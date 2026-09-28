@@ -370,10 +370,10 @@ impl SimGui {
             app.tick(obc_ports::RideClock(0), obc_ports::Sensors::new(&mut loc), None);
         }
         tracks.offer_recovery(&mut app);
-        // Seed the live settings from the persisted store, falling back to defaults on a first run
-        // or an unreadable file, as the device's boot path does.
+        // Seed the live settings from the persisted store, falling back to a factory-fresh device
+        // on a first run or an unreadable file, as the device's boot path does.
         let mut settings_store = FileSettingsStore::open(args.settings_path());
-        let boot_settings = settings_store.load().unwrap_or_default();
+        let boot_settings = settings_store.load().unwrap_or(obc_app::Settings::FACTORY);
         app.set_settings(boot_settings);
         args.stamp_initial_clock(&mut app);
         app.set_map_nav_graph(map_tables.has_nav_graph());
@@ -387,6 +387,7 @@ impl SimGui {
         app.set_backlight_available(obc_ports::Backlight::available(&backlight));
         let sounder = crate::sounder::SimSounder::open(!args.no_sound);
         app.set_sound_available(obc_ports::Sounder::available(&sounder));
+        app.set_factory_name(crate::SIM_FACTORY_NAME);
         // The window draws into one resident device-64 plane and presents it by self-diff, as the
         // board does, so the frozen base's rows survive between frames.
         app.set_resident_frame(true);

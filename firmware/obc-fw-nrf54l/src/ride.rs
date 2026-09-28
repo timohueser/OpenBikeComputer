@@ -730,6 +730,7 @@ pub(crate) async fn run_app(
     let mut backlight_level = u8::MAX;
     app.set_backlight_available(obc_ports::Backlight::available(&backlight));
     app.set_sound_available(obc_ports::Sounder::available(&buzzer));
+    app.set_factory_name(&crate::link::identity::device_name());
     // The map plane is one resident framebuffer that the present scans out of, so every repaint is a
     // repaint over the last frame. That is what lets the app leave a frozen base's rows alone while
     // a drawer's sheet grows over them.
@@ -766,11 +767,11 @@ pub(crate) async fn run_app(
     // pulsing the manager's work edge every pass.
     let mut sensor_scan_rearm_ms: u32 = 0;
 
-    // Seed the app from the persistent RRAM store at boot; a blank or corrupt page decodes to the
-    // defaults. One brief lock, released at once.
+    // Seed the app from the persistent RRAM store at boot; a blank or corrupt page boots a
+    // factory-fresh device. One brief lock, released at once.
     app.set_settings({
         let mut store = shared.lock().await;
-        store.settings.load().unwrap_or_default()
+        store.settings.load().unwrap_or(obc_app::Settings::FACTORY)
     });
     // The brightness in that seed reaches the panel here, before the first frame is drawn. The
     // per-pass apply at the end of the loop would otherwise leave the light at the level
@@ -2185,9 +2186,6 @@ pub(crate) async fn run_app(
                 let outcome = match effect {
                     SettingsEffect::PersistRevision { token, revision } => match settings_store.save(app.settings()) {
                         Ok(()) => {
-                            // The RRAM blob just moved, so the BLE config-read cache is stale. Flag
-                            // it, so the BLE plane refreshes before its next read.
-                            crate::link_control::mark_device_settings_changed();
                             // Push a changed GPS fix interval to the sensor task → it re-VALSETs the M10's rate.
                             #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
                             if app.settings().fix_interval_s != prev_interval {

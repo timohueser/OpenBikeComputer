@@ -124,6 +124,10 @@ pub struct AppState {
     /// Whether this platform can make a sound, declared once by the host at composition through
     /// [`App::set_sound_available`]. `false` hides the Sound settings page and plays no cue.
     pub sound_available: bool,
+    /// Whether this platform bonds a phone: [`PlatformSupport::bonding`](crate::device_core::PlatformSupport),
+    /// fed before the input of every pass. It reads `true` until the first pass. `false` hides the
+    /// pairing code in setup and in Connections.
+    pub bonding: bool,
 
     /// The Up-ahead timeline's category filter. It resets to Everything on each entry to the
     /// list. It lives here, not on the list screen, because the sheet that edits it sits above
@@ -155,6 +159,7 @@ impl AppState {
             bond_status: crate::ble::BondStatus::Idle,
             has_nav_graph: false,
             sound_available: false,
+            bonding: true,
 
             up_ahead_filter: obc_reader::PoiCategorySet::ALL,
         }
@@ -450,6 +455,9 @@ pub struct App {
     /// The running firmware version string, fed by the host at boot. Resident because the System
     /// screen draws on a frame with no `Reader`.
     fw_version: heapless::String<32>,
+    /// The factory name `OBC-XXXX` that the OBC advertises while no rename is stored (BLE spec
+    /// §9.3), fed by the host at boot.
+    factory_name: heapless::String<8>,
     /// The loaded map's display name, fed on map load. Empty until a map loads.
     map_name: heapless::String<24>,
     /// The loaded map's OBCM format version, the right half of the `Map` row. `0` until a map loads.
@@ -509,6 +517,7 @@ impl App {
             storage: StorageInfo::new(),
             pass: crate::device_core::pass::PassState::new(),
             fw_version: heapless::String::new(),
+            factory_name: heapless::String::new(),
             map_name: heapless::String::new(),
             map_obcm_version: 0,
             backlight_available: false,
@@ -553,6 +562,7 @@ impl App {
             storage,
             pass,
             fw_version,
+            factory_name,
             map_name,
             map_obcm_version,
             backlight_available,
@@ -577,7 +587,10 @@ impl App {
         assert_eq!(bond.status(), crate::ble::BondStatus::Idle);
         storage.assert_boot_state();
         assert_eq!(*pass, crate::device_core::pass::PassState::new(), "no connection wired, no pass in flight");
-        assert!(fw_version.is_empty() && map_name.is_empty(), "the host has identified nothing yet");
+        assert!(
+            fw_version.is_empty() && factory_name.is_empty() && map_name.is_empty(),
+            "the host has identified nothing yet"
+        );
         assert_eq!(*map_obcm_version, 0, "no map format known yet");
         assert!(!*backlight_available, "no host has claimed a panel light yet");
         assert_eq!(*cues, crate::cues::Cues::new(), "no cue raised, no level pending");
@@ -911,6 +924,12 @@ impl App {
                 break;
             }
         }
+    }
+
+    /// Declare the factory name. The host calls this once at boot.
+    pub fn set_factory_name(&mut self, name: &str) {
+        self.factory_name.clear();
+        let _ = self.factory_name.push_str(name);
     }
 
     /// Feed the loaded map's display name and OBCM format version on map load. The System
@@ -1861,8 +1880,52 @@ impl App {
         if changed && self.ui.indicator_visible() {
             self.ui.map_dirty = true;
         }
+        if status.paired {
+            self.close_pairing_code();
+        }
         self.ui.cards.set_passkey(status.passkey);
         self.sweep_cards();
+    }
+
+    /// Close the pairing code, which shows only while the bond slot is empty (BLE spec §9.3). In
+    /// setup a bond ends the pairing step and opens the page that confirms it; the page Connections
+    /// opened returns there, where the phone row shows the bond.
+    fn close_pairing_code(&mut self) {
+        let Some(i) = self.ui.stack.iter().position(|s| matches!(s, Screen::SetupQr(_) | Screen::PairPhone(_))) else {
+            return;
+        };
+        if matches!(self.ui.stack[i], Screen::SetupQr(_)) {
+            self.settings.setup = screen::setup::after(crate::settings::SetupStep::Qr, &self.state);
+            self.settings_ops.note_edited();
+            screen::apply(&mut self.ui.stack, screen::Transition::Root(Screen::SetupPaired(screen::SetupPairedScreen)));
+        } else {
+            self.ui.stack.truncate(i);
+        }
+        self.ui.cancel_holds();
+        self.ui.map_dirty = true;
+    }
+
+    /// Commit a confirmed factory reset only after the bond store acknowledges removal. The
+    /// board's unconfirmed controller clearance keeps the restart instruction on screen.
+    pub(crate) fn finish_factory_reset(&mut self) {
+        use crate::ble::BondStatus;
+        if !matches!(self.state.bond_status, BondStatus::Removed | BondStatus::RestartRequired)
+            || !self.factory_reset_pending()
+        {
+            return;
+        }
+        self.settings = Settings::FACTORY;
+        self.wall_clock.set(self.settings.local_clock(), self.ui.now_ms);
+        self.sync_find_preferences();
+        self.settings_ops.note_edited();
+        if self.state.bond_status == BondStatus::Removed {
+            screen::apply(&mut self.ui.stack, screen::setup::go_to(&self.settings));
+            self.ui.cancel_holds();
+        }
+    }
+
+    fn factory_reset_pending(&self) -> bool {
+        self.ui.stack.iter().any(|s| matches!(s, Screen::Reset(r) if r.removing()))
     }
 
     /// Whether the passkey card is currently up. A route-upload popup is dropped, not queued,
@@ -1876,7 +1939,8 @@ impl App {
     /// card lands in the same frame unless a policy rule defers it.
     fn sweep_cards(&mut self) {
         let arrival = self.arrival_view();
-        self.ui.run_card_sweep(&self.catalogs, self.recorder.recording(), self.state.pan.is_some(), arrival);
+        let in_setup = self.settings.in_setup() || self.factory_reset_pending();
+        self.ui.run_card_sweep(&self.catalogs, self.recorder.recording(), self.state.pan.is_some(), arrival, in_setup);
         if self.ui.stack.iter().any(|s| matches!(s, Screen::Journey(_))) || self.ui.find.resume_offer {
             self.ui.find.review = self.assistant_review_status();
             self.ui.find.resume_route = self
@@ -1952,11 +2016,12 @@ impl App {
         self.ui.set_sensor_scan_hits(hits);
     }
 
-    /// Whether the rider is on the scan-list screen and a scan should run. The host reads the
-    /// level each pass: while `true` it keeps a discovery scan running and feeds the hits back;
-    /// when it falls it clears the app scan list.
+    /// Whether a scan list is on the stack, so a scan should run. The host reads the level each
+    /// pass: while `true` it keeps a discovery scan running and feeds the hits back; when it falls
+    /// it clears the app scan list. A card over the list keeps the scan, and whatever takes the list
+    /// off the stack ends it.
     pub fn sensor_scan_active(&self) -> bool {
-        self.activity.sensor_scan_active()
+        self.ui.stack.iter().any(|s| matches!(s, Screen::SensorScan(_) | Screen::SetupSensorScan(_)))
     }
 
     /// A committed route upload: forced adoption on an active replace + the advisory prompt.
@@ -2142,7 +2207,14 @@ impl App {
     /// live here only: a modal that declares [`Caps::blocks_chords`](crate::screen::Caps) stops
     /// every chord, and one drawer is open at a time, so the same chord again closes it.
     pub fn apply_chord(&mut self, chord: Chord) -> bool {
+        if self.factory_reset_pending() {
+            return false;
+        }
         if self.ui.stack.last().is_some_and(|s| s.caps().blocks_chords) {
+            return false;
+        }
+        // Setup ends only on its own pages, and the Assistant is a place of its own.
+        if chord == Chord::Assistant && self.settings.in_setup() {
             return false;
         }
         // The powering-off frame refuses a squeeze. It cannot be said in `Caps`, because the
@@ -2347,6 +2419,13 @@ impl App {
         // The value came from the store, so it is already persisted: reset the handshake to
         // Clean. A pending edit is discarded, because seeding is a boot operation, not an edit.
         self.settings_ops.note_seeded();
+        // An unfinished setup opens at its step. A recovered-ride decision already on top stays
+        // there, and setup opens once it is answered.
+        let decision_open = self.ui.stack.last().is_some_and(|top| top.caps().blocks_escape);
+        if let Some(step) = screen::setup::screen(&self.settings).filter(|_| !decision_open) {
+            screen::apply(&mut self.ui.stack, screen::Transition::Root(step));
+            self.ui.map_dirty = true;
+        }
     }
 
     /// Merge the BLE-owned fields (units and device name) of a phone Config write into the live
@@ -2363,6 +2442,15 @@ impl App {
     /// Apply a host's theme without resetting the clock or the settings save handshake.
     pub fn set_theme(&mut self, theme: crate::settings::Theme) {
         self.settings.theme = theme;
+    }
+
+    /// The theme the frame draws in. Setup's theme step previews the theme under its cursor, also
+    /// under a drawer, and the setting changes only when the rider commits it.
+    pub(crate) fn theme(&self) -> crate::settings::Theme {
+        match screen::base_screen(&self.ui.stack) {
+            Some(Screen::SetupTheme(step)) => step.0,
+            _ => self.settings.theme,
+        }
     }
 
     pub fn settings(&self) -> &Settings {
@@ -2596,7 +2684,7 @@ impl App {
         // Asked of the base, not of `stack.last()`: a sheet opened over a card the rider must
         // answer is not consent to walk away from the card.
         let base = screen::base_screen(&self.ui.stack);
-        if base.is_some_and(|s| s.caps().blocks_escape) || self.power_off_requested() {
+        if base.is_some_and(|s| s.caps().blocks_escape) || self.power_off_requested() || self.factory_reset_pending() {
             return false;
         }
         // No explicit sheet-popping: a rewind truncates to the Menu, which is under every
@@ -2989,7 +3077,8 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        let style_set = match self.settings.theme {
+        let theme = self.theme();
+        let style_set = match theme {
             crate::settings::Theme::Light => MapStyleSet::Light,
             crate::settings::Theme::Dark => MapStyleSet::Dark,
         };
@@ -3076,6 +3165,7 @@ impl App {
             recorder,
             ui,
             fw_version,
+            factory_name,
             map_name,
             map_obcm_version,
             storage,
@@ -3155,6 +3245,7 @@ impl App {
             clock,
             stats: RenderStats::default(),
             fw_version: fw_version.as_str(),
+            factory_name: factory_name.as_str(),
             map_name: map_name.as_str(),
             map_obcm_version: *map_obcm_version,
             card_free_bytes: storage.free_bytes(),
@@ -3175,7 +3266,6 @@ impl App {
         let covered = ui.base_frozen();
         let recessed = covered && ui.stack.get(base).is_none_or(|s| s.caps().recess);
         let recess = core::cell::Cell::new(recessed);
-        let theme = settings.theme;
         let theme_policy_enabled = core::cell::Cell::new(true);
         let policy = |c: u16| {
             let themed = if theme_policy_enabled.get() { screen::palette::resolve(theme, c) } else { c };
@@ -3247,7 +3337,7 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        let themed = |color| color_fn(crate::screen::palette::resolve(self.settings.theme, color));
+        let themed = |color| color_fn(crate::screen::palette::resolve(self.theme(), color));
         self.ui.input.render_overlay(target, w, h, themed);
         self.render_planning_banner(target, w, h, color_fn);
     }
@@ -3260,7 +3350,7 @@ impl App {
     {
         if let Some(message) = self.planning_banner() {
             let text = crate::i18n::t(message, self.settings.language);
-            let themed = |color| color_fn(crate::screen::palette::resolve(self.settings.theme, color));
+            let themed = |color| color_fn(crate::screen::palette::resolve(self.theme(), color));
             crate::screen::vocab::chrome::recalculating_banner(
                 target,
                 &themed,
@@ -4441,7 +4531,7 @@ mod tests {
     #[test]
     fn every_settings_screen_holds_a_pending_save_until_exit() {
         use crate::screen::settings::page;
-        use crate::screen::{apply, AddFieldScreen, ResetScreen, SettingsPage, StatFieldsScreen, Transition};
+        use crate::screen::{apply, AddFieldScreen, SettingsPage, StatFieldsScreen, Transition};
         use crate::settings::Units;
 
         /// The screens to stack on the Home root (bottom first — parents under children, as the
@@ -4452,7 +4542,7 @@ mod tests {
             let _ = v.push(s);
             v
         }
-        let cases: [Case; 10] = [
+        let cases: [Case; 9] = [
             // Pure navigation — no edit gesture of its own.
             ("Settings list", || one(Screen::Settings(SettingsPage::hub())), &[]),
             // Open the UTC-offset editor sheet over the page, step it and commit; the sheet pops
@@ -4492,13 +4582,11 @@ mod tests {
             ("Power", || one(Screen::Power(SettingsPage::new(&page::POWER))), &[Gesture::Step(1), Gesture::Press]),
             // Pure navigation — the Firmware page's install action leaves the settings subtree.
             ("Firmware", || one(Screen::Firmware(SettingsPage::new(&page::FIRMWARE))), &[]),
-            // Press arms, then the completed hold erases to defaults — a real diff off the seed below.
-            ("Reset", || one(Screen::Reset(ResetScreen::new())), &[Gesture::Press, Gesture::Hold]),
         ];
 
         for (name, stack, edits) in cases {
             let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-            // A non-default seed, so the factory Reset's erase-to-defaults really changes something.
+            // A non-default seed, so a Units edit really changes something.
             app.set_settings(Settings { units: Units::Imperial, ..Settings::default() });
             for s in stack() {
                 apply(&mut app.ui.stack, Transition::Push(s));
@@ -4533,6 +4621,22 @@ mod tests {
     /// Upper bound of `Back` presses needed to unwind any settings case above, so a regression
     /// cannot loop forever.
     const MAX_DEPTH_BACKOUT: usize = crate::screen::MAX_DEPTH;
+
+    /// An unpaired device needs no bond receipt: reset saves at once and opens setup.
+    #[test]
+    fn an_unpaired_factory_reset_saves_at_once_and_opens_setup() {
+        use crate::screen::{ResetScreen, SettingsPage};
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings::default());
+        let _ = app.ui.stack.push(Screen::Settings(SettingsPage::hub()));
+        let _ = app.ui.stack.push(Screen::Reset(ResetScreen::new()));
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Hold);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::Hello(_)]));
+        assert_eq!(*app.settings(), Settings::FACTORY);
+        assert!(!app.state.ble_forget_requested, "there is no phone to forget");
+        assert!(settings_dirty(&mut app), "the reset is saved at once");
+    }
 
     /// A host-pushed warning still lands over the deepest ordinary mid-ride settings path. This
     /// walks that one path with gestures; how deep a rider can get at all, and what that leaves,
@@ -6071,6 +6175,363 @@ mod tests {
         app.arm_settings_save(); // pretend a stale dirty state survived somehow
         app.set_settings(Settings::default()); // boot seed (store load or default)
         assert_eq!(drain_persist(&mut app), None, "a seeded boot value is already persisted");
+    }
+
+    /// A factory-fresh boot opens setup, and only its own pages leave it. Hello's press opens the
+    /// language step, and Back there returns to Hello. Select on a language commits it and opens the
+    /// button lesson. Once each button is pressed there, Select opens the units step.
+    #[test]
+    fn a_factory_boot_runs_setup_through_its_steps() {
+        use crate::settings::{Language, SetupStep};
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings::FACTORY);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::Hello(_)]));
+
+        for g in [Gesture::Back, Gesture::BackHold, Gesture::Hold] {
+            app.apply_gesture(g);
+        }
+        assert!(matches!(app.ui.stack.last(), Some(Screen::Hello(_))), "setup cannot be escaped");
+
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupLanguage(_)]));
+        app.apply_gesture(Gesture::BackHold);
+        assert!(matches!(app.ui.stack.last(), Some(Screen::SetupLanguage(_))), "setup cannot be escaped");
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::Hello(_)]), "Back returns to Hello");
+        assert_eq!(app.settings().setup, SetupStep::Hello, "a power loss resumes on the step shown");
+
+        app.apply_gesture(Gesture::Press);
+        let before = *app.settings();
+        app.apply_gesture(Gesture::Step(1));
+        assert_eq!(*app.settings(), before, "the page previews the cursor's language and saves nothing");
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupButtons(_)]));
+        assert_eq!((app.settings().setup, app.settings().language), (SetupStep::Buttons, Language::De));
+
+        for g in [Gesture::BackHold, Gesture::Step(-1), Gesture::Step(1), Gesture::Back, Gesture::Press] {
+            app.apply_gesture(g);
+        }
+        assert!(matches!(app.ui.stack.last(), Some(Screen::SetupButtons(_))), "the lesson's presses stay on it");
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupUnits(_)]));
+        assert_eq!((app.settings().setup, app.settings().language), (SetupStep::Units, Language::De));
+    }
+
+    /// The units and theme steps commit on Select only. The theme step draws the frame in the
+    /// theme under its cursor, and that preview is never saved: a step leaves the setting alone,
+    /// and Back returns to the units step in the committed theme. Select on a theme opens the
+    /// pairing step.
+    #[test]
+    fn the_units_and_theme_steps_commit_on_select_and_the_theme_preview_saves_nothing() {
+        use crate::settings::{SetupStep, Theme, Units};
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings { setup: SetupStep::Units, ..Settings::FACTORY });
+        let mut host = SettingsHost::default();
+
+        app.apply_gesture(Gesture::Step(1));
+        assert_eq!(app.settings().units, Units::Metric, "the cursor commits nothing");
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupTheme(_)]));
+        assert_eq!((app.settings().setup, app.settings().units), (SetupStep::Theme, Units::Imperial));
+        let revision = host.drain(&mut app).expect("the step is saved");
+        host.ack(&mut app, revision);
+
+        app.apply_gesture(Gesture::Step(1));
+        assert_eq!((app.theme(), app.settings().theme), (Theme::Dark, Theme::Light), "the page previews Dark");
+        assert_eq!(host.drain(&mut app), None, "a preview is not saved");
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupUnits(_)]));
+        assert_eq!((app.settings().setup, app.theme()), (SetupStep::Units, Theme::Light), "Back drops the preview");
+
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Step(1));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupQr(_)]));
+        let s = app.settings();
+        assert_eq!((s.setup, s.units, s.theme), (SetupStep::Qr, Units::Imperial, Theme::Dark));
+        assert!(host.drain(&mut app).is_some(), "the step is saved");
+    }
+
+    /// The sensors step adds a sensor through the Settings scan list, which setup's escape refusal
+    /// covers too. A cursor move saves nothing, Back returns to the pairing step, and the last row
+    /// opens the effort step.
+    #[test]
+    fn the_sensors_step_adds_through_the_scan_list_and_its_last_row_opens_the_effort_step() {
+        use crate::settings::{SavedSensor, SetupStep};
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings { setup: SetupStep::Sensors, ..Settings::FACTORY });
+        app.set_sensor_scan_hits(&[crate::sensors::SensorScanHit::new(1, 0, [1, 2, 3, 4, 5, 6], "Stages", -60)]);
+        let mut host = SettingsHost::default();
+
+        app.apply_gesture(Gesture::Step(1));
+        assert_eq!(host.drain(&mut app), None, "a cursor move saves nothing");
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(
+            app.ui.stack.as_slice(),
+            [Screen::Home(_), Screen::SetupSensors(_), Screen::SetupSensorScan(_)]
+        ));
+        assert!(app.sensor_scan_active());
+        app.apply_gesture(Gesture::BackHold);
+        assert!(matches!(app.ui.stack.last(), Some(Screen::SetupSensorScan(_))), "setup cannot be escaped");
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupSensors(_)]));
+        assert_eq!(
+            app.settings().saved_sensors[1],
+            SavedSensor::saved(0, [1, 2, 3, 4, 5, 6]),
+            "the pick is the power meter"
+        );
+        assert!(!app.sensor_scan_active());
+
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupQr(_)]));
+        assert_eq!(app.settings().setup, SetupStep::Qr);
+        // Skip the app: Back opens the way out, and its second row skips.
+        for g in [Gesture::Back, Gesture::Step(1), Gesture::Press] {
+            app.apply_gesture(g);
+        }
+        app.apply_gesture(Gesture::Press);
+        assert!(
+            matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupEffort(_)]),
+            "with a sensor saved, the step opens on Continue"
+        );
+        assert_eq!(app.settings().setup, SetupStep::Effort);
+        assert!(app.settings().saved_sensors[1].present, "the added sensor stays");
+    }
+
+    /// The pairing step's way out. Back opens the page that asks to ride without the app: its
+    /// first row returns to the code, Skip ends the step, and Back walks on to the theme step.
+    #[test]
+    fn back_on_the_pairing_step_offers_to_skip_the_app() {
+        use crate::settings::SetupStep;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings { setup: SetupStep::Qr, ..Settings::FACTORY });
+        let way_out =
+            |app: &App| matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupQr(_), Screen::SetupNoApp(_)]);
+
+        app.apply_gesture(Gesture::Back);
+        assert!(way_out(&app));
+        app.apply_gesture(Gesture::BackHold);
+        assert!(way_out(&app), "setup cannot be escaped");
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupQr(_)]), "the first row");
+
+        app.apply_gesture(Gesture::Back);
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupTheme(_)]));
+        assert_eq!(app.settings().setup, SetupStep::Theme);
+
+        for g in [Gesture::Press, Gesture::Back, Gesture::Step(1), Gesture::Press] {
+            app.apply_gesture(g);
+        }
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupSensors(_)]), "Skip");
+        assert_eq!(app.settings().setup, SetupStep::Sensors);
+    }
+
+    /// A rejected pairing closes the passkey card onto the code. A bond ends the pairing step,
+    /// under the passkey card too: the step after it is saved at once, and the page that confirms
+    /// the bond opens. Its Select opens that step, and its Back the step before the pairing step,
+    /// which a bonded device passes by in both directions (BLE spec §9.3).
+    #[test]
+    fn a_bond_confirms_the_pairing_step_and_a_bonded_device_passes_it_by() {
+        use crate::ble::{BleLink, BleStatus};
+        use crate::settings::SetupStep;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings { setup: SetupStep::Qr, ..Settings::FACTORY });
+        let mut host = SettingsHost::default();
+        let pairing = BleStatus { link: BleLink::Connected, passkey: Some(123_456), paired: false };
+
+        app.set_ble_status(pairing);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupQr(_), Screen::Passkey(_)]));
+        app.set_ble_status(BleStatus { passkey: None, ..pairing });
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupQr(_)]), "a rejection");
+
+        app.set_ble_status(pairing);
+        app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: None, paired: true });
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupPaired(_)]));
+        assert_eq!(app.settings().setup, SetupStep::Sensors);
+        assert!(host.drain(&mut app).is_some(), "the step is saved");
+        app.apply_gesture(Gesture::BackHold);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupPaired(_)]), "no escape");
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupSensors(_)]));
+
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupTheme(_)]));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupSensors(_)]));
+    }
+
+    /// Connections offers the pairing code while no phone is paired. Back returns to the page, a
+    /// rejected pairing to the code, and a bond to the page, where the phone row shows it.
+    #[test]
+    fn connections_opens_the_pairing_code_until_a_phone_pairs() {
+        use crate::ble::{BleLink, BleStatus};
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings::default());
+        let connections = crate::screen::SettingsPage::new(&crate::screen::settings::page::CONNECTIONS);
+        let _ = app.ui.stack.push(Screen::Connections(connections));
+        // The Bluetooth switch, then the Sensors door, then the pairing code's door.
+        for g in [Gesture::Step(1), Gesture::Step(1), Gesture::Press] {
+            app.apply_gesture(g);
+        }
+        assert!(matches!(app.ui.stack.last(), Some(Screen::PairPhone(_))));
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.ui.stack.last(), Some(Screen::Connections(_))));
+
+        app.apply_gesture(Gesture::Press);
+        let pairing = BleStatus { link: BleLink::Connected, passkey: Some(123_456), paired: false };
+        app.set_ble_status(pairing);
+        app.set_ble_status(BleStatus { passkey: None, ..pairing });
+        assert!(matches!(app.ui.stack.last(), Some(Screen::PairPhone(_))), "a rejection returns to the code");
+        app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: None, paired: true });
+        assert!(matches!(app.ui.stack.last(), Some(Screen::Connections(_))), "a bond closes the code");
+    }
+
+    /// The effort step edits each limit in the drawer editor over the page: the editor's Select
+    /// commits and saves the value, and its Back discards. The sheet keeps setup's refusals of the
+    /// Assistant chord, the escape and the idle return. Back on the page returns to the sensors step with the
+    /// committed limits kept, and the last row opens the All set page.
+    #[test]
+    fn the_effort_step_edits_its_limits_in_the_drawer_editor() {
+        use crate::input::Chord;
+        use crate::settings::SetupStep;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let factory = Settings { setup: SetupStep::Effort, idle_return: IdleReturn::S15, ..Settings::FACTORY };
+        app.set_settings(factory);
+        let mut host = SettingsHost::default();
+
+        app.apply_gesture(Gesture::Press);
+        let editing = |app: &App| {
+            matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupEffort(_), Screen::ContextDrawer(_)])
+        };
+        assert!(editing(&app), "Select on Max heart rate opens its editor");
+        assert!(!app.apply_chord(Chord::Assistant));
+        app.apply_gesture(Gesture::BackHold);
+        idle_tick(&mut app, 60_000);
+        idle_tick(&mut app, 120_000);
+        assert!(editing(&app), "the sheet keeps setup's refusals");
+        app.apply_gesture(Gesture::Step(1));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupEffort(_)]));
+        assert_eq!(app.settings().max_hr, 181, "an unset limit opens on 180 bpm");
+        let revision = host.drain(&mut app).expect("the committed limit is saved");
+        host.ack(&mut app, revision);
+
+        for g in [Gesture::Step(1), Gesture::Press, Gesture::Step(3), Gesture::Back] {
+            app.apply_gesture(g);
+        }
+        assert_eq!((app.settings().ftp_w, host.drain(&mut app)), (0, None), "the editor's Back discards");
+
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupSensors(_)]));
+        assert_eq!((app.settings().setup, app.settings().max_hr), (SetupStep::Sensors, 181));
+
+        for g in [Gesture::Step(-1), Gesture::Press, Gesture::Step(-1), Gesture::Press] {
+            app.apply_gesture(g);
+        }
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupAllSet(_)]), "the last row");
+        let s = app.settings();
+        assert_eq!((s.setup, s.max_hr, s.ftp_w), (SetupStep::AllSet, 181, 0));
+    }
+
+    /// The All set page is the last step and refuses the escape. Back returns to the effort step,
+    /// and Select saves setup as done and opens Home.
+    #[test]
+    fn the_all_set_page_ends_setup_on_home() {
+        use crate::settings::SetupStep;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings { setup: SetupStep::AllSet, ..Settings::FACTORY });
+        let mut host = SettingsHost::default();
+        let all_set = |app: &App| matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupAllSet(_)]);
+
+        assert!(all_set(&app), "a power loss resumes on the page");
+        app.apply_gesture(Gesture::BackHold);
+        assert!(all_set(&app), "setup cannot be escaped");
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupEffort(_)]));
+        assert_eq!(app.settings().setup, SetupStep::Effort);
+
+        for g in [Gesture::Step(-1), Gesture::Press] {
+            app.apply_gesture(g);
+        }
+        assert!(all_set(&app), "Skip on the effort step");
+        let revision = host.drain(&mut app).expect("the step is saved");
+        host.ack(&mut app, revision);
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_)]));
+        assert_eq!(app.settings().setup, SetupStep::Done);
+        assert!(host.drain(&mut app).is_some(), "setup is saved as done");
+    }
+
+    /// The recovered ride is decided first, whichever the host offers first, and setup opens on
+    /// its saved step once the decision is answered.
+    #[test]
+    fn setup_opens_once_the_recovered_ride_is_answered() {
+        use crate::settings::SetupStep;
+        let saved = Settings { setup: SetupStep::Units, ..Settings::FACTORY };
+        // The board offers the ride before it seeds the settings.
+        let mut board = App::new_idle(AppState::new(0, 0, 1.0));
+        assert!(board.offer_recovered_ride(crate::RideContinuation::default()));
+        board.set_settings(saved);
+        assert!(matches!(board.top_screen(), Screen::RideRecovery(_)));
+        board.apply_gesture(Gesture::Press);
+        assert!(matches!(board.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupUnits(_)]), "Continue");
+
+        // The iOS host seeds the settings first.
+        let mut phone = App::new_idle(AppState::new(0, 0, 1.0));
+        phone.set_settings(saved);
+        assert!(phone.offer_recovered_ride(crate::RideContinuation::default()));
+        assert!(matches!(phone.top_screen(), Screen::RideRecovery(_)));
+        phone.apply_gesture(Gesture::Step(1));
+        phone.apply_gesture(Gesture::Hold);
+        assert!(matches!(phone.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupUnits(_)]), "Discard");
+    }
+
+    /// The quick drawer opens over setup for the power and the light, and holds no way out of it.
+    /// The Assistant chord and the escape stay refused.
+    #[test]
+    fn the_quick_drawer_opens_over_setup() {
+        use crate::input::Chord;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings::FACTORY);
+        assert!(!app.apply_chord(Chord::Assistant));
+        assert!(app.apply_chord(Chord::Quick));
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::Hello(_), Screen::QuickDrawer(_)]));
+        app.apply_gesture(Gesture::BackHold);
+        assert!(matches!(app.ui.stack.get(1), Some(Screen::Hello(_))), "setup cannot be escaped");
+    }
+
+    /// A route card waits while setup runs, because its VIEW leads on to a ride, and lands once
+    /// setup ends.
+    #[test]
+    fn a_route_card_waits_for_setup_to_end() {
+        use crate::settings::SetupStep;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings { setup: SetupStep::AllSet, ..Settings::FACTORY });
+        app.set_routes_with_ids(&[summary("Alpha")], &[10]);
+        app.on_route_uploaded(10, false, None);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::SetupAllSet(_)]), "the card waits");
+        app.apply_gesture(Gesture::Press);
+        idle_tick(&mut app, 1_000);
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::RouteReceived(_)]));
+    }
+
+    /// The scan runs while a scan list is on the stack, under a card too, and ends when the list
+    /// leaves the stack in any way.
+    #[test]
+    fn the_sensor_scan_ends_when_its_list_leaves_the_stack() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.test_mount_store();
+        app.set_routes_with_ids(&[summary("Alpha")], &[10]);
+        let _ = app.ui.stack.push(Screen::Sensors(crate::screen::SensorsScreen::new()));
+        app.apply_gesture(Gesture::Press);
+        assert!(app.sensor_scan_active());
+        app.on_route_uploaded(10, false, None);
+        assert!(app.sensor_scan_active(), "a card over the list keeps the scan");
+        app.apply_gesture(Gesture::Press); // VIEW
+        app.apply_gesture(Gesture::Press); // START RIDE
+        assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::Map(_)]));
+        assert!(!app.sensor_scan_active());
     }
 
     /// A cancel posted while the plan request is still undrained annihilates it: the rider's net

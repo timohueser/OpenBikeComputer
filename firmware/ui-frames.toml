@@ -702,14 +702,34 @@ script = "B u p d d p"
 expect = "Sound"
 
 # Connections (group 3): the Bluetooth switch, the Sensors door, the phone's status line (read-only,
-# the cursor skips it) and the guarded Forget row — drawn only while there is a bond to drop.
-# Unpaired: no Forget row, one step lands on Sensors and the next wraps. Paired: two steps select
-# the Forget row (the shaded guarded base), and a partial hold fills it warning-red.
+# the cursor skips it), then the pairing code's door while no phone is paired, or the guarded Forget
+# row while there is a bond to drop. Paired: two steps select the Forget row (the shaded guarded
+# base), and a partial hold fills it warning-red.
 [[frame]]
 name = "connections"
 map = "{grimsel}"
 script = "B u p d d d p"
 expect = "Connections"
+
+# Unpaired: two steps select the pairing code's door, and Select opens the code.
+[[frame]]
+name = "connections-pair"
+map = "{grimsel}"
+script = "B u p d d d p d d"
+expect = "Connections"
+
+[[frame]]
+name = "connections-pair"
+map = "{grimsel}"
+script = "B u p d d d p d d"
+expect = "Connections"
+langs = ["de", "fr", "es"]
+
+[[frame]]
+name = "pair-phone"
+map = "{grimsel}"
+script = "B u p d d d p d d p"
+expect = "PairPhone"
 
 [[frame]]
 name = "connections-paired"
@@ -1767,6 +1787,306 @@ map = "{grimsel}"
 expect = "Passkey"
 args = ["--ble", "passkey=42"]
 
+# First-use setup: a factory-fresh device boots into the Hello greeting.
+[[frame]]
+name = "setup-hello"
+map = "{grimsel}"
+expect = "Hello"
+args = ["--fresh"]
+
+# Setup's language step, reached from Hello: the Language pick list with the controls hint at its
+# foot. It shows in the language the device has, so the hint is swept in all four.
+[[frame]]
+name = "setup-language"
+map = "{grimsel}"
+script = "p"
+expect = "SetupLanguage"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-language"
+map = "{grimsel}"
+script = "p"
+expect = "SetupLanguage"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+# The cursor moved to Deutsch: the page speaks German, and the tick stays on the committed language
+# until Select.
+[[frame]]
+name = "setup-language-cursor"
+map = "{grimsel}"
+script = "p d"
+expect = "SetupLanguage"
+args = ["--fresh"]
+
+# Setup's button lesson, reached through Hello and the language step: untouched, with Up and Back
+# pressed, and with all four pressed, when Select continues.
+[[frame]]
+name = "setup-buttons"
+map = "{grimsel}"
+script = "p p"
+expect = "SetupButtons"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-buttons"
+map = "{grimsel}"
+script = "p p"
+expect = "SetupButtons"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+[[frame]]
+name = "setup-buttons-partial"
+map = "{grimsel}"
+script = "p p u b"
+expect = "SetupButtons"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-buttons-done"
+map = "{grimsel}"
+script = "p p u d b p"
+expect = "SetupButtons"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-buttons-done"
+map = "{grimsel}"
+script = "p p u d b p"
+expect = "SetupButtons"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+# Setup's units step, after the button lesson: Metric and Imperial over the ride tiles.
+[[frame]]
+name = "setup-units"
+map = "{grimsel}"
+script = "p p u d b p p"
+expect = "SetupUnits"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-units"
+map = "{grimsel}"
+script = "p p u d b p p"
+expect = "SetupUnits"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+# The cursor on Imperial: the tiles read in miles, and the tick stays on Metric.
+[[frame]]
+name = "setup-units-imperial"
+map = "{grimsel}"
+script = "p p u d b p p d"
+expect = "SetupUnits"
+args = ["--fresh"]
+
+# Setup's theme step on Light, the committed theme.
+[[frame]]
+name = "setup-theme"
+map = "{grimsel}"
+script = "p p u d b p p p"
+expect = "SetupTheme"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-theme"
+map = "{grimsel}"
+script = "p p u d b p p p"
+expect = "SetupTheme"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+# The cursor on Dark: the whole page previews Dark, and the tick stays on Light.
+[[frame]]
+name = "setup-theme-dark"
+map = "{grimsel}"
+script = "p p u d b p p p d"
+expect = "SetupTheme"
+args = ["--fresh"]
+
+# Setup's pairing step after the theme step: the QR code of the app link over the sim's factory
+# name. The code stays dark on light in the Dark theme.
+[[frame]]
+name = "setup-qr"
+map = "{grimsel}"
+script = "p p u d b p p p p"
+expect = "SetupQr"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-qr"
+map = "{grimsel}"
+script = "p p u d b p p p p"
+expect = "SetupQr"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+[[frame]]
+name = "setup-qr-dark"
+map = "{grimsel}"
+script = "p p u d b p p p d p"
+expect = "SetupQr"
+args = ["--fresh"]
+
+# A USB cable parks the radio while the Bluetooth switch stays on, so the line under the name says
+# to unplug it.
+[[frame]]
+name = "setup-qr-cable"
+map = "{grimsel}"
+script = "p p u d b p p p p"
+expect = "SetupQr"
+args = ["--fresh", "--ble", "off"]
+
+[[frame]]
+name = "setup-qr-bluetooth-off"
+map = "{grimsel}"
+script = "p p u d b p p p p Q d p Q"
+expect = "SetupQr"
+args = ["--fresh"]
+
+# Back on the pairing step asks whether to ride without the app. Skip passes the step, which the
+# later setup frames do.
+[[frame]]
+name = "setup-no-app"
+map = "{grimsel}"
+script = "p p u d b p p p p b"
+expect = "SetupNoApp"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-no-app"
+map = "{grimsel}"
+script = "p p u d b p p p p b"
+expect = "SetupNoApp"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+# A phone bonds on the pairing step: the page that confirms it, before the sensors step.
+[[frame]]
+name = "setup-paired"
+map = "{grimsel}"
+script = "p p u d b p p p p P"
+expect = "SetupPaired"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-paired"
+map = "{grimsel}"
+script = "p p u d b p p p p P"
+expect = "SetupPaired"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+# Setup's sensors step with no sensor saved: each slot says how to wake its sensor, over Skip.
+[[frame]]
+name = "setup-sensors"
+map = "{grimsel}"
+script = "p p u d b p p p p b d p"
+expect = "SetupSensors"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-sensors"
+map = "{grimsel}"
+script = "p p u d b p p p p b d p"
+expect = "SetupSensors"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+# Two sensors saved: the slots show their live status, and the cursor opens on Continue.
+[[frame]]
+name = "setup-sensors-added"
+map = "{grimsel}"
+script = "p p u d b p p p p b d p"
+expect = "SetupSensors"
+args = ["--fresh", "--sensors", "screen"]
+
+# Select on the power slot opens the scan list for it, in the setup chrome. Before a hit, the empty
+# list says how to wake a power meter.
+[[frame]]
+name = "setup-sensors-scanning"
+map = "{grimsel}"
+script = "p p u d b p p p p b d p d p"
+expect = "SetupSensorScan"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-sensors-scanning"
+map = "{grimsel}"
+script = "p p u d b p p p p b d p d p"
+expect = "SetupSensorScan"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+# Setup's effort step after the sensors step: max heart rate and FTP unset, the last row Skip, and
+# the plain ride tiles.
+[[frame]]
+name = "setup-effort"
+map = "{grimsel}"
+script = "p p u d b p p p p b d p u p"
+expect = "SetupEffort"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-effort"
+map = "{grimsel}"
+script = "p p u d b p p p p b d p u p"
+expect = "SetupEffort"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+# Select on Max heart rate: the drawer editor rises over the page on 180 bpm.
+[[frame]]
+name = "setup-effort-editor"
+map = "{grimsel}"
+script = "p p u d b p p p p b d p u p p w"
+expect = "ContextDrawer"
+args = ["--fresh"]
+
+# Both limits set, 185 bpm and 250 W, and the cursor on Continue: the tiles take their zones.
+[[frame]]
+name = "setup-effort-set"
+map = "{grimsel}"
+script = "p p u d b p p p p b d p u p p d*5 p d p d*10 p d w"
+expect = "SetupEffort"
+args = ["--fresh"]
+
+# Setup's last page after the effort step skips: no phone, no sensors and no zones.
+[[frame]]
+name = "setup-all-set"
+map = "{grimsel}"
+script = "p p u d b p p p p b d p u p u p"
+expect = "SetupAllSet"
+args = ["--fresh"]
+
+[[frame]]
+name = "setup-all-set"
+map = "{grimsel}"
+script = "p p u d b p p p p b d p u p u p"
+expect = "SetupAllSet"
+args = ["--fresh"]
+langs = ["de", "fr", "es"]
+
+# A paired phone passes the pairing step by, two sensors are saved, and both limits are set: every
+# line is checked.
+[[frame]]
+name = "setup-all-set-full"
+map = "{grimsel}"
+script = "p p u d b p p p p p p d*5 p d p d*10 p d p"
+expect = "SetupAllSet"
+args = ["--fresh", "--ble", "connected+paired", "--sensors", "screen"]
+
+[[frame]]
+name = "setup-all-set-full"
+map = "{grimsel}"
+script = "p p u d b p p p p p p d*5 p d p d*10 p d p"
+expect = "SetupAllSet"
+args = ["--fresh", "--ble", "connected+paired", "--sensors", "screen"]
+langs = ["de", "fr", "es"]
+
 # Route-upload popups (#451), all three variants. `--inject upload[-replace]=ID` raises the upload
 # event after the script, exactly as the control panel's inject buttons do. specs/vectors holds
 # two routes: id 0 = route-plain, id 1 = route-waypoints (filename order).
@@ -2159,6 +2479,20 @@ map = "{grimsel}"
 script = "B u p d*5 p d*5 p p"
 expect = "Reset"
 langs = ["de", "fr", "es"]
+
+[[frame]]
+name = "reset-remove-failed"
+map = "{grimsel}"
+script = "B u p d*5 p d*5 p p h"
+expect = "Reset"
+args = ["--ble", "paired", "--inject", "bond-clear=failed"]
+
+[[frame]]
+name = "reset-restart"
+map = "{grimsel}"
+script = "B u p d*5 p d*5 p p h"
+expect = "Reset"
+args = ["--ble", "paired", "--inject", "bond-clear=restart"]
 
 [[frame]]
 name = "dfu-confirm"

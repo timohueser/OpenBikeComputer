@@ -2,7 +2,7 @@
 
 The GATT surface the device serves to the companion app: the two SIG services, the custom OBC
 Control service, its live characteristics, and the payload layouts of the objects those
-characteristics carry. Pairing and encryption are §8.
+characteristics carry. Pairing and encryption are §8. The QR link that starts pairing is §9.
 
 Object transfers are **not** here. They are protocol v4, whose normative contract is
 [`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md); §5.1 of that document binds it to the
@@ -417,9 +417,9 @@ Days count from 0 in the object; the rider sees Day 1 for day 0.
 - **Single-peer policy — reject-when-bonded**: exactly one bond slot, and **while it is occupied the
   device refuses every new pairing attempt** — from a stranger and from a peer claiming the bonded
   identity alike. A stored bond can only be cleared by the rider: the hold-guarded **Forget phone**
-  action in Settings ▸ Bluetooth zeroes the bond slot, removes the peer from the host's bond table
-  and resolving list, and drops the connection if that peer is connected. After Forget, the next
-  pairing is open again. Physical possession guards the *clear* step, so a stranger who can see the
+  action in Settings ▸ Connections zeroes the bond slot, removes the peer from the host's bond table
+  and resolving list, and drops the connection if that peer is connected. A factory reset runs the
+  same clear. After the clear, the next pairing is open again. Physical possession guards the *clear* step, so a stranger who can see the
   screen cannot silently evict the rider's phone by pairing.
 - **Reject mechanics.** The pairing link is not bondable while a bond is stored, and the device
   refuses the attempt at its first SMP surface: it suppresses the passkey display and drops the
@@ -427,9 +427,99 @@ Days count from 0 in the object; the rider sees Day 1 for day 0.
   SMP Pairing Request before the application sees it, and iOS does not surface an SMP reason code to
   the app. The app infers "already bonded elsewhere" from context, not from a code. A phone that
   forgets the device **while offline** is rejected like any other until the rider runs Forget phone
-  on the device; a forget **while connected** uses `forgetBond` (§4.4) and needs no on-device step.
+  or a factory reset on the device; a forget **while connected** uses `forgetBond` (§4.4) and needs no on-device step.
 
 - **Reconnect policy**: the device keeps a **stable static random address** and does **not** enable
   device-side privacy. The phone stores that identity and reconnects on any advertising contact.
   Identifying the phone behind its rotating RPA uses the stored peer IRK in the controller resolving
   list, not a filter accept-list.
+
+## 9. Pairing link
+
+While no phone is paired, the device shows a QR code. The code holds one fixed universal link, the
+same on every device. The link opens the companion app into its pairing flow, and pairing then runs
+as §8 specifies. The link identifies no device and carries no secret: the passkey stays the only
+proof that the rider holds the device.
+
+### 9.1 The link
+
+```
+https://openbikecomputer.com/app
+```
+
+The link is these 32 ASCII bytes. It has no query, no fragment and no trailing slash.
+
+### 9.2 The QR code
+
+| Property | Value |
+|---|---|
+| Symbol | QR Code model 2 (ISO/IEC 18004) |
+| Version | 3 (29 × 29 modules) |
+| Error correction | level Q |
+| Segment | one byte-mode segment with the 32 link bytes |
+| Mask | the mask that the standard penalty rule selects: mask 6 |
+| Module | 5 × 5 px or larger |
+| Quiet zone | 4 modules or more on each side |
+| Colors | dark modules on a light background, in each theme |
+
+Version 3 is the smallest version that holds the link at level M. At version 3, level Q holds 32
+bytes in byte mode, so the link also fits at the higher level. At 5 px per module the code and its
+quiet zone use 185 × 185 px. The symbol is fixed, so the device stores its modules and does not
+encode at run time.
+
+### 9.3 Device rules
+
+- The device shows the code only while its bond slot is empty (§8). A bonded device refuses every
+  new pairing, so its code would be of no use.
+- While the device shows the code, it advertises the OBC Control service UUID (§3.3) and its name.
+- The device shows the name that it advertises under the code. With no stored name, this is the
+  factory name `OBC-XXXX`, where `XXXX` is the last four digits of the Serial Number String (§3.1).
+  First-use setup follows a factory reset, which clears the name that the rider set, so setup shows
+  the factory name.
+
+### 9.4 App rules
+
+1. **Open.** The link opens the app into its pairing flow.
+2. **Scan.** The app scans for the OBC Control service UUID. It lists each device that it finds and
+   has no bond with, by the advertised name.
+3. **Pair.** When the scan finds exactly one device, the app connects to it and starts pairing (§8).
+   When it finds more, the rider selects the name that the device shows under the code.
+4. **Not found.** When the scan window ends with no device, the app tells the rider that it did not
+   find the OBC and offers a new scan.
+
+A pairing failure is as §8 specifies: a wrong passkey and a bonded device look the same to the app.
+
+### 9.5 When the app is not installed
+
+The phone opens the link in the browser. `https://openbikecomputer.com/app` redirects the browser to
+the app's App Store page. Until a store listing exists, it redirects to the TestFlight invitation or
+to a landing page. After the install, the rider scans the code again, because iOS does not give the
+link to an app that it installs later.
+
+### 9.6 Associated domains
+
+A universal link opens the app only when the app and the domain each name the other.
+
+- **App entitlement.** `com.apple.developer.associated-domains` holds
+  `applinks:openbikecomputer.com`.
+- **Domain file.** `https://openbikecomputer.com/.well-known/apple-app-site-association`, with no
+  file extension. The server sends it over HTTPS with a valid certificate, with status 200, with no
+  redirect, and with `Content-Type: application/json`.
+
+```json
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["<TEAM_ID>.com.openbikecomputer.companion"],
+        "components": [{ "/": "/app" }]
+      }
+    ]
+  }
+}
+```
+
+`<TEAM_ID>` is the Apple Developer team id that signs the release app. The component matches only
+the path `/app`, so every other page of the site opens in the browser. iOS gets the file through
+the Apple CDN when it installs or updates the app, so a change to the file does not reach a phone
+immediately.

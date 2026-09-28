@@ -39,9 +39,12 @@ use obc_host_core::{FlatRouteStore as RouteStore, FlatTripStore as TripStore, Ro
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::RouteReader;
 
+/// The sim's factory name, the stand-in for the board's name from its FICR device id.
+const SIM_FACTORY_NAME: &str = "OBC-7A2F";
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct BleSeed {
-    connected: bool,
+    link: obc_app::BleLink,
     paired: bool,
     passkey: Option<u32>,
 }
@@ -72,6 +75,7 @@ enum Injection {
     TripUpload { id: obc_app::CatalogObjectId },
     MapTransfer(obc_app::screen::MapTransfer),
     Warning(obc_app::Alerts),
+    BondClear(Result<obc_app::ble::ControllerClearance, obc_app::ble::BondError>),
 }
 
 #[derive(Clone)]
@@ -132,6 +136,8 @@ struct Args {
     /// Headless `--png` only: render from the device's real power-on state (Home / Idle,
     /// no route) instead of straight from the map.
     boot: bool,
+    /// Headless `--png` only: boot as a factory-fresh device, which opens first-use setup.
+    fresh: bool,
     /// One-time route/trip fixture import directory; defaults to `routes/`.
     routes_dir: Option<String>,
     /// A progress record for the first imported trip: `(day, metres, last finished day)`.
@@ -206,6 +212,7 @@ impl Default for Args {
             no_sound: false,
             expect_screen: None,
             boot: false,
+            fresh: false,
             routes_dir: None,
             trip_progress: None,
             card: None,
@@ -399,7 +406,9 @@ fn parse_ble(s: &str) -> Result<BleSeed, String> {
     let mut seed = BleSeed::default();
     for part in s.split('+') {
         match part {
-            "connected" => seed.connected = true,
+            "connected" => seed.link = obc_app::BleLink::Connected,
+            // The radio parked with the rider's switch on: the board's USB cable interlock.
+            "off" => seed.link = obc_app::BleLink::Off,
             "paired" => seed.paired = true,
             _ if part.starts_with("passkey=") && seed.passkey.is_none() => {
                 seed.passkey = Some(
@@ -409,7 +418,11 @@ fn parse_ble(s: &str) -> Result<BleSeed, String> {
                         .ok_or("--ble passkey needs 0..=999999")?,
                 );
             }
-            _ => return Err("--ble needs connected, paired, and/or passkey=N joined by + (N is 0..=999999)".into()),
+            _ => {
+                return Err(
+                    "--ble needs connected or off, paired, and/or passkey=N joined by + (N is 0..=999999)".into()
+                )
+            }
         }
     }
     Ok(seed)
@@ -419,7 +432,7 @@ fn parse_ble(s: &str) -> Result<BleSeed, String> {
 /// it.
 const INJECT_FORMS: &str = "--inject needs nav-fail=KIND|detour-fail=KIND|upload=ID|upload-replace=ID|\
      trip-upload=N|map-transfer=receiving:RECEIVED/TOTAL|map-transfer=installed|map-transfer=failed:KIND|\
-     warning=LIST";
+     warning=LIST|bond-clear=confirmed|restart|failed";
 
 /// The `--inject map-transfer` forms, stated once.
 const MAP_TRANSFER_FORMS: &str =
@@ -475,6 +488,12 @@ fn parse_injection(s: &str) -> Result<Injection, String> {
         }
         "map-transfer" => Ok(Injection::MapTransfer(parse_map_transfer(value)?)),
         "warning" => Ok(Injection::Warning(parse_warning(value)?)),
+        "bond-clear" => Ok(Injection::BondClear(match value {
+            "confirmed" => Ok(obc_app::ble::ControllerClearance::Confirmed),
+            "restart" => Ok(obc_app::ble::ControllerClearance::Unconfirmed),
+            "failed" => Err(obc_app::ble::BondError::StoreWriteFailed),
+            _ => return Err("--inject bond-clear needs confirmed|restart|failed".into()),
+        })),
         _ => Err(INJECT_FORMS.into()),
     }
 }
@@ -547,6 +566,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             "--script-after" => a.script_after = Some(it.next().ok_or("--script-after needs a token string")?),
             "--expect-screen" => a.expect_screen = Some(it.next().ok_or("--expect-screen needs a screen name")?),
             "--boot" => a.boot = true,
+            "--fresh" => a.fresh = true,
             "--card" => a.card = Some(it.next().ok_or("--card needs a path")?),
             "--create-card" => a.create_card = Some(it.next().ok_or("--create-card needs a path")?),
             "--routes-dir" => a.routes_dir = Some(it.next().ok_or("--routes-dir needs a path")?),
@@ -707,6 +727,7 @@ struct Stores<'a> {
 /// settle instead of parking.
 #[derive(Default)]
 struct HeadlessPlatform {
+    bond_clear: Option<Result<obc_app::ble::ControllerClearance, obc_app::ble::BondError>>,
     /// The `--dfu` scan answer, taken by the first scan the flow asks for.
     scan: Option<Result<obc_app::dfu::DfuScanReport, obc_app::dfu::DfuScanError>>,
     /// The `--dfu` install answer. `None` leaves the arm in flight, which is the progress
@@ -715,6 +736,10 @@ struct HeadlessPlatform {
 }
 
 impl HostPlatform for HeadlessPlatform {
+    fn forget_bond(&mut self) -> Result<obc_app::ble::ControllerClearance, obc_app::ble::BondError> {
+        self.bond_clear.unwrap_or(Err(obc_app::ble::BondError::Unsupported))
+    }
+
     fn measure_free_space(&mut self) -> Result<u64, obc_app::device_core::StorageInfoError> {
         Ok(SIM_CARD_FREE)
     }
@@ -984,6 +1009,12 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
                 now += 5 * 60_000 + 1_000;
                 feed(app, now, vec![]);
             }
+            // A phone bonds: the link is up and the passkey clears, as the board reports a bond.
+            'P' => app.set_ble_status(obc_app::BleStatus {
+                link: obc_app::BleLink::Connected,
+                passkey: None,
+                paired: true,
+            }),
             other => eprintln!("warning: ignoring unknown --script token '{other}'"),
         }
         hook(app, ScriptHook::After(ch), now);
@@ -1021,6 +1052,7 @@ Device state:
   --route-cleanup        Show the storage cleanup dialog
   --no-card               Simulate an absent storage card
   --boot                  Start headless rendering at the power-on Home screen
+  --fresh                 Boot a factory-fresh device, which opens first-use setup
   --battery PCT           Initial battery charge, 0..=100
   --clock DATE            Trusted UTC time, YYYY-MM-DDTHH:MM (local offset defaults to 0)
   --clock-after-script DATE  Set trusted UTC time after the script (same format and offset)
@@ -1028,7 +1060,7 @@ Device state:
   --lang LANG             UI language: en|de|fr|es
   --stat-fields LIST      Comma-separated Statistics field ids
   --physical              Use saved physical-size calibration in the GUI
-  --ble STATE             connected|paired|passkey=N (join independent facts with +)
+  --ble STATE             connected|off|paired|passkey=N (join independent facts with +)
   --sensors MODE          demo|screen
 
 Scripted snapshots:
@@ -1036,7 +1068,7 @@ Scripted snapshots:
   --script TOKENS         Apply device-button script tokens before rendering
                           (d/u step, p press, b back, h/B hold, H/M partial hold,
                            Q quick-drawer tap, A held Up+Select (Assistant), C context-drawer squeeze,
-                           w wait, f frame, T tick, I idle)
+                           w wait, f frame, T tick, I idle, P a phone bonds)
   --trip-progress D:M:L   The first trip's progress: day D (from 0), M metres into it, and the
                           last finished day L (or -)
   --no-backlight          Model a panel with no controllable light (three quick-drawer controls)
@@ -1265,8 +1297,14 @@ fn main() {
         }
         // Explicit headless settings are applied before the script. Without an explicit clock the
         // device's boot time stays untrusted.
-        if args.clock.is_some() || args.lang.is_some() || args.stat_fields.is_some() || args.sensors.is_some() {
-            let mut settings = obc_app::settings::Settings::default();
+        if args.fresh
+            || args.clock.is_some()
+            || args.lang.is_some()
+            || args.stat_fields.is_some()
+            || args.sensors.is_some()
+        {
+            let mut settings =
+                if args.fresh { obc_app::settings::Settings::FACTORY } else { obc_app::settings::Settings::default() };
             if let Some(clock) = args.clock {
                 settings.clock = clock;
             }
@@ -1329,6 +1367,7 @@ fn main() {
         app.set_backlight_available(!args.no_backlight);
         // The sounder capability, stated as the window states it, with no device opened.
         app.set_sound_available(!args.no_sound);
+        app.set_factory_name(SIM_FACTORY_NAME);
         // No `set_resident_frame` here: the headless host composes one frame into a buffer that
         // holds nothing, so every screen must be drawn, including a base a resident host would
         // leave standing under a sheet.
@@ -1365,11 +1404,7 @@ fn main() {
         app.set_rides(ride_store.catalog(), ride_store.trip_names());
         // Inject BLE before the script. `+` keeps independent link, bond and passkey facts.
         let ble = args.ble.unwrap_or_default();
-        app.set_ble_status(obc_app::BleStatus {
-            link: if ble.connected { obc_app::BleLink::Connected } else { obc_app::BleLink::Advertising },
-            passkey: ble.passkey,
-            paired: ble.paired,
-        });
+        app.set_ble_status(obc_app::BleStatus { link: ble.link, passkey: ble.passkey, paired: ble.paired });
         // Planner emission and map-referenced altitude share terrain from this retained map.
         let mut elev = map.elevation();
         // The open ride log. Opened above the script, because every settling pass reconciles it
@@ -1385,6 +1420,9 @@ fn main() {
         // operation and park the flow. `Progress` stages no install answer, because that unanswered
         // arm is the spinner.
         let mut platform = HeadlessPlatform::default();
+        if let Some(Injection::BondClear(result)) = args.inject {
+            platform.bond_clear = Some(result);
+        }
         if let Some(dfu) = &args.dfu {
             platform.scan = match dfu {
                 DfuSeed::Scan(kind) | DfuSeed::Progress(kind) | DfuSeed::Installing(kind) => Some(kind.report()),
@@ -1899,8 +1937,13 @@ mod cli_tests {
         assert_eq!(parse(&["--peak-view", "scheidegg"]).unwrap().peak_view, Some(peak_view::Preset::KleineScheidegg));
         assert_eq!(parse(&["--ble", "passkey=42"]).unwrap().ble.unwrap().passkey, Some(42));
         let linked_bond = parse(&["--ble", "connected+paired"]).unwrap().ble.unwrap();
-        assert!(linked_bond.connected);
+        assert_eq!(linked_bond.link, obc_app::BleLink::Connected);
         assert!(linked_bond.paired);
+        assert!(matches!(
+            parse(&["--inject", "bond-clear=restart"]).unwrap().inject,
+            Some(Injection::BondClear(Ok(obc_app::ble::ControllerClearance::Unconfirmed)))
+        ));
+        assert!(parse(&["--inject", "bond-clear=unknown"]).is_err());
         assert!(matches!(
             parse(&["--inject", "upload-replace=7"]).unwrap().inject,
             Some(Injection::Upload { id: 7, replaced: true })
@@ -1986,6 +2029,7 @@ mod cli_tests {
             "--script-after",
             "--expect-screen",
             "--boot",
+            "--fresh",
             "--routes-dir",
             "--tracks-dir",
             "--import",

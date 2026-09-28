@@ -116,6 +116,19 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::RouteUpdated(RouteUpdatedScreen::new(0, 0)),
         Screen::TripReceived(TripReceivedScreen::new(7, 0)),
         Screen::Passkey(PasskeyScreen::new(123_456)),
+        Screen::Hello(HelloScreen),
+        Screen::SetupLanguage(SetupLanguageScreen::new(language)),
+        Screen::SetupUnits(SetupUnitsScreen(crate::settings::Units::Metric)),
+        Screen::SetupTheme(SetupThemeScreen(crate::settings::Theme::Light)),
+        Screen::SetupQr(SetupQrScreen),
+        Screen::SetupNoApp(SetupNoAppScreen::default()),
+        Screen::SetupPaired(SetupPairedScreen),
+        Screen::PairPhone(PairPhoneScreen),
+        Screen::SetupSensors(SetupSensorsScreen::default()),
+        Screen::SetupSensorScan(SetupSensorScanScreen::new(0)),
+        Screen::SetupSensorScan(SetupSensorScanScreen::new(1)),
+        Screen::SetupSensorScan(SetupSensorScanScreen::new(2)),
+        Screen::SetupAllSet(SetupAllSetScreen),
         Screen::MapTransfer(MapTransferScreen::new(MapTransfer::Receiving { received_kib: 1_024, total_kib: 65_536 })),
         Screen::MapTransfer(MapTransferScreen::new(MapTransfer::Installed)),
         Screen::Settings(SettingsPage::hub()),
@@ -187,6 +200,12 @@ fn seeds(language: Language) -> Vec<Seed> {
             .map(|why| Screen::DfuFailed(DfuFailedScreen::new(why, Some("1.5.0"))))
             .into(),
     ));
+    // The button lesson changes its foot hint once all four buttons are pressed.
+    let lesson = vec![Gesture::Step(-1), Gesture::Step(1), Gesture::Back, Gesture::Press];
+    v.push((Screen::SetupButtons(SetupButtonsScreen::default()), lesson));
+    // The effort step's last row reads Skip until a limit is set, and each limit opens its editor.
+    let effort = vec![Gesture::Press, Gesture::Press, Gesture::Step(1), Gesture::Press];
+    v.push((Screen::SetupEffort(SetupEffortScreen::default()), effort));
     // The About page is taller than the panel, so the lines under the fold are drawn only after it
     // scrolls. One step per line reaches every one of them; the offset clamps at the end.
     v.push((Screen::About(AboutScreen::new()), vec![Gesture::Step(1); 24]));
@@ -261,6 +280,8 @@ fn walk(
         if step > 0 {
             app.advance_animations(InputClock(now));
             app.apply_gesture(gestures[step - 1]);
+            // A sheet the gesture pushed starts its open on the first tick after it.
+            app.advance_animations(InputClock(now));
             now += SLIDE_STEP_MS;
             app.advance_animations(InputClock(now));
         }
@@ -284,8 +305,8 @@ fn walk(
     drawn
 }
 
-/// Longer than any sheet slide, so the page a gesture opened has landed before the next one.
-const SLIDE_STEP_MS: u32 = 400;
+/// Longer than any sheet open or slide, so the page a gesture opened has landed before it is drawn.
+const SLIDE_STEP_MS: u32 = 500;
 
 /// Why `drawn` does not fit, if it does not.
 fn complaint(name: &str, language: Language, drawn: &obc_render::text_tap::TextDraw) -> Option<String> {
@@ -325,8 +346,65 @@ fn every_string_fits_the_panel_in_every_language() {
                 offenders.extend(complaint(name, language, &drawn));
             }
         }
+        // The pairing code explains the USB interlock and the rider's Bluetooth switch.
+        let off = crate::BleStatus { link: crate::BleLink::Off, ..crate::BleStatus::DISCONNECTED };
+        for enabled in [true, false] {
+            for (name, drawn) in
+                walk(plain(vec![Screen::PairPhone(PairPhoneScreen)]).remove(0), language, &bytes, |app| {
+                    app.set_settings(Settings { ble_enabled: enabled, ..*app.settings() });
+                    app.set_ble_status(off);
+                })
+            {
+                offenders.extend(complaint(name, language, &drawn));
+            }
+        }
+        for status in [
+            crate::ble::BondStatus::Pending,
+            crate::ble::BondStatus::Failed(crate::ble::BondError::StoreWriteFailed),
+            crate::ble::BondStatus::RestartRequired,
+        ] {
+            for (name, drawn) in
+                walk(plain(vec![Screen::Reset(ResetScreen::new())]).remove(0), language, &bytes, |app| {
+                    app.state.device.ble_paired = true;
+                    app.apply_gesture(Gesture::Press);
+                    app.apply_gesture(Gesture::Hold);
+                    app.state.bond_status = status;
+                })
+            {
+                offenders.extend(complaint(name, language, &drawn));
+            }
+        }
+        // The All set page with a phone paired, sensors saved and the zones set. One sensor reads
+        // shorter than two in every catalog.
+        for (name, drawn) in
+            walk(plain(vec![Screen::SetupAllSet(SetupAllSetScreen)]).remove(0), language, &bytes, |app| {
+                let mut s =
+                    Settings { language, setup: crate::settings::SetupStep::AllSet, max_hr: 185, ..Default::default() };
+                s.saved_sensors[0] = crate::settings::SavedSensor::saved(1, [1, 2, 3, 4, 5, 6]);
+                s.saved_sensors[1] = crate::settings::SavedSensor::saved(0, [6, 5, 4, 3, 2, 1]);
+                app.set_settings(s);
+                app.set_ble_status(crate::BleStatus { paired: true, ..crate::BleStatus::DISCONNECTED });
+            })
+        {
+            offenders.extend(complaint(name, language, &drawn));
+        }
     }
     report(offenders);
+}
+
+/// A setup scan list's title fits beside the step count whole in every language: the title bar
+/// cuts a title that does not, and the cut line still fits the panel.
+#[test]
+fn every_setup_scan_title_is_drawn_whole() {
+    let bytes = build_min_obcm(0xF800);
+    for language in Language::ALL {
+        for slot in 0..crate::settings::SENSOR_SLOTS {
+            let title = crate::i18n::t(crate::screen::setup::scan_title(slot), language);
+            let seed = plain(vec![Screen::SetupSensorScan(SetupSensorScanScreen::new(slot as u8))]).remove(0);
+            let drawn = walk(seed, language, &bytes, |_| {});
+            assert!(drawn.iter().any(|(_, d)| d.text == title), "{language:?}: {title:?} is cut");
+        }
+    }
 }
 
 /// The reading page, which `Landmarks`, `LandmarkSources` and `PeakArticle` all draw. It needs a

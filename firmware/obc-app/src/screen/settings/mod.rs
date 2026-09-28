@@ -23,6 +23,7 @@ pub use fields::StatFieldsScreen;
 pub use language::LanguageScreen;
 pub use page::SettingsPage;
 pub use reset::ResetScreen;
+pub(crate) use sensors::{kind_msg, status_line, wake_msg};
 pub use sensors::{SensorScanScreen, SensorsScreen};
 
 /// The bottom-anchored guarded Forget row of the Sensors list: the destructive action row of the

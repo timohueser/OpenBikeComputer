@@ -2,8 +2,8 @@
 //! three kinds, and [`SensorScanScreen`] is the scan list for one kind.
 //!
 //! A save or a forget is a plain [`Settings`](crate::Settings) edit. The host reconcile carries the
-//! change to the radio and persists it, so there is one durable path. Scan mode is a level
-//! ([`Activity::request_sensor_scan`]) the host polls to keep a discovery scan running.
+//! change to the radio and persists it, so there is one durable path. A scan runs while a scan list
+//! is on the stack ([`App::sensor_scan_active`](crate::App::sensor_scan_active)).
 
 use core::fmt::Write;
 
@@ -12,6 +12,7 @@ use obc_render::Surface;
 use crate::input::Gesture;
 use crate::screen::vocab::chrome::{empty_state, title_frame, LIST_TOP};
 use crate::screen::vocab::fmt::write_ble_address;
+use crate::screen::vocab::list::{scrollbar, window_start};
 use crate::screen::vocab::rows::{self, row_rect, Line2, ROW_GAP, ROW_TWO};
 use crate::screen::{Ctx, Render, Screen, Transition};
 use crate::sensors::{SensorPhase, SensorStatus};
@@ -19,11 +20,20 @@ use crate::settings::{Language, SavedSensor, SENSOR_SLOTS};
 use crate::Msg;
 
 /// The label key for a slot. The slot index is the sensor kind.
-fn kind_msg(slot: usize) -> Msg {
+pub(crate) fn kind_msg(slot: usize) -> Msg {
     match slot {
         0 => Msg::SensorsHeartRate,
         1 => Msg::SensorsPower,
         _ => Msg::SensorsCadence,
+    }
+}
+
+/// How the rider wakes a slot's sensor so a scan finds it: a strap wakes on the skin, a power or
+/// cadence sensor on a crank turn.
+pub(crate) fn wake_msg(slot: usize) -> Msg {
+    match slot {
+        0 => Msg::SensorsWakeStrap,
+        _ => Msg::SensorsWakeCranks,
     }
 }
 
@@ -48,11 +58,7 @@ impl SensorsScreen {
                 self.selected = crate::screen::vocab::list::step_selection(self.selected, n, SENSOR_SLOTS);
                 Transition::None
             }
-            // Scan mode makes the host run a discovery scan. The scan screen lowers it on exit.
-            Gesture::Press => {
-                cx.activity.request_sensor_scan(true);
-                Transition::Push(Screen::SensorScan(SensorScanScreen::new(self.selected as u8)))
-            }
+            Gesture::Press => Transition::Push(Screen::SensorScan(SensorScanScreen::new(self.selected as u8))),
             // The guarded hold is the confirmation. There is no popup.
             Gesture::Hold if self.selection_is_guarded(cx.settings) => {
                 cx.settings.saved_sensors[self.selected] = SavedSensor::EMPTY;
@@ -85,7 +91,7 @@ impl SensorsScreen {
 
 /// Compose one row's status line into `buf`. A saved slot whose status snapshot is not yet current
 /// reads `Searching`, so the line does not contradict the armed Forget footer.
-fn status_line(buf: &mut heapless::String<24>, present: bool, status: SensorStatus, lang: Language) {
+pub(crate) fn status_line(buf: &mut heapless::String<24>, present: bool, status: SensorStatus, lang: Language) {
     if !present {
         let _ = buf.push_str(crate::t(Msg::SensorsNotSet, lang));
         return;
@@ -110,7 +116,7 @@ fn status_line(buf: &mut heapless::String<24>, present: bool, status: SensorStat
 #[derive(Debug)]
 pub struct SensorScanScreen {
     /// The kind being paired: 0 heart rate, 1 power, 2 cadence. It filters the scan hits.
-    slot: u8,
+    pub(crate) slot: u8,
     selected: usize,
 }
 
@@ -132,11 +138,14 @@ impl SensorScanScreen {
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        // The list refreshes under the cursor, so a shorter one moves it onto its last row, where
+        // the draw puts it.
+        let len = self.count(cx.sensor_scan_hits);
+        self.selected = self.selected.min(len.saturating_sub(1));
         match g {
             Gesture::Step(n) => {
-                let len = self.count(cx.sensor_scan_hits);
                 if len > 0 {
-                    self.selected = crate::screen::vocab::list::step_selection(self.selected.min(len - 1), n, len);
+                    self.selected = crate::screen::vocab::list::step_selection(self.selected, n, len);
                 }
                 Transition::None
             }
@@ -145,16 +154,12 @@ impl SensorScanScreen {
                 let picked = self.hits(cx.sensor_scan_hits).nth(self.selected).map(|h| (h.addr_kind, h.addr));
                 if let Some((addr_kind, addr)) = picked {
                     cx.settings.saved_sensors[self.slot as usize] = SavedSensor::saved(addr_kind, addr);
-                    cx.activity.request_sensor_scan(false);
                     Transition::Pop
                 } else {
                     Transition::None
                 }
             }
-            Gesture::Back => {
-                cx.activity.request_sensor_scan(false);
-                Transition::Pop
-            }
+            Gesture::Back => Transition::Pop,
             _ => Transition::None,
         }
     }
@@ -162,16 +167,24 @@ impl SensorScanScreen {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(kind_msg(self.slot as usize)), "");
+        self.draw_list(cv, rx, h - 6);
+    }
 
+    /// The hits under the title bar down to `bottom`, or the scanning state while there is none.
+    /// More hits than fit scroll the window with the cursor.
+    pub(crate) fn draw_list(&self, cv: &mut impl Surface, rx: &Render, bottom: i32) {
+        let (w, h) = (rx.w, rx.h);
         let len = self.count(rx.sensor_scan_hits);
         if len == 0 {
-            empty_state(cv, w, h, rx.t(Msg::SensorsScanning), "");
+            empty_state(cv, w, h, rx.t(Msg::SensorsScanning), rx.t(wake_msg(self.slot as usize)));
             return;
         }
 
         let selected = self.selected.min(len - 1);
-        for (i, hit) in self.hits(rx.sensor_scan_hits).enumerate() {
-            let y = LIST_TOP + i as i32 * (ROW_TWO + ROW_GAP);
+        let visible = ((bottom - LIST_TOP + ROW_GAP) / (ROW_TWO + ROW_GAP)).max(1) as usize;
+        let first = window_start(selected, visible, len);
+        for (i, hit) in self.hits(rx.sensor_scan_hits).enumerate().skip(first).take(visible) {
+            let y = LIST_TOP + (i - first) as i32 * (ROW_TWO + ROW_GAP);
             let row = row_rect(y, w, ROW_TWO);
             let mut addr = heapless::String::<24>::new();
             if hit.name.is_empty() {
@@ -182,6 +195,7 @@ impl SensorScanScreen {
             let _ = write!(rssi, "{} dBm", hit.rssi);
             rows::nav_row(cv, row, name, Some(Line2::text(&rssi)), i == selected, true, false);
         }
+        scrollbar(cv, w - 8, LIST_TOP, bottom - LIST_TOP, len, first, visible);
     }
 }
 
@@ -216,11 +230,11 @@ mod tests {
         scr: &mut SensorScanScreen,
         st: &mut AppState,
         s: &mut Settings,
-        act: &mut Activity,
         hits: &[SensorScanHit],
         g: Gesture,
     ) -> Transition {
-        let mut cx = Ctx { sensor_scan_hits: hits, ..test_ctx(st, act, s) };
+        let mut act = Activity::new(Mode::Idle);
+        let mut cx = Ctx { sensor_scan_hits: hits, ..test_ctx(st, &mut act, s) };
         scr.handle(g, &mut cx)
     }
 
@@ -230,14 +244,7 @@ mod tests {
         let mut s = Settings::default();
         let mut scr = SensorsScreen::new();
         run(&mut scr, &mut st, &mut s, &[], Gesture::Step(1));
-        let t = {
-            let mut act = Activity::new(Mode::Idle);
-            let mut cx = test_ctx(&mut st, &mut act, &mut s);
-            let t = scr.handle(Gesture::Press, &mut cx);
-            assert!(act.sensor_scan_active(), "entering a row raises scan mode");
-            t
-        };
-        match t {
+        match run(&mut scr, &mut st, &mut s, &[], Gesture::Press) {
             Transition::Push(Screen::SensorScan(scan)) => {
                 assert_eq!(scan.slot, 1, "the Power slot travels with the scan")
             }
@@ -265,44 +272,42 @@ mod tests {
     fn picking_a_hit_saves_and_pops() {
         let mut st = AppState::new(0, 0, 1.0);
         let mut s = Settings::default();
-        let mut act = Activity::new(Mode::Idle);
-        act.request_sensor_scan(true);
         let mut scr = SensorScanScreen::new(0);
         let hits = [hit(1, "PWR", -50), hit(0, "HRM", -60), hit(0, "Watch", -72)];
 
         // The press selects the first heart rate hit. The power hit is filtered out.
-        let t = run_scan(&mut scr, &mut st, &mut s, &mut act, &hits, Gesture::Press);
+        let t = run_scan(&mut scr, &mut st, &mut s, &hits, Gesture::Press);
         assert!(matches!(t, Transition::Pop), "a pick pops back to the row list");
         assert!(s.saved_sensors[0].present, "the HR slot now holds a saved sensor");
         assert_eq!(s.saved_sensors[0].addr, [1, 2, 3, 4, 5, 6]);
-        assert!(!act.sensor_scan_active(), "picking leaves scan mode");
+    }
+
+    /// A list that shrinks under the cursor leaves it on the last row, and Select picks that row.
+    #[test]
+    fn select_picks_the_last_row_after_the_list_shrinks_under_the_cursor() {
+        let mut st = AppState::new(0, 0, 1.0);
+        let mut s = Settings::default();
+        let mut scr = SensorScanScreen::new(1);
+        let hits: Vec<SensorScanHit> =
+            (0..6u8).map(|i| SensorScanHit::new(1, 0, [i, 2, 3, 4, 5, 6], "PWR", -40)).collect();
+        run_scan(&mut scr, &mut st, &mut s, &hits, Gesture::Step(-1));
+        let t = run_scan(&mut scr, &mut st, &mut s, &hits[..3], Gesture::Press);
+        assert!(matches!(t, Transition::Pop));
+        assert_eq!(s.saved_sensors[1], SavedSensor::saved(0, [2, 2, 3, 4, 5, 6]));
     }
 
     #[test]
     fn scan_cursor_bounded_to_kind_and_empty_is_safe() {
         let mut st = AppState::new(0, 0, 1.0);
         let mut s = Settings::default();
-        let mut act = Activity::new(Mode::Idle);
         let mut scr = SensorScanScreen::new(2);
         let hits = [hit(0, "HRM", -60), hit(1, "PWR", -50)];
 
-        run_scan(&mut scr, &mut st, &mut s, &mut act, &hits, Gesture::Step(1));
+        run_scan(&mut scr, &mut st, &mut s, &hits, Gesture::Step(1));
         assert_eq!(scr.selected, 0, "no cadence hits → the cursor can't move");
-        let t = run_scan(&mut scr, &mut st, &mut s, &mut act, &hits, Gesture::Press);
+        let t = run_scan(&mut scr, &mut st, &mut s, &hits, Gesture::Press);
         assert!(matches!(t, Transition::None), "a press with no hit does nothing");
         assert!(!s.saved_sensors[2].present, "and saves nothing");
-    }
-
-    #[test]
-    fn back_cancels_scan() {
-        let mut st = AppState::new(0, 0, 1.0);
-        let mut s = Settings::default();
-        let mut act = Activity::new(Mode::Idle);
-        act.request_sensor_scan(true);
-        let mut scr = SensorScanScreen::new(0);
-        let t = run_scan(&mut scr, &mut st, &mut s, &mut act, &[], Gesture::Back);
-        assert!(matches!(t, Transition::Pop));
-        assert!(!act.sensor_scan_active(), "Back leaves scan mode");
     }
 
     #[test]
@@ -337,5 +342,40 @@ mod tests {
         b.clear();
         status_line(&mut b, true, SensorStatus { phase: SensorPhase::Connected, battery: None, last_value_ms: 0 }, en);
         assert_eq!(b.as_str(), "Connected", "no battery → no percent tail");
+    }
+
+    /// More hits than fit scroll with the cursor, and no row reaches past the list's bottom: the
+    /// outline in Settings, the hint band in setup.
+    #[test]
+    fn the_scan_list_scrolls_with_the_cursor_and_stays_above_its_bottom() {
+        use crate::harness::support::{build_min_obcm, Buf};
+        use crate::screen::SetupSensorScanScreen;
+        use crate::App;
+        let bytes = build_min_obcm(0xF800);
+        let src = obc_reader::SliceSource(&bytes);
+        let tables = obc_reader::MapTables::parse(&src).expect("valid fixture");
+        let cache = obc_reader::MapCache::new();
+        let reader = obc_reader::Reader::new(&src, &tables, &cache);
+        let hits: Vec<SensorScanHit> = (0..6).map(|i| hit(1, &format!("Meter {i}"), -40)).collect();
+        for (screen, bottom) in [
+            (Screen::SensorScan(SensorScanScreen::new(1)), 314),
+            (Screen::SetupSensorScan(SetupSensorScanScreen::new(1)), 260),
+        ] {
+            let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+            assert!(app.ui.stack.push(screen).is_ok());
+            app.set_sensor_scan_hits(&hits);
+            app.apply_gesture(Gesture::Step(-1));
+            let (mut scratch, mut buf) = (Box::new(obc_render::RenderScratch::new()), Buf::new(240, 320));
+            let drawn = obc_render::text_tap::record(|| {
+                app.render_frame(Some(&mut scratch), &mut buf, &reader, None, 240.0, 320.0, |c| {
+                    let (r, g, b) = obc_reader::rgb565_to_rgb888(c);
+                    embedded_graphics::pixelcolor::Rgb888::new(r, g, b)
+                });
+            });
+            let names: Vec<_> = drawn.iter().filter(|d| d.text.starts_with("Meter")).collect();
+            assert!(names.iter().any(|d| d.text == "Meter 5"), "the cursor wrapped to the last hit, and it shows");
+            assert!(!names.iter().any(|d| d.text == "Meter 0"), "the window left the first hit");
+            assert!(names.iter().all(|d| d.area.top_left.y + d.area.size.height as i32 <= bottom));
+        }
     }
 }

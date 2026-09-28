@@ -313,6 +313,7 @@ title = "CONNECTIONS"
 phone = "Phone"
 sensors = "Sensors"
 not_paired = "Not paired"
+pair = "Pair phone"
 connected = "connected"
 
 # --- The phone link: its status words and the Forget action ---
@@ -338,6 +339,9 @@ connecting = "Connecting"
 connected = "Connected"
 scanning = "Searching..."
 forget = "Forget sensor"
+# How to wake a sensor so a scan finds it. A row cuts it at 16 characters.
+wake_strap = "Wear the strap"
+wake_cranks = "Spin the cranks"
 
 # --- Language settings screen (the endonyms come from Language::name, uncatalogued) ---
 [language]
@@ -357,14 +361,15 @@ all_added_sub = "Remove one to swap"
 # --- Factory-reset settings screen ---
 [reset]
 title = "RESET"
-complete = "Reset complete"
-restarting = "Restarting"
 factory = "Factory reset"
 erases = "Erases all settings"
 saved_time = "& saved time."
 confirm = "Confirm"
 keep_holding = "Keep holding"
 hold_to_erase = "Hold to erase"
+retry = "Retry"
+power_cycle = "Switch off, then turn the OBC on again."
+phone_failed = "Phone not removed"
 
 # --- The six POI categories (obcm §7.4): the browser's rows, the POI list's title, and the
 # "Up ahead" category picker all draw these ---
@@ -408,6 +413,12 @@ off_route = "Off route"
 title = "PAIRING"
 enter_code = "Enter this code"
 on_phone = "on your phone"
+
+# --- The pairing code: the QR code of the pairing link ---
+[pair]
+scan = "Scan with your phone"
+unplug = "Unplug cable to pair"
+enable_bluetooth = "Turn Bluetooth on"
 
 # --- Rides list screen ---
 [rides]
@@ -560,6 +571,51 @@ tomorrow = "TOMORROW"
 # After the time estimate: "~3:30 h est."
 est = "est."
 ok = "OK"
+
+# --- First-use setup ---
+[setup]
+ok = "OK"
+# The controls hint beside the Up and Down glyphs.
+choose = "Choose"
+# The button lesson. It names the buttons in English in every language, so `hold_back` keeps "BACK".
+buttons_title = "BUTTONS"
+press_each = "Press each button"
+hold_back = "Hold BACK"
+menu_anywhere = "Menu from anywhere"
+continue = "Continue"
+skip = "Skip"
+# The titles of the units, theme and effort steps.
+units = "UNITS"
+theme = "THEME"
+effort = "ZONES"
+# The sensors step's scan list titles, one per kind. Each fits beside the step count.
+heart_rate = "HEART RATE"
+power = "POWER"
+cadence = "CADENCE"
+# The pairing step: its title, its Back hint, and the page that asks to ride without the app.
+qr = "GET THE APP"
+no_app = "No app?"
+no_app_title = "WITHOUT APP"
+offline = "Works offline"
+needs_app = "Needs the app"
+recording = "Ride recording"
+ride_sync = "Ride sync"
+show_code = "Show the code"
+# The page a bond opens on the pairing step.
+paired_title = "PAIRED"
+phone_paired = "Phone paired"
+# The closing page: its title, then a line each for the phone (`phone_paired` or `no_phone`), the
+# sensors and the zones. The count of saved sensors goes before `sensor` (one) or `sensors`.
+# `add_later` shows under the lines when one is skipped, and `lets_ride` is the hint beside OK.
+all_set = "ALL SET"
+no_phone = "No phone"
+sensor = "sensor"
+sensors = "sensors"
+no_sensors = "No sensors"
+zones_set = "Zones set"
+no_zones = "No zones"
+add_later = "Add later in Settings"
+lets_ride = "Let's ride"
 
 # --- Boot-time recovered ride ---
 [ride_recovery]
