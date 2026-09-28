@@ -12,7 +12,6 @@
                 <span class="hours-row"><span class="days">{row.days}</span><span class="periods">{#each row.periods as period}<span class:closed={period === 'Closed'}>{period}</span>{/each}</span></span>
             {/each}
         </span>
-        {#if rows.some(row => row.periods.some(period => period.startsWith('From ')))}<span class="unknown">Closing time not specified for “From” hours</span>{/if}
     {:else if value}
         <span class="raw">{value}</span><span class="unknown">Hours as listed in OpenStreetMap</span>
     {:else}<span class="unknown">No opening hours listed</span>{/if}
