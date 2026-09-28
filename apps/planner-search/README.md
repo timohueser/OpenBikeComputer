@@ -6,7 +6,7 @@ this local server. Map tiles and the routing engine are separate services.
 
 ## Setup and run
 
-Install Node 24 or later, Python 3.11 or later, `uv`, and the GitHub CLI. Run from the
+Install Node 24 or later, Python 3.12 or later, `uv`, and the GitHub CLI. Run from the
 repository root. Allow 12 GB of free disk space for the source and generated packages.
 
 ```sh
