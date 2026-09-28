@@ -14,6 +14,28 @@ from tools import planner, planner_maps as maps
 
 
 class PlannerTests(unittest.TestCase):
+    def test_interrupted_routing_setup_leaves_no_partial_package(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "maps").mkdir()
+            source = root / "bw.osm.pbf"
+            source.write_bytes(b"input")
+            args = argparse.Namespace(data_dir=root, pmtiles="pmtiles", osm=source,
+                                      dem_dir=root / "dem", reference=None)
+
+            def run(*command):
+                if str(command[0]).endswith("/route-build"):
+                    output = Path(command[command.index("--output") + 1])
+                    output.with_suffix(".building-test").mkdir()
+                    raise KeyboardInterrupt
+
+            with patch.object(planner, "run", side_effect=run), \
+                 patch.object(planner.shutil, "which", return_value="tool"), \
+                 patch.object(maps, "DATA", root / "maps"):
+                with self.assertRaises(KeyboardInterrupt):
+                    planner.setup(args)
+            self.assertEqual({p.name for p in root.iterdir()}, {"maps", "bw.osm.pbf"})
+
     def test_freiburg_package_cannot_pass_as_baden_wuerttemberg(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

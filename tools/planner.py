@@ -12,6 +12,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from urllib.request import urlopen
 
@@ -62,13 +63,16 @@ def setup(args):
                 "--output", partial, "https://download.geofabrik.de/europe/germany/baden-wuerttemberg-latest.osm.pbf")
             partial.rename(source)
         run(ROOT / "target/release/obc-dem", "fetch", "--bbox", "47.5,7.45,49.85,10.5", "--out", args.dem_dir)
-        command = [ROOT / "target/release/route-build", source, "--output", route,
-                   "--region", REGION, "--country", "DE", "--bounds", maps.BW_BOUNDS,
-                   "--profiles", "all", "--dem", args.dem_dir]
-        if args.reference:
-            command += ["--reference", args.reference]
-        print("Building BW routing with local elevation data. This can take a long time.", flush=True)
-        run(*command)
+        with tempfile.TemporaryDirectory(prefix=".routing-", dir=args.data_dir) as stage:
+            output = Path(stage) / "routing"
+            command = [ROOT / "target/release/route-build", source, "--output", output,
+                       "--region", REGION, "--country", "DE", "--bounds", maps.BW_BOUNDS,
+                       "--profiles", "all", "--dem", args.dem_dir]
+            if args.reference:
+                command += ["--reference", args.reference]
+            print("Building BW routing with local elevation data. This can take a long time.", flush=True)
+            run(*command)
+            output.rename(route)
     verify(args, full=True)
     print("Setup complete. Run: obc planner", flush=True)
 

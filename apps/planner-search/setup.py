@@ -5,6 +5,7 @@ import json
 import sys
 import shutil
 import sqlite3
+import signal
 import subprocess
 import tarfile
 import tempfile
@@ -87,4 +88,10 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    def stop(_signum, _frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, stop)
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)
