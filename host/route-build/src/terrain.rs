@@ -2,7 +2,11 @@ use route_engine::model::{Graph, Point, NO_ELEVATION};
 
 /// Samples ground heights before metric preparation. A missing sample stays unknown.
 pub fn apply(graph: &mut Graph, mut height: impl FnMut(Point) -> Result<Option<f64>, String>) -> Result<(), String> {
-    for road in &mut graph.roads {
+    // Reuse decoded raster tiles without changing road indices or turn restrictions.
+    let mut order: Vec<_> = (0..graph.roads.len()).collect();
+    order.sort_unstable_by_key(|&i| graph.roads[i].shape.first().map(|p| route_engine::package::cell(*p)));
+    for index in order {
+        let road = &mut graph.roads[index];
         if road.shape.len() < 2 {
             return Err("Terrain requires a road with at least two points".into());
         }
