@@ -30,7 +30,9 @@ sys.path.insert(0, str(SPEED.parent))
 from artifacts import check_labels, label_contract
 
 
-def sizes(path: Path):
+def sizes(path: Path, compressed: bool):
+    if not compressed:
+        return {'raw_mb': path.stat().st_size / 1e6}
     raw = path.read_bytes()
     quality = 11 if len(raw) < 150e6 else 9  # brotli 11 on the fp32 file takes over 20 minutes
     return {"raw_mb": len(raw) / 1e6, "gzip9_mb": len(gzip.compress(raw, 9)) / 1e6,
@@ -68,6 +70,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--compression-sizes", action="store_true", help="Also measure gzip and Brotli sizes; this can take many minutes.")
     ap.add_argument("--opset", type=int, default=18)
     ap.add_argument("--outlier-limit", type=float, default=500.0,
                     help="MatMuls with a larger input activation stay fp32 (mmBERT-small: two MatMuls at 4600 and 9400, the rest below 100); inf disables")
@@ -111,7 +114,7 @@ def main():
                          nodes_to_exclude=keep_fp32)
 
     sessions = {k: ort.InferenceSession(str(p), providers=["CPUExecutionProvider"]) for k, p in variants.items()}
-    report = {"sizes": {k: sizes(p) for k, p in variants.items()}, "fp32_matmuls": keep_fp32,
+    report = {"sizes": {k: sizes(p, args.compression_sizes) for k, p in variants.items()}, "fp32_matmuls": keep_fp32,
               "sentences": len(sentences), "check": {}}
 
     with torch.no_grad():
