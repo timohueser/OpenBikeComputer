@@ -47,20 +47,28 @@ final class OnboardingFlowTests: XCTestCase {
     @MainActor
     func testDemoRouteAndRideReachLibrary() {
         let app = launch()
+        XCTAssertTrue(app.staticTexts["onboarding.welcomeTitle"].waitForExistence(timeout: 10))
+        capture(app, "P01-welcome")
         tap(app, "onboarding.getStarted")
+        capture(app, "P02-switch-on")
         tap(app, "pair.start")
+        capture(app, "P03-bluetooth")
         tap(app, "onboarding.allowBluetooth")
         XCTAssertTrue(app.staticTexts["pair.pairedTitle"].waitForExistence(timeout: 15))
         XCTAssertEqual(app.textFields["pairing.name"].value as? String, "OBC-7A2F")
         capture(app, "P06-factory-name")
         tap(app, "pairing.keepName")
+        capture(app, "P08-sensors")
         tap(app, "onboarding.sensorsContinue")
+        XCTAssertTrue(app.staticTexts["onboarding.routeTitle"].waitForExistence(timeout: 15))
+        capture(app, "P10-route")
         tap(app, "onboarding.demoRoute")
         XCTAssertTrue(app.buttons["upload.done"].waitForExistence(timeout: 30))
         XCTAssertTrue(app.staticTexts["Grimsel Pass is on OBC-7A2F"].exists)
         capture(app, "P10-route-sent")
         tap(app, "upload.done")
         XCTAssertTrue(app.staticTexts["onboarding.rideTitle"].waitForExistence(timeout: 10))
+        capture(app, "P11-ride")
         tap(app, "onboarding.syncRide")
         let title = app.staticTexts["onboarding.rideTitle"]
         let synced = expectation(
@@ -69,13 +77,16 @@ final class OnboardingFlowTests: XCTestCase {
         capture(app, "P11-ride-synced")
         tap(app, "onboarding.finish")
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["Grimsel Pass"].firstMatch.waitForExistence(timeout: 10))
+        capture(app, "P12-ready-note")
+        tap(app, "Got it")
+        XCTAssertFalse(app.descendants(matching: .any)["onboarding.readyNote"].firstMatch.exists)
+        let demo = app.staticTexts["Grimsel Pass"].firstMatch
+        for _ in 0..<3 where !demo.exists { app.swipeUp() }
+        XCTAssertTrue(demo.waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts.containing(
             NSPredicate(format: "label CONTAINS %@", "Demo ride, excluded from totals")
         ).firstMatch.exists)
         capture(app, "P12-demo-library")
-        app.buttons["Got it"].tap()
-        XCTAssertFalse(app.descendants(matching: .any)["onboarding.readyNote"].firstMatch.exists)
     }
 
     @MainActor
