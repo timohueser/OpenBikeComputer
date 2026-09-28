@@ -87,7 +87,7 @@ describe('planner query requests',()=>{
         expect(document.activeElement).toBe(chips[1]);
         expect(target.querySelector('.picker')).toBeNull();
     });
-    it('frames fresh results, keeps fitted bounds, and lets the rider pan without framing again',async()=>{
+    it('keeps pagination and retries in the searched area until the rider pans',async()=>{
         const state=writable({context,viewRevision:0});
         const current=fromStore(state);
         const onResults=vi.fn();
@@ -102,12 +102,24 @@ describe('planner query requests',()=>{
         const fitted: SearchContext={...context,view:[7.8,48.1,7.9,48.2]};
         state.set({context:fitted,viewRevision:0});await tick();await vi.advanceTimersByTimeAsync(250);
         expect(fetch).toHaveBeenCalledTimes(1);
+        const sent = () => JSON.parse(String((fetch.mock.lastCall as unknown as [string,RequestInit])[1].body));
+        fetch.mockRejectedValueOnce(new TypeError('Offline'));
+        component.more();await vi.advanceTimersByTimeAsync(0);await tick();
+        expect(sent().view).toEqual(context.view);
+        expect(sent().limit).toBe(26);
+        component.retry();await vi.advanceTimersByTimeAsync(0);await tick();
+        expect(sent().view).toEqual(context.view);
+        expect(fetch).toHaveBeenCalledTimes(3);
+        expect(onResults).toHaveBeenCalledTimes(2);
         const panned: SearchContext={...context,view:[7.9,48.1,8,48.2]};
         state.set({context:panned,viewRevision:1});await tick();await vi.advanceTimersByTimeAsync(250);
-        expect(fetch).toHaveBeenCalledTimes(2);
-        expect(onResults).toHaveBeenCalledTimes(1);
-        const body=JSON.parse(String((fetch.mock.lastCall as unknown as [string,RequestInit])[1].body));
-        expect(body.view).toEqual(panned.view);
+        expect(fetch).toHaveBeenCalledTimes(4);
+        expect(onResults).toHaveBeenCalledTimes(2);
+        expect(sent().view).toEqual(panned.view);
+        state.set({context:fitted,viewRevision:1});await tick();
+        component.more();await vi.advanceTimersByTimeAsync(0);await tick();
+        expect(sent().view).toEqual(panned.view);
+        expect(sent().limit).toBe(46);
     });
     it('preserves pending result framing when initial map bounds interrupt the first request',async()=>{
         const state=writable({context,viewRevision:0});const current=fromStore(state);
