@@ -132,12 +132,12 @@ export function orderedRoutePoints(trip: Trip): RoutePoint[] {
     return [...trip.points.filter(p => p.kind === 'start'), ...ranked, ...middle.filter(p => !order.includes(p.id)), ...trip.points.filter(p => p.kind === 'finish')];
 }
 
-export function reorderPoint(trip: Trip, id: string, direction: -1 | 1): Trip {
+export function reorderPoint(trip: Trip, id: string, offset: number): Trip {
     const points = orderedRoutePoints(trip);
     const index = points.findIndex(p => p.id === id);
-    const target = index + direction;
-    if (index <= 0 || index >= points.length - 1 || target <= 0 || target >= points.length - 1) return trip;
-    [points[index], points[target]] = [points[target], points[index]];
+    const target = index + offset;
+    if (!Number.isInteger(offset) || !offset || index <= 0 || index >= points.length - 1 || target <= 0 || target >= points.length - 1) return trip;
+    points.splice(target, 0, ...points.splice(index, 1));
     return { ...trip, routeOrder: points.map(p => p.id) };
 }
 

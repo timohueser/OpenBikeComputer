@@ -166,6 +166,19 @@ describe('planning modes', () => {
 
 
 describe('single-route stop order', () => {
+    it('inserts a stop across multiple positions and keeps both endpoints fixed', () => {
+        const initial = initialTrip();
+        const base = routeCoordinates(initial);
+        const trip: Trip = { ...initial, points: [...initial.points, ...[.2, .4, .6].map((progress, index) => ({
+            id: `stop-${index}`, label: `Stop ${index}`, kind: 'waypoint' as const, progress, coordinate: coordinateAt(base, progress),
+        }))] };
+        const moved = reorderPoint(trip, 'stop-0', 2);
+        expect(routeStops(moved).map(stop => stop.point.id)).toEqual(['start', 'stop-1', 'stop-2', 'stop-0', 'finish']);
+        expect(routeStops(reorderPoint(moved, 'stop-0', -2)).map(stop => stop.point.id)).toEqual(['start', 'stop-0', 'stop-1', 'stop-2', 'finish']);
+        expect(reorderPoint(trip, 'stop-0', -1)).toBe(trip);
+        expect(reorderPoint(trip, 'stop-0', 3)).toBe(trip);
+        expect(reorderPoint(trip, 'finish', -1)).toBe(trip);
+    });
     it('changes the travelled geometry and cumulative stop distances without moving places', () => {
         const initial = initialTrip();
         const base = routeCoordinates(initial);

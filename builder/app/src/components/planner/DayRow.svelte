@@ -2,6 +2,7 @@
     import type { Attachment } from 'svelte/attachments';
     import Icon from './PlannerIcon.svelte';
     import PlaceRow from './PlaceRow.svelte';
+    import RouteStats from './RouteStats.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import { profileAscent } from '../../lib/planner/profile-data';
@@ -40,8 +41,8 @@
     const riding = $derived(day.ridingNumber);
     const last = $derived(riding === days.length);
     const previous = $derived(days[riding - 2]);
-    const start = $derived(riding === 1 ? trip.points.find(p => p.kind === 'start')!.label : previous?.pinned?.label ?? `Night ${calendar[riding - 1]} not chosen`);
-    const end = $derived(last ? trip.points.find(p => p.kind === 'finish')!.label : day.pinned?.label ?? `Night ${day.number} not chosen`);
+    const start = $derived(riding === 1 ? trip.points.find(p => p.kind === 'start')!.label : previous?.pinned?.label ?? `Day ${calendar[riding - 1]} overnight`);
+    const end = $derived(last ? trip.points.find(p => p.kind === 'finish')!.label : day.pinned?.label ?? 'Overnight to choose');
     const endPlace = $derived(day.pinned && places.find(p => p.coordinate[0] === day.pinned!.coordinate[0] && p.coordinate[1] === day.pinned!.coordinate[1]));
     const ascent = $derived(profileAscent(day.from, day.to));
     const over = $derived(dayOverTarget(trip, day, ascent));
@@ -61,7 +62,8 @@
     };
 
     function duration(hours: number) {
-        return `${Math.floor(hours)}h ${Math.round(hours % 1 * 60)}m`;
+        const minutes = Math.round(hours * 60);
+        return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
     }
 
     function candidateDay(candidate: OvernightCandidate) {
@@ -77,28 +79,39 @@
 </script>
 
 <section class="day" class:expanded style:--day-color={dayColor(riding, theme)}>
-    <button type="button" class="heading" onclick={onToggle} aria-expanded={expanded}>
+    {#if expanded}
+        <header class="detail-heading">
+            <span class="badge">{day.number}</span>
+            <h2>{start} → {end}</h2>
+        </header>
+        <RouteStats distance={day.distance} {ascent} hours={day.hours} />
+    {:else}
+    <button type="button" class="heading" data-day={riding} onclick={onToggle} aria-label={`Open day ${day.number}: ${start} to ${end}`}>
+        <span class="heading-content">
         <span class="badge">{day.number}</span>
         <span class="title">
             <strong>{start} → {end}</strong>
             <small>{duration(day.hours)} · <span class:over={over.climb > 0}>↑ {ascent} m</span>{endPlace ? ` · ${placeCategories[endPlace.category].label}` : ''}</small>
         </span>
         <span class="distance" class:over={over.km > 0}>{day.distance.toFixed(1)}<small>km</small></span>
-        <Icon name={expanded ? 'down' : 'chevron'} size={14} />
-    </button>
-    <div class="bar" aria-hidden="true">
+        <Icon name="chevron" size={14} />
+        </span>
+    <span class="bar" aria-hidden="true">
         <span class="fill" style:width={`${Math.min(100, day.distance / scale * 100)}%`}></span>
         {#if trip.limit > 0}<span class="tick" style:left={`${trip.limit / scale * 100}%`}></span>{/if}
-    </div>
+    </span>
+    </button>
+    {/if}
     {#if overParts.length}
-        <p class="note">{overParts.join(' · ')} · <button type="button" class="planner-link" onclick={onEditTarget}>Edit target</button></p>
+        <p class="note">{overParts.join(' · ')} · <button type="button" class="planner-action" onclick={onEditTarget}>Edit target</button></p>
     {/if}
     {#if conflict !== null}
-        <p class="note warn"><Icon name="warning" size={15} />Ends before day {conflict}'s overnight · <button type="button" class="planner-link" onclick={onShowConflict}>Show</button></p>
+        <p class="note warn"><Icon name="warning" size={15} />Ends before day {conflict}'s overnight · <button type="button" class="planner-action" onclick={onShowConflict}>Show</button></p>
     {/if}
     {#if expanded}
         <div class="body">
-            <div class="stop"><span class="dot"></span><span>{start}</span><small>Start</small></div>
+            <h3>Stops along the day</h3>
+            {#if stops.length}<div class="stop"><span class="dot"></span><span>{start}</span><small>0 km</small></div>{/if}
             {#each stops as { point, km } (point.id)}
                 <button type="button" class="stop" class:chosen={selectedId === point.id} class:flash={revealId === point.id} onclick={() => onInspect(point)} {@attach reveal(point.id)}>
                     <Icon name={stopKinds[point.kind].icon} size={15} /><span>{point.label}</span>
@@ -110,22 +123,29 @@
                     <Icon name={last ? 'flag' : 'camp'} size={15} /><span>{end}</span><small>{last ? 'Finish' : 'Pinned'}</small>
                 </button>
             {/if}
+            {#if stops.length && !last && !day.pinned}
+                <button type="button" class="stop end" onclick={onShowEnd}><Icon name="camp" size={15} /><span>Suggested day end<small>Choose an overnight below</small></span><small>{day.distance.toFixed(1)} km</small></button>
+            {/if}
+            <p class="help">{stops.length ? 'Click the map to add a stop. Drag the route to reshape it.' : 'No stops yet. Click the map to add one.'}</p>
             {#if choosing}
                 <div class="choose">
                     <div class="choose-head">
-                        <button type="button" onclick={onShowEnd}><strong>Where to sleep</strong></button>
-                        <small>Day {day.number} would be</small>
+                        <h3>Where to sleep</h3>
+                        <button type="button" class="planner-action" onclick={onShowEnd}>Show area</button>
                     </div>
+                    <p class="help">Distance and climb if you stay here.</p>
                     {#each candidates as candidate (candidate.place.id)}
                         <PlaceRow place={candidate.place} day={candidateDay(candidate)} selected={selectedId === candidate.place.id} onSelect={onSelectPlace} />
+                    {:else}
+                        <p class="help">No suggested places here. Pick a spot on the map.</p>
                     {/each}
                     <div class="choose-actions">
-                        <button type="button" class="planner-link" onclick={onPick}>Pick another spot on the map</button>
-                        {#if day.pinned}<button type="button" class="planner-link quiet" onclick={() => onChangeOvernight(false)}>Cancel</button>{/if}
+                        <button type="button" class="planner-action" onclick={onPick}>Pick another spot on the map</button>
+                        {#if day.pinned}<button type="button" class="planner-action quiet" onclick={() => onChangeOvernight(false)}>Cancel</button>{/if}
                     </div>
                 </div>
             {:else if day.pinned && !last}
-                <button type="button" class="planner-link change" onclick={() => onChangeOvernight(true)}>Change overnight</button>
+                <button type="button" class="planner-action change" onclick={() => onChangeOvernight(true)}>Change overnight</button>
             {/if}
         </div>
     {/if}
@@ -136,9 +156,14 @@
         padding: 4px 8px 12px;
         border-radius: 8px;
     }
-    .expanded {
-        background: var(--parchment);
-    }
+    .expanded { padding: 4px 8px 12px; }
+    .day:not(.expanded) { border-bottom: 1px solid var(--line); border-radius: 0; }
+    .detail-heading { display: flex; align-items: center; gap: 10px; }
+    h2 { margin: 0; font: 600 17px/1.35 var(--sans); overflow-wrap: anywhere; }
+    h3 { margin: 0; font: 600 14px var(--sans); }
+    .help { margin: 6px 0 12px; font-size: 13px; color: var(--ink-soft); }
+    .expanded .note { margin-left: 0; }
+
     button {
         border: 0;
         background: none;
@@ -147,9 +172,7 @@
         cursor: pointer;
     }
     .heading {
-        display: flex;
-        align-items: center;
-        gap: 12px;
+        display: block;
         width: calc(100% + 16px);
         margin: 0 -8px;
         padding: 8px;
@@ -160,7 +183,8 @@
     .heading:hover {
         background: var(--parchment-2);
     }
-    .heading > :global(svg) {
+    .heading-content { display: flex; align-items: center; gap: 12px; }
+    .heading-content > :global(svg) {
         flex: none;
         color: var(--ink-faint);
     }
@@ -217,9 +241,10 @@
         color: var(--coral);
     }
     .bar {
+        display: block;
         position: relative;
         height: 4px;
-        margin: 0 26px 0 36px;
+        margin: 8px 26px 4px 36px;
         border-radius: 2px;
         background: var(--parchment-3);
     }
@@ -240,6 +265,7 @@
     }
     .note {
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
         gap: 4px;
         margin: 4px 0 0 36px;
@@ -253,16 +279,18 @@
         margin-right: 2px;
     }
     .body {
-        margin: 8px 0 0 36px;
+        margin: 4px 0 0;
+        padding-top: 12px;
+        border-top: 1px solid var(--line);
     }
     .stop {
         display: flex;
         align-items: center;
         gap: 10px;
         width: calc(100% + 16px);
-        min-height: 32px;
+        min-height: 40px;
         margin: 0 -8px;
-        padding: 0 8px;
+        padding: 6px 8px;
         border-radius: 6px;
         text-align: left;
         font-size: 14px;
@@ -276,6 +304,7 @@
         min-width: 0;
     }
     .stop small {
+        display: block;
         font-size: 13px;
         color: var(--ink-soft);
     }
@@ -310,21 +339,15 @@
         font-weight: 600;
     }
     .choose {
-        margin-top: 12px;
+        margin-top: 16px;
+        padding-top: 12px;
+        border-top: 1px solid var(--line);
     }
     .choose-head {
         display: flex;
         align-items: baseline;
         justify-content: space-between;
-        padding-right: 22px;
-        margin-bottom: 4px;
-    }
-    .choose-head strong {
-        font: 600 14px var(--sans);
-    }
-    .choose-head small {
-        font-size: 11px;
-        color: var(--ink-soft);
+        gap: 8px;
     }
     .choose-actions {
         display: flex;

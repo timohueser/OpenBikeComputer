@@ -10,6 +10,7 @@
     import Segmented from './Segmented.svelte';
     import Itinerary from './Itinerary.svelte';
     import RouteList from './RouteList.svelte';
+    import RouteStats from './RouteStats.svelte';
     import WaysList, { ways } from './WaysList.svelte';
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
@@ -45,9 +46,9 @@
     let list = $state<'plan' | 'ways'>('plan');
     let searching = $state(false);
     let planEditing = $state(false);
-    // The riding day the rider works on, and the one open in the itinerary.
+    // Riding numbers stay stable when the itinerary includes rest days.
     let night = $state(1);
-    let expandedDay = $state<number | null>(1);
+    let expandedDay = $state<number | null>(null);
     let changingOvernight = $state(false);
     let selectedId = $state<string | null>(null);
     // The point whose panel row lights up for a moment after it was added or pinned.
@@ -101,6 +102,7 @@
     const days = $derived(tripDays(trip));
     const multi = $derived(trip.mode !== 'route');
     const itinerary = $derived(itineraryDays(trip));
+    const focusedDay = $derived(multi && list === 'plan' && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
     const conflicts = $derived(multi ? nightOrderConflicts(trip) : []);
     const activeDay = $derived(days[Math.min(night - 1, days.length - 1)]);
@@ -294,6 +296,7 @@
         revision++;
         clearSelection();
         night = Math.min(night, tripDays(trip).length);
+        if (expandedDay !== null) expandedDay = night;
         save();
         message = description;
         undoable = false;
@@ -334,18 +337,30 @@
         query = '';
     }
 
-    /** Opens a riding day in the itinerary and fits it on the map; `toggle` closes an open day instead. */
-    function showDay(riding: number, toggle = false) {
-        const collapse = toggle && expandedDay === riding && list === 'plan' && !searching;
+    function clearSearch() {
+        if (!searching) return;
+        searching = false;
+        if (multi && list === 'plan' && expandedDay !== null) showDay(expandedDay);
+        else { clearSelection(); map?.fitRoute(); }
+    }
+
+    /** Opens a riding day and fits its route on the map. */
+    function showDay(riding: number) {
         night = riding;
-        expandedDay = collapse ? null : riding;
+        expandedDay = riding;
         list = 'plan';
         changingOvernight = false;
         exitSearch();
         clearSelection();
-        if (collapse) return;
         const day = days[riding - 1];
         map?.fitCoordinates(routeSlice(coordinates, Math.max(0, day.from - .04), Math.min(1, day.to + .04)));
+    }
+
+    function showAllDays() {
+        expandedDay = null;
+        changingOvernight = false;
+        clearSelection();
+        map?.fitRoute();
     }
 
     function showDayEnd(day: Day) {
@@ -552,7 +567,7 @@
         edit(change, description);
         if (!('mode' in change)) return;
         night = 1;
-        expandedDay = 1;
+        expandedDay = null;
         list = 'plan';
         planEditing = false;
         exitSearch();
@@ -562,6 +577,7 @@
     function applyPlan(budget: Trip['budget'], target: number, limit: number, climb: number) {
         commit({ ...applyBudget($state.snapshot(trip), budget, target, limit), climbTarget: climb || undefined }, 'Day plan updated');
         night = Math.min(night, trip.days);
+        if (expandedDay !== null) expandedDay = night;
     }
 
     function search(value: PlannerQueryValue) {
@@ -583,6 +599,7 @@
         undoable = true;
         clearSelection();
         night = Math.min(night, tripDays(trip).length);
+        if (expandedDay !== null) expandedDay = night;
     }
 
     function keyboard(event: KeyboardEvent) {
@@ -593,14 +610,12 @@
             else undo();
         }
         if (event.key === 'Escape') {
+            if (!selectedId && !picking && !drawing && focusedDay) showAllDays();
             clearSelection();
             drawing = null;
         }
     }
 
-    function duration(hours: number) {
-        return `${Math.floor(hours)}h ${Math.round(hours % 1 * 60)}m`;
-    }
 </script>
 
 <svelte:window onkeydown={keyboard} bind:innerHeight={viewportHeight} bind:innerWidth={viewportWidth} />
@@ -623,26 +638,25 @@
     />
     <main>
         <aside class="planner-pane" aria-label="Trip planning">
-            <Query bind:text={query} days={multi ? itinerary.filter(d => !d.rest).map(d => d.number) : []} onSearch={search} onClear={() => searching = false} />
+            <Query bind:text={query} days={multi ? itinerary.filter(d => !d.rest).map(d => d.number) : []} onSearch={search} onClear={clearSearch} />
             {#if searching}
                 <div class="pane-scroll">
                     <QueryResults {results} {selectedId} loading={searchLoading} searchedDay={searchDay?.number ?? null} onSelect={selectPlace}
                         days={multi ? itinerary.filter(d => !d.rest).map(d => ({ number: d.number, color: dayColor(d.ridingNumber, theme) })) : []} />
                 </div>
             {:else}
-                <dl class="totals">
-                    <div><dt>Distance</dt><dd>{total.toFixed(1)}<small>km</small></dd></div>
-                    <div><dt>Ascent</dt><dd>{profileAscent()}<small>m</small></dd></div>
-                    <div><dt>Riding time</dt><dd>{duration(total / 15)}</dd></div>
-                </dl>
-                <PlanLine {trip} dayCount={itinerary.length} bind:editing={planEditing} onApply={applyPlan} />
-                {#if nearbyLandmark}
-                    <NearbyLandmark landmark={nearbyLandmark} onRide={addVisit} onShow={showLandmark} />
+                {#if !focusedDay}
+                    <div class="trip-summary"><RouteStats distance={total} ascent={profileAscent()} hours={total / 15} /></div>
                 {/if}
-                <div class="list-switch">
-                    <Segmented compact label="List" value={list} onChange={(value) => list = value}
-                        options={[{ value: 'plan', label: multi ? 'Days' : 'Route' }, { value: 'ways', label: `Ways · ${ways.length}` }]} />
-                </div>
+                {#if !focusedDay || planEditing}
+                    <PlanLine {trip} dayCount={itinerary.length} bind:editing={planEditing} onApply={applyPlan} />
+                {/if}
+                {#if !focusedDay}
+                    <div class="list-switch">
+                        <Segmented compact label="List" value={list} onChange={(value) => list = value}
+                            options={[{ value: 'plan', label: multi ? 'Days' : 'Route' }, { value: 'ways', label: `Route options · ${ways.length}` }]} />
+                    </div>
+                {/if}
                 <div class="pane-scroll">
                     {#if list === 'ways'}
                         <WaysList {trip} onPick={(variant) => edit({ variant }, 'Way changed')} />
@@ -650,7 +664,7 @@
                         <Itinerary
                             {trip} {itinerary} {days} {theme} {expandedDay} {candidates} {conflicts} {selectedId} {revealId}
                             changing={changingOvernight}
-                            onToggle={(riding) => showDay(riding, true)}
+                            onToggle={showDay} onOverview={showAllDays}
                             onInspect={inspectPoint}
                             onShowEnd={showDayEnd}
                             onSelectPlace={selectPlace}
@@ -664,7 +678,10 @@
                         />
                     {:else}
                         <RouteList {stops} onInspect={inspectPoint}
-                            onReorder={(id, direction) => commit(reorderPoint($state.snapshot(trip), id, direction), direction < 0 ? 'Stop moved earlier' : 'Stop moved later')} />
+                            onReorder={(id, offset) => commit(reorderPoint($state.snapshot(trip), id, offset), 'Stop reordered')} />
+                    {/if}
+                    {#if nearbyLandmark && !focusedDay}
+                        <NearbyLandmark landmark={nearbyLandmark} onRide={addVisit} onShow={showLandmark} />
                     {/if}
                 </div>
             {/if}
@@ -709,7 +726,7 @@
                         <button type="button" onclick={() => map?.zoomBy(-1)} aria-label="Zoom out"><Icon name="minus" /></button>
                     </div>
                     <div class="control-group">
-                        <button type="button" onclick={() => map?.fitRoute()} aria-label="Show whole route"><Icon name="fit" /></button>
+                        <button type="button" onclick={() => focusedDay ? showDay(focusedDay.ridingNumber) : map?.fitRoute()} aria-label={focusedDay ? `Show day ${focusedDay.number} on map` : 'Show whole route'}><Icon name="fit" /></button>
                         <button type="button" class:chosen={showRoute} aria-label={showRoute ? 'Hide route' : 'Show route'} aria-pressed={showRoute} onclick={() => showRoute = !showRoute}><Icon name="eye" /></button>
                     </div>
                     <LayerMenu bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
@@ -722,14 +739,17 @@
                 {/if}
             </div>
             <Resize value={Math.min(profileHeight, maxProfile)} min={130} max={maxProfile} axis="y" label="Elevation height" onResize={(value) => profileHeight = value} />
+            {#key focusedDay?.number ?? 'overview'}
             <Profile
                 height={Math.min(profileHeight, maxProfile)} {total} {days} {dayLabels} {theme}
-                activeNight={expandedDay ?? 0} band={overnightContext ? area : null} window={profileWindow}
+                activeNight={focusedDay?.ridingNumber ?? 0} band={overnightContext ? area : null} window={profileWindow}
+                focus={focusedDay ? { from: focusedDay.from, to: focusedDay.to, label: `Day ${focusedDay.number}` } : null}
                 onNight={(riding) => showDay(riding)} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
             />
+            {/key}
             <div class="status-line" role="status">
-                <span>{message}</span>
-                {#if undoable}<span>·</span><button type="button" class="planner-link" onclick={undo}>Undo</button>{/if}
+                <span class:save-error={!!draftError}>{draftError || message}</span>
+                {#if undoable}<span>·</span><button type="button" class="planner-action" onclick={undo}>Undo</button>{/if}
                 {#if placeNote}<span>· {placeNote}</span>{/if}
                 <span class="lab-note">Routing & elevation mocked</span>
             </div>
@@ -787,28 +807,30 @@
         display: flex;
         flex-direction: column;
         height: 100dvh;
-        min-width: 880px;
+        min-width: 760px;
         min-height: 580px;
     }
     :global([data-theme="dark"]) .planner-shell {
         --planner-shadow: 0 6px 18px rgba(0, 0, 0, .4);
         --link: var(--wood);
     }
-    :global(.planner-link) {
+    .planner-shell :global(.planner-action) {
         display: inline-flex;
         align-items: center;
-        min-height: 28px;
-        padding: 6px 0;
-        border: 0;
-        background: none;
-        color: var(--link);
+        justify-content: center;
+        min-height: 32px;
+        padding: 5px 10px;
+        border: 1px solid var(--line-strong);
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--ink);
         font: inherit;
         font-weight: 600;
-        text-decoration: underline;
-        text-underline-offset: 3px;
+        text-decoration: none;
         cursor: pointer;
     }
-    :global(.planner-link.quiet) {
+    .planner-shell :global(.planner-action:hover:not(:disabled)) { background: var(--parchment-2); border-color: var(--ink-faint); }
+    .planner-shell :global(.planner-action.quiet) {
         color: var(--ink-soft);
     }
     .site-header {
@@ -867,7 +889,7 @@
         border-radius: 6px;
     }
     .theme:hover {
-        background: #803b13;
+        background: color-mix(in srgb, var(--rust) 80%, var(--on-amber));
     }
     main {
         display: grid;
@@ -881,32 +903,7 @@
         min-height: 0;
         background: var(--panel);
     }
-    .totals {
-        display: grid;
-        grid-template-columns: 1fr .8fr 1.1fr;
-        gap: 8px;
-        margin: 4px 0 0;
-        padding: 0 16px 8px;
-    }
-    .totals div {
-        display: flex;
-        flex-direction: column-reverse;
-    }
-    .totals dt {
-        font-size: 11px;
-        color: var(--ink-soft);
-    }
-    .totals dd {
-        margin: 0;
-        font: 700 22px var(--sans);
-        font-variant-numeric: tabular-nums;
-        white-space: nowrap;
-    }
-    .totals small {
-        margin-left: 4px;
-        font: 400 13px var(--sans);
-        color: var(--ink-soft);
-    }
+    .trip-summary { padding: 0 16px; }
     .list-switch {
         display: flex;
         padding: 12px 16px 8px;
@@ -984,7 +981,7 @@
         display: flex;
         align-items: center;
         gap: 12px;
-        height: 28px;
+        height: 38px;
         flex: none;
         padding: 0 16px;
         border-top: 1px solid var(--line);
@@ -992,6 +989,7 @@
         font-size: 11px;
         color: var(--ink-soft);
     }
+    .save-error { color: var(--coral); }
     .lab-note {
         margin-left: auto;
     }

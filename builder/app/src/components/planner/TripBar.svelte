@@ -1,5 +1,6 @@
 <script lang="ts">
     import Icon from './PlannerIcon.svelte';
+    import Select from './PlannerSelect.svelte';
     import VersionsMenu from './VersionsMenu.svelte';
     import { ridingProfiles, type BikeType } from '../../lib/planner/riding-profiles';
     import type { Trip } from '../../lib/planner/editor';
@@ -25,26 +26,20 @@
 <div class="trip-bar">
     <div class="trip-name">
         <h1>{title}</h1>
-        <select class="quiet" aria-label="Plan type" value={trip.mode ?? 'trip'}
-            onchange={(event) => onChange({ mode: event.currentTarget.value as Trip['mode'] }, event.currentTarget.value === 'route' ? 'Single route' : 'Multi-day trip')}>
-            <option value="trip">Multi-day trip</option>
-            <option value="route">Single route</option>
-        </select>
+        <Select label="Plan type" value={trip.mode ?? 'trip'} options={[{ value: 'trip', label: 'Multi-day trip' }, { value: 'route', label: 'Single route' }]}
+            onChange={(mode) => onChange({ mode: mode as Trip['mode'] }, mode === 'route' ? 'Single route' : 'Multi-day trip')} />
     </div>
     <div class="ride">
-        <label>Bike
-            <select value={bike} onchange={(event) => {
-                const next = event.currentTarget.value as BikeType;
+        <div class="preference"><span>Bike</span>
+            <Select label="Bike" value={bike} options={Object.entries(ridingProfiles).map(([value, profile]) => ({ value, label: profile.label }))} onChange={(value) => {
+                const next = value as BikeType;
                 onChange({ bike: next, preset: ridingProfiles[next].presets[0] }, 'Bike preference saved · routing is mocked');
-            }}>
-                {#each Object.entries(ridingProfiles) as [id, profile]}<option value={id}>{profile.label}</option>{/each}
-            </select>
-        </label>
-        <label>Preset
-            <select value={trip.preset ?? 'Balanced'} onchange={(event) => onChange({ preset: event.currentTarget.value }, 'Preset saved · routing is mocked')}>
-                {#each ridingProfiles[bike].presets as preset}<option>{preset}</option>{/each}
-            </select>
-        </label>
+            }} />
+        </div>
+        <div class="preference"><span>Preset</span>
+            <Select label="Preset" value={trip.preset ?? 'Balanced'} options={ridingProfiles[bike].presets.map(value => ({ value, label: value }))}
+                onChange={(preset) => onChange({ preset }, 'Preset saved · routing is mocked')} />
+        </div>
     </div>
     <div class="actions">
         <button type="button" class="icon" disabled={!canUndo} onclick={onUndo} aria-label="Undo" title="Undo"><Icon name="undo" /></button>
@@ -67,7 +62,7 @@
     }
     .trip-name {
         display: flex;
-        align-items: baseline;
+        align-items: center;
         gap: 12px;
         min-width: 0;
     }
@@ -78,41 +73,17 @@
         white-space: nowrap;
         font: 700 17px var(--sans);
     }
-    select {
-        height: 30px;
-        padding: 0 8px;
-        border: 1px solid var(--line-strong);
-        border-radius: 6px;
-        background: var(--panel);
-        color: var(--ink);
-        font: 600 13px var(--sans);
-        cursor: pointer;
-    }
-    select.quiet {
-        flex: none;
-        height: 26px;
-        padding: 0 4px;
-        border-color: transparent;
-        color: var(--ink-soft);
-        font-weight: 400;
-    }
-    select.quiet:hover {
-        border-color: var(--line-strong);
-    }
     .ride {
         display: flex;
         align-items: center;
         gap: 16px;
     }
-    label {
+    .preference {
         display: flex;
         align-items: center;
         gap: 8px;
         font-size: 13px;
         color: var(--ink-soft);
-    }
-    .ride select {
-        max-width: 170px;
     }
     .actions {
         display: flex;
@@ -131,6 +102,11 @@
     }
     .icon:hover:not(:disabled) {
         background: var(--parchment-2);
+    }
+    @media (max-width: 1050px) {
+        .trip-bar { grid-template-columns: minmax(0, 1fr) auto; height: auto; min-height: 56px; padding-block: 8px; gap: 8px 16px; }
+        .ride { grid-column: 1; grid-row: 2; }
+        .actions { grid-column: 2; grid-row: 1 / span 2; }
     }
     .actions > :global(.versions) {
         margin-left: 8px;

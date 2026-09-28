@@ -122,7 +122,7 @@
         const box = calloutPopup.getElement().getBoundingClientRect();
         const margin = 16;
         const right = frame.right - controlsWidth;
-        const bottom = frame.bottom - 2 * margin;
+        const bottom = frame.bottom - 48;
         const dx = box.left < frame.left + margin ? box.left - frame.left - margin : Math.max(0, box.right - right);
         const dy = box.top < frame.top + margin ? box.top - frame.top - margin : Math.max(0, box.bottom - bottom);
         if (dx || dy) map.panBy([dx, dy], { duration: motionDuration() });
@@ -369,7 +369,10 @@
             refit = setTimeout(fitRoute, 150);
         });
         observer.observe(container);
+        const popupObserver = new ResizeObserver(() => { requestAnimationFrame(keepCalloutInside); });
+        popupObserver.observe(popupContent);
         return () => {
+            popupObserver.disconnect();
             observer.disconnect();
             clearTimeout(refit);
             markerList.forEach((marker) => marker.remove());
@@ -523,7 +526,7 @@
         }
         calloutPopup ??= new maplibregl.Popup({
             closeButton: false, closeOnClick: false, offset: 20, maxWidth: "340px",
-            padding: { top: 16, right: controlsWidth, bottom: 16, left: 16 },
+            padding: { top: 16, right: controlsWidth, bottom: 48, left: 16 },
         }).setDOMContent(popupContent);
         calloutPopup.setLngLat(callout).addTo(map);
         const settle = () => requestAnimationFrame(keepCalloutInside);

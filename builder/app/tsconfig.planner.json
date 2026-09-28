@@ -2,6 +2,7 @@
     "extends": "./tsconfig.json",
     "include": [
         "src/components/planner/**/*.svelte",
+        "src/components/planner/**/*.ts",
         "src/lib/planner/**/*.ts",
         "src/planner.ts",
         "src/map-study.ts"

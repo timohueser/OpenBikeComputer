@@ -62,7 +62,7 @@
         <div class="query-input" class:edited>
             <PlannerIcon name="search" size={17} />
             <input aria-label="Search places along your route" bind:value={text} oninput={(event) => { text = event.currentTarget.value; input(); }}
-                placeholder="Find a place, or ask along your route…" maxlength="120"
+                placeholder={days.length ? 'Try “campsites day 2”…' : 'Find campsites, water…'} maxlength="120"
                 onkeydown={(event) => { if (event.key === 'Escape') picker = null; }} />
             {#if text}<button type="button" class="clear" aria-label="Clear search" onclick={clear}><PlannerIcon name="close" size={16} /></button>{/if}
         </div>
@@ -116,10 +116,11 @@
 <style>
     .planner-query { padding: 16px 16px 12px; color: var(--ink); }
     form { margin: 0; }
-    .query-input { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 10px; border: 1px solid var(--line-strong, var(--line)); border-radius: 6px; background: var(--panel); color: var(--ink-soft); }
-    .query-input:focus-within { border-color: var(--ink-soft); outline: 2px solid var(--ink); outline-offset: 2px; }
+    .query-input { display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--parchment); color: var(--ink-soft); }
+    .query-input:focus-within { border-color: var(--ink-soft); box-shadow: inset 0 0 0 1px var(--ink-soft); background: var(--panel); }
     input { flex: 1; width: 0; min-width: 0; padding: 10px 0; font: inherit; font-size: 14px; border: 0; outline: none; background: transparent; color: var(--ink); caret-color: var(--ink); }
     input::placeholder { color: var(--ink-soft); opacity: 1; }
+    input:focus-visible { outline: none; }
     input::selection { color: var(--panel); background: var(--ink); }
     .edited input:not(:focus) { color: var(--ink-soft); }
     button { font: inherit; color: inherit; cursor: pointer; }

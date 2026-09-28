@@ -60,6 +60,7 @@
     ];
 
     let root: HTMLDivElement;
+    let opener: HTMLElement | null = null;
     let renaming = $state(false);
     // svelte-ignore state_referenced_locally
     let sleepDay = $state(night);
@@ -74,15 +75,21 @@
     });
 
     onMount(() => {
+        opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         // The map moves this content into its popup after mounting.
         const frame = requestAnimationFrame(() => root.focus({ preventScroll: true }));
         return () => cancelAnimationFrame(frame);
     });
 
+    function close() {
+        onClose();
+        if (opener?.isConnected) opener.focus({ preventScroll: true });
+    }
+
     function key(event: KeyboardEvent) {
         if (event.key !== 'Escape' || (event.target as HTMLElement).closest('input, select')) return;
         event.stopPropagation();
-        onClose();
+        close();
     }
 
     function candidateDay(candidate: OvernightCandidate) {
@@ -99,7 +106,7 @@
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div class="callout" bind:this={root} tabindex="-1" role="dialog" aria-label="Map details" onkeydown={key}>
-    <button type="button" class="close" onclick={onClose} aria-label="Close"><Icon name="close" size={15} /></button>
+    <button type="button" class="close" onclick={close} aria-label="Close"><Icon name="close" size={15} /></button>
     {#if kind === 'add'}
         <h2>Add point here</h2>
         <div class="add-types">
@@ -118,7 +125,7 @@
         {#each candidates as candidate (candidate.place.id)}
             <PlaceRow place={candidate.place} day={candidateDay(candidate)} onSelect={onSelectPlace} />
         {/each}
-        <button type="button" class="planner-link" onclick={onPick}>Pick another spot on the map</button>
+        <button type="button" class="planner-action" onclick={onPick}>Pick another spot on the map</button>
         <p class="hint">Drag the marker along the route to move the day end.</p>
     {:else if kind === 'place'}
         <h2>{place?.label ?? 'Overnight spot'}</h2>
@@ -173,7 +180,7 @@
     .callout {
         position: relative;
         width: 320px;
-        max-height: calc(var(--map-height, 100vh) - 48px);
+        max-height: calc(var(--map-height, 100vh) - 96px);
         overflow-y: auto;
         padding: 16px;
         color: var(--ink);

@@ -5,7 +5,7 @@
     import type { Day } from '../../lib/planner/editor';
 
     let {
-        total, days, dayLabels, theme = 'light', activeNight, band, window: view = { from: 0, to: 1 }, height = 190,
+        total, days, dayLabels, theme = 'light', activeNight, band, focus = null, window: view = { from: 0, to: 1 }, height = 190,
         onNight, onDayEndDrag, onHover,
     }: {
         /** Route length in km. */
@@ -15,6 +15,7 @@
         dayLabels: Record<number, number>;
         theme?: 'light' | 'dark';
         activeNight: number;
+        focus?: { from: number; to: number; label: string } | null;
         /** The suggested overnight stretch, as route progress. */
         band: { from: number; to: number; blocked: boolean } | null;
         /** The stretch of the route the map shows, as route progress. */
@@ -32,9 +33,10 @@
     let drag = $state<{ night: number; progress: number; moved: boolean } | null>(null);
     let range = $state<'map' | 'route'>('map');
 
-    const shown = $derived(range === 'map' ? view : { from: 0, to: 1 });
+    const shown = $derived(range === 'map' ? focus ?? view : { from: 0, to: 1 });
+    const origin = $derived(range === 'map' && focus ? focus.from : 0);
     const span = $derived(Math.max(1e-6, shown.to - shown.from));
-    const ticks = $derived([0, .25, .5, .75, 1].map(t => (shown.from + t * span) * total));
+    const ticks = $derived([0, .25, .5, .75, 1].map(t => (shown.from + t * span - origin) * total));
     // The day ends inside the shown stretch; with none inside, the nearest one on each side sits at the edge so it can still be dragged in.
     const handles = $derived.by(() => {
         const ends = days.slice(0, -1).map(day => ({ day, at: drag?.night === day.number ? drag.progress : day.to }));
@@ -92,15 +94,15 @@
     <div class="title">
         <strong>Elevation</strong>
         <Segmented compact label="Profile range" value={range} onChange={(value) => range = value}
-            options={[{ value: 'map', label: 'Map view' }, { value: 'route', label: 'Whole route' }]} />
-        <span>Illustrative profile</span>
-        <span class="distance">{total.toFixed(1)} km</span>
+            options={[{ value: 'map', label: focus?.label ?? 'Map view' }, { value: 'route', label: 'Whole route' }]} />
+        <span class="example">Illustrative profile</span>
+        <span class="distance">{(span * total).toFixed(1)} km</span>
     </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="plot" bind:this={plot} onpointermove={track} onpointerleave={leave} onpointerup={release} onpointercancel={() => drag = null}>
         <span class="height" style:top="22%">750 m</span>
         <span class="height" style:top="94%">350 m</span>
-        <svg viewBox={`${shown.from * 1000} 0 ${span * 1000} 112`} preserveAspectRatio="none" role="img" aria-label="Elevation profile. The shaded band is the suggested overnight stretch.">
+        <svg viewBox={`${shown.from * 1000} 0 ${span * 1000} 112`} preserveAspectRatio="none" role="img" aria-label={`${focus && range === 'map' ? focus.label : 'Route'} elevation profile. Distances start at ${origin > 0 ? 'the day start' : 'the route start'}. The shaded band is the suggested overnight stretch.`}>
             <path d="M0 25H1000M0 65H1000M0 105H1000" class="grid" />
             <polygon points={`0,112 ${line} 1000,112`} class="terrain" />
             {#if band && !band.blocked}<rect x={band.from * 1000} width={Math.max(0, band.to - band.from) * 1000} y="0" height="112" class="band" />{/if}
@@ -115,7 +117,7 @@
         </svg>
         {#if hover !== null}
             <span class="readout" style:left={`${x(hover)}%`}>
-                <span class="chip" class:flip={x(hover) > 80}>{(hover * total).toFixed(1)} km · {Math.round(profileHeightAt(hover))} m</span>
+                <span class="chip" class:flip={x(hover) > 80}>{((hover - origin) * total).toFixed(1)} km{origin > 0 ? ` into ${focus!.label.toLowerCase()}` : ''} · {Math.round(profileHeightAt(hover))} m</span>
             </span>
         {/if}
         {#each handles as { day, x: left } (day.number)}
@@ -142,16 +144,14 @@
 <style>
     .elevation {
         --terrain: var(--parchment-2);
-        --band: #fbe6b8;
+        --band: color-mix(in srgb, var(--amber) 24%, var(--panel));
+        container-type: inline-size;
         display: flex;
         flex-direction: column;
         flex: none;
         min-height: 130px;
         padding: 12px 24px 8px;
         background: var(--panel);
-    }
-    :global([data-theme="dark"]) .elevation {
-        --band: #5a4622;
     }
     .title {
         display: flex;
@@ -163,6 +163,7 @@
     .title strong {
         font: 600 14px var(--sans);
     }
+    @container (max-width: 560px) { .example { display: none; } }
     .title span {
         color: var(--ink-faint);
     }

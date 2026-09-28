@@ -1,11 +1,12 @@
 <script lang="ts">
+    import { tick } from 'svelte';
     import Icon from './PlannerIcon.svelte';
     import DayRow from './DayRow.svelte';
     import type { Day, ItineraryDay, OvernightCandidate, Place, RoutePoint, Trip } from '../../lib/planner/editor';
 
     let {
         trip, itinerary, days, theme, expandedDay, changing, candidates, conflicts, selectedId, revealId,
-        onToggle, onInspect, onShowEnd, onSelectPlace, onPick, onChangeOvernight, onEditTarget, onShowConflict,
+        onToggle, onOverview, onInspect, onShowEnd, onSelectPlace, onPick, onChangeOvernight, onEditTarget, onShowConflict,
         onAddRest, onRemoveRest, onNameRest,
     }: {
         trip: Trip;
@@ -21,6 +22,7 @@
         /** The point whose row lights up for a moment. */
         revealId: string | null;
         onToggle: (ridingDay: number) => void;
+        onOverview: () => void;
         onInspect: (point: RoutePoint) => void;
         onShowEnd: (day: Day) => void;
         onSelectPlace: (place: Place) => void;
@@ -33,9 +35,35 @@
         onNameRest: (index: number, name: string) => void;
     } = $props();
 
+    let root: HTMLDivElement;
+    let dayPicker = $state<HTMLSelectElement>();
     let restEditing = $state<number | null>(null);
+    const focused = $derived(itinerary.find(day => !day.rest && day.ridingNumber === expandedDay));
+    const visible = $derived(focused ? itinerary.filter(day => day.ridingNumber === focused.ridingNumber) : itinerary);
+    const ridingDays = $derived(itinerary.filter(day => !day.rest));
     const scale = $derived(Math.max(trip.limit, ...days.map(day => day.distance)) || 1);
     const calendar = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
+
+    $effect(() => {
+        expandedDay;
+        tick().then(() => {
+            const scroll = root?.closest('.pane-scroll');
+            if (scroll) scroll.scrollTop = 0;
+        });
+    });
+
+    async function openDay(riding: number) {
+        onToggle(riding);
+        await tick();
+        dayPicker?.focus({ preventScroll: true });
+    }
+
+    async function overview() {
+        const riding = expandedDay;
+        onOverview();
+        await tick();
+        root?.querySelector<HTMLElement>(`[data-day="${riding}"]`)?.focus();
+    }
 
     function conflictOf(ridingDay: number) {
         return conflicts.find(([, after]) => after.night === ridingDay) ?? null;
@@ -47,8 +75,22 @@
     }
 </script>
 
-<div class="itinerary">
-    {#each itinerary as day (`${day.number}-${day.rest}`)}
+{#if focused}
+    <nav class="day-nav" aria-label="Day navigation">
+        <button type="button" class="overview" onclick={overview}><Icon name="back" size={16} />All days</button>
+        <div class="day-picker">
+            <button type="button" class="icon" aria-label="Previous riding day" disabled={focused.ridingNumber === 1} onclick={() => onToggle(focused.ridingNumber - 1)}><Icon name="back" size={16} /></button>
+            <select bind:this={dayPicker} aria-label="Selected day" value={focused.ridingNumber} onchange={event => onToggle(Number(event.currentTarget.value))}>
+                {#each ridingDays as day}<option value={day.ridingNumber}>Day {day.number}</option>{/each}
+            </select>
+            <button type="button" class="icon" aria-label="Next riding day" disabled={focused.ridingNumber === days.length} onclick={() => onToggle(focused.ridingNumber + 1)}><Icon name="arrow" size={16} /></button>
+        </div>
+    </nav>
+{/if}
+<div class="itinerary" bind:this={root}>
+    {#if !focused}<p class="hint">Open a day to plan its stops and overnight.</p>{/if}
+    {#key expandedDay}
+    {#each visible as day (`${day.number}-${day.rest}`)}
         {#if day.rest}
             <div class="rest">
                 <span class="badge"><Icon name="pause" size={14} /></span>
@@ -77,19 +119,39 @@
                 expanded={expandedDay === day.ridingNumber}
                 candidates={expandedDay === day.ridingNumber ? candidates : []}
                 conflict={conflict ? calendar[conflict[0].night!] : null}
-                onToggle={() => onToggle(day.ridingNumber)}
+                onToggle={() => openDay(day.ridingNumber)}
                 {onInspect} {onSelectPlace} {onPick} {onChangeOvernight} {onEditTarget}
-                onShowEnd={() => onShowEnd(day)}
+                onShowEnd={() => onShowEnd(days[day.ridingNumber - 1])}
                 onShowConflict={() => conflict && onShowConflict(conflict)}
             />
-            {#if day.ridingNumber < days.length && !trip.restAfter?.includes(day.ridingNumber)}
+            {#if focused && day.ridingNumber < days.length && !trip.restAfter?.includes(day.ridingNumber)}
                 <button type="button" class="add-rest" onclick={() => onAddRest(day.ridingNumber)}><Icon name="plus" size={13} />Add rest day</button>
             {/if}
         {/if}
     {/each}
+    {/key}
 </div>
 
 <style>
+    .day-nav {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 16px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel);
+    }
+    .overview, .day-picker { display: flex; align-items: center; gap: 8px; }
+    .overview { min-height: 36px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); color: var(--ink); font-size: 13px; font-weight: 600; }
+    .overview:hover { background: var(--parchment-2); }
+    .day-picker { gap: 2px; }
+    select { height: 34px; padding: 0 4px; border: 0; border-radius: 6px; color: var(--ink); background: var(--panel); font: 600 14px var(--sans); }
+    .hint { margin: 4px 8px 8px; font-size: 13px; color: var(--ink-soft); }
+
     .itinerary {
         display: flex;
         flex-direction: column;
@@ -169,7 +231,7 @@
         align-items: center;
         gap: 8px;
         align-self: flex-start;
-        margin-left: 44px;
+        margin-left: 8px;
         padding: 4px 8px;
         border-radius: 6px;
         font-size: 13px;

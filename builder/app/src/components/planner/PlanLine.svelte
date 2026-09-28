@@ -18,8 +18,8 @@
 
     const summary = $derived([
         `${dayCount} ${dayCount === 1 ? 'day' : 'days'}`,
-        ...(trip.limit > 0 ? [`≤ ${trip.limit} km/day`] : []),
-        ...(trip.climbTarget ? [`≤ ${trip.climbTarget} m/day`] : []),
+        ...(trip.limit > 0 ? [`${trip.limit} km/day target`] : []),
+        ...(trip.climbTarget ? [`${trip.climbTarget} m/day climb target`] : []),
     ].join(' · '));
     const valid = $derived(Number.isFinite(target) && target >= 1 && Number.isFinite(limit) && limit >= 0 && Number.isFinite(climb) && climb >= 0);
 
@@ -51,7 +51,7 @@
 {:else if !editing}
     <p class="plan-line">
         <span>{summary}</span>
-        <button type="button" class="planner-link" onclick={() => editing = true}>Edit</button>
+        <button type="button" class="planner-action" onclick={() => editing = true} aria-label="Edit day plan">Edit plan</button>
     </p>
 {:else}
     <!-- Escape bubbles from the fields; the form closes the editor in place. -->
@@ -60,7 +60,7 @@
         onsubmit={(event) => { event.preventDefault(); apply(); }}
         onkeydown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); editing = false; } }}>
         <label class="wide">
-            <span>Plan by</span>
+            <span>Split the trip by</span>
             <span class="pair">
                 <select bind:value={budget} onchange={changeBudget}>
                     <option value="days">Days available</option>
@@ -73,6 +73,7 @@
                 </span>
             </span>
         </label>
+        <p class="target-help">Daily targets flag longer or steeper days.</p>
         <label>
             <span>Distance target</span>
             <span class="unit-field"><input type="number" min="0" required bind:value={limit} /><small>km</small></span>
@@ -107,6 +108,7 @@
         font: inherit;
         cursor: pointer;
     }
+    .plan-line button { flex: none; white-space: nowrap; }
     .plan-editor {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -167,6 +169,7 @@
         color: var(--ink-faint);
         pointer-events: none;
     }
+    .target-help { grid-column: 1 / -1; margin: 0; font-size: 13px; color: var(--ink-soft); }
     .help {
         grid-column: 1 / -1;
         margin: 0;

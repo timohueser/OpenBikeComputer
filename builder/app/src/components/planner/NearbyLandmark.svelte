@@ -11,8 +11,8 @@
 <p class="nearby">
     <span>Near the route: {landmark.label} ({landmark.description})</span>
     <span class="actions">
-        <button type="button" class="planner-link" onclick={() => onRide(landmark)}>Ride over it</button>
-        <button type="button" class="planner-link" onclick={() => onShow(landmark)}>Show</button>
+        <button type="button" class="planner-action" onclick={() => onRide(landmark)}>Ride over it</button>
+        <button type="button" class="planner-action" onclick={() => onShow(landmark)}>Show</button>
     </span>
 </p>
 
@@ -21,7 +21,7 @@
         display: flex;
         flex-wrap: wrap;
         align-items: center;
-        column-gap: 12px;
+        gap: 8px 12px;
         margin: 0;
         padding: 0 16px 8px;
         font-size: 13px;
@@ -29,7 +29,7 @@
     }
     .actions {
         display: flex;
-        gap: 12px;
+        gap: 8px;
         white-space: nowrap;
     }
 </style>
