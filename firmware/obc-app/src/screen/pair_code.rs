@@ -95,8 +95,13 @@ pub(crate) fn code_page(cv: &mut impl Surface, rx: &Render) {
     let name_at = Point::new(rx.w / 2, top + CODE_PX + 2);
     cv.text(&fit(name, copy_w(rx.w), Font::Label), name_at, Font::Label, TextAlign::Center, palette::INK);
     let caption = name_at + Point::new(0, Font::Label.line_height() as i32);
-    let cable = rx.settings.ble_enabled && rx.state.device.ble_link == BleLink::Off;
-    let line = if cable { Msg::PairUnplug } else { Msg::PairScan };
+    let line = if !rx.settings.ble_enabled {
+        Msg::PairEnableBluetooth
+    } else if rx.state.device.ble_link == BleLink::Off {
+        Msg::PairUnplug
+    } else {
+        Msg::PairScan
+    };
     cv.text(rx.t(line), caption, Font::Caption, TextAlign::Center, palette::INK);
 }
 

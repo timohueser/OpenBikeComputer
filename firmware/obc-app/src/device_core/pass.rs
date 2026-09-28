@@ -343,6 +343,7 @@ impl App {
         if let Some(outcome) = outcomes.bond.take() {
             if self.bond.apply_outcome(outcome) {
                 self.state.bond_status = self.bond.status();
+                self.finish_factory_reset();
                 self.ui.map_dirty = true;
             }
         }
@@ -775,6 +776,58 @@ mod tests {
     fn quiet(app: &mut App, ms: u32) -> PassPlan {
         let mut facts = ExternalFacts::NONE;
         pass_with(app, ms, &[], &mut OutcomeSlots::new(), &mut facts)
+    }
+
+    #[test]
+    fn factory_reset_waits_for_bond_removal_and_exposes_retry_or_restart() {
+        use crate::ble::{BleStatus, BondError, BondOutcome, BondStatus, ControllerClearance};
+        use crate::input::Chord;
+        use crate::screen::ResetScreen;
+        use crate::settings::{IdleReturn, Settings, Units};
+
+        for controller in [ControllerClearance::Confirmed, ControllerClearance::Unconfirmed] {
+            let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+            let original = Settings { units: Units::Imperial, idle_return: IdleReturn::S15, ..Settings::default() };
+            app.set_settings(original);
+            app.set_ble_status(BleStatus { paired: true, ..BleStatus::DISCONNECTED });
+            assert!(app.ui.stack.push(Screen::Reset(ResetScreen::new())).is_ok());
+            let mut outcomes = OutcomeSlots::new();
+            let mut facts = ExternalFacts::NONE;
+            let mut plan = pass_with(&mut app, 10, &[Gesture::Press, Gesture::Hold], &mut outcomes, &mut facts);
+            let removal = plan.effects.bond.take().expect("the confirmed reset removes the phone first");
+            assert!(plan.effects.settings.is_empty());
+            assert_eq!(*app.settings(), original, "a reboot before the receipt does not enter setup");
+            assert!(!app.apply_chord(Chord::Assistant));
+            assert!(!app.apply_chord(Chord::Quick));
+            app.apply_gesture(Gesture::BackHold);
+            quiet(&mut app, 60_000);
+            assert!(matches!(app.top_screen(), Screen::Reset(_)), "the pending operation stays visible");
+
+            outcomes
+                .bond
+                .try_put(BondOutcome::Failed { token: removal.token(), error: BondError::StoreWriteFailed })
+                .unwrap();
+            let plan = pass_with(&mut app, 60_010, &[], &mut outcomes, &mut facts);
+            assert_eq!(*app.settings(), original, "failed removal preserves the settings");
+            assert!(matches!(app.state.bond_status, BondStatus::Failed(_)));
+            assert!(plan.effects.settings.is_empty());
+
+            let mut plan = pass_with(&mut app, 60_020, &[Gesture::Press], &mut outcomes, &mut facts);
+            let retry = plan.effects.bond.take().expect("Select retries the failed removal");
+            outcomes.bond.try_put(BondOutcome::KeysRemoved { token: retry.token(), controller }).unwrap();
+            app.set_ble_status(BleStatus::DISCONNECTED);
+            let mut plan = pass_with(&mut app, 60_030, &[], &mut outcomes, &mut facts);
+            assert_eq!(*app.settings(), Settings::FACTORY);
+            assert!(plan.effects.settings.take().is_some(), "the successful reset saves at once");
+            match controller {
+                ControllerClearance::Confirmed => assert!(matches!(app.top_screen(), Screen::Hello(_))),
+                ControllerClearance::Unconfirmed => {
+                    assert!(matches!(app.top_screen(), Screen::Reset(_)), "restart is required before setup");
+                    pass_with(&mut app, 60_040, &[Gesture::Press], &mut outcomes, &mut facts);
+                    assert!(matches!(app.top_screen(), Screen::QuickDrawer(d) if d.selection_is_guarded()));
+                }
+            }
+        }
     }
 
     fn pass_with(

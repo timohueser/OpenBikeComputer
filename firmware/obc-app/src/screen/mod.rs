@@ -1036,7 +1036,8 @@ screens! {
     /// The Language pick list.
     Language(LanguageScreen) => Caps::settings(),
     About(AboutScreen) => Caps::settings(),
-    Reset(ResetScreen) => Caps::settings(),
+    /// The guarded reset and its bond-removal result. A successful reset saves immediately.
+    Reset(ResetScreen) => Caps::modal().blocks_escape(),
     /// The "Checking update..." wait while the board validates the staged package. The answer
     /// replaces it with the confirm screen or an error card.
     DfuCheck(DfuCheckScreen) => Caps::modal(),

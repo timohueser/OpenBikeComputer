@@ -1940,6 +1940,13 @@ script = "p p u d b p p p p"
 expect = "SetupQr"
 args = ["--fresh", "--ble", "off"]
 
+[[frame]]
+name = "setup-qr-bluetooth-off"
+map = "{grimsel}"
+script = "p p u d b p p p p Q d p Q"
+expect = "SetupQr"
+args = ["--fresh"]
+
 # Back on the pairing step asks whether to ride without the app. Skip passes the step, which the
 # later setup frames do.
 [[frame]]
@@ -2472,6 +2479,20 @@ map = "{grimsel}"
 script = "B u p d*5 p d*5 p p"
 expect = "Reset"
 langs = ["de", "fr", "es"]
+
+[[frame]]
+name = "reset-remove-failed"
+map = "{grimsel}"
+script = "B u p d*5 p d*5 p p h"
+expect = "Reset"
+args = ["--ble", "paired", "--inject", "bond-clear=failed"]
+
+[[frame]]
+name = "reset-restart"
+map = "{grimsel}"
+script = "B u p d*5 p d*5 p p h"
+expect = "Reset"
+args = ["--ble", "paired", "--inject", "bond-clear=restart"]
 
 [[frame]]
 name = "dfu-confirm"

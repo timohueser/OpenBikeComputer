@@ -331,6 +331,9 @@ all_added_sub = "Retirez-en un"
 
 # --- Factory-reset settings screen ---
 [reset]
+retry = "Réessayer"
+power_cycle = "Éteignez puis rallumez l'OBC."
+phone_failed = "Téléphone non supprimé"
 title = "RÉINITIALISER"
 factory = "Réinit. usine"
 erases = "Efface les réglages"
@@ -384,6 +387,7 @@ on_phone = "sur le tél."
 
 # --- The pairing code: the QR code of the pairing link ---
 [pair]
+enable_bluetooth = "Activez le Bluetooth"
 scan = "Scannez avec le tél."
 unplug = "Débranchez le câble"
 

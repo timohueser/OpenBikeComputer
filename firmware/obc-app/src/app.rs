@@ -1905,6 +1905,29 @@ impl App {
         self.ui.map_dirty = true;
     }
 
+    /// Commit a confirmed factory reset only after the bond store acknowledges removal. The
+    /// board's unconfirmed controller clearance keeps the restart instruction on screen.
+    pub(crate) fn finish_factory_reset(&mut self) {
+        use crate::ble::BondStatus;
+        if !matches!(self.state.bond_status, BondStatus::Removed | BondStatus::RestartRequired)
+            || !self.factory_reset_pending()
+        {
+            return;
+        }
+        self.settings = Settings::FACTORY;
+        self.wall_clock.set(self.settings.local_clock(), self.ui.now_ms);
+        self.sync_find_preferences();
+        self.settings_ops.note_edited();
+        if self.state.bond_status == BondStatus::Removed {
+            screen::apply(&mut self.ui.stack, screen::setup::go_to(&self.settings));
+            self.ui.cancel_holds();
+        }
+    }
+
+    fn factory_reset_pending(&self) -> bool {
+        self.ui.stack.iter().any(|s| matches!(s, Screen::Reset(r) if r.removing()))
+    }
+
     /// Whether the passkey card is currently up. A route-upload popup is dropped, not queued,
     /// while the card shows.
     pub fn passkey_card_up(&self) -> bool {
@@ -1916,7 +1939,7 @@ impl App {
     /// card lands in the same frame unless a policy rule defers it.
     fn sweep_cards(&mut self) {
         let arrival = self.arrival_view();
-        let in_setup = self.settings.in_setup();
+        let in_setup = self.settings.in_setup() || self.factory_reset_pending();
         self.ui.run_card_sweep(&self.catalogs, self.recorder.recording(), self.state.pan.is_some(), arrival, in_setup);
         if self.ui.stack.iter().any(|s| matches!(s, Screen::Journey(_))) || self.ui.find.resume_offer {
             self.ui.find.review = self.assistant_review_status();
@@ -2184,6 +2207,9 @@ impl App {
     /// live here only: a modal that declares [`Caps::blocks_chords`](crate::screen::Caps) stops
     /// every chord, and one drawer is open at a time, so the same chord again closes it.
     pub fn apply_chord(&mut self, chord: Chord) -> bool {
+        if self.factory_reset_pending() {
+            return false;
+        }
         if self.ui.stack.last().is_some_and(|s| s.caps().blocks_chords) {
             return false;
         }
@@ -2658,7 +2684,7 @@ impl App {
         // Asked of the base, not of `stack.last()`: a sheet opened over a card the rider must
         // answer is not consent to walk away from the card.
         let base = screen::base_screen(&self.ui.stack);
-        if base.is_some_and(|s| s.caps().blocks_escape) || self.power_off_requested() {
+        if base.is_some_and(|s| s.caps().blocks_escape) || self.power_off_requested() || self.factory_reset_pending() {
             return false;
         }
         // No explicit sheet-popping: a rewind truncates to the Menu, which is under every
@@ -4596,10 +4622,9 @@ mod tests {
     /// cannot loop forever.
     const MAX_DEPTH_BACKOUT: usize = crate::screen::MAX_DEPTH;
 
-    /// A factory reset saves the cleared settings at once and opens setup, so a power loss after
-    /// the hold boots into setup, as the forgotten phone expects.
+    /// An unpaired device needs no bond receipt: reset saves at once and opens setup.
     #[test]
-    fn a_factory_reset_saves_at_once_and_opens_setup() {
+    fn an_unpaired_factory_reset_saves_at_once_and_opens_setup() {
         use crate::screen::{ResetScreen, SettingsPage};
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.set_settings(Settings::default());
@@ -4609,7 +4634,7 @@ mod tests {
         app.apply_gesture(Gesture::Hold);
         assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::Hello(_)]));
         assert_eq!(*app.settings(), Settings::FACTORY);
-        assert!(app.state.ble_forget_requested, "the paired phone is forgotten");
+        assert!(!app.state.ble_forget_requested, "there is no phone to forget");
         assert!(settings_dirty(&mut app), "the reset is saved at once");
     }
 

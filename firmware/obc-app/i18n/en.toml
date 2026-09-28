@@ -367,6 +367,9 @@ saved_time = "& saved time."
 confirm = "Confirm"
 keep_holding = "Keep holding"
 hold_to_erase = "Hold to erase"
+retry = "Retry"
+power_cycle = "Switch off, then turn the OBC on again."
+phone_failed = "Phone not removed"
 
 # --- The six POI categories (obcm §7.4): the browser's rows, the POI list's title, and the
 # "Up ahead" category picker all draw these ---
@@ -415,6 +418,7 @@ on_phone = "on your phone"
 [pair]
 scan = "Scan with your phone"
 unplug = "Unplug cable to pair"
+enable_bluetooth = "Turn Bluetooth on"
 
 # --- Rides list screen ---
 [rides]

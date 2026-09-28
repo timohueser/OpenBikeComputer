@@ -35,7 +35,7 @@ use core::mem::MaybeUninit;
 use defmt::{info, unwrap, warn};
 use embassy_executor::Spawner;
 use embassy_futures::join::{join, join4};
-use embassy_futures::select::{select, select3, Either, Either3};
+use embassy_futures::select::{select, select4, Either, Either4};
 use embassy_nrf::mode::Blocking;
 use embassy_nrf::{cracen, peripherals, Peri};
 use embassy_time::Timer;
@@ -387,26 +387,28 @@ pub async fn run(
                 }
                 let adv_name = advertised_name(&store.borrow());
 
-                let conn = match select3(
+                let conn = match select4(
                     advertise_lifecycle(adv_name.as_str(), &mut peripheral, server),
                     state::radio_disabled(),
                     FORGET_BOND.wait(),
+                    crate::link_control::wait_advertised_name_change(),
                 )
                 .await
                 {
-                    Either3::First(Ok(conn)) => conn,
-                    Either3::First(Err(e)) => {
+                    Either4::First(Ok(conn)) => conn,
+                    Either4::First(Err(e)) => {
                         // An advertise error must not take the firmware down and must not wedge the
                         // loop.
                         warn!("ble: advertise error: {:?} — retrying in 1 s", defmt::Debug2Format(&e));
                         Timer::after_secs(1).await;
                         continue;
                     }
-                    Either3::Second(()) => continue, // radio off — park at the loop top
-                    Either3::Third(()) => {
+                    Either4::Second(()) => continue, // radio off — park at the loop top
+                    Either4::Third(()) => {
                         forget_bond(stack, store, shared).await;
                         continue;
                     }
+                    Either4::Fourth(()) => continue,
                 };
                 let peer = conn.raw().peer_address();
                 let mut peer_bytes = [0u8; 6];

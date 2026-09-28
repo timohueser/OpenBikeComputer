@@ -346,12 +346,33 @@ fn every_string_fits_the_panel_in_every_language() {
                 offenders.extend(complaint(name, language, &drawn));
             }
         }
-        // The pairing code's line while the USB interlock parks the radio.
+        // The pairing code explains the USB interlock and the rider's Bluetooth switch.
         let off = crate::BleStatus { link: crate::BleLink::Off, ..crate::BleStatus::DISCONNECTED };
-        for (name, drawn) in walk(plain(vec![Screen::PairPhone(PairPhoneScreen)]).remove(0), language, &bytes, |app| {
-            app.set_ble_status(off)
-        }) {
-            offenders.extend(complaint(name, language, &drawn));
+        for enabled in [true, false] {
+            for (name, drawn) in
+                walk(plain(vec![Screen::PairPhone(PairPhoneScreen)]).remove(0), language, &bytes, |app| {
+                    app.set_settings(Settings { ble_enabled: enabled, ..*app.settings() });
+                    app.set_ble_status(off);
+                })
+            {
+                offenders.extend(complaint(name, language, &drawn));
+            }
+        }
+        for status in [
+            crate::ble::BondStatus::Pending,
+            crate::ble::BondStatus::Failed(crate::ble::BondError::StoreWriteFailed),
+            crate::ble::BondStatus::RestartRequired,
+        ] {
+            for (name, drawn) in
+                walk(plain(vec![Screen::Reset(ResetScreen::new())]).remove(0), language, &bytes, |app| {
+                    app.state.device.ble_paired = true;
+                    app.apply_gesture(Gesture::Press);
+                    app.apply_gesture(Gesture::Hold);
+                    app.state.bond_status = status;
+                })
+            {
+                offenders.extend(complaint(name, language, &drawn));
+            }
         }
         // The All set page with a phone paired, sensors saved and the zones set. One sensor reads
         // shorter than two in every catalog.

@@ -130,6 +130,11 @@ impl QuickDrawerScreen {
         }
     }
 
+    /// The reset result's direct path to the existing guarded power-off control.
+    pub(crate) fn power_confirmation() -> Self {
+        Self { page: Page::PowerConfirm, slide_from: Page::PowerConfirm, ..Self::opening() }
+    }
+
     /// The brightness the panel should show now: the editor's staged preview while it is open, and
     /// nothing, which means the committed row, everywhere else.
     pub(crate) fn staged_brightness(&self) -> Option<u8> {

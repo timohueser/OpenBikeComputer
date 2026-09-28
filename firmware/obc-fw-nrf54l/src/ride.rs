@@ -2186,9 +2186,6 @@ pub(crate) async fn run_app(
                 let outcome = match effect {
                     SettingsEffect::PersistRevision { token, revision } => match settings_store.save(app.settings()) {
                         Ok(()) => {
-                            // The RRAM blob just moved, so the BLE config-read cache is stale. Flag
-                            // it, so the BLE plane refreshes before its next read.
-                            crate::link_control::mark_device_settings_changed();
                             // Push a changed GPS fix interval to the sensor task → it re-VALSETs the M10's rate.
                             #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
                             if app.settings().fix_interval_s != prev_interval {

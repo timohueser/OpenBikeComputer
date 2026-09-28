@@ -75,6 +75,7 @@ enum Injection {
     TripUpload { id: obc_app::CatalogObjectId },
     MapTransfer(obc_app::screen::MapTransfer),
     Warning(obc_app::Alerts),
+    BondClear(Result<obc_app::ble::ControllerClearance, obc_app::ble::BondError>),
 }
 
 #[derive(Clone)]
@@ -431,7 +432,7 @@ fn parse_ble(s: &str) -> Result<BleSeed, String> {
 /// it.
 const INJECT_FORMS: &str = "--inject needs nav-fail=KIND|detour-fail=KIND|upload=ID|upload-replace=ID|\
      trip-upload=N|map-transfer=receiving:RECEIVED/TOTAL|map-transfer=installed|map-transfer=failed:KIND|\
-     warning=LIST";
+     warning=LIST|bond-clear=confirmed|restart|failed";
 
 /// The `--inject map-transfer` forms, stated once.
 const MAP_TRANSFER_FORMS: &str =
@@ -487,6 +488,12 @@ fn parse_injection(s: &str) -> Result<Injection, String> {
         }
         "map-transfer" => Ok(Injection::MapTransfer(parse_map_transfer(value)?)),
         "warning" => Ok(Injection::Warning(parse_warning(value)?)),
+        "bond-clear" => Ok(Injection::BondClear(match value {
+            "confirmed" => Ok(obc_app::ble::ControllerClearance::Confirmed),
+            "restart" => Ok(obc_app::ble::ControllerClearance::Unconfirmed),
+            "failed" => Err(obc_app::ble::BondError::StoreWriteFailed),
+            _ => return Err("--inject bond-clear needs confirmed|restart|failed".into()),
+        })),
         _ => Err(INJECT_FORMS.into()),
     }
 }
@@ -720,6 +727,7 @@ struct Stores<'a> {
 /// settle instead of parking.
 #[derive(Default)]
 struct HeadlessPlatform {
+    bond_clear: Option<Result<obc_app::ble::ControllerClearance, obc_app::ble::BondError>>,
     /// The `--dfu` scan answer, taken by the first scan the flow asks for.
     scan: Option<Result<obc_app::dfu::DfuScanReport, obc_app::dfu::DfuScanError>>,
     /// The `--dfu` install answer. `None` leaves the arm in flight, which is the progress
@@ -728,6 +736,10 @@ struct HeadlessPlatform {
 }
 
 impl HostPlatform for HeadlessPlatform {
+    fn forget_bond(&mut self) -> Result<obc_app::ble::ControllerClearance, obc_app::ble::BondError> {
+        self.bond_clear.unwrap_or(Err(obc_app::ble::BondError::Unsupported))
+    }
+
     fn measure_free_space(&mut self) -> Result<u64, obc_app::device_core::StorageInfoError> {
         Ok(SIM_CARD_FREE)
     }
@@ -1408,6 +1420,9 @@ fn main() {
         // operation and park the flow. `Progress` stages no install answer, because that unanswered
         // arm is the spinner.
         let mut platform = HeadlessPlatform::default();
+        if let Some(Injection::BondClear(result)) = args.inject {
+            platform.bond_clear = Some(result);
+        }
         if let Some(dfu) = &args.dfu {
             platform.scan = match dfu {
                 DfuSeed::Scan(kind) | DfuSeed::Progress(kind) | DfuSeed::Installing(kind) => Some(kind.report()),
@@ -1924,6 +1939,11 @@ mod cli_tests {
         let linked_bond = parse(&["--ble", "connected+paired"]).unwrap().ble.unwrap();
         assert_eq!(linked_bond.link, obc_app::BleLink::Connected);
         assert!(linked_bond.paired);
+        assert!(matches!(
+            parse(&["--inject", "bond-clear=restart"]).unwrap().inject,
+            Some(Injection::BondClear(Ok(obc_app::ble::ControllerClearance::Unconfirmed)))
+        ));
+        assert!(parse(&["--inject", "bond-clear=unknown"]).is_err());
         assert!(matches!(
             parse(&["--inject", "upload-replace=7"]).unwrap().inject,
             Some(Injection::Upload { id: 7, replaced: true })

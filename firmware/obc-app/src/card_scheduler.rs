@@ -241,8 +241,8 @@ pub(crate) struct CardCtx<'a> {
     /// The arrival level: `Some` from arrival at the route end until the rider rides on, finishes,
     /// pauses or loads another route.
     pub(crate) arrival: Option<screen::ArrivalView>,
-    /// First-use setup is running. Its pages are the only way out of it, so the upload prompt,
-    /// which opens routes and rides, waits for setup to end.
+    /// First-use setup or a confirmed factory reset is running. The upload prompt, which opens
+    /// routes and rides, waits for it to end.
     pub(crate) in_setup: bool,
 }
 

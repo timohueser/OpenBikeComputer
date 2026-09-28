@@ -1,7 +1,8 @@
 //! The Factory Reset screen. The long-press threshold is about 500 ms, which is too short to feel
 //! safe alone, so a reset takes two steps: a press to arm, then a hold to erase. A hold on an
-//! un-armed screen does nothing. The reset clears the settings and forgets the paired phone, and
-//! opens first-use setup, which can pair a phone again. It keeps the files on the card.
+//! un-armed screen does nothing. A paired device waits for bond removal before it clears the
+//! settings. Unconfirmed controller clearance asks for a restart before first-use setup. The
+//! reset keeps the files on the card.
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
@@ -10,9 +11,10 @@ use obc_render::{
     Surface,
 };
 
+use crate::ble::BondStatus;
 use crate::input::Gesture;
 use crate::screen::vocab::chrome::{card_triangle, copy_w, title_frame, wrapped, TITLE_BAR_H};
-use crate::screen::{palette, Ctx, Render, Transition};
+use crate::screen::{palette, Ctx, QuickDrawerScreen, Render, Screen, Transition};
 use crate::settings::Settings;
 use crate::Msg;
 
@@ -20,30 +22,61 @@ use crate::Msg;
 #[derive(Debug, Default)]
 pub struct ResetScreen {
     armed: bool,
+    removing: bool,
 }
 
 impl ResetScreen {
     pub fn new() -> Self {
-        ResetScreen { armed: false }
+        ResetScreen { armed: false, removing: false }
     }
 
     /// True while the hold-to-erase bar is on screen and fills with the live hold progress.
     pub(crate) fn hold_fill_active(&self) -> bool {
-        self.armed
+        self.armed && !self.removing
+    }
+
+    pub(crate) fn removing(&self) -> bool {
+        self.removing
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        if self.removing {
+            return match (g, cx.state.bond_status) {
+                (Gesture::Press, BondStatus::Failed(_)) => {
+                    cx.state.ble_forget_requested = true;
+                    Transition::None
+                }
+                (Gesture::Back, BondStatus::Failed(_)) => Transition::Pop,
+                (Gesture::Press, BondStatus::RestartRequired) => {
+                    Transition::Push(Screen::QuickDrawer(QuickDrawerScreen::power_confirmation()))
+                }
+                _ => Transition::None,
+            };
+        }
         match g {
             Gesture::Press if !self.armed => {
                 self.armed = true;
                 Transition::None
             }
-            // Setup leaves the settings subtree, so the cleared settings are saved on this pass,
-            // beside the forget. The forget takes the Forget phone path, and does nothing while no
-            // phone is paired.
+            Gesture::Hold if self.armed && cx.state.bond_status == BondStatus::RestartRequired => {
+                self.removing = true;
+                *cx.settings = Settings::FACTORY;
+                Transition::None
+            }
+            // Keep the settings until bond removal succeeds. A failed clear must not boot setup
+            // with the old phone still paired. The App commits the reset on its removal receipt.
+            Gesture::Hold
+                if self.armed
+                    && cx.state.bonding
+                    && (cx.state.device.ble_paired
+                        || matches!(cx.state.bond_status, BondStatus::Pending | BondStatus::Failed(_))) =>
+            {
+                self.removing = true;
+                cx.state.ble_forget_requested = true;
+                Transition::None
+            }
             Gesture::Hold if self.armed => {
                 *cx.settings = Settings::FACTORY;
-                cx.state.ble_forget_requested = true;
                 crate::screen::setup::go_to(cx.settings)
             }
             Gesture::Back => Transition::Pop,
@@ -57,6 +90,22 @@ impl ResetScreen {
         title_frame(cv, w, h, rx.t(Msg::ResetTitle), "");
 
         card_triangle(cv, Point::new(w / 2, TITLE_BAR_H + 50), 24);
+        if self.removing {
+            let (message, action) = match rx.state.bond_status {
+                BondStatus::Failed(_) => (Msg::ResetPhoneFailed, Some(Msg::ResetRetry)),
+                BondStatus::RestartRequired => (Msg::BluetoothRestart, Some(Msg::QuickPower)),
+                _ => (Msg::BluetoothRemoving, None),
+            };
+            let y = wrapped(cv, rx.t(message), w / 2, TITLE_BAR_H + 96, copy_w(w), Font::Body, INK);
+            if rx.state.bond_status == BondStatus::RestartRequired {
+                wrapped(cv, rx.t(Msg::ResetPowerCycle), w / 2, y + 12, copy_w(w), Font::Label, SUBTEXT);
+            }
+            if let Some(action) = action {
+                let area = super::super::vocab::rows::row_rect(h - 58, w, 42);
+                super::super::vocab::rows::action_row(cv, area, rx.t(action), None, true, true, false, 0.0);
+            }
+            return;
+        }
         wrapped(cv, rx.t(Msg::ResetFactory), w / 2, TITLE_BAR_H + 90, copy_w(w), Font::Body, WARNING);
 
         if !self.armed {
@@ -104,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn arm_then_hold_resets_to_factory_forgets_the_phone_and_starts_setup() {
+    fn arm_then_hold_resets_an_unpaired_device_and_starts_setup() {
         let mut s = Settings { units: Units::Imperial, power_saver: true, fix_interval_s: 30, ..Settings::default() };
         let before = s;
         let mut st = AppState::new(0, 0, 1.0);
@@ -119,7 +168,7 @@ mod tests {
         let t = run_in(&mut scr, &mut s, &mut st, Gesture::Hold);
         assert!(matches!(t, Transition::Root(crate::Screen::Hello(_))), "setup opens at once");
         assert_eq!(s, Settings::FACTORY, "settings were cleared to factory defaults");
-        assert!(st.ble_forget_requested, "the paired phone is forgotten");
+        assert!(!st.ble_forget_requested, "there is no phone to forget");
     }
 
     #[test]
