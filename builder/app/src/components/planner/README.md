@@ -5,15 +5,31 @@ tiles and terrain. The editor uses the Rust route service for routing, terrain p
 moving time. Place search still uses examples.
 They are not inputs to the default production build.
 
-From `builder/app`:
+Install the [PMTiles CLI](https://docs.protomaps.com/pmtiles/cli) on `PATH`.
+Use Python 3.11 or later and Node.js. From the repository root:
 
 ```sh
-npm ci
-npm run dev -- --mode web
+npm ci --prefix builder/app
+python3 tools/planner_maps.py prepare --basemap <Protomaps-PMTiles-URL>
+python3 tools/planner_maps.py serve
 ```
 
-Open `/map-study.html` for map styling or `/planner.html` for the desktop editor.
+Choose a compatible source from [Protomaps builds](https://maps.protomaps.com/builds/).
+Preparation extracts the Baden-Württemberg bounding box, with vector zooms 0–14
+and terrain zooms 0–12. Terrain includes a border of neighbouring tiles for
+contour calculation at the region edge. It copies fonts, sprites and their licence notices.
+The output goes to `builder/app/public/data/planner/`, which git ignores.
+Archive checks must pass before the bundle becomes visible. `manifest.json`
+records source URLs, bounds, file sizes and SHA-256 hashes. Move an existing
+bundle aside before preparing a replacement. Use `prepare --bbox west,south,east,north`
+for another region. `--pmtiles /path/to/pmtiles` selects a CLI outside `PATH`.
+
+Open `http://127.0.0.1:4175/planner.html` for the editor or
+`http://127.0.0.1:4175/map-study.html` for map styling.
 Start the [route service](../../../../../apps/route-server/README.md) first.
+Map coverage and route-service coverage are separate. `serve --routing URL`
+selects the route service; `--port` and `--tile-port` change the local ports.
+Ctrl-C stops both preview servers. All map requests stay local.
 The editor saves its trip in browser storage. Undo and Redo apply to
 changes made in the current session. Hold a dragged point still to preview its
 route. Release it to save one change. Open Route options to load alternatives. The surface
@@ -24,10 +40,8 @@ and terrain gaps. Missing terrain and fragments below 20 m have no grade estimat
 
 ## Tile sources
 
-The basemap default points at a public Protomaps demo archive that no longer
-exists, so the map needs a local extract. Terrain defaults to public Mapterhorn
-tiles, which still work. Set these variables before starting Vite (an
-uncommitted `builder/app/.env.local` is the easiest place):
+The defaults use this host. `serve` sets URLs and bounds for the local bundle.
+For another host, set these variables before starting Vite or building the planner:
 
 | Variable | Value |
 | --- | --- |
@@ -35,34 +49,32 @@ uncommitted `builder/app/.env.local` is the easiest place):
 | `VITE_PLANNER_ROUTING_URL` | Route API prefix; defaults to the local `/routing` proxy |
 | `VITE_PLANNER_PMTILES_URL` | Basemap PMTiles URL; absolute or relative to this host |
 | `VITE_PLANNER_DEM_URL` | Terrarium WebP XYZ template with `{z}`, `{x}` and `{y}` |
+| `VITE_PLANNER_GLYPHS_URL` | Font template with `{fontstack}` and `{range}` |
+| `VITE_PLANNER_SPRITES_URL` | Sprite directory; the style appends `/light` or `/dark` |
+| `VITE_PLANNER_MAP_BOUNDS` | Optional `west,south,east,north`; limits panning and terrain requests |
 
 The style expects the Protomaps basemap schema. Terrain is capped at zoom 12.
-Glyphs and sprites still use public Protomaps assets. Most rider places (shops,
+Most rider places (shops,
 lodging, food) exist only in the archive's zoom 14 tiles, so the map shows them
 from zoom 14. A highlighted place category loads those tiles along the route
 once per session, so it shows at every zoom.
 
-Use the PMTiles CLI to extract a region from a compatible archive. Put local
-extracts in `builder/app/public/data/planner/`, which is ignored by git. A
-symlink to an extract in another checkout works. Vite serves the basemap with
-range requests, so `VITE_PLANNER_PMTILES_URL=/data/planner/basemap.pmtiles`
-is enough for the basemap.
-Serve the terrain archive with `pmtiles serve` and enable CORS for the Vite origin.
+Vite serves `basemap.pmtiles` with HTTP range requests. Its `/tiles` proxy sends
+terrain requests to `pmtiles serve` on port 8789. The browser makes contours from
+those terrain tiles. The bundle contains two archives and an `assets/` directory;
+it needs no database or tile build server at runtime.
 
-```sh
-pmtiles serve public/data/planner --interface=127.0.0.1 --port=8787 \
-  --cors=http://127.0.0.1:4174 --public-url=http://127.0.0.1:8787
-```
-
-In a second terminal, from `builder/app`:
-
-```sh
-VITE_PLANNER_PMTILES_URL=/data/planner/basemap.pmtiles \
-VITE_PLANNER_DEM_URL='http://127.0.0.1:8787/terrain/{z}/{x}/{y}.webp' \
-npm run dev -- --mode web --host 127.0.0.1 --port 4174
-```
+For R2, upload the bundle under a versioned prefix. Serve the basemap with range
+support, expose terrain XYZ requests through a Worker, and serve assets as static
+files. Set the four map URLs above. Cross-origin endpoints need CORS.
+The planner build excludes the bundle; distribute it separately. Local serving
+tests the archive and HTTP interfaces, but does not emulate Worker caching or billing.
+The supplied archives do not share the route package's OSM snapshot. A release
+pipeline must align vector, routing and search snapshots.
 
 ## Checks
+
+From `builder/app`:
 
 ```sh
 npx vitest run src/lib/planner/ src/components/planner/
