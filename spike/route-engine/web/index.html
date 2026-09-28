@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Route engine WASM benchmark</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 72rem; margin: 2rem auto; padding: 0 1rem; }
+  pre { background: #f3f4f5; padding: 1rem; overflow: auto; }
+  button { padding: .5rem 1rem; }
+</style>
+<h1>Route engine WASM benchmark</h1>
+<p>This harness uses graph-state endpoints. It measures summary search and path unpacking.
+  It excludes snapping, route geometry, elevation, and the visual map.</p>
+<p>Parameters: <code>base</code>, <code>start</code>, <code>startroad</code>,
+  <code>end</code>, <code>endroad</code>; optional <code>maxlabels</code> (default 1000000).</p>
+<button id="cancel" disabled>Cancel</button>
+<pre id="status" aria-live="polite">Loading…</pre>
+<script type="module">
+  const status = document.querySelector('#status');
+  const cancel = document.querySelector('#cancel');
+  const params = new URLSearchParams(location.search);
+  const integer = (key, fallback) => {
+    const raw = params.get(key) ?? fallback;
+    if (raw === undefined || !/^\d+$/.test(raw)) throw new Error(`Missing or invalid ${key}`);
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value > 0xffffffff) throw new Error(`Out-of-range ${key}`);
+    return value;
+  };
+  let search;
+  let wasm;
+  let started;
+  let abort;
+  let cancelled = false;
+  const result = {
+    scope: 'CH summary query and original graph-state path; no snapping, geometry or elevation',
+    cache_mode: 'empty Rust cache; fetch cache=no-store',
+    compressed_page_bytes: 0,
+    fetched_pages: 0,
+    fetch_waves: 0,
+    wasm_poll_ms: 0,
+    page_decode_ms: 0,
+    fetch_wait_ms: 0,
+    pages: [],
+  };
+  window.routeBenchmarkResult = null;
+  cancel.addEventListener('click', () => {
+    cancelled = true;
+    search?.cancel();
+    abort?.abort();
+  });
+  const show = () => {
+    const display = { ...result, pages: `${result.pages.length} page measurements in window.routeBenchmarkResult` };
+    if (display.route?.roads) display.route = { ...display.route, roads: `${display.route.roads.length} graph states` };
+    status.textContent = JSON.stringify(display, null, 2);
+  };
+  try {
+    const baseValue = params.get('base');
+    if (!baseValue) throw new Error('Supply the base URL of the prepared CH page directory.');
+    const base = new URL(baseValue.endsWith('/') ? baseValue : `${baseValue}/`, location.href);
+    if (!['http:', 'https:'].includes(base.protocol)) throw new Error('The page directory must use HTTP or HTTPS.');
+    const endpoints = {
+      start: integer('start'), startroad: integer('startroad'),
+      end: integer('end'), endroad: integer('endroad'),
+    };
+    const maxlabels = integer('maxlabels', '1000000');
+    const initializationStarted = performance.now();
+    const { default: init, BrowserSearch } = await import('./pkg/trip_router.js');
+    wasm = await init();
+    result.wasm_init_ms = performance.now() - initializationStarted;
+    result.wasm_memory_initial_bytes = wasm.memory.buffer.byteLength;
+    result.endpoints = endpoints;
+    result.max_labels = maxlabels;
+    result.base = base.href;
+    search = new BrowserSearch(endpoints.start, endpoints.startroad, endpoints.end, endpoints.endroad, maxlabels);
+    cancel.disabled = false;
+    started = performance.now();
+    for (;;) {
+      const beforePoll = performance.now();
+      const progress = JSON.parse(search.poll(4096));
+      result.wasm_poll_ms += performance.now() - beforePoll;
+      if (progress.kind === 'need_pages') {
+        result.fetch_waves += 1;
+        abort = new AbortController();
+        const beforeFetch = performance.now();
+        const fetched = await Promise.all(progress.pages.map(async id => {
+          const now = performance.now();
+          const response = await fetch(new URL(`${id}.bin`, base), { cache: 'no-store', signal: abort.signal });
+          if (!response.ok) throw new Error(`Page ${id}: HTTP ${response.status}`);
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          result.pages.push({ id, bytes: bytes.length, response_ms: performance.now() - now });
+          result.compressed_page_bytes += bytes.length;
+          result.fetched_pages += 1;
+          return { id, bytes };
+        }));
+        result.fetch_wait_ms += performance.now() - beforeFetch;
+        const beforeDecode = performance.now();
+        for (const { id, bytes } of fetched) search.insert_page(id, bytes);
+        result.page_decode_ms += performance.now() - beforeDecode;
+        abort = null;
+      } else if (progress.kind !== 'working') {
+        result.route = progress;
+        break;
+      }
+      result.elapsed_ms = performance.now() - started;
+      result.decoded_cache_bytes = search.decoded_cache_bytes();
+      result.wasm_memory_bytes = wasm.memory.buffer.byteLength;
+      show();
+      // Yield so cancellation and browser rendering remain responsive between bounded polls.
+      if (progress.kind === 'working') await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  } catch (error) {
+    abort?.abort();
+    result.route = cancelled ? { kind: 'cancelled' } : { kind: 'error', message: String(error) };
+  } finally {
+    if (started !== undefined) result.elapsed_ms = performance.now() - started;
+    if (search) result.decoded_cache_bytes = search.decoded_cache_bytes();
+    if (wasm) result.wasm_memory_bytes = wasm.memory.buffer.byteLength;
+    window.routeBenchmarkResult = result;
+    show();
+    cancel.disabled = true;
+    search?.free();
+  }
+</script>
+</html>

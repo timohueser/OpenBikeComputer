@@ -1,0 +1,40 @@
+[package]
+name = "trip-router"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+
+[workspace]
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[features]
+default = []
+builder = ["dep:fast_paths", "dep:osmpbfreader", "dep:tiff"]
+web = ["dep:wasm-bindgen"]
+server = ["dep:httparse"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+postcard = { version = "1", features = ["alloc"] }
+flate2 = "1"
+fast_paths = { version = "=1.0.0", optional = true }
+tiff = { version = "0.10", optional = true }
+osmpbfreader = { version = "0.19", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+httparse = { version = "1.10", optional = true }
+
+[[bin]]
+name = "trip-router"
+path = "src/main.rs"
+required-features = ["builder"]
+
+[[bin]]
+name = "trip-router-server"
+path = "src/server_main.rs"
+required-features = ["server"]
+
+[profile.release]
+lto = "thin"
