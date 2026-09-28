@@ -8,7 +8,7 @@
     let position = $state<number | null>(null);
     const at = $derived(Math.max(from, Math.min(to, position ?? from)));
     const current = $derived(data.runs.find(run => run.to > at) ?? data.runs.at(-1));
-    const description = $derived(current ? `${current.surface === 'Unknown' ? 'Unknown surface' : current.surface} · ${Math.round((data.shares.get(current.surface) ?? 0) * 100)}% of route` : 'Surface unavailable');
+    const description = $derived(current ? `${current.surface === 'Unknown' ? 'Unknown surface' : current.surface} · ${Math.round((data.shares.get(current.surface) ?? 0) * 100) || '<1'}% of route` : 'Surface unavailable');
     function inspect(value: number) { position = Math.max(from, Math.min(to, value)); onHover(position); }
     function leave(event: PointerEvent) { if (document.activeElement !== event.currentTarget) { position = null; onHover(null); } }
     function key(event: KeyboardEvent) {
