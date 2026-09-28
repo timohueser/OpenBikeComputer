@@ -38,6 +38,7 @@ beforeEach(() => {
 
 afterEach(async () => {
     if (app) await unmount(app);
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     document.body.replaceChildren();
@@ -131,15 +132,25 @@ describe('planner app transitions', () => {
         expect(plan.hours.at(-1)).toBeGreaterThan(0);
         const row = [...document.querySelectorAll<HTMLButtonElement>('.results button')].find(button => button.textContent?.includes(tilePlace.label))!;
         expect(row).toBeDefined();
+        const searches = vi.mocked(fetch).mock.calls.length;
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
         row.click();
         await tick();
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(fetch).toHaveBeenCalledTimes(searches);
+        expect(row.isConnected).toBe(true);
+        expect(document.querySelector('.results')?.getAttribute('aria-busy')).toBe('false');
         expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe(tilePlace.label);
         button('Close').click();
         await tick();
         await vi.waitFor(() => expect(button(`Map place: ${tilePlace.label}`)).toBeDefined());
         button(`Map place: ${tilePlace.label}`).click();
         await tick();
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(fetch).toHaveBeenCalledTimes(searches);
+        expect(row.isConnected).toBe(true);
         expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe(tilePlace.label);
+        vi.useRealTimers();
         button('Add as visit').click();
         await tick();
         const draft = [...stored.values()].map(value => JSON.parse(value)).find(value => value.points);

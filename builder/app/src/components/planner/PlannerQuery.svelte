@@ -78,7 +78,7 @@
     export function more() { run(Math.min(100, Math.max(20, limit + 20))); }
     export function retry() { run(Math.max(20, limit), request, !edited); }
     $effect(() => {
-        // Result framing updates the live bounds but does not advance viewRevision.
+        // Result framing and place inspection update live bounds without advancing viewRevision.
         const current = JSON.stringify([viewRevision, context.here, context.startDate, context.pointing, context.plan]);
         if (current === previousContext) return;
         previousContext = current;

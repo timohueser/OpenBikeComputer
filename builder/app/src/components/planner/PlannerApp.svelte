@@ -441,7 +441,8 @@
 
     /** Opens a place clicked on the map; while picking, the place is offered for the night. */
     function choosePlace(place: Place) {
-        pointing = { anchor: place.coordinate };
+        const fromSearch = searching && results.some(result => result.place.id === place.id);
+        if (!fromSearch) pointing = { anchor: place.coordinate };
         const forNight = picking;
         clearSelection();
         mapPlace = place;
@@ -829,7 +830,7 @@
                     {theme} {hillshade} {contours} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces} {landmarks}
-                    onBounds={(bounds, fromSearch) => { viewBounds = bounds; if (!fromSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={previewPoint} onDayEndDrag={moveDayEnd}
+                    onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={previewPoint} onDayEndDrag={moveDayEnd}
                     onLegClick={legClick} onInsert={insert} onDrawn={drawn} onPlaceClick={choosePlace}
                     onVisibleRange={(range) => visibleRange = range}
                 >
