@@ -56,7 +56,7 @@ npm run dev -- --mode web --host 127.0.0.1 --port 4174
 ## Checks
 
 ```sh
-npx vitest run src/lib/planner/
+npx vitest run src/lib/planner/ src/components/planner/
 npx svelte-check --tsconfig tsconfig.planner.json --fail-on-warnings
 ```
 
