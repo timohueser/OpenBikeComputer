@@ -1,6 +1,7 @@
 <script lang="ts">
     let { name, size = 18 }: { name: string; size?: number } = $props();
     const paths: Record<string, string> = {
+        up: 'm6 15 6-6 6 6',
         layers: 'm12 3 10 6-10 6L2 9l10-6Zm-10 10 10 6 10-6M2 17l10 6 10-6',
         eye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Zm10-3a3 3 0 1 0 0 6 3 3 0 0 0 0-6',
         flag: 'M5 22V3m0 1c5-4 9 4 15 0v10c-6 4-10-4-15 0',

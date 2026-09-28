@@ -13,6 +13,10 @@ export type Place = RoutePoint & {
     description: string;
 };
 export interface Trip {
+    bike?: import('./riding-profiles').BikeType;
+    preset?: string;
+    routeOrder?: string[];
+    restNames?: string[];
     mode?: 'route' | 'trip';
     points: RoutePoint[];
     days: number;
@@ -83,7 +87,7 @@ export function kilometres(a: Coordinate, b: Coordinate): number {
     return 6371 * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
 }
 
-export function routeCoordinates(trip: Trip): Coordinate[] {
+function corridorCoordinates(trip: Trip): Coordinate[] {
     const lengths = cumulative(valley);
     const total = lengths.at(-1)!;
     const samples = valley.map((coordinate, i) => ({ coordinate, progress: lengths[i] / total }))
@@ -107,6 +111,47 @@ export function routeCoordinates(trip: Trip): Coordinate[] {
     const result = [...through, ...excursions].sort((a, b) => a.progress - b.progress).map(p => p.coordinate);
     return result.filter((p, i) => i === 0 || p[0] !== result[i - 1][0] || p[1] !== result[i - 1][1]);
 }
+
+export function orderedRoutePoints(trip: Trip): RoutePoint[] {
+    const middle = trip.points.filter(p => !['start', 'finish', 'marker'].includes(p.kind)).sort((a, b) => a.progress - b.progress);
+    const order = trip.routeOrder ?? middle.map(p => p.id);
+    const ranked = order.flatMap(id => middle.filter(p => p.id === id));
+    return [...trip.points.filter(p => p.kind === 'start'), ...ranked, ...middle.filter(p => !order.includes(p.id)), ...trip.points.filter(p => p.kind === 'finish')];
+}
+
+export function reorderPoint(trip: Trip, id: string, direction: -1 | 1): Trip {
+    const points = orderedRoutePoints(trip);
+    const index = points.findIndex(p => p.id === id);
+    const target = index + direction;
+    if (index <= 0 || index >= points.length - 1 || target <= 0 || target >= points.length - 1) return trip;
+    [points[index], points[target]] = [points[target], points[index]];
+    return { ...trip, routeOrder: points.map(p => p.id) };
+}
+
+function routeLayout(trip: Trip): {coordinates:Coordinate[]; stops:{point:RoutePoint; distance:number}[]} {
+    const base = corridorCoordinates(trip);
+    const points = orderedRoutePoints(trip);
+    if (!trip.routeOrder) {
+        const total = cumulative(base).at(-1)!;
+        return {coordinates:base, stops:points.map(point=>({point,distance:point.kind==='start'?0:point.kind==='finish'?total:nearestProgress(base,point.coordinate)*total}))};
+    }
+    const coordinates:Coordinate[] = [[...points[0].coordinate]];
+    const stops = [{point:points[0],distance:0}];
+    let distance = 0;
+    for (let i=1;i<points.length;i++) {
+        const before=points[i-1], point=points[i];
+        const from=before.kind==='start'?0:nearestProgress(base,before.coordinate);
+        const to=point.kind==='finish'?1:nearestProgress(base,point.coordinate);
+        const leg=routeSlice(base,from,to);
+        distance+=cumulative(leg).at(-1)!;
+        coordinates.push(...leg.slice(1));
+        stops.push({point,distance});
+    }
+    return {coordinates,stops};
+}
+
+export function routeCoordinates(trip: Trip): Coordinate[] { return routeLayout(trip).coordinates; }
+export function routeStops(trip: Trip): {point:RoutePoint; distance:number}[] { return routeLayout(trip).stops; }
 
 // Stored anchors use one corridor frame; current-route fractions change with every detour.
 export function anchorProgress(coordinate: Coordinate): number {
@@ -142,6 +187,12 @@ export function routeSlice(coordinates: Coordinate[], from: number, to: number):
     return [first, ...inside.map(p => [...p] as Coordinate), coordinateAt(coordinates, end)];
 }
 
+function stopProgress(trip:Trip, coordinates:Coordinate[], point:RoutePoint):number {
+    if (!trip.routeOrder) return nearestProgress(coordinates,point.coordinate);
+    const stops=routeStops(trip);
+    return (stops.find(stop=>stop.point.id===point.id)?.distance??0)/(stops.at(-1)?.distance||1);
+}
+
 export function overnightWindow(trip: Trip, night: number): { from: number; to: number; center: number; blocked: boolean } {
     const coordinates = routeCoordinates(trip);
     const total = cumulative(coordinates).at(-1)!;
@@ -149,8 +200,8 @@ export function overnightWindow(trip: Trip, night: number): { from: number; to: 
     const count = Math.max(trip.days, ...trip.points.filter(p => p.kind === 'night').map(p => p.night! + 1));
     const before = pinned.filter(p => p.night! < night).at(-1);
     const after = pinned.find(p => p.night! > night);
-    const lo = before ? nearestProgress(coordinates, before.coordinate) : 0;
-    const hi = after ? nearestProgress(coordinates, after.coordinate) : 1;
+    const lo = before ? stopProgress(trip, coordinates, before) : 0;
+    const hi = after ? stopProgress(trip, coordinates, after) : 1;
     const daysBefore = night - (before?.night ?? 0);
     const daysAfter = (after?.night ?? count) - night;
     const dayFraction = (hi - lo) / (daysBefore + daysAfter);
@@ -190,15 +241,15 @@ export function tripDays(trip: Trip): Day[] {
     }
     const coordinates = routeCoordinates(trip);
     const total = cumulative(coordinates).at(-1)!;
-    const pinned = trip.points.filter(p => p.kind === 'night').sort((a, b) => a.progress - b.progress);
+    const pinned = trip.points.filter(p => p.kind === 'night').sort((a, b) => a.night! - b.night!);
     const count = Math.max(trip.days, ...pinned.map(p => (p.night ?? 0) + 1));
     const boundaries = [0];
     for (let i = 1; i < count; i++) {
         const pin = pinned.find(p => p.night === i);
-        if (pin) boundaries.push(nearestProgress(coordinates, pin.coordinate));
+        if (pin) boundaries.push(stopProgress(trip, coordinates, pin));
         else {
             const next = pinned.find(p => (p.night ?? 0) > i);
-            const end = next ? nearestProgress(coordinates, next.coordinate) : 1;
+            const end = next ? stopProgress(trip, coordinates, next) : 1;
             const remaining = (next?.night ?? count) - i + 1;
             boundaries.push(boundaries[i - 1] + (end - boundaries[i - 1]) / remaining);
         }
@@ -215,7 +266,7 @@ export function applyBudget(trip: Trip, budget: Trip['budget'], target: number, 
     const wanted = budget === 'days' ? Math.round(target) - (trip.restAfter?.length ?? 0) : Math.ceil(total / (budget === 'distance' ? target : target * 15));
     const pinnedMinimum = Math.max(1, ...trip.points.filter(p => p.kind === 'night').map(p => (p.night ?? 0) + 1));
     const days = Math.max(pinnedMinimum, Math.min(14, Math.max(1, wanted)));
-    return { ...trip, budget, target, limit, days, restAfter: (trip.restAfter ?? []).filter(after => after <= days) };
+    return { ...trip, budget, target, limit, days, restAfter: (trip.restAfter ?? []).filter(after => after <= days), restNames: (trip.restAfter ?? []).flatMap((after,i)=>after<=days?[trip.restNames?.[i]??'']:[]) };
 }
 
 export function itineraryDays(trip: Trip): ItineraryDay[] {
@@ -234,13 +285,13 @@ export function itineraryDays(trip: Trip): ItineraryDay[] {
 
 export function addRestDay(trip: Trip, after: number): Trip {
     if (!Number.isInteger(after) || after < 1 || after > tripDays(trip).length) return trip;
-    return { ...trip, restAfter: [...(trip.restAfter ?? []), after], target: trip.budget === 'days' ? trip.target + 1 : trip.target };
+    return { ...trip, restAfter: [...(trip.restAfter ?? []), after], restNames: [...(trip.restAfter ?? []).map((_,i)=>trip.restNames?.[i]??''), ''], target: trip.budget === 'days' ? trip.target + 1 : trip.target };
 }
 
 export function removeRestDay(trip: Trip, index: number): Trip {
     const restAfter = trip.restAfter ?? [];
     if (!Number.isInteger(index) || index < 0 || index >= restAfter.length) return trip;
-    return { ...trip, restAfter: restAfter.filter((_, i) => i !== index), target: trip.budget === 'days' ? Math.max(1, trip.target - 1) : trip.target };
+    return { ...trip, restAfter: restAfter.filter((_, i) => i !== index), restNames: restAfter.flatMap((_,i)=>i===index?[]:[trip.restNames?.[i]??'']), target: trip.budget === 'days' ? Math.max(1, trip.target - 1) : trip.target };
 }
 
 export function pinNight(trip: Trip, night: number, coordinate: Coordinate, label: string): Trip {
@@ -252,7 +303,8 @@ export function pinNight(trip: Trip, night: number, coordinate: Coordinate, labe
 
 export function nightOrderConflicts(trip: Trip): [RoutePoint, RoutePoint][] {
     const nights = trip.points.filter(p => p.kind === 'night').sort((a, b) => a.night! - b.night!);
-    return nights.slice(1).flatMap((point, i) => point.progress <= nights[i].progress ? [[nights[i], point] as [RoutePoint, RoutePoint]] : []);
+    const coordinates=routeCoordinates(trip);
+    return nights.slice(1).flatMap((point, i) => stopProgress(trip,coordinates,point) <= stopProgress(trip,coordinates,nights[i]) ? [[nights[i], point] as [RoutePoint, RoutePoint]] : []);
 }
 
 export class TripHistory {

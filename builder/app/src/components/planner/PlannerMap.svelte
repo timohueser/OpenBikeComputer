@@ -33,6 +33,7 @@
     let dem: InstanceType<typeof mlcontour.DemSource>;
     let appliedTheme: "light" | "dark";
     let fittedInitialRoute = false;
+    let dragging = $state(false);
 
     export function fitRoute() {
         if (!map || !coordinates.length) return;
@@ -141,6 +142,8 @@
             failure = "The map could not start. This view needs a browser with WebGL enabled.";
             errorDetail = error instanceof Error ? error.message : String(error);
         }
+        map?.on("dragstart",()=>dragging=true);
+        map?.on("dragend",()=>dragging=false);
         const observer = new ResizeObserver(() => map?.resize());
         observer.observe(container);
         return () => {
@@ -173,7 +176,7 @@
         highlightedCoordinates;
         if (map && ready) (map.getSource("trip-highlight") as GeoJSONSource | undefined)?.setData(highlightData());
     });
-    $effect(() => { if (map) map.getCanvas().style.cursor = pickMode ? "crosshair" : ""; });
+    $effect(() => { if (map) map.getCanvas().style.cursor = dragging ? "grabbing" : pickMode ? "crosshair" : "grab"; });
 
     function markerIcon(appearance: "hotel" | "camp" | "waypoint" | "detour") {
         const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");

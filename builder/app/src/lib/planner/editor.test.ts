@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addRestDay, anchorProgress, applyBudget, coordinateAt, cumulative, initialTrip, itineraryDays, kilometres, nightOrderConflicts, overnightWindow, pinNight, places, removeRestDay, routeCoordinates, routeSlice, TripHistory, tripDays, type Coordinate, type Trip } from './editor';
+import { reorderPoint, routeStops, addRestDay, anchorProgress, applyBudget, coordinateAt, cumulative, initialTrip, itineraryDays, kilometres, nightOrderConflicts, overnightWindow, pinNight, places, removeRestDay, routeCoordinates, routeSlice, TripHistory, tripDays, type Coordinate, type Trip } from './editor';
 
 describe('planner commitments', () => {
     it('keeps a previous pin intact through a later edit and undo', () => {
@@ -161,5 +161,49 @@ describe('planning modes', () => {
         const restored: Trip = { ...single, mode: 'trip' };
         expect(itineraryDays(restored)).toEqual(itineraryDays(trip));
         expect(restored.points).toEqual(trip.points);
+    });
+});
+
+
+describe('single-route stop order', () => {
+    it('changes the travelled geometry and cumulative stop distances without moving places', () => {
+        const initial = initialTrip();
+        const base = routeCoordinates(initial);
+        const trip: Trip = { ...initial, mode:'route', points:[...initial.points,
+            {id:'first',label:'First',kind:'waypoint',progress:.25,coordinate:coordinateAt(base,.25)},
+            {id:'second',label:'Second',kind:'waypoint',progress:.7,coordinate:coordinateAt(base,.7)}] };
+        const reordered = reorderPoint(trip,'first',1);
+        const stops = routeStops(reordered);
+        expect(stops.map(s=>s.point.id)).toEqual(['start','second','first','finish']);
+        expect(reordered.points).toEqual(trip.points);
+        expect(stops[2].distance).toBeGreaterThan(stops[1].distance);
+        expect(stops.at(-1)!.distance).toBeCloseTo(cumulative(routeCoordinates(reordered)).at(-1)!);
+        expect(stops.at(-1)!.distance).toBeGreaterThan(cumulative(routeCoordinates(trip)).at(-1)!);
+        expect(reorderPoint(reordered,'start',1)).toEqual(reordered);
+        expect(routeCoordinates({...reordered,mode:'trip'})).toEqual(routeCoordinates(reordered));
+    });
+    it('keeps rest-day names attached when another rest day is removed', () => {
+        const trip:Trip={...addRestDay(addRestDay(initialTrip(),1),2),restNames:['Hike','Visit friends']};
+        expect(removeRestDay(trip,0).restNames).toEqual(['Visit friends']);
+        expect(removeRestDay(trip,0).restAfter).toEqual([2]);
+    });
+});
+
+
+describe('ordered overnight occurrences', () => {
+    it('uses the planned visit occurrence on a backtracking route and reports reversed nights', () => {
+        const initial=initialTrip();
+        const base=routeCoordinates(initial);
+        const pinned=pinNight(pinNight(initial,1,coordinateAt(base,.3),'First night'),2,coordinateAt(base,.7),'Second night');
+        const reversed=reorderPoint(pinned,'night-1',1);
+        const stops=routeStops(reversed);
+        const total=stops.at(-1)!.distance;
+        const first=stops.find(s=>s.point.id==='night-1')!.distance;
+        const second=stops.find(s=>s.point.id==='night-2')!.distance;
+        expect(first).toBeGreaterThan(second);
+        expect(tripDays(reversed)[0].to).toBeCloseTo(first/total);
+        expect(tripDays(reversed)[1].to).toBeCloseTo(second/total);
+        expect(nightOrderConflicts(reversed)).toHaveLength(1);
+        expect(overnightWindow(reversed,2).center).toBeGreaterThan(first/total);
     });
 });

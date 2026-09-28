@@ -49,8 +49,8 @@ npm run dev -- --mode web --host 127.0.0.1 --port 4174
 
 ```sh
 npx vitest run src/lib/planner/editor.test.ts
-npm run check
+npx svelte-check --tsconfig tsconfig.planner.json --fail-on-warnings
 ```
 
-The full type check needs the generated WASM packages described in the builder
+`npm run check` checks the full app. The full type check needs the generated WASM packages described in the builder
 README. Native iOS rendering and mobile performance need separate validation.
