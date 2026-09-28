@@ -293,6 +293,7 @@
     }
 
     function releaseMap(event: maplibregl.MapMouseEvent) {
+        if (event.originalEvent.target !== map?.getCanvas()) { cancelGesture(); return; }
         const coordinate: Coordinate = [event.lngLat.lng, event.lngLat.lat];
         if (sketch && drawing) {
             const drawn = sketch;
@@ -310,6 +311,15 @@
             setSketch([]);
             onInsert?.(hit.legEndId, coordinate);
         }
+    }
+
+    function cancelGesture() {
+        if (!press && !sketch) return;
+        press = null;
+        sketch = null;
+        hover = null;
+        consumedPress = true;
+        setSketch([]);
     }
 
     onMount(() => {
@@ -534,6 +544,9 @@
         else settle();
     });
 </script>
+
+<svelte:window onmouseup={(event) => { if (event.target !== map?.getCanvas()) cancelGesture(); }}
+    onblur={cancelGesture} onkeydown={(event) => { if (event.key === 'Escape') cancelGesture(); }} />
 
 <div class="map-frame" data-map-theme={theme}>
     <div class="map-canvas" bind:this={container} aria-label="Route map"></div>

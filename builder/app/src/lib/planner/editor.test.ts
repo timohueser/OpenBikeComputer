@@ -1,5 +1,39 @@
 import { describe, expect, it } from 'vitest';
-import { reorderPoint, routeStops, addRestDay, anchorProgress, addClickedPoint, dayStops, applyBudget, coordinateAt, cumulative, initialTrip, insertPoint, itineraryDays, kilometres, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, places, removeRestDay, routeCoordinates, routeSlice, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Coordinate, type RoutePoint, type Trip } from './editor';
+import {
+    reorderPoint, routeStops, addRestDay, anchorProgress, addClickedPoint, dayStops, applyBudget, coordinateAt,
+    cumulative, initialTrip, insertPoint, itineraryDays, kilometres, maxRidingDays, nightOrderConflicts,
+    orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, places, removeRestDay, routeCoordinates,
+    routeSlice, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Coordinate, type RoutePoint, type Trip,
+} from './editor';
+
+describe('overnight edits', () => {
+    it('keeps the incoming leg when replacing an overnight or converting a visit', () => {
+        const initial = initialTrip();
+        const drawing: Coordinate[] = [[7.3, 47.7], [7.1, 47.6]];
+        const pinned = setDrawnLeg(pinNight(initial, 1, [7, 47.5], 'Old camp'), 'night-1', drawing);
+        const replaced = pinNight(pinned, 1, [6.9, 47.5], 'New camp');
+        expect(replaced.points.find(point => point.id === 'night-1')).toMatchObject({ leg: 'drawn', drawn: drawing, label: 'New camp' });
+        const visit: RoutePoint = { id: 'visit', kind: 'waypoint', label: 'Visit', coordinate: [7.2, 47.5], progress: .3 };
+        const shaped = setDrawnLeg(addClickedPoint(pinned, visit), 'visit', drawing);
+        const converted = pinNight(shaped, 1, visit.coordinate, 'Camp', visit.id);
+        expect(converted.points.some(point => point.id === visit.id)).toBe(false);
+        expect(converted.points.filter(point => point.kind === 'night')).toHaveLength(1);
+        expect(converted.points.find(point => point.id === 'night-1')).toMatchObject({ leg: 'drawn', drawn: drawing });
+        expect(orderedRoutePoints(converted).map(point => point.id)).toEqual(['start', 'night-1', 'finish']);
+        const straight = setLegMode(converted, 'night-1', 'straight');
+        expect(pinNight(straight, 1, [7, 47.5], 'Other camp').points.find(point => point.id === 'night-1')?.leg).toBe('straight');
+    });
+
+    it('adds a riding day for a final overnight without exceeding the shared limit', () => {
+        const initial = initialTrip();
+        const extended = pinNight(initial, initial.days, [6.5, 47.4], 'Last night');
+        expect(extended.days).toBe(initial.days + 1);
+        expect(extended.target).toBe(initial.target + 1);
+        const longest = applyBudget(initial, 'days', maxRidingDays, 50);
+        expect(pinNight(longest, maxRidingDays, [6.5, 47.4], 'Too late')).toBe(longest);
+        expect(pinNight(longest, maxRidingDays - 1, [6.5, 47.4], 'Last valid night').days).toBe(maxRidingDays);
+    });
+});
 
 describe('planner commitments', () => {
     it('keeps a previous pin intact through a later edit and undo', () => {
@@ -164,6 +198,23 @@ describe('planning modes', () => {
     });
 });
 
+
+describe('day budgets', () => {
+    it('retains only rest days that fit the requested calendar budget', () => {
+        const lateRest = { ...addRestDay(initialTrip(), 2), restNames: ['Visit friends'] };
+        const shortened = applyBudget(lateRest, 'days', 2, 50);
+        expect(shortened.days).toBe(2);
+        expect(shortened.restAfter).toEqual([]);
+        expect(itineraryDays(shortened)).toHaveLength(2);
+        const earlyRests = { ...addRestDay(addRestDay(initialTrip(), 1), 1), restNames: ['Walk', 'Museum'] };
+        const retained = applyBudget(earlyRests, 'days', 2, 50);
+        expect(retained.days).toBe(1);
+        expect(retained.restNames).toEqual(['Walk']);
+        expect(itineraryDays(retained)).toHaveLength(2);
+        const pinned = pinNight(initialTrip(), 2, [6.8, 47.5], 'Camp');
+        expect(applyBudget(pinned, 'days', 1, 50).days).toBe(3);
+    });
+});
 
 describe('single-route stop order', () => {
     it('inserts a stop across multiple positions and keeps both endpoints fixed', () => {

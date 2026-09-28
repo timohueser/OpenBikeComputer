@@ -1,6 +1,6 @@
 <script lang="ts">
     import { tick, untrack } from 'svelte';
-    import type { Trip } from '../../lib/planner/editor';
+    import { maxRidingDays, type Trip } from '../../lib/planner/editor';
 
     let { trip, dayCount, editing = $bindable(false), onApply }: {
         trip: Trip;
@@ -68,7 +68,7 @@
                     <option value="hours">Riding hours per day</option>
                 </select>
                 <span class="unit-field">
-                    <input type="number" min="1" max={budget === 'days' ? 14 : undefined} required aria-label={budget === 'days' ? 'Number of days' : budget === 'distance' ? 'Kilometres per day' : 'Riding hours per day'} bind:value={target} />
+                    <input type="number" min="1" max={budget === 'days' ? maxRidingDays + (trip.restAfter?.length ?? 0) : undefined} required aria-label={budget === 'days' ? 'Number of days' : budget === 'distance' ? 'Kilometres per day' : 'Riding hours per day'} bind:value={target} />
                     <small>{budget === 'days' ? 'days' : budget === 'distance' ? 'km' : 'h'}</small>
                 </span>
             </span>

@@ -12,7 +12,7 @@
     import Segmented from './Segmented.svelte';
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import { profileAscent } from '../../lib/planner/profile-data';
-    import { dayOverTarget, pinNight, tripDays, type Coordinate, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import { dayOverTarget, maxRidingDays, pinNight, tripDays, type Coordinate, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
 
     let {
         kind, trip, days, dayLabels, night, point, place, coordinate, candidates, legMode, forNight = false,
@@ -134,14 +134,15 @@
             <label class="field">End of day
                 <select bind:value={sleepDay}>
                     {#each days as day (day.number)}
-                        <option value={day.number}>Day {dayLabels[day.number]}{day.pinned ? ` · replaces ${day.pinned.label}` : day.number === days.length ? ' · adds a night' : ''}</option>
+                        <option value={day.number} disabled={day.number >= maxRidingDays}>Day {dayLabels[day.number]}{day.pinned ? ` · replaces ${day.pinned.label}` : day.number >= maxRidingDays ? ' · day limit reached' : day.number === days.length ? ' · adds a night' : ''}</option>
                     {/each}
                 </select>
             </label>
             {#if preview}
                 <p class="predict">Day {dayLabels[sleepDay]} would be <strong class:over={preview.over}>{preview.distance.toFixed(1)} km ↑ {preview.ascent} m</strong></p>
             {/if}
-            <button type="button" class="primary" onclick={() => onStay(sleepDay)}>{days[sleepDay - 1]?.pinned ? 'Replace overnight' : 'Stay here'}<Icon name="check" size={15} /></button>
+            {#if sleepDay >= maxRidingDays}<p class="hint">A trip can have up to {maxRidingDays} riding days. Choose an earlier day for this overnight.</p>{/if}
+            <button type="button" class="primary" disabled={sleepDay >= maxRidingDays} onclick={() => onStay(sleepDay)}>{days[sleepDay - 1]?.pinned ? 'Replace overnight' : 'Stay here'}<Icon name="check" size={15} /></button>
             {#if place}<button type="button" class="secondary" onclick={() => onAddVisit(place)}>Add as visit</button>{/if}
         {:else if place}
             <button type="button" class="primary" onclick={() => onAddVisit(place)}>{place.category === 'peak' ? 'Ride over it' : 'Add visit'}<Icon name="plus" size={15} /></button>
