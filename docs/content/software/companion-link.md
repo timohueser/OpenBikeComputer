@@ -292,8 +292,9 @@ offers the rider an age-based cleanup instead of deciding alone. The durable for
   <text class="d-sub" x="522" y="374" text-anchor="middle">generic failure</text>
 
   <rect class="d-hot" x="606" y="336" width="98" height="52" rx="10" style="fill:#f8efe4" />
-  <text class="d-sub" x="655" y="356" text-anchor="middle" style="fill:#a9501c">only way in:</text>
-  <text class="d-sub" x="655" y="372" text-anchor="middle">Forget phone</text>
+  <text class="d-sub" x="655" y="350" text-anchor="middle">Forget phone</text>
+  <text class="d-sub" x="655" y="365" text-anchor="middle" style="fill:#a9501c">or</text>
+  <text class="d-sub" x="655" y="380" text-anchor="middle">Factory reset</text>
 
   <line class="d-flow" x1="166" y1="362" x2="220" y2="362" marker-end="url(#pk-a)" />
   <line class="d-flow" x1="406" y1="362" x2="460" y2="362" marker-end="url(#pk-a)" />
