@@ -399,3 +399,51 @@ fn geometry_cache_retains_a_snap_working_set_across_many_small_pages() {
     }
     assert_eq!(reads.get(), 20);
 }
+
+#[test]
+fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profile() {
+    let mut graph = fixture();
+    graph.points = [(0, 0), (0, 10_000), (100, 4_000), (100, 6_000)]
+        .map(|(lat, lon)| Point { lat, lon, elevation: NO_ELEVATION })
+        .to_vec();
+    let template = graph.roads[0].clone();
+    graph.roads = [(0, 1, 0), (1, 0, 0), (2, 3, 0), (3, 2, 0), (0, 2, 1), (2, 0, 1)]
+        .map(|(from, to, difficulty)| {
+            let shape = vec![graph.points[from as usize], graph.points[to as usize]];
+            Road {
+                from,
+                to,
+                difficulty,
+                surface: Surface::Paved,
+                length_m: shape[0].distance(shape[1]).round() as u32,
+                shape,
+                ..template.clone()
+            }
+        })
+        .to_vec();
+    graph.forbidden.clear();
+    graph.forbidden_foot.clear();
+    let (source, manifest) = package(&graph);
+    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 1024 * 1024);
+    let mut request = Request {
+        points: vec![[0.0, 0.0], [0.005, 0.0002], [0.01, 0.0]],
+        profile: "road".into(),
+        pace: Pace::default(),
+        alternatives: false,
+        turnarounds: vec![1],
+    };
+    let route = router.route(&request, &Control::default()).unwrap();
+    assert_eq!(route.attachments[1].projected.lat, 0);
+    assert!(route.attachments[1].snap_distance_m < 25.0);
+    assert_eq!(route.attachments[0].snap_distance_m, 0.0);
+    assert_eq!(route.attachments[2].snap_distance_m, 0.0);
+    assert!(route.warnings.iter().any(|w| w.contains("nearby accessible roads")));
+    request.profile = "mtb".into();
+    let mtb = router.route(&request, &Control::default()).unwrap();
+    assert_eq!(mtb.attachments[1].projected.lat, 100);
+    assert!(mtb.warnings.is_empty());
+    request.profile = "road".into();
+    // An explicit point on the disconnected driveway must not jump to a different road.
+    request.points[1][1] = 0.0001;
+    assert!(matches!(router.route(&request, &Control::default()), Err(Error::NoPath)));
+}

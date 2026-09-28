@@ -771,7 +771,14 @@
                 </div>
             {:else}
                 {#if !currentRoute}
-                    <div class="route-status" role="status"><p>{routingStatus}</p>{#if routingStatus !== 'Calculating route…'}<button type="button" class="planner-action" onclick={() => routeAttempt++}>Retry routing</button><p>Move a point or choose another place in Baden-Württemberg.</p>{/if}</div>
+                    <div class="route-status" role="status">
+                        <p>{routingStatus}</p>
+                        {#if routingStatus !== 'Calculating route…'}
+                            {#if canUndo}<button type="button" class="planner-action" onclick={undo}>Undo last change</button>{/if}
+                            <button type="button" class="planner-action" onclick={() => routeAttempt++}>Retry routing</button>
+                            <p>Move a point or choose another place in Baden-Württemberg.</p>
+                        {/if}
+                    </div>
                 {/if}
                 {#if !focusedDay && currentRoute}
                     <div class="trip-summary"><RouteStats distance={total} ascent={currentRoute?.elevation.every(h => h !== null) ? profileAscent(0, 1, currentRoute) : null} hours={currentRoute ? currentRoute.seconds / 3600 : null} /></div>
