@@ -138,6 +138,7 @@
     .query-input input:focus-visible { outline: none; }
     .query-input input { flex: 1; width: 0; min-width: 0; padding: 10px 0; font: inherit; font-size: 14px; border: 0; outline: none; background: transparent; color: var(--ink); caret-color: var(--ink); }
     input::placeholder { color: var(--ink-soft); opacity: 1; }
+    input:focus-visible { outline: none; }
     input::selection { color: var(--panel); background: var(--ink); }
     .edited input:not(:focus) { color: var(--ink-soft); }
     button { font: inherit; color: inherit; cursor: pointer; }

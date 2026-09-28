@@ -14,7 +14,7 @@
     import Segmented from './Segmented.svelte';
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import { profileAscent } from '../../lib/planner/profile-data';
-    import { dayOverTarget, pinNight, tripDays, type Coordinate, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import { dayOverTarget, maxRidingDays, pinNight, tripDays, type Coordinate, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
 
     let {
         kind, trip, days, dayLabels, night, point, place, coordinate, candidates, legMode, forNight = false,
@@ -62,6 +62,7 @@
     ];
 
     let root: HTMLDivElement;
+    let opener: HTMLElement | null = null;
     let renaming = $state(false);
     // svelte-ignore state_referenced_locally
     let sleepDay = $state(night);
@@ -76,15 +77,21 @@
     });
 
     onMount(() => {
+        opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         // The map moves this content into its popup after mounting.
         const frame = requestAnimationFrame(() => root.focus({ preventScroll: true }));
         return () => cancelAnimationFrame(frame);
     });
 
+    function close() {
+        onClose();
+        if (opener?.isConnected) opener.focus({ preventScroll: true });
+    }
+
     function key(event: KeyboardEvent) {
         if (event.key !== 'Escape' || (event.target as HTMLElement).closest('input, select')) return;
         event.stopPropagation();
-        onClose();
+        close();
     }
 
     function candidateDay(candidate: OvernightCandidate) {
@@ -101,7 +108,7 @@
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div class="callout" bind:this={root} tabindex="-1" role="dialog" aria-label="Map details" onkeydown={key}>
-    <button type="button" class="close" onclick={onClose} aria-label="Close"><Icon name="close" size={15} /></button>
+    <button type="button" class="close" onclick={close} aria-label="Close"><Icon name="close" size={15} /></button>
     {#if kind === 'add'}
         <h2>Add point here</h2>
         <div class="add-types">
@@ -120,7 +127,7 @@
         {#each candidates as candidate (candidate.place.id)}
             <PlaceRow place={candidate.place} day={candidateDay(candidate)} onSelect={onSelectPlace} />
         {/each}
-        <button type="button" class="planner-link" onclick={onPick}>Pick another spot on the map</button>
+        <button type="button" class="planner-action" onclick={onPick}>Pick another spot on the map</button>
         <p class="hint">Drag the marker along the route to move the day end.</p>
     {:else if kind === 'place'}
         <div class="place-heading">
@@ -135,14 +142,15 @@
             <label class="field">End of day
                 <select bind:value={sleepDay}>
                     {#each days as day (day.number)}
-                        <option value={day.number}>Day {dayLabels[day.number]}{day.pinned ? ` · replaces ${day.pinned.label}` : day.number === days.length ? ' · adds a night' : ''}</option>
+                        <option value={day.number} disabled={day.number >= maxRidingDays}>Day {dayLabels[day.number]}{day.pinned ? ` · replaces ${day.pinned.label}` : day.number >= maxRidingDays ? ' · day limit reached' : day.number === days.length ? ' · adds a night' : ''}</option>
                     {/each}
                 </select>
             </label>
             {#if preview}
                 <p class="predict">Day {dayLabels[sleepDay]} would be <strong class:over={preview.over}>{preview.distance.toFixed(1)} km ↑ {preview.ascent} m</strong></p>
             {/if}
-            <button type="button" class="primary" onclick={() => onStay(sleepDay)}>{days[sleepDay - 1]?.pinned ? 'Replace overnight' : 'Stay here'}<Icon name="check" size={15} /></button>
+            {#if sleepDay >= maxRidingDays}<p class="hint">A trip can have up to {maxRidingDays} riding days. Choose an earlier day for this overnight.</p>{/if}
+            <button type="button" class="primary" disabled={sleepDay >= maxRidingDays} onclick={() => onStay(sleepDay)}>{days[sleepDay - 1]?.pinned ? 'Replace overnight' : 'Stay here'}<Icon name="check" size={15} /></button>
             {#if place}<button type="button" class="secondary" onclick={() => onAddVisit(place)}>Add as visit</button>{/if}
         {:else if place}
             <button type="button" class="primary" onclick={() => onAddVisit(place)}>{place.category === 'peak' ? 'Ride over it' : 'Add visit'}<Icon name="plus" size={15} /></button>
@@ -182,7 +190,7 @@
         position: relative;
         width: 340px;
         max-width: calc(100vw - 48px);
-        max-height: calc(var(--map-height, 100vh) - 48px);
+        max-height: calc(var(--map-height, 100vh) - 96px);
         overflow-y: auto;
         padding: 16px;
         color: var(--ink);

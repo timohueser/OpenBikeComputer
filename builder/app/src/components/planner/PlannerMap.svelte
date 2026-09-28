@@ -130,7 +130,7 @@
         const box = calloutPopup.getElement().getBoundingClientRect();
         const margin = 16;
         const right = frame.right - controlsWidth;
-        const bottom = frame.bottom - 2 * margin;
+        const bottom = frame.bottom - 48;
         const dx = box.left < frame.left + margin ? box.left - frame.left - margin : Math.max(0, box.right - right);
         const dy = box.top < frame.top + margin ? box.top - frame.top - margin : Math.max(0, box.bottom - bottom);
         if (dx || dy) map.panBy([dx, dy], { duration: motionDuration() });
@@ -303,6 +303,7 @@
     }
 
     function releaseMap(event: maplibregl.MapMouseEvent) {
+        if (event.originalEvent.target !== map?.getCanvas()) { cancelGesture(); return; }
         const coordinate: Coordinate = [event.lngLat.lng, event.lngLat.lat];
         if (sketch && drawing) {
             const drawn = sketch;
@@ -320,6 +321,15 @@
             setSketch([]);
             onInsert?.(hit.legEndId, coordinate);
         }
+    }
+
+    function cancelGesture() {
+        if (!press && !sketch) return;
+        press = null;
+        sketch = null;
+        hover = null;
+        consumedPress = true;
+        setSketch([]);
     }
 
     onMount(() => {
@@ -379,7 +389,10 @@
             refit = setTimeout(() => { if (wholeRoute) fitRoute(); }, 150);
         });
         observer.observe(container);
+        const popupObserver = new ResizeObserver(() => { requestAnimationFrame(keepCalloutInside); });
+        popupObserver.observe(popupContent);
         return () => {
+            popupObserver.disconnect();
             observer.disconnect();
             clearTimeout(refit);
             markerList.forEach((marker) => marker.remove());
@@ -533,7 +546,7 @@
         }
         calloutPopup ??= new maplibregl.Popup({
             closeButton: false, closeOnClick: false, offset: 20, maxWidth: "340px",
-            padding: { top: 16, right: controlsWidth, bottom: 16, left: 16 },
+            padding: { top: 16, right: controlsWidth, bottom: 48, left: 16 },
         }).setDOMContent(popupContent);
         calloutPopup.setLngLat(callout).addTo(map);
         const settle = () => requestAnimationFrame(keepCalloutInside);
@@ -541,6 +554,9 @@
         else settle();
     });
 </script>
+
+<svelte:window onmouseup={(event) => { if (event.target !== map?.getCanvas()) cancelGesture(); }}
+    onblur={cancelGesture} onkeydown={(event) => { if (event.key === 'Escape') cancelGesture(); }} />
 
 <div class="map-frame" data-map-theme={theme}>
     <div class="map-canvas" bind:this={container} aria-label="Route map"></div>

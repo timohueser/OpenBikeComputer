@@ -1,4 +1,5 @@
 import { cumulative, itineraryDays, routeCoordinates, type Trip } from './editor';
+import { isTrip } from './trip-validation';
 
 export interface Version {
     id: string;
@@ -24,13 +25,27 @@ export function versionSummary(trip: Trip): string {
 }
 
 /** Newest first. */
-export function listVersions(store: VersionStore = localStorage): Version[] {
+export function listVersions(store?: VersionStore): Version[] {
     try {
-        const list = JSON.parse(store.getItem(key) ?? '[]');
-        return Array.isArray(list) ? list : [];
+        const list = JSON.parse((store ?? localStorage).getItem(key) ?? '[]');
+        const ids = new Set<string>();
+        return Array.isArray(list) ? list.filter((value): value is Version => {
+            if (!isVersion(value) || ids.has(value.id)) return false;
+            ids.add(value.id);
+            return true;
+        }) : [];
     } catch {
         return [];
     }
+}
+
+function isVersion(value: unknown): value is Version {
+    if (!value || typeof value !== 'object') return false;
+    const version = value as Partial<Version>;
+    return typeof version.id === 'string' && version.id.length > 0
+        && typeof version.at === 'string' && Number.isFinite(Date.parse(version.at))
+        && typeof version.summary === 'string' && (version.name === undefined || typeof version.name === 'string')
+        && isTrip(version.trip);
 }
 
 /** Named versions stay until deleted; only the newest unnamed ones are kept. */

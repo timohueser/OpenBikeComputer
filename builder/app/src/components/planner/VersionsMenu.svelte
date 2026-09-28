@@ -16,6 +16,7 @@
     // `new` names the version about to be saved; `latest` renames the newest saved one.
     let naming = $state<'new' | 'latest' | null>(null);
     let name = $state('');
+    let error = $state('');
     let versions = $state<Version[]>([]);
     let root: HTMLDivElement;
     let menu = $state<HTMLDivElement>();
@@ -42,6 +43,7 @@
 
     async function startNaming(what: 'new' | 'latest') {
         now = Date.now();
+        error = '';
         versions = listVersions();
         open = true;
         naming = what;
@@ -57,13 +59,15 @@
         const what = naming;
         if (!what) return;
         const typed = name.trim() === suggested ? '' : name;
-        naming = null;
+        error = '';
         try {
             if (what === 'new') onSaved(saveVersion($state.snapshot(trip), typed));
             else renameLatest(typed);
         } catch {
+            error = 'Could not save the version. Press Enter to try again.';
             return;
         }
+        naming = null;
         versions = listVersions();
     }
 
@@ -72,6 +76,7 @@
         naming = null;
         if (!open) return;
         now = Date.now();
+        error = '';
         versions = listVersions();
         await tick();
         menu?.querySelector<HTMLElement>('button')?.focus();
@@ -85,8 +90,13 @@
     }
 
     function remove(id: string) {
-        deleteVersion(id);
-        versions = listVersions();
+        try {
+            deleteVersion(id);
+            error = '';
+            versions = listVersions();
+        } catch {
+            error = 'Could not delete the version. Try again.';
+        }
     }
 
     function outside(event: PointerEvent) {
@@ -123,6 +133,7 @@
             {:else}
                 <p class="draft">{draft}</p>
             {/if}
+            {#if error}<p class="error" role="alert">{error}</p>{/if}
             {#if versions.length}
                 <ul>
                     {#each versions as version (version.id)}
@@ -131,7 +142,7 @@
                                 <strong>{title(version)}</strong>
                                 <small>{version.name ? `${when(version.at)} · ` : ''}{version.summary}</small>
                             </span>
-                            <button type="button" class="planner-link" onclick={() => restore(version)}>Restore</button>
+                            <button type="button" class="planner-action" onclick={() => restore(version)}>Restore</button>
                             <button type="button" class="delete" aria-label={`Delete ${title(version)}`} onclick={() => remove(version.id)}><Icon name="close" size={14} /></button>
                         </li>
                     {/each}
@@ -190,6 +201,7 @@
         background: var(--panel);
         box-shadow: var(--planner-shadow);
     }
+    .error { margin: 0; padding: 8px; color: var(--coral); font-size: 13px; }
     .draft,
     .empty {
         margin: 0;
