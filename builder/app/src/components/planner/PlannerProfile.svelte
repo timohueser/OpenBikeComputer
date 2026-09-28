@@ -226,9 +226,10 @@
         color: var(--ink-faint);
     }
     .distance {
+        margin-left: auto;
         font-variant-numeric: tabular-nums;
     }
-    .grade-toggle { display: flex; align-items: center; gap: 6px; margin-left: auto; min-height: 28px; font-weight: 600; cursor: pointer; }
+    .grade-toggle { display: flex; align-items: center; gap: 6px; margin-left: 4px; min-height: 28px; font-weight: 600; cursor: pointer; }
     .grade-toggle input { width: 14px; height: 14px; margin: 0; accent-color: var(--ink-soft); }
     .grade-toggle input:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
     .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-height: 18px; margin: 0 12px 10px 48px; color: var(--ink-soft); font: 12px var(--sans); font-variant-numeric: tabular-nums; }
