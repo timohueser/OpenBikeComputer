@@ -1,30 +1,24 @@
-<script lang="ts" module>
-    import type { Trip } from '../../lib/planner/editor';
-
-    export const ways: { id: Trip['variant']; title: string; description: string }[] = [
-        { id: 'valley', title: 'Along the valley', description: 'Canal and Doubs corridor' },
-        { id: 'direct', title: 'More direct', description: 'Fewer bends' },
-    ];
-</script>
-
 <script lang="ts">
-    import { cumulative, routeCoordinates } from '../../lib/planner/editor';
-    import { profileAscent } from '../../lib/planner/profile-data';
-
-    let { trip, onPick }: { trip: Trip; onPick: (variant: Trip['variant']) => void } = $props();
-
-    const lengths = $derived(ways.map(way => cumulative(routeCoordinates({ ...trip, variant: way.id })).at(-1)!));
+    import type { EngineRoute } from '../../lib/planner/routing';
+    let { routes, choiceId, status = '', onPick }: { routes: EngineRoute[]; status?: string; choiceId: string; onPick: (route: EngineRoute) => void } = $props();
+    function title(id: string) { return id.endsWith('/shorter') ? 'Shorter' : id.endsWith('/smoother') ? 'Smoother' : id.endsWith('/less-climbing') ? 'Less climbing' : 'Balanced'; }
+    function differences(route: EngineRoute) {
+        const a = routes[0].totals, b = route.totals;
+        const signed = (n: number, digits = 0) => `${n > 0 ? '+' : ''}${n.toFixed(digits)}`;
+        const unpaved = (r: EngineRoute) => r.totals.surface_m.slice(3).reduce((sum, n) => sum + n, 0);
+        return `${signed((b.distance_m - a.distance_m) / 1000, 1)} km · ${signed(b.ascent_m - a.ascent_m)} m climb · ${signed((b.seconds - a.seconds) / 60)} min · ${signed((unpaved(route) - unpaved(routes[0])) / 1000, 1)} km unpaved`;
+    }
 </script>
 
 <div class="ways" role="radiogroup" aria-label="Ways">
-    {#each ways as way, index (way.id)}
-        <button type="button" role="radio" aria-checked={trip.variant === way.id} onclick={() => onPick(way.id)}>
+    {#each routes as route (route.id)}
+        <button type="button" role="radio" aria-checked={choiceId === route.id} onclick={() => onPick(route)}>
             <span class="mark"></span>
-            <span class="what"><strong>{way.title}</strong><small>{way.description}</small></span>
-            <span class="figure">{lengths[index].toFixed(1)} km<small>↑ {profileAscent()} m</small></span>
+            <span class="what"><strong>{route.reason === 'corridor' ? 'Different corridor' : title(route.profile)}</strong><small>{(route.totals.surface_m[0] / 1000).toFixed(1)} km unknown surface · {Math.round(route.totals.seconds / 60)} min moving</small>{#if route.id !== routes[0].id}<small>{differences(route)}</small>{/if}</span>
+            <span class="figure">{(route.totals.distance_m / 1000).toFixed(1)} km<small>{route.totals.unknown_elevation_m ? 'Elevation incomplete' : `↑ ${route.totals.ascent_m} m`}</small></span>
         </button>
     {/each}
-    <p class="note">Example geometry · pinned places stay fixed</p>
+    <p class="note" role="status">{status || (routes.length < 2 ? 'No useful alternative found.' : 'Alternatives offer a distance, surface, climbing or corridor trade-off.')}</p>
 </div>
 
 <style>

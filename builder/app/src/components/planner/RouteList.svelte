@@ -1,7 +1,6 @@
 <script lang="ts">
     import { tick } from 'svelte';
     import Icon from './PlannerIcon.svelte';
-    import { profileAscent } from '../../lib/planner/profile-data';
     import type { RoutePoint } from '../../lib/planner/editor';
 
     let { stops, onInspect, onReorder }: {
@@ -10,7 +9,6 @@
         onReorder: (id: string, offset: number) => void;
     } = $props();
 
-    const total = $derived(stops.at(-1)?.distance || 1);
     const helpId = $props.id();
     let list: HTMLOListElement;
     let drag = $state<{ id: string; from: number; to: number; y: number; delta: number; centers: number[] } | null>(null);
@@ -63,7 +61,7 @@
                 <Icon name={point.kind === 'via' ? 'route' : point.kind === 'start' || point.kind === 'finish' ? 'pin' : 'flag'} size={17} />
                 <span>
                     <strong>{point.kind === 'via' ? 'Shaping point' : point.label}</strong>
-                    <small>{distance.toFixed(1)} km · ↑ {profileAscent(0, distance / total)} m</small>
+                    <small>{distance.toFixed(1)} km</small>
                 </span>
             </button>
             {#if index > 0 && index < stops.length - 1}
@@ -83,7 +81,7 @@
         </li>
     {/each}
 </ol>
-<p class="note">Cumulative from the start · climb is illustrative</p>
+<p class="note">Cumulative from the start</p>
 <span class="sr-only" id={helpId}>Drag to reorder. Use the up and down arrow keys when focused.</span>
 <span class="sr-only" role="status">{announcement}</span>
 

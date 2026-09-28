@@ -22,6 +22,8 @@ members = [
     "firmware/obc-crc",
     "firmware/obc-link",
     # host/ — tools, shared host glue, and the test oracles. Never on the device.
+    "host/route-engine",
+    "host/route-build",
     "host/obc-host-core",
     "host/obc-file-source",
     "host/obc-inspect",
@@ -40,6 +42,7 @@ members = [
     "host/obc-usb-host",
     "host/obc-usb",
     # apps/ — the shells. obc-desktop is here too, but carries its own [workspace].
+    "apps/route-server",
     "apps/obc-ios-host",
     "apps/obc-companion-core",
     "apps/obc-sim",

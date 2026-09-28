@@ -63,7 +63,10 @@
       "obc-web-convert",
       "obc-web-demo",
       "obcm-assemble",
-      "obcm-testkit"
+      "obcm-testkit",
+      "route-build",
+      "route-engine",
+      "route-server"
     ],
     "standalone": [
       "obc-boot",

@@ -33,12 +33,12 @@
         <div class="preference"><span>Bike</span>
             <Select label="Bike" value={bike} options={Object.entries(ridingProfiles).map(([value, profile]) => ({ value, label: profile.label }))} onChange={(value) => {
                 const next = value as BikeType;
-                onChange({ bike: next, preset: ridingProfiles[next].presets[0] }, 'Bike preference saved · routing is mocked');
+                onChange({ bike: next, preset: ridingProfiles[next].presets[0] }, 'Bike profile changed');
             }} />
         </div>
         <div class="preference"><span>Preset</span>
             <Select label="Preset" value={trip.preset ?? 'Balanced'} options={ridingProfiles[bike].presets.map(value => ({ value, label: value }))}
-                onChange={(preset) => onChange({ preset }, 'Preset saved · routing is mocked')} />
+                onChange={(preset) => onChange({ preset }, 'Route preference changed')} />
         </div>
     </div>
     <div class="actions">
