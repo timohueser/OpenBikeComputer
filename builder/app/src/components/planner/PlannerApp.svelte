@@ -20,7 +20,7 @@
     import {
         addClickedPoint, addPointNear, addRestDay, applyBudget, coordinateAt, cumulative, initialTrip,
         insertPoint, itineraryDays, kilometres, nearestProgress, nightOrderConflicts, offRoute, overnightCandidates,
-        overnightWindow, pinNight, places, removeRestDay, reorderPoint, routeCoordinates, routeSlice, routeStops,
+        overnightWindow, pinNight, removeRestDay, reorderPoint, routeCoordinates, routeSlice, routeStops,
         setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, routingKey,
         type Coordinate, type Day, type LegMode, type Place, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
@@ -30,7 +30,10 @@
     import { BASEMAP_URL } from '../../lib/planner/map-data';
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileAscent } from '../../lib/planner/profile-data';
-    import type { PlannerQueryValue } from '../../lib/planner/query';
+    import { searchPlaces, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
+    import { asPlace } from '../../lib/planner/search/presentation';
+    import { buildQueryRoute } from '../../lib/planner/search/route-client';
+    import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
     import type { Version } from '../../lib/planner/versions';
 
@@ -129,8 +132,18 @@
     let contours = $state(true);
     let showRoute = $state(true);
     let query = $state('');
-    let searchValue = $state<PlannerQueryValue>({ text: '', category: 'all', day: null, within: null });
-    let message = $state('OpenStreetMap routing');
+    let searchState = $state<SearchState>({ loading: false, error: '', answer: null });
+    let searchBox: Query | undefined;
+    let searchViewRevision = $state(0);
+    let viewBounds = $state<[number, number, number, number]>([7.77,47.965,7.96,48.06]);
+    let here = $state<Coordinate | undefined>();
+    let pointing = $state<Where | undefined>();
+    let applyingQuery = $state(false);
+    let queryApplyError = $state('');
+    let searchRegion = $state('baden-wuerttemberg');
+    let overnightPlaces = $state<Place[]>([]);
+    let overnightNote = $state('');
+    let message = $state('Example route · local place search');
     // The status line offers Undo after a version restore, until the next change.
     let undoable = $state(false);
     let draftSavedAt = $state<number | null>(null);
@@ -159,6 +172,9 @@
     const itinerary = $derived(itineraryDays(trip));
     const focusedDay = $derived(multi && list === 'plan' && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
+    const searchContext = $derived<SearchContext>({ view: viewBounds, here, pointing, startDate: trip.startDate,
+        plan: { coordinates, hours: trip.routing?.key === routingInput && trip.routing.unroutedKm === 0 ? trip.routing.elapsed.map(seconds => seconds / 3600) : undefined, days: itinerary.map(d => ({ number: d.number, from: d.from * total, to: d.to * total, rest: d.rest })),
+            points: trip.points.map(p => ({ id: p.id, label: p.label, coordinate: p.coordinate, kind: p.kind, placeKind: p.placeKind })) } });
     const conflicts = $derived(multi ? nightOrderConflicts(trip) : []);
     const activeDay = $derived(days[Math.min(night - 1, days.length - 1)]);
     const area = $derived(night < days.length ? overnightWindow(trip, night) : null);
@@ -166,7 +182,7 @@
         multi && expandedDay !== null && !searching && list === 'plan' && night < days.length && (!activeDay?.pinned || changingOvernight),
     );
     const highlighted = $derived(overnightContext && area && !area.blocked ? routeSlice(coordinates, area.from, area.to) : []);
-    const candidates = $derived(multi ? overnightCandidates(trip, night) : []);
+    const candidates = $derived(multi ? overnightCandidates(trip, night, overnightPlaces) : []);
     // One stretch per leg and day, so the map can tell legs apart and colour days.
     const segments = $derived.by(() => {
         const length = stops.at(-1)!.distance || 1;
@@ -177,29 +193,11 @@
             return [{ coordinates: routeSlice(coordinates, from, to), color: dayColor(day.number, theme), legEndId: stop.point.id, leg: stop.point.leg ?? 'routed' }];
         }));
     });
-    const searchDay = $derived(searchValue.day === null ? null : itinerary.find(d => d.number === searchValue.day && !d.rest) ?? null);
-    // A category search also lists the basemap places along the route; "all places" stays with the examples.
-    const searchable = $derived(searching && searchValue.category !== 'all'
-        ? [...places, ...corridor.filter(place => place.category === searchValue.category && offRoute(coordinates, place.coordinate) <= 5)]
-        : places);
-    const searchLoading = $derived(searching && searchValue.category !== 'all' && corridorLoad === 'loading');
-    const results = $derived.by(() => {
-        const dayEnd = searchDay ? coordinateAt(coordinates, searchDay.to) : null;
-        return searchable
-            .filter(place => searchValue.category === 'all' || place.category === searchValue.category)
-            .map(place => {
-                const at = nearestProgress(coordinates, place.coordinate);
-                return { place, at, where: whereAlong(at), off: offRoute(coordinates, place.coordinate) };
-            })
-            .filter(result => searchValue.within === null || (dayEnd ? kilometres(result.place.coordinate, dayEnd) : result.off) <= searchValue.within)
-            .sort((a, b) => searchDay ? Math.abs(a.at - searchDay.to) - Math.abs(b.at - searchDay.to) : a.at - b.at);
-    });
+    const results = $derived((searchState.answer?.results ?? []).map(result => ({ place: asPlace(result) })));
     const visiblePlaces = $derived(searching ? results.map(result => result.place) : overnightContext ? candidates.map(candidate => candidate.place) : []);
-    // The search category highlights its places too while the search is open.
-    const highlights = $derived(searching && searchValue.category !== 'all' && !highlightedCategories.includes(searchValue.category)
-        ? [...highlightedCategories, searchValue.category] : highlightedCategories);
+    const highlights = $derived(highlightedCategories);
     const highlightLimit = 300;
-    // Fixture places of a highlighted category always show; basemap places within 5 km of the route, nearest first.
+    // Basemap places within 5 km of the route, nearest first.
     const highlightCandidates = $derived.by(() => {
         if (!highlights.length) return [];
         const pinned = new Set(visiblePlaces.map(place => place.id));
@@ -209,7 +207,7 @@
             .filter(({ off }) => off <= 5)
             .sort((a, b) => a.off - b.off)
             .map(({ place }) => place);
-        return [...places.filter(place => highlights.includes(place.category)), ...nearby].filter(place => !pinned.has(place.id));
+        return nearby.filter(place => !pinned.has(place.id));
     });
     const highlightedPlaces = $derived(highlightCandidates.slice(0, highlightLimit));
     const placeNote = $derived(
@@ -223,7 +221,7 @@
     const nearbyLandmark = $derived(landmarks
         .filter(landmark => offRoute(coordinates, landmark.coordinate) <= 15 && !trip.points.some(p => kilometres(p.coordinate, landmark.coordinate) < .3))
         .sort((a, b) => nearestProgress(coordinates, a.coordinate) - nearestProgress(coordinates, b.coordinate))[0]);
-    const selectedPlace = $derived(places.find(p => p.id === selectedId) ?? corridor.find(p => p.id === selectedId) ?? (mapPlace?.id === selectedId ? mapPlace : undefined));
+    const selectedPlace = $derived(visiblePlaces.find(p => p.id === selectedId) ?? corridor.find(p => p.id === selectedId) ?? (mapPlace?.id === selectedId ? mapPlace : undefined));
     const selectedPoint = $derived(trip.points.find(p => p.id === selectedId));
     const previewCoordinate = $derived(selectedId === 'pending' ? pending : selectedPlace?.coordinate ?? null);
     const mapPoints = $derived.by(() => {
@@ -234,7 +232,7 @@
             markerLabel: multi && p.kind === 'night' ? String(dayLabels[p.night!]) : undefined,
             fixed: p.kind === 'night' || (['waypoint', 'detour'].includes(p.kind) && p.label !== defaultLabels.waypoint),
         }));
-        const shown = selectedPlace && places.includes(selectedPlace) && !visiblePlaces.includes(selectedPlace) ? [...visiblePlaces, selectedPlace] : visiblePlaces;
+        const shown = selectedPlace && !visiblePlaces.includes(selectedPlace) ? [...visiblePlaces, selectedPlace] : visiblePlaces;
         for (const p of shown) {
             if (p.id === selectedId || !pins.some(pin => pin.coordinate[0] === p.coordinate[0] && pin.coordinate[1] === p.coordinate[1])) pins.push({ ...p });
         }
@@ -274,14 +272,6 @@
         return to > from ? { from, to } : { from: 0, to: 1 };
     });
 
-    /** Where a route position sits in the trip, in the rider's words. */
-    function whereAlong(at: number): string {
-        if (!multi) return `${(at * total).toFixed(1)} km from the start`;
-        const day = days.find(d => at <= d.to) ?? days.at(-1)!;
-        if (searchDay && day.number === searchDay.ridingNumber) return `${((day.to - at) * total).toFixed(1)} km before day ${dayLabels[day.number]} ends`;
-        return `${((at - day.from) * total).toFixed(1)} km into day ${dayLabels[day.number]}`;
-    }
-
     $effect(() => {
         if (!highlights.length) return;
         const route = coordinates;
@@ -292,6 +282,20 @@
             () => { if (current) corridorLoad = 'failed'; },
         );
         return () => { current = false; };
+    });
+
+    $effect(() => {
+        const context = $state.snapshot(searchContext), region = searchRegion, day = dayLabels[night];
+        overnightPlaces = [];
+        if (!overnightContext || !day) { overnightNote = ''; return; }
+        const abort = new AbortController();
+        overnightNote = 'Loading nearby overnight places…';
+        searchPlaces('sleep', context, region, 6, abort.signal, { type: 'places', what: ['sleep'], where: { day, part: 'end' }, radius: { value: 5, unit: 'km' } }).then(answer => {
+            if (abort.signal.aborted) return;
+            overnightPlaces = (answer.results ?? []).map(asPlace);
+            overnightNote = answer.type === 'unresolved' ? answer.note ?? '' : overnightPlaces.length ? '' : 'No mapped overnight places within 5 km. Search a wider area or pick on the map.';
+        }).catch(() => { if (!abort.signal.aborted) overnightNote = 'Local overnight search is unavailable. Start the search server or pick on the map.'; });
+        return () => abort.abort();
     });
 
     onMount(() => {
@@ -434,15 +438,20 @@
 
     /** Opens a place clicked on the map; while picking, the place is offered for the night. */
     function choosePlace(place: Place) {
+        pointing = { anchor: place.coordinate };
         const forNight = picking;
         clearSelection();
-        if (!places.includes(place)) mapPlace = place;
+        mapPlace = place;
         selectedId = place.id;
         pickedForNight = forNight;
     }
 
     function selectPoint(id: string) {
         if (id === 'pending') return;
+        const place = visiblePlaces.find(p => p.id === id) ?? corridor.find(p => p.id === id) ?? (mapPlace?.id === id ? mapPlace : undefined);
+        if (place) { choosePlace(place); return; }
+        const pin = mapPoints.find(p => p.id === id);
+        if (pin) pointing = pin.kind === 'dayend' ? { day: dayLabels[pin.night!], part: 'end' } : { anchor: pin.coordinate };
         const forNight = picking;
         clearSelection();
         selectedId = id;
@@ -492,6 +501,8 @@
     }
 
     function legClick(legEndId: string, coordinate: Coordinate) {
+        const i = stops.findIndex(s => s.point.id === legEndId);
+        if (i > 0) pointing = { along: { ref:'km', from:{value:stops[i-1].distance,unit:'km'}, to:{value:stops[i].distance,unit:'km'} } };
         clearSelection();
         spot = { coordinate, legEndId };
         selectedId = 'leg';
@@ -529,6 +540,7 @@
         const current = $state.snapshot(trip);
         const next = pinNight(current, sleepDay, coordinate, label, pendingSource ?? undefined);
         if (next === current) return;
+        next.points.find(p => p.night === sleepDay)!.placeKind = selectedPlace?.placeKind ?? source?.placeKind;
         commit(next, 'Overnight pinned');
         clearSelection();
         reveal(`night-${sleepDay}`, sleepDay);
@@ -632,13 +644,41 @@
         if (expandedDay !== null) expandedDay = night;
     }
 
-    function search(value: PlannerQueryValue) {
-        searchValue = value;
-        searching = true;
-        clearSelection();
-        if (searchDay) night = searchDay.ridingNumber;
-        const region = [...results.map(result => result.place.coordinate), ...(searchDay ? routeSlice(coordinates, searchDay.from, searchDay.to) : [])];
-        if (region.length) map?.fitCoordinates(region);
+    function locate() {
+        if (!navigator.geolocation) { message = 'This browser cannot read your location.'; return; }
+        navigator.geolocation.getCurrentPosition(position => {
+            here = [position.coords.longitude, position.coords.latitude];
+            message = 'Location set for search';
+        }, () => { message = 'Location unavailable. Allow location access or use a named place.'; }, { timeout: 10000 });
+    }
+
+    async function loadSearchSample() {
+        try {
+            const response = await fetch('/api/planner-search/sample');
+            if (!response.ok) throw new Error('Start the local search server first.');
+            const { coordinates: line } = await response.json() as { coordinates: Coordinate[] };
+            if (line.length < 2) throw new Error('The sample route could not load.');
+            commit({ ...initialTrip(), mode: 'trip', routeOrder: [], points: [
+                { id: 'start', label: 'Black Forest start', kind: 'start', coordinate: line[0], progress: 0 },
+                { id: 'finish', label: 'Black Forest finish', kind: 'finish', coordinate: line.at(-1)!, progress: 1, leg: 'drawn', drawn: line.slice(1,-1) },
+            ] }, 'Black Forest test route loaded · three provisional days');
+            exitSearch(); clearSelection(); pointing = undefined; map?.fitCoordinates(line);
+        } catch (error) { message = (error as Error).message; }
+    }
+
+    async function applySearch() {
+        const answer = $state.snapshot(searchState.answer);
+        if (!answer?.changes || applyingQuery) return;
+        const before = $state.snapshot(trip);
+        applyingQuery = true; queryApplyError = '';
+        try {
+            let routingNote = '';
+            const next = await applyQueryChanges(before, answer.changes, (points,bike,goal) => buildQueryRoute(points,bike,goal,note => routingNote = note), next => calculateLine(next, new AbortController().signal));
+            if (JSON.stringify(answer.changes) !== JSON.stringify(searchState.answer?.changes) || JSON.stringify(before) !== JSON.stringify($state.snapshot(trip))) throw new Error('The plan changed. Review the search again.');
+            commit(next, [answer.description ?? 'Query applied', routingNote].filter(Boolean).join(' · '));
+            exitSearch(); clearSelection();
+        } catch (error) { queryApplyError = (error as Error).message; }
+        finally { applyingQuery = false; }
     }
 
     function nameRest(index: number, name: string) {
@@ -690,11 +730,11 @@
     />
     <main>
         <aside class="planner-pane" aria-label="Trip planning">
-            <Query bind:text={query} days={multi ? itinerary.filter(d => !d.rest).map(d => d.number) : []} onSearch={search} onClear={clearSearch} />
+            {#if overnightContext && overnightNote}<p class="search-note" role="status">{overnightNote}</p>{/if}
+            <Query bind:this={searchBox} bind:text={query} bind:region={searchRegion} bind:searchState={searchState} context={searchContext} viewRevision={searchViewRevision} onResults={coordinates => { clearSelection(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} />
             {#if searching}
                 <div class="pane-scroll">
-                    <QueryResults {results} {selectedId} loading={searchLoading} searchedDay={searchDay?.number ?? null} onSelect={selectPlace}
-                        days={multi ? itinerary.filter(d => !d.rest).map(d => ({ number: d.number, color: dayColor(d.ridingNumber, theme) })) : []} />
+                    <QueryResults state={searchState} {selectedId} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
                 </div>
             {:else}
                 {#if !focusedDay}
@@ -746,7 +786,7 @@
                     {theme} {hillshade} {contours} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces} {landmarks}
-                    onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={previewPoint} onDayEndDrag={moveDayEnd}
+                    onBounds={(bounds, fromSearch) => { viewBounds = bounds; if (!fromSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={previewPoint} onDayEndDrag={moveDayEnd}
                     onLegClick={legClick} onInsert={insert} onDrawn={drawn} onPlaceClick={choosePlace}
                     onVisibleRange={(range) => visibleRange = range}
                 >
@@ -810,6 +850,7 @@
 </div>
 
 <style>
+    .search-note { margin: 8px 16px 0; color: var(--ink-soft); font-size: 13px; line-height: 1.4; }
     :global(*) {
         box-sizing: border-box;
         scrollbar-width: thin;
@@ -854,6 +895,9 @@
     }
     /* Links are rust in light and tan in dark, so amber stays the one action colour in both. */
     .planner-shell {
+        --query-place: #3b654c;
+        --query-area: #365f84;
+        --query-time: #965125;
         --planner-shadow: 0 6px 18px rgba(28, 27, 20, .12);
         --link: var(--forest);
         display: flex;
@@ -863,6 +907,9 @@
         min-height: 580px;
     }
     :global([data-theme="dark"]) .planner-shell {
+        --query-place: #aed0b5;
+        --query-area: #a9cce9;
+        --query-time: #edb58b;
         --planner-shadow: 0 6px 18px rgba(0, 0, 0, .4);
         --link: var(--wood);
     }

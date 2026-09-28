@@ -1,0 +1,543 @@
+# Kind id (schema.KINDS) -> iD tagging schema presets, dropped iD terms and hand-written terms.
+# `lexicon.py build` turns this and lexicon/src/ into kinds.json. A preset gives its name and its
+# terms; `names_only` keeps only the name (for presets with long, loose term lists). A term that
+# two kinds claim goes to the kind that writes it by hand, else the kind whose preset name it is,
+# else nowhere. Drops are compared after folding and apply to every language.
+
+water:
+  presets: []
+  add:
+    en: [water, water source, water sources, water point, water points, water refill, water refills, refill water, refill, refills, refill bottles, fill bottles, fill up water, fill up, get water, top up water, top up, well, wells, water stop, water stops, refill point, refill points, refill station, refill stations, fill my bottles, fill up my bottles, refill my bottles, fill my bidons, get some water]
+    de: [Wasser, Wasserstelle, Wasserstellen, Wasserquelle, Wasserquellen, Wasser auffüllen, Wasser nachfüllen, Wasser tanken, Wasser holen, Flaschen auffüllen, Flaschen füllen, auffüllen, nachfüllen, Wasserpunkt, Nachfüllstelle, Nachfüllstellen, Auffüllstelle, Auffüllstellen, Wasserstopp, Wasserstopps, meine Flaschen auffüllen, Flaschen nachfüllen, Trinkflaschen auffüllen]
+    fr: [eau, point d'eau, points d'eau, source d'eau, sources d'eau, remplir les gourdes, remplir mes gourdes, remplir les bidons, faire le plein d'eau, ravitaillement en eau, recharger en eau, puits, point de remplissage, points de remplissage, remplir ma gourde, remplir mes bidons, remplir mon bidon, arrêt eau, trouver de l'eau, point de ravitaillement en eau, points de ravitaillement en eau]
+    it: [acqua, punto acqua, punti acqua, punto d'acqua, punti d'acqua, fonte d'acqua, riempire le borracce, riempire la borraccia, rifornimento d'acqua, fare acqua, pozzo, pozzi, punto di rifornimento acqua, punti di rifornimento acqua, riempire le borracce, riempire la mia borraccia, rifornimento idrico, trovare acqua, punto di rifornimento d'acqua, punti di rifornimento d'acqua]
+
+drinking_water:
+  presets: [amenity/drinking_water, amenity/water_point, amenity/vending_machine/water]
+  drop: [brunnen, robinet, boire, eau, fontaine, fontana, aqua, wasser, frischwasser, wasserflaschen, wasserhahn, water tap, water faucet, water spigot, water point, water source, water refill, bubbler, citerne, camping-car, caravane, autocaravane, vehicule recreatif, mobile-home, motor-home, vehicule de loisirs, amenity water point, water_point, remplissage, colonnina, acqua, camper, caravan, trinkwasserreserve, frischwasserreserve, camping-trinkwasser, rv drinking water, eau potable pour citerne de vehicule de loisirs, acqua potabile per camper, drinking water vending machine, distributeur d'eau, fontaine d'eau]
+  add:
+    en: [drinking water, potable water, drinkable water, drinking fountain, drinking fountains, water fountain, water fountains, drinking water fountain, drinking water fountains]
+    de: [Trinkwasser, Trinkwasserstelle, Trinkwasserstellen, Trinkbrunnen, Trinkwasserbrunnen, Trinkwasserspender, Wasserspender, Trinkbrunnen, Trinkwasserbrunnen]
+    fr: [eau potable, fontaine à eau, fontaines à eau, fontaine d'eau potable, point d'eau potable, fontaines à eau potable]
+    it: [acqua potabile, nasone, nasoni, fontanelle d'acqua potabile]
+
+fountain:
+  presets: [amenity/fountain]
+  drop: [basin, bubbler, water, wasserspiel, designerbrunnen, fontaine d'ornement, fontaine decorative, fontaine sculpturale, fontaine recreative, grande fontaine, jet d'eau, jets d'eau, fontaine d'eau, fontaine d'eau non potable, eau non potable, non potable, fountain, fontana decorativa]
+  add:
+    en: [fountain, fountains, village fountain, village fountains]
+    de: [Brunnen, Dorfbrunnen, Laufbrunnen, Springbrunnen]
+    fr: [fontaine, fontaines, lavoir, lavoirs]
+    it: [fontana, fontane, fontanella, fontanelle]
+
+spring:
+  presets: [natural/spring]
+  drop: [aquifer, hydro, seep, water source, grundwasseraustritt]
+  add:
+    en: [spring, springs, natural spring, water spring]
+    de: [Quelle, Quellen]
+    fr: [source, sources]
+    it: [sorgente, sorgenti, fonte, fonti]
+
+water_tap:
+  presets: [man_made/water_tap]
+  drop: [trinkwasser, wasserstelle, wasserquelle, point d'eau, source d'eau, eau, acqua potabile, drinking water, water point, water source]
+  add:
+    en: [water tap, water taps, tap, taps, faucet, faucets, spigot, standpipe]
+    de: [Wasserhahn, Wasserhähne, Zapfstelle, Zapfstellen]
+    fr: [robinet, robinets, robinet d'eau]
+    it: [rubinetto, rubinetti, rubinetto dell'acqua]
+
+sleep:
+  presets: []
+  add:
+    en: [sleep, sleeping, place to sleep, places to sleep, somewhere to sleep, spot to sleep, spots to sleep, sleeping spot, sleeping spots, overnight stay, overnight stays, stay the night, spend the night, bed for the night, crash]
+    de: [schlafen, übernachten, Übernachtung, Übernachtungen, Schlafplatz, Schlafplätze, Übernachtungsmöglichkeit, Übernachtungsmöglichkeiten, Übernachtungsplatz, Übernachtungsplätze, pennen, nächtigen, Nachtlager]
+    fr: [dormir, où dormir, passer la nuit, coucher, se coucher, nuitée, endroit pour dormir, hébergement pour la nuit, logement pour la nuit]
+    it: [dormire, pernottare, pernottamento, pernottamenti, posto per dormire, posti per dormire, passare la notte, sistemazione per la notte, sistemazioni per la notte, posto per la notte]
+
+campsite:
+  presets: [tourism/camp_site, tourism/camp_pitch]
+  drop: [campers, caravans, mobile homes, recreational vehicles, rv, tent, camping lager, zelt, wohnwagen, tente, caravane, camping-car, parcelle, lotto, zeltplatz/wohnwagenplatz, parcelle dans un camping]
+  add:
+    en: [campsite, campsites, camp site, camp sites, campground, campgrounds, camping, camp, camps, camping spot, camping spots, tent spot, tent spots, pitch, pitches, wild camping, wild camp, pitch a tent, pitch my tent, put up my tent, put up a tent, tenting, place to camp, places to camp, somewhere to camp, spot to camp, camp spot]
+    de: [Campingplatz, Campingplätze, Zeltplatz, Zeltplätze, Camping, zelten, Zelten, campen, Zeltwiese, Zeltwiesen, Wildcampen, wild zelten, wild campen, Zelt aufschlagen, Zelt aufstellen, Zeltstelle, Platz zum Zelten, Plätze zum Zelten, Zeltmöglichkeit, Zeltmöglichkeiten, Campingmöglichkeit, Campingmöglichkeiten]
+    fr: [camping, campings, terrain de camping, terrains de camping, aire de camping, camper, planter la tente, planter ma tente, emplacement de tente, bivouaquer, camping sauvage, endroit pour camper, endroits pour camper, où camper, coin pour camper]
+    it: [campeggio, campeggi, camping, campeggiare, piantare la tenda, piazzola, piazzole, area camping, campeggio libero, tenda, posto per campeggiare, posti per campeggiare, dove campeggiare, posto per la tenda]
+
+shelter:
+  presets: [amenity/shelter, tourism/wilderness_hut]
+  drop: [gazebo, picnic, pensilina, grotta, casetta, struttura incustodita, rifugio, unterkunft, alpine hut, cabin, lodge, lodging, overnight accommodations, refuge, cabane, bivouac box, ricovero]
+  add:
+    en: [shelter, shelters, bivouac, bivouacs, bivvy, bivy, bothy, bothies, lean-to, emergency shelter, wilderness hut, wilderness huts, sleeping shelter]
+    de: [Unterstand, Unterstände, Schutzhütte, Schutzhütten, Wetterschutz, Biwak, Biwaks, Biwakschachtel, Schutzdach, Wetterpilz, Selbstversorgerhütte]
+    fr: [abri, abris, refuge non gardé, refuges non gardés, cabane, cabanes, bivouac, abri de bivouac]
+    it: [riparo, ripari, bivacco, bivacchi, tettoia, tettoie, baito]
+
+lodging:
+  presets: [tourism/apartment, tourism/chalet]
+  drop: [condo, condominium, vacances, vacanze, casetta, appartamenti, affittacamere, bed & breakfast, b & b, b and b, b&b, bed and breakfast, bnb, lodge, overnight accommodations, holiday rental, vacation rental, appartement d'invite]
+  add:
+    en: [accommodation, accommodations, lodging, lodgings, room, rooms, a room, bed, beds, a bed, place to stay, places to stay, somewhere to stay, where to stay, holiday apartment, holiday home, cabin, cabins, chalet, airbnb, rental]
+    de: [Unterkunft, Unterkünfte, Zimmer, Bett, Betten, Ferienwohnung, Ferienwohnungen, Ferienhaus, Quartier, Quartiere, Bleibe, Übernachtungsmöglichkeit mit Bett]
+    fr: [hébergement, hébergements, logement, logements, chambre, chambres, gîte, gîtes, location, lit, un lit]
+    it: [alloggio, alloggi, camera, camere, sistemazione, sistemazioni, appartamento, casa vacanze, chalet, letto, un letto, posto letto, posti letto]
+
+hotel:
+  presets: [tourism/hotel]
+  drop: [concierge, lodge, lodging, overnight accommodations, suite]
+  add:
+    en: [hotel, hotels, inn, inns]
+    de: [Hotel, Hotels, Hotel garni]
+    fr: [hôtel, hôtels, auberge, auberges]
+    it: [albergo, alberghi, hotel]
+
+hostel:
+  presets: [tourism/hostel]
+  drop: [bunk beds, dormitories, dorms, lodging, overnight accommodations]
+  add:
+    en: [hostel, hostels, youth hostel, youth hostels, backpackers]
+    de: [Hostel, Hostels, Jugendherberge, Jugendherbergen, Herberge, Herbergen]
+    fr: [auberge de jeunesse, auberges de jeunesse, hostel, gîte d'étape, gîtes d'étape]
+    it: [ostello, ostelli, ostello della gioventù]
+
+guest_house:
+  presets: [tourism/guest_house]
+  drop: [bed, breakfast, colazione, notte, nottata, sistemazione, alloggio, camera, dormire, herberge, gite, airbnb, lodging, overnight accommodations]
+  add:
+    en: [guest house, guest houses, guesthouse, guesthouses, B&B, B&Bs, bed and breakfast, bnb, pension]
+    de: [Pension, Pensionen, Gästehaus, Gästehäuser, Gästezimmer, Privatzimmer, Frühstückspension]
+    fr: [chambre d'hôtes, chambres d'hôtes, maison d'hôtes]
+    it: [affittacamere, B&B, pensione, pensioni, agriturismo, agriturismi, locanda]
+
+motel:
+  presets: [tourism/motel]
+  drop: [lodging, overnight accommodations]
+  add:
+    en: [motel, motels]
+    de: [Motel, Motels]
+    fr: [motel, motels]
+    it: [motel]
+
+hut:
+  presets: [tourism/alpine_hut]
+  drop: [unterkunft, wildnis-hutte, schutzhutte, abri, cabane, cabin, lodge, lodging, overnight accommodations, wilderness hut, climbing hut, refuge hut]
+  add:
+    en: [hut, huts, mountain hut, mountain huts, alpine hut, alpine huts, refuge, refuges, mountain refuge]
+    de: [Hütte, Hütten, Berghütte, Berghütten, Alpenhütte, Almhütte, Almhütten, Alm, Alpenvereinshütte, Berggasthaus]
+    fr: [refuge, refuges, refuge de montagne, refuges de montagne, refuge gardé]
+    it: [rifugio, rifugi, rifugio alpino, rifugi alpini, baita, baite, malga, malghe]
+
+resupply:
+  presets: [shop/greengrocer, shop/farm, shop/deli]
+  names_only: true
+  drop: [produce stand, delicatessen, feinkostladen, epicerie fine, negozio di specialita gastronomiche]
+  add:
+    en: [shop, shops, store, stores, groceries, grocery, food shop, food shops, food store, food stores, resupply, resupplies, resupply point, buy food, get food, food supplies, supplies, provisions, shopping, buy groceries, stock up, farm shop, farm shops, resupply points, supply point, supply points]
+    de: [Laden, Läden, Geschäft, Geschäfte, einkaufen, Einkauf, Einkaufen, Einkaufsmöglichkeit, Einkaufsmöglichkeiten, Lebensmittel, Lebensmittelgeschäft, Lebensmittelgeschäfte, Lebensmittelladen, Proviant, Verpflegung, Essen kaufen, Hofladen, Hofläden, Nachschub, Versorgung, Versorgungspunkt, Versorgungspunkte, Versorgungsmöglichkeit, Versorgungsmöglichkeiten, Verpflegungsstelle, Verpflegungsstellen]
+    fr: [magasin, magasins, courses, faire les courses, faire des courses, faire mes courses, commerce, commerces, ravitaillement, ravitaillements, ravito, alimentation, acheter à manger, provisions, magasin d'alimentation, point de ravitaillement, points de ravitaillement, épicerie, épiceries, petite épicerie, épicerie du village, acheter de la nourriture, faire des provisions]
+    it: [negozio, negozi, spesa, fare la spesa, rifornimento, rifornimenti, provviste, comprare da mangiare, negozio di alimentari, punto di rifornimento, punti di rifornimento, alimentari, comprare cibo, comprare del cibo, fare provviste]
+
+supermarket:
+  presets: [shop/supermarket]
+  drop: [food market, grocery, grocery store, market, shop, store, lebensmittel]
+  add:
+    en: [supermarket, supermarkets, grocery store, grocery stores, hypermarket, groceries store]
+    de: [Supermarkt, Supermärkte, Discounter, Supermärkten, Lebensmittelmärkte]
+    fr: [supermarché, supermarchés, hypermarché, hypermarchés, grande surface, grandes surfaces]
+    it: [supermercato, supermercati, ipermercato]
+
+convenience:
+  presets: [shop/convenience, shop/general, shop/kiosk]
+  drop: [tankstellenverkauf, zeitungsstand, zeitungskiosk, tabacchi, dolciumi, snack, edicola, beverages, cigarettes, mall kiosk, newsagent, newspaper, newsstand, snacks, sweets, drogheria, negozietto, emporio]
+  add:
+    en: [convenience store, convenience stores, corner shop, corner shops, corner store, mini market, minimarket, village shop, village shops, general store, kiosk, kiosks, deli, delis]
+    de: [Minimarkt, Späti, Spätis, Spätkauf, Dorfladen, Dorfläden, Tante-Emma-Laden, Kiosk, Kioske, Greißler, Gemischtwarenladen]
+    fr: [supérette, supérettes, magasin général, kiosque, kiosques, alimentation générale, supérette de quartier]
+    it: [minimarket, negozio di paese, bottega, botteghe, chiosco, chioschi, emporio]
+
+bakery:
+  presets: [shop/bakery, shop/pastry]
+  drop: [cakes, rolls, cakery, chimney cake shop, cookies, gaufre, sussspeisengeschaft, konfiserie, torteria, torte, paste, pasticcini]
+  add:
+    en: [bakery, bakeries, baker, bakers, "baker's", bread, pastry shop, pastry shops, patisserie, bread shop, bread shops, buy bread, get bread]
+    de: [Bäckerei, Bäckereien, Bäcker, Konditorei, Konditoreien, Brot, Backstube, Brötchen, Brötchen holen, Brötchen kaufen, Brot kaufen, Bäckereien]
+    fr: [boulangerie, boulangeries, boulanger, pâtisserie, pâtisseries, pain, du pain, acheter du pain, chercher du pain, boulangeries-pâtisseries]
+    it: [panetteria, panetterie, panificio, panifici, forno, fornaio, pasticceria, pasticcerie, pane, comprare il pane, prendere il pane]
+
+butcher:
+  presets: [shop/butcher]
+  drop: [beef, chicken, lamb, meat, pork]
+  add:
+    en: [butcher, butchers, "butcher's", butcher shop]
+    de: [Metzgerei, Metzgereien, Metzger, Fleischerei, Fleischer, Schlachter]
+    fr: [boucherie, boucheries, boucher, charcuterie]
+    it: [macelleria, macellerie, macellaio, salumeria, salumiere]
+
+marketplace:
+  presets: [amenity/marketplace]
+  drop: [marktverkauf, marktgelande]
+  add:
+    en: [market, markets, marketplace, farmers market, "farmers' market", weekly market, market hall]
+    de: [Markt, Märkte, Wochenmarkt, Wochenmärkte, Marktplatz, Bauernmarkt, Markthalle]
+    fr: [marché, marchés, marché couvert, place du marché]
+    it: [mercato, mercati, mercatino, mercatini]
+
+fuel:
+  presets: [amenity/fuel]
+  drop: [biodiesel, cng, diesel, fuel, gasoline, lng, petrol, propane, carburant, essence, gpl, gas, benzina, gasolio, nafta, carburante]
+  add:
+    en: [gas station, gas stations, petrol station, petrol stations, fuel station, fuel stations, service station, service stations, filling station]
+    de: [Tankstelle, Tankstellen, Tanke]
+    fr: [station-service, stations-service, station essence, stations essence, station-essence]
+    it: [distributore, distributori, benzinaio, benzinai, distributore di benzina, stazione di servizio, area di servizio, autogrill]
+
+food:
+  presets: [amenity/food_court]
+  names_only: true
+  add:
+    en: [food, eat, eating, something to eat, a bite, bite to eat, a bite to eat, meal, meals, lunch, dinner, breakfast, supper, grub, food stop, place to eat, places to eat, somewhere to eat, eat out, eating out, go out to eat, grab a bite]
+    de: [Essen, essen, etwas essen, was essen, was zu essen, etwas zu essen, Mahlzeit, Mittagessen, Abendessen, Frühstück, einkehren, Einkehr, Einkehrmöglichkeit, Einkehrmöglichkeiten, Brotzeit, Gastronomie, Futter, essen gehen, was essen gehen, Essensmöglichkeit, Essensmöglichkeiten, etwas zu essen holen, Mittag]
+    fr: [manger, à manger, quelque chose à manger, repas, déjeuner, dîner, petit-déjeuner, casse-croûte, se restaurer, restauration, endroit pour manger, endroits pour manger, où manger, aller manger, manger un morceau, manger au restaurant, sortir manger]
+    it: [mangiare, da mangiare, qualcosa da mangiare, cibo, pasto, pasti, pranzo, cena, colazione, spuntino, ristoro, punto ristoro, punti ristoro, posto per mangiare, posti per mangiare, dove mangiare, mangiare fuori, andare a mangiare, mangiare qualcosa]
+
+cafe:
+  presets: [amenity/cafe]
+  drop: [espresso, latte, tea, pub, brasserie, restaurant, bar, the, te]
+  add:
+    en: [cafe, cafes, café, cafés, coffee, a coffee, coffee shop, coffee shops, tea room, tearoom, bistro]
+    de: [Café, Cafés, Kaffee, Kaffeehaus, Bistro, Cafe]
+    fr: [café, cafés, salon de thé, bistrot, bistrots]
+    it: [caffè, caffetteria, caffetterie, un caffè]
+
+restaurant:
+  presets: [amenity/restaurant]
+  drop: [bar, breakfast, cafe, coffee, dine, dining, dinner, drive-in, eat, grill, lunch, table, cafeteria, kantine, coffee-shop, kaffeehaus, imbiss, speisesaal, kneipe, donut shop, fast-food-restaurant, hamburgerstand, hotdogstand, imbissstube, caffetteria, caffe, negozio di ciambelle, venditore di hamburger, venditore di hotdog, canteen]
+  add:
+    en: [restaurant, restaurants, pizzeria, trattoria, eatery, eateries, tavern, taverns, inn restaurant]
+    de: [Restaurant, Restaurants, Gasthaus, Gasthäuser, Gasthof, Gasthöfe, Wirtshaus, Wirtschaft, Beiz, Lokal, Lokale, Pizzeria, Gaststätte, Gaststätten, Landgasthof, Landgasthöfe, Gasthöfen, Lokalen]
+    fr: [restaurant, restaurants, resto, restos, brasserie, brasseries, crêperie, pizzeria, auberge de campagne, auberges de campagne]
+    it: [ristorante, ristoranti, trattoria, trattorie, osteria, osterie, pizzeria, pizzerie, trattoria di campagna, osteria di campagna]
+
+fast_food:
+  presets: [amenity/fast_food]
+  drop: [drive thru, drive-through, restaurant, ristorante, service au comptoir, tacos, food truck, sandwich, panini]
+  add:
+    en: [fast food, takeaway, take-away, takeout, burger, burgers, kebab, kebabs, snack bar, snack bars, kebab shop, kebab shops, chippy, chip shop]
+    de: [Imbiss, Imbisse, Schnellimbiss, Döner, Dönerbude, Pommesbude, Snackbar, Fastfood, Imbissbude, Dönerläden, Dönerladen, Kebabladen]
+    fr: [restauration rapide, fast-food, snack, snacks, kebab, friterie, sandwicherie, kebabs, restaurant rapide]
+    it: [fast food, rosticceria, paninoteca, tavola calda, kebab, pizza al taglio, asporto, kebabbaro, paninoteche]
+
+bar:
+  presets: [amenity/bar, amenity/pub, amenity/biergarten]
+  drop: [booze, cocktails, dive, drink, alcohol, alcoolico, alcolici, vino, locale, distesa, bevuta, alcol, bierre, cafe, american bar, brasserie]
+  add:
+    en: [bar, bars, pub, pubs, beer, a beer, beers, beer garden, beer gardens, brewery, breweries, wine bar]
+    de: [Bar, Bars, Kneipe, Kneipen, Bier, ein Bier, Biergarten, Biergärten, Brauerei, Brauereien]
+    fr: [bar, bars, pub, pubs, bière, une bière, bières]
+    it: [pub, birreria, birrerie, birra, una birra, enoteca, vineria]
+
+ice_cream:
+  presets: [amenity/ice_cream]
+  drop: [froyo, frozen, sherbet, sorbet, sundae, yogurt, semifreddo, semifreddi, sorbetto, sorbetti, ghiacciolo, ghiaccoli, grattachecca]
+  add:
+    en: [ice cream, ice creams, ice-cream, ice cream shop, gelato, gelateria]
+    de: [Eis, ein Eis, Eisdiele, Eisdielen, Eiscafé, Eisladen, Glace]
+    fr: [glace, glaces, une glace, marchand de glaces]
+    it: [gelato, gelati, gelateria, gelaterie]
+
+pharmacy:
+  presets: [amenity/pharmacy]
+  drop: [medicine, prescription, speziale, medicinali, ricetta, prescrizione, farmacista, pharmacy counter]
+  add:
+    en: [pharmacy, pharmacies, chemist, chemists, "chemist's", drugstore, drugstores, drug store]
+    de: [Apotheke, Apotheken, Notapotheke]
+    fr: [pharmacie, pharmacies, pharmacie de garde]
+    it: [farmacia, farmacie, farmacia di turno]
+
+medical:
+  presets: []
+  add:
+    en: [medical, medical help, medical care, first aid, health care, healthcare, medical centre, medical center, medical facility]
+    de: [medizinische Hilfe, medizinisch, Erste Hilfe, ärztliche Hilfe, medizinische Versorgung]
+    fr: [médical, aide médicale, soins, soins médicaux, premiers secours, centre médical]
+    it: [assistenza medica, soccorso, primo soccorso, cure mediche, centro medico]
+
+hospital:
+  presets: [amenity/hospital]
+  drop: [clinic, doctor, health, institution, sanatorium, sanitarium, sick, surgery, ward, area ospedaliera, servizio sanitario, salute, hospice, ospizio, istituzione, casa di cura, casa di riposo, sanatorio, ambulatorio, chirurgia, reparto, clinica, hospital grounds, centre hospitalier]
+  add:
+    en: [hospital, hospitals, emergency room, emergency department, "A&E", emergency]
+    de: [Krankenhaus, Krankenhäuser, Klinik, Kliniken, Spital, Spitäler, Notaufnahme, Notfall]
+    fr: [hôpital, hôpitaux, urgences, clinique, cliniques]
+    it: [ospedale, ospedali, pronto soccorso, clinica, cliniche]
+
+doctor:
+  presets: [amenity/doctors, amenity/clinic]
+  names_only: true
+  drop: [clinique medicale, centre medical de taille moyenne, soins en ambulatoire]
+  add:
+    en: [doctor, doctors, "doctor's", GP, physician, medic, clinic, clinics, medical practice, "doctor's office", urgent care, GPs, family doctor, general practitioner]
+    de: [Arzt, Ärzte, Ärztin, Doktor, Hausarzt, Arztpraxis, Praxis, Ärztezentrum, Notarzt, Hausärzte, Allgemeinarzt]
+    fr: [médecin, médecins, docteur, cabinet médical, généraliste, maison médicale, médecin généraliste, médecins généralistes]
+    it: [medico, medici, dottore, guardia medica, ambulatorio, studio medico, poliambulatorio, medico di base, medico di famiglia, medici di base]
+
+bike:
+  presets: []
+  add:
+    en: [bike help, bike service, bike services, bike stuff, bike repair, bike repairs, bicycle repair, repair, repairs, fix my bike, fix the bike, repair my bike, repair the bike, get my bike fixed, fix a flat, fix my puncture]
+    de: [Fahrradservice, Radservice, Fahrradhilfe, Fahrradreparatur, Fahrradreparaturen, Reparatur, mein Rad reparieren, Rad reparieren, Fahrrad reparieren, mein Fahrrad reparieren, Rad flicken, Reifen flicken, Platten flicken]
+    fr: [réparation vélo, réparation de vélo, réparations vélo, service vélo, réparation, réparer mon vélo, réparer le vélo, réparer une crevaison, faire réparer mon vélo]
+    it: [riparazione bici, riparazioni bici, assistenza bici, riparazione, riparare la bici, sistemare la bici, aggiustare la bici, riparare una foratura]
+
+bike_shop:
+  presets: [shop/bicycle]
+  drop: [bike, bike parts, hobby, repair, tricycle, unicycle, riparazione, bici, biciclette, velocipedi, tricicli, monocicli, radservice]
+  add:
+    en: [bike shop, bike shops, bicycle shop, bicycle shops, bike store, bike stores, cycle shop, cycle shops, bike mechanic, bike mechanics, LBS, bike repair shop, bike repair shops, bicycle repair shop, bicycle repair shops, repair shop, repair shops, bike parts, spare parts, inner tube, inner tubes]
+    de: [Fahrradladen, Fahrradläden, Fahrradgeschäft, Fahrradgeschäfte, Radladen, Radgeschäft, Veloladen, Velogeschäft, Fahrradwerkstatt, Radwerkstatt, Fahrradhändler, Fahrradmechaniker, Velomech, Radhändler, Radläden, Radgeschäfte, Fahrradwerkstätten, Ersatzteile, Schlauch, Schläuche, Fahrradschlauch]
+    fr: [magasin de vélo, magasin de vélos, magasins de vélos, vélociste, vélocistes, atelier vélo, réparateur vélo, marchand de vélos, atelier de réparation vélo, ateliers de réparation vélo, réparateur de vélos, réparateurs de vélos, pièces vélo, chambre à air, chambres à air]
+    it: [negozio di bici, negozio di biciclette, negozio bici, negozi di bici, ciclofficina, officina bici, meccanico bici, meccanico di bici, meccanici di bici, officine bici, officina di biciclette, camera d'aria, camere d'aria, ricambi bici]
+
+repair_station:
+  presets: [amenity/bicycle_repair_station, amenity/compressed_air]
+  drop: [bike chain, bike multitool, bike repair, cycle repair, cycling, fahrradreparatur-werkzeugkasten, fahrradreparatur-werkzeug-standplatz, fahrrad-stutzpunkt, fahrrad-station, magasin de velos, atelier de reparation de velos, riparazione, biciclette, meccanico, bici, cicli, bicycle repair station]
+  add:
+    en: [repair station, repair stations, bike repair station, bike repair stations, bike pump, pump, pumps, air pump, public pump, fix-it station, compressed air, bike repair stand]
+    de: [Reparaturstation, Reparaturstationen, Fahrradreparaturstation, Luftpumpe, Pumpe, Druckluft, Servicestation, Fahrrad-Servicestation]
+    fr: [station de réparation, station de réparation vélo, stations de réparation, pompe, pompe à vélo, station de gonflage, air comprimé, borne de réparation]
+    it: [stazione di riparazione, colonnina di riparazione, pompa, pompa bici, aria compressa]
+
+charging:
+  presets: [amenity/charging_station]
+  names_only: true
+  add:
+    en: [charging, charging station, charging stations, charger, chargers, charging point, e-bike charging, power outlet, socket, plug, charge my phone, recharge]
+    de: [Ladestation, Ladestationen, Ladesäule, Steckdose, Steckdosen, Strom, aufladen, E-Bike laden, Akku laden]
+    fr: [borne de recharge, bornes de recharge, recharge, recharger, prise, prise électrique, station de recharge]
+    it: [ricarica, colonnina di ricarica, stazione di ricarica, presa, presa elettrica, ricaricare]
+
+toilets:
+  presets: [amenity/toilets]
+  drop: [head, privy, urinal, urinoir, vespasienne, vespasiano, cesso, restroom]
+  add:
+    en: [toilet, toilets, restroom, restrooms, public toilet, public toilets, wc, loo, loos, bathroom, bathrooms, lavatory, pee, have a pee, wee, go to the toilet, go to the loo]
+    de: [Toilette, Toiletten, WC, Klo, öffentliche Toilette, öffentliche Toiletten, Klos, pinkeln, aufs Klo]
+    fr: [toilettes, wc, sanitaires, toilettes publiques, faire pipi, aller aux toilettes]
+    it: [bagno, bagni, toilette, servizi, servizi igienici, gabinetto, wc, bagni pubblici, fare pipì, andare in bagno]
+
+shower:
+  presets: [amenity/shower]
+  drop: [rain closet]
+  add:
+    en: [shower, showers, public shower, hot shower, take a shower, have a shower, get a shower, shower facilities]
+    de: [Dusche, Duschen, duschen, Duschmöglichkeit, Duschmöglichkeiten, Duschgelegenheit, duschen gehen]
+    fr: [douche, douches, se doucher, prendre une douche, possibilité de douche, douches publiques]
+    it: [doccia, docce, fare la doccia, farsi una doccia, docce pubbliche]
+
+laundry:
+  presets: [shop/laundry]
+  drop: [textilreinigung]
+  add:
+    en: [laundry, laundromat, laundromats, launderette, laundrette, laundries, wash clothes, washing machine, do laundry, do my laundry, wash my clothes]
+    de: [Waschsalon, Waschsalons, Wäscherei, Waschmaschine, Wäsche waschen, Wäsche machen, Kleidung waschen]
+    fr: [laverie, laveries, laverie automatique, lessive, faire la lessive, laver mes vêtements, laver le linge]
+    it: [lavanderia, lavanderie, lavanderia a gettoni, fare il bucato, bucato, lavare i vestiti]
+
+atm:
+  presets: [amenity/atm]
+  drop: [machine, withdrawal, gab, billets de banque, retrait de liquide, guichet de retrait, retrait automatique, amenity atm, mister cash, cash]
+  add:
+    en: [ATM, ATMs, cash machine, cash machines, cash point, cashpoint, cash, money, bank, banks]
+    de: [Geldautomat, Geldautomaten, Bankomat, Bancomat, Bargeld, Geld, Bank, Banken]
+    fr: [distributeur, distributeurs, distributeur de billets, DAB, retirer de l'argent, argent, banque, banques]
+    it: [bancomat, prelievo, banca, banche, contanti, soldi]
+
+transport:
+  presets: []
+  add:
+    en: [public transport, transit, public transportation, train or bus, transport, transportation, take public transport, public transit]
+    de: [ÖPNV, öffentliche Verkehrsmittel, Nahverkehr, öffentlicher Verkehr, Öffis, öffentlichen Verkehrsmitteln, Öffis nehmen, Nahverkehrsmittel]
+    fr: [transports en commun, transport en commun, transport public, transports publics, transports, prendre les transports en commun, prendre les transports]
+    it: [trasporto pubblico, trasporti pubblici, mezzi pubblici, trasporti, prendere i mezzi, prendere i mezzi pubblici, fermata dei mezzi, fermate dei mezzi, mezzi]
+
+train_station:
+  presets: [public_transport/station_train, public_transport/station_train_halt, building/train_station]
+  drop: [halt, terminal, public transit, public transportation, rail, track, transit, transportation, whistle stop, stop, arret, fermata, transito, passeggeri, station, stazione]
+  add:
+    en: [train station, train stations, railway station, railway stations, station, stations, train, trains, rail station, railway, train stop, train stops, take the train, take a train, catch a train]
+    de: [Bahnhof, Bahnhöfe, Bahnstation, Hauptbahnhof, Haltepunkt, Zugverbindung, Züge, Zügen, mit dem Zug, mit dem Zug weiterfahren, den Zug nehmen, Zug nehmen, Zughalt]
+    fr: [gare, gares, gare ferroviaire, train, trains, arrêt de train, arrêts de train, halte ferroviaire, prendre le train]
+    it: [stazione, stazioni, stazione ferroviaria, treno, treni, fermata del treno, fermate del treno, prendere il treno]
+
+bus_stop:
+  presets: [highway/bus_stop, public_transport/platform/bus_point]
+  drop: [platform, public transit, public transportation, transit, transportation, gare, arret, piattaforma, trasporto pubblico, transito pubblico, transito, trasporto, cars, bus station, gare de bus]
+  add:
+    en: [bus stop, bus stops, bus, buses, bus station, coach]
+    de: [Bushaltestelle, Bushaltestellen, Haltestelle, Haltestellen, Bus, Busbahnhof, Postauto]
+    fr: [arrêt de bus, arrêts de bus, bus, gare routière, autocar, cars, arrêt de car]
+    it: [fermata, fermata dell'autobus, fermata del bus, autobus, pullman, corriera]
+
+ferry:
+  presets: [amenity/ferry_terminal, public_transport/station_ferry]
+  drop: [anleger, boot, dock, pier, terminal, boat, public transit, public transportation, transportation, transit, station]
+  add:
+    en: [ferry, ferries, ferry terminal, ferry port, boat]
+    de: [Fähre, Fähren, Fähranleger, Schiffsanleger, Schiff]
+    fr: [ferry, bac, bacs, traversier, embarcadère, bateau]
+    it: [traghetto, traghetti, battello, battelli, imbarco]
+
+swimming:
+  presets: [leisure/swimming_area]
+  drop: [aquatics, dive, water, eau, lac, aquatique, plongee, tuffo, acqua, acquatico, nuotatori]
+  add:
+    en: [swim, swimming, swim spot, swim spots, swimming spot, swimming spots, place to swim, places to swim, bathing, bathing spot, go for a swim, a swim, dip, wild swimming]
+    de: [baden, schwimmen, Badestelle, Badestellen, Badeplatz, Badeplätze, Naturbad, Badesee, Badeseen, Badegelegenheit, Badegelegenheiten]
+    fr: [nager, se baigner, baignade, baignades, lieu de baignade, coin baignade, se rafraîchir]
+    it: [nuotare, fare il bagno, nuoto, balneazione, zona balneabile, un bagno]
+
+lake:
+  presets: []
+  add:
+    en: [lake, lakes, pond, ponds, lakeside, reservoir]
+    de: [See, Seen, Weiher, Teich, Teiche, Stausee]
+    fr: [lac, lacs, étang, étangs, plan d'eau]
+    it: [lago, laghi, laghetto, laghetti]
+
+beach:
+  presets: [natural/beach, leisure/beach_resort]
+  drop: [shore, bagni, bagno, "plage."]
+  add:
+    en: [beach, beaches, seaside]
+    de: [Strand, Strände, Strandbad]
+    fr: [plage, plages]
+    it: [spiaggia, spiagge, lido, lidi, stabilimento balneare]
+
+swimming_pool:
+  presets: [leisure/swimming_pool, leisure/water_park]
+  drop: [aquatics, dive, water, swim, badeparadies, freizeitpark, immersione, scivoli, pool, schwimmbecken]
+  add:
+    en: [swimming pool, swimming pools, pool, pools, outdoor pool, public pool]
+    de: [Schwimmbad, Schwimmbäder, Freibad, Freibäder, Hallenbad, Hallenbäder, Pool]
+    fr: [piscine, piscines]
+    it: [piscina, piscine]
+
+sight:
+  presets: [tourism/attraction, historic/monument]
+  names_only: true
+  add:
+    en: [sights, sight, sightseeing, attraction, attractions, tourist attraction, tourist attractions, things to see, something to see, points of interest, poi, pois, monument, monuments, landmark, landmarks]
+    de: [Sehenswürdigkeit, Sehenswürdigkeiten, Attraktion, Attraktionen, Denkmal, Denkmäler, Monument, was zu sehen, etwas zu sehen]
+    fr: [curiosité, curiosités, à voir, choses à voir, monument, monuments, attraction, attractions, site touristique, sites touristiques]
+    it: [attrazione, attrazioni, da vedere, cose da vedere, monumento, monumenti, luoghi da visitare]
+
+viewpoint:
+  presets: [tourism/viewpoint]
+  drop: [scenery, scenic, observatoire, punto, panoramico]
+  add:
+    en: [viewpoint, viewpoints, view point, lookout, lookouts, overlook, overlooks, scenic view, scenic views, panorama, vista point]
+    de: [Aussichtspunkt, Aussichtspunkte, Aussicht, Ausblick, Panorama, Aussichtsplattform]
+    fr: [point de vue, points de vue, belvédère, belvédères, panorama]
+    it: [punto panoramico, punti panoramici, belvedere, panorama]
+
+castle:
+  presets: [historic/castle, historic/castle/fortress, historic/castle/palace, historic/castle/stately, historic/fort]
+  names_only: true
+  drop: [palazzo, historic fort, historisches fort, forte, fort historique, forteresse historique, historic fortress, chateau non fortifie, castello, palace]
+  add:
+    en: [castle, castles, palace, palaces, fortress, fortresses, fort, forts, château]
+    de: [Burg, Burgen, Schloss, Schlösser, Festung, Festungen, Palast]
+    fr: [château, châteaux, forteresse, forteresses, citadelle, fort, palais]
+    it: [castello, castelli, fortezza, fortezze, rocca, forte]
+
+church:
+  presets: [amenity/place_of_worship, building/church, building/chapel, building/cathedral]
+  names_only: true
+  drop: [church building, chapel building, cathedral building, kirchengebaude, kapellenbau, eglise - batiment, chiesa (edificio)]
+  add:
+    en: [church, churches, chapel, chapels, cathedral, cathedrals, basilica]
+    de: [Kirche, Kirchen, Kapelle, Kapellen, Dom, Münster, Kathedrale, Basilika]
+    fr: [église, églises, chapelle, chapelles, cathédrale, cathédrales, basilique]
+    it: [chiesa, chiese, cappella, cappelle, duomo, cattedrale, basilica, pieve, santuario]
+
+monastery:
+  presets: [amenity/monastery]
+  names_only: true
+  drop: [monastery grounds, klostergelande, terrain de monastere]
+  add:
+    en: [monastery, monasteries, abbey, abbeys, convent, priory]
+    de: [Kloster, Klöster, Abtei, Stift]
+    fr: [monastère, monastères, abbaye, abbayes, couvent, prieuré]
+    it: [monastero, monasteri, abbazia, abbazie, badia, convento, certosa]
+
+museum:
+  presets: [tourism/museum]
+  names_only: true
+  add:
+    en: [museum, museums, gallery, galleries, art gallery, art galleries]
+    de: [Museum, Museen, Galerie, Galerien, Kunstgalerie]
+    fr: [musée, musées, galerie, galeries, galerie d'art]
+    it: [museo, musei, galleria d'arte, gallerie d'arte, pinacoteca]
+
+ruins:
+  presets: [historic/ruins]
+  add:
+    en: [ruins, ruin, ancient ruins]
+    de: [Ruine, Ruinen, Burgruine, Burgruinen]
+    fr: [ruines, ruine]
+    it: [rovine, ruderi, rudere]
+
+waterfall:
+  presets: [waterway/waterfall]
+  drop: [fall, salto, acqua, rotte, rapide]
+  add:
+    en: [waterfall, waterfalls, falls, cascade]
+    de: [Wasserfall, Wasserfälle]
+    fr: [cascade, cascades, chute d'eau, chutes d'eau]
+    it: [cascata, cascate]
+
+pass:
+  presets: [natural/saddle]
+  drop: [gap, notch, top, passe]
+  add:
+    en: [pass, passes, mountain pass, mountain passes, col, cols, saddle]
+    de: [Pass, Pässe, Passhöhe, Bergpass, Joch, Sattel, Col]
+    fr: [col, cols, col de montagne]
+    it: [passo, passi, valico, valichi, colle, forcella, sella]
+
+summit:
+  presets: [natural/peak, natural/volcano]
+  drop: [acme, aiguille, alp, climax, crest, crown, tip, felsnadel, zipfel, cresta, corona, pinnacolo, stromboli, feuerberg, crater, pinnacle, berggipfel]
+  add:
+    en: [summit, summits, peak, peaks, mountain, mountains, top, hilltop, hill top, volcano]
+    de: [Gipfel, Berg, Berge, Bergspitze, Hügel, Vulkan]
+    fr: [sommet, sommets, pic, pics, mont, montagne, montagnes, cime, colline, volcan]
+    it: [vetta, vette, cima, cime, picco, monte, montagna, montagne, collina, vulcano]
+
+tower:
+  presets: [man_made/tower]
+  drop: [tour]
+  add:
+    en: [tower, towers, lookout tower, observation tower]
+    de: [Turm, Türme, Aussichtsturm, Aussichtstürme]
+    fr: [tour d'observation, tours d'observation, tour panoramique, tours panoramiques]
+    it: [torre, torri, torre panoramica, torri panoramiche]
+
+bridge:
+  presets: [man_made/bridge]
+  drop: [bridge outline, bruckenflache, pontile, arco, strallato, cavalcavia, bridge area, pont (surface), superficie di un ponte]
+  add:
+    en: [bridge, bridges, viaduct]
+    de: [Brücke, Brücken]
+    fr: [pont, ponts, viaduc]
+    it: [ponte, ponti, viadotto]
+
+town:
+  presets: [place/town, place/city, place/village, place/hamlet]
+  drop: [sehr kleines dorf, kleine siedlung, zinken, hofschaft, drubbel, lieu dit, lieu-dit, metropoli, luogo, localita, insediamento, frazione]
+  add:
+    en: [town, towns, village, villages, city, cities, hamlet, settlement]
+    de: [Stadt, Städte, Dorf, Dörfer, Ortschaft, Ortschaften, Ort, Weiler]
+    fr: [ville, villes, village, villages, hameau, bourg]
+    it: [città, paese, paesi, villaggio, villaggi, borgo, borghi]

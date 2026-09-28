@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount, type Snippet } from "svelte";
+    import { onMount, untrack, type Snippet } from "svelte";
     import * as maplibregl from "maplibre-gl";
     import mapWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
     import type { GeoJSONSource } from "maplibre-gl";
@@ -20,7 +20,7 @@
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.0, 46.7], zoom = 11,
         shownCategories = categoryIds, highlightedPlaces = [], landmarks = [],
-        onEmptyClick, onPointSelect, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, popup,
+        onEmptyClick, onPointSelect, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
         segments?: MapSegment[]; coordinates?: Coordinate[]; highlightedCoordinates?: Coordinate[]; points?: MapPoint[];
         selectedId?: string | null; callout?: Coordinate | null; drawing?: string | null; highlightedPlaceIds?: string[];
@@ -44,6 +44,7 @@
         onInsert?: (legEndId: string, coordinate: Coordinate) => void;
         onDrawn?: (legEndId: string, coordinates: Coordinate[]) => void;
         onPlaceClick?: (place: Place) => void;
+        onBounds?: (bounds: [number, number, number, number], fromSearch: boolean) => void;
         onVisibleRange?: (range: [number, number]) => void; popup?: Snippet;
     } = $props();
 
@@ -101,16 +102,23 @@
         fitBounds(region, 13, motionDuration());
     }
 
+    export function fitSearchResults(region: Coordinate[]) {
+        if (!map || !region.length) return;
+        fittedInitialRoute = true;
+        wholeRoute = false;
+        fitBounds(region, 14, motionDuration(), true);
+    }
+
     export function zoomBy(delta: number) {
         if (!map) return;
         wholeRoute = false;
         map.zoomTo(map.getZoom() + delta, { duration: motionDuration() });
     }
 
-    function fitBounds(region: Coordinate[], maxZoom: number, duration: number) {
+    function fitBounds(region: Coordinate[], maxZoom: number, duration: number, searchResults = false) {
         const bounds = new maplibregl.LngLatBounds();
         region.forEach((coordinate) => bounds.extend(coordinate));
-        map!.fitBounds(bounds, { padding: fitPadding, maxZoom, duration });
+        map!.fitBounds(bounds, { padding: fitPadding, maxZoom, duration }, { searchResults });
     }
 
     function motionDuration() {
@@ -212,9 +220,11 @@
         map.setLayoutProperty("relief", "visibility", hillshade ? "visible" : "none");
     }
 
-    function reportView() {
-        if (!map || !onVisibleRange || !coordinates.length) return;
+    function reportView(event?: { type: string; searchResults?: boolean }) {
+        if (!map) return;
         const bounds = map.getBounds();
+        untrack(() => onBounds?.([bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()], !!event?.searchResults));
+        if (!onVisibleRange || !coordinates.length) return;
         const visible = coordinates.flatMap((coordinate, index) => bounds.contains(coordinate) ? [index] : []);
         if (visible.length) onVisibleRange([visible[0], visible[visible.length - 1]]);
     }
@@ -378,7 +388,7 @@
             map?.resize();
             if (!wholeRoute) return;
             clearTimeout(refit);
-            refit = setTimeout(fitRoute, 150);
+            refit = setTimeout(() => { if (wholeRoute) fitRoute(); }, 150);
         });
         observer.observe(container);
         const popupObserver = new ResizeObserver(() => { requestAnimationFrame(keepCalloutInside); });

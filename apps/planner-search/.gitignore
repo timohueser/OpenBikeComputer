@@ -1,0 +1,12 @@
+node_modules/
+.venv/
+data/
+query/data/
+query/work/
+query/speed/work/
+query/.venv/
+query/speed/.venv/
+__pycache__/
+.pytest_cache/
+test-output/
+web/vendor/

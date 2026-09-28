@@ -1,10 +1,26 @@
 import { describe, expect, it } from 'vitest';
-import {
-    reorderPoint, routeStops, addRestDay, anchorProgress, addClickedPoint, dayStops, applyBudget, coordinateAt,
-    cumulative, initialTrip, insertPoint, itineraryDays, kilometres, maxRidingDays, nightOrderConflicts,
-    orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, places, removeRestDay, routeCoordinates,
-    routeSlice, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Coordinate, type RoutePoint, type Trip,
-} from './editor';
+import { maxRidingDays, reorderPoint, routeStops, addRestDay, anchorProgress, addClickedPoint, dayStops, applyBudget, coordinateAt, cumulative, initialTrip, insertPoint, itineraryDays, kilometres, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, removeRestDay, routeCoordinates, routeSlice, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Place, type Coordinate, type RoutePoint, type Trip } from './editor';
+
+// Fictional places keep their geographic positions when the mock route changes.
+const places: Place[] = [
+    { progress: .2, category: 'camp', label: 'Orchard camp', description: 'A quiet overnight spot beside an orchard.' },
+    { progress: .3, category: 'hotel', label: 'Canal-side rooms', description: 'A small hotel near the canal.' },
+    { progress: .37, category: 'camp', label: 'Willow camp', description: 'A camping option beside a willow grove.' },
+    { progress: .46, category: 'hotel', label: 'Village inn', description: 'Rooms in a village along the valley.' },
+    { progress: .56, category: 'camp', label: 'Meadow camp', description: 'A camping option on an open meadow.' },
+    { progress: .65, category: 'hotel', label: 'Riverside rooms', description: 'A small hotel beside the river.' },
+    { progress: .73, category: 'camp', label: 'Forest-edge camp', description: 'A camping option near the edge of a wood.' },
+    { progress: .82, category: 'hotel', label: 'Valley inn', description: 'Rooms for an overnight stop in the valley.' },
+    { progress: .9, category: 'camp', label: 'Mill meadow camp', description: 'A camping option near an old mill.' },
+    { progress: .47, category: 'water', label: 'Water stop', description: 'A water point with unverified availability.' },
+].map((place, index) => ({
+    ...place,
+    category: place.category as Place['category'],
+    id: `${place.category}-${index}`,
+    kind: 'place' as const,
+    coordinate: coordinateAt(routeCoordinates(initialTrip()), place.progress),
+}));
+
 
 describe('overnight edits', () => {
     it('keeps the incoming leg when replacing an overnight or converting a visit', () => {
@@ -313,7 +329,7 @@ describe('provisional day ends', () => {
     });
 
     it('offers three overnight candidates without water, shortest predicted day first', () => {
-        const candidates = overnightCandidates(initialTrip(), 1);
+        const candidates = overnightCandidates(initialTrip(), 1, places);
         expect(candidates).toHaveLength(3);
         expect(candidates.every(c => c.place.category !== 'water')).toBe(true);
         expect(candidates.map(c => c.distance)).toEqual([...candidates.map(c => c.distance)].sort((a, b) => a - b));

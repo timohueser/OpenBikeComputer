@@ -2,13 +2,15 @@
 
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { addRestDay, initialTrip, itineraryDays, places, tripDays } from '../../lib/planner/editor';
+import { addRestDay, initialTrip, itineraryDays, tripDays, type Place } from '../../lib/planner/editor';
 import Itinerary from './Itinerary.svelte';
 import Profile from './PlannerProfile.svelte';
 import MapCallout from './MapCallout.svelte';
 import VersionsMenu from './VersionsMenu.svelte';
 import Select from './PlannerSelect.svelte';
 import RouteList from './RouteList.svelte';
+
+const places: Place[] = [{id:'test-camp',kind:'place',label:'Test camp',category:'camp',description:'',progress:.25,coordinate:[7.5,47.5]}];
 
 const mounted: ReturnType<typeof mount>[] = [];
 

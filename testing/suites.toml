@@ -717,3 +717,36 @@ route = "manual"
 command = "companion-ios/scripts/test-application.sh"
 platforms = ["macos"]
 triggers = ["companion-ios/OBCCompanionUITests/**"]
+
+
+[[suite]]
+id = "planner.search"
+route = "ordinary"
+command = "npm test --prefix apps/planner-search"
+jobs = ["planner-search"]
+platforms = ["linux", "macos"]
+triggers = ["apps/planner-search/**"]
+
+[[suite]]
+id = "planner.query-decoder"
+route = "ordinary"
+command = "npm run test:query --prefix apps/planner-search"
+jobs = ["planner-search"]
+platforms = ["linux", "macos"]
+triggers = ["apps/planner-search/query/**", "apps/planner-search/package.json"]
+
+[[suite]]
+id = "planner.search-data"
+route = "manual"
+command = "npm run test:data --prefix apps/planner-search"
+fixtures = ["local-photon-search-packages"]
+platforms = ["linux", "macos"]
+triggers = ["apps/planner-search/**"]
+
+[[suite]]
+id = "planner.query-model"
+route = "manual"
+command = "npm run test:model --prefix apps/planner-search"
+fixtures = ["local-query-onnx-model"]
+platforms = ["linux", "macos"]
+triggers = ["apps/planner-search/query/**"]

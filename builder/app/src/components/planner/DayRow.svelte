@@ -4,9 +4,9 @@
     import PlaceRow from './PlaceRow.svelte';
     import RouteStats from './RouteStats.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
-    import { placeCategories } from '../../lib/planner/poi-kinds';
+    import { kindLabel } from '../../lib/planner/search/presentation';
     import { profileAscent } from '../../lib/planner/profile-data';
-    import { dayOverTarget, dayStops, places, routingKey, type ItineraryDay, type OvernightCandidate, type Place, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
+    import { dayOverTarget, dayStops, routingKey, type ItineraryDay, type OvernightCandidate, type Place, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
 
     let {
         trip, day, days, theme, scale, expanded, changing, candidates, conflict, selectedId, revealId, calendar,
@@ -43,7 +43,6 @@
     const previous = $derived(days[riding - 2]);
     const start = $derived(riding === 1 ? trip.points.find(p => p.kind === 'start')!.label : previous?.pinned?.label ?? `Day ${calendar[riding - 1]} overnight`);
     const end = $derived(last ? trip.points.find(p => p.kind === 'finish')!.label : day.pinned?.label ?? 'Overnight to choose');
-    const endPlace = $derived(day.pinned && places.find(p => p.coordinate[0] === day.pinned!.coordinate[0] && p.coordinate[1] === day.pinned!.coordinate[1]));
     const line = $derived(trip.routing?.key === routingKey(trip) ? trip.routing : undefined);
     const ascent = $derived(profileAscent(day.from, day.to, line));
     const ascentKnown = $derived(line?.elevation.every(h => h !== null));
@@ -93,7 +92,7 @@
         <span class="badge">{day.number}</span>
         <span class="title">
             <strong>{start} → {end}</strong>
-            <small>{duration(day.hours)} · <span class:over={over.climb > 0}>↑ {ascentKnown ? ascent : '—'} m</span>{endPlace ? ` · ${placeCategories[endPlace.category].label}` : ''}</small>
+            <small>{duration(day.hours)} · <span class:over={over.climb > 0}>↑ {ascentKnown ? ascent : '—'} m</span>{day.pinned?.placeKind ? ` · ${kindLabel(day.pinned.placeKind)}` : ''}</small>
         </span>
         <span class="distance" class:over={over.km > 0}>{day.distance.toFixed(1)}<small>km</small></span>
         <Icon name="chevron" size={14} />

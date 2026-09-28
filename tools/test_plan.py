@@ -73,6 +73,7 @@ JOBS: dict[str, Job] = {
     "web": Job(needs=("selection", "wasm-bridges")),
     "web-browser": Job(needs=("selection", "wasm-bridges")),
     "verification": Job(needs=("selection",)),
+    "planner-search": Job(needs=("selection",)),
     "desktop-frontend": Job(needs=("selection", "wasm-bridges")),
     "desktop": Job(needs=("selection", "desktop-frontend"), roots=("apps/obc-desktop",)),
     "desktop-launch": Job(needs=("selection", "desktop")),

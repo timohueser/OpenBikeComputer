@@ -1,0 +1,9 @@
+iniconfig==2.3.0
+packaging==26.3
+pluggy==1.6.0
+pyflakes==4.0.0
+pygments==2.21.0
+pytest==9.1.1
+pyyaml==6.0.3
+rapidfuzz==3.14.6
+snowballstemmer==3.1.1

@@ -75,6 +75,7 @@ export default defineConfig(({ mode }) => {
             // Dev mode: `python -m builder.server --no-browser` on :8000 serves
             // the API; Vite proxies it (plain http-proxy streams SSE fine).
             proxy: {
+                "/api/planner-search": `http://127.0.0.1:${process.env.OBC_SEARCH_PORT || "8780"}`,
                 "/routing": { target: process.env.OBC_PLANNER_ROUTING_URL || "http://127.0.0.1:8788", rewrite: (path: string) => path.replace(/^\/routing/, '') },
                 "/tiles": { target: process.env.OBC_PLANNER_TILES_URL || "http://127.0.0.1:8789", rewrite: (path: string) => path.replace(/^\/tiles/, '') },
                 "/api": `http://127.0.0.1:${process.env.OBC_BUILDER_PORT || "8000"}`,

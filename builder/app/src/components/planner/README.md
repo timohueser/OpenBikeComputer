@@ -1,8 +1,8 @@
 # Planner previews
 
 These entry points use the builder's Svelte runtime. The map renders vector
-tiles and terrain. The editor uses the Rust route service for routing, terrain profiles and
-moving time. Place search still uses examples.
+tiles and terrain. The editor uses the Rust route service for routing, terrain profiles,
+and moving time. Place search uses the [local search service](../../../../../apps/planner-search/README.md).
 They are not inputs to the default production build.
 
 Install the [PMTiles CLI](https://docs.protomaps.com/pmtiles/cli) on `PATH`.

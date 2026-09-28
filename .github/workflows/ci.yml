@@ -1450,6 +1450,30 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  planner-search:
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'planner-search')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/planner-search/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci --prefix apps/planner-search
+      - run: python -m venv apps/planner-search/.venv
+      - run: apps/planner-search/.venv/bin/pip install -r apps/planner-search/query/requirements.txt
+      - run: npm test --prefix apps/planner-search
+      - run: npm run test:query --prefix apps/planner-search
+
   verification:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'verification')
@@ -1483,7 +1507,7 @@ jobs:
   # publishes no plan, which fails this gate rather than silently passing.
   ci:
     if: always()
-    needs: [selection, guards, fmt, clippy, test, ui-snapshots, builder-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, desktop-frontend, desktop, desktop-launch, verification]
+    needs: [selection, guards, fmt, clippy, test, ui-snapshots, builder-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, desktop-frontend, desktop, desktop-launch, verification, planner-search]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
