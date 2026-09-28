@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Query Box Playground</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --ink: #1d1f1c; --muted: #6b6e68; --line: #e2e0d8;
+    --accent: #2f6b4f; --warn: #a3542a;
+    --c-what: #2f6b4f; --c-point: #2d5b8f; --c-where: #7a4f9a; --c-filter: #a3542a;
+    --c-route: #8a6d1d; --c-num: #3f7f86; --c-ign: #8b8d86;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151714; --panel: #1e211d; --ink: #e9e8e2; --muted: #9a9d95; --line: #30342e;
+      --accent: #7cc39c; --warn: #e39a6d;
+      --c-what: #7cc39c; --c-point: #82aee0; --c-where: #c3a0e0; --c-filter: #e39a6d;
+      --c-route: #d8bd6a; --c-num: #7fc6cd; --c-ign: #8b8d86;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 820px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .box { display: flex; align-items: center; gap: 10px; background: var(--panel);
+         border: 1.5px solid var(--line); border-radius: 14px; padding: 4px 14px; }
+  .box:focus-within { border-color: var(--accent); }
+  input { flex: 1; border: 0; outline: 0; background: transparent; color: var(--ink);
+          font-size: 19px; padding: 12px 0; min-width: 0; }
+  .count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .examples { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 24px; }
+  .examples button { border: 1px solid var(--line); background: transparent; color: var(--muted);
+                     border-radius: 999px; padding: 4px 10px; font-size: 12.5px; cursor: pointer; }
+  .examples button:hover { color: var(--ink); border-color: var(--muted); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+            padding: 16px; margin-bottom: 14px; }
+  .label { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+           margin-bottom: 10px; display: flex; justify-content: space-between; gap: 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .type { font-weight: 650; font-size: 15px; padding: 6px 12px; border-radius: 10px;
+          background: var(--ink); color: var(--panel); }
+  .type.none { background: transparent; color: var(--muted); border: 1.5px dashed var(--line); }
+  .chip { display: inline-flex; flex-direction: column; border: 1.5px solid currentColor;
+          border-radius: 10px; padding: 4px 10px 5px; min-height: 44px; justify-content: center; }
+  .chip small { font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; opacity: .8; }
+  .chip span { color: var(--ink); font-weight: 550; }
+  .chip.ign { border-style: dashed; color: var(--c-ign); }
+  .chip.ign span { color: var(--muted); font-weight: 400; text-decoration: line-through; }
+  .chip.err { color: var(--warn); }
+  .words { display: flex; flex-wrap: wrap; gap: 4px 2px; }
+  .w { display: inline-flex; flex-direction: column; align-items: center; padding: 2px 5px;
+       border-radius: 6px; border-bottom: 3px solid transparent; }
+  .w b { font-weight: 500; }
+  .w i { font-style: normal; font-size: 10px; color: var(--muted); letter-spacing: .03em; }
+  .w.low { outline: 1.5px dotted var(--warn); outline-offset: 1px; }
+  .meta { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  pre { margin: 0; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .log { list-style: none; margin: 0; padding: 0; font-size: 13.5px; }
+  .log li { padding: 6px 0; border-top: 1px solid var(--line); cursor: pointer; display: flex;
+            gap: 10px; justify-content: space-between; }
+  .log li:first-child { border-top: 0; }
+  .log li em { color: var(--muted); font-style: normal; font-size: 12px; white-space: nowrap; }
+  .empty { color: var(--muted); font-size: 13.5px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Query box playground</h1>
+  <div class="sub">Model v2, int8, parses as you type. Press Enter to keep a query in the log
+    (<code>work/playground.jsonl</code>).</div>
+  <div class="box">
+    <input id="q" maxlength="80" autocomplete="off" spellcheck="false" autofocus
+           placeholder="campsites end of day 4">
+    <span class="count" id="count">0/80</span>
+  </div>
+  <div class="examples" id="examples"></div>
+
+  <section>
+    <div class="label"><span>Request</span><span class="meta" id="meta"></span></div>
+    <div class="chips" id="request"><span class="empty">Type a sentence.</span></div>
+  </section>
+  <section>
+    <div class="label"><span>Word labels</span><span class="meta">dotted = label probability below 0.9</span></div>
+    <div class="words" id="words"></div>
+  </section>
+  <section>
+    <details><summary>Request JSON</summary><pre id="json"></pre></details>
+  </section>
+  <section>
+    <div class="label"><span>Kept queries</span></div>
+    <ul class="log" id="log"><li class="empty">None yet.</li></ul>
+  </section>
+</main>
+<script>
+const EXAMPLES = [
+  "add water stops every three hours to route", "supermarket within the first 20 kilometers",
+  "route to the nearest pharmacy", "take me up the Furka pass", "Basel to Nice in 7 days",
+  "wo kann ich am Ende von Tag 4 zelten", "letztes Wasser vor dem Stelvio",
+  "supermarché ouvert dimanche jour 3", "portami in cima al passo dello Stelvio",
+  "end every day at a campsite", "make day 3 flatter", "is the galibier worth it",
+];
+const GROUP = {
+  WHAT: "what", NAME: "point", FROM: "point", TO: "point", VIA: "point", NEAR: "where",
+  POINT: "point", BEFORE: "where", AFTER: "where", DAY: "where", SCOPE: "where", ALONG: "where",
+  OPEN: "filter", RADIUS: "filter", MIN: "filter", BIKE: "route", GOAL: "route", DAYS: "num",
+  PER_DAY: "num", EVERY: "num", KIND: "route", IGNORED: "ign",
+};
+const color = g => `var(--c-${g})`;
+const TYPE = {
+  places: "Places", place: "Place", route: "Route", stretches: "Stretches", end_day: "End day",
+  add_point: "Add point", remove_point: "Remove point", split: "Split", join: "Join days",
+  reverse: "Reverse", reroute: "Re-route", none: "Not understood → place search",
+};
+const nice = s => String(s).replace(/_/g, " ");
+const qty = q => `${+q.value.toFixed(2)} ${q.unit}`;
+const dayName = (d, part) => {
+  const day = d === "every" ? "every day" : d === "today" ? "today" : d === "tomorrow" ? "tomorrow" : `day ${d}`;
+  return part ? `${part} of ${day}` : day;
+};
+const along = a => {
+  const ref = { km: "", start: "from start ", end: "before end ", here: "from here " }[a.ref];
+  if (a.at) return a.ref === "km" ? `at km ${+a.at.value.toFixed(2)}${a.at.unit === "h" ? " h" : ""}` : `${qty(a.at)} ${ref.trim()}`;
+  const from = a.from ? qty(a.from) : "0";
+  return a.ref === "km" ? `km ${+(a.from?.value ?? 0)}–${+(a.to?.value ?? 0)}${a.to?.unit === "h" ? " h" : ""}`
+    : `${a.ref === "end" ? "last" : a.ref === "here" ? "next" : "first"} ${a.to ? qty(a.to) : ""}${a.from ? ` (from ${from})` : ""}`;
+};
+const point = p => p.name ? `“${p.name}”` : p.kind ? `nearest ${nice(p.kind)}` : p.here ? "here"
+  : p.plan ? `plan ${p.plan}` : p.day ? dayName(p.day, p.part || "end") : p.along ? along(p.along) : JSON.stringify(p);
+
+function requestChips(r) {
+  const out = [];
+  const add = (group, label, value) => out.push({ group, label, value });
+  if (r.error) add("filter", "decoder error", r.error);
+  if (r.what) add("what", r.type === "stretches" ? "stretch" : "what",
+    Array.isArray(r.what) ? r.what.map(nice).join(" · ") : nice(r.what).replace("gap:", "no ") + (String(r.what).startsWith("gap:") ? " (gap)" : ""));
+  if (r.name) add("point", "name", `“${r.name}”`);
+  if (r.from) add("point", "from", point(r.from));
+  if (r.to) add("point", "to", point(r.to));
+  (r.via || []).forEach(v => add("point", "via", point(v)));
+  if (r.point) add("point", "point", point(r.point));
+  if (r.at) add("point", "at", point(r.at));
+  if (r.near && r.type === "place") add("where", "near", point(r.near));
+  if (r.day !== undefined) add("where", "day", r.type === "join" ? `day ${r.day} + ${r.day + 1}` : dayName(r.day));
+  const w = r.where || {};
+  if (w.scope) add("where", "where", { route: "along the route", view: "map view", here: "around here" }[w.scope]);
+  if (w.day !== undefined) add("where", "day", dayName(w.day, w.part));
+  if (w.near) add("where", w.near.length === 2 ? "between" : "near", w.near.map(point).join(" and "));
+  if (w.along) add("where", "along", along(w.along));
+  if (w.before) add("where", "before", point(w.before));
+  if (w.after) add("where", "after", point(w.after));
+  if (r.open) add("filter", "open", r.open.now ? "now" : r.open.weekday ? r.open.weekday : `on day ${r.open.day}`);
+  if (r.radius) add("filter", "within", qty(r.radius));
+  if (r.min) add("filter", "at least", qty(r.min));
+  if (r.bike) add("route", "bike", r.bike);
+  if (r.goal) add("route", "goal", nice(r.goal));
+  if (r.kind) add("route", "point kind", r.kind);
+  if (r.days) add("num", "days", r.days);
+  if (r.per_day) add("num", "per day", qty(r.per_day));
+  if (r.every) add("num", "every", qty(r.every));
+  (r.ignored || []).forEach(t => add("ign", "not understood", t));
+  return out;
+}
+
+const $ = id => document.getElementById(id);
+const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html !== undefined) e.innerHTML = html; return e; };
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function render(res) {
+  const req = $("request"), words = $("words");
+  req.innerHTML = ""; words.innerHTML = "";
+  if (!res.words.length) { req.innerHTML = '<span class="empty">Type a sentence.</span>'; $("meta").textContent = ""; $("json").textContent = ""; return; }
+  const r = res.request;
+  req.append(el("span", "type" + (r.type === "none" ? " none" : ""), esc(TYPE[r.type] || r.type)));
+  for (const c of requestChips(r)) {
+    const chip = el("span", "chip" + (c.group === "ign" ? " ign" : "") + (c.label === "decoder error" ? " err" : ""),
+      `<small>${esc(c.label)}</small><span>${esc(c.value)}</span>`);
+    chip.style.color = color(c.group === "ign" ? "ign" : c.group);
+    req.append(chip);
+  }
+  for (const w of res.words) {
+    const slot = w.label === "O" ? null : w.label.slice(2);
+    const d = el("span", "w" + (w.p !== null && w.p < 0.9 ? " low" : ""), `<b>${esc(w.w)}</b><i>${slot ? esc(slot.toLowerCase()) : "&nbsp;"}</i>`);
+    if (slot) { d.style.borderBottomColor = color(GROUP[slot]); if (w.label.startsWith("B-")) d.style.marginLeft = "6px"; }
+    d.title = `${w.label}  p=${w.p}`;
+    words.append(d);
+  }
+  $("meta").textContent = `sentence label ${res.intent} (p ${res.intent_p}) · ${res.tokens} tokens · model ${res.model_ms} ms · decoder ${res.decode_ms} ms`;
+  $("json").textContent = JSON.stringify(r, null, 2);
+}
+
+let seq = 0, timer = null;
+async function parse(text, log = false) {
+  const n = ++seq;
+  const res = await (await fetch(`/parse?q=${encodeURIComponent(text)}&log=${log ? 1 : 0}`)).json();
+  if (n === seq) render(res);
+  return res;
+}
+const input = $("q");
+input.addEventListener("input", () => {
+  $("count").textContent = `${input.value.length}/80`;
+  clearTimeout(timer); timer = setTimeout(() => parse(input.value), 120);
+});
+input.addEventListener("keydown", async e => {
+  if (e.key !== "Enter" || !input.value.trim()) return;
+  const res = await parse(input.value, true);
+  const log = $("log");
+  if (log.querySelector(".empty")) log.innerHTML = "";
+  const li = el("li", "", `<span>${esc(res.text)}</span><em>${esc(TYPE[res.request.type] || res.request.type)}</em>`);
+  li.onclick = () => { input.value = res.text; input.dispatchEvent(new Event("input")); input.focus(); };
+  log.prepend(li);
+});
+for (const x of EXAMPLES) {
+  const b = el("button", "", esc(x));
+  b.onclick = () => { input.value = x; input.dispatchEvent(new Event("input")); input.focus(); };
+  $("examples").append(b);
+}
+</script>
+</body>
+</html>

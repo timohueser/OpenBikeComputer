@@ -41,6 +41,13 @@
       "port": 8081
     },
     {
+      "name": "query-playground",
+      "runtimeExecutable": "speed/.venv/bin/python",
+      "runtimeArgs": ["playground/serve.py", "--port", "8770"],
+      "cwd": "spike/query-parser",
+      "port": 8770
+    },
+    {
       "name": "verification-demo",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "demo:coverage"],
