@@ -18,10 +18,10 @@
     import NearbyLandmark from './NearbyLandmark.svelte';
     import { isTrip } from '../../lib/planner/trip-validation';
     import {
-        addClickedPoint, addPointNear, addRestDay, applyBudget, coordinateAt, cumulative, initialTrip,
+        addClickedPoint, addPointNear, addRestDay, applyBudget, coordinateAt, cumulative, emptyTrip,
         insertPoint, itineraryDays, kilometres, nearestProgress, nightOrderConflicts, offRoute, overnightCandidates,
         overnightWindow, pinNight, removeRestDay, reorderPoint, routeCoordinates, routeSlice, routeStops,
-        setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, routingKey,
+        setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint, TripHistory, tripDays, routingKey,
         type Coordinate, type Day, type LegMode, type Place, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
@@ -49,10 +49,9 @@
         marker: 'Marker',
     };
 
-    let trip = $state<Trip>({ ...initialTrip(), live: true, routeOrder: [], mode: 'route', days: 1, bike: 'touring', points: [
-        { id: 'start', coordinate: [7.8415, 47.9974], label: 'Freiburg Hbf', kind: 'start', progress: 0 },
-        { id: 'finish', coordinate: [8.154, 47.902], label: 'Titisee', kind: 'finish', progress: 1 },
-    ] });
+    let trip = $state<Trip>(emptyTrip());
+    const hasEndpoints = $derived(trip.points.some(p => p.kind === 'start') && trip.points.some(p => p.kind === 'finish'));
+    const nextEndpoint = $derived(trip.points.some(p => p.kind === 'start') ? 'finish' : 'start');
     let previewTrip = $state<Trip | null>(null);
     let draggingPoint = $state(false);
     let previewStatus = $state('');
@@ -61,10 +60,13 @@
         previewTrip = { ...draft, routing: line };
         previewStatus = 'Route preview · release to keep';
     }, error => { previewStatus = error instanceof Error ? error.message : 'Preview unavailable.'; });
-    let routingStatus = $state('Calculating route…');
+    let routingStatus = $state('Choose a start and finish');
+    let routeAttempt = $state(0);
     const routingInput = $derived(routingKey(trip));
     $effect(() => {
         const key = routingInput;
+        void routeAttempt;
+        if (!hasEndpoints) { routingStatus = 'Choose a start and finish'; return; }
         const snapshot = untrack(() => $state.snapshot(trip));
         if (snapshot.routing?.key === key) return;
         const abort = new AbortController();
@@ -81,7 +83,7 @@
         next.routing = selectRoute(next, route, trip.routing?.alternatives ?? [route]);
         commit(next, 'Route preference changed');
     }
-    const currentRoute = $derived(shownTrip.routing?.key === routingKey(shownTrip) ? shownTrip.routing : undefined);
+    const currentRoute = $derived(hasEndpoints && shownTrip.routing?.key === routingKey(shownTrip) ? shownTrip.routing : undefined);
     const routingMessage = $derived(draggingPoint ? previewStatus : currentRoute
         ? `${currentRoute.unknownSurfaceKm.toFixed(1)} km unknown surface${currentRoute.pushingKm ? ` · ${currentRoute.pushingKm.toFixed(1)} km pushing` : ''}${currentRoute.unroutedKm ? ` · ${currentRoute.unroutedKm.toFixed(1)} km manual / access unverified` : ''}${currentRoute.elevation.some(h => h === null) ? ' · elevation incomplete' : ''}`
         : routingStatus);
@@ -143,7 +145,7 @@
     let searchRegion = $state('baden-wuerttemberg');
     let overnightPlaces = $state<Place[]>([]);
     let overnightNote = $state('');
-    let message = $state('Example route · local place search');
+    let message = $state('Plan a ride in Baden-Württemberg');
     // The status line offers Undo after a version restore, until the next change.
     let undoable = $state(false);
     let draftSavedAt = $state<number | null>(null);
@@ -179,13 +181,13 @@
     const activeDay = $derived(days[Math.min(night - 1, days.length - 1)]);
     const area = $derived(night < days.length ? overnightWindow(trip, night) : null);
     const overnightContext = $derived(
-        multi && expandedDay !== null && !searching && list === 'plan' && night < days.length && (!activeDay?.pinned || changingOvernight),
+        multi && !!currentRoute && expandedDay !== null && !searching && list === 'plan' && night < days.length && (!activeDay?.pinned || changingOvernight),
     );
     const highlighted = $derived(overnightContext && area && !area.blocked ? routeSlice(coordinates, area.from, area.to) : []);
     const candidates = $derived(multi ? overnightCandidates(trip, night, overnightPlaces) : []);
     // One stretch per leg and day, so the map can tell legs apart and colour days.
     const segments = $derived.by(() => {
-        const length = stops.at(-1)!.distance || 1;
+        const length = stops.at(-1)?.distance || 1;
         return stops.slice(1).flatMap((stop, i) => days.flatMap((day): MapSegment[] => {
             const from = Math.max(day.from, stops[i].distance / length);
             const to = Math.min(day.to, stop.distance / length);
@@ -199,7 +201,7 @@
     const highlightLimit = 300;
     // Basemap places within 5 km of the route, nearest first.
     const highlightCandidates = $derived.by(() => {
-        if (!highlights.length) return [];
+        if (!highlights.length || coordinates.length < 2) return [];
         const pinned = new Set(visiblePlaces.map(place => place.id));
         const nearby = corridor
             .filter(place => highlights.includes(place.category))
@@ -238,7 +240,7 @@
         }
         if (pending) pins.push({ id: 'pending', coordinate: pending, label: 'Overnight spot', kind: 'place', appearance: 'suggested' });
         // Day ends come last, so they stay on top of a candidate place at the same spot and can be dragged.
-        for (const day of multi ? days.slice(0, -1) : []) {
+        for (const day of multi && currentRoute ? days.slice(0, -1) : []) {
             if (day.pinned) continue;
             const label = dayLabels[day.number] ?? day.number;
             pins.push({
@@ -273,7 +275,7 @@
     });
 
     $effect(() => {
-        if (!highlights.length) return;
+        if (!highlights.length || coordinates.length < 2) return;
         const route = coordinates;
         let current = true;
         corridorLoad = 'loading';
@@ -306,9 +308,9 @@
                 if (saved.routing && !saved.routing.surfaces) saved.routing = undefined;
                 trip = saved;
             }
-            else if (raw) draftError = 'Saved draft is invalid · default route loaded';
+            else if (raw) draftError = 'Saved draft is invalid · new plan opened';
         } catch (error) {
-            draftError = error instanceof SyntaxError ? 'Saved draft is invalid · default route loaded' : 'Draft · browser storage unavailable';
+            draftError = error instanceof SyntaxError ? 'Saved draft is invalid · new plan opened' : 'Draft · browser storage unavailable';
         }
         return () => preview.cancel();
     });
@@ -332,6 +334,7 @@
         previewTrip = null;
         draggingPoint = false;
         trip = history.commit($state.snapshot(trip), next);
+        if (!hasEndpoints) { expandedDay = null; list = 'plan'; planEditing = false; hoverProgress = null; }
         revision++;
         message = description;
         undoable = false;
@@ -357,7 +360,7 @@
         draggingPoint = false;
         revision++;
         clearSelection();
-        night = Math.min(night, tripDays(trip).length);
+        night = Math.max(1, Math.min(night, tripDays(trip).length));
         if (expandedDay !== null) expandedDay = night;
         save();
         message = description;
@@ -378,9 +381,9 @@
         revealTimer = setTimeout(() => revealId = null, 1200);
     }
 
-    function dayOf(coordinate: Coordinate): number {
+    function dayOf(coordinate: Coordinate): number | null {
         const at = nearestProgress(coordinates, coordinate);
-        return (days.find(d => at <= d.to) ?? days.at(-1)!).number;
+        return (days.find(d => at <= d.to) ?? days.at(-1))?.number ?? null;
     }
 
     function undo() {
@@ -438,7 +441,8 @@
 
     /** Opens a place clicked on the map; while picking, the place is offered for the night. */
     function choosePlace(place: Place) {
-        pointing = { anchor: place.coordinate };
+        const fromSearch = searching && results.some(result => result.place.id === place.id);
+        if (!fromSearch) pointing = { anchor: place.coordinate };
         const forNight = picking;
         clearSelection();
         mapPlace = place;
@@ -579,6 +583,7 @@
     }
 
     function previewPoint(id: string, coordinate: Coordinate) {
+        if (!hasEndpoints) return;
         draggingPoint = true;
         previewStatus = 'Hold still to preview the route';
         preview.move(movedPoint(id, coordinate));
@@ -591,12 +596,29 @@
     }
 
     function removePoint() {
-        if (!selectedPoint || selectedPoint.kind === 'start' || selectedPoint.kind === 'finish') return;
-        const next = $state.snapshot(trip);
-        next.points = next.points.filter(p => p.id !== selectedId);
-        next.routeOrder = next.routeOrder?.filter(id => id !== selectedId);
-        commit(next, 'Point removed');
+        if (!selectedPoint) return;
+        commit(removeRoutePoint($state.snapshot(trip), selectedPoint.id), 'Point removed');
+        pointing = undefined;
         clearSelection();
+    }
+
+    function chooseEndpoint(kind: 'start' | 'finish') {
+        const coordinate = spot?.coordinate ?? selectedPlace?.coordinate;
+        if (!coordinate) return;
+        commit(setEndpoint($state.snapshot(trip), kind, coordinate, selectedPlace?.label), kind === 'start' ? 'Start set' : 'Finish set');
+        showRoute = true;
+        clearSelection();
+        exitSearch();
+        list = 'plan';
+    }
+
+    function newPlan() {
+        commit({ ...emptyTrip(trip.mode), bike: trip.bike, preset: trip.preset }, 'New plan · Undo to restore');
+        clearSelection();
+        exitSearch();
+        drawing = null;
+        pointing = undefined;
+        showRoute = true;
     }
 
     function rename(label: string) {
@@ -658,7 +680,7 @@
             if (!response.ok) throw new Error('Start the local search server first.');
             const { coordinates: line } = await response.json() as { coordinates: Coordinate[] };
             if (line.length < 2) throw new Error('The sample route could not load.');
-            commit({ ...initialTrip(), mode: 'trip', routeOrder: [], points: [
+            commit({ ...emptyTrip('trip'), routeOrder: [], points: [
                 { id: 'start', label: 'Black Forest start', kind: 'start', coordinate: line[0], progress: 0 },
                 { id: 'finish', label: 'Black Forest finish', kind: 'finish', coordinate: line.at(-1)!, progress: 1, leg: 'drawn', drawn: line.slice(1,-1) },
             ] }, 'Black Forest test route loaded · three provisional days');
@@ -690,7 +712,7 @@
         commit(saved, `Restored ‘${name}’`);
         undoable = true;
         clearSelection();
-        night = Math.min(night, tripDays(trip).length);
+        night = Math.max(1, Math.min(night, tripDays(trip).length));
         if (expandedDay !== null) expandedDay = night;
     }
 
@@ -725,7 +747,7 @@
     </header>
     <TripBar
         {trip} {canUndo} {canRedo} {draftSavedAt} {draftError}
-        onChange={changeTrip} onUndo={undo} onRedo={redo} onRestore={restoreVersion}
+        onNew={newPlan} onChange={changeTrip} onUndo={undo} onRedo={redo} onRestore={restoreVersion}
         onSaved={(version: Version) => message = `Version saved · ${version.summary}`}
     />
     <main>
@@ -736,14 +758,36 @@
                 <div class="pane-scroll">
                     <QueryResults state={searchState} {selectedId} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
                 </div>
+            {:else if !hasEndpoints}
+                <div class="start-plan pane-scroll">
+                    <Icon name="route" size={24} />
+                    <h2>{stops.length ? `Choose your ${nextEndpoint}` : 'Where would you like to ride?'}</h2>
+                    <p>{stops.length ? `Click another place on the map and choose “${nextEndpoint === 'start' ? 'Start' : 'Finish'} here”.` : 'Click a place on the map, or search above. Choose “Start here” or “Finish here”.'}</p>
+                    {#each stops as { point } (point.id)}
+                        <button type="button" class="chosen-endpoint" onclick={() => inspectPoint(point)}>
+                            <Icon name="pin" size={18} /><span><small>{point.kind === 'start' ? 'Start' : 'Finish'}</small><strong>{point.label}</strong></span><Icon name="chevron" size={16} />
+                        </button>
+                    {/each}
+                    <p class="next-step">{multi ? 'Choose both points to see the route and split it into riding days.' : 'Your route appears when you have a start and finish. Add stops along the way.'}</p>
+                </div>
             {:else}
-                {#if !focusedDay}
+                {#if !currentRoute}
+                    <div class="route-status" role="status">
+                        <p>{routingStatus}</p>
+                        {#if routingStatus !== 'Calculating route…'}
+                            {#if canUndo}<button type="button" class="planner-action" onclick={undo}>Undo last change</button>{/if}
+                            <button type="button" class="planner-action" onclick={() => routeAttempt++}>Retry routing</button>
+                            <p>Move a point or choose another place in Baden-Württemberg.</p>
+                        {/if}
+                    </div>
+                {/if}
+                {#if !focusedDay && currentRoute}
                     <div class="trip-summary"><RouteStats distance={total} ascent={currentRoute?.elevation.every(h => h !== null) ? profileAscent(0, 1, currentRoute) : null} hours={currentRoute ? currentRoute.seconds / 3600 : null} /></div>
                 {/if}
-                {#if !focusedDay || planEditing}
+                {#if currentRoute && (!focusedDay || planEditing)}
                     <PlanLine {trip} dayCount={itinerary.length} bind:editing={planEditing} onApply={applyPlan} />
                 {/if}
-                {#if !focusedDay}
+                {#if !focusedDay && currentRoute}
                     <div class="list-switch">
                         <Segmented compact label="List" value={list} onChange={(value) => list = value}
                             options={[{ value: 'plan', label: multi ? 'Days' : 'Route' }, { value: 'ways', label: currentRoute?.alternativesReady ? `Route options · ${currentRoute.alternatives.length}` : 'Route options' }]} />
@@ -752,7 +796,7 @@
                 <div class="pane-scroll">
                     {#if list === 'ways'}
                         <WaysList status={needsAlternatives ? waysStatus || 'Open Route options to find alternatives.' : ''} routes={currentRoute?.alternatives ?? []} choiceId={currentRoute?.choiceId ?? ''} onPick={pickRoute} />
-                    {:else if multi}
+                    {:else if multi && currentRoute}
                         <Itinerary
                             {trip} {itinerary} {days} {theme} {expandedDay} {candidates} {conflicts} {selectedId} {revealId}
                             changing={changingOvernight}
@@ -769,7 +813,7 @@
                             onNameRest={nameRest}
                         />
                     {:else}
-                        <RouteList {stops} onInspect={inspectPoint}
+                        <RouteList {stops} measured={!!currentRoute} onInspect={inspectPoint}
                             onReorder={(id, offset) => commit(reorderPoint($state.snapshot(trip), id, offset), 'Stop reordered')} />
                     {/if}
                     {#if nearbyLandmark && !focusedDay}
@@ -786,7 +830,7 @@
                     {theme} {hillshade} {contours} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces} {landmarks}
-                    onBounds={(bounds, fromSearch) => { viewBounds = bounds; if (!fromSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={previewPoint} onDayEndDrag={moveDayEnd}
+                    onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={previewPoint} onDayEndDrag={moveDayEnd}
                     onLegClick={legClick} onInsert={insert} onDrawn={drawn} onPlaceClick={choosePlace}
                     onVisibleRange={(range) => visibleRange = range}
                 >
@@ -795,7 +839,7 @@
                             {#key selectedId}
                                 <MapCallout
                                     kind={calloutKind} {trip} {days} {dayLabels} {night} {candidates} {legMode}
-                                    point={selectedPoint} place={selectedPlace} coordinate={previewCoordinate} forNight={pickedForNight}
+                                    onEndpoint={chooseEndpoint} point={selectedPoint} place={selectedPlace} coordinate={previewCoordinate} forNight={pickedForNight}
                                     onClose={clearSelection}
                                     onAddHere={addHere}
                                     onLegMode={setLeg}
@@ -818,8 +862,8 @@
                         <button type="button" onclick={() => map?.zoomBy(-1)} aria-label="Zoom out"><Icon name="minus" /></button>
                     </div>
                     <div class="control-group">
-                        <button type="button" onclick={() => focusedDay ? showDay(focusedDay.ridingNumber) : map?.fitRoute()} aria-label={focusedDay ? `Show day ${focusedDay.number} on map` : 'Show whole route'}><Icon name="fit" /></button>
-                        <button type="button" class:chosen={showRoute} aria-label={showRoute ? 'Hide route' : 'Show route'} aria-pressed={showRoute} onclick={() => showRoute = !showRoute}><Icon name="eye" /></button>
+                        <button type="button" disabled={!trip.points.length} onclick={() => focusedDay ? showDay(focusedDay.ridingNumber) : coordinates.length ? map?.fitRoute() : map?.fitCoordinates(trip.points.map(p => p.coordinate))} aria-label={focusedDay ? `Show day ${focusedDay.number} on map` : 'Show whole route'}><Icon name="fit" /></button>
+                        <button type="button" disabled={!hasEndpoints} class:chosen={showRoute} aria-label={showRoute ? 'Hide route' : 'Show route'} aria-pressed={showRoute} onclick={() => showRoute = !showRoute}><Icon name="eye" /></button>
                     </div>
                     <LayerMenu bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
                 </div>
@@ -831,6 +875,12 @@
                 {/if}
             </div>
             <Resize value={Math.min(profileHeight, maxProfile)} min={210} max={maxProfile} axis="y" label="Elevation height" onResize={(value) => profileHeight = value} />
+            {#if !currentRoute}
+                <section class="empty-profile" aria-label="Elevation profile" style:height={`${Math.min(profileHeight, maxProfile)}px`}>
+                    <h2>Elevation &amp; surface</h2>
+                    <div><Icon name="route" size={24} /><p>{hasEndpoints ? 'The profile appears when your route is ready.' : 'See the climbs and surfaces along your route.'}</p><small>{hasEndpoints ? routingStatus : stops.length ? `Choose a ${nextEndpoint} to see the profile.` : 'Choose a start and finish to get started.'}</small></div>
+                </section>
+            {:else}
             {#key focusedDay?.number ?? 'overview'}
             <Profile
                 lineData={currentRoute} singleRoute={!multi} height={Math.min(profileHeight, maxProfile)} {total} {days} {dayLabels} {theme}
@@ -839,6 +889,7 @@
                 onNight={(riding) => showDay(riding)} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
             />
             {/key}
+            {/if}
             <div class="status-line" role="status">
                 <span class:save-error={!!draftError}>{draftError || `${message} · ${routingMessage}`}</span>
                 {#if undoable}<span>·</span><button type="button" class="planner-action" onclick={undo}>Undo</button>{/if}
@@ -850,6 +901,23 @@
 </div>
 
 <style>
+    .start-plan { padding: 24px 20px; }
+    .start-plan > :global(svg), .empty-profile :global(svg) { color: var(--ink-soft); }
+    .start-plan h2 { margin: 16px 0 8px; font: 600 20px/1.3 var(--sans); text-wrap: balance; }
+    .start-plan p { margin: 0; color: var(--ink-soft); line-height: 1.6; }
+    .start-plan .next-step { margin-top: 24px; font-size: 13px; }
+    .chosen-endpoint { display: flex; width: 100%; align-items: center; gap: 12px; margin-top: 24px; padding: 12px 0; text-align: left; border-block: 1px solid var(--line); }
+    .chosen-endpoint:hover { color: var(--link); }
+    .chosen-endpoint span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .chosen-endpoint small, .chosen-endpoint strong { display: block; }
+    .chosen-endpoint small { margin-bottom: 4px; color: var(--ink-soft); }
+    .route-status { padding: 8px 16px; color: var(--ink-soft); }
+    .empty-profile { flex: none; display: flex; flex-direction: column; padding: 16px 24px; background: var(--panel); }
+    .empty-profile h2 { margin: 0; font: 600 14px var(--sans); }
+    .empty-profile div { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+    .empty-profile p { margin: 12px 0 4px; }
+    .empty-profile small { color: var(--ink-soft); }
+
     .search-note { margin: 8px 16px 0; color: var(--ink-soft); font-size: 13px; line-height: 1.4; }
     :global(*) {
         box-sizing: border-box;

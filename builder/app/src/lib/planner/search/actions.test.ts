@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { addRestDay, coordinateAt, cumulative, initialTrip, pinNight, routingKey, routeCoordinates, routeSlice, TripHistory, type Trip } from '../editor';
+import { addRestDay, coordinateAt, cumulative, emptyTrip, initialTrip, pinNight, routingKey, routeCoordinates, routeSlice, TripHistory, type Trip } from '../editor';
 import { calculateLine } from '../routing';
 import { applyQueryChanges, type RouteBuilder } from './actions';
 
@@ -7,6 +7,15 @@ const length = (trip: Trip) => cumulative(routeCoordinates(trip)).at(-1)!;
 const direct: RouteBuilder = async points => points.slice(1).map((p,i) => [points[i].coordinate, p.coordinate]);
 
 describe('query edits', () => {
+    it('creates a route from an empty plan and explains edits that need a route', async () => {
+        const empty = emptyTrip();
+        const points = [{coordinate:[8,48] as [number,number],label:'A'},{coordinate:[8.1,48] as [number,number],label:'B'}];
+        await expect(applyQueryChanges(empty, [{op:'add_point',point:points[0]}])).rejects.toThrow('Choose a start and finish');
+        const next = await applyQueryChanges(empty, [{op:'route',points}], direct, trip => calculateLine(trip, new AbortController().signal));
+        expect(next.points.map(p => p.kind)).toEqual(['start','finish']);
+        expect(routeCoordinates(next)).toEqual(points.map(p => p.coordinate));
+        expect(empty.points).toEqual([]);
+    });
     it('commits a sentence atomically and supports the existing undo history', async () => {
         const before = initialTrip(), saved = structuredClone(before);
         const next = await applyQueryChanges(before, [{ op: 'split', range: [0,length(before)], count: 5 }]);

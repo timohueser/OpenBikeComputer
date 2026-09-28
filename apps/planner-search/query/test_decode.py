@@ -516,3 +516,27 @@ ROUND4 = [
 @pytest.mark.parametrize("intent,markup,gold", ROUND4, ids=[c[1] for c in ROUND4])
 def test_round4(intent, markup, gold):
     test_decode(intent, markup, gold)
+
+
+@pytest.mark.parametrize("scope,part", [
+    ("the end of the route", "end"), ("the start of the route", "start"),
+    ("am Ende der Route", "end"), ("in der Mitte der Route", "middle"),
+    ("à la fin du parcours", "end"), ("alla fine del percorso", "end"),
+])
+def test_route_parts(scope, part):
+    test_decode("places", f"[restaurant|WHAT] [{scope}|SCOPE]",
+                {"type": "places", "what": ["restaurant"],
+                 "where": {"scope": "route", "part": part}})
+
+
+def test_route_part_in_a_separate_day_span():
+    test_decode("places", "[restaurants|WHAT] at [route|SCOPE] [end|DAY]",
+                {"type": "places", "what": ["restaurant"],
+                 "where": {"scope": "route", "part": "end"}})
+
+
+def test_short_names_do_not_become_foreign_categories():
+    assert parse_what(Span("Lidl", "en")) == []
+    assert parse_what(Span("lido", "en")) == ["beach"]
+    assert parse_what(Span("watr", "en")) == ["water"]
+    assert parse_what(Span("restarant")) == ["restaurant"]

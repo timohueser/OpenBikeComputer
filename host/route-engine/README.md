@@ -42,12 +42,14 @@ cargo run --release -p route-engine --example query -- /data/freiburg < request.
 | `router` | Ordered points, direction continuity, geometry and totals |
 | `directory` | Optional native file adapter |
 
-The primary route minimizes the selected integer metric over retained snap
-candidates. Exactness is within the installed graph. The snap window is 250 m;
-retain roads within 3 m of the nearest distance, up to eight candidates. The
-response reports truncation. A shape point shares its directed attachment
-between both legs. Only an explicit `turnarounds` entry permits a reversal at
-that point. Road junction turns still obey the prepared access and turn rules.
+The primary route minimizes the selected metric over retained attachments.
+The snap radius is 250 m. The first attempt retains up to eight roads within
+3 m of the nearest distance. If they cannot connect, one retry widens the band
+to 50 m and 16 candidates. This retry minimizes total snap distance first,
+then route cost. Points already within 3 m of a road keep the narrow band.
+The response reports recovery and truncation. Both attempts share the query
+budgets. A shape point keeps its direction between legs. Only an explicit
+`turnarounds` entry permits reversal there. Prepared access and turn rules apply.
 
 Alternatives use prepared goals and bounded corridor probes. They must pass a
 base-cost cap and a material benefit or separation test. Discovery is not
@@ -66,7 +68,7 @@ changes. Use `elapsed` for time at positions along the geometry.
 ## Bounds and checks
 
 One router runs one query at a time. It retains up to 256 leg paths with at most
-65,536 road slices and 32 default-policy snap results. Geometry and endpoint
+65,536 road slices and 32 snap results. Geometry and endpoint
 caches each have a 32 MiB ceiling. The endpoint cache also has a 16-page limit. The caller sets the CH cache size. A decoded page is at most
 8 MiB. Default query limits are 64 points, 250,000 labels, 8,192 attachment-pair
 queries, and 250,000 geometry vertices. `Control` can lower these limits and

@@ -23,6 +23,7 @@ import {
   kmQuantity,
 } from './web/geography.mjs';
 import { openingState } from './hours.mjs';
+import { routeResults } from './web/route-results.mjs';
 
 const groups = {
   ...GROUPS,
@@ -210,7 +211,7 @@ function scope(db, request, context) {
       radial = radius ?? 3;
       bounds = [around(focus, radial)];
       line = null;
-      area = `Within ${radial} km of ${w.day ? `Day ${dayNumber(w.day, context)} ${w.part}` : `km ${km.toFixed(1)}`}`;
+      area = `Within ${radial} km of ${w.day ? `Day ${dayNumber(w.day, context)} ${w.part}` : w.part ? `the route ${w.part}` : `km ${km.toFixed(1)}`}`;
     } else {
       line = slice(line, ...range);
       bounds = boxes(line, radius ?? 1);
@@ -280,7 +281,7 @@ export function findPlaces(db, request, context) {
     );
     return {
       type: 'places',
-      results: results.slice(0, context.limit || 20),
+      results: routeResults(results, planRange(context), context.limit || 20),
       hasMore: results.length > (context.limit || 20),
       area: `Near every day ${where.part}`,
       note: [...new Set(answers.map((a) => a.note).filter(Boolean))].join(' '),
@@ -383,15 +384,16 @@ export function findPlaces(db, request, context) {
       }
     }
   }
-  if (
+  const alongRoute = sc.line || (
     implicit &&
     context.plan?.coordinates?.length > 1 &&
     crossesView(context.plan.coordinates, context.view)
-  ) {
+  );
+  if (alongRoute) {
     results = results.map((p) => ({
       ...p,
       score: -p.position.along,
-      why: { ...p.why, order: 'Position along route' },
+      why: { ...p.why, order: 'Spread along route, favouring nearby places' },
     }));
   }
   if (unknown)
@@ -410,7 +412,7 @@ export function findPlaces(db, request, context) {
     limit = context.limit || 20;
   return {
     type: 'places',
-    results: sorted.slice(0, limit),
+    results: alongRoute ? routeResults(sorted, sc.range || planRange(context), limit) : sorted.slice(0, limit),
     hasMore: sorted.length > limit,
     area: sc.area,
     note: notes.join(' '),
@@ -421,17 +423,18 @@ export function findPlaces(db, request, context) {
 
 export function resolve(db, request, context) {
   if (request.type === 'none' || request.type === 'place') {
-    let view = context.view;
-    if (request.near)
-      view = around(resolvePoint(db, request.near, context).coordinate, 5);
+    const near = request.near ? resolvePoint(db, request.near, context) : null;
+    const view = near ? around(near.coordinate, 5) : context.view;
     return {
       type: 'places',
       ...search(db, {
         q: context.q,
         request: { type: 'place', name: request.name || context.q },
         view,
+        withinKm: request.near ? 5 : undefined,
         limit: context.limit,
       }),
+      ...(near ? { area: `Within 5 km of ${near.label}` } : {}),
     };
   }
   if (request.type === 'places') return findPlaces(db, request, context);

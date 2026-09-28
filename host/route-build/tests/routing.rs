@@ -18,15 +18,17 @@ impl Source for Memory {
     }
 }
 fn package(graph: &Graph) -> (Memory, Vec<u8>) {
-    let mut objects = HashMap::new();
     let profiles = Profile::presets();
-    let manifest =
-        route_build::prepare(graph, "test".into(), [-1.0, -1.0, 1.0, 1.0], &profiles[..5], vec![], |bytes| {
-            let key = digest(bytes);
-            objects.insert(key.clone(), bytes.to_vec());
-            Ok(key)
-        })
-        .unwrap();
+    package_with_profiles(graph, &profiles[..5])
+}
+fn package_with_profiles(graph: &Graph, profiles: &[Profile]) -> (Memory, Vec<u8>) {
+    let mut objects = HashMap::new();
+    let manifest = route_build::prepare(graph, "test".into(), [-1.0, -1.0, 1.0, 1.0], profiles, vec![], |bytes| {
+        let key = digest(bytes);
+        objects.insert(key.clone(), bytes.to_vec());
+        Ok(key)
+    })
+    .unwrap();
     (Memory(Arc::new(objects)), serde_json::to_vec(&manifest).unwrap())
 }
 fn fixture() -> Graph {
@@ -398,4 +400,98 @@ fn geometry_cache_retains_a_snap_working_set_across_many_small_pages() {
         }
     }
     assert_eq!(reads.get(), 20);
+}
+
+#[test]
+fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profile() {
+    let mut graph = fixture();
+    graph.points = [(0, 0), (0, 10_000), (100, 4_000), (100, 6_000)]
+        .map(|(lat, lon)| Point { lat, lon, elevation: NO_ELEVATION })
+        .to_vec();
+    let template = graph.roads[0].clone();
+    graph.roads = [(0, 1, 0), (1, 0, 0), (2, 3, 0), (3, 2, 0), (0, 2, 1), (2, 0, 1)]
+        .map(|(from, to, difficulty)| {
+            let shape = vec![graph.points[from as usize], graph.points[to as usize]];
+            Road {
+                from,
+                to,
+                difficulty,
+                surface: Surface::Paved,
+                length_m: shape[0].distance(shape[1]).round() as u32,
+                shape,
+                ..template.clone()
+            }
+        })
+        .to_vec();
+    graph.forbidden.clear();
+    graph.forbidden_foot.clear();
+    let (source, manifest) = package(&graph);
+    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 1024 * 1024);
+    let mut request = Request {
+        points: vec![[0.0, 0.0], [0.005, 0.0002], [0.01, 0.0]],
+        profile: "road".into(),
+        pace: Pace::default(),
+        alternatives: false,
+        turnarounds: vec![1],
+    };
+    let route = router.route(&request, &Control::default()).unwrap();
+    assert_eq!(route.attachments[1].projected.lat, 0);
+    assert!(route.attachments[1].snap_distance_m < 25.0);
+    assert_eq!(route.attachments[0].snap_distance_m, 0.0);
+    assert_eq!(route.attachments[2].snap_distance_m, 0.0);
+    assert!(route.warnings.iter().any(|w| w.contains("nearby accessible roads")));
+    request.profile = "mtb".into();
+    let mtb = router.route(&request, &Control::default()).unwrap();
+    assert_eq!(mtb.attachments[1].projected.lat, 100);
+    assert!(mtb.warnings.is_empty());
+    request.profile = "road".into();
+    // An explicit point on the disconnected driveway must not jump to a different road.
+    request.points[1][1] = 0.0001;
+    assert!(matches!(router.route(&request, &Control::default()), Err(Error::NoPath)));
+}
+
+#[test]
+fn route_goals_preserve_the_bikes_surface_suitability() {
+    let mut graph = fixture();
+    graph.points =
+        [(0, 0), (0, 10_000), (15_000, 5_000)].map(|(lat, lon)| Point { lat, lon, elevation: NO_ELEVATION }).to_vec();
+    let template = graph.roads[0].clone();
+    graph.roads = [(0, 1), (1, 0), (0, 2), (2, 0), (2, 1), (1, 2)]
+        .map(|(from, to)| {
+            let shape = vec![graph.points[from as usize], graph.points[to as usize]];
+            Road {
+                from,
+                to,
+                surface: if from + to == 1 { Surface::Gravel } else { Surface::Paved },
+                length_m: shape[0].distance(shape[1]).round() as u32,
+                shape,
+                ..template.clone()
+            }
+        })
+        .to_vec();
+    graph.forbidden.clear();
+    graph.forbidden_foot.clear();
+    let profiles: Vec<_> = Profile::presets()
+        .into_iter()
+        .filter(|p| ["road", "road/shorter", "road/smoother", "gravel/shorter"].contains(&p.name.as_str()))
+        .collect();
+    let (source, manifest) = package_with_profiles(&graph, &profiles);
+    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 1024 * 1024);
+    let mut request = Request {
+        points: vec![[0.0, 0.0], [0.01, 0.0]],
+        profile: "road".into(),
+        pace: Pace::default(),
+        alternatives: false,
+        turnarounds: vec![],
+    };
+    for profile in ["road", "road/shorter", "road/smoother"] {
+        request.profile = profile.into();
+        let route = router.route(&request, &Control::default()).unwrap();
+        assert_eq!(route.totals.surface_m[Surface::Gravel as usize], 0, "{profile}");
+        assert!(route.totals.surface_m[Surface::Paved as usize] > 3000, "{profile}");
+    }
+    request.profile = "gravel/shorter".into();
+    let route = router.route(&request, &Control::default()).unwrap();
+    assert_eq!(route.totals.surface_m[Surface::Paved as usize], 0);
+    assert!(route.totals.distance_m < 1200);
 }

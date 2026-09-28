@@ -72,6 +72,7 @@ export function selectRoute(trip: Trip, route: EngineRoute, alternatives: Engine
 /** Consecutive routed legs form one request, so a shaping point keeps its road direction. */
 export async function calculateLine(trip: Trip, signal: AbortSignal, alternatives = false): Promise<RoutingLine> {
     const points = orderedRoutePoints(trip);
+    if (points.length < 2) throw new Error('Choose a start and finish to calculate a route.');
     const result: RoutingLine = { choiceId: '', key: routingKey(trip), coordinates: [], elevation: [], elapsed: [], surfaces: [], stops: [], seconds: 0,
         alternatives: [], alternativesReady: true, profile: profileId(trip), unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0 };
     let distance = 0;

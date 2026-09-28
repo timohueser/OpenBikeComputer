@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { maxRidingDays, reorderPoint, routeStops, addRestDay, anchorProgress, addClickedPoint, dayStops, applyBudget, coordinateAt, cumulative, initialTrip, insertPoint, itineraryDays, kilometres, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, removeRestDay, routeCoordinates, routeSlice, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Place, type Coordinate, type RoutePoint, type Trip } from './editor';
+import { emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, routeStops, addRestDay, anchorProgress, addClickedPoint, dayStops, applyBudget, coordinateAt, cumulative, initialTrip, insertPoint, itineraryDays, kilometres, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, removeRestDay, routeCoordinates, routeSlice, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Place, type Coordinate, type RoutePoint, type Trip } from './editor';
 
 // Fictional places keep their geographic positions when the mock route changes.
 const places: Place[] = [
@@ -397,5 +397,51 @@ describe('legs', () => {
         const drawn = setDrawnLeg(initial, 'finish', [[7.2, 47.7], [6.8, 47.7], [6.4, 47.5]]);
         const pinned = pinNight(drawn, 1, [6.8, 47.69], 'Camp');
         expect(routeCoordinates(pinned)).toEqual([initial.points[0].coordinate, [7.2, 47.7], [6.8, 47.69], [6.4, 47.5], initial.points[1].coordinate]);
+    });
+});
+
+
+describe('route endpoints', () => {
+    it.each(['route', 'trip'] as const)('builds a %s from either endpoint and promotes points in route order', mode => {
+        const empty = emptyTrip(mode);
+        expect(routeCoordinates(empty)).toEqual([]);
+        expect(tripDays(empty)).toEqual([]);
+        const finish = setEndpoint(empty, 'finish', [8, 48], 'Destination');
+        expect(routeCoordinates(finish)).toEqual([]);
+        expect(tripDays(finish)).toEqual([]);
+        const complete = setEndpoint(finish, 'start', [7.8, 48], 'Origin');
+        const startId = complete.points.find(p => p.kind === 'start')!.id;
+        const finishId = finish.points[0].id;
+        const a: RoutePoint = { id: 'a', kind: 'waypoint', label: 'A', coordinate: [7.9, 48], progress: .7 };
+        const b: RoutePoint = { ...a, id: 'b', label: 'B', progress: .3 };
+        const trip = { ...complete, points: [...complete.points, a, b, { ...a, id: 'marker', kind: 'marker' as const }], routeOrder: ['a', 'b'] };
+        const shorter = removeRoutePoint(trip, startId);
+        expect(orderedRoutePoints(shorter).map(p => [p.id, p.kind])).toEqual([['a', 'start'], ['b', 'waypoint'], [finishId, 'finish']]);
+        const both = removeRoutePoint(shorter, finishId);
+        expect(orderedRoutePoints(both).map(p => [p.id, p.kind])).toEqual([['a', 'start'], ['b', 'finish']]);
+        const one = removeRoutePoint(both, 'a');
+        expect(one.points.find(p => p.id === 'b')?.kind).toBe('finish');
+        expect(routeCoordinates(one)).toEqual([]);
+        expect(tripDays(one)).toEqual([]);
+        const cleared = removeRoutePoint(one, 'b');
+        expect(orderedRoutePoints(cleared)).toEqual([]);
+        expect(cleared.points.map(p => p.id)).toEqual(['marker']);
+        expect(routeStops(cleared)).toEqual([]);
+    });
+
+    it('clears overnight and detour semantics when promoting endpoints, and replaces an endpoint in place', () => {
+        const trip = pinNight(initialTrip(), 1, [7.3, 47.6], 'Camp');
+        const next = removeRoutePoint(trip, 'start');
+        const start = next.points.find(p => p.kind === 'start')!;
+        expect(start).toMatchObject({ label: 'Camp', progress: 0 });
+        expect(start.night).toBeUndefined();
+        expect(start.id).not.toBe('night-1');
+        expect(setEndpoint(next, 'start', [7.4, 47.6], 'New start').points.filter(p => p.kind === 'start')).toEqual([
+            expect.objectContaining({ id: start.id, label: 'New start', coordinate: [7.4, 47.6] }),
+        ]);
+        const history = new TripHistory();
+        history.commit(trip, next);
+        expect(history.undo(next)).toEqual(trip);
+        expect(history.redo(trip)).toEqual(next);
     });
 });

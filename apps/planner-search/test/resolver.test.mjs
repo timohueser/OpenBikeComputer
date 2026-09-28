@@ -73,3 +73,17 @@ test('every day ends resolve separately and riding-time splits use the supplied 
 test('repeated stops bound work before resolving duplicate destinations', () => {
   assert.throws(() => resolve(db, {type:'add_point', point:{name:'Kandel'}, every:{value:0.001,unit:'km'}}, context), /50 stop intervals/);
 });
+
+test('route pages cover the route while an endpoint request stays near its endpoint', () => {
+  const records = Array.from({length:60}, (_,i) => [`poi-${i}`,`Restaurant ${i}`,'restaurant',7.8+(i<30?i/10000:(i-29)/30),48,'',0]);
+  const {db} = database(records);
+  const coordinates = [[7.8,48],[8.8,48]];
+  const total = lengths(coordinates).at(-1);
+  const ctx = {...context,plan:{coordinates,days:[],points:[]}};
+  const route = findPlaces(db,{type:'places',what:['restaurant'],where:{scope:'route'}},ctx);
+  assert.ok(route.results[0].position.along < total*.1);
+  assert.ok(route.results.at(-1).position.along > total*.9);
+  const end = findPlaces(db,{type:'places',what:['restaurant'],where:{scope:'route',part:'end'}},ctx);
+  assert.ok(end.results.length);
+  assert.ok(end.results.every(p=>p.distance <= 3 && p.position.along > total*.9));
+});

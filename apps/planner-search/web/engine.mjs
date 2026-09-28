@@ -27,7 +27,7 @@ const CATEGORY_WORDS = {
   pharmacy: 'pharmacy pharmacies apotheke apotheken pharmacie',
   restaurant: 'restaurant restaurants', cafe: 'cafe cafes coffee',
   water: 'water wasser eau', drinking_water: 'drinking water trinkwasser',
-  bike_shop: 'bike shop bike shops fahrradladen fahrradladen',
+  bike_shop: 'fahrradladen',
   toilets: 'toilet toilets toilette toiletten wc', museum: 'museum museums museen',
   summit: 'peak peaks summit summits gipfel berg berge', pass: 'pass passes passe col',
   castle: 'castle castles burg burgen schloss schlosser',
@@ -76,6 +76,7 @@ export function around(point, km) {
   return [point[0] - dx, point[1] - dy, point[0] + dx, point[1] + dy];
 }
 const inBox = (p, b) => p.lon >= b[0] && p.lon <= b[2] && p.lat >= b[1] && p.lat <= b[3];
+const pointBoundsSQL = 'p.lon>=? AND p.lat>=? AND p.lon<=? AND p.lat<=?';
 const bboxSQL = 'p.id IN (SELECT id FROM spatial WHERE east>=? AND north>=? AND west<=? AND south<=?)';
 
 export function routePosition(point, route) {
@@ -136,7 +137,7 @@ function textCandidates(db, q, view, onlyPlaces=false) {
     ORDER BY ${candidateOrder(view)} LIMIT 100`,[norm(q),norm(q)+'\uffff']);
   // Both branches precede ranking: a local candidate survives a common global name.
   const global=db.all(`SELECT p.* ${from} ORDER BY rank, ${candidateOrder(view)} LIMIT 400`,[exp]);
-  const local=db.all(`SELECT p.* ${from} AND ${bboxSQL} ORDER BY ${candidateOrder(view)} LIMIT 800`,[exp,...view]);
+  const local=db.all(`SELECT p.* ${from} AND ${pointBoundsSQL} ORDER BY ${candidateOrder(view)} LIMIT 800`,[exp,...view]);
   const keys=[...new Set([...spans(q),...spans(streetNorm(q))].map(p=>p.term))];
   const joined=compactCandidates(db,keys,compact(q),view,restriction);
   return [...new Map([...exact,...prefix,...global,...local,...joined].map(p=>[p.id,p])).values()];
@@ -147,7 +148,7 @@ function compactCandidates(db,keys,prefix,view,restriction='') {
   // A common query fragment must not exhaust the budget for the complete name.
   const compactGlobal=keys.flatMap(key=>db.all(`SELECT p.* FROM compact_names n JOIN places p ON p.id=n.place_id
     WHERE n.term=?${restriction} ORDER BY ${candidateOrder(view)} LIMIT 400`,[key]));
-  const compactLocal=db.all(`SELECT DISTINCT p.* ${joined} AND ${bboxSQL} ORDER BY ${candidateOrder(view)} LIMIT 800`,[...keys,...view]);
+  const compactLocal=db.all(`SELECT DISTINCT p.* ${joined} AND ${pointBoundsSQL} ORDER BY ${candidateOrder(view)} LIMIT 800`,[...keys,...view]);
   const compactPrefix=db.all(`SELECT DISTINCT p.* FROM compact_names n JOIN places p ON p.id=n.place_id
     WHERE n.term>=? AND n.term<?${restriction} ORDER BY ${candidateOrder(view)} LIMIT 100`,[prefix,prefix+'\uffff']);
   return [...new Map([...compactGlobal,...compactLocal,...compactPrefix].map(p=>[p.id,p])).values()];
@@ -307,6 +308,7 @@ export function search(db,input) {
     }
     if(!results.length) results=named(db,text,view);
   }
+  if(input.withinKm!==undefined) results=results.filter(p=>distance([p.lon,p.lat],center(view))<=input.withinKm);
   results=distinct(rank(results));
   const total=results.length;
   return {results:results.slice(0,limit),hasMore:total>limit,matched:total,area,note,resolved,

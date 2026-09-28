@@ -53,6 +53,10 @@ class Span:
             if not self.used[i]:
                 for name in tables:
                     m = T[name].match_at(self.t, i)
+                    if name == "kind" and self.lang:
+                        local = T[f"kind_{self.lang}"].match_at(self.t, i)
+                        if local and (m is None or rank(local) > rank(m)):
+                            m = local
                     if m and not any(self.used[i:i + m[0]]) and not (strict and m[2] > 1) and (
                             best is None or rank(m) > rank(best)):
                         best, name_ = m, name
@@ -418,6 +422,14 @@ def first(table: str):
     return lambda sp: next(iter(sp.find(table)), None)
 
 
+def parse_scope(sp: Span) -> dict | None:
+    scope = first("scope")(sp)
+    if scope is None:
+        return None
+    part = first("part")(sp) if scope == "route" else None
+    return {"scope": scope, **({"part": part} if part else {})}
+
+
 def _compounds(sp: Span, head: str, tail: str) -> list[Any]:
     """Head values of the unread German compounds with that tail: "Wasserstopps" -> water."""
     out = []
@@ -531,12 +543,12 @@ class _Req:
             if part and "part" not in w:
                 w["part"] = part
             self.ignore(i, rest + [str(x) for x in extra])
-        if "part" in w and "day" not in w:
+        if (s := self.one("SCOPE", parse_scope)) is not None:
+            w.update(s)
+        if "part" in w and "day" not in w and w.get("scope") != "route":
             del w["part"]
             for i, text in days:
                 self.ignore(i, [text])
-        if (s := self.one("SCOPE", first("scope"))) is not None:
-            w["scope"] = s
         # "near a supermarket" nests a second search (level 3); "before the next pass" does not.
         if near := self.point("NEAR", 2, kinds=False):
             w["near"] = near
