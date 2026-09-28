@@ -1,0 +1,114 @@
+# Hand-made names, shared by all languages. `business` entries are patterns (see gen/generate.py);
+# the name keeps its kind word ("Hotel Krone" is a name, not a WHAT).
+business:
+  - "(Hotel|Gasthof|Gasthaus|Landgasthof|Pension|Berggasthof|Hotel Garni) (Krone|Adler|Sonne|Post|Löwen|Hirschen|Rössle|Bären|Engel|Linde|Alpenblick|Edelweiss|Schwarzwaldhof|Sternen|Ochsen|Kreuz|Rebstock|Traube|Waldhorn|Hirsch|Bergblick|Seeblick|Alpenrose|Tannenhof|Belvedere)"
+  - "(Gasthaus|Gasthof|Wirtshaus) (zum|zur) (Löwen|Adler|Hirschen|Ochsen|Bären|Schwanen|Rössle|Post|Linde|Krone|Sonne|Traube|Mühle|Brücke|Kreuz)"
+  - "(Camping|Campingplatz|Camping Park|Camping Municipal|Camping Le|Campeggio|Camping La) (Sonnenwiese|Seeblick|Waldesruh|Kirchzarten|Belvedere|Les Pins|Le Lac|Bella Italia|Riverside|Alpenblick|Hochschwarzwald|Les Mélèzes|Sole|Mühlbach|Lago|Paradis|des Alpes)"
+  - "(Bäckerei|Metzgerei|Konditorei|Café|Dorfladen|Hofladen) (Müller|Schmidt|Maier|Huber|Wagner|Fischer|Weber|Schneider|Becker|Hofmann|Keller|Frey|Kaiser|Lang|Zimmermann|Wolf)"
+  - "(Café|Caffè|Cafe|Bistro|Bar) (Central|Europa|Roma|Luna|du Commerce|des Sports|Sport|am Markt|Paradiso|Venezia|de la Poste|Tell)"
+  - "(Rifugio|Albergo|Trattoria|Osteria|Pizzeria|Agriturismo|Locanda) (Bonatti|Monte Rosa|Stella Alpina|La Baita|Da Mario|Il Sole|Belvedere|Gardena|Alpino|Genziana|Dolomiti|Al Lago|Sassolungo)"
+  - "(Auberge|Hôtel|Gîte|Refuge|Boulangerie|Chambres d'hôtes) (du Col|de la Poste|du Lac|des Alpes|du Soleil|Chez Marie|la Grange|Le Relais|de France|du Galibier|Saint-Pierre|les Écrins)"
+  - "(Jugendherberge|Hostel|Youth Hostel|Auberge de Jeunesse) (Freiburg|Basel|Konstanz|Luzern|Annecy|Bolzano|Innsbruck|Zermatt|Titisee|Grenoble)"
+  - "(The|Ye Olde) (Red Lion|Kings Arms|Crown Inn|White Hart|Black Horse|Plough|Royal Oak|Swan|Bell Inn)"
+  - "(Radsport|Bike Shop|Fahrrad|Cycles|Vélo|Bici) (Huber|Keller|Maier|Martin|Rossi|Bianchi|Dubois|Wolf|Express|Station|Center|Point)"
+  - "(Edeka|Rewe|Spar|Migros|Coop|Carrefour|Intermarché|Conad|Lidl|Aldi|Penny|Denner|Volg|Tesco|Co-op) (Müller|Center|Express|City|Contact|Market|Wolf|Frey)"
+  - "(Apotheke|Pharmacie|Farmacia) (am Markt|zum Löwen|Centrale|du Centre|am Rathaus|Sankt Georg|Europa|San Marco)"
+  - "(Hotel Krone St. Peter|Gasthaus zum Löwen|Camping Sonnenwiese|Bäckerei Müller|Café Central|Rifugio Bonatti|Auberge du Col|Hotel Krone|Berghaus Kandel|Hofgut Sternen|Kandelhof|Café Sonne|Col Bike|Camping du Col)"
+
+# Real place names that are also common words, or that look like kind words.
+common:
+  - Kandel
+  - Col
+  - Bad
+  - Rain
+  - Au
+  - Hof
+  - Berg
+  - Post
+  - Mark
+  - Stein
+  - Wald
+  - Zell
+  - Feld
+  - Tann
+  - Laufen
+  - Essen
+  - Wetter
+  - Halle
+  - Weil
+  - Lauf
+  - Weiden
+  - Sonnenberg
+  - Oberhof
+  - Titisee
+  - Feldberg
+  - Belchen
+  - Schauinsland
+  - Hinterzarten
+  - St. Peter
+  - St. Märgen
+  - St. Moritz
+  - Reading
+  - Bath
+  - Wells
+  - Rye
+  - Deal
+  - Street
+  - Hope
+  - March
+  - Ware
+  - Sandwich
+  - Nice
+  - Nancy
+  - Orange
+  - Tours
+  - Sens
+  - Lens
+  - Aix
+  - Bra
+  - Riva
+  - Arco
+  - Ora
+  - Como
+  - Lago
+  - Monte
+  - Passo
+  - Sion
+  - Chur
+  - Brig
+  - Thun
+  - Olten
+  - Aigle
+  - Bourg
+  - Pont
+  - Le Pont
+  - La Chapelle
+  - Saint-Michel-de-Maurienne
+  - Saint-Jean-de-Maurienne
+  - Passo dello Stelvio
+  - Col du Galibier
+  - Col de la Bonette
+  - Alpe d'Huez
+  - Mont Ventoux
+  - Grosse Scheidegg
+  - Furkapass
+  - Großglockner
+  - Garmisch-Partenkirchen
+  - Bourg-d'Oisans
+  - Briançon
+  - Val d'Isère
+  - Sankt Anton am Arlberg
+  - Pfaffenhofen an der Ilm
+  - Kirchzarten
+  - Waldkirch
+  - Freiburg
+  - Freiburg im Breisgau
+  - Basel
+  - Zürich
+  - Genève
+  - Annecy
+  - Grenoble
+  - Bolzano
+  - Bozen
+  - Innsbruck
+  - Konstanz

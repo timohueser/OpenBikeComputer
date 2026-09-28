@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+work/
+*.onnx
+*.safetensors
+*.bin
+*.pt
+data/
+runs/
+lexicon/src/

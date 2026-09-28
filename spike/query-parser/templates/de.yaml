@@ -1,0 +1,1257 @@
+# German templates for gen/generate.py. The format is in the docstring of gen/generate.py.
+# Written the way a German rider types: verb at the end, fused prepositions (zum, beim, am),
+# compounds (Kaffeepause, Rennradroute) and telegraphic style.
+lang: de
+decimal: ","
+
+numbers:
+  word: [null, eins, zwei, drei, vier, fünf, sechs, sieben, acht, neun, zehn, elf, zwölf, dreizehn, vierzehn]
+  wordcap: [null, Ein, Zwei, Drei, Vier, Fünf, Sechs, Sieben, Acht, Neun, Zehn, Elf, Zwölf, Dreizehn, Vierzehn]
+  ordn: [null, ersten, zweiten, dritten, vierten, fünften, sechsten, siebten, achten, neunten, zehnten, elften, zwölften]
+  orde: [null, erste, zweite, dritte, vierte, fünfte, sechste, siebte, achte, neunte, zehnte, elfte, zwölfte]
+
+weekdays:
+  mon: {sg: [Montag, Mo], pl: [montags]}
+  tue: {sg: [Dienstag, Di], pl: [dienstags]}
+  wed: {sg: [Mittwoch, Mi], pl: [mittwochs]}
+  thu: {sg: [Donnerstag, Do], pl: [donnerstags]}
+  fri: {sg: [Freitag, Fr], pl: [freitags]}
+  sat: {sg: [Samstag, Sa, Samstag], pl: [samstags]}
+  sun: {sg: [Sonntag, So, Sonntag], pl: [sonntags]}
+
+# pl: plural or mass noun; sg: singular with gender; verb: "wo kann ich ..."; stop: a compound
+# that also names the stop; gap: "kein ..."; gapn: a gap compound.
+kinds:
+  water:
+    pl: [Wasser, Wasserstellen, Wasserquellen, Nachfüllstellen, Wasserpunkte]
+    sg: [Wasserstelle/f, Wasserquelle/f, Nachfüllstelle/f, Wasserpunkt/m]
+    verb: [Wasser auffüllen, Wasser holen, Wasser tanken, Flaschen auffüllen, Wasser nachfüllen, meine Flaschen füllen, Wasser bekommen]
+    stop: [Wasserstopp/m, Wasserpause/f, Nachfüllstopp/m, Wasser-Stopp/m, Wasser-Pause/f]
+    mod: [Wasser/n]
+    gap: [Wasser/n]
+    gapn: [Wasserlücken, Wasserlücke]
+  drinking_water:
+    pl: [Trinkwasser, Trinkwasserstellen]
+    sg: [Trinkwasserstelle/f, Trinkwasserhahn/m]
+    gap: [Trinkwasser/n]
+  fountain:
+    pl: [Brunnen, Trinkbrunnen, Dorfbrunnen, Wasserbrunnen]
+    sg: [Brunnen/m, Trinkbrunnen/m, Dorfbrunnen/m]
+  spring:
+    pl: [Quellen, Bergquellen]
+    sg: [Quelle/f, Bergquelle/f]
+  water_tap:
+    pl: [Wasserhähne, Zapfstellen, Außenwasserhähne]
+    sg: [Wasserhahn/m, Zapfstelle/f, Außenwasserhahn/m]
+  sleep:
+    pl: [Schlafplätze, Übernachtungsmöglichkeiten, Übernachtungsplätze, Plätze zum Schlafen]
+    sg: [Schlafplatz/m, Übernachtungsmöglichkeit/f, Übernachtungsplatz/m]
+    verb: [schlafen, übernachten, pennen, die Nacht verbringen]
+    gap: [Übernachtungsmöglichkeit/f, Schlafplatz/m]
+  campsite:
+    pl: [Campingplätze, Zeltplätze, Campings, Campingplätze]
+    sg: [Campingplatz/m, Zeltplatz/m, Camping/n]
+    verb: [zelten, campen, das Zelt aufschlagen, mein Zelt aufstellen, mein Zelt aufbauen]
+    gap: [Campingplatz/m, Zeltplatz/m]
+  shelter:
+    pl: [Schutzhütten, Unterstände, Biwaks]
+    sg: [Schutzhütte/f, Unterstand/m, Biwak/n]
+  lodging:
+    pl: [Unterkünfte, Zimmer, Betten]
+    sg: [Unterkunft/f, Zimmer/n, Bett/n]
+    verb: [ein Zimmer nehmen, ein Zimmer buchen, unterkommen]
+    gap: [Unterkunft/f]
+  hotel:
+    pl: [Hotels, Gasthöfe, Gasthäuser, Landgasthöfe]
+    sg: [Hotel/n, Gasthof/m, Gasthaus/n]
+  hostel:
+    pl: [Hostels, Jugendherbergen, Herbergen]
+    sg: [Hostel/n, Jugendherberge/f, Herberge/f]
+  guest_house:
+    pl: [Pensionen, Gästehäuser, Ferienzimmer, Privatzimmer]
+    sg: [Pension/f, Gästehaus/n, Privatzimmer/n]
+  motel:
+    pl: [Motels]
+    sg: [Motel/n]
+  hut:
+    pl: [Hütten, Berghütten, Almhütten, Alpenvereinshütten]
+    sg: [Hütte/f, Berghütte/f, Almhütte/f]
+  resupply:
+    pl: [Einkaufsmöglichkeiten, Läden, Geschäfte, Lebensmittelläden, Lebensmittelgeschäfte, Versorgungspunkte]
+    sg: [Laden/m, Geschäft/n, Lebensmittelladen/m, Einkaufsmöglichkeit/f, Versorgungspunkt/m]
+    verb: [einkaufen, Essen kaufen, Proviant kaufen, Lebensmittel kaufen, Vorräte auffüllen, was zu essen kaufen]
+    stop: [Einkaufsstopp/m, Versorgungsstopp/m, Einkaufs-Stopp/m]
+    mod: [Einkauf/m, Proviant/m]
+    gap: [Einkaufsmöglichkeit/f, Laden/m]
+    gapn: [Versorgungslücken, Versorgungslücke, Einkaufslücken]
+  supermarket:
+    pl: [Supermärkte]
+    sg: [Supermarkt/m]
+    stop: [Supermarktstopp/m]
+    gap: [Supermarkt/m]
+  convenience:
+    pl: [Kioske, Dorfläden, Tankstellenshops, Spätis, Minimärkte]
+    sg: [Kiosk/m, Dorfladen/m, Späti/m, Tankstellenshop/m]
+  bakery:
+    pl: [Bäckereien, Bäcker, Backstuben]
+    sg: [Bäckerei/f, Bäcker/m]
+    verb: [Brot kaufen, Brötchen holen, Brötchen kaufen]
+    stop: [Bäckerstopp/m, Bäckerpause/f, Bäcker-Stopp/m]
+    mod: [Bäcker/m, Brötchen/n]
+    gap: [Bäcker/m, Bäckerei/f]
+  butcher:
+    pl: [Metzgereien, Metzger, Fleischereien]
+    sg: [Metzgerei/f, Metzger/m, Fleischerei/f]
+  marketplace:
+    pl: [Märkte, Wochenmärkte, Bauernmärkte, Marktplätze]
+    sg: [Markt/m, Wochenmarkt/m, Bauernmarkt/m]
+  fuel:
+    pl: [Tankstellen]
+    sg: [Tankstelle/f]
+    gap: [Tankstelle/f]
+  food:
+    pl: [Essen, Essensmöglichkeiten, Verpflegung, Einkehrmöglichkeiten, Lokale]
+    sg: [Essensmöglichkeit/f, Einkehrmöglichkeit/f, Lokal/n]
+    verb: [essen, einkehren, was essen, etwas essen, zu Abend essen, was futtern]
+    stop: [Essenspause/f, Essensstopp/m, Einkehrpause/f, Essens-Pause/f, Mittagspause/f, Brotzeitpause/f, Mittagsrast/f]
+    mod: [Essen/n]
+    gap: [Essen/n, Verpflegung/f]
+  cafe:
+    pl: [Cafés, Cafes, Kaffee, Kaffeehäuser]
+    sg: [Café/n, Cafe/n, Kaffeehaus/n]
+    verb: [Kaffee trinken, einen Kaffee trinken, Kaffee holen]
+    stop: [Kaffeepause/f, Kaffeestopp/m, Cafépause/f, Kaffee-Pause/f, Kaffee-Stopp/m]
+    mod: [Kaffee/m]
+    gap: [Café/n]
+  restaurant:
+    pl: [Restaurants, Gaststätten, Wirtshäuser, Pizzerien]
+    sg: [Restaurant/n, Gaststätte/f, Wirtshaus/n, Pizzeria/f]
+    verb: [essen gehen]
+  fast_food:
+    pl: [Imbisse, Imbissbuden, Dönerbuden, Fast Food, Schnellrestaurants, Pommesbuden]
+    sg: [Imbiss/m, Imbissbude/f, Dönerbude/f, Schnellrestaurant/n]
+  bar:
+    pl: [Bars, Kneipen, Biergärten, Pubs]
+    sg: [Bar/f, Kneipe/f, Biergarten/m]
+    verb: [ein Bier trinken, einen trinken]
+    stop: [Bierpause/f]
+  ice_cream:
+    pl: [Eisdielen, Eiscafés, Eis]
+    sg: [Eisdiele/f, Eiscafé/n]
+    verb: [Eis essen, ein Eis essen, ein Eis holen]
+    stop: [Eispause/f]
+  pharmacy:
+    pl: [Apotheken]
+    sg: [Apotheke/f]
+    gap: [Apotheke/f]
+  medical:
+    pl: [medizinische Hilfe, medizinische Versorgung, Ambulanzen, Gesundheitszentren]
+    sg: [Ambulanz/f, Gesundheitszentrum/n]
+  hospital:
+    pl: [Krankenhäuser, Kliniken, Notaufnahmen, Spitäler]
+    sg: [Krankenhaus/n, Klinik/f, Notaufnahme/f, Spital/n]
+  doctor:
+    pl: [Ärzte, Arztpraxen, Hausärzte]
+    sg: [Arzt/m, Arztpraxis/f, Hausarzt/m, Ärztin/f]
+  bike:
+    pl: [Radservice, Fahrradservice, Radhilfe]
+    sg: [Radservice/m]
+  bike_shop:
+    pl: [Radläden, Fahrradläden, Fahrradgeschäfte, Radwerkstätten, Fahrradwerkstätten, Radhändler, Bikeshops]
+    sg: [Radladen/m, Fahrradladen/m, Fahrradgeschäft/n, Radwerkstatt/f, Fahrradwerkstatt/f, Bikeshop/m]
+    verb: [mein Rad reparieren, mein Fahrrad reparieren lassen, einen Schlauch kaufen, Ersatzteile kaufen, einen neuen Mantel kaufen]
+    gap: [Radladen/m, Fahrradladen/m]
+  repair_station:
+    pl: [Reparaturstationen, Radservicestationen, Luftpumpen, Pumpstationen]
+    sg: [Reparaturstation/f, Radservicestation/f, Luftpumpe/f, Pumpstation/f]
+    verb: [Reifen aufpumpen, Luft aufpumpen, aufpumpen]
+  charging:
+    pl: [Ladestationen, Lademöglichkeiten, Steckdosen, E-Bike-Ladestationen]
+    sg: [Ladestation/f, Lademöglichkeit/f, Steckdose/f]
+    verb: [mein Handy laden, den Akku laden, mein E-Bike laden]
+  toilets:
+    pl: [Toiletten, WCs, öffentliche Toiletten, Klos]
+    sg: [Toilette/f, WC/n, Klo/n]
+    verb: [aufs Klo, auf die Toilette, pinkeln]
+    stop: [Pinkelpause/f, Klopause/f, Klo-Pause/f]
+    gap: [Toilette/f]
+  shower:
+    pl: [Duschen, Duschmöglichkeiten]
+    sg: [Dusche/f, Duschmöglichkeit/f]
+    verb: [duschen, mich duschen, mich waschen]
+    gap: [Dusche/f]
+  laundry:
+    pl: [Waschsalons, Wäschereien, Waschmaschinen]
+    sg: [Waschsalon/m, Wäscherei/f, Waschmaschine/f]
+    verb: [Wäsche waschen, meine Klamotten waschen]
+  atm:
+    pl: [Geldautomaten, Bankomaten, Banken, Bankautomaten]
+    sg: [Geldautomat/m, Bankomat/m, Bank/f]
+    verb: [Geld abheben, Bargeld holen, Geld holen, Bargeld abheben]
+    gap: [Geldautomat/m]
+  transport:
+    pl: [öffentliche Verkehrsmittel, ÖPNV, Nahverkehr]
+    sg: [ÖPNV-Haltestelle/f]
+  train_station:
+    pl: [Bahnhöfe, Züge, Bahnstationen, Haltepunkte]
+    sg: [Bahnhof/m, Bahnstation/f, Haltepunkt/m]
+    verb: [den Zug nehmen, in den Zug steigen, mit dem Zug weiterfahren, einen Zug nehmen]
+    gap: [Bahnhof/m]
+  bus_stop:
+    pl: [Bushaltestellen, Busse, Haltestellen]
+    sg: [Bushaltestelle/f, Haltestelle/f]
+    verb: [den Bus nehmen, in den Bus steigen]
+  ferry:
+    pl: [Fähren, Fähranleger, Fährverbindungen]
+    sg: [Fähre/f, Fähranleger/m, Fährverbindung/f]
+    verb: [die Fähre nehmen, übersetzen]
+  swimming:
+    pl: [Badestellen, Badeplätze, Bademöglichkeiten, Stellen zum Baden]
+    sg: [Badestelle/f, Badeplatz/m, Bademöglichkeit/f]
+    verb: [baden, schwimmen, schwimmen gehen, baden gehen, mich abkühlen]
+    stop: [Badepause/f, Badestopp/m]
+  lake:
+    pl: [Seen, Badeseen, Weiher, Stauseen]
+    sg: [See/m, Badesee/m, Weiher/m, Stausee/m]
+  beach:
+    pl: [Strände]
+    sg: [Strand/m]
+  swimming_pool:
+    pl: [Schwimmbäder, Freibäder, Hallenbäder, Pools]
+    sg: [Schwimmbad/n, Freibad/n, Hallenbad/n, Pool/m]
+  sight:
+    pl: [Sehenswürdigkeiten, Attraktionen, Ausflugsziele]
+    sg: [Sehenswürdigkeit/f, Attraktion/f, Ausflugsziel/n]
+    verb: [was anschauen, was besichtigen]
+  viewpoint:
+    pl: [Aussichtspunkte, Aussichten, Fotospots, Panoramapunkte]
+    sg: [Aussichtspunkt/m, Fotospot/m, Panoramapunkt/m]
+    stop: [Fotostopp/m, Aussichtsstopp/m]
+  castle:
+    pl: [Burgen, Schlösser, Festungen]
+    sg: [Burg/f, Schloss/n, Festung/f]
+  church:
+    pl: [Kirchen, Kapellen, Dome]
+    sg: [Kirche/f, Kapelle/f, Dom/m]
+  monastery:
+    pl: [Klöster, Abteien]
+    sg: [Kloster/n, Abtei/f]
+  museum:
+    pl: [Museen, Galerien]
+    sg: [Museum/n, Galerie/f]
+  ruins:
+    pl: [Ruinen, Burgruinen]
+    sg: [Ruine/f, Burgruine/f]
+  waterfall:
+    pl: [Wasserfälle]
+    sg: [Wasserfall/m]
+  pass:
+    pl: [Pässe, Bergpässe, Passstraßen, Jöcher, Sättel]
+    sg: [Pass/m, Bergpass/m, Joch/n, Sattel/m]
+  summit:
+    pl: [Gipfel, Aussichtsberge, Bergspitzen]
+    sg: [Gipfel/m, Bergspitze/f]
+  tower:
+    pl: [Türme, Aussichtstürme]
+    sg: [Turm/m, Aussichtsturm/m]
+  bridge:
+    pl: [Brücken]
+    sg: [Brücke/f]
+  town:
+    pl: [Orte, Dörfer, Städte, Ortschaften]
+    sg: [Ort/m, Dorf/n, Stadt/f, Ortschaft/f]
+
+stretches:
+  climb:
+    pl: [Anstiege, Steigungen, Berge, Auffahrten, lange Anstiege, große Anstiege]
+    sg: [Anstieg/m, Steigung/f, Auffahrt/f, Berg/m]
+  descent:
+    pl: [Abfahrten, Gefälle, Abfahrtsstrecken]
+    sg: [Abfahrt/f]
+  steep:
+    pl: [steile Stellen, steile Abschnitte, steile Rampen, Rampen, Steilstücke]
+    sg: [steile Stelle/f, Rampe/f]
+  unpaved:
+    pl: [Schotterabschnitte, unbefestigte Abschnitte, Schotter, Schotterwege, Feldwege, Waldwege, unbefestigte Wege, Schotterpisten]
+    sg: [Schotterabschnitt/m, Schotterweg/m, Feldweg/m]
+  unknown_surface:
+    pl: [unbekannter Belag, unbekannte Oberflächen, unklarer Untergrund, unbekannter Untergrund]
+  pushing:
+    pl: [Schiebestrecken, Schiebepassagen, Tragepassagen, Schiebestücke]
+    sg: [Schiebestrecke/f]
+    verb: [schieben, das Rad schieben, tragen, das Rad tragen]
+  closure:
+    pl: [Sperrungen, Straßensperrungen, gesperrte Straßen, Baustellen, Vollsperrungen, gesperrte Wege]
+    sg: [Sperrung/f, Baustelle/f]
+  main_road:
+    pl: [Hauptstraßen, Bundesstraßen, stark befahrene Straßen, viel befahrene Straßen, Schnellstraßen, Straßen mit viel Verkehr]
+    sg: [Hauptstraße/f, Bundesstraße/f]
+
+banks:
+  WHAT:
+    default: ["{kind:any}"]
+    sg: ["{kind:sg}"]
+    verb: ["{kind:verb}"]
+    list: ["{kind:pl} (und|oder) {kind:pl}", "{kind:pl}, {kind:pl} (und|oder) {kind:pl}"]
+    verbs: ["{kind:verb} und {kind:verb}", "{kind:verb} oder {kind:verb}"]
+    stretch: ["{stretch:pl}"]
+    stretch_verb: ["{stretch:verb}"]
+    gap_ohne: ["ohne {kind:pl/gap}", "ohne {kind:gap}"]
+    gap_kein: ["~(keinen|keine|kein) {kind:gap}"]
+    gap_n: ["{kind:gapn}"]
+
+  NAME:
+    default: ["{name}", "{name}", "{name:poi}"]
+    one: ["{name:one}"]
+    biz_town: ["{name:biz} {name:town}"]
+
+  DAY:
+    default:
+      - ["(an|am|für|) <Tag {n}>", {day: $n}]
+      - ["am <{n:ordn} Tag>", {day: $n}]
+      - ["am <{n}. Tag>", {day: $n}]
+      - ["(an|auf|) <Etappe {n}>", {day: $n}]
+      - ["auf der <{n:ordn} Etappe>", {day: $n}]
+      - ["(an|) <Tag {n:word}>", {day: $n}]
+      - ["am <Ende von Tag {n}>", {day: $n, part: end}]
+      - ["<Ende (von|) Tag {n}>", {day: $n, part: end}]
+      - ["<Tag {n} Ende>", {day: $n, part: end}]
+      - ["am <Abend von Tag {n}>", {day: $n, part: end}]
+      - ["<Tag {n} (abends|am Abend)>", {day: $n, part: end}]
+      - ["am <Ende des {n:ordn} Tages>", {day: $n, part: end}]
+      - ["am <Ende der {n:ordn} Etappe>", {day: $n, part: end}]
+      - ["am <Anfang von Tag {n}>", {day: $n, part: start}]
+      - ["zu <Beginn von Tag {n}>", {day: $n, part: start}]
+      - ["am <Morgen von Tag {n}>", {day: $n, part: start}]
+      - ["<Tag {n} (morgens|früh)>", {day: $n, part: start}]
+      - ["<Start Tag {n}>", {day: $n, part: start}]
+      - ["in der <Mitte von Tag {n}>", {day: $n, part: middle}]
+      - ["<Mitte Tag {n}>", {day: $n, part: middle}]
+      - ["<Tag {n} mittags>", {day: $n, part: middle}]
+      - ["<mittags an Tag {n}>", {day: $n, part: middle}]
+      - ["zur <Hälfte von Tag {n}>", {day: $n, part: middle}]
+      - ["(für|) <heute>", {day: today}]
+      - ["(für|) <morgen>", {day: tomorrow}]
+      - ["(für|) <heute (Abend|Nacht)>", {day: today, part: end}]
+      - ["(für|) <morgen (Abend|Nacht)>", {day: tomorrow, part: end}]
+      - ["<morgen früh>", {day: tomorrow, part: start}]
+      - ["<morgen Mittag>", {day: tomorrow, part: middle}]
+      - ["<heute Mittag>", {day: today, part: middle}]
+      - ["<jeden Tag>", {day: every}]
+      - ["<täglich>", {day: every}]
+      - ["<(jeden Abend|jede Nacht)>", {day: every, part: end}]
+      - ["am <Ende jedes Tages>", {day: every, part: end}]
+      - ["<jeden Morgen>", {day: every, part: start}]
+    dated:
+      - ["(an|am|für|) <Tag {n}>", {day: $n}]
+      - ["am <{n:ordn} Tag>", {day: $n}]
+      - ["am <Ende von Tag {n}>", {day: $n, part: end}]
+      - ["in der <Mitte von Tag {n}>", {day: $n, part: middle}]
+      - ["<Tag {n} (morgens|früh)>", {day: $n, part: start}]
+      - ["<heute>", {day: today}]
+      - ["<morgen>", {day: tomorrow}]
+      - ["<morgen früh>", {day: tomorrow, part: start}]
+      - ["<heute Abend>", {day: today, part: end}]
+    von:
+      - ["von <Tag {n}>", {day: $n}]
+      - ["an <Tag {n}>", {day: $n}]
+      - ["<heute>", {day: today}]
+      - ["<morgen>", {day: tomorrow}]
+    plain:
+      - ["<Tag {n}>", {day: $n}]
+      - ["<Tag {n}>", {day: $n}]
+      - ["<Etappe {n}>", {day: $n}]
+      - ["<Tag {n:word}>", {day: $n}]
+      - ["den <{n:ordn} Tag>", {day: $n}]
+      - ["<heute>", {day: today}]
+      - ["<morgen>", {day: tomorrow}]
+    num:
+      - ["<Tag {n}>", {day: $n}]
+      - ["<Etappe {n}>", {day: $n}]
+      - ["den <{n:ordn} Tag>", {day: $n}]
+    end:
+      - ["das <Ende von Tag {n}>", {day: $n, part: end}]
+      - ["das <Ziel von Tag {n}>", {day: $n, part: end}]
+      - ["das <Ende der {n:ordn} Etappe>", {day: $n, part: end}]
+      - ["das <Etappenziel von Tag {n}>", {day: $n, part: end}]
+    ziel:
+      - ["<Etappenziel (für|von|) Tag {n}>", {day: $n, part: end}]
+      - ["<Tagesziel (für|von|) Tag {n}>", {day: $n, part: end}]
+      - ["<Ziel Tag {n}>", {day: $n, part: end}]
+      - ["<Tagesziel (heute|für heute)>", {day: today, part: end}]
+    night:
+      - ["an <Tag {n}>", {day: $n}]
+      - ["<heute Nacht>", {day: today, part: end}]
+      - ["<heute>", {day: today}]
+      - ["<morgen Nacht>", {day: tomorrow, part: end}]
+      - ["am <Ende von Tag {n}>", {day: $n, part: end}]
+    every:
+      - ["<jeden Tag>", {day: every}]
+      - ["<täglich>", {day: every}]
+      - ["<jede Etappe>", {day: every}]
+      - ["<jeden Abend>", {day: every, part: end}]
+    rad:
+      - ["vom <Ende von Tag {n}>", {day: $n, part: end}]
+      - ["vom <Start von Tag {n}>", {day: $n, part: start}]
+      - ["vom <Etappenziel von Tag {n}>", {day: $n, part: end}]
+      - ["vom <Ende der {n:ordn} Etappe>", {day: $n, part: end}]
+    rad_um:
+      - ["um das <Ende von Tag {n}>", {day: $n, part: end}]
+      - ["um den <Start von Tag {n}>", {day: $n, part: start}]
+      - ["um das <Etappenziel von Tag {n}>", {day: $n, part: end}]
+    join:
+      - ["<Tag {n}> und <{n1}>", {day: $n}]
+      - ["<Tage {n}> und <{n1}>", {day: $n}]
+      - ["<Tag {n}> und <Tag {n1}>", {day: $n}]
+      - ["<Tag {n}> mit <Tag {n1}>", {day: $n}]
+      - ["<Tag {n}> mit <{n1}>", {day: $n}]
+      - ["<Etappe {n}> und <{n1}>", {day: $n}]
+      - ["<Tag {n:word}> und <{n1:word}>", {day: $n}]
+      - ["<Tage {n}> - <{n1}>", {day: $n}]
+      - ["den <{n:ordn}> und <{n1:ordn} Tag>", {day: $n}]
+
+  SCOPE:
+    default:
+      - ["(entlang der|auf der|an der) (Route|Strecke|Tour)", route]
+      - ["auf (meiner|der) (Route|Strecke|Tour)", route]
+      - ["(unterwegs|auf dem Weg|am Weg|entlang meiner Route)", route]
+      - ["(im Kartenausschnitt|auf der Karte|im sichtbaren Bereich|im Ausschnitt|auf dem Bildschirm|in der Kartenansicht)", view]
+      - ["(in der Nähe|hier in der Nähe|in meiner Nähe|um mich herum|hier|in der Umgebung|hier in der Gegend|bei mir in der Nähe)", here]
+    route:
+      - ["(entlang der|auf der|an der) (Route|Strecke|Tour)", route]
+      - ["auf (meiner|der) (Route|Strecke|Tour)", route]
+      - ["<auf der ganzen Strecke>", route]
+    view:
+      - ["(im Kartenausschnitt|auf der Karte|im sichtbaren Bereich|im Ausschnitt|auf dem Bildschirm|in der Kartenansicht|hier auf der Karte)", view]
+    here:
+      - ["(in der Nähe|hier in der Nähe|in meiner Nähe|um mich herum|hier|in der Umgebung|hier in der Gegend|bei mir in der Nähe)", here]
+    way:
+      - ["(unterwegs|auf dem Weg|auf der Strecke)", route]
+    line:
+      - ["(von der|neben der|abseits der) <(Route|Strecke)>", route]
+      - ["um die <(Route|Strecke)>", route]
+      - ["von <meiner Route>", route]
+    whole:
+      - ["die <(ganze|gesamte) (Route|Tour|Strecke)>", route]
+
+  ALONG:
+    default:
+      - ["(von|) <km {k1} bis {k2}>", {ref: km, from: {value: $k1, unit: km}, to: {value: $k2, unit: km}}]
+      - ["<zwischen km {k1} und {k2}>", {ref: km, from: {value: $k1, unit: km}, to: {value: $k2, unit: km}}]
+      - ["<km {k1} - {k2}>", {ref: km, from: {value: $k1, unit: km}, to: {value: $k2, unit: km}}]
+      - ["(von|) <Kilometer {k1} bis {k2}>", {ref: km, from: {value: $k1, unit: km}, to: {value: $k2, unit: km}}]
+      - ["(bei|um|an) <km {km}>", {ref: km, at: {value: $km, unit: km}}]
+      - ["bei <Kilometer {km}>", {ref: km, at: {value: $km, unit: km}}]
+      - ["(auf den|in den|die) <ersten {km} (km|Kilometern)>", {ref: start, to: {value: $km, unit: km}}]
+      - ["(auf den|in den|die) <letzten {km} (km|Kilometern)>", {ref: end, to: {value: $km, unit: km}}]
+      - ["(auf den|in den|die) <nächsten {km} (km|Kilometern)>", {ref: here, to: {value: $km, unit: km}}]
+      - ["(in den|die) <nächsten {hh} Stunden>", {ref: here, to: {value: $hh, unit: h}}]
+      - ["in der <nächsten Stunde>", {ref: here, to: {value: 1, unit: h}}]
+      - ["in den <nächsten {min} Minuten>", {ref: here, to: {value: $min/60, unit: h}}]
+      - ["(auf den|die) <nächsten {x} km>", {ref: here, to: {value: $x, unit: km}}]
+      - ["<nach {km} km>", {ref: start, at: {value: $km, unit: km}}]
+      - ["<nach {hh} Stunden>", {ref: start, at: {value: $hh, unit: h}}]
+      - ["<in {km} km>", {ref: here, at: {value: $km, unit: km}}]
+      - ["<in {hh} Stunden>", {ref: here, at: {value: $hh, unit: h}}]
+      - ["<in {min} Minuten>", {ref: here, at: {value: $min/60, unit: h}}]
+      - ["<{km} km von hier>", {ref: here, at: {value: $km, unit: km}}]
+      - ["<ab km {k1}>", {ref: km, from: {value: $k1, unit: km}}]
+    km:
+      - ["(von|) <km {k1} bis {k2}>", {ref: km, from: {value: $k1, unit: km}, to: {value: $k2, unit: km}}]
+      - ["<zwischen km {k1} und {k2}>", {ref: km, from: {value: $k1, unit: km}, to: {value: $k2, unit: km}}]
+      - ["(bei|um) <km {km}>", {ref: km, at: {value: $km, unit: km}}]
+    mark:
+      - ["bei <km {km}>", {ref: km, at: {value: $km, unit: km}}]
+      - ["bei <Kilometer {km}>", {ref: km, at: {value: $km, unit: km}}]
+      - ["<nach {km} km>", {ref: start, at: {value: $km, unit: km}}]
+      - ["<nach {hh} Stunden>", {ref: start, at: {value: $hh, unit: h}}]
+      - ["<nach einer Stunde>", {ref: start, at: {value: 1, unit: h}}]
+      - ["<in {km} km>", {ref: here, at: {value: $km, unit: km}}]
+    range:
+      - ["(von|) <km {k1} bis {k2}>", {ref: km, from: {value: $k1, unit: km}, to: {value: $k2, unit: km}}]
+      - ["<zwischen km {k1} und {k2}>", {ref: km, from: {value: $k1, unit: km}, to: {value: $k2, unit: km}}]
+      - ["(auf den|für die|die) <ersten {km} km>", {ref: start, to: {value: $km, unit: km}}]
+      - ["(auf den|für die|die) <letzten {km} km>", {ref: end, to: {value: $km, unit: km}}]
+      - ["(auf den|für die|die) <nächsten {km} (km|Kilometer)>", {ref: here, to: {value: $km, unit: km}}]
+      - ["(für die|in den|die) <nächsten {hh} Stunden>", {ref: here, to: {value: $hh, unit: h}}]
+    rel:
+      - ["(auf den|in den|die) <ersten {ks} km>", {ref: start, to: {value: $ks, unit: km}}]
+      - ["(auf den|in den|die) <letzten {ks} km>", {ref: end, to: {value: $ks, unit: km}}]
+      - ["<nach {km} km>", {ref: start, at: {value: $km, unit: km}}]
+      - ["<nach {hh} Stunden>", {ref: start, at: {value: $hh, unit: h}}]
+      - ["in den <ersten {hh} Stunden>", {ref: start, to: {value: $hh, unit: h}}]
+    here:
+      - ["(auf den|in den|die) <nächsten {km} (km|Kilometern)>", {ref: here, to: {value: $km, unit: km}}]
+      - ["(in den|die) <nächsten {hh} Stunden>", {ref: here, to: {value: $hh, unit: h}}]
+      - ["in der <nächsten Stunde>", {ref: here, to: {value: 1, unit: h}}]
+      - ["<in {km} km>", {ref: here, at: {value: $km, unit: km}}]
+      - ["<in {hh} Stunden>", {ref: here, at: {value: $hh, unit: h}}]
+
+  RADIUS:
+    pre:
+      - ["<(max.|maximal|höchstens) {r} km>", {value: $r, unit: km}]
+      - ["<(max.|maximal|höchstens) {m} m>", {value: $m/1000, unit: km}]
+      - ["<nicht weiter als {r} km>", {value: $r, unit: km}]
+      - ["<weniger als {m} m>", {value: $m/1000, unit: km}]
+    umkreis:
+      - ["<im Umkreis von {r} km>", {value: $r, unit: km}]
+      - ["<im Umkreis von {m} m>", {value: $m/1000, unit: km}]
+      - ["<in {r} km Umkreis>", {value: $r, unit: km}]
+    default:
+      - ["<im Umkreis von {r} km>", {value: $r, unit: km}]
+      - ["<innerhalb von {r} km>", {value: $r, unit: km}]
+      - ["<(max.|maximal|höchstens) {r} km> (entfernt|weg|abseits)", {value: $r, unit: km}]
+      - ["<in {r} km Umkreis>", {value: $r, unit: km}]
+      - ["<weniger als {r} km> (entfernt|weg)", {value: $r, unit: km}]
+      - ["<im Umkreis von {m} m>", {value: $m/1000, unit: km}]
+      - ["<innerhalb von {m} Metern>", {value: $m/1000, unit: km}]
+      - ["<nicht weiter als {r} km> (entfernt|weg|)", {value: $r, unit: km}]
+      - ["<bis {r} km> (entfernt|weg)", {value: $r, unit: km}]
+      - ["<im Radius von {r} km>", {value: $r, unit: km}]
+      - ["<im Umkreis von {x} km>", {value: $x, unit: km}]
+      - ["<{r} km Umkreis>", {value: $r, unit: km}]
+
+  OPEN:
+    default:
+      - ["<(offen|geöffnet) am {wd:sg}>", {weekday: $wd}]
+      - ["(die |)<am {wd:sg} (offen|geöffnet)> (haben|sind|)", {weekday: $wd}]
+      - ["(die |)<{wd:pl} (offen|geöffnet|aufhaben)>", {weekday: $wd}]
+      - ["(die |)<(jetzt|gerade|noch|aktuell|momentan) (offen|geöffnet)> (haben|sind|)", {now: true}]
+      - ["(die |)<noch aufhaben>", {now: true}]
+    wd:
+      - ["<(offen|geöffnet) am {wd:sg}>", {weekday: $wd}]
+      - ["(die |)<am {wd:sg} (offen|geöffnet)> (haben|sind|)", {weekday: $wd}]
+      - ["(die |)<{wd:pl} (offen|geöffnet)>", {weekday: $wd}]
+    now:
+      - ["(die |)<(jetzt|gerade|noch|aktuell) (offen|geöffnet)> (haben|sind|)", {now: true}]
+      - ["<noch auf>", {now: true}]
+    bare:
+      - ["<(offen|geöffnet)>", bare]
+    bare_pre:
+      - ["<(geöffnete|offene)>", bare]
+
+  BIKE:
+    default:
+      - ["(Rennrad|Straßenrad|Renner)", road]
+      - ["(Gravelbike|Gravel|Gravel-Bike|Gravelrad)", gravel]
+      - ["(MTB|Mountainbike|Mountain-Bike)", mtb]
+      - ["(Reiserad|Trekkingrad|Tourenrad|Trekkingbike|Reisevelo)", touring]
+    route:
+      - ["(Rennradroute|Rennradtour|Rennradrunde)", road]
+      - ["(Gravelroute|Graveltour)", gravel]
+      - ["(MTB-Tour|MTB-Route|Mountainbiketour)", mtb]
+
+  GOAL:
+    adj_e:
+      - ["(kürzeste|direkteste|schnellste)", shortest]
+      - ["(flachste|einfachste|leichteste)", least_climbing]
+      - ["(asphaltierte|befestigte)", least_unpaved]
+      - ["(bergigste|anspruchsvollste|hügeligste)", most_climbing]
+      - ["(ausgewogene|normale)", balanced]
+    adj_en:
+      - ["(kürzesten|direktesten|schnellsten)", shortest]
+      - ["(flachsten|einfachsten|leichtesten)", least_climbing]
+      - ["(bergigsten|anspruchsvollsten)", most_climbing]
+    post:
+      - ["<möglichst flach>", least_climbing]
+      - ["mit <(wenig|möglichst wenig|den wenigsten) Höhenmetern>", least_climbing]
+      - ["<ohne (große |)(Anstiege|Berge)>", least_climbing]
+      - ["<(Anstiege|Berge|Steigungen) vermeiden>", least_climbing]
+      - ["<nur (auf |)Asphalt>", least_unpaved]
+      - ["<ohne (Schotter|Feldwege)>", least_unpaved]
+      - ["<(Schotter|Feldwege) vermeiden>", least_unpaved]
+      - ["<möglichst asphaltiert>", least_unpaved]
+      - ["mit <wenig Schotter>", least_unpaved]
+      - ["auf dem <kürzesten Weg>", shortest]
+      - ["<(möglichst kurz|so kurz wie möglich|am kürzesten)>", shortest]
+      - ["mit <(möglichst |)vielen Höhenmetern>", most_climbing]
+      - ["<(möglichst bergig|so bergig wie möglich)>", most_climbing]
+      - ["<ausgewogen>", balanced]
+    cmp:
+      - ["(flacher|leichter|einfacher)", least_climbing]
+      - ["(kürzer|direkter)", shortest]
+      - ["(bergiger|hügeliger|anspruchsvoller|schwerer)", most_climbing]
+    cmp_e:
+      - ["(flachere|leichtere)", least_climbing]
+      - ["(kürzere|direktere)", shortest]
+      - ["(bergigere|anspruchsvollere)", most_climbing]
+    cmp_n:
+      - ["weniger (Höhenmeter|Anstiege|Steigung)", least_climbing]
+      - ["weniger (Schotter|Feldwege)", least_unpaved]
+      - ["mehr (Höhenmeter|Anstiege)", most_climbing]
+
+  DAYS:
+    default:
+      - ["<{d} Tage>", $d]
+      - ["<{d:word} Tage>", $d]
+      - ["<{d} Etappen>", $d]
+    in:
+      - ["in <{d} Tagen>", $d]
+      - ["in <{d:word} Tagen>", $d]
+      - ["in <einer Woche>", 7]
+      - ["in <zwei Wochen>", 14]
+      - ["über <{d} Tage>", $d]
+      - ["in <{d} Etappen>", $d]
+    akk:
+      - ["in <{d} Tage>", $d]
+      - ["auf <{d} Tage>", $d]
+      - ["in <{d} Etappen>", $d]
+      - ["in <{d:word} Tage>", $d]
+    dash:
+      - ["<{d}-tägige>", $d]
+    tour:
+      - ["<{d:wordcap}tagestour>", $d]
+      - ["<{d}-Tage-Tour>", $d]
+      - ["<{d}-Tages-Tour>", $d]
+      - ["<{d}-tägige Tour>", $d]
+
+  PER_DAY:
+    default:
+      - ["<{km} km (am|pro) Tag>", {value: $km, unit: km}]
+      - ["<{km} km täglich>", {value: $km, unit: km}]
+      - ["<{km} Kilometer (am|pro) Tag>", {value: $km, unit: km}]
+      - ["<{km} km/Tag>", {value: $km, unit: km}]
+      - ["<(maximal|höchstens|etwa|rund) {km} km (am|pro) Tag>", {value: $km, unit: km}]
+      - ["<{km} km pro Etappe>", {value: $km, unit: km}]
+      - ["<{hh} Stunden (am|pro) Tag>", {value: $hh, unit: h}]
+      - ["<{x} Stunden am Tag>", {value: $x, unit: h}]
+    filler:
+      - ["<höchstens {hh} Stunden Fahrzeit (pro|am) Tag>", {value: $hh, unit: h}]
+      - ["<maximal {hh} Stunden im Sattel (pro|am) Tag>", {value: $hh, unit: h}]
+      - ["<nicht mehr als {km} km (am|pro) Tag>", {value: $km, unit: km}]
+      - ["<bis zu {km} km (am|pro) Tag>", {value: $km, unit: km}]
+      - ["<{hh} Stunden Fahrzeit am Tag>", {value: $hh, unit: h}]
+    stages:
+      - ["<Etappen von {km} km>", {value: $km, unit: km}]
+      - ["<Tagesetappen von {km} km>", {value: $km, unit: km}]
+      - ["<{km}-km-Etappen>", {value: $km, unit: km}]
+      - ["<Etappen à {km} km>", {value: $km, unit: km}]
+
+  EVERY:
+    default:
+      - ["<alle {km} km>", {value: $km, unit: km}]
+      - ["<alle {km} Kilometer>", {value: $km, unit: km}]
+      - ["<alle {hh} Stunden>", {value: $hh, unit: h}]
+      - ["<jede Stunde>", {value: 1, unit: h}]
+      - ["<stündlich>", {value: 1, unit: h}]
+      - ["<alle {min} Minuten>", {value: $min/60, unit: h}]
+      - ["<alle {x} Stunden>", {value: $x, unit: h}]
+
+  MIN:
+    default:
+      - ["<länger als {ks} km>", {value: $ks, unit: km}]
+      - ["<über {ks} km lang>", {value: $ks, unit: km}]
+      - ["<mehr als {ks} km>", {value: $ks, unit: km}]
+      - ["<mindestens {ks} km> lang", {value: $ks, unit: km}]
+      - ["<ab {ks} km>", {value: $ks, unit: km}]
+      - ["<länger als {m} m>", {value: $m/1000, unit: km}]
+    gap:
+      - ["<länger als {km} km>", {value: $km, unit: km}]
+      - ["<über {km} km>", {value: $km, unit: km}]
+      - ["<von mehr als {km} km>", {value: $km, unit: km}]
+    elev:
+      - ["<über {e} (Hm|Höhenmeter|hm)>", {value: $e, unit: m}]
+      - ["mit <mehr als {e} Höhenmetern>", {value: $e, unit: m}]
+      - ["<ab {e} Hm>", {value: $e, unit: m}]
+      - ["<über {e} m>", {value: $e, unit: m}]
+    pct:
+      - ["<über {p} %>", {value: $p, unit: "%"}]
+      - ["<mehr als {p} Prozent>", {value: $p, unit: "%"}]
+      - ["<ab {p} %>", {value: $p, unit: "%"}]
+      - ["<über {p}%>", {value: $p, unit: "%"}]
+    than_pct:
+      - ["<als {p} %>", {value: $p, unit: "%"}]
+      - ["<als {p} Prozent>", {value: $p, unit: "%"}]
+
+  IGNORED:
+    filter:
+      - "(mit Pool|mit WLAN|mit Wifi|mit Kartenzahlung|mit Aussicht|mit Strom|mit warmen Duschen|mit veganem Essen|mit Parkplatz|mit Terrasse|mit Frühstück|mit Radkeller|mit Küche|wo Hunde erlaubt sind|mit freien Zimmern|mit guten Bewertungen|mit 4 Sternen|mit Seeblick|mit Fahrradgarage)"
+    pre:
+      - "(günstige|billige|ruhige|hundefreundliche|familienfreundliche|gut bewertete|luxuriöse|kostenlose|gemütliche|günstigste)"
+    nested:
+      - "(in der Nähe von|nahe|bei|neben) ~(einem|einer|einem) {kind:sg}"
+      - "mit ~(einem|einer|einem) {kind:sg} in der Nähe"
+      - "~(beim|bei der|beim) nächsten {kind:sg}"
+      - "im Umkreis von {r} km um ~(einen|eine|ein) {kind:sg}"
+      - "nicht weit von ~(einem|einer|einem) {kind:sg}"
+      - "wo ~(ein|eine|ein) {kind:sg} in der Nähe ist"
+    route:
+      - "(ohne|keine) (Hauptstraßen|Bundesstraßen|Tunnel|Fähren|Autobahn)"
+      - "(Hauptstraßen|Bundesstraßen|Tunnel|Verkehr) vermeiden"
+      - "(mit schöner Aussicht|auf ruhigen Straßen|am Fluss entlang|durch den Wald|auf Radwegen|über Radwege|mit wenig Verkehr|durch die Weinberge|an der Küste entlang)"
+      - "(bis 17 Uhr|vor Einbruch der Dunkelheit|vor Sonnenuntergang|bis mittags)"
+    route_pre:
+      - "(landschaftlich schöne|ruhige|sichere|autofreie|verkehrsarme|malerische)"
+    stretch:
+      - "(im Schatten|mit Aussicht|in der Sonne|die gefährlich sind|mit Ampeln|länger als eine Stunde|über 2 Stunden|die fahrbar sind)"
+
+points:
+  default:
+    name: ["{name}"]
+    kind: ["~(der|die|das) <nächste {kind:sg}>", "<~(ein|eine|ein) {kind:sg}>"]
+    here: ["<hier>"]
+    along:
+      - ["<km {km}>", {along: {ref: km, at: {value: $km, unit: km}}}]
+  # route destination
+  nach:
+    name: ["nach <{name:town}>", "nach <{name}>", "zum <{name:biz}>", "zum <{name:peak}>", "auf den <{name:peak}>", "zur <{name:hut}>", "bis <{name}>"]
+    kind: ["~(zum|zur|zum) <nächsten {kind:sg}>", "~(zum|zur|zum) <{kind:sg}>", "zu <~(einem|einer|einem) {kind:sg}>"]
+    plan:
+      - ["zurück zum <Start>", {plan: start}]
+      - ["zum <(Start|Ausgangspunkt)> (zurück|)", {plan: start}]
+      - ["zum <(Ziel|Endpunkt)>", {plan: end}]
+      - ["ans <Ende der (Route|Tour)>", {plan: end}]
+    day:
+      - ["bis zum <Ende von Tag {n}>", {day: $n, part: end}]
+      - ["bis <Ende Tag {n}>", {day: $n, part: end}]
+    along:
+      - ["(auf|zu) <km {km}>", {along: {ref: km, at: {value: $km, unit: km}}}]
+  # route origin
+  von:
+    name: ["von <{name}>", "ab <{name}>", "aus <{name:town}>", "vom <{name:biz}>", "vom <{name:peak}>"]
+    day:
+      - ["vom <Ende von Tag {n}>", {day: $n, part: end}]
+      - ["vom <Start von Tag {n}>", {day: $n, part: start}]
+      - ["ab <Ende Tag {n}>", {day: $n, part: end}]
+      - ["vom <Etappenziel von Tag {n}>", {day: $n, part: end}]
+    along:
+      - ["(ab|von) <km {km}>", {along: {ref: km, at: {value: $km, unit: km}}}]
+      - ["ab <Kilometer {km}>", {along: {ref: km, at: {value: $km, unit: km}}}]
+    here: ["(von|ab) <hier>", "von <(meinem Standort|meiner Position)>", "<hier>"]
+    kind: ["~(vom|von der|vom) <nächsten {kind:sg}>"]
+    plan:
+      - ["(vom|ab) <Start>", {plan: start}]
+  # route via
+  ueber:
+    name: ["über <{name}>", "via <{name}>", "durch <{name:town}>", "über den <{name:peak}>"]
+    kind: ["über <~(einen|eine|ein) {kind:sg}>", "an <~(einem|einer|einem) {kind:sg}> vorbei"]
+  # a point with its preposition: end_day, add_point
+  bei:
+    name: ["in <{name:town}>", "bei <{name}>", "am <{name:peak}>", "beim <{name:biz}>", "auf der <{name:hut}>", "in <{name}>"]
+    kind: ["~(beim|bei der|beim) <nächsten {kind:sg}>", "~(am|an der|am) <nächsten {kind:sg}>", "bei <~(einem|einer|einem) {kind:sg}>", "an <~(einem|einer|einem) {kind:sg}>", "~(im|in der|im) <nächsten {kind:sg}>"]
+    here: ["<hier>", "<genau hier>", "an <meinem Standort>"]
+    along:
+      - ["bei <km {km}>", {along: {ref: km, at: {value: $km, unit: km}}}]
+      - ["bei <Kilometer {km}>", {along: {ref: km, at: {value: $km, unit: km}}}]
+      - ["<nach {km} km>", {along: {ref: start, at: {value: $km, unit: km}}}]
+      - ["<nach {hh} Stunden>", {along: {ref: start, at: {value: $hh, unit: h}}}]
+      - ["<in {km} km>", {along: {ref: here, at: {value: $km, unit: km}}}]
+  # near, in places and place
+  nahe:
+    name: ["in der Nähe von <{name}>", "bei <{name}>", "um <{name:town}>", "nahe <{name}>", "rund um <{name:town}>", "in <{name:town}>", "Nähe <{name}>"]
+    here: ["bei <mir>", "<in meiner Nähe>", "<hier in der Nähe>"]
+  vor:
+    name: ["vor <{name}>", "vor dem <{name:peak}>", "vor der <{name:hut}>"]
+    day:
+      - ["vor dem <Ende von Tag {n}>", {day: $n, part: end}]
+      - ["vor der <Mitte von Tag {n}>", {day: $n, part: middle}]
+      - ["vor dem <Start von Tag {n}>", {day: $n, part: start}]
+      - ["vor <Ende Tag {n}>", {day: $n, part: end}]
+    along:
+      - ["vor <km {km}>", {along: {ref: km, at: {value: $km, unit: km}}}]
+      - ["vor <Kilometer {km}>", {along: {ref: km, at: {value: $km, unit: km}}}]
+  nach_after:
+    name: ["nach <{name}>", "hinter <{name:town}>", "nach dem <{name:peak}>"]
+    day:
+      - ["nach dem <Start von Tag {n}>", {day: $n, part: start}]
+      - ["nach der <Mitte von Tag {n}>", {day: $n, part: middle}]
+      - ["nach dem <Ende von Tag {n}>", {day: $n, part: end}]
+    along:
+      - ["nach <km {km}>", {along: {ref: km, at: {value: $km, unit: km}}}]
+      - ["(hinter|ab) <km {km}>", {along: {ref: km, at: {value: $km, unit: km}}}]
+      - ["nach <Kilometer {km}>", {along: {ref: km, at: {value: $km, unit: km}}}]
+  # the object of add_point verbs ("einen Bäcker einbauen")
+  akk:
+    name: ["{name}"]
+    kind: ["<~(einen|eine|ein) {kind:sg}>"]
+  rm:
+    name: ["{name}", "{name}"]
+    kind: ["den Stopp ~(beim|bei der|beim) <{kind:sg}>"]
+    along:
+      - ["den Punkt bei <km {km}>", {along: {ref: km, at: {value: $km, unit: km}}}]
+  stop:
+    kind: ["{kind:stop}"]
+  up:
+    name: ["auf den <{name:peak}>", "zum <{name:peak}>", "hoch zum <{name:peak}>", "rauf auf den <{name:peak}>", "ganz nach oben auf den <{name:peak}>"]
+  intown:
+    name: ["in <{name:town}>", "in <{name:kt}>", "in <{name:kt}>"]
+  mod:
+    kind: ["{kind:mod}"]
+  biz_town:
+    name: ["{name:biz} {name:town}"]
+
+templates:
+  places:
+    - "{WHAT} {DAY}"
+    - "{DAY} {WHAT}"
+    - "{WHAT:sg} {DAY}"
+    - "{WHAT} {NEAR:intown}"
+    - "{WHAT:sg} {NEAR:intown}"
+    - "{WHAT} {RADIUS:pre} {DAY:rad}"
+    - "{WHAT} {RADIUS:umkreis} {DAY:rad_um}"
+    - "wo (kann|könnte) (ich|man) {DAY} {WHAT:verb}(?|)"
+    - "wo kann ich {WHAT:verb} {DAY}(?|)"
+    - "{WHAT} {SCOPE}"
+    - "{WHAT} {SCOPE} {DAY}"
+    - "gibt es {WHAT} {SCOPE}(?|)"
+    - "gibt es {DAY} (irgendwo |)~(einen|eine|ein) {WHAT:sg}(?|)"
+    - "gibt es ~(einen|eine|ein) {WHAT:sg} {DAY}(?|)"
+    - "(zeig mir|zeige|zeig|such|suche|finde|liste) {WHAT} {DAY}"
+    - "(ich brauche|brauche|wir brauchen) ~(einen|eine|ein) {WHAT:sg} {DAY}"
+    - "{WHAT:list} {DAY}"
+    - "{WHAT:list} {SCOPE}"
+    - "{WHAT:list} {NEAR:nahe}"
+    - "wo (kann|könnte) (ich|man) {DAY} {WHAT:verbs}(?|)"
+    - "{WHAT} {NEAR:nahe}"
+    - "{WHAT} zwischen {NEAR:.name} und {NEAR:.name}"
+    - "{WHAT} {RADIUS} um {NEAR:.name}"
+    - "{WHAT} {RADIUS} {SCOPE:line} (entfernt|weg|)"
+    - "{WHAT} {DAY} {RADIUS} {SCOPE:line}"
+    - "{WHAT} {RADIUS}"
+    - "{WHAT} {RADIUS} {SCOPE:here}"
+    - "{WHAT} {OPEN}"
+    - "{WHAT} {DAY:dated} {OPEN:bare}"
+    - "{OPEN:bare_pre} {WHAT} {DAY:dated}"
+    - "{WHAT}, die {DAY:dated} {OPEN:bare} (haben|sind)"
+    - "{WHAT} {OPEN:wd} {DAY}"
+    - "{WHAT} {DAY} {OPEN:wd}"
+    - "{WHAT} {SCOPE:here} {OPEN:now}"
+    - "{WHAT} {NEAR:nahe} {OPEN:now}"
+    - "{WHAT} {ALONG}"
+    - "{WHAT} {ALONG:here}"
+    - "{WHAT} {ALONG:rel} {DAY:von}"
+    - "{WHAT} {ALONG:km}"
+    - "{WHAT} {BEFORE:vor}"
+    - "{WHAT} {AFTER:nach_after}"
+    - "{WHAT} {DAY} {BEFORE:vor.name}"
+    - "{WHAT} {BEFORE:vor.day+along}"
+    - "{WHAT} {AFTER:nach_after.day+along}"
+    - "{WHAT} {AFTER:nach_after.day}"
+    - "wo gibt es {WHAT} {AFTER:nach_after.along}(?|)"
+    - "wo kann ich {AFTER:nach_after.day+along} {WHAT:verb}(?|)"
+    - "{WHAT:list} {OPEN}"
+    - "gibt es {WHAT:list} {DAY}(?|)"
+    - "(letzte Chance für|wo bekomme ich noch) {WHAT} {BEFORE:vor.name}(?|)"
+    - "wo kann ich {BEFORE:vor.name+day} noch {WHAT:verb}(?|)"
+    - "wo kann ich {AFTER:nach_after.name} {WHAT:verb}(?|)"
+    - "{WHAT}"
+    - "(alle|zeig alle|zeig) {WHAT}"
+    - "{WHAT} {IGNORED:filter} {DAY}"
+    - "{WHAT} {IGNORED:filter} {SCOPE}"
+    - "{IGNORED:pre} {WHAT} {DAY}"
+    - "{IGNORED:pre} {WHAT} {NEAR:nahe}"
+    - "{WHAT} {IGNORED:nested} {DAY}"
+    - "{WHAT} {DAY} {IGNORED:nested}"
+    - "{WHAT} {IGNORED:nested} {SCOPE}"
+    - "{WHAT} {IGNORED:nested} {ALONG}"
+    - "{DAY}: {WHAT}(?|)"
+    - "wo (gibt es|gibt's|finde ich) {DAY} {WHAT}(?|)"
+    - "wo (gibt es|gibt's|finde ich) {WHAT} {SCOPE}(?|)"
+    - "wo (kann ich|kann man) {SCOPE} {WHAT:verb}(?|)"
+    - "wo (kann ich|kann man) {ALONG:here} {WHAT:verb}(?|)"
+    - "wo (kann ich|kann man) {NEAR:nahe} {WHAT:verb}(?|)"
+    - "(bitte |)(zeig|zeige|such) {WHAT} {DAY}( bitte|)"
+    - "(kannst du|könntest du) (mir |){WHAT} {DAY} (zeigen|suchen|raussuchen|finden)(?|)"
+    - "ich (muss|will|möchte) {DAY} {WHAT:verb}"
+    - "(muss|will|möchte) {DAY} {WHAT:verb}"
+    - "und {WHAT} {DAY}(?|)"
+    - "{WHAT} {DAY} (bitte|danke|pls)"
+    - "{WHAT} {DAY} {NEAR:nahe}"
+    - "{WHAT} {NEAR:nahe} {DAY}"
+    - "(ich suche|suche) ~(einen|eine|ein) {WHAT:sg} {SCOPE:here}"
+    - "{WHAT} {SCOPE:view}"
+    - "(alle|zeig alle) {WHAT} {SCOPE:view}"
+    - "{WHAT} {RADIUS} um {NEAR:.name} {OPEN}"
+    - "{WHAT} {DAY} {ALONG:rel}"
+    - "wo kann ich {DAY} {WHAT:verb} {IGNORED:filter}(?|)"
+    - "{WHAT} {IGNORED:filter}"
+    - "{WHAT:sg} {SCOPE}(?|)"
+    - "nächste Möglichkeit zum {WHAT:verb} {SCOPE}(?|)"
+
+  route:
+    - "Route {TO:nach}"
+    - "(bring|fahr|führ) mich {TO:up}"
+    - "{TO:up} (hoch|rauf|hochfahren)"
+    - "(bring|fahr) mich {TO:nach.kind}"
+    - "{FROM:von.day+along+plan} {TO:nach.kind+name}"
+    - "Route {FROM:von.day+along+plan} {TO:nach.kind+name}"
+    - "Weg {FROM:von.day+along} {TO:nach.kind+name}"
+    - "wie komme ich {FROM:von.day+along} {TO:nach.kind+name}(?|)"
+    - "Route {FROM:von} {TO:nach}"
+    - "{FROM:von} {TO:nach}"
+    - "{FROM:.name} nach {TO:.name}"
+    - "{FROM:.name} - {TO:.name}"
+    - "{FROM:.name} -> {TO:.name}"
+    - "(bring mich|führ mich|navigiere mich|navigier mich) {TO:nach}"
+    - "wie komme ich {TO:nach}(?|)"
+    - "(Navigation|navigiere|Weg) {TO:nach}"
+    - "(plane|plan|erstelle|mach) (eine|mir eine|) Route {TO:nach}"
+    - "(plane|plan) (eine|mir eine|) Route {FROM:von} {TO:nach}"
+    - "{BIKE:route} {TO:nach}"
+    - "{BIKE:route} {FROM:von} {TO:nach}"
+    - "{BIKE:route} {TO:nach.name} {FROM:von.here}"
+    - "mit dem {BIKE} {TO:nach}"
+    - "mit dem {BIKE} {FROM:von} {TO:nach}"
+    - "Route {TO:nach} {VIA:ueber}"
+    - "{FROM:von} {TO:nach} {VIA:ueber}"
+    - "{FROM:von} {VIA:ueber} {TO:nach}"
+    - "{FROM:von} {VIA:ueber.name} und {VIA:.name} {TO:nach}"
+    - "{FROM:.name} - {VIA:.name} - {TO:.name}"
+    - "Route {TO:nach} {GOAL:post}"
+    - "(die|) {GOAL:adj_e} Route {TO:nach}"
+    - "(den|) {GOAL:adj_en} Weg {TO:nach}"
+    - "{GOAL:post} {TO:nach}"
+    - "{TO:nach} {GOAL:post}"
+    - "{FROM:von} {TO:nach} {DAYS:in}"
+    - "{DAYS:in} {FROM:von} {TO:nach}"
+    - "(eine|) {DAYS:dash} Tour {FROM:von} {TO:nach}"
+    - "Bikepacking-Tour {FROM:von} {TO:nach} {DAYS:in}"
+    - "{FROM:von} {TO:nach} mit {PER_DAY}"
+    - "{FROM:.name} nach {TO:.name}, {PER_DAY}"
+    - "{FROM:.name} nach {TO:.name}, {PER_DAY:filler}"
+    - "{FROM:von} {TO:nach} mit {PER_DAY:filler}"
+    - "(Tour|Route|Reise) {TO:nach} (mit|bei) {PER_DAY}"
+    - "{FROM:von} {TO:nach} {DAYS:in} {VIA:ueber}"
+    - "(fahr|radel|fahre) {TO:nach}"
+    - "(ich will|ich möchte|wir wollen|will) {TO:nach}"
+    - "(ich will|ich möchte|wir möchten) {FROM:von} {TO:nach} (fahren|radeln)"
+    - "(ich will|ich möchte) mit dem {BIKE} {TO:nach} (fahren|)"
+    - "{TO:nach} mit dem {BIKE}"
+    - "{GOAL:adj_e} Route {TO:nach} mit dem {BIKE}"
+    - "(fahr|Route|) {TO:nach.plan}"
+    - "Route {TO:nach} {IGNORED:route}"
+    - "{IGNORED:route_pre} Route {TO:nach}"
+    - "{FROM:von} {TO:nach} {IGNORED:route}"
+    - "(kannst du|könntest du) (mir |uns |)eine Route {TO:nach} (planen|machen|erstellen)(?|)"
+    - "{TO:nach} {FROM:von}"
+    - "Start (in|bei|) {FROM:.name}, Ziel {TO:.name}"
+    - "Ziel: {TO:.name}"
+    - "{TO:nach} {VIA:ueber} (bitte|)"
+    - "{GOAL:post} {TO:nach} {VIA:ueber}"
+    - "{FROM:.name} nach {TO:.name} {BIKE}"
+    - "{FROM:.name} nach {TO:.name}, {GOAL:post}"
+    - "{VIA:ueber} {TO:nach}"
+    - "Weg {TO:nach} {VIA:ueber} und {VIA:.name}"
+    - "(navigiere|Route) {TO:nach.kind}"
+    - "{FROM:.name} nach {TO:.name} über {VIA:.name} {DAYS:in}"
+    - "(bring|führ) mich {GOAL:post} {TO:nach}"
+    - "wie komme ich {GOAL:post} {TO:nach}(?|)"
+    - "{DAYS} {FROM:von} {TO:nach}"
+    - "(Tour|Route|Reise) {TO:nach} {DAYS:in}"
+    - "(Radtour|Radreise|Fahrradtour) {FROM:von} {TO:nach}"
+    - "{BIKE}: {FROM:.name} nach {TO:.name}"
+    - "(Radreise|Tour) {FROM:von} {TO:nach} mit {PER_DAY}"
+
+  place:
+    - "{NAME}"
+    - "{NAME:one}"
+    - "{NAME:one}"
+    - "{NAME:one}(?|)"
+    - "{NAME}"
+    - "(wo ist|wo liegt|zeig mir|zeig|finde|such|suche|wo finde ich) {NAME}(?|)"
+    - "{NAME} {NEAR:nahe}"
+    - "(wo ist|wo liegt) {NAME} (auf der Karte|)(?|)"
+    - "(zoom auf|zeig auf der Karte|spring zu|zentriere auf) {NAME}"
+    - "{NAME}(?|)"
+    - "{NAME:biz_town}"
+    - "(wie finde ich|wo genau ist|wo genau liegt) {NAME}(?|)"
+    - "{NAME} (bitte|pls)"
+    - "(such mal|suche mal|such) {NAME} {NEAR:nahe}"
+    - "{NAME} (Standort|auf der Karte|Karte|Lage)"
+    - "{NAME}, {NEAR:.name}"
+    - "(markiere|merk dir) {NAME}"
+    - "(wo ist|wo liegt) (der|die|das) {NAME}(?|)"
+    - "(such|finde) {NAME:biz_town}"
+    - "(ein Ort namens|den Ort) {NAME}"
+    - "{NAME} (finden|suchen|anzeigen)"
+    - "{NAME} {NEAR:nahe.here}"
+    - "(zeig mir|zeig) wo {NAME} (liegt|ist)"
+    - "Karte von {NAME}"
+    - "{NAME} auf der Karte zeigen"
+
+  end_day:
+    - "{DAY:plain} {POINT:bei} beenden"
+    - "{DAY:plain} (endet|hört auf) {POINT:bei}"
+    - "{DAY:plain} soll {POINT:bei} enden"
+    - "beende {DAY:plain} {POINT:bei}"
+    - "(verlege|verschiebe|setze|leg) {DAY:end} {POINT:nach}"
+    - "{DAY:night} {POINT:bei.name+kind} (schlafen|übernachten|pennen|zelten|bleiben)"
+    - "(ich will|ich möchte|wir wollen) {DAY:night} {POINT:bei.name+kind} (schlafen|übernachten|bleiben)"
+    - "{DAY:plain} (lieber|stattdessen) {POINT:bei} beenden"
+    - "{DAY:plain} bis {POINT:.name}"
+    - "{DAY:every} {POINT:bei.kind} beenden"
+    - "{DAY:every} {POINT:bei.kind} (enden|aufhören|übernachten)"
+    - "{DAY:plain} (früher|schon) {POINT:bei} beenden"
+    - "{DAY:plain} bis {POINT:.name} verlängern"
+    - "(neues|) {DAY:ziel}: {POINT:.name}"
+    - "{DAY:ziel} (ist|wird|=) {POINT:.name}"
+    - "{DAY:plain} {POINT:bei.along} beenden"
+    - "(bitte|kannst du) {DAY:plain} {POINT:bei} beenden(?|)"
+    - "{DAY:plain} {POINT:bei.here} (beenden|aufhören)"
+    - "(Schluss|Feierabend) für {DAY:plain} {POINT:bei}"
+    - "{DAY:plain} {POINT:bei} (Schluss machen|aufhören|stoppen)"
+    - "(ich schlafe|wir schlafen|übernachte) {DAY:night} {POINT:bei.name+kind}"
+    - "{DAY:plain} weiterfahren bis {POINT:.name}"
+    - "{DAY:plain} verkürzen, {POINT:bei} beenden"
+
+  add_point:
+    - "über {POINT:.name}"
+    - "via {POINT}"
+    - "via {POINT:biz_town}"
+    - "{POINT:akk} (hinzufügen|einbauen|einfügen|mitnehmen|aufnehmen)"
+    - "(füge|füg) {POINT:akk} (hinzu|ein)"
+    - "(fahr|fahre|Route) über {POINT:.name}"
+    - "{POINT:.name} (besuchen|anschauen|ansehen|mitnehmen)"
+    - "(einen|) [Stopp|Halt|Zwischenstopp|KIND=stop] {POINT:bei}"
+    - "(eine|) [Pause|Rast|KIND=stop] {POINT:bei} (einlegen|einplanen|machen)"
+    - "[durch|KIND=pass] {POINT:.name} (fahren|durchfahren)"
+    - "an {POINT:.name} [vorbei|vorbeifahren|KIND=pass]"
+    - "{POINT:.name} [als Stopp|als Pause|als Zwischenstopp|KIND=stop] (einplanen|hinzufügen|)"
+    - "~(einen|eine|ein) {POINT:stop} {EVERY}"
+    - "{EVERY} ~(einen|eine|ein) {POINT:stop}"
+    - "{POINT:stop} {ALONG:mark}"
+    - "eine [Pause|Rast|KIND=stop] {POINT:bei.kind} {ALONG:mark}"
+    - "~(einen|eine|ein) {POINT:stop} {ALONG:mark} (einplanen|einlegen|)"
+    - "{EVERY} (eine|) [Pause|Stopp|KIND=stop] {POINT:bei.kind}"
+    - "{POINT:akk} {DAY:dated} (einbauen|hinzufügen|einplanen)"
+    - "[Pause|Stopp|KIND=stop] {POINT:bei} {DAY:dated}"
+    - "{POINT:akk.kind} {ALONG:range} (einbauen|einplanen|hinzufügen)"
+    - "{POINT:akk} {BEFORE:vor.name} (einbauen|einplanen)"
+    - "~(einen|eine|ein) {POINT:stop} {BEFORE:vor.name}"
+    - "(ich will|ich möchte) (noch |){POINT:.name} (besuchen|sehen|anschauen)"
+    - "(auch|und) über {POINT:.name}"
+    - "{POINT:.name} als (Wegpunkt|Zwischenziel|Via-Punkt)"
+    - "(bitte |){POINT:akk} (zur Route hinzufügen|zur Tour hinzufügen|in die Route einbauen)"
+    - "einen Abstecher (zu|nach|zum) {POINT:.name}"
+    - "{POINT:.name} {SCOPE:way} mitnehmen"
+    - "~(einen|eine|ein) {POINT:stop} {DAY:dated} (einplanen|einbauen)"
+    - "{EVERY} {POINT:akk.kind} (einplanen|einbauen|)"
+    - "{POINT:akk.kind} {EVERY} (einplanen|einbauen)"
+    - "(einen|) [Stopp|Halt|KIND=stop] {EVERY} {POINT:bei.kind}"
+    - "{EVERY} (einen|) [Stopp|Halt|KIND=stop] {POINT:bei.kind}"
+    - "{EVERY} eine [Pause|Rast|KIND=stop] {POINT:bei.kind}"
+    - "[Pause|Stopp|KIND=stop] {POINT:bei.kind} {EVERY}"
+    - "{POINT:mod} {EVERY}"
+    - "{EVERY} {POINT:mod} (auffüllen|holen|einplanen)"
+    - "{POINT:akk} {BEFORE:vor.day+along} (einbauen|einplanen)"
+
+  remove_point:
+    - "{POINT:rm} (entfernen|löschen|streichen|rausnehmen|weglassen|auslassen)"
+    - "(entferne|lösche|streiche|nimm) {POINT:rm} (raus|)"
+    - "nicht (über|via) {POINT:.name}"
+    - "ohne {POINT:.name}"
+    - "(den Stopp|den Halt|den Abstecher|den Wegpunkt|die Pause) (in|bei|zu) {POINT:.name} (entfernen|löschen|streichen)"
+    - "(ich will|ich muss|wir wollen) nicht (mehr |)(über|nach) {POINT:.name}"
+    - "{POINT:.name} (brauche ich nicht|brauch ich nicht mehr|ist nicht nötig|muss nicht sein)"
+    - "(lass|lasse) {POINT:rm} weg"
+    - "(den Punkt|den Wegpunkt|den Stopp) bei {POINT:.along} (entfernen|löschen)"
+    - "{POINT:rm} (aus der Route|aus der Tour|vom Plan) (entfernen|nehmen|streichen)"
+    - "(bitte |)(entferne|lösche) {POINT:rm}"
+    - "(kannst du|könntest du) {POINT:rm} (entfernen|rausnehmen)(?|)"
+    - "(Wegpunkt|Stopp|Zwischenziel) {POINT:.name} (löschen|entfernen|weg)"
+    - "{POINT:.name} (raus|weg|streichen)"
+    - "~(den|die|das) {POINT:stop} (entfernen|streichen|löschen)"
+    - "auf {POINT:.name} verzichten"
+    - "(kein|keinen) (Stopp|Halt|Abstecher) (in|bei|nach) {POINT:.name}"
+    - "(Route|fahr) (ohne|nicht über) {POINT:.name}"
+    - "{POINT:.name} (auslassen|überspringen|skippen)"
+    - "(vergiss|streich) {POINT:rm}"
+    - "nicht {POINT:bei.name+kind} (halten|anhalten|stoppen)"
+
+  split:
+    - "{DAYS:akk} (aufteilen|verteilen|splitten|teilen)"
+    - "(Route|die Route|die Tour|Tour) {DAYS:akk} (aufteilen|teilen|verteilen)"
+    - "(teile|verteile) (die Route|die Tour|sie|alles) {DAYS:akk}"
+    - "(mach|mache) {DAYS} (daraus|draus)"
+    - "(daraus|lieber) {DAYS} machen"
+    - "(eine|) {DAYS:dash} Tour (daraus machen|draus machen)"
+    - "(mach|mache) (eine|) {DAYS:tour} (draus|daraus)"
+    - "daraus eine {DAYS:tour} machen"
+    - "lieber eine {DAYS:tour}"
+    - "{PER_DAY}"
+    - "{PER_DAY:filler}"
+    - "(aufteilen|planen|neu planen) mit {PER_DAY:filler}"
+    - "{PER_DAY:stages}"
+    - "(neu aufteilen|aufteilen|planen|neu planen) mit {PER_DAY}"
+    - "{PER_DAY} (planen|einteilen|aufteilen)"
+    - "{DAY:num} in [zwei Tage|2 Tage|DAYS=2] (teilen|aufteilen)"
+    - "{DAY:num} (halbieren|teilen|aufteilen)"
+    - "(ich will|ich möchte|wir wollen) (das |die Tour |)({DAYS:in}) fahren"
+    - "(nur|lieber) {DAYS}"
+    - "{DAYS:in}(?|)"
+    - "(kannst du|könntest du) (die Route|das|sie) {DAYS:akk} (aufteilen|teilen)(?|)"
+    - "{PER_DAY} (maximal|max|höchstens)"
+    - "(kürzere|längere) Etappen, {PER_DAY}"
+    - "{ALONG:range} {DAYS:akk} (aufteilen|teilen)"
+    - "(Etappen|Tage) (neu |)(einteilen|aufteilen): {PER_DAY}"
+    - "(neue Aufteilung|neu aufteilen): {DAYS}"
+    - "{DAY:num} {DAYS:akk} (aufteilen|teilen)"
+
+  join:
+    - "{DAY:join} zusammenlegen"
+    - "{DAY:join} (zusammenfassen|verbinden|zusammenführen|kombinieren)"
+    - "(lege|leg|fasse|fass) {DAY:join} zusammen"
+    - "(aus|mach aus) {DAY:join} einen Tag (machen|)"
+    - "{DAY:num} mit dem (nächsten Tag|Folgetag|nächsten) zusammenlegen"
+    - "{DAY:join} an einem Tag (fahren|machen)"
+    - "(die Übernachtung|den Stopp|die Nacht) nach {DAY:num} (streichen|weglassen|entfernen)"
+    - "(kannst du|könntest du|bitte) {DAY:join} zusammenlegen(?|)"
+    - "{DAY:join} (zu einem Tag|in einem Rutsch|am Stück)"
+    - "(ich will|wir wollen|ich möchte) {DAY:join} an einem Tag fahren"
+    - "keine Übernachtung zwischen {DAY:join}"
+    - "{DAY:num} und (den nächsten|den Folgetag) zusammenlegen"
+    - "{DAY:join} zusammen"
+    - "(zusammenlegen|verbinden): {DAY:join}"
+    - "{DAY:join} als einen Tag"
+    - "{DAY:join} durchfahren"
+    - "(lass|lasse) (uns |){DAY:join} zusammenlegen"
+    - "(zieh|ziehe) {DAY:join} zusammen"
+    - "{DAY:join} zu einer Etappe (machen|zusammenfassen)"
+    - "(bitte |){DAY:join} (vereinen|zusammenlegen)"
+
+  reverse:
+    - "(Route|Tour|Strecke|die Route|die Tour) (umdrehen|umkehren|rückwärts|andersrum|andersherum|in Gegenrichtung)"
+    - "(dreh|drehe|kehre|kehr) (die Route|die Tour|sie|alles|die Richtung) um"
+    - "(andersrum|andersherum|umgekehrt|rückwärts|in die andere Richtung|in Gegenrichtung) (fahren|bitte|)"
+    - "(Start und Ziel|Anfang und Ende) (tauschen|vertauschen|umdrehen)"
+    - "(tausche|vertausche|tausch) Start und Ziel"
+    - "(Richtung|Fahrtrichtung) (umkehren|umdrehen|wechseln|ändern|tauschen)"
+    - "(kannst du|könntest du) die (Route|Tour|Richtung) umdrehen(?|)"
+    - "(ich will|ich möchte|wir wollen|lieber) (andersrum|rückwärts|in die andere Richtung) fahren"
+    - "(Gegenrichtung|andere Richtung|umgekehrte Richtung)(, bitte| bitte|)(?|)"
+    - "(im|gegen den) Uhrzeigersinn fahren"
+    - "vom Ziel (zum|zurück zum) Start"
+    - "(die ganze Tour|alles) (rückwärts|andersrum)"
+    - "(was ist wenn|wie wäre es wenn) (ich|wir) (andersrum|rückwärts) fahren(?|)"
+    - "am Ziel (starten|beginnen)"
+    - "(umdrehen|umkehren)(!| bitte|)"
+    - "gleiche (Route|Tour|Strecke) (rückwärts|andersrum|in Gegenrichtung)"
+    - "(fahr|fahre) (die Route|die Tour|sie) (rückwärts|andersrum|in die andere Richtung)"
+    - "Richtung (umdrehen|drehen) bitte"
+    - "(Route|Tour) in umgekehrter Richtung"
+    - "(Route|Tour) spiegeln"
+    - "(hey|ok|also|) (können wir|lass uns) (andersrum|rückwärts|in die andere Richtung) fahren(?|)"
+    - "(ich hab's mir anders überlegt|eigentlich|hmm), (lieber andersrum|dreh die Route um|Richtung umkehren)"
+    - "(beim|am) Ziel (starten|anfangen) und zum Start (fahren|zurück)"
+    - "(mach|mache) das Ziel zum Start"
+    - "(die Tour|die Reise|alles) (vom Ende her|von hinten) (fahren|planen)( bitte|)"
+    - "(die|diese) Route (rückwärts|umgekehrt|andersherum)(?|)"
+    - "(bitte |)(dreh|kehr) (meine|die) (Route|Tour|Planung|Strecke) um( jetzt| bitte|)"
+    - "ich will (die Tour|die Route|das) in (der anderen|umgekehrter|entgegengesetzter) Richtung fahren"
+    - "(Reihenfolge|Richtung) der (Etappen|Route|Tage) umkehren"
+    - "(von Süden nach Norden|von Norden nach Süden|von Osten nach Westen|von Westen nach Osten) statt andersrum"
+
+  reroute:
+    - "{DAY:plain} {GOAL:cmp} (machen|planen|gestalten)"
+    - "(mach|mache|plane|plan) {DAY:plain} {GOAL:cmp}"
+    - "{DAY:plain} {GOAL:post} (neu planen|umplanen|neu berechnen)"
+    - "{GOAL:post} {DAY:dated}"
+    - "{GOAL:cmp_n} {DAY:dated}"
+    - "{ALONG:range} {GOAL:post}"
+    - "{ALONG:range} {GOAL:post} (neu planen|umplanen)"
+    - "zwischen {NEAR:.name} und {NEAR:.name} {GOAL:post}"
+    - "{DAY:plain} (mit dem|fürs|für das) {BIKE} (neu planen|umplanen|planen)"
+    - "{DAY:plain} (mit dem|fürs) {BIKE}"
+    - "(stell|stelle) {DAY:plain} (auf das|aufs) {BIKE} um"
+    - "{SCOPE:whole} {GOAL:post} (neu planen|umplanen)"
+    - "{SCOPE:whole} (fürs|für das|mit dem) {BIKE} (neu planen|umplanen)"
+    - "{AFTER:nach_after.name} {GOAL:post} (neu planen|)"
+    - "{AFTER:nach_after.day+along} {GOAL:post} (neu planen|umplanen|)"
+    - "{BEFORE:vor.day+along} {GOAL:post} (neu planen|)"
+    - "{BEFORE:vor.name} {GOAL:post}"
+    - "{GOAL:cmp} {ALONG:range}"
+    - "(gibt es|finde) (eine |){GOAL:cmp_e} (Variante|Route|Alternative) für {DAY:plain}(?|)"
+    - "{DAY:plain} {GOAL:post}"
+    - "(bitte |){DAY:plain} {GOAL:post} (umplanen|neu planen)(?|)"
+    - "{DAY:plain} {GOAL:post} {IGNORED:route}"
+    - "{GOAL:cmp_n} {ALONG:range}"
+    - "{GOAL:cmp_e} (Route|Variante) für {DAY:plain}"
+    - "{DAY:plain} neu (routen|berechnen), {GOAL:post}"
+
+  stretches:
+    - "{WHAT:gap_n}"
+    - "{WHAT:gap_n} {DAY}"
+    - "(Abschnitte|Strecken|Stücke) {WHAT:gap_ohne} {DAY}"
+    - "(längste|lange) (Strecke|Strecken|Abschnitte|Abschnitt) {WHAT:gap_ohne} {DAY}"
+    - "(längste|lange) (Strecke|Strecken|Abschnitte) {WHAT:gap_ohne}"
+    - "wo (gibt es|gibt's|habe ich) (lange|länger|lange Zeit) {WHAT:gap_kein}(?|)"
+    - "(Abschnitte|Strecken) {WHAT:gap_ohne} {MIN:gap}"
+    - "{WHAT:stretch} {DAY}"
+    - "{WHAT:stretch} {SCOPE:route}"
+    - "(zeig|zeige|zeig mir|liste|markiere) (die|alle|) {WHAT:stretch} {DAY}"
+    - "{WHAT:stretch} {MIN}"
+    - "[Anstiege|Steigungen|Auffahrten|WHAT=climb] {MIN:elev}"
+    - "[Anstiege|Steigungen|WHAT=climb] {DAY} {MIN:elev}"
+    - "(Abschnitte|Stellen|Stücke|Passagen) [steiler|WHAT=steep] {MIN:than_pct}"
+    - "[steile Stellen|steile Abschnitte|Rampen|steile Rampen|WHAT=steep] {MIN:pct}"
+    - "wo (muss ich|werde ich|muss man) {DAY} {WHAT:stretch_verb}(?|)"
+    - "{WHAT:stretch} {ALONG:range}"
+    - "{WHAT:stretch} zwischen {NEAR:.name} und {NEAR:.name}"
+    - "{WHAT:stretch} {BEFORE:vor.name}"
+    - "{WHAT:stretch} {AFTER:nach_after.name}"
+    - "{WHAT:stretch} {BEFORE:vor.day+along}"
+    - "{WHAT:stretch} {AFTER:nach_after.day+along}"
+    - "gibt es {WHAT:stretch} {DAY}(?|)"
+    - "{DAY} {WHAT:stretch}"
+    - "wie viele {WHAT:stretch} (gibt es|hat es|kommen) {DAY}(?|)"
+    - "{WHAT:stretch} {IGNORED:stretch} {DAY}"
+    - "{WHAT:gap_n} {SCOPE:route}"
+    - "{WHAT:stretch} {DAY} {MIN}"
+    - "{WHAT:stretch} {SCOPE:view}"
+    - "wo sind die {WHAT:stretch}(?|)"
+    - "wie lange (habe ich|gibt es) {WHAT:gap_kein}(?|)"
+
+  none:
+    - "(hallo|hi|hey|servus|moin|grüß dich)(!|?|)"
+    - "(danke|danke schön|ok|okay|cool|super|tschüss|sorry|bitte)(!|)"
+    - "(test|hilfe|hmm|ja|nein|was|na)(?|!|)"
+    - "lohnt sich (der|die|das|) {name:peak}(?|)"
+    - "wie (steil|schwer|lang|hoch) ist (der|die|das|) {name:peak}(?|)"
+    - "wie schwer ist (Tag {n}|morgen|die Route)(?|)"
+    - "wie wird das Wetter (morgen|an Tag {n}|in {name:town}|heute)(?|)"
+    - "regnet es (morgen|heute|an Tag {n})(?|)"
+    - "wie lange (brauche ich für Tag {n}|dauert Tag {n}|dauert die Route|brauche ich)(?|)"
+    - "wie viele (Kilometer|Höhenmeter) (hat|sind es an) (Tag {n}|morgen|die ganze Tour)(?|)"
+    - "welcher (Tag|Abschnitt) ist am (härtesten|längsten|leichtesten)(?|)"
+    - "soll ich (den Zug nehmen|Tag {n} auslassen|über den {name:peak} fahren|nachts fahren)(?|)"
+    - "wann (geht die Sonne unter|ist Sonnenuntergang|wird es dunkel)(?|)"
+    - "darf man (in Frankreich|in der Schweiz|hier|) (wild campen|wildcampen|im Wald schlafen)(?|)"
+    - "wie viel Wasser (brauche ich|soll ich mitnehmen)(?|)"
+    - "(erzähl mir einen Witz|hallo|hi|danke|vielen Dank|guten Morgen|wer bist du|was kannst du|hilfe|wie geht's|wie spät ist es|servus|moin)(?|!|)"
+    - "(asdf|qwertz|lol|ok|test|xyz|hmm|bla|aaaa|jjjj)"
+    - "wann ist die beste Zeit für (den|die|das|) {name:peak}(?|)"
+    - "warum ist Tag {n} so (lang|schwer|kurz)(?|)"
+    - "(vergleiche die Routen|welche Route ist besser|ist die Route gut)(?|)"
+    - "was ist besser, {name:town} oder {name:town}(?|)"
+    - "was (soll ich|muss ich) (einpacken|mitnehmen|anziehen)(?|)"
+    - "ist {name:town} (schön|sehenswert|einen Besuch wert)(?|)"
+    - "~(welcher|welche|welches) {kind:sg} an Tag {n} ist am nächsten an ~(einem|einer|einem) {kind:sg}(?|)"
+    - "finde eine Route über alle {kind:pl}"
+    - "(plane meine ganze Reise|plan alles für mich|überrasch mich)"
+    - "in welcher Reihenfolge soll ich die (Pässe|Anstiege) fahren(?|)"
+    - "wo schlafen die meisten Radfahrer an Tag {n}(?|)"
+    - "erinnere mich (jede Stunde|alle 30 Minuten) ans (Trinken|Essen)"
+    - "(stell einen Wecker auf 6|ruf Mama an|spiel Musik|schick meinen Standort an Anna)"
+    - "(eine |)(Rundtour|Runde|Schleife) (von|mit|über) {km} km(?|)"
+    - "{km} km (Runde|Rundtour|Schleife) (ab hier|von hier|ab {name:town})"
+    - "ist (Tag {n}|die Route|morgen) zu (schwer|lang|steil) für mich(?|)"
+    - "wie fit muss ich sein(?|)"
+    - "kann ich das mit (dem Rennrad|einem Gravelbike|dem Trekkingrad) fahren(?|)"
+    - "was kostet (ein Zimmer im|eine Nacht im) {name:biz}(?|)"
+    - "ist {name:biz} (gut|schön|teuer)(?|)"
+    - "~(welcher|welche|welches) {kind:sg} hat die besten Bewertungen(?|)"
+    - "(wie|warum) funktioniert (das|die App)(?|)"
+    - "(bist du da|wer hat dich gemacht|was ist das für eine App)(?|)"
+    - "wie viele Höhenmeter (hat|haben) (Tag {n}|morgen|die ganze Route)(?|)"
+    - "wie viel (Wasser|Essen) brauche ich (an Tag {n}|morgen|heute)(?|)"
+    - "(sind|ist) (die Straßen|Tag {n}|der {name:peak}) (gefährlich|sicher|viel befahren|matschig)(?|)"
+    - "welche (Reifen|Übersetzung|Taschen) (brauche ich|soll ich nehmen) für (Tag {n}|die Route|den {name:peak})(?|)"
+    - "(kann|darf) ich (am|auf dem) {name:peak} (schlafen|zelten|biwakieren)(?|)"
+    - "wann (öffnet|schließt) {name:biz}(?|)"
+    - "(habe ich|gibt es) (Handyempfang|Netz|Empfang) (an Tag {n}|am {name:peak}|unterwegs)(?|)"
+    - "(was ist der|wo ist der) (steilste|längste|höchste) (Anstieg|Pass|Punkt) (an Tag {n}|der Route|der Tour)(?|)"
+    - "(erzähl mir was über|was weißt du über) {name}"
+    - "(gute Nacht|tschüss|bis später|ciao|super|cool|klasse|prima)(!|)"
+    - "wie weit bin ich (heute|bisher) gefahren(?|)"
+    - "wie (exportiere|teile|lade) ich (die Route|den Track|das GPX)( hoch|)(?|)"
+    - "(zzz|???|...|?!|hmm hmm|test test|abc|12345|km km)"

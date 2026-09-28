@@ -1,0 +1,397 @@
+# Hand-written word lists, per language: category -> value -> lang -> [terms].
+# Terms are matched after accent folding and lower-casing, so case and accents here are for
+# readers (and for the data generator, which fills templates from these lists).
+
+stretch:
+  climb:
+    en: [climb, climbs, climbing, ascent, ascents, uphill, uphills, ascend, hill, hills]
+    de: [Anstieg, Anstiege, Steigung, Steigungen, Aufstieg, Aufstiege, bergauf, Auffahrt, Auffahrten]
+    fr: [montée, montées, ascension, ascensions, côte, côtes, grimpée, grimpées, bosse, bosses]
+    it: [salita, salite, ascesa, ascese, arrampicata, strappo, strappi]
+  descent:
+    en: [descent, descents, downhill, downhills, descend, descending]
+    de: [Abfahrt, Abfahrten, Abfahrtsstrecke, Abfahrtsstrecken, Gefälle, bergab, Abstieg]
+    fr: [descente, descentes]
+    it: [discesa, discese]
+  steep:
+    en: [steep, steep bits, steep parts, steep sections, steep stretches, steepest, gradient, gradients, steep climbs]
+    de: [steil, steile, steilen, steile Stellen, steile Abschnitte, steilste, Steilstück, Steilstücke, Rampe, Rampen]
+    fr: [mur, murs, raide, raides, pente raide, pentes raides, passages raides, pente, pentes, forte pente, fortes pentes, rampe, rampes]
+    it: [muro, muri, ripido, ripida, ripidi, ripide, pendenza, pendenze, tratti ripidi, strappi ripidi, rampa, rampe]
+  unpaved:
+    en: [unpaved, gravel, gravel sections, gravel roads, dirt, dirt roads, dirt track, dirt tracks, off-road, offroad, unsealed, rough roads]
+    de: [unbefestigt, unbefestigte, Schotter, Schotterstraße, Schotterwege, Schotterstrecke, Schotterstrecken, Schotterabschnitte, Feldweg, Feldwege, Waldweg, Waldwege, Kies]
+    fr: [non goudronné, non goudronnés, non revêtu, gravier, graviers, chemin de terre, chemins de terre, piste, pistes, terre, gravel]
+    it: [sterrato, sterrati, strada bianca, strade bianche, ghiaia, fondo sterrato, tratti sterrati, sterrate]
+  unknown_surface:
+    en: [unknown surface, unknown surfaces, surface unknown, unclear surface, unknown road surface]
+    de: [unbekannter Belag, unbekannte Oberfläche, unbekannter Untergrund, unklarer Belag, Belag unbekannt]
+    fr: [revêtement inconnu, surface inconnue, revêtement inconnus, sol inconnu]
+    it: [fondo sconosciuto, superficie sconosciuta, fondo ignoto, fondo non noto]
+  pushing:
+    en: [pushing, push, hike-a-bike, hike a bike, hab, carry, carrying, walking the bike, push the bike]
+    de: [schieben, Schiebestrecke, Schiebestrecken, Schiebepassage, Schiebepassagen, tragen, Tragepassage, Tragepassagen]
+    fr: [pousser, portage, portages, poussage, à pied, pousser le vélo, marcher à côté du vélo, marcher à côté de mon vélo]
+    it: [spingere, spinta, bici a spinta, portage, portare la bici, a piedi]
+  closure:
+    en: [closure, closures, closed, road closure, road closures, closed roads, blocked, roadworks]
+    de: [Sperrung, Sperrungen, Vollsperrung, Vollsperrungen, gesperrt, gesperrte, Straßensperrung, Straßensperrungen, Baustelle, Baustellen]
+    fr: [fermeture, fermetures, fermeture totale, route barrée, barrée, fermé, fermée, route fermée, routes fermées, travaux, déviation]
+    it: [chiusura, chiusure, chiusura totale, strada interrotta, interrotta, chiuso, chiusa, strada chiusa, strade chiuse, lavori, lavori in corso]
+  main_road:
+    en: [main road, main roads, busy road, busy roads, traffic, highway, highways, heavy traffic, major road, major roads]
+    de: [Hauptstraße, Hauptstraßen, Bundesstraße, Bundesstraßen, Verkehr, viel Verkehr, stark befahren, stark befahrene, Landstraße, Schnellstraße]
+    fr: [route principale, routes principales, grande route, grandes routes, route nationale, routes nationales, nationale, trafic, circulation, route passante]
+    it: [strada principale, strade principali, statale, statali, strada statale, traffico, strade trafficate, strada trafficata]
+
+gap:
+  gap:
+    en: [gap, gaps, without, no, stretch without, stretches without, longest stretch without, without any, lack of, far from]
+    de: [Lücke, Lücken, ohne, kein, keine, keinen, Abschnitt ohne, Abschnitte ohne, längste Strecke ohne, weit weg von]
+    fr: [trou, trous, sans, pas de, manque de, "manque d'", aucun, aucune, tronçon sans, tronçons sans, plus long tronçon sans, loin de]
+    it: [buco, buchi, senza, niente, mancanza di, "mancanza d'", nessun, nessuna, tratto senza, tratti senza, tratto più lungo senza, lontano da]
+
+# Words that may stand in a stretch WHAT span without meaning anything by themselves.
+stretch_filler:
+  _:
+    en: [longest, long, stretch, stretches, section, sections, part, parts, bit, bits, segment, segments, where, of, the, a, an, any, with, there, is, are]
+    de: [längste, längsten, lange, lang, Strecke, Strecken, Abschnitt, Abschnitte, Teil, Teile, Stück, Stücke, Stelle, Stellen, wo, mit, gibt, es]
+    fr: [plus long, plus longs, longue, long, tronçon, tronçons, section, sections, partie, parties, passage, passages, portion, portions, où, avec]
+    it: [più lungo, più lunghi, lungo, lunghi, tratto, tratti, sezione, sezioni, parte, parti, pezzo, pezzi, dove, con]
+
+day_noun:
+  day:
+    en: [day, days, stage, stages, leg, daily stage]
+    de: [Tag, Tage, Tages, Tagen, Etappe, Etappen, Tagesetappe]
+    fr: [jour, jours, journée, journées, étape, étapes]
+    it: [giorno, giorni, giornata, giornate, tappa, tappe]
+
+night_noun:
+  night:
+    en: [night, nights, evening, evenings, overnight]
+    de: [Nacht, Nächte, Abend, Abende]
+    fr: [nuit, nuits, soir, soirs, soirée, soirées]
+    it: [notte, notti, sera, sere, serata, serate]
+
+every:
+  every:
+    en: [every, each, all, per]
+    de: [jeden, jede, jeder, jedem, jedes, alle, pro]
+    fr: [chaque, tous les, toutes les, par]
+    it: [ogni, tutti i, tutte le, ciascun, ciascuna, per]
+
+# A word that names a day by itself. "tonight" and "thismorning" carry a part as well.
+day_value:
+  today:
+    en: [today, this day]
+    de: [heute, heutigen]
+    fr: ["aujourd'hui", ce jour]
+    it: [oggi, questo giorno]
+  tomorrow:
+    en: [tomorrow, tomorrows, "tomorrow's", next day]
+    de: [morgen, morgigen, morgige, nächsten Tag, am nächsten Tag]
+    fr: [demain, lendemain, le lendemain]
+    it: [domani, il giorno dopo, giorno dopo]
+  tonight:
+    en: [tonight, this evening, this night]
+    de: [heute Abend, heute Nacht, heut Abend, heute abends]
+    fr: [ce soir, cette nuit]
+    it: [stasera, stanotte, questa sera, questa notte]
+  todaymiddle:
+    en: [today at noon, this noon, at noon today, lunchtime today]
+    de: [heute Mittag, heute mittags]
+    fr: [ce midi, à midi aujourd'hui]
+    it: [oggi a pranzo, oggi a mezzogiorno]
+  thismorning:
+    en: [this morning]
+    de: [heute Morgen, heute früh]
+    fr: [ce matin]
+    it: [stamattina, stamani, questa mattina]
+  every:
+    en: [daily, every day, each day, all days, every stage, each stage]
+    de: [täglich, jeden Tag, alle Tage, jede Etappe, jeder Tag]
+    fr: [quotidien, chaque jour, tous les jours, chaque étape]
+    it: [ogni giorno, tutti i giorni, ogni tappa, quotidianamente]
+  everymorning:
+    en: [every morning, each morning, mornings]
+    de: [jeden Morgen, jeden Vormittag, jeden Tag morgens]
+    fr: [chaque matin, tous les matins]
+    it: [ogni mattina, ogni mattino, tutte le mattine]
+  everynight:
+    en: [nightly, every night, each night, every evening, each evening]
+    de: [jede Nacht, jeden Abend, allabendlich, abends immer]
+    fr: [chaque nuit, chaque soir, tous les soirs, toutes les nuits]
+    it: [ogni notte, ogni sera, tutte le sere, tutte le notti]
+
+part:
+  start:
+    en: [start, beginning, begin, morning, mornings, early, first thing, start of]
+    de: [Start, Anfang, Beginn, morgens, früh, vormittags, Vormittag, am Morgen, Anfang von, Beginn von, Morgen von, am Morgen von, Morgen des, am Morgen des, Start von]
+    fr: [début, départ, commencement, matin, matinée, le matin, au début]
+    it: [inizio, partenza, mattina, mattino, mattinata, di mattina, all'inizio]
+  middle:
+    en: [middle, midday, noon, lunch, lunchtime, halfway, half way, halfway through, mid, midway, mid-day]
+    de: [Mitte, mittags, Mittag, Mittagszeit, Hälfte, zur Hälfte, Mittagessen, halber Strecke]
+    fr: [milieu, midi, mi-journée, à mi-chemin, mi-parcours, déjeuner, moitié]
+    it: [metà, mezzo, mezzogiorno, pranzo, a metà, a metà strada, mezza giornata]
+  end:
+    en: [end, finish, ending, evening, night, the end, end of, overnight, end point, finish line]
+    de: [Ende, Schluss, Abend, abends, Nacht, nachts, Ziel, Ende von, am Ende, Tagesende, Tagesziel, Etappenziel, Etappenende]
+    fr: [fin, arrivée, soir, soirée, nuit, la fin, à la fin, fin de, arrivée d'étape, fin d'étape]
+    it: [fine, arrivo, sera, serata, notte, alla fine, fine di, fine tappa, arrivo di tappa]
+
+ordinal:
+  1: {en: [first, 1st], de: [erste, ersten, erster, erstes, erstem], fr: [premier, première, 1er, 1re], it: [primo, prima, 1°]}
+  2: {en: [second, 2nd], de: [zweite, zweiten, zweiter, zweites], fr: [deuxième, second, seconde, 2e, 2ème], it: [secondo, seconda]}
+  3: {en: [third, 3rd], de: [dritte, dritten, dritter, drittes], fr: [troisième, 3e, 3ème], it: [terzo, terza]}
+  4: {en: [fourth, 4th], de: [vierte, vierten, vierter, viertes], fr: [quatrième, 4e, 4ème], it: [quarto, quarta]}
+  5: {en: [fifth, 5th], de: [fünfte, fünften, fünfter, fünftes], fr: [cinquième, 5e, 5ème], it: [quinto, quinta]}
+  6: {en: [sixth, 6th], de: [sechste, sechsten, sechster, sechstes], fr: [sixième, 6e, 6ème], it: [sesto, sesta]}
+  7: {en: [seventh, 7th], de: [siebte, siebten, siebter, siebtes], fr: [septième, 7e, 7ème], it: [settimo, settima]}
+  8: {en: [eighth, 8th], de: [achte, achten, achter, achtes], fr: [huitième, 8e, 8ème], it: [ottavo, ottava]}
+  9: {en: [ninth, 9th], de: [neunte, neunten, neunter, neuntes], fr: [neuvième, 9e, 9ème], it: [nono, nona]}
+  10: {en: [tenth, 10th], de: [zehnte, zehnten, zehnter, zehntes], fr: [dixième, 10e, 10ème], it: [decimo, decima]}
+  11: {en: [eleventh], de: [elfte, elften], fr: [onzième], it: [undicesimo, undicesima]}
+  12: {en: [twelfth], de: [zwölfte, zwölften], fr: [douzième], it: [dodicesimo, dodicesima]}
+
+# Tokens that may follow a digit to make an ordinal ("4th", "4.", "4e", "4°").
+ordinal_suffix:
+  _:
+    en: [th, st, nd, rd]
+    de: ["."]
+    fr: [e, ème, eme, er, re]
+    it: ["°", "º", "ª", o, a]
+
+# Number words. "a", "an", "one" and their equivalents are 1; they count only next to a unit.
+number:
+  0: {en: [zero, none], de: ["null"], fr: [zéro], it: [zero]}
+  1: {en: [one, a, an], de: [eins, ein, eine, einen, einer, einem], fr: [un, une], it: [uno, una, un, "un'"]}
+  2: {en: [two, couple, a couple, a couple of], de: [zwei, zwo, paar, ein paar], fr: [deux, quelques], it: [due, un paio, un paio di]}
+  3: {en: [three], de: [drei], fr: [trois], it: [tre]}
+  4: {en: [four], de: [vier], fr: [quatre], it: [quattro]}
+  5: {en: [five], de: [fünf], fr: [cinq], it: [cinque]}
+  6: {en: [six], de: [sechs], fr: [six], it: [sei]}
+  7: {en: [seven], de: [sieben], fr: [sept], it: [sette]}
+  8: {en: [eight], de: [acht], fr: [huit], it: [otto]}
+  9: {en: [nine], de: [neun], fr: [neuf], it: [nove]}
+  10: {en: [ten], de: [zehn], fr: [dix], it: [dieci]}
+  11: {en: [eleven], de: [elf], fr: [onze], it: [undici]}
+  12: {en: [twelve, dozen, a dozen], de: [zwölf, Dutzend], fr: [douze, douzaine], it: [dodici, dozzina]}
+  13: {en: [thirteen], de: [dreizehn], fr: [treize], it: [tredici]}
+  14: {en: [fourteen], de: [vierzehn], fr: [quatorze], it: [quattordici]}
+  15: {en: [fifteen], de: [fünfzehn], fr: [quinze], it: [quindici]}
+  16: {en: [sixteen], de: [sechzehn], fr: [seize], it: [sedici]}
+  17: {en: [seventeen], de: [siebzehn], fr: [dix-sept], it: [diciassette]}
+  18: {en: [eighteen], de: [achtzehn], fr: [dix-huit], it: [diciotto]}
+  19: {en: [nineteen], de: [neunzehn], fr: [dix-neuf], it: [diciannove]}
+  20: {en: [twenty], de: [zwanzig], fr: [vingt], it: [venti]}
+  30: {en: [thirty], de: [dreißig, dreissig], fr: [trente], it: [trenta]}
+  40: {en: [forty, fourty], de: [vierzig], fr: [quarante], it: [quaranta]}
+  50: {en: [fifty], de: [fünfzig], fr: [cinquante], it: [cinquanta]}
+  60: {en: [sixty], de: [sechzig], fr: [soixante], it: [sessanta]}
+  70: {en: [seventy], de: [siebzig], fr: [soixante-dix, septante], it: [settanta]}
+  80: {en: [eighty], de: [achtzig], fr: [quatre-vingt, quatre-vingts, huitante], it: [ottanta]}
+  90: {en: [ninety], de: [neunzig], fr: [quatre-vingt-dix, nonante], it: [novanta]}
+  100: {en: [hundred, a hundred, one hundred], de: [hundert, einhundert], fr: [cent], it: [cento]}
+  0.5: {en: [half, a half, half an, half a], de: [halb, halbe, halben, eine halbe, einen halben], fr: [demi, demie, une demi], it: [mezzo, mezza, "mezz'", un mezzo]}
+  1.5: {en: [one and a half], de: [anderthalb, eineinhalb], fr: [une et demie], it: [uno e mezzo]}
+
+# Joins "one and a half", "vingt et un", "fünf und zwanzig".
+number_and:
+  _: {en: [and], de: [und], fr: [et], it: [e]}
+
+weekday:
+  mon: {en: [monday, mondays], de: [Montag, montags, Montagen], fr: [lundi, lundis], it: [lunedì, lunedi]}
+  tue: {en: [tuesday, tuesdays], de: [Dienstag, dienstags], fr: [mardi, mardis], it: [martedì, martedi]}
+  wed: {en: [wednesday, wednesdays], de: [Mittwoch, mittwochs], fr: [mercredi, mercredis], it: [mercoledì, mercoledi]}
+  thu: {en: [thursday, thursdays], de: [Donnerstag, donnerstags], fr: [jeudi, jeudis], it: [giovedì, giovedi]}
+  fri: {en: [friday, fridays], de: [Freitag, freitags], fr: [vendredi, vendredis], it: [venerdì, venerdi]}
+  sat: {en: [saturday, saturdays], de: [Samstag, samstags, Sonnabend, sonnabends], fr: [samedi, samedis], it: [sabato, sabati]}
+  sun: {en: [sunday, sundays], de: [Sonntag, sonntags, Sonntagen, Feiertag, feiertags], fr: [dimanche, dimanches, jour férié], it: [domenica, domeniche, festivo, festivi]}
+
+# Short weekday forms: "So" and "Do" are also words, so these count only in an OPEN span.
+weekday_short:
+  mon: {en: [mon], de: [Mo], fr: [lun], it: [lun]}
+  tue: {en: [tue, tues], de: [Di], fr: [mar], it: [mar]}
+  wed: {en: [wed], de: [Mi], fr: [mer], it: [mer]}
+  thu: {en: [thu, thur, thurs], de: [Do], fr: [jeu], it: [gio]}
+  fri: {en: [fri], de: [Fr], fr: [ven], it: [ven]}
+  sat: {en: [sat], de: [Sa], fr: [sam], it: [sab]}
+  sun: {en: [sun], de: [So], fr: [dim], it: [dom]}
+
+open:
+  open:
+    en: [open, opened, opening, open on, still open, that are open, which are open]
+    de: [geöffnet, offen, offene, offenen, geöffnete, geöffneten, hat auf, haben auf, aufhaben, Öffnungszeiten]
+    fr: [ouvert, ouverte, ouverts, ouvertes, ouvrant]
+    it: [aperto, aperta, aperti, aperte]
+
+now:
+  now:
+    en: [now, right now, currently, at the moment, open now, still open now]
+    de: [jetzt, gerade, momentan, aktuell, derzeit, grad]
+    fr: [maintenant, actuellement, en ce moment, tout de suite]
+    it: [adesso, ora, in questo momento, attualmente, subito]
+
+scope:
+  route:
+    en: [route, the route, my route, along route, on route, along the way, along my way, on my way, my way, plan, the plan, my plan, trip, the trip, my trip, tour, track, gpx, the way, along the route, on the route, on my route, along my route, the whole route, whole route, the line, course]
+    de: [Route, die Route, meine Route, der Route, meiner Route, Strecke, die Strecke, der Strecke, Tour, meine Tour, der Tour, Weg, entlang der Route, auf der Route, auf meiner Route, auf der Strecke, entlang der Strecke, Plan, Track, unterwegs]
+    fr: [itinéraire, sur le chemin, sur mon chemin, en chemin, mon itinéraire, l'itinéraire, parcours, mon parcours, le parcours, trajet, le trajet, trace, la trace, le long du parcours, sur le parcours, sur l'itinéraire, sur la route, en route, tracé, le tracé]
+    it: [percorso, strada facendo, sulla strada, lungo il giro, il percorso, mio percorso, itinerario, l'itinerario, tragitto, traccia, la traccia, lungo il percorso, sul percorso, sull'itinerario, lungo la strada, per strada, giro, il giro]
+  view:
+    en: [map view, the map view, map, the map, on the map, view, the view, this area, visible area, on screen, the screen, screen, my screen, what I see, this section of the map, current view]
+    de: [Kartenausschnitt, im Kartenausschnitt, Ausschnitt, im Ausschnitt, Karte, auf der Karte, der Karte, Ansicht, Kartenansicht, sichtbarer Bereich, sichtbaren Bereich, Bildschirm, auf dem Bildschirm, diesem Bereich, dieser Gegend]
+    fr: [carte, la carte, sur la carte, écran, mon écran, vue actuelle, la vue actuelle, vue, la vue, vue de la carte, zone visible, cette zone, l'écran, à l'écran, cette région]
+    it: [mappa, la mappa, sulla mappa, mio schermo, vista attuale, vista, la vista, area visibile, quest'area, questa zona, schermo, sullo schermo]
+  here:
+    en: [here, right here, exactly here, around here, nearby, near here, near me, close by, close to me, around me, near my location, in the area, close, local, local area]
+    de: [hier, genau hier, hier in der Gegend, in der Gegend, Gegend, hier in der Nähe, in der Nähe, in meiner Nähe, um mich herum, bei mir, nahe, in der Umgebung, Umgebung, hier herum, hierzu]
+    fr: [ici, juste ici, ici même, près d'ici, autour d'ici, autour de moi, près de moi, à proximité, dans le coin, aux alentours, dans les environs, par ici]
+    it: [qui, qua, proprio qui, qui vicino, qua vicino, vicino a me, nelle vicinanze, nei dintorni, qui intorno, intorno a me, in zona, nei paraggi]
+
+# Words for the rider's position, as a point ("from here", "near me").
+here:
+  here:
+    en: [here, me, my location, my position, my current location, current location, current position, where I am, my place, myself, us, where we are]
+    de: [hier, mir, mich, mein Standort, meinem Standort, meinen Standort, meine Position, meiner Position, aktueller Standort, aktuellen Standort, Standort, wo ich bin, uns]
+    fr: [ici, moi, ma position, ma localisation, position actuelle, où je suis, là où je suis, nous]
+    it: [qui, qua, me, la mia posizione, mia posizione, posizione attuale, dove sono, dove mi trovo, noi]
+
+# Start or end of the whole plan, as a point.
+plan:
+  start:
+    en: [start, the start, beginning, the beginning, the starting point, start of the route, start of the trip, the start of the route, starting point, departure, trailhead, start of my route]
+    de: [Start, den Start, der Start, Anfang, Startpunkt, Beginn, Start der Route, Anfang der Route, Beginn der Tour, Start der Tour, Ausgangspunkt]
+    fr: [départ, le départ, début, le début, début du parcours, départ de l'itinéraire, point de départ, début de l'itinéraire]
+    it: [partenza, la partenza, inizio, l'inizio, inizio del percorso, punto di partenza, partenza del giro]
+  end:
+    en: [end, the end, finish, the finish, end of the route, end of the trip, the end of the route, destination, finish line, end of my route]
+    de: [Ende, das Ende, Ziel, das Ziel, Ende der Route, Ende der Tour, Endpunkt, Zielort]
+    fr: [fin, la fin, arrivée, l'arrivée, fin du parcours, fin de l'itinéraire, point d'arrivée, destination]
+    it: [fine, la fine, arrivo, l'arrivo, fine del percorso, punto di arrivo, destinazione, traguardo]
+
+# Words that turn a kind into "the nearest place of that kind".
+nearest:
+  _:
+    en: [nearest, closest, next, a, an, any, some, the, one, the nearest, the closest, the next, nearby, close]
+    de: [nächste, nächsten, nächster, nächstes, nächstgelegene, nächstgelegenen, ein, eine, einen, einem, einer, irgendein, irgendeine, irgendeinen, der, die, das, den, dem, zum, zur, nahe, nahen]
+    fr: [le plus proche, la plus proche, les plus proches, plus proche, prochain, prochaine, un, une, le, la, les, l', des, du, au, aux, n'importe quel, n'importe quelle]
+    it: [più vicino, più vicina, il più vicino, la più vicina, prossimo, prossima, un, uno, una, "un'", il, lo, la, l', al, alla, allo, qualche, qualsiasi, vicino, vicina]
+
+# ALONG qualifiers.
+qualifier:
+  first: {en: [first, the first, initial, opening], de: [erste, ersten, ersten paar], fr: [premier, premiers, première, premières, les premiers], it: [primo, primi, prima, prime, i primi]}
+  last: {en: [last, the last, final, closing], de: [letzte, letzten, letzter], fr: [dernier, derniers, dernière, dernières, les derniers], it: [ultimo, ultimi, ultima, ultime, gli ultimi]}
+  next: {en: [next, the next, coming, following, upcoming], de: [nächste, nächsten, kommenden, folgenden, kommende], fr: [prochain, prochains, prochaine, prochaines, suivants, suivantes], it: [prossimo, prossimi, prossima, prossime, successivi, seguenti]}
+  after: {en: [after, beyond, past, later than], de: [nach, hinter, später als, ab], fr: [après, au-delà de, passé], it: [dopo, oltre]}
+  at: {en: [at, at around, "@", on], de: [bei, an, am, auf], fr: [à, au, sur], it: [a, al, all', sul]}
+  around: {en: [around, about, approximately, approx, roughly, near, circa, ca], de: [etwa, ungefähr, rund, um, ca, circa, zirka, gegen], fr: [environ, vers, autour de, à peu près, aux alentours de], it: [circa, verso, intorno a, intorno al, attorno a, più o meno]}
+  between: {en: [between], de: [zwischen], fr: [entre], it: [tra, fra]}
+  within: {en: [within, inside, in the], de: [innerhalb, innerhalb der, in den, auf den], fr: [dans les, sur les], it: [entro, nei, negli, nelle, nel, entro i]}
+  from: {en: [from, since, starting at, starting from], de: [von, vom, ab, seit], fr: [de, du, depuis, à partir de, à partir du], it: [da, dal, dalla, dai, a partire da, a partire dal]}
+  to: {en: [to, until, till, up to, "-", "–", through], de: [bis, bis zu, bis zum, bis km, "-"], fr: [à, au, jusqu'à, jusqu'au, "-"], it: [a, al, fino a, fino al, "-"]}
+  and: {en: [and], de: [und], fr: [et], it: [e]}
+  in: {en: [in, in about, in around], de: [in, in etwa], fr: [dans, d'ici], it: [tra, fra, entro]}
+  from_here: {en: [from here, from me, from my location, away, ahead, from now], de: [von hier, ab hier, von mir, entfernt, ab jetzt], fr: [d'ici, de moi, à partir d'ici, devant moi], it: [da qui, da me, da adesso, davanti]}
+  from_start: {en: [from the start, into the route, into the day, into the ride, after the start], de: [nach dem Start, ab Start, vom Start, nach Start], fr: [après le départ, du départ, depuis le départ], it: [dalla partenza, dopo la partenza, dall'inizio]}
+  from_end: {en: [from the end, before the end, to go, to the end, before the finish, from the finish], de: [vor dem Ende, vor dem Ziel, vorm Ziel, bis zum Ende, bis zum Ziel], fr: [avant la fin, avant l'arrivée, de la fin, de l'arrivée], it: [prima della fine, prima dell'arrivo, dalla fine, dall'arrivo]}
+
+unit:
+  km: {en: [km, kms, k, kilometer, kilometers, kilometre, kilometres, klicks, clicks, kilo], de: [Kilometer, Kilometern, Km, Kilometre], fr: [kilomètre, kilomètres, kilo, kilos], it: [chilometro, chilometri, chilometr, kilometri]}
+  mi: {en: [mi, mile, miles], de: [Meile, Meilen], fr: [mile, miles], it: [miglio, miglia]}
+  h: {en: [h, hr, hrs, hour, hours, an hour], de: [Stunde, Stunden, Std, stündlich], fr: [heure, heures, hr, hrs], it: [ora, ore]}
+  min: {en: [min, mins, minute, minutes], de: [Minute, Minuten, Min], fr: [minute, minutes, min, mn], it: [minuto, minuti, min]}
+  m: {en: [m, meter, meters, metre, metres], de: [Meter, Metern], fr: [mètre, mètres, metre, metres], it: [metro, metri]}
+  elev: {en: [hm, vertical meters, vertical metres, meters of climbing, metres of climbing, m of climbing, elevation, elevation gain, climbing, of climbing, vm, altitude, "d+"], de: [Höhenmeter, Höhenmetern, hm, Hm, hoehenmeter, Höhe], fr: [mètres de dénivelé, m de dénivelé, dénivelé, dénivelé positif, "d+", "m d+"], it: [metri di dislivello, m di dislivello, dislivello, "d+", "m d+"]}
+  pct: {en: ["%", percent, per cent, pc, gradient], de: [Prozent, "%"], fr: [pourcent, pour cent, pourcents, "%"], it: [percento, per cento, "%"]}
+  day: {en: [day, days, stage, stages, nights, day-long], de: [Tag, Tage, Tagen, Etappe, Etappen, Nächte, Tagesetappen, tägig, tägige, tägigen, tägiger, tägiges], fr: [jour, jours, étape, étapes, journées, nuits], it: [giorno, giorni, tappa, tappe, giornate, notti]}
+  week: {en: [week, weeks], de: [Woche, Wochen], fr: [semaine, semaines], it: [settimana, settimane]}
+
+# Words that make "m" a horizontal distance in a MIN span ("longer than 500 m").
+length_word:
+  _:
+    en: [long, longer, length, longest, over, distance]
+    de: [lang, länger, lange, langen, Länge]
+    fr: [long, longs, longue, longues, plus long, plus longs, longueur]
+    it: [lungo, lunghi, lunga, lunghe, più lungo, più lunghi, lunghezza]
+
+bike:
+  road: {en: [road, road bike, roadbike, racer, racing bike, road cycle, road bikes, skinny tyres], de: [Rennrad, Rennräder, Rennradler, Straßenrad, mit dem Rennrad, Renner], fr: [vélo de route, route, vélo route, vélo de course, cyclisme sur route], it: [bici da corsa, bici da strada, bdc, strada, corsa]}
+  gravel: {en: [gravel, gravel bike, gravel bikes, gravelbike, gravel grinder], de: [Gravel, Gravelbike, Gravelbikes, Gravelrad, Gravel-Rad, Gravelbike], fr: [gravel, vélo gravel, vélo de gravel], it: [gravel, bici gravel, bici da gravel]}
+  mtb: {en: [mtb, mountain bike, mountainbike, mountain bikes, mtbs, mountain biking, fatbike], de: [MTB, Mountainbike, Mountainbikes, Mountain-Bike, Bergrad], fr: [vtt, vélo tout terrain, vélo tout-terrain, mountain bike], it: [mtb, mountain bike, bici da montagna, rampichino]}
+  touring: {en: [touring, touring bike, trekking, trekking bike, tourer, loaded touring, bikepacking bike, hybrid, city bike], de: [Reiserad, Reiseräder, Tourenrad, Trekkingrad, Trekkingbike, Trekking, Tourenfahrrad, Reisevelo], fr: [vélo de voyage, randonneuse, vélo de randonnée, vélo trekking, vtc, vélo de cyclotourisme, cyclotourisme], it: [bici da turismo, bici da viaggio, trekking, bici da trekking, cicloturismo]}
+
+goal:
+  shortest: {en: [shortest, short, shorter, direct, most direct, quickest, fastest, quicker, faster], de: [kürzeste, kürzesten, kürzer, kurz, direkt, direkteste, schnellste, schnellsten, schneller], fr: [le plus court, plus court, plus courte, court, direct, plus direct, rapide, plus rapide, le plus rapide], it: [più breve, il più breve, breve, più corto, corto, diretto, più diretto, veloce, più veloce, il più veloce]}
+  least_climbing: {en: [flattest, flatter, flat, least climbing, less climbing, fewer hills, avoid hills, avoiding hills, easiest, easier, no climbs, no big climbs, less elevation, least elevation, minimum climbing, not hilly, avoid climbs], de: [flach, flacher, flachste, flachsten, flache, wenig Höhenmeter, weniger Höhenmeter, wenige Höhenmeter, wenig Steigung, weniger Steigung, ohne Berge, keine Berge, leichter, einfacher, wenig Anstiege, weniger Anstiege], fr: [moins dur, moins dure, moins difficile, moins fatigant, plat, plus plat, le plus plat, plate, moins de dénivelé, moins de montée, moins de côtes, éviter les côtes, sans côtes, peu de dénivelé, facile, plus facile], it: [meno duro, meno dura, meno faticoso, meno difficile, pianeggiante, più piatto, piatto, piatta, meno dislivello, poco dislivello, meno salite, senza salite, evitare le salite, facile, più facile, pianura]}
+  least_unpaved: {en: [paved, asphalt, tarmac, sealed, without gravel, no gravel, avoid gravel, avoiding gravel, less gravel, least gravel, on road, smooth, no dirt, avoid dirt, less unpaved, least unpaved, on tarmac, only paved], de: [asphaltiert, Asphalt, befestigt, befestigte, kein Schotter, keine Schotter, ohne Schotter, wenig Schotter, weniger Schotter, Schotter vermeiden, nur Asphalt, auf Asphalt, keine Feldwege], fr: [évitant les chemins, éviter les chemins, en évitant les chemins, goudronné, goudronnée, bitumé, asphalte, asphaltée, sans gravier, sans chemins, pas de gravier, moins de gravier, éviter le gravier, sans pistes, route goudronnée, que du goudron], it: [asfaltato, asfaltata, asfalto, senza sterrato, niente sterrato, meno sterrato, evitare lo sterrato, solo asfalto, su asfalto, senza ghiaia]}
+  most_climbing: {en: [harder route, most climbing, more climbing, max climbing, hilly, hillier, hilliest, lots of climbing, mountainous, challenging, harder, hardest, more hills, most hills, more elevation, most elevation, with climbs], de: [viele Höhenmeter, mehr Höhenmeter, meiste Höhenmeter, maximal Höhenmeter, hügelig, hügeliger, bergig, bergiger, anspruchsvoll, anspruchsvoller, schwerer, mehr Berge, viele Berge, mehr Anstiege], fr: [plus dur, le plus dur, plus dure, maximum de dénivelé, plus de dénivelé, beaucoup de dénivelé, vallonné, plus vallonné, montagneux, difficile, plus difficile, plus de côtes, plus de montées], it: [più duro, più dura, il più duro, più dislivello, molto dislivello, massimo dislivello, collinare, montuoso, impegnativo, più impegnativo, più salite, tante salite, difficile]}
+  balanced: {en: [balanced, normal, default, standard, regular, best, recommended], de: [ausgewogen, ausgeglichen, normal, Standard, beste, empfohlen], fr: [équilibré, équilibrée, normal, standard, par défaut, meilleur, recommandé], it: [equilibrato, bilanciato, normale, standard, predefinito, migliore, consigliato]}
+
+point_kind:
+  visit: {en: [visit, visiting, see, go by, as a visit, to visit], de: [besuchen, Besuch, besichtigen, anschauen, ansehen, vorbeischauen], fr: [visiter, visite, voir, aller voir], it: [visitare, visita, vedere, andare a vedere]}
+  stop: {en: [stop, stops, break, breaks, pause, rest, rest stop, rest stops, as a stop, stopover, halt, stay], de: [Stopp, Stopps, Stop, Halt, Pause, Pausen, Rast, Zwischenstopp, Zwischenstopps, Rastplatz, als Stopp, anhalten, Stopps einlegen], fr: [arrêt, arrêts, pause, pauses, halte, haltes, étape, escale, comme arrêt], it: [sosta, soste, fermata, fermate, pausa, pause, tappa, come sosta]}
+  pass: {en: [pass through, pass by, through, go through, passing through, ride through, via only, just pass], de: [durchfahren, durch, vorbei, vorbeifahren, vorbei an, durchqueren], fr: [passer par, traverser, en passant par, passage par, passer], it: [passare per, passare da, attraversare, passando per, passaggio]}
+
+# Words a slot span may hold that carry no value: articles, prepositions, fillers.
+stop:
+  _:
+    en: [the, a, an, of, on, in, at, to, for, by, and, or, please, pls, me, my, i, some, any, is, are, there, where, can, could, would, show, find, give, list, get, search, look, looking, want, need, all, this, that, these, those, it, its, about, around, approximately, approx, roughly, ca, circa, like, maybe, also, just, only, which, what, do, does, you, your, we, our, us, let, lets, "let's", from, up, into, onto, over, somewhere, anywhere, as, possible, along, entire, whole, have, has, had, needs, wants, finding, show me, "i'd", "i'm", "'s", exactly, right, still, take, buy, grab, municipal, public, complete, full, hi, hey, hello, thanks, thank, ok, okay, test, "?", "!", ",", ".", ";", ":", "/", "(", ")"]
+    de: [der, die, das, den, dem, des, ein, eine, einen, einem, einer, eines, von, vom, im, in, am, an, auf, bei, beim, zu, zum, zur, und, oder, bitte, mir, mich, ich, wo, kann, können, gibt, es, zeig, zeige, such, suche, finde, alle, mal, doch, noch, irgendwo, irgendein, welche, welcher, "gibt's", etwa, ungefähr, rund, ca, circa, so, gegen, um, hier, da, gerne, gern, bis, nach, für, wir, uns, unser, unsere, man, eigentlich, ganz, gute, guten, schöne, schönen, gib, gebt, brauche, brauchen, hätte, möchte, will, möglichst, möglich, wie, ganze, ganzen, gesamte, gesamten, nur, entlang, mein, meine, meiner, meinem, meinen, meines, genau, finden, hat, haben, habe, gibt es, bräuchte, suchen, noch, nehmen, kaufen, holen, städtisch, städtische, städtischen, öffentliche, öffentlichen, komplett, komplette, db, sbb, hallo, hi, hey, danke, ok, test]
+    fr: [le, la, les, "l'", un, une, des, du, de, "d'", au, aux, à, en, sur, dans, et, ou, "s'il", vous, plaît, svp, moi, me, je, "j'", où, peux, puis, trouve, trouver, montre, montrez, cherche, il, y, a, "est-ce", "qu'", que, quel, quels, tous, toutes, environ, vers, pour, nous, notre, nos, on, bon, bons, bonne, bonnes, pas, ne, "n'", donne, donne-moi, veux, voudrais, besoin, possible, plus, aussi, tout, toute, entier, entière, seulement, uniquement, mon, ma, mes, chercher, trouver, avoir, ai, faut, est, sont, exactement, juste, même, encore, prendre, acheter, aller, municipal, municipaux, municipale, municipales, complet, complète, sncf, ter, salut, bonjour, merci, ok, test]
+    it: [il, lo, la, i, gli, le, "l'", un, uno, una, "un'", di, del, della, dello, dei, degli, delle, da, dal, dalla, a, al, alla, allo, ai, agli, alle, in, nel, nella, nei, su, sul, sulla, e, o, per, favore, mi, me, io, dove, posso, trova, trovami, mostra, mostrami, cerca, "c'è", ci, sono, tutti, tutte, circa, verso, noi, nostro, nostra, buono, buoni, buona, buone, qualche, "dell'", "all'", "nell'", "sull'", "dall'", dammi, voglio, vorrei, cerco, serve, servono, possibile, più, tutto, tutta, intero, intera, solo, soltanto, mio, mia, miei, mie, trovare, cercare, finire, avere, ho, hai, bisogno, esattamente, proprio, ancora, prendere, comprare, andare, comunale, comunali, completo, completa, trenitalia, fs, ciao, grazie, ok, test]
+
+# Role prepositions, for the rules baseline and for stripping names.
+prep:
+  to: {en: [to, towards, toward, up, up to, into, till, until, onto, over to], de: [nach, zu, zum, zur, bis, bis nach, bis zum, bis zur, hoch, hinauf, rauf, auf, auf den, auf die, in Richtung], fr: [à, au, aux, vers, jusqu'à, jusqu'au, pour, en direction de], it: [a, al, alla, allo, ai, "all'", verso, fino a, fino al, in direzione di]}
+  from: {en: [from, starting at, starting from, starting in, leaving from, out of, starting], de: [von, vom, ab, aus, los von, startend in], fr: [de, du, des, "d'", depuis, à partir de, en partant de], it: [da, dal, dalla, dallo, "dall'", partendo da, a partire da]}
+  via: {en: [via, through, by way of, passing, passing through, going through], de: [über, durch, via, vorbei an], fr: [par, en passant par, via, passant par], it: [per, passando per, attraverso, tramite, via, passando da]}
+  near: {en: [near, close to, around, next to, by, beside, nearby, in the area of], de: [bei, beim, nahe, in der Nähe von, neben, um, rund um, nahe bei, in der Nähe vom], fr: [près de, près du, à côté de, autour de, proche de, aux environs de, vers], it: [vicino a, vicino al, vicino alla, presso, nei pressi di, intorno a, accanto a, vicino]}
+  before: {en: [before, ahead of, prior to], de: [vor, vorm, vor dem, vor der], fr: [avant, avant le, avant la], it: [prima, prima di, prima del, prima della, "prima dell'"]}
+  after: {en: [after, past, beyond, behind], de: [nach, hinter, nach dem, nach der], fr: [après, après le, après la], it: [dopo, oltre, dopo il, dopo la, "dopo l'"]}
+  at: {en: [at, in, on], de: [in, im, am, an, auf], fr: [à, au, en, dans], it: [a, ad, al, in, nel, nella, a]}
+  between: {en: [between], de: [zwischen], fr: [entre], it: [tra, fra]}
+  with: {en: [with, that have, which have, having], de: [mit, die haben], fr: [avec, qui ont], it: [con, che hanno]}
+
+# Request-type words for the rules baseline.
+intent:
+  route: {en: [route, directions, navigate, take me, bring me, get me, lead me, plan a route, route me, how do i get, i want to go, a route, ride, cycle], de: [Route, Weg, navigiere, navigieren, bring mich, führe mich, fahre, fahren, wie komme ich], fr: [itinéraire, emmène-moi, emmène moi, amène-moi, conduis-moi, aller, rouler, comment aller, trajet], it: [percorso, portami, andare, naviga, come arrivo, come arrivare, itinerario, strada]}
+  add: {en: [add, insert, include, put, plan, schedule], de: [hinzufügen, füge, füg, einfügen, ergänzen, einplanen, plane, einbauen], fr: [ajouter, ajoute, ajoutez, insérer, insère, inclure, prévoir, prévois], it: [aggiungere, aggiungi, inserire, inserisci, includere, includi, prevedere, prevedi]}
+  remove: {en: [remove, delete, drop, skip, take out, get rid of, cancel, avoid stopping at], de: [entfernen, entferne, löschen, lösche, streichen, streiche, weglassen, raus, rausnehmen], fr: [supprimer, supprime, enlever, enlève, retirer, retire, annuler], it: [rimuovere, rimuovi, togliere, togli, eliminare, elimina, cancella, cancellare]}
+  split: {en: [split, divide, break up, cut, spread, chop], de: [aufteilen, teilen, teile, teil, aufteilen in, unterteilen, aufsplitten], fr: [diviser, divise, découper, découpe, couper, coupe, répartir, scinder], it: [dividere, dividi, spezzare, spezza, suddividere, suddividi, ripartire]}
+  join: {en: [join, merge, combine, fuse, put together], de: [zusammenlegen, zusammenfassen, verbinden, vereinen, kombinieren, zusammen], fr: [fusionner, fusionne, regrouper, regroupe, combiner, combine, réunir, joindre], it: [unire, unisci, accorpare, accorpa, combinare, combina, fondere]}
+  reverse: {en: [reverse, backwards, other direction, opposite direction, flip, other way round, other way around, turn around], de: [umdrehen, umkehren, rückwärts, andere Richtung, Gegenrichtung, drehe, umgekehrt], fr: [inverser, inverse, sens inverse, "dans l'autre sens", retourner, renverser], it: [invertire, inverti, al contrario, senso inverso, rovescia, "all'incontrario"]}
+  end: {en: [end, finish, ending, finishing], de: [beenden, enden, beende, endet, aufhören, Schluss], fr: [terminer, termine, finir, finis, arrêter, arrête, fin], it: [finire, finisci, terminare, termina, fermarsi, fermati, chiudere]}
+  reroute: {en: [make, change, reroute, redo, replan], de: [mach, mache, ändere, ändern, neu planen], fr: [rendre, rends, changer, change, refaire, modifier], it: [rendi, rendere, cambia, cambiare, rifare, modifica]}
+  question: {en: [worth, should, recommend, why, how, weather, better, loop, round trip, what is, whats, tell me, who], de: [lohnt, lohnen, sollte, sollten, empfiehlst, empfehlen, warum, wie weit, wie lang, wie lange, wie viele, wie ist, Wetter, besser, Runde, Rundtour, Rundfahrt, was ist], fr: [vaut, faut-il, pourquoi, comment, météo, mieux, boucle, conseilles, "qu'est-ce"], it: [vale la pena, conviene, dovrei, perché, come è, "com'è", meteo, meglio, anello, giro ad anello, consigli]}
+
+# Filler words of a RADIUS span ("less than 2 km away").
+limit:
+  _: {en: [within, less than, under, max, maximum, up to, at most, no more than, not more than, no further than, not further than, not farther than, radius, a radius of, away, around, of], de: [innerhalb, im Umkreis von, Umkreis, nicht weiter als, nicht mehr als, weiter als, weniger als, unter, höchstens, maximal, bis, entfernt, Radius, im Radius von, max], fr: [dans un rayon de, rayon, pas au-delà de, pas plus loin que, pas plus de, moins de, à moins de, au plus, maximum, max, de distance, dans les], it: [entro, nel giro di, nel raggio di, raggio, non oltre, non più lontano di, non più di, meno di, al massimo, massimo, di distanza, max]}
+
+# Filler words of a MIN span ("longer than 30 km").
+threshold:
+  _: {en: [or more, or longer, or above, and more, and above, more than, longer than, over, at least, above, min, minimum, steeper than, than, bigger than, greater than, higher than, exceeding], de: [oder mehr, oder länger, und mehr, mehr als, länger als, über, mindestens, steiler als, als, größer als, höher als, ab, min], fr: [ou plus, et plus, ou davantage, plus de, plus long que, plus longs que, au moins, plus raide que, plus raides que, que, supérieur à, supérieure à, dépassant, minimum], it: [o più, e oltre, più di, più lungo di, più lunghi di, almeno, oltre, più ripido di, più ripide di, più ripido del, più ripida del, più ripidi del, più ripide del, più lungo del, più lunghi del, di, del, superiore a, minimo]}
+
+# Words that name the trip in a DAYS span ("a 7-day tour").
+trip_noun:
+  _: {en: [trip, tour, ride, journey, trek, adventure, loop], de: [Tour, Reise, Fahrt, Radtour, Radreise, Ausflug, Trip, Runde], fr: [voyage, tour, sortie, périple, randonnée, balade, virée], it: [viaggio, giro, tour, uscita, gita, viaggetto]}
+
+# Road words a GOAL span may hold ("paved roads", "auf dem kürzesten Weg").
+route_noun:
+  _: {en: [route, routes, way, ways, road, roads, path, paths, trail, trails, streets], de: [Route, Routen, Weg, Wege, Straße, Straßen, Strecke, Strecken, Pfad, Pfade], fr: [route, routes, chemin, chemins, itinéraire, voie, voies, parcours], it: [strada, strade, percorso, percorsi, via, vie, sentiero, sentieri]}
+
+# "avoid gravel", "Anstiege vermeiden", "sans côtes": avoid a stretch kind.
+avoid:
+  _: {en: [avoid, avoiding, without, no, less, fewer, skip, not too many], de: [vermeiden, meiden, umfahren, ohne, kein, keine, keinen, weniger, wenig, möglichst wenig], fr: [éviter, évitant, évite, sans, pas de, moins de, peu de], it: [evitare, evitando, evita, senza, niente, meno, poche, pochi]}
+
+# Tails of German compounds: "Wasserstopps", "Wasserlücke", "Rennradtour".
+compound_tail:
+  stop: {de: [stopp, stopps, stop, stops, pause, pausen, halt, rast]}
+  gap: {de: [lücke, lücken]}
+  trip: {de: [tour, touren, fahrt, fahrten, runde, runden, reise, route, routen, rute, strecke, strecken, weg, wege]}
+
+# Words that lead to a named summit: "the top of the Belchen", "in cima al Mottarone".
+top_of:
+  _: {en: [top of, the top of, up to the top of, to the top of, summit of, the summit of], de: [oben auf, auf den Gipfel des, auf den Gipfel der, auf den Gipfel vom, auf dem Gipfel des, zum Gipfel des, zum Gipfel vom, Gipfel des, Gipfel vom], fr: [en haut de, en haut du, au sommet de, au sommet du, sommet du, sommet de], it: [in cima a, in cima al, in cima alla, in cima allo, cima del, cima della, in vetta a, in vetta al]}

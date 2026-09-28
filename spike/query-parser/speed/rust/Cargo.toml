@@ -1,0 +1,36 @@
+[package]
+name = "parser-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Standalone: keeps the repository's root workspace from picking this spike up.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers"]
+
+[dependencies]
+tract-onnx = "0.23"
+tokenizers = { version = "0.22", default-features = false, features = ["unstable_wasm"] }
+candle-core = { version = "0.11", optional = true }
+candle-nn = { version = "0.11", optional = true }
+candle-transformers = { version = "0.11", optional = true }
+serde_json = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.125"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+
+[[bin]]
+name = "bench_candle"
+required-features = ["candle"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
