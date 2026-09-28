@@ -1,4 +1,8 @@
+import { profileAscent } from './profile-data';
+import type { PlaceCategory } from './poi-kinds';
+
 export type Coordinate = [number, number];
+export type LegMode = 'routed' | 'straight' | 'drawn';
 export type PointKind = 'start' | 'finish' | 'pass' | 'via' | 'waypoint' | 'detour' | 'night' | 'marker' | 'place';
 export interface RoutePoint {
     id: string;
@@ -7,9 +11,13 @@ export interface RoutePoint {
     kind: PointKind;
     progress: number;
     night?: number;
+    /** Mode of the leg that ends at this point; absent means routed. */
+    leg?: LegMode;
+    /** Inner path of a drawn leg. The leg always joins its two points, so moving a point keeps the drawing. */
+    drawn?: Coordinate[];
 }
 export type Place = RoutePoint & {
-    category: 'hotel' | 'camp' | 'water';
+    category: PlaceCategory;
     description: string;
 };
 export interface Trip {
@@ -25,6 +33,10 @@ export interface Trip {
     limit: number;
     variant: 'valley' | 'direct';
     restAfter?: number[];
+    /** Night number → progress along the current route of a provisional day end set by drag. */
+    splits?: Record<number, number>;
+    /** Climb per day in metres; 0 or absent means no target. */
+    climbTarget?: number;
 }
 export interface Day {
     number: number;
@@ -33,6 +45,7 @@ export interface Day {
     distance: number;
     hours: number;
     pinned: RoutePoint | undefined;
+    split?: boolean;
 }
 export interface ItineraryDay extends Day {
     ridingNumber: number;
@@ -128,30 +141,38 @@ export function reorderPoint(trip: Trip, id: string, direction: -1 | 1): Trip {
     return { ...trip, routeOrder: points.map(p => p.id) };
 }
 
-function routeLayout(trip: Trip): {coordinates:Coordinate[]; stops:{point:RoutePoint; distance:number}[]} {
+type Stop = { point: RoutePoint; distance: number };
+
+function routeLayout(trip: Trip): { coordinates: Coordinate[]; stops: Stop[] } {
     const base = corridorCoordinates(trip);
     const points = orderedRoutePoints(trip);
-    if (!trip.routeOrder) {
+    if (!trip.routeOrder && points.slice(1).every(p => (p.leg ?? 'routed') === 'routed')) {
         const total = cumulative(base).at(-1)!;
         return {coordinates:base, stops:points.map(point=>({point,distance:point.kind==='start'?0:point.kind==='finish'?total:nearestProgress(base,point.coordinate)*total}))};
     }
-    const coordinates:Coordinate[] = [[...points[0].coordinate]];
-    const stops = [{point:points[0],distance:0}];
+    const coordinates: Coordinate[] = [[...points[0].coordinate]];
+    const stops: Stop[] = [{ point: points[0], distance: 0 }];
     let distance = 0;
-    for (let i=1;i<points.length;i++) {
-        const before=points[i-1], point=points[i];
-        const from=before.kind==='start'?0:nearestProgress(base,before.coordinate);
-        const to=point.kind==='finish'?1:nearestProgress(base,point.coordinate);
-        const leg=routeSlice(base,from,to);
-        distance+=cumulative(leg).at(-1)!;
+    for (let i = 1; i < points.length; i++) {
+        const leg = legCoordinates(base, points[i - 1], points[i]);
+        distance += cumulative(leg).at(-1)!;
         coordinates.push(...leg.slice(1));
-        stops.push({point,distance});
+        stops.push({ point: points[i], distance });
     }
-    return {coordinates,stops};
+    return { coordinates, stops };
+}
+
+function legCoordinates(base: Coordinate[], before: RoutePoint, point: RoutePoint): Coordinate[] {
+    if (point.leg === 'straight' || point.leg === 'drawn') {
+        return [[...before.coordinate], ...(point.leg === 'drawn' ? point.drawn ?? [] : []).map(c => [...c] as Coordinate), [...point.coordinate]];
+    }
+    const from = before.kind === 'start' ? 0 : nearestProgress(base, before.coordinate);
+    const to = point.kind === 'finish' ? 1 : nearestProgress(base, point.coordinate);
+    return routeSlice(base, from, to);
 }
 
 export function routeCoordinates(trip: Trip): Coordinate[] { return routeLayout(trip).coordinates; }
-export function routeStops(trip: Trip): {point:RoutePoint; distance:number}[] { return routeLayout(trip).stops; }
+export function routeStops(trip: Trip): Stop[] { return routeLayout(trip).stops; }
 
 // Stored anchors use one corridor frame; current-route fractions change with every detour.
 export function anchorProgress(coordinate: Coordinate): number {
@@ -187,23 +208,35 @@ export function routeSlice(coordinates: Coordinate[], from: number, to: number):
     return [first, ...inside.map(p => [...p] as Coordinate), coordinateAt(coordinates, end)];
 }
 
-function stopProgress(trip:Trip, coordinates:Coordinate[], point:RoutePoint):number {
-    if (!trip.routeOrder) return nearestProgress(coordinates,point.coordinate);
-    const stops=routeStops(trip);
-    return (stops.find(stop=>stop.point.id===point.id)?.distance??0)/(stops.at(-1)?.distance||1);
+function stopProgress(stops: Stop[], point: RoutePoint): number {
+    return (stops.find(stop => stop.point.id === point.id)?.distance ?? 0) / (stops.at(-1)?.distance || 1);
+}
+
+// Night → progress of every fixed day end. A pinned overnight wins over a dragged split.
+function fixedNights(trip: Trip, stops: Stop[]): Map<number, number> {
+    const fixed = new Map<number, number>();
+    for (const [night, progress] of Object.entries(trip.splits ?? {})) fixed.set(Number(night), progress);
+    for (const pin of trip.points) if (pin.kind === 'night') fixed.set(pin.night!, stopProgress(stops, pin));
+    return fixed;
+}
+
+function nightCount(trip: Trip): number {
+    return Math.max(trip.days, ...trip.points.filter(p => p.kind === 'night').map(p => p.night! + 1));
 }
 
 export function overnightWindow(trip: Trip, night: number): { from: number; to: number; center: number; blocked: boolean } {
-    const coordinates = routeCoordinates(trip);
+    const { coordinates, stops } = routeLayout(trip);
     const total = cumulative(coordinates).at(-1)!;
-    const pinned = trip.points.filter(p => p.kind === 'night' && p.night !== night).sort((a, b) => a.night! - b.night!);
-    const count = Math.max(trip.days, ...trip.points.filter(p => p.kind === 'night').map(p => p.night! + 1));
-    const before = pinned.filter(p => p.night! < night).at(-1);
-    const after = pinned.find(p => p.night! > night);
-    const lo = before ? stopProgress(trip, coordinates, before) : 0;
-    const hi = after ? stopProgress(trip, coordinates, after) : 1;
-    const daysBefore = night - (before?.night ?? 0);
-    const daysAfter = (after?.night ?? count) - night;
+    const count = nightCount(trip);
+    const fixed = fixedNights(trip, stops);
+    fixed.delete(night);
+    const anchors = [...fixed.keys()].filter(n => n < count).sort((a, b) => a - b);
+    const before = anchors.filter(n => n < night).at(-1);
+    const after = anchors.find(n => n > night);
+    const lo = before === undefined ? 0 : fixed.get(before)!;
+    const hi = after === undefined ? 1 : fixed.get(after)!;
+    const daysBefore = night - (before ?? 0);
+    const daysAfter = (after ?? count) - night;
     const dayFraction = (hi - lo) / (daysBefore + daysAfter);
     const center = Math.max(0, Math.min(1, lo + dayFraction * daysBefore));
     if (night <= 0 || night >= count || hi <= lo) return { from: center, to: center, center, blocked: true };
@@ -235,30 +268,73 @@ export function nearestProgress(coordinates: Coordinate[], point: Coordinate): n
 }
 
 export function tripDays(trip: Trip): Day[] {
-    if (trip.mode === 'route') {
-        const distance = cumulative(routeCoordinates(trip)).at(-1)!;
-        return [{ number: 1, from: 0, to: 1, distance, hours: distance / 15, pinned: undefined }];
-    }
-    const coordinates = routeCoordinates(trip);
+    const { coordinates, stops } = routeLayout(trip);
     const total = cumulative(coordinates).at(-1)!;
-    const pinned = trip.points.filter(p => p.kind === 'night').sort((a, b) => a.night! - b.night!);
-    const count = Math.max(trip.days, ...pinned.map(p => (p.night ?? 0) + 1));
+    if (trip.mode === 'route') {
+        return [{ number: 1, from: 0, to: 1, distance: total, hours: total / 15, pinned: undefined }];
+    }
+    const pinned = trip.points.filter(p => p.kind === 'night');
+    const count = nightCount(trip);
+    const fixed = fixedNights(trip, stops);
     const boundaries = [0];
     for (let i = 1; i < count; i++) {
-        const pin = pinned.find(p => p.night === i);
-        if (pin) boundaries.push(stopProgress(trip, coordinates, pin));
-        else {
-            const next = pinned.find(p => (p.night ?? 0) > i);
-            const end = next ? stopProgress(trip, coordinates, next) : 1;
-            const remaining = (next?.night ?? count) - i + 1;
-            boundaries.push(boundaries[i - 1] + (end - boundaries[i - 1]) / remaining);
+        if (fixed.has(i)) {
+            boundaries.push(fixed.get(i)!);
+            continue;
         }
+        let next = i + 1;
+        while (next < count && !fixed.has(next)) next++;
+        const end = next < count ? fixed.get(next)! : 1;
+        boundaries.push(boundaries[i - 1] + (end - boundaries[i - 1]) / (next - i + 1));
     }
     boundaries.push(1);
     return boundaries.slice(1).map((to, i) => {
         const distance = Math.max(0, to - boundaries[i]) * total;
-        return { number: i + 1, from: boundaries[i], to, distance, hours: distance / 15, pinned: pinned.find(p => p.night === i + 1) };
+        const pin = pinned.find(p => p.night === i + 1);
+        const split = !pin && i + 1 < count && trip.splits?.[i + 1] !== undefined;
+        return { number: i + 1, from: boundaries[i], to, distance, hours: distance / 15, pinned: pin, split };
     });
+}
+
+/** Moves a provisional day end along the route, never past the day ends beside it. */
+export function setSplit(trip: Trip, night: number, progress: number): Trip {
+    const days = tripDays(trip);
+    if (trip.mode === 'route' || night < 1 || night >= days.length || days[night - 1].pinned) return trip;
+    const clamped = Math.max(days[night - 1].from, Math.min(days[night].to, progress));
+    return { ...trip, splits: { ...trip.splits, [night]: clamped } };
+}
+
+/** How far a day goes over the rider's targets; 0 when under or without a target. */
+export function dayOverTarget(trip: Trip, day: Day, ascent: number): { km: number; climb: number } {
+    return {
+        km: trip.limit > 0 ? Math.max(0, day.distance - trip.limit) : 0,
+        climb: trip.climbTarget ? Math.max(0, ascent - trip.climbTarget) : 0,
+    };
+}
+
+export interface OvernightCandidate {
+    place: Place;
+    distance: number;
+    ascent: number;
+    from: number;
+    to: number;
+}
+
+/** The three places nearest the suggested day end, each with its predicted day, shortest day first. */
+export function overnightCandidates(trip: Trip, night: number): OvernightCandidate[] {
+    if (trip.mode === 'route' || night < 1 || night >= tripDays(trip).length) return [];
+    const coordinates = routeCoordinates(trip);
+    const { center } = overnightWindow(trip, night);
+    const gap = (place: Place) => Math.abs(nearestProgress(coordinates, place.coordinate) - center);
+    return places
+        .filter(place => place.category !== 'water')
+        .sort((a, b) => gap(a) - gap(b))
+        .slice(0, 3)
+        .map(place => {
+            const day = tripDays(pinNight(trip, night, place.coordinate, place.label))[night - 1];
+            return { place, distance: day.distance, ascent: profileAscent(day.from, day.to), from: day.from, to: day.to };
+        })
+        .sort((a, b) => a.distance - b.distance);
 }
 
 export function applyBudget(trip: Trip, budget: Trip['budget'], target: number, limit: number): Trip {
@@ -266,7 +342,7 @@ export function applyBudget(trip: Trip, budget: Trip['budget'], target: number, 
     const wanted = budget === 'days' ? Math.round(target) - (trip.restAfter?.length ?? 0) : Math.ceil(total / (budget === 'distance' ? target : target * 15));
     const pinnedMinimum = Math.max(1, ...trip.points.filter(p => p.kind === 'night').map(p => (p.night ?? 0) + 1));
     const days = Math.max(pinnedMinimum, Math.min(14, Math.max(1, wanted)));
-    return { ...trip, budget, target, limit, days, restAfter: (trip.restAfter ?? []).filter(after => after <= days), restNames: (trip.restAfter ?? []).flatMap((after,i)=>after<=days?[trip.restNames?.[i]??'']:[]) };
+    return { ...trip, budget, target, limit, days, splits: days === trip.days ? trip.splits : undefined, restAfter: (trip.restAfter ?? []).filter(after => after <= days), restNames: (trip.restAfter ?? []).flatMap((after,i)=>after<=days?[trip.restNames?.[i]??'']:[]) };
 }
 
 export function itineraryDays(trip: Trip): ItineraryDay[] {
@@ -295,16 +371,87 @@ export function removeRestDay(trip: Trip, index: number): Trip {
 }
 
 export function pinNight(trip: Trip, night: number, coordinate: Coordinate, label: string): Trip {
-    const points = trip.points.filter(p => p.id !== `night-${night}`);
-    const progress = anchorProgress(coordinate);
-    points.push({ id: `night-${night}`, kind: 'night', night, coordinate, label, progress });
-    return { ...trip, points };
+    const id = `night-${night}`;
+    const others: Trip = { ...trip, points: trip.points.filter(p => p.id !== id) };
+    const point: RoutePoint = { id, kind: 'night', night, coordinate, label, progress: anchorProgress(coordinate) };
+    const next = trip.routeOrder && !trip.routeOrder.includes(id)
+        ? intoLeg(others, point, nearestLegEnd(others, coordinate))
+        : { ...others, points: [...others.points, point] };
+    if (trip.splits?.[night] !== undefined) {
+        const { [night]: _, ...splits } = trip.splits;
+        next.splits = splits;
+    }
+    return next;
+}
+
+/** Adds a point as the last stop before the finish; the other points keep their order. */
+export function appendPoint(trip: Trip, point: RoutePoint): Trip {
+    return point.kind === 'marker' ? { ...trip, points: [...trip.points, point] } : intoLeg(trip, point, finishId(trip));
+}
+
+/** Adds a point in the leg nearest to it; the other points keep their order. */
+export function addPointNear(trip: Trip, point: RoutePoint): Trip {
+    if (!trip.routeOrder || point.kind === 'marker') return { ...trip, points: [...trip.points, point] };
+    return intoLeg(trip, point, nearestLegEnd(trip, point.coordinate));
+}
+
+/** Inserts a shaping point into the leg that ends at `legEndId`. */
+export function insertPoint(trip: Trip, legEndId: string, coordinate: Coordinate): Trip {
+    const end = trip.points.find(p => p.id === legEndId);
+    if (!end || end.kind === 'start' || end.kind === 'marker') return trip;
+    return intoLeg(trip, { id: crypto.randomUUID(), kind: 'via', label: 'Shaping point', coordinate: [...coordinate], progress: anchorProgress(coordinate) }, legEndId);
+}
+
+export function setLegMode(trip: Trip, id: string, mode: LegMode): Trip {
+    return withLeg(trip, id, { leg: mode === 'routed' ? undefined : mode });
+}
+
+export function setDrawnLeg(trip: Trip, id: string, coordinates: Coordinate[]): Trip {
+    return withLeg(trip, id, { leg: 'drawn', drawn: coordinates.map(c => [...c] as Coordinate) });
+}
+
+// A shaped leg fixes the route order, so a later point joins the leg it is placed in, not the one its corridor progress suggests.
+function withLeg(trip: Trip, id: string, change: Partial<RoutePoint>): Trip {
+    const routeOrder = orderedRoutePoints(trip).slice(1, -1).map(p => p.id);
+    return { ...trip, routeOrder, points: trip.points.map(p => p.id === id ? { ...p, ...change } : p) };
+}
+
+// Places `point` in the leg that ends at `legEndId`. Both halves keep that leg's mode; a drawing splits at its vertex nearest the point.
+function intoLeg(trip: Trip, point: RoutePoint, legEndId: string): Trip {
+    const end = trip.points.find(p => p.id === legEndId)!;
+    const placed: RoutePoint = { ...point, leg: end.leg };
+    let points = trip.points;
+    if (end.leg === 'drawn') {
+        const drawn = end.drawn ?? [];
+        const cut = drawn.reduce((best, c, i) => kilometres(c, point.coordinate) < kilometres(drawn[best], point.coordinate) ? i : best, 0);
+        placed.drawn = drawn.slice(0, cut);
+        points = points.map(p => p.id === end.id ? { ...p, drawn: drawn.slice(cut + 1) } : p);
+    }
+    return { ...trip, points: [...points, placed], routeOrder: orderBefore(trip, point.id, legEndId) };
+}
+
+function finishId(trip: Trip): string {
+    return trip.points.find(p => p.kind === 'finish')!.id;
+}
+
+function nearestLegEnd(trip: Trip, coordinate: Coordinate): string {
+    const { coordinates, stops } = routeLayout(trip);
+    const distance = nearestProgress(coordinates, coordinate) * stops.at(-1)!.distance;
+    return (stops.find(stop => stop.distance >= distance) ?? stops.at(-1)!).point.id;
+}
+
+// The route order of the middle points with `id` placed just before `legEndId`; before the finish means last.
+function orderBefore(trip: Trip, id: string, legEndId: string): string[] {
+    const middle = orderedRoutePoints(trip).slice(1, -1).map(p => p.id).filter(other => other !== id);
+    const index = middle.indexOf(legEndId);
+    middle.splice(index < 0 ? middle.length : index, 0, id);
+    return middle;
 }
 
 export function nightOrderConflicts(trip: Trip): [RoutePoint, RoutePoint][] {
     const nights = trip.points.filter(p => p.kind === 'night').sort((a, b) => a.night! - b.night!);
-    const coordinates=routeCoordinates(trip);
-    return nights.slice(1).flatMap((point, i) => stopProgress(trip,coordinates,point) <= stopProgress(trip,coordinates,nights[i]) ? [[nights[i], point] as [RoutePoint, RoutePoint]] : []);
+    const stops = routeStops(trip);
+    return nights.slice(1).flatMap((point, i) => stopProgress(stops, point) <= stopProgress(stops, nights[i]) ? [[nights[i], point] as [RoutePoint, RoutePoint]] : []);
 }
 
 export class TripHistory {

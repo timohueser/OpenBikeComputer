@@ -1,6 +1,7 @@
 import { layers, namedFlavor, type Flavor } from "@protomaps/basemaps";
-import type { StyleSpecification, LayerSpecification } from "maplibre-gl";
+import type { ExpressionSpecification, StyleSpecification, LayerSpecification } from "maplibre-gl";
 import { BASEMAP_URL } from "./map-data";
+import { poiKinds } from "./poi-kinds";
 
 function flavor(dark: boolean): Flavor {
     const paper = dark ? "#181d19" : "#f4f2eb";
@@ -66,6 +67,22 @@ export function mapStyle(theme: "light" | "dark", demUrl: string, contourUrl: st
         id: "obc-cycleways", type: "line", source: "basemap", "source-layer": "roads", minzoom: 12,
         filter: ["==", ["get", "kind_detail"], "cycleway"],
         paint: { "line-color": dark ? "#b39de8" : "#7762b1", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 1.4, 16, 2.8] },
+    });
+    const plannerKinds: ExpressionSpecification = ["in", ["get", "kind"], ["literal", Object.keys(poiKinds)]];
+    // The planner draws its own place kinds; the basemap keeps the rest.
+    const pois = base.find((layer) => layer.id === "pois");
+    if (pois?.type === "symbol") pois.filter = ["all", pois.filter as ExpressionSpecification, ["!", plannerKinds]];
+    const panel = dark ? "#201f17" : "#ffffff";
+    base.push({
+        id: "planner-pois", type: "circle", source: "basemap", "source-layer": "pois", minzoom: 12, filter: plannerKinds,
+        paint: { "circle-radius": 4.5, "circle-color": panel, "circle-stroke-color": dark ? "#aaa383" : "#676443", "circle-stroke-width": 1.5 },
+    }, {
+        id: "planner-pois-matched", type: "circle", source: "basemap", "source-layer": "pois", minzoom: 12, filter: ["in", ["to-string", ["id"]], ["literal", []]],
+        paint: { "circle-radius": 6, "circle-color": panel, "circle-stroke-color": dark ? "#f2a93a" : "#f4a81d", "circle-stroke-width": 3 },
+    }, {
+        id: "planner-poi-labels", type: "symbol", source: "basemap", "source-layer": "pois", minzoom: 14, filter: plannerKinds,
+        layout: { "text-field": ["coalesce", ["get", "name:en"], ["get", "name"]], "text-font": ["Noto Sans Regular"], "text-size": 11, "text-anchor": "top", "text-offset": [0, 0.7], "text-optional": true },
+        paint: { "text-color": dark ? "#f2efe3" : "#1c1b14", "text-halo-color": panel, "text-halo-width": 1.2 },
     });
     base.push({
         id: "contour-labels", type: "symbol", source: "contours", "source-layer": "contours", minzoom: 12,

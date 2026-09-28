@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { reorderPoint, routeStops, addRestDay, anchorProgress, applyBudget, coordinateAt, cumulative, initialTrip, itineraryDays, kilometres, nightOrderConflicts, overnightWindow, pinNight, places, removeRestDay, routeCoordinates, routeSlice, TripHistory, tripDays, type Coordinate, type Trip } from './editor';
+import { reorderPoint, routeStops, addRestDay, anchorProgress, appendPoint, applyBudget, coordinateAt, cumulative, initialTrip, insertPoint, itineraryDays, kilometres, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, places, removeRestDay, routeCoordinates, routeSlice, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Coordinate, type RoutePoint, type Trip } from './editor';
 
 describe('planner commitments', () => {
     it('keeps a previous pin intact through a later edit and undo', () => {
@@ -205,5 +205,87 @@ describe('ordered overnight occurrences', () => {
         expect(tripDays(reversed)[1].to).toBeCloseTo(second/total);
         expect(nightOrderConflicts(reversed)).toHaveLength(1);
         expect(overnightWindow(reversed,2).center).toBeGreaterThan(first/total);
+    });
+});
+
+
+describe('provisional day ends', () => {
+    it('holds a dragged day end while the free nights re-balance around it', () => {
+        const trip = setSplit({ ...initialTrip(), days: 4 }, 2, .7);
+        const days = tripDays(trip);
+        expect(days.map(d => d.to)).toEqual([expect.closeTo(.35, 9), .7, expect.closeTo(.85, 9), 1]);
+        expect(days.map(d => !!d.split)).toEqual([false, true, false, false]);
+        const pinned = pinNight(trip, 1, coordinateAt(routeCoordinates(trip), .2), 'Camp');
+        expect(tripDays(pinned)[1].to).toBe(.7);
+        expect(overnightWindow(pinned, 3).center).toBeCloseTo(.85, 9);
+    });
+
+    it('never moves a day end past its neighbours', () => {
+        const trip = setSplit({ ...initialTrip(), days: 4 }, 2, .7);
+        expect(tripDays(setSplit(trip, 3, .1))[2].to).toBe(.7);
+        expect(tripDays(setSplit(trip, 1, .95))[0].to).toBe(.7);
+    });
+
+    it('clears a split when its night is pinned or the day count changes', () => {
+        const trip = setSplit(setSplit({ ...initialTrip(), days: 4 }, 1, .1), 2, .7);
+        const pinned = pinNight(trip, 2, coordinateAt(routeCoordinates(trip), .6), 'Inn');
+        expect(pinned.splits).toEqual({ 1: .1 });
+        expect(tripDays(pinned)[1].split).toBe(false);
+        expect(applyBudget(trip, 'days', 4, 50).splits).toEqual(trip.splits);
+        expect(applyBudget(trip, 'days', 5, 50).splits).toBeUndefined();
+    });
+
+    it('offers three overnight candidates without water, shortest predicted day first', () => {
+        const candidates = overnightCandidates(initialTrip(), 1);
+        expect(candidates).toHaveLength(3);
+        expect(candidates.every(c => c.place.category !== 'water')).toBe(true);
+        expect(candidates.map(c => c.distance)).toEqual([...candidates.map(c => c.distance)].sort((a, b) => a - b));
+    });
+});
+
+describe('legs', () => {
+    const visit = (trip: Trip, progress: number): RoutePoint => ({ id: 'visit', kind: 'waypoint', label: 'Visit', progress, coordinate: coordinateAt(routeCoordinates(trip), progress) });
+    const length = (trip: Trip) => cumulative(routeCoordinates(trip)).at(-1)!;
+
+    it('follows the geometry of straight, drawn and routed legs', () => {
+        const initial = initialTrip();
+        const trip: Trip = { ...initial, points: [...initial.points, visit(initial, .5)] };
+        const straight = setLegMode(trip, 'visit', 'straight');
+        expect(length(straight)).toBeLessThan(length(trip));
+        const start = trip.points[0].coordinate;
+        const end = trip.points.find(p => p.id === 'visit')!.coordinate;
+        expect(routeCoordinates(straight).slice(0, 2)).toEqual([start, end]);
+        const sketch: Coordinate[] = [[7.4, 47.7], [7.2, 47.7]];
+        const drawn = setDrawnLeg(trip, 'visit', sketch);
+        expect(routeCoordinates(drawn).slice(0, 4)).toEqual([start, ...sketch, end]);
+        expect(routeStops(drawn)[1].distance).toBeCloseTo(cumulative([start, ...sketch, end]).at(-1)!, 9);
+        expect(routeCoordinates(setLegMode(drawn, 'visit', 'routed'))).toEqual(routeCoordinates(trip));
+    });
+
+    it('inserts a point into one leg and keeps the other points in order', () => {
+        const initial = initialTrip();
+        const trip = setLegMode({ ...initial, points: [...initial.points, visit(initial, .5)] }, 'visit', 'straight');
+        const between = coordinateAt(routeCoordinates(trip), .25);
+        const inserted = insertPoint(trip, 'visit', between);
+        const order = orderedRoutePoints(inserted);
+        expect(order.map(p => p.id)).toEqual(['start', order[1].id, 'visit', 'finish']);
+        expect(order[1]).toMatchObject({ kind: 'via', coordinate: between, leg: 'straight' });
+        expect(routeCoordinates(inserted).slice(0, 3)).toEqual([trip.points[0].coordinate, between, trip.points.find(p => p.id === 'visit')!.coordinate]);
+    });
+
+    it('adds a clicked point at the end and a pinned night in its nearest leg', () => {
+        const initial = initialTrip();
+        const early = visit(initial, .1);
+        const appended = appendPoint({ ...initial, points: [...initial.points, visit(initial, .5)] }, { ...early, id: 'early' });
+        expect(orderedRoutePoints(appended).map(p => p.id)).toEqual(['start', 'visit', 'early', 'finish']);
+        const pinned = pinNight(appended, 1, coordinateAt(routeCoordinates(initial), .3), 'Camp');
+        expect(orderedRoutePoints(pinned).map(p => p.id)).toEqual(['start', 'night-1', 'visit', 'early', 'finish']);
+    });
+
+    it('splits a drawn leg where a pinned night joins it', () => {
+        const initial = initialTrip();
+        const drawn = setDrawnLeg(initial, 'finish', [[7.2, 47.7], [6.8, 47.7], [6.4, 47.5]]);
+        const pinned = pinNight(drawn, 1, [6.8, 47.69], 'Camp');
+        expect(routeCoordinates(pinned)).toEqual([initial.points[0].coordinate, [7.2, 47.7], [6.8, 47.69], [6.4, 47.5], initial.points[1].coordinate]);
     });
 });

@@ -6,15 +6,19 @@
     import Query from './PlannerQuery.svelte';
     import Resize from './PanelResize.svelte';
     import { ridingProfiles, type BikeType } from '../../lib/planner/riding-profiles';
-    import { reorderPoint, routeStops, anchorProgress, addRestDay, removeRestDay, itineraryDays, applyBudget, coordinateAt, cumulative, initialTrip, kilometres, nearestProgress, nightOrderConflicts, overnightWindow, pinNight, places, routeCoordinates, routeSlice, TripHistory, tripDays, type Coordinate, type Place, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
+    import { reorderPoint, routeStops, anchorProgress, addRestDay, removeRestDay, itineraryDays, applyBudget, coordinateAt, cumulative, initialTrip, kilometres, nearestProgress, nightOrderConflicts, overnightWindow, pinNight, places, routeCoordinates, routeSlice, TripHistory, tripDays, addPointNear, appendPoint, dayOverTarget, insertPoint, overnightCandidates, setDrawnLeg, setLegMode, setSplit, type Coordinate, type Place, type RoutePoint, type Trip, type Day, type LegMode, type OvernightCandidate } from '../../lib/planner/editor';
+    import { poiKinds } from '../../lib/planner/poi-kinds';
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileAscent } from '../../lib/planner/profile-data';
     import type { PlannerQueryValue } from '../../lib/planner/query';
-    import type { MapPoint } from '../../lib/planner/map-types';
+    import type { MapPoi, MapPoint, MapSegment } from '../../lib/planner/map-types';
 
     type Panel = 'trip' | 'search' | 'budget' | 'route' | 'checks' | 'setup';
     type EditableKind = 'via'|'pass'|'waypoint'|'night'|'marker';
+    type CalloutKind = 'point' | 'place' | 'dayend' | 'add' | 'leg';
     const pointTypes: {kind:EditableKind;label:string;icon:string}[] = [{kind:'via',label:'Shape',icon:'route'},{kind:'waypoint',label:'Visit',icon:'flag'},{kind:'night',label:'Sleep',icon:'camp'},{kind:'marker',label:'Marker',icon:'pin'}];
+    const defaultLabels: Record<EditableKind, string> = { via: 'Shaping point', pass: 'Pass here', waypoint: 'Visit', night: 'Overnight spot', marker: 'Marker' };
+    const legModes: { mode: LegMode; label: string }[] = [{ mode: 'routed', label: 'Routed' }, { mode: 'straight', label: 'Straight' }, { mode: 'drawn', label: 'Drawn' }];
     let trip = $state<Trip>(initialTrip());
     let panel = $state<Panel>('trip');
     let night = $state(1);
@@ -35,6 +39,10 @@
     let renaming = $state(false);
     let changingOvernight = $state(false);
     let adding = $state<EditableKind|null>(null);
+    // Where an add or leg callout opened; a leg callout also names its leg.
+    let spot = $state<{ coordinate: Coordinate; legEndId?: string } | null>(null);
+    let drawing = $state<string | null>(null);
+    let tilePlace = $state<Place | null>(null);
     let theme = $state<'light'|'dark'>('light');
     let hillshade = $state(true);
     let contours = $state(true);
@@ -56,32 +64,74 @@
     const days = $derived(tripDays(trip));
     const multi = $derived(trip.mode !== 'route');
     const availableTypes = $derived(pointTypes.filter(t=>multi||t.kind!=='night'));
-    const segments = $derived(days.map(d=>({coordinates:routeSlice(coordinates,d.from,d.to),color:dayColor(dayLabels[d.number]??d.number,theme)})));
+    // One stretch per leg and day, so the map can tell legs apart and colour days.
+    const segments = $derived.by(() => {
+        const length = stops.at(-1)!.distance || 1;
+        return stops.slice(1).flatMap((stop, i) => days.flatMap((day): MapSegment[] => {
+            const from = Math.max(day.from, stops[i].distance / length);
+            const to = Math.min(day.to, stop.distance / length);
+            if (to <= from) return [];
+            const color = dayColor(dayLabels[day.number] ?? day.number, theme);
+            return [{ coordinates: routeSlice(coordinates, from, to), color, legEndId: stop.point.id, leg: stop.point.leg ?? 'routed' }];
+        }));
+    });
     const longestDay = $derived(Math.max(1,...days.map(d=>d.distance)));
     const itinerary = $derived(itineraryDays(trip));
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d=>!d.rest).map(d=>[d.ridingNumber,d.number])));
-    const warnings = $derived(multi?days.filter(d=>dayConfirmed(d)&&trip.limit>0&&d.distance>trip.limit):[]);
+    const overTargets = $derived(days.map(day => dayOverTarget(trip, day, profileAscent(day.from, day.to))));
+    const warnings = $derived(multi ? days.filter((_, i) => overTargets[i].km > 0) : []);
     const conflicts = $derived(multi?nightOrderConflicts(trip):[]);
     const warningCount = $derived(warnings.length+conflicts.length);
     const activeDay = $derived(days[Math.min(night-1,days.length-1)]);
     const area = $derived(night<days.length?overnightWindow(trip,night):null);
     const overnightContext = $derived(multi&&expandedDay!==null&&panel==='trip'&&night<days.length&&(!activeDay?.pinned||changingOvernight)&&!adding);
     const highlighted = $derived(overnightContext&&area&&!area.blocked?routeSlice(coordinates,area.from,area.to):[]);
-    const suggested = $derived(places.filter(p=>p.category!=='water').sort((a,b)=>Math.abs(nearestProgress(coordinates,a.coordinate)-(area?.center??.5))-Math.abs(nearestProgress(coordinates,b.coordinate)-(area?.center??.5))).slice(0,3));
+    const candidates = $derived(multi ? overnightCandidates(trip, night) : []);
+    const suggested = $derived(candidates.map(candidate => candidate.place));
     const searchDay = $derived(searchValue.day===null?null:itinerary.find(d=>d.number===searchValue.day));
     const results = $derived(places.filter(p=>searchValue.category==='all'||p.category===searchValue.category).filter(p=>searchValue.within===null||kilometres(p.coordinate,coordinateAt(coordinates,searchDay?.to??nearestProgress(coordinates,p.coordinate)))<=searchValue.within).sort((a,b)=>searchDay?Math.abs(nearestProgress(coordinates,a.coordinate)-searchDay.to)-Math.abs(nearestProgress(coordinates,b.coordinate)-searchDay.to):a.progress-b.progress));
     const visiblePlaces = $derived(panel==='search'?results:overnightContext?suggested:[]);
-    const selectedPlace = $derived(places.find(p=>p.id===selectedId));
+    const selectedPlace = $derived(places.find(p=>p.id===selectedId) ?? (tilePlace?.id===selectedId ? tilePlace : undefined));
     const selectedPoint = $derived(trip.points.find(p=>p.id===selectedId));
     const previewCoordinate = $derived(selectedId==='pending'?pending:selectedPlace?.coordinate);
     const previewDay = $derived(previewCoordinate&&sleepDay<days.length?tripDays(pinNight(trip,sleepDay,previewCoordinate,'Preview'))[sleepDay-1]:null);
     const previewDistance = $derived(previewDay?.distance??null);
-    const mapPoints = $derived.by(()=>{
-        const pins:MapPoint[]=trip.points.map(p=>({...p,kind:!multi&&p.kind==='night'?'waypoint':p.kind,color:multi&&p.kind==='night'?dayColor(dayLabels[p.night!]??p.night!,theme):undefined,markerLabel:multi&&p.kind==='night'?String(dayLabels[p.night!]):undefined}));
-        for(const p of visiblePlaces)if(p.id===selectedId||!pins.some(pin=>pin.coordinate[0]===p.coordinate[0]&&pin.coordinate[1]===p.coordinate[1]))pins.push({...p,appearance:p.category==='water'?undefined:p.category,draggable:false});
-        if(pending)pins.push({id:'pending',coordinate:pending,label:'Overnight spot',kind:'place',appearance:'suggested',draggable:false});
+    const mapPoints = $derived.by(() => {
+        const pins: MapPoint[] = trip.points.map(p => ({
+            ...p,
+            kind: !multi && p.kind === 'night' ? 'waypoint' : p.kind,
+            color: multi && p.kind === 'night' ? dayColor(dayLabels[p.night!] ?? p.night!, theme) : undefined,
+            markerLabel: multi && p.kind === 'night' ? String(dayLabels[p.night!]) : undefined,
+            fixed: p.kind === 'night' || (['waypoint', 'detour'].includes(p.kind) && p.label !== defaultLabels.waypoint),
+        }));
+        for (const day of multi ? days.slice(0, -1) : []) {
+            if (day.pinned) continue;
+            const label = dayLabels[day.number] ?? day.number;
+            pins.push({ id: `dayend-${day.number}`, kind: 'dayend', night: day.number, coordinate: coordinateAt(coordinates, day.to), label: `Day ${label} ends here for now`, markerLabel: String(label), color: dayColor(label, theme) });
+        }
+        const shown = selectedPlace && places.includes(selectedPlace) && !visiblePlaces.includes(selectedPlace) ? [...visiblePlaces, selectedPlace] : visiblePlaces;
+        for (const p of shown) {
+            if (p.id === selectedId || !pins.some(pin => pin.coordinate[0] === p.coordinate[0] && pin.coordinate[1] === p.coordinate[1])) {
+                pins.push({ ...p, appearance: p.category === 'hotel' || p.category === 'camp' ? p.category : undefined });
+            }
+        }
+        if (pending) pins.push({ id: 'pending', coordinate: pending, label: 'Overnight spot', kind: 'place', appearance: 'suggested' });
         return pins;
     });
+    const calloutKind = $derived<CalloutKind | null>(
+        selectedId === 'add' || selectedId === 'leg' ? selectedId
+        : selectedId?.startsWith('dayend-') ? 'dayend'
+        : selectedPoint ? 'point'
+        : selectedPlace || selectedId === 'pending' ? 'place'
+        : null,
+    );
+    const calloutCoordinate = $derived.by(() => {
+        if (calloutKind === 'add' || calloutKind === 'leg') return spot?.coordinate ?? null;
+        if (calloutKind === 'place') return previewCoordinate ?? null;
+        if (!showRoute && selectedPoint?.kind !== 'marker') return null;
+        return mapPoints.find(p => p.id === selectedId)?.coordinate ?? null;
+    });
+    const legMode = $derived(trip.points.find(p => p.id === spot?.legEndId)?.leg ?? 'routed');
     onMount(()=>{
         try{const raw=localStorage.getItem('obc-planner-lab-v1');const saved=raw?JSON.parse(raw):null;if(saved&&Array.isArray(saved.points)&&saved.points.every((p:RoutePoint)=>Array.isArray(p.coordinate)&&p.coordinate.length===2&&p.coordinate.every(Number.isFinite))&&Number.isFinite(saved.days)&&saved.days>=1&&saved.days<=14&&Number.isFinite(saved.limit))trip=saved;if(!saved)panel='setup';syncBudget();}catch{saveStatus='Browser storage unavailable';}
     });
@@ -89,18 +139,96 @@
     function syncBudget(){budget=trip.budget;target=trip.target;limit=trip.limit;}
     function save(){try{localStorage.setItem('obc-planner-lab-v1',JSON.stringify(trip));saveStatus='Saved locally';}catch{saveStatus='Could not save locally';}}
     function commit(next:Trip,description:string){trip=history.commit($state.snapshot(trip),next);revision++;message=description;save();}
-    function clearSelection(){selectedId=null;pending=null;pendingSource=null;renaming=false;}
+    function clearSelection() {
+        selectedId = null;
+        pending = null;
+        pendingSource = null;
+        renaming = false;
+        spot = null;
+    }
     function undo(){trip=history.undo($state.snapshot(trip));revision++;clearSelection();night=Math.min(night,trip.days);syncBudget();save();message='Change undone';}
     function redo(){trip=history.redo($state.snapshot(trip));revision++;clearSelection();syncBudget();save();message='Change restored';}
     function openPanel(next:Panel){panel=next;adding=null;changingOvernight=false;clearSelection();if(next==='budget')syncBudget();}
     async function focusDay(number:number){const collapse=expandedDay===number&&panel==='trip';night=number;sleepDay=number;expandedDay=collapse?null:number;openPanel('trip');if(collapse)return;await tick();map?.fitCoordinates(routeSlice(coordinates,Math.max(0,activeDay.from-.04),Math.min(1,activeDay.to+.04)));}
     function selectPlace(place:Place){pendingSource=null;sleepDay=night;selectedId=place.id;pending=null;renaming=false;map?.showPlace(place.coordinate,12);}
-    function selectPoint(id:string){pendingSource=null;selectedId=id;pending=null;renaming=false;const p=trip.points.find(p=>p.id===id);if(p?.night&&multi){night=p.night;sleepDay=p.night;expandedDay=p.night;panel='trip';changingOvernight=false;}}
+    function selectPoint(id: string) {
+        if (id === 'pending') return;
+        clearSelection();
+        selectedId = id;
+        const number = id.startsWith('dayend-') ? Number(id.slice('dayend-'.length)) : trip.points.find(p => p.id === id)?.night;
+        if (number && multi) {
+            night = number;
+            sleepDay = number;
+            expandedDay = number;
+            panel = 'trip';
+            changingOvernight = false;
+        }
+    }
     function inspectPoint(p:RoutePoint){selectPoint(p.id);map?.showPlace(p.coordinate,12);}
-    function mapClick(coordinate:Coordinate){
-        if(selectedId){clearSelection();adding=null;return;}
-        if(adding){const kind=adding;adding=null;if(kind==='night'){sleepDay=night;pending=coordinate;selectedId='pending';}else addPoint(coordinate,kind);return;}
-        if(overnightContext){sleepDay=night;pending=coordinate;selectedId='pending';}
+    function emptyClick(coordinate: Coordinate) {
+        if (adding) {
+            const kind = adding;
+            adding = null;
+            if (kind === 'night') {
+                sleepDay = night;
+                pending = coordinate;
+                selectedId = 'pending';
+            } else {
+                addPoint(coordinate, kind);
+            }
+            return;
+        }
+        if (selectedId) {
+            clearSelection();
+            return;
+        }
+        spot = { coordinate };
+        selectedId = 'add';
+    }
+    function addHere(kind: EditableKind) {
+        const coordinate = spot!.coordinate;
+        if (kind !== 'night') {
+            addPoint(coordinate, kind);
+            return;
+        }
+        clearSelection();
+        sleepDay = night;
+        pending = coordinate;
+        selectedId = 'pending';
+    }
+    function legClick(legEndId: string, coordinate: Coordinate) {
+        clearSelection();
+        adding = null;
+        spot = { coordinate, legEndId };
+        selectedId = 'leg';
+    }
+    function setLeg(mode: LegMode) {
+        const legEndId = spot!.legEndId!;
+        if (mode === 'drawn') {
+            clearSelection();
+            drawing = legEndId;
+            return;
+        }
+        commit(setLegMode($state.snapshot(trip), legEndId, mode), mode === 'straight' ? 'Leg set to a straight line' : 'Leg set to routed');
+    }
+    function insert(legEndId: string, coordinate: Coordinate) {
+        clearSelection();
+        commit(insertPoint($state.snapshot(trip), legEndId, coordinate), 'Shaping point inserted');
+    }
+    function drawn(legEndId: string, coordinates: Coordinate[]) {
+        drawing = null;
+        commit(setDrawnLeg($state.snapshot(trip), legEndId, coordinates), 'Leg drawn');
+    }
+    function moveDayEnd(number: number, progress: number) {
+        commit(setSplit($state.snapshot(trip), number, progress), 'Day end moved');
+    }
+    function selectTilePlace(poi: MapPoi) {
+        const kind = poiKinds[poi.kind];
+        clearSelection();
+        adding = null;
+        tilePlace = { id: `poi-${poi.id}`, kind: 'place', label: poi.label, coordinate: poi.coordinate, progress: anchorProgress(poi.coordinate), category: kind.category, description: kind.label };
+        sleepDay = night;
+        selectedId = tilePlace.id;
     }
     function stayHere(){
         if(!previewCoordinate)return;
@@ -113,12 +241,30 @@
         night=sleepDay;expandedDay=night;
         commit(pinNight(next,night,[...previewCoordinate],label),'Overnight pinned');panel='trip';changingOvernight=false;pending=null;selectedId=`night-${night}`;
     }
-    function addPoint(coordinate:Coordinate,kind:EditableKind='via',label?:string){
-        const p:RoutePoint={id:crypto.randomUUID(),coordinate:[...coordinate],label:label??({via:'Shaping point',pass:'Pass here',waypoint:'Visit',night:'Overnight spot',marker:'Marker'}[kind]),kind,progress:anchorProgress(coordinate)};
-        commit({...$state.snapshot(trip),points:[...$state.snapshot(trip.points),p]},'Point added');selectedId=p.id;pending=null;
+    function newPoint(coordinate: Coordinate, kind: EditableKind, label?: string): RoutePoint {
+        return { id: crypto.randomUUID(), coordinate: [...coordinate], label: label ?? defaultLabels[kind], kind, progress: anchorProgress(coordinate) };
+    }
+    function addPoint(coordinate: Coordinate, kind: EditableKind = 'via') {
+        const point = newPoint(coordinate, kind);
+        commit(appendPoint($state.snapshot(trip), point), 'Point added');
+        clearSelection();
+        selectedId = point.id;
+    }
+    function addVisit(place: Place) {
+        const point = newPoint(place.coordinate, 'waypoint', place.label);
+        commit(addPointNear($state.snapshot(trip), point), 'Visit added');
+        clearSelection();
+        selectedId = point.id;
     }
     function movePoint(id:string,coordinate:Coordinate){const p=trip.points.find(p=>p.id===id);if(!p)return;if(p.kind==='night')commit(pinNight($state.snapshot(trip),p.night!,coordinate,p.label),'Overnight moved');else commit({...$state.snapshot(trip),points:$state.snapshot(trip.points).map(p=>p.id===id?{...p,coordinate,progress:['start','finish'].includes(p.kind)?p.progress:anchorProgress(coordinate)}:p)},'Point moved');}
-    function removePoint(){if(!selectedPoint||['start','finish'].includes(selectedPoint.kind))return;commit({...$state.snapshot(trip),points:$state.snapshot(trip.points).filter(p=>p.id!==selectedId)},'Point removed');clearSelection();}
+    function removePoint() {
+        if (!selectedPoint || ['start', 'finish'].includes(selectedPoint.kind)) return;
+        const next = $state.snapshot(trip);
+        next.points = next.points.filter(p => p.id !== selectedId);
+        next.routeOrder = next.routeOrder?.filter(id => id !== selectedId);
+        commit(next, 'Point removed');
+        clearSelection();
+    }
     function rename(label:string){if(!selectedPoint||!label.trim())return;commit({...$state.snapshot(trip),points:$state.snapshot(trip.points).map(p=>p.id===selectedId?{...p,label:label.trim()}:p)},'Point renamed');renaming=false;}
     function changeKind(kind:EditableKind|'detour'){
         if(!selectedPoint)return;
@@ -131,14 +277,25 @@
     function apply(){if(!Number.isFinite(target)||target<1||!Number.isFinite(limit)||limit<0)return;commit(multi?applyBudget($state.snapshot(trip),budget,target,limit):{...$state.snapshot(trip),limit},'Day budget updated');night=Math.min(night,trip.days);openPanel('trip');}
     function search(value:PlannerQueryValue){searchValue=value;if(value.day!==null){const d=itinerary.find(d=>d.number===value.day);if(d)night=d.ridingNumber;}openPanel('search');}
     function candidateDay(p:Place){return night<days.length?tripDays(pinNight(trip,night,p.coordinate,p.label))[night-1]:null;}
-    function dayConfirmed(day:Day){return !!(day.number===1||days[day.number-2]?.pinned)&&!!(day.number===days.length||day.pinned);}
     function nameRest(index:number,name:string){const names=(trip.restAfter??[]).map((_,i)=>i===index?name.trim():trip.restNames?.[i]??'');commit({...$state.snapshot(trip),restNames:names},'Rest day named');restEditing=null;}
     function chooseBike(value:BikeType){commit({...$state.snapshot(trip),bike:value,preset:ridingProfiles[value].presets[0]},'Bike preference saved · routing is mocked');}
     function startLabel(day:Day){return day.number===1?trip.points.find(p=>p.kind==='start')!.label:days[day.number-2]?.pinned?.label??'Open overnight';}
     function endLabel(day:Day){return day.number===days.length?trip.points.find(p=>p.kind==='finish')!.label:day.pinned?.label??'Choose overnight';}
     function duration(hours:number){return `${Math.floor(hours)}h ${Math.round(hours%1*60)}m`;}
     function dayStops(day:Day){return trip.points.filter(p=>['pass','waypoint','detour'].includes(p.kind)&&nearestProgress(coordinates,p.coordinate)>day.from&&nearestProgress(coordinates,p.coordinate)<=day.to).sort((a,b)=>a.progress-b.progress);}
-    function keyboard(e:KeyboardEvent){if((e.target as HTMLElement)?.closest('input,select,textarea'))return;if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='z'){e.preventDefault();e.shiftKey?redo():undo();}if(e.key==='Escape'){clearSelection();adding=null;}}
+    function keyboard(e: KeyboardEvent) {
+        if ((e.target as HTMLElement)?.closest('input,select,textarea')) return;
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+            e.preventDefault();
+            if (e.shiftKey) redo();
+            else undo();
+        }
+        if (e.key === 'Escape') {
+            clearSelection();
+            adding = null;
+            drawing = null;
+        }
+    }
 </script>
 
 <svelte:window onkeydown={keyboard} bind:innerHeight={viewportHeight} bind:innerWidth={viewportWidth}/>
@@ -173,7 +330,7 @@
                                             {#each dayStops(day) as point}<button class="stop-line" onclick={()=>inspectPoint(point)}><Icon name={point.kind==='pass'?'pin':'flag'} size={14}/><span>{point.label}</span><small>{point.kind==='detour'?'Out & back':point.kind==='pass'?'Pass':'Visit'}</small></button>{/each}
                                             <button class="stop-line end" onclick={()=>{if(day.pinned)inspectPoint(day.pinned);else if(day.ridingNumber===days.length)inspectPoint(trip.points.find(p=>p.kind==='finish')!);else map?.fitCoordinates(routeSlice(coordinates,Math.max(0,(area?.from??day.to)-.05),Math.min(1,(area?.to??day.to)+.05)));}}><Icon name={day.ridingNumber===days.length?'flag':'camp'} size={15}/><span>{endLabel({...day,number:day.ridingNumber})}</span>{#if day.pinned}<Icon name="pin" size={13}/>{/if}</button>
                                             {#if day.ridingNumber<days.length&&(!day.pinned||changingOvernight)}
-                                                {#if area?.blocked&&!previewCoordinate}<div class="inline-warning"><Icon name="warning" size={14}/><span>No overnight area fits the limit</span><button onclick={()=>openPanel('budget')}>Edit limit</button></div>{/if}<div class="stay-list">{#each suggested as place}{@render stayRow(place)}{/each}</div>
+                                                {#if area?.blocked&&!previewCoordinate}<div class="inline-warning"><Icon name="warning" size={14}/><span>No overnight area fits the limit</span><button onclick={()=>openPanel('budget')}>Edit limit</button></div>{/if}<div class="stay-list">{#each candidates as candidate}{@render stayRow(candidate.place, candidate)}{/each}</div>
                                                 <button class="map-pick" onclick={()=>{clearSelection();adding='night';}}><Icon name="plus" size={14}/>Pick overnight on map</button>
                                             {/if}
                                             {#if warnings.some(d=>d.number===day.ridingNumber)&&!changingOvernight&&!previewCoordinate}<div class="inline-warning"><Icon name="warning" size={14}/><span>{(day.distance-trip.limit).toFixed(1)} km over limit</span><button onclick={()=>openPanel('budget')}>Edit limit</button></div>{/if}
@@ -199,24 +356,62 @@
         <Resize value={Math.min(sideWidth,maxSide)} min={320} max={maxSide} axis="x" label="Sidebar width" onResize={value=>sideWidth=value}/>
         <section class="geography" aria-label="Map and elevation">
             <div class="map-area">
-                <PlannerMap bind:this={map} {segments} {coordinates} points={mapPoints} {selectedId} {theme} {hillshade} {contours} {showRoute} highlightedCoordinates={highlighted} pickMode={!!adding} onMapClick={mapClick} onPointSelect={selectPoint} onPointMove={movePoint}>
-                    {#snippet popup()}<div class="point-popup"><button class="popup-close" onclick={clearSelection} aria-label="Close point"><Icon name="close" size={14}/></button>
-                        {#if selectedPlace||selectedId==='pending'}<h2>{selectedPlace?.label??'Overnight spot'}</h2>{#if !multi||selectedPlace?.category==='water'}<button class="primary" onclick={()=>addPoint(selectedPlace!.coordinate,'waypoint',selectedPlace!.label)}>Add visit<Icon name="plus"/></button>{:else}<label class="sleep-target" for="sleep-day">End of day<select id="sleep-day" bind:value={sleepDay}>{#each days as day}<option value={day.number}>Day {dayLabels[day.number]}{day.pinned?` · replace ${day.pinned.label}`:day.number===days.length?' · add overnight':''}</option>{/each}</select></label>{#if previewDistance!==null}<div class="popup-distance"><span>Day {dayLabels[sleepDay]}</span><strong>{previewDistance.toFixed(1)} km · ↑ {profileAscent(previewDay?.from??0,previewDay?.to??0)} m</strong></div>{#if trip.limit>0&&previewDistance>trip.limit}<div class="inline-warning"><Icon name="warning" size={14}/><span>{(previewDistance-trip.limit).toFixed(1)} km over</span><button onclick={()=>openPanel('budget')}>Edit limit</button></div>{/if}{/if}<button class="primary" onclick={stayHere}>{days[sleepDay-1]?.pinned?'Replace overnight':'Stay here'}<Icon name="check"/></button>{#if selectedPlace}<button class="secondary" onclick={()=>addPoint(selectedPlace!.coordinate,'waypoint',selectedPlace!.label)}>Add as visit</button>{/if}{/if}
-                        {:else if selectedPoint}<div class="popup-title"><h2>{selectedPoint.kind==='via'?'Shaping point':selectedPoint.label}</h2>{#if selectedPoint.kind!=='via'}<button class="icon-button" aria-label="Rename point" onclick={()=>renaming=!renaming}><Icon name="pencil" size={14}/></button>{/if}</div>{#if renaming}<input aria-label="Point name" value={selectedPoint.label} onchange={e=>rename(e.currentTarget.value)} onkeydown={e=>{if(e.key==='Enter')rename(e.currentTarget.value);}}/>{/if}
-                            {#if !['start','finish'].includes(selectedPoint.kind)}<div class="point-types" aria-label="Point type">{#each availableTypes as type}<button class:chosen={selectedPoint.kind===type.kind||(type.kind==='waypoint'&&selectedPoint.kind==='detour')} onclick={()=>changeKind(type.kind)}><Icon name={type.icon} size={15}/>{type.label}</button>{/each}</div>{#if ['waypoint','detour'].includes(selectedPoint.kind)}<div class="reach-options"><button class:chosen={selectedPoint.kind==='waypoint'} onclick={()=>changeKind('waypoint')}>Through</button><button class:chosen={selectedPoint.kind==='detour'} onclick={()=>changeKind('detour')}>Out and back</button></div>{/if}<button class="remove" onclick={removePoint}>Remove point</button>{/if}
-                        {/if}
-                    </div>{/snippet}
+                <PlannerMap
+                    bind:this={map} {segments} {coordinates} points={mapPoints} {selectedId} callout={calloutCoordinate} {drawing}
+                    {theme} {hillshade} {contours} {showRoute} highlightedCoordinates={highlighted} pickMode={!!adding}
+                    onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onDayEndDrag={moveDayEnd}
+                    onLegClick={legClick} onInsert={insert} onDrawn={drawn} onPoiClick={selectTilePlace}
+                >
+                    {#snippet popup()}
+                        <div class="point-popup">
+                            <button class="popup-close" onclick={clearSelection} aria-label="Close"><Icon name="close" size={14}/></button>
+                            {#if calloutKind === 'add'}
+                                <h2>Add point here</h2>
+                                <div class="point-types" aria-label="Point type">
+                                    {#each availableTypes.filter(type => type.kind !== 'marker') as type}
+                                        <button onclick={() => addHere(type.kind)}><Icon name={type.icon} size={15}/>{type.label}</button>
+                                    {/each}
+                                </div>
+                                <button class="add-marker" onclick={() => addHere('marker')}><Icon name="pin" size={13}/>Marker</button>
+                            {:else if calloutKind === 'leg'}
+                                <h2>This leg</h2>
+                                <div class="reach-options" aria-label="Leg mode">
+                                    {#each legModes as option}
+                                        <button class:chosen={legMode === option.mode} aria-pressed={legMode === option.mode} onclick={() => setLeg(option.mode)}>{option.label}</button>
+                                    {/each}
+                                </div>
+                                <button class="secondary" onclick={() => insert(spot!.legEndId!, spot!.coordinate)}>Insert point here</button>
+                            {:else if calloutKind === 'dayend'}
+                                <h2>Day {dayLabels[night]} ends here for now</h2>
+                                <div class="stay-list">{#each candidates as candidate}{@render stayRow(candidate.place, candidate)}{/each}</div>
+                                <button class="map-pick" onclick={() => { clearSelection(); adding = 'night'; }}><Icon name="plus" size={14}/>Pick another spot on the map</button>
+                                <p class="popup-hint">Drag the marker along the route to move the day end.</p>
+                            {:else if calloutKind === 'place'}
+                                <h2>{selectedPlace?.label??'Overnight spot'}</h2>
+                                {#if !multi||(selectedPlace&&selectedPlace.category!=='hotel'&&selectedPlace.category!=='camp')}<button class="primary" onclick={()=>addVisit(selectedPlace!)}>Add visit<Icon name="plus"/></button>{:else}<label class="sleep-target" for="sleep-day">End of day<select id="sleep-day" bind:value={sleepDay}>{#each days as day}<option value={day.number}>Day {dayLabels[day.number]}{day.pinned?` · replace ${day.pinned.label}`:day.number===days.length?' · add overnight':''}</option>{/each}</select></label>{#if previewDistance!==null}<div class="popup-distance"><span>Day {dayLabels[sleepDay]}</span><strong>{previewDistance.toFixed(1)} km · ↑ {profileAscent(previewDay?.from??0,previewDay?.to??0)} m</strong></div>{#if trip.limit>0&&previewDistance>trip.limit}<div class="inline-warning"><Icon name="warning" size={14}/><span>{(previewDistance-trip.limit).toFixed(1)} km over</span><button onclick={()=>openPanel('budget')}>Edit limit</button></div>{/if}{/if}<button class="primary" onclick={stayHere}>{days[sleepDay-1]?.pinned?'Replace overnight':'Stay here'}<Icon name="check"/></button>{#if selectedPlace}<button class="secondary" onclick={()=>addVisit(selectedPlace!)}>Add as visit</button>{/if}{/if}
+                            {:else if selectedPoint}<div class="popup-title"><h2>{selectedPoint.kind==='via'?'Shaping point':selectedPoint.label}</h2>{#if selectedPoint.kind!=='via'}<button class="icon-button" aria-label="Rename point" onclick={()=>renaming=!renaming}><Icon name="pencil" size={14}/></button>{/if}</div>{#if renaming}<input aria-label="Point name" value={selectedPoint.label} onchange={e=>rename(e.currentTarget.value)} onkeydown={e=>{if(e.key==='Enter')rename(e.currentTarget.value);}}/>{/if}
+                                {#if !['start','finish'].includes(selectedPoint.kind)}<div class="point-types" aria-label="Point type">{#each availableTypes as type}<button class:chosen={selectedPoint.kind===type.kind||(type.kind==='waypoint'&&selectedPoint.kind==='detour')} onclick={()=>changeKind(type.kind)}><Icon name={type.icon} size={15}/>{type.label}</button>{/each}</div>{#if ['waypoint','detour'].includes(selectedPoint.kind)}<div class="reach-options"><button class:chosen={selectedPoint.kind==='waypoint'} onclick={()=>changeKind('waypoint')}>Through</button><button class:chosen={selectedPoint.kind==='detour'} onclick={()=>changeKind('detour')}>Out and back</button></div>{/if}<button class="remove" onclick={removePoint}>Remove point</button>{/if}
+                            {/if}
+                        </div>
+                    {/snippet}
                 </PlannerMap>
                 <div class="map-controls" aria-label="Map controls"><div class="control-group"><button onclick={()=>map?.zoomBy(1)} aria-label="Zoom in"><Icon name="plus"/></button><button onclick={()=>map?.zoomBy(-1)} aria-label="Zoom out"><Icon name="minus"/></button></div><div class="control-group"><button onclick={()=>map?.fitRoute()} aria-label="Show whole route"><Icon name="fit"/></button><button class:chosen={showRoute} aria-label={showRoute?'Hide route':'Show route'} aria-pressed={showRoute} onclick={()=>showRoute=!showRoute}><Icon name="eye"/></button></div><details class="layer-menu"><summary aria-label="Map layers"><Icon name="layers"/></summary><div><strong>Map layers</strong><label><input type="checkbox" bind:checked={hillshade}/>Relief</label><label><input type="checkbox" bind:checked={contours}/>Contours</label></div></details></div>
             </div>
             <Resize value={Math.min(profileHeight,maxProfile)} min={130} max={maxProfile} axis="y" label="Elevation height" onResize={value=>profileHeight=value}/>
             <Profile height={Math.min(profileHeight,maxProfile)} {coordinates} {days} {dayLabels} {theme} activeNight={expandedDay??0} window={overnightContext?area:null} onNight={focusDay}/>
-            <div class="status-line" role="status">{#if adding}<strong>Place {pointTypes.find(t=>t.kind===adding)?.label.toLowerCase()} on map</strong><button onclick={()=>adding=null}>Cancel</button>{:else}<span>{message}</span>{/if}<span class="status-meta">{saveStatus}{saveStatus?' · ':''}Routing & elevation mocked</span></div>
+            <div class="status-line" role="status">{#if adding}<strong>Place {pointTypes.find(t=>t.kind===adding)?.label.toLowerCase()} on map</strong><button onclick={()=>adding=null}>Cancel</button>{:else if drawing}<strong>Draw the leg on the map · Esc cancels</strong><button onclick={()=>drawing=null}>Cancel</button>{:else}<span>{message}</span>{/if}<span class="status-meta">{saveStatus}{saveStatus?' · ':''}Routing & elevation mocked</span></div>
         </section>
     </main>
 </div>
 
-{#snippet stayRow(place:Place)}{@const candidate=candidateDay(place)}<button class="stay-row" class:selected={selectedId===place.id} onclick={()=>selectPlace(place)}><Icon name={place.category==='hotel'?'hotel':place.category==='camp'?'camp':'water'} size={17}/><span><strong>{place.label}</strong><small>{place.category==='hotel'?'Hotel':place.category==='camp'?'Campsite':'Water'}</small></span>{#if place.category!=='water'&&night<days.length}<b>{candidate?.distance.toFixed(1)} km<small>↑ {profileAscent(candidate?.from??0,candidate?.to??0)} m · day {dayLabels[night]}</small></b>{/if}<Icon name="chevron" size={12}/></button>{/snippet}
+{#snippet stayRow(place: Place, prediction: Pick<OvernightCandidate, 'distance' | 'from' | 'to'> | null = candidateDay(place))}
+    <button class="stay-row" class:selected={selectedId===place.id} onclick={()=>selectPlace(place)}>
+        <Icon name={place.category==='hotel'?'hotel':place.category==='camp'?'camp':'water'} size={17}/>
+        <span><strong>{place.label}</strong><small>{place.category==='hotel'?'Hotel':place.category==='camp'?'Campsite':'Water'}</small></span>
+        {#if place.category!=='water'&&prediction}<b>{prediction.distance.toFixed(1)} km<small>↑ {profileAscent(prediction.from,prediction.to)} m · day {dayLabels[night]}</small></b>{/if}
+        <Icon name="chevron" size={12}/>
+    </button>
+{/snippet}
 
 <style>
     :global(*){box-sizing:border-box;scrollbar-width:thin;scrollbar-color:var(--wood) var(--panel)}
@@ -233,6 +428,7 @@
     .detail-panel{padding:18px}.detail-panel .pane-heading{padding:8px 0 12px}.back{display:flex;align-items:center;gap:6px;color:var(--ink-soft);font-size:12px;margin-bottom:20px}.budget-form{display:flex;flex-direction:column;gap:8px}.budget-form label{font-size:12px}.budget-form h2{margin-top:18px}.budget-form select{margin-bottom:6px}.form-help,.fixture-note{font-size:11px;color:var(--ink-soft);line-height:1.5}.primary{background:var(--amber);color:var(--on-amber);border:1px solid color-mix(in srgb,var(--amber) 80%,var(--ink));border-radius:5px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 11px;font-weight:600;font-size:12px}.primary:hover{filter:brightness(.97);color:var(--on-amber)}.secondary{border:1px solid var(--line);border-radius:5px;padding:7px 10px;font-size:12px}.route-option{display:flex;gap:11px;width:100%;align-items:center;text-align:left;border-bottom:1px solid var(--line);padding:17px 0}.route-option>span:nth-child(2){flex:1}.route-option strong{display:block;font-size:13px}.route-option small{display:block;font-size:11px}.route-option b{text-align:right;font-size:18px;font-weight:550}.radio-mark{width:16px;height:16px;border:1px solid var(--line-strong);border-radius:50%;display:grid;place-items:center;font-size:10px}.chosen .radio-mark{border-color:var(--forest);color:var(--forest)}.check-row{display:flex;gap:12px;padding:16px 0;border-bottom:1px solid var(--line);color:var(--forest)}.check-row>div{flex:1}.check-row h2{font-size:13px;color:var(--ink)}.check-row p{font-size:12px;margin:5px 0 10px}.check-row button{font-size:12px;text-decoration:underline;text-underline-offset:3px}.inline-actions{display:flex;gap:20px}.inline-warning{display:flex;align-items:center;gap:6px;color:var(--forest);font-size:11px;margin:8px 0}.inline-warning span{flex:1}.inline-warning button{text-decoration:underline;white-space:nowrap}.all-clear{display:flex;gap:8px;align-items:center;font-size:12px}.muted{color:var(--ink-soft)}
     .geography{display:flex;flex-direction:column;min-width:0;min-height:0}.map-area{position:relative;min-height:170px;flex:1}.map-controls{position:absolute;right:16px;top:16px;display:flex;flex-direction:column;gap:9px;z-index:3}.control-group,.layer-menu{background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 2px 8px #0002}.control-group button,.layer-menu summary{display:grid;place-items:center;width:34px;height:34px}.control-group button+button{border-top:1px solid var(--line)}.control-group .chosen{color:var(--forest)}.layer-menu{position:relative}.layer-menu>div{position:absolute;right:43px;top:0;background:var(--panel);border:1px solid var(--line);box-shadow:0 2px 8px #0002;border-radius:6px;padding:13px;min-width:155px;font-size:12px}.layer-menu strong{display:block;margin-bottom:9px}.layer-menu label{display:flex;align-items:center;gap:7px;padding:4px 0}.layer-menu input{accent-color:var(--forest)}.status-line{height:27px;display:flex;align-items:center;gap:10px;padding:0 16px;border-top:1px solid var(--line);background:var(--panel);font-size:10px;color:var(--ink-soft);flex:none}.status-line button{text-decoration:underline;color:var(--forest)}.status-meta{margin-left:auto}
     .point-popup{width:276px;padding:15px;position:relative;color:var(--ink);font:13px var(--sans)}.popup-close{position:absolute;right:8px;top:8px;display:grid;place-items:center;width:23px;height:23px;color:var(--ink-soft)}.point-popup h2{font-size:14px;margin:0 20px 12px 0}.popup-title{display:flex;align-items:center;padding-right:17px;margin-bottom:9px}.popup-title h2{margin:0;flex:1}.point-popup input{width:100%;font-size:12px;margin-bottom:10px}.point-popup .primary{width:100%;margin-top:8px}.point-popup .secondary{width:100%;margin-top:7px}.popup-distance{display:flex;justify-content:space-between;font-size:12px;margin-bottom:9px}.popup-distance>span{color:var(--ink-soft)}.point-types{display:flex;border:1px solid var(--line);border-radius:5px;overflow:hidden}.point-types button{flex:1;display:flex;align-items:center;flex-direction:column;gap:5px;padding:9px 2px;font-size:9px;white-space:nowrap}.point-types button+button{border-left:1px solid var(--line)}.point-types .chosen,.reach-options .chosen{background:var(--parchment);color:var(--forest)}.reach-options{display:flex;gap:5px;margin-top:8px}.reach-options button{flex:1;padding:7px 4px;border:1px solid var(--line);border-radius:4px;font-size:11px}.remove{font-size:11px;color:var(--ink-soft);margin-top:13px}
+    .add-marker{display:flex;align-items:center;gap:6px;margin-top:10px;font-size:11px;color:var(--ink-soft)}.point-popup .stay-list{margin:-4px 0 4px}.popup-hint{font-size:11px;margin:4px 0 0}
     .mode-button{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-soft);margin-top:3px}.length-track{display:block;height:3px;background:var(--line);margin-top:7px;width:100%;border-radius:2px}.length-track>span{display:block;height:100%;background:var(--day-color);border-radius:2px}.route-add{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:20px;width:100%}.sleep-target{display:block;font-size:11px;margin:8px 0;color:var(--ink-soft)}.sleep-target select{display:block;width:100%;font-size:12px;margin-top:5px}.day-actions button{font-size:12px}
     .ride-controls{display:flex;gap:12px;align-items:center;grid-column:2;grid-row:1}.ride-controls label{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--ink-soft)}.ride-controls select{padding:5px 7px;font-size:13px;font-weight:600;max-width:170px}.route-stop{display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line);padding:10px 0}.stop-detail{display:flex;align-items:center;gap:10px;flex:1;text-align:left}.stop-detail strong{display:block;font-size:13px}.stop-detail small{display:block;margin-top:4px}.reorder{display:flex;flex-direction:column}.reorder button{width:26px;height:25px;display:grid;place-items:center}.between-days{display:flex;align-items:center;gap:6px;width:100%;padding:7px 18px 7px 49px;font-size:11px;color:var(--ink-soft);border-top:1px solid var(--line)}.between-days:hover{background:var(--parchment)}.rest-name{display:flex;align-items:center;gap:8px;text-align:left}.rest-row input{width:100%;font-size:12px;padding:5px}.rest-row>div{min-width:0}
     @media(max-width:1150px){.trip-bar{gap:10px}.trip-name{width:auto}.planning-tools button{padding:8px;font-size:12px;gap:5px}.planning-tools button:first-child :global(svg){display:none}.brand span{font-size:15px}.add-menu summary{font-size:11px}.edit-actions{gap:0}main{grid-template-columns:var(--side-width) 8px minmax(0,1fr)}}
