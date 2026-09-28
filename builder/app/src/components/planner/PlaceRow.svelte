@@ -1,6 +1,6 @@
 <script lang="ts">
     import Icon from './PlannerIcon.svelte';
-    import { categoryLabels } from '../../lib/planner/poi-kinds';
+    import { placeCategories } from '../../lib/planner/poi-kinds';
     import type { Place } from '../../lib/planner/editor';
 
     let { place, detail = '', day = null, selected = false, onSelect }: {
@@ -12,15 +12,13 @@
         selected?: boolean;
         onSelect: (place: Place) => void;
     } = $props();
-
-    const icon = $derived(place.category === 'hotel' || place.category === 'camp' || place.category === 'water' ? place.category : 'pin');
 </script>
 
 <button type="button" class="place-row" class:selected onclick={() => onSelect(place)}>
-    <Icon name={icon} size={17} />
+    <Icon path={placeCategories[place.category].icon} size={17} />
     <span class="name">
         <strong>{place.label}</strong>
-        <small>{categoryLabels[place.category]}{detail ? ` · ${detail}` : ''}</small>
+        <small>{placeCategories[place.category].label}{detail ? ` · ${detail}` : ''}</small>
     </span>
     {#if day}
         <span class="figure" class:over={day.over}>{day.distance.toFixed(1)} km<small>↑ {day.ascent} m</small></span>

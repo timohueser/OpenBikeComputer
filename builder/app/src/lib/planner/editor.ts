@@ -249,6 +249,11 @@ export function overnightWindow(trip: Trip, night: number): { from: number; to: 
     return { from, to: Math.max(from, to), center, blocked: false };
 }
 
+/** Straight distance in km from a point to the nearest spot on the route. */
+export function offRoute(coordinates: Coordinate[], point: Coordinate): number {
+    return kilometres(point, coordinateAt(coordinates, nearestProgress(coordinates, point)));
+}
+
 export function nearestProgress(coordinates: Coordinate[], point: Coordinate): number {
     const lengths = cumulative(coordinates);
     let nearest = Infinity;
@@ -294,6 +299,17 @@ export function tripDays(trip: Trip): Day[] {
         const split = !pin && i + 1 < count && trip.splits?.[i + 1] !== undefined;
         return { number: i + 1, from: boundaries[i], to, distance, hours: distance / 15, pinned: pin, split };
     });
+}
+
+/** Visits, out-and-backs, passes and markers inside a day in route order, with their km from the day's start. */
+export function dayStops(trip: Trip, day: Pick<Day, 'from' | 'to'>): { point: RoutePoint; km: number }[] {
+    const { coordinates, stops } = routeLayout(trip);
+    const total = stops.at(-1)!.distance;
+    const markers = trip.points.filter(p => p.kind === 'marker').map(point => ({ point, distance: nearestProgress(coordinates, point.coordinate) * total }));
+    return [...stops.filter(stop => ['pass', 'waypoint', 'detour'].includes(stop.point.kind)), ...markers]
+        .filter(stop => stop.distance > day.from * total && stop.distance <= day.to * total)
+        .sort((a, b) => a.distance - b.distance)
+        .map(stop => ({ point: stop.point, km: stop.distance - day.from * total }));
 }
 
 /** Moves a provisional day end along the route, never past the day ends beside it. */
@@ -384,8 +400,9 @@ export function pinNight(trip: Trip, night: number, coordinate: Coordinate, labe
     return next;
 }
 
-/** Adds a point as the last stop before the finish; the other points keep their order. */
-export function appendPoint(trip: Trip, point: RoutePoint): Trip {
+/** A clicked point extends a single route at its end. On a trip it joins its nearest leg, so it stays in the day it lies in. */
+export function addClickedPoint(trip: Trip, point: RoutePoint): Trip {
+    if (trip.mode !== 'route') return addPointNear(trip, point);
     return point.kind === 'marker' ? { ...trip, points: [...trip.points, point] } : intoLeg(trip, point, finishId(trip));
 }
 

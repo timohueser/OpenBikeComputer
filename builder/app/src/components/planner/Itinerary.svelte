@@ -1,17 +1,16 @@
 <script lang="ts">
     import Icon from './PlannerIcon.svelte';
     import DayRow from './DayRow.svelte';
-    import type { Coordinate, Day, ItineraryDay, OvernightCandidate, Place, RoutePoint, Trip } from '../../lib/planner/editor';
+    import type { Day, ItineraryDay, OvernightCandidate, Place, RoutePoint, Trip } from '../../lib/planner/editor';
 
     let {
-        trip, itinerary, days, coordinates, theme, expandedDay, changing, candidates, conflicts, selectedId,
+        trip, itinerary, days, theme, expandedDay, changing, candidates, conflicts, selectedId,
         onToggle, onInspect, onShowEnd, onSelectPlace, onPick, onChangeOvernight, onEditTarget, onShowConflict,
         onAddRest, onRemoveRest, onNameRest,
     }: {
         trip: Trip;
         itinerary: ItineraryDay[];
         days: Day[];
-        coordinates: Coordinate[];
         theme: 'light' | 'dark';
         /** Riding number of the open day. */
         expandedDay: number | null;
@@ -72,7 +71,7 @@
         {:else}
             {@const conflict = conflictOf(day.ridingNumber)}
             <DayRow
-                {trip} {day} {days} {coordinates} {theme} {scale} {changing} {selectedId}
+                {trip} {day} {days} {theme} {scale} {changing} {selectedId}
                 expanded={expandedDay === day.ridingNumber}
                 candidates={expandedDay === day.ridingNumber ? candidates : []}
                 conflict={conflict ? calendar[conflict[0].night!] : null}

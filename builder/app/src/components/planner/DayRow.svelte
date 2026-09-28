@@ -2,18 +2,17 @@
     import Icon from './PlannerIcon.svelte';
     import PlaceRow from './PlaceRow.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
-    import { categoryLabels } from '../../lib/planner/poi-kinds';
+    import { placeCategories } from '../../lib/planner/poi-kinds';
     import { profileAscent } from '../../lib/planner/profile-data';
-    import { dayOverTarget, nearestProgress, places, type Coordinate, type ItineraryDay, type OvernightCandidate, type Place, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
+    import { dayOverTarget, dayStops, places, type ItineraryDay, type OvernightCandidate, type Place, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
 
     let {
-        trip, day, days, coordinates, theme, scale, expanded, changing, candidates, conflict, selectedId,
+        trip, day, days, theme, scale, expanded, changing, candidates, conflict, selectedId,
         onToggle, onInspect, onShowEnd, onSelectPlace, onPick, onChangeOvernight, onEditTarget, onShowConflict,
     }: {
         trip: Trip;
         day: ItineraryDay;
         days: Day[];
-        coordinates: Coordinate[];
         theme: 'light' | 'dark';
         /** Kilometres the full length bar stands for. */
         scale: number;
@@ -47,12 +46,13 @@
         ...(over.climb > 0 ? [`↑ ${over.climb} m over target`] : []),
     ]);
     const choosing = $derived(!last && (!day.pinned || changing));
-    const stops = $derived(trip.points
-        .filter(p => ['pass', 'waypoint', 'detour'].includes(p.kind))
-        .map(point => ({ point, at: nearestProgress(coordinates, point.coordinate) }))
-        .filter(({ at }) => at > day.from && at <= day.to)
-        .sort((a, b) => a.at - b.at)
-        .map(({ point }) => point));
+    const stops = $derived(expanded ? dayStops(trip, day) : []);
+    const stopKinds: Record<string, { label: string; icon: string }> = {
+        waypoint: { label: 'Visit', icon: 'flag' },
+        detour: { label: 'Out and back', icon: 'back' },
+        pass: { label: 'Pass', icon: 'pin' },
+        marker: { label: 'Marker', icon: 'pin' },
+    };
 
     function duration(hours: number) {
         return `${Math.floor(hours)}h ${Math.round(hours % 1 * 60)}m`;
@@ -69,7 +69,7 @@
         <span class="badge">{day.number}</span>
         <span class="title">
             <strong>{start} → {end}</strong>
-            <small>{duration(day.hours)} · ↑ {ascent} m{endPlace ? ` · ${categoryLabels[endPlace.category]}` : ''}</small>
+            <small>{duration(day.hours)} · ↑ {ascent} m{endPlace ? ` · ${placeCategories[endPlace.category].label}` : ''}</small>
         </span>
         <span class="distance" class:over={over.km > 0}>{day.distance.toFixed(1)}<small>km</small></span>
         <Icon name={expanded ? 'down' : 'chevron'} size={14} />
@@ -87,10 +87,10 @@
     {#if expanded}
         <div class="body">
             <div class="stop"><span class="dot"></span><span>{start}</span><small>Start</small></div>
-            {#each stops as point (point.id)}
-                <button type="button" class="stop" onclick={() => onInspect(point)}>
-                    <Icon name={point.kind === 'pass' ? 'pin' : 'flag'} size={15} /><span>{point.label}</span>
-                    <small>{point.kind === 'detour' ? 'Out and back' : point.kind === 'pass' ? 'Pass' : 'Visit'}</small>
+            {#each stops as { point, km } (point.id)}
+                <button type="button" class="stop" class:chosen={selectedId === point.id} onclick={() => onInspect(point)}>
+                    <Icon name={stopKinds[point.kind].icon} size={15} /><span>{point.label}</span>
+                    <small>{stopKinds[point.kind].label} · at {km.toFixed(1)} km</small>
                 </button>
             {/each}
             {#if last || day.pinned}
@@ -269,6 +269,13 @@
     .stop > :global(svg) {
         flex: none;
         color: var(--ink-soft);
+    }
+    button.stop:hover > span {
+        text-decoration: underline;
+        text-underline-offset: 3px;
+    }
+    .stop.chosen {
+        font-weight: 600;
     }
     .dot {
         width: 8px;

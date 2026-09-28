@@ -1,5 +1,6 @@
 <script lang="ts">
-    let { name, size = 18 }: { name: string; size?: number } = $props();
+    /** `path` draws a 24 px stroke path instead of a named icon. */
+    let { name = 'pin', path, size = 18 }: { name?: string; path?: string; size?: number } = $props();
     const paths: Record<string, string> = {
         up: 'm6 15 6-6 6 6',
         layers: 'm12 3 10 6-10 6L2 9l10-6Zm-10 10 10 6 10-6M2 17l10 6 10-6',
@@ -27,4 +28,4 @@
         mountain: 'm2 20 7-13 4 7 3-5 6 11H2Zm4-7 3 1 2-3',
     };
 </script>
-<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={paths[name] ?? paths.pin} /></svg>
+<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={path ?? paths[name] ?? paths.pin} /></svg>

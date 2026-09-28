@@ -1,7 +1,7 @@
 import { layers, namedFlavor, type Flavor } from "@protomaps/basemaps";
 import type { ExpressionSpecification, StyleSpecification, LayerSpecification } from "maplibre-gl";
 import { BASEMAP_URL } from "./map-data";
-import { poiKinds } from "./poi-kinds";
+import { categoryIds, placeCategories, poiKinds, type PlaceCategory } from "./poi-kinds";
 
 function flavor(dark: boolean): Flavor {
     const paper = dark ? "#181d19" : "#f4f2eb";
@@ -68,20 +68,21 @@ export function mapStyle(theme: "light" | "dark", demUrl: string, contourUrl: st
         filter: ["==", ["get", "kind_detail"], "cycleway"],
         paint: { "line-color": dark ? "#b39de8" : "#7762b1", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 1.4, 16, 2.8] },
     });
-    const plannerKinds: ExpressionSpecification = ["in", ["get", "kind"], ["literal", Object.keys(poiKinds)]];
     // The planner draws its own place kinds; the basemap keeps the rest.
     const pois = base.find((layer) => layer.id === "pois");
-    if (pois?.type === "symbol") pois.filter = ["all", pois.filter as ExpressionSpecification, ["!", plannerKinds]];
+    if (pois?.type === "symbol") pois.filter = ["all", pois.filter as ExpressionSpecification, ["!", poiFilter(categoryIds)]];
     const panel = dark ? "#201f17" : "#ffffff";
+    const category = ["match", ["get", "kind"], ...categoryIds.flatMap((id) => [Object.keys(placeCategories[id].kinds), id]), ""] as unknown as ExpressionSpecification;
     base.push({
-        id: "planner-pois", type: "circle", source: "basemap", "source-layer": "pois", minzoom: 12, filter: plannerKinds,
-        paint: { "circle-radius": 4.5, "circle-color": panel, "circle-stroke-color": dark ? "#aaa383" : "#676443", "circle-stroke-width": 1.5 },
+        id: "planner-pois", type: "circle", source: "basemap", "source-layer": "pois", minzoom: 12, maxzoom: 13, filter: poiFilter(categoryIds),
+        paint: { "circle-radius": 3.5, "circle-color": panel, "circle-stroke-color": dark ? "#aaa383" : "#676443", "circle-stroke-width": 1.5 },
     }, {
-        id: "planner-pois-matched", type: "circle", source: "basemap", "source-layer": "pois", minzoom: 12, filter: ["in", ["to-string", ["id"]], ["literal", []]],
-        paint: { "circle-radius": 6, "circle-color": panel, "circle-stroke-color": dark ? "#f2a93a" : "#f4a81d", "circle-stroke-width": 3 },
-    }, {
-        id: "planner-poi-labels", type: "symbol", source: "basemap", "source-layer": "pois", minzoom: 14, filter: plannerKinds,
-        layout: { "text-field": ["coalesce", ["get", "name:en"], ["get", "name"]], "text-font": ["Noto Sans Regular"], "text-size": 11, "text-anchor": "top", "text-offset": [0, 0.7], "text-optional": true },
+        id: "planner-poi-icons", type: "symbol", source: "basemap", "source-layer": "pois", minzoom: 13, filter: poiFilter(categoryIds),
+        layout: {
+            "icon-image": ["concat", "poi-", category, `-${theme}`], "icon-padding": 1,
+            "text-field": ["step", ["zoom"], "", 14, ["coalesce", ["get", "name:en"], ["get", "name"]]],
+            "text-font": ["Noto Sans Regular"], "text-size": 11, "text-anchor": "top", "text-offset": [0, 0.9], "text-optional": true,
+        },
         paint: { "text-color": dark ? "#f2efe3" : "#1c1b14", "text-halo-color": panel, "text-halo-width": 1.2 },
     });
     base.push({
@@ -101,4 +102,9 @@ export function mapStyle(theme: "light" | "dark", demUrl: string, contourUrl: st
         },
         layers: base,
     };
+}
+
+/** Matches basemap places of the given categories. */
+export function poiFilter(categories: PlaceCategory[]): ExpressionSpecification {
+    return ["in", ["get", "kind"], ["literal", Object.keys(poiKinds).filter((kind) => categories.includes(poiKinds[kind].category))]];
 }

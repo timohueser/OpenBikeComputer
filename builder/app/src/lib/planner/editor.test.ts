@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { reorderPoint, routeStops, addRestDay, anchorProgress, appendPoint, applyBudget, coordinateAt, cumulative, initialTrip, insertPoint, itineraryDays, kilometres, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, places, removeRestDay, routeCoordinates, routeSlice, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Coordinate, type RoutePoint, type Trip } from './editor';
+import { reorderPoint, routeStops, addRestDay, anchorProgress, addClickedPoint, dayStops, applyBudget, coordinateAt, cumulative, initialTrip, insertPoint, itineraryDays, kilometres, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, places, removeRestDay, routeCoordinates, routeSlice, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Coordinate, type RoutePoint, type Trip } from './editor';
 
 describe('planner commitments', () => {
     it('keeps a previous pin intact through a later edit and undo', () => {
@@ -273,13 +273,30 @@ describe('legs', () => {
         expect(routeCoordinates(inserted).slice(0, 3)).toEqual([trip.points[0].coordinate, between, trip.points.find(p => p.id === 'visit')!.coordinate]);
     });
 
-    it('adds a clicked point at the end and a pinned night in its nearest leg', () => {
-        const initial = initialTrip();
+    it('adds a clicked point at the end of a single route and a pinned night in its nearest leg', () => {
+        const initial: Trip = { ...initialTrip(), mode: 'route' };
         const early = visit(initial, .1);
-        const appended = appendPoint({ ...initial, points: [...initial.points, visit(initial, .5)] }, { ...early, id: 'early' });
+        const appended = addClickedPoint({ ...initial, points: [...initial.points, visit(initial, .5)] }, { ...early, id: 'early' });
         expect(orderedRoutePoints(appended).map(p => p.id)).toEqual(['start', 'visit', 'early', 'finish']);
         const pinned = pinNight(appended, 1, coordinateAt(routeCoordinates(initial), .3), 'Camp');
         expect(orderedRoutePoints(pinned).map(p => p.id)).toEqual(['start', 'night-1', 'visit', 'early', 'finish']);
+    });
+
+    it('keeps a visit added before a pinned night inside that night\'s day', () => {
+        const initial = initialTrip();
+        // A leg mode fixes the route order, which is where a clicked point used to land after the night.
+        const pinned = setLegMode(pinNight(initial, 1, coordinateAt(routeCoordinates(initial), .4), 'Camp'), 'night-1', 'routed');
+        const nightKm = (trip: Trip) => routeStops(trip).find(stop => stop.point.id === 'night-1')!.distance;
+        const dayEndKm = (trip: Trip) => tripDays(trip)[0].to * cumulative(routeCoordinates(trip)).at(-1)!;
+        expect(dayEndKm(pinned)).toBeCloseTo(nightKm(pinned), 9);
+        const added = addClickedPoint(pinned, visit(initial, .2));
+        expect(orderedRoutePoints(added).map(p => p.id)).toEqual(['start', 'visit', 'night-1', 'finish']);
+        expect(nightKm(added)).toBeCloseTo(nightKm(pinned), 6);
+        expect(dayEndKm(added)).toBeCloseTo(nightKm(added), 9);
+        const [first] = dayStops(added, tripDays(added)[0]);
+        expect(first.point.id).toBe('visit');
+        expect(first.km).toBeCloseTo(routeStops(added)[1].distance, 9);
+        expect(dayStops(added, tripDays(added)[1])).toEqual([]);
     });
 
     it('splits a drawn leg where a pinned night joins it', () => {

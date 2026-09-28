@@ -13,18 +13,23 @@
     import WaysList, { ways } from './WaysList.svelte';
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
+    import LayerMenu from './LayerMenu.svelte';
+    import NearbyLandmark from './NearbyLandmark.svelte';
     import {
-        addPointNear, addRestDay, anchorProgress, appendPoint, applyBudget, coordinateAt, cumulative, initialTrip,
-        insertPoint, itineraryDays, kilometres, nearestProgress, nightOrderConflicts, overnightCandidates,
+        addClickedPoint, addPointNear, addRestDay, anchorProgress, applyBudget, coordinateAt, cumulative, initialTrip,
+        insertPoint, itineraryDays, kilometres, nearestProgress, nightOrderConflicts, offRoute, overnightCandidates,
         overnightWindow, pinNight, places, removeRestDay, reorderPoint, routeCoordinates, routeSlice, routeStops,
         setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays,
         type Coordinate, type Day, type LegMode, type Place, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
-    import { poiKinds } from '../../lib/planner/poi-kinds';
+    import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
+    import { corridorPlaces } from '../../lib/planner/place-index';
+    import { landmarks } from '../../lib/planner/landmarks';
+    import { BASEMAP_URL } from '../../lib/planner/map-data';
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileAscent } from '../../lib/planner/profile-data';
     import type { PlannerQueryValue } from '../../lib/planner/query';
-    import type { MapPoi, MapPoint, MapSegment } from '../../lib/planner/map-types';
+    import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
     import type { Version } from '../../lib/planner/versions';
 
     const storageKey = 'obc-planner-lab-v1';
@@ -49,10 +54,17 @@
     let pending = $state<Coordinate | null>(null);
     let pendingSource = $state<string | null>(null);
     let picking = $state(false);
+    // A place chosen while picking offers the night whatever its kind.
+    let pickedForNight = $state(false);
     // Where an add or leg callout opened; a leg callout also names its leg.
     let spot = $state<{ coordinate: Coordinate; legEndId?: string } | null>(null);
     let drawing = $state<string | null>(null);
-    let tilePlace = $state<Place | null>(null);
+    // The selected place when it is not a fixture: a basemap place or a landmark.
+    let mapPlace = $state<Place | null>(null);
+    let hiddenCategories = $state<PlaceCategory[]>([]);
+    let highlightedCategories = $state<PlaceCategory[]>([]);
+    let corridor = $state<Place[]>([]);
+    let corridorLoad = $state<'done' | 'loading' | 'failed'>('done');
     let theme = $state<'light' | 'dark'>('light');
     let hillshade = $state(true);
     let contours = $state(true);
@@ -109,13 +121,41 @@
             .filter(place => searchValue.category === 'all' || place.category === searchValue.category)
             .map(place => {
                 const at = nearestProgress(coordinates, place.coordinate);
-                return { place, at, km: at * total, off: kilometres(place.coordinate, coordinateAt(coordinates, at)) };
+                return { place, at, km: at * total, off: offRoute(coordinates, place.coordinate) };
             })
             .filter(result => searchValue.within === null || (dayEnd ? kilometres(result.place.coordinate, dayEnd) : result.off) <= searchValue.within)
             .sort((a, b) => searchDay ? Math.abs(a.at - searchDay.to) - Math.abs(b.at - searchDay.to) : a.at - b.at);
     });
     const visiblePlaces = $derived(searching ? results.map(result => result.place) : overnightContext ? candidates.map(candidate => candidate.place) : []);
-    const selectedPlace = $derived(places.find(p => p.id === selectedId) ?? (tilePlace?.id === selectedId ? tilePlace : undefined));
+    // The search category highlights its places too while the search is open.
+    const highlights = $derived(searching && searchValue.category !== 'all' && !highlightedCategories.includes(searchValue.category)
+        ? [...highlightedCategories, searchValue.category] : highlightedCategories);
+    const highlightLimit = 300;
+    // Fixture places of a highlighted category always show; basemap places within 5 km of the route, nearest first.
+    const highlightCandidates = $derived.by(() => {
+        if (!highlights.length) return [];
+        const pinned = new Set(visiblePlaces.map(place => place.id));
+        const nearby = corridor
+            .filter(place => highlights.includes(place.category))
+            .map(place => ({ place, off: offRoute(coordinates, place.coordinate) }))
+            .filter(({ off }) => off <= 5)
+            .sort((a, b) => a.off - b.off)
+            .map(({ place }) => place);
+        return [...places.filter(place => highlights.includes(place.category)), ...nearby].filter(place => !pinned.has(place.id));
+    });
+    const highlightedPlaces = $derived(highlightCandidates.slice(0, highlightLimit));
+    const placeNote = $derived(
+        !highlights.length ? ''
+        : corridorLoad === 'loading' ? 'Loading places along the route…'
+        : corridorLoad === 'failed' ? 'Places along the route could not load'
+        : highlightCandidates.length > highlightLimit ? `Showing ${highlightLimit} of ${highlightCandidates.length} highlighted places, nearest the route first`
+        : '',
+    );
+    // The next landmark along the route within 15 km that the route does not visit yet.
+    const nearbyLandmark = $derived(landmarks
+        .filter(landmark => offRoute(coordinates, landmark.coordinate) <= 15 && !trip.points.some(p => kilometres(p.coordinate, landmark.coordinate) < .3))
+        .sort((a, b) => nearestProgress(coordinates, a.coordinate) - nearestProgress(coordinates, b.coordinate))[0]);
+    const selectedPlace = $derived(places.find(p => p.id === selectedId) ?? (mapPlace?.id === selectedId ? mapPlace : undefined));
     const selectedPoint = $derived(trip.points.find(p => p.id === selectedId));
     const previewCoordinate = $derived(selectedId === 'pending' ? pending : selectedPlace?.coordinate ?? null);
     const mapPoints = $derived.by(() => {
@@ -136,9 +176,7 @@
         }
         const shown = selectedPlace && places.includes(selectedPlace) && !visiblePlaces.includes(selectedPlace) ? [...visiblePlaces, selectedPlace] : visiblePlaces;
         for (const p of shown) {
-            if (p.id === selectedId || !pins.some(pin => pin.coordinate[0] === p.coordinate[0] && pin.coordinate[1] === p.coordinate[1])) {
-                pins.push({ ...p, appearance: p.category === 'hotel' || p.category === 'camp' ? p.category : undefined });
-            }
+            if (p.id === selectedId || !pins.some(pin => pin.coordinate[0] === p.coordinate[0] && pin.coordinate[1] === p.coordinate[1])) pins.push({ ...p });
         }
         if (pending) pins.push({ id: 'pending', coordinate: pending, label: 'Overnight spot', kind: 'place', appearance: 'suggested' });
         return pins;
@@ -164,6 +202,18 @@
         const from = lengths[Math.max(0, Math.min(last, visibleRange[0] - 1))] / total;
         const to = lengths[Math.max(0, Math.min(last, visibleRange[1] + 1))] / total;
         return to > from ? { from, to } : { from: 0, to: 1 };
+    });
+
+    $effect(() => {
+        if (!highlights.length) return;
+        const route = coordinates;
+        let current = true;
+        corridorLoad = 'loading';
+        corridorPlaces(BASEMAP_URL.replace(/^pmtiles:\/\//, ''), route).then(
+            found => { if (current) { corridor = found; corridorLoad = 'done'; } },
+            () => { if (current) corridorLoad = 'failed'; },
+        );
+        return () => { current = false; };
     });
 
     onMount(() => {
@@ -215,6 +265,7 @@
         pendingSource = null;
         spot = null;
         picking = false;
+        pickedForNight = false;
     }
 
     function afterHistory(description: string) {
@@ -267,10 +318,26 @@
         map?.showPlace(place.coordinate, 12);
     }
 
+    /** Opens a place clicked on the map; while picking, the place is offered for the night. */
+    function choosePlace(place: Place) {
+        const forNight = picking;
+        clearSelection();
+        if (!places.includes(place)) mapPlace = place;
+        selectedId = place.id;
+        pickedForNight = forNight;
+    }
+
+    function showLandmark(landmark: Place) {
+        choosePlace(landmark);
+        map?.showPlace(landmark.coordinate, 12);
+    }
+
     function selectPoint(id: string) {
         if (id === 'pending') return;
+        const forNight = picking;
         clearSelection();
         selectedId = id;
+        pickedForNight = forNight;
         const number = id.startsWith('dayend-') ? Number(id.slice('dayend-'.length)) : trip.points.find(p => p.id === id)?.night;
         if (number && multi) {
             night = number;
@@ -345,16 +412,6 @@
         commit(setSplit($state.snapshot(trip), number, progress), 'Day end moved');
     }
 
-    function selectTilePlace(poi: MapPoi) {
-        const kind = poiKinds[poi.kind];
-        clearSelection();
-        tilePlace = {
-            id: `poi-${poi.id}`, kind: 'place', label: poi.label, coordinate: poi.coordinate,
-            progress: anchorProgress(poi.coordinate), category: kind.category, description: kind.label,
-        };
-        selectedId = tilePlace.id;
-    }
-
     function stayHere(sleepDay: number) {
         if (!previewCoordinate) return;
         const coordinate: Coordinate = [...previewCoordinate];
@@ -387,7 +444,7 @@
 
     function addPoint(coordinate: Coordinate, kind: EditableKind) {
         const point = newPoint(coordinate, kind);
-        commit(appendPoint($state.snapshot(trip), point), 'Point added');
+        commit(addClickedPoint($state.snapshot(trip), point), 'Point added');
         clearSelection();
         selectedId = point.id;
     }
@@ -536,6 +593,9 @@
                     <div><dt>Riding time</dt><dd>{duration(total / 15)}</dd></div>
                 </dl>
                 <PlanLine {trip} dayCount={itinerary.length} bind:editing={planEditing} onApply={applyPlan} />
+                {#if nearbyLandmark}
+                    <NearbyLandmark landmark={nearbyLandmark} onRide={addVisit} onShow={showLandmark} />
+                {/if}
                 <div class="list-switch">
                     <Segmented compact label="List" value={list} onChange={(value) => list = value}
                         options={[{ value: 'plan', label: multi ? 'Days' : 'Route' }, { value: 'ways', label: `Ways · ${ways.length}` }]} />
@@ -545,7 +605,7 @@
                         <WaysList {trip} onPick={(variant) => edit({ variant }, 'Way changed')} />
                     {:else if multi}
                         <Itinerary
-                            {trip} {itinerary} {days} {coordinates} {theme} {expandedDay} {candidates} {conflicts} {selectedId}
+                            {trip} {itinerary} {days} {theme} {expandedDay} {candidates} {conflicts} {selectedId}
                             changing={changingOvernight}
                             onToggle={(riding) => showDay(riding, true)}
                             onInspect={inspectPoint}
@@ -573,8 +633,9 @@
                     bind:this={map} {segments} {coordinates} points={mapPoints} {selectedId} callout={calloutCoordinate} {drawing}
                     {theme} {hillshade} {contours} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
+                    shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces} {landmarks}
                     onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onDayEndDrag={moveDayEnd}
-                    onLegClick={legClick} onInsert={insert} onDrawn={drawn} onPoiClick={selectTilePlace}
+                    onLegClick={legClick} onInsert={insert} onDrawn={drawn} onPlaceClick={choosePlace}
                     onVisibleRange={(range) => visibleRange = range}
                 >
                     {#snippet popup()}
@@ -582,7 +643,7 @@
                             {#key selectedId}
                                 <MapCallout
                                     kind={calloutKind} {trip} {days} {dayLabels} {night} {candidates} {legMode}
-                                    point={selectedPoint} place={selectedPlace} coordinate={previewCoordinate}
+                                    point={selectedPoint} place={selectedPlace} coordinate={previewCoordinate} forNight={pickedForNight}
                                     onClose={clearSelection}
                                     onAddHere={addHere}
                                     onLegMode={setLeg}
@@ -608,14 +669,7 @@
                         <button type="button" onclick={() => map?.fitRoute()} aria-label="Show whole route"><Icon name="fit" /></button>
                         <button type="button" class:chosen={showRoute} aria-label={showRoute ? 'Hide route' : 'Show route'} aria-pressed={showRoute} onclick={() => showRoute = !showRoute}><Icon name="eye" /></button>
                     </div>
-                    <details class="layer-menu">
-                        <summary aria-label="Map layers"><Icon name="layers" /></summary>
-                        <div>
-                            <strong>Map layers</strong>
-                            <label><input type="checkbox" bind:checked={hillshade} />Relief</label>
-                            <label><input type="checkbox" bind:checked={contours} />Contours</label>
-                        </div>
-                    </details>
+                    <LayerMenu bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
                 </div>
             </div>
             <Resize value={Math.min(profileHeight, maxProfile)} min={130} max={maxProfile} axis="y" label="Elevation height" onResize={(value) => profileHeight = value} />
@@ -634,6 +688,7 @@
                 {:else}
                     <span>{message}</span>
                 {/if}
+                {#if placeNote}<span>· {placeNote}</span>{/if}
                 <span class="lab-note">Routing & elevation mocked</span>
             </div>
         </section>
@@ -820,27 +875,20 @@
         flex-direction: column;
         gap: 8px;
     }
-    .control-group,
-    .layer-menu {
+    .control-group {
         border-radius: 8px;
         background: var(--panel);
         box-shadow: var(--planner-shadow);
     }
-    .control-group button,
-    .layer-menu summary {
+    .control-group button {
         display: grid;
         place-items: center;
         width: 36px;
         height: 36px;
         color: var(--ink);
         cursor: pointer;
-        list-style: none;
     }
-    .layer-menu summary::-webkit-details-marker {
-        display: none;
-    }
-    .control-group button:hover,
-    .layer-menu summary:hover {
+    .control-group button:hover {
         color: var(--forest);
     }
     .control-group button + button {
@@ -848,34 +896,6 @@
     }
     .control-group .chosen {
         color: var(--forest);
-    }
-    .layer-menu {
-        position: relative;
-    }
-    .layer-menu > div {
-        position: absolute;
-        top: 0;
-        right: 44px;
-        min-width: 160px;
-        padding: 12px 16px;
-        border-radius: 8px;
-        background: var(--panel);
-        box-shadow: var(--planner-shadow);
-        font-size: 13px;
-    }
-    .layer-menu strong {
-        display: block;
-        margin-bottom: 8px;
-        font-weight: 600;
-    }
-    .layer-menu label {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 4px 0;
-    }
-    .layer-menu input {
-        accent-color: var(--forest);
     }
     .status-line {
         display: flex;

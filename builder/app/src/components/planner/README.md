@@ -28,7 +28,10 @@ uncommitted `builder/app/.env.local` is the easiest place):
 | `VITE_PLANNER_DEM_URL` | Terrarium WebP XYZ template with `{z}`, `{x}` and `{y}` |
 
 The style expects the Protomaps basemap schema. Terrain is capped at zoom 12.
-Glyphs and sprites still use public Protomaps assets.
+Glyphs and sprites still use public Protomaps assets. Most rider places (shops,
+lodging, food) exist only in the archive's zoom 14 tiles, so the map shows them
+from zoom 14. A highlighted place category loads those tiles along the route
+once per session, so it shows at every zoom.
 
 Use the PMTiles CLI to extract a region from a compatible archive. Put local
 extracts in `builder/app/public/data/planner/`, which is ignored by git. A
@@ -53,7 +56,7 @@ npm run dev -- --mode web --host 127.0.0.1 --port 4174
 ## Checks
 
 ```sh
-npx vitest run src/lib/planner/editor.test.ts
+npx vitest run src/lib/planner/
 npx svelte-check --tsconfig tsconfig.planner.json --fail-on-warnings
 ```
 

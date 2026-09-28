@@ -10,12 +10,12 @@
     import Icon from './PlannerIcon.svelte';
     import PlaceRow from './PlaceRow.svelte';
     import Segmented from './Segmented.svelte';
-    import { categoryLabels } from '../../lib/planner/poi-kinds';
+    import { placeCategories } from '../../lib/planner/poi-kinds';
     import { profileAscent } from '../../lib/planner/profile-data';
     import { dayOverTarget, pinNight, tripDays, type Coordinate, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
 
     let {
-        kind, trip, days, dayLabels, night, point, place, coordinate, candidates, legMode,
+        kind, trip, days, dayLabels, night, point, place, coordinate, candidates, legMode, forNight = false,
         onClose, onAddHere, onLegMode, onInsert, onPick, onSelectPlace, onStay, onAddVisit, onRename, onKind, onRemove,
     }: {
         kind: CalloutKind;
@@ -31,6 +31,8 @@
         coordinate?: Coordinate | null;
         candidates: OvernightCandidate[];
         legMode: LegMode;
+        /** The place was picked for the night, so it offers the night whatever its kind. */
+        forNight?: boolean;
         onClose: () => void;
         onAddHere: (kind: EditableKind) => void;
         onLegMode: (mode: LegMode) => void;
@@ -62,7 +64,7 @@
     // svelte-ignore state_referenced_locally
     let sleepDay = $state(night);
 
-    const sleeps = $derived(multi && (!place || place.category === 'hotel' || place.category === 'camp'));
+    const sleeps = $derived(multi && (!place || forNight || place.category === 'hotel' || place.category === 'camp'));
     const preview = $derived.by(() => {
         if (!coordinate || sleepDay >= days.length) return null;
         const day = tripDays(pinNight(trip, sleepDay, coordinate, 'Preview'))[sleepDay - 1];
@@ -120,7 +122,7 @@
         <p class="hint">Drag the marker along the route to move the day end.</p>
     {:else if kind === 'place'}
         <h2>{place?.label ?? 'Overnight spot'}</h2>
-        {#if place}<p class="kind">{categoryLabels[place.category]}</p>{/if}
+        {#if place}<p class="kind">{placeCategories[place.category].label} · {place.description}</p>{/if}
         {#if sleeps}
             <label class="field">End of day
                 <select bind:value={sleepDay}>
@@ -135,7 +137,7 @@
             <button type="button" class="primary" onclick={() => onStay(sleepDay)}>{days[sleepDay - 1]?.pinned ? 'Replace overnight' : 'Stay here'}<Icon name="check" size={15} /></button>
             {#if place}<button type="button" class="secondary" onclick={() => onAddVisit(place)}>Add as visit</button>{/if}
         {:else if place}
-            <button type="button" class="primary" onclick={() => onAddVisit(place)}>Add visit<Icon name="plus" size={15} /></button>
+            <button type="button" class="primary" onclick={() => onAddVisit(place)}>{place.category === 'peak' ? 'Ride over it' : 'Add visit'}<Icon name="plus" size={15} /></button>
         {/if}
     {:else if kind === 'point' && point}
         <div class="title">

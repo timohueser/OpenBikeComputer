@@ -1,3 +1,5 @@
+import type { PlaceCategory } from "./poi-kinds";
+
 export type Coordinate = [number, number];
 
 export interface MapPoint {
@@ -5,7 +7,9 @@ export interface MapPoint {
     coordinate: Coordinate;
     label: string;
     kind: "start" | "finish" | "via" | "night" | "place" | "waypoint" | "detour" | "pass" | "marker" | "dayend";
-    appearance?: "hotel" | "camp" | "suggested";
+    appearance?: "suggested";
+    /** The place category a `place` pin shows. */
+    category?: PlaceCategory;
     color?: string;
     markerLabel?: string;
     /** A fixed point never moves by drag. Places are always fixed. */
@@ -20,12 +24,4 @@ export interface MapSegment {
     color: string;
     legEndId: string;
     leg: "routed" | "straight" | "drawn";
-}
-
-/** A place from the basemap `pois` layer. */
-export interface MapPoi {
-    id: string;
-    kind: string;
-    label: string;
-    coordinate: Coordinate;
 }

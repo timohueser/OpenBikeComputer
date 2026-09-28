@@ -3,25 +3,35 @@
     import * as maplibregl from "maplibre-gl";
     import mapWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
     import type { GeoJSONSource } from "maplibre-gl";
-    import type { Feature, FeatureCollection, LineString } from "geojson";
+    import type { Feature, FeatureCollection, LineString, Point } from "geojson";
     import { Protocol } from "pmtiles";
     import mlcontour from "maplibre-contour";
     import "maplibre-gl/dist/maplibre-gl.css";
-    import { mapStyle } from "../../lib/planner/map-style";
+    import { mapStyle, poiFilter } from "../../lib/planner/map-style";
+    import { mapIcon } from "../../lib/planner/map-icons";
     import { TERRAIN_URL } from "../../lib/planner/map-data";
-    import { poiKinds } from "../../lib/planner/poi-kinds";
-    import { coordinateAt, nearestProgress } from "../../lib/planner/editor";
-    import type { Coordinate, MapPoi, MapPoint, MapSegment } from "../../lib/planner/map-types";
+    import { categoryIds, placeCategories, type PlaceCategory } from "../../lib/planner/poi-kinds";
+    import { poiPlace } from "../../lib/planner/place-index";
+    import { coordinateAt, nearestProgress, type Place } from "../../lib/planner/editor";
+    import type { Coordinate, MapPoint, MapSegment } from "../../lib/planner/map-types";
 
     let {
         segments = [], coordinates = [], highlightedCoordinates = [], points = [], selectedId = null, callout = null,
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.0, 46.7], zoom = 11,
-        onEmptyClick, onPointSelect, onPointMove, onDayEndDrag, onLegClick, onInsert, onDrawn, onPoiClick, onVisibleRange, popup,
+        shownCategories = categoryIds, highlightedPlaces = [], landmarks = [],
+        onEmptyClick, onPointSelect, onPointMove, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, popup,
     }: {
         segments?: MapSegment[]; coordinates?: Coordinate[]; highlightedCoordinates?: Coordinate[]; points?: MapPoint[];
         selectedId?: string | null; callout?: Coordinate | null; drawing?: string | null; highlightedPlaceIds?: string[];
+        /** While picking, any map click places the overnight; the line takes no edits. */
         pickMode?: boolean; showRoute?: boolean; theme?: "light" | "dark"; hillshade?: boolean; contours?: boolean;
+        /** Basemap place categories to draw. */
+        shownCategories?: PlaceCategory[];
+        /** Places drawn with a ring at every zoom. */
+        highlightedPlaces?: Place[];
+        /** Places to ride over, drawn from zoom 10. */
+        landmarks?: Place[];
         /** Route progress the elevation profile points at. */
         hoverProgress?: number | null;
         center?: Coordinate; zoom?: number;
@@ -32,7 +42,7 @@
         onLegClick?: (legEndId: string, coordinate: Coordinate) => void;
         onInsert?: (legEndId: string, coordinate: Coordinate) => void;
         onDrawn?: (legEndId: string, coordinates: Coordinate[]) => void;
-        onPoiClick?: (poi: MapPoi) => void;
+        onPlaceClick?: (place: Place) => void;
         onVisibleRange?: (range: [number, number]) => void; popup?: Snippet;
     } = $props();
 
@@ -115,6 +125,16 @@
         return lineData(segments.map(({ coordinates, color, legEndId, leg }) => lineFeature(coordinates, { color, legEndId, leg })));
     }
 
+    function placeData(list: Place[]): FeatureCollection<Point> {
+        return {
+            type: "FeatureCollection",
+            features: list.map((place) => ({
+                type: "Feature", properties: { pid: place.id, category: place.category, name: place.label },
+                geometry: { type: "Point", coordinates: [place.coordinate[0], place.coordinate[1]] },
+            })),
+        };
+    }
+
     function highlightData() {
         return lineData(highlightedCoordinates.length < 2 ? [] : [lineFeature(highlightedCoordinates)]);
     }
@@ -142,6 +162,22 @@
         map.addLayer({ id: "trip-line", type: "line", source: "trip", layout: round, paint: { "line-color": ["get", "color"], "line-width": 4 } });
         map.addSource("planner-sketch", { type: "geojson", data: lineData([]) });
         map.addLayer({ id: "planner-sketch", type: "line", source: "planner-sketch", layout: round, paint: { "line-color": dark ? "#f175c5" : "#cc2a93", "line-width": 3, "line-dasharray": [1.5, 1.5] } });
+        const panel = dark ? "#201f17" : "#ffffff";
+        const text: maplibregl.SymbolLayerSpecification["layout"] = { "text-font": ["Noto Sans Regular"], "text-size": 11, "text-anchor": "top", "text-offset": [0, 1], "text-optional": true };
+        const textPaint = { "text-color": dark ? "#f2efe3" : "#1c1b14", "text-halo-color": panel, "text-halo-width": 1.2 };
+        map.addSource("planner-landmarks", { type: "geojson", data: placeData(landmarks) });
+        map.addLayer({
+            id: "planner-landmarks", type: "symbol", source: "planner-landmarks", minzoom: 10,
+            layout: { "icon-image": `landmark-${theme}`, "icon-allow-overlap": true, "text-field": ["step", ["zoom"], "", 12, ["get", "name"]], ...text },
+            paint: textPaint,
+        });
+        map.addSource("planner-highlights", { type: "geojson", data: placeData(highlightedPlaces) });
+        map.addLayer({ id: "planner-highlight-rings", type: "circle", source: "planner-highlights", paint: { "circle-radius": 12, "circle-color": panel, "circle-stroke-color": dark ? "#f2a93a" : "#f4a81d", "circle-stroke-width": 2.5 } });
+        map.addLayer({
+            id: "planner-highlight-icons", type: "symbol", source: "planner-highlights",
+            layout: { "icon-image": ["concat", "poi-", ["get", "category"], `-${theme}`], "icon-allow-overlap": true, "text-field": ["step", ["zoom"], "", 13, ["get", "name"]], ...text },
+            paint: textPaint,
+        });
         syncRouteVisibility();
         syncTerrain();
     }
@@ -185,15 +221,18 @@
         return { legEndId: best.legEndId, coordinate: [at.lng, at.lat] };
     }
 
-    function poiAt(point: maplibregl.Point): MapPoi | null {
-        if (!map?.getLayer("planner-pois")) return null;
+    const placeLayers = ["planner-pois", "planner-poi-icons", "planner-highlight-rings", "planner-highlight-icons", "planner-landmarks"];
+
+    /** The basemap place, highlighted place or landmark under a screen position. */
+    function placeAt(point: maplibregl.Point): Place | null {
+        if (!map) return null;
         const box: [maplibregl.PointLike, maplibregl.PointLike] = [[point.x - 4, point.y - 4], [point.x + 4, point.y + 4]];
-        const feature = map.queryRenderedFeatures(box, { layers: ["planner-pois", "planner-poi-labels"] })[0];
+        const feature = map.queryRenderedFeatures(box, { layers: placeLayers.filter((id) => map!.getLayer(id)) })[0];
         if (!feature || feature.geometry.type !== "Point") return null;
-        const kind = String(feature.properties.kind);
+        const { pid, kind } = feature.properties;
+        if (pid) return [...highlightedPlaces, ...landmarks].find((place) => place.id === pid) ?? null;
         const [longitude, latitude] = feature.geometry.coordinates;
-        const label = feature.properties["name:en"] ?? feature.properties.name ?? poiKinds[kind]?.label ?? kind;
-        return { id: String(feature.id), kind, label: String(label), coordinate: [longitude, latitude] };
+        return poiPlace(feature.id, String(kind), feature.properties["name:en"] ?? feature.properties.name, [longitude, latitude]);
     }
 
     function legEnds(legEndId: string): [Coordinate, Coordinate] {
@@ -231,8 +270,8 @@
             setSketch([from, coordinate, to]);
         } else {
             const onMap = event.originalEvent.target === map.getCanvas();
-            overPoi = onMap && !!poiAt(event.point);
-            hover = onMap && !overPoi && !dragging && !drawing ? lineHit(event.point) : null;
+            overPoi = onMap && !!placeAt(event.point);
+            hover = onMap && !overPoi && !dragging && !drawing && !pickMode ? lineHit(event.point) : null;
         }
     }
 
@@ -274,6 +313,10 @@
             map.dragRotate.disable();
             map.touchZoomRotate.disableRotation();
             map.on("style.load", () => { ready = true; installRoute(); });
+            map.setMissingStyleImageResolver((id) => {
+                const icon = mapIcon(id);
+                if (icon && !map!.hasImage(id)) map!.addImage(id, icon.image, { pixelRatio: icon.pixelRatio });
+            });
             map.once("load", reportView);
             map.on("error", (event) => {
                 failure = "Some map data could not load. Check your connection, then retry.";
@@ -283,9 +326,9 @@
             map.on("click", (event) => {
                 const target = event.originalEvent.target;
                 if (consumedPress || drawing || (target instanceof Node && popupContent?.contains(target))) return;
-                const poi = poiAt(event.point);
-                const hit = poi ? null : lineHit(event.point);
-                if (poi) onPoiClick?.(poi);
+                const place = placeAt(event.point);
+                const hit = place || pickMode ? null : lineHit(event.point);
+                if (place) onPlaceClick?.(place);
                 else if (hit) onLegClick?.(hit.legEndId, hit.coordinate);
                 else onEmptyClick?.([event.lngLat.lng, event.lngLat.lat]);
             });
@@ -343,8 +386,20 @@
         if (map && ready) (map.getSource("trip-highlight") as GeoJSONSource | undefined)?.setData(highlightData());
     });
     $effect(() => {
-        const ids = [...highlightedPlaceIds];
-        if (map && ready && map.getLayer("planner-pois-matched")) map.setFilter("planner-pois-matched", ["in", ["to-string", ["id"]], ["literal", ids]]);
+        const filter = poiFilter(shownCategories);
+        if (!map || !ready) return;
+        for (const id of ["planner-pois", "planner-poi-icons"]) if (map.getLayer(id)) map.setFilter(id, filter);
+    });
+    $effect(() => {
+        const data = placeData(highlightedPlaces);
+        if (map && ready) (map.getSource("planner-highlights") as GeoJSONSource | undefined)?.setData(data);
+    });
+    $effect(() => {
+        const data = placeData(landmarks);
+        if (map && ready) (map.getSource("planner-landmarks") as GeoJSONSource | undefined)?.setData(data);
+    });
+    $effect(() => {
+        if (pickMode) hover = null;
     });
     $effect(() => {
         if (!map) return;
@@ -371,7 +426,7 @@
         if (map) map.getCanvas().style.cursor = dragging ? "grabbing" : drawing || pickMode ? "crosshair" : hover || overPoi ? "pointer" : "grab";
     });
 
-    function markerIcon(appearance: "hotel" | "camp" | "waypoint" | "detour") {
+    function markerIcon(path: string) {
         const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
         svg.setAttribute("viewBox", "0 0 24 24");
         svg.setAttribute("aria-hidden", "true");
@@ -380,17 +435,16 @@
         svg.setAttribute("stroke-width", "1.7");
         svg.setAttribute("stroke-linecap", "round");
         svg.setAttribute("stroke-linejoin", "round");
-        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        const paths = {
-            camp: "M3 20 12 4l9 16H3ZM8 20l4-8 4 8M10 2l4 4M14 2l-4 4",
-            hotel: "M3 19V8m18 11V8M3 15h18M5 15V6h14v9M7 12V9h4v3m2 0V9h4v3",
-            waypoint: "M6 21V3m0 1c4-3 8 3 12 0v9c-4 3-8-3-12 0",
-            detour: "M8 5 3 10l5 5M3 10h11a5 5 0 0 1 0 10h-2",
-        };
-        path.setAttribute("d", paths[appearance]);
-        svg.append(path);
+        const element = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        element.setAttribute("d", path);
+        svg.append(element);
         return svg;
     }
+
+    const pointIcons = {
+        waypoint: "M6 21V3m0 1c4-3 8 3 12 0v9c-4 3-8-3-12 0",
+        detour: "M8 5 3 10l5 5M3 10h11a5 5 0 0 1 0 10h-2",
+    };
 
     function routeProgress(marker: maplibregl.Marker) {
         const at = marker.getLngLat();
@@ -412,10 +466,10 @@
             button.setAttribute("aria-label", point.label);
             button.setAttribute("aria-pressed", String(point.id === selectedId));
             button.title = point.label + (dayEnd ? " · drag along the route" : draggable ? " · drag to move" : "");
-            if (point.kind === "place" && (point.appearance === "hotel" || point.appearance === "camp")) {
-                button.append(markerIcon(point.appearance));
+            if (point.kind === "place" && point.category) {
+                button.append(markerIcon(placeCategories[point.category].icon));
             } else if (point.kind === "waypoint" || point.kind === "detour") {
-                button.append(markerIcon(point.kind));
+                button.append(markerIcon(pointIcons[point.kind]));
             } else {
                 button.textContent = point.markerLabel ?? (point.kind === "start" ? "A" : point.kind === "finish" ? "B" : point.kind === "night" ? String(nightNumber) : "");
             }
