@@ -19,6 +19,18 @@ async function setup(extra: Record<string, unknown> = {}) {
     return {target,type,component};
 }
 describe('planner query requests',()=>{
+    it('shows and edits a route endpoint without losing its scope', async()=>{
+        const fetch=vi.fn(async(_url:string,init:RequestInit)=>reply(JSON.parse(String(init.body)).request??{type:'places',what:['restaurant'],where:{scope:'route',part:'end'}}));
+        vi.stubGlobal('fetch',fetch);
+        const {target,type}=await setup();await type('restaurant at the end of the route');await tick();
+        const chip=[...target.querySelectorAll<HTMLButtonElement>('.chip')].find(b=>b.textContent?.includes('Near route end'))!;
+        expect(chip).toBeDefined();chip.click();await tick();
+        const part=[...target.querySelectorAll('label')].find(l=>l.textContent?.startsWith('Part of route'))!.querySelector('select')!;
+        expect(part.value).toBe('end');
+        part.value='start';part.dispatchEvent(new Event('change',{bubbles:true}));await tick();
+        (target.querySelector('.apply') as HTMLButtonElement).click();await vi.advanceTimersByTimeAsync(0);await tick();
+        expect(JSON.parse(String(fetch.mock.lastCall![1].body)).request.where).toEqual({scope:'route',part:'start'});
+    });
     it('discards stale responses and keeps a cleared search empty',async()=>{
         const pending: ((response:Response)=>void)[]=[];
         const fetch=vi.fn(()=>new Promise<Response>(resolve=>pending.push(resolve)));
@@ -75,7 +87,7 @@ describe('planner query requests',()=>{
         expect(document.activeElement).toBe(chips[1]);
         expect(target.querySelector('.picker')).toBeNull();
     });
-    it('frames fresh results, keeps fitted bounds, and lets the rider pan without framing again',async()=>{
+    it('keeps pagination and retries in the searched area until the rider pans',async()=>{
         const state=writable({context,viewRevision:0});
         const current=fromStore(state);
         const onResults=vi.fn();
@@ -90,12 +102,24 @@ describe('planner query requests',()=>{
         const fitted: SearchContext={...context,view:[7.8,48.1,7.9,48.2]};
         state.set({context:fitted,viewRevision:0});await tick();await vi.advanceTimersByTimeAsync(250);
         expect(fetch).toHaveBeenCalledTimes(1);
+        const sent = () => JSON.parse(String((fetch.mock.lastCall as unknown as [string,RequestInit])[1].body));
+        fetch.mockRejectedValueOnce(new TypeError('Offline'));
+        component.more();await vi.advanceTimersByTimeAsync(0);await tick();
+        expect(sent().view).toEqual(context.view);
+        expect(sent().limit).toBe(26);
+        component.retry();await vi.advanceTimersByTimeAsync(0);await tick();
+        expect(sent().view).toEqual(context.view);
+        expect(fetch).toHaveBeenCalledTimes(3);
+        expect(onResults).toHaveBeenCalledTimes(2);
         const panned: SearchContext={...context,view:[7.9,48.1,8,48.2]};
         state.set({context:panned,viewRevision:1});await tick();await vi.advanceTimersByTimeAsync(250);
-        expect(fetch).toHaveBeenCalledTimes(2);
-        expect(onResults).toHaveBeenCalledTimes(1);
-        const body=JSON.parse(String((fetch.mock.lastCall as unknown as [string,RequestInit])[1].body));
-        expect(body.view).toEqual(panned.view);
+        expect(fetch).toHaveBeenCalledTimes(4);
+        expect(onResults).toHaveBeenCalledTimes(2);
+        expect(sent().view).toEqual(panned.view);
+        state.set({context:fitted,viewRevision:1});await tick();
+        component.more();await vi.advanceTimersByTimeAsync(0);await tick();
+        expect(sent().view).toEqual(panned.view);
+        expect(sent().limit).toBe(46);
     });
     it('preserves pending result framing when initial map bounds interrupt the first request',async()=>{
         const state=writable({context,viewRevision:0});const current=fromStore(state);

@@ -234,8 +234,11 @@ TABLES: dict[str, Table] = {
     c: Table(pairs(c), typos=(5 if c in _TYPOS else None) if c in _CLOSED else 4,
              stem=c not in _CLOSED)
     for c in WORDS}
-TABLES["kind"] = Table(kind_pairs())
+# Short corrections need a language; exact category words still work in every language.
+TABLES["kind"] = Table(kind_pairs(), typos=5)
 TABLES["kind_exact"] = Table(kind_pairs(), typos=None)
+for lang, kinds in KIND_TERMS.items():
+    TABLES[f"kind_{lang}"] = Table((term, kind) for kind, terms in kinds.items() for term in terms)
 TABLES["split_verb"] = Table(((t, "split") for ts in WORDS["intent"]["split"].values()
                               for t in ts), typos=5)
 

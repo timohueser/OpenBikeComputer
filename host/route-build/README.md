@@ -52,9 +52,11 @@ via-way automaton, smoothness model, or country-default catalogue. Do not use
 this German regional importer as a worldwide release pipeline.
 
 The profile catalogue has touring, road, gravel, MTB and hiking. Each has
-shorter, smoother and less-climbing variants. `--profiles all` prepares all
-20 metrics. Passing a comma-separated list prepares only those IDs. The
-profiles are explicit initial policy values; rider validation is still needed.
+shorter, smoother and less-climbing variants. Shorter ignores road-class and
+climb preferences but keeps surface preferences. Smoother raises surface costs
+where the base profile has lower costs. Access rules apply to every variant.
+`--profiles all` prepares all 20 metrics. Pass a comma-separated list for fewer.
+Rebuild packages after changing profiles. These initial values need rider validation.
 
 The package includes all geometry, snap cells, endpoint states and CH pages.
 It is separate from map tiles. See [the package contract](../../specs/route-package.md).

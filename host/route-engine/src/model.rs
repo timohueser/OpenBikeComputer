@@ -150,12 +150,14 @@ impl Profile {
                     p.name = format!("{}/{variant}", profile.name);
                     match variant {
                         "shorter" => {
-                            p.surface_weights = [1.0; 6];
                             p.road_weights = [1.0; 7];
                             p.climb_weight = 0.0;
                         }
                         "smoother" => {
-                            p.surface_weights = [2.0, 1.0, 1.4, 3.0, 6.0, 12.0];
+                            // A smoother goal must not weaken the bike's surface preferences.
+                            for (weight, minimum) in p.surface_weights.iter_mut().zip([2.0, 1.0, 1.4, 3.0, 6.0, 12.0]) {
+                                *weight = weight.max(minimum);
+                            }
                         }
                         _ => p.climb_weight *= 3.0,
                     }
