@@ -136,7 +136,10 @@ const port = Number(process.env.OBC_SEARCH_PORT || 8780);
 server.listen(port, '127.0.0.1', () =>
   console.log(`Local planner search: http://127.0.0.1:${port}`),
 );
+let stopping = false;
 const stop = () => {
+  if (stopping) return;
+  stopping = true;
   parser.close();
   server.close(() => {
     for (const v of databases.values()) v.close();
