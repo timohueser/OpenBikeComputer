@@ -129,3 +129,21 @@ html { scroll-padding-top: 64px; scroll-behavior: smooth; }
 #chips .gallery { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 @media (max-width: 900px) { #r2 .dir-grid.r2grid, #chips .gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 560px) { #r2 .dir-grid.r2grid, #chips .gallery { grid-template-columns: 1fr; } }
+
+/* round 3: states × directions */
+.mx-scroll { overflow-x: auto; margin-inline: -4px; padding-inline: 4px; }
+.mx { display: grid; grid-template-columns: 120px repeat(3, minmax(250px, 1fr)); gap: 18px 22px; min-width: 900px; align-items: start; }
+.mx-h { font-weight: 800; font-size: 16px; position: sticky; top: 50px; background: var(--parchment); padding-block: 8px; z-index: 2; }
+.mx-s { font-weight: 700; font-size: 14.5px; color: var(--ink-soft); padding-top: 14px; border-top: 1px solid var(--line); }
+.mx-c { border-top: 1px solid var(--line); padding-top: 14px; min-width: 0; }
+.mx-c figure, .mx-extra figure { margin: 0; display: grid; gap: 8px; }
+.mx-c .fit { padding: 11px; max-width: 320px; }
+.mx-c figcaption, .mx-extra figcaption { font-size: 13.5px; color: var(--ink-soft); }
+.mx-extra { max-width: 760px; }
+.mx-extra .fit { padding: 11px; }
+.r3notes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px 28px; }
+.r3notes > div { display: grid; gap: 8px; align-content: start; font-size: 15px; }
+.r3notes h3 { font-size: 16px; }
+.r3notes ul { display: grid; gap: 6px; }
+.r3notes li + li { margin-top: 0; }
+@media (max-width: 860px) { .r3notes { grid-template-columns: 1fr; } }

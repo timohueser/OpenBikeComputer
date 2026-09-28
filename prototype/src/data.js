@@ -1,5 +1,6 @@
 /* Example data, all from wireframes/kit/content.md. Coordinates are in the units of the named map
-   (see MAPS). Places on the Day 4 map carry d4 coordinates; the alps position is derived. */
+   (see MAPS). A place with `day` and `km` sits on the Alps line at that base day's km; when it has
+   no x/y, Trip.init places it on the line. */
 
 const MAPS = {
   // x = (lon − lon0) / dlon × w ; y = (lat0 − lat) / dlat × h ; kmx/kmy = km per map unit
@@ -22,28 +23,28 @@ const KINDS = {
 const SLEEP = ['campsite', 'lodging', 'hut', 'shelter'];
 const SUPPLY = ['shop', 'water', 'pharmacy', 'bikeshop', 'train'];
 
+// Point types of a route, with their glyphs.
+const POINT_KINDS = { pass: { label: 'Pass here', icon: 'i-ring' }, shape: { label: 'Shape', icon: 'i-dot' }, visit: { label: 'Visit', icon: 'i-flag' }, sleep: { label: 'Sleep', icon: 'i-tent' }, marker: { label: 'Marker', icon: 'i-drop' } };
+const MODES = { routed: 'Routed', straight: 'Straight', drawn: 'Drawn' };
+
 const BIKES = { road: 'Road', gravel: 'Gravel', mtb: 'MTB', touring: 'Touring' };
 const GOALS = { balanced: 'Balanced', shortest: 'Shortest', leastclimb: 'Least climbing', leastunpaved: 'Least unpaved', mostclimb: 'Most climbing' };
 const WEEKDAYS = { mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday' };
 
-// The Alps trip. Times in minutes; start = trip km at the day's start.
+// The Alps trip's base days. Times in minutes. The days the rider sees derive from these (Trip).
 const DAYS = [
-  { n: 1, wd: 'thu', date: 'Thu 17 Jun', from: 'Genève', to: 'Le Grand-Bornand', km: 78, climb: 1640, time: 340, passes: 'Col de la Colombière 1,613 m' },
-  { n: 2, wd: 'fri', date: 'Fri 18 Jun', from: 'Le Grand-Bornand', to: 'Beaufort', km: 64, climb: 1720, time: 320, passes: 'Col des Aravis 1,486 m, Col des Saisies 1,650 m' },
-  { n: 3, wd: 'sat', date: 'Sat 19 Jun', from: 'Beaufort', to: "Val d'Isère", km: 71, climb: 2290, time: 390, passes: 'Cormet de Roselend 1,968 m' },
-  { n: 4, wd: 'sun', date: 'Sun 20 Jun', from: "Val d'Isère", to: 'Valloire', km: 104, climb: 2310, time: 430, passes: "Col de l'Iseran 2,764 m, Col du Télégraphe 1,566 m" },
-  { n: 5, wd: 'mon', date: 'Mon 21 Jun', from: 'Valloire', to: 'Briançon', km: 53, climb: 1480, time: 270, passes: 'Col du Galibier 2,642 m' },
-  { n: 6, wd: 'tue', date: 'Tue 22 Jun', rest: true, to: 'Briançon', km: 0, climb: 0, time: 0 },
-  { n: 7, wd: 'wed', date: 'Wed 23 Jun', from: 'Briançon', to: 'Guillestre', km: 56, climb: 1420, time: 280, passes: "Col d'Izoard 2,360 m" },
-  { n: 8, wd: 'thu', date: 'Thu 24 Jun', from: 'Guillestre', to: 'Barcelonnette', km: 51, climb: 1470, time: 270, passes: 'Col de Vars 2,109 m' },
-  { n: 9, wd: 'fri', date: 'Fri 25 Jun', from: 'Barcelonnette', to: 'Saint-Étienne-de-Tinée', km: 63, climb: 1640, time: 330, passes: 'Cime de la Bonette 2,802 m' },
-  { n: 10, wd: 'sat', date: 'Sat 26 Jun', from: 'Saint-Étienne-de-Tinée', to: 'Nice', km: 94, climb: 620, time: 290 },
+  { n: 1, from: 'Genève', to: 'Le Grand-Bornand', km: 78, climb: 1640, time: 340 },
+  { n: 2, from: 'Le Grand-Bornand', to: 'Beaufort', km: 64, climb: 1720, time: 320 },
+  { n: 3, from: 'Beaufort', to: "Val d'Isère", km: 71, climb: 2290, time: 390 },
+  { n: 4, from: "Val d'Isère", to: 'Valloire', km: 104, climb: 2310, time: 430 },
+  { n: 5, from: 'Valloire', to: 'Briançon', km: 53, climb: 1480, time: 270 },
+  { n: 6, rest: true, to: 'Briançon', km: 0, climb: 0, time: 0 },
+  { n: 7, from: 'Briançon', to: 'Guillestre', km: 56, climb: 1420, time: 280 },
+  { n: 8, from: 'Guillestre', to: 'Barcelonnette', km: 51, climb: 1470, time: 270 },
+  { n: 9, from: 'Barcelonnette', to: 'Saint-Étienne-de-Tinée', km: 63, climb: 1640, time: 330 },
+  { n: 10, from: 'Saint-Étienne-de-Tinée', to: 'Nice', km: 94, climb: 620, time: 290 },
 ];
-const TRIP = { km: 634, climb: 14590, time: 2940, facts: '634 km · 14,590 m · 49 h riding', unknown: '12 km unknown surface', dates: 'Thu 17 – Sat 26 Jun 2027', datesShort: '17–26 Jun 2027' };
-// Alps day ends on the overview map (Day 4's end is derived from its km, see D4_LINE).
-const DAY_ENDS_ALPS = { 0: [190, 32], 1: [290, 119], 2: [341, 194], 3: [483, 284], 4: [290, 378], 5: [363, 467], 6: [363, 467], 7: [367, 547], 8: [368, 638], 9: [464, 681], 10: [583, 866] };
-// Day 4 line: km → d4 position, from the content sheet's Day 4 map table.
-const D4_LINE = [[0, 840, 78], [15, 908, 125], [30, 929, 192], [38, 853, 270], [45, 747, 310], [48, 704, 321], [54, 620, 334], [62, 567, 412], [71, 427, 450], [88, 160, 420], [99, 125, 445], [104, 105, 501]];
+const TRIP = { km: 634, climb: 14590, time: 2940, facts: '634 km · 14,590 m · 49 h riding', unknown: '12 km unknown surface', dates: 'Thu 17 – Sat 26 Jun 2027', datesShort: '17–26 Jun 2027', start: '2027-06-17' };
 // Profile bands in trip km.
 const BANDS = {
   unknown: [[104, 112], [398, 402]], unpaved: [[118, 119.5], [400, 401]],
@@ -51,7 +52,7 @@ const BANDS = {
 };
 
 // P(name, kind, map, x, y, more). Kinds: city town village summit pass lake lodging campsite shop water bikeshop
-const P = (name, kind, map, x, y, more) => Object.assign({ id: name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''), name, kind, map, x, y }, more);
+const P = (name, kind, map, x, y, more) => Object.assign({ id: name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''), name, kind, map, x, y }, more);
 const PLACES = [
   // Black Forest
   P('Freiburg im Breisgau', 'city', 'bf', 200, 362, { elev: 278, region: 'Black Forest' }),
@@ -69,22 +70,26 @@ const PLACES = [
   P('Simonswald', 'village', 'bf', 620, 117, { elev: 330, region: 'Black Forest' }),
   P('Hotel Krone, St. Peter', 'lodging', 'bf', 590, 318, { elev: 720, region: 'Black Forest', off: 1.1, alias: ['hotel krone'] }),
   // Alps overview
-  P('Genève', 'city', 'alps', 190, 32, { region: 'Alps', alias: ['geneva', 'genf'] }),
-  P('Le Grand-Bornand', 'village', 'alps', 290, 119, { region: 'Alps' }),
-  P('Beaufort', 'village', 'alps', 341, 194, { region: 'Alps' }),
+  P('Genève', 'city', 'alps', 190, 32, { region: 'Alps', alias: ['geneva', 'genf'], day: 1, km: 0, elev: 375 }),
+  P('Le Grand-Bornand', 'village', 'alps', 290, 119, { region: 'Alps', day: 1, km: 78, elev: 950 }),
+  P('Beaufort', 'village', 'alps', 341, 194, { region: 'Alps', day: 2, km: 64, elev: 740 }),
   P("Lac d'Annecy", 'lake', 'alps', 200, 150, { region: 'Alps', alias: ['annecy'] }),
-  P('Col du Galibier', 'pass', 'alps', 283, 412, { elev: 2642, region: 'Alps', day: 5, km: 18 }),
-  P('Briançon', 'town', 'alps', 363, 467, { region: 'Alps', alias: ['briancon'] }),
-  P("Col d'Izoard", 'pass', 'alps', 397, 493, { elev: 2360, region: 'Alps', day: 7 }),
-  P('Guillestre', 'village', 'alps', 367, 547, { region: 'Alps' }),
-  P('Col de Vars', 'pass', 'alps', 386, 587, { elev: 2109, region: 'Alps', day: 8 }),
-  P('Barcelonnette', 'town', 'alps', 368, 638, { region: 'Alps' }),
-  P('Cime de la Bonette', 'pass', 'alps', 422, 660, { elev: 2802, region: 'Alps', day: 9 }),
-  P('Saint-Étienne-de-Tinée', 'village', 'alps', 464, 681, { region: 'Alps' }),
-  P('Nice', 'city', 'alps', 583, 866, { region: 'Alps' }),
+  P('Col de la Colombière', 'pass', 'alps', null, null, { elev: 1613, region: 'Alps', day: 1, km: 65, alias: ['colombiere'] }),
+  P('Col des Aravis', 'pass', 'alps', null, null, { elev: 1486, region: 'Alps', day: 2, km: 12, alias: ['aravis'] }),
+  P('Col des Saisies', 'pass', 'alps', null, null, { elev: 1650, region: 'Alps', day: 2, km: 42, alias: ['saisies'] }),
+  P('Cormet de Roselend', 'pass', 'alps', null, null, { elev: 1968, region: 'Alps', day: 3, km: 23, alias: ['roselend'] }),
+  P('Col du Galibier', 'pass', 'alps', 283, 412, { elev: 2642, region: 'Alps', day: 5, km: 18, alias: ['galibier'] }),
+  P('Briançon', 'town', 'alps', 363, 467, { region: 'Alps', alias: ['briancon'], day: 5, km: 53, elev: 1200 }),
+  P("Col d'Izoard", 'pass', 'alps', 397, 493, { elev: 2360, region: 'Alps', day: 7, km: 20, alias: ['izoard'] }),
+  P('Guillestre', 'village', 'alps', 367, 547, { region: 'Alps', day: 7, km: 56, elev: 1000 }),
+  P('Col de Vars', 'pass', 'alps', 386, 587, { elev: 2109, region: 'Alps', day: 8, km: 20, alias: ['vars'] }),
+  P('Barcelonnette', 'town', 'alps', 368, 638, { region: 'Alps', day: 8, km: 51, elev: 1130 }),
+  P('Cime de la Bonette', 'pass', 'alps', 422, 660, { elev: 2802, region: 'Alps', day: 9, km: 24, alias: ['bonette'] }),
+  P('Saint-Étienne-de-Tinée', 'village', 'alps', 464, 681, { region: 'Alps', day: 9, km: 63, elev: 1140 }),
+  P('Nice', 'city', 'alps', 583, 866, { region: 'Alps', day: 10, km: 94, elev: 10 }),
   // Day 4 map, with km on Day 4
   P("Val d'Isère", 'village', 'd4', 840, 78, { elev: 1850, region: 'Alps', day: 4, km: 0 }),
-  P("Col de l'Iseran", 'pass', 'd4', 908, 125, { elev: 2764, region: 'Alps', day: 4, km: 15 }),
+  P("Col de l'Iseran", 'pass', 'd4', 908, 125, { elev: 2764, region: 'Alps', day: 4, km: 15, alias: ['iseran'] }),
   P('Bonneval-sur-Arc', 'village', 'd4', 929, 192, { elev: 1780, region: 'Alps', day: 4, km: 30 }),
   P('Bessans', 'village', 'd4', 853, 270, { elev: 1710, region: 'Alps', day: 4, km: 38 }),
   P('Lanslevillard', 'village', 'd4', 747, 310, { elev: 1450, region: 'Alps', day: 4, km: 45 }),
@@ -120,19 +125,19 @@ const ROUTES = {
   titisee: {
     from: 'glottertal', to: 'titisee', title: 'Glottertal → Titisee',
     options: [
-      { id: 'shortest', name: 'Shortest', win: '34 km', meta: '1,020 m · 2 h 50 · 3.1 km unpaved', km: 34, climb: 1020, time: 170, path: 'route-bf-shortest', prof: 'prof-bf-titisee', profKm: 34, label: ['Shortest · 34 km', 470, 262], surface: { unpaved: [[12.5, 15.6]], unknown: [[14.2, 15.6]] } },
+      { id: 'shortest', name: 'Shortest', win: '34 km', meta: '1,020 m · 2 h 50 · 3.1 km unpaved', km: 34, climb: 1020, time: 170, path: 'route-bf-shortest', prof: 'prof-bf-titisee', label: ['Shortest · 34 km', 470, 262], surface: { unpaved: [[12.5, 15.6]], unknown: [[14.2, 15.6]] } },
       { id: 'leastclimb', name: 'Least climbing', win: '−300 m', meta: '+13 km · +0 h 20 · via Freiburg, Höllental', km: 47, climb: 720, time: 190, path: 'route-bf-leastclimb', label: ['Least climbing · +13 km', 330, 500] },
       { id: 'leastunpaved', name: 'Least unpaved', win: '0 km unpaved', meta: '+2 km · +40 m · +0 h 10 · on roads', km: 36, climb: 1060, time: 180, path: 'route-bf-leastunpaved', label: ['Least unpaved · +2 km', 740, 440] },
     ],
   },
   kandel: {
     from: 'denzlingen', to: 'kandel', title: 'Denzlingen → Kandel summit', bike: 'road',
-    options: [{ id: 'kandel', name: 'Road', km: 20.8, climb: 1020, time: 115, path: 'route-bf-kandel', prof: 'prof-bf-kandel', profKm: 20.8,
+    options: [{ id: 'kandel', name: 'Road', km: 20.8, climb: 1020, time: 115, path: 'route-bf-kandel', prof: 'prof-bf-kandel',
       ledger: [['Distance', '20.8 km'], ['Climb', '1,020 m'], ['Riding time', '1 h 55 <small>estimated</small>'], ['Max gradient', '12 %'], ['Surface', 'Paved <small>0 km unknown</small>']],
       note: 'No other way is shorter, flatter or more paved.' }],
   },
   import: {
-    title: 'Schwarzwald Gravel, 3 days', km: 312, climb: 6480, path: 'route-bf-import', prof: 'prof-bf-import', profKm: 312,
+    title: 'Schwarzwald Gravel, 3 days', km: 312, climb: 6480, path: 'route-bf-import', prof: 'prof-bf-import',
     facts: '312 km · 6,480 m · Gravel', notes: ['Imported line · not re-routed', '41 km unknown surface', 'No mapped water for 38 km (Day 2)'],
     krone: { place: 'hotel-krone-st-peter', path: 'route-bf-krone', km: 2.3, climb: 60 },
   },
@@ -151,5 +156,5 @@ const PLANS = [
   { id: 'import', name: 'Schwarzwald Gravel, 3 days', kind: 'import', map: 'bf', bike: 'gravel', goal: 'balanced', route: 'import' },
 ];
 
-const DATA = { MAPS, KINDS, SLEEP, SUPPLY, BIKES, GOALS, WEEKDAYS, DAYS, TRIP, DAY_ENDS_ALPS, D4_LINE, BANDS, PLACES, OTHER_KANDEL, KIND_LINE, ROUTES, GAPS, PLANS,
+const DATA = { MAPS, KINDS, SLEEP, SUPPLY, POINT_KINDS, MODES, BIKES, GOALS, WEEKDAYS, DAYS, TRIP, BANDS, PLACES, OTHER_KANDEL, KIND_LINE, ROUTES, GAPS, PLANS,
   place: (id) => PLACES.find((p) => p.id === id) };

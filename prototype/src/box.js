@@ -45,8 +45,8 @@ const Box = (() => {
       else if (S.removed.open) out.push({ field: 'open', cls: 'off', label: `Open on ${DATA.WEEKDAYS[S.removed.open.wd] || 'the day'}`, act: 'restore', data: 'open' });
     } else if (req.kind === 'route') {
       out.push({ field: null, cls: 'what', icon: 'i-route', label: 'Route' });
-      out.push({ field: null, cls: 'where', icon: 'i-here', label: 'From here', k: DATA.place(ans.from ? ans.from.id : S.here).name });
       out.push({ field: null, cls: 'where', label: `To ${req.to.name}${req.to.kind === 'summit' ? ' summit' : ''}` });
+      out.push({ field: null, cls: 'where', icon: 'i-here', label: 'From here', k: DATA.place(ans.from ? ans.from.id : S.here).name });
       out.push({ field: 'bike', cls: 'filter', icon: 'i-bike', label: DATA.BIKES[req.bike], edit: true });
     } else if (req.kind === 'change' && req.change.type === 'dayend') {
       out.push({ field: null, cls: 'what', icon: 'i-tent', label: `End Day ${req.change.day}` });
@@ -68,6 +68,7 @@ const Box = (() => {
     for (const o of req.off) out.push({ field: null, cls: 'off', label: o, k: req.kind === 'places' ? '· not understood, ignored' : null });
     return out;
   }
+  // One row of chips: it wraps on the website and scrolls sideways on the phone.
   function chipsHtml(specs, S) {
     if (!specs.length) return '';
     const c = specs.map((s) => {
@@ -75,11 +76,11 @@ const Box = (() => {
       const act = s.act ? `data-act="${s.act}" data-field="${s.data || s.field || ''}"` : s.edit ? `data-act="pickField" data-field="${s.field}"` : '';
       return `<${tag} class="chip ${s.cls} ${on ? 'on' : ''} ${s.removable ? 'rm' : ''}" ${act} data-chip="${s.field || ''}">${s.icon ? icon(s.icon) : ''}${esc(s.label)}${s.k ? ` <span class="k">${esc(s.k)}</span>` : ''}${s.edit ? icon('i-chev-d', 'chev') : ''}${s.removable ? `<i class="xb" data-act="removeFilter" data-field="${s.field}" title="Turn off">${icon('i-close')}</i>` : ''}</${tag}>`;
     }).join('');
-    return `<span class="lbl">Understood as</span>${c}`;
+    return `<div class="chips"><span class="lbl">Understood as</span>${c}</div>`;
   }
   // The "Find" row: a where is set but no what.
-  const findHtml = () => `<span class="lbl">Find</span>` + [['sleep', 'i-tent', 'Places to sleep'], ['water', 'i-drop', 'Water'], ['shop', 'i-cart', 'Shops'], ['bikeshop', 'i-wrench', 'Bike shops']]
-    .map(([k, ic, l]) => `<button class="chip what" data-act="find" data-k="${k}">${icon(ic)}${l}</button>`).join('');
+  const findHtml = () => `<div class="chips"><span class="lbl">Find</span>` + [['sleep', 'i-tent', 'Places to sleep'], ['water', 'i-drop', 'Water'], ['shop', 'i-cart', 'Shops'], ['bikeshop', 'i-wrench', 'Bike shops']]
+    .map(([k, ic, l]) => `<button class="chip what" data-act="find" data-k="${k}">${icon(ic)}${l}</button>`).join('') + `</div>`;
 
   // ---- pickers ----
   const seg = (items, cls = '') => `<div class="seg2 ${cls}">${items.map((i) => `<button class="${i.on ? 'on' : ''}" data-act="${i.act}" ${i.data}>${i.label}${i.small != null ? `<small>${i.small}</small>` : ''}</button>`).join('')}</div>`;
@@ -113,7 +114,7 @@ const Box = (() => {
   // Place the picker's arrow under its chip.
   function placeArrow(container) {
     const pick = container.querySelector('.pick'), chip = pick && container.querySelector(`[data-chip="${pick.dataset.pick}"]`);
-    if (pick && chip) pick.style.setProperty('--ax', chip.offsetLeft + chip.offsetWidth / 2 + 'px');
+    if (pick && chip) pick.style.setProperty('--ax', chip.offsetLeft - chip.parentElement.scrollLeft + chip.offsetWidth / 2 + 'px');
   }
   return { init, sync, focus, chips, chipsHtml, findHtml, pickerHtml, placeArrow, get input() { return input; } };
 })();

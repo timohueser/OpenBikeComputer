@@ -11,7 +11,7 @@ const puppeteer = require('puppeteer-core');
     await p.setViewport({ width: w, height: h, isMobile: mobile, hasTouch: mobile });
     await p.goto(process.argv[2], { waitUntil: 'networkidle0' });
     await new Promise((r) => setTimeout(r, 500));
-    console.log(w + 'x' + h, 'loaded, title:', await p.title(), 'days:', await p.evaluate(() => document.querySelectorAll('.day').length));
+    console.log(w + 'x' + h, 'loaded, title:', await p.title(), 'plans:', await p.evaluate(() => document.querySelectorAll('#plans .prow2').length));
     await p.close();
   }
   await b.close();

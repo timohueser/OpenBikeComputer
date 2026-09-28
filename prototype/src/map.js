@@ -1,12 +1,13 @@
 /* The map: one SVG with a view {map, cx, cy, scale} (scale = screen px per map unit). Pan by
    drag, zoom by wheel, pinch, double tap and the +/− buttons; animated framing; a switch between
    the alps overview and the Day 4 map by zoom. Markers and labels sit in map coordinates and keep
-   their pixel size through --mk / --lk (= 1 / scale). Not a map engine. */
+   their pixel size through --mk / --lk (= 1 / scale). A drag that starts on a leg of the line
+   (data-leg) moves a point instead of the map; in draw mode a drag is a stroke. Not a map engine. */
 
 const MapView = (() => {
   const LIMITS = { bf: [0.3, 3], alps: [0.4, 3.2], d4: [0.3, 3] };
   const K_D4 = 4.14;                                   // d4 units per alps unit (geometric mean of x 3.81, y 4.5)
-  let el, svg, baseUse, layers, view = { map: 'alps', cx: 350, cy: 450, scale: 1 }, anim = null, handlers = {};
+  let el, svg, baseUse, layers, view = { map: 'alps', cx: 350, cy: 450, scale: 1 }, anim = null, handlers = {}, drawMode = false;
   const api = { insets: () => ({}) };
   const bboxCache = {};
 
@@ -22,6 +23,7 @@ const MapView = (() => {
     svg.setAttribute('viewBox', `${view.cx - w / 2} ${view.cy - h / 2} ${w} ${h}`);
     svg.style.setProperty('--mk', 1 / view.scale);
     svg.style.setProperty('--lk', 1.1 / view.scale);
+    handlers.move && handlers.move();
   }
   function setMap(map) {
     if (view.map === map) return;
@@ -31,7 +33,6 @@ const MapView = (() => {
     baseUse.setAttribute('href', '#map-' + map);
     handlers.change && handlers.change();
   }
-  function clamp() { const [lo, hi] = LIMITS[view.map]; view.scale = Math.min(hi, Math.max(lo, view.scale)); }
   // Zoom by the rider switches the alps overview and the Day 4 map (with hysteresis).
   function maybeSwitch() {
     if (view.map === 'alps' && view.scale > 2.3) {
@@ -52,7 +53,9 @@ const MapView = (() => {
     };
     anim = requestAnimationFrame(step);
   }
-  function screenToMap(sx, sy) { const r = el.getBoundingClientRect(), { W, H } = size(); return { x: view.cx + (sx - r.left - W / 2) / view.scale, y: view.cy + (sy - r.top - H / 2) / view.scale }; }
+  function screenToMap(sx, sy) { const r = el.getBoundingClientRect(), { W, H } = size(); return { map: view.map, x: view.cx + (sx - r.left - W / 2) / view.scale, y: view.cy + (sy - r.top - H / 2) / view.scale }; }
+  // The screen position of a map position, relative to the map element.
+  function toScreen(pos) { const c = convert(pos, view.map), { W, H } = size(); return { x: W / 2 + (c.x - view.cx) * view.scale, y: H / 2 + (c.y - view.cy) * view.scale }; }
   function zoomAt(f, sx, sy, animate) {
     const p = screenToMap(sx, sy), s = view.scale, [lo, hi] = LIMITS[view.map], ns = Math.min(hi, Math.max(lo, s * f));
     const t = { cx: p.x - (p.x - view.cx) * s / ns, cy: p.y - (p.y - view.cy) * s / ns, scale: ns };
@@ -81,6 +84,7 @@ const MapView = (() => {
     for (let i = 0; i + 1 < nums.length; i += 2) { x0 = Math.min(x0, nums[i]); x1 = Math.max(x1, nums[i]); y0 = Math.min(y0, nums[i + 1]); y1 = Math.max(y1, nums[i + 1]); }
     return (bboxCache[id] = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
   }
+  const bboxOfPts = (pts) => { let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const [x, y] of pts) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); } return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }; };
   const union = (a, b) => { const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y); return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y }; };
   // The visible rectangle in map units, minus the insets; plus a helper for "in this map view".
   function viewRect(insets = {}) {
@@ -91,21 +95,19 @@ const MapView = (() => {
     const p = convert(pos, view.map), m = DATA.MAPS[view.map], gx = growKm / m.kmx, gy = growKm / m.kmy;
     return p.x >= r.x - gx && p.x <= r.x + r.w + gx && p.y >= r.y - gy && p.y <= r.y + r.h + gy;
   }
-  // A point at `km` on the Day 4 line, in d4 coordinates.
-  function d4Point(km) {
-    const L = DATA.D4_LINE;
-    for (let i = 1; i < L.length; i++) if (km <= L[i][0]) { const [k0, x0, y0] = L[i - 1], [k1, x1, y1] = L[i], u = (km - k0) / (k1 - k0); return { map: 'd4', x: x0 + (x1 - x0) * u, y: y0 + (y1 - y0) * u }; }
-    return { map: 'd4', x: L[L.length - 1][1], y: L[L.length - 1][2] };
-  }
+  const widthKm = () => (size().W / view.scale) * DATA.MAPS[view.map].kmx;
 
   // ---- input ----
   function bindInput() {
-    const ptrs = new Map(); let drag = null, pinch = null, lastTap = 0, lastTapAt = null;
+    const ptrs = new Map(); let drag = null, pinch = null, lastTap = 0, lastTapAt = null, stroke = null;
     svg.addEventListener('pointerdown', (e) => {
       if (e.button) return;
       svg.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY }); stopAnim();
-      if (ptrs.size === 1) { drag = { sx: e.clientX, sy: e.clientY, cx: view.cx, cy: view.cy, moved: false, t: performance.now() }; pinch = null; }
-      else if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d0: Math.hypot(a.x - b.x, a.y - b.y), s0: view.scale, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, cx: view.cx, cy: view.cy }; drag = null; }
+      if (ptrs.size === 1) {
+        const leg = e.target.closest('[data-leg]');
+        drag = { sx: e.clientX, sy: e.clientY, cx: view.cx, cy: view.cy, moved: false, leg: leg && !drawMode ? +leg.dataset.leg : null };
+        stroke = drawMode ? [] : null; pinch = null;
+      } else if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d0: Math.hypot(a.x - b.x, a.y - b.y), s0: view.scale, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, cx: view.cx, cy: view.cy }; drag = null; stroke = null; }
     });
     svg.addEventListener('pointermove', (e) => {
       if (!ptrs.has(e.pointerId)) return;
@@ -114,26 +116,30 @@ const MapView = (() => {
         const [a, b] = [...ptrs.values()], d = Math.hypot(a.x - b.x, a.y - b.y), mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
         const [lo, hi] = LIMITS[view.map], ns = Math.min(hi, Math.max(lo, pinch.s0 * d / pinch.d0));
         const r = el.getBoundingClientRect(), { W, H } = size();
-        // keep the map point under the initial midpoint under the current midpoint
         const px = pinch.cx + (pinch.mx - r.left - W / 2) / pinch.s0, py = pinch.cy + (pinch.my - r.top - H / 2) / pinch.s0;
         view.cx = px - (mx - r.left - W / 2) / ns; view.cy = py - (my - r.top - H / 2) / ns; view.scale = ns; apply();
       } else if (drag) {
         const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
-        if (Math.hypot(dx, dy) > 4) drag.moved = true;
-        view.cx = drag.cx - dx / view.scale; view.cy = drag.cy - dy / view.scale; apply();
+        if (!drag.moved && Math.hypot(dx, dy) > 4) { drag.moved = true; if (drag.leg != null) handlers.legDrag(drag.leg, screenToMap(e.clientX, e.clientY), 'start'); }
+        if (!drag.moved) return;
+        if (stroke) { stroke.push(screenToMap(e.clientX, e.clientY)); handlers.draw(stroke, 'move'); }
+        else if (drag.leg != null) handlers.legDrag(drag.leg, screenToMap(e.clientX, e.clientY), 'move');
+        else { view.cx = drag.cx - dx / view.scale; view.cy = drag.cy - dy / view.scale; apply(); }
       }
     });
     const up = (e) => {
       if (!ptrs.has(e.pointerId)) return;
       ptrs.delete(e.pointerId);
-      if (pinch) { maybeSwitch(); if (ptrs.size === 1) { const p = [...ptrs.values()][0]; drag = { sx: p.x, sy: p.y, cx: view.cx, cy: view.cy, moved: true, t: 0 }; } else if (!ptrs.size) pinch = null; return; }
-      if (drag && !drag.moved && ptrs.size === 0 && e.type === 'pointerup') {
+      if (pinch) { maybeSwitch(); if (ptrs.size === 1) { const p = [...ptrs.values()][0]; drag = { sx: p.x, sy: p.y, cx: view.cx, cy: view.cy, moved: true, leg: null }; } else if (!ptrs.size) pinch = null; return; }
+      if (drag && drag.moved && stroke) handlers.draw(stroke, 'end');
+      else if (drag && drag.moved && drag.leg != null) handlers.legDrag(drag.leg, screenToMap(e.clientX, e.clientY), 'end');
+      else if (drag && !drag.moved && ptrs.size === 0 && e.type === 'pointerup') {
         const now = performance.now(), hit = document.elementFromPoint(e.clientX, e.clientY), act = hit && hit.closest('[data-act]');
-        if (act && svg.contains(act)) handlers.tap && handlers.tap(act.dataset);
+        if (act && svg.contains(act)) handlers.tap(act.dataset, screenToMap(e.clientX, e.clientY));
         else if (now - lastTap < 320 && lastTapAt && Math.hypot(e.clientX - lastTapAt.x, e.clientY - lastTapAt.y) < 24) { zoomAt(2, e.clientX, e.clientY, true); lastTap = 0; }
-        else { handlers.tapEmpty && handlers.tapEmpty(); lastTap = now; lastTapAt = { x: e.clientX, y: e.clientY }; }
+        else { handlers.tapEmpty(screenToMap(e.clientX, e.clientY)); lastTap = now; lastTapAt = { x: e.clientX, y: e.clientY }; }
       }
-      drag = null;
+      drag = null; stroke = null;
     };
     svg.addEventListener('pointerup', up); svg.addEventListener('pointercancel', up);
     svg.addEventListener('wheel', (e) => { e.preventDefault(); zoomAt(Math.exp(-e.deltaY * (e.ctrlKey ? 0.012 : 0.0016)), e.clientX, e.clientY, false); }, { passive: false });
@@ -149,5 +155,6 @@ const MapView = (() => {
   }
   const setLayers = (routes, marks) => { layers.routes.innerHTML = routes; layers.marks.innerHTML = marks; };
 
-  return Object.assign(api, { init, setLayers, frame, panTo, zoomBy, setMap, convert, kmBetween, bboxOfPath, union, viewRect, inRect, d4Point, get view() { return view; } });
+  const setDraw = (v) => { drawMode = v; el.classList.toggle('drawing', v); };
+  return Object.assign(api, { init, setLayers, frame, panTo, zoomBy, setMap, convert, kmBetween, bboxOfPath, bboxOfPts, union, viewRect, inRect, widthKm, toScreen, screenToMap, setDraw, get view() { return view; } });
 })();

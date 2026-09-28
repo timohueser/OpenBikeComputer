@@ -118,7 +118,7 @@ const Parser = (() => {
     const day = get('day')[0]; if (day) req.day = +day.t.find((w) => /^\d+$/.test(w));
     const rel = get('rel')[0];
     if (rel && !req.day) { if (ctx.hasDates) req.day = ctx.today + (rel.value === 'tomorrow' ? 1 : 0); else { req.needDate = true; req.relWord = rel.t.join(' '); } }
-    if (req.day && !DATA.DAYS.some((d) => d.n === req.day && !d.rest)) req.day = null;
+    if (req.day && !ctx.days.includes(req.day)) req.day = null;
     req.part = (get('part')[0] || {}).value || null;
     const within = get('within')[0]; if (within) req.within = +within.t.find((w) => /^\d+$/.test(w));
     req.here = get('here').length > 0;

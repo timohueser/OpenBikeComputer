@@ -6,41 +6,57 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#A4501E">
 <title>OBC Planner</title>
 <link rel="icon" href="data:,">
+<script>
+// The theme follows the system until the header's toggle sets it; the tokens key off data-theme.
+(() => { const q = matchMedia('(prefers-color-scheme: dark)'), r = document.documentElement, f = () => (r.dataset.theme = q.matches ? 'dark' : 'light'); f(); q.addEventListener('change', f); })();
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Mono:wght@400;600&family=Atkinson+Hyperlegible+Next:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Mono:wght@400;500;700&family=Atkinson+Hyperlegible+Next:wght@400;500;600;700;800&display=swap">
 <style>
-{{base.css}}
 {{app.css}}
 </style>
 </head>
 <body>
 {{icons.svg}}
 {{maps.svg}}
-<div id="stage"><div id="app" class="mk web">
-  <header id="bar" class="bar"></header>
+<div id="stage">
+<div id="frame-tools" hidden><button class="btn sm" data-act="rotate">Rotate</button><button class="btn sm" data-act="toggleFrame">Laptop view</button></div>
+<div id="app" class="web">
+  <header id="site">
+    <a class="brand"><svg class="mark" viewBox="0 0 128 128" aria-hidden="true"><rect width="128" height="128" fill="#f4f2eb"/><g transform="translate(6.5 8.8) scale(1.15)"><path fill="#5c5a2e" d="M44 10H56V91H44Z"/><path fill="#f4a81d" d="M13.09 26.419L27.823 16.422L78.699 19.98L77.164 41.926L26.289 38.369Z"/><path fill="#f4a81d" d="M21.301 53.98L73.174 50.353L87.907 60.349L74.709 72.299L22.836 75.926Z"/></g></svg><span class="name">OpenBikeComputer</span></a>
+    <nav aria-label="Main navigation"><a>Docs</a><a>Blog</a><a>Maps</a><a class="on">Planner</a><a>GitHub</a></nav>
+    <button class="theme" data-act="theme" title="Dark mode"><svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14A8.5 8.5 0 0 1 10 3.5 8.5 8.5 0 1 0 20.5 14Z"/></svg><svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg></button>
+  </header>
+  <section id="plans" hidden></section>
+  <header id="bar"></header>
   <div class="mapcol">
     <div id="map" class="map"></div>
     <div class="ctl">
       <div><button data-act="zoomIn" title="Zoom in"><svg><use href="#i-plus"/></svg></button><button data-act="zoomOut" title="Zoom out"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></button></div>
       <div><button data-act="fitAll" title="Show the whole route"><svg><use href="#i-route"/></svg></button></div>
     </div>
+    <div id="callout" class="callout" hidden></div>
     <div id="prof" class="prof"></div>
   </div>
-  <nav id="nav" class="nav"></nav>
-  <aside id="panel" class="panel">
+  <nav id="nav"></nav>
+  <aside id="panel">
     <div class="grab"></div>
+    <div id="head" class="head rest"></div>
+    <div id="pfslot"></div>
     <div class="q">
-      <div class="qbox"><svg><use href="#i-search"/></svg><span id="pointed" class="pointed"></span><input id="qin" type="text" placeholder="Search places or the route" maxlength="80" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="Search places or the route"><span id="qcount" class="count"></span><button id="qclear" class="x" title="Clear" hidden><svg><use href="#i-close"/></svg></button></div>
-      <div id="chips" class="understood" hidden></div>
+      <div class="qrow"><div class="qbox"><svg><use href="#i-search"/></svg><span id="pointed" class="pointed"></span><input id="qin" type="text" placeholder="Search places or the route" maxlength="80" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="Search places or the route"><span id="qcount" class="count"></span><button id="qclear" class="x" title="Clear" hidden><svg><use href="#i-close"/></svg></button></div><button id="qcancel" class="cancel" hidden>Cancel</button></div>
+      <div id="chips" hidden></div>
     </div>
-    <div id="oneline" class="oneline rest"></div>
     <div id="body" class="body"></div>
-    <div id="pin" class="acts" hidden></div>
-    <div id="foot" class="foot"></div>
+    <div id="pin" hidden></div>
+    <div id="foot"></div>
   </aside>
-  <div id="menus" class="menus" hidden></div>
+  <div id="land"></div>
+  <div id="pf" class="pf"></div>
+  <div id="menus" hidden></div>
 </div></div>
 <script>
 {{js}}

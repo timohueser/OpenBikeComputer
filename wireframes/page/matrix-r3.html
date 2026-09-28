@@ -1,0 +1,1361 @@
+<style>
+/* Direction P1 · one sheet, clear states. Prefix p1-.
+   The map and one sheet. Each detent has one job. Low: the box and one line. Medium: one block,
+   the profile, or the compact answer while an answer is open. High: one list, the days, or the full
+   answer. Focusing the box takes the sheet to full height and hides the map. The navigation bar
+   holds Back, the plan name, Undo and "···"; an answer's action is one row at the bottom of the
+   sheet and exists only while a row is selected. */
+
+/* day colours (the brief's), on the profile and the days list */
+.p1-dc { --d1: #CC2A93; --d2: #2F6FB5; --d3: #3B8A3F; --d4: #5B2FB0; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .p1-dc { --d1: #E45CB5; --d2: #6FA8E8; --d3: #6CC47A; --d4: #A070F0; } }
+:root[data-theme="dark"] .p1-dc { --d1: #E45CB5; --d2: #6FA8E8; --d3: #6CC47A; --d4: #A070F0; }
+
+/* navigation bar */
+.p1-nav { position: absolute; z-index: 20; left: 0; right: 0; top: 0; height: 98px; padding: 54px 8px 0; display: flex; align-items: center; justify-content: space-between;
+  background: color-mix(in srgb, var(--panel) 94%, transparent); border-bottom: 1px solid var(--line); }
+.p1-nb { display: inline-flex; align-items: center; gap: 2px; height: 44px; min-width: 44px; padding: 0 6px; font-size: 17px; color: var(--ink); }
+.p1-nb svg { width: 22px; height: 22px; }
+.p1-nb.icon { width: 44px; padding: 0; justify-content: center; }
+.p1-nb.dis { opacity: .35; }
+.p1-nr { display: flex; }
+.p1-title { position: absolute; left: 92px; right: 92px; top: 54px; height: 44px; line-height: 44px; text-align: center; font-weight: 600; font-size: 17px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* map marks: label text and the route stroke widths per zoom (map units per pixel) */
+.p1-mt { font: 600 13px var(--ios); fill: var(--m-label); paint-order: stroke; stroke: var(--m-label-halo); stroke-width: 3px; stroke-linejoin: round; }
+.p1-mt.b { fill: var(--ink); font-weight: 700; }
+.p1-mt.rt { fill: var(--route); }
+.p1-z15 .rt-casing { stroke-width: 12; } .p1-z15 .rt-line { stroke-width: 6; }
+.p1-z18 .rt-casing { stroke-width: 14; } .p1-z18 .rt-line { stroke-width: 7; }
+.p1-z18 .rt-alt-casing { stroke-width: 13; } .p1-z18 .rt-alt { stroke-width: 6.5; }
+.p1-attr { bottom: 22px; left: 6px; right: auto; }
+
+/* the sheet: grab, box, one line, then one block */
+.p1-sheet { padding: 0 16px 34px; display: flex; flex-direction: column; overflow: hidden; }
+.p1-sheet > .qbox { margin-top: 10px; flex: none; }
+.p1-x { width: 44px; height: 44px; margin-right: -14px; display: grid; place-items: center; color: var(--ink-faint); flex: none; }
+.p1-x svg { width: 18px; height: 18px; }
+.p1-one { margin-top: 12px; flex: none; }
+.p1-one > b { display: block; font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p1-one > .cap { display: block; font-size: 15px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* search: the sheet at full height, the box and Cancel at its top, the keyboard below */
+.p1-scrim { position: absolute; inset: 0; background: var(--panel); opacity: .55; }
+.p1-full { top: 54px; }
+.p1-full > .p1-qrow { display: flex; align-items: center; gap: 6px; margin-top: 10px; flex: none; }
+.p1-qrow > .qbox { flex: 1; min-width: 0; }
+.p1-cancel { height: 44px; padding: 0 6px; font-size: 17px; color: var(--ink); flex: none; }
+.p1-kb { position: absolute; z-index: 30; left: 0; right: 0; bottom: 0; height: 258px; padding: 8px 3px 0; background: var(--parchment-2); display: grid; grid-auto-rows: 42px; gap: 12px; align-content: start; }
+.p1-kb > div { display: flex; justify-content: center; gap: 6px; }
+.p1-kb i { width: 33px; height: 42px; border-radius: 6px; background: var(--panel); box-shadow: 0 1px 0 var(--line-strong); font: 400 22px/42px var(--ios); font-style: normal; text-align: center; color: var(--ink); }
+.p1-kb i.w { width: 44px; font-size: 15px; background: var(--parchment-3); }
+.p1-kb i.sp { width: 186px; }
+.p1-kb i.go { width: 88px; font-size: 15px; background: var(--parchment-3); }
+
+/* understood chips and their picker (as approved in round 2) */
+.p1-sheet .understood { gap: 8px; margin-top: 10px; flex: none; }
+.p1-sheet .understood > .lbl { font-size: 13px; }
+.p1-sheet .chip { height: 36px; font-size: 15px; padding: 0 12px; border-radius: 18px; gap: 6px; background: var(--parchment-2); color: var(--ink); border-color: transparent; }
+.p1-sheet .chip svg { width: 15px; height: 15px; }
+.p1-sheet .chip .k { color: var(--ink-soft); }
+.p1-sheet .chip svg.p1-chev { width: 12px; height: 12px; color: var(--ink-faint); margin: 0 -3px 0 -2px; }
+.p1-sheet .chip.p1-on { background: var(--ink); color: var(--panel); }
+.p1-sheet .chip.p1-on .k { color: var(--parchment-3); }
+.p1-sheet .chip.p1-on svg.p1-chev { color: var(--parchment-3); transform: rotate(180deg); }
+.p1-pick { position: relative; flex: none; margin-top: 10px; padding: 8px; border-radius: 14px; background: var(--parchment-2); display: grid; gap: 6px; }
+.p1-pick::before { content: ""; position: absolute; top: -6px; left: var(--ax, 40px); width: 12px; height: 12px; margin-left: -6px; background: var(--parchment-2); transform: rotate(45deg); border-radius: 2px; }
+.p1-seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; }
+.p1-seg > * { min-height: 44px; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; font-size: 15px; font-weight: 600; line-height: 1.2; color: var(--ink); border: 1px solid transparent; white-space: nowrap; }
+.p1-seg > * > small { font-size: 13px; font-weight: 400; color: var(--ink-soft); }
+.p1-seg > .on { background: var(--panel); border-color: var(--line-strong); }
+
+/* lists: two lines per row, no buttons in rows */
+.p1-list { flex: 1; min-height: 0; overflow: hidden; margin: 0 -10px; padding: 0 10px; }
+.mk-phone .row.p1-row { grid-template-columns: 32px 1fr; padding: 10px 0; min-height: 62px; }
+.mk-phone .row.p1-row > * { min-width: 0; }
+.mk-phone .row.p1-row .t { font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mk-phone .row.p1-row .m { font-size: 15px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mk-phone .row.p1-row.sel { padding-left: 10px; padding-right: 10px; }
+.p1-sec { padding: 12px 0 2px; font-size: 13px; font-weight: 600; color: var(--ink-faint); }
+.mk-phone .row.p1-opt { grid-template-columns: 32px 1fr auto; row-gap: 0; min-height: 60px; padding: 9px 0; }
+.mk-phone .row.p1-opt .ic { grid-row: 1 / 3; background: transparent; }
+.mk-phone .row.p1-opt .t { font-size: 17px; font-weight: 600; }
+.mk-phone .row.p1-opt .win { font-size: 15px; font-weight: 600; white-space: nowrap; }
+.mk-phone .row.p1-opt .m { grid-column: 2 / 4; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p1-act { flex: none; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--line); display: flex; gap: 10px; }
+.p1-act .btn { height: 50px; flex: 1; font-size: 17px; }
+.p1-act .btn.ghost { flex: none; }
+
+/* the days, each with its length bar in its day colour */
+.p1-day { position: relative; display: grid; grid-template-columns: 32px 1fr auto; column-gap: 10px; align-items: center; padding: 10px 0 14px; min-height: 66px; border-bottom: 1px solid var(--line); --dc: var(--ink); }
+.p1-day .n { grid-row: 1 / 3; width: 26px; height: 26px; border-radius: 50%; background: var(--dc); color: var(--panel); font-size: 13px; font-weight: 700; display: grid; place-items: center; }
+.p1-day .n.rest { background: transparent; color: var(--ink-soft); border: 1.5px solid var(--line-strong); }
+.p1-day .t { font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.p1-day .m { grid-column: 2 / 4; font-size: 15px; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p1-day .km { font-size: 15px; font-weight: 600; }
+.p1-day .bar { position: absolute; left: 42px; bottom: 6px; height: 4px; border-radius: 2px; background: var(--dc); }
+.p1-day.rest { min-height: 56px; padding-bottom: 10px; }
+
+/* the profile: full width, the days as coloured areas, a scrubber, the day ends on the baseline */
+.p1-prof { flex: none; margin: 10px -16px 0; }
+.p1-dn { position: relative; height: 18px; margin: 0 16px; }
+.p1-dn b { position: absolute; transform: translateX(-50%); font-size: 13px; font-weight: 700; color: var(--dc); }
+.p1-strip { position: relative; }
+.p1-strip svg.prof { height: 224px; }
+.p1-areas use { opacity: .38; }
+.p1-areas use.sel { opacity: .72; }
+.p1-line { stroke: var(--ink); opacity: .6; stroke-width: 1.5; }
+.p1-scrub { stroke: var(--ink); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.p1-pt { position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; background: var(--panel); border: 3px solid var(--ink); }
+.p1-base { position: relative; height: 30px; margin: 0 16px; }
+.p1-de { position: absolute; top: -6px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: var(--ink); border: 2px solid var(--panel); }
+.p1-de.h { top: -13px; width: 26px; height: 26px; margin-left: -13px; color: var(--panel); font-size: 13px; font-weight: 700; display: grid; place-items: center; box-shadow: var(--shadow); }
+.p1-km { position: absolute; bottom: 0; font-size: 13px; color: var(--ink-faint); }
+</style>
+<style>
+/* P2 · Three views. Prefix p2-. A two-row navigation bar (the plan name, then Map | Profile | Days) switches three
+   full-screen views. On the Map view the box is docked at the bottom edge, in thumb reach; after a search the
+   answer takes its place there as a compact docked panel. Search is a full-screen state of its own. */
+.p2 { --d1: #cc2a93; --d2: #2f6fb5; --d3: #3b8a3f; --d4: #5b2fb0; }   /* the app's day colours (no shared token yet) */
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .p2 { --d1: #e45cb5; --d2: #6fa8e8; --d3: #6cc47a; --d4: #a070f0; } }
+:root[data-theme="dark"] .p2 { --d1: #e45cb5; --d2: #6fa8e8; --d3: #6cc47a; --d4: #a070f0; }
+.p2-c1 { --dc: var(--d1); } .p2-c2 { --dc: var(--d2); } .p2-c3 { --dc: var(--d3); } .p2-c4 { --dc: var(--d4); }
+
+/* navigation bar: the name row, then the view switch */
+.p2-nav { position: absolute; z-index: 6; top: 0; left: 0; right: 0; height: 150px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.p2-row { position: absolute; top: 59px; left: 4px; right: 4px; height: 44px; display: flex; align-items: center; }
+.p2-ib { width: 44px; height: 44px; display: grid; place-items: center; color: var(--ink); flex: none; }
+.p2-ib svg { width: 22px; height: 22px; }
+.p2-ib.off { opacity: .3; }
+.p2-sp { flex: 1; }
+.p2-title { position: absolute; left: 48px; right: 136px; top: 0; height: 44px; display: flex; align-items: center; justify-content: center; font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; }
+.p2-seg { position: absolute; top: 107px; left: 16px; right: 16px; height: 36px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2px; padding: 2px; border-radius: 10px; background: var(--parchment-2); }
+.p2-seg > span { display: flex; align-items: center; justify-content: center; border-radius: 8px; font-size: 15px; font-weight: 600; color: var(--ink-soft); }
+.p2-seg > .on { background: var(--panel); color: var(--ink); box-shadow: 0 1px 3px rgba(28,27,20,.16); }
+
+/* the map fills the view under the bar; the dock takes the bottom edge */
+.p2-map { top: 150px; }
+.p2-loc { position: absolute; z-index: 5; top: 162px; right: 16px; width: 44px; height: 44px; border-radius: 50%; background: var(--panel); box-shadow: var(--shadow); display: grid; place-items: center; color: var(--ink); }
+.p2-loc svg { width: 20px; height: 20px; }
+.p2-pm { font: 600 16px var(--ios); fill: var(--m-label); paint-order: stroke; stroke: var(--m-label-halo); stroke-width: 3px; stroke-linejoin: round; }
+.p2-pm.b { fill: var(--ink); font-weight: 700; }
+.p2-pm.rt { fill: var(--route); }
+.p2-pin text { font: 700 12px var(--ios); fill: #fff; text-anchor: middle; }
+
+.p2-dock { z-index: 7; display: flex; flex-direction: column; padding: 0 16px 34px; overflow: hidden; }
+.p2-dock > .grab { flex: none; }
+.p2-rest { padding-top: 10px; gap: 8px; }
+.p2-sum { font-size: 15px; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p2-rest .qbox { flex: none; height: 50px; }
+
+/* chips: neutral, 36 pt with an 8 pt gap; a chevron marks an editable chip; the open chip is ink */
+.p2 .understood { gap: 8px; flex: none; }
+.p2 .understood > .lbl { font-size: 13px; }
+.p2 .chip { height: 36px; font-size: 15px; padding: 0 12px; border-radius: 18px; gap: 6px; background: var(--parchment-2); color: var(--ink); border-color: transparent; }
+.p2 .chip svg { width: 15px; height: 15px; }
+.p2 .chip .k { font-size: 14px; }
+.p2 .chip svg.p2-chev { width: 12px; height: 12px; color: var(--ink-faint); margin: 0 -3px 0 -2px; }
+.p2 .chip.p2-on { background: var(--ink); color: var(--panel); }
+.p2 .chip.p2-on .k { color: var(--parchment-3); }
+.p2 .chip.p2-on svg.p2-chev { color: var(--parchment-3); transform: rotate(180deg); }
+.p2-req { margin-top: 8px; }
+.p2-x { width: 36px; height: 36px; border-radius: 18px; display: grid; place-items: center; background: var(--parchment-2); color: var(--ink-soft); flex: none; }
+.p2-x svg { width: 16px; height: 16px; }
+
+/* the picker under its chip (round 2), the arrow at --ax */
+.p2-pick { position: relative; flex: none; margin-top: 10px; padding: 8px; border-radius: 14px; background: var(--parchment-2); }
+.p2-pick::before { content: ""; position: absolute; top: -6px; left: var(--ax, 40px); width: 12px; height: 12px; margin-left: -6px; background: var(--parchment-2); transform: rotate(45deg); border-radius: 2px; }
+.p2-pseg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; }
+.p2-pseg > * { min-height: 44px; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; font-size: 15px; font-weight: 600; line-height: 1.2; color: var(--ink); border: 1px solid transparent; white-space: nowrap; }
+.p2-pseg > * > small { font-size: 13px; font-weight: 400; color: var(--ink-soft); }
+.p2-pseg > .on { background: var(--panel); border-color: var(--line-strong); }
+
+/* the answer: a count line, rows, and the one action while a row is selected */
+.p2-head { flex: none; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 12px 0 4px; font-size: 15px; color: var(--ink-soft); white-space: nowrap; }
+.p2-head b { font-size: 17px; color: var(--ink); font-weight: 700; }
+.p2-head span { overflow: hidden; text-overflow: ellipsis; }
+.p2-sec { flex: none; padding: 14px 0 2px; font-size: 13px; font-weight: 600; color: var(--ink-faint); }
+.p2-list { flex: none; margin: 0 -10px; padding: 0 10px; }
+.p2 .row { min-height: 56px; padding: 8px 0; gap: 12px; }
+.p2 .row > div { min-width: 0; }
+.p2 .row .t { font-size: 17px; font-weight: 600; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p2 .row .m { font-size: 15px; line-height: 1.3; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p2 .row > .ic svg { width: 17px; height: 17px; }
+.p2 .row.p2-opt { grid-template-columns: 1fr; }
+.p2-opt .t { display: flex; justify-content: space-between; gap: 10px; }
+.p2-opt .t .p2-fig { font-size: 15px; font-weight: 500; flex: none; }
+.p2-hrs { font-size: 15px; color: var(--ink-soft); white-space: nowrap; }
+.p2-act { flex: none; padding-top: 8px; }
+.p2-act > .btn { width: 100%; height: 50px; font-size: 17px; }
+
+/* search: full screen, the box at the top, the keyboard low */
+.p2-srch { position: absolute; inset: 0; background: var(--panel); display: flex; flex-direction: column; padding: 59px 16px 0; }
+.p2-sbar { display: flex; align-items: center; gap: 4px; height: 44px; flex: none; }
+.p2-sbar .qbox { flex: 1; }
+.p2-cancel { height: 44px; padding: 0 4px 0 10px; font-size: 17px; color: var(--ink); flex: none; }
+.p2-srch .understood { margin-top: 12px; }
+.p2-kbd { position: absolute; z-index: 8; left: 0; right: 0; bottom: 0; height: 270px; padding: 8px 3px 0; background: var(--parchment-2); display: grid; grid-auto-rows: 42px; row-gap: 11px; align-content: start; }
+.p2-kbd > div { display: flex; justify-content: center; gap: 6px; }
+.p2-kbd i { width: 33px; height: 42px; border-radius: 6px; background: var(--panel); box-shadow: 0 1px 0 var(--line-strong); font: 400 22px/42px var(--ios); font-style: normal; text-align: center; color: var(--ink); }
+.p2-kbd i.w { width: 44px; font-size: 15px; background: var(--parchment-3); }
+.p2-kbd i.sp { width: 180px; }
+
+/* profile view: the map follows the scrubber; the whole trip in the day colours below it */
+.p2-prof { position: absolute; z-index: 7; left: 0; right: 0; top: 470px; bottom: 0; background: var(--panel); border-top: 1px solid var(--line); padding: 10px 16px 0; }
+.p2-read { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 17px; font-weight: 600; white-space: nowrap; }
+.p2-read .p2-alt { font-weight: 500; }
+.p2-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--d4); margin-right: 7px; }
+.p2-quiet { font-size: 15px; color: var(--ink-soft); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p2-pg { position: relative; margin-top: 12px; height: 216px; }
+.p2-pg svg.prof { position: absolute; inset: 0; width: 100%; height: 100%; }
+.p2-band { opacity: .4; }
+.p2-pl { stroke: var(--ink); opacity: .55; stroke-width: 1.4; }
+.p2-scrub { stroke: var(--ink); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.p2-hend { stroke: var(--ink); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+.p2-sdot { position: absolute; width: 14px; height: 14px; border-radius: 50%; background: var(--panel); border: 3px solid var(--ink); transform: translate(-50%, -50%); }
+.p2-dn { position: absolute; bottom: 3px; font-size: 13px; font-weight: 700; }
+.p2-pg .tick { bottom: 0; height: 18px; }
+.p2-axis { position: relative; height: 34px; margin-top: 4px; }
+.p2-hd { position: absolute; top: 0; transform: translateX(-50%); width: 30px; height: 30px; border-radius: 50%; background: var(--ink); display: grid; place-items: center; }
+.p2-hd::before { content: ""; width: 8px; height: 12px; border-left: 2px solid var(--panel); border-right: 2px solid var(--panel); }
+.p2-hl { position: absolute; top: 7px; font-size: 13px; color: var(--ink-soft); white-space: nowrap; }
+
+/* days view: one list */
+.p2-days { position: absolute; top: 150px; left: 0; right: 0; bottom: 0; overflow: hidden; padding: 0 16px; }
+.p2-dh { padding: 12px 0 10px; border-bottom: 1px solid var(--line); }
+.p2-dh b { display: block; font-size: 17px; font-weight: 700; }
+.p2-dh span { display: block; font-size: 15px; color: var(--ink-soft); margin-top: 2px; }
+.p2-day { position: relative; display: grid; grid-template-columns: 32px 1fr auto; column-gap: 12px; align-items: start; min-height: 68px; padding: 10px 0 14px; border-bottom: 1px solid var(--line); }
+.p2-day .n { width: 32px; height: 32px; border-radius: 50%; background: var(--dc); color: #fff; font-size: 15px; font-weight: 700; display: grid; place-items: center; }
+.p2-day .n.rest { background: transparent; color: var(--ink-soft); border: 1.5px solid var(--line-strong); }
+.p2-day .t { font-size: 17px; font-weight: 600; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p2-day .m { font-size: 15px; color: var(--ink-soft); line-height: 1.3; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p2-day .km { font-size: 15px; font-weight: 600; padding-top: 2px; }
+.p2-day .bar { position: absolute; left: 44px; right: 0; bottom: 6px; height: 4px; }
+.p2-day .bar i { display: block; height: 100%; border-radius: 2px; background: var(--dc); opacity: .7; }
+</style>
+<style>
+/* Direction P3 · the map, a profile strip docked at the bottom, a tool bar in thumb reach. Prefix p3-.
+   The bottom dock holds one thing at a time: the strip at rest, the compact answer, or the days. */
+.p3 { --p3-d1: #CC2A93; --p3-d2: #2F6FB5; --p3-d3: #3B8A3F; --p3-d4: #5B2FB0; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .p3 { --p3-d1: #E45CB5; --p3-d2: #6FA8E8; --p3-d3: #6CC47A; --p3-d4: #A070F0; } }
+:root[data-theme="dark"] .p3 { --p3-d1: #E45CB5; --p3-d2: #6FA8E8; --p3-d3: #6CC47A; --p3-d4: #A070F0; }
+
+/* navigation bar: Back, the plan name, Undo; nothing else */
+.p3-nav { position: absolute; z-index: 6; left: 0; right: 0; top: 0; height: 98px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.p3-nav .p3-ttl { position: absolute; left: 84px; right: 84px; top: 54px; height: 44px; display: flex; align-items: center; justify-content: center;
+  font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p3-nb { position: absolute; top: 54px; height: 44px; min-width: 44px; padding: 0 6px; display: inline-flex; align-items: center; justify-content: center;
+  gap: 1px; font-size: 17px; color: var(--ink); }
+.p3-nb svg { width: 22px; height: 22px; }
+
+/* the map fills what the dock leaves; two small controls sit on it */
+.p3-ctl { position: absolute; z-index: 5; right: 12px; top: 110px; background: var(--panel); border-radius: 12px; box-shadow: var(--shadow); display: flex; flex-direction: column; }
+.p3-ctl button { width: 44px; height: 44px; display: grid; place-items: center; color: var(--ink); }
+.p3-ctl button + button { border-top: 1px solid var(--line); }
+.p3-ctl svg { width: 20px; height: 20px; }
+.p3-mt { font: 600 13px var(--ios); fill: var(--m-label); paint-order: stroke; stroke: var(--m-label-halo); stroke-width: 3px; stroke-linejoin: round; }
+.p3-mt.b { fill: var(--ink); font-weight: 700; }
+.p3-de text { font: 700 20px var(--ios); fill: var(--panel); text-anchor: middle; }
+
+/* the tool bar: three labelled 44 pt targets; a lit item names the open state */
+.p3-bar { position: absolute; z-index: 8; left: 0; right: 0; bottom: 0; height: 83px; padding: 3px 20px 34px; background: var(--panel); border-top: 1px solid var(--line);
+  display: grid; grid-template-columns: repeat(3, 1fr); }
+.p3-bar > button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: 13px; font-weight: 600; color: var(--ink-soft); }
+.p3-bar > button > i { width: 48px; height: 28px; border-radius: 8px; display: grid; place-items: center; }
+.p3-bar svg { width: 24px; height: 24px; }
+.p3-bar > .on { color: var(--ink); }
+.p3-bar > .on > i { background: var(--parchment-2); }
+
+/* the dock above the tool bar */
+.p3-dock { z-index: 7; bottom: 83px; padding: 0 16px; display: flex; flex-direction: column; overflow: hidden; }
+.p3-dock > .grab { flex: none; margin-top: 6px; }
+.p3-fade { mask-image: linear-gradient(to bottom, black calc(100% - 48px), transparent calc(100% - 8px)); }
+
+/* the strip: one summary line, the profile, the day numbers */
+.p3-sh { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-top: 6px; font-size: 15px; font-weight: 600; white-space: nowrap; }
+.p3-sh .cap { font-size: 13px; font-weight: 400; }
+.p3-prof { position: relative; margin-top: 4px; }
+.p3-prof svg.prof { display: block; width: 100%; height: 46px; }
+.p3-band { opacity: .16; }
+.p3-closed { fill: var(--coral); opacity: .28; }
+.p3-nums { position: relative; height: 18px; }
+.p3-nums b { position: absolute; transform: translateX(-50%); top: 3px; font-size: 13px; line-height: 1; font-weight: 700; color: var(--p3-c, var(--ink-soft)); }
+
+/* the full profile: a two-line header, the profile with its scrubber and handles, the bands */
+.p3-ph { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-top: 8px; }
+.p3-ph .t { font-size: 17px; font-weight: 700; line-height: 1.25; white-space: nowrap; }
+.p3-ph .m { font-size: 15px; color: var(--ink-soft); margin-top: 2px; white-space: nowrap; }
+.p3-lnk { flex: none; height: 44px; margin-top: -8px; padding: 0 4px; font-size: 15px; font-weight: 600; color: var(--ink-soft); display: inline-flex; align-items: center; }
+.p3-pg { display: grid; grid-template-columns: 62px 1fr; column-gap: 8px; row-gap: 6px; align-items: center; margin-top: 10px; }
+.p3-pl { font-size: 13px; color: var(--ink-faint); white-space: nowrap; text-align: right; }
+.p3-ax { position: relative; align-self: stretch; }
+.p3-ax span { position: absolute; right: 0; transform: translateY(-50%); }
+.p3-pg .p3-prof { margin: 0; }
+.p3-pg .p3-prof svg.prof { height: 150px; }
+.p3-pg .band { height: 10px; }
+.p3-scrub { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--ink); }
+.p3-scrub::after { content: ""; position: absolute; left: -6px; top: var(--y); width: 14px; height: 14px; margin-top: -7px; border-radius: 50%; box-sizing: border-box;
+  background: var(--ink); border: 2.5px solid var(--panel); }
+.p3-read { position: absolute; top: 6px; font-size: 13px; font-weight: 600; line-height: 1; padding: 5px 7px; border-radius: 6px; background: var(--ink); color: var(--panel); white-space: nowrap; }
+.p3-dend { position: absolute; width: 28px; height: 28px; margin: -14px 0 0 -14px; border-radius: 50%; background: var(--p3-c, var(--ink)); border: 2.5px solid var(--panel);
+  box-shadow: 0 1px 3px rgba(0,0,0,.25); display: grid; place-items: center; color: var(--panel); }
+.p3-dend svg { width: 15px; height: 15px; }
+.p3-dend.sm { width: 12px; height: 12px; margin: -6px 0 0 -6px; border-width: 2px; box-shadow: none; }
+
+/* search, full screen: the box with Cancel on top, the chips, the live answer, the keyboard */
+.p3-top { position: absolute; z-index: 6; left: 0; right: 0; top: 0; height: 108px; padding: 54px 16px 0; background: var(--panel); border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: 10px; }
+.p3-top .qbox { flex: 1; min-width: 0; }
+.p3-cancel { flex: none; height: 44px; font-size: 17px; color: var(--ink); }
+.p3-full { position: absolute; left: 0; right: 0; top: 108px; bottom: 250px; padding: 0 16px; background: var(--panel); overflow: hidden; }
+.p3-kbd { position: absolute; z-index: 9; left: 0; right: 0; bottom: 0; height: 250px; padding: 10px 3px 0; background: var(--parchment-2); display: grid; grid-auto-rows: 42px; align-content: start; gap: 8px; }
+.p3-kbd > div { display: flex; justify-content: center; gap: 6px; }
+.p3-kbd i { width: 32px; height: 42px; border-radius: 6px; background: var(--panel); box-shadow: 0 1px 0 var(--line-strong); font: 400 20px/42px var(--ios); font-style: normal; text-align: center; color: var(--ink); }
+.p3-kbd i.w { width: 44px; font-size: 14px; background: var(--parchment-3); }
+.p3-kbd i.sp { width: 180px; }
+.p3-kbd i.go { width: 88px; font-size: 15px; background: var(--ink); color: var(--panel); }
+
+/* the chips and their pickers, as approved in round 2 (r2-chips): neutral, 36 pt on a 44 pt pitch, a chevron marks an editable chip */
+.p3 .understood { gap: 8px; margin-top: 10px; flex: none; }
+.p3 .understood > .lbl { font-size: 13px; }
+.p3 .chip { height: 36px; font-size: 15px; padding: 0 12px; border-radius: 18px; gap: 6px; }
+.p3 .chip svg { width: 15px; height: 15px; }
+.p3 .chip.what, .p3 .chip.where, .p3 .chip.filter { background: var(--parchment-2); color: var(--ink); border-color: transparent; }
+.p3 .chip svg.p3-chev { width: 12px; height: 12px; color: var(--ink-faint); margin: 0 -3px 0 -2px; }
+.p3 .chip.p3-on { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+.p3 .chip.p3-on .k { color: var(--parchment-3); }
+.p3 .chip.p3-on svg.p3-chev { color: var(--parchment-3); transform: rotate(180deg); }
+.p3-pick { position: relative; flex: none; margin-top: 10px; padding: 8px; border-radius: 14px; background: var(--parchment-2); display: grid; gap: 6px; }
+.p3-pick::before { content: ""; position: absolute; top: -6px; left: var(--ax, 40px); width: 12px; height: 12px; margin-left: -6px; background: var(--parchment-2); transform: rotate(45deg); border-radius: 2px; }
+.p3-seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; }
+.p3-seg > * { min-height: 44px; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  font-size: 15px; font-weight: 600; line-height: 1.2; color: var(--ink); border: 1px solid transparent; white-space: nowrap; }
+.p3-seg > * > small { font-size: 13px; font-weight: 400; color: var(--ink-soft); }
+.p3-seg > .on { background: var(--panel); border-color: var(--line-strong); }
+
+/* the answer: a head line, rows of two lines, the selected row with its one compact action */
+.p3-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 10px 0 6px; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--ink-soft); white-space: nowrap; flex: none; }
+.p3-head b { font-size: 15px; color: var(--ink); font-weight: 700; }
+.p3 .row { padding: 9px 0; min-height: 60px; }
+.p3 .row > * { min-width: 0; }
+.p3 .row .t { font-size: 17px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p3 .row .m { font-size: 15px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p3 .row > .ic { width: 32px; height: 32px; }
+.p3 .row > .ic svg { width: 16px; height: 16px; }
+.p3 .row .r { font-size: 15px; color: var(--ink-soft); text-align: right; }
+.p3 .row .r svg { width: 20px; height: 20px; color: var(--ink-faint); }
+.p3-sel { background: var(--amber-soft); border-radius: 12px; margin: 2px -10px 0; padding: 0 10px 10px; flex: none; }
+.p3-sel > .row { border-bottom: 0; }
+.p3-act { display: flex; padding-left: 42px; }
+.p3-act .btn { height: 44px; font-size: 16px; }
+.p3-opt { grid-template-columns: 32px 1fr auto; }
+.p3-opt > .ic { grid-row: 1 / span 2; background: transparent; }
+.p3-opt > .fig { font-size: 15px; font-weight: 600; white-space: nowrap; }
+.p3-opt > .m { grid-column: 2 / 4; margin-top: -2px; }
+
+/* the days: number disc and length bar in the day colour, two lines of text */
+.p3-dh { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-top: 8px; padding-bottom: 4px; flex: none; }
+.p3-dh .t { font-size: 17px; font-weight: 700; line-height: 1.25; white-space: nowrap; }
+.p3-dh .m { font-size: 15px; color: var(--ink-soft); margin-top: 2px; white-space: nowrap; }
+.p3-ib { flex: none; width: 44px; height: 44px; margin: -8px -8px 0 0; display: grid; place-items: center; color: var(--ink-soft); }
+.p3-ib svg { width: 22px; height: 22px; }
+.p3-day { position: relative; display: grid; grid-template-columns: 30px 1fr auto; column-gap: 10px; align-items: start; padding: 9px 0 13px; border-bottom: 1px solid var(--line); }
+.p3-day .n { grid-row: 1 / 3; width: 26px; height: 26px; margin-top: 1px; border-radius: 50%; background: var(--p3-c, var(--ink)); color: var(--panel); font-size: 13px; font-weight: 700; display: grid; place-items: center; }
+.p3-day.rest .n { background: transparent; color: var(--ink-soft); border: 1.5px solid var(--line-strong); }
+.p3-day .t { font-size: 17px; font-weight: 600; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.p3-day .km { font-size: 15px; color: var(--ink-soft); padding-top: 2px; }
+.p3-day .m { grid-column: 2 / 4; font-size: 15px; color: var(--ink-soft); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p3-day .bar { position: absolute; left: 40px; bottom: 5px; height: 4px; border-radius: 2px; background: var(--p3-c); opacity: .75; }
+
+/* landscape: the phone turned, the profile alone, full width */
+.p3-land.mk-phone { width: 844px; height: 390px; background: var(--panel); }
+.p3-land.mk-phone::before { top: 50%; left: 11px; width: 36px; height: 124px; margin: -62px 0 0 0; }
+.p3-lh { position: absolute; left: 72px; right: 40px; top: 18px; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 17px; font-weight: 700; white-space: nowrap; }
+.p3-lh .cap { font-size: 15px; font-weight: 400; }
+.p3-lg { position: absolute; left: 72px; right: 40px; top: 54px; bottom: 30px; display: grid; grid-template-columns: 74px 1fr; grid-template-rows: 1fr 18px 12px 12px; column-gap: 10px; row-gap: 8px; align-items: center; }
+.p3-lg .p3-prof { margin: 0; align-self: stretch; height: 100%; }
+.p3-lg .p3-prof svg.prof { height: 100%; }
+.p3-lg .band { height: 12px; }
+.p3-lg .p3-nums b { font-size: 15px; top: 1px; }
+.p3-lg .p3-nums i { position: absolute; transform: translateX(-50%); top: 2px; font: 400 13px var(--ios); font-style: normal; color: var(--ink-faint); }
+</style>
+<div class="mx-scroll"><div class="mx">
+<div class="mx-h"></div><div class="mx-h">P1 · One sheet</div><div class="mx-h">P2 · Three views</div><div class="mx-h">P3 · Map, strip, tool bar</div>
+<div class="mx-s">At rest</div>
+<div class="mx-c"><figure class="mock phone" id="p1-rest">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p1-dc">
+    <div class="map" style="bottom:152px">
+      <svg class="p1-z15" viewBox="84 -145 604.5 1072.6" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-alps"/>
+        <use href="#route-alps-d1" class="rt-casing"/><use href="#route-alps-d2" class="rt-casing"/><use href="#route-alps-d3" class="rt-casing"/><use href="#route-alps-d4" class="rt-casing"/><use href="#route-alps-d5" class="rt-casing"/><use href="#route-alps-d7" class="rt-casing"/><use href="#route-alps-d8" class="rt-casing"/><use href="#route-alps-d9" class="rt-casing"/><use href="#route-alps-d10" class="rt-casing"/>
+        <use href="#route-alps-d1" class="rt-line"/><use href="#route-alps-d2" class="rt-line"/><use href="#route-alps-d3" class="rt-line"/><use href="#route-alps-d4" class="rt-line"/><use href="#route-alps-d5" class="rt-line"/><use href="#route-alps-d7" class="rt-line"/><use href="#route-alps-d8" class="rt-line"/><use href="#route-alps-d9" class="rt-line"/><use href="#route-alps-d10" class="rt-line"/>
+        <g transform="translate(190 32)"><circle r="13" style="fill:var(--panel);stroke:var(--ink);stroke-width:4"/></g>
+        <g transform="translate(290 119)"><circle r="21" style="fill:var(--ink);stroke:var(--panel);stroke-width:3"/><text y="7" text-anchor="middle" style="font:700 19px var(--ios);fill:var(--panel)">1</text></g>
+        <g transform="translate(341 194)"><circle r="21" style="fill:var(--ink);stroke:var(--panel);stroke-width:3"/><text y="7" text-anchor="middle" style="font:700 19px var(--ios);fill:var(--panel)">2</text></g>
+        <g transform="translate(483 284)"><circle r="21" style="fill:var(--ink);stroke:var(--panel);stroke-width:3"/><text y="7" text-anchor="middle" style="font:700 19px var(--ios);fill:var(--panel)">3</text></g>
+        <g transform="translate(290 378)"><circle r="21" style="fill:var(--ink);stroke:var(--panel);stroke-width:3"/><text y="7" text-anchor="middle" style="font:700 19px var(--ios);fill:var(--panel)">4</text></g>
+        <g transform="translate(363 467)"><circle r="21" style="fill:var(--ink);stroke:var(--panel);stroke-width:3"/><text y="7" text-anchor="middle" style="font:700 19px var(--ios);fill:var(--panel)">5</text></g>
+        <g transform="translate(367 547)"><circle r="21" style="fill:var(--ink);stroke:var(--panel);stroke-width:3"/><text y="7" text-anchor="middle" style="font:700 19px var(--ios);fill:var(--panel)">7</text></g>
+        <g transform="translate(368 638)"><circle r="21" style="fill:var(--ink);stroke:var(--panel);stroke-width:3"/><text y="7" text-anchor="middle" style="font:700 19px var(--ios);fill:var(--panel)">8</text></g>
+        <g transform="translate(464 681)"><circle r="21" style="fill:var(--ink);stroke:var(--panel);stroke-width:3"/><text y="7" text-anchor="middle" style="font:700 19px var(--ios);fill:var(--panel)">9</text></g>
+        <g transform="translate(583 866)"><circle r="21" style="fill:var(--ink);stroke:var(--panel);stroke-width:3"/><use href="#i-flag" x="-12" y="-12" width="24" height="24" style="color:var(--panel)"/></g>
+      </svg>
+      <span class="attribution p1-attr">© OpenStreetMap</span>
+    </div>
+    <div class="p1-nav">
+      <button class="p1-nb"><svg><use href="#i-chev-l"/></svg>Trips</button>
+      <span class="p1-title">Alps: Genève to Nice</span>
+      <span class="p1-nr"><button class="p1-nb icon dis" title="Undo"><svg><use href="#i-undo"/></svg></button><button class="p1-nb icon" title="More"><svg><use href="#i-more"/></svg></button></span>
+    </div>
+    <div class="sheet p1-sheet" style="height:168px">
+      <div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="ph">Search places or the route</span></div>
+      <div class="p1-one"><b>634 km · 14,590 m · 49 h riding</b><span class="cap">10 days · Thu 17 – Sat 26 Jun 2027 · Touring</span></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>At rest, low detent: the whole trip on the map, the box in thumb reach, one line. A drag up shows the profile, a second drag the days.</figcaption>
+</figure></div>
+<div class="mx-c"><figure class="mock phone" id="p2-rest">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p2">
+    <div class="map p2-map" style="bottom:120px">
+      <svg viewBox="85 0 630 914" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-alps"/>
+        <use href="#route-alps-d1" class="rt-casing"/><use href="#route-alps-d2" class="rt-casing"/><use href="#route-alps-d3" class="rt-casing"/><use href="#route-alps-d4" class="rt-casing"/><use href="#route-alps-d5" class="rt-casing"/><use href="#route-alps-d7" class="rt-casing"/><use href="#route-alps-d8" class="rt-casing"/><use href="#route-alps-d9" class="rt-casing"/><use href="#route-alps-d10" class="rt-casing"/>
+        <use href="#route-alps-d1" class="rt-line"/><use href="#route-alps-d2" class="rt-line"/><use href="#route-alps-d3" class="rt-line"/><use href="#route-alps-d4" class="rt-line"/><use href="#route-alps-d5" class="rt-line"/><use href="#route-alps-d7" class="rt-line"/><use href="#route-alps-d8" class="rt-line"/><use href="#route-alps-d9" class="rt-line"/><use href="#route-alps-d10" class="rt-line"/>
+        <g transform="translate(190 32) scale(1.6)"><circle r="8" style="fill:var(--panel);stroke:var(--ink);stroke-width:2.5"/></g>
+        <g class="p2-pin" transform="translate(290 119) scale(1.6)"><circle r="13" style="fill:var(--d1);stroke:var(--panel);stroke-width:2.5"/><text y="4.5">1</text></g>
+        <g class="p2-pin" transform="translate(341 194) scale(1.6)"><circle r="13" style="fill:var(--d2);stroke:var(--panel);stroke-width:2.5"/><text y="4.5">2</text></g>
+        <g class="p2-pin" transform="translate(483 284) scale(1.6)"><circle r="13" style="fill:var(--d3);stroke:var(--panel);stroke-width:2.5"/><text y="4.5">3</text></g>
+        <g class="p2-pin" transform="translate(290 378) scale(1.6)"><circle r="13" style="fill:var(--d4);stroke:var(--panel);stroke-width:2.5"/><text y="4.5">4</text></g>
+        <g class="p2-pin" transform="translate(363 467) scale(1.6)"><circle r="13" style="fill:var(--d1);stroke:var(--panel);stroke-width:2.5"/><text y="4.5">5</text></g>
+        <g class="p2-pin" transform="translate(367 547) scale(1.6)"><circle r="13" style="fill:var(--d2);stroke:var(--panel);stroke-width:2.5"/><text y="4.5">7</text></g>
+        <g class="p2-pin" transform="translate(368 638) scale(1.6)"><circle r="13" style="fill:var(--d3);stroke:var(--panel);stroke-width:2.5"/><text y="4.5">8</text></g>
+        <g class="p2-pin" transform="translate(464 681) scale(1.6)"><circle r="13" style="fill:var(--d4);stroke:var(--panel);stroke-width:2.5"/><text y="4.5">9</text></g>
+        <g class="p2-pin" transform="translate(583 866) scale(1.6)"><circle r="13" style="fill:var(--d1);stroke:var(--panel);stroke-width:2.5"/><text y="4.5">10</text></g>
+      </svg>
+    </div>
+    <div class="p2-nav">
+      <div class="p2-row">
+        <button class="p2-ib"><svg><use href="#i-chev-l"/></svg></button>
+        <div class="p2-title">Alps: Genève to Nice</div>
+        <span class="p2-sp"></span>
+        <button class="p2-ib" title="Search"><svg><use href="#i-search"/></svg></button>
+        <button class="p2-ib" title="Undo"><svg><use href="#i-undo"/></svg></button>
+        <button class="p2-ib" title="More"><svg><use href="#i-more"/></svg></button>
+      </div>
+      <div class="p2-seg"><span class="on">Map</span><span>Profile</span><span>Days</span></div>
+    </div>
+    <button class="p2-loc"><svg><use href="#i-here"/></svg></button>
+    <div class="sheet p2-dock p2-rest" style="height:128px">
+      <div class="p2-sum">10 days · 634 km · 14,590 m · 49 h riding</div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed ph">Search places or the route</span></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>At rest, the Map view: the whole trip with its day ends; the box is docked at the bottom edge, in thumb reach, above it one summary line; no primary button.</figcaption>
+</figure></div>
+<div class="mx-c"><figure class="mock phone" id="p3-rest">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p3">
+    <div class="map" style="top:98px;bottom:187px">
+      <svg viewBox="66 -20 640 917" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-alps"/>
+        <use href="#route-alps-d1" class="rt-casing"/><use href="#route-alps-d2" class="rt-casing"/><use href="#route-alps-d3" class="rt-casing"/><use href="#route-alps-d4" class="rt-casing"/><use href="#route-alps-d5" class="rt-casing"/><use href="#route-alps-d7" class="rt-casing"/><use href="#route-alps-d8" class="rt-casing"/><use href="#route-alps-d9" class="rt-casing"/><use href="#route-alps-d10" class="rt-casing"/>
+        <use href="#route-alps-d1" class="rt-line" style="stroke:var(--p3-d1)"/><use href="#route-alps-d2" class="rt-line" style="stroke:var(--p3-d2)"/><use href="#route-alps-d3" class="rt-line" style="stroke:var(--p3-d3)"/><use href="#route-alps-d4" class="rt-line" style="stroke:var(--p3-d4)"/><use href="#route-alps-d5" class="rt-line" style="stroke:var(--p3-d1)"/><use href="#route-alps-d7" class="rt-line" style="stroke:var(--p3-d2)"/><use href="#route-alps-d8" class="rt-line" style="stroke:var(--p3-d3)"/><use href="#route-alps-d9" class="rt-line" style="stroke:var(--p3-d4)"/><use href="#route-alps-d10" class="rt-line" style="stroke:var(--p3-d1)"/>
+        <g transform="translate(190 32)"><circle r="14" style="fill:var(--panel);stroke:var(--ink);stroke-width:4"/><circle r="5" style="fill:var(--ink)"/></g>
+        <g class="p3-de" transform="translate(290 119)"><circle r="22" style="fill:var(--p3-d1);stroke:var(--panel);stroke-width:3"/><text y="7">1</text></g>
+        <g class="p3-de" transform="translate(341 194)"><circle r="22" style="fill:var(--p3-d2);stroke:var(--panel);stroke-width:3"/><text y="7">2</text></g>
+        <g class="p3-de" transform="translate(483 284)"><circle r="22" style="fill:var(--p3-d3);stroke:var(--panel);stroke-width:3"/><text y="7">3</text></g>
+        <g class="p3-de" transform="translate(290 378)"><circle r="22" style="fill:var(--p3-d4);stroke:var(--panel);stroke-width:3"/><text y="7">4</text></g>
+        <g class="p3-de" transform="translate(363 467)"><circle r="22" style="fill:var(--p3-d1);stroke:var(--panel);stroke-width:3"/><text y="7">5</text></g>
+        <g class="p3-de" transform="translate(367 547)"><circle r="22" style="fill:var(--p3-d2);stroke:var(--panel);stroke-width:3"/><text y="7">7</text></g>
+        <g class="p3-de" transform="translate(368 638)"><circle r="22" style="fill:var(--p3-d3);stroke:var(--panel);stroke-width:3"/><text y="7">8</text></g>
+        <g class="p3-de" transform="translate(464 681)"><circle r="22" style="fill:var(--p3-d4);stroke:var(--panel);stroke-width:3"/><text y="7">9</text></g>
+        <g transform="translate(583 866)"><circle r="22" style="fill:var(--ink);stroke:var(--panel);stroke-width:3"/><use href="#i-flag" x="-13" y="-13" width="26" height="26" style="color:var(--panel)"/></g>
+      </svg>
+    </div>
+    <div class="p3-ctl"><button title="Layers"><svg><use href="#i-layers"/></svg></button><button title="Here"><svg><use href="#i-here"/></svg></button></div>
+
+    <div class="p3-nav">
+      <button class="p3-nb" style="left:4px"><svg><use href="#i-chev-l"/></svg>Trips</button>
+      <div class="p3-ttl">Alps: Genève to Nice</div>
+      <button class="p3-nb" style="right:8px" title="Undo"><svg><use href="#i-undo"/></svg></button>
+    </div>
+
+    <div class="sheet p3-dock" style="height:104px">
+      <div class="grab"></div>
+      <div class="p3-sh"><span>634 km · 14,590 m · 49 h riding</span><span class="cap">10 days</span></div>
+      <div class="p3-prof">
+        <svg class="prof" viewBox="0 0 634 300" preserveAspectRatio="none">
+          <use href="#prof-alps-area" class="prof-area"/>
+          <rect class="p3-band" x="0" width="78" y="0" height="300" style="fill:var(--p3-d1)"/><rect class="p3-band" x="78" width="64" y="0" height="300" style="fill:var(--p3-d2)"/><rect class="p3-band" x="142" width="71" y="0" height="300" style="fill:var(--p3-d3)"/><rect class="p3-band" x="213" width="104" y="0" height="300" style="fill:var(--p3-d4)"/><rect class="p3-band" x="317" width="53" y="0" height="300" style="fill:var(--p3-d1)"/><rect class="p3-band" x="370" width="56" y="0" height="300" style="fill:var(--p3-d2)"/><rect class="p3-band" x="426" width="51" y="0" height="300" style="fill:var(--p3-d3)"/><rect class="p3-band" x="477" width="63" y="0" height="300" style="fill:var(--p3-d4)"/><rect class="p3-band" x="540" width="94" y="0" height="300" style="fill:var(--p3-d1)"/>
+          <rect class="p3-closed" x="220" width="9" y="0" height="300"/>
+          <use href="#prof-alps-line" class="prof-line"/>
+        </svg>
+      </div>
+      <div class="p3-nums">
+        <b style="left:6.2%;--p3-c:var(--p3-d1)">1</b><b style="left:17.4%;--p3-c:var(--p3-d2)">2</b><b style="left:28%;--p3-c:var(--p3-d3)">3</b><b style="left:41.8%;--p3-c:var(--p3-d4)">4</b><b style="left:54.2%;--p3-c:var(--p3-d1)">5</b><b style="left:62.8%;--p3-c:var(--p3-d2)">7</b><b style="left:71.2%;--p3-c:var(--p3-d3)">8</b><b style="left:80.2%;--p3-c:var(--p3-d4)">9</b><b style="left:92.6%;--p3-c:var(--p3-d1)">10</b>
+      </div>
+    </div>
+
+    <div class="p3-bar">
+      <button><i><svg><use href="#i-search"/></svg></i>Search</button>
+      <button><i><svg><use href="#p3-i-days"/></svg></i>Days</button>
+      <button><i><svg><use href="#i-more"/></svg></i>More</button>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>At rest: the map, the whole-trip strip with the day colours, and Search, Days and More under the thumb. Nothing else.</figcaption>
+</figure></div>
+<div class="mx-s">Searching, keyboard up</div>
+<div class="mx-c"><figure class="mock phone" id="p1-search">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p1-dc">
+    <div class="map">
+      <svg class="p1-z15" viewBox="84 -137 604.5 1308.2" preserveAspectRatio="xMidYMid slice"><use href="#map-alps"/>
+        <use href="#route-alps-d1" class="rt-casing"/><use href="#route-alps-d1" class="rt-line"/></svg>
+      <div class="p1-scrim"></div>
+    </div>
+    <div class="sheet p1-sheet p1-full">
+      <div class="p1-qrow">
+        <div class="qbox focus"><svg><use href="#i-search"/></svg><span class="typed">campsites end of day 4<span class="caret"></span></span></div>
+        <button class="p1-cancel">Cancel</button>
+      </div>
+      <div class="understood"><span class="lbl">Understood as</span>
+        <button class="chip what"><svg><use href="#i-tent"/></svg>Campsites<svg class="p1-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where">End of Day 4 <span class="k">Valloire</span><svg class="p1-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip filter">within 5 km<svg class="p1-chev"><use href="#i-chev-d"/></svg></button>
+      </div>
+      <div class="p1-one"><b>2 campsites within 5 km</b><span class="cap">nearest to the end of Day 4 first · 3 earlier on Day 4</span></div>
+      <div class="p1-list">
+        <div class="row p1-row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Caravaneige, Valloire</div><div class="m">0.6 km off the line · Reception 8:00–20:00</div></div></div>
+        <div class="row p1-row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Les Verneys, Valloire</div><div class="m">1.4 km off the line · +70 m · Hours unknown</div></div></div>
+        <div class="p1-sec">Earlier on Day 4</div>
+        <div class="row p1-row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Le Petit Nice, Saint-Michel-de-Maurienne</div><div class="m">km 87 · 0.9 km off the line · Hours unknown</div></div></div>
+        <div class="row p1-row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping de l'Arc, Modane</div><div class="m">km 71 · 0.4 km off the line · 9:00–19:00</div></div></div>
+        <div class="row p1-row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Les Mélèzes, Lanslevillard</div><div class="m">km 45 · 0.3 km off the line · Hours unknown</div></div></div>
+      </div>
+    </div>
+    <div class="p1-kb">
+      <div><i>q</i><i>w</i><i>e</i><i>r</i><i>t</i><i>y</i><i>u</i><i>i</i><i>o</i><i>p</i></div>
+      <div><i>a</i><i>s</i><i>d</i><i>f</i><i>g</i><i>h</i><i>j</i><i>k</i><i>l</i></div>
+      <div><i class="w">⇧</i><i>z</i><i>x</i><i>c</i><i>v</i><i>b</i><i>n</i><i>m</i><i class="w">⌫</i></div>
+      <div><i class="w">123</i><i class="sp"></i><i class="go">search</i></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>Search: the box moved up with the sheet, the chips under it, the live answer below, the keyboard. The map is out of the way.</figcaption>
+</figure></div>
+<div class="mx-c"><figure class="mock phone" id="p2-search">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p2">
+    <div class="p2-srch">
+      <div class="p2-sbar">
+        <div class="qbox focus"><svg><use href="#i-search"/></svg><span class="typed">campsites end of day 4<span class="caret"></span></span><span class="count">22/80</span></div>
+        <button class="p2-cancel">Cancel</button>
+      </div>
+      <div class="understood"><span class="lbl">Understood as</span>
+        <button class="chip what"><svg><use href="#i-tent"/></svg>Campsites<svg class="p2-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where">End of Day 4 <span class="k">Valloire</span><svg class="p2-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip filter">within 5 km<svg class="p2-chev"><use href="#i-chev-d"/></svg></button>
+      </div>
+      <div class="p2-head"><b>2 campsites</b><span>within 5 km of the end of Day 4</span></div>
+      <div class="p2-list">
+        <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Caravaneige</div><div class="m">0.6 km off the line · +30 m</div></div><span class="p2-hrs">8:00–20:00</span></div>
+        <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Les Verneys</div><div class="m">1.4 km off the line · +70 m</div></div><span class="p2-hrs">Hours unknown</span></div>
+      </div>
+      <div class="p2-sec">Earlier on Day 4</div>
+      <div class="p2-list">
+        <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Le Petit Nice</div><div class="m">km 87 · 17 km earlier</div></div><span class="p2-hrs">Hours unknown</span></div>
+        <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping de l'Arc</div><div class="m">km 71 · 33 km earlier</div></div><span class="p2-hrs">9:00–19:00</span></div>
+        <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Les Mélèzes</div><div class="m">km 45 · 59 km earlier</div></div><span class="p2-hrs">Hours unknown</span></div>
+      </div>
+    </div>
+    <div class="p2-kbd">
+      <div><i>q</i><i>w</i><i>e</i><i>r</i><i>t</i><i>y</i><i>u</i><i>i</i><i>o</i><i>p</i></div>
+      <div><i>a</i><i>s</i><i>d</i><i>f</i><i>g</i><i>h</i><i>j</i><i>k</i><i>l</i></div>
+      <div><i class="w">⇧</i><i>z</i><i>x</i><i>c</i><i>v</i><i>b</i><i>n</i><i>m</i><i class="w">⌫</i></div>
+      <div><i class="w">123</i><i class="sp"></i><i class="w">search</i></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>Search: the box moved to the top and took the screen, the map is hidden; the understood chips, the live answer with its earlier campsites, the keyboard.</figcaption>
+</figure></div>
+<div class="mx-c"><figure class="mock phone" id="p3-search">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p3">
+    <div class="p3-top">
+      <div class="qbox focus"><svg><use href="#i-search"/></svg><span class="typed">campsites end of day 4<span class="caret"></span></span><span class="count">22/80</span></div>
+      <button class="p3-cancel">Cancel</button>
+    </div>
+    <div class="p3-full">
+      <div class="understood"><span class="lbl">Understood as</span>
+        <button class="chip what"><svg><use href="#i-tent"/></svg>Campsites<svg class="p3-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where">End of Day 4 <span class="k">Valloire</span><svg class="p3-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip filter">within 5 km<svg class="p3-chev"><use href="#i-chev-d"/></svg></button>
+      </div>
+      <div class="p3-head"><b>2 campsites</b><span>nearest to the end of Day 4 first</span></div>
+      <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Caravaneige, Valloire</div><div class="m">km 104 · 0.6 km off the line · 8:00–20:00</div></div></div>
+      <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Les Verneys, Valloire</div><div class="m">km 103 · 1.4 km off the line · Hours unknown</div></div></div>
+      <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Earlier on Day 4</div><div class="m">3 campsites · km 45 to km 87</div></div><span class="r"><svg><use href="#i-chev-r"/></svg></span></div>
+    </div>
+    <div class="p3-kbd">
+      <div><i>q</i><i>w</i><i>e</i><i>r</i><i>t</i><i>y</i><i>u</i><i>i</i><i>o</i><i>p</i></div>
+      <div><i>a</i><i>s</i><i>d</i><i>f</i><i>g</i><i>h</i><i>j</i><i>k</i><i>l</i></div>
+      <div><i class="w">⇧</i><i>z</i><i>x</i><i>c</i><i>v</i><i>b</i><i>n</i><i>m</i><i class="w">⌫</i></div>
+      <div><i class="w">123</i><i class="sp"></i><i class="go">search</i></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>Search takes the whole screen: the box on top, the chips, the live answer, the keyboard. The map waits.</figcaption>
+</figure></div>
+<div class="mx-s">Answer on the map</div>
+<div class="mx-c"><figure class="mock phone" id="p1-answer">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p1-dc">
+    <div class="map" style="bottom:424px">
+      <svg viewBox="0 219 390 420" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-d4"/>
+        <use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+        <g transform="translate(176 410)"><circle r="13" style="fill:var(--panel);stroke:var(--route);stroke-width:2.2"/><use href="#i-tent" x="-8" y="-8" width="16" height="16" style="color:var(--route)"/></g>
+        <g transform="translate(86 528)"><circle r="13" style="fill:var(--panel);stroke:var(--route);stroke-width:2.2"/><use href="#i-tent" x="-8" y="-8" width="16" height="16" style="color:var(--route)"/></g>
+        <g transform="translate(105 501)"><circle r="13" style="fill:var(--ink);stroke:var(--panel);stroke-width:2.2"/><use href="#i-tent" x="-8" y="-8" width="16" height="16" style="color:var(--panel)"/></g>
+        <text class="p1-mt" x="90" y="485" text-anchor="end" style="font-size:13px;stroke-width:3.5px">End of Day 4</text>
+        <g transform="translate(134 516)"><circle r="16" style="fill:var(--amber);stroke:var(--ink);stroke-width:2.2"/><use href="#i-tent" x="-10" y="-10" width="20" height="20" style="color:var(--on-amber)"/></g>
+        <text class="p1-mt b" x="156" y="521" style="font-size:13px;stroke-width:3.5px">Camping Caravaneige</text>
+      </svg>
+      <span class="attribution p1-attr">© OpenStreetMap</span>
+    </div>
+    <div class="p1-nav">
+      <button class="p1-nb"><svg><use href="#i-chev-l"/></svg>Trips</button>
+      <span class="p1-title">Alps: Genève to Nice</span>
+      <span class="p1-nr"><button class="p1-nb icon dis" title="Undo"><svg><use href="#i-undo"/></svg></button><button class="p1-nb icon" title="More"><svg><use href="#i-more"/></svg></button></span>
+    </div>
+    <div class="sheet p1-sheet" style="height:440px">
+      <div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">campsites end of day 4</span><button class="p1-x" title="Clear"><svg><use href="#i-close"/></svg></button></div>
+      <div class="understood"><span class="lbl">Understood as</span>
+        <button class="chip what"><svg><use href="#i-tent"/></svg>Campsites<svg class="p1-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where">End of Day 4 <span class="k">Valloire</span><svg class="p1-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip filter">within 5 km<svg class="p1-chev"><use href="#i-chev-d"/></svg></button>
+      </div>
+      <div class="p1-one"><b>2 campsites within 5 km</b><span class="cap">nearest to the end of Day 4 first · 3 earlier on Day 4</span></div>
+      <div class="p1-list">
+        <div class="row p1-row sel"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Caravaneige, Valloire</div><div class="m">0.6 km off the line · Reception 8:00–20:00</div></div></div>
+        <div class="row p1-row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Les Verneys, Valloire</div><div class="m">1.4 km off the line · +70 m · Hours unknown</div></div></div>
+      </div>
+      <div class="p1-act"><button class="btn ghost">Add as stop</button><button class="btn primary">End Day 4 here</button></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>Answer, medium detent: the map with the markers, the chips, the two places within 5 km; one selected, its action in one row. A drag up shows the full list.</figcaption>
+</figure></div>
+<div class="mx-c"><figure class="mock phone" id="p2-answer">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p2">
+    <div class="map p2-map" style="bottom:342px">
+      <svg viewBox="-20 330 480 433" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-d4"/>
+        <use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+        <g transform="translate(105 501) scale(1.35)"><circle r="12" style="fill:var(--ink);stroke:var(--panel);stroke-width:2.5"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--panel)"/></g>
+        <text class="p2-pm b" x="105" y="478" text-anchor="middle">End of Day 4</text>
+        <g transform="translate(78 524) scale(1.35)"><circle r="11" style="fill:var(--panel);stroke:var(--route);stroke-width:2.5"/><use href="#i-tent" x="-6.5" y="-6.5" width="13" height="13" style="color:var(--route)"/></g>
+        <text class="p2-pm" x="78" y="552" text-anchor="middle">Les Verneys</text>
+        <g transform="translate(138 530) scale(1.35)"><circle r="15" style="fill:var(--amber);stroke:var(--ink);stroke-width:2.5"/><use href="#i-tent" x="-9" y="-9" width="18" height="18" style="color:var(--on-amber)"/></g>
+        <text class="p2-pm b" x="164" y="536">Camping Caravaneige</text>
+      </svg>
+    </div>
+    <div class="p2-nav">
+      <div class="p2-row">
+        <button class="p2-ib"><svg><use href="#i-chev-l"/></svg></button>
+        <div class="p2-title">Alps: Genève to Nice</div>
+        <span class="p2-sp"></span>
+        <button class="p2-ib" title="Search"><svg><use href="#i-search"/></svg></button>
+        <button class="p2-ib" title="Undo"><svg><use href="#i-undo"/></svg></button>
+        <button class="p2-ib" title="More"><svg><use href="#i-more"/></svg></button>
+      </div>
+      <div class="p2-seg"><span class="on">Map</span><span>Profile</span><span>Days</span></div>
+    </div>
+    <div class="sheet p2-dock" style="height:350px">
+      <div class="grab"></div>
+      <div class="understood p2-req">
+        <button class="chip what"><svg><use href="#i-tent"/></svg>Campsites<svg class="p2-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where">End of Day 4 <span class="k">Valloire</span><svg class="p2-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip filter">within 5 km<svg class="p2-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="p2-x"><svg><use href="#i-close"/></svg></button>
+      </div>
+      <div class="p2-head"><b>2 campsites</b><span>3 more earlier on Day 4</span></div>
+      <div class="p2-list">
+        <div class="row sel"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Caravaneige</div><div class="m">0.6 km off the line · +30 m</div></div><span class="p2-hrs">8:00–20:00</span></div>
+        <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Les Verneys</div><div class="m">1.4 km off the line · +70 m</div></div><span class="p2-hrs">Hours unknown</span></div>
+      </div>
+      <div class="p2-act"><button class="btn primary">End Day 4 here</button></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>Answer, keyboard down: the map returns with the markers; the compact dock holds the chips and the two results, the selected one shows its one action; a drag up shows the rest.</figcaption>
+</figure></div>
+<div class="mx-c"><figure class="mock phone" id="p3-answer">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p3">
+    <div class="map" style="top:98px;bottom:463px">
+      <svg viewBox="-60 350 420 305" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-d4"/>
+        <use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line" style="stroke:var(--p3-d4)"/>
+        <g transform="translate(172 406)"><circle r="10" style="fill:var(--panel);stroke:var(--route);stroke-width:2"/><use href="#i-tent" x="-6" y="-6" width="12" height="12" style="color:var(--route)"/></g>
+        <g transform="translate(105 501)"><circle r="12" style="fill:var(--p3-d4);stroke:var(--panel);stroke-width:2.5"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--panel)"/></g>
+        <text class="p3-mt" x="98" y="484" text-anchor="end">End of Day 4</text>
+        <g transform="translate(84 530)"><circle r="12" style="fill:var(--panel);stroke:var(--route);stroke-width:2.5"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--route)"/></g>
+        <g transform="translate(140 522)"><circle r="15" style="fill:var(--amber);stroke:var(--ink);stroke-width:2.5"/><use href="#i-tent" x="-9" y="-9" width="18" height="18" style="color:var(--on-amber)"/></g>
+        <text class="p3-mt b" x="140" y="548" text-anchor="middle">Camping Caravaneige</text>
+      </svg>
+    </div>
+    <div class="p3-ctl"><button title="Layers"><svg><use href="#i-layers"/></svg></button><button title="Here"><svg><use href="#i-here"/></svg></button></div>
+
+    <div class="p3-nav">
+      <button class="p3-nb" style="left:4px"><svg><use href="#i-chev-l"/></svg>Trips</button>
+      <div class="p3-ttl">Alps: Genève to Nice</div>
+      <button class="p3-nb" style="right:8px" title="Undo"><svg><use href="#i-undo"/></svg></button>
+    </div>
+
+    <div class="sheet p3-dock" style="height:380px">
+      <div class="grab"></div>
+      <div class="understood">
+        <button class="chip what"><svg><use href="#i-tent"/></svg>Campsites<svg class="p3-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where">End of Day 4 <span class="k">Valloire</span><svg class="p3-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip filter">within 5 km<svg class="p3-chev"><use href="#i-chev-d"/></svg></button>
+      </div>
+      <div class="p3-head"><b>2 campsites</b><span>nearest to the end of Day 4 first</span></div>
+      <div class="p3-sel">
+        <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Caravaneige, Valloire</div><div class="m">km 104 · 0.6 km off the line · 8:00–20:00</div></div></div>
+        <div class="p3-act"><button class="btn primary">End Day 4 here</button></div>
+      </div>
+      <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Les Verneys, Valloire</div><div class="m">km 103 · 1.4 km off the line · Hours unknown</div></div></div>
+      <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Earlier on Day 4</div><div class="m">3 campsites · km 45 to km 87</div></div><span class="r"><svg><use href="#i-chev-r"/></svg></span></div>
+    </div>
+
+    <div class="p3-bar">
+      <button class="on"><i><svg><use href="#i-search"/></svg></i>Search</button>
+      <button><i><svg><use href="#p3-i-days"/></svg></i>Days</button>
+      <button><i><svg><use href="#i-more"/></svg></i>More</button>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>Keyboard down: the answer takes the strip's place under the map; the selected campsite carries its one action. Search stays lit.</figcaption>
+</figure></div>
+<div class="mx-s">A chip picker open</div>
+<div class="mx-c"><figure class="mock phone" id="p1-picker">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p1-dc">
+    <div class="map" style="bottom:494px">
+      <svg viewBox="0 254 390 350" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-d4"/>
+        <use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+        <g transform="translate(176 410)"><circle r="13" style="fill:var(--panel);stroke:var(--route);stroke-width:2.2"/><use href="#i-tent" x="-8" y="-8" width="16" height="16" style="color:var(--route)"/></g>
+        <g transform="translate(86 528)"><circle r="13" style="fill:var(--panel);stroke:var(--route);stroke-width:2.2"/><use href="#i-tent" x="-8" y="-8" width="16" height="16" style="color:var(--route)"/></g>
+        <g transform="translate(105 501)"><circle r="13" style="fill:var(--ink);stroke:var(--panel);stroke-width:2.2"/><use href="#i-tent" x="-8" y="-8" width="16" height="16" style="color:var(--panel)"/></g>
+        <text class="p1-mt" x="90" y="485" text-anchor="end" style="font-size:13px;stroke-width:3.5px">End of Day 4</text>
+        <g transform="translate(134 516)"><circle r="16" style="fill:var(--amber);stroke:var(--ink);stroke-width:2.2"/><use href="#i-tent" x="-10" y="-10" width="20" height="20" style="color:var(--on-amber)"/></g>
+        <text class="p1-mt b" x="156" y="521" style="font-size:13px;stroke-width:3.5px">Camping Caravaneige</text>
+      </svg>
+      <span class="attribution p1-attr">© OpenStreetMap</span>
+    </div>
+    <div class="p1-nav">
+      <button class="p1-nb"><svg><use href="#i-chev-l"/></svg>Trips</button>
+      <span class="p1-title">Alps: Genève to Nice</span>
+      <span class="p1-nr"><button class="p1-nb icon dis" title="Undo"><svg><use href="#i-undo"/></svg></button><button class="p1-nb icon" title="More"><svg><use href="#i-more"/></svg></button></span>
+    </div>
+    <div class="sheet p1-sheet" style="height:510px">
+      <div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">campsites end of day 4</span><button class="p1-x" title="Clear"><svg><use href="#i-close"/></svg></button></div>
+      <div class="understood"><span class="lbl">Understood as</span>
+        <button class="chip what"><svg><use href="#i-tent"/></svg>Campsites<svg class="p1-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where">End of Day 4 <span class="k">Valloire</span><svg class="p1-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip filter p1-on">within 5 km<svg class="p1-chev"><use href="#i-chev-d"/></svg></button>
+      </div>
+      <div class="p1-pick" style="--ax:55px">
+        <div class="p1-seg"><button>2 km<small>1</small></button><button class="on">5 km<small>2</small></button><button>10 km<small>2</small></button><button>25 km<small>3</small></button></div>
+      </div>
+      <div class="p1-one"><b>2 campsites within 5 km</b><span class="cap">nearest to the end of Day 4 first · 3 earlier on Day 4</span></div>
+      <div class="p1-list">
+        <div class="row p1-row sel"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Caravaneige, Valloire</div><div class="m">0.6 km off the line · Reception 8:00–20:00</div></div></div>
+        <div class="row p1-row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Les Verneys, Valloire</div><div class="m">1.4 km off the line · +70 m · Hours unknown</div></div></div>
+      </div>
+      <div class="p1-act"><button class="btn ghost">Add as stop</button><button class="btn primary">End Day 4 here</button></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>Picker: the distance picker opens under its chip and the sheet grows by exactly its height, so the list and the map markers stay in view while the count changes.</figcaption>
+</figure></div>
+<div class="mx-c"><figure class="mock phone" id="p2-picker">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p2">
+    <div class="map p2-map" style="bottom:420px">
+      <svg viewBox="-20 330 480 433" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-d4"/>
+        <use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+        <g transform="translate(172 406) scale(1.35)"><circle r="11" style="fill:var(--panel);stroke:var(--route);stroke-width:2.5"/><use href="#i-tent" x="-6.5" y="-6.5" width="13" height="13" style="color:var(--route)"/></g>
+        <text class="p2-pm" x="172" y="434" text-anchor="middle">Le Petit Nice</text>
+        <g transform="translate(105 501) scale(1.35)"><circle r="12" style="fill:var(--ink);stroke:var(--panel);stroke-width:2.5"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--panel)"/></g>
+        <text class="p2-pm b" x="105" y="478" text-anchor="middle">End of Day 4</text>
+        <g transform="translate(78 524) scale(1.35)"><circle r="11" style="fill:var(--panel);stroke:var(--route);stroke-width:2.5"/><use href="#i-tent" x="-6.5" y="-6.5" width="13" height="13" style="color:var(--route)"/></g>
+        <text class="p2-pm" x="78" y="552" text-anchor="middle">Les Verneys</text>
+        <g transform="translate(138 530) scale(1.35)"><circle r="11" style="fill:var(--panel);stroke:var(--route);stroke-width:2.5"/><use href="#i-tent" x="-6.5" y="-6.5" width="13" height="13" style="color:var(--route)"/></g>
+        <text class="p2-pm" x="162" y="536">Caravaneige</text>
+      </svg>
+    </div>
+    <div class="p2-nav">
+      <div class="p2-row">
+        <button class="p2-ib"><svg><use href="#i-chev-l"/></svg></button>
+        <div class="p2-title">Alps: Genève to Nice</div>
+        <span class="p2-sp"></span>
+        <button class="p2-ib" title="Search"><svg><use href="#i-search"/></svg></button>
+        <button class="p2-ib" title="Undo"><svg><use href="#i-undo"/></svg></button>
+        <button class="p2-ib" title="More"><svg><use href="#i-more"/></svg></button>
+      </div>
+      <div class="p2-seg"><span class="on">Map</span><span>Profile</span><span>Days</span></div>
+    </div>
+    <div class="sheet p2-dock" style="height:428px">
+      <div class="grab"></div>
+      <div class="understood p2-req">
+        <button class="chip what"><svg><use href="#i-tent"/></svg>Campsites<svg class="p2-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where">End of Day 4 <span class="k">Valloire</span><svg class="p2-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip filter p2-on">within 25 km<svg class="p2-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="p2-x"><svg><use href="#i-close"/></svg></button>
+      </div>
+      <div class="p2-pick" style="--ax:64px">
+        <div class="p2-pseg"><button>2 km<small>2</small></button><button>5 km<small>2</small></button><button>10 km<small>2</small></button><button class="on">25 km<small>3</small></button></div>
+      </div>
+      <div class="p2-head"><b>3 campsites</b><span>nearest to the end first</span></div>
+      <div class="p2-list">
+        <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Caravaneige</div><div class="m">0.6 km off the line · +30 m</div></div><span class="p2-hrs">8:00–20:00</span></div>
+        <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Les Verneys</div><div class="m">1.4 km off the line · +70 m</div></div><span class="p2-hrs">Hours unknown</span></div>
+        <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Le Petit Nice</div><div class="m">km 87 · 17 km earlier</div></div><span class="p2-hrs">Hours unknown</span></div>
+      </div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>The "within" chip's picker opens under the chips, the four rings with their counts; 25 km chosen, the list and the map follow at once. An open picker clears the selection and its action.</figcaption>
+</figure></div>
+<div class="mx-c"><figure class="mock phone" id="p3-picker">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p3">
+    <div class="map" style="top:98px;bottom:530px">
+      <svg viewBox="-60 386 420 232" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-d4"/>
+        <use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line" style="stroke:var(--p3-d4)"/>
+        <g transform="translate(105 501)"><circle r="12" style="fill:var(--p3-d4);stroke:var(--panel);stroke-width:2.5"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--panel)"/></g>
+        <g transform="translate(172 406)"><circle r="12" style="fill:var(--panel);stroke:var(--route);stroke-width:2.5"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--route)"/></g>
+        <g transform="translate(84 530)"><circle r="12" style="fill:var(--panel);stroke:var(--route);stroke-width:2.5"/><use href="#i-tent" x="-7" y="-7" width="14" height="14" style="color:var(--route)"/></g>
+        <g transform="translate(140 522)"><circle r="15" style="fill:var(--amber);stroke:var(--ink);stroke-width:2.5"/><use href="#i-tent" x="-9" y="-9" width="18" height="18" style="color:var(--on-amber)"/></g>
+      </svg>
+    </div>
+
+    <div class="p3-nav">
+      <button class="p3-nb" style="left:4px"><svg><use href="#i-chev-l"/></svg>Trips</button>
+      <div class="p3-ttl">Alps: Genève to Nice</div>
+      <button class="p3-nb" style="right:8px" title="Undo"><svg><use href="#i-undo"/></svg></button>
+    </div>
+
+    <div class="sheet p3-dock" style="height:447px">
+      <div class="grab"></div>
+      <div class="understood">
+        <button class="chip what"><svg><use href="#i-tent"/></svg>Campsites<svg class="p3-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where">End of Day 4 <span class="k">Valloire</span><svg class="p3-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip filter p3-on">within 25 km<svg class="p3-chev"><use href="#i-chev-d"/></svg></button>
+      </div>
+      <div class="p3-pick" style="--ax:66px">
+        <div class="p3-seg"><button>2 km<small>2</small></button><button>5 km<small>2</small></button><button>10 km<small>2</small></button><button class="on">25 km<small>3</small></button></div>
+      </div>
+      <div class="p3-head"><b>3 campsites</b><span>nearest to the end of Day 4 first</span></div>
+      <div class="p3-sel">
+        <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Caravaneige, Valloire</div><div class="m">km 104 · 0.6 km off the line · 8:00–20:00</div></div></div>
+        <div class="p3-act"><button class="btn primary">End Day 4 here</button></div>
+      </div>
+      <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Les Verneys, Valloire</div><div class="m">km 103 · 1.4 km off the line · Hours unknown</div></div></div>
+      <div class="row"><span class="ic"><svg><use href="#i-tent"/></svg></span><div><div class="t">Camping Le Petit Nice, Saint-Michel-de-Maurienne</div><div class="m">km 87 · 17 km before the end</div></div></div>
+    </div>
+
+    <div class="p3-bar">
+      <button class="on"><i><svg><use href="#i-search"/></svg></i>Search</button>
+      <button><i><svg><use href="#p3-i-days"/></svg></i>Days</button>
+      <button><i><svg><use href="#i-more"/></svg></i>More</button>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>The distance picker opens under its chip; the answer grows so the whole list stays in view, the map becomes a band with the markers.</figcaption>
+</figure></div>
+<div class="mx-s">The profile</div>
+<div class="mx-c"><figure class="mock phone" id="p1-profile">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p1-dc">
+    <div class="map" style="bottom:424px">
+      <svg viewBox="215 45 400 410" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-alps"/>
+        <use href="#route-alps-d2" class="rt-casing"/><use href="#route-alps-d3" class="rt-casing"/><use href="#route-alps-d4" class="rt-casing"/><use href="#route-alps-d5" class="rt-casing"/><use href="#route-alps-d7" class="rt-casing"/>
+        <use href="#route-alps-d2" class="rt-line"/><use href="#route-alps-d3" class="rt-line"/><use href="#route-alps-d4" class="rt-line"/><use href="#route-alps-d5" class="rt-line"/><use href="#route-alps-d7" class="rt-line"/>
+        <g transform="translate(341 194)"><circle r="14" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><text y="4.6" text-anchor="middle" style="font:700 13px var(--ios);fill:var(--panel)">2</text></g>
+        <g transform="translate(483 284)"><circle r="14" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><text y="4.6" text-anchor="middle" style="font:700 13px var(--ios);fill:var(--panel)">3</text></g>
+        <g transform="translate(290 378)"><circle r="14" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><text y="4.6" text-anchor="middle" style="font:700 13px var(--ios);fill:var(--panel)">4</text></g>
+        <g transform="translate(363 467)"><circle r="14" style="fill:var(--ink);stroke:var(--panel);stroke-width:2"/><text y="4.6" text-anchor="middle" style="font:700 13px var(--ios);fill:var(--panel)">5</text></g>
+        <!-- the scrubber's point -->
+        <g transform="translate(504 302)"><circle r="8" style="fill:var(--panel);stroke:var(--ink);stroke-width:3"/></g>
+      </svg>
+      <span class="attribution p1-attr">© OpenStreetMap</span>
+    </div>
+    <div class="p1-nav">
+      <button class="p1-nb"><svg><use href="#i-chev-l"/></svg>Trips</button>
+      <span class="p1-title">Alps: Genève to Nice</span>
+      <span class="p1-nr"><button class="p1-nb icon dis" title="Undo"><svg><use href="#i-undo"/></svg></button><button class="p1-nb icon" title="More"><svg><use href="#i-more"/></svg></button></span>
+    </div>
+    <div class="sheet p1-sheet" style="height:440px">
+      <div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="ph">Search places or the route</span></div>
+      <div class="p1-one"><b>Col de l'Iseran · 2,764 m · km 15</b><span class="cap">Day 4 · Seasonal closure in OSM: Nov–15 Jun</span></div>
+      <div class="p1-prof">
+        <div class="p1-dn">
+          <b style="left:6.2%;--dc:var(--d1)">1</b><b style="left:17.4%;--dc:var(--d2)">2</b><b style="left:28%;--dc:var(--d3)">3</b><b style="left:41.8%;--dc:var(--d4)">4</b><b style="left:54.2%;--dc:var(--d1)">5</b><b style="left:62.8%;--dc:var(--d2)">7</b><b style="left:71.2%;--dc:var(--d3)">8</b><b style="left:80.2%;--dc:var(--d4)">9</b><b style="left:92.6%;--dc:var(--d1)">10</b>
+        </div>
+        <div class="p1-strip">
+          <svg class="prof" viewBox="0 0 634 300" preserveAspectRatio="none">
+            <defs>
+              <clipPath id="p1-c1"><rect x="0" y="0" width="78" height="300"/></clipPath>
+              <clipPath id="p1-c2"><rect x="78" y="0" width="64" height="300"/></clipPath>
+              <clipPath id="p1-c3"><rect x="142" y="0" width="71" height="300"/></clipPath>
+              <clipPath id="p1-c4"><rect x="213" y="0" width="104" height="300"/></clipPath>
+              <clipPath id="p1-c5"><rect x="317" y="0" width="53" height="300"/></clipPath>
+              <clipPath id="p1-c7"><rect x="370" y="0" width="56" height="300"/></clipPath>
+              <clipPath id="p1-c8"><rect x="426" y="0" width="51" height="300"/></clipPath>
+              <clipPath id="p1-c9"><rect x="477" y="0" width="63" height="300"/></clipPath>
+              <clipPath id="p1-c10"><rect x="540" y="0" width="94" height="300"/></clipPath>
+            </defs>
+            <g class="p1-areas">
+              <use href="#prof-alps-area" clip-path="url(#p1-c1)" style="fill:var(--d1)"/>
+              <use href="#prof-alps-area" clip-path="url(#p1-c2)" style="fill:var(--d2)"/>
+              <use href="#prof-alps-area" clip-path="url(#p1-c3)" style="fill:var(--d3)"/>
+              <use href="#prof-alps-area" clip-path="url(#p1-c4)" class="sel" style="fill:var(--d4)"/>
+              <use href="#prof-alps-area" clip-path="url(#p1-c5)" style="fill:var(--d1)"/>
+              <use href="#prof-alps-area" clip-path="url(#p1-c7)" style="fill:var(--d2)"/>
+              <use href="#prof-alps-area" clip-path="url(#p1-c8)" style="fill:var(--d3)"/>
+              <use href="#prof-alps-area" clip-path="url(#p1-c9)" style="fill:var(--d4)"/>
+              <use href="#prof-alps-area" clip-path="url(#p1-c10)" style="fill:var(--d1)"/>
+            </g>
+            <rect x="220" y="0" width="9" height="300" style="fill:var(--coral);opacity:.18"/>
+            <use href="#prof-alps-line" class="prof-line p1-line"/>
+            <line class="p1-scrub" x1="228" x2="228" y1="0" y2="300"/>
+          </svg>
+          <i class="p1-pt" style="left:36%;top:17.6px"></i>
+        </div>
+        <div class="p1-base">
+          <i class="p1-de" style="left:12.3%"></i><i class="p1-de" style="left:22.4%"></i><i class="p1-de" style="left:33.6%"></i><b class="p1-de h" style="left:50%">4</b><i class="p1-de" style="left:58.4%"></i><i class="p1-de" style="left:67.2%"></i><i class="p1-de" style="left:75.2%"></i><i class="p1-de" style="left:85.2%"></i>
+          <span class="p1-km" style="left:0">0</span><span class="p1-km" style="right:0">634 km</span>
+        </div>
+      </div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>Profile, medium detent: the whole trip full width, each day its colour, the scrubber on the Iseran with its point on the map and its readout on the one line; the end of Day 4 is the handle to drag.</figcaption>
+</figure></div>
+<div class="mx-c"><figure class="mock phone" id="p2-profile">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p2">
+    <div class="map p2-map" style="bottom:374px">
+      <svg viewBox="540 -60 520 427" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-d4"/>
+        <use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line"/>
+        <g class="p2-pin" transform="translate(840 78) scale(1.35)"><circle r="13" style="fill:var(--d3);stroke:var(--panel);stroke-width:2.5"/><text y="4.5">3</text></g>
+        <g class="p2-pin" transform="translate(105 501) scale(1.35)"><circle r="13" style="fill:var(--d4);stroke:var(--panel);stroke-width:2.5"/><text y="4.5">4</text></g>
+        <g transform="translate(908 125)"><circle r="30" style="fill:var(--ink);opacity:.14"/><circle r="14" style="fill:var(--panel);stroke:var(--ink);stroke-width:4.5"/></g>
+      </svg>
+    </div>
+    <div class="p2-nav">
+      <div class="p2-row">
+        <button class="p2-ib"><svg><use href="#i-chev-l"/></svg></button>
+        <div class="p2-title">Alps: Genève to Nice</div>
+        <span class="p2-sp"></span>
+        <button class="p2-ib" title="Search"><svg><use href="#i-search"/></svg></button>
+        <button class="p2-ib" title="Undo"><svg><use href="#i-undo"/></svg></button>
+        <button class="p2-ib" title="More"><svg><use href="#i-more"/></svg></button>
+      </div>
+      <div class="p2-seg"><span>Map</span><span class="on">Profile</span><span>Days</span></div>
+    </div>
+    <div class="p2-prof">
+      <div class="p2-read"><span><i class="p2-dot"></i>Day 4 · km 15 · Col de l'Iseran</span><span class="p2-alt">2,764 m</span></div>
+      <div class="p2-quiet">Seasonal closure in OSM: Nov–15 Jun</div>
+      <div class="p2-pg">
+        <svg class="prof" viewBox="0 0 634 300" preserveAspectRatio="none">
+          <defs>
+            <clipPath id="p2-c1"><rect x="0" y="0" width="78" height="301"/></clipPath>
+            <clipPath id="p2-c2"><rect x="78" y="0" width="64" height="301"/></clipPath>
+            <clipPath id="p2-c3"><rect x="142" y="0" width="71" height="301"/></clipPath>
+            <clipPath id="p2-c4"><rect x="213" y="0" width="104" height="301"/></clipPath>
+            <clipPath id="p2-c5"><rect x="317" y="0" width="53" height="301"/></clipPath>
+            <clipPath id="p2-c7"><rect x="370" y="0" width="56" height="301"/></clipPath>
+            <clipPath id="p2-c8"><rect x="426" y="0" width="51" height="301"/></clipPath>
+            <clipPath id="p2-c9"><rect x="477" y="0" width="63" height="301"/></clipPath>
+            <clipPath id="p2-c10"><rect x="540" y="0" width="94" height="301"/></clipPath>
+          </defs>
+          <use href="#prof-alps-area" clip-path="url(#p2-c1)" class="p2-band" style="fill:var(--d1)"/>
+          <use href="#prof-alps-area" clip-path="url(#p2-c2)" class="p2-band" style="fill:var(--d2)"/>
+          <use href="#prof-alps-area" clip-path="url(#p2-c3)" class="p2-band" style="fill:var(--d3)"/>
+          <use href="#prof-alps-area" clip-path="url(#p2-c4)" class="p2-band" style="fill:var(--d4)"/>
+          <use href="#prof-alps-area" clip-path="url(#p2-c5)" class="p2-band" style="fill:var(--d1)"/>
+          <use href="#prof-alps-area" clip-path="url(#p2-c7)" class="p2-band" style="fill:var(--d2)"/>
+          <use href="#prof-alps-area" clip-path="url(#p2-c8)" class="p2-band" style="fill:var(--d3)"/>
+          <use href="#prof-alps-area" clip-path="url(#p2-c9)" class="p2-band" style="fill:var(--d4)"/>
+          <use href="#prof-alps-area" clip-path="url(#p2-c10)" class="p2-band" style="fill:var(--d1)"/>
+          <use href="#prof-alps-line" class="prof-line p2-pl"/>
+          <line class="p2-scrub" x1="228" x2="228" y1="0" y2="300"/>
+          <line class="p2-hend" x1="317" x2="317" y1="0" y2="300"/>
+        </svg>
+        <i class="p2-sdot" style="left:35.96%;top:7.9%"></i>
+        <span class="tick" style="left:40.7%"></span><span class="tick" style="left:44.8%"></span><span class="tick" style="left:47.3%"></span><span class="tick" style="left:49.7%"></span>
+        <b class="p2-dn" style="left:4px;color:var(--d1)">1</b>
+        <b class="p2-dn" style="left:calc(12.3% + 4px);color:var(--d2)">2</b>
+        <b class="p2-dn" style="left:calc(22.4% + 4px);color:var(--d3)">3</b>
+        <b class="p2-dn" style="left:calc(33.6% + 4px);color:var(--d4)">4</b>
+        <b class="p2-dn" style="left:calc(50% + 5px);color:var(--d1)">5</b>
+        <b class="p2-dn" style="left:calc(58.4% + 4px);color:var(--d2)">7</b>
+        <b class="p2-dn" style="left:calc(67.2% + 4px);color:var(--d3)">8</b>
+        <b class="p2-dn" style="left:calc(75.2% + 4px);color:var(--d4)">9</b>
+        <b class="p2-dn" style="left:calc(85.2% + 4px);color:var(--d1)">10</b>
+      </div>
+      <div class="p2-axis">
+        <span class="p2-hd" style="left:50%"></span>
+        <span class="p2-hl" style="left:calc(50% + 22px)">End of Day 4 · Valloire</span>
+      </div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>Profile view: the whole trip in the day colours; the scrubber on the Col de l'Iseran with its point on the map, which follows it at the day's zoom; the Day 4 end handle to drag; the campsites of the answer as ticks.</figcaption>
+</figure></div>
+<div class="mx-c"><figure class="mock phone" id="p3-profile">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p3">
+    <div class="map" style="top:98px;bottom:374px">
+      <svg viewBox="660 -2 340 324" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-d4"/>
+        <use href="#route-d4" class="rt-casing"/><use href="#route-d4" class="rt-line" style="stroke:var(--p3-d4)"/>
+        <g transform="translate(840 78)"><circle r="11" style="fill:var(--p3-d3);stroke:var(--panel);stroke-width:2.5"/><use href="#i-tent" x="-6.5" y="-6.5" width="13" height="13" style="color:var(--panel)"/></g>
+        <g transform="translate(901 116)"><circle r="12" style="fill:var(--ink);opacity:.18"/><circle r="7" style="fill:var(--ink);stroke:var(--panel);stroke-width:2.5"/></g>
+      </svg>
+    </div>
+    <div class="p3-ctl"><button title="Layers"><svg><use href="#i-layers"/></svg></button><button title="Here"><svg><use href="#i-here"/></svg></button></div>
+
+    <div class="p3-nav">
+      <button class="p3-nb" style="left:4px"><svg><use href="#i-chev-l"/></svg>Trips</button>
+      <div class="p3-ttl">Alps: Genève to Nice</div>
+      <button class="p3-nb" style="right:8px" title="Undo"><svg><use href="#i-undo"/></svg></button>
+    </div>
+
+    <div class="sheet p3-dock" style="height:291px">
+      <div class="grab"></div>
+      <div class="p3-ph">
+        <div><div class="t">Day 4 · Val d'Isère → Valloire</div><div class="m">Sun 20 Jun · 104 km · 2,310 m · 7 h 10</div></div>
+        <button class="p3-lnk">Whole trip</button>
+      </div>
+      <div class="p3-pg">
+        <span class="p3-pl p3-ax"><span style="top:38.1%">2,000 m</span><span style="top:85.7%">1,000 m</span></span>
+        <div class="p3-prof">
+          <svg class="prof" viewBox="0 20 104 210" preserveAspectRatio="none">
+            <use href="#prof-d4-area" class="prof-area"/>
+            <rect class="p3-band" x="0" width="104" y="0" height="300" style="fill:var(--p3-d4)"/>
+            <rect class="p3-closed" x="7" width="9" y="0" height="300"/>
+            <line class="prof-grid" x1="0" x2="104" y1="100" y2="100"/><line class="prof-grid" x1="0" x2="104" y1="200" y2="200"/>
+            <use href="#prof-d4-line" class="prof-line" style="stroke:var(--p3-d4)"/>
+          </svg>
+          <span class="p3-dend sm" style="left:0;top:45.2%;--p3-c:var(--p3-d3)"></span>
+          <span class="p3-scrub" style="left:12.5%;--y:5.7%"></span>
+          <span class="p3-read" style="left:22px">km 13 · 2,680 m</span>
+          <span class="p3-dend" style="left:100%;top:65.2%;--p3-c:var(--p3-d4)"><svg><use href="#i-tent"/></svg></span>
+        </div>
+        <span class="p3-pl">Surface</span><div class="band"><i class="paved" style="left:0;width:100%"></i></div>
+        <span class="p3-pl">Snow history</span><div class="band"><i class="snow" style="left:8.7%;width:5.8%"></i></div>
+      </div>
+    </div>
+
+    <div class="p3-bar">
+      <button><i><svg><use href="#i-search"/></svg></i>Search</button>
+      <button><i><svg><use href="#p3-i-days"/></svg></i>Days</button>
+      <button><i><svg><use href="#i-more"/></svg></i>More</button>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>The strip dragged up, scoped to Day 4: the scrubber's point shows on the map; the day-end handle at km 104 moves by a drag, never re-routing.</figcaption>
+</figure></div>
+<div class="mx-s">The days</div>
+<div class="mx-c"><figure class="mock phone" id="p1-days">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p1-dc">
+    <div class="map" style="bottom:684px">
+      <svg class="p1-z15" viewBox="84 -137 604.5 103.2" preserveAspectRatio="xMidYMid slice"><use href="#map-alps"/>
+        <use href="#route-alps-d1" class="rt-casing"/><use href="#route-alps-d1" class="rt-line"/>
+        <g transform="translate(190 32)"><circle r="13" style="fill:var(--panel);stroke:var(--ink);stroke-width:4"/></g></svg>
+    </div>
+    <div class="p1-nav">
+      <button class="p1-nb"><svg><use href="#i-chev-l"/></svg>Trips</button>
+      <span class="p1-title">Alps: Genève to Nice</span>
+      <span class="p1-nr"><button class="p1-nb icon dis" title="Undo"><svg><use href="#i-undo"/></svg></button><button class="p1-nb icon" title="More"><svg><use href="#i-more"/></svg></button></span>
+    </div>
+    <div class="sheet p1-sheet" style="height:700px">
+      <div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="ph">Search places or the route</span></div>
+      <div class="p1-one"><b>634 km · 14,590 m · 49 h riding</b><span class="cap">10 days · Thu 17 – Sat 26 Jun 2027 · Touring</span></div>
+      <div class="p1-list">
+        <div class="p1-day" style="--dc:var(--d1)"><b class="n">1</b><div class="t">Genève → Le Grand-Bornand</div><span class="km">78 km</span><div class="m">Thu 17 Jun · 5 h 40 · 1,640 m</div><i class="bar" style="width:calc((100% - 42px) * .75)"></i></div>
+        <div class="p1-day" style="--dc:var(--d2)"><b class="n">2</b><div class="t">Le Grand-Bornand → Beaufort</div><span class="km">64 km</span><div class="m">Fri 18 Jun · 5 h 20 · 1,720 m</div><i class="bar" style="width:calc((100% - 42px) * .62)"></i></div>
+        <div class="p1-day" style="--dc:var(--d3)"><b class="n">3</b><div class="t">Beaufort → Val d'Isère</div><span class="km">71 km</span><div class="m">Sat 19 Jun · 6 h 30 · 2,290 m</div><i class="bar" style="width:calc((100% - 42px) * .68)"></i></div>
+        <div class="p1-day" style="--dc:var(--d4)"><b class="n">4</b><div class="t">Val d'Isère → Valloire</div><span class="km">104 km</span><div class="m">Sun 20 Jun · 7 h 10 · 2,310 m</div><i class="bar" style="width:calc((100% - 42px) * 1)"></i></div>
+        <div class="p1-day" style="--dc:var(--d1)"><b class="n">5</b><div class="t">Valloire → Briançon</div><span class="km">53 km</span><div class="m">Mon 21 Jun · 4 h 30 · 1,480 m</div><i class="bar" style="width:calc((100% - 42px) * .51)"></i></div>
+        <div class="p1-day rest"><b class="n rest">6</b><div class="t">Rest day · Briançon</div><span class="km">–</span><div class="m">Tue 22 Jun</div></div>
+        <div class="p1-day" style="--dc:var(--d2)"><b class="n">7</b><div class="t">Briançon → Guillestre</div><span class="km">56 km</span><div class="m">Wed 23 Jun · 4 h 40 · 1,420 m</div><i class="bar" style="width:calc((100% - 42px) * .54)"></i></div>
+        <div class="p1-day" style="--dc:var(--d3)"><b class="n">8</b><div class="t">Guillestre → Barcelonnette</div><span class="km">51 km</span><div class="m">Thu 24 Jun · 4 h 30 · 1,470 m</div><i class="bar" style="width:calc((100% - 42px) * .49)"></i></div>
+        <div class="p1-day" style="--dc:var(--d4)"><b class="n">9</b><div class="t">Barcelonnette → Saint-Étienne-de-Tinée</div><span class="km">63 km</span><div class="m">Fri 25 Jun · 5 h 30 · 1,640 m</div><i class="bar" style="width:calc((100% - 42px) * .61)"></i></div>
+      </div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>Days, high detent: the list with the length bars in the day colours; a tap selects a day, the profile then scrubs and drags on it.</figcaption>
+</figure></div>
+<div class="mx-c"><figure class="mock phone" id="p2-days">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p2">
+    <div class="p2-nav">
+      <div class="p2-row">
+        <button class="p2-ib"><svg><use href="#i-chev-l"/></svg></button>
+        <div class="p2-title">Alps: Genève to Nice</div>
+        <span class="p2-sp"></span>
+        <button class="p2-ib" title="Search"><svg><use href="#i-search"/></svg></button>
+        <button class="p2-ib" title="Undo"><svg><use href="#i-undo"/></svg></button>
+        <button class="p2-ib" title="More"><svg><use href="#i-more"/></svg></button>
+      </div>
+      <div class="p2-seg"><span>Map</span><span>Profile</span><span class="on">Days</span></div>
+    </div>
+    <div class="p2-days">
+      <div class="p2-dh"><b>634 km · 14,590 m · 49 h riding</b><span>10 days · Thu 17 – Sat 26 Jun 2027</span></div>
+      <div class="p2-day p2-c1"><b class="n">1</b><div><div class="t">Genève → Le Grand-Bornand</div><div class="m">Thu 17 Jun · 5 h 40 · 1,640 m</div></div><span class="km">78 km</span><span class="bar"><i style="width:75%"></i></span></div>
+      <div class="p2-day p2-c2"><b class="n">2</b><div><div class="t">Le Grand-Bornand → Beaufort</div><div class="m">Fri 18 Jun · 5 h 20 · 1,720 m</div></div><span class="km">64 km</span><span class="bar"><i style="width:62%"></i></span></div>
+      <div class="p2-day p2-c3"><b class="n">3</b><div><div class="t">Beaufort → Val d'Isère</div><div class="m">Sat 19 Jun · 6 h 30 · 2,290 m</div></div><span class="km">71 km</span><span class="bar"><i style="width:68%"></i></span></div>
+      <div class="p2-day p2-c4"><b class="n">4</b><div><div class="t">Val d'Isère → Valloire</div><div class="m">Sun 20 Jun · 7 h 10 · 2,310 m</div></div><span class="km">104 km</span><span class="bar"><i style="width:100%"></i></span></div>
+      <div class="p2-day p2-c1"><b class="n">5</b><div><div class="t">Valloire → Briançon</div><div class="m">Mon 21 Jun · 4 h 30 · 1,480 m</div></div><span class="km">53 km</span><span class="bar"><i style="width:51%"></i></span></div>
+      <div class="p2-day"><b class="n rest">6</b><div><div class="t">Rest day</div><div class="m">Tue 22 Jun · Briançon</div></div><span class="km">–</span></div>
+      <div class="p2-day p2-c2"><b class="n">7</b><div><div class="t">Briançon → Guillestre</div><div class="m">Wed 23 Jun · 4 h 40 · 1,420 m</div></div><span class="km">56 km</span><span class="bar"><i style="width:54%"></i></span></div>
+      <div class="p2-day p2-c3"><b class="n">8</b><div><div class="t">Guillestre → Barcelonnette</div><div class="m">Thu 24 Jun · 4 h 30 · 1,470 m</div></div><span class="km">51 km</span><span class="bar"><i style="width:49%"></i></span></div>
+      <div class="p2-day p2-c4"><b class="n">9</b><div><div class="t">Barcelonnette → Saint-Étienne-de-Tinée</div><div class="m">Fri 25 Jun · 5 h 30 · 1,640 m</div></div><span class="km">63 km</span><span class="bar"><i style="width:61%"></i></span></div>
+      <div class="p2-day p2-c1"><b class="n">10</b><div><div class="t">Saint-Étienne-de-Tinée → Nice</div><div class="m">Sat 26 Jun · 4 h 50 · 620 m</div></div><span class="km">94 km</span><span class="bar"><i style="width:90%"></i></span></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>Days view: one list with the length bars in the day colours; a tap on a day selects it for the Map and Profile views. The list scrolls.</figcaption>
+</figure></div>
+<div class="mx-c"><figure class="mock phone" id="p3-days">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p3">
+    <div class="map" style="top:98px;bottom:639px">
+      <svg viewBox="66 -20 640 917" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-alps"/>
+        <use href="#route-alps-d1" class="rt-casing"/><use href="#route-alps-d2" class="rt-casing"/><use href="#route-alps-d3" class="rt-casing"/><use href="#route-alps-d4" class="rt-casing"/><use href="#route-alps-d5" class="rt-casing"/><use href="#route-alps-d7" class="rt-casing"/><use href="#route-alps-d8" class="rt-casing"/><use href="#route-alps-d9" class="rt-casing"/><use href="#route-alps-d10" class="rt-casing"/>
+        <use href="#route-alps-d1" class="rt-line" style="stroke:var(--p3-d1)"/><use href="#route-alps-d2" class="rt-line" style="stroke:var(--p3-d2)"/><use href="#route-alps-d3" class="rt-line" style="stroke:var(--p3-d3)"/><use href="#route-alps-d4" class="rt-line" style="stroke:var(--p3-d4)"/><use href="#route-alps-d5" class="rt-line" style="stroke:var(--p3-d1)"/><use href="#route-alps-d7" class="rt-line" style="stroke:var(--p3-d2)"/><use href="#route-alps-d8" class="rt-line" style="stroke:var(--p3-d3)"/><use href="#route-alps-d9" class="rt-line" style="stroke:var(--p3-d4)"/><use href="#route-alps-d10" class="rt-line" style="stroke:var(--p3-d1)"/>
+        <g class="p3-de" transform="translate(483 284)"><circle r="22" style="fill:var(--p3-d3);stroke:var(--panel);stroke-width:3"/><text y="7">3</text></g>
+        <g class="p3-de" transform="translate(290 378)"><circle r="22" style="fill:var(--p3-d4);stroke:var(--panel);stroke-width:3"/><text y="7">4</text></g>
+        <g class="p3-de" transform="translate(363 467)"><circle r="22" style="fill:var(--p3-d1);stroke:var(--panel);stroke-width:3"/><text y="7">5</text></g>
+      </svg>
+    </div>
+
+    <div class="p3-nav">
+      <button class="p3-nb" style="left:4px"><svg><use href="#i-chev-l"/></svg>Trips</button>
+      <div class="p3-ttl">Alps: Genève to Nice</div>
+      <button class="p3-nb" style="right:8px" title="Undo"><svg><use href="#i-undo"/></svg></button>
+    </div>
+
+    <div class="sheet p3-dock" style="height:556px">
+      <div class="grab"></div>
+      <div class="p3-dh">
+        <div><div class="t">10 days · 634 km · 14,590 m</div><div class="m">Thu 17 – Sat 26 Jun 2027 · 49 h riding</div></div>
+        <button class="p3-ib" title="Trip dates"><svg><use href="#i-calendar"/></svg></button>
+      </div>
+      <div class="p3-fade" style="flex:1;min-height:0;overflow:hidden">
+        <div class="p3-day" style="--p3-c:var(--p3-d1)"><b class="n">1</b><div class="t">Genève → Le Grand-Bornand</div><span class="km">78 km</span><div class="m">Thu 17 Jun · 5 h 40 · 1,640 m</div><i class="bar" style="width:calc((100% - 40px) * .75)"></i></div>
+        <div class="p3-day" style="--p3-c:var(--p3-d2)"><b class="n">2</b><div class="t">Le Grand-Bornand → Beaufort</div><span class="km">64 km</span><div class="m">Fri 18 Jun · 5 h 20 · 1,720 m</div><i class="bar" style="width:calc((100% - 40px) * .615)"></i></div>
+        <div class="p3-day" style="--p3-c:var(--p3-d3)"><b class="n">3</b><div class="t">Beaufort → Val d'Isère</div><span class="km">71 km</span><div class="m">Sat 19 Jun · 6 h 30 · 2,290 m</div><i class="bar" style="width:calc((100% - 40px) * .683)"></i></div>
+        <div class="p3-day" style="--p3-c:var(--p3-d4)"><b class="n">4</b><div class="t">Val d'Isère → Valloire</div><span class="km">104 km</span><div class="m">Sun 20 Jun · 7 h 10 · 2,310 m</div><i class="bar" style="width:calc((100% - 40px) * 1)"></i></div>
+        <div class="p3-day" style="--p3-c:var(--p3-d1)"><b class="n">5</b><div class="t">Valloire → Briançon</div><span class="km">53 km</span><div class="m">Mon 21 Jun · 4 h 30 · 1,480 m</div><i class="bar" style="width:calc((100% - 40px) * .51)"></i></div>
+        <div class="p3-day rest"><b class="n">6</b><div class="t">Rest day · Briançon</div><span class="km"></span><div class="m">Tue 22 Jun</div></div>
+        <div class="p3-day" style="--p3-c:var(--p3-d2)"><b class="n">7</b><div class="t">Briançon → Guillestre</div><span class="km">56 km</span><div class="m">Wed 23 Jun · 4 h 40 · 1,420 m</div><i class="bar" style="width:calc((100% - 40px) * .538)"></i></div>
+        <div class="p3-day" style="--p3-c:var(--p3-d3)"><b class="n">8</b><div class="t">Guillestre → Barcelonnette</div><span class="km">51 km</span><div class="m">Thu 24 Jun · 4 h 30 · 1,470 m</div><i class="bar" style="width:calc((100% - 40px) * .49)"></i></div>
+      </div>
+    </div>
+
+    <div class="p3-bar">
+      <button><i><svg><use href="#i-search"/></svg></i>Search</button>
+      <button class="on"><i><svg><use href="#p3-i-days"/></svg></i>Days</button>
+      <button><i><svg><use href="#i-more"/></svg></i>More</button>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>Days: a sheet over the map, one day per row with its length bar in the day colour; a tap scopes the map and the strip to that day.</figcaption>
+</figure></div>
+<div class="mx-s">On the road: a route</div>
+<div class="mx-c"><figure class="mock phone" id="p1-route">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p1-dc">
+    <div class="map" style="bottom:424px">
+      <svg class="p1-z18" viewBox="170 -50 700 754" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-bf"/>
+        <use href="#route-bf-leastclimb" class="rt-alt-casing"/><use href="#route-bf-leastclimb" class="rt-alt"/>
+        <use href="#route-bf-leastunpaved" class="rt-alt-casing"/><use href="#route-bf-leastunpaved" class="rt-alt"/>
+        <use href="#route-bf-shortest" class="rt-casing"/><use href="#route-bf-shortest" class="rt-line"/>
+        <text class="p1-mt" x="330" y="393" text-anchor="middle" style="font-size:22px;stroke-width:5px">Least climbing</text>
+        <text class="p1-mt" x="856" y="447" text-anchor="end" style="font-size:22px;stroke-width:5px">Least unpaved</text>
+        <text class="p1-mt rt" x="522" y="262" style="font-size:22px;stroke-width:5px">Shortest · 34 km</text>
+        <g transform="translate(380 233)"><circle r="32" fill="#2f7de1" opacity=".18"/><circle r="16" fill="#2f7de1" stroke="#ffffff" stroke-width="4"/></g>
+        <g transform="translate(820 576)"><circle r="19" style="fill:var(--ink);stroke:var(--panel);stroke-width:3"/><use href="#i-flag" x="-11" y="-11" width="22" height="22" style="color:var(--panel)"/></g>
+      </svg>
+      <span class="attribution p1-attr">© OpenStreetMap</span>
+    </div>
+    <div class="p1-nav">
+      <button class="p1-nb"><svg><use href="#i-chev-l"/></svg>Routes</button>
+      <span class="p1-title">New route from Glottertal</span>
+      <span class="p1-nr"><button class="p1-nb icon dis" title="Undo"><svg><use href="#i-undo"/></svg></button><button class="p1-nb icon" title="More"><svg><use href="#i-more"/></svg></button></span>
+    </div>
+    <div class="sheet p1-sheet" style="height:440px">
+      <div class="grab"></div>
+      <div class="qbox"><svg><use href="#i-search"/></svg><span class="typed">Titisee</span><button class="p1-x" title="Clear"><svg><use href="#i-close"/></svg></button></div>
+      <div class="understood"><span class="lbl">Understood as</span>
+        <button class="chip what"><svg><use href="#i-route"/></svg>Route<svg class="p1-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where">To Titisee<svg class="p1-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where"><svg><use href="#i-here"/></svg>From here <span class="k">Glottertal</span><svg class="p1-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip filter"><svg><use href="#i-bike"/></svg>Touring<svg class="p1-chev"><use href="#i-chev-d"/></svg></button>
+      </div>
+      <div class="p1-list" style="margin-top:6px">
+        <div class="row p1-opt sel"><span class="ic" style="color:var(--route)"><svg><use href="#i-dot"/></svg></span><div class="t">Shortest</div><span class="win">34 km</span><div class="m">1,020 m · 2 h 50 · 3.1 km unpaved, 1.4 km unknown</div></div>
+        <div class="row p1-opt"><span class="ic"><svg><use href="#i-ring"/></svg></span><div class="t">Least climbing</div><span class="win">−300 m</span><div class="m">+13 km · +0 h 20 · via Freiburg, Höllental</div></div>
+        <div class="row p1-opt" style="border-bottom:0"><span class="ic"><svg><use href="#i-ring"/></svg></span><div class="t">Least unpaved</div><span class="win">0 km unpaved</span><div class="m">+2 km · +40 m · +0 h 10 · on roads</div></div>
+      </div>
+      <div class="p1-act"><button class="btn primary">Use this route</button></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>On the road, medium detent: Titisee from here; the three ways named by what they win, as differences from the chosen one; its action in one row. Sending is the route page's job.</figcaption>
+</figure></div>
+<div class="mx-c"><figure class="mock phone" id="p2-route">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p2">
+    <div class="map p2-map" style="bottom:400px">
+      <svg viewBox="240 170 700 540" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-bf"/>
+        <use href="#route-bf-leastclimb" class="rt-alt-casing"/><use href="#route-bf-leastclimb" class="rt-alt"/>
+        <use href="#route-bf-leastunpaved" class="rt-alt-casing"/><use href="#route-bf-leastunpaved" class="rt-alt"/>
+        <use href="#route-bf-shortest" class="rt-casing"/><use href="#route-bf-shortest" class="rt-line"/>
+        <text class="p2-pm" x="430" y="505" style="font-size:24px;stroke-width:6px">Least climbing · +13 km</text>
+        <text class="p2-pm" x="760" y="430" text-anchor="end" style="font-size:24px;stroke-width:6px">Least unpaved · +2 km</text>
+        <text class="p2-pm rt" x="470" y="262" style="font-size:24px;stroke-width:6px">Shortest · 34 km</text>
+        <g transform="translate(380 233) scale(1.8)"><circle r="12" fill="#2f7de1" opacity=".18"/><circle r="7" fill="#2f7de1" stroke="#fff" stroke-width="2.5"/></g>
+        <g transform="translate(820 576) scale(1.8)"><circle r="13" style="fill:var(--ink);stroke:var(--panel);stroke-width:2.5"/><use href="#i-flag" x="-7.5" y="-7.5" width="15" height="15" style="color:var(--panel)"/></g>
+      </svg>
+    </div>
+    <div class="p2-nav">
+      <div class="p2-row">
+        <button class="p2-ib"><svg><use href="#i-chev-l"/></svg></button>
+        <div class="p2-title">New route from Glottertal</div>
+        <span class="p2-sp"></span>
+        <button class="p2-ib" title="Search"><svg><use href="#i-search"/></svg></button>
+        <button class="p2-ib off" title="Undo"><svg><use href="#i-undo"/></svg></button>
+        <button class="p2-ib" title="More"><svg><use href="#i-more"/></svg></button>
+      </div>
+      <div class="p2-seg"><span class="on">Map</span><span>Profile</span><span>Days</span></div>
+    </div>
+    <button class="p2-loc"><svg><use href="#i-here"/></svg></button>
+    <div class="sheet p2-dock" style="height:408px">
+      <div class="grab"></div>
+      <div class="understood p2-req">
+        <button class="chip what"><svg><use href="#i-route"/></svg>Route<svg class="p2-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where">From here <span class="k">Glottertal</span><svg class="p2-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where">To Titisee<svg class="p2-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip filter"><svg><use href="#i-bike"/></svg>Touring<svg class="p2-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="p2-x"><svg><use href="#i-close"/></svg></button>
+      </div>
+      <div class="p2-head"><b>Glottertal → Titisee</b><span>3 options</span></div>
+      <div class="p2-list">
+        <div class="row sel p2-opt"><div><div class="t"><span>Shortest</span><span class="p2-fig">34 km · 1,020 m · 2 h 50</span></div><div class="m">via St. Peter, St. Märgen · 3.1 km unpaved</div></div></div>
+        <div class="row p2-opt"><div><div class="t"><span>Least climbing</span><span class="p2-fig">+13 km · −300 m · +0 h 20</span></div><div class="m">via Freiburg, Höllental · 0.8 km unpaved</div></div></div>
+        <div class="row p2-opt"><div><div class="t"><span>Least unpaved</span><span class="p2-fig">+2 km · +40 m · +0 h 10</span></div><div class="m">via St. Peter, on roads · 0 km unpaved</div></div></div>
+      </div>
+      <div class="p2-act"><button class="btn primary">Use this route</button></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>On the road: "Titisee" from here gives three options named by what they win, as differences; the selected one has one action. Save and send to device lives in "···" and on the route preview.</figcaption>
+</figure></div>
+<div class="mx-c"><figure class="mock phone" id="p3-route">
+  <div class="fit" data-w="412" data-max="0.8"><div class="mk mk-phone p3">
+    <div class="map" style="top:98px;bottom:432px">
+      <svg viewBox="140 104 760 612" preserveAspectRatio="xMidYMid slice">
+        <use href="#map-bf"/>
+        <use href="#route-bf-leastclimb" class="rt-alt-casing"/><use href="#route-bf-leastclimb" class="rt-alt"/>
+        <use href="#route-bf-leastunpaved" class="rt-alt-casing"/><use href="#route-bf-leastunpaved" class="rt-alt"/>
+        <use href="#route-bf-shortest" class="rt-casing"/><use href="#route-bf-shortest" class="rt-line"/>
+        <text class="p3-mt" x="300" y="540" style="font-size:24px;stroke-width:5px">Least climbing · +13 km</text>
+        <text class="p3-mt" x="700" y="452" text-anchor="end" style="font-size:24px;stroke-width:5px">Least unpaved · +2 km</text>
+        <text class="p3-mt b" x="470" y="268" style="font-size:24px;stroke-width:5px;fill:var(--route)">Shortest · 34 km</text>
+        <g transform="translate(380 233)"><circle r="34" style="fill:var(--navy);opacity:.18"/><circle r="19" style="fill:var(--navy);stroke:var(--panel);stroke-width:5"/></g>
+        <g transform="translate(820 576)"><circle r="24" style="fill:var(--ink);stroke:var(--panel);stroke-width:4"/><use href="#i-flag" x="-14" y="-14" width="28" height="28" style="color:var(--panel)"/></g>
+      </svg>
+    </div>
+    <div class="p3-ctl"><button title="Layers"><svg><use href="#i-layers"/></svg></button><button title="Here"><svg><use href="#i-here"/></svg></button></div>
+
+    <div class="p3-nav">
+      <button class="p3-nb" style="left:4px"><svg><use href="#i-chev-l"/></svg>Back</button>
+      <div class="p3-ttl">New route from Glottertal</div>
+      <button class="p3-nb" style="right:8px" title="Undo"><svg><use href="#i-undo"/></svg></button>
+    </div>
+
+    <div class="sheet p3-dock" style="height:349px">
+      <div class="grab"></div>
+      <div class="understood">
+        <button class="chip what"><svg><use href="#i-route"/></svg>Route<svg class="p3-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where"><svg><use href="#i-here"/></svg>From here <span class="k">Glottertal</span><svg class="p3-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip where">To Titisee<svg class="p3-chev"><use href="#i-chev-d"/></svg></button>
+        <button class="chip filter"><svg><use href="#i-bike"/></svg>Touring<svg class="p3-chev"><use href="#i-chev-d"/></svg></button>
+      </div>
+      <div style="height:6px;flex:none"></div>
+      <div class="p3-sel">
+        <div class="row p3-opt"><span class="ic" style="color:var(--route)"><svg><use href="#i-dot"/></svg></span><div class="t">Shortest</div><span class="fig">34 km · 1,020 m · 2 h 50</span><div class="m">via St. Peter, St. Märgen · 3.1 km unpaved</div></div>
+        <div class="p3-act"><button class="btn primary">Use this route</button></div>
+      </div>
+      <div class="row p3-opt"><span class="ic"><svg><use href="#i-ring"/></svg></span><div class="t">Least climbing</div><span class="fig">+13 km · −300 m · +0 h 20</span><div class="m">via Freiburg, Kirchzarten, Höllental</div></div>
+      <div class="row p3-opt" style="border-bottom:0"><span class="ic"><svg><use href="#i-ring"/></svg></span><div class="t">Least unpaved</div><span class="fig">+2 km · +40 m · +0 h 10</span><div class="m">via St. Peter, St. Märgen, on roads</div></div>
+    </div>
+
+    <div class="p3-bar">
+      <button class="on"><i><svg><use href="#i-search"/></svg></i>Search</button>
+      <button><i><svg><use href="#p3-i-days"/></svg></i>Days</button>
+      <button><i><svg><use href="#i-more"/></svg></i>More</button>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>On the road: Titisee typed from here; the three options as differences, the chosen one with "Use this route". Send to device waits in More.</figcaption>
+</figure></div>
+</div></div>
+<div class="mx-extra"><figure class="mock phone" id="p3-landscape">
+  <div class="fit" data-w="866" data-max="0.8"><div class="mk mk-phone p3 p3-land">
+    <div class="p3-lh"><span>Alps: Genève to Nice</span><span class="cap">634 km · 14,590 m · 49 h riding · 10 days</span></div>
+    <div class="p3-lg">
+      <span class="p3-pl p3-ax"><span style="top:0%">3,000 m</span><span style="top:33.3%">2,000 m</span><span style="top:66.7%">1,000 m</span><span style="top:100%">0 m</span></span>
+      <div class="p3-prof">
+        <svg class="prof" viewBox="0 0 634 300" preserveAspectRatio="none">
+          <use href="#prof-alps-area" class="prof-area"/>
+          <rect class="p3-band" x="0" width="78" y="0" height="300" style="fill:var(--p3-d1)"/><rect class="p3-band" x="78" width="64" y="0" height="300" style="fill:var(--p3-d2)"/><rect class="p3-band" x="142" width="71" y="0" height="300" style="fill:var(--p3-d3)"/><rect class="p3-band" x="213" width="104" y="0" height="300" style="fill:var(--p3-d4)"/><rect class="p3-band" x="317" width="53" y="0" height="300" style="fill:var(--p3-d1)"/><rect class="p3-band" x="370" width="56" y="0" height="300" style="fill:var(--p3-d2)"/><rect class="p3-band" x="426" width="51" y="0" height="300" style="fill:var(--p3-d3)"/><rect class="p3-band" x="477" width="63" y="0" height="300" style="fill:var(--p3-d4)"/><rect class="p3-band" x="540" width="94" y="0" height="300" style="fill:var(--p3-d1)"/>
+          <rect class="p3-closed" x="220" width="9" y="0" height="300"/>
+          <line class="prof-grid" x1="0" x2="634" y1="100" y2="100"/><line class="prof-grid" x1="0" x2="634" y1="200" y2="200"/>
+          <use href="#prof-alps-line" class="prof-line"/>
+        </svg>
+        <span class="p3-dend sm" style="left:12.3%;top:68.3%;--p3-c:var(--p3-d1)"></span>
+        <span class="p3-dend sm" style="left:22.4%;top:75.3%;--p3-c:var(--p3-d2)"></span>
+        <span class="p3-dend sm" style="left:33.6%;top:38.3%;--p3-c:var(--p3-d3)"></span>
+        <span class="p3-dend" style="left:50%;top:52.3%;--p3-c:var(--p3-d4)"><svg><use href="#i-tent"/></svg></span>
+        <span class="p3-dend sm" style="left:58.4%;top:60%;--p3-c:var(--p3-d1)"></span>
+        <span class="p3-dend sm" style="left:67.2%;top:66.7%;--p3-c:var(--p3-d2)"></span>
+        <span class="p3-dend sm" style="left:75.2%;top:62.3%;--p3-c:var(--p3-d3)"></span>
+        <span class="p3-dend sm" style="left:85.2%;top:62%;--p3-c:var(--p3-d4)"></span>
+        <span class="p3-scrub" style="left:35.7%;--y:11.3%"></span>
+        <span class="p3-read" style="left:37.5%">Day 4 · km 13 · 2,680 m · Col de l'Iseran in 2 km</span>
+      </div>
+      <span class="p3-pl">Days</span>
+      <div class="p3-nums">
+        <b style="left:6.2%;--p3-c:var(--p3-d1)">1</b><b style="left:17.4%;--p3-c:var(--p3-d2)">2</b><b style="left:28%;--p3-c:var(--p3-d3)">3</b><b style="left:41.8%;--p3-c:var(--p3-d4)">4</b><b style="left:54.2%;--p3-c:var(--p3-d1)">5</b><i style="left:58.4%">rest</i><b style="left:62.8%;--p3-c:var(--p3-d2)">7</b><b style="left:71.2%;--p3-c:var(--p3-d3)">8</b><b style="left:80.2%;--p3-c:var(--p3-d4)">9</b><b style="left:92.6%;--p3-c:var(--p3-d1)">10</b>
+      </div>
+      <span class="p3-pl">Surface</span>
+      <div class="band"><i class="paved" style="left:0;width:100%"></i><i class="unknown" style="left:16.4%;width:1.3%"></i><i class="unpaved" style="left:18.6%;width:.3%"></i><i class="unknown" style="left:62.8%;width:.7%"></i></div>
+      <span class="p3-pl">Snow history</span>
+      <div class="band"><i class="snow" style="left:35%;width:1%"></i><i class="snow" style="left:52.2%;width:.7%"></i><i class="snow" style="left:78.4%;width:.7%"></i></div>
+    </div>
+    <div class="home-ind"></div>
+  </div></div>
+  <figcaption>Turned to landscape: the whole trip's profile alone, the day colours, every day end as a handle, the scrubber with its readout.</figcaption>
+</figure></div>

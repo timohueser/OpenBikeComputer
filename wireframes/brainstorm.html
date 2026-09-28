@@ -1,0 +1,753 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Route Planner Brainstorm</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Mono:wght@400;600&family=Atkinson+Hyperlegible+Next:wght@400;500;700;800&display=swap">
+<style>
+:root{
+  --bg:#f4f2eb; --bg-2:#ebe8dc; --panel:#fffdf8;
+  --line:rgba(92,90,46,.16); --line-strong:rgba(92,90,46,.32);
+  --ink:#1c1b14; --ink-soft:#4f4d2a; --ink-faint:#6b6847;
+  --amber:#f4a81d; --amber-soft:#fbe9c4; --amber-ink:#7a5300;
+  --route:#cc2a93; --route-soft:#f8dcee;
+  --water:#33575b; --water-soft:#d8e6e4;
+  --coral:#ae4825; --coral-soft:#f5dcd2;
+  --ok:#4a6b2f; --ok-soft:#dfe9d3;
+  --sans:"Atkinson Hyperlegible Next","Atkinson Hyperlegible",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"Atkinson Hyperlegible Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#16150f; --bg-2:#1e1d16; --panel:#211f18;
+    --line:rgba(189,180,126,.15); --line-strong:rgba(189,180,126,.3);
+    --ink:#f2efe3; --ink-soft:#d3cba0; --ink-faint:#aaa383;
+    --amber:#f2a93a; --amber-soft:#3a2e15; --amber-ink:#f5c877;
+    --route:#f175c5; --route-soft:#3d1a30;
+    --water:#8bb9bd; --water-soft:#1b2b2c;
+    --coral:#ef996f; --coral-soft:#3b2016;
+    --ok:#a9c98a; --ok-soft:#232d1a;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#16150f; --bg-2:#1e1d16; --panel:#211f18;
+  --line:rgba(189,180,126,.15); --line-strong:rgba(189,180,126,.3);
+  --ink:#f2efe3; --ink-soft:#d3cba0; --ink-faint:#aaa383;
+  --amber:#f2a93a; --amber-soft:#3a2e15; --amber-ink:#f5c877;
+  --route:#f175c5; --route-soft:#3d1a30;
+  --water:#8bb9bd; --water-soft:#1b2b2c;
+  --coral:#ef996f; --coral-soft:#3b2016;
+  --ok:#a9c98a; --ok-soft:#232d1a;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:64px}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+body{background:var(--bg);color:var(--ink);font:16px/1.55 var(--sans);padding-inline:20px;padding-block:0 64px}
+.wrap{max-width:900px;margin:0 auto}
+a{color:var(--route);text-decoration-thickness:1px;text-underline-offset:2px}
+a:hover{text-decoration-thickness:2px}
+a:focus-visible,button:focus-visible{outline:2px solid var(--amber);outline-offset:2px;border-radius:3px}
+h1,h2,h3{text-wrap:balance;line-height:1.2;margin:0}
+h1{font-size:clamp(30px,5vw,44px);font-weight:800;letter-spacing:-.01em}
+h2{font-size:26px;font-weight:800}
+h3{font-size:18px;font-weight:700}
+p{margin:0}
+ul{margin:0;padding-left:1.15em}
+li+li{margin-top:4px}
+code{font:13px var(--mono);background:var(--bg-2);padding:1px 4px;border-radius:3px}
+.mono{font-family:var(--mono)}
+.muted{color:var(--ink-faint)}
+
+/* header */
+header{padding-block:40px 20px;display:grid;gap:14px}
+.eyebrow{font:600 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint)}
+.lead{font-size:19px;max-width:62ch;color:var(--ink-soft)}
+.meta{display:flex;flex-wrap:wrap;gap:6px 16px;font:13px var(--mono);color:var(--ink-faint)}
+.profile{width:100%;height:86px;display:block;margin-top:6px}
+.profile .area{fill:var(--route-soft)}
+.profile .ln{fill:none;stroke:var(--route);stroke-width:2.5;vector-effect:non-scaling-stroke;stroke-linejoin:round}
+.profile .day{stroke:var(--ink-faint);stroke-width:1;stroke-dasharray:3 3;vector-effect:non-scaling-stroke}
+.profile .gap{fill:var(--amber);opacity:.35}
+.plabels{display:flex;justify-content:space-between;font:12px var(--mono);color:var(--ink-faint);margin-top:-2px}
+
+/* nav */
+nav{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);border-bottom:1px solid var(--line);margin-inline:-20px;padding-inline:20px}
+nav .scroller{max-width:900px;margin:0 auto;display:flex;gap:4px;overflow-x:auto;padding-block:10px;scrollbar-width:none}
+nav a{flex:none;font:600 13px/1 var(--sans);color:var(--ink-soft);text-decoration:none;padding:7px 10px;border-radius:6px}
+nav a:hover{background:var(--bg-2);color:var(--ink)}
+
+section{padding-block:44px 8px;display:grid;gap:18px}
+.intro{max-width:66ch;color:var(--ink-soft)}
+
+/* chips */
+.chip{display:inline-block;font:600 11px/1 var(--mono);letter-spacing:.05em;text-transform:uppercase;padding:5px 7px 4px;border-radius:4px;white-space:nowrap;vertical-align:middle}
+.c-in{background:var(--water-soft);color:var(--water)}
+.c-further{background:var(--amber-soft);color:var(--amber-ink)}
+.c-conflict{background:var(--coral-soft);color:var(--coral)}
+.c-new{background:var(--route-soft);color:var(--route)}
+.c-ok{background:var(--ok-soft);color:var(--ok)}
+.c-est{background:var(--amber-soft);color:var(--amber-ink)}
+.c-hard{background:var(--coral-soft);color:var(--coral)}
+.c-quick{background:var(--ok-soft);color:var(--ok)}
+.c-deep{background:var(--water-soft);color:var(--water)}
+.c-open{background:var(--bg-2);color:var(--ink-faint)}
+.legend{display:flex;flex-wrap:wrap;gap:8px 14px;font-size:13px;color:var(--ink-faint);align-items:center}
+
+/* jobs */
+.jobs{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.job{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;display:grid;gap:8px;align-content:start}
+.job .q{font-weight:700;font-size:17px;line-height:1.3}
+.job .where{font:12px/1.4 var(--mono);color:var(--ink-faint)}
+.job p{font-size:15px;color:var(--ink-soft)}
+.job .top{display:flex;justify-content:space-between;gap:8px;align-items:start}
+
+/* ideas */
+.ideas{display:grid;gap:0;border-top:1px solid var(--line)}
+.idea{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 16px;padding-block:18px;border-bottom:1px solid var(--line)}
+.idea h3{grid-column:1}
+.idea .chip{grid-column:2;grid-row:1;justify-self:end}
+.idea .body{grid-column:1 / -1;display:grid;gap:8px;max-width:72ch}
+.said{font-style:italic;color:var(--ink-soft)}
+.vs{font-size:14px;color:var(--ink-faint)}
+.vs b{color:var(--ink-soft)}
+
+/* tables */
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-size:14.5px}
+th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:0}
+th{font:600 12px/1.3 var(--mono);letter-spacing:.04em;text-transform:uppercase;color:var(--ink-faint);background:var(--bg-2)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:13.5px}
+td:first-child{font-weight:600}
+
+/* holes */
+.groups{display:grid;gap:26px}
+.group h3{font:600 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:10px}
+.group ul{list-style:none;padding:0;display:grid;gap:10px}
+.group li{max-width:74ch;padding-left:14px;border-left:2px solid var(--line-strong)}
+.group li+li{margin-top:0}
+
+/* proposals */
+.props{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.prop{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;display:grid;gap:8px;align-content:start}
+.prop .tag{font:600 12px/1 var(--mono);color:var(--route);letter-spacing:.06em}
+.prop p{font-size:15px}
+.prop .src{font-size:13px;color:var(--ink-faint)}
+
+/* inspiration */
+.insp{display:grid;gap:0;border-top:1px solid var(--line)}
+.area{display:grid;grid-template-columns:200px minmax(0,1fr);gap:8px 20px;padding-block:18px;border-bottom:1px solid var(--line)}
+.area h3{font-size:16px}
+.area .best{font-size:13px;color:var(--ink-faint);margin-top:4px}
+.area ul{font-size:15px}
+.shots{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:13px;margin-top:8px}
+.shots a::before{content:"▸ ";color:var(--ink-faint)}
+@media (max-width:640px){.area{grid-template-columns:1fr}}
+
+/* riders miss */
+.miss{columns:2 300px;column-gap:28px;padding-left:1.4em;font-size:15px}
+.miss li{break-inside:avoid;margin-bottom:6px}
+
+/* decisions */
+.qs{display:grid;gap:12px}
+.qcard{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px 18px;display:grid;grid-template-columns:52px minmax(0,1fr);gap:4px 12px}
+.qcard .qn{grid-row:1 / span 3;font:600 20px/1.2 var(--mono);color:var(--route)}
+.qcard .qq{font-weight:700;font-size:16.5px}
+.qcard .qo{font-size:14.5px;color:var(--ink-soft)}
+.qcard .take{font-size:14.5px}
+.qcard .take b{font:600 11px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--amber-ink);background:var(--amber-soft);padding:4px 6px 3px;border-radius:4px;margin-right:6px}
+.qhead{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline}
+
+.callout{background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;padding:14px 16px;font-size:15px;max-width:74ch}
+.callout b{color:var(--coral)}
+.plain{display:grid;gap:8px;max-width:74ch}
+/* agreed */
+.principles{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:12px}
+.pr{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px;display:grid;gap:6px;align-content:start}
+.pr h3{font-size:16px}
+.pr p{font-size:14.5px;color:var(--ink-soft)}
+.status{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:12px}
+.st{border-top:3px solid var(--line-strong);padding-top:10px;display:grid;gap:8px;align-content:start}
+.st.v1{border-color:var(--ok)}
+.st.exp{border-color:var(--route)}
+.st.later{border-color:var(--amber)}
+.st.no{border-color:var(--coral)}
+.st h3{font:600 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint)}
+.st ul{font-size:14.5px;display:grid;gap:5px}
+.st li+li{margin-top:0}
+.r2{font-size:14px;color:var(--ink-soft);border-left:2px solid var(--route);padding-left:10px}
+.r2 b{font:600 11px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--route);margin-right:4px}
+.cases{display:grid;gap:8px;list-style:none;padding:0;max-width:74ch}
+.cases li{display:grid;grid-template-columns:minmax(120px,190px) minmax(0,1fr);gap:12px;padding:10px 12px;background:var(--panel);border:1px solid var(--line);border-radius:6px;font-size:15px}
+.cases li+li{margin-top:0}
+.cases .in{font:600 14px/1.4 var(--mono);color:var(--route)}
+@media (max-width:520px){.cases li{grid-template-columns:1fr;gap:2px}}
+.answered{display:grid;gap:8px;max-width:78ch;list-style:none;padding:0}
+.answered li{font-size:15px;display:grid;grid-template-columns:44px minmax(0,1fr);gap:10px}
+.answered li+li{margin-top:0}
+.answered .qn{font:600 14px/1.5 var(--mono);color:var(--ink-faint)}
+.pending{font-size:14px;color:var(--ink-faint);font-style:italic}
+footer{margin-top:48px;padding-top:18px;border-top:1px solid var(--line);font-size:14px;color:var(--ink-faint);display:grid;gap:6px}
+</style>
+
+<div class="wrap">
+<header>
+  <div class="eyebrow">OpenBikeComputer · route planner · round 5</div>
+  <h1>Route planner brainstorm</h1>
+  <p class="lead">The goal: a good route in a few taps, and full control for the rider who wants it. This page distils your list, issue #2236 and the research passes. It is a baseline for the planning sessions, not a spec.</p>
+  <div class="meta">
+    <span>Round 5 · 27 Sep 2026</span>
+    <a href="https://github.com/timohueser/OpenBikeComputer/issues/2236">Baseline #2236</a>
+    <a href="https://github.com/timohueser/OpenBikeComputer/issues/2056">Trips #2056</a>
+    <a href="https://github.com/timohueser/OpenBikeComputer/issues/1734">Ride Assistant #1734</a>
+    <a href="https://github.com/timohueser/OpenBikeComputer/issues/1780">Ride time #1780</a>
+    <a href="https://github.com/timohueser/OpenBikeComputer/issues/1518">Backlog #1518</a>
+  </div>
+  <svg class="profile" viewBox="0 0 600 80" preserveAspectRatio="none" aria-hidden="true">
+    <rect class="gap" x="238" y="0" width="92" height="80"/>
+    <polygon class="area" points="0,80 0,62 30,58 60,60 90,50 120,34 140,22 160,28 190,46 220,55 250,52 280,40 300,30 320,18 335,12 350,20 380,44 410,58 440,60 470,54 500,48 530,36 560,40 600,52 600,80"/>
+    <polyline class="ln" points="0,62 30,58 60,60 90,50 120,34 140,22 160,28 190,46 220,55 250,52 280,40 300,30 320,18 335,12 350,20 380,44 410,58 440,60 470,54 500,48 530,36 560,40 600,52"/>
+    <line class="day" x1="200" y1="0" x2="200" y2="80"/>
+    <line class="day" x1="420" y1="0" x2="420" y2="80"/>
+  </svg>
+  <div class="plabels"><span>Day 1 · 86 km</span><span>Day 2 · no shop 38 km</span><span>Day 3 · 74 km</span></div>
+</header>
+
+<nav aria-label="Sections"><div class="scroller">
+  <a href="#agreed">Agreed</a><a href="#jobs">Rider jobs</a><a href="#ideas">Your ideas</a><a href="#search">Search</a><a href="#newway">New way to plan</a><a href="#conflicts">Conflicts</a><a href="#holes">Holes</a><a href="#proposals">Proposals</a><a href="#reality">Reality check</a><a href="#miss">Riders miss</a><a href="#best">Best in class</a><a href="#data">Data</a><a href="#decisions">Decisions</a><a href="#later">Later</a>
+</div></nav>
+
+<section id="agreed">
+  <h2>Agreed so far</h2>
+  <p class="intro">From your answers in rounds 2 to 4. This is the part the planning sessions build on. Issue #2236 now carries the same content.</p>
+  <div class="principles">
+    <div class="pr"><h3>One planner, two front-ends</h3><p>The website and the app do the same things with the same engine. Only the interaction differs: mouse on the website, touch on the phone. Keep the two as similar as possible.</p></div>
+    <div class="pr"><h3>No accounts</h3><p>A plan moves between the website and the phone without an account. Website or phone to device is already covered by USB and Bluetooth. Website to phone: an animated QR code (proposal H).</p></div>
+    <div class="pr"><h3>Survives our infrastructure</h3><p>The project must not die when our servers do. Server features are conveniences, never dependencies. The desktop app and a local build script can produce and use everything without our website or storage.</p></div>
+    <div class="pr"><h3>Offline for downloaded areas</h3><p>Download the area you travel to, and everything works offline: routing, planning, nearby search, the planner’s data. Only live data, such as current closures, needs a connection.</p></div>
+    <div class="pr"><h3>Ask, don’t push</h3><p>Information is easy to ask for, or suggested quietly. It never interrupts. “Day 3 is a Sunday” may be obvious to the rider. When it matters, one query adds the shops that open on Sundays.</p></div>
+    <div class="pr"><h3>Ready for hiking</h3><p>v1 plans for bikes only. The architecture must support hiking fully later: its own profile and weights, walking time, trail difficulty. Snow matters for mountain biking too.</p></div>
+    <div class="pr"><h3>Coverage region</h3><p>Europe, North America, Australia and New Zealand. A regional feature is worth building only if it covers a large part of this region, about half. Otherwise it sets expectations it cannot meet elsewhere.</p></div>
+    <div class="pr"><h3>No “scenic”</h3><p>We do not define or label anything as scenic.</p></div>
+    <div class="pr"><h3>Dates are optional</h3><p>A rider may give the trip a start date, set dates per day and add rest days. It is easy to find and never in the way. Nothing requires it. Date-aware answers (open on Sunday) work only when dates are set.</p></div>
+    <div class="pr"><h3>Riding time, never the clock</h3><p>We do not know when a rider starts or how long they stop. The planner shows riding time. It never claims an arrival time, “before dark” or “the shop is open when you arrive”.</p></div>
+    <div class="pr"><h3>The best riding-time estimate we can make</h3><p>Standard speeds for each bike type, as Komoot has, plus a personal pace learned from the rider’s own rides. #1780 is the starting point.</p></div>
+    <div class="pr"><h3>Ground-level elevation is required</h3><p>Use open laser-scan models wherever they exist, as Peak View already does. Copernicus is only the fallback.</p></div>
+    <div class="pr"><h3>The device router stays simple</h3><p>It shares code with the planner, but uses fixed weights and handles short detours. It does not copy the plan’s settings.</p></div>
+  </div>
+  <div class="status">
+    <div class="st v1"><h3>v1</h3><ul>
+      <li>Riding-time estimate: standard and personal pace.</li>
+      <li>Point types (pass here, bend the line, visit, sleep here), with a clear UI.</li>
+      <li>Solid undo and redo.</li>
+      <li>Saved versions: each save is a version you can go back to. Subtle. Few planners offer it.</li>
+      <li>Deliberate import of other people’s routes that stays close to the original.</li>
+      <li>Photos and sights from open data. Your Wikidata experiment was usable, but below Komoot.</li>
+      <li>Seasonal closures from OSM tags.</li>
+      <li>Gaps on request, or as one quiet line: “last shop for 62 km” (proposal I).</li>
+      <li>Avoid big roads by road type. No busyness estimate.</li>
+      <li>Fast presets: bike type plus a goal. Slower custom values in an advanced menu.</li>
+      <li>Alternatives on every A→B route.</li>
+      <li>Offline planning in downloaded areas.</li>
+      <li>Handoff from website to phone by animated QR code.</li>
+      <li>Search: nearby from the map cells, famous places worldwide.</li>
+    </ul></div>
+    <div class="st exp"><h3>Experiment · signature bet</h3><ul>
+      <li>The route query box: short sentences in, fixed result types out, offline (see “A new way to plan?”). Next: wireframes in a fresh session.</li>
+      <li>Snow on the route, from satellite history and recent images: “is this path likely free of snow in April?” Very valuable for hiking. Needs trial and experimentation (proposal J). A minimal first version is defined and needs about 1–2 weeks.</li>
+    </ul></div>
+    <div class="st later"><h3>Later or maybe</h3><ul>
+      <li>Estimated busyness on minor roads, only if it is fairly accurate.</li>
+      <li>Loops from a start point.</li>
+      <li>Hiking, on an architecture that is ready for it.</li>
+      <li>Asking riders about unknown surfaces after a ride, for OSM. It needs a larger user base.</li>
+      <li>Street addresses. They need a solution; a per-cell address add-on is the candidate.</li>
+
+      <li>Photos from OBC riders. It needs a community we may never reach.</li>
+    </ul></div>
+    <div class="st no"><h3>Not doing</h3><ul>
+      <li>Arrival clock times, “before dark”, “open when you arrive”.</li>
+      <li>User accounts.</li>
+      <li>Device re-routes with the plan’s settings.</li>
+      <li>Regional access rules beyond OSM tags and country defaults. Hard, and not the focus.</li>
+      <li>A “scenic” option or label.</li>
+      <li>Long roadworks closures from regional feeds, unless their coverage reaches about half of the coverage region. Today it does not: Baden-Württemberg, Norway, some of France and Switzerland.</li>
+    </ul></div>
+  </div>
+</section>
+
+<section id="jobs">
+  <h2>Six rider jobs</h2>
+  <p class="intro">Each feature below serves one of these jobs. When two features conflict, the job decides. <span class="chip c-quick">Quick</span> means minutes on a phone. <span class="chip c-deep">Deep</span> means an evening on a big screen.</p>
+  <div class="jobs">
+    <div class="job"><div class="top"><span class="q">“Get me to that town.”</span><span class="chip c-quick">Quick</span></div><div class="where">On the road · phone, one hand, weak signal</div><p>Search a place. Get 2–3 options. Send one to the device in under a minute.</p></div>
+    <div class="job"><div class="top"><span class="q">“Where do I sleep tomorrow?”</span><span class="chip c-quick">Quick</span></div><div class="where">In the tent · phone</div><p>See where tomorrow can end after the hours I want to ride, the places to sleep there, the shops on the way and whether they open that day.</p></div>
+    <div class="job"><div class="top"><span class="q">“Ten days through the Alps.”</span><span class="chip c-deep">Deep</span></div><div class="where">At home · big screen, several evenings</div><p>Days and overnights, gaps, passes and closures, versions to compare, export.</p></div>
+    <div class="job"><div class="top"><span class="q">“The published route, but via my hotel.”</span><span class="chip c-deep">Deep</span></div><div class="where">Before and during a trip · someone else’s GPX</div><p>Keep their line. Detour from it. See surface, gaps and closures on their line.</p></div>
+    <div class="job"><div class="top"><span class="q">“60 km of gravel from my door, back by five.”</span><span class="chip c-open">Not v1</span></div><div class="where">Weekend · phone or web</div><p>My example of a loop, not one of yours. Round 4: loops are not in v1.</p></div>
+    <div class="job"><div class="top"><span class="q">“Hut to hut, four days.”</span><span class="chip c-open">Later</span></div><div class="where">On foot</div><p>Trail difficulty, huts, walking time. Round 4: not in v1, but the architecture must support it fully.</p></div>
+  </div>
+</section>
+
+<section id="ideas">
+  <h2>Your ideas, distilled</h2>
+  <p class="intro">Your list, sharpened with the research. The chip compares each idea with what #2236 and the backlog already record.</p>
+  <div class="legend"><span class="chip c-in">In #2236</span><span class="chip c-further">Goes further</span><span class="chip c-conflict">Conflict</span><span class="chip c-new">New</span></div>
+  <div class="ideas">
+    <article class="idea"><h3>A routing engine that knows the ground</h3><span class="chip c-further">Goes further</span>
+      <div class="body">
+        <p class="said">Surface, precise elevation, road busyness if possible. Flexible, but sensible.</p>
+        <ul>
+          <li>Good defaults for each bike type matter more than settings. cycle.travel is free, has only five route types, and riders praise its routes.</li>
+          <li>Riders ask for hard limits: a maximum gradient, and no pushing. Komoot sends MTB riders up climbs steeper than 30%.</li>
+          <li>“Precise elevation” needs laser-scan ground models. Our current model inflates climb by 28–145% (see Reality check).</li>
+        </ul>
+        <p class="vs"><b>Recorded:</b> #2236 has surface, elevation, an inferred traffic class, three sliders and three hard limits. #1518 lists broad road-traffic datasets as a rejected direction.</p>
+        <p class="r2"><b>Round 2</b>Laser-scan elevation is a hard requirement. v1 avoids big roads by road type. A busyness estimate comes later, and only if it is fairly accurate.</p>
+      </div></article>
+
+    <article class="idea"><h3>Alternatives with their trade-offs</h3><span class="chip c-conflict">Conflict</span>
+      <div class="body">
+        <p class="said">Like Google Maps. Different lines with similar numbers as equal options, and real trade-offs: long and flat against short and steep.</p>
+        <ul>
+          <li>Name each option by what it wins: Shortest, Least climbing, Least unpaved. Drop an option that wins nothing. PitStopper does this.</li>
+          <li>Show each option as a difference from the selected one: +km, +time, −m climb, −km busy road, +km unpaved.</li>
+          <li>No engine offers alternatives once a route has via points, and Google does not either. With via points, see proposal B.</li>
+        </ul>
+        <p class="vs"><b>Recorded:</b> #2236 puts alternatives “for later”. You rank them second.</p>
+      </div></article>
+
+    <article class="idea"><h3>Closures, live and seasonal</h3><span class="chip c-further">Goes further</span>
+      <div class="body">
+        <p class="said">Show a closure when data exists. Warn about seasonal ones: “this pass is often closed in April”.</p>
+        <ul>
+          <li>The big passes carry their closure months in OSM: Stelvio Nov–Apr, Furka Oct–May, Galibier 20 Oct–31 May. The dates are fixed. They do not say when the pass opens this year.</li>
+          <li>Twenty years of daily satellite snow maps can add “snow likely nearby on this date”.</li>
+          <li>Open live feeds cover few pass roads. Norway is the exception.</li>
+        </ul>
+        <p class="vs"><b>Recorded:</b> #2236 warns on <code>access:conditional</code>. Live closures are out of scope.</p>
+        <p class="r2"><b>Round 2</b>The valuable case is a long roadworks closure, not an accident: the road up to the Kandel was closed all summer. Snow history is a signature bet, especially for hiking.</p>
+      </div></article>
+
+    <article class="idea"><h3>Multi-day planning that works</h3><span class="chip c-further">Goes further</span>
+      <div class="body">
+        <p class="said">Grow the trip editor into a real planning tool. Warn about gaps, such as no supermarket for the second half of the day. No pop-up hell.</p>
+        <ul>
+          <li>A day end is a point on the line that you drag. Moving it never re-routes the line. Komoot re-routes, and riders dislike it.</li>
+          <li>Split into days by distance and climb, and offer places to sleep at each day end. cycle.travel does both, for free.</li>
+          <li>Warnings live in one place, on the profile. They are never pop-ups.</li>
+        </ul>
+        <p class="vs"><b>Recorded:</b> #2236 has the gap list and opening hours. “The planner makes the line, the day editor makes the days.”</p>
+        <p class="r2"><b>Round 2</b>Gaps become markers on the route (“last shop for 62 km”), computed in the planner so you can act while you plan. No arrival-time checks.</p>
+      </div></article>
+
+    <article class="idea"><h3>Draw your own line</h3><span class="chip c-in">In #2236</span>
+      <div class="body">
+        <p class="said">Hand-drawn segments where OSM has no path.</p>
+        <ul><li>Choose the mode for each segment: routed, straight or hand-drawn. Kurviger puts the choice between every two points. Footpath uses a magnet button to switch snapping off.</li></ul>
+        <p class="vs"><b>Recorded:</b> #2236 question 6 proposes yes for v1.</p>
+      </div></article>
+
+    <article class="idea"><h3>Via points that behave</h3><span class="chip c-new">New</span>
+      <div class="body">
+        <p class="said">A new point gives a sensible detour. Adding or deleting points never scrambles the order.</p>
+        <ul>
+          <li>Komoot documents that it sorts a new point into “the best possible spot”. Riders report reshuffled routes and ride sections twice.</li>
+          <li>Ride with GPS: a click adds at the end, dragging the line inserts, control points pin the line, and undo goes back to the start.</li>
+          <li>A point must never create an out-and-back spur or a U-turn.</li>
+        </ul>
+        <p class="vs"><b>Recorded:</b> #2236 says a drag recalculates only the changed legs. It has no rule for the order.</p>
+        <p class="r2"><b>Round 2</b>Point types are agreed and need a good UI. Undo and redo must be solid. Saved versions are a feature that few planners offer.</p>
+      </div></article>
+
+    <article class="idea"><h3>Search like Google Maps</h3><span class="chip c-conflict">Conflict</span>
+      <div class="body">
+        <p class="said">Addresses, towns, hotels, campsites. Tap a result to add it as a point.</p>
+        <ul><li>Two actions, as in Ride with GPS: “Add on the way” joins from the nearest point on the line. “Go here next” adds it at the end.</li></ul>
+        <p class="vs"><b>Recorded:</b> #2236 puts address search later and has no search server. The app’s stop search uses Apple data, which may not be shown on a MapLibre map.</p>
+        <p class="r2"><b>Round 2</b>Search gets its own discussion. Komoot uses Photon, and its search often misses. The budget is one server with 16 GB of RAM at most. See the Search section.</p>
+      </div></article>
+
+    <article class="idea"><h3>Our map, our style</h3><span class="chip c-in">In #2236</span>
+      <div class="body">
+        <p class="said">OSM based, styled like the device, served as tiles.</p>
+        <ul><li>The website builder uses Leaflet today. One MapLibre style file can serve both the website and the app.</li></ul>
+        <p class="vs"><b>Recorded:</b> #2236 plans MapLibre, one planet PMTiles file and our own style.</p>
+      </div></article>
+
+    <article class="idea"><h3>Free and open data</h3><span class="chip c-in">In #2236</span>
+      <div class="body">
+        <p class="said">Free, open and current.</p>
+        <ul><li>Ten licence traps were found. See the Data section.</li></ul>
+      </div></article>
+
+    <article class="idea"><h3>In the app and on the website</h3><span class="chip c-new">New</span>
+      <div class="body">
+        <p class="said">The planner is part of the app and of the website.</p>
+        <p class="vs"><b>Recorded:</b> #2236 covers only the iOS app.</p>
+        <p class="r2"><b>Round 2</b>The same features and the same engine on both. Two front-ends, one for mouse and one for touch, as similar as possible.</p>
+      </div></article>
+
+    <article class="idea"><h3>Know what the route will be like</h3><span class="chip c-new">New</span>
+      <div class="body">
+        <p class="said">You use Komoot mainly for Highlights and Trail View.</p>
+        <p class="vs"><b>Recorded:</b> #2236 does not mention it. This is the largest gap. See proposal E.</p>
+        <p class="r2"><b>Round 2</b>Open photos and sights in v1. Your Wikidata experiment was usable but below Komoot. Rider uploads need a large community, so they are not in v1.</p>
+      </div></article>
+  </div>
+</section>
+
+<section id="conflicts">
+  <h2>Where your list and the record disagree</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Topic</th><th>Your list</th><th>Recorded so far</th></tr></thead>
+    <tbody>
+      <tr><td>Alternatives</td><td>Second most important</td><td>#2236: for later</td></tr>
+      <tr><td>Hotel and address search</td><td>As close to Google as possible</td><td>#2236: address search later, no search server now</td></tr>
+      <tr><td>Road busyness</td><td>Wanted</td><td>#1518: broad road-traffic data and live traffic are rejected directions. #2236: minor-road traffic out of scope</td></tr>
+      <tr><td>Live closures</td><td>Wanted where data exists</td><td>#2236: out of scope</td></tr>
+      <tr><td>Website</td><td>Planner on the website too</td><td>#2236: iOS app only</td></tr>
+      <tr><td>Highlights and photos</td><td>Your reason for Komoot</td><td>Not mentioned</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="search">
+  <h2>What search must do</h2>
+  <p class="intro">Your acceptance cases. Search is location-aware and global at the same time. The budget is one server with at most 16 GB of RAM, or static files. A planet Photon server needs 64 GB and is out.</p>
+  <ul class="cases">
+    <li><span class="in">Matterhorn</span><span>Typed anywhere in the world, it finds the peak.</span></li>
+    <li><span class="in">hotel</span><span>Hotels near you or near the map view, nearest first.</span></li>
+    <li><span class="in">Hotel Krone</span><span>There are hundreds. The nearest ones come first.</span></li>
+    <li><span class="in">Kandel</span><span>Near Freiburg: the Black Forest mountain. Near Karlsruhe: the town Kandel in the Pfalz.</span></li>
+    <li><span class="in">Stilfser Joch</span><span>The same pass as “Stelvio” and “Passo dello Stelvio”.</span></li>
+    <li><span class="in">supermarket</span><span>With a route open: results along the route, by distance along it.</span></li>
+    <li><span class="in">Hauptstraße 12, Waldkirch</span><span>The house. Lower priority.</span></li>
+  </ul>
+  <p class="intro"><b>Research result.</b> No single engine passes all seven cases within the budget. Three layers can. Nearby things are a local question, because nobody wants the Hotel Krone 500 km away. Famous places are a small global list.</p>
+  <div class="tbl"><table>
+    <thead><tr><th>Layer</th><th>Answers</th><th>Where it runs</th><th>Size and cost</th></tr></thead>
+    <tbody>
+      <tr><td>Nearby, from the map cells</td><td>hotel · Hotel Krone · supermarket along the route · Kandel where the cell is loaded</td><td>On the phone and in the browser, offline. Cells load on demand</td><td>A small name index per cell. Free</td></tr>
+      <tr><td>Famous places worldwide</td><td>Matterhorn · all three Stelvio names · Kandel both ways · towns for addresses</td><td>A small Rust service on the existing VPS</td><td>About 5–6 M places, 150–400 MB on disk, under 1 GB of RAM. Built weekly from OSM and Wikipedia importance</td></tr>
+      <tr><td>Addresses, later</td><td>Street and house number</td><td>A per-cell add-on, or a hosted API as a stopgap</td><td>About 1 GB for Europe (estimate). Geoapify: free up to 3,000 requests a day</td></tr>
+    </tbody>
+  </table></div>
+  <ul class="plain">
+    <li><b>Why Komoot’s search misses:</b> Photon weighs distance and importance with a simple rule. Its open issues include “Starbucks” from Berlin returning Canada, and Paris dropping out of results for a searcher in France.</li>
+    <li><b>Ranking:</b> text match + importance + closeness to the view. With Nominatim’s own importance values, the Kandel case works both ways: the mountain wins near Freiburg, and the town wins near Karlsruhe. One of the top three results is always the most important place worldwide, so “Matterhorn” finds the Zermatt peak even next to a small hill of the same name.</li>
+    <li><b>Names:</b> OSM names the pass “Passo dello Stelvio - Stilfser Joch”. Split combined names, index every word and all language variants, and fold ü to u and ue.</li>
+    <li><b>Category words</b> such as “hotel”, “Hotel”, “albergo” come from the iD editor’s term lists, which cover many languages.</li>
+    <li><b>Fallback:</b> a filtered Photon without house numbers and streets fits the 8 GB VPS, but its ranking problems stay.</li>
+    <li><b>Round 3:</b> the famous-places index may use up to 2 GB of RAM. That allows a much longer list: every village and hamlet, peak, pass, lake, hut, station, hotel and campsite worldwide.</li>
+    <li><b>Round 3, addresses:</b> they need a solution. A per-cell address add-on is the candidate: it works offline, needs no server, and the local build script can make it. Germany has 20.7 M OSM addresses, about 200 MB in a compact form (estimate).</li>
+    <li><b>Round 3, offline and our servers:</b> a downloaded area carries the famous places inside it, so search works offline and without our server. The server list adds the rest of the world.</li>
+  </ul>
+</section>
+
+<section id="newway">
+  <h2>A new way to plan?</h2>
+  <p class="intro">A classic route planner first: solid, fast and intuitive. On top of it, one box that takes short natural sentences, not only place names. It is not a chatbot and not an LLM-first planner. The answer is always one of a few fixed result types, it is quick, and it works offline.</p>
+  <ul class="cases">
+    <li><span class="in">campsites end of day 3</span><span>A list of places near where Day 3 ends, each with its position on the route and its detour.</span></li>
+    <li><span class="in">shops middle of day 4</span><span>A list of places around the middle of Day 4.</span></li>
+    <li><span class="in">shops along route</span><span>A list of places along the whole route, by distance along it.</span></li>
+    <li><span class="in">pharmacies along route</span><span>The same, for another place type.</span></li>
+    <li><span class="in">road bike route up Kandel starting here</span><span>A route: from the current position to the Kandel summit, with the road-bike profile.</span></li>
+    <li><span class="in">shops open Sunday day 3</span><span>A list, filtered by opening days. Only when the trip has dates.</span></li>
+  </ul>
+  <div class="plain">
+    <p><b>Fixed output types.</b> A list of places on or near the route. One suggested place. A route. A change to the current route. Each type has one fixed card design and fixed actions, such as “End Day 3 here” or “Add as stop”.</p>
+    <p><b>Input.</b> Short sentences with a character limit. Context comes from the plan and the map: “here”, “day 3”, “the route”, the current bike type.</p>
+    <p><b>How it can work.</b> A small model turns the sentence into a typed request, for example: type = places, what = campsite, where = end of Day 3. Our own data then answers the request. The model never produces results itself, so it cannot invent a place.</p>
+    <p><b>Model candidates</b>, to test in a spike: a small encoder that classifies the request and marks the words that fill it (the BERT family, for example ModernBERT, or GLiNER for the place words); or a tiny generative model (Gemma 3 270M, SmolLM2) with grammar-constrained decoding, which guarantees valid output by construction. Both run offline in the browser and on the iPhone without Apple’s model. Training data can be generated in many languages during development.</p>
+    <p><b>Guardrails.</b> Show how the box understood the sentence, so it never acts silently on a guess. When it cannot understand, it says so and falls back to place search.</p>
+  </div>
+  <h3>Three directions to mock</h3>
+  <div class="props">
+    <div class="prop"><span class="tag">MAP FIRST</span><h3>The classic, done right</h3><p>Map with points, a sidebar and a profile, like Komoot and Ride with GPS. Our point types, versions, alternatives and honest facts make it better. The box is the search field.</p></div>
+    <div class="prop"><span class="tag">PROFILE FIRST</span><h3>The route as a strip</h3><p>The profile is the main editing surface. Days, gaps, surface, climbs and answers from the box live on it, and the map follows. The day editor already works this way: drag only on the profile.</p></div>
+    <div class="prop"><span class="tag">QUERY FIRST</span><h3>One box drives it</h3><p>Places, route questions and route requests all go through one box. Results are fixed cards on the map and the strip. The map is for looking and fine edits.</p></div>
+  </div>
+  <p class="intro">A fresh session starts with wireframes of these directions. It may also find that the right answer is more than a search box.</p>
+</section>
+
+<section id="holes">
+  <h2>Holes nobody has named yet</h2>
+  <p class="intro">Neither your list nor #2236 covers these. Round 2 settled arrival times, point types, versions and device re-routes; they moved to “Agreed so far”.</p>
+  <div class="groups">
+    <div class="group"><h3>The plan itself</h3><ul>
+      <li><b>Other people’s routes.</b> Keep the line, detour from it, and show our surface, gap and closure data on it without changing it. Round 2: agreed as a goal, the flow is open.</li>
+      <li><b>Loops.</b> Job 5. #2236 puts round trips later.</li>
+      <li><b>Trains and ferries.</b> Trips already have transfers (#2116). Can the planner add a train leg between two days?</li>
+    </ul></div>
+    <div class="group"><h3>Trust</h3><ul>
+      <li><b>Why this way?</b> Tap a stretch and see what the router knows about it and why it chose it. No router we found explains a route by comparing it with the other options.</li>
+      <li><b>Avoid and prefer, for me.</b> Tap a road to avoid it or prefer it in all my future routes. Draw an area to avoid.</li>
+      <li><b>Forcing a stretch.</b> A gate you can push a bike through, or a path the router refuses. #2236 has “force with a warning”.</li>
+      <li><b>Warnings without pop-ups.</b> One place, severity levels, and a way to mute a warning type. Gap markers (proposal I) are one answer.</li>
+      <li><b>One climb number.</b> Strava, Garmin and Komoot disagree, and riders will ask why ours differs. Compute it the same way on the website, the app and the device.</li>
+    </ul></div>
+    <div class="group"><h3>The ecosystem</h3><ul>
+      <li><b>Moving a plan between website and phone.</b> No accounts. Proposal H is a way to do it anyway.</li>
+      <li><b>Other head units.</b> GPX and FIT export for Garmin and Wahoo riders, including the via/shaping point choice. For many people the planner may be their first OBC product.</li>
+      <li><b>Planning together.</b> Group trips and shared links.</li>
+      <li><b>Giving data back.</b> After a ride over “unknown surface”, the app asks one question and sends the answer to OSM as a note. Our data then improves where it is weakest.</li>
+    </ul></div>
+    <div class="group"><h3>Context for the plan</h3><ul>
+      <li><b>Weather and wind per day</b>, heat and water. The weather epic is #1185. Sunset is only useful with a start time, which we do not know.</li>
+      <li><b>Hiking.</b> #2236 question 1. It changes the time model, and trail difficulty becomes a hard limit. The snow feature makes hiking more attractive.</li>
+    </ul></div>
+  </div>
+</section>
+
+<section id="proposals">
+  <h2>Proposals to react to</h2>
+  <p class="intro">My suggestions. Each one is a rider-visible behaviour, not a mechanism.</p>
+  <div class="props">
+    <div class="prop"><span class="tag">A · QUICK PATH</span><h3>Alternatives are the first setting</h3><p>Every A→B route shows 2–3 options, each named by what it wins. Choosing one is the quick way to customize. Sliders come after, for riders who want them.</p><p class="src">A user study found four alternative methods, Google’s included, rated the same. The presentation is what matters.</p></div>
+    <div class="prop"><span class="tag">B · CONTROL</span><h3>Fix this section</h3><p>Select a stretch on the map or on the profile. The planner offers other ways for that stretch only, each with its cost: “+2.1 km, −80 m climb, 6 km less busy road”. This is how alternatives work once a route has via points.</p><p class="src">The device already does this on the road: Easier route, #1734.</p></div>
+    <div class="prop"><span class="tag">C · MULTI-DAY</span><h3>Day windows</h3><p>For a multi-day trip, shade the stretch where each day can end after the riding time you choose, for example 5–7 hours at your pace. Show places to sleep inside it. Tap one, and the day ends there. Riding time only, no clock times.</p><p class="src">Builds on cycle.travel’s overnight stops and the existing day editor.</p></div>
+    <div class="prop"><span class="tag">D · TIME · AGREED</span><h3>Your own pace</h3><p>Standard speeds for each bike type, plus a pace learned from your own rides, on your own devices only. It gives riding time for routes, days and day windows.</p><p class="src">The estimator exists: #1780. No popularity data involved.</p></div>
+    <div class="prop"><span class="tag">E · PREVIEW · AGREED FOR V1</span><h3>What will it be like?</h3><p>Sights from Wikidata and Wikimedia Commons. Street photos from Mapillary and Panoramax where they matter most: unknown surface, a change of surface, the start of a trail.</p><p class="src">The device already shows Landmarks from Wikidata. Stelvio has 104 Commons photos within 2 km.</p></div>
+    <div class="prop"><span class="tag">F · CONTINUITY</span><h3>One map style everywhere</h3><p>MapLibre on the website and in the app, one style file, colours from the device palette. A “device view” switch shows the route as the device will draw it.</p><p class="src">The landing page already runs the device renderer in the browser.</p></div>
+    <div class="prop"><span class="tag">G · HONESTY</span><h3>Known or estimated</h3><p>Every figure says whether it is known or estimated: “23 km unknown surface”. Unknown stretches look different on the line.</p><p class="src">Ride with GPS draws unknown surface as an outlined line and lists it as its own row.</p></div>
+    <div class="prop"><span class="tag">H · HANDOFF · AGREED</span><h3>Continue on phone: animated QR</h3><p>The website plays an animated QR code. Hold the phone in front of the screen, and the plan opens in the app. No server, no account, no network, and it works from the desktop app. The other direction: the phone plays the code, and the laptop webcam reads it.</p><p class="src">Measured on five routes in the repo: the line needs 50–65 bytes per km. A 1,000 km trip is about 60 KB. A recent browser project reached 128 KB/s phone to phone, so a whole trip takes about one second. Even at a cautious 10 KB/s it is 6 seconds.</p></div>
+    <div class="prop"><span class="tag">I · GAPS</span><h3>Gaps, on request</h3><p>Ask “last shop” or “water gaps”, and the planner shows them and offers to add them as waypoints: “Last shop for 62 km”. At most one quiet line in the route summary suggests it. Added markers go to the device as normal waypoints, so What’s next shows them.</p><p class="src">Your idea, round 2. Rules to define: thresholds per bike type and for hiking, search width beside the line, what counts as a shop or water, and “no mapped water” instead of “no water”.</p></div>
+    <div class="prop"><span class="tag">J · SNOW · EXPERIMENT</span><h3>Snow on the route</h3><p><b>First version:</b> for each stretch, a graphic of the history, not one date: in how many of the last years it was free of snow on your day, the spread between early and late years, and any trend. It shows as a layer on the profile, like surface. <b>If a recent satellite view exists:</b> “last clear view 4 May: snow on 3 of 12 km”, with the age of the view. Round 4: “one of the better things we thought of.”</p><p class="src">Copernicus publishes the melt-out day for every 20 m pixel in Europe, each year since 2016, openly. We take the median and a late year per trail edge: one byte per edge, a few MB for the Alps, and it works offline. Outdooractive sells something similar in its top tier. Traps: gullies and avalanche cones smaller than a pixel, snow under forest, ploughed roads. For roads, pass status is the better source.</p></div>
+  </div>
+</section>
+
+<section id="reality">
+  <h2>Reality check</h2>
+  <p class="intro">What the open data and the algorithms can deliver today.</p>
+  <div class="legend"><span class="chip c-ok">Solid</span><span class="chip c-est">Estimate</span><span class="chip c-hard">Hard or limited</span></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Feature</th><th>Verdict</th><th>Facts</th></tr></thead>
+    <tbody>
+      <tr><td>Precise elevation</td><td><span class="chip c-ok">Solid</span></td><td>Open laser-scan ground models cover DE, AT, CH, FR, UK, NL, DK, NO, SE, FI, ES and the US. Italy has gaps. <a href="https://protomaps.com/blog/mapterhorn-terrain/">Mapterhorn</a> has merged them already. Bridges and tunnels need interpolation.</td></tr>
+      <tr><td>Surface</td><td><span class="chip c-est">Estimate</span></td><td>OSM tags cover 51% of tracks in DE and 16% in FR. A Mapillary-derived paved/unpaved layer (ODbL, Nov 2024) fills 22% of the German gap. The rest is inferred from road type.</td></tr>
+      <tr><td>Busyness, main roads</td><td><span class="chip c-ok">Solid</span></td><td>Open traffic counts exist for main roads in every country checked.</td></tr>
+      <tr><td>Busyness, minor roads</td><td><span class="chip c-est">Estimate</span></td><td>Only the UK, CH, SE and NO count minor roads. The best models explain about half the variation on residential roads. Honest output: “quiet / moderate / busy, estimated”, never a number. Round 2: not in v1.</td></tr>
+      <tr><td>Seasonal pass closures</td><td><span class="chip c-ok">Solid</span></td><td>Where tagged. The Gotthard Tremola is mostly untagged. On Grossglockner 5 segments use a different key, so a naive router lets bikes through at night.</td></tr>
+      <tr><td>“Often snowy in April”</td><td><span class="chip c-est">Estimate</span></td><td>Daily satellite snow maps since 2002 (250–500 m), and 20 m since 2016. Roads get ploughed, and a closure is a decision, not a measurement. Round 3: Copernicus publishes a yearly melt-out day per 20 m pixel since 2016. A per-edge “usually free of snow after” date is about 1–2 weeks of work.</td></tr>
+      <tr><td>Live closures</td><td><span class="chip c-hard">Limited</span></td><td>Norway covers all roads. CH has a national feed with unclear pass coverage. France covers national roads only, and most passes are D-roads.</td></tr>
+      <tr><td>Long roadworks closures</td><td><span class="chip c-est">Per region</span></td><td>The Kandel road (L 186) was closed 10 Mar–1 Oct 2025, and in parts of 2022, 2023 and 2026. OSM never carried it. Baden-Württemberg’s open roadworks feed (MobiData BW, DL-DE-BY-2.0) lists planned closures months ahead, down to county and town roads. Similar open feeds: Norway (all roads), France (about 10 départements), Switzerland (partial). Austria’s feed is paid; Italy has none. Effort: a daily server job and a match to our edges, a few days per region. Show a warning (“closed to traffic 10 Mar–30 Sep; bikes sometimes pass”), never a block. The feeds keep no history, so start an archive early.</td></tr>
+      <tr><td>Google-like hotel search</td><td><span class="chip c-est">Close</span></td><td>Overture lists 13,362 hotels in Switzerland against 7,589 in OSM. No prices, availability or reviews. A planet Photon server needs 64 GB of RAM. Round 2 research: nearby search from the map cells plus a global famous-places index under 1 GB of RAM covers every case except addresses.</td></tr>
+      <tr><td>Highlights and photos</td><td><span class="chip c-est">Partial</span></td><td>Open photos and sights: yes. Rider tips: no. Komoot picked 1M photos from 15M uploads. That crowd content does not exist for us.</td></tr>
+      <tr><td>Alternatives</td><td><span class="chip c-ok">Solid</span></td><td>The algorithms are known. The work is in the filtering and the presentation.</td></tr>
+      <tr><td>Water gaps</td><td><span class="chip c-ok">Solid</span></td><td>Where water is mapped. Mapped drinking water per 1,000 km²: CH 364, IT 230, DE 25, US 3, NO 2. No mapped water does not mean no water, and the warning must say so.</td></tr>
+      <tr><td>Opening hours on the day</td><td><span class="chip c-ok">Solid</span></td><td>In most of Europe. Supermarkets with hours: DE 89%, FR 84%, CH 76%, UK 55%, IT 34%. Round 2: used per date only (for example, closed on Sunday), never at an arrival time.</td></tr>
+      <tr><td>Scenic</td><td><span class="chip c-hard">Not doing</span></td><td>Only proxies are measurable. Round 4: no scenic option or label.</td></tr>
+      <tr><td>500–2,000 km in one tap, offline, custom settings</td><td><span class="chip c-hard">Hard</span></td><td>Needs a hierarchy like OsmAnd’s, which falls back to slow search when settings differ a lot. The cycle.travel author says a planner is either customizable or fast.</td></tr>
+      <tr><td>Legal access by region</td><td><span class="chip c-hard">Limited</span></td><td>OSM tags plus country defaults from a wiki table. There is no machine-readable library for local rules.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout"><b>Elevation, measured.</b> Three Swiss routes, total climb in metres, both models filtered the same way (5 m hysteresis). The satellite model sees treetops and roofs.
+    <div class="tbl" style="margin-top:10px"><table>
+      <thead><tr><th>Route</th><th class="num">km</th><th class="num">Laser scan</th><th class="num">Copernicus GLO-30</th></tr></thead>
+      <tbody>
+        <tr><td>Zürich–Zug (city start)</td><td class="num">31</td><td class="num">202</td><td class="num">495 (+145%)</td></tr>
+        <tr><td>Burgdorf–Langnau (valley)</td><td class="num">22</td><td class="num">167</td><td class="num">249 (+49%)</td></tr>
+        <tr><td>Uetliberg–Albis (forest ridge)</td><td class="num">28</td><td class="num">851</td><td class="num">1,091 (+28%)</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+</section>
+
+<section id="miss">
+  <h2>What riders miss</h2>
+  <p class="intro">From Reddit, forums, Hacker News and issue trackers.</p>
+  <ol class="miss">
+    <li>Points go exactly where I click, in the order I click them. <a href="https://www.reddit.com/r/komoot/comments/p7tx1q/">1</a> <a href="https://www.reddit.com/r/komoot/comments/1vptwez/">2</a></li>
+    <li>Splitting days never re-routes my line. <a href="https://www.reddit.com/r/komoot/comments/1n3b1fx/">1</a></li>
+    <li>Hard limits: maximum gradient, no hike-a-bike. <a href="https://www.reddit.com/r/komoot/comments/1kkau2e/">1</a> <a href="https://www.reddit.com/r/komoot/comments/1w2ut01/">2</a></li>
+    <li>Settings, not more profiles. <a href="https://www.reddit.com/r/komoot/comments/1tm24ul/">1</a></li>
+    <li>No shortcuts across fields and pathless farmland. <a href="https://www.reddit.com/r/bikepacking/comments/1vous1n/">1</a></li>
+    <li>Show where the bad surface is, not only a percentage. <a href="https://news.ycombinator.com/item?id=42212356">HN</a></li>
+    <li>Undo, redo, autosave, and saving without leaving the editor. <a href="https://github.com/nrenner/brouter-web/issues/867">1</a></li>
+    <li>Compare two versions of a route. <a href="https://github.com/nrenner/brouter-web/issues/867">1</a></li>
+    <li>Water and resupply gaps, and opening hours at arrival. <a href="https://www.reddit.com/r/bikepacking/comments/1uenyx0/">1</a></li>
+    <li>Candidate campsites and hotels off the route, saved with it. <a href="https://www.reddit.com/r/komoot/comments/1o3yfd6/">1</a></li>
+    <li>Move tonight’s stop on the phone without re-planning the trip. <a href="https://www.reddit.com/r/komoot/comments/1n3b1fx/">1</a></li>
+    <li>Force a stretch through a gate or along an unmapped path. <a href="https://news.ycombinator.com/item?id=42206112">HN</a></li>
+    <li>Highlights and photos along the route. <a href="https://www.reddit.com/r/komoot/comments/1l7sp2j/">1</a></li>
+    <li>No subscription only to sync to a device. <a href="https://www.dcrainmaker.com/2025/03/komoots-expanded-paywalls-trying-to-make-sense-of-it.html">DC Rainmaker</a></li>
+    <li>A clean planner rather than a content feed, and planning offline. <a href="https://www.reddit.com/r/komoot/comments/1u6hgpg/">1</a></li>
+  </ol>
+</section>
+
+<section id="best">
+  <h2>Best in class</h2>
+  <p class="intro">What to copy, per area. Screenshot links open the vendor’s image in a new tab.</p>
+  <div class="insp">
+    <div class="area"><div><h3>Alternatives</h3><div class="best">Google Maps, PitStopper, Mapy.com</div></div><div>
+      <ul>
+        <li>Google Maps cycling: per option, time, profile, “Steep hill” and “Stairs” flags, and road-type shares such as “39% major roads”.</li>
+        <li>PitStopper: options named by what they win. An option that wins nothing is dropped. Your own order stays the first chip. A compare view overlays the profiles.</li>
+        <li>Mapy.com: alternatives on the map with time and distance labels.</li>
+        <li>AllTrails: one-tap “Make shorter”, “Reduce elevation gain”, “Take the scenic route”.</li>
+      </ul>
+      <div class="shots"><a href="https://c02.purpledshub.com/uploads/sites/39/2022/07/Google-Maps-updated-cycling-routing-c630f64.jpg">Google Maps screenshot</a><a href="https://pitstopper.net/assets/blog/auto-order-kent-compare.png">PitStopper compare</a><a href="https://help.mapy.com/wp-content/uploads/sites/12/2025/10/planovani-en-2880-1800-1536x960.png">Mapy alternatives</a><a href="https://pitstopper.net/blog/auto-order-twenty-stops.html">PitStopper post</a></div>
+    </div></div>
+
+    <div class="area"><div><h3>Editing points</h3><div class="best">Ride with GPS</div></div><div>
+      <ul>
+        <li>A click adds at the end. Dragging the line inserts a point. Control points pin the line so that a drag changes only one stretch.</li>
+        <li>Undo back to creation, a version history, and a stretch selected on the profile to delete or edit.</li>
+        <li>gpx.studio edits an imported GPX at any zoom and never snaps it again. Mapy PRO reshapes with a finger stroke.</li>
+      </ul>
+      <div class="shots"><a href="https://support.ridewithgps.com/hc/en-us/articles/4415462488475-Route-Planning-101">RWGPS Planning 101</a><a href="https://support.ridewithgps.com/hc/en-us/articles/4415470200859-Advanced-Route-Planning">RWGPS advanced</a><a href="https://gpx.studio/help/toolbar/routing">gpx.studio</a><a href="https://support.komoot.com/hc/en-us/articles/10194270667034-Plan-routes-on-the-website">Komoot “best possible spot”</a></div>
+    </div></div>
+
+    <div class="area"><div><h3>Mode per segment</h3><div class="best">Kurviger, Footpath</div></div><div>
+      <ul>
+        <li>Kurviger: a mode selector between every two points: beeline, fastest or a curviness level. The same icons appear on the map.</li>
+        <li>Footpath: trace with a finger, the line snaps to paths. A magnet button turns snapping off. Tracing over a stretch replaces it.</li>
+        <li>CalTopo: choose what to snap to; hold Shift to draw freehand.</li>
+      </ul>
+      <div class="shots"><a href="https://docs.kurviger.com/_media/web/route_options_per_segment.png">Kurviger selector</a><a href="https://footpathapp.com/user-guide/drawing-a-route/">Footpath guide</a></div>
+    </div></div>
+
+    <div class="area"><div><h3>Multi-day</h3><div class="best">cycle.travel (free)</div></div><div>
+      <ul>
+        <li>An overnight stop is a special point that you drag like any other. Distance restarts at each one.</li>
+        <li>“Suggest overnight stops” with ± days and “short first/last day”. Hotels and campsites near each stop.</li>
+        <li>Bikemap splits by daily distance and a climb setting, and colours each stage on the profile.</li>
+      </ul>
+      <div class="shots"><a href="https://cycle.travel/user/content/1/overnight3.png">Split by day</a><a href="https://cycle.travel/user/content/1/overnight2.png">Beds near a stop</a><a href="https://www.bikemap.net/_next/static/media/slicing-en.f50731d3.jpg">Bikemap stages</a><a href="https://cycle.travel/news/plan_multi_day_adventures_easily">cycle.travel post</a></div>
+    </div></div>
+
+    <div class="area"><div><h3>Route facts</h3><div class="best">Ride with GPS, GraphHopper</div></div><div>
+      <ul>
+        <li>RWGPS: the surface table has an Unknown row, and unknown surface is drawn as an outlined line. The profile has toggles for elevation, surface, grade and waypoints.</li>
+        <li>GraphHopper: pick a detail (road class, surface, incline). A bar under the map and the route line take the same colours.</li>
+        <li>Bikerouter: one key cycles the line colour through gradient, surface, speed limit and routing cost.</li>
+      </ul>
+      <div class="shots"><a href="https://support.ridewithgps.com/hc/article_attachments/47757264515355">RWGPS surfaces</a><a href="https://www.graphhopper.com/wp-content/uploads/2026/03/graphhopper-maps-details-1024x524.png">GraphHopper details</a></div>
+    </div></div>
+
+    <div class="area"><div><h3>Photos along the route</h3><div class="best">Komoot, AllTrails</div></div><div>
+      <ul>
+        <li>Komoot Trail View: photos on hover in the planner, chosen from 15M uploads.</li>
+        <li>AllTrails Photo Tour updates while you edit the route.</li>
+      </ul>
+      <div class="shots"><a href="https://d21buns5ku92am.cloudfront.net/67683/images/437915-trailview03-en-75272e-large-1659085505.jpg">Trail View</a><a href="https://support.alltrails.com/hc/en-us/articles/37270479773204-How-to-create-custom-routes">AllTrails help</a></div>
+    </div></div>
+
+    <div class="area"><div><h3>Settings</h3><div class="best">Valhalla demo, BRouter, GraphHopper</div></div><div>
+      <ul>
+        <li>Valhalla: sliders for use roads, use hills and avoid bad surfaces, plus bike type and speed. Close to the three sliders in #2236.</li>
+        <li>BRouter: a profile marks its parameters, and the website turns them into an options dialog.</li>
+        <li>GraphHopper: a rule editor with autocomplete for experts.</li>
+      </ul>
+      <div class="shots"><a href="https://www.graphhopper.com/wp-content/uploads/2026/03/graphhopper-maps-custom-model-1014x1024.png">GraphHopper rule editor</a><a href="https://valhalla.github.io/valhalla/api/route/api-reference/">Valhalla options</a></div>
+    </div></div>
+
+    <div class="area"><div><h3>Places on the route</h3><div class="best">Ride with GPS</div></div><div>
+      <ul>
+        <li>“Include in route” joins the place from the nearest point on the line. “Route to here” adds it at the end.</li>
+        <li>Riders ask for places sorted by distance along the route, with one-tap add.</li>
+      </ul>
+      <div class="shots"><a href="https://support.ridewithgps.com/hc/en-us/articles/4415456909339-Mobile-Route-Planner">RWGPS mobile planner</a></div>
+    </div></div>
+
+    <div class="area"><div><h3>Loops</h3><div class="best">Bikerouter, Mapy.com</div></div><div>
+      <ul>
+        <li>Bikerouter: radius and compass heading. The generated points are normal points that you can edit.</li>
+        <li>Mapy.com: a length slider with a live profile. Works offline. Komoot’s round trips often come out as out-and-back.</li>
+      </ul>
+      <div class="shots"><a href="https://docs.bikerouter.de/en/images/roundtrip-planner/planner.jpg">Bikerouter loop</a><a href="https://help.mapy.com/route-planning/trip/">Mapy nearby trips</a></div>
+    </div></div>
+
+    <div class="area"><div><h3>Gap warnings</h3><div class="best">Nobody mainstream</div></div><div>
+      <ul><li>Only small tools: CycleWater flags dry stretches over 30 km; a Polish planner rates gaps safe, caution or danger; a roadbook beta shows opening hours at arrival. This is open ground for us.</li></ul>
+      <div class="shots"><a href="https://github.com/aitormaa/cyclewater">CycleWater</a><a href="https://www.reddit.com/r/bikepacking/comments/1uenyx0/">Roadbook thread</a></div>
+    </div></div>
+  </div>
+</section>
+
+<section id="data">
+  <h2>Data and licences</h2>
+  <p class="intro">The best open source for each need. All sources were checked on 27 Sep 2026.</p>
+  <div class="tbl"><table>
+    <thead><tr><th>Need</th><th>Best open source</th><th>Licence</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr><td>Ground elevation</td><td>National laser-scan models via Mapterhorn; GLO-30 elsewhere</td><td>Per source, mostly CC BY or open government</td><td><span class="chip c-ok">Use</span></td></tr>
+      <tr><td>Surface</td><td>OSM tags; HeiGIT Mapillary paved/unpaved per way</td><td>ODbL</td><td><span class="chip c-est">Estimate</span></td></tr>
+      <tr><td>Busyness</td><td>Inferred from OSM; checked against counts from UK (OGL), SE (CC0), NO (NLOD), CH</td><td>Mixed</td><td><span class="chip c-est">Estimate</span></td></tr>
+      <tr><td>Seasonal closures</td><td>OSM <code>access</code>, <code>vehicle</code>, <code>motor_vehicle</code> conditionals</td><td>ODbL</td><td><span class="chip c-ok">Use</span></td></tr>
+      <tr><td>Snow history</td><td>NASA MODIS/VIIRS daily; Eurac Alps 250 m; Copernicus 20 m</td><td>Open, CC BY</td><td><span class="chip c-est">Research</span></td></tr>
+      <tr><td>Live road events</td><td>NO DATEX; CH DATEX II; DE state feeds; FR national roads</td><td>Per country</td><td><span class="chip c-hard">Patchy</span></td></tr>
+      <tr><td>Places</td><td>OSM + Overture Places + Foursquare OS Places</td><td>ODbL, CDLA-P-2.0, Apache-2.0</td><td><span class="chip c-ok">Use</span></td></tr>
+      <tr><td>Search engine</td><td>Photon, self-hosted</td><td>Apache-2.0</td><td><span class="chip c-ok">Use</span></td></tr>
+      <tr><td>Street photos</td><td>Mapillary; Panoramax</td><td>CC BY-SA; Mapillary terms §12 limit commercial use</td><td><span class="chip c-est">Check terms</span></td></tr>
+      <tr><td>Sights</td><td>Wikidata; Wikimedia Commons</td><td>CC0; per file</td><td><span class="chip c-ok">Use</span></td></tr>
+      <tr><td>Water</td><td>OSM drinking water, taps, springs, fountains</td><td>ODbL</td><td><span class="chip c-ok">Use</span></td></tr>
+      <tr><td>Holidays</td><td>OpenHolidays; python-holidays</td><td>ODbL; MIT</td><td><span class="chip c-ok">Use</span></td></tr>
+      <tr><td>Weather, wind</td><td>DWD; ECMWF; MeteoSwiss</td><td>CC BY 4.0 / open</td><td><span class="chip c-ok">Use</span></td></tr>
+      <tr><td>Cycle routes</td><td>OSM relations; EuroVelo GPX</td><td>ODbL</td><td><span class="chip c-ok">Use</span></td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout"><b>Licence traps.</b> FABDEM (non-commercial, share-alike). HeiGIT Planet surface (non-commercial). Telraam (CC BY-NC). Strava Metro (no competing products). Open-Meteo free API (non-commercial; we sell hardware). Apple Maps data (only on an Apple map, no caching). Google Places in the EEA (not with any map). Stadia free tier (non-commercial, no storage). Mapillary (commercial use per terms §12). Nager.Date (offline use needs a key).</div>
+</section>
+
+<section id="decisions">
+  <h2>Decisions</h2>
+  <p class="intro">The questions and answers so far. The open questions are also written out in full in the chat.</p>
+  <h3>Answered</h3>
+  <ul class="answered">
+    <li><span class="qn">R2</span><span><b>Website and phone:</b> the same features and engine. Two front-ends, mouse and touch, as similar as possible.</span></li>
+    <li><span class="qn">R2</span><span><b>Accounts:</b> none. A handoff without an account is welcome.</span></li>
+    <li><span class="qn">R2</span><span><b>Busyness:</b> a labelled estimate is acceptable, but only worth building if fairly accurate. Not in v1. v1 avoids big roads by road type.</span></li>
+    <li><span class="qn">R2</span><span><b>Server budget:</b> 16 GB of RAM at most. A 64 GB search server is out.</span></li>
+    <li><span class="qn">R2</span><span><b>Photos:</b> open photos in v1. Rider photos not in v1, maybe never.</span></li>
+    <li><span class="qn">R2</span><span><b>Pace:</b> the best estimator we can build, standard speeds plus personal pace. Riding time only, never clock times.</span></li>
+    <li><span class="qn">R2</span><span><b>Device re-route:</b> stays simple, fixed weights, shared code. It does not copy the plan’s settings.</span></li>
+    <li><span class="qn">R3</span><span><b>Alternatives:</b> shown on every A→B route.</span></li>
+    <li><span class="qn">R3</span><span><b>Handoff:</b> animated QR code, no server. A server link would only ever be optional, because the project must survive our infrastructure.</span></li>
+    <li><span class="qn">R3</span><span><b>Dates:</b> optional, per trip and per day, with rest days. Easy to find, never required. With dates set, date-aware answers work, but on request, not as pop-ups.</span></li>
+    <li><span class="qn">R3</span><span><b>Gaps:</b> on request, or one quiet suggestion. Never pushed.</span></li>
+    <li><span class="qn">R3</span><span><b>Search:</b> nearby from cells and famous places worldwide, in the right direction. The famous-places index may use up to 2 GB of RAM. Addresses need a solution.</span></li>
+    <li><span class="qn">R3</span><span><b>Offline:</b> a downloaded area supports everything except live data.</span></li>
+    <li><span class="qn">R4</span><span><b>Next step:</b> a fresh session makes wireframes of the planner interface, with the query box, using the impeccable skill.</span></li>
+    <li><span class="qn">R4</span><span><b>Roadworks closures:</b> only if the feeds cover about half of the coverage region (Europe, North America, Australia, New Zealand). Today they do not, so skip.</span></li>
+    <li><span class="qn">R4</span><span><b>Snow:</b> yes. Show the history graphically (share of years free of snow on the day, spread, trend), not one date. Use a recent satellite view when one exists.</span></li>
+    <li><span class="qn">R4</span><span><b>Scenic:</b> no definition, no label.</span></li>
+    <li><span class="qn">R4</span><span><b>Loops:</b> not in v1.</span></li>
+    <li><span class="qn">R4</span><span><b>Hiking:</b> not in v1. The architecture must support it fully later.</span></li>
+    <li><span class="qn">R4</span><span><b>Surface questions for OSM:</b> not in v1. A future feature, once the user base is larger.</span></li>
+    <li><span class="qn">R4</span><span><b>Query box:</b> natural short sentences, not fixed phrases. Fixed output types, quick, offline. A classic planner with a modern addition, not an LLM-first planner.</span></li>
+    <li><span class="qn">R5</span><span><b>Speed:</b> presets (bike type plus a goal such as least climbing, shortest, or most climbing for training) must be fast. Custom values from an advanced menu may be slower: up to about 20 s on the phone for a 700 km one-tap route is fine.</span></li>
+  </ul>
+  <p class="intro">No questions are open from the brainstorm. The open technical questions are in #2236.</p>
+</section>
+
+<section id="later">
+  <h2>Parked for the mechanism session</h2>
+  <p class="intro">Real questions, but only after the flows are agreed.</p>
+  <ul class="plain">
+    <li>Where the website’s router runs: in the browser on downloaded cells, with no routing server, or on a server.</li>
+    <li>One graph for planner and device, or a richer planner graph that the device reads a subset of (#2236 question 2).</li>
+    <li>Speed for long legs: an overlay hierarchy like OsmAnd’s, or CCH. Sliders that penalize main roads weaken the easy speed-ups.</li>
+    <li>What each edge stores: length, climb (bridges and tunnels interpolated), unpaved, traffic class, green and water class, route membership. A request then only changes the weights.</li>
+    <li>The format of expert mode: declarative rules (GraphHopper) or a script (BRouter).</li>
+    <li>The search backend within 16 GB or static files, and how OSM and Overture places merge.</li>
+    <li>Terrain from the same laser-scan sources as Peak View (or Mapterhorn) for routing climb and hillshade. Tile hosting is already in #2236.</li>
+    <li>The local build script and the desktop app must produce every planner dataset for a region: routing graph, tiles, terrain, search, snow values. Server copies are conveniences.</li>
+    <li>The animated QR handoff: fountain codes, frame size, and what a plan file contains (line, points, settings, versions).</li>
+    <li>The query box: its grammar, languages and result cards, in the shared Rust core.</li>
+    <li>How saved versions are stored, and how they travel with a plan.</li>
+    <li>How standard speeds and personal pace combine (#1780).</li>
+    <li>Gap-marker rules, and snow datasets and processing.</li>
+  </ul>
+</section>
+
+<footer>
+  <span>Round 4. Next: wireframes of the planner interface in a fresh session.</span>
+  <span>When the ideas settle, the result goes into #2236. GitHub issues are the plan.</span>
+</footer>
+</div>
+
+</body></html>
