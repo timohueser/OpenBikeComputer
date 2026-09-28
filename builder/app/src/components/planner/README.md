@@ -14,7 +14,10 @@ npm run dev -- --mode web
 
 Open `/map-study.html` for map styling or `/planner.html` for the desktop editor.
 Start the [route service](../../../../../apps/route-server/README.md) first.
-The editor saves its trip in browser storage. Undo and Redo apply to
+Choose a map location or search result, then select Start here or Finish here.
+Choose both endpoints to calculate a route. Remove an endpoint to promote the
+adjacent route point. Use New route or New trip to clear the plan; Undo restores it.
+The editor saves empty, partial and complete plans in browser storage. Undo and Redo apply to
 changes made in the current session. Hold a dragged point still to preview its
 route. Release it to save one change. Open Route options to load alternatives. The surface
 strip follows the profile range; hover or use arrow keys to inspect each section.
