@@ -33,7 +33,7 @@ def main():
     data.mkdir(exist_ok=True)
     run('npm', 'ci')
     if not (ROOT / '.venv').exists():
-        run('uv', 'venv', '.venv')
+        run('uv', 'venv', '--python', '>=3.12', '.venv')
     run('uv', 'pip', 'install', '--python', '.venv/bin/python', '-r', 'requirements.txt', '-r', 'query/requirements.txt')
     run('npm', 'ci', '--prefix', '../../builder/app')
     archive = data / 'query-parser-v2-int8.tar.gz'
