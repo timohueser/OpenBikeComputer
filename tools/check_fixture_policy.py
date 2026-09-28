@@ -18,11 +18,12 @@ LIMIT = 256 * 1024
 ALLOWED = {
     # Shipped wasm demo payload, not a developer fixture.
     "apps/obc-sim/assets/grimsel-demo.obcm",
+    # Bundled onboarding route and factory demo ride source.
+    "companion-ios/Packages/OBCKit/Sources/OBCFormats/Resources/grimsel-pass.gpx",
     # Skin-preview product input/golden, owned and rendered by obc-bake.
     "host/obc-bake/assets/teningen-preview.obcm",
     # Authored source rides whose textual diffs remain reviewable.
     "fixtures/sources/sim-grimsel/tracks/grimsel-climb.gpx",
-    "companion-ios/Packages/OBCKit/Sources/OBCMock/Fixtures/website-import.gpx",
 }
 FIXTURE_SUFFIXES = (
     ".obcm",
