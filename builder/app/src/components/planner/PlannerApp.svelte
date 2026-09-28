@@ -136,7 +136,7 @@
     let visibleRange = $state<[number, number] | null>(null);
     let hoverProgress = $state<number | null>(null);
     let sideWidth = $state(360);
-    let profileHeight = $state(230);
+    let profileHeight = $state(260);
     let viewportHeight = $state(900);
     let viewportWidth = $state(1200);
     let mapHeight = $state(600);
@@ -144,7 +144,7 @@
     const history = new TripHistory();
     let revision = $state(0);
 
-    const maxProfile = $derived(Math.max(175, Math.min(340, viewportHeight - 400)));
+    const maxProfile = $derived(Math.max(210, Math.min(340, viewportHeight - 400)));
     const maxSide = $derived(Math.max(320, Math.min(460, viewportWidth - 540)));
     const canUndo = $derived.by(() => { void revision; return history.canUndo; });
     const canRedo = $derived.by(() => { void revision; return history.canRedo; });
@@ -794,9 +794,9 @@
                     </div>
                 {/if}
             </div>
-            <Resize value={Math.min(profileHeight, maxProfile)} min={175} max={maxProfile} axis="y" label="Elevation height" onResize={(value) => profileHeight = value} />
+            <Resize value={Math.min(profileHeight, maxProfile)} min={210} max={maxProfile} axis="y" label="Elevation height" onResize={(value) => profileHeight = value} />
             <Profile
-                lineData={currentRoute} height={Math.min(profileHeight, maxProfile)} {total} {days} {dayLabels} {theme}
+                lineData={currentRoute} singleRoute={!multi} height={Math.min(profileHeight, maxProfile)} {total} {days} {dayLabels} {theme}
                 activeNight={expandedDay ?? 0} band={overnightContext ? area : null} window={profileWindow}
                 onNight={(riding) => showDay(riding)} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
             />
