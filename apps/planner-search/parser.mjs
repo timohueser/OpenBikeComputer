@@ -22,6 +22,7 @@ export function parserProcess(python, model) {
   child.on('error', () =>
     fail('The query runtime could not start. Run the local setup command.'),
   );
+  child.stdin.on('error', () => fail('The query runtime input closed. Restart the search server.'));
   child.on('exit', () =>
     fail('The query runtime stopped. Restart the search server.'),
   );
@@ -54,7 +55,7 @@ export function parserProcess(python, model) {
       return new Promise((resolve, reject) => {
         const id = ++nextId,
           timer = setTimeout(() => {
-            pending.delete(id);
+            // Keep the slot until the worker replies; a timeout does not cancel its work.
             reject(new Error('The query model timed out. Try again.'));
           }, 10000);
         pending.set(id, { resolve, reject, timer });

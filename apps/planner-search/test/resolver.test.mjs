@@ -69,3 +69,7 @@ test('every day ends resolve separately and riding-time splits use the supplied 
   assert.ok(Math.abs(split.boundaries[0]-(ds[1]+ds[2])/2)<1e-9);
   assert.throws(()=>alongRange({ref:'end',at:{value:10,unit:'h'}},[0,total],timed),/beyond/);
 });
+
+test('repeated stops bound work before resolving duplicate destinations', () => {
+  assert.throws(() => resolve(db, {type:'add_point', point:{name:'Kandel'}, every:{value:0.001,unit:'km'}}, context), /50 stop intervals/);
+});

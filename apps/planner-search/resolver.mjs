@@ -487,6 +487,11 @@ export function resolve(db, request, context) {
     if (request.every) {
       if (request.every.value <= 0)
         throw new Error('Choose a repeat distance greater than zero.');
+      const span = request.every.unit === 'h'
+        ? hoursAt(range[1], context) - hoursAt(range[0], context)
+        : range[1] - range[0];
+      if (Math.ceil(span / request.every.value) - 1 > 50)
+        throw new Error('This checks more than 50 stop intervals. Use a larger interval.');
       let km = range[0];
       while (km < range[1]) {
         if (
@@ -502,6 +507,7 @@ export function resolve(db, request, context) {
           [km, range[1]],
           context,
         )[0];
+        if (next <= km) throw new Error('The repeat interval does not advance along the route.');
         if (next >= range[1]) break;
         km = next;
         const point = resolvePoint(db, request.point, context, at(line, km));
