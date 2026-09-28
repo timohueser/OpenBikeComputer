@@ -28,3 +28,9 @@ test('snapshots expire by their next transition and do not invent a 24/7 closure
   assert.equal(always.closesAt,undefined);
   assert.equal(always.validUntil-always.checkedAt,300_000);
 });
+
+test('open-ended hours do not imply a known closing time or an open badge', () => {
+  const current = status('2026-09-28T12:00:00Z', 'Mo,We-Fr 13:00+; Sa,Su 10:30+; Tu off');
+  assert.equal(current.state, 'unknown');
+  assert.equal(current.closesAt, undefined);
+});

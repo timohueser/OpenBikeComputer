@@ -46,7 +46,7 @@ describe('planner query requests',()=>{
         vi.stubGlobal('fetch',fetch);
         const {target,type}=await setup();await type('hotels nearby');await tick();
         (target.querySelector('.chip') as HTMLButtonElement).click();await tick();
-        const button=(text:string)=>[...target.querySelectorAll('.choices button')].find(b=>b.textContent?.trim()===text)!;
+        const button=(text:string)=>[...target.querySelectorAll<HTMLButtonElement>('.choices button')].find(b=>b.textContent?.trim()===text)!;
         button('hotel').click();await tick();
         expect((target.querySelector('.apply') as HTMLButtonElement).disabled).toBe(true);
         button('campsite').click();await tick();

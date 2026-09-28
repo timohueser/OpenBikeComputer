@@ -14,6 +14,10 @@ const tilePlace: Place = { id: 'poi-123', kind: 'place', label: 'Tile camp', cat
 
 beforeEach(() => {
     stored.clear();
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+        const input = JSON.parse(String(init.body));
+        return {ok:true,json:async () => ({type:'places',request:input.request ?? {type:'places',what:['campsite']},results:[{source:tilePlace.id,name:tilePlace.label,kind:'campsite',lon:tilePlace.coordinate[0],lat:tilePlace.coordinate[1],precision:'place',distance:0}]})};
+    }));
     vi.stubGlobal('localStorage', { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value) });
     vi.mocked(corridorPlaces).mockResolvedValue([tilePlace]);
 });
@@ -32,12 +36,11 @@ function button(label: string, scope: ParentNode = document) {
 }
 
 async function search(text: string) {
-    const input = document.querySelector<HTMLInputElement>('[aria-label="Search places along your route"]')!;
+    const input = document.querySelector<HTMLInputElement>('[aria-label="Find a place or ask about the route"]')!;
     input.value = text;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    await tick();
-    await tick();
+    await vi.waitFor(() => expect(document.querySelector('.results')?.textContent).toContain(tilePlace.label));
 }
 
 describe('planner app transitions', () => {
@@ -52,6 +55,7 @@ describe('planner app transitions', () => {
         expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe(tilePlace.label);
         button('Close').click();
         await tick();
+        await vi.waitFor(() => expect(button(`Map place: ${tilePlace.label}`)).toBeDefined());
         button(`Map place: ${tilePlace.label}`).click();
         await tick();
         expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe(tilePlace.label);
@@ -94,7 +98,10 @@ describe('planner app transitions', () => {
         days.dispatchEvent(new Event('input', { bubbles: true }));
         days.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
         await tick();
+        button(`Open day ${maxRidingDays}: Day ${maxRidingDays - 1} overnight to Besançon`).click();
+        await tick();
         await search(`campsites day ${maxRidingDays}`);
+        await vi.waitFor(() => expect(button(`Map place: ${tilePlace.label}`)).toBeDefined());
         button(`Map place: ${tilePlace.label}`).click();
         await tick();
         const dialog = document.querySelector('[role="dialog"]')!;

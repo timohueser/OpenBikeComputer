@@ -24,6 +24,14 @@ describe('opening hours presentation', () => {
     it('uses the complete original expression when dates, solar times, comments or fallback rules need interpretation', () => {
         for (const raw of ['Mo-Fr 08:00-17:00; Dec 24 off','sunrise-sunset','Mo-Fr 08:00-12:00 || "by appointment"','Mo-Fr 10:00-17:00; PH open "call ahead"','']) expect(openingHoursRows(raw)).toBeNull();
     });
+    it('formats open-ended hours without inventing a closing time', () => {
+        expect(openingHoursRows('Mo,We-Fr 13:00+; Sa,Su 10:30+; Tu off')).toEqual([
+            {days:'Mon, Wed–Fri', periods:['From 13:00']},
+            {days:'Sat, Sun', periods:['From 10:30']},
+            {days:'Tue', periods:['Closed']},
+        ]);
+        expect(openingHoursRows('Mo 13:00+, Tu off')).toEqual([{days:'Mon',periods:['From 13:00']},{days:'Tue',periods:['Closed']}]);
+    });
     it('carries hours and locality into the same place used by list and map', () => {
         const place=asPlace({source:'test',name:'Pharmacy',kind:'pharmacy',city:'Teningen',region:'Baden-Württemberg',lon:7.81,lat:48.1,distance:1,precision:'place',opening_hours:'Mo-Fr 08:30-13:00'});
         expect(place.openingHours).toBe('Mo-Fr 08:30-13:00');
