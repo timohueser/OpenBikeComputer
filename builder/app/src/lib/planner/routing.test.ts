@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { calculateLine, selectRoute, movingSecondsAt, type EngineRoute } from './routing';
 import { surfaceRuns, surfaceWindow } from './surface-data';
-import { initialTrip, cumulative, routingKey, routeCoordinates, type Trip } from './editor';
+import { initialTrip, cumulative, removeRoutePoint, setEndpoint, routingKey, routeCoordinates, type Trip } from './editor';
 
 const route: EngineRoute = {
     id: 'test-route', surfaces: ['Paved', 'Gravel'], reason: 'primary', elapsed: [0, 3000, 4000], package: 'test', profile: 'touring', geometry: [[7.8, 48], [7.9, 48], [8, 48]], elevation: [200, null, 400],
@@ -42,6 +42,12 @@ describe('routing integration', () => {
         const edited = { ...plan, days: 5, splits: { 1: .4 }, restAfter: [1], limit: 10, points: plan.points.map(p => ({ ...p, label: 'Renamed' })) };
         expect(routingKey(edited)).toBe(routingKey(plan));
         expect(routeCoordinates(edited)).toEqual(route.geometry);
+        const sameStart = setEndpoint(edited, 'start', edited.points[0].coordinate, 'New label');
+        expect(routeCoordinates(sameStart)).toEqual(route.geometry);
+        const marked = { ...edited, points: [...edited.points, { ...edited.points[0], id: 'note', kind: 'marker' as const }] };
+        const unmarked = removeRoutePoint(marked, 'note');
+        expect(unmarked.routing).toBe(edited.routing);
+        expect(unmarked.splits).toEqual(edited.splits);
         const moved = { ...edited, points: edited.points.map(p => p.id === 'shape' ? { ...p, coordinate: [8.1, 48] as [number, number] } : p) };
         expect(routingKey(moved)).not.toBe(routingKey(plan));
         expect(routeCoordinates(moved)).toEqual([plan.points[0].coordinate]);

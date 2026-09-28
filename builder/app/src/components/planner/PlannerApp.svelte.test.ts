@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { coordinateAt, cumulative, initialTrip, maxRidingDays, routeCoordinates, routingKey, type Place } from '../../lib/planner/editor';
+import { coordinateAt, cumulative, emptyTrip, initialTrip, maxRidingDays, routeCoordinates, routingKey, type Place } from '../../lib/planner/editor';
 import { corridorPlaces } from '../../lib/planner/place-index';
 import PlannerApp from './PlannerApp.svelte';
+import * as routing from '../../lib/planner/routing';
 import type { RoutingLine } from '../../lib/planner/routing';
 
 vi.mock('./PlannerMap.svelte', async () => ({ default: (await import('../../../test-support/planner/MapStub.svelte')).default }));
@@ -57,6 +58,69 @@ async function search(text: string) {
 }
 
 describe('planner app transitions', () => {
+    it.each(['route', 'trip'] as const)('creates and clears a %s without routing incomplete drafts', async mode => {
+        stored.set('obc-planner-routing-v2', JSON.stringify(emptyTrip(mode)));
+        const calculate = vi.spyOn(routing, 'calculateLine').mockRejectedValue(new Error('Routing service offline'));
+        app = mount(PlannerApp, { target: document.body });
+        await tick();
+        expect(document.body.textContent).toContain('Where would you like to ride?');
+        expect(calculate).not.toHaveBeenCalled();
+        button('Pick map location').click(); await tick();
+        button('Finish here').click(); await tick();
+        expect(document.body.textContent).toContain('Choose your start');
+        expect(calculate).not.toHaveBeenCalled();
+        button('Pick map location').click(); await tick();
+        button('Start here').click(); await tick();
+        await vi.waitFor(() => expect(calculate).toHaveBeenCalledTimes(1));
+        expect(document.body.textContent).toContain('Routing service offline');
+        button('Retry routing').click(); await tick();
+        await vi.waitFor(() => expect(calculate).toHaveBeenCalledTimes(2));
+        button('Map point: Start').click(); await tick();
+        button('Remove point').click(); await tick();
+        expect(document.body.textContent).toContain('Choose your start');
+        expect(calculate).toHaveBeenCalledTimes(2);
+        button('Map point: Finish').click(); await tick();
+        button('Remove point').click(); await tick();
+        expect(document.body.textContent).toContain('Where would you like to ride?');
+        button('Undo').click(); await tick();
+        expect(document.body.textContent).toContain('Choose your start');
+        button(mode === 'route' ? 'New route' : 'New trip').click(); await tick();
+        expect(document.body.textContent).toContain('Where would you like to ride?');
+        button('Undo').click(); await tick();
+        await unmount(app);
+        app = mount(PlannerApp, { target: document.body }); await tick();
+        expect(document.body.textContent).toContain('Choose your start');
+        expect(calculate).toHaveBeenCalledTimes(2);
+    });
+
+    it('uses a search result as the first endpoint', async () => {
+        stored.clear();
+        const calculate = vi.spyOn(routing, 'calculateLine');
+        app = mount(PlannerApp, { target: document.body }); await tick();
+        await search('campsites');
+        button(`Map place: ${tilePlace.label}`).click(); await tick();
+        button('Finish here').click(); await tick();
+        expect(document.body.textContent).toContain('Choose your start');
+        const draft = JSON.parse(stored.get('obc-planner-routing-v2')!);
+        expect(draft.points).toEqual([expect.objectContaining({ kind: 'finish', label: tilePlace.label, coordinate: tilePlace.coordinate })]);
+        expect(calculate).not.toHaveBeenCalled();
+    });
+
+    it('ignores an in-flight route after an endpoint is removed', async () => {
+        const saved = JSON.parse(stored.get('obc-planner-routing-v2')!);
+        delete saved.routing;
+        stored.set('obc-planner-routing-v2', JSON.stringify(saved));
+        let finish!: (line: RoutingLine) => void;
+        const calculate = vi.spyOn(routing, 'calculateLine').mockImplementation(() => new Promise(resolve => finish = resolve));
+        app = mount(PlannerApp, { target: document.body }); await tick();
+        button('Map point: Basel').click(); await tick();
+        button('Remove point').click(); await tick();
+        expect(calculate.mock.calls[0][1].aborted).toBe(true);
+        finish({ key: routingKey(saved) } as RoutingLine); await tick();
+        expect(document.body.textContent).toContain('Choose your start');
+        expect(JSON.parse(stored.get('obc-planner-routing-v2')!).routing).toBeUndefined();
+    });
+
     it('opens a tile place from both a search row and its map pin, then adds a visit', async () => {
         app = mount(PlannerApp, { target: document.body });
         await tick();
@@ -101,9 +165,9 @@ describe('planner app transitions', () => {
         vi.spyOn(localStorage, 'getItem').mockReturnValueOnce(JSON.stringify({ points: [], days: 3, limit: 50 }));
         app = mount(PlannerApp, { target: document.body });
         await tick();
-        expect(document.body.textContent).toContain('Saved draft is invalid · default route loaded');
-        expect(document.body.textContent).toContain('Freiburg Hbf → Titisee');
-        expect(document.body.textContent).toContain('Elevation unavailable');
+        expect(document.body.textContent).toContain('Saved draft is invalid · new plan opened');
+        expect(document.body.textContent).toContain('Where would you like to ride?');
+        expect(document.body.textContent).toContain('Choose a start and finish to get started.');
     });
 
     it('prevents adding an overnight past the riding-day limit', async () => {

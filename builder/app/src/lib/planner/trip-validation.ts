@@ -38,8 +38,11 @@ export function isTrip(value: unknown): value is Trip {
     const { points, days } = value;
     const ids = new Set(points.map(point => point.id));
     const nights = points.filter(point => point.kind === 'night');
-    if (ids.size !== points.length || points.filter(point => point.kind === 'start').length !== 1
-        || points.filter(point => point.kind === 'finish').length !== 1
+    const route = points.filter(point => point.kind !== 'marker');
+    const starts = route.filter(point => point.kind === 'start').length;
+    const finishes = route.filter(point => point.kind === 'finish').length;
+    if (ids.size !== points.length || starts > 1 || finishes > 1
+        || (route.length >= 2 ? starts !== 1 || finishes !== 1 : starts + finishes !== route.length)
         || nights.some(point => !integer(point.night, 1, days - 1) || point.id !== `night-${point.night}`)
         || new Set(nights.map(point => point.night)).size !== nights.length) return false;
 

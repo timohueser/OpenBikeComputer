@@ -3,7 +3,8 @@
     import Icon from './PlannerIcon.svelte';
     import type { RoutePoint } from '../../lib/planner/editor';
 
-    let { stops, onInspect, onReorder }: {
+    let { stops, onInspect, onReorder, measured = true }: {
+        measured?: boolean;
         stops: { point: RoutePoint; distance: number }[];
         onInspect: (point: RoutePoint) => void;
         onReorder: (id: string, offset: number) => void;
@@ -61,7 +62,7 @@
                 <Icon name={point.kind === 'via' ? 'route' : point.kind === 'start' || point.kind === 'finish' ? 'pin' : 'flag'} size={17} />
                 <span>
                     <strong>{point.kind === 'via' ? 'Shaping point' : point.label}</strong>
-                    <small>{distance.toFixed(1)} km</small>
+                    {#if measured}<small>{distance.toFixed(1)} km</small>{/if}
                 </span>
             </button>
             {#if index > 0 && index < stops.length - 1}
@@ -76,12 +77,12 @@
                         }
                     }}><Icon name="grip" size={20} /></button>
             {:else}
-                <small class="end">{index === 0 ? 'Start' : 'Finish'}</small>
+                <small class="end">{point.kind === 'start' ? 'Start' : 'Finish'}</small>
             {/if}
         </li>
     {/each}
 </ol>
-<p class="note">Cumulative from the start</p>
+{#if measured}<p class="note">Cumulative from the start</p>{/if}
 <span class="sr-only" id={helpId}>Drag to reorder. Use the up and down arrow keys when focused.</span>
 <span class="sr-only" role="status">{announcement}</span>
 

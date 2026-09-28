@@ -82,6 +82,38 @@ export function initialTrip(): Trip {
     };
 }
 
+/** A new plan has no route until the rider chooses both endpoints. */
+export function emptyTrip(mode: Trip['mode'] = 'route'): Trip {
+    return { points: [], live: true, routeOrder: [], mode, bike: 'touring',
+        days: 3, budget: 'days', target: 3, limit: 50, variant: 'valley', restAfter: [] };
+}
+
+export function setEndpoint(trip: Trip, kind: 'start' | 'finish', coordinate: Coordinate, label?: string): Trip {
+    const previous = trip.points.find(p => p.kind === kind);
+    const point: RoutePoint = { id: previous?.id ?? crypto.randomUUID(), kind, coordinate: [...coordinate],
+        label: label ?? (kind === 'start' ? 'Start' : 'Finish'), progress: kind === 'start' ? 0 : 1 };
+    return { ...trip, splits: undefined,
+        points: previous ? trip.points.map(p => p.id === previous.id ? point : p) : [...trip.points, point] };
+}
+
+/** Removing an endpoint promotes its neighbour in route order. Markers never become endpoints. */
+export function removeRoutePoint(trip: Trip, id: string): Trip {
+    const removed = trip.points.find(p => p.id === id);
+    if (!removed) return trip;
+    if (removed.kind === 'marker') return { ...trip, points: trip.points.filter(p => p.id !== id), routeOrder: trip.routeOrder?.filter(pointId => pointId !== id) };
+    const route = orderedRoutePoints(trip).filter(p => p.id !== id);
+    const neighbour = removed.kind === 'start' ? route[0] : removed.kind === 'finish' ? route.at(-1) : undefined;
+    const promoted = neighbour && neighbour.kind !== 'start' && neighbour.kind !== 'finish' ? neighbour : undefined;
+    const points = trip.points.filter(p => p.id !== id).map(p => p !== promoted ? p : {
+        ...p, id: p.kind === 'night' ? crypto.randomUUID() : p.id, kind: removed.kind,
+        progress: removed.kind === 'start' ? 0 : 1, night: undefined, anchor: undefined,
+        leg: removed.kind === 'start' ? undefined : p.leg, drawn: removed.kind === 'start' ? undefined : p.drawn,
+    });
+    const next = { ...trip, points, routing: undefined, splits: undefined };
+    next.routeOrder = route.map(p => p === promoted ? points.find(point => point.kind === removed.kind)!.id : p.id);
+    return next;
+}
+
 export function kilometres(a: Coordinate, b: Coordinate): number {
     const rad = Math.PI / 180;
     const x = Math.sin((b[1] - a[1]) * rad / 2) ** 2
@@ -133,8 +165,9 @@ export function reorderPoint(trip: Trip, id: string, offset: number): Trip {
 type Stop = { point: RoutePoint; distance: number };
 
 function routeLayout(trip: Trip): { coordinates: Coordinate[]; stops: Stop[] } {
+    const points = orderedRoutePoints(trip);
+    if (points.length < 2) return { coordinates: [], stops: points.map(point => ({ point, distance: 0 })) };
     if (trip.live) {
-        const points = orderedRoutePoints(trip);
         const line = trip.routing?.key === routingKey(trip) ? trip.routing : undefined;
         return {
             coordinates: line?.coordinates ?? [points[0].coordinate],
@@ -142,7 +175,6 @@ function routeLayout(trip: Trip): { coordinates: Coordinate[]; stops: Stop[] } {
         };
     }
     const base = corridorCoordinates(trip);
-    const points = orderedRoutePoints(trip);
     if (!trip.routeOrder && points.slice(1).every(p => (p.leg ?? 'routed') === 'routed')) {
         const total = cumulative(base).at(-1)!;
         return {coordinates:base, stops:points.map(point=>({point,distance:point.kind==='start'?0:point.kind==='finish'?total:nearestProgress(base,point.coordinate)*total}))};
@@ -263,7 +295,7 @@ export function overnightWindow(trip: Trip, night: number): { from: number; to: 
 
 /** Straight distance in km from a point to the nearest spot on the route. */
 export function offRoute(coordinates: Coordinate[], point: Coordinate): number {
-    return kilometres(point, coordinateAt(coordinates, nearestProgress(coordinates, point)));
+    return coordinates.length ? kilometres(point, coordinateAt(coordinates, nearestProgress(coordinates, point))) : Infinity;
 }
 
 export function nearestProgress(coordinates: Coordinate[], point: Coordinate): number {
@@ -285,6 +317,7 @@ export function nearestProgress(coordinates: Coordinate[], point: Coordinate): n
 }
 
 export function tripDays(trip: Trip): Day[] {
+    if (orderedRoutePoints(trip).length < 2) return [];
     const line = trip.routing?.key === routingKey(trip) ? trip.routing : undefined;
     const hours = (from: number, to: number, distance: number) => line ? (movingSecondsAt(line, to) - movingSecondsAt(line, from)) / 3600 : distance / 15;
     const { coordinates, stops } = routeLayout(trip);
@@ -318,7 +351,7 @@ export function tripDays(trip: Trip): Day[] {
 /** Visits, out-and-backs, passes and markers inside a day in route order, with their km from the day's start. */
 export function dayStops(trip: Trip, day: Pick<Day, 'from' | 'to'>): { point: RoutePoint; km: number }[] {
     const { coordinates, stops } = routeLayout(trip);
-    const total = stops.at(-1)!.distance;
+    const total = stops.at(-1)?.distance ?? 0;
     const markers = trip.points.filter(p => p.kind === 'marker').map(point => ({ point, distance: nearestProgress(coordinates, point.coordinate) * total }));
     return [...stops.filter(stop => ['pass', 'waypoint', 'detour'].includes(stop.point.kind)), ...markers]
         .filter(stop => stop.distance > day.from * total && stop.distance <= day.to * total)

@@ -50,6 +50,8 @@ export async function applyQueryChanges(
   }
   let trip = structuredClone(original);
   for (const change of changes) {
+    if (change.op !== 'route' && (!trip.points.some(p => p.kind === 'start') || !trip.points.some(p => p.kind === 'finish')))
+      throw new Error('Choose a start and finish before editing the route.');
     const line = routeCoordinates(trip),
       total = cumulative(line).at(-1)!;
     const ridingDay = (number: number) => {

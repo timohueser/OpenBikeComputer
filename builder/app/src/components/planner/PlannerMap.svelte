@@ -18,7 +18,7 @@
     let {
         segments = [], coordinates = [], highlightedCoordinates = [], points = [], selectedId = null, callout = null,
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
-        showRoute = true, hoverProgress = null, center = [8.0, 46.7], zoom = 11,
+        showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         shownCategories = categoryIds, highlightedPlaces = [], landmarks = [],
         onEmptyClick, onPointSelect, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
