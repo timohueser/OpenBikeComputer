@@ -9,27 +9,27 @@
 </script>
 
 <p class="nearby">
-    Near the route: {landmark.label} ({landmark.description})
-    · <button type="button" onclick={() => onRide(landmark)}>Ride over it</button>
-    · <button type="button" onclick={() => onShow(landmark)}>Show</button>
+    <span>Near the route: {landmark.label} ({landmark.description})</span>
+    <span class="actions">
+        <button type="button" class="planner-link" onclick={() => onRide(landmark)}>Ride over it</button>
+        <button type="button" class="planner-link" onclick={() => onShow(landmark)}>Show</button>
+    </span>
 </p>
 
 <style>
     .nearby {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        column-gap: 12px;
         margin: 0;
-        padding: 0 16px 12px;
+        padding: 0 16px 8px;
         font-size: 13px;
         color: var(--ink-soft);
     }
-    button {
-        padding: 0;
-        border: 0;
-        background: none;
-        color: var(--forest);
-        font: inherit;
-        font-weight: 600;
-        text-decoration: underline;
-        text-underline-offset: 3px;
-        cursor: pointer;
+    .actions {
+        display: flex;
+        gap: 12px;
+        white-space: nowrap;
     }
 </style>

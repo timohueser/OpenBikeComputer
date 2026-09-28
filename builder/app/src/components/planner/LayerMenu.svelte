@@ -1,6 +1,6 @@
 <script lang="ts">
     import Icon from './PlannerIcon.svelte';
-    import { categoryIds, placeCategories, type PlaceCategory } from '../../lib/planner/poi-kinds';
+    import { placeCategories, type PlaceCategory } from '../../lib/planner/poi-kinds';
 
     let { hillshade = $bindable(), contours = $bindable(), hidden = $bindable(), highlighted = $bindable() }: {
         hillshade: boolean;
@@ -11,6 +11,17 @@
         highlighted: PlaceCategory[];
     } = $props();
 
+    const groups: { title: string; categories: PlaceCategory[] }[] = [
+        { title: 'Sleep', categories: ['hotel', 'camp', 'shelter'] },
+        { title: 'Eat & drink', categories: ['shop', 'food'] },
+        { title: 'Water', categories: ['water', 'toilets'] },
+        { title: 'Fix & go', categories: ['bike', 'pharmacy', 'station'] },
+        { title: 'See', categories: ['viewpoint', 'peak'] },
+    ];
+
+    let open = $state(false);
+    let root: HTMLDivElement;
+
     function show(category: PlaceCategory, shown: boolean) {
         hidden = shown ? hidden.filter(c => c !== category) : [...hidden, category];
         if (!shown) highlighted = highlighted.filter(c => c !== category);
@@ -19,63 +30,82 @@
     function highlight(category: PlaceCategory) {
         highlighted = highlighted.includes(category) ? highlighted.filter(c => c !== category) : [...highlighted, category];
     }
+
+    function outside(event: PointerEvent) {
+        if (open && !root.contains(event.target as Node)) open = false;
+    }
+
+    function key(event: KeyboardEvent) {
+        if (event.key !== 'Escape' || !open) return;
+        event.stopPropagation();
+        open = false;
+        root.querySelector<HTMLElement>('.toggle')?.focus();
+    }
 </script>
 
-<details class="layer-menu">
-    <summary aria-label="Map layers"><Icon name="layers" /></summary>
-    <div class="panel">
-        <strong>Map layers</strong>
-        <label><input type="checkbox" bind:checked={hillshade} />Relief</label>
-        <label><input type="checkbox" bind:checked={contours} />Contours</label>
-        <strong class="section">Places</strong>
-        <ul>
-            {#each categoryIds as category (category)}
-                {@const info = placeCategories[category]}
-                {@const on = highlighted.includes(category)}
-                <li>
-                    <label>
-                        <input type="checkbox" checked={!hidden.includes(category)} onchange={(event) => show(category, event.currentTarget.checked)} />
-                        <Icon path={info.icon} size={15} />{info.plural}
-                    </label>
-                    <button type="button" class="pin" class:on aria-pressed={on} disabled={hidden.includes(category)}
-                        aria-label={`Highlight ${info.plural.toLowerCase()} at every zoom`} title="Highlight at every zoom"
-                        onclick={() => highlight(category)}><Icon name="pin" size={15} /></button>
-                </li>
+<svelte:window onpointerdown={outside} />
+
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="layer-menu" bind:this={root} onkeydown={key}>
+    <button type="button" class="toggle" class:chosen={open} aria-label="Map layers" aria-expanded={open} aria-haspopup="true" onclick={() => open = !open}><Icon name="layers" /></button>
+    {#if open}
+        <div class="panel">
+            <strong>Map layers</strong>
+            <label><input type="checkbox" bind:checked={hillshade} />Relief</label>
+            <label><input type="checkbox" bind:checked={contours} />Contours</label>
+            {#each groups as group (group.title)}
+                <strong class="section">{group.title}</strong>
+                <ul>
+                    {#each group.categories as category (category)}
+                        {@const info = placeCategories[category]}
+                        {@const on = highlighted.includes(category)}
+                        <li>
+                            <label>
+                                <input type="checkbox" checked={!hidden.includes(category)} onchange={(event) => show(category, event.currentTarget.checked)} />
+                                <Icon path={info.icon} size={15} />{info.plural}
+                            </label>
+                            <button type="button" class="ring" class:on aria-pressed={on} disabled={hidden.includes(category)}
+                                aria-label={`Highlight ${info.plural.toLowerCase()} at every zoom`} title="Highlight at every zoom"
+                                onclick={() => highlight(category)}><span></span></button>
+                        </li>
+                    {/each}
+                </ul>
             {/each}
-        </ul>
-    </div>
-</details>
+        </div>
+    {/if}
+</div>
 
 <style>
     .layer-menu {
-        position: relative;
         border-radius: 8px;
         background: var(--panel);
         box-shadow: var(--planner-shadow);
     }
-    summary {
+    .toggle {
         display: grid;
         place-items: center;
         width: 36px;
         height: 36px;
+        padding: 0;
+        border: 0;
+        border-radius: 8px;
+        background: none;
         color: var(--ink);
         cursor: pointer;
-        list-style: none;
     }
-    summary::-webkit-details-marker {
-        display: none;
+    .toggle:hover,
+    .toggle.chosen {
+        color: var(--link);
     }
-    summary:hover {
-        color: var(--forest);
-    }
+    /* Positioned against the controls column, so it starts level with the first control and stays inside the map. */
     .panel {
         position: absolute;
         top: 0;
         right: 44px;
-        width: 216px;
-        max-height: calc(100vh - 360px);
+        width: 224px;
+        max-height: calc(var(--map-height, 100vh) - 32px);
         overflow: auto;
-        padding: 12px 12px 8px 16px;
+        padding: 12px 8px 8px 16px;
         border-radius: 8px;
         background: var(--panel);
         box-shadow: var(--planner-shadow);
@@ -83,13 +113,15 @@
     }
     strong {
         display: block;
-        margin-bottom: 8px;
+        margin-bottom: 4px;
         font-weight: 600;
     }
     .section {
-        margin: 12px 0 4px;
-        padding-top: 12px;
+        margin: 8px 0 0;
+        padding-top: 8px;
         border-top: 1px solid var(--line);
+        font-size: 11px;
+        color: var(--ink-soft);
     }
     ul {
         margin: 0;
@@ -100,21 +132,28 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
+        gap: 8px;
     }
     label {
         display: flex;
+        flex: 1;
         align-items: center;
         gap: 8px;
-        padding: 4px 0;
+        min-height: 32px;
+        color: var(--ink);
+        cursor: pointer;
     }
     li label :global(svg) {
         color: var(--ink-soft);
     }
     input {
+        width: 18px;
+        height: 18px;
         margin: 0;
-        accent-color: var(--forest);
+        accent-color: var(--link);
+        cursor: pointer;
     }
-    .pin {
+    .ring {
         display: grid;
         place-items: center;
         width: 28px;
@@ -123,15 +162,25 @@
         border: 0;
         border-radius: 6px;
         background: none;
-        color: var(--ink-faint);
         cursor: pointer;
     }
-    .pin:hover:not(:disabled) {
-        background: var(--parchment-2);
-        color: var(--ink);
+    .ring span {
+        width: 14px;
+        height: 14px;
+        border: 2px solid var(--line-strong);
+        border-radius: 50%;
     }
-    .pin.on {
-        color: var(--forest);
+    .ring:hover:not(:disabled) {
         background: var(--parchment-2);
+    }
+    .ring:hover:not(:disabled) span {
+        border-color: var(--ink-soft);
+    }
+    .ring.on span {
+        border-width: 3px;
+        border-color: var(--amber);
+    }
+    .ring:disabled {
+        cursor: default;
     }
 </style>

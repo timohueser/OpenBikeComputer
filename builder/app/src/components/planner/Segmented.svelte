@@ -1,12 +1,14 @@
 <script lang="ts" generics="T extends string">
     import Icon from './PlannerIcon.svelte';
 
-    let { label, options, value, onChange, compact = false }: {
+    let { label, options, value, onChange, compact = false, columns = 0 }: {
         label: string;
         options: { value: T; label: string; icon?: string }[];
         value: T;
         onChange: (value: T) => void;
         compact?: boolean;
+        /** Lays the options out in a grid of this many columns instead of one row. */
+        columns?: number;
     } = $props();
 
     // A radio group keeps one tab stop, also when no option matches.
@@ -22,7 +24,7 @@
     }
 </script>
 
-<div class="segmented" class:compact role="radiogroup" aria-label={label}>
+<div class="segmented" class:compact class:grid={columns > 0} style:grid-template-columns={columns > 0 ? `repeat(${columns}, 1fr)` : undefined} role="radiogroup" aria-label={label}>
     {#each options as option, index (option.value)}
         <button
             type="button"
@@ -68,6 +70,9 @@
         background: var(--panel);
         color: var(--ink);
         box-shadow: inset 0 0 0 1px var(--line-strong);
+    }
+    .grid {
+        display: grid;
     }
     .compact button {
         min-height: 26px;

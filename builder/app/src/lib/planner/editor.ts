@@ -212,11 +212,21 @@ function stopProgress(stops: Stop[], point: RoutePoint): number {
     return (stops.find(stop => stop.point.id === point.id)?.distance ?? 0) / (stops.at(-1)?.distance || 1);
 }
 
-// Night → progress of every fixed day end. A pinned overnight wins over a dragged split.
+const minDayKm = 1;
+
+// Night → progress of every fixed day end. A pinned overnight wins over a dragged split, and a split is
+// provisional: one that leaves no day of at least `minDayKm` beside the fixed ends around it is dropped.
 function fixedNights(trip: Trip, stops: Stop[]): Map<number, number> {
     const fixed = new Map<number, number>();
-    for (const [night, progress] of Object.entries(trip.splits ?? {})) fixed.set(Number(night), progress);
     for (const pin of trip.points) if (pin.kind === 'night') fixed.set(pin.night!, stopProgress(stops, pin));
+    const gap = minDayKm / (stops.at(-1)?.distance || 1);
+    for (const [key, progress] of Object.entries(trip.splits ?? {})) {
+        const night = Number(key);
+        if (fixed.has(night)) continue;
+        const lo = Math.max(0, ...[...fixed].filter(([n]) => n < night).map(([, p]) => p));
+        const hi = Math.min(1, ...[...fixed].filter(([n]) => n > night).map(([, p]) => p));
+        if (progress >= lo + gap && progress <= hi - gap) fixed.set(night, progress);
+    }
     return fixed;
 }
 
@@ -296,7 +306,7 @@ export function tripDays(trip: Trip): Day[] {
     return boundaries.slice(1).map((to, i) => {
         const distance = Math.max(0, to - boundaries[i]) * total;
         const pin = pinned.find(p => p.night === i + 1);
-        const split = !pin && i + 1 < count && trip.splits?.[i + 1] !== undefined;
+        const split = !pin && fixed.has(i + 1);
         return { number: i + 1, from: boundaries[i], to, distance, hours: distance / 15, pinned: pin, split };
     });
 }
@@ -312,11 +322,12 @@ export function dayStops(trip: Trip, day: Pick<Day, 'from' | 'to'>): { point: Ro
         .map(stop => ({ point: stop.point, km: stop.distance - day.from * total }));
 }
 
-/** Moves a provisional day end along the route, never past the day ends beside it. */
+/** Moves a provisional day end along the route, keeping a day of at least 1 km on both sides. */
 export function setSplit(trip: Trip, night: number, progress: number): Trip {
     const days = tripDays(trip);
     if (trip.mode === 'route' || night < 1 || night >= days.length || days[night - 1].pinned) return trip;
-    const clamped = Math.max(days[night - 1].from, Math.min(days[night].to, progress));
+    const gap = minDayKm / (cumulative(routeCoordinates(trip)).at(-1)! || 1);
+    const clamped = Math.max(days[night - 1].from + gap, Math.min(days[night].to - gap, progress));
     return { ...trip, splits: { ...trip.splits, [night]: clamped } };
 }
 

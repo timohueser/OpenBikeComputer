@@ -51,7 +51,7 @@
 {:else if !editing}
     <p class="plan-line">
         <span>{summary}</span>
-        <button type="button" class="link" onclick={() => editing = true}>Edit</button>
+        <button type="button" class="planner-link" onclick={() => editing = true}>Edit</button>
     </p>
 {:else}
     <!-- Escape bubbles from the fields; the form closes the editor in place. -->
@@ -92,10 +92,10 @@
 <style>
     .plan-line {
         display: flex;
-        align-items: baseline;
+        align-items: center;
         gap: 12px;
         margin: 0;
-        padding: 0 16px 16px;
+        padding: 0 16px 10px;
         font-size: 13px;
         color: var(--ink-soft);
         font-variant-numeric: tabular-nums;
@@ -106,15 +106,6 @@
     button {
         font: inherit;
         cursor: pointer;
-    }
-    .link {
-        padding: 0;
-        border: 0;
-        background: none;
-        color: var(--forest);
-        font-weight: 600;
-        text-decoration: underline;
-        text-underline-offset: 3px;
     }
     .plan-editor {
         display: grid;

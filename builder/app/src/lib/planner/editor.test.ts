@@ -220,10 +220,23 @@ describe('provisional day ends', () => {
         expect(overnightWindow(pinned, 3).center).toBeCloseTo(.85, 9);
     });
 
-    it('never moves a day end past its neighbours', () => {
+    it('never moves a day end past its neighbours and keeps a day of 1 km beside them', () => {
         const trip = setSplit({ ...initialTrip(), days: 4 }, 2, .7);
-        expect(tripDays(setSplit(trip, 3, .1))[2].to).toBe(.7);
-        expect(tripDays(setSplit(trip, 1, .95))[0].to).toBe(.7);
+        const squeezedAfter = tripDays(setSplit(trip, 3, .1));
+        expect(squeezedAfter[1].to).toBe(.7);
+        expect(squeezedAfter[2].distance).toBeCloseTo(1, 6);
+        const squeezedBefore = tripDays(setSplit(trip, 1, .95));
+        expect(squeezedBefore[1].to).toBe(.7);
+        expect(squeezedBefore[1].distance).toBeCloseTo(1, 6);
+    });
+
+    it('drops a dragged split that a pinned night leaves no day for', () => {
+        const trip = setSplit({ ...initialTrip(), days: 4 }, 2, .7);
+        const pinned = pinNight(trip, 1, coordinateAt(routeCoordinates(trip), .8), 'Late camp');
+        const days = tripDays(pinned);
+        expect(days.map(d => d.to)).toEqual([expect.closeTo(.8, 4), expect.closeTo(.8 + .2 / 3, 4), expect.closeTo(.8 + .4 / 3, 4), 1]);
+        expect(days.every(d => d.distance > 1)).toBe(true);
+        expect(days[1].split).toBe(false);
     });
 
     it('clears a split when its night is pinned or the day count changes', () => {

@@ -1,10 +1,11 @@
 <script lang="ts">
+    import Segmented from './Segmented.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileHeightAt, profileHeights } from '../../lib/planner/profile-data';
     import type { Day } from '../../lib/planner/editor';
 
     let {
-        total, days, dayLabels, theme = 'light', activeNight, band, window: shown = { from: 0, to: 1 }, height = 190,
+        total, days, dayLabels, theme = 'light', activeNight, band, window: view = { from: 0, to: 1 }, height = 190,
         onNight, onDayEndDrag, onHover,
     }: {
         /** Route length in km. */
@@ -29,9 +30,20 @@
     let plot: HTMLDivElement;
     let hover = $state<number | null>(null);
     let drag = $state<{ night: number; progress: number; moved: boolean } | null>(null);
+    let range = $state<'map' | 'route'>('map');
 
+    const shown = $derived(range === 'map' ? view : { from: 0, to: 1 });
     const span = $derived(Math.max(1e-6, shown.to - shown.from));
     const ticks = $derived([0, .25, .5, .75, 1].map(t => (shown.from + t * span) * total));
+    // The day ends inside the shown stretch; with none inside, the nearest one on each side sits at the edge so it can still be dragged in.
+    const handles = $derived.by(() => {
+        const ends = days.slice(0, -1).map(day => ({ day, at: drag?.night === day.number ? drag.progress : day.to }));
+        const inside = ends.filter(end => end.at >= shown.from && end.at <= shown.to).map(end => ({ ...end, x: x(end.at) }));
+        if (inside.length) return inside;
+        const before = ends.filter(end => end.at < shown.from).at(-1);
+        const after = ends.find(end => end.at > shown.to);
+        return [...(before ? [{ ...before, x: 0 }] : []), ...(after ? [{ ...after, x: 100 }] : [])];
+    });
 
     function x(progress: number) {
         return (progress - shown.from) / span * 100;
@@ -79,6 +91,8 @@
 <section class="elevation" style:height={`${height}px`} aria-label="Elevation profile">
     <div class="title">
         <strong>Elevation</strong>
+        <Segmented compact label="Profile range" value={range} onChange={(value) => range = value}
+            options={[{ value: 'map', label: 'Map view' }, { value: 'route', label: 'Whole route' }]} />
         <span>Illustrative profile</span>
         <span class="distance">{total.toFixed(1)} km</span>
     </div>
@@ -89,9 +103,9 @@
         <svg viewBox={`${shown.from * 1000} 0 ${span * 1000} 112`} preserveAspectRatio="none" role="img" aria-label="Elevation profile. The shaded band is the suggested overnight stretch.">
             <path d="M0 25H1000M0 65H1000M0 105H1000" class="grid" />
             <polygon points={`0,112 ${line} 1000,112`} class="terrain" />
-            {#if band && !band.blocked}<rect x={band.from * 1000} width={(band.to - band.from) * 1000} y="0" height="112" class="band" />{/if}
+            {#if band && !band.blocked}<rect x={band.from * 1000} width={Math.max(0, band.to - band.from) * 1000} y="0" height="112" class="band" />{/if}
             {#each days as day (day.number)}
-                <svg x={day.from * 1000} width={(day.to - day.from) * 1000} height="112" viewBox={`${day.from * 1000} 0 ${(day.to - day.from) * 1000} 112`} preserveAspectRatio="none" overflow="hidden">
+                <svg x={day.from * 1000} width={Math.max(0, day.to - day.from) * 1000} height="112" viewBox={`${day.from * 1000} 0 ${Math.max(0, day.to - day.from) * 1000} 112`} preserveAspectRatio="none" overflow="hidden">
                     <polyline points={line} style:stroke={dayColor(day.number, theme)} />
                 </svg>
             {/each}
@@ -104,22 +118,20 @@
                 <span class="chip" class:flip={x(hover) > 80}>{(hover * total).toFixed(1)} km · {Math.round(profileHeightAt(hover))} m</span>
             </span>
         {/if}
-        {#each days.slice(0, -1) as day (day.number)}
-            {@const at = drag?.night === day.number ? drag.progress : day.to}
-            {#if at >= shown.from && at <= shown.to}
-                <button
-                    type="button"
-                    class="handle"
-                    class:pinned={day.pinned}
-                    class:active={activeNight === day.number}
-                    style:left={`${x(at)}%`}
-                    style:--day-color={dayColor(day.number, theme)}
-                    title={day.pinned ? 'Pinned · Change overnight in the day' : 'Drag to move the day end'}
-                    aria-label={`Day ${dayLabels[day.number] ?? day.number} ends here${day.pinned ? ', pinned' : ''}. Show the day.`}
-                    onpointerdown={(event) => press(event, day)}
-                    onclick={(event) => { if (event.detail === 0) onNight(day.number); }}
-                >{dayLabels[day.number] ?? day.number}</button>
-            {/if}
+        {#each handles as { day, x: left } (day.number)}
+            <button
+                type="button"
+                class="handle"
+                class:pinned={day.pinned}
+                class:moved={day.split}
+                class:active={activeNight === day.number}
+                style:left={`${left}%`}
+                style:--day-color={dayColor(day.number, theme)}
+                title={day.pinned ? 'Pinned · Change overnight in the day' : `${day.split ? 'Day end you moved' : 'Day end suggested'} · drag along the route`}
+                aria-label={`Day ${dayLabels[day.number] ?? day.number} ends here${day.pinned ? ', pinned' : day.split ? ', moved by you' : ', suggested'}. Show the day.`}
+                onpointerdown={(event) => press(event, day)}
+                onclick={(event) => { if (event.detail === 0) onNight(day.number); }}
+            >{dayLabels[day.number] ?? day.number}</button>
         {/each}
     </div>
     <div class="axis">
@@ -139,13 +151,13 @@
         background: var(--panel);
     }
     :global([data-theme="dark"]) .elevation {
-        --band: #4a3a1c;
+        --band: #5a4622;
     }
     .title {
         display: flex;
-        align-items: baseline;
+        align-items: center;
         gap: 12px;
-        margin-bottom: 12px;
+        margin-bottom: 8px;
         font-size: 13px;
     }
     .title strong {
@@ -245,6 +257,18 @@
         font: 700 11px var(--sans);
         cursor: ew-resize;
         touch-action: none;
+    }
+    .handle.moved {
+        border-style: dotted;
+    }
+    .handle.moved::after {
+        content: "";
+        position: absolute;
+        bottom: 2px;
+        width: 3px;
+        height: 3px;
+        border-radius: 50%;
+        background: currentColor;
     }
     .handle.pinned {
         border-style: solid;

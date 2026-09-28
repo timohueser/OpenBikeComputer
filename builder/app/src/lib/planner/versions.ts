@@ -43,6 +43,14 @@ export function saveVersion(trip: Trip, name?: string, store: VersionStore = loc
     return version;
 }
 
+/** Names the newest version; an empty name leaves it unnamed. */
+export function renameLatest(name: string, store: VersionStore = localStorage): void {
+    const [latest, ...rest] = listVersions(store);
+    if (!latest) return;
+    const { name: _, ...unnamed } = latest;
+    store.setItem(key, JSON.stringify([name.trim() ? { ...unnamed, name: name.trim() } : unnamed, ...rest]));
+}
+
 export function deleteVersion(id: string, store: VersionStore = localStorage): void {
     store.setItem(key, JSON.stringify(listVersions(store).filter(v => v.id !== id)));
 }

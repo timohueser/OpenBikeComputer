@@ -20,7 +20,7 @@
         insertPoint, itineraryDays, kilometres, nearestProgress, nightOrderConflicts, offRoute, overnightCandidates,
         overnightWindow, pinNight, places, removeRestDay, reorderPoint, routeCoordinates, routeSlice, routeStops,
         setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays,
-        type Coordinate, type Day, type LegMode, type Place, type RoutePoint, type Trip,
+        type Coordinate, type Day, type LegMode, type Place, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import { corridorPlaces } from '../../lib/planner/place-index';
@@ -50,6 +50,9 @@
     let expandedDay = $state<number | null>(1);
     let changingOvernight = $state(false);
     let selectedId = $state<string | null>(null);
+    // The point whose panel row lights up for a moment after it was added or pinned.
+    let revealId = $state<string | null>(null);
+    let revealTimer: ReturnType<typeof setTimeout> | undefined;
     // A spot picked on the map, and the point it replaces when a point becomes an overnight.
     let pending = $state<Coordinate | null>(null);
     let pendingSource = $state<string | null>(null);
@@ -72,6 +75,8 @@
     let query = $state('');
     let searchValue = $state<PlannerQueryValue>({ text: '', category: 'all', day: null, within: null });
     let message = $state('Example route and places');
+    // The status line offers Undo after a version restore, until the next change.
+    let undoable = $state(false);
     let draftSavedAt = $state<number | null>(null);
     let draftError = $state('');
     let visibleRange = $state<[number, number] | null>(null);
@@ -80,6 +85,7 @@
     let profileHeight = $state(190);
     let viewportHeight = $state(900);
     let viewportWidth = $state(1200);
+    let mapHeight = $state(600);
     let map: PlannerMap | undefined;
     const history = new TripHistory();
     let revision = $state(0);
@@ -115,13 +121,18 @@
         }));
     });
     const searchDay = $derived(searchValue.day === null ? null : itinerary.find(d => d.number === searchValue.day && !d.rest) ?? null);
+    // A category search also lists the basemap places along the route; "all places" stays with the examples.
+    const searchable = $derived(searching && searchValue.category !== 'all'
+        ? [...places, ...corridor.filter(place => place.category === searchValue.category && offRoute(coordinates, place.coordinate) <= 5)]
+        : places);
+    const searchLoading = $derived(searching && searchValue.category !== 'all' && corridorLoad === 'loading');
     const results = $derived.by(() => {
         const dayEnd = searchDay ? coordinateAt(coordinates, searchDay.to) : null;
-        return places
+        return searchable
             .filter(place => searchValue.category === 'all' || place.category === searchValue.category)
             .map(place => {
                 const at = nearestProgress(coordinates, place.coordinate);
-                return { place, at, km: at * total, off: offRoute(coordinates, place.coordinate) };
+                return { place, at, where: whereAlong(at), off: offRoute(coordinates, place.coordinate) };
             })
             .filter(result => searchValue.within === null || (dayEnd ? kilometres(result.place.coordinate, dayEnd) : result.off) <= searchValue.within)
             .sort((a, b) => searchDay ? Math.abs(a.at - searchDay.to) - Math.abs(b.at - searchDay.to) : a.at - b.at);
@@ -166,19 +177,21 @@
             markerLabel: multi && p.kind === 'night' ? String(dayLabels[p.night!]) : undefined,
             fixed: p.kind === 'night' || (['waypoint', 'detour'].includes(p.kind) && p.label !== defaultLabels.waypoint),
         }));
+        const shown = selectedPlace && places.includes(selectedPlace) && !visiblePlaces.includes(selectedPlace) ? [...visiblePlaces, selectedPlace] : visiblePlaces;
+        for (const p of shown) {
+            if (p.id === selectedId || !pins.some(pin => pin.coordinate[0] === p.coordinate[0] && pin.coordinate[1] === p.coordinate[1])) pins.push({ ...p });
+        }
+        if (pending) pins.push({ id: 'pending', coordinate: pending, label: 'Overnight spot', kind: 'place', appearance: 'suggested' });
+        // Day ends come last, so they stay on top of a candidate place at the same spot and can be dragged.
         for (const day of multi ? days.slice(0, -1) : []) {
             if (day.pinned) continue;
             const label = dayLabels[day.number] ?? day.number;
             pins.push({
                 id: `dayend-${day.number}`, kind: 'dayend', night: day.number, coordinate: coordinateAt(coordinates, day.to),
                 label: `Day ${label} ends here for now`, markerLabel: String(label), color: dayColor(day.number, theme),
+                appearance: day.split ? 'moved' : undefined,
             });
         }
-        const shown = selectedPlace && places.includes(selectedPlace) && !visiblePlaces.includes(selectedPlace) ? [...visiblePlaces, selectedPlace] : visiblePlaces;
-        for (const p of shown) {
-            if (p.id === selectedId || !pins.some(pin => pin.coordinate[0] === p.coordinate[0] && pin.coordinate[1] === p.coordinate[1])) pins.push({ ...p });
-        }
-        if (pending) pins.push({ id: 'pending', coordinate: pending, label: 'Overnight spot', kind: 'place', appearance: 'suggested' });
         return pins;
     });
     const calloutKind = $derived<CalloutKind | null>(
@@ -203,6 +216,14 @@
         const to = lengths[Math.max(0, Math.min(last, visibleRange[1] + 1))] / total;
         return to > from ? { from, to } : { from: 0, to: 1 };
     });
+
+    /** Where a route position sits in the trip, in the rider's words. */
+    function whereAlong(at: number): string {
+        if (!multi) return `${(at * total).toFixed(1)} km from the start`;
+        const day = days.find(d => at <= d.to) ?? days.at(-1)!;
+        if (searchDay && day.number === searchDay.ridingNumber) return `${((day.to - at) * total).toFixed(1)} km before day ${dayLabels[day.number]} ends`;
+        return `${((at - day.from) * total).toFixed(1)} km into day ${dayLabels[day.number]}`;
+    }
 
     $effect(() => {
         if (!highlights.length) return;
@@ -252,6 +273,7 @@
         trip = history.commit($state.snapshot(trip), next);
         revision++;
         message = description;
+        undoable = false;
         save();
     }
 
@@ -274,6 +296,26 @@
         night = Math.min(night, tripDays(trip).length);
         save();
         message = description;
+        undoable = false;
+    }
+
+    /** Opens the day a point lies in and lights its row for a moment. */
+    function reveal(id: string, ridingDay: number | null) {
+        if (ridingDay !== null && multi) {
+            night = ridingDay;
+            expandedDay = ridingDay;
+            list = 'plan';
+            changingOvernight = false;
+            exitSearch();
+        }
+        revealId = id;
+        clearTimeout(revealTimer);
+        revealTimer = setTimeout(() => revealId = null, 1200);
+    }
+
+    function dayOf(coordinate: Coordinate): number {
+        const at = nearestProgress(coordinates, coordinate);
+        return (days.find(d => at <= d.to) ?? days.at(-1)!).number;
     }
 
     function undo() {
@@ -429,24 +471,22 @@
             if (next.budget === 'days') next.target++;
         }
         commit(pinNight(next, sleepDay, coordinate, label), 'Overnight pinned');
-        night = sleepDay;
-        expandedDay = sleepDay;
-        list = 'plan';
-        changingOvernight = false;
-        exitSearch();
         clearSelection();
-        selectedId = `night-${sleepDay}`;
+        reveal(`night-${sleepDay}`, sleepDay);
     }
 
     function newPoint(coordinate: Coordinate, kind: EditableKind, label?: string): RoutePoint {
         return { id: crypto.randomUUID(), coordinate: [...coordinate], label: label ?? defaultLabels[kind], kind, progress: anchorProgress(coordinate) };
     }
 
+    const added: Partial<Record<PointKind, string>> = { via: 'Shaping point added', waypoint: 'Visit added', night: 'Overnight pinned', marker: 'Marker added', pass: 'Pass added' };
+
     function addPoint(coordinate: Coordinate, kind: EditableKind) {
         const point = newPoint(coordinate, kind);
-        commit(addClickedPoint($state.snapshot(trip), point), 'Point added');
+        commit(addClickedPoint($state.snapshot(trip), point), added[kind]!);
         clearSelection();
         selectedId = point.id;
+        reveal(point.id, dayOf(point.coordinate));
     }
 
     function addVisit(place: Place) {
@@ -454,6 +494,7 @@
         commit(addPointNear($state.snapshot(trip), point), 'Visit added');
         clearSelection();
         selectedId = point.id;
+        reveal(point.id, dayOf(point.coordinate));
     }
 
     function movePoint(id: string, coordinate: Coordinate) {
@@ -537,8 +578,9 @@
         edit({ restNames: names }, 'Rest day named');
     }
 
-    function restoreVersion(saved: Trip) {
-        commit(saved, 'Version restored');
+    function restoreVersion(saved: Trip, name: string) {
+        commit(saved, `Restored ‘${name}’`);
+        undoable = true;
         clearSelection();
         night = Math.min(night, tripDays(trip).length);
     }
@@ -584,7 +626,8 @@
             <Query bind:text={query} days={multi ? itinerary.filter(d => !d.rest).map(d => d.number) : []} onSearch={search} onClear={() => searching = false} />
             {#if searching}
                 <div class="pane-scroll">
-                    <QueryResults {results} {selectedId} onSelect={selectPlace} />
+                    <QueryResults {results} {selectedId} loading={searchLoading} searchedDay={searchDay?.number ?? null} onSelect={selectPlace}
+                        days={multi ? itinerary.filter(d => !d.rest).map(d => ({ number: d.number, color: dayColor(d.ridingNumber, theme) })) : []} />
                 </div>
             {:else}
                 <dl class="totals">
@@ -605,7 +648,7 @@
                         <WaysList {trip} onPick={(variant) => edit({ variant }, 'Way changed')} />
                     {:else if multi}
                         <Itinerary
-                            {trip} {itinerary} {days} {theme} {expandedDay} {candidates} {conflicts} {selectedId}
+                            {trip} {itinerary} {days} {theme} {expandedDay} {candidates} {conflicts} {selectedId} {revealId}
                             changing={changingOvernight}
                             onToggle={(riding) => showDay(riding, true)}
                             onInspect={inspectPoint}
@@ -628,7 +671,7 @@
         </aside>
         <Resize value={Math.min(sideWidth, maxSide)} min={320} max={maxSide} axis="x" label="Sidebar width" onResize={(value) => sideWidth = value} />
         <section class="geography" aria-label="Map and elevation">
-            <div class="map-area">
+            <div class="map-area" bind:clientHeight={mapHeight} style:--map-height={`${mapHeight}px`}>
                 <PlannerMap
                     bind:this={map} {segments} {coordinates} points={mapPoints} {selectedId} callout={calloutCoordinate} {drawing}
                     {theme} {hillshade} {contours} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking}
@@ -671,6 +714,12 @@
                     </div>
                     <LayerMenu bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
                 </div>
+                {#if picking || drawing}
+                    <div class="mode-chip" role="status">
+                        {picking ? `Click the route or the map to end day ${dayLabels[night] ?? night} here · Esc` : 'Drawing the leg · Esc cancels'}
+                        <button type="button" onclick={() => { picking = false; drawing = null; }}>Cancel</button>
+                    </div>
+                {/if}
             </div>
             <Resize value={Math.min(profileHeight, maxProfile)} min={130} max={maxProfile} axis="y" label="Elevation height" onResize={(value) => profileHeight = value} />
             <Profile
@@ -679,15 +728,8 @@
                 onNight={(riding) => showDay(riding)} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
             />
             <div class="status-line" role="status">
-                {#if picking}
-                    <strong>Click the map to choose an overnight spot · Esc cancels</strong>
-                    <button type="button" onclick={() => picking = false}>Cancel</button>
-                {:else if drawing}
-                    <strong>Draw the leg on the map · Esc cancels</strong>
-                    <button type="button" onclick={() => drawing = null}>Cancel</button>
-                {:else}
-                    <span>{message}</span>
-                {/if}
+                <span>{message}</span>
+                {#if undoable}<span>·</span><button type="button" class="planner-link" onclick={undo}>Undo</button>{/if}
                 {#if placeNote}<span>· {placeNote}</span>{/if}
                 <span class="lab-note">Routing & elevation mocked</span>
             </div>
@@ -738,8 +780,10 @@
         background: none;
         color: inherit;
     }
+    /* Links are rust in light and tan in dark, so amber stays the one action colour in both. */
     .planner-shell {
         --planner-shadow: 0 6px 18px rgba(28, 27, 20, .12);
+        --link: var(--forest);
         display: flex;
         flex-direction: column;
         height: 100dvh;
@@ -748,6 +792,24 @@
     }
     :global([data-theme="dark"]) .planner-shell {
         --planner-shadow: 0 6px 18px rgba(0, 0, 0, .4);
+        --link: var(--wood);
+    }
+    :global(.planner-link) {
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        padding: 6px 0;
+        border: 0;
+        background: none;
+        color: var(--link);
+        font: inherit;
+        font-weight: 600;
+        text-decoration: underline;
+        text-underline-offset: 3px;
+        cursor: pointer;
+    }
+    :global(.planner-link.quiet) {
+        color: var(--ink-soft);
     }
     .site-header {
         display: flex;
@@ -889,13 +951,34 @@
         cursor: pointer;
     }
     .control-group button:hover {
-        color: var(--forest);
+        color: var(--link);
     }
     .control-group button + button {
         border-top: 1px solid var(--line);
     }
     .control-group .chosen {
-        color: var(--forest);
+        color: var(--link);
+    }
+    .mode-chip {
+        position: absolute;
+        top: 16px;
+        left: 16px;
+        z-index: 3;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 6px 12px;
+        border-radius: 6px;
+        background: var(--ink);
+        color: var(--panel);
+        font: 600 13px var(--sans);
+        box-shadow: var(--planner-shadow);
+    }
+    .mode-chip button {
+        color: inherit;
+        font-weight: 600;
+        text-decoration: underline;
+        text-underline-offset: 3px;
     }
     .status-line {
         display: flex;
@@ -908,16 +991,6 @@
         background: var(--panel);
         font-size: 11px;
         color: var(--ink-soft);
-    }
-    .status-line strong {
-        font-weight: 600;
-        color: var(--ink);
-    }
-    .status-line button {
-        color: var(--forest);
-        font-weight: 600;
-        text-decoration: underline;
-        text-underline-offset: 3px;
     }
     .lab-note {
         margin-left: auto;

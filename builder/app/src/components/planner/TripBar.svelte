@@ -14,7 +14,7 @@
         onChange: (change: Partial<Trip>, description: string) => void;
         onUndo: () => void;
         onRedo: () => void;
-        onRestore: (trip: Trip) => void;
+        onRestore: (trip: Trip, name: string) => void;
         onSaved: (version: Version) => void;
     } = $props();
 

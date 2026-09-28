@@ -4,7 +4,7 @@
     import type { Day, ItineraryDay, OvernightCandidate, Place, RoutePoint, Trip } from '../../lib/planner/editor';
 
     let {
-        trip, itinerary, days, theme, expandedDay, changing, candidates, conflicts, selectedId,
+        trip, itinerary, days, theme, expandedDay, changing, candidates, conflicts, selectedId, revealId,
         onToggle, onInspect, onShowEnd, onSelectPlace, onPick, onChangeOvernight, onEditTarget, onShowConflict,
         onAddRest, onRemoveRest, onNameRest,
     }: {
@@ -18,6 +18,8 @@
         candidates: OvernightCandidate[];
         conflicts: [RoutePoint, RoutePoint][];
         selectedId: string | null;
+        /** The point whose row lights up for a moment. */
+        revealId: string | null;
         onToggle: (ridingDay: number) => void;
         onInspect: (point: RoutePoint) => void;
         onShowEnd: (day: Day) => void;
@@ -64,14 +66,14 @@
                             <strong>Day {day.number} · {trip.restNames?.[day.restIndex!] || 'Rest'}</strong><Icon name="pencil" size={13} />
                         </button>
                     {/if}
-                    <small>{day.pinned?.label ?? 'Open overnight'}</small>
+                    <small>{day.pinned?.label ?? `Night ${calendar[day.ridingNumber]} not chosen`}</small>
                 </div>
                 <button type="button" class="icon" aria-label={`Remove rest day ${day.number}`} onclick={() => onRemoveRest(day.restIndex!)}><Icon name="close" size={15} /></button>
             </div>
         {:else}
             {@const conflict = conflictOf(day.ridingNumber)}
             <DayRow
-                {trip} {day} {days} {theme} {scale} {changing} {selectedId}
+                {trip} {day} {days} {theme} {scale} {changing} {selectedId} {revealId} {calendar}
                 expanded={expandedDay === day.ridingNumber}
                 candidates={expandedDay === day.ridingNumber ? candidates : []}
                 conflict={conflict ? calendar[conflict[0].night!] : null}

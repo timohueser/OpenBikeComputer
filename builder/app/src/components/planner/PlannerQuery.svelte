@@ -1,6 +1,7 @@
 <script lang="ts">
     import PlannerIcon from './PlannerIcon.svelte';
     import { parsePlannerQuery, type PlannerQueryValue } from '../../lib/planner/query';
+    import { categoryIds, placeCategories } from '../../lib/planner/poi-kinds';
 
     let { text = $bindable(''), days, onSearch, onClear }: {
         text?: string;
@@ -14,11 +15,10 @@
     let editedText = $state('');
     let picker = $state<'category' | 'day' | 'within' | null>(null);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const categories: { value: PlannerQueryValue['category']; label: string; icon: string }[] = [
-        { value: 'all', label: 'All places', icon: 'pin' },
-        { value: 'hotel', label: 'Hotels', icon: 'hotel' },
-        { value: 'camp', label: 'Campsites', icon: 'camp' },
-        { value: 'water', label: 'Drinking water', icon: 'water' },
+    // The chips list the same categories the grammar understands; `path` is undefined for the named pin icon.
+    const categories: { value: PlannerQueryValue['category']; label: string; path?: string }[] = [
+        { value: 'all', label: 'All places' },
+        ...categoryIds.map(id => ({ value: id, label: placeCategories[id].plural, path: placeCategories[id].icon })),
     ];
     const parsed = $derived(parsePlannerQuery(text));
     const value = $derived<PlannerQueryValue>({ ...parsed.value, ...(editedText === text ? edits : {}), ...(days.length ? {} : { day: null }) });
@@ -69,12 +69,12 @@
     </form>
     {#if text.trim()}
         {#if parsed.unsupported}
-            <p class="query-note" role="status">This prototype understands hotels, campsites or water, a day, and “within … km”. It does not understand “{parsed.unsupported}”.</p>
+            <p class="query-note" role="status">I don't know “{parsed.unsupported}”. Try a place type like hotels or campsites, a day, or “within 5 km”.</p>
         {:else}
             <div class="meaning">
                 <span class="meaning-label">{edited ? 'Edited to' : 'Understood as'}</span>
                 <button type="button" class="chip" class:active={picker === 'category'} aria-expanded={picker === 'category'} onclick={() => picker = picker === 'category' ? null : 'category'}>
-                    <PlannerIcon name={selectedCategory.icon} size={14} />{selectedCategory.label}<PlannerIcon name="down" size={12} />
+                    <PlannerIcon name="pin" path={selectedCategory.path} size={14} />{selectedCategory.label}<PlannerIcon name="down" size={12} />
                 </button>
                 {#if days.length}
                     <button type="button" class="chip" class:active={picker === 'day'} aria-expanded={picker === 'day'} onclick={() => picker = picker === 'day' ? null : 'day'}>
@@ -93,7 +93,7 @@
                     {#if picker === 'category'}
                         {#each categories as category}
                             <button type="button" class:chosen={value.category === category.value} aria-pressed={value.category === category.value} onclick={() => edit({ category: category.value })}>
-                                <PlannerIcon name={category.icon} size={15} />{category.label}
+                                <PlannerIcon name="pin" path={category.path} size={15} />{category.label}
                             </button>
                         {/each}
                     {:else if picker === 'day'}
@@ -133,6 +133,6 @@
     .picker { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .picker button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); font-size: 13px; }
     .picker button:hover { border-color: var(--ink-soft); }
-    .picker button.chosen { color: var(--panel); background: var(--ink); border-color: var(--ink); }
+    .picker button.chosen { color: var(--ink); background: var(--parchment-2); border-color: var(--ink-soft); }
     .query-note { margin: 8px 0 0; color: var(--ink-soft); font-size: 13px; line-height: 1.45; }
 </style>

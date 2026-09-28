@@ -118,11 +118,11 @@
         {#each candidates as candidate (candidate.place.id)}
             <PlaceRow place={candidate.place} day={candidateDay(candidate)} onSelect={onSelectPlace} />
         {/each}
-        <button type="button" class="link" onclick={onPick}>Pick another spot on the map</button>
+        <button type="button" class="planner-link" onclick={onPick}>Pick another spot on the map</button>
         <p class="hint">Drag the marker along the route to move the day end.</p>
     {:else if kind === 'place'}
         <h2>{place?.label ?? 'Overnight spot'}</h2>
-        {#if place}<p class="kind">{placeCategories[place.category].label} · {place.description}</p>{/if}
+        {#if place}<p class="kind">{[placeCategories[place.category].label, place.description].filter((part, i, all) => all.indexOf(part) === i).join(' · ')}</p>{/if}
         {#if sleeps}
             <label class="field">End of day
                 <select bind:value={sleepDay}>
@@ -156,7 +156,7 @@
                 }} />
         {/if}
         {#if point.kind !== 'start' && point.kind !== 'finish'}
-            <Segmented label="Point type" options={types} value={point.kind === 'detour' ? 'waypoint' : point.kind as EditableKind} onChange={onKind} />
+            <Segmented label="Point type" options={types} columns={types.length > 3 ? 2 : 0} value={point.kind === 'detour' ? 'waypoint' : point.kind as EditableKind} onChange={onKind} />
             {#if point.kind === 'waypoint' || point.kind === 'detour'}
                 <div class="gap">
                     <Segmented label="How the route reaches it" value={point.kind} onChange={onKind}
@@ -169,9 +169,12 @@
 </div>
 
 <style>
+    /* Never taller than the map it sits on; the content scrolls as a last resort. */
     .callout {
         position: relative;
-        width: 288px;
+        width: 320px;
+        max-height: calc(var(--map-height, 100vh) - 48px);
+        overflow-y: auto;
         padding: 16px;
         color: var(--ink);
         font: 400 13px var(--sans);
@@ -277,16 +280,8 @@
         font-size: 11px;
         color: var(--ink-soft);
     }
-    .link {
-        margin-top: 8px;
-        padding: 0;
-        color: var(--forest);
-        font-weight: 600;
-        text-decoration: underline;
-        text-underline-offset: 3px;
-    }
     .hint {
-        margin: 8px 0 0;
+        margin: 4px 0 0;
         color: var(--ink-soft);
     }
     .field {
