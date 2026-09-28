@@ -15,7 +15,9 @@ npm run dev -- --mode web
 Open `/map-study.html` for map styling or `/planner.html` for the desktop editor.
 Start the [route service](../../../../../apps/route-server/README.md) first.
 The editor saves its trip in browser storage. Undo and Redo apply to
-changes made in the current session.
+changes made in the current session. Hold a dragged point still to preview its
+route. Release it to save one change. Open Ways to load alternatives. The surface
+strip follows the profile range; hover or use arrow keys to inspect each section.
 
 ## Tile sources
 

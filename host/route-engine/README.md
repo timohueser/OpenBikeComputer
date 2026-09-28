@@ -66,8 +66,8 @@ changes. Use `elapsed` for time at positions along the geometry.
 ## Bounds and checks
 
 One router runs one query at a time. It retains up to 256 leg paths with at most
-65,536 road slices. Geometry and endpoint caches each have a 32 MiB ceiling and
-16-page limit. The caller sets the CH cache size. A decoded page is at most
+65,536 road slices and 32 default-policy snap results. Geometry and endpoint
+caches each have a 32 MiB ceiling. The endpoint cache also has a 16-page limit. The caller sets the CH cache size. A decoded page is at most
 8 MiB. Default query limits are 64 points, 250,000 labels, 8,192 attachment-pair
 queries, and 250,000 geometry vertices. `Control` can lower these limits and
 supplies a cancellation callback. These are service budgets, not device

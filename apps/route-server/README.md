@@ -42,7 +42,7 @@ Omitted pace uses 19, 4.5 and 1 respectively.
 The response contains `routes`. The first is the primary route. Each result
 has an ID, reason, package identity, profile, cost, coordinates, nullable
 heights, cumulative moving seconds, totals, directed attachments and leg road
-slices. Each leg has inclusive geometry indices. Surface totals use this order:
+slices. `surfaces[i]` describes the edge from `geometry[i]` to `geometry[i + 1]`. Each leg has inclusive geometry indices. Surface totals use this order:
 unknown, paved, compacted, gravel, dirt, rough. Distances and heights are metres.
 Time is seconds. A cost is a prepared preference value, not time.
 
