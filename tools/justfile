@@ -134,6 +134,7 @@ flash *args:
       if [[ -z "${OBC_DEMO_RIDE_FILE:-}" ]]; then
         export OBC_DEMO_RIDE_FILE="$OBC_ROOT/target/factory/grimsel-pass.obcr"
         start="$(python3 -c 'from datetime import datetime, timezone; print(int(datetime(datetime.now(timezone.utc).year, 1, 1, 9, tzinfo=timezone.utc).timestamp()))')"
+        cd "$OBC_ROOT"
         _run cargo run --release -p obc-replay --example gpx_to_ride -- \
           "$OBC_ROOT/companion-ios/Packages/OBCKit/Sources/OBCFormats/Resources/grimsel-pass.gpx" \
           "$OBC_DEMO_RIDE_FILE" "$start" "Grimsel Pass" --demo
