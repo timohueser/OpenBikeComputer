@@ -4,7 +4,7 @@ Run these commands from this folder. The parent setup command installs the runti
 Training needs a separate environment with PyTorch:
 
 ```sh
-uv venv speed/.venv
+uv venv --python 3.12 speed/.venv
 uv pip install --python speed/.venv/bin/python -r speed/requirements.txt
 ```
 
@@ -35,15 +35,28 @@ speed/.venv/bin/python train.py --base speed/work/cut-50k --train data/train/{en
 `speed/cut_vocab.py` can rebuild the cut encoder from the base model and FrequencyWords
 lists. See `--help`. The archived encoder is the stable input for reproduction.
 
-The ONNX export keeps the MLP output layers in blocks 11 and 18 in fp32. Plain dynamic
-int8 quantization of those layers damages the word labels. Keep the exception. Labels
+The ONNX export keeps layers with large calibration activations in fp32. Plain dynamic
+int8 quantization of these layers damages the word labels. Keep outlier detection enabled. Labels
 refer to `words.split` words. Inference aligns each label with its first tokenizer token.
 
-Evaluate an exported runtime directory that contains `model.int8.onnx` and `tokenizer.json`:
+Training writes `training.json` with arguments, dependency versions, and SHA-256 hashes
+of the encoder and data inputs. Keep this file with the checkpoint. A seed does not
+guarantee identical weights across devices.
+
+Export requires trained heads and a matching `labels.json`. It copies the label contract
+and training record into the runtime directory. The runtime rejects a different label
+order. Export parity checks do not replace held-out evaluation.
+
+Evaluate the exported directory before use:
 
 ```sh
 ../.venv/bin/python evaluate.py runtime:speed/work/onnx/checkpoint
 ```
+
+To try the export locally, keep the existing SQLite files in `data/`. Copy
+`model.int8.onnx`, `tokenizer.json`, `labels.json`, and `training.json` from the export
+into the parent `data/model/`, then restart the local server. Setup restores the pinned
+model, so do not run setup after this replacement. Do not commit generated model files.
 
 `schema.py` owns the finite model language. `decode.py` converts word tags to requests.
 `runtime.py` runs CPU inference through ONNX Runtime. The local service also supports

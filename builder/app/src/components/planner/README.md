@@ -1,7 +1,8 @@
 # Planner previews
 
 These entry points use the builder's Svelte runtime. The map renders vector
-tiles and terrain. Routing, elevation profiles and place search use fixtures.
+tiles and terrain. Elevation profiles use fixtures. Place search uses the [local search service](../../../../../apps/planner-search/README.md).
+Routing uses a separate local engine.
 They are not inputs to the default production build.
 
 From `builder/app`:

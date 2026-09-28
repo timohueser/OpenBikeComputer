@@ -35,7 +35,7 @@ For local map tiles, place a basemap at `builder/app/public/data/planner/basemap
 VITE_PLANNER_PMTILES_URL=/data/planner/basemap.pmtiles npm run dev --prefix apps/planner-search
 ```
 
-Terrain uses `VITE_PLANNER_DEM_URL`, a Terrain-RGB tile URL template. Without local map
+Terrain uses `VITE_PLANNER_DEM_URL`, a Terrarium WebP tile URL template. Without local map
 settings, the planner uses its public evaluation map sources. Search still works if
 those sources are unavailable.
 
@@ -47,7 +47,7 @@ those sources are unavailable.
 | `OBC_PLANNER_PORT` | `4184` |
 | `OBC_QUERY_ROUTER` | `http://127.0.0.1:8788` |
 
-The Vite proxy uses port 8780. Keep that port for the combined development command.
+The combined development command passes `OBC_SEARCH_PORT` to the Vite proxy.
 
 ## Boundaries
 
