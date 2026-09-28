@@ -8,12 +8,14 @@ import {
   routeCoordinates,
   routeSlice,
   routeStops,
+  routingKey,
   setSplit,
   tripDays,
   type Trip,
   type RoutePoint,
   type Coordinate,
 } from '../editor';
+import type { RoutingLine } from '../routing';
 import type { QueryChange, ResolvedPoint } from './types';
 
 export type RouteBuilder = (
@@ -39,7 +41,13 @@ export async function applyQueryChanges(
   original: Trip,
   changes: QueryChange[],
   buildRoute?: RouteBuilder,
+  refreshRoute?: (trip: Trip) => Promise<RoutingLine>,
 ): Promise<Trip> {
+  async function refresh(trip: Trip): Promise<Trip> {
+    if (!trip.live || trip.routing?.key === routingKey(trip)) return trip;
+    if (!refreshRoute) throw new Error('The routing engine must refresh the edited route.');
+    return { ...trip, routing: await refreshRoute(trip) };
+  }
   let trip = structuredClone(original);
   for (const change of changes) {
     const line = routeCoordinates(trip),
@@ -167,7 +175,7 @@ export async function applyQueryChanges(
           'Start the local routing engine to apply route requests. Place search and day edits are available now.',
         );
       if (change.op === 'reroute') {
-        trip = await reroute(trip, change, buildRoute);
+        trip = await refresh(await reroute(trip, change, buildRoute));
         continue;
       }
       if (change.perDay?.unit === 'h')
@@ -215,6 +223,7 @@ export async function applyQueryChanges(
         bike: (change.bike ?? trip.bike) as Trip['bike'],
       };
     }
+    trip = await refresh(trip);
   }
   return trip;
 }

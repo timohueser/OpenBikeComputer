@@ -61,6 +61,10 @@ describe('planner app transitions', () => {
         app = mount(PlannerApp, { target: document.body });
         await tick();
         await search('campsites');
+        const request = vi.mocked(fetch).mock.calls.find(([, init]) => JSON.parse(String(init?.body)).q === 'campsites');
+        const plan = JSON.parse(String(request?.[1]?.body)).plan;
+        expect(plan.hours).toHaveLength(plan.coordinates.length);
+        expect(plan.hours.at(-1)).toBeGreaterThan(0);
         const row = [...document.querySelectorAll<HTMLButtonElement>('.results button')].find(button => button.textContent?.includes(tilePlace.label))!;
         expect(row).toBeDefined();
         row.click();

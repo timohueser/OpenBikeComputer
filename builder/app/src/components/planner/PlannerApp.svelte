@@ -173,7 +173,7 @@
     const focusedDay = $derived(multi && list === 'plan' && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
     const searchContext = $derived<SearchContext>({ view: viewBounds, here, pointing, startDate: trip.startDate,
-        plan: { coordinates, days: itinerary.map(d => ({ number: d.number, from: d.from * total, to: d.to * total, rest: d.rest })),
+        plan: { coordinates, hours: trip.routing?.key === routingInput && trip.routing.unroutedKm === 0 ? trip.routing.elapsed.map(seconds => seconds / 3600) : undefined, days: itinerary.map(d => ({ number: d.number, from: d.from * total, to: d.to * total, rest: d.rest })),
             points: trip.points.map(p => ({ id: p.id, label: p.label, coordinate: p.coordinate, kind: p.kind, placeKind: p.placeKind })) } });
     const conflicts = $derived(multi ? nightOrderConflicts(trip) : []);
     const activeDay = $derived(days[Math.min(night - 1, days.length - 1)]);
@@ -673,7 +673,7 @@
         applyingQuery = true; queryApplyError = '';
         try {
             let routingNote = '';
-            const next = await applyQueryChanges(before, answer.changes, (points,bike,goal) => buildQueryRoute(points,bike,goal,note => routingNote = note));
+            const next = await applyQueryChanges(before, answer.changes, (points,bike,goal) => buildQueryRoute(points,bike,goal,note => routingNote = note), next => calculateLine(next, new AbortController().signal));
             if (JSON.stringify(answer.changes) !== JSON.stringify(searchState.answer?.changes) || JSON.stringify(before) !== JSON.stringify($state.snapshot(trip))) throw new Error('The plan changed. Review the search again.');
             commit(next, [answer.description ?? 'Query applied', routingNote].filter(Boolean).join(' · '));
             exitSearch(); clearSelection();

@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import { addRestDay, coordinateAt, cumulative, initialTrip, pinNight, routeCoordinates, routeSlice, TripHistory, type Trip } from '../editor';
+import { describe, expect, it, vi } from 'vitest';
+import { addRestDay, coordinateAt, cumulative, initialTrip, pinNight, routingKey, routeCoordinates, routeSlice, TripHistory, type Trip } from '../editor';
+import { calculateLine } from '../routing';
 import { applyQueryChanges, type RouteBuilder } from './actions';
 
 const length = (trip: Trip) => cumulative(routeCoordinates(trip)).at(-1)!;
@@ -39,6 +40,20 @@ describe('query edits', () => {
         expect(next.points.find(p=>p.label==='Inn')?.kind).toBe('night');
         expect(next.days).toBe(trip.days); expect(next.restAfter).toEqual(trip.restAfter);
         await expect(applyQueryChanges(base,[{op:'route',points:[{coordinate:[8,48],label:'A'},{coordinate:[8.1,48],label:'B'}]}])).rejects.toThrow('routing engine');
+    });
+    it('refreshes live geometry between edits and preserves the original on a routing failure', async () => {
+        const base = initialTrip(), line = routeCoordinates(base);
+        const trip: Trip = {...base, live:true, routeOrder:[], points:[base.points[0], {...base.points.at(-1)!,leg:'drawn',drawn:line.slice(1,-1)}]};
+        trip.routing = await calculateLine(trip, new AbortController().signal);
+        const before = structuredClone(trip);
+        const refresh = vi.fn((next: Trip) => calculateLine(next, new AbortController().signal));
+        const next = await applyQueryChanges(trip, [{op:'reverse'}, {op:'reverse'}], undefined, refresh);
+        expect(refresh).toHaveBeenCalledTimes(2);
+        expect(next.routing?.key).toBe(routingKey(next));
+        expect(routeCoordinates(next)).toEqual(line);
+        const failing = vi.fn().mockImplementationOnce(refresh).mockRejectedValue(new Error('Routing unavailable'));
+        await expect(applyQueryChanges(trip, [{op:'reverse'}, {op:'reverse'}], undefined, failing)).rejects.toThrow('Routing unavailable');
+        expect(trip).toEqual(before);
     });
     it('re-routes a selected interval while retaining its outside geometry', async () => {
         const trip = initialTrip(), line = routeCoordinates(trip), total = length(trip);
