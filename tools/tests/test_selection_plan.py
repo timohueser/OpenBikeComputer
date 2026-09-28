@@ -423,6 +423,7 @@ class ShippedPlanTests(unittest.TestCase):
         whose only build is a non-Cargo command, which a subset assertion let regress once."""
 
         cases = [
+            ("planner search", ["apps/planner-search/server.mjs"], ["planner-search"]),
             ("documentation only", ["docs/content/ride.md"], ["docs"]),
             # Agent prose instructs an agent; it decides nothing. It must not build every
             # platform, and the unconditional guards job still validates the policy.
@@ -452,12 +453,12 @@ class ShippedPlanTests(unittest.TestCase):
             (
                 "workflow",
                 [".github/workflows/ci.yml"],
-                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             (
                 "nextest configuration",
                 [".config/nextest.toml"],
-                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             ("web demo crate", ["apps/obc-web-demo/src/lib.rs"], ["clippy", "fmt", "test", "wasm"]),
             ("web demo Trunk target", ["docs/index.html"], ["docs", "wasm", "wasm-bridges"]),

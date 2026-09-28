@@ -1,84 +1,56 @@
 <script lang="ts">
     import PlaceRow from './PlaceRow.svelte';
-    import type { Place } from '../../lib/planner/editor';
-
-    let { results, days, searchedDay, loading = false, selectedId, onSelect }: {
-        /** `where` places the result along the trip; `off` is the straight distance from the route in km. */
-        results: { place: Place; where: string; off: number }[];
-        /** The riding days as calendar numbers with their colours; empty for a single route. */
-        days: { number: number; color: string }[];
-        searchedDay: number | null;
-        loading?: boolean;
-        selectedId: string | null;
-        onSelect: (place: Place) => void;
+    import { asPlace } from '../../lib/planner/search/presentation';
+    import type { SearchState } from '../../lib/planner/search/types';
+    import type { Coordinate, Place } from '../../lib/planner/editor';
+    let { state, selectedId, applying = false, applyError = '', onSelect, onApply, onMore, onRetry, onStretch }: {
+        state: SearchState; selectedId: string | null; applying?: boolean; applyError?: string;
+        onSelect: (place: Place) => void; onApply: () => void; onMore: () => void; onRetry: () => void; onStretch: (line: Coordinate[]) => void;
     } = $props();
+    const answer = $derived(state.answer);
 </script>
-
-<div class="results">
-    {#if days.length}
-        <ol class="days" aria-label="Days">
-            {#each days as day (day.number)}
-                <li class:current={day.number === searchedDay} style:--day-color={day.color}><span class="badge">{day.number}</span>Day {day.number}</li>
+<div class="results" aria-busy={state.loading}>
+    {#if state.loading}<p role="status">Searching local data…</p>
+    {:else if state.error}<p role="alert">{state.error}</p><button type="button" onclick={onRetry}>Retry search</button>
+    {:else if answer}
+        {#if answer.notice}<p class="note" role="status">{answer.notice}</p>{/if}
+        {#if answer.canRetry}<button type="button" onclick={onRetry}>Retry interpretation</button>{/if}
+        {#if answer.type === 'change'}
+            <p class="description">{answer.description}</p>
+            {#each answer.changes ?? [] as change}
+                {#if change.point}<p>{change.point.label}{change.point.detail ? ` · ${change.point.detail}` : ''}</p>{/if}
+                {#if change.points}<ol>{#each change.points as point}<li>{point.label}{point.detail ? ` · ${point.detail}` : ''}</li>{/each}</ol>{/if}
             {/each}
-        </ol>
+            <button type="button" class="apply" disabled={applying} onclick={onApply}>{applying ? 'Applying…' : 'Apply change'}</button>
+            {#if applyError}<p role="alert">{applyError}</p>{/if}
+        {:else if answer.type === 'stretches'}
+            <p class="count">{answer.stretches?.length ?? 0} stretches · {answer.area}</p>
+            {#each answer.stretches ?? [] as stretch}<button type="button" class="stretch" onclick={() => onStretch(stretch.coordinates)}>{stretch.label}<span>km {stretch.from.toFixed(1)}–{stretch.to.toFixed(1)} · {(stretch.to - stretch.from).toFixed(1)} km</span></button>{/each}
+            {#if !answer.stretches?.length}<p>No matching stretch in this route data.</p>{/if}
+        {:else if answer.type === 'places'}
+            <p class="count">{answer.area}</p>
+            {#each answer.results ?? [] as result (result.source)}
+                <PlaceRow wrapDetail place={asPlace(result)} detail={[result.precision === 'street' ? 'Street location only' : '', result.city, result.position ? `${result.position.along.toFixed(1)} km from start · ${result.position.distance.toFixed(1)} km from line` : `${result.distance.toFixed(1)} km from search centre`, result.opening_hours ?? ''].filter(Boolean).join(' · ')} selected={selectedId === result.source} {onSelect} />
+            {:else}<p>No mapped places match this request in this package.</p>{/each}
+            {#if answer.hasMore && (answer.results?.length ?? 0) < 100}<button type="button" onclick={onMore}>Show more results</button>{:else if answer.hasMore}<p>Zoom in or narrow the request to see more places.</p>{/if}
+        {/if}
+        {#if answer.note}<p class="note" role="status">{answer.note}</p>{/if}
+        <p class="attribution">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a> · ODbL</p>
     {/if}
-    <p class="count">{loading ? 'Looking along the route…' : `${results.length} ${results.length === 1 ? 'place' : 'places'}`}</p>
-    {#each results as { place, where, off } (place.id)}
-        <PlaceRow {place} detail={off >= .1 ? `${where} · ${off.toFixed(1)} km off route` : where} selected={selectedId === place.id} {onSelect} />
-    {:else}
-        {#if !loading}<p class="empty">Nothing found along the route for that.</p>{/if}
-    {/each}
-    <p class="note">Example places · no live availability</p>
 </div>
-
 <style>
-    .results {
-        padding: 12px 16px 16px;
-    }
-    .days {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px 12px;
-        margin: 0 0 12px;
-        padding: 0 0 12px;
-        list-style: none;
-        border-bottom: 1px solid var(--line);
-        font-size: 13px;
-        color: var(--ink-soft);
-    }
-    .days li {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-    }
-    .days .current {
-        color: var(--ink);
-        font-weight: 700;
-    }
-    .badge {
-        display: grid;
-        place-items: center;
-        width: 20px;
-        height: 20px;
-        border-radius: 50%;
-        background: var(--day-color);
-        color: var(--panel);
-        font: 700 11px var(--sans);
-    }
-    p {
-        margin: 0;
-        font-size: 13px;
-        color: var(--ink-soft);
-    }
-    .count {
-        margin-bottom: 4px;
-        font-weight: 600;
-        color: var(--ink);
-    }
-    .empty {
-        padding: 8px 0;
-    }
-    .note {
-        margin-top: 12px;
-    }
+    .results { padding: 12px 16px 16px; }
+    p { margin: 0 0 10px; font-size: 13px; line-height: 1.45; color: var(--ink-soft); overflow-wrap: anywhere; }
+    .count, .description { color: var(--ink); font-weight: 600; }
+    .note { margin-top: 12px; }
+    ol { padding-inline-start: 22px; font-size: 13px; }
+    button { min-height: 36px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); font: inherit; font-size: 13px; cursor: pointer; }
+    button:hover { border-color: var(--ink-soft); }
+    .apply { background: var(--amber); color: var(--black, #171717); margin-block: 10px; }
+    button:disabled { cursor: wait; opacity: .6; }
+    button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+    .stretch { width: 100%; text-align: start; margin-block: 4px; }
+    .stretch span { display: block; color: var(--ink-soft); margin-top: 4px; }
+    .attribution { font-size: 11px; margin-top: 16px; }
+    a { color: inherit; text-underline-offset: 2px; }
 </style>

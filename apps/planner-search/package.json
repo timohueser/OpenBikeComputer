@@ -1,0 +1,19 @@
+{
+  "name": "@obc/planner-search",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:query": ".venv/bin/python -m pytest -q query/test_decode.py",
+    "test:data": "node test/data.mjs",
+    "dev": "node dev.mjs",
+    "test:model": ".venv/bin/python query/evaluate.py runtime:data/model"
+  },
+  "dependencies": {
+    "opening_hours": "3.11.0"
+  }
+}

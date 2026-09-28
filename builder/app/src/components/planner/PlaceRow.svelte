@@ -1,24 +1,26 @@
 <script lang="ts">
     import Icon from './PlannerIcon.svelte';
+    import { kindLabel } from '../../lib/planner/search/presentation';
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import type { Place } from '../../lib/planner/editor';
 
-    let { place, detail = '', day = null, selected = false, onSelect }: {
+    let { place, detail = '', day = null, selected = false, wrapDetail = false, onSelect }: {
         place: Place;
         /** Extra facts after the kind, such as the km mark. */
         detail?: string;
         /** The predicted day if the rider sleeps here. */
         day?: { distance: number; ascent: number; over: boolean } | null;
         selected?: boolean;
+        wrapDetail?: boolean;
         onSelect: (place: Place) => void;
     } = $props();
 </script>
 
-<button type="button" class="place-row" class:selected onclick={() => onSelect(place)}>
+<button type="button" class="place-row" class:selected class:wrapDetail onclick={() => onSelect(place)}>
     <Icon path={placeCategories[place.category].icon} size={17} />
     <span class="name">
         <strong>{place.label}</strong>
-        <small>{placeCategories[place.category].label}{detail ? ` · ${detail}` : ''}</small>
+        <small>{place.placeKind ? kindLabel(place.placeKind) : placeCategories[place.category].label}{detail ? ` · ${detail}` : ''}</small>
     </span>
     {#if day}
         <span class="figure" class:over={day.over}>{day.distance.toFixed(1)} km<small>↑ {day.ascent} m</small></span>
@@ -68,6 +70,7 @@
         font: 400 13px var(--sans);
         color: var(--ink-soft);
     }
+    .wrapDetail .name small { white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
     .figure {
         flex: none;
         text-align: right;

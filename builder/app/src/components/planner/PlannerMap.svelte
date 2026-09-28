@@ -20,7 +20,7 @@
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.0, 46.7], zoom = 11,
         shownCategories = categoryIds, highlightedPlaces = [], landmarks = [],
-        onEmptyClick, onPointSelect, onPointMove, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, popup,
+        onEmptyClick, onPointSelect, onPointMove, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
         segments?: MapSegment[]; coordinates?: Coordinate[]; highlightedCoordinates?: Coordinate[]; points?: MapPoint[];
         selectedId?: string | null; callout?: Coordinate | null; drawing?: string | null; highlightedPlaceIds?: string[];
@@ -43,6 +43,7 @@
         onInsert?: (legEndId: string, coordinate: Coordinate) => void;
         onDrawn?: (legEndId: string, coordinates: Coordinate[]) => void;
         onPlaceClick?: (place: Place) => void;
+        onBounds?: (bounds: [number, number, number, number]) => void;
         onVisibleRange?: (range: [number, number]) => void; popup?: Snippet;
     } = $props();
 
@@ -211,8 +212,10 @@
     }
 
     function reportView() {
-        if (!map || !onVisibleRange || !coordinates.length) return;
+        if (!map) return;
         const bounds = map.getBounds();
+        onBounds?.([bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()]);
+        if (!onVisibleRange || !coordinates.length) return;
         const visible = coordinates.flatMap((coordinate, index) => bounds.contains(coordinate) ? [index] : []);
         if (visible.length) onVisibleRange([visible[0], visible[visible.length - 1]]);
     }
