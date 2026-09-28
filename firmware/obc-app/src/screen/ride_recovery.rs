@@ -8,7 +8,8 @@
 //! attempt: Repair failed offers one more guarded Retry, and Card needs service offers none,
 //! because there is no safe object-level repair. Both terminal modes carry a labelled Back row,
 //! because the rider must see a way out. The global escape stays refused and Back stays inert, so
-//! the card cannot be dismissed by accident.
+//! the card cannot be dismissed by accident. An unfinished first-use setup opens on its saved step
+//! once the card is answered.
 
 use core::fmt::Write;
 
@@ -111,6 +112,11 @@ impl RecoveryMode {
     }
 }
 
+/// Where an answer goes: to `to`, or to the saved setup step while setup is unfinished.
+fn answered(to: Transition, s: &crate::Settings) -> Transition {
+    super::setup::screen(s).map_or(to, Transition::Root)
+}
+
 #[derive(Debug, Default)]
 pub struct RideRecoveryScreen {
     selected: usize,
@@ -143,15 +149,15 @@ impl RideRecoveryScreen {
                 cx.activity.mode = crate::activity::Mode::Riding;
                 cx.navigator.suspend_for_recording_recovery();
                 cx.recorder.continue_recovered();
-                Transition::Root(Screen::Map(MapScreen::new()))
+                answered(Transition::Root(Screen::Map(MapScreen::new())), cx.settings)
             }
             // The only way out of a terminal mode. The decision waits for the rider.
-            (Gesture::Press, Row::Leave) => Transition::Home,
+            (Gesture::Press, Row::Leave) => answered(Transition::Home, cx.settings),
             (Gesture::Hold, Row::Discard | Row::Retry) => {
                 cx.recorder.request(RecorderIntent::Discard);
                 cx.activity.mode = crate::activity::Mode::Idle;
                 cx.navigator.suspend_for_recording_recovery();
-                Transition::Home
+                answered(Transition::Home, cx.settings)
             }
             // Press on a guarded row is deliberately inert, and Back cannot bypass the decision.
             _ => Transition::None,

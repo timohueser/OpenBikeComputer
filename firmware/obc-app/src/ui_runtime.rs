@@ -421,9 +421,9 @@ impl UiRuntime {
         }
     }
 
-    /// The Sensors pages, and Connections, whose Sensors door counts the connected ones.
+    /// Whether the top screen draws the sensor status or the scan hits.
     fn sensors_screen_up(&self) -> bool {
-        matches!(self.stack.last(), Some(Screen::Sensors(_) | Screen::SensorScan(_) | Screen::Connections(_)))
+        self.stack.last().is_some_and(|s| s.caps().render_key == crate::screen::RenderKeyKind::SensorSettings)
     }
 
     /// Whether the base screen draws the connected indicator: everything whose base is
@@ -464,9 +464,10 @@ impl UiRuntime {
         tracking: bool,
         panning: bool,
         arrival: Option<crate::screen::ArrivalView>,
+        in_setup: bool,
     ) {
         let hold_charging = self.hold_charging();
-        let ctx = CardCtx { now_ms: self.now_ms, hold_charging, catalogs, tracking, panning, arrival };
+        let ctx = CardCtx { now_ms: self.now_ms, hold_charging, catalogs, tracking, panning, arrival, in_setup };
         if self.cards.sweep(&mut self.stack, &ctx) {
             self.map_dirty = true;
         }
@@ -511,12 +512,13 @@ impl UiRuntime {
         }
     }
 
-    /// Whether the top screen is exempt from the idle-return timeout: the modal cards that stay
+    /// Whether the base screen is exempt from the idle-return timeout: the modal cards that stay
     /// put until dismissed, the route-planning spinner, and the SD-sideload update flow. It reads
     /// the declared [`idle_exempt`](crate::screen::Caps::idle_exempt) capability, so a new modal
-    /// card cannot be forgotten here.
+    /// card cannot be forgotten here. The base answers, because a sheet over a card is not
+    /// consent to take the card away.
     fn idle_return_exempt(&self) -> bool {
-        self.stack.last().is_some_and(|s| s.caps().idle_exempt)
+        crate::screen::base_screen(&self.stack).is_some_and(|s| s.caps().idle_exempt)
     }
 
     /// Whether the top screen is a deliberate ride view that must never time out while a ride is

@@ -168,6 +168,35 @@ pub(crate) fn nav_row(
     }
 }
 
+/// One choice of a pick list: a glyph in the flag slot, then the name. `glyph` draws at the
+/// slot's top-left. The tick marks the committed choice, which the cursor does not move.
+pub(crate) fn choice_row<S: Surface>(
+    cv: &mut S,
+    area: Rectangle,
+    name: &str,
+    selected: bool,
+    committed: bool,
+    glyph: impl FnOnce(&mut S, i32, i32),
+) {
+    row_cursor(cv, area, selected, false);
+    let (x, y, h) = (area.top_left.x + TEXT_DX, area.top_left.y, area.size.height as i32);
+    glyph(cv, x + 1, y + (h - super::flags::FLAG_H) / 2);
+    let ink = if selected { palette::ON_ACCENT } else { palette::INK };
+    cv.text_vcentered(name, x + 30, (y, h), Font::Body, TextAlign::Left, ink);
+    if committed {
+        row_tick(cv, area);
+    }
+}
+
+/// The committed tick of the drawer editor, at row scale, at the right of `area`.
+pub(crate) fn row_tick(cv: &mut impl Surface, area: Rectangle) {
+    let tx = area.top_left.x + area.size.width as i32 - 22;
+    let cy = area.top_left.y + area.size.height as i32 / 2;
+    for k in 0..2 {
+        super::sheet::committed_tick(cv, tx + k, cy - k, palette::WOOD);
+    }
+}
+
 /// A door onto a destructive page, lettered in warning red until the cursor lands on it. A press
 /// opens it like any door; the confirm and its hold live on the page.
 pub(crate) fn danger_door_row(cv: &mut impl Surface, area: Rectangle, label: &str, selected: bool) {

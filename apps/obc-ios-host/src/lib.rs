@@ -35,6 +35,9 @@ use std::path::Path;
 pub const FRAME_W: u32 = obc_display::ls021::FRAME_W as u32;
 pub const FRAME_H: u32 = obc_display::ls021::FRAME_H as u32;
 
+/// The phone's stand-in for the board's factory name, which the board derives from its device id.
+const FACTORY_NAME: &str = "OBC-IOS";
+
 /// What the phone honestly is. It has a card and a settings file, so detours and persisted
 /// settings are real. It is not a BLE peripheral, carries no staged firmware and reports no free
 /// space, so the screens behind those hide rather than offer a control that answers nothing.
@@ -160,7 +163,7 @@ impl Host {
         let recorder = FlatRideRecorder::new(owner.clone()).map_err(|error| format!("ride recovery: {error:?}"))?;
         let tracks = TrackStore::new(recorder, owner, exports);
         let mut settings_store = FileSettingsStore::open(settings);
-        let boot_settings = settings_store.load().unwrap_or_default();
+        let boot_settings = settings_store.load().unwrap_or(Settings::FACTORY);
         // Absent or unreadable terrain is not fatal; routes stay flat.
         let elevation: Box<dyn ElevationSource> = match obc_host_core::terrain::FlatElevation::open(&map) {
             Ok(Some(terrain)) => terrain,
@@ -178,9 +181,10 @@ impl Host {
         app.set_map_nav_graph(map.tables().has_nav_graph());
         app.set_routes_with_ids(routes.catalog(), routes.ids());
         app.set_rides(rides.catalog(), rides.trip_names());
-        // The phone runs the settings a rider runs: whatever was saved, or the defaults.
+        // The phone runs the settings a rider runs: whatever was saved, or a factory-fresh device.
         app.set_settings(boot_settings);
         app.set_sound_available(true);
+        app.set_factory_name(FACTORY_NAME);
         tracks.offer_recovery(&mut app);
 
         Ok(Box::new(Host {

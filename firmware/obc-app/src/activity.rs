@@ -144,10 +144,6 @@ pub struct Activity {
     /// drains to a no-op at the host.
     delete_trip: Option<crate::CatalogObjectId>,
     pub(crate) cleanup_routes: Option<crate::catalog_state::CatalogIntent>,
-    /// The sensor scan mode level, raised by the Sensors screen while a scan-list sub-screen is
-    /// open and lowered on exit. A level, not a drained edge: the host polls it each pass, keeps a
-    /// discovery scan running while it is `true`, and clears the app scan list when it falls.
-    sensor_scan: bool,
 }
 
 impl Activity {
@@ -193,16 +189,5 @@ impl Activity {
     /// the member-then-folder order from there.
     pub(crate) fn take_trip_delete(&mut self) -> Option<crate::CatalogObjectId> {
         self.delete_trip.take()
-    }
-
-    /// Set the sensor scan mode level: `true` when the scan-list screen opens on a sensor row,
-    /// `false` on exit. The host polls it each pass.
-    pub(crate) fn request_sensor_scan(&mut self, on: bool) {
-        self.sensor_scan = on;
-    }
-
-    /// Whether sensor scan mode is on — the host's per-pass read.
-    pub(crate) fn sensor_scan_active(&self) -> bool {
-        self.sensor_scan
     }
 }
