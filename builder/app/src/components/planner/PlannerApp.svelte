@@ -894,7 +894,7 @@
                 <span class:save-error={!!draftError}>{draftError || `${message} · ${routingMessage}`}</span>
                 {#if undoable}<span>·</span><button type="button" class="planner-action" onclick={undo}>Undo</button>{/if}
                 {#if placeNote}<span>· {placeNote}</span>{/if}
-                <span class="lab-note">Regional routing · place suggestions are examples{#if import.meta.env.VITE_PLANNER_DATA_URL} · <a href={import.meta.env.VITE_PLANNER_DATA_URL}>Routing data · ODbL</a>{/if}</span>
+                <span class="lab-note">Regional map, search and routing{#if import.meta.env.VITE_PLANNER_DATA_URL} · <a href={import.meta.env.VITE_PLANNER_DATA_URL}>Routing data · ODbL</a>{/if}</span>
             </div>
         </section>
     </main>

@@ -1,6 +1,6 @@
 //! Native storage adapter. The query library itself only requires `Source`.
 use crate::{
-    package::{Package, Source},
+    package::{Package, Source, MAX_MANIFEST_BYTES},
     Error, Result,
 };
 use std::{
@@ -14,7 +14,7 @@ pub struct Directory(PathBuf);
 
 impl Directory {
     pub fn open(path: &Path) -> Result<Package<Self>> {
-        let manifest = read_limited(&path.join("manifest.json"), 64 * 1024 * 1024)?;
+        let manifest = read_limited(&path.join("manifest.json"), MAX_MANIFEST_BYTES)?;
         Package::open(Self(path.join("objects")), &manifest)
     }
 }

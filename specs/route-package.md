@@ -47,6 +47,6 @@ arc index and forward/backward side. The unpacked witness must connect legal
 directed roads and preserve the prepared total cost.
 
 A stored object and its decoded payload must each fit within 8 MiB. The
-manifest must fit within 64 MiB. Consumers verify hashes before decoding.
+manifest must fit within 128 MiB. Consumers verify hashes before decoding.
 These bounds protect installation and query memory; they do not set region
 coverage or a phone performance target.

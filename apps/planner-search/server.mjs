@@ -14,7 +14,8 @@ const parser = parserProcess(
   path.join(data, 'model'),
 );
 const databases = new Map();
-for (const region of ['germany', 'baden-wuerttemberg']) {
+for (const region of (process.env.OBC_SEARCH_REGIONS || 'germany,baden-wuerttemberg').split(',')) {
+  if (!['germany', 'baden-wuerttemberg'].includes(region)) throw new Error(`Unknown search region: ${region}`);
   const file = path.join(data, `${region}.sqlite`);
   if (!existsSync(file)) continue;
   const conn = new DatabaseSync(file, { readOnly: true });

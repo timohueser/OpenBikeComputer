@@ -1,6 +1,6 @@
 import { layers, namedFlavor, type Flavor } from "@protomaps/basemaps";
 import type { ExpressionSpecification, StyleSpecification, LayerSpecification } from "maplibre-gl";
-import { BASEMAP_URL } from "./map-data";
+import { BASEMAP_URL, GLYPHS_URL, MAP_BOUNDS, SPRITES_URL } from "./map-data";
 import { categoryIds, placeCategories, poiKinds, type PlaceCategory } from "./poi-kinds";
 
 function flavor(dark: boolean): Flavor {
@@ -70,7 +70,13 @@ export function mapStyle(theme: "light" | "dark", demUrl: string, contourUrl: st
     });
     // The planner draws its own place kinds; the basemap keeps the rest.
     const pois = base.find((layer) => layer.id === "pois");
-    if (pois?.type === "symbol") pois.filter = ["all", pois.filter as ExpressionSpecification, ["!", poiFilter(categoryIds)]];
+    if (pois?.type === "symbol") {
+        pois.filter = ["all", pois.filter as ExpressionSpecification, ["!", poiFilter(categoryIds)]];
+        if (pois.layout?.["icon-image"]) {
+            // The sprite atlas supplies a building glyph for town halls.
+            pois.layout["icon-image"] = ["match", ["get", "kind"], "townhall", "building", pois.layout["icon-image"] as ExpressionSpecification];
+        }
+    }
     const panel = dark ? "#201f17" : "#ffffff";
     const category = ["match", ["get", "kind"], ...categoryIds.flatMap((id) => [Object.keys(placeCategories[id].kinds), id]), ""] as unknown as ExpressionSpecification;
     base.push({
@@ -93,12 +99,12 @@ export function mapStyle(theme: "light" | "dark", demUrl: string, contourUrl: st
     });
     return {
         version: 8,
-        glyphs: "https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf",
-        sprite: `https://protomaps.github.io/basemaps-assets/sprites/v4/${theme}`,
+        glyphs: GLYPHS_URL,
+        sprite: `${SPRITES_URL}/${theme}`,
         sources: {
-            basemap: { type: "vector", url: BASEMAP_URL, attribution: '<a href="https://openstreetmap.org/copyright">© OpenStreetMap</a> · <a href="https://protomaps.com">Protomaps</a>' },
-            terrain: { type: "raster-dem", tiles: [demUrl], tileSize: 512, encoding: "terrarium", maxzoom: 12, attribution: '<a href="https://mapterhorn.com/attribution">Terrain © Mapterhorn contributors</a>' },
-            contours: { type: "vector", tiles: [contourUrl], maxzoom: 15, attribution: '<a href="https://mapterhorn.com/attribution">Terrain © Mapterhorn contributors</a>' },
+            basemap: { type: "vector", url: BASEMAP_URL, attribution: '<a href="https://openstreetmap.org/copyright">© OpenStreetMap contributors</a> · <a href="https://protomaps.com">Protomaps</a>' },
+            terrain: { type: "raster-dem", tiles: [demUrl], ...(MAP_BOUNDS ? { bounds: MAP_BOUNDS } : {}), tileSize: 512, encoding: "terrarium", maxzoom: 12, attribution: '<a href="https://mapterhorn.com/attribution">Terrain © Mapterhorn contributors</a>' },
+            contours: { type: "vector", tiles: [contourUrl], ...(MAP_BOUNDS ? { bounds: MAP_BOUNDS } : {}), maxzoom: 15, attribution: '<a href="https://mapterhorn.com/attribution">Terrain © Mapterhorn contributors</a>' },
         },
         layers: base,
     };

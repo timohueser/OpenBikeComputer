@@ -305,6 +305,20 @@ r2 *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/r2.py" "$@"
 
+# Run the complete local Baden-Württemberg planner. `obc planner setup` prepares
+# maps, search, the query model and routing. `obc planner verify` checks the data.
+# Packages stay in $OBC_PLANNER_DATA (default ~/.cache/obc/planner/baden-wuerttemberg).
+# Setup needs Node 24+, Python 3.12+, uv, gh, curl, Rust and the PMTiles CLI.
+# Start after setup with `obc planner`; Ctrl-C stops all four local services.
+# Prepare, verify or run the local Baden-Württemberg planner
+[group('maps')]
+planner *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    _run python3 "$OBC_TOOLS/planner.py" "$@"
+
 # Bake the published cell catalog. `obc bake` processes every regions.toml entry;
 # positional ids narrow it (`obc bake europe/austria --force`). Output goes to
 # $OBC_BAKE_TREE (default ~/obc-bake). `verify` and `publish` use that same tree

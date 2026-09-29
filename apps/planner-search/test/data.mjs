@@ -5,9 +5,11 @@ import {readFileSync} from 'node:fs';
 import {resolve} from '../resolver.mjs';
 import {lengths} from '../web/geography.mjs';
 import {compact} from '../web/text.mjs';
+import path from 'node:path';
 
-const dbs=Object.fromEntries(['germany','baden-wuerttemberg'].map(name=>{
-  const conn=new DatabaseSync(`data/${name}.sqlite`,{readOnly:true});
+const regions=(process.env.OBC_SEARCH_REGIONS || 'germany,baden-wuerttemberg').split(',');
+const dbs=Object.fromEntries(regions.map(name=>{
+  const conn=new DatabaseSync(path.join(process.env.OBC_SEARCH_DATA || 'data', `${name}.sqlite`),{readOnly:true});
   conn.exec('PRAGMA cache_size=-32768; PRAGMA mmap_size=0;');
   return [name,{conn,all:(sql,bind=[])=>conn.prepare(sql).all(...bind)}];
 }));
@@ -48,8 +50,10 @@ for(const [name,db]of Object.entries(dbs))for(const c of cases) {
 }
 console.log(`PASS ${results.length} real-data acceptance cases`);
 const timing=[];
+const primary=dbs.germany || dbs['baden-wuerttemberg'];
 for(let n=0;n<3;n++)for(const c of cases) {
-  const r=search(dbs.germany,{...c,view:c.view||DEFAULT_VIEW});timing.push(r.elapsed);
+  if(!dbs.germany && c.serverOnly)continue;
+  const r=search(primary,{...c,view:c.view||DEFAULT_VIEW});timing.push(r.elapsed);
 }
 timing.sort((a,b)=>a-b);
 const counts=Object.fromEntries(Object.entries(dbs).map(([name,db])=>[name,{
@@ -63,7 +67,7 @@ const hotels=resolve(dbs['baden-wuerttemberg'],{type:'places',what:['hotel'],whe
 assert.ok(hotels.results.length>0);assert.ok(hotels.results.every(p=>p.kind==='hotel'&&p.distance<=3));
 const gap=resolve(dbs['baden-wuerttemberg'],{type:'stretches',what:'gap:water'},context);
 assert.ok(gap.stretches.length>0);assert.ok(gap.stretches.every(s=>s.from>=0&&s.to<=total&&s.coordinates.length>=2));
-const address=resolve(dbs.germany,{type:'route',from:{plan:'start'},to:{name:'Habsburgerstr. 10 Freiburg'}},context);
+const address=resolve(primary,{type:'route',from:{plan:'start'},to:{name:'Habsburgerstr. 10 Freiburg'}},context);
 assert.equal(address.changes[0].points.at(-1).source,'w154330310');
 console.log('PASS real-data day scope, water gaps, and address route target');
 for(const db of Object.values(dbs))db.conn.close();

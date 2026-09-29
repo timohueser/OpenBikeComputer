@@ -5,15 +5,58 @@ tiles and terrain. The editor uses the Rust route service for routing, terrain p
 and moving time. Place search uses the [local search service](../../../../../apps/planner-search/README.md).
 They are not inputs to the default production build.
 
-From `builder/app`:
+## Local Baden-Württemberg planner
+
+Install Node 24+, Python 3.12+, Rust, `uv`, `gh`, `curl`, and the
+[PMTiles CLI](https://docs.protomaps.com/pmtiles/cli). Authenticate `gh` for the
+query model release. From this checkout:
 
 ```sh
-npm ci
-npm run dev -- --mode web
+obc planner setup
+obc planner
 ```
 
-Open `/map-study.html` for map styling or `/planner.html` for the desktop editor.
-Start the [route service](../../../../../apps/route-server/README.md) first.
+Open `http://127.0.0.1:4175/planner.html`. Setup downloads prepared search records,
+the query model, Protomaps vector tiles, Mapterhorn terrain, fonts and sprites.
+It builds the BW search database and all routing profiles from a regional OSM
+extract. Routing uses the local curated elevation archive when configured,
+with downloaded Copernicus DEM tiles as fallback. Map hillshade and contours
+use Mapterhorn. The inputs do not share an OSM snapshot.
+
+Setup needs network access and can take a long time. It reuses complete packages.
+Normal launch performs no downloads or builds. Maps, search, model inference and
+routing run locally. Ctrl-C stops all four services. Each service binds to loopback.
+An occupied port or an incomplete package stops launch with an error.
+
+| Setting | Default |
+| --- | --- |
+| `OBC_PLANNER_DATA` or `--data-dir` | `~/.cache/obc/planner/baden-wuerttemberg` |
+| `--port` | Planner `4175` |
+| `--tile-port` | Terrain tiles `8789` |
+| `--route-port` | Routing `8787` |
+| `--search-port` | Search `8786` |
+| `--reference` or `OBC_REFERENCE_ARCHIVE` | `~/obc-reference` when its index exists |
+| `--dem-dir` | `~/.cache/obcm/dem` |
+| `setup --osm PATH` | Use an existing BW OSM PBF |
+| `setup --basemap URL` | Use this Protomaps archive for a new map bundle |
+
+The data directory contains `maps/`, `search/` and `routing/`. Search preparation
+reads the Germany Photon dump but builds only the BW package. Route preparation
+uses the existing Geofabrik cache. Bounds are `7.45,47.5,10.5,49.85`; routing stays
+inside the OSM extract. The map stores vector zooms 0–14 and terrain zooms 0–12.
+Terrain includes neighbouring tiles for contour calculation at the region edge.
+
+Run `obc planner verify` for map checksums, SQLite integrity and routing object
+verification. To replace a package, stop the planner, move its directory aside,
+then repeat setup. A new map preparation selects an available Protomaps v4 build
+and records the chosen URL. Existing maps keep their source. `maps/manifest.json`
+records bounds, sizes, hashes and source URLs. Routing records source hashes and
+terrain credits. Setup does not upload data or change hosting.
+
+For map styling alone, `tools/planner_maps.py` provides `prepare` and `serve`.
+Its separate default directory is `builder/app/public/data/planner/`. Open
+`map-study.html` on the preview host. Use `--help` for archive and port options.
+
 Choose a map location or search result, then select Start here or Finish here.
 Choose both endpoints to calculate a route. Remove an endpoint to promote the
 adjacent route point. Use New route or New trip to clear the plan; Undo restores it.
@@ -27,10 +70,8 @@ and terrain gaps. Missing terrain and fragments below 20 m have no grade estimat
 
 ## Tile sources
 
-The basemap default points at a public Protomaps demo archive that no longer
-exists, so the map needs a local extract. Terrain defaults to public Mapterhorn
-tiles, which still work. Set these variables before starting Vite (an
-uncommitted `builder/app/.env.local` is the easiest place):
+The defaults use this host. `serve` sets URLs and bounds for the local bundle.
+For another host, set these variables before starting Vite or building the planner:
 
 | Variable | Value |
 | --- | --- |
@@ -38,34 +79,27 @@ uncommitted `builder/app/.env.local` is the easiest place):
 | `VITE_PLANNER_ROUTING_URL` | Route API prefix; defaults to the local `/routing` proxy |
 | `VITE_PLANNER_PMTILES_URL` | Basemap PMTiles URL; absolute or relative to this host |
 | `VITE_PLANNER_DEM_URL` | Terrarium WebP XYZ template with `{z}`, `{x}` and `{y}` |
+| `VITE_PLANNER_GLYPHS_URL` | Font template with `{fontstack}` and `{range}` |
+| `VITE_PLANNER_SPRITES_URL` | Sprite directory; the style appends `/light` or `/dark` |
+| `VITE_PLANNER_MAP_BOUNDS` | Optional `west,south,east,north`; limits panning and terrain requests |
 
 The style expects the Protomaps basemap schema. Terrain is capped at zoom 12.
-Glyphs and sprites still use public Protomaps assets. Most rider places (shops,
+Most rider places (shops,
 lodging, food) exist only in the archive's zoom 14 tiles, so the map shows them
 from zoom 14. A highlighted place category loads those tiles along the route
 once per session, so it shows at every zoom.
 
-Use the PMTiles CLI to extract a region from a compatible archive. Put local
-extracts in `builder/app/public/data/planner/`, which is ignored by git. A
-symlink to an extract in another checkout works. Vite serves the basemap with
-range requests, so `VITE_PLANNER_PMTILES_URL=/data/planner/basemap.pmtiles`
-is enough for the basemap.
-Serve the terrain archive with `pmtiles serve` and enable CORS for the Vite origin.
+Vite serves `basemap.pmtiles` with HTTP range requests. Its `/tiles` proxy sends
+terrain requests to `pmtiles serve` on port 8789. The browser makes contours from
+those terrain tiles. The bundle contains two archives and an `assets/` directory;
+it needs no database or tile build server at runtime.
 
-```sh
-pmtiles serve public/data/planner --interface=127.0.0.1 --port=8787 \
-  --cors=http://127.0.0.1:4174 --public-url=http://127.0.0.1:8787
-```
-
-In a second terminal, from `builder/app`:
-
-```sh
-VITE_PLANNER_PMTILES_URL=/data/planner/basemap.pmtiles \
-VITE_PLANNER_DEM_URL='http://127.0.0.1:8787/terrain/{z}/{x}/{y}.webp' \
-npm run dev -- --mode web --host 127.0.0.1 --port 4174
-```
+The planner build excludes generated data. Publication and common-source
+preparation are separate work.
 
 ## Checks
+
+From `builder/app`:
 
 ```sh
 npx vitest run src/lib/planner/ src/components/planner/

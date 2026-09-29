@@ -247,6 +247,33 @@ fn a_shape_keeps_direction_and_only_an_explicit_visit_can_reverse() {
 }
 
 #[test]
+fn terrain_reuses_nearby_tiles_without_changing_road_identity_or_heights() {
+    let mut graph = fixture();
+    graph.roads.truncate(3);
+    let identities: Vec<_> = graph.roads.iter().map(|r| (r.way, r.from, r.to)).collect();
+    for (road, lon) in graph.roads.iter_mut().zip([0, 1_000_000, 1000]) {
+        road.shape = [lon, lon + 10].map(|lon| Point { lat: 0, lon, elevation: NO_ELEVATION }).to_vec();
+    }
+    let mut loaded = None;
+    let mut loads = 0;
+    route_build::terrain::apply(&mut graph, |point| {
+        let tile = point.lon.div_euclid(100_000);
+        if loaded != Some(tile) {
+            loaded = Some(tile);
+            loads += 1;
+        }
+        Ok(Some(100.0 + point.lon.rem_euclid(1000) as f64 / 10.0))
+    })
+    .unwrap();
+    assert_eq!(loads, 2);
+    assert_eq!(graph.roads.iter().map(|r| (r.way, r.from, r.to)).collect::<Vec<_>>(), identities);
+    for road in &graph.roads {
+        assert_eq!(road.shape.iter().map(|p| p.elevation).collect::<Vec<_>>(), [100, 101]);
+        assert_eq!((road.ascent_m, road.descent_m), (1, 0));
+    }
+}
+
+#[test]
 fn terrain_is_direction_independent_preserves_gaps_and_interpolates_structures() {
     let mut graph = fixture();
     graph.roads.retain(|r| (r.from == 0 && r.to == 1) || (r.from == 1 && r.to == 0));
