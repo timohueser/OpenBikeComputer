@@ -23,9 +23,19 @@
   (condition "A.hasNetclass('Power_Input')")
   (constraint track_width (min 0.3mm)))
 
+# Nordic reference routing uses 0.1 mm local spacing and short supply neckdowns.
+# This does not relax the unapproved microvia fabrication limits below.
+(rule "Nordic local routing"
+  (condition "A.Type != 'Zone' && B.Type != 'Zone' && A.intersectsArea('Nordic routing') && B.intersectsArea('Nordic routing')")
+  (constraint clearance (min 0.1mm)))
+
+(rule "Nordic short supply neckdowns"
+  (condition "A.intersectsArea('Nordic routing')")
+  (constraint track_width (min 0.1mm)))
+
 # Local neckdowns only. Keep power neckdowns short; use planes for distribution.
 (rule "Small package escape"
-  (condition "A.intersectsCourtyard('U6') || A.intersectsCourtyard('U2') || A.intersectsCourtyard('U4') || A.intersectsCourtyard('U7')")
+  (condition "A.Type != 'Zone' && (A.intersectsCourtyard('U6') || A.intersectsCourtyard('U2') || A.intersectsCourtyard('U4') || A.intersectsCourtyard('U7'))")
   (constraint clearance (min 0.065mm))
   (constraint track_width (min 0.065mm) (opt 0.1mm)))
 
@@ -83,6 +93,11 @@
   (condition "A.hasNetclass('USB_90R_TBD') && AB.isCoupledDiffPair()")
   (constraint clearance (min 0.1mm))
   (constraint diff_pair_gap (min 0.1mm) (opt 0.15mm)))
+
+# The largest pad mask expansion is 0.102 mm; retain a 0.102 mm mask web.
+(rule "Outer pour solder mask clearance"
+  (condition "A.Type == 'Zone' && (A.Layer == 'F.Cu' || A.Layer == 'B.Cu')")
+  (constraint clearance (min 0.25mm)))
 
 # Keep copper on other nets clear of probe contacts.
 # https://www.tag-connect.com/wp-content/uploads/bsk-pdf-manager/2019/12/TC2030-IDC-NL-Datasheet-Rev-B.pdf

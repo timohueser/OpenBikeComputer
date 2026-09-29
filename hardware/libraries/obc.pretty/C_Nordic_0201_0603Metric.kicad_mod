@@ -1,0 +1,95 @@
+(footprint "C_Nordic_0201_0603Metric"
+	(version 20260206)
+	(generator "pcbnew")
+	(generator_version "10.0")
+	(layer "F.Cu")
+	(descr "Nordic nRF54LM20A PAAA reference 0.6 0201 lands: 0.30 x 0.27 mm, 0.57 mm pitch; reflow assembly. https://www.nordicsemi.com/Products/nRF54LM20A/Reference-layout")
+	(tags "capacitor")
+	(property "Reference" "REF**"
+		(at 0 -0.8 0)
+		(layer "F.Fab")
+		(effects
+			(font
+				(size 0.5 0.5)
+				(thickness 0.08)
+			)
+		)
+	)
+	(property "Value" "C_Nordic_0201_0603Metric"
+		(at 0 0.8 0)
+		(layer "F.Fab")
+		(effects
+			(font
+				(size 0.5 0.5)
+				(thickness 0.08)
+			)
+		)
+	)
+	(attr smd)
+	(duplicate_pad_numbers_are_jumpers no)
+	(fp_rect
+		(start -0.535 -0.25)
+		(end 0.535 0.25)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "a56fc746-6505-4d4a-af0d-54194b2e8a4d")
+	)
+	(fp_rect
+		(start -0.3 -0.15)
+		(end 0.3 0.15)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "a881fd02-9424-4947-834c-dd1b5dce2b4a")
+	)
+	(fp_text user "${REFERENCE}"
+		(at 0 -0.68 0)
+		(layer "F.Fab")
+		(uuid "e752344b-7cb9-432b-98ad-f7952fe6995c")
+		(effects
+			(font
+				(size 0.25 0.25)
+				(thickness 0.04)
+			)
+		)
+	)
+	(pad "" smd rect
+		(at -0.285 0)
+		(size 0.3 0.27)
+		(layers "F.Paste")
+	)
+	(pad "" smd rect
+		(at 0.285 0)
+		(size 0.3 0.27)
+		(layers "F.Paste")
+	)
+	(pad "1" smd rect
+		(at -0.285 0)
+		(size 0.3 0.27)
+		(layers "F.Cu" "F.Mask")
+	)
+	(pad "2" smd rect
+		(at 0.285 0)
+		(size 0.3 0.27)
+		(layers "F.Cu" "F.Mask")
+	)
+	(embedded_fonts no)
+	(model "${KICAD10_3DMODEL_DIR}/Capacitor_SMD.3dshapes/C_0201_0603Metric.step"
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 0 0 0)
+		)
+	)
+)
