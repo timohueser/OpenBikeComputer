@@ -8,7 +8,7 @@ import SwiftUI
 struct DeviceGlyphView: View {
     enum Variant {
         case welcome
-        /// The title bar with the device's name and the amber track squiggle.
+        /// The title bar with the device's name and the signpost mark.
         case home(name: String)
         /// The device's pairing card. The app never knows the code, so the digits are blanks.
         case passkey
@@ -129,7 +129,7 @@ struct DeviceGlyphView: View {
     }
 }
 
-/// The name in the title bar over the amber track squiggle.
+/// The name in the title bar over the signpost mark.
 private struct DeviceHomeScreen: View {
     let name: String
 
@@ -137,17 +137,10 @@ private struct DeviceHomeScreen: View {
         Canvas { context, size in
             let title = name.count <= 15 ? name : String(name.prefix(13)).trimmingCharacters(in: .whitespaces) + ".."
             context.deviceFrame(size: size, title: title)
-            // The source path is "M12 60 C 20 40 34 44 40 52 C 48 62 60 40 68 20" in an 80×74 box.
-            let box = CGRect(x: 24, y: 70, width: 192, height: 200)
-            func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-                CGPoint(x: box.minX + x / 80 * box.width, y: box.minY + y / 74 * box.height)
-            }
-            var path = Path()
-            path.move(to: point(12, 60))
-            path.addCurve(to: point(40, 52), control1: point(20, 40), control2: point(34, 44))
-            path.addCurve(to: point(68, 20), control1: point(48, 62), control2: point(60, 40))
-            context.stroke(path, with: .color(OBCTheme.deviceTrack), style: StrokeStyle(lineWidth: 6, lineCap: .round))
+            context.draw(Image("Signpost", bundle: .module),
+                         in: CGRect(x: 40, y: 96, width: 160, height: 160))
         }
+        .environment(\.colorScheme, .light)
     }
 }
 
