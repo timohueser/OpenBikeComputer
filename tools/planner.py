@@ -59,7 +59,7 @@ def setup(args):
                 raise ValueError(f"OSM input does not exist: {source}")
             source.parent.mkdir(parents=True, exist_ok=True)
             partial = source.with_suffix(".download")
-            run("curl", "--fail", "--location", "--retry", "3", "--continue-at", "-",
+            run("curl", "--fail", "--location", "--retry", "3",
                 "--output", partial, "https://download.geofabrik.de/europe/germany/baden-wuerttemberg-latest.osm.pbf")
             partial.rename(source)
         run(ROOT / "target/release/obc-dem", "fetch", "--bbox", "47.5,7.45,49.85,10.5", "--out", args.dem_dir)
