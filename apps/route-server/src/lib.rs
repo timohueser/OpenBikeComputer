@@ -1,5 +1,6 @@
+mod access;
 use axum::{
-    extract::{rejection::JsonRejection, DefaultBodyLimit, State},
+    extract::{rejection::JsonRejection, DefaultBodyLimit, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -18,10 +19,14 @@ use std::{
 use tokio::sync::Semaphore;
 use tower_http::compression::CompressionLayer;
 
+mod overlays;
+
 struct Workers {
     routers: Mutex<Vec<Router<Directory>>>,
     permits: Arc<Semaphore>,
     metadata: Value,
+    overlays: overlays::Overlays,
+    overlay_permits: Arc<Semaphore>,
 }
 
 pub fn app(directory: &Path, workers: usize) -> Result<axum::Router, Error> {
@@ -33,17 +38,43 @@ pub fn app(directory: &Path, workers: usize) -> Result<axum::Router, Error> {
         routers.push(Router::new(Directory::open(directory)?, 64 * 1024 * 1024));
     }
     let package = routers[0].package();
+    let overlays = overlays::Overlays::load(package)?;
     let metadata = json!({ "package": package.identity(), "region": package.manifest().region, "bounds": package.manifest().bounds,
         "profiles": package.manifest().metrics.keys().collect::<Vec<_>>(), "attribution": package.manifest().attribution, "warnings": package.manifest().warnings });
-    let state =
-        Arc::new(Workers { routers: Mutex::new(routers), permits: Arc::new(Semaphore::new(workers)), metadata });
+    let state = Arc::new(Workers {
+        routers: Mutex::new(routers),
+        permits: Arc::new(Semaphore::new(workers)),
+        metadata,
+        overlays,
+        overlay_permits: Arc::new(Semaphore::new(2)),
+    });
     Ok(axum::Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/v1/region", get(region))
         .route("/v1/route", post(route))
+        .route("/v1/overlays", get(map_overlays))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .layer(CompressionLayer::new())
         .with_state(state))
+}
+
+async fn map_overlays(
+    State(workers): State<Arc<Workers>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Ok(permit) = workers.overlay_permits.clone().try_acquire_owned() else {
+        return failure(Error::Limit);
+    };
+    match tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        workers.overlays.query(&params)
+    })
+    .await
+    {
+        Ok(Ok(data)) => Json(data).into_response(),
+        Ok(Err(error)) => failure(error),
+        Err(_) => failure(Error::Limit),
+    }
 }
 
 async fn region(State(workers): State<Arc<Workers>>) -> Json<Value> {

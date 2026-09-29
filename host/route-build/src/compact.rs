@@ -1,7 +1,9 @@
+use crate::cost::Costing;
 use route_engine::{
     model::{Graph, Profile},
-    package::Endpoint,
+    package::{Departure, Endpoint},
 };
+use std::collections::BTreeMap;
 
 pub struct Arc {
     pub to: u32,
@@ -15,9 +17,9 @@ pub struct Compact {
 
 impl Compact {
     pub fn new(graph: &Graph, profile: &Profile) -> Result<Self, String> {
-        profile.validate()?;
+        let costing = Costing::new(graph, profile)?;
         let mut endpoints: Vec<_> =
-            graph.roads.iter().map(|r| Endpoint { cost: profile.cost(r), ..Endpoint::default() }).collect();
+            costing.roads.iter().map(|cost| Endpoint { cost: cost.clone(), ..Endpoint::default() }).collect();
         let mut incoming = vec![Vec::new(); graph.points.len()];
         let mut outgoing = vec![Vec::new(); graph.points.len()];
         for (id, road) in graph.roads.iter().enumerate() {
@@ -25,58 +27,51 @@ impl Compact {
                 return Err("Invalid road endpoints".into());
             }
             if endpoints[id].cost.is_some() {
-                incoming[road.to as usize].push(id);
-                outgoing[road.from as usize].push(id);
+                incoming[road.to as usize].push(id as u32);
+                outgoing[road.from as usize].push(id as u32);
             }
         }
         let restrictions = if profile.walking { &graph.forbidden_foot } else { &graph.forbidden };
         if !restrictions.is_sorted() {
             return Err("Unsorted turn restrictions".into());
         }
-        let mut restricted = vec![false; graph.points.len()];
         for &(a, b) in restrictions {
             let from = graph.roads.get(a as usize).ok_or("Unknown restriction road")?;
             let to = graph.roads.get(b as usize).ok_or("Unknown restriction road")?;
             if from.to != to.from {
                 return Err("Restriction roads do not meet".into());
             }
-            if endpoints[a as usize].cost.is_some() && endpoints[b as usize].cost.is_some() {
-                restricted[from.to as usize] = true;
-            }
         }
         let mut arcs = Vec::<Vec<Arc>>::new();
         for node in 0..graph.points.len() {
-            if incoming[node].is_empty() && outgoing[node].is_empty() {
-                continue;
-            }
-            let first = u32::try_from(arcs.len()).map_err(|_| "Too many states")?;
-            if restricted[node] {
-                for &road in &incoming[node] {
-                    endpoints[road].arrival = u32::try_from(arcs.len()).map_err(|_| "Too many states")?;
-                    arcs.push(Vec::new());
-                }
-            } else {
-                arcs.push(Vec::new());
-                for &road in &incoming[node] {
-                    endpoints[road].arrival = first;
-                }
-            }
-            for &road in &outgoing[node] {
-                endpoints[road].departures = if restricted[node] {
-                    incoming[node]
-                        .iter()
-                        .filter(|&&before| graph.permits_turn(before as u32, road as u32, profile.walking))
-                        .map(|&before| endpoints[before].arrival)
-                        .collect()
+            // Arrivals share a state only when every legal departure and its penalty agree.
+            let mut groups = BTreeMap::new();
+            for &before in &incoming[node] {
+                let penalties: Vec<_> = outgoing[node].iter().map(|&after| costing.transition(before, after)).collect();
+                let state = if let Some(&state) = groups.get(&penalties) {
+                    state
                 } else {
-                    vec![first]
+                    let state = u32::try_from(arcs.len()).map_err(|_| "Too many states")?;
+                    for (&after, &penalty) in outgoing[node].iter().zip(&penalties) {
+                        if let Some(penalty) = penalty {
+                            endpoints[after as usize].departures.push(Departure { state, penalty });
+                        }
+                    }
+                    groups.insert(penalties, state);
+                    arcs.push(Vec::new());
+                    state
                 };
+                endpoints[before as usize].arrival = state;
             }
         }
         for (road, endpoint) in endpoints.iter().enumerate() {
-            if let Some(cost) = endpoint.cost {
-                for &from in &endpoint.departures {
-                    arcs[from as usize].push(Arc { to: endpoint.arrival, road: road as u32, cost });
+            if let Some(cost) = &endpoint.cost {
+                for departure in &endpoint.departures {
+                    arcs[departure.state as usize].push(Arc {
+                        to: endpoint.arrival,
+                        road: road as u32,
+                        cost: cost.total().checked_add(departure.penalty).ok_or("Transition cost overflow")?,
+                    });
                 }
             }
         }

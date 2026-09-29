@@ -37,28 +37,58 @@ between their endpoints. Without terrain, climb and slope remain unknown.
 | Input | Policy |
 | --- | --- |
 | Country defaults | Germany only; other country codes fail |
-| Access and direction | Separate cycling, walking and pushing permissions |
+| Access and direction | Separate cycling, walking and pushing; pushing follows foot access unless `bicycle:pushing` restricts it |
 | Node identity | Shared OSM node IDs create junctions; geometry crossings do not |
 | Via-node turn restrictions | Mode-specific forbidden transitions |
 | Via-way restrictions | Exclude affected member roads for the restricted mode |
-| Conditional access or turns | Exclude affected modes; no date evaluation |
+| Conditional access or turns | Exclude affected rider modes; ignore motor-only and hazardous-load conditions; no date evaluation |
 | Destination, private or unsupported access | Conservative exclusion |
 | Bridge and tunnel | Preserve structure flag for terrain |
-| Surface, MTB scale, SAC scale | Separate fields; missing values stay unknown |
+| Source data | All tags, way node IDs, relation members and roles retained |
+| Road suitability | Highway, surface, smoothness, tracktype and difficulty remain distinct |
 
 Read the manifest warnings before publishing. The importer does not yet model
 all OSM semantics. It has no ferry schedule, opening-time evaluator, general
-via-way automaton, smoothness model, or country-default catalogue. Do not use
+via-way automaton or country-default catalogue. Do not use
 this German regional importer as a worldwide release pipeline.
 
-The profile catalogue has touring, road, gravel, MTB and hiking. Each has
-shorter, smoother and less-climbing variants. Shorter ignores road-class and
-climb preferences but keeps surface preferences. Smoother raises surface costs
-where the base profile has lower costs. Access rules apply to every variant.
-`--profiles all` prepares all 20 metrics. Pass a comma-separated list for fewer.
-Rebuild packages after changing profiles. These initial values need rider validation.
+## Profiles
 
-The package includes all geometry, snap cells, endpoint states and CH pages.
+Pass `--profiles all` to prepare all 21 metrics, or supply comma-separated IDs.
+Rebuild packages after changing the profile code. Rider validation is required.
+
+| Road profile | Preference |
+| --- | --- |
+| `road` | BRouter fastbike road classes, turns and downhill costs |
+| `road/shorter` | Same road suitability; no terrain penalty; lower turn cost |
+| `road/smoother` | Higher costs for rough surfaces and poor smoothness |
+| `road/less-climbing` | Additional uphill cost above the slope threshold |
+| `road/quieter` | Road class, signed speed, cycle lanes and bicycle routes |
+
+Road weights derive from the MIT-licensed BRouter
+[fastbike](https://github.com/abrensch/brouter/blob/29898106b555e342ff3ade7ae3e9c1ae6644a43b/misc/profiles2/fastbike.brf),
+[trekking](https://github.com/abrensch/brouter/blob/29898106b555e342ff3ade7ae3e9c1ae6644a43b/misc/profiles2/trekking.brf)
+and [gravel](https://github.com/abrensch/brouter/blob/29898106b555e342ff3ade7ae3e9c1ae6644a43b/misc/profiles2/gravel.brf)
+profiles. Preserve [the licence notice](LICENSE.brouter) when redistributing them.
+
+| Adaptation | Behavior |
+| --- | --- |
+| Missing surface | Use highway context; no universal unknown-surface penalty |
+| Explicit poor surface | Apply a minimum cost even on a paved road class |
+| Smoothness | Apply gravel-profile dry-surface multipliers |
+| Elevation | Filtered fractional heights; 1.5% slope threshold; additive costs |
+| BRouter elevation buffer | Not reproduced; no path-dependent state in CH |
+| Estimated traffic, forest and noise | Not inferred from BRouter's derived data |
+| Access | German importer rules; restricted access is not a soft penalty |
+| Pushing | Allowed where permitted, with distance and entry costs; no cycling permission implied |
+
+Touring, gravel, MTB and hiking use separate surface and road-class tables.
+Each has shorter, smoother and less-climbing variants. Shorter ignores road
+class and climb preferences but keeps surface preferences. Smoother raises
+surface costs. Access rules apply to every variant.
+
+The package includes source OSM pages, geometry, snap cells, endpoint states
+and CH pages. Source pages stay outside the query caches.
 It is separate from map tiles. See [the package contract](../../specs/route-package.md).
 Preserve OpenStreetMap attribution and ODbL notices when distributing the data.
 

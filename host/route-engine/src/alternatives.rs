@@ -61,7 +61,11 @@ impl<S: Source> Router<S> {
                     return Err(Error::Cancelled);
                 }
                 let found = self.package.snap(
-                    Point { lon: (probe[0] * 1e6).round() as i32, lat: (probe[1] * 1e6).round() as i32, elevation: 0 },
+                    Point {
+                        lon: (probe[0] * 1e6).round() as i32,
+                        lat: (probe[1] * 1e6).round() as i32,
+                        elevation: 0.0,
+                    },
                     &request.profile,
                     snap::Policy { radius_m: (offset * 111_195.0).min(5000.0), ..snap::Policy::default() },
                 )?;
@@ -108,7 +112,6 @@ impl<S: Source> Router<S> {
         {
             return Ok(false);
         }
-        let profile = self.package.metric(metric)?.profile.clone();
         let mut cost = 0u64;
         let mut previous = None;
         let mut visited = BTreeSet::new();
@@ -120,11 +123,22 @@ impl<S: Source> Router<S> {
             {
                 return Ok(false);
             }
+            let endpoint = self.package.endpoint(metric, slice.road)?;
+            let Some(curve) = endpoint.cost.as_ref() else {
+                return Ok(false);
+            };
+            if let Some(before) = previous.filter(|&id| id != slice.road) {
+                let arrival = self.package.endpoint(metric, before)?.arrival;
+                let Some(entry) = endpoint.departures.iter().find(|d| d.state == arrival) else {
+                    return Ok(false);
+                };
+                cost = cost.checked_add(entry.penalty).ok_or(Error::Limit)?;
+            }
             previous = Some(slice.road);
             cost = cost
                 .checked_add(
-                    snap::prefix_cost(&road, &profile, slice.to).map_err(Error::InvalidData)?
-                        - snap::prefix_cost(&road, &profile, slice.from).map_err(Error::InvalidData)?,
+                    curve.prefix(slice.to).map_err(Error::InvalidData)?
+                        - curve.prefix(slice.from).map_err(Error::InvalidData)?,
                 )
                 .ok_or(Error::Limit)?;
         }
@@ -153,7 +167,7 @@ fn tradeoff(primary: &Route, candidate: &Route) -> Option<&'static str> {
 
 fn distinct(primary: &Route, candidate: &Route) -> bool {
     let point =
-        |p: [f64; 2]| Point { lon: (p[0] * 1e6).round() as i32, lat: (p[1] * 1e6).round() as i32, elevation: 0 };
+        |p: [f64; 2]| Point { lon: (p[0] * 1e6).round() as i32, lat: (p[1] * 1e6).round() as i32, elevation: 0.0 };
     let mut far = 0;
     let mut count = 0;
     for &coordinate in candidate.geometry.iter().step_by((candidate.geometry.len() / 100).max(1)) {

@@ -15,7 +15,9 @@
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
     import LayerMenu from './LayerMenu.svelte';
+    import type { OverlayOptions } from '../../lib/planner/route-overlays';
     import NearbyLandmark from './NearbyLandmark.svelte';
+    import { presetName } from '../../lib/planner/riding-profiles';
     import { isTrip } from '../../lib/planner/trip-validation';
     import {
         addClickedPoint, addPointNear, addRestDay, applyBudget, coordinateAt, cumulative, emptyTrip,
@@ -79,7 +81,7 @@
         return () => abort.abort();
     });
     function pickRoute(route: EngineRoute) {
-        const next = { ...$state.snapshot(trip), preset: route.profile.endsWith('/shorter') ? 'Shorter' : route.profile.endsWith('/smoother') ? 'Smoother' : route.profile.endsWith('/less-climbing') ? 'Less climbing' : 'Balanced' };
+        const next = { ...$state.snapshot(trip), preset: presetName(route.profile) };
         next.routing = selectRoute(next, route, trip.routing?.alternatives ?? [route]);
         commit(next, 'Route preference changed');
     }
@@ -132,6 +134,7 @@
     let theme = $state<'light' | 'dark'>('light');
     let hillshade = $state(true);
     let contours = $state(true);
+    let mapOverlays = $state<OverlayOptions>({ network: 'cycling', access: true });
     let showRoute = $state(true);
     let query = $state('');
     let searchState = $state<SearchState>({ loading: false, error: '', answer: null });
@@ -305,7 +308,7 @@
             const raw = localStorage.getItem(storageKey);
             const saved = raw ? JSON.parse(raw) : null;
             if (isTrip(saved)) {
-                if (saved.routing && !saved.routing.surfaces) saved.routing = undefined;
+                if (saved.routing && (!saved.routing.surfaces || !saved.routing.pushing)) saved.routing = undefined;
                 trip = saved;
             }
             else if (raw) draftError = 'Saved draft is invalid · new plan opened';
@@ -709,7 +712,7 @@
     }
 
     function restoreVersion(saved: Trip, name: string) {
-        commit(saved, `Restored ‘${name}’`);
+        commit({ ...saved, routing: saved.routing?.pushing ? saved.routing : undefined }, `Restored ‘${name}’`);
         undoable = true;
         clearSelection();
         night = Math.max(1, Math.min(night, tripDays(trip).length));
@@ -827,7 +830,7 @@
             <div class="map-area" bind:clientHeight={mapHeight} style:--map-height={`${mapHeight}px`}>
                 <PlannerMap
                     bind:this={map} {segments} {coordinates} points={mapPoints} {selectedId} callout={calloutCoordinate} {drawing}
-                    {theme} {hillshade} {contours} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking}
+                    {theme} {hillshade} {contours} {mapOverlays} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces} {landmarks}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={previewPoint} onDayEndDrag={moveDayEnd}
@@ -865,7 +868,7 @@
                         <button type="button" disabled={!trip.points.length} onclick={() => focusedDay ? showDay(focusedDay.ridingNumber) : coordinates.length ? map?.fitRoute() : map?.fitCoordinates(trip.points.map(p => p.coordinate))} aria-label={focusedDay ? `Show day ${focusedDay.number} on map` : 'Show whole route'}><Icon name="fit" /></button>
                         <button type="button" disabled={!hasEndpoints} class:chosen={showRoute} aria-label={showRoute ? 'Hide route' : 'Show route'} aria-pressed={showRoute} onclick={() => showRoute = !showRoute}><Icon name="eye" /></button>
                     </div>
-                    <LayerMenu bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
+                    <LayerMenu {theme} bind:mapOverlays bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
                 </div>
                 {#if picking || drawing}
                     <div class="mode-chip" role="status">

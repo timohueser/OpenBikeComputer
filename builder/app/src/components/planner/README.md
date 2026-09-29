@@ -65,8 +65,20 @@ changes made in the current session. Hold a dragged point still to preview its
 route. Release it to save one change. Open Route options to load alternatives. The surface
 strip follows the profile range; hover or use arrow keys to inspect each section.
 Grade colors start enabled in single-route mode. Use Grade to switch between
-grade and day colors. Grades use a 100 m terrain window, shortened at route ends
+grade and day colors. Climbs use green, yellow and red; descents use blue to purple.
+Both directions use 3, 6, 10, 15 and 20 percent thresholds. The Push strip below
+the surface bar marks pushing sections. Hover or use arrow keys for access details.
+Grades use a 100 m terrain window, shortened at route ends
 and terrain gaps. Missing terrain and fragments below 20 m have no grade estimate.
+
+Open Map layers to select Cycling (default), Hiking, or Off. Solid line colors
+show network levels. Closures & access starts on. Walking symbols mark pushing
+sections at close zoom. Expand Terrain or Places for controls. Click a route
+line or blaze for its name; click an access symbol for rules. Route lines
+highlight on hover. Route names link to mapped websites. Hiking routes show
+supported geometric trail blazes; other markers retain their descriptions.
+Use this location opens route-point controls. Overlays use the routing package's
+OSM snapshot. They do not provide live closures or change route weights.
 
 ## Tile sources
 

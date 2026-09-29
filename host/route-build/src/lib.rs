@@ -1,8 +1,10 @@
 mod compact;
+pub mod cost;
 mod hierarchy;
 #[cfg(feature = "obc-terrain")]
 pub mod obc_terrain;
 pub mod osm;
+mod road_bike;
 pub mod terrain;
 
 use route_engine::{
@@ -31,9 +33,20 @@ pub fn prepare(
         warnings: graph.warnings.clone(),
         roads: u32::try_from(graph.roads.len()).map_err(|_| "Too many roads")?,
         geometry: Vec::new(),
+        osm: package::OsmPages::default(),
         spatial: BTreeMap::new(),
         metrics: BTreeMap::new(),
     };
+    macro_rules! source_pages {
+        ($field:ident) => {
+            for page in graph.osm.$field.values().collect::<Vec<_>>().chunks(128) {
+                manifest.osm.$field.push(write(&storage::encode(&page)?)?);
+            }
+        };
+    }
+    source_pages!(nodes);
+    source_pages!(ways);
+    source_pages!(relations);
     let mut cells = BTreeMap::<(i32, i32), BTreeSet<u32>>::new();
     for (id, road) in graph.roads.iter().enumerate() {
         if road.shape.len() < 2 || road.class > 6 {
@@ -69,17 +82,23 @@ pub fn prepare(
             if endpoint.cost.is_some() {
                 endpoint.arrival = ranks[endpoint.arrival as usize];
                 for state in &mut endpoint.departures {
-                    *state = ranks[*state as usize];
+                    state.state = ranks[state.state as usize];
                 }
             }
         }
         let mut endpoints = Vec::new();
+        let mut allowed = vec![0; graph.endpoints.len().div_ceil(64)];
+        for (id, endpoint) in graph.endpoints.iter().enumerate() {
+            if endpoint.cost.is_some() {
+                allowed[id / 64] |= 1 << (id % 64);
+            }
+        }
         for page in graph.endpoints.chunks(ROADS_PER_PAGE as usize) {
             endpoints.push(write(&storage::encode(&page)?)?);
         }
         manifest.metrics.insert(
             profile.name.clone(),
-            Metric { profile: profile.clone(), graph: pages, endpoints, states: ranks.len() as u32 },
+            Metric { profile: profile.clone(), graph: pages, endpoints, states: ranks.len() as u32, allowed },
         );
     }
     Ok(manifest)

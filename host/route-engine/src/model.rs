@@ -4,13 +4,13 @@ pub type Cost = u64;
 pub const BIKE: u8 = 1;
 pub const FOOT: u8 = 2;
 pub const PUSH: u8 = 4;
-pub const NO_ELEVATION: i16 = i16::MIN;
+pub const NO_ELEVATION: f32 = f32::MIN;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Point {
     pub lat: i32,
     pub lon: i32,
-    pub elevation: i16,
+    pub elevation: f32,
 }
 
 impl Point {
@@ -39,6 +39,7 @@ pub struct Road {
     pub from: u32,
     pub to: u32,
     pub way: i64,
+    pub reversed: bool,
     pub length_m: u32,
     pub ascent_m: u32,
     pub descent_m: u32,
@@ -55,9 +56,12 @@ pub struct Road {
     pub shape: Vec<Point>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Graph {
     pub points: Vec<Point>,
+    pub node_ids: Vec<i64>,
+    pub node_access: Vec<u8>,
+    pub osm: crate::osm::Data,
     pub roads: Vec<Road>,
     /// Forbidden transitions between directed roads. Sorted for binary search.
     pub forbidden: Vec<(u32, u32)>,
@@ -83,13 +87,26 @@ impl Graph {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Profile {
     pub name: String,
+    pub weighting: Weighting,
     pub walking: bool,
-    pub surface_weights: [f64; 6],
-    pub road_weights: [f64; 7],
-    pub climb_weight: f64,
     pub pushing: bool,
     pub ferries: bool,
     pub max_difficulty: u8,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Weighting {
+    RoadBike(RoadBike),
+    Weighted { surface: [f64; 6], road: [f64; 7], climb: f64 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RoadBike {
+    Balanced,
+    Shorter,
+    Smoother,
+    LessClimbing,
+    Quieter,
 }
 
 impl Profile {
@@ -98,9 +115,11 @@ impl Profile {
             Self {
                 name: "touring".into(),
                 walking: false,
-                surface_weights: [1.4, 1.0, 1.15, 1.6, 2.5, 5.0],
-                road_weights: [1.0, 1.15, 3.0, 1.2, 2.0, 8.0, 2.0],
-                climb_weight: 10.0,
+                weighting: Weighting::Weighted {
+                    surface: [1.4, 1.0, 1.15, 1.6, 2.5, 5.0],
+                    road: [1.0, 1.15, 3.0, 1.2, 2.0, 8.0, 2.0],
+                    climb: 10.0,
+                },
                 pushing: true,
                 ferries: true,
                 max_difficulty: 1,
@@ -108,9 +127,11 @@ impl Profile {
             Self {
                 name: "gravel".into(),
                 walking: false,
-                surface_weights: [1.3, 1.4, 1.0, 1.0, 1.5, 3.5],
-                road_weights: [1.1, 1.2, 4.0, 1.0, 1.7, 8.0, 2.0],
-                climb_weight: 6.0,
+                weighting: Weighting::Weighted {
+                    surface: [1.3, 1.4, 1.0, 1.0, 1.5, 3.5],
+                    road: [1.1, 1.2, 4.0, 1.0, 1.7, 8.0, 2.0],
+                    climb: 6.0,
+                },
                 pushing: true,
                 ferries: true,
                 max_difficulty: 1,
@@ -118,19 +139,19 @@ impl Profile {
             Self {
                 name: "road".into(),
                 walking: false,
-                surface_weights: [2.0, 1.0, 2.5, 5.0, 8.0, 15.0],
-                road_weights: [1.0, 1.1, 2.5, 3.0, 6.0, 20.0, 2.0],
-                climb_weight: 5.0,
-                pushing: false,
+                weighting: Weighting::RoadBike(RoadBike::Balanced),
+                pushing: true,
                 ferries: true,
                 max_difficulty: 0,
             },
             Self {
                 name: "hiking".into(),
                 walking: true,
-                surface_weights: [1.2, 1.3, 1.1, 1.0, 1.0, 1.5],
-                road_weights: [1.4, 2.0, 8.0, 1.1, 1.0, 1.2, 2.0],
-                climb_weight: 4.0,
+                weighting: Weighting::Weighted {
+                    surface: [1.2, 1.3, 1.1, 1.0, 1.0, 1.5],
+                    road: [1.4, 2.0, 8.0, 1.1, 1.0, 1.2, 2.0],
+                    climb: 4.0,
+                },
                 pushing: true,
                 ferries: true,
                 max_difficulty: 2,
@@ -138,8 +159,11 @@ impl Profile {
         ];
         let mut mtb = profiles[1].clone();
         mtb.name = "mtb".into();
-        mtb.surface_weights = [1.4, 1.3, 1.1, 1.0, 1.0, 1.8];
-        mtb.road_weights = [1.2, 1.4, 4.0, 1.0, 1.0, 8.0, 2.0];
+        mtb.weighting = Weighting::Weighted {
+            surface: [1.4, 1.3, 1.1, 1.0, 1.0, 1.8],
+            road: [1.2, 1.4, 4.0, 1.0, 1.0, 8.0, 2.0],
+            climb: 6.0,
+        };
         mtb.max_difficulty = 3;
         profiles.push(mtb);
         let variants: Vec<_> = profiles
@@ -148,38 +172,52 @@ impl Profile {
                 ["shorter", "smoother", "less-climbing"].map(|variant| {
                     let mut p = profile.clone();
                     p.name = format!("{}/{variant}", profile.name);
-                    match variant {
-                        "shorter" => {
-                            p.road_weights = [1.0; 7];
-                            p.climb_weight = 0.0;
-                        }
-                        "smoother" => {
-                            // A smoother goal must not weaken the bike's surface preferences.
-                            for (weight, minimum) in p.surface_weights.iter_mut().zip([2.0, 1.0, 1.4, 3.0, 6.0, 12.0]) {
-                                *weight = weight.max(minimum);
+                    match &mut p.weighting {
+                        Weighting::RoadBike(road) => {
+                            *road = match variant {
+                                "shorter" => RoadBike::Shorter,
+                                "smoother" => RoadBike::Smoother,
+                                _ => RoadBike::LessClimbing,
                             }
                         }
-                        _ => p.climb_weight *= 3.0,
+                        Weighting::Weighted { surface, road, climb } => match variant {
+                            "shorter" => {
+                                *road = [1.0; 7];
+                                *climb = 0.0;
+                            }
+                            "smoother" => {
+                                for (weight, minimum) in surface.iter_mut().zip([2.0, 1.0, 1.4, 3.0, 6.0, 12.0]) {
+                                    *weight = weight.max(minimum);
+                                }
+                            }
+                            _ => *climb *= 3.0,
+                        },
                     }
                     p
                 })
             })
             .collect();
         profiles.extend(variants);
+        let mut quieter = profiles[2].clone();
+        quieter.name = "road/quieter".into();
+        quieter.weighting = Weighting::RoadBike(RoadBike::Quieter);
+        profiles.push(quieter);
         profiles
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.surface_weights.iter().chain(&self.road_weights).any(|v| !v.is_finite() || *v < 0.01 || *v > 1000.0)
-            || !self.climb_weight.is_finite()
-            || !(0.0..=1000.0).contains(&self.climb_weight)
-        {
-            return Err("Weights must be finite, positive and at most 1000; climb may be zero".into());
+        if let Weighting::Weighted { surface, road, climb } = &self.weighting {
+            if surface.iter().chain(road).any(|v| !v.is_finite() || *v < 0.01 || *v > 1000.0)
+                || !climb.is_finite()
+                || !(0.0..=1000.0).contains(climb)
+            {
+                return Err("Weights must be finite, positive and at most 1000; climb may be zero".into());
+            }
         }
         Ok(())
     }
 
-    pub fn cost(&self, road: &Road) -> Option<Cost> {
+    pub fn permits(&self, road: &Road) -> bool {
         let permitted = if self.walking {
             road.access & FOOT != 0
         } else {
@@ -191,16 +229,7 @@ impl Profile {
             road.difficulty != 255 && road.difficulty > self.max_difficulty
                 || road.hiking_difficulty.is_some_and(|d| d > 2)
         };
-        if !permitted || road.class == 6 && !self.ferries || too_difficult {
-            return None;
-        }
-        let pushing = !self.walking && road.access & BIKE == 0;
-        let cost = road.length_m as f64
-            * self.surface_weights[road.surface as usize]
-            * self.road_weights.get(road.class as usize)?
-            * if pushing { 4.0 } else { 1.0 }
-            + road.ascent_m as f64 * self.climb_weight;
-        Some(cost.round().max(1.0) as Cost)
+        permitted && (road.class != 6 || self.ferries) && !too_difficult
     }
 }
 

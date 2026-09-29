@@ -1,4 +1,5 @@
 use crate::{
+    cost::RoadCost,
     model::{Point, Profile, Road},
     storage, Error, Result,
 };
@@ -7,7 +8,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 pub const MAX_MANIFEST_BYTES: usize = 128 * 1024 * 1024;
 pub const ROADS_PER_PAGE: u32 = 128;
 pub const CELL: i32 = 10_000;
@@ -24,6 +25,8 @@ pub struct Metric {
     pub graph: Vec<String>,
     pub endpoints: Vec<String>,
     pub states: u32,
+    /// One eligibility bit per directed road; snapping does not load cost pages.
+    pub allowed: Vec<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -37,6 +40,7 @@ pub struct Manifest {
     pub warnings: Vec<String>,
     pub roads: u32,
     pub geometry: Vec<String>,
+    pub osm: OsmPages,
     /// Cell keys are latitude_index,longitude_index.
     pub spatial: BTreeMap<String, String>,
     pub metrics: BTreeMap<String, Metric>,
@@ -44,10 +48,29 @@ pub struct Manifest {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Endpoint {
-    pub cost: Option<u64>,
+    pub cost: Option<RoadCost>,
     pub arrival: u32,
     /// States from which this road can legally be entered.
-    pub departures: Vec<u32>,
+    pub departures: Vec<Departure>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Departure {
+    pub state: u32,
+    pub penalty: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct OsmPages {
+    pub nodes: Vec<String>,
+    pub ways: Vec<String>,
+    pub relations: Vec<String>,
+}
+
+impl OsmPages {
+    pub fn objects(&self) -> impl Iterator<Item = &String> {
+        self.nodes.iter().chain(&self.ways).chain(&self.relations)
+    }
 }
 
 pub fn digest(bytes: &[u8]) -> String {
@@ -108,6 +131,7 @@ impl<S: Source> Package<S> {
                 || metric.states == 0
                 || metric.graph.len() != metric.states.div_ceil(storage::NODES_PER_PAGE) as usize
                 || metric.endpoints.len() != manifest.geometry.len()
+                || metric.allowed.len() != (manifest.roads as usize).div_ceil(64)
             {
                 return Err(Error::InvalidData("Incomplete prepared metric".into()));
             }
@@ -115,6 +139,7 @@ impl<S: Source> Package<S> {
         for key in manifest
             .geometry
             .iter()
+            .chain(manifest.osm.objects())
             .chain(manifest.spatial.values())
             .chain(manifest.metrics.values().flat_map(|m| m.graph.iter().chain(&m.endpoints)))
         {
@@ -139,6 +164,7 @@ impl<S: Source> Package<S> {
             .manifest
             .geometry
             .iter()
+            .chain(self.manifest.osm.objects())
             .chain(self.manifest.spatial.values())
             .chain(self.manifest.metrics.values().flat_map(|m| m.graph.iter().chain(&m.endpoints)))
             .collect();
@@ -177,9 +203,11 @@ impl<S: Source> Package<S> {
                 || value.iter().any(|r| {
                     r.class > 6
                         || r.shape.len() < 2
-                        || r.shape
-                            .iter()
-                            .any(|p| p.lat.unsigned_abs() > 85_000_000 || p.lon.unsigned_abs() > 180_000_000)
+                        || r.shape.iter().any(|p| {
+                            p.lat.unsigned_abs() > 85_000_000
+                                || p.lon.unsigned_abs() > 180_000_000
+                                || !p.elevation.is_finite()
+                        })
                 })
             {
                 return Err(Error::InvalidData("Invalid road page".into()));
@@ -217,9 +245,14 @@ impl<S: Source> Package<S> {
                 let value: Vec<Endpoint> = self.read(&self.metric(metric)?.endpoints[page as usize])?;
                 let states = self.metric(metric)?.states;
                 if value.len() != (self.manifest.roads - page * ROADS_PER_PAGE).min(ROADS_PER_PAGE) as usize
-                    || value
-                        .iter()
-                        .any(|e| e.cost.is_some() && (e.arrival >= states || e.departures.iter().any(|&r| r >= states)))
+                    || value.iter().enumerate().any(|(offset, e)| {
+                        let road = page as usize * ROADS_PER_PAGE as usize + offset;
+                        let allowed = self.metric(metric).unwrap().allowed[road / 64] & (1 << (road % 64)) != 0;
+                        allowed != e.cost.is_some()
+                            || e.cost.as_ref().is_some_and(|cost| {
+                                !cost.valid() || e.arrival >= states || e.departures.iter().any(|d| d.state >= states)
+                            })
+                    })
                 {
                     return Err(Error::InvalidData("Invalid endpoint page".into()));
                 }
@@ -230,7 +263,13 @@ impl<S: Source> Package<S> {
             .cloned()
             .ok_or_else(|| Error::InvalidData("Missing endpoint".into()))?;
         let size = value.capacity() * std::mem::size_of::<Endpoint>()
-            + value.iter().map(|e| e.departures.capacity() * std::mem::size_of::<u32>()).sum::<usize>();
+            + value
+                .iter()
+                .map(|e| {
+                    e.departures.capacity() * std::mem::size_of::<Departure>()
+                        + e.cost.as_ref().map_or(0, |c| c.penalties.capacity() * std::mem::size_of::<(f64, f64)>())
+                })
+                .sum::<usize>();
         self.endpoints.push_back((metric.into(), page, value, size));
         while self.endpoints.len() > 16 || self.endpoints.iter().map(|entry| entry.3).sum::<usize>() > 32 * 1024 * 1024
         {

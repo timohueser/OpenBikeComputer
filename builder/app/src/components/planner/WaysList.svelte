@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { EngineRoute } from '../../lib/planner/routing';
     let { routes, choiceId, status = '', onPick }: { routes: EngineRoute[]; status?: string; choiceId: string; onPick: (route: EngineRoute) => void } = $props();
-    function title(id: string) { return id.endsWith('/shorter') ? 'Shorter' : id.endsWith('/smoother') ? 'Smoother' : id.endsWith('/less-climbing') ? 'Less climbing' : 'Balanced'; }
+    import { presetName } from '../../lib/planner/riding-profiles';
     function differences(route: EngineRoute) {
         const a = routes[0].totals, b = route.totals;
         const signed = (n: number, digits = 0) => `${n > 0 ? '+' : ''}${n.toFixed(digits)}`;
@@ -14,7 +14,7 @@
     {#each routes as route (route.id)}
         <button type="button" role="radio" aria-checked={choiceId === route.id} onclick={() => onPick(route)}>
             <span class="mark"></span>
-            <span class="what"><strong>{route.reason === 'corridor' ? 'Different corridor' : title(route.profile)}</strong><small>{(route.totals.surface_m[0] / 1000).toFixed(1)} km unknown surface · {Math.round(route.totals.seconds / 60)} min moving</small>{#if route.id !== routes[0].id}<small>{differences(route)}</small>{/if}</span>
+            <span class="what"><strong>{route.reason === 'corridor' ? 'Different corridor' : presetName(route.profile)}</strong><small>{(route.totals.surface_m[0] / 1000).toFixed(1)} km unknown surface · {Math.round(route.totals.seconds / 60)} min moving</small>{#if route.id !== routes[0].id}<small>{differences(route)}</small>{/if}</span>
             <span class="figure">{(route.totals.distance_m / 1000).toFixed(1)} km<small>{route.totals.unknown_elevation_m ? 'Elevation incomplete' : `↑ ${route.totals.ascent_m} m`}</small></span>
         </button>
     {/each}

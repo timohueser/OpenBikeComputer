@@ -36,7 +36,7 @@ pub fn apply(graph: &mut Graph, mut height: impl FnMut(Point) -> Result<Option<f
                     distance += dense[i - 1].distance(dense[i]);
                 }
                 dense[i].elevation = match (start, end) {
-                    (Some(a), Some(b)) => (a + (b - a) * distance / total.max(0.01)).round() as i16,
+                    (Some(a), Some(b)) => (a + (b - a) * distance / total.max(0.01)) as f32,
                     _ => NO_ELEVATION,
                 };
             }
@@ -44,7 +44,7 @@ pub fn apply(graph: &mut Graph, mut height: impl FnMut(Point) -> Result<Option<f
             for point in &mut dense {
                 point.elevation = height(*point)?
                     .filter(|h| h.is_finite() && (-500.0..=9000.0).contains(h))
-                    .map(|h| h.round() as i16)
+                    .map(|h| h as f32)
                     .unwrap_or(NO_ELEVATION);
             }
             // Symmetric distance-window filtering gives the same heights in either direction.
@@ -69,18 +69,20 @@ pub fn apply(graph: &mut Graph, mut height: impl FnMut(Point) -> Result<Option<f
                         index += direction;
                     }
                 }
-                point.elevation = (sum / count as f64).round() as i16;
+                point.elevation = (sum / count as f64) as f32;
             }
         }
-        road.ascent_m = 0;
-        road.descent_m = 0;
+        let mut ascent = 0.0f64;
+        let mut descent = 0.0f64;
         for pair in dense.windows(2) {
             if pair.iter().all(|p| p.elevation != NO_ELEVATION) {
-                let delta = pair[1].elevation as i32 - pair[0].elevation as i32;
-                road.ascent_m += delta.max(0) as u32;
-                road.descent_m += (-delta).max(0) as u32;
+                let delta = pair[1].elevation as f64 - pair[0].elevation as f64;
+                ascent += delta.max(0.0);
+                descent += (-delta).max(0.0);
             }
         }
+        road.ascent_m = ascent.round() as u32;
+        road.descent_m = descent.round() as u32;
         road.shape = dense;
     }
     graph.warnings.retain(|w| !w.starts_with("No DEM applied"));
