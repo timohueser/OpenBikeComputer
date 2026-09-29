@@ -7,7 +7,7 @@ A digest is lowercase SHA-256 as 64 hexadecimal characters. Each object name
 is the digest of its complete stored bytes. The package ID is the digest of the
 exact UTF-8 manifest bytes. Reformatting a manifest changes its ID.
 
-The manifest format is `1`. Its JSON fields are defined by `Manifest` and
+The manifest format is `2`. Its JSON fields are defined by `Manifest` and
 `Metric` in `host/route-engine/src/package.rs`. Bounds are
 `[west, south, east, north]` in degrees. Metric IDs equal their profile names.
 Source digests identify the input data. Attribution and warnings travel with
@@ -26,6 +26,9 @@ always refers to the actual stored bytes.
 
 | Manifest reference | Decoded type | Ordering |
 | --- | --- | --- |
+| `osm.nodes` | `Vec<osm::Node>` | OSM ID, 128 nodes per page |
+| `osm.ways` | `Vec<osm::Way>` | OSM ID, 128 ways per page |
+| `osm.relations` | `Vec<osm::Relation>` | OSM ID, 128 relations per page |
 | `geometry` | `Vec<model::Road>` | Directed road ID, 128 roads per page |
 | `spatial` | `Vec<u32>` | Sorted road IDs; key is `latitude_cell,longitude_cell` |
 | Metric `endpoints` | `Vec<package::Endpoint>` | Directed road ID, 128 roads per page |
@@ -35,11 +38,30 @@ Cells span 10,000 microdegrees on each axis. Cell indices use floor division,
 including for negative coordinates. A road appears in all cells crossed by
 its geometry segment bounding boxes. The last page can contain fewer entries.
 
-Points store integer microdegree coordinates and signed metre heights.
-Height `-32768` means unknown. Surface enum order is unknown, paved, compacted,
+Points store integer microdegree coordinates and `f32` metre heights.
+Height `f32::MIN` means unknown. Surface enum order is unknown, paved, compacted,
 gravel, dirt, rough. Access bits are bike `1`, foot `2`, and pushing `4`.
-Profile costs are positive integer values for eligible roads. Excluded roads
-have no cost. Endpoint arrival and departure values use CH ranks.
+A road stores its source way ID and direction relative to that way.
+
+Source pages preserve all tags on retained highway and ferry ways, their
+referenced nodes within bounds, and relations that contain these elements or
+other retained relations. Members retain IDs, types, order and roles. References
+outside the clipped source set remain IDs; their objects need not be present.
+Source node heights remain unknown; an `ele` tag remains source text. Terrain
+samples belong to the directed road geometry.
+
+Metric `allowed` holds one bit per directed road: road `i` uses bit `i % 64`
+of word `i / 64`. Its length is `ceil(roads / 64)`. It agrees with endpoint
+cost eligibility. Queries use it to snap without reading cost pages.
+
+An eligible endpoint has a `RoadCost`: distance cost and cumulative penalties
+at geometric length fractions. Fractions and penalties are nondecreasing;
+equal fractions encode a step. The last fraction is `1`, unless there are no
+penalties. Total cost is rounded to a positive integer. Rounded interpolated
+prefix differences give partial costs. Excluded endpoints have no cost.
+Endpoint arrivals and departure states use CH ranks. Each departure also holds
+its turn and entry penalty. An arc adds this penalty to the entered road cost.
+Arrivals share a state only when all departure permissions and penalties agree.
 
 CH arcs point to a higher rank. A shortcut names two child arc references.
 Leaf arcs name the original directed road. A reference contains its node rank,

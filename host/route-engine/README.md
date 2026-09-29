@@ -37,7 +37,9 @@ cargo run --release -p route-engine --example query -- /data/freiburg < request.
 | --- | --- |
 | `model` | Directed roads, prepared profiles, surface data, separate pace |
 | `package` | Manifest, object identity, bounded geometry and endpoint caches |
-| `snap` | Nearest accessible directed road attachments and partial costs |
+| `snap` | Nearest accessible directed road attachments |
+| `cost` | Prepared road costs and partial-road prefixes |
+| `osm` | Source tags and relation membership, outside query caches |
 | `search` | Resumable bidirectional CH query and shortcut reconstruction |
 | `router` | Ordered points, direction continuity, geometry and totals |
 | `directory` | Optional native file adapter |
