@@ -1,6 +1,7 @@
 //! Streaming regional OSM import.
 use osmpbfreader::{OsmId, OsmObj, OsmPbfReader, Relation, Tags, Way};
 use route_engine::model::{Graph, Point, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH};
+use route_engine::osm as source;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::path::PathBuf;
@@ -30,12 +31,14 @@ struct RawWay {
     id: i64,
     nodes: Vec<i64>,
     attributes: Attributes,
+    tags: Tags,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct RawNode {
     point: Point,
     crossing: u8,
+    tags: Tags,
 }
 
 struct Restriction {
@@ -47,62 +50,12 @@ struct Restriction {
     walking: bool,
 }
 
-fn granted(value: &str) -> bool {
-    matches!(value, "yes" | "designated" | "official" | "permissive" | "discouraged")
-}
-
-fn inherited<'a>(tags: &'a Tags, mode: &str, direction: &str) -> Option<&'a str> {
-    let keys = if mode == "bicycle" { vec!["access", "vehicle", "bicycle"] } else { vec!["access", "foot"] };
-    let mut result = None;
-    for key in keys {
-        result = tag(tags, key).or(result);
-        result = tag(tags, &format!("{key}:{direction}")).or(result);
-    }
-    result
-}
-
 fn access(tags: &Tags, defaults: u8, direction: &str) -> u8 {
-    let mut result = defaults;
-    if let Some(value) = inherited(tags, "foot", direction) {
-        if granted(value) {
-            result |= FOOT | PUSH;
-        } else {
-            result &= !(FOOT | PUSH);
-        }
-    }
-    if let Some(value) = inherited(tags, "bicycle", direction) {
-        if granted(value) {
-            result |= BIKE;
-        } else {
-            result &= !BIKE;
-            if value != "dismount" {
-                result &= !PUSH;
-            }
-        }
-    }
-    // Dismount permission is distinct from pedestrian access.
-    if result & FOOT == 0 {
-        result &= !PUSH;
-    }
-    result
+    source::access(|key| tag(tags, key), defaults, direction)
 }
 
 fn conditional_modes(tags: &Tags) -> u8 {
-    let mut modes = 0;
-    for key in tags.keys().map(|k| k.as_str()).filter(|k| k.ends_with(":conditional")) {
-        if key.starts_with("oneway:foot:") {
-            modes |= FOOT | PUSH;
-            continue;
-        }
-        let base = key.split(':').next().unwrap_or("");
-        modes |= match base {
-            "access" => BIKE | FOOT | PUSH,
-            "vehicle" | "motor_vehicle" | "bicycle" | "oneway" => BIKE | PUSH,
-            "foot" => FOOT | PUSH,
-            _ => 0,
-        };
-    }
-    modes
+    source::conditional_modes(tags.iter().map(|(key, value)| (key.as_str(), value.as_str())))
 }
 
 fn attributes(tags: &Tags, counts: &mut Counts) -> Option<Attributes> {
@@ -112,43 +65,14 @@ fn attributes(tags: &Tags, counts: &mut Counts) -> Option<Attributes> {
     }
     let ferry = tags.contains("route", "ferry");
     let highway = tag(tags, "highway").unwrap_or("");
-    let (class, defaults) = if ferry {
-        (6, BIKE | FOOT | PUSH)
-    } else {
-        match highway {
-            "cycleway" => (0, BIKE),
-            "residential" | "living_street" | "unclassified" | "service" | "tertiary" | "tertiary_link" => {
-                (1, BIKE | FOOT | PUSH)
-            }
-            "trunk" | "trunk_link" | "primary" | "primary_link" | "secondary" | "secondary_link" => {
-                (2, BIKE | FOOT | PUSH)
-            }
-            "motorway" | "motorway_link" => (2, 0),
-            "track" => (3, BIKE | FOOT | PUSH),
-            "path" => (4, BIKE | FOOT | PUSH),
-            "footway" | "pedestrian" => (4, FOOT | PUSH),
-            "bridleway" => (4, 0),
-            "steps" => (5, FOOT | PUSH),
-            _ => return None,
-        }
-    };
-    let restricted_road = tags.contains("motorroad", "yes") || matches!(highway, "motorway" | "motorway_link");
-    let defaults = if restricted_road { 0 } else { defaults };
+    let (class, defaults) = if ferry { (6, BIKE | FOOT | PUSH) } else { source::highway_access(highway)? };
     let mut modes = [access(tags, defaults, "forward"), access(tags, defaults, "backward")];
-    if restricted_road {
-        // A generic public-access tag does not grant a mode an exception to a restricted road class.
-        for (mask, direction) in modes.iter_mut().zip(["forward", "backward"]) {
-            for (mode, bits) in [("bicycle", BIKE), ("foot", FOOT | PUSH)] {
-                if !tag(tags, &format!("{mode}:{direction}")).or(tag(tags, mode)).is_some_and(granted) {
-                    *mask &= !bits;
-                }
-            }
-        }
-    }
     let oneway = tag(tags, "oneway").unwrap_or(if tags.contains("junction", "roundabout") { "yes" } else { "no" });
-    let opposite = ["cycleway", "cycleway:left", "cycleway:right", "cycleway:both"]
-        .iter()
-        .any(|key| tag(tags, key).is_some_and(|v| v.starts_with("opposite")));
+    let opposite = match oneway {
+        "yes" | "1" | "true" => source::cycleway(|key| tag(tags, key), true),
+        "-1" | "reverse" => source::cycleway(|key| tag(tags, key), false),
+        _ => false,
+    };
     let bike_oneway = tag(tags, "oneway:bicycle").unwrap_or(if opposite { "no" } else { oneway });
     for (value, mask) in [(bike_oneway, BIKE), (tag(tags, "oneway:foot").unwrap_or("no"), FOOT | PUSH)] {
         match value {
@@ -224,7 +148,7 @@ fn crossing(tags: &Tags, counts: &mut Counts) -> u8 {
     };
     let modes = access(tags, defaults, "forward") & access(tags, defaults, "backward");
     if modes & BIKE == 0 && modes & PUSH != 0 {
-        count(counts, "conservatively closed dismount-only crossing nodes");
+        count(counts, "dismount-only crossing nodes");
     }
     let conditional = conditional_modes(tags);
     if conditional != 0 {
@@ -332,27 +256,31 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4], country: &str) -> Result<Grap
     let mut counts = Counts::new();
     let mut ways = HashMap::new();
     let mut relations = HashMap::new();
+    let mut preserved = source::Data::default();
     for path in paths {
         let mut reader = OsmPbfReader::new(File::open(path).map_err(|e| format!("{}: {e}", path.display()))?);
         for item in reader.iter() {
             match item.map_err(|e| e.to_string())? {
                 OsmObj::Way(Way { id, tags, nodes }) if nodes.len() >= 2 => {
-                    if ways.contains_key(&id.0) {
+                    if !tags.contains_key("highway") && !tags.contains("route", "ferry") {
+                        continue;
+                    }
+                    if preserved.ways.contains_key(&id.0) {
                         count(&mut counts, "duplicate input ways");
                         continue;
                     }
+                    preserved.ways.insert(
+                        id.0,
+                        source::Way { id: id.0, nodes: nodes.iter().map(|n| n.0).collect(), tags: copy_tags(&tags) },
+                    );
                     if let Some(attributes) = attributes(&tags, &mut counts) {
                         ways.insert(
                             id.0,
-                            RawWay { id: id.0, nodes: nodes.into_iter().map(|n| n.0).collect(), attributes },
+                            RawWay { id: id.0, nodes: nodes.into_iter().map(|n| n.0).collect(), attributes, tags },
                         );
                     }
                 }
-                OsmObj::Relation(relation)
-                    if tag(&relation.tags, "type").is_some_and(|v| {
-                        v == "restriction" || v == "restriction:bicycle" || v == "restriction:foot"
-                    }) =>
-                {
+                OsmObj::Relation(relation) => {
                     relations.entry(relation.id.0).or_insert(relation);
                 }
                 _ => {}
@@ -360,12 +288,12 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4], country: &str) -> Result<Grap
         }
     }
     let mut rules = Vec::new();
-    for relation in relations.into_values() {
-        relation_rules(&relation, &mut ways, &mut rules, &mut counts);
+    for relation in relations.values() {
+        relation_rules(relation, &mut ways, &mut rules, &mut counts);
     }
     ways.retain(|_, w| w.attributes.access != [0, 0]);
     let mut needed = HashMap::<i64, u32>::new();
-    for way in ways.values() {
+    for way in preserved.ways.values() {
         for id in &way.nodes {
             *needed.entry(*id).or_default() += 1;
         }
@@ -393,12 +321,66 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4], country: &str) -> Result<Grap
                         elevation: NO_ELEVATION,
                     },
                     crossing: crossing(&node.tags, &mut counts),
+                    tags: node.tags,
                 },
             );
         }
     }
     counts.insert("outside bounds or missing referenced nodes", needed.len() - nodes.len());
-    build_graph(ways, nodes, needed, rules, counts)
+    preserved.ways.retain(|_, way| way.nodes.iter().any(|id| nodes.contains_key(id)));
+    preserve_relations(&mut preserved, relations, &nodes);
+    let mut graph = build_graph(ways, nodes, needed, rules, counts)?;
+    graph.osm.ways = preserved.ways;
+    graph.osm.relations = preserved.relations;
+    Ok(graph)
+}
+
+fn copy_tags(tags: &Tags) -> source::Tags {
+    tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
+fn preserve_relations(data: &mut source::Data, relations: HashMap<i64, Relation>, nodes: &HashMap<i64, RawNode>) {
+    // Retain direct memberships and their parent relations, including unrecognized tags and roles.
+    loop {
+        let mut changed = false;
+        for relation in relations.values() {
+            if data.relations.contains_key(&relation.id.0) {
+                continue;
+            }
+            if !relation.refs.iter().any(|r| match r.member {
+                OsmId::Way(id) => data.ways.contains_key(&id.0),
+                OsmId::Node(id) => nodes.contains_key(&id.0),
+                OsmId::Relation(id) => data.relations.contains_key(&id.0),
+            }) {
+                continue;
+            }
+            data.relations.insert(
+                relation.id.0,
+                source::Relation {
+                    id: relation.id.0,
+                    tags: copy_tags(&relation.tags),
+                    members: relation
+                        .refs
+                        .iter()
+                        .map(|r| {
+                            (
+                                match r.member {
+                                    OsmId::Way(id) => source::Id::Way(id.0),
+                                    OsmId::Node(id) => source::Id::Node(id.0),
+                                    OsmId::Relation(id) => source::Id::Relation(id.0),
+                                },
+                                r.role.to_string(),
+                            )
+                        })
+                        .collect(),
+                },
+            );
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
 }
 
 fn build_graph(
@@ -410,12 +392,34 @@ fn build_graph(
 ) -> Result<Graph, String> {
     let mut graph = Graph {
         points: Vec::new(),
+        node_ids: Vec::new(),
+        node_access: Vec::new(),
+        osm: source::Data {
+            nodes: nodes
+                .iter()
+                .map(|(&id, n)| (id, source::Node { id, point: n.point, tags: copy_tags(&n.tags) }))
+                .collect(),
+            ways: ways
+                .values()
+                .map(|w| (w.id, source::Way { id: w.id, nodes: w.nodes.clone(), tags: copy_tags(&w.tags) }))
+                .collect(),
+            relations: BTreeMap::new(),
+        },
         roads: Vec::new(),
         forbidden: Vec::new(),
         forbidden_foot: Vec::new(),
         warnings: Vec::new(),
     };
     let mut junctions: HashSet<_> = usage.into_iter().filter(|(_, n)| *n > 1).map(|(id, _)| id).collect();
+    junctions.extend(
+        nodes
+            .iter()
+            .filter(|(_, n)| {
+                n.tags.contains("highway", "traffic_signals")
+                    || n.tags.contains("highway", "crossing") && n.tags.contains("crossing", "traffic_signals")
+            })
+            .map(|(id, _)| *id),
+    );
     junctions.extend(rules.iter().map(|r| r.via));
     junctions.extend(nodes.iter().filter(|(_, n)| n.crossing != (BIKE | FOOT | PUSH)).map(|(id, _)| *id));
     let mut point_ids = HashMap::new();
@@ -450,20 +454,6 @@ fn build_graph(
     for (id, road) in graph.roads.iter().enumerate() {
         incoming[road.to as usize].push(id as u32);
     }
-    for (osm_id, point_id) in &point_ids {
-        let crossing = nodes[osm_id].crossing;
-        for from in &incoming[*point_id as usize] {
-            for to in &outgoing[*point_id as usize] {
-                // Bicycle profiles share this transition table; it cannot encode dismounting at a node.
-                if crossing & BIKE == 0 {
-                    graph.forbidden.push((*from, *to));
-                }
-                if crossing & FOOT == 0 {
-                    graph.forbidden_foot.push((*from, *to));
-                }
-            }
-        }
-    }
     for rule in rules {
         let Some(&via) = point_ids.get(&rule.via) else {
             count(&mut counts, "restrictions outside retained graph");
@@ -496,7 +486,7 @@ fn build_graph(
     counts.insert("roads with unknown surface", graph.roads.iter().filter(|r| r.surface == Surface::Unknown).count());
     graph.warnings = counts.into_iter().filter(|(_, n)| *n != 0).map(|(label, n)| format!("{label}: {n}")).collect();
     graph.warnings.push("No DEM applied; elevation is unknown and climbing costs are not validated".into());
-    graph.warnings.push("German access defaults; ferry schedules, tracktype, smoothness, ford conditions and trail visibility are not modeled".into());
+    graph.warnings.push("German access defaults; ferry schedules, conditional access and via-way restrictions require conservative handling".into());
     if graph.roads.is_empty() {
         return Err("No routable roads within input bounds".into());
     }
@@ -524,6 +514,8 @@ fn emit_run(
         }
         let index = u32::try_from(graph.points.len()).map_err(|_| "Too many graph nodes")?;
         graph.points.push(nodes[&id].point);
+        graph.node_ids.push(id);
+        graph.node_access.push(nodes[&id].crossing);
         point_ids.insert(id, index);
         Ok(index)
     };
@@ -542,6 +534,7 @@ fn emit_run(
             from: if direction == 0 { from } else { to },
             to: if direction == 0 { to } else { from },
             way: way.id,
+            reversed: direction == 1,
             length_m: length.round().max(1.0) as u32,
             ascent_m: 0,
             descent_m: 0,
@@ -569,7 +562,12 @@ mod tests {
     }
 
     fn way(id: i64, nodes: &[i64], values: &[(&str, &str)]) -> RawWay {
-        RawWay { id, nodes: nodes.to_vec(), attributes: attributes(&tags(values), &mut Counts::new()).unwrap() }
+        RawWay {
+            id,
+            nodes: nodes.to_vec(),
+            attributes: attributes(&tags(values), &mut Counts::new()).unwrap(),
+            tags: tags(values),
+        }
     }
 
     fn fixture(ways: Vec<RawWay>, present: &[i64], rules: Vec<Restriction>) -> Graph {
@@ -587,11 +585,58 @@ mod tests {
                     RawNode {
                         point: Point { lat: 47_000_000, lon: 10_000_000 + *id as i32 * 100, elevation: NO_ELEVATION },
                         crossing: BIKE | FOOT | PUSH,
+                        tags: Tags::default(),
                     },
                 )
             })
             .collect();
         build_graph(ways.into_iter().map(|w| (w.id, w)).collect(), nodes, usage, rules, Counts::new()).unwrap()
+    }
+
+    #[test]
+    fn source_tags_and_relation_roles_survive_graph_compilation() {
+        let source = way(
+            10,
+            &[1, 2],
+            &[
+                ("highway", "tertiary"),
+                ("smoothness", "intermediate"),
+                ("maxspeed:forward", "70"),
+                ("cycleway:right", "lane"),
+                ("custom:future", "retained"),
+            ],
+        );
+        let expected = copy_tags(&source.tags);
+        let mut graph = fixture(vec![source], &[1, 2], vec![]);
+        let relation = Relation {
+            id: RelationId(20),
+            tags: tags(&[("type", "route"), ("route", "bicycle"), ("network", "lcn")]),
+            refs: vec![Ref { member: OsmId::Way(WayId(10)), role: "forward".into() }],
+        };
+        let parent = Relation {
+            id: RelationId(21),
+            tags: tags(&[("type", "superroute"), ("route", "bicycle")]),
+            refs: vec![Ref { member: OsmId::Relation(RelationId(20)), role: "section".into() }],
+        };
+        preserve_relations(&mut graph.osm, [(20, relation), (21, parent)].into_iter().collect(), &HashMap::new());
+        assert_eq!(graph.osm.ways[&10].tags, expected);
+        assert_eq!(graph.osm.ways[&10].nodes, [1, 2]);
+        assert_eq!(graph.osm.relations[&20].members, [(source::Id::Way(10), "forward".into())]);
+        assert_eq!(graph.osm.relations[&21].members, [(source::Id::Relation(20), "section".into())]);
+        let profile = Profile::presets().into_iter().find(|p| p.name == "road/quieter").unwrap();
+        let mut objects = HashMap::new();
+        let manifest =
+            crate::prepare(&graph, "source-test".into(), [9.0, 46.0, 11.0, 48.0], &[profile], vec![], |bytes| {
+                let key = route_engine::package::digest(bytes);
+                objects.insert(key.clone(), bytes.to_vec());
+                Ok(key)
+            })
+            .unwrap();
+        let retained: Vec<source::Way> = route_engine::storage::decode(&objects[&manifest.osm.ways[0]]).unwrap();
+        assert_eq!(retained[0].tags, expected);
+        let relations: Vec<source::Relation> =
+            route_engine::storage::decode(&objects[&manifest.osm.relations[0]]).unwrap();
+        assert_eq!(relations.len(), 2);
     }
 
     #[test]
@@ -611,10 +656,37 @@ mod tests {
         assert_eq!(attrs.access, [BIKE | FOOT | PUSH; 2]);
         let attrs = attributes(&tags(&[("highway", "residential"), ("oneway", "-1")]), &mut Counts::new()).unwrap();
         assert_eq!(attrs.access, [FOOT | PUSH, BIKE | FOOT | PUSH]);
+        let attrs = attributes(&tags(&[("highway", "footway"), ("bicycle", "no")]), &mut Counts::new()).unwrap();
+        assert_eq!(attrs.access, [FOOT | PUSH; 2]);
+        let attrs = attributes(
+            &tags(&[("highway", "footway"), ("bicycle", "no"), ("bicycle:pushing", "no")]),
+            &mut Counts::new(),
+        )
+        .unwrap();
+        assert_eq!(attrs.access, [FOOT; 2]);
+        let attrs = attributes(
+            &tags(&[("highway", "path"), ("bicycle:pushing:conditional", "no @ (wet)")]),
+            &mut Counts::new(),
+        )
+        .unwrap();
+        assert_eq!(attrs.access, [BIKE | FOOT; 2]);
         let attrs = attributes(&tags(&[("highway", "footway"), ("bicycle", "dismount")]), &mut Counts::new()).unwrap();
         assert_eq!(attrs.access, [FOOT | PUSH; 2]);
         assert!(attributes(&tags(&[("highway", "path"), ("bicycle", "dismount"), ("foot", "no")]), &mut Counts::new())
             .is_none());
+        let attrs = attributes(&tags(&[("highway", "cycleway"), ("bicycle", "dismount")]), &mut Counts::new()).unwrap();
+        assert_eq!(attrs.access, [FOOT | PUSH; 2]);
+        let attrs = attributes(
+            &tags(&[("highway", "cycleway"), ("bicycle", "dismount"), ("bicycle:pushing", "no")]),
+            &mut Counts::new(),
+        )
+        .unwrap();
+        assert_eq!(attrs.access, [FOOT; 2]);
+        assert!(attributes(
+            &tags(&[("highway", "cycleway"), ("bicycle", "dismount"), ("foot", "no")]),
+            &mut Counts::new()
+        )
+        .is_none());
         assert!(attributes(&tags(&[("highway", "motorway")]), &mut Counts::new()).is_none());
         assert!(attributes(&tags(&[("highway", "motorway"), ("access", "yes")]), &mut Counts::new()).is_none());
         let attrs =
@@ -623,7 +695,41 @@ mod tests {
         assert_eq!(attrs.access, [BIKE | FOOT | PUSH; 2]);
         let attrs =
             attributes(&tags(&[("highway", "residential"), ("bicycle:forward", "no")]), &mut Counts::new()).unwrap();
-        assert_eq!(attrs.access, [FOOT, BIKE | FOOT | PUSH]);
+        assert_eq!(attrs.access, [FOOT | PUSH, BIKE | FOOT | PUSH]);
+    }
+
+    #[test]
+    fn cycle_lane_direction_only_opens_the_opposing_direction_when_permitted() {
+        for (oneway, lane, expected) in [
+            ("yes", "yes", [BIKE | FOOT | PUSH, FOOT | PUSH]),
+            ("yes", "-1", [BIKE | FOOT | PUSH; 2]),
+            ("-1", "-1", [FOOT | PUSH, BIKE | FOOT | PUSH]),
+            ("-1", "yes", [BIKE | FOOT | PUSH; 2]),
+            ("-1", "no", [BIKE | FOOT | PUSH; 2]),
+        ] {
+            let attrs = attributes(
+                &tags(&[
+                    ("highway", "residential"),
+                    ("oneway", oneway),
+                    ("cycleway:left", "lane"),
+                    ("cycleway:left:oneway", lane),
+                ]),
+                &mut Counts::new(),
+            )
+            .unwrap();
+            assert_eq!(attrs.access, expected, "oneway={oneway}, lane={lane}");
+            let attrs = attributes(
+                &tags(&[
+                    ("highway", "residential"),
+                    ("oneway", oneway),
+                    ("cycleway:both", "lane"),
+                    ("cycleway:left:oneway", lane),
+                ]),
+                &mut Counts::new(),
+            )
+            .unwrap();
+            assert_eq!(attrs.access, expected, "oneway={oneway}, both lanes, left={lane}");
+        }
     }
 
     #[test]
@@ -631,14 +737,46 @@ mod tests {
         let mut counts = Counts::new();
         let attrs =
             attributes(&tags(&[("highway", "path"), ("bicycle:conditional", "no @ (wet)")]), &mut counts).unwrap();
-        assert_eq!(attrs.access, [FOOT; 2]);
+        assert_eq!(attrs.access, [FOOT | PUSH; 2]);
         assert_eq!(counts["ways with excluded conditional modes"], 1);
         let attrs =
             attributes(&tags(&[("highway", "residential"), ("oneway:foot:conditional", "yes @ (Mo-Fr)")]), &mut counts)
                 .unwrap();
         assert_eq!(attrs.access, [BIKE; 2]);
         let attrs = attributes(&tags(&[("highway", "path"), ("bicycle", "destination")]), &mut counts).unwrap();
-        assert_eq!(attrs.access, [FOOT; 2]);
+        assert_eq!(attrs.access, [FOOT | PUSH; 2]);
+    }
+
+    #[test]
+    fn freight_conditions_do_not_close_a_cycling_ascent() {
+        for condition in ["agricultural @ hazmat:water", "no @ (hazmat)"] {
+            let graph = fixture(
+                vec![way(
+                    10,
+                    &[1, 2, 3],
+                    &[("highway", "tertiary"), ("ref", "L 186"), ("access:conditional", condition)],
+                )],
+                &[1, 2, 3],
+                vec![],
+            );
+            assert_eq!(graph.roads.len(), 2);
+            assert!(graph.roads.iter().all(|r| r.access == BIKE | FOOT | PUSH));
+        }
+        let attrs = attributes(
+            &tags(&[("highway", "tertiary"), ("motor_vehicle:conditional", "no @ (Mo-Fr)")]),
+            &mut Counts::new(),
+        )
+        .unwrap();
+        assert_eq!(attrs.access, [BIKE | FOOT | PUSH; 2]);
+        for condition in ["no @ (wet)", "agricultural @ hazmat:water; no @ (Mo-Fr)", "no @ (!hazmat:water)"] {
+            assert!(attributes(
+                &tags(&[("highway", "tertiary"), ("access:conditional", condition)]),
+                &mut Counts::new()
+            )
+            .is_none());
+        }
+        assert!(attributes(&tags(&[("highway", "construction"), ("construction", "tertiary")]), &mut Counts::new())
+            .is_none());
     }
 
     #[test]
@@ -723,11 +861,11 @@ mod tests {
             vec![],
         );
         let profiles = Profile::presets();
-        assert!(profiles.iter().find(|p| p.walking).unwrap().cost(&graph.roads[0]).is_some());
-        assert!(profiles.iter().filter(|p| !p.walking).all(|p| p.cost(&graph.roads[0]).is_none()));
+        assert!(profiles.iter().find(|p| p.walking).unwrap().permits(&graph.roads[0]));
+        assert!(profiles.iter().filter(|p| !p.walking).all(|p| !p.permits(&graph.roads[0])));
         let difficult =
             fixture(vec![way(10, &[1, 2], &[("highway", "path"), ("sac_scale", "alpine_hiking")])], &[1, 2], vec![]);
-        assert!(profiles.iter().all(|p| p.cost(&difficult.roads[0]).is_none()));
+        assert!(profiles.iter().all(|p| !p.permits(&difficult.roads[0])));
     }
 
     #[test]
@@ -739,6 +877,7 @@ mod tests {
                     id,
                     RawNode {
                         point: Point { lat: 47_000_000, lon: 10_000_000 + id as i32 * 100, elevation: NO_ELEVATION },
+                        tags: Tags::default(),
                         crossing: if id == 2 {
                             crossing(&tags(&[("bicycle", "dismount")]), &mut Counts::new())
                         } else {
@@ -750,11 +889,22 @@ mod tests {
             .collect();
         let graph =
             build_graph(ways, nodes, [(1, 1), (2, 1), (3, 1)].into_iter().collect(), vec![], Counts::new()).unwrap();
-        assert_eq!(graph.forbidden.len(), 4);
+        assert!(graph.node_access.iter().any(|a| a & BIKE == 0 && a & PUSH != 0));
+        assert!(graph.forbidden.is_empty());
         assert!(graph.forbidden_foot.is_empty());
-        for (from, to) in graph.forbidden.iter().copied() {
-            assert!(!graph.permits_turn(from, to, false));
-            assert!(graph.permits_turn(from, to, true));
-        }
+        let before = graph
+            .roads
+            .iter()
+            .position(|r| graph.node_ids[r.from as usize] == 1 && graph.node_ids[r.to as usize] == 2)
+            .unwrap() as u32;
+        let after = graph
+            .roads
+            .iter()
+            .position(|r| graph.node_ids[r.from as usize] == 2 && graph.node_ids[r.to as usize] == 3)
+            .unwrap() as u32;
+        let mut profile = Profile::presets().into_iter().find(|p| p.name == "road").unwrap();
+        assert_eq!(crate::cost::Costing::new(&graph, &profile).unwrap().transition(before, after), Some(300));
+        profile.pushing = false;
+        assert_eq!(crate::cost::Costing::new(&graph, &profile).unwrap().transition(before, after), None);
     }
 }

@@ -14,12 +14,14 @@
     import { poiPlace } from "../../lib/planner/place-index";
     import { coordinateAt, nearestProgress, type Place } from "../../lib/planner/editor";
     import type { Coordinate, MapPoint, MapSegment } from "../../lib/planner/map-types";
+    import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection } from "../../lib/planner/route-overlays";
+    import MapOverlayDetails from './MapOverlayDetails.svelte';
 
     let {
         segments = [], coordinates = [], highlightedCoordinates = [], points = [], selectedId = null, callout = null,
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
-        shownCategories = categoryIds, highlightedPlaces = [], landmarks = [],
+        shownCategories = categoryIds, highlightedPlaces = [], landmarks = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling',
         onEmptyClick, onPointSelect, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
         segments?: MapSegment[]; coordinates?: Coordinate[]; highlightedCoordinates?: Coordinate[]; points?: MapPoint[];
@@ -32,6 +34,9 @@
         highlightedPlaces?: Place[];
         /** Places to ride over, drawn from zoom 10. */
         landmarks?: Place[];
+        mapOverlays?: OverlayOptions;
+        /** Travel mode, independent of the network chosen for display. */
+        accessMode?: AccessMode;
         /** Route progress the elevation profile points at. */
         hoverProgress?: number | null;
         center?: Coordinate; zoom?: number;
@@ -72,6 +77,7 @@
     let dragging = $state(false);
     let hover = $state<LineHit | null>(null);
     let overPoi = $state(false);
+    let overOverlay = $state(false);
     let insertDot: maplibregl.Marker;
     let hoverDot: maplibregl.Marker;
     let press: { hit: LineHit; start: maplibregl.Point; moved: boolean } | null = null;
@@ -80,6 +86,10 @@
     // A finished drawing or insert must not also count as a click on the map.
     let consumedPress = false;
     let wholeRoute = false;
+    let overlayLayer: RouteOverlays | undefined;
+    let overlayStatus = $state('');
+    let overlayRetry = $state(false);
+    let overlaySelection = $state<OverlaySelection | null>(null);
 
     export function fitRoute() {
         if (!map || !coordinates.length) return;
@@ -301,6 +311,7 @@
             const onMap = event.originalEvent.target === map.getCanvas();
             overPoi = onMap && !!placeAt(event.point);
             hover = onMap && !overPoi && !dragging && !draggingPin && !drawing && !pickMode ? lineHit(event.point) : null;
+            overOverlay = overlayLayer?.hover(onMap && !overPoi && !hover && !dragging && !draggingPin && !drawing && !pickMode ? event : undefined) ?? false;
         }
     }
 
@@ -346,12 +357,13 @@
         hoverDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-hover-dot" }) });
         try {
             map = new maplibregl.Map({ container, center, zoom, maxBounds: MAP_BOUNDS, style: mapStyle(theme, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false });
+            overlayLayer = new RouteOverlays(map, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; });
             fitInitialRoute();
             map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 90, unit: "metric" }), "bottom-left");
             map.dragRotate.disable();
             map.touchZoomRotate.disableRotation();
-            map.on("style.load", () => { ready = true; installRoute(); });
+            map.on("style.load", () => { overlayLayer?.install(theme); ready = true; installRoute(); });
             map.setMissingStyleImageResolver((id) => {
                 const icon = mapIcon(id);
                 if (icon && !map!.hasImage(id)) map!.addImage(id, icon.image, { pixelRatio: icon.pixelRatio });
@@ -367,15 +379,19 @@
                 if (consumedPress || drawing || (target instanceof Node && popupContent?.contains(target))) return;
                 const place = placeAt(event.point);
                 const hit = place || pickMode ? null : lineHit(event.point);
+                const overlay = place || pickMode ? null : overlayLayer?.hit(event);
+                overlaySelection = null;
                 if (place) onPlaceClick?.(place);
+                else if (overlay?.kind === 'access') overlaySelection = overlay;
                 else if (hit) onLegClick?.(hit.legEndId, hit.coordinate);
+                else if (overlay) overlaySelection = overlay;
                 else onEmptyClick?.([event.lngLat.lng, event.lngLat.lat]);
             });
             map.on("mousedown", pressMap);
             map.on("mousemove", trackPointer);
             map.on("mouseup", releaseMap);
-            map.on("mouseout", () => { if (!press) hover = null; overPoi = false; });
-            map.on("movestart", (event) => { if (event.originalEvent) wholeRoute = false; });
+            map.on("mouseout", () => { if (!press) hover = null; overPoi = false; overOverlay = false; overlayLayer?.hover(); });
+            map.on("movestart", (event) => { if (event.originalEvent) wholeRoute = false; overOverlay = false; overlayLayer?.hover(); });
             map.on("moveend", reportView);
         } catch (error) {
             failure = "The map could not start. This view needs a browser with WebGL enabled.";
@@ -401,6 +417,7 @@
             insertDot.remove();
             hoverDot.remove();
             calloutPopup?.remove();
+            overlayLayer?.destroy();
             map?.remove();
             maplibregl.removeProtocol(dem.sharedDemProtocolId);
             maplibregl.removeProtocol(dem.contourProtocolId);
@@ -422,6 +439,7 @@
         }
     });
     $effect(() => { hillshade; contours; if (ready) syncTerrain(); });
+    $effect(() => { const options = { ...mapOverlays }; const mode = accessMode; if (ready) { overlaySelection = null; overOverlay = false; overlayLayer?.set(options, mode); } });
     $effect(() => { showRoute; if (ready) syncRouteVisibility(); });
     $effect(() => {
         highlightedCoordinates;
@@ -465,7 +483,7 @@
         setSketch([]);
     });
     $effect(() => {
-        if (map) map.getCanvas().style.cursor = dragging || draggingPin ? "grabbing" : drawing || pickMode ? "crosshair" : hover || overPoi ? "pointer" : "grab";
+        if (map) map.getCanvas().style.cursor = dragging || draggingPin ? "grabbing" : drawing || pickMode ? "crosshair" : hover || overPoi || overOverlay ? "pointer" : "grab";
     });
 
     function markerIcon(path: string) {
@@ -561,11 +579,18 @@
 </script>
 
 <svelte:window onmouseup={(event) => { if (event.target !== map?.getCanvas()) cancelGesture(); }}
-    onblur={cancelGesture} onkeydown={(event) => { if (event.key === 'Escape') cancelGesture(); }} />
+    onblur={cancelGesture} onkeydown={(event) => { if (event.key === 'Escape') { cancelGesture(); overlaySelection = null; } }} />
 
 <div class="map-frame" data-map-theme={theme}>
     <div class="map-canvas" bind:this={container} aria-label="Route map"></div>
     <div class="popup-storage"><div bind:this={popupContent}>{#if popup}{@render popup()}{/if}</div></div>
+    {#if overlaySelection}
+        <MapOverlayDetails selection={overlaySelection} onclose={() => overlaySelection = null}
+            onuse={() => { const coordinate = overlaySelection!.coordinate; overlaySelection = null; onEmptyClick?.(coordinate); }} />
+    {/if}
+    {#if overlayStatus && !failure && !overlaySelection}
+        <div class="overlay-status" role="status">{overlayStatus}{#if overlayRetry}<button onclick={() => overlayLayer?.refresh()}>Retry</button>{/if}</div>
+    {/if}
     {#if !ready && !failure}<div class="map-status" role="status">Loading map…</div>{/if}
     {#if failure}
         <div class="map-status" role="status">
@@ -579,6 +604,8 @@
     .map-frame { position: relative; min-height: 240px; height: 100%; isolation: isolate; background: var(--parchment, #f4f2eb); }
     .map-canvas { width: 100%; height: 100%; min-height: 240px; }
     .popup-storage { display: none; }
+    .overlay-status { position: absolute; left: 12px; bottom: 34px; max-width: calc(100% - 80px); padding: 7px 10px; border-radius: 6px; color: var(--ink); background: var(--panel); font-size: 12px; }
+    .overlay-status button { margin-left: 8px; border: 0; background: none; color: var(--link); font: inherit; text-decoration: underline; cursor: pointer; }
     .map-status { position: absolute; bottom: 32px; left: 12px; right: 12px; padding: 10px 12px; background: var(--panel, white); color: var(--ink, #1c1b14); border: 1px solid var(--line-strong, #bcb9aa); font-size: 13px; }
     .map-status button { color: inherit; background: transparent; border: 0; text-decoration: underline; cursor: pointer; font: inherit; }
     :global(.planner-map-pin) { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 2px solid var(--panel, #fff); border-radius: 50%; background: #a4501e; color: #fff; font: 700 13px var(--sans, sans-serif); cursor: pointer; box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); }

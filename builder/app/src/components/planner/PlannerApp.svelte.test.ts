@@ -22,7 +22,7 @@ beforeEach(() => {
     const line: RoutingLine = {
         key: routingKey(trip), choiceId: 'saved-route', profile: 'touring', coordinates,
         elevation: coordinates.map(() => 200), elapsed: distance.map(km => km * 240),
-        surfaces: coordinates.slice(1).map(() => 'Paved'), seconds: distance.at(-1)! * 240,
+        surfaces: coordinates.slice(1).map(() => 'Paved'), pushing: coordinates.slice(1).map(() => false), seconds: distance.at(-1)! * 240,
         stops: [{ id: 'start', distance: 0 }, { id: 'finish', distance: distance.at(-1)! }],
         alternatives: [], alternativesReady: true, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0,
     };

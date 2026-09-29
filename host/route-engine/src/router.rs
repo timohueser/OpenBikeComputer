@@ -51,9 +51,11 @@ pub struct Route {
     pub profile: String,
     pub cost: u64,
     pub geometry: Vec<[f64; 2]>,
-    pub elevation: Vec<Option<i16>>,
+    pub elevation: Vec<Option<f32>>,
     /// Surface of each edge from geometry[i] to geometry[i + 1].
     pub surfaces: Vec<Surface>,
+    /// Whether the bicycle must be pushed along each geometry edge.
+    pub pushing: Vec<bool>,
     /// Cumulative moving seconds at each geometry vertex.
     pub elapsed: Vec<f64>,
     pub legs: Vec<Leg>,
@@ -271,6 +273,7 @@ impl<S: Source> Router<S> {
             geometry: Vec::new(),
             elevation: Vec::new(),
             surfaces: Vec::new(),
+            pushing: Vec::new(),
             elapsed: Vec::new(),
             legs: Vec::new(),
             attachments,
@@ -307,6 +310,7 @@ impl<S: Source> Router<S> {
                     }
                     if !route.geometry.is_empty() {
                         route.surfaces.push(road.surface);
+                        route.pushing.push(!profile.walking && road.access & BIKE == 0);
                     }
                     route.geometry.push(coordinate);
                     route.elapsed.push(seconds);
@@ -364,15 +368,16 @@ impl<S: Source> Router<S> {
     }
 
     fn find_leg(&mut self, from: &Candidate, to: &Candidate, control: &Control<'_>) -> Result<Option<Path>> {
-        let profile = self.package.metric(&self.metric)?.profile.clone();
         let a = from.position;
         let b = to.position;
         let source = self.package.endpoint(&self.metric, a.road)?;
         let target = self.package.endpoint(&self.metric, b.road)?;
-        let prefix =
-            snap::prefix_cost(&self.package.road(a.road)?, &profile, a.fraction).map_err(Error::InvalidData)?;
-        let suffix =
-            snap::prefix_cost(&self.package.road(b.road)?, &profile, b.fraction).map_err(Error::InvalidData)?;
+        let source_cost =
+            source.cost.as_ref().ok_or_else(|| Error::InvalidData("Excluded source attachment".into()))?;
+        let target_cost =
+            target.cost.as_ref().ok_or_else(|| Error::InvalidData("Excluded target attachment".into()))?;
+        let prefix = source_cost.prefix(a.fraction).map_err(Error::InvalidData)?;
+        let suffix = target_cost.prefix(b.fraction).map_err(Error::InvalidData)?;
         let mut best = if a.road == b.road && a.fraction <= b.fraction {
             Some(Path {
                 cost: suffix.checked_sub(prefix).ok_or_else(|| Error::InvalidData("Invalid partial costs".into()))?,
@@ -381,13 +386,11 @@ impl<S: Source> Router<S> {
         } else {
             None
         };
-        let remaining = source
-            .cost
-            .ok_or_else(|| Error::InvalidData("Excluded source attachment".into()))?
-            .checked_sub(prefix)
-            .ok_or_else(|| Error::InvalidData("Invalid source cost".into()))?;
+        let remaining =
+            source_cost.total().checked_sub(prefix).ok_or_else(|| Error::InvalidData("Invalid source cost".into()))?;
         let starts = [Seed { node: source.arrival, cost: remaining, road: a.road }];
-        let ends: Vec<_> = target.departures.iter().map(|&node| Seed { node, cost: suffix, road: b.road }).collect();
+        let ends: Vec<_> =
+            target.departures.iter().map(|d| Seed { node: d.state, cost: suffix + d.penalty, road: b.road }).collect();
         let mut search = Search::new(&starts, &ends, control.max_labels);
         loop {
             if (control.cancelled)() {
@@ -444,7 +447,7 @@ fn trim(mut road: Road, from: f64, to: f64) -> Road {
                         NO_ELEVATION
                     } else {
                         (pair[0].elevation as f64 + (pair[1].elevation as f64 - pair[0].elevation as f64) * fraction)
-                            .round() as i16
+                            .clamp(-500.0, 9000.0) as f32
                     },
                 };
                 if shape.last().is_none_or(|p: &Point| p.lat != point.lat || p.lon != point.lon) {
@@ -456,14 +459,16 @@ fn trim(mut road: Road, from: f64, to: f64) -> Road {
     }
     road.shape = shape;
     road.length_m = (total * (to - from)).round() as u32;
-    road.ascent_m = 0;
-    road.descent_m = 0;
+    let mut ascent = 0.0f64;
+    let mut descent = 0.0f64;
     for pair in road.shape.windows(2) {
         if pair.iter().all(|p| p.elevation != NO_ELEVATION) {
-            let difference = pair[1].elevation as i32 - pair[0].elevation as i32;
-            road.ascent_m += difference.max(0) as u32;
-            road.descent_m += (-difference).max(0) as u32;
+            let difference = pair[1].elevation as f64 - pair[0].elevation as f64;
+            ascent += difference.max(0.0);
+            descent += (-difference).max(0.0);
         }
     }
+    road.ascent_m = ascent.round() as u32;
+    road.descent_m = descent.round() as u32;
     road
 }
