@@ -71,16 +71,14 @@ the surface bar marks pushing sections. Hover or use arrow keys for access detai
 Grades use a 100 m terrain window, shortened at route ends
 and terrain gaps. Missing terrain and fragments below 20 m have no grade estimate.
 
-Open Map layers to select Cycling, Hiking, or Off. Cycling is the default.
-Both networks use solid lines. Colors separate international or national,
-regional, local, and unspecified routes. Closures & access starts on and shows
-restriction symbols. Walking symbols mark pushing sections at close zoom.
-Expand Terrain or Places for their controls. Click a route line or blaze for its
-name, or an access symbol for its rules. Route lines highlight on hover.
-Route names link to their mapped website when present. Hiking routes show supported
-geometric trail blazes; other markers retain their mapped descriptions.
-Use this location opens the route-point controls. These overlays use the routing
-package's OSM snapshot. They do not provide live closure status or change route weights.
+Open Map layers to select Cycling (default), Hiking, or Off. Solid line colors
+show network levels. Closures & access starts on. Walking symbols mark pushing
+sections at close zoom. Expand Terrain or Places for controls. Click a route
+line or blaze for its name; click an access symbol for rules. Route lines
+highlight on hover. Route names link to mapped websites. Hiking routes show
+supported geometric trail blazes; other markers retain their descriptions.
+Use this location opens route-point controls. Overlays use the routing package's
+OSM snapshot. They do not provide live closures or change route weights.
 
 ## Tile sources
 
