@@ -317,7 +317,7 @@ fn terrain_reuses_nearby_tiles_without_changing_road_identity_or_heights() {
     assert_eq!(loads, 2);
     assert_eq!(graph.roads.iter().map(|r| (r.way, r.from, r.to)).collect::<Vec<_>>(), identities);
     for road in &graph.roads {
-        assert_eq!(road.shape.iter().map(|p| p.elevation).collect::<Vec<_>>(), [100, 101]);
+        assert_eq!(road.shape.iter().map(|p| p.elevation).collect::<Vec<_>>(), [100.0, 101.0]);
         assert_eq!((road.ascent_m, road.descent_m), (1, 0));
     }
 }
