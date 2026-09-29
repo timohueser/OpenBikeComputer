@@ -8,7 +8,7 @@ import OBCTransport
 @MainActor
 struct LaunchFlowModelTests {
     private static let timing = LaunchFlowModel.Timing(
-        connectGrace: .milliseconds(50), scanTimeout: .seconds(2), pairingBeat: .zero)
+        scanTimeout: .seconds(2), pairingBeat: .zero)
 
     private func make(
         _ scenario: Scenario = .noDevice,
@@ -218,27 +218,58 @@ struct LaunchFlowModelTests {
         #expect(model.phase == .setup)
     }
 
-    @Test func bondedLaunchResumesOnlyPendingSetup() async throws {
+    @Test func bondedLaunchResumesOnlyPendingSetup() {
         let (normal, _) = make(.happyPath)
         normal.start()
-        try await wait { normal.phase == .main }
-        let (pending, _) = make(.happyPath, pending: { true })
+        #expect(normal.phase == .main)
+        let (pending, control) = make(.deviceUnreachable, pending: { true })
+        control.latency = .seconds(3_600)
         pending.start()
-        try await wait { pending.phase == .setup }
+        #expect(pending.phase == .setup)
         pending.finishSetup()
         pending.replaySetup()
         #expect(pending.phase == .setup)
     }
 
-    @Test func bondedUnreachableDeviceCanUseLibraryAndLaterReconnect() async throws {
+    @Test(arguments: [ConnectionState.disconnected, .connecting, .connected, .outOfRange])
+    func bondedLaunchShowsLibraryBeforeAnyLinkWork(_ connection: ConnectionState) {
+        let (model, control) = make(.happyPath)
+        control.connection = connection
+        control.latency = .seconds(3_600)
+        model.start()
+        #expect(model.phase == .main)
+        #expect(control.connection == connection)
+        #expect(control.bonded)
+    }
+
+    @Test func backgroundReconnectNeverChangesLibraryNavigation() async throws {
         let (model, control) = make(.happyPath)
         control.connection = .disconnected
-        control.latency = .milliseconds(100)
+        let states = MockTransport(control: control).state
+        var observed: [ConnectionState] = []
+        let watch = Task { for await state in states { observed.append(state) } }
+        defer { watch.cancel() }
         model.start()
-        try await wait { model.phase == .connectFailed(deviceName: "Trailhead") }
-        model.browseLibrary()
-        try await wait { control.connection == .connected }
         #expect(model.phase == .main)
+        try await wait { observed.count == 3 }
+        #expect(observed == [.disconnected, .connecting, .connected])
+        #expect(model.phase == .main)
+    }
+
+    @Test func failedBackgroundReconnectKeepsLibraryAndBond() async throws {
+        let (model, control) = make(.happyPath)
+        control.connection = .disconnected
+        control.failNextOp(.readFailed)
+        let states = MockTransport(control: control).state
+        var observed: [ConnectionState] = []
+        let watch = Task { for await state in states { observed.append(state) } }
+        defer { watch.cancel() }
+        model.start()
+        #expect(model.phase == .main)
+        try await wait { observed.count == 3 }
+        #expect(observed == [.disconnected, .connecting, .disconnected])
+        #expect(model.phase == .main)
+        #expect(control.bonded)
     }
 
     @Test func forgetReturnsToWelcome() async throws {

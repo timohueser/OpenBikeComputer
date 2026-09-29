@@ -162,6 +162,99 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertEqual(model.routes.count, 5)
     }
 
+    func testOfflineLibraryDefersDeviceReadsUntilConnected() async throws {
+        for connection in [ConnectionState.disconnected, .connecting, .outOfRange] {
+            for savedContent in [false, true] {
+                let control = MockControl(scenario: .happyPath)
+                control.latency = .zero
+                control.connection = connection
+                let library = InMemoryLibraryStore()
+                if savedContent {
+                    library.savePlannedRoute(importedRecord())
+                    library.saveRide(Ride(
+                        summary: RideSummary(id: RideID("saved"), name: "Saved ride", date: Date(), distanceMeters: 1_000),
+                        points: []))
+                }
+                let transport = ObservedMockTransport(control: control)
+                let model = MainScreenModel(transport: transport, library: library)
+                model.start()
+                try await waitFor("offline Library") {
+                    model.connection == connection && model.loadState == .loaded && transport.catalogChangesObserved
+                }
+                XCTAssertEqual(model.routes.count, savedContent ? 1 : 0)
+                XCTAssertEqual(model.rides.count, savedContent ? 1 : 0)
+                model.reload()
+                control.deviceDeletesRoute(DeviceObjectID(7))
+                let stayedLocal = await neverHolds({
+                    transport.routeCatalogStartedCount != 0 || transport.tripCatalogStartedCount != 0
+                        || transport.deviceInfoStartedCount != 0 || model.loadState != .loaded
+                }, for: .milliseconds(50))
+                XCTAssertTrue(stayedLocal, "offline retries and catalog events must not read the device")
+                XCTAssertTrue(control.setClockSamples.isEmpty)
+
+                control.connection = .connected
+                try await waitFor("connected catalogs and identity") {
+                    model.connectedScope != nil && model.loadState == .loaded
+                }
+                XCTAssertEqual(transport.routeCatalogStartedCount, 1)
+                XCTAssertEqual(transport.tripCatalogStartedCount, 1)
+                XCTAssertEqual(transport.deviceInfoStartedCount, 1)
+            }
+        }
+    }
+
+    func testDisconnectDrainsAnOpenCatalogWithoutAReadError() async throws {
+        let control = MockControl(scenario: .happyPath)
+        control.latency = .zero
+        let transport = ObservedMockTransport(control: control, gateFirstRouteCatalog: true)
+        let model = MainScreenModel(transport: transport)
+        model.start()
+        defer { transport.releaseFirstRouteCatalog() }
+        try await waitFor("open catalog") { transport.routeCatalogStartedCount == 1 }
+        control.connection = .disconnected
+        try await waitFor("offline Library") { model.connection == .disconnected && model.loadState == .loaded }
+        model.reload()
+        transport.releaseFirstRouteCatalog()
+        try await waitFor("catalog drained") { transport.routeCatalogCompletedCount == 1 }
+        let stayedLocal = await neverHolds({
+            model.loadState != .loaded || transport.tripCatalogStartedCount != 0
+                || transport.deviceInfoStartedCount != 0
+        }, for: .milliseconds(50))
+        XCTAssertTrue(stayedLocal)
+        XCTAssertEqual(control.cancelledRouteCatalogReadCount, 0)
+
+        control.connection = .connected
+        try await waitFor("reconnected Library") { model.connectedScope != nil && model.loadState == .loaded }
+        XCTAssertEqual(transport.routeCatalogStartedCount, 2)
+        XCTAssertEqual(transport.tripCatalogStartedCount, 1)
+        XCTAssertEqual(transport.deviceInfoStartedCount, 1)
+    }
+
+    func testFailedReconnectCatalogCannotDisproveAnotherDevicesSavedLink() async throws {
+        let library = InMemoryLibraryStore()
+        var record = importedRecord()
+        record.deviceLink = DeviceRouteLink(
+            serial: "OBC-B", storeID: FixtureSet.defaultStoreID, objectID: DeviceObjectID(900))
+        record.uploadedCRC32 = 0x1234_5678
+        library.savePlannedRoute(record)
+        let (model, control) = makeModel(.happyPath, library: library, seedLibrary: false)
+        try await startLoaded(model)
+        try await waitFor("first identity") { model.connectedScope != nil }
+
+        control.connection = .disconnected
+        try await waitFor("link down") { model.connection == .disconnected }
+        control.deviceInfo = DeviceInfo(
+            name: "Second OBC", firmwareVersion: "1.0.0", serial: "OBC-B", storeID: FixtureSet.defaultStoreID)
+        control.failNextOp(.readFailed)
+        control.connection = .connected
+        try await waitFor("new identity after failed catalog") {
+            model.connectedScope?.serial == "OBC-B" && model.loadState == .failed
+        }
+        XCTAssertEqual(library.plannedRoutes().first?.deviceLink, record.deviceLink)
+        XCTAssertEqual(library.plannedRoutes().first?.uploadedCRC32, record.uploadedCRC32)
+        XCTAssertFalse(model.isUploaded(record.id))
+    }
+
     // MARK: Search
 
     func testSearchFiltersBothTabsCaseInsensitively() async throws {

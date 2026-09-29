@@ -179,6 +179,41 @@ struct TripReconcileModelTests {
     // MARK: Reconcile transitions
 
     @Test
+    func aReplacementDevicesCatalogKeepsThePreviousDevicesRouteTripAndDayLinks() async throws {
+        let (model, control, library) = try await makeMainWithLibrary()
+        try await uploadTrip(model)
+        let kettle = RouteID("kettle-moraine-loop")
+        let savedRoute = try #require(library.plannedRoutes().first { $0.id == kettle })
+        let savedTrip = try #require(library.trips().first { $0.id == tripID })
+        #expect(savedRoute.deviceLink != nil)
+        #expect(savedTrip.deviceLink != nil)
+        #expect(savedTrip.dayCopies.compactMap { $0 }.count == savedTrip.dayCount)
+
+        control.connection = .disconnected
+        try await waitFor("link down") { model.connection == .disconnected }
+        for id in control.deviceTripObjectIDs { control.deviceDeletesTrip(id) }
+        control.fixtures.routes = []
+        control.deviceInfo = DeviceInfo(
+            name: "Second OBC", firmwareVersion: "1.0.0", serial: "OBC-B",
+            storeID: FixtureSet.defaultStoreID)
+        control.connection = .connected
+        try await waitFor("replacement identity and catalogs") {
+            model.connectedScope?.serial == "OBC-B" && model.loadState == .loaded
+        }
+
+        let keptRoute = try #require(library.plannedRoutes().first { $0.id == kettle })
+        let keptTrip = try #require(library.trips().first { $0.id == tripID })
+        #expect(keptRoute.deviceLink == savedRoute.deviceLink)
+        #expect(keptRoute.uploadedCRC32 == savedRoute.uploadedCRC32)
+        #expect(keptTrip.deviceLink == savedTrip.deviceLink)
+        #expect(keptTrip.uploadedCRC32 == savedTrip.uploadedCRC32)
+        #expect(keptTrip.dayCopies == savedTrip.dayCopies)
+        #expect(model.plannedDeviceObjectID(for: kettle) == nil)
+        #expect(model.tripOnDeviceState(tripID) == .notOnDevice)
+        #expect(model.planTripUpload(tripID)?.days.allSatisfy { $0.action == .fresh } == true)
+    }
+
+    @Test
     func aDeviceSideTripDeleteClearsTheLink() async throws {
         let (model, control) = try await makeMain()
         try await uploadTrip(model)

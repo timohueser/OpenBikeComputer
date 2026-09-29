@@ -229,8 +229,6 @@ public struct OBCComponentGallery: View {
                 #endif
 
                 section("Launch & Pairing") {
-                    launchScreen { LaunchConnectingView(deviceName: "Trailhead") }
-                    launchScreen { LaunchConnectFailedView(deviceName: "Trailhead", onRetry: {}, onGoToRoutes: {}) }
                     launchScreen { WelcomeView(onStart: {}, onBrowse: {}) }
                     launchScreen { SwitchOnView(onFind: {}, onBack: {}) }
                     launchScreen { BluetoothPermissionView(onAllow: {}, onBack: {}, onBrowse: {}) }

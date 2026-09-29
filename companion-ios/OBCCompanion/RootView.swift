@@ -4,8 +4,8 @@ import OBCTransport
 import OBCFormats
 import OBCUI
 
-/// The app's root: the launch gate, a bond check and quiet reconnect or the pairing flow, in
-/// front of the main screen, which pushes the detail screens. Holds only the seams the
+/// The app's root: first-use setup or the Library, with a quiet reconnect for a saved bond.
+/// The main screen pushes the detail screens. Holds only the seams the
 /// composition root chose, plus the file-format edge that turns a picked file into an import.
 /// The import flow itself is `ImportFlowModel`; this view only binds its presentation state.
 struct RootView: View {

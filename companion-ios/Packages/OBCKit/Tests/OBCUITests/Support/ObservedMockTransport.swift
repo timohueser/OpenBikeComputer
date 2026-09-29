@@ -14,6 +14,8 @@ final class ObservedMockTransport: DeviceLink, DeviceBattery, DeviceObjects, Dev
     private let lock = NSLock()
     private var routeCatalogStarted = 0
     private var routeCatalogCompleted = 0
+    private var tripCatalogStarted = 0
+    private var deviceInfoStarted = 0
     private var observedCatalogChanges = false
 
     init(control: MockControl, gateFirstRouteCatalog: Bool = false) {
@@ -23,6 +25,8 @@ final class ObservedMockTransport: DeviceLink, DeviceBattery, DeviceObjects, Dev
 
     var routeCatalogStartedCount: Int { lock.withLock { routeCatalogStarted } }
     var routeCatalogCompletedCount: Int { lock.withLock { routeCatalogCompleted } }
+    var tripCatalogStartedCount: Int { lock.withLock { tripCatalogStarted } }
+    var deviceInfoStartedCount: Int { lock.withLock { deviceInfoStarted } }
     var catalogChangesObserved: Bool { lock.withLock { observedCatalogChanges } }
 
     func releaseFirstRouteCatalog() {
@@ -38,7 +42,10 @@ final class ObservedMockTransport: DeviceLink, DeviceBattery, DeviceObjects, Dev
 
     func connect() async throws { try await base.connect() }
     func disconnect() async { await base.disconnect() }
-    func deviceInfo() async throws -> DeviceInfo { try await base.deviceInfo() }
+    func deviceInfo() async throws -> DeviceInfo {
+        lock.withLock { deviceInfoStarted += 1 }
+        return try await base.deviceInfo()
+    }
     func setClock(_ sample: WallClockSample) async throws -> ClockSyncOutcome {
         try await base.setClock(sample)
     }
@@ -61,7 +68,10 @@ final class ObservedMockTransport: DeviceLink, DeviceBattery, DeviceObjects, Dev
 
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { base.uploadRoute(route) }
     func deleteRoute(_ id: DeviceObjectID) async throws { try await base.deleteRoute(id) }
-    func listTrips() async throws -> [TripCatalogEntry] { try await base.listTrips() }
+    func listTrips() async throws -> [TripCatalogEntry] {
+        lock.withLock { tripCatalogStarted += 1 }
+        return try await base.listTrips()
+    }
     func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Trip {
         try await base.downloadTrip(id)
     }

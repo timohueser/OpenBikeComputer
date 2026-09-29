@@ -31,8 +31,6 @@ public final class LaunchFlowModel {
 
     public enum Phase: Equatable, Sendable {
         case idle
-        case connecting(deviceName: String)
-        case connectFailed(deviceName: String)
         case welcome
         case pairIntro
         case bluetoothPermission
@@ -46,15 +44,13 @@ public final class LaunchFlowModel {
     }
 
     public struct Timing: Sendable {
-        public var connectGrace: Duration
         public var scanTimeout: Duration
         public var pairingBeat: Duration
 
         public init(
-            connectGrace: Duration = .seconds(8), scanTimeout: Duration = .seconds(30),
+            scanTimeout: Duration = .seconds(30),
             pairingBeat: Duration = .milliseconds(700)
         ) {
-            self.connectGrace = connectGrace
             self.scanTimeout = scanTimeout
             self.pairingBeat = pairingBeat
         }
@@ -93,63 +89,16 @@ public final class LaunchFlowModel {
 
     public func start() {
         guard phase == .idle else { return }
-        if let bond = bondStore.load() { beginBondedConnect(bond) } else { phase = .welcome }
-    }
-
-    private var connectedDestination: Phase { onboardingPending() ? .setup : .main }
-
-    private func beginBondedConnect(_ bond: BondRecord) {
-        phase = .connecting(deviceName: bond.deviceName)
-        flowTask = Task { [transport, timing] in
-            var current: ConnectionState?
-            for await state in transport.state { current = state; break }
-            guard !Task.isCancelled else { return }
-            if current == .connected || current == .outOfRange {
-                phase = connectedDestination
+        guard bondStore.load() != nil else { phase = .welcome; return }
+        phase = onboardingPending() ? .setup : .main
+        // The Library observes link status. Reconnection never owns navigation.
+        connectAttempt = Task { [transport] in
+            for await state in transport.state {
+                guard !Task.isCancelled, state == .disconnected else { return }
+                try? await transport.connect()
                 return
             }
-            startConnectAttemptIfNeeded()
-            let connected = await Self.linkCameUp(transport.state, within: timing.connectGrace)
-            guard !Task.isCancelled else { return }
-            phase = connected ? connectedDestination : .connectFailed(deviceName: bond.deviceName)
         }
-    }
-
-    private func startConnectAttemptIfNeeded() {
-        guard connectAttempt == nil else { return }
-        connectAttempt = Task { [transport, weak self] in
-            try? await transport.connect()
-            guard let self, !Task.isCancelled else { return }
-            connectAttempt = nil
-            switch phase {
-            case .connecting, .connectFailed:
-                flowTask?.cancel()
-                phase = connectedDestination
-            default: break
-            }
-        }
-    }
-
-    private static func linkCameUp(_ states: AsyncStream<ConnectionState>, within grace: Duration) async -> Bool {
-        await withTaskGroup(of: Bool.self) { group in
-            group.addTask {
-                for await state in states where state == .connected { return true }
-                return false
-            }
-            group.addTask {
-                try? await Task.sleep(for: grace)
-                return false
-            }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
-        }
-    }
-
-    public func retryConnect() {
-        guard let bond = bondStore.load() else { phase = .welcome; return }
-        flowTask?.cancel()
-        beginBondedConnect(bond)
     }
 
     public static func acceptsPairingLink(_ url: URL) -> Bool {

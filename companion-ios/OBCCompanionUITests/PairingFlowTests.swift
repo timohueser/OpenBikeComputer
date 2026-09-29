@@ -137,8 +137,7 @@ final class PairingFlowTests: XCTestCase {
         snap(app, "S4-main-out-of-range")
     }
 
-    /// Bonded but with the link down at launch: the connecting state resolves to the main screen
-    /// within the grace window.
+    /// A saved pairing opens the Library while the link connects in the background.
     @MainActor
     func testBondedColdLaunchResolvesToMain() {
         let app = XCUIApplication()
@@ -147,26 +146,22 @@ final class PairingFlowTests: XCTestCase {
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 15))
     }
 
-    /// Bonded but the device never answers: the grace window expires onto the connect-failed
-    /// screen, never a forever-spinner, and the secondary action still reaches the library.
+    /// An absent device leaves the Library available, with connection status in its header.
     @MainActor
-    func testDeviceUnreachableTimesOutToConnectFailedAndRoutesStayReachable() {
+    func testDeviceUnreachableOpensLibraryWhileReconnecting() {
         let app = launch(scenario: "deviceUnreachable")
-
-        XCTAssertTrue(app.staticTexts["launch.connectingTitle"].waitForExistence(timeout: 10), "A state missing")
-        // The default connect grace must expire onto the timeout screen.
-        let title = app.staticTexts["launch.connectFailedTitle"]
-        XCTAssertTrue(title.waitForExistence(timeout: 15), "connect-failed screen missing")
-        XCTAssertEqual(title.label, "Can't reach Trailhead")
-        XCTAssertTrue(app.buttons["launch.tryAgain"].exists)
-        snap(app, "A-timeout-connect-failed")
-
-        // Try again re-enters the connecting state, and the still-silent device times out again.
-        app.buttons["launch.tryAgain"].tap()
-        XCTAssertTrue(app.staticTexts["launch.connectingTitle"].waitForExistence(timeout: 10), "retry must re-enter A")
-        XCTAssertTrue(title.waitForExistence(timeout: 15), "second timeout missing")
-
-        app.buttons["launch.goToRoutes"].tap()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "library must stay reachable")
+        let header = app.descendants(matching: .any)["topbar.device"].firstMatch
+        let reconnecting = expectation(
+            for: NSPredicate(format: "label CONTAINS[c] 'connecting'"), evaluatedWith: header)
+        wait(for: [reconnecting], timeout: 10)
+        XCTAssertFalse(app.buttons["topbar.sync"].isEnabled)
+        XCTAssertTrue(app.buttons["topbar.settings"].isEnabled)
+        XCTAssertFalse(app.staticTexts["launch.connectingTitle"].exists)
+        XCTAssertFalse(app.staticTexts["launch.connectFailedTitle"].exists)
+        app.segmentedControls.buttons["Rides"].tap()
+        XCTAssertTrue(app.staticTexts["No rides yet"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.descendants(matching: .any)["main.readError"].firstMatch.exists)
+        snap(app, "D5-library-offline")
     }
 }

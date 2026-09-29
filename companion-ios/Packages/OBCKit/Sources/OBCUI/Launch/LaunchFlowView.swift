@@ -27,11 +27,6 @@ public struct LaunchFlowView<Main: View, Setup: View>: View {
         switch model.phase {
         case .idle:
             OBCTheme.page.ignoresSafeArea()
-        case .connecting(let deviceName):
-            LaunchConnectingView(deviceName: deviceName)
-        case .connectFailed(let deviceName):
-            LaunchConnectFailedView(
-                deviceName: deviceName, onRetry: model.retryConnect, onGoToRoutes: model.browseLibrary)
         case .welcome:
             WelcomeView(onStart: model.showSwitchOn, onBrowse: model.browseLibrary)
         case .pairIntro:
@@ -61,8 +56,6 @@ public struct LaunchFlowView<Main: View, Setup: View>: View {
     private var phaseKey: String {
         switch model.phase {
         case .idle: "idle"
-        case .connecting: "connecting"
-        case .connectFailed: "connectFailed"
         case .welcome: "welcome"
         case .pairIntro: "pairIntro"
         case .bluetoothPermission: "bluetoothPermission"
