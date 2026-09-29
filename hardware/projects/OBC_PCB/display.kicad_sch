@@ -596,20 +596,19 @@
 					)
 				)
 				(pin no_connect line
-					(at 8.89 -30.48 90)
+					(at 20.32 15.24 180)
 					(length 5.08)
-					(hide yes)
 					(name "NC"
 						(effects
 							(font
-								(size 1.27 1.27)
+								(size 1 1)
 							)
 						)
 					)
 					(number "2"
 						(effects
 							(font
-								(size 1.27 1.27)
+								(size 1 1)
 							)
 						)
 					)
@@ -903,20 +902,19 @@
 					)
 				)
 				(pin no_connect line
-					(at 8.89 -30.48 90)
+					(at 20.32 7.62 180)
 					(length 5.08)
-					(hide yes)
 					(name "NC"
 						(effects
 							(font
-								(size 1.27 1.27)
+								(size 1 1)
 							)
 						)
 					)
 					(number "19"
 						(effects
 							(font
-								(size 1.27 1.27)
+								(size 1 1)
 							)
 						)
 					)
@@ -940,58 +938,55 @@
 					)
 				)
 				(pin no_connect line
-					(at 8.89 -30.48 90)
+					(at 20.32 0.0 180)
 					(length 5.08)
-					(hide yes)
 					(name "NC"
 						(effects
 							(font
-								(size 1.27 1.27)
+								(size 1 1)
 							)
 						)
 					)
 					(number "21"
 						(effects
 							(font
-								(size 1.27 1.27)
+								(size 1 1)
 							)
 						)
 					)
 				)
 				(pin no_connect line
-					(at 8.89 -30.48 90)
+					(at 20.32 -7.619999999999999 180)
 					(length 5.08)
-					(hide yes)
 					(name "MP1"
 						(effects
 							(font
-								(size 1.27 1.27)
+								(size 1 1)
 							)
 						)
 					)
 					(number "MP1"
 						(effects
 							(font
-								(size 1.27 1.27)
+								(size 1 1)
 							)
 						)
 					)
 				)
 				(pin no_connect line
-					(at 8.89 -30.48 90)
+					(at 20.32 -15.24 180)
 					(length 5.08)
-					(hide yes)
 					(name "MP2"
 						(effects
 							(font
-								(size 1.27 1.27)
+								(size 1 1)
 							)
 						)
 					)
 					(number "MP2"
 						(effects
 							(font
-								(size 1.27 1.27)
+								(size 1 1)
 							)
 						)
 					)
@@ -3215,10 +3210,7 @@
 		)
 		(uuid "e74c0e23-37cc-41ad-b6ad-1135ed10d9d1")
 	)
-	(no_connect
-		(at 186.69 132.08)
-		(uuid "a94a727b-7718-4dd6-b3b2-38c931bff9e2")
-	)
+
 	(text "DISPLAY — LS021B7DD02 / 21-pin FPC"
 		(at 111.76 33.02 0)
 		(effects
@@ -3263,7 +3255,7 @@
 		)
 		(uuid "22ba30c9-c46b-4ebb-8101-a6ed665e7ba1")
 	)
-	(text "R0/R1 share SD DAT3/DAT1 on the parent sheet.\nFLPR arbitrates; keep SD CLK parked during display writes."
+	(text "LCD: R0=P2.00, R1=P2.04, G0=P2.06, G1=P2.08\nB0=P2.09, B1=P2.10, BCK=P2.07.\nP2.00/P2.04 share SD DAT3/DAT1; FLPR arbitrates.\nKeep SD CLK parked during display writes."
 		(at 144.78 157.48 0)
 		(effects
 			(font
@@ -3521,7 +3513,7 @@
 			)
 		)
 		(property "Tolerance" "1%"
-			(at 111.76 139.7 0)
+			(at 111.76 142.23999999999998 0)
 			(effects
 				(font
 					(size 1 1)
@@ -3549,7 +3541,7 @@
 			)
 		)
 		(property "Reference" "R36"
-			(at 111.76 134.62 0)
+			(at 111.76 137.16 0)
 			(effects
 				(font
 					(size 1 1)
@@ -3558,7 +3550,7 @@
 			)
 		)
 		(property "Value" "220R"
-			(at 111.76 137.16 0)
+			(at 111.76 139.7 0)
 			(effects
 				(font
 					(size 1 1)
@@ -3621,13 +3613,11 @@
 			)
 		)
 		(property "Tolerance" "1%"
-			(at 0 0 0)
-			(hide yes)
+			(at 78.74 167.64 90)
 			(effects
 				(font
-					(size 1.27 1.27)
+					(size 1 1)
 				)
-				(justify left)
 			)
 		)
 		(property "Power" "63mW"
@@ -3651,21 +3641,19 @@
 			)
 		)
 		(property "Reference" "R37"
-			(at 76.2 160.02 90)
+			(at 78.74 160.01999999999998 90)
 			(effects
 				(font
 					(size 1 1)
 				)
-				(justify left)
 			)
 		)
 		(property "Value" "1k"
-			(at 76.2 162.56 90)
+			(at 78.74 162.56 90)
 			(effects
 				(font
 					(size 1 1)
 				)
-				(justify left)
 			)
 		)
 		(pin "1"
@@ -3824,7 +3812,7 @@
 			)
 		)
 		(property "Voltage" "10V"
-			(at 82.55 138.43 0)
+			(at 93.98 142.24 0)
 			(effects
 				(font
 					(size 1 1)
@@ -3833,7 +3821,7 @@
 			)
 		)
 		(property "Dielectric" "X7R"
-			(at 82.55 140.97 0)
+			(at 101.6 142.24 0)
 			(effects
 				(font
 					(size 1 1)
@@ -3862,7 +3850,7 @@
 			)
 		)
 		(property "Reference" "C49"
-			(at 82.55 133.35 0)
+			(at 93.98 137.16 0)
 			(effects
 				(font
 					(size 1 1)
@@ -3871,7 +3859,7 @@
 			)
 		)
 		(property "Value" "1u"
-			(at 82.55 135.89 0)
+			(at 93.98 139.7 0)
 			(effects
 				(font
 					(size 1 1)
@@ -4349,5 +4337,30 @@
 			(justify left top)
 		)
 		(uuid "58da5c09-1f78-4bd9-b14a-76767147f143")
+	)
+
+
+
+
+
+	(no_connect
+		(at 198.12 86.36)
+		(uuid "1e36ea24-c1e0-4118-a143-7a2f2bf452bd")
+	)
+	(no_connect
+		(at 198.12 93.98)
+		(uuid "9ecd4379-7a2e-4784-9155-2bd45ba256d0")
+	)
+	(no_connect
+		(at 198.12 101.6)
+		(uuid "9109d838-c4d9-44a4-b41c-cc84a0b073a1")
+	)
+	(no_connect
+		(at 198.12 109.22)
+		(uuid "e8d56e91-b796-498f-8a9f-e95c3dcc3821")
+	)
+	(no_connect
+		(at 198.12 116.84)
+		(uuid "5ac6172f-869f-403e-b532-9f06d1dc4eca")
 	)
 )

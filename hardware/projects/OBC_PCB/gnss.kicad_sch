@@ -1594,7 +1594,7 @@
 					)
 				)
 			)
-			(property "Footprint" "obc:Taoglas_GGBLA125A_10x3.2mm_ContactPads"
+			(property "Footprint" "obc:Taoglas_GGBLA125A_10x3.2mm_Corner"
 				(at 0 0 0)
 				(hide yes)
 				(effects
@@ -2276,17 +2276,7 @@
 			)
 		)
 	)
-	(wire
-		(pts
-			(xy 90.17 48.26)
-			(xy 96.52 48.26)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "7ec42fe2-6bcb-42a9-839a-8963c211fe21")
-	)
+
 	(wire
 		(pts
 			(xy 96.52 48.26)
@@ -2300,7 +2290,7 @@
 	)
 	(symbol
 		(lib_id "obc:+3V2_GPS")
-		(at 96.52 48.26 0)
+		(at 93.98 48.26 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -2311,7 +2301,7 @@
 		(fields_autoplaced yes)
 		(uuid "6084a1f2-f6ae-4cd5-bcd7-645a4ef34bc6")
 		(property "Reference" "#PWR3201"
-			(at 99.06 44.45 0)
+			(at 96.52 44.45 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2323,7 +2313,7 @@
 			)
 		)
 		(property "Value" "+3V2_GPS"
-			(at 96.52 44.45 0)
+			(at 93.98 44.45 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2333,7 +2323,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 99.06 46.99 0)
+			(at 96.52 46.99 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2345,7 +2335,7 @@
 			)
 		)
 		(property "Datasheet" "~"
-			(at 99.06 48.26 0)
+			(at 96.52 48.26 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2357,7 +2347,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 99.06 49.53 0)
+			(at 96.52 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3266,7 +3256,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "obc:Taoglas_GGBLA125A_10x3.2mm_ContactPads"
+		(property "Footprint" "obc:Taoglas_GGBLA125A_10x3.2mm_Corner"
 			(at 290.5 34.29 0)
 			(hide yes)
 			(show_name no)
@@ -3753,11 +3743,10 @@
 			)
 		)
 		(property "Tolerance" "0.1nH"
-			(at -254.0 12.7 0)
-			(hide yes)
+			(at 193.04 106.68 0)
 			(effects
 				(font
-					(size 1.27 1.27)
+					(size 1 1)
 				)
 				(justify left)
 			)
@@ -4300,11 +4289,10 @@
 			)
 		)
 		(property "Tolerance" "Jumper"
-			(at 187.96 78.74 90)
-			(hide yes)
+			(at 198.12 83.82000000000001 0)
 			(effects
 				(font
-					(size 1.0 1.0)
+					(size 1 1)
 				)
 				(justify left)
 			)
@@ -4539,11 +4527,10 @@
 			)
 		)
 		(property "Tolerance" "Jumper"
-			(at 198.12 78.74 90)
-			(hide yes)
+			(at 208.28 83.82000000000001 0)
 			(effects
 				(font
-					(size 1.0 1.0)
+					(size 1 1)
 				)
 				(justify left)
 			)
@@ -4754,13 +4741,11 @@
 			)
 		)
 		(property "Tolerance" "Jumper"
-			(at 0 0 0)
-			(hide yes)
+			(at 143.51 93.98 90)
 			(effects
 				(font
-					(size 1.27 1.27)
+					(size 1 1)
 				)
-				(justify left)
 			)
 		)
 		(property "Power" "63mW"
@@ -4784,21 +4769,19 @@
 			)
 		)
 		(property "Reference" "R40"
-			(at 140.97 83.82 90)
+			(at 143.51 86.36 90)
 			(effects
 				(font
 					(size 1 1)
 				)
-				(justify left)
 			)
 		)
 		(property "Value" "0R"
-			(at 140.97 86.36 90)
+			(at 143.51 88.89999999999999 90)
 			(effects
 				(font
 					(size 1 1)
 				)
-				(justify left)
 			)
 		)
 		(pin "1"
@@ -4808,17 +4791,7 @@
 			(uuid "08656bdd-6c88-4b7b-af76-e5ee7338ed2f")
 		)
 	)
-	(wire
-		(pts
-			(xy 132.08 91.44)
-			(xy 140.97 91.44)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "a0eb088f-fa9a-454d-ae85-b3dd79d24205")
-	)
+
 	(wire
 		(pts
 			(xy 146.04999999999998 91.44)
@@ -5062,5 +5035,306 @@
 			(justify left top)
 		)
 		(uuid "1f0be957-7d9f-45a5-8689-cfd2bff4f044")
+	)
+	(symbol
+		(lib_id "Device:C_Small")
+		(at 134.62 104.14 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp yes)
+		(uuid "57ebc53b-cd8e-4b65-a590-2bbb6518f9e1")
+		(property "Reference" "C50"
+			(at 137.16 101.6 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "DNP"
+			(at 137.16 104.14 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+			(at 134.62 104.14 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" "https://www.taoglas.com/datasheets/GGBLA.125.A.pdf"
+			(at 134.62 104.14 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Optional RF input shunt capacitor; C0G, 25V, 0402; value set by RF measurement"
+			(at 134.62 104.14 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "b26b915e-1f01-4a1f-9f79-18c8f90ebba1")
+		)
+		(pin "2"
+			(uuid "bed8fd15-c255-41e9-970c-8789e28a52ed")
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/5a14f605-48aa-4460-a539-747803f1a190"
+					(reference "C50")
+					(unit 1)
+				)
+			)
+		)
+		(property "Manufacturer" "Murata"
+			(at -288.29 12.7 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "MPN" ""
+			(at -288.29 12.7 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "25V"
+			(at 137.16 106.68 0)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Dielectric" "C0G"
+			(at 137.16 109.22 0)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "0.1pF"
+			(at -288.29 12.7 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Tuning" "Retune on final assembled PCB"
+			(at -288.29 12.7 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 134.62 111.76 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "69490c5f-4f70-44d8-ab0d-70428af8b30b")
+		(property "Reference" "#PWR5001"
+			(at 137.16 107.95 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "GND"
+			(at 137.16 109.22 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" ""
+			(at 137.16 110.49 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 137.16 111.76 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" ""
+			(at 137.16 113.03 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "bedebeaa-117c-4cbf-9bdb-87fa951b1480")
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/5a14f605-48aa-4460-a539-747803f1a190"
+					(reference "#PWR5001")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 132.08 91.44)
+			(xy 134.62 91.44)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "fcc1662f-2eec-429a-9b9a-ca203e2d1ecc")
+	)
+	(wire
+		(pts
+			(xy 134.62 91.44)
+			(xy 140.97 91.44)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "d1e64898-95aa-4a96-9e3d-8084316fc532")
+	)
+	(wire
+		(pts
+			(xy 134.62 91.44)
+			(xy 134.62 101.6)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "39795826-da85-41bc-9cd0-f0a2c7187b01")
+	)
+	(wire
+		(pts
+			(xy 134.62 106.68)
+			(xy 134.62 111.76)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "75e2378f-0b6d-48be-a633-f00c9b30ba6e")
+	)
+	(junction
+		(at 134.62 91.44)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "be9d5355-6298-4b82-8c58-f114f1673bb1")
+	)
+	(wire
+		(pts
+			(xy 90.17 48.26)
+			(xy 93.98 48.26)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "8426f741-256f-4458-9487-1053ba4f088d")
+	)
+	(wire
+		(pts
+			(xy 93.98 48.26)
+			(xy 96.52 48.26)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "1d3ef3ca-d28f-4610-859f-951624b9efbc")
+	)
+	(junction
+		(at 93.98 48.26)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "4ec374be-fe1c-4f89-ae91-12b6349a5b6c")
 	)
 )

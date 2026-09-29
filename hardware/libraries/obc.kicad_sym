@@ -2173,20 +2173,19 @@
 				)
 			)
 			(pin no_connect line
-				(at 8.89 -30.48 90)
+				(at 20.32 15.24 180)
 				(length 5.08)
-				(hide yes)
 				(name "NC"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "2"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
@@ -2480,20 +2479,19 @@
 				)
 			)
 			(pin no_connect line
-				(at 8.89 -30.48 90)
+				(at 20.32 7.62 180)
 				(length 5.08)
-				(hide yes)
 				(name "NC"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "19"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
@@ -2517,58 +2515,55 @@
 				)
 			)
 			(pin no_connect line
-				(at 8.89 -30.48 90)
+				(at 20.32 0.0 180)
 				(length 5.08)
-				(hide yes)
 				(name "NC"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "21"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 			)
 			(pin no_connect line
-				(at 8.89 -30.48 90)
+				(at 20.32 -7.619999999999999 180)
 				(length 5.08)
-				(hide yes)
 				(name "MP1"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "MP1"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 			)
 			(pin no_connect line
-				(at 8.89 -30.48 90)
+				(at 20.32 -15.24 180)
 				(length 5.08)
-				(hide yes)
 				(name "MP2"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "MP2"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
@@ -5212,8 +5207,8 @@
 		)
 		(symbol "USB4720-03-A_0_1"
 			(rectangle
-				(start -12.7 15.24)
-				(end 12.7 -15.24)
+				(start -25.4 15.24)
+				(end 12.7 -25.4)
 				(stroke
 					(width 0.254)
 					(type default)
@@ -5225,37 +5220,37 @@
 		)
 		(symbol "USB4720-03-A_1_1"
 			(pin power_in line
-				(at -10.16 -20.32 90)
+				(at -20.32 -30.48 90)
 				(length 5.08)
 				(name "GND_A"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "A1_B12"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 			)
 			(pin power_in line
-				(at -2.54 20.32 270)
+				(at -10.16 20.32 270)
 				(length 5.08)
 				(name "VBUS_A"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "A4_B9"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
@@ -5266,14 +5261,14 @@
 				(name "CC1"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "A5"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
@@ -5284,14 +5279,14 @@
 				(name "DP1"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "A6"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
@@ -5302,14 +5297,14 @@
 				(name "DN1"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "A7"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
@@ -5320,50 +5315,50 @@
 				(name "SBU1"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "A8"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 			)
 			(pin power_in line
-				(at -7.62 -20.32 90)
+				(at -7.62 -30.48 90)
 				(length 5.08)
 				(name "GND_B"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "B1_A12"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 			)
 			(pin power_in line
-				(at 0 20.32 270)
+				(at 2.54 20.32 270)
 				(length 5.08)
 				(name "VBUS_B"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "B4_A9"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
@@ -5374,14 +5369,14 @@
 				(name "CC2"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "B5"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
@@ -5392,14 +5387,14 @@
 				(name "DP2"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "B6"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
@@ -5410,14 +5405,14 @@
 				(name "DN2"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "B7"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
@@ -5428,125 +5423,130 @@
 				(name "SBU2"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "B8"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 			)
 			(pin passive line
-				(at -5.08 -20.32 90)
+				(at 7.62 -30.48 90)
 				(length 5.08)
 				(name "SHIELD"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "SH1"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 			)
 			(pin passive line
-				(at -2.54 -20.32 90)
+				(at 7.62 -30.48 90)
 				(length 5.08)
 				(name "SHIELD"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "SH2"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
+				(hide yes)
 			)
 			(pin passive line
-				(at 0 -20.32 90)
+				(at 7.62 -30.48 90)
 				(length 5.08)
 				(name "SHIELD"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "SH3"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
+				(hide yes)
 			)
 			(pin passive line
-				(at 2.54 -20.32 90)
+				(at 7.62 -30.48 90)
 				(length 5.08)
 				(name "SHIELD"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "SH4"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
+				(hide yes)
 			)
 			(pin passive line
-				(at 5.08 -20.32 90)
+				(at 7.62 -30.48 90)
 				(length 5.08)
 				(name "SHIELD"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "SH5"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
+				(hide yes)
 			)
 			(pin passive line
-				(at 7.62 -20.32 90)
+				(at 7.62 -30.48 90)
 				(length 5.08)
 				(name "SHIELD"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
 				(number "SH6"
 					(effects
 						(font
-							(size 1.27 1.27)
+							(size 1 1)
 						)
 					)
 				)
+				(hide yes)
 			)
 		)
 		(embedded_fonts no)
@@ -6716,7 +6716,7 @@
 		)
 		(symbol "nRF54LM20A-PAXX_2_0"
 			(pin bidirectional line
-				(at 19.05 -11.43 180)
+				(at -19.05 -11.43 0)
 				(length 3.81)
 				(name "P0.09"
 					(effects
@@ -6734,7 +6734,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at 19.05 -8.89 180)
+				(at -19.05 -8.89 0)
 				(length 3.81)
 				(name "P0.08"
 					(effects
@@ -6752,7 +6752,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at 19.05 -6.35 180)
+				(at -19.05 -6.35 0)
 				(length 3.81)
 				(name "P0.07"
 					(effects
@@ -6770,7 +6770,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at 19.05 -3.81 180)
+				(at -19.05 -3.81 0)
 				(length 3.81)
 				(name "P0.06"
 					(effects
@@ -6788,7 +6788,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at 19.05 -1.27 180)
+				(at -19.05 -1.27 0)
 				(length 3.81)
 				(name "P0.05"
 					(effects
@@ -6806,7 +6806,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at 19.05 1.27 180)
+				(at -19.05 1.27 0)
 				(length 3.81)
 				(name "P0.04"
 					(effects
@@ -6824,7 +6824,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at 19.05 3.81 180)
+				(at -19.05 3.81 0)
 				(length 3.81)
 				(name "P0.03"
 					(effects
@@ -6842,7 +6842,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at 19.05 6.35 180)
+				(at -19.05 6.35 0)
 				(length 3.81)
 				(name "P0.02"
 					(effects
@@ -6860,7 +6860,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at 19.05 8.89 180)
+				(at -19.05 8.89 0)
 				(length 3.81)
 				(name "P0.01"
 					(effects
@@ -6878,7 +6878,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at 19.05 11.43 180)
+				(at -19.05 11.43 0)
 				(length 3.81)
 				(name "P0.00"
 					(effects
@@ -7091,7 +7091,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at 19.05 8.89 180)
+				(at 19.05 24.13 180)
 				(length 3.81)
 				(name "P1.11"
 					(effects
@@ -7271,7 +7271,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at 19.05 24.13 180)
+				(at 19.05 8.89 180)
 				(length 3.81)
 				(name "P1.05"
 					(effects
@@ -7289,7 +7289,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at 19.05 29.21 180)
+				(at -19.05 29.21 0)
 				(length 3.81)
 				(name "P1.03"
 					(effects
@@ -7307,7 +7307,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at 19.05 -31.75 180)
+				(at -19.05 34.29 0)
 				(length 3.81)
 				(name "P1.29"
 					(effects
@@ -7379,7 +7379,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at 19.05 26.67 180)
+				(at -19.05 26.67 0)
 				(length 3.81)
 				(name "P1.04"
 					(effects
@@ -7397,7 +7397,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at 19.05 -34.29 180)
+				(at 19.05 -31.75 180)
 				(length 3.81)
 				(name "P1.30"
 					(effects
@@ -7415,7 +7415,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at 19.05 36.83 180)
+				(at 19.05 -36.83 180)
 				(length 3.81)
 				(name "P1.00"
 					(effects
@@ -7433,7 +7433,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at 19.05 -36.83 180)
+				(at 19.05 -34.29 180)
 				(length 3.81)
 				(name "P1.31"
 					(effects
@@ -8507,7 +8507,7 @@
 				)
 			)
 		)
-		(property "Footprint" "obc:Taoglas_GGBLA125A_10x3.2mm_ContactPads"
+		(property "Footprint" "obc:Taoglas_GGBLA125A_10x3.2mm_Corner"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -9185,7 +9185,7 @@
 						)
 					)
 				)
-				(number "1"
+				(number "2"
 					(effects
 						(font
 							(size 1 1)
@@ -9203,7 +9203,7 @@
 						)
 					)
 				)
-				(number "2"
+				(number "3"
 					(effects
 						(font
 							(size 1 1)
@@ -9221,7 +9221,7 @@
 						)
 					)
 				)
-				(number "3"
+				(number "10"
 					(effects
 						(font
 							(size 1 1)
@@ -9239,7 +9239,7 @@
 						)
 					)
 				)
-				(number "4"
+				(number "11"
 					(effects
 						(font
 							(size 1 1)
@@ -9257,7 +9257,7 @@
 						)
 					)
 				)
-				(number "5"
+				(number "4"
 					(effects
 						(font
 							(size 1 1)
@@ -9275,7 +9275,7 @@
 						)
 					)
 				)
-				(number "10"
+				(number "9"
 					(effects
 						(font
 							(size 1 1)
@@ -9293,7 +9293,7 @@
 						)
 					)
 				)
-				(number "7"
+				(number "6"
 					(effects
 						(font
 							(size 1 1)
@@ -9311,7 +9311,7 @@
 						)
 					)
 				)
-				(number "8"
+				(number "7"
 					(effects
 						(font
 							(size 1 1)
@@ -9329,7 +9329,7 @@
 						)
 					)
 				)
-				(number "6"
+				(number "1"
 					(effects
 						(font
 							(size 1 1)
@@ -9347,7 +9347,7 @@
 						)
 					)
 				)
-				(number "9"
+				(number "5"
 					(effects
 						(font
 							(size 1 1)
@@ -9365,7 +9365,7 @@
 						)
 					)
 				)
-				(number "11"
+				(number "8"
 					(effects
 						(font
 							(size 1 1)

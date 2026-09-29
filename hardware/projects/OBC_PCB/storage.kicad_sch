@@ -1173,7 +1173,7 @@
 		(uuid "b658ddd8-53e8-4f41-a525-5dc1aacdfdc6")
 	)
 	(label "FLPR.P05"
-		(at 137.16 83.82 0)
+		(at 60.96 83.82 0)
 		(effects
 			(font
 				(size 1 1)
@@ -1195,23 +1195,23 @@
 		(fields_autoplaced yes)
 		(uuid "c59c95a0-8ca9-476d-8aae-628afe8ab9c3")
 		(property "Reference" "R28"
-			(at 92.71 63.5 0)
+			(at 93.98 63.50000000000001 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
-					(size 1.27 1.27)
+					(size 1 1)
 				)
 				(justify left)
 			)
 		)
 		(property "Value" "47k"
-			(at 92.71 66.04 0)
+			(at 93.98 66.04 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
-					(size 1.27 1.27)
+					(size 1 1)
 				)
 				(justify left)
 			)
@@ -1267,7 +1267,7 @@
 			)
 		)
 		(property "Tolerance" "1%"
-			(at 92.71 68.58 0)
+			(at 93.98 68.58000000000001 0)
 			(effects
 				(font
 					(size 1 1)
@@ -1366,7 +1366,7 @@
 		(uuid "f228982e-1e6a-4fca-b639-582d98a60d4f")
 	)
 	(label "FLPR.P02"
-		(at 137.16 86.36 0)
+		(at 60.96 86.36 0)
 		(effects
 			(font
 				(size 1 1)
@@ -1388,23 +1388,23 @@
 		(fields_autoplaced yes)
 		(uuid "b470299f-78d4-440d-b047-7f0f1cc990c5")
 		(property "Reference" "R29"
-			(at 102.87 63.5 0)
+			(at 104.14 63.50000000000001 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
-					(size 1.27 1.27)
+					(size 1 1)
 				)
 				(justify left)
 			)
 		)
 		(property "Value" "47k"
-			(at 102.87 66.04 0)
+			(at 104.14 66.04 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
-					(size 1.27 1.27)
+					(size 1 1)
 				)
 				(justify left)
 			)
@@ -1460,7 +1460,7 @@
 			)
 		)
 		(property "Tolerance" "1%"
-			(at 102.87 68.58 0)
+			(at 104.14 68.58000000000001 0)
 			(effects
 				(font
 					(size 1 1)
@@ -1562,23 +1562,23 @@
 		(fields_autoplaced yes)
 		(uuid "267d83f4-3925-491d-b7a2-2950b02278aa")
 		(property "Reference" "R30"
-			(at 113.03 63.5 0)
+			(at 114.30000000000001 63.50000000000001 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
-					(size 1.27 1.27)
+					(size 1 1)
 				)
 				(justify left)
 			)
 		)
 		(property "Value" "47k"
-			(at 113.03 66.04 0)
+			(at 114.30000000000001 66.04 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
-					(size 1.27 1.27)
+					(size 1 1)
 				)
 				(justify left)
 			)
@@ -1634,7 +1634,7 @@
 			)
 		)
 		(property "Tolerance" "1%"
-			(at 113.03 68.58 0)
+			(at 114.30000000000001 68.58000000000001 0)
 			(effects
 				(font
 					(size 1 1)
@@ -1733,7 +1733,7 @@
 		(uuid "915fe14c-1557-42fd-95fe-b09890a9134f")
 	)
 	(label "FLPR.P03"
-		(at 137.16 91.44 0)
+		(at 60.96 91.44 0)
 		(effects
 			(font
 				(size 1 1)
@@ -1755,23 +1755,23 @@
 		(fields_autoplaced yes)
 		(uuid "f2a413a6-6732-4c49-8938-137e9288dd26")
 		(property "Reference" "R31"
-			(at 123.19 63.5 0)
+			(at 124.46000000000001 63.50000000000001 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
-					(size 1.27 1.27)
+					(size 1 1)
 				)
 				(justify left)
 			)
 		)
 		(property "Value" "47k"
-			(at 123.19 66.04 0)
+			(at 124.46000000000001 66.04 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
-					(size 1.27 1.27)
+					(size 1 1)
 				)
 				(justify left)
 			)
@@ -1827,7 +1827,7 @@
 			)
 		)
 		(property "Tolerance" "1%"
-			(at 123.19 68.58 0)
+			(at 124.46000000000001 68.58000000000001 0)
 			(effects
 				(font
 					(size 1 1)
@@ -1929,23 +1929,23 @@
 		(fields_autoplaced yes)
 		(uuid "3076cd49-e85c-4cdc-9d91-5508991dc923")
 		(property "Reference" "R32"
-			(at 133.35 63.5 0)
+			(at 134.62 63.50000000000001 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
-					(size 1.27 1.27)
+					(size 1 1)
 				)
 				(justify left)
 			)
 		)
 		(property "Value" "47k"
-			(at 133.35 66.04 0)
+			(at 134.62 66.04 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
-					(size 1.27 1.27)
+					(size 1 1)
 				)
 				(justify left)
 			)
@@ -2001,7 +2001,7 @@
 			)
 		)
 		(property "Tolerance" "1%"
-			(at 133.35 68.58 0)
+			(at 134.62 68.58000000000001 0)
 			(effects
 				(font
 					(size 1 1)

@@ -1037,7 +1037,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Inductor_SMD:L_0201_0603Metric"
+		(property "Footprint" "obc:L_Nordic_0201_0603Metric"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -1158,7 +1158,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Inductor_SMD:L_0201_0603Metric"
+		(property "Footprint" "obc:L_Nordic_0201_0603Metric"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -1279,7 +1279,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Inductor_SMD:L_0201_0603Metric"
+		(property "Footprint" "obc:L_Nordic_0201_0603Metric"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -1400,7 +1400,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0201_0603Metric"
+		(property "Footprint" "obc:C_Nordic_0201_0603Metric"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -1590,6 +1590,7 @@
 				)
 				(justify left)
 			)
+			(hide yes)
 		)
 		(pin "1"
 			(uuid "02702111-7ade-4464-9686-d28f5416dd01")
@@ -1618,7 +1619,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0201_0603Metric"
+		(property "Footprint" "obc:C_Nordic_0201_0603Metric"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -1808,6 +1809,7 @@
 				)
 				(justify left)
 			)
+			(hide yes)
 		)
 		(pin "1"
 			(uuid "0ecdb153-839b-4c14-a416-1e30ce2a6ddb")
@@ -2026,6 +2028,7 @@
 				)
 				(justify left)
 			)
+			(hide yes)
 		)
 		(pin "1"
 			(uuid "eb0591ee-7df6-4437-ba21-a6ed8b56cbab")
@@ -2244,6 +2247,7 @@
 				)
 				(justify left)
 			)
+			(hide yes)
 		)
 		(pin "1"
 			(uuid "61349512-80a7-4de0-8bf7-7da480a64109")
@@ -2313,21 +2317,19 @@
 			)
 		)
 		(property "Reference" "R35"
-			(at 177.8 78.74 90)
+			(at 180.34 81.28 90)
 			(effects
 				(font
 					(size 1 1)
 				)
-				(justify left)
 			)
 		)
 		(property "Value" "0R"
-			(at 177.8 81.28 90)
+			(at 180.34 83.82 90)
 			(effects
 				(font
 					(size 1 1)
 				)
-				(justify left)
 			)
 		)
 		(pin "1"
@@ -2584,6 +2586,7 @@
 				)
 				(justify left)
 			)
+			(hide yes)
 		)
 		(pin "1"
 			(uuid "a03e6abe-3d70-4371-b7d5-68ef52ffe245")
@@ -2699,13 +2702,11 @@
 			)
 		)
 		(property "Tolerance" "Jumper"
-			(at 0 0 0)
-			(hide yes)
+			(at 144.78 88.9 90)
 			(effects
 				(font
-					(size 1.27 1.27)
+					(size 1 1)
 				)
-				(justify left)
 			)
 		)
 		(property "Power" "63mW"
@@ -2729,21 +2730,19 @@
 			)
 		)
 		(property "Reference" "R39"
-			(at 142.24 78.74 90)
+			(at 144.78 81.28 90)
 			(effects
 				(font
 					(size 1 1)
 				)
-				(justify left)
 			)
 		)
 		(property "Value" "0R"
-			(at 142.24 81.28 90)
+			(at 144.78 83.82 90)
 			(effects
 				(font
 					(size 1 1)
 				)
-				(justify left)
 			)
 		)
 		(pin "1"
@@ -2870,7 +2869,7 @@
 			)
 		)
 		(property "Reference" "J7"
-			(at 138.43 68.58 90)
+			(at 157.48000000000002 68.58 90)
 			(effects
 				(font
 					(size 1 1)
@@ -2879,7 +2878,7 @@
 			)
 		)
 		(property "Value" "RF coax pads"
-			(at 138.43 71.12 90)
+			(at 157.48000000000002 71.12 90)
 			(effects
 				(font
 					(size 1 1)
