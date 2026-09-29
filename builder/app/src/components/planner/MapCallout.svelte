@@ -18,7 +18,7 @@
 
     let {
         kind, trip, days, dayLabels, night, point, place, coordinate, candidates, legMode, forNight = false,
-        onClose, onAddHere, onLegMode, onInsert, onPick, onSelectPlace, onStay, onAddVisit, onRename, onKind, onRemove,
+        onClose, onEndpoint, onAddHere, onLegMode, onInsert, onPick, onSelectPlace, onStay, onAddVisit, onRename, onKind, onRemove,
     }: {
         kind: CalloutKind;
         trip: Trip;
@@ -35,6 +35,7 @@
         legMode: LegMode;
         /** The place was picked for the night, so it offers the night whatever its kind. */
         forNight?: boolean;
+        onEndpoint?: (kind: 'start' | 'finish') => void;
         onClose: () => void;
         onAddHere: (kind: EditableKind) => void;
         onLegMode: (mode: LegMode) => void;
@@ -48,6 +49,7 @@
         onRemove: () => void;
     } = $props();
 
+    const hasEndpoints = $derived(trip.points.some(p => p.kind === 'start') && trip.points.some(p => p.kind === 'finish'));
     const multi = $derived(trip.mode !== 'route');
     const types = $derived(([
         { value: 'via', label: 'Shape', icon: 'route' },
@@ -67,7 +69,7 @@
     // svelte-ignore state_referenced_locally
     let sleepDay = $state(night);
 
-    const sleeps = $derived(multi && (!place || forNight || place.category === 'hotel' || place.category === 'camp'));
+    const sleeps = $derived(hasEndpoints && days.length > 0 && multi && (!place || forNight || place.category === 'hotel' || place.category === 'camp'));
     const preview = $derived.by(() => {
         if (!coordinate || sleepDay >= days.length) return null;
         const day = tripDays(pinNight(trip, sleepDay, coordinate, 'Preview'))[sleepDay - 1];
@@ -109,14 +111,23 @@
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div class="callout" bind:this={root} tabindex="-1" role="dialog" aria-label="Map details" onkeydown={key}>
     <button type="button" class="close" onclick={close} aria-label="Close"><Icon name="close" size={15} /></button>
+    {#snippet endpoints()}
+        {#if onEndpoint}<div class="add-types endpoints">
+            <button type="button" onclick={() => onEndpoint?.('start')}><Icon name="pin" size={15} />Start here</button>
+            <button type="button" onclick={() => onEndpoint?.('finish')}><Icon name="flag" size={15} />Finish here</button>
+        </div>{/if}
+    {/snippet}
     {#if kind === 'add'}
-        <h2>Add point here</h2>
+        <h2>{hasEndpoints ? 'Add point here' : 'Plan from here'}</h2>
+        {@render endpoints()}
+        {#if hasEndpoints}
         <div class="add-types">
             {#each types.filter(type => type.value !== 'marker') as type (type.value)}
                 <button type="button" onclick={() => onAddHere(type.value)}><Icon name={type.icon} size={15} />{type.label}</button>
             {/each}
         </div>
         <button type="button" class="quiet" onclick={() => onAddHere('marker')}><Icon name="pin" size={15} />Add a marker</button>
+        {/if}
     {:else if kind === 'leg'}
         <h2>This leg</h2>
         <Segmented label="Leg mode" options={legModes} value={legMode} onChange={onLegMode} />
@@ -138,6 +149,7 @@
         </div>
         {#if place?.description && place.description !== placeCategories[place.category].label}<p class="place-note">{place.description}</p>{/if}
         {#if place && (place.openingHours || ['shop','food','pharmacy','hotel','bike'].includes(place.category))}<OpeningHours value={place.openingHours} />{/if}
+        {#if place}{@render endpoints()}{/if}
         {#if sleeps}
             <label class="field">End of day
                 <select bind:value={sleepDay}>
@@ -152,7 +164,7 @@
             {#if sleepDay >= maxRidingDays}<p class="hint">A trip can have up to {maxRidingDays} riding days. Choose an earlier day for this overnight.</p>{/if}
             <button type="button" class="primary" disabled={sleepDay >= maxRidingDays} onclick={() => onStay(sleepDay)}>{days[sleepDay - 1]?.pinned ? 'Replace overnight' : 'Stay here'}<Icon name="check" size={15} /></button>
             {#if place}<button type="button" class="secondary" onclick={() => onAddVisit(place)}>Add as visit</button>{/if}
-        {:else if place}
+        {:else if place && hasEndpoints}
             <button type="button" class="primary" onclick={() => onAddVisit(place)}>{place.category === 'peak' ? 'Ride over it' : 'Add visit'}<Icon name="plus" size={15} /></button>
         {/if}
     {:else if kind === 'point' && point}
@@ -171,7 +183,7 @@
                     if (event.key === 'Escape') renaming = false;
                 }} />
         {/if}
-        {#if point.kind !== 'start' && point.kind !== 'finish'}
+        {#if hasEndpoints && point.kind !== 'start' && point.kind !== 'finish'}
             <Segmented label="Point type" options={types} columns={types.length > 3 ? 2 : 0} value={point.kind === 'detour' ? 'waypoint' : point.kind as EditableKind} onChange={onKind} />
             {#if point.kind === 'waypoint' || point.kind === 'detour'}
                 <div class="gap">
@@ -179,8 +191,8 @@
                         options={[{ value: 'waypoint', label: 'Through' }, { value: 'detour', label: 'Out and back' }]} />
                 </div>
             {/if}
-            <button type="button" class="quiet" onclick={onRemove}><Icon name="trash" size={15} />Remove point</button>
         {/if}
+        <button type="button" class="quiet" onclick={onRemove}><Icon name="trash" size={15} />Remove point</button>
     {/if}
 </div>
 
@@ -246,6 +258,7 @@
     .place-symbol { display: grid; place-items: center; width: 40px; height: 40px; flex: none; border-radius: 50%; color: var(--query-place); background: color-mix(in srgb, var(--query-place) 10%, var(--panel)); }
     .kind { margin: 0; color: var(--ink-soft); font-size: 13px; line-height: 1.45; }
     .place-note { margin: 10px 0; color: var(--ink-soft); line-height: 1.45; }
+    .endpoints { margin-bottom: 12px; }
     .add-types {
         display: flex;
         gap: 8px;

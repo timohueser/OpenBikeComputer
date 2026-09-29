@@ -15,6 +15,8 @@ const key = 'obc-planner-lab-versions-v1';
 const unnamedKept = 10;
 
 export function versionSummary(trip: Trip): string {
+    const endpoints = trip.points.filter(p => p.kind === 'start' || p.kind === 'finish');
+    if (endpoints.length < 2) return endpoints.length ? `${endpoints[0].kind === 'start' ? 'Start' : 'Finish'} chosen` : 'Empty plan';
     const distance = `${cumulative(routeCoordinates(trip)).at(-1)!.toFixed(1)} km`;
     if (trip.mode === 'route') return `Single route · ${distance}`;
     const days = itineraryDays(trip).length;

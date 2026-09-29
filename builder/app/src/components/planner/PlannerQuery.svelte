@@ -17,7 +17,7 @@
     let serial = 0;
     let previousContext = '';
     let framePending = false;
-    let answeredContext: SearchContext | undefined;
+    let requestContext: SearchContext | undefined;
     let limit = 6;
     let settings = $state(false);
     const regions = (import.meta.env.VITE_PLANNER_SEARCH_REGIONS || 'baden-wuerttemberg,germany').split(',');
@@ -27,20 +27,21 @@
     const required = $derived(request?.type === 'places' ? ['what'] : request?.type === 'place' ? ['name'] : request?.type === 'route' ? ['to'] : request?.type === 'end_day' ? ['day','at'] : ['add_point','remove_point'].includes(request?.type ?? '') ? ['point'] : request?.type === 'split' ? ['days','per_day'] : request?.type === 'join' ? ['day'] : request?.type === 'stretches' ? ['what'] : []);
     const explicitWhere = $derived(request?.where ?? context.pointing ?? { scope: 'view' as const });
 
-    async function run(nextLimit = 20, parsed = request, reparse = false, fit = true, background = false) {
+    async function run(nextLimit = 20, parsed = request, options: { reparse?: boolean; fit?: boolean; background?: boolean; context?: SearchContext } = {}) {
+        const { reparse = false, fit = true, background = false } = options;
         if (fit) framePending = true;
         if (reparse) parsed = undefined;
         clearTimeout(timer); controller?.abort(); const id = ++serial;
         if (!text.trim()) { clear(); return; }
         controller = new AbortController(); limit = nextLimit;
         const input = text, signal = controller.signal;
-        const searchContext = background && answeredContext ? answeredContext : $state.snapshot(context);
+        const searchContext = options.context ?? (background && requestContext ? requestContext : $state.snapshot(context));
+        requestContext = searchContext;
         if (!background) onSearch();
         searchState = { loading: true, error: '', answer: background ? searchState.answer : null };
         try {
             const answer = await searchPlaces(input, searchContext, region, limit, signal, parsed ? $state.snapshot(parsed) : undefined);
             if (id !== serial) return;
-            answeredContext = searchContext;
             request = answer.request; searchState = { loading: false, error: '', answer };
             if (framePending && answer.type === 'places' && answer.results?.length) onResults?.(answer.results.map(p => [p.lon, p.lat]));
             framePending = false;
@@ -76,25 +77,25 @@
         delete (next as unknown as Record<string, unknown>)[key];
         removed = { ...removed, [key]: value }; request = next; edited = true; run(20, next);
     }
-    export function more() { run(Math.min(100, Math.max(20, limit + 20))); }
-    export function retry() { run(Math.max(20, limit), request, !edited); }
+    export function more() { run(Math.min(100, Math.max(20, limit + 20)), request, { context: requestContext }); }
+    export function retry() { run(Math.max(20, limit), request, { reparse: !edited, context: requestContext }); }
     $effect(() => {
-        // Result framing updates the live bounds but does not advance viewRevision.
+        // Result framing and place inspection update live bounds without advancing viewRevision.
         const current = JSON.stringify([viewRevision, context.here, context.startDate, context.pointing, context.plan]);
         if (current === previousContext) return;
         previousContext = current;
-        untrack(() => { if (text.trim() && current) { clearTimeout(timer); controller?.abort(); serial++; searchState = { loading: true, error: '', answer: null }; timer = setTimeout(() => run(limit, request, false, false), 200); } });
+        untrack(() => { if (text.trim() && current) { clearTimeout(timer); controller?.abort(); serial++; searchState = { loading: true, error: '', answer: null }; timer = setTimeout(() => run(limit, request, { fit: false }), 200); } });
     });
     onMount(() => {
         const refresh = setInterval(() => {
-            if (!document.hidden && !searchState.loading && searchState.answer?.results?.some(p => p.opening_hours)) run(limit, request, false, false, true);
+            if (!document.hidden && !searchState.loading && searchState.answer?.results?.some(p => p.opening_hours)) run(limit, request, { fit: false, background: true });
         }, 60_000);
         return () => clearInterval(refresh);
     });
     onDestroy(() => { clearTimeout(timer); controller?.abort(); });
 </script>
 <div class="planner-query">
-    <form onsubmit={event => { event.preventDefault(); run(20, request, !edited); }}>
+    <form onsubmit={event => { event.preventDefault(); run(20, request, { reparse: !edited }); }}>
         <div class="query-input" class:edited>
             <PlannerIcon name="search" size={17} />
             <input aria-label="Find a place or ask about the route" value={text} oninput={e => input(e.currentTarget.value)} placeholder="Find a place, or ask along your route…" maxlength="240" onkeydown={e => { if (e.key === 'Escape') clear(); }} />

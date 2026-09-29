@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addRestDay, applyBudget, initialTrip, maxRidingDays, pinNight, reorderPoint, setDrawnLeg } from './editor';
+import { emptyTrip, setEndpoint, addRestDay, applyBudget, initialTrip, maxRidingDays, pinNight, reorderPoint, setDrawnLeg } from './editor';
 import { isTrip } from './trip-validation';
 import { listVersions, readVersion, saveVersion } from './versions';
 
@@ -17,7 +17,7 @@ describe('stored planner data', () => {
         expect(readVersion(version.id, store)).toEqual(trip);
     });
 
-    it('rejects missing endpoints, invalid geometry and broken route references', () => {
+    it('rejects invalid endpoint roles, invalid geometry and broken route references', () => {
         const trip = initialTrip();
         const invalid: unknown[] = [
             null, {}, { points: [], days: 3, limit: 50 },
@@ -32,6 +32,17 @@ describe('stored planner data', () => {
             { ...trip, points: [...trip.points, { ...trip.points[0], id: 'night-3', kind: 'night', night: 3 }] },
         ];
         for (const value of invalid) expect(isTrip(value), JSON.stringify(value)).toBe(false);
+    });
+
+    it('round-trips empty and one-endpoint drafts and versions', () => {
+        for (const trip of [emptyTrip(), setEndpoint(emptyTrip('trip'), 'finish', [8, 48], 'Finish')]) {
+            expect(isTrip(JSON.parse(JSON.stringify(trip)))).toBe(true);
+            let json: string | null = null;
+            const store = { getItem: () => json, setItem: (_: string, value: string) => { json = value; } };
+            const saved = saveVersion(trip, undefined, store);
+            expect(readVersion(saved.id, store)).toEqual(trip);
+        }
+        expect(isTrip({ ...emptyTrip(), points: [{ ...initialTrip().points[0], kind: 'via' }] })).toBe(false);
     });
 
     it('skips malformed and duplicate version entries while keeping readable versions', () => {

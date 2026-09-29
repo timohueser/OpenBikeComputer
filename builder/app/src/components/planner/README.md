@@ -57,7 +57,10 @@ For map styling alone, `tools/planner_maps.py` provides `prepare` and `serve`.
 Its separate default directory is `builder/app/public/data/planner/`. Open
 `map-study.html` on the preview host. Use `--help` for archive and port options.
 
-The editor saves its trip in browser storage. Undo and Redo apply to
+Choose a map location or search result, then select Start here or Finish here.
+Choose both endpoints to calculate a route. Remove an endpoint to promote the
+adjacent route point. Use New route or New trip to clear the plan; Undo restores it.
+The editor saves empty, partial and complete plans in browser storage. Undo and Redo apply to
 changes made in the current session. Hold a dragged point still to preview its
 route. Release it to save one change. Open Route options to load alternatives. The surface
 strip follows the profile range; hover or use arrow keys to inspect each section.

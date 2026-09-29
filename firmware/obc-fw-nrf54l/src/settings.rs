@@ -394,24 +394,26 @@ impl SettingsStore for RramSettingsStore {
                 if settings.is_some() {
                     defmt::info!("settings: loaded {=usize} B from RRAM @ {=u32:#010x}", SLOT_LEN, off);
                 } else {
-                    defmt::info!("settings: RRAM slot @ {=u32:#010x} blank/invalid → booting defaults", off);
+                    defmt::info!("settings: RRAM slot @ {=u32:#010x} blank/invalid → booting factory settings", off);
                 }
                 settings
             }
             Err(e) => {
-                defmt::warn!("settings: RRAM read failed: {} → booting defaults", e);
+                defmt::warn!("settings: RRAM read failed: {} → booting factory settings", e);
                 None
             }
         }
     }
 
     fn save(&mut self, s: &Settings) -> Result<(), obc_ports::SettingsSaveError> {
+        let renamed = self.load().unwrap_or(Settings::FACTORY).device_name != s.device_name;
         let off = region_offset();
         let bytes: [u8; SLOT_LEN] = obc_app::settings::encode(s);
         // No erase: RRAM overwrites in place. One aligned 16-byte line, so this is a single write.
         match self.rram.write(off, &bytes) {
             Ok(()) => {
                 defmt::info!("settings: wrote {=usize} B to RRAM @ {=u32:#010x}", SLOT_LEN, off);
+                crate::link_control::mark_device_settings_changed(renamed);
                 Ok(())
             }
             Err(e) => {

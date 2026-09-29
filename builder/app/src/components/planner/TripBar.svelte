@@ -6,13 +6,14 @@
     import type { Trip } from '../../lib/planner/editor';
     import type { Version } from '../../lib/planner/versions';
 
-    let { trip, canUndo, canRedo, draftSavedAt, draftError, onChange, onUndo, onRedo, onRestore, onSaved }: {
+    let { trip, canUndo, canRedo, draftSavedAt, draftError, onChange, onUndo, onRedo, onRestore, onSaved, onNew }: {
         trip: Trip;
         canUndo: boolean;
         canRedo: boolean;
         draftSavedAt: number | null;
         draftError: string;
         onChange: (change: Partial<Trip>, description: string) => void;
+        onNew: () => void;
         onUndo: () => void;
         onRedo: () => void;
         onRestore: (trip: Trip, name: string) => void;
@@ -20,7 +21,9 @@
     } = $props();
 
     const bike = $derived(trip.bike ?? 'touring');
-    const title = $derived(`${trip.points.find(p => p.kind === 'start')?.label} → ${trip.points.find(p => p.kind === 'finish')?.label}`);
+    const start = $derived(trip.points.find(p => p.kind === 'start'));
+    const finish = $derived(trip.points.find(p => p.kind === 'finish'));
+    const title = $derived(start && finish ? `${start.label} → ${finish.label}` : start ? `From ${start.label}` : finish ? `To ${finish.label}` : 'New plan');
 </script>
 
 <div class="trip-bar">
@@ -42,6 +45,7 @@
         </div>
     </div>
     <div class="actions">
+        <button type="button" class="planner-action quiet" disabled={!trip.points.length} onclick={onNew}>New {trip.mode === 'route' ? 'route' : 'trip'}</button>
         <button type="button" class="icon" disabled={!canUndo} onclick={onUndo} aria-label="Undo" title="Undo"><Icon name="undo" /></button>
         <button type="button" class="icon" disabled={!canRedo} onclick={onRedo} aria-label="Redo" title="Redo"><Icon name="redo" /></button>
         <VersionsMenu {trip} {draftSavedAt} {draftError} {onRestore} {onSaved} />

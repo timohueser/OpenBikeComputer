@@ -49,6 +49,8 @@ obcm-testkit = { path = "../../host/obcm-testkit" }
 obc-fixtures = { path = "../../host/obc-fixtures" }
 serde_json = "1"
 sha2 = "0.11"
+# The QR encoder the pairing code's test re-encodes the app link with (BLE spec §9.2).
+qrcodegen-no-heap = "1.8"
 
 [[test]]
 name = "peak_view_photos"

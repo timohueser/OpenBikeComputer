@@ -38,6 +38,7 @@ pub(crate) mod map;
 mod map_transfer;
 mod menu;
 mod nav_route;
+mod pair_code;
 pub mod palette;
 mod passkey;
 mod peak_article;
@@ -58,6 +59,7 @@ mod route_overview;
 mod route_received;
 mod route_swap;
 pub(crate) mod settings;
+pub(crate) mod setup;
 mod start_away;
 mod statistics;
 mod trip_delete;
@@ -89,6 +91,7 @@ pub use map::{MapScreen, ROUTE_WEIGHT};
 pub use map_transfer::{MapTransfer, MapTransferError, MapTransferScreen};
 pub use menu::MenuScreen;
 pub use nav_route::{NavFailScreen, NavPlanningScreen, PlanKind};
+pub use pair_code::PairPhoneScreen;
 pub use passkey::PasskeyScreen;
 pub use peak_article::PeakArticleScreen;
 pub use peak_view::PeakViewScreen;
@@ -115,6 +118,10 @@ pub use route_swap::RouteSwapScreen;
 pub use settings::{
     AboutScreen, AddFieldScreen, LanguageScreen, ResetScreen, SensorScanScreen, SensorsScreen, SettingsPage,
     StatFieldsScreen,
+};
+pub use setup::{
+    HelloScreen, SetupAllSetScreen, SetupButtonsScreen, SetupEffortScreen, SetupLanguageScreen, SetupNoAppScreen,
+    SetupPairedScreen, SetupQrScreen, SetupSensorScanScreen, SetupSensorsScreen, SetupThemeScreen, SetupUnitsScreen,
 };
 pub use start_away::StartAwayScreen;
 pub use statistics::StatisticsScreen;
@@ -463,6 +470,8 @@ pub struct Render<'a> {
     pub stats: RenderStats,
     /// The running firmware version string. Empty until the host feeds it.
     pub fw_version: &'a str,
+    /// The factory name `OBC-XXXX`, the name the OBC advertises while no rename is stored.
+    pub factory_name: &'a str,
     /// The loaded map's display name. Empty until map load.
     pub map_name: &'a str,
     /// The loaded map's OBCM format version; `0` means no map yet.
@@ -903,6 +912,38 @@ screens! {
     /// The one-shot boot decision for a durable recording recovered after reset. Back cannot
     /// dismiss it; Continue preserves restored totals, while Discard is hold-guarded.
     RideRecovery(RideRecoveryScreen) => Caps::modal().blocks_escape(),
+    /// First-use setup's greeting in the four UI languages. Setup refuses the escape and the
+    /// Assistant chord: it ends only when its last step is done. The quick drawer opens over it
+    /// without its Settings control.
+    Hello(HelloScreen) => Caps::modal().blocks_escape(),
+    /// Setup's language step: the Language pick list, where Select ends the step and Back returns
+    /// to Hello.
+    SetupLanguage(SetupLanguageScreen) => Caps::modal().blocks_escape(),
+    /// Setup's button lesson: each press fills its button's board. Once all four are filled,
+    /// Select ends the step and Back returns to the language step.
+    SetupButtons(SetupButtonsScreen) => Caps::modal().blocks_escape(),
+    /// Setup's units step: Metric or Imperial over a preview of the ride tiles.
+    SetupUnits(SetupUnitsScreen) => Caps::modal().blocks_escape(),
+    /// Setup's theme step: Light or Dark. The frame draws in the theme under its cursor.
+    SetupTheme(SetupThemeScreen) => Caps::modal().blocks_escape(),
+    /// Setup's pairing step: the QR code of the pairing link. A bond ends the step, and Back opens
+    /// the page that asks whether to ride without the app.
+    SetupQr(SetupQrScreen) => Caps::modal().blocks_escape(),
+    /// Ride without the app: a row back to the code and Skip, which ends the pairing step.
+    SetupNoApp(SetupNoAppScreen) => Caps::modal().blocks_escape(),
+    /// The page a bond opens on the pairing step: the phone is paired, and each side goes on with
+    /// its own steps. Select opens the next step.
+    SetupPaired(SetupPairedScreen) => Caps::modal().blocks_escape(),
+    /// Setup's sensors step: the three sensor slots with their live status, then Skip or Continue.
+    SetupSensors(SetupSensorsScreen) => Caps::modal().blocks_escape().key(RenderKeyKind::SensorSettings),
+    /// The Settings scan list for one slot in the setup chrome, opened from the sensors step. It
+    /// blocks the escape, because the step it returns to does.
+    SetupSensorScan(SetupSensorScanScreen) => Caps::modal().blocks_escape().key(RenderKeyKind::SensorSettings),
+    /// Setup's effort step: max heart rate and FTP, each edited in the drawer editor over the page,
+    /// then a row that continues.
+    SetupEffort(SetupEffortScreen) => Caps::modal().blocks_escape(),
+    /// Setup's last step: what the rider set up. Select ends setup and opens Home.
+    SetupAllSet(SetupAllSetScreen) => Caps::modal().blocks_escape(),
     /// The card after Finish on a trip day: today's ledger, then tomorrow's day or the trip's
     /// totals. OK returns Home.
     DayDone(DayDoneScreen) => Caps::modal(),
@@ -962,6 +1003,9 @@ screens! {
     /// it replaces the last per-route popup of the burst. It holds the trip's durable id, not a
     /// catalog index, so no rescan remap is needed.
     TripReceived(TripReceivedScreen) => Caps::modal(),
+    /// The pairing code, opened from Connections while no phone is paired. It waits for the rider
+    /// to pair on the phone, so idle return leaves it up. A bond closes it.
+    PairPhone(PairPhoneScreen) => Caps::modal(),
     /// The BLE pairing passkey card. Host-pushed when the seam's passkey goes `Some`, popped when
     /// it clears. Opaque and non-dismissible.
     Passkey(PasskeyScreen) => Caps::modal().blocking(),
@@ -992,7 +1036,8 @@ screens! {
     /// The Language pick list.
     Language(LanguageScreen) => Caps::settings(),
     About(AboutScreen) => Caps::settings(),
-    Reset(ResetScreen) => Caps::settings(),
+    /// The guarded reset and its bond-removal result. A successful reset saves immediately.
+    Reset(ResetScreen) => Caps::modal().blocks_escape(),
     /// The "Checking update..." wait while the board validates the staged package. The answer
     /// replaces it with the confirm screen or an error card.
     DfuCheck(DfuCheckScreen) => Caps::modal(),
@@ -1131,7 +1176,9 @@ impl Screen {
             Screen::Arrival(s) => s.selection_is_guarded(),
             Screen::Reset(s) => s.hold_fill_active(),
             Screen::StatFields(s) => s.selection_is_deletable(settings),
-            Screen::Connections(s) => s.selection_is_guarded(state),
+            Screen::Connections(s) => {
+                s.selection_is_guarded(&context_drawer::ContextFacts { state, navigation, settings, recording })
+            }
             Screen::QuickDrawer(s) => s.selection_is_guarded(),
             Screen::Sensors(s) => s.selection_is_guarded(settings),
             Screen::RouteOverview(s) => s.selection_is_guarded(navigation, recording, routes),

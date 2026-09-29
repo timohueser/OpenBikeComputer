@@ -1,7 +1,7 @@
 import {DatabaseSync} from 'node:sqlite';
 import {norm} from '../web/engine.mjs';
 import {streetNorm,compact} from '../web/text.mjs';
-export function database() {
+export function database(extra = []) {
 const conn=new DatabaseSync(':memory:');
 conn.exec(`CREATE TABLE places(id INTEGER PRIMARY KEY,source TEXT,name TEXT,aliases TEXT,kind TEXT,lon REAL,lat REAL,
   city TEXT,postcode TEXT,importance REAL,west REAL,south REAL,east REAL,north REAL,region TEXT,context TEXT,cuisine TEXT);
@@ -40,6 +40,7 @@ const records=[
   ['n24','SilberFuchs','shop',7.86,47.99,'Freiburg',.1],
   ['n25','Silberfuchsmuseum','museum',7.86,47.99,'Freiburg',.1],
   ['s26','Rathausplatz','street',7.85,47.99,'Freiburg',.05],
+  ...extra,
 ];
 records.forEach(([source,name,kind,lon,lat,city,importance,aliases='',cuisine=''],i)=>{
   const bounds=kind==='city'?[lon-.1,lat-.1,lon+.1,lat+.1]:[lon,lat,lon,lat];

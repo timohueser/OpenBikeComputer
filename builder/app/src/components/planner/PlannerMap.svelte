@@ -18,7 +18,7 @@
     let {
         segments = [], coordinates = [], highlightedCoordinates = [], points = [], selectedId = null, callout = null,
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
-        showRoute = true, hoverProgress = null, center = [8.0, 46.7], zoom = 11,
+        showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         shownCategories = categoryIds, highlightedPlaces = [], landmarks = [],
         onEmptyClick, onPointSelect, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
@@ -44,7 +44,7 @@
         onInsert?: (legEndId: string, coordinate: Coordinate) => void;
         onDrawn?: (legEndId: string, coordinates: Coordinate[]) => void;
         onPlaceClick?: (place: Place) => void;
-        onBounds?: (bounds: [number, number, number, number], fromSearch: boolean) => void;
+        onBounds?: (bounds: [number, number, number, number], preserveSearch: boolean) => void;
         onVisibleRange?: (range: [number, number]) => void; popup?: Snippet;
     } = $props();
 
@@ -93,7 +93,7 @@
         // A tall map shows the place below the centre, so its callout opens above it; a short one keeps it centred.
         const height = map.getContainer().clientHeight;
         const below = height >= 560 ? Math.min(150, height / 5) : 0;
-        map.flyTo({ center: coordinate, zoom: detail, offset: [-25, below], duration: motionDuration() });
+        map.flyTo({ center: coordinate, zoom: detail, offset: [-25, below], duration: motionDuration() }, { preserveSearch: true });
     }
 
     export function fitCoordinates(region: Coordinate[]) {
@@ -115,10 +115,10 @@
         map.zoomTo(map.getZoom() + delta, { duration: motionDuration() });
     }
 
-    function fitBounds(region: Coordinate[], maxZoom: number, duration: number, searchResults = false) {
+    function fitBounds(region: Coordinate[], maxZoom: number, duration: number, preserveSearch = false) {
         const bounds = new maplibregl.LngLatBounds();
         region.forEach((coordinate) => bounds.extend(coordinate));
-        map!.fitBounds(bounds, { padding: fitPadding, maxZoom, duration }, { searchResults });
+        map!.fitBounds(bounds, { padding: fitPadding, maxZoom, duration }, { preserveSearch });
     }
 
     function motionDuration() {
@@ -135,7 +135,7 @@
         const bottom = frame.bottom - 48;
         const dx = box.left < frame.left + margin ? box.left - frame.left - margin : Math.max(0, box.right - right);
         const dy = box.top < frame.top + margin ? box.top - frame.top - margin : Math.max(0, box.bottom - bottom);
-        if (dx || dy) map.panBy([dx, dy], { duration: motionDuration() });
+        if (dx || dy) map.panBy([dx, dy], { duration: motionDuration() }, { preserveSearch: true });
     }
 
     function lineFeature(input: Coordinate[], properties: Record<string, string> = {}): Feature<LineString> {
@@ -220,10 +220,10 @@
         map.setLayoutProperty("relief", "visibility", hillshade ? "visible" : "none");
     }
 
-    function reportView(event?: { type: string; searchResults?: boolean }) {
+    function reportView(event?: { type: string; preserveSearch?: boolean }) {
         if (!map) return;
         const bounds = map.getBounds();
-        untrack(() => onBounds?.([bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()], !!event?.searchResults));
+        untrack(() => onBounds?.([bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()], !!event?.preserveSearch));
         if (!onVisibleRange || !coordinates.length) return;
         const visible = coordinates.flatMap((coordinate, index) => bounds.contains(coordinate) ? [index] : []);
         if (visible.length) onVisibleRange([visible[0], visible[visible.length - 1]]);

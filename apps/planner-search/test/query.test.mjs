@@ -40,3 +40,32 @@ test('plain categories inherit pointing and cuisine filters stay visible and rem
   const anyFood=await answerQuery(db,{...input,q:'pizza',request},never);
   assert.ok(anyFood.results.some(p=>p.name==='Asia Wok'));assert.equal(anyFood.request.cuisine,undefined);
 });
+
+test('literal names and bilingual categories keep an explicit locality without the model', async () => {
+  const {db} = database([
+    ['r27','Teningen','town',7.81,48.13,'Teningen',.2],
+    ['n28','Lidl','supermarket',7.815,48.129,'Teningen',0],
+    ['n29','ALDI Süd','supermarket',7.845,48.117,'Emmendingen',0],
+    ['n30','ALDI','supermarket',9.18,48.77,'Stuttgart',0],
+    ['n31','Berggasthaus Kandelhof','restaurant',8.018,48.063,'Waldkirch',0],
+  ]);
+  for (const q of ['Lidl in Teningen', 'Lidl Teningen', 'Aldi in Teningen']) {
+    const r = await answerQuery(db, {...input, q}, never);
+    assert.equal(r.notice, '');
+    assert.equal(r.request.type, 'place');
+    assert.ok(r.results.length);
+    assert.ok(r.results.every(p => p.distance < 5));
+    assert.match(r.area, /Teningen/);
+    assert.ok(r.results.every(p => p.city !== 'Stuttgart'));
+  }
+  for (const q of ['Shop Teningen', 'Shop in Teningen', 'Supermarkt Teningen', 'shops in Teningen']) {
+    const r = await answerQuery(db, {...input, q}, never);
+    assert.equal(r.notice, '');
+    assert.ok(r.results.some(p => p.name === 'Lidl'));
+    assert.ok(r.results.every(p => p.kind === 'supermarket' && p.distance < 5));
+  }
+  const inn = await answerQuery(db, {...input, q:'Berggasthaus Kandel'}, never);
+  assert.equal(inn.request.type, 'place');
+  assert.equal(inn.results[0].name, 'Berggasthaus Kandelhof');
+  assert.equal(inn.notice, '');
+});

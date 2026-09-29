@@ -285,6 +285,7 @@ title = "CONEXIONES"
 phone = "Teléfono"
 sensors = "Sensores"
 not_paired = "No vinculado"
+pair = "Vincular móvil"
 connected = "conectado"
 
 # --- The phone link: its status words and the Forget action ---
@@ -310,6 +311,8 @@ connecting = "Conectando"
 connected = "Conectado"
 scanning = "Buscando..."
 forget = "Olvidar sensor"
+wake_strap = "Ponte la banda"
+wake_cranks = "Pedalea un poco"
 
 # --- Language settings screen (the endonyms come from Language::name, uncatalogued) ---
 [language]
@@ -328,9 +331,10 @@ all_added_sub = "Quita uno antes"
 
 # --- Factory-reset settings screen ---
 [reset]
+retry = "Reintentar"
+power_cycle = "Apaga y vuelve a encender el OBC."
+phone_failed = "Teléfono no eliminado"
 title = "RESTABLECER"
-complete = "Restablecido"
-restarting = "Reiniciando"
 factory = "Restablecer"
 erases = "Borra los ajustes"
 saved_time = "y la hora."
@@ -380,6 +384,12 @@ off_route = "Desvío"
 title = "EMPAREJAR"
 enter_code = "Escribe el código"
 on_phone = "en el móvil"
+
+# --- The pairing code: the QR code of the pairing link ---
+[pair]
+enable_bluetooth = "Activa Bluetooth"
+scan = "Escanea con el móvil"
+unplug = "Desconecta el cable"
 
 # --- Rides list screen ---
 [rides]
@@ -525,6 +535,42 @@ tomorrow = "MAÑANA"
 # After the time estimate: "~3:30 h est."
 est = "est."
 ok = "OK"
+
+# --- Configuración inicial ---
+[setup]
+ok = "OK"
+choose = "Elegir"
+buttons_title = "BOTONES"
+press_each = "Pulsa cada botón"
+hold_back = "Mantén BACK"
+menu_anywhere = "El menú, siempre"
+continue = "Continuar"
+skip = "Omitir"
+units = "UNIDADES"
+theme = "TEMA"
+effort = "ZONAS"
+heart_rate = "PULSO"
+power = "POTENCIA"
+cadence = "CADENCIA"
+qr = "OBTÉN LA APP"
+no_app = "¿Sin app?"
+no_app_title = "SIN APP"
+offline = "Funciona sin app"
+needs_app = "Necesita la app"
+recording = "Grabación"
+ride_sync = "Sync de salidas"
+show_code = "Ver el código"
+paired_title = "VINCULADO"
+phone_paired = "Móvil vinculado"
+all_set = "TODO LISTO"
+no_phone = "Sin móvil"
+sensor = "sensor"
+sensors = "sensores"
+no_sensors = "Sin sensores"
+zones_set = "Zonas fijadas"
+no_zones = "Sin zonas"
+add_later = "Luego en Ajustes"
+lets_ride = "¡A rodar!"
 
 # --- Salida recuperada al arrancar ---
 [ride_recovery]

@@ -6,7 +6,7 @@
     let { value, days, onChange }: { value: Where; days: number[]; onChange: (value: Where) => void } = $props();
     const mode = $derived(value.near ? 'near' : value.along ? 'interval' : value.day ? 'day' : value.anchor ? 'anchor' : value.scope ?? 'view');
     const options = $derived([
-        {id:'view', label:'Map view', icon:'fit'}, {id:'route', label:'Whole route', icon:'route'},
+        {id:'view', label:'Map view', icon:'fit'}, {id:'route', label:'Route', icon:'route'},
         {id:'near', label:'Near a place', icon:'pin'}, {id:'here', label:'My location', icon:'locate'},
         ...(days.length ? [{id:'day',label:'Trip day',icon:'calendar'}] : []), {id:'interval',label:'Route section',icon:'sliders'},
         ...(value.anchor ? [{id:'anchor',label:'Selected point',icon:'pin'}] : []),
@@ -25,7 +25,9 @@
     <label class="half">Day<select value={String(value.day)} onchange={e => onChange({...value,day: /^\d+$/.test(e.currentTarget.value) ? Number(e.currentTarget.value) : e.currentTarget.value as QueryDay})}>
         {#each days as day}<option value={day}>Day {day}</option>{/each}<option value="every">Every day</option><option value="today">Today</option><option value="tomorrow">Tomorrow</option>
     </select></label>
-    <label class="half">Part of day<select value={value.part ?? 'whole'} onchange={e => { const next = {...value}; if(e.currentTarget.value === 'whole') delete next.part; else next.part = e.currentTarget.value as Where['part']; onChange(next); }}><option value="whole">Whole day</option><option value="start">Start</option><option value="middle">Middle</option><option value="end">End</option></select></label>
+{/if}
+{#if value.day || mode === 'route'}
+    <label class="half">{value.day ? 'Part of day' : 'Part of route'}<select value={value.part ?? 'whole'} onchange={e => { const next = {...value}; if(e.currentTarget.value === 'whole') delete next.part; else next.part = e.currentTarget.value as Where['part']; onChange(next); }}><option value="whole">{value.day ? 'Whole day' : 'Whole route'}</option><option value="start">Start</option><option value="middle">Middle</option><option value="end">End</option></select></label>
 {/if}
 {#if value.along}<QueryAlong value={value.along} onChange={along => onChange({...value,along})} />{/if}
 {#each value.near ?? [] as point, i}

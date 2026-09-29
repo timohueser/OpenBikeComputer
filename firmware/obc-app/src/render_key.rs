@@ -256,7 +256,7 @@ impl App {
             let _ = key.shape.push(screen.row());
         }
         if self.ui.stack.iter().skip(base).any(|screen| !matches!(screen, Screen::Home(_))) {
-            key.theme = Some(self.settings().theme);
+            key.theme = Some(self.theme());
         }
         if let Some(drawer) = self.drawer_key() {
             key.drawer = Some(drawer);
@@ -425,6 +425,8 @@ mod tests {
                 ("Landmarks", RenderKeyKind::Map),
                 ("Statistics", RenderKeyKind::Statistics),
                 ("Climb", RenderKeyKind::Climb),
+                ("SetupSensors", RenderKeyKind::SensorSettings),
+                ("SetupSensorScan", RenderKeyKind::SensorSettings),
                 ("PeakView", RenderKeyKind::Statistics),
                 ("Detour", RenderKeyKind::Map),
                 ("DetourPreview", RenderKeyKind::Map),

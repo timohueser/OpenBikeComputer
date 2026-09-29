@@ -81,6 +81,12 @@ struct Path {
     roads: Vec<Slice>,
 }
 
+#[derive(Default)]
+struct Work {
+    queries: usize,
+    witnesses: usize,
+}
+
 pub struct Router<S> {
     pub(crate) package: Package<S>,
     cache: Cache,
@@ -113,6 +119,26 @@ impl<S: Source> Router<S> {
     }
 
     pub fn route(&mut self, request: &Request, control: &Control<'_>) -> Result<Route> {
+        let mut work = Work::default();
+        match self.route_with_policy(request, control, Policy::default(), false, &mut work) {
+            Err(Error::NoPath) => {
+                let policy = Policy { ambiguity_m: 50.0, max_candidates: 16, ..Policy::default() };
+                let mut route = self.route_with_policy(request, control, policy, true, &mut work)?;
+                route.warnings.push("The nearest roads do not connect. The route uses nearby accessible roads.".into());
+                Ok(route)
+            }
+            result => result,
+        }
+    }
+
+    fn route_with_policy(
+        &mut self,
+        request: &Request,
+        control: &Control<'_>,
+        policy: Policy,
+        nearest: bool,
+        work: &mut Work,
+    ) -> Result<Route> {
         if !(2..=64).contains(&request.points.len()) {
             return Err(Error::InvalidRequest("Use 2 to 64 ordered points".into()));
         }
@@ -144,20 +170,29 @@ impl<S: Source> Router<S> {
             }
             let point =
                 Point { lat: (lat * 1e6).round() as i32, lon: (lon * 1e6).round() as i32, elevation: NO_ELEVATION };
-            let found = if let Some((_, _, _, found)) = self
-                .snaps
-                .iter()
-                .find(|(lat, lon, metric, _)| *lat == point.lat && *lon == point.lon && metric == &request.profile)
-            {
+            let mut found = if let Some((_, _, _, found)) = self.snaps.iter().find(|(lat, lon, metric, found)| {
+                *lat == point.lat
+                    && *lon == point.lon
+                    && metric == &request.profile
+                    && found.policy.ambiguity_m == policy.ambiguity_m
+                    && found.policy.max_candidates == policy.max_candidates
+            }) {
                 found.clone()
             } else {
-                let found = self.package.snap(point, &request.profile, Policy::default())?;
+                let found = self.package.snap(point, &request.profile, policy)?;
                 if self.snaps.len() == 32 {
                     self.snaps.pop_front();
                 }
                 self.snaps.push_back((point.lat, point.lon, request.profile.clone(), found.clone()));
                 found
             };
+            // Recovery must not move a point that is already on a road to a different road.
+            if nearest && found.nearest_distance_m.is_some_and(|d| d <= Policy::default().ambiguity_m) {
+                let cutoff = found.nearest_distance_m.unwrap() + Policy::default().ambiguity_m;
+                found.retained.retain(|c| c.snap_distance_m <= cutoff);
+                found.truncated = found.retained.len() > Policy::default().max_candidates;
+                found.retained.truncate(Policy::default().max_candidates);
+            }
             truncated |= found.truncated;
             if found.retained.is_empty() {
                 return Err(Error::NoSnap(index));
@@ -165,12 +200,11 @@ impl<S: Source> Router<S> {
             candidates.push(found.retained);
         }
         // A candidate is shared by both adjacent legs. The dynamic program preserves its direction.
-        let mut costs = vec![0u64; candidates[0].len()];
+        let snap_cost = |c: &Candidate| if nearest { (c.snap_distance_m * 1000.0).round() as u64 } else { 0 };
+        let mut costs: Vec<_> = candidates[0].iter().map(|c| (snap_cost(c), 0u64)).collect();
         let mut stages = Vec::<Vec<Option<(usize, usize, Path)>>>::new();
-        let mut queries = 0;
-        let mut witnesses = 0usize;
         for (stage_index, pair) in candidates.windows(2).enumerate() {
-            let mut next = vec![u64::MAX; pair[1].len()];
+            let mut next = vec![(u64::MAX, u64::MAX); pair[1].len()];
             let mut paths = vec![None; pair[1].len()];
             for (i, from) in pair[0].iter().enumerate() {
                 let previous = if request.turnarounds.contains(&stage_index) {
@@ -184,23 +218,26 @@ impl<S: Source> Router<S> {
                 } else {
                     i
                 };
-                if costs[previous] == u64::MAX {
+                if costs[previous].1 == u64::MAX {
                     continue;
                 }
                 for (j, to) in pair[1].iter().enumerate() {
-                    queries += 1;
-                    if queries > control.max_queries {
+                    work.queries += 1;
+                    if work.queries > control.max_queries {
                         return Err(Error::Limit);
                     }
                     if (control.cancelled)() {
                         return Err(Error::Cancelled);
                     }
                     if let Some(path) = self.leg(from, to, control)? {
-                        witnesses = witnesses.saturating_add(path.roads.len());
-                        if witnesses > control.max_geometry {
+                        work.witnesses = work.witnesses.saturating_add(path.roads.len());
+                        if work.witnesses > control.max_geometry {
                             return Err(Error::Limit);
                         }
-                        let cost = costs[previous].checked_add(path.cost).ok_or(Error::Limit)?;
+                        let cost = (
+                            costs[previous].0.checked_add(snap_cost(to)).ok_or(Error::Limit)?,
+                            costs[previous].1.checked_add(path.cost).ok_or(Error::Limit)?,
+                        );
                         if cost < next[j] {
                             next[j] = cost;
                             paths[j] = Some((previous, i, path));
@@ -208,13 +245,13 @@ impl<S: Source> Router<S> {
                     }
                 }
             }
-            if next.iter().all(|&cost| cost == u64::MAX) {
+            if next.iter().all(|cost| cost.1 == u64::MAX) {
                 return Err(Error::NoPath);
             }
             costs = next;
             stages.push(paths);
         }
-        let (mut selected, &cost) = costs.iter().enumerate().min_by_key(|(_, cost)| *cost).ok_or(Error::NoPath)?;
+        let (mut selected, &(_, cost)) = costs.iter().enumerate().min_by_key(|(_, cost)| *cost).ok_or(Error::NoPath)?;
         let mut attachments = vec![candidates.last().unwrap()[selected].clone()];
         let mut paths = Vec::new();
         for (index, stage) in stages.into_iter().enumerate().rev() {

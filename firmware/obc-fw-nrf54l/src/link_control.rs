@@ -70,10 +70,11 @@ pub(crate) fn take_dfu_install_ble() -> bool {
 /// change-detection save, so the phone's write reaches the UI same-session and is never clobbered.
 static BLE_CONFIG_WRITTEN: AtomicBool = AtomicBool::new(false);
 
-/// Raised by the ride loop after it persists an on-device settings change; the BLE plane drains it
+/// Raised by the RRAM store after a settings write; the BLE plane drains it
 /// and refreshes the [`LinkControl`] config cache from RRAM before serving a Config read (or the
 /// advertised name), so a read after an on-device units change is fresh without a reboot.
 static DEVICE_SETTINGS_CHANGED: AtomicBool = AtomicBool::new(false);
+static ADVERTISED_NAME_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// The ride loop's cue to reload BLE-written settings before its next save (see
 /// [`BLE_CONFIG_WRITTEN`]). `true` at most once per BLE Config write; drains on read.
@@ -81,10 +82,17 @@ pub(crate) fn take_ble_config_written() -> bool {
     BLE_CONFIG_WRITTEN.swap(false, Ordering::Relaxed)
 }
 
-/// The ride loop signals that it persisted an on-device settings edit, so the BLE plane's config
-/// cache is now stale (see [`DEVICE_SETTINGS_CHANGED`]). Cheap: one relaxed store per settings save.
-pub(crate) fn mark_device_settings_changed() {
+/// A successful settings write invalidates the config cache and a changed name wakes advertising.
+pub(crate) fn mark_device_settings_changed(renamed: bool) {
     DEVICE_SETTINGS_CHANGED.store(true, Ordering::Relaxed);
+    if renamed {
+        ADVERTISED_NAME_CHANGED.signal(());
+    }
+}
+
+/// A persisted rename restarts active advertising with the new name.
+pub(crate) async fn wait_advertised_name_change() {
+    ADVERTISED_NAME_CHANGED.wait().await;
 }
 
 // A `setClock` command must not touch `App` from the BLE plane. Like the other crossings, the
@@ -144,7 +152,8 @@ impl LinkControl {
     /// `App` copy before its next save and the phone's write cannot be clobbered.
     pub fn apply_config(&mut self, shared: &mut SharedSettings, name: &str, units: u8) {
         // Start from the current persisted truth so an on-device edit racing this write isn't dropped.
-        self.settings = shared.settings.load().unwrap_or_default();
+        // A blank store is a factory-fresh device, so a phone write cannot skip first-use setup.
+        self.settings = shared.settings.load().unwrap_or(obc_app::Settings::FACTORY);
         self.settings.device_name = DeviceName::from_str_lossy(name);
         self.settings.units = if units == 1 { obc_app::Units::Imperial } else { obc_app::Units::Metric };
 

@@ -30,7 +30,7 @@ export function pointLabel(p: QueryPoint): string {
 }
 export function whereLabel(w: Where): string {
     if (w.anchor) return 'Near the selected point';
-    return [w.day ? `Day ${w.day}${w.part ? ` ${w.part}` : ''}` : w.scope === 'route' ? 'Along the route' : w.scope === 'here' ? 'Near your location' : '',
+    return [w.day ? `Day ${w.day}${w.part ? ` ${w.part}` : ''}` : w.scope === 'route' ? w.part ? `Near route ${w.part}` : 'Along the route' : w.scope === 'here' ? 'Near your location' : '',
         w.near ? `${w.near.length > 1 ? 'Between' : 'Near'} ${w.near.map(pointLabel).join(' and ')}` : '',
         w.along ? pointLabel({ along: w.along }) : '', w.before ? `Before ${pointLabel(w.before)}` : '', w.after ? `After ${pointLabel(w.after)}` : '',
     ].filter(Boolean).join(' · ') || 'In this map view';
