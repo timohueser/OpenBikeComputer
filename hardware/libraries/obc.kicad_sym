@@ -198,7 +198,7 @@
 				)
 			)
 		)
-		(property "Description" "Power symbol creates a global label with name \"+3V3_SD\""
+		(property "Description" "Power symbol creates a global label with name \"+3V2\""
 			(at 0 0 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -223,7 +223,8 @@
 		(symbol "+3V2_0_1"
 			(polyline
 				(pts
-					(xy -0.762 1.27) (xy 0 2.54)
+					(xy -0.762 1.27)
+					(xy 0 2.54)
 				)
 				(stroke
 					(width 0)
@@ -235,7 +236,8 @@
 			)
 			(polyline
 				(pts
-					(xy 0 2.54) (xy 0.762 1.27)
+					(xy 0 2.54)
+					(xy 0.762 1.27)
 				)
 				(stroke
 					(width 0)
@@ -247,7 +249,8 @@
 			)
 			(polyline
 				(pts
-					(xy 0 0) (xy 0 2.54)
+					(xy 0 0)
+					(xy 0 2.54)
 				)
 				(stroke
 					(width 0)
@@ -337,7 +340,7 @@
 				)
 			)
 		)
-		(property "Description" "Power symbol creates a global label with name \"+3V3_GPS\""
+		(property "Description" "Power symbol creates a global label with name \"+3V2_GPS\""
 			(at 0 0 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -362,7 +365,8 @@
 		(symbol "+3V2_GPS_0_1"
 			(polyline
 				(pts
-					(xy -0.762 1.27) (xy 0 2.54)
+					(xy -0.762 1.27)
+					(xy 0 2.54)
 				)
 				(stroke
 					(width 0)
@@ -374,7 +378,8 @@
 			)
 			(polyline
 				(pts
-					(xy 0 2.54) (xy 0.762 1.27)
+					(xy 0 2.54)
+					(xy 0.762 1.27)
 				)
 				(stroke
 					(width 0)
@@ -386,7 +391,8 @@
 			)
 			(polyline
 				(pts
-					(xy 0 0) (xy 0 2.54)
+					(xy 0 0)
+					(xy 0 2.54)
 				)
 				(stroke
 					(width 0)
@@ -704,7 +710,7 @@
 		(in_pos_files yes)
 		(duplicate_pin_numbers_are_jumpers no)
 		(property "Reference" "U"
-			(at -10.16 16.51 0)
+			(at 10.16 -19.05 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -715,7 +721,7 @@
 			)
 		)
 		(property "Value" "BMA400"
-			(at -10.16 13.97 0)
+			(at 10.16 -21.59 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -737,7 +743,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "BMA400"
+		(property "Datasheet" "https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bma400-ds000.pdf"
 			(at 0 0 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -749,7 +755,7 @@
 				)
 			)
 		)
-		(property "Description" "3-axis ultra-low-power accelerometer, QFN12"
+		(property "Description" "3-axis ultra-low-power accelerometer, LGA-12, 2x2mm"
 			(at 0 0 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -816,8 +822,8 @@
 		)
 		(symbol "BMA400_0_1"
 			(rectangle
-				(start -10.16 7.62)
-				(end 10.16 -7.62)
+				(start -12.7 15.24)
+				(end 12.7 -15.24)
 				(stroke
 					(width 0.254)
 					(type default)
@@ -829,8 +835,8 @@
 		)
 		(symbol "BMA400_1_1"
 			(pin bidirectional line
-				(at -15.24 -2.54 0)
-				(length 5.08)
+				(at -15.24 -10.16 0)
+				(length 2.54)
 				(name "SDO"
 					(effects
 						(font
@@ -845,10 +851,11 @@
 						)
 					)
 				)
+				(alternate "ADDR" input line)
 			)
 			(pin bidirectional line
 				(at -15.24 0 0)
-				(length 5.08)
+				(length 2.54)
 				(name "SDX"
 					(effects
 						(font
@@ -863,10 +870,11 @@
 						)
 					)
 				)
+				(alternate "SDA" bidirectional line)
 			)
 			(pin power_in line
-				(at 0 12.7 270)
-				(length 5.08)
+				(at 5.08 17.78 270)
+				(length 2.54)
 				(name "VDDIO"
 					(effects
 						(font
@@ -883,8 +891,8 @@
 				)
 			)
 			(pin no_connect line
-				(at 15.24 -2.54 180)
-				(length 5.08)
+				(at 15.24 -7.62 180)
+				(length 2.54)
 				(name "NC"
 					(effects
 						(font
@@ -901,8 +909,8 @@
 				)
 			)
 			(pin output line
-				(at 15.24 5.08 180)
-				(length 5.08)
+				(at 15.24 2.54 180)
+				(length 2.54)
 				(name "INT1"
 					(effects
 						(font
@@ -919,8 +927,8 @@
 				)
 			)
 			(pin output line
-				(at 15.24 2.54 180)
-				(length 5.08)
+				(at 15.24 -2.54 180)
+				(length 2.54)
 				(name "INT2"
 					(effects
 						(font
@@ -937,8 +945,8 @@
 				)
 			)
 			(pin power_in line
-				(at -2.54 12.7 270)
-				(length 5.08)
+				(at -5.08 17.78 270)
+				(length 2.54)
 				(name "VDD"
 					(effects
 						(font
@@ -955,8 +963,8 @@
 				)
 			)
 			(pin power_in line
-				(at 0 -12.7 90)
-				(length 5.08)
+				(at 5.08 -17.78 90)
+				(length 2.54)
 				(name "GNDIO"
 					(effects
 						(font
@@ -973,8 +981,8 @@
 				)
 			)
 			(pin power_in line
-				(at -2.54 -12.7 90)
-				(length 5.08)
+				(at -5.08 -17.78 90)
+				(length 2.54)
 				(name "GND"
 					(effects
 						(font
@@ -991,8 +999,8 @@
 				)
 			)
 			(pin input line
-				(at -15.24 5.08 0)
-				(length 5.08)
+				(at 15.24 10.16 180)
+				(length 2.54)
 				(name "CSB"
 					(effects
 						(font
@@ -1009,8 +1017,8 @@
 				)
 			)
 			(pin no_connect line
-				(at 15.24 -5.08 180)
-				(length 5.08)
+				(at 15.24 -12.7 180)
+				(length 2.54)
 				(name "NC"
 					(effects
 						(font
@@ -1027,8 +1035,8 @@
 				)
 			)
 			(pin input line
-				(at -15.24 2.54 0)
-				(length 5.08)
+				(at -15.24 5.08 0)
+				(length 2.54)
 				(name "SCX"
 					(effects
 						(font
@@ -1043,6 +1051,7 @@
 						)
 					)
 				)
+				(alternate "SCL" input line)
 			)
 		)
 		(embedded_fonts no)
@@ -1054,7 +1063,7 @@
 		(in_pos_files yes)
 		(duplicate_pin_numbers_are_jumpers no)
 		(property "Reference" "U"
-			(at -10.16 16.51 0)
+			(at 10.16 -19.05 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -1065,7 +1074,7 @@
 			)
 		)
 		(property "Value" "BMM350"
-			(at -10.16 13.97 0)
+			(at 10.16 -21.59 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -1087,7 +1096,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "BMM350"
+		(property "Datasheet" "https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmm350-ds001.pdf"
 			(at 0 0 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1099,7 +1108,7 @@
 				)
 			)
 		)
-		(property "Description" "3-axis magnetometer, WLCSP9"
+		(property "Description" "3-axis TMR magnetometer, 1.8V core, WLCSP-9, 1.28x1.28mm"
 			(at 0 0 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1166,8 +1175,8 @@
 		)
 		(symbol "BMM350_0_1"
 			(rectangle
-				(start -10.16 7.62)
-				(end 10.16 -7.62)
+				(start -12.7 15.24)
+				(end 12.7 -15.24)
 				(stroke
 					(width 0.254)
 					(type default)
@@ -1180,7 +1189,7 @@
 		(symbol "BMM350_1_1"
 			(pin output line
 				(at 15.24 5.08 180)
-				(length 5.08)
+				(length 2.54)
 				(name "INT"
 					(effects
 						(font
@@ -1197,8 +1206,8 @@
 				)
 			)
 			(pin bidirectional line
-				(at -15.24 5.08 0)
-				(length 5.08)
+				(at -15.24 0 0)
+				(length 2.54)
 				(name "SDA"
 					(effects
 						(font
@@ -1215,8 +1224,8 @@
 				)
 			)
 			(pin input line
-				(at -15.24 2.54 0)
-				(length 5.08)
+				(at -15.24 5.08 0)
+				(length 2.54)
 				(name "SCK"
 					(effects
 						(font
@@ -1231,10 +1240,11 @@
 						)
 					)
 				)
+				(alternate "SCL" input line)
 			)
 			(pin power_in line
-				(at 0 -12.7 90)
-				(length 5.08)
+				(at -5.08 -17.78 90)
+				(length 2.54)
 				(name "GND"
 					(effects
 						(font
@@ -1251,8 +1261,8 @@
 				)
 			)
 			(pin input line
-				(at -15.24 0 0)
-				(length 5.08)
+				(at 15.24 10.16 180)
+				(length 2.54)
 				(name "ADSEL"
 					(effects
 						(font
@@ -1269,8 +1279,8 @@
 				)
 			)
 			(pin power_in line
-				(at 0 12.7 270)
-				(length 5.08)
+				(at 5.08 17.78 270)
+				(length 2.54)
 				(name "VDDIO"
 					(effects
 						(font
@@ -1287,8 +1297,8 @@
 				)
 			)
 			(pin power_in line
-				(at -2.54 12.7 270)
-				(length 5.08)
+				(at -5.08 17.78 270)
+				(length 2.54)
 				(name "VDD"
 					(effects
 						(font
@@ -1305,8 +1315,8 @@
 				)
 			)
 			(pin passive line
-				(at 15.24 0 180)
-				(length 5.08)
+				(at 15.24 -2.54 180)
+				(length 2.54)
 				(name "CRST"
 					(effects
 						(font
@@ -1323,8 +1333,8 @@
 				)
 			)
 			(pin passive line
-				(at 15.24 -2.54 180)
-				(length 5.08)
+				(at 5.08 -17.78 90)
+				(length 2.54)
 				(name "BYPASS"
 					(effects
 						(font
@@ -1350,7 +1360,7 @@
 		(in_pos_files yes)
 		(duplicate_pin_numbers_are_jumpers no)
 		(property "Reference" "U"
-			(at -7.62 16.51 0)
+			(at 10.16 -19.05 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -1361,7 +1371,7 @@
 			)
 		)
 		(property "Value" "BMP581"
-			(at -7.62 13.97 0)
+			(at 10.16 -21.59 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -1395,7 +1405,7 @@
 				(justify left top)
 			)
 		)
-		(property "Description" "Pressure Sensor 4.35PSI ~ 18.13PSI (30kPa ~ 125kPa) Absolute 10-WFLGA"
+		(property "Description" "Barometric pressure sensor, 300-1250hPa, LGA-10, 2x2mm"
 			(at 0 0 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1456,8 +1466,8 @@
 		)
 		(symbol "BMP581_0_1"
 			(rectangle
-				(start -7.62 7.62)
-				(end 7.62 -7.62)
+				(start -12.7 15.24)
+				(end 12.7 -15.24)
 				(stroke
 					(width 0.254)
 					(type default)
@@ -1469,8 +1479,8 @@
 		)
 		(symbol "BMP581_1_1"
 			(pin power_in line
-				(at 0 12.7 270)
-				(length 5.08)
+				(at 5.08 17.78 270)
+				(length 2.54)
 				(name "VDDIO"
 					(effects
 						(font
@@ -1487,8 +1497,8 @@
 				)
 			)
 			(pin input line
-				(at -12.7 2.54 0)
-				(length 5.08)
+				(at -15.24 5.08 0)
+				(length 2.54)
 				(name "SCK"
 					(effects
 						(font
@@ -1503,10 +1513,11 @@
 						)
 					)
 				)
+				(alternate "SCL" input line)
 			)
 			(pin power_in line
-				(at -2.54 -12.7 90)
-				(length 5.08)
+				(at -5.08 -17.78 90)
+				(length 2.54)
 				(name "VSS"
 					(effects
 						(font
@@ -1522,9 +1533,9 @@
 					)
 				)
 			)
-			(pin input line
-				(at -12.7 0 0)
-				(length 5.08)
+			(pin bidirectional line
+				(at -15.24 0 0)
+				(length 2.54)
 				(name "SDI"
 					(effects
 						(font
@@ -1539,10 +1550,11 @@
 						)
 					)
 				)
+				(alternate "SDA" bidirectional line)
 			)
 			(pin bidirectional line
-				(at -12.7 -2.54 0)
-				(length 5.08)
+				(at 15.24 5.08 180)
+				(length 2.54)
 				(name "SDO"
 					(effects
 						(font
@@ -1557,10 +1569,11 @@
 						)
 					)
 				)
+				(alternate "ADDR" input line)
 			)
 			(pin input line
-				(at -12.7 5.08 0)
-				(length 5.08)
+				(at 15.24 10.16 180)
+				(length 2.54)
 				(name "CSB"
 					(effects
 						(font
@@ -1577,8 +1590,8 @@
 				)
 			)
 			(pin output line
-				(at 12.7 5.08 180)
-				(length 5.08)
+				(at 15.24 -2.54 180)
+				(length 2.54)
 				(name "INT"
 					(effects
 						(font
@@ -1595,8 +1608,8 @@
 				)
 			)
 			(pin power_in line
-				(at 0 -12.7 90)
-				(length 5.08)
+				(at 0 -17.78 90)
+				(length 2.54)
 				(name "VSS"
 					(effects
 						(font
@@ -1613,8 +1626,8 @@
 				)
 			)
 			(pin power_in line
-				(at 2.54 -12.7 90)
-				(length 5.08)
+				(at 5.08 -17.78 90)
+				(length 2.54)
 				(name "VSS"
 					(effects
 						(font
@@ -1631,8 +1644,8 @@
 				)
 			)
 			(pin power_in line
-				(at -2.54 12.7 270)
-				(length 5.08)
+				(at -5.08 17.78 270)
+				(length 2.54)
 				(name "VDD"
 					(effects
 						(font
@@ -3378,7 +3391,7 @@
 					)
 				)
 			)
-			(pin input line
+			(pin power_in line
 				(at 22.86 -31.75 180)
 				(length 5.08)
 				(name "LSIN1/VINLDO1"
@@ -3396,7 +3409,7 @@
 					)
 				)
 			)
-			(pin input line
+			(pin power_in line
 				(at 22.86 -34.29 180)
 				(length 5.08)
 				(name "LSIN2/VINLDO2"
@@ -3450,7 +3463,7 @@
 					)
 				)
 			)
-			(pin power_in line
+			(pin power_out line
 				(at 22.86 22.86 180)
 				(length 5.08)
 				(name "VSYS"
@@ -3468,7 +3481,7 @@
 					)
 				)
 			)
-			(pin power_in line
+			(pin passive line
 				(at 22.86 20.32 180)
 				(length 5.08)
 				(name "VSYS"
@@ -3630,7 +3643,7 @@
 					)
 				)
 			)
-			(pin bidirectional line
+			(pin input line
 				(at -22.86 -31.75 0)
 				(length 5.08)
 				(name "SHPHLD"
@@ -4884,7 +4897,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Package_SON:WSON-6-1EP_2x2mm_P0.65mm_EP1x1.6mm"
+		(property "Footprint" "obc:TI_YFF0006_0.884x1.226mm_P0.4mm"
 			(at -0.254 -27.178 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4906,7 +4919,7 @@
 				)
 			)
 		)
-		(property "Description" "5.0V fixed synchronous boost, 1uA Iq, true shutdown, WSON-6"
+		(property "Description" "5V fixed synchronous boost, 1uA IQ, true shutdown, YFF DSBGA-6"
 			(at 1.27 -27.178 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4917,7 +4930,7 @@
 				)
 			)
 		)
-		(property "MPN" "TPS610997DRVR"
+		(property "MPN" "TPS610997YFFR"
 			(at 0 -27.178 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5971,7 +5984,7 @@
 				)
 			)
 		)
-		(property "Value" "nRF54LM20A-PAXX"
+		(property "Value" "nRF54LM20A-PAAA"
 			(at 0 -1.27 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5992,7 +6005,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://docs-be.nordicsemi.com/bundle/ps_nrf54LM20A/page/pdf/nRF54LM20A_Preliminary_Datasheet_v0.7.pdf"
+		(property "Datasheet" "https://docs.nordicsemi.com/bundle/ps_nrf54lm20a"
 			(at 0 0 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6025,7 +6038,7 @@
 				)
 			)
 		)
-		(property "MPN" "nRF54LM20A-PAXX"
+		(property "MPN" "nRF54LM20A-PAAA"
 			(at 0 0 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7914,5 +7927,1918 @@
 			)
 		)
 		(embedded_fonts no)
+	)
+	(symbol "MAX-F11N"
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(duplicate_pin_numbers_are_jumpers no)
+		(property "Reference" "U"
+			(at 6.35 -22.86 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "MAX-F11N"
+			(at 6.35 -25.4 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "obc:ublox_MAX_F11N_Provisional"
+			(at 10.16 -16.51 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" "https://www.u-blox.com/sites/default/files/documents/MAX-F11-M11-series_DataSheet_UBXDOC-304424225-21561.pdf"
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "L1/L5 GNSS receiver, UART, 1.76-3.6V VCC, preliminary pinout"
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "ki_keywords" "ublox GPS GNSS module"
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "ki_fp_filters" "ublox?MAX*"
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(symbol "MAX-F11N_0_1"
+			(rectangle
+				(start -12.7 22.86)
+				(end 17.78 -20.32)
+				(stroke
+					(width 0.254)
+					(type default)
+				)
+				(fill
+					(type background)
+				)
+			)
+		)
+		(symbol "MAX-F11N_1_1"
+			(pin power_in line
+				(at 0 -22.86 90)
+				(length 2.54)
+				(name "GND"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "1"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin output line
+				(at -15.24 5.08 0)
+				(length 2.54)
+				(name "TXD"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "2"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin input line
+				(at -15.24 10.16 0)
+				(length 2.54)
+				(name "RXD"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "3"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin output line
+				(at 20.32 -7.62 180)
+				(length 2.54)
+				(name "TIMEPULSE"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "4"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin input line
+				(at -15.24 -2.54 0)
+				(length 2.54)
+				(name "EXTINT"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "5"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin power_in line
+				(at 5.08 25.4 270)
+				(length 2.54)
+				(name "V_BCKP"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "6"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin power_in line
+				(at -2.54 25.4 270)
+				(length 2.54)
+				(name "V_IO"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "7"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin power_in line
+				(at -10.16 25.4 270)
+				(length 2.54)
+				(name "VCC"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "8"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin input line
+				(at -15.24 -12.7 0)
+				(length 2.54)
+				(name "~{RESET}"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "9"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 0 -22.86 90)
+				(length 2.54)
+				(hide yes)
+				(name "GND"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "10"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin input line
+				(at 20.32 0 180)
+				(length 2.54)
+				(name "RF_IN"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "11"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 0 -22.86 90)
+				(length 2.54)
+				(hide yes)
+				(name "GND"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "12"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin output line
+				(at 20.32 5.08 180)
+				(length 2.54)
+				(name "LNA_EN"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "13"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin power_out line
+				(at 20.32 17.78 180)
+				(length 2.54)
+				(name "VCC_RF"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "14"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin input line
+				(at -15.24 -17.78 0)
+				(length 2.54)
+				(name "VIO_SEL"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "15"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin no_connect line
+				(at 20.32 -12.7 180)
+				(length 2.54)
+				(name "NC"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "16"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin no_connect line
+				(at 20.32 -17.78 180)
+				(length 2.54)
+				(name "NC"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "17"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin input line
+				(at -15.24 -7.62 0)
+				(length 2.54)
+				(name "~{SAFEBOOT}"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "18"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+		)
+		(embedded_fonts no)
+		(property "Manufacturer" "u-blox"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "MPN" "MAX-F11N-00B"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Design status" "Preliminary; verify against production datasheet before PCB release"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+	)
+
+	(symbol "GGBLA.125.A"
+		(pin_names
+			(offset 0.508)
+		)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(property "Reference" "ANT"
+			(at -10.16 10.16 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "GGBLA.125.A"
+			(at -10.16 7.62 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(symbol "GGBLA.125.A_0_1"
+			(rectangle
+				(start -10.16 5.08)
+				(end 10.16 -5.08)
+				(stroke
+					(width 0.254)
+					(type default)
+				)
+				(fill
+					(type background)
+				)
+			)
+			(polyline
+				(pts
+					(xy -10.16 2.54)
+					(xy -7.62 -1.27)
+					(xy -5.08 2.54)
+					(xy -10.16 2.54)
+				)
+				(stroke
+					(width 0.254)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+			(polyline
+				(pts
+					(xy -7.62 -1.27)
+					(xy -7.62 -5.08)
+				)
+				(stroke
+					(width 0.254)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+		)
+		(symbol "GGBLA.125.A_1_1"
+			(pin passive line
+				(at -7.62 -7.62 90)
+				(length 2.54)
+				(name "~"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "1"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 0 -7.62 90)
+				(length 2.54)
+				(name "FTE"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "2"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 7.62 -7.62 90)
+				(length 2.54)
+				(name "FTE"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "3"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+		)
+		(property "Footprint" "obc:Taoglas_GGBLA125A_10x3.2mm_ContactPads"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "https://www.taoglas.com/datasheets/GGBLA.125.A.pdf"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Manufacturer" "Taoglas"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "MPN" "GGBLA.125.A"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "L1/L2/L5/L6 ceramic loop antenna; two fine-tuning returns"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Polarization" "Linear"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Keepout" "Reserve 15.3 x 9.8mm for corner integration; follow datasheet section 11.14"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Tuning" "Corner reference network; tune with PCB, display, battery and enclosure fitted"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint status" "Contact lands only. Reproduce section 11.13 corner copper extensions and clearance during PCB layout."
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+	)
+	(symbol "CPT-9019A-SMT-TR"
+		(pin_names
+			(offset 0.0254)
+			(hide yes)
+		)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(duplicate_pin_numbers_are_jumpers no)
+		(property "Reference" "BZ"
+			(at 3.81 1.27 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "CPT-9019A-SMT-TR"
+			(at 3.81 -1.27 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "obc:CPT-9019A-SMT-TR"
+			(at -0.635 2.54 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" "https://www.sameskydevices.com/product/resource/cpt-9019a-smt-tr.pdf"
+			(at -0.635 2.54 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Externally driven non-polar piezo transducer, 9x9x1.9mm, 4kHz"
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "ki_keywords" "quartz resonator ceramic"
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "ki_fp_filters" "*Buzzer*"
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(symbol "CPT-9019A-SMT-TR_0_1"
+			(arc
+				(start 0 3.175)
+				(mid 3.1612 0)
+				(end 0 -3.175)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+			(polyline
+				(pts
+					(xy 0 3.175)
+					(xy 0 -3.175)
+				)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+		)
+		(symbol "CPT-9019A-SMT-TR_1_1"
+			(pin passive line
+				(at -2.54 2.54 0)
+				(length 2.54)
+				(name "~"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "1"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at -2.54 -2.54 0)
+				(length 2.54)
+				(name "~"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "2"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+		)
+		(embedded_fonts no)
+		(property "MPN" "CPT-9019A-SMT-TR"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Manufacturer" "Same Sky"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Rated Drive" "3Vpp, 4kHz, 50% square wave"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Sound Pressure" "72dB min at 10cm, rated drive"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Capacitance" "12nF +/-30%"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Operating Voltage" "1 to 25Vpp"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Operating Temperature" "-40 to +85 C"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+	)
+	(symbol "PCB_2G4_MIFA"
+		(pin_numbers
+			(hide yes)
+		)
+		(pin_names
+			(offset 1.016)
+			(hide yes)
+		)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(duplicate_pin_numbers_are_jumpers no)
+		(property "Reference" "AE"
+			(at -1.905 4.445 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Value" "PCB MIFA"
+			(at -1.905 2.54 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Footprint" "RF_Antenna:Texas_SWRA117D_2.4GHz_Right"
+			(at 0 2.54 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" "https://www.ti.com/lit/an/swra117d/swra117d.pdf"
+			(at 0 2.54 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "2.4GHz printed meandered inverted-F antenna; TI AN043 reference geometry"
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "ki_keywords" "antenna"
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(symbol "PCB_2G4_MIFA_0_1"
+			(arc
+				(start 0 -2.667)
+				(mid -0.8485 -2.1032)
+				(end -0.508 -1.143)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+			(polyline
+				(pts
+					(xy 0 5.08)
+					(xy 0 -3.81)
+				)
+				(stroke
+					(width 0.254)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+			(polyline
+				(pts
+					(xy 0 -2.54)
+					(xy 0 0)
+				)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+			(arc
+				(start 0.508 -1.143)
+				(mid 0.8046 -2.0885)
+				(end 0 -2.667)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+			(polyline
+				(pts
+					(xy 0.762 -1.905)
+					(xy 2.54 -1.905)
+				)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+			(circle
+				(center 0.762 -1.905)
+				(radius 0.1778)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type outline)
+				)
+			)
+			(polyline
+				(pts
+					(xy 1.27 5.08)
+					(xy 0 0)
+					(xy -1.27 5.08)
+				)
+				(stroke
+					(width 0.254)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+			(polyline
+				(pts
+					(xy 2.54 -2.54)
+					(xy 2.54 -1.905)
+				)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+		)
+		(symbol "PCB_2G4_MIFA_1_1"
+			(pin passive line
+				(at 0 -5.08 90)
+				(length 2.54)
+				(name "FEED"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "1"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 2.54 -5.08 90)
+				(length 2.54)
+				(name "GND"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "2"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+		)
+		(embedded_fonts no)
+	)
+	(symbol "USB_FLEX_12"
+		(pin_names
+			(offset 0.762)
+		)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(property "Reference" "J"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "FH12-12S-0.5SH(55)"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Connector_FFC-FPC:Hirose_FH12-12S-0.5SH_1x12-1MP_P0.50mm_Horizontal"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "https://www.hirose.com/en/product/p/CL0586-0704-0-55"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "USB 2.0 + CC flex interface, 12 contacts, four VBUS and four GND contacts"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "MPN" "FH12-12S-0.5SH(55)"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Manufacturer" "Hirose"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Current Rating" "0.5A/contact; use 70% rating for populated power contact bank"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "FPC Thickness" "0.30 +/-0.05mm"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Contact Side" "Bottom"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "USB Input Limit" "1.2A max setting (1.32A with PMIC tolerance)"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(symbol "USB_FLEX_12_0_1"
+			(rectangle
+				(start -7.62 16.51)
+				(end 2.54 -24.13)
+				(stroke
+					(width 0.254)
+					(type default)
+				)
+				(fill
+					(type background)
+				)
+			)
+		)
+		(symbol "USB_FLEX_12_1_1"
+			(pin passive line
+				(at 5.08 13.97 180)
+				(length 2.54)
+				(name "VBUS"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "1"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 5.08 11.43 180)
+				(length 2.54)
+				(name "VBUS"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "2"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 5.08 8.89 180)
+				(length 2.54)
+				(name "VBUS"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "3"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 5.08 6.35 180)
+				(length 2.54)
+				(name "VBUS"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "4"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 5.08 0 180)
+				(length 2.54)
+				(name "CC1"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "5"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 5.08 -2.54 180)
+				(length 2.54)
+				(name "CC2"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "10"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 5.08 -5.08 180)
+				(length 2.54)
+				(name "D+"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "7"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 5.08 -7.62 180)
+				(length 2.54)
+				(name "D-"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "8"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 5.08 -13.97 180)
+				(length 2.54)
+				(name "GND"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "6"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 5.08 -16.51 180)
+				(length 2.54)
+				(name "GND"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "9"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 5.08 -19.05 180)
+				(length 2.54)
+				(name "GND"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "11"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 5.08 -21.59 180)
+				(length 2.54)
+				(name "GND"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "12"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+		)
+	)
+	(symbol "TPD4E05U06DQA"
+		(pin_names
+			(offset 0.762)
+		)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(property "Reference" "U"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "TPD4E05U06DQAR"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "obc:TI_DQA0010A_USON-10_2.5x1.0mm_P0.5mm"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "https://www.ti.com/lit/ds/symlink/tpd4e05u06.pdf"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Four 5.5V, 0.5pF shunt ESD clamps; NC pads are not feedthroughs"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "MPN" "TPD4E05U06DQAR"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Manufacturer" "Texas Instruments"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(symbol "TPD4E05U06DQA_0_1"
+			(rectangle
+				(start -20.32 7.62)
+				(end 20.32 -10.16)
+				(stroke
+					(width 0.254)
+					(type default)
+				)
+				(fill
+					(type background)
+				)
+			)
+		)
+		(symbol "TPD4E05U06DQA_1_1"
+			(pin passive line
+				(at -15.24 10.16 270)
+				(length 2.54)
+				(name "IO3"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "4"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at -5.08 10.16 270)
+				(length 2.54)
+				(name "IO4"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "5"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 5.08 10.16 270)
+				(length 2.54)
+				(name "IO1"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "1"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 15.24 10.16 270)
+				(length 2.54)
+				(name "IO2"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "2"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin power_in line
+				(at 0 -12.7 90)
+				(length 2.54)
+				(name "GND"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "3"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 0 -12.7 90)
+				(length 2.54)
+				(hide yes)
+				(name "GND"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "8"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin no_connect line
+				(at 22.86 5.08 180)
+				(length 2.54)
+				(name "NC"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "6"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin no_connect line
+				(at 22.86 0 180)
+				(length 2.54)
+				(name "NC"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "7"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin no_connect line
+				(at 22.86 -5.08 180)
+				(length 2.54)
+				(name "NC"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "9"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+			(pin no_connect line
+				(at 22.86 -7.62 180)
+				(length 2.54)
+				(name "NC"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+				(number "10"
+					(effects
+						(font
+							(size 1 1)
+						)
+					)
+				)
+			)
+		)
+	)
+	(symbol "TC2030_CTX_NL"
+		(pin_names
+			(offset 1.016)
+		)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(property "Reference" "J"
+			(at 0 19.05 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "TC2030-CTX-NL"
+			(at 0 16.51 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "Connector:Tag-Connect_TC2030-IDC-NL_2x03_P1.27mm_Vertical"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "https://www.tag-connect.com/wp-content/uploads/bsk-pdf-manager/TC2030-CTX_1.pdf"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Six contact pads for TC2030-CTX-NL Cortex SWD cable; no fitted connector"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(symbol "TC2030_CTX_NL_0_1"
+			(rectangle
+				(start -7.62 12.7)
+				(end 10.16 -12.7)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type background)
+				)
+			)
+		)
+		(symbol "TC2030_CTX_NL_1_1"
+			(pin passive line
+				(at 0 15.24 270)
+				(length 2.54)
+				(name "VTref"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "1"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 12.7 0 180)
+				(length 2.54)
+				(name "SWDIO"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "2"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 12.7 7.62 180)
+				(length 2.54)
+				(name "~{RESET}"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "3"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 12.7 2.54 180)
+				(length 2.54)
+				(name "SWCLK"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "4"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 0 -15.24 90)
+				(length 2.54)
+				(name "GND"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "5"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 12.7 -2.54 180)
+				(length 2.54)
+				(name "SWO"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "6"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+		)
 	)
 )
