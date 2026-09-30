@@ -19,11 +19,16 @@ public struct PlannerPreviewPlace: Identifiable, Equatable, Sendable {
     public let kind: Kind
     public let alongRouteMeters: Double
     public let offRouteMeters: Double
+    /// Opening hours as the place states them, unparsed.
+    public let hours: String?
+    /// One fact worth a line, such as "Drinking water".
+    public let note: String?
 
     public init(id: String, name: String, coordinate: Coordinate, kind: Kind = .town,
-                alongRouteMeters: Double = 0, offRouteMeters: Double = 0) {
+                alongRouteMeters: Double = 0, offRouteMeters: Double = 0, hours: String? = nil, note: String? = nil) {
         self.id = id; self.name = name; self.coordinate = coordinate; self.kind = kind
         self.alongRouteMeters = alongRouteMeters; self.offRouteMeters = offRouteMeters
+        self.hours = hours; self.note = note
     }
 }
 
@@ -303,21 +308,21 @@ public final class PlannerPreviewModel {
         .init(id: "freiburg", name: "Freiburg", coordinate: .init(latitude: 47.997922, longitude: 7.842534)),
         .init(id: "titisee", name: "Titisee", coordinate: .init(latitude: 47.905528, longitude: 8.153371), alongRouteMeters: 30_524),
         .init(id: "cafe", name: "Valley café", coordinate: .init(latitude: 47.9592, longitude: 7.9935), kind: .cafe,
-              alongRouteMeters: 14_000, offRouteMeters: 80),
+              alongRouteMeters: 14_000, offRouteMeters: 80, hours: "Tue–Sun 9:00–18:00", note: "Outdoor seating"),
         .init(id: "water", name: "Village fountain", coordinate: .init(latitude: 47.9451, longitude: 8.0385), kind: .water,
-              alongRouteMeters: 19_000, offRouteMeters: 20),
+              alongRouteMeters: 19_000, offRouteMeters: 20, note: "Drinking water"),
         .init(id: "camping", name: "Forest campsite", coordinate: .init(latitude: 47.9288, longitude: 8.0798), kind: .camping,
-              alongRouteMeters: 23_000, offRouteMeters: 90),
+              alongRouteMeters: 23_000, offRouteMeters: 90, hours: "Reception 8:00–12:00, 16:00–20:00", note: "Tent pitches, showers"),
         .init(id: "cafe-orchard", name: "Orchard café", coordinate: .init(latitude: 47.9851, longitude: 7.9122), kind: .cafe,
-              alongRouteMeters: 6_500, offRouteMeters: 50),
+              alongRouteMeters: 6_500, offRouteMeters: 50, hours: "Wed–Sun 10:00–17:00"),
         .init(id: "shop-village", name: "Village food shop", coordinate: .init(latitude: 47.9660, longitude: 7.9650), kind: .shop,
-              alongRouteMeters: 11_000, offRouteMeters: 100),
+              alongRouteMeters: 11_000, offRouteMeters: 100, hours: "Mon–Sat 7:30–19:00"),
         .init(id: "shop-lake", name: "Lakeside food shop", coordinate: .init(latitude: 47.9070, longitude: 8.1490), kind: .shop,
-              alongRouteMeters: 29_800, offRouteMeters: 200),
+              alongRouteMeters: 29_800, offRouteMeters: 200, hours: "Mon–Sat 8:00–20:00, Sun 9:00–13:00"),
         .init(id: "water-valley", name: "Valley water tap", coordinate: .init(latitude: 47.9790, longitude: 7.9300), kind: .water,
-              alongRouteMeters: 8_300, offRouteMeters: 40),
+              alongRouteMeters: 8_300, offRouteMeters: 40, note: "Drinking water, seasonal"),
         .init(id: "cafe-hillside", name: "Hillside café", coordinate: .init(latitude: 47.9164, longitude: 8.1178), kind: .cafe,
-              alongRouteMeters: 27_000, offRouteMeters: 160),
+              alongRouteMeters: 27_000, offRouteMeters: 160, hours: "Daily 8:00–19:00"),
     ]
 
     private var sampledRoute: (samples: [RoutePoint], indices: [String: Int]) {

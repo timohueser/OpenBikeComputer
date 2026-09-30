@@ -163,9 +163,10 @@ struct PlannerPreviewSearch: View {
         return PlannerPreviewPlaceQuery.parse(query, hasRoute: model.hasRoute)
     }
     private func submit() { guard hasQuery else { return }; isFocused = false; onResult(result) }
+    // A picked place carries its list along, so the planner can offer the way back to it.
     private func select(_ place: PlannerPreviewPlace) {
         isFocused = false
-        if let onPlace { onPlace(place) }
+        if let onPlace { onResult(result); onPlace(place) }
         else { onResult(.init(title: place.name, explanation: result.explanation, places: [place], action: nil)) }
     }
 }

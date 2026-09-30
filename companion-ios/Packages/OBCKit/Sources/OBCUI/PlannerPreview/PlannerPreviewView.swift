@@ -5,16 +5,17 @@ import SwiftUI
 
 /// A development-only native study of the map-first planning flow.
 public struct PlannerPreviewView: View {
-    private enum Panel { case planning, stops, preferences, days, results, point }
+    private enum Panel { case planning, stops, preferences, days, results, place }
     private enum SearchIntent: Equatable { case general, replace(String) }
     @State private var searchAfterDismissal = false
     @State private var searchQuery = ""
     @State private var model: PlannerPreviewModel
     @ScaledMetric(relativeTo: .body) private var collapsedHeight = PlannerPreviewDrawerPosition.collapsedBase
     @ScaledMetric(relativeTo: .body) private var listContentHeight: CGFloat = 350
-    /// Measured from the planning and results panels, so the open detent fits its rows.
+    /// Measured from the planning, results and place panels, so the open detent fits its rows.
     @State private var planningContentHeight: CGFloat = 220
     @State private var resultsContentHeight: CGFloat = 300
+    @State private var placeContentHeight: CGFloat = 260
     @State private var drawerShown = false
     /// Runs once the drawer has gone: a pop or a save that follows it must not race its dismissal.
     @State private var afterDrawerDismiss: (() -> Void)?
@@ -23,12 +24,10 @@ public struct PlannerPreviewView: View {
     @State private var layersShown = false
     @State private var infoShown = false
     @State private var attributionShown = false
-    @State private var mapPlaceShown = false
-    @State private var mapAnchor = CGPoint.zero
     @State private var searchShown = false
     @State private var saveShown = false
     @State private var closeShown = false
-    @State private var editorPanel = Panel.point
+    @State private var editorPanel = Panel.preferences
     @State private var panel = Panel.planning
     @State private var intent = SearchIntent.general
     @State private var sheetHeight: CGFloat = 340
@@ -46,7 +45,6 @@ public struct PlannerPreviewView: View {
     @State private var queryEditor: PlannerPreviewQueryField?
     @State private var searchSnapshot: (String, PlannerPreviewPlaceQuery?, SearchIntent)?
     @State private var searchSelectedPlace: PlannerPreviewPlace?
-    @State private var mapContextHeight: CGFloat = 280
     private let onSave: (ImportedRoute, BikeType) -> Void
     private let onClose: () -> Void
 
@@ -60,12 +58,11 @@ public struct PlannerPreviewView: View {
     public var body: some View {
         GeometryReader { geometry in
             PlannerPreviewMap(coordinates: model.geometry, pins: pins,
-                              selectedID: mapPlaceShown || editorShown ? editingPointID ?? selectedPlace?.id : nil,
+                              selectedID: panel == .place ? editingPointID ?? selectedPlace?.id : nil,
                               cursor: cursor, bottomInset: sheetHeight + geometry.safeAreaInsets.bottom,
                               fitRevision: fitRevision, onSelect: selectPin, onMapPoint: selectMapPoint,
                               showCycling: network == .cycling, showHiking: network == .hiking,
                               onVisibleMapRect: { visibleMapRect = $0 },
-                              onSelectionPosition: { mapAnchor = $0 },
                               onVisibleRouteRange: { visibleRouteRange = $0 })
                 .ignoresSafeArea(edges: .bottom)
                 .overlay(alignment: .topTrailing) { if !layersShown { mapTools.padding(12) } }
@@ -104,9 +101,6 @@ public struct PlannerPreviewView: View {
                         .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
                         .shadow(color: .black.opacity(0.14), radius: 14, y: 4).padding(12)
                     }
-                }
-                .overlay(alignment: .topLeading) {
-                    if mapPlaceShown { mapContext(in: geometry.size) }
                 }
                 .sheet(isPresented: $drawerShown, onDismiss: { afterDrawerDismiss?(); afterDrawerDismiss = nil }) {
                     PlannerPreviewDrawer(position: $drawerPosition,
@@ -174,17 +168,17 @@ public struct PlannerPreviewView: View {
 
     private var mapTools: some View {
         VStack(spacing: 8) {
-            Button { fitRevision += 1; fraction = nil; mapPlaceShown = false } label: {
+            Button { fitRevision += 1; fraction = nil } label: {
                 Image(systemName: "arrow.up.left.and.arrow.down.right")
             }.accessibilityLabel("Show whole route")
             Button {
-                mapPlaceShown = false; infoShown = false
+                infoShown = false
                 layersShown.toggle()
                 if layersShown { drawerPosition = .collapsed }
             } label: { Image(systemName: "square.3.layers.3d") }
                 .accessibilityLabel("Map layers")
             if network != .none {
-                Button { layersShown = false; mapPlaceShown = false; infoShown.toggle() } label: {
+                Button { layersShown = false; infoShown.toggle() } label: {
                     Image(systemName: "info.circle")
                 }.accessibilityLabel("Map data attribution")
             }
@@ -195,8 +189,17 @@ public struct PlannerPreviewView: View {
     private var routeHeader: some View {
         HStack(spacing: 8) {
             if drawerPosition != .collapsed && panel != .planning {
-                Text(panel == .results ? results?.title ?? "Places" : "Route points")
-                    .font(.headline).lineLimit(1)
+                if panel == .place, let results, results.action == nil {
+                    // The way back to the list this place came from.
+                    Button { showResults() } label: {
+                        Label(results.title, systemImage: "chevron.left").font(.headline).lineLimit(1)
+                            .frame(minHeight: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain).foregroundStyle(OBCTheme.tint).accessibilityIdentifier("planner.backToResults")
+                } else {
+                    Text(panel == .results ? results?.title ?? "Places" : panel == .place
+                         ? (editingPointID != nil ? "Route point" : "Place") : "Route points")
+                        .font(.headline).lineLimit(1)
+                }
                 Spacer(minLength: 4)
                 doneButton(action: returnToPlanning)
             } else {
@@ -252,11 +255,17 @@ public struct PlannerPreviewView: View {
                 }.padding(.horizontal, 16).padding(.bottom, 16)
                 .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { resultsContentHeight = $0 }
             }
+        case .place:
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) { placePanel }
+                    .padding(.horizontal, 16).padding(.bottom, 16)
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { placeContentHeight = $0 }
+            }.scrollBounceBehavior(.basedOnSize)
         case .stops:
             PlannerPreviewPoints(model: model, onEdit: editPoint, onAdd: startSearch,
                 onReverse: { queryRequest = nil; results = model.lookup("reverse"); panel = .results },
-                onExample: { model.loadSample(); resetPanel() },
-                onNew: { model.newRoute(); resetPanel() })
+                onExample: { model.loadSample(); resetPanel(); fitRevision += 1 },
+                onNew: { model.newRoute(); resetPanel(); fitRevision += 1 })
         default: EmptyView()
         }
     }
@@ -266,6 +275,7 @@ public struct PlannerPreviewView: View {
         let content = switch panel {
         case .planning: planningContentHeight
         case .results: resultsContentHeight
+        case .place: placeContentHeight
         default: listContentHeight
         }
         return collapsedHeight + content
@@ -288,47 +298,34 @@ public struct PlannerPreviewView: View {
             .frame(minHeight: 44).fixedSize(horizontal: true, vertical: false)
     }
 
-    private func mapContext(in size: CGSize) -> some View {
-        let width = min(310.0, size.width - 24)
-        let x = min(max(12, mapAnchor.x - width / 2), size.width - width - 12)
-        let available = max(240, size.height - sheetHeight - 28)
-        let height = min(mapContextHeight, available)
-        let preferredY = mapAnchor.y > height + 32 ? mapAnchor.y - height - 22 : mapAnchor.y + 22
-        let y = min(max(12, preferredY), max(12, available - height))
-        return ScrollView {
-            VStack(spacing: 0) {
-                HStack(spacing: 10) {
-                    Image(systemName: selectedPlace?.kind.symbol ?? "mappin")
-                        .font(.subheadline).foregroundStyle(OBCTheme.secondary)
-                        .frame(width: 32, height: 32).background(OBCTheme.surface2, in: Circle())
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(selectedPlace?.name ?? "Map point").font(.headline)
-                        if let selectedPlace, editingPointID == nil, selectedPlace.kind != .town {
-                            Text(PlannerPlaceRow.detail(for: selectedPlace, showsRouteDistances: model.hasRoute, includesKind: false))
-                                .lineLimit(1)
-                                .font(.system(.subheadline).monospacedDigit()).foregroundStyle(OBCTheme.secondary)
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                    Button(action: dismissMapContext) {
-                        Image(systemName: "xmark").font(.caption.weight(.semibold))
-                            .foregroundStyle(OBCTheme.secondary)
-                            .frame(width: 30, height: 30).background(OBCTheme.fill, in: Circle())
-                            .frame(width: 44, height: 44).contentShape(Rectangle())
-                    }.accessibilityLabel("Close point actions")
-                }.padding(.leading, 16).padding(.trailing, 6).padding(.vertical, 6)
-                Divider().overlay(OBCTheme.hairline)
-                VStack(alignment: .leading, spacing: 4) {
-                    if editingPointID != nil { pointEditor }
-                    else if let selectedPlace { placeActions(selectedPlace) }
-                }.padding(.horizontal, 16).padding(.vertical, 8)
+    /// The selected place, route point or map point: its facts, then what to do with it.
+    @ViewBuilder private var placePanel: some View {
+        if let place = selectedPlace {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(place.name).font(.system(.title3, weight: .semibold))
+                if place.kind != .town {
+                    Text(PlannerPlaceRow.detail(for: place, showsRouteDistances: model.hasRoute))
+                        .font(.system(.subheadline).monospacedDigit()).foregroundStyle(OBCTheme.secondary)
+                }
             }
-            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { mapContextHeight = $0 }
+            if place.hours != nil || place.note != nil {
+                OBCGroupedSection {
+                    if let hours = place.hours {
+                        OBCListRow(icon: "clock", label: "Hours", detail: hours, showsDivider: place.note != nil)
+                    }
+                    if let note = place.note {
+                        OBCListRow(icon: "info.circle", label: note, showsDivider: false)
+                    }
+                }
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                if editingPointID != nil { pointEditor } else { placeActions(place) }
+            }
+            if place.kind != .town {
+                Text("Sample place. Location and opening hours are not verified.")
+                    .font(.footnote).foregroundStyle(OBCTheme.secondary)
+            }
         }
-        .scrollBounceBehavior(.basedOnSize)
-        .frame(width: width, height: height)
-        .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusCard))
-        .shadow(color: .black.opacity(0.14), radius: 14, y: 4)
-        .foregroundStyle(OBCTheme.ink).offset(x: x, y: y)
     }
 
     private func elevation(height: CGFloat) -> some View {
@@ -360,24 +357,13 @@ public struct PlannerPreviewView: View {
                     Spacer(minLength: 8)
                     doneButton { editorShown = false; intent = .general }
                 }
-                switch editorPanel {
-                case .preferences: preferences
-                case .days: days
-                case .point: pointEditor
-                default: EmptyView()
-                }
+                if editorPanel == .days { days } else { preferences }
             }.frame(maxWidth: .infinity, alignment: .leading)
         }
         .foregroundStyle(OBCTheme.ink).tint(OBCTheme.tint)
     }
 
-    private var editorTitle: String {
-        switch editorPanel {
-        case .preferences: "Bike"
-        case .days: "Days"
-        default: (model.points + model.markers).first { $0.id == editingPointID }?.place.name ?? "Point"
-        }
-    }
+    private var editorTitle: String { editorPanel == .days ? "Days" : "Bike" }
 
     @ViewBuilder private var pointEditor: some View {
         if let point = (model.points + model.markers).first(where: { $0.id == editingPointID }) {
@@ -476,7 +462,7 @@ public struct PlannerPreviewView: View {
         } else if model.start == nil {
             Button("Start here") { model.setStart(place); resetPanel() }.buttonStyle(.obcPrimary)
         } else if model.finish == nil {
-            Button("Finish here") { model.setFinish(place); resetPanel() }.buttonStyle(.obcPrimary)
+            Button("Finish here") { model.setFinish(place); resetPanel(); fitRevision += 1 }.buttonStyle(.obcPrimary)
         } else {
             // Most taps mean "stop here"; the other point kinds wait behind More.
             Button("Add stop") { model.addPoint(place, kind: .visit); resetPanel() }
@@ -499,7 +485,8 @@ public struct PlannerPreviewView: View {
     }
 
     private func editPoint(_ point: PlannerPreviewPoint) {
-        editingPointID = point.id; selectedPlace = point.place; show(.point)
+        editingPointID = point.id; selectedPlace = point.place; intent = .general
+        panel = .place; drawerPosition = .open
     }
 
     /// The Library's stat line, so the planner and the list agree on every figure.
@@ -518,7 +505,7 @@ public struct PlannerPreviewView: View {
 
     private func startSearch() {
         searchSnapshot = nil
-        mapPlaceShown = false; layersShown = false; infoShown = false
+        layersShown = false; infoShown = false
         intent = .general; searchQuery = ""; queryRequest = nil; queryEditor = nil; searchShown = true
     }
 
@@ -536,7 +523,7 @@ public struct PlannerPreviewView: View {
 
     private func openSearchFromDetail() {
         searchSnapshot = nil
-        queryRequest = nil; queryEditor = nil; mapPlaceShown = false
+        queryRequest = nil; queryEditor = nil
         if editorShown { searchAfterDismissal = true; editorShown = false }
         else { searchShown = true }
     }
@@ -559,19 +546,25 @@ public struct PlannerPreviewView: View {
     }
 
     private func show(_ panel: Panel) {
-        mapPlaceShown = false; layersShown = false; infoShown = false
+        layersShown = false; infoShown = false
         if panel == .stops || panel == .results { self.panel = panel; drawerPosition = .open }
         else { editorPanel = panel; editorShown = true }
     }
 
     private func returnToPlanning() {
         panel = .planning; drawerPosition = .open; results = nil; fraction = nil; intent = .general
+        selectedPlace = nil; editingPointID = nil
     }
 
+    private func showResults() {
+        selectedPlace = nil; editingPointID = nil; intent = .general
+        panel = .results; drawerPosition = .open
+    }
+
+    /// After an edit: back to the list the place came from, else to planning. The camera stays.
     private func resetPanel() {
-        mapPlaceShown = false; editorShown = false; selectedPlace = nil
-        intent = .general; editingPointID = nil; queryRequest = nil
-        returnToPlanning(); fitRevision += 1
+        editorShown = false
+        if let results, results.action == nil { showResults() } else { queryRequest = nil; returnToPlanning() }
     }
 
     private func receiveSearch(_ result: PlannerPreviewQueryResult) {
@@ -581,40 +574,32 @@ public struct PlannerPreviewView: View {
     }
 
     private func selectResult(_ place: PlannerPreviewPlace) {
-        let selectionIntent = intent
-        returnToPlanning(); intent = selectionIntent
-        selectedPlace = place; editingPointID = nil; mapPlaceShown = true
+        selectedPlace = place; editingPointID = nil
+        panel = .place; drawerPosition = .open
     }
 
-    // A tap on the map always selects what was tapped; an open card just moves there.
+    // A tap on the map always selects what was tapped; the place panel just shows the next one.
     private func selectPin(_ id: String, at location: CGPoint) {
-        let selectionIntent = panel == .results ? intent : .general
-        mapAnchor = location; layersShown = false; infoShown = false
+        layersShown = false; infoShown = false
         if let point = (model.points + model.markers).first(where: { $0.id == id }) {
-            editingPointID = point.id; selectedPlace = point.place
+            editingPointID = point.id; selectedPlace = point.place; intent = .general
         } else {
             guard let place = ((results?.places ?? []) + PlannerPreviewModel.sampleMapPlaces).first(where: { $0.id == id }) else { return }
             editingPointID = nil; selectedPlace = place
         }
-        panel = .planning; results = nil; intent = selectionIntent; mapPlaceShown = true
+        panel = .place; drawerPosition = .open
     }
 
     private func selectMapPoint(_ coordinate: Coordinate, at location: CGPoint) {
-        let selectionIntent = panel == .results ? intent : .general
-        mapAnchor = location; editingPointID = nil; layersShown = false; infoShown = false
+        editingPointID = nil; layersShown = false; infoShown = false
         selectedPlace = .init(id: UUID().uuidString, name: "Map point", coordinate: coordinate)
-        panel = .planning; results = nil; intent = selectionIntent; mapPlaceShown = true
+        panel = .place; drawerPosition = .open
     }
 
     /// Closes the drawer first and runs `action` after it has gone.
     private func leave(_ action: @escaping () -> Void) {
         afterDrawerDismiss = action
         drawerShown = false
-    }
-
-    private func dismissMapContext() {
-        mapPlaceShown = false; layersShown = false; infoShown = false
-        selectedPlace = nil; editingPointID = nil; intent = .general
     }
 
     private func isInMapView(_ place: PlannerPreviewPlace) -> Bool {
@@ -633,7 +618,7 @@ public struct PlannerPreviewView: View {
             guard let category = PlannerPreviewPlaceCategory.category(for: place) else { return model.points.isEmpty }
             return results == nil && !hiddenCategories.contains(category)
         }
-        if mapPlaceShown, let selectedPlace, editingPointID == nil { places.insert(selectedPlace, at: 0) }
+        if panel == .place, let selectedPlace, editingPointID == nil { places.insert(selectedPlace, at: 0) }
         var seen = Set((model.points + model.markers).map { $0.place.id })
         pins += places.filter { seen.insert($0.id).inserted }.map { place in
             .init(id: place.id, title: place.name, coordinate: place.coordinate, symbol: place.kind.symbol,

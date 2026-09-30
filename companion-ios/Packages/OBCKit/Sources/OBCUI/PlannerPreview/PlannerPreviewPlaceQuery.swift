@@ -90,7 +90,8 @@ struct PlannerPreviewPlaceQuery: Equatable {
             guard model.hasRoute else { return place }
             let projection = line.projection(of: place.coordinate, near: line.length / 2, window: line.length)
             return PlannerPreviewPlace(id: place.id, name: place.name, coordinate: place.coordinate, kind: place.kind,
-                                       alongRouteMeters: projection.distance, offRouteMeters: projection.error)
+                                       alongRouteMeters: projection.distance, offRouteMeters: projection.error,
+                                       hours: place.hours, note: place.note)
         }
         let places = filter(candidates, routeLengthMeters: line.length, isInMapView: isInMapView)
         return .init(title: kinds.isEmpty ? name : kindLabel,

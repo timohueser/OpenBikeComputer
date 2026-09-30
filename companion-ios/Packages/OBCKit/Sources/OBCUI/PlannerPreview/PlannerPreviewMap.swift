@@ -28,7 +28,6 @@ struct PlannerPreviewMap: UIViewRepresentable {
     var showCycling = false
     var showHiking = false
     var onVisibleMapRect: (MKMapRect) -> Void = { _ in }
-    var onSelectionPosition: (CGPoint) -> Void = { _ in }
     var onVisibleRouteRange: (ClosedRange<Double>?) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -130,7 +129,6 @@ struct PlannerPreviewMap: UIViewRepresentable {
         private var reportedRange: ClosedRange<Double>?
         private var hasReportedRange = false
         private var reportedViewport: MKMapRect?
-        private var reportedSelection: (id: String, point: CGPoint)?
         private var networkOverlays: [String: [PlannerPreviewNetworkOverlay]] = [:]
 
         init(_ parent: PlannerPreviewMap) {
@@ -339,20 +337,6 @@ struct PlannerPreviewMap: UIViewRepresentable {
                 if !unchanged {
                     self.reportedViewport = viewport
                     self.parent.onVisibleMapRect(viewport)
-                }
-                if let selectedID = self.parent.selectedID,
-                   let pin = self.parent.pins.first(where: { $0.id == selectedID }) {
-                    let point = map.convert(MapGeometry.clLocation(pin.coordinate), toPointTo: map)
-                    let moved = self.reportedSelection.map {
-                        let dx = point.x - $0.point.x, dy = point.y - $0.point.y
-                        return dx * dx + dy * dy > 0.25
-                    } ?? true
-                    if self.reportedSelection?.id != selectedID || moved {
-                        self.reportedSelection = (selectedID, point)
-                        self.parent.onSelectionPosition(point)
-                    }
-                } else {
-                    self.reportedSelection = nil
                 }
                 let range = self.visibleRange(map)
                 guard !self.hasReportedRange || range != self.reportedRange else { return }
