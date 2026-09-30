@@ -41,7 +41,10 @@ Responses distinguish construction, no access, private, limited, conditional,
 directional, pushing and bicycle bans. Dense requests fail with a zoom-in message.
 Prepare `overlays.sqlite` before service startup. Its package identity must match
 the routing manifest. The service reads the viewport through a disk spatial index
-with a 4 MiB cache. Overlay requests do not use routing workers.
+with a 4 MiB cache. Two overlay requests can run independently of routing workers.
+Geometry is simplified within half a map pixel at the requested zoom. Feature
+`routes` contains IDs from the response's `routes` dictionary. Successful responses
+permit caching for one hour.
 Route relations retain names, references, websites, trail symbols, network levels and overlapping memberships.
 Proposed routes are omitted. Access markings are snapshot data, not live closures.
 
