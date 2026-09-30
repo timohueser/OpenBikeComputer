@@ -127,13 +127,13 @@ def publish(args):
             source_listing.write_text("\n".join(Path(name).name for name in source_files) + "\n")
             options = ["--files-from", str(source_listing)]
             r2.run_rclone(["copy", str(args.data_dir / "sources"), f"{remote.path}/planner/sources", *options,
-                           "--immutable", "--transfers", "2", "--header-upload", "Cache-Control: public,max-age=31536000,immutable"], remote.env)
+                           "--immutable", "--checksum", "--transfers", "2", "--header-upload", "Cache-Control: public,max-age=31536000,immutable"], remote.env)
             r2.run_rclone(["check", str(args.data_dir / "sources"), f"{remote.path}/planner/sources", *options,
                            "--one-way", "--download", "--checkers", "2"], remote.env)
         listing = Path(directory) / "files.txt"
         listing.write_text("\n".join(files) + "\n")
         r2.run_rclone(["copy", str(args.data_dir), f"{remote.path}/{prefix}", "--files-from", str(listing),
-                       "--immutable", "--transfers", "4", "--s3-upload-concurrency", "2",
+                       "--immutable", "--checksum", "--transfers", "4", "--s3-upload-concurrency", "2",
                        "--header-upload", "Cache-Control: public,max-age=31536000,immutable"], remote.env)
         rows = json.loads(r2.run_rclone(["lsjson", f"{remote.path}/{prefix}", "--recursive", "--files-only"], remote.env, capture=True))
         sizes = {row["Path"]: row["Size"] for row in rows}
@@ -142,7 +142,7 @@ def publish(args):
         r2.run_rclone(["check", str(args.data_dir), f"{remote.path}/{prefix}", "--files-from", str(listing),
                        "--one-way", "--download", "--checkers", "2"], remote.env)
         r2.run_rclone(["copyto", str(args.data_dir / "release.json"), f"{remote.path}/{prefix}/release.json",
-                       "--immutable", "--header-upload", "Content-Type: application/json",
+                       "--immutable", "--checksum", "--header-upload", "Content-Type: application/json",
                        "--header-upload", "Cache-Control: public,max-age=31536000,immutable"], remote.env)
     print(f"Published {args.public_url}/planner/releases/{identity}/release.json")
 
