@@ -35,7 +35,7 @@ export function validateInput(input) {
     fail();
   if (
     input.region !== undefined &&
-    !['germany', 'baden-wuerttemberg'].includes(input.region)
+    (typeof input.region !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(input.region))
   )
     fail();
   if (

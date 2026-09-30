@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare and run the complete Baden-Württemberg planner on loopback."""
+"""Prepare, publish, deploy, or preview regional planner data."""
 
 import argparse
 import fcntl
@@ -73,6 +73,7 @@ def setup(args):
             print("Building BW routing with local elevation data. This can take a long time.", flush=True)
             run(*command)
             output.rename(route)
+    run(ROOT / "target/release/route-server", route, "--build-overlays")
     verify(args, full=True)
     print("Setup complete. Run: obc planner", flush=True)
 
@@ -85,6 +86,8 @@ def verify(args, full=False):
     routing = json.loads((route / "manifest.json").read_text())
     if routing["region"] != REGION or routing["bounds"] != maps.bounds(maps.BW_BOUNDS):
         raise ValueError("The route package must cover Baden-Württemberg. Repeat setup with a fresh data directory.")
+    if not (route / "overlays.sqlite").is_file():
+        raise ValueError("Missing overlay index. Run obc planner setup.")
     for name in ["touring", "road", "gravel", "mtb", "hiking"]:
         if name not in routing["metrics"]:
             raise ValueError(f"Route package lacks {name}.")
@@ -146,6 +149,11 @@ def serve(args):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] in {"prepare", "publish", "deploy", "rollback", "site-config"}:
+        try: from .planner_release import main as release_main
+        except ImportError: from planner_release import main as release_main
+        release_main(sys.argv[1:])
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["setup", "serve", "verify"], nargs="?", default="serve")
     parser.add_argument("--data-dir", type=Path, default=os.environ.get(

@@ -112,6 +112,12 @@
         .ride { grid-column: 1; grid-row: 2; }
         .actions { grid-column: 2; grid-row: 1 / span 2; }
     }
+    @media (max-width: 700px) {
+        .trip-bar { grid-template-columns: minmax(0, 1fr); }
+        .trip-name h1 { flex: 1; }
+        .ride { flex-wrap: wrap; }
+        .actions { grid-column: 1; grid-row: 3; justify-content: flex-end; }
+    }
     .actions > :global(.versions) {
         margin-left: 8px;
     }

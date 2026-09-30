@@ -3,6 +3,7 @@
 ```sh
 cargo build --release -p route-server
 target/release/route-server /data/routes/freiburg --verify
+target/release/route-server /data/routes/freiburg --build-overlays
 target/release/route-server /data/routes/freiburg
 ```
 
@@ -13,7 +14,7 @@ target/release/route-server /data/routes/freiburg
 | `ROUTE_ORIGIN` | Unset | One allowed browser origin; omit for same-origin proxy |
 
 The service does not queue requests. Extra requests receive `503 busy`.
-Each worker has its own router with a 64 MiB CH cache. A request has a 15-second
+Each worker has its own router with a 128 MiB CH cache. A request has a 15-second
 cooperative deadline. Disconnects cancel its work. The body limit is 64 KiB.
 Put a public service behind TLS and an OS memory and CPU limit. Keep the package
 read-only. Replace it by starting a new service instance on the new directory.
@@ -37,8 +38,10 @@ Construction and conditional access appear from 10; other access restrictions
 appear from 13, directional rules from 14, and pushing sections from 15.
 Access uses `mode=cycling` by default; `mode=walking` selects pedestrian rules.
 Responses distinguish construction, no access, private, limited, conditional,
-directional, pushing and bicycle bans. Dense requests fail with a zoom-in message. The service builds a
-separate spatial index at startup. Overlay requests do not use routing workers.
+directional, pushing and bicycle bans. Dense requests fail with a zoom-in message.
+Prepare `overlays.sqlite` before service startup. Its package identity must match
+the routing manifest. The service reads the viewport through a disk spatial index
+with a 4 MiB cache. Overlay requests do not use routing workers.
 Route relations retain names, references, websites, trail symbols, network levels and overlapping memberships.
 Proposed routes are omitted. Access markings are snapshot data, not live closures.
 

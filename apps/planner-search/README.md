@@ -1,8 +1,8 @@
-# Local planner search
+# Planner search
 
-Run place search and smart requests on your computer. The service binds to loopback.
-Search and query inference need no network after setup. The browser must keep access to
-this local server. Map tiles and the routing engine are separate services.
+Run place search and smart requests locally or on the VPS. The service binds to loopback.
+Caddy serves hosted requests with the configured site origin. SQLite and model inference
+need no external search service. Map tiles and routing are separate services.
 
 ## Setup and run
 
@@ -30,7 +30,9 @@ The normal Undo button restores the previous plan.
 
 Setup verifies the source and model hashes before use. It builds both SQLite packages
 from the prepared [Photon Germany dump](https://download1.graphhopper.com/public/europe/germany/).
-It does not install Photon or OpenSearch. A build from raw OSM is not included.
+This preview does not install Photon or OpenSearch. The common-source release pipeline
+builds a private Nominatim database and exports it with Photon. See the planner README.
+Neither build tool runs as a public service.
 To use existing packages, omit `--build-data`. An interrupted build has no completion
 metadata. Build into a fresh directory with `build.py SOURCE --output DIRECTORY`.
 
@@ -56,6 +58,8 @@ those sources are unavailable.
 | `OBC_PLANNER_PORT` | `4184` |
 | `OBC_QUERY_ROUTER` | `http://127.0.0.1:8788` |
 | `OBC_SEARCH_REGIONS` | `germany,baden-wuerttemberg` |
+| `OBC_SEARCH_ORIGINS` | Loopback origins only when unset |
+| `OBC_SEARCH_SAMPLE` | Repository Black Forest GPX |
 
 The combined development command passes `OBC_SEARCH_PORT` to the Vite proxy.
 

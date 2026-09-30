@@ -4,6 +4,7 @@ import hashlib
 import io
 import sqlite3
 import time
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -78,14 +79,18 @@ class Writer:
         return self.next_id
 
     def add(self, p):
+        # Photon derives postcode centroids from addresses without an OSM identity.
+        if p['osm_key'] == 'place' and p['osm_value'] == 'postcode' and not p.get('object_type'):
+            return
         a = p.get('address', {})
         ns = names(p.get('name', {}))
         lon, lat = p['centroid']
         region = a.get('state', '')
         city = (values(a, ['city', 'town', 'village', 'county']) or [''])[0]
         postcode = p.get('postcode', '')
+        country = 'Deutschland Germany' if p.get('country_code') == 'de' else ' '.join(values(a, ['country', 'country:en']))
         context = ' '.join(values(a, ['city', 'city:de', 'city:en', 'district', 'locality',
-                                     'county', 'state', 'street']) + [postcode, 'Deutschland Germany'])
+                                     'county', 'state', 'street']) + [postcode, country])
         source = f"{p['object_type'].lower()}{p['object_id']}"
         bbox = p.get('bbox', [lon, lat, lon, lat])
         bbox = [min(bbox[0], bbox[2]), min(bbox[1], bbox[3]), max(bbox[0], bbox[2]), max(bbox[1], bbox[3])]
@@ -148,8 +153,21 @@ def main():
     ap.add_argument('dump', type=Path)
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--output', type=Path, default=ROOT / 'data')
-    ap.add_argument('--region', choices=['germany', 'baden-wuerttemberg', 'all'], default='all')
+    ap.add_argument('--region', default='all')
+    ap.add_argument('--bounds', help='West,south,east,north for one regional package')
+    ap.add_argument('--countries', default='de', help='Comma-separated country codes')
+    ap.add_argument('--osm-sha256', help='Identity of the OSM input used by Nominatim')
     args = ap.parse_args()
+    if not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', args.region):
+        ap.error('Invalid region ID')
+    bounds = list(map(float, args.bounds.split(','))) if args.bounds else None
+    if bounds is None and args.region not in ('all', 'germany', 'baden-wuerttemberg'):
+        ap.error('--bounds is required for a custom region')
+    if bounds and (len(bounds) != 4 or not -180 <= bounds[0] < bounds[2] <= 180 or not -85 <= bounds[1] < bounds[3] <= 85 or args.region == 'all'):
+        ap.error('Use valid bounds with one region')
+    countries = args.countries.lower().split(',')
+    if args.osm_sha256 and not re.fullmatch(r'[a-f0-9]{64}', args.osm_sha256):
+        ap.error('Invalid OSM digest')
     args.output.mkdir(parents=True, exist_ok=True)
     regions = ['germany', 'baden-wuerttemberg'] if args.region == 'all' else [args.region]
     writers = {name: Writer(name, args.output) for name in regions}
@@ -157,6 +175,8 @@ def main():
     n = 0
     outlines = []
     meta = {'schema': 1, 'source': args.dump.name, 'attribution': '© OpenStreetMap contributors, ODbL 1.0; prepared by Nominatim / Photon'}
+    if args.osm_sha256:
+        meta.update(osm_sha256=args.osm_sha256, bounds=bounds, countries=countries)
     with args.dump.open('rb') as raw, zstandard.ZstdDecompressor().stream_reader(raw) as stream:
         for line in io.BufferedReader(stream):
             obj = orjson.loads(line)
@@ -165,13 +185,18 @@ def main():
             if obj['type'] != 'Place':
                 continue
             for p in obj['content']:
-                if p.get('country_code') != 'de' or not p.get('centroid'):
+                if p.get('country_code') not in countries or not p.get('centroid'):
                     continue
-                if 'germany' in writers:
+                if bounds:
+                    lon, lat = p['centroid']
+                    if not (bounds[0] <= lon <= bounds[2] and bounds[1] <= lat <= bounds[3]):
+                        continue
+                    writers[args.region].add(p)
+                elif 'germany' in writers:
                     writers['germany'].add(p)
                 state = p.get('address', {}).get('state', '')
                 name = p.get('name', {}).get('name', '')
-                if 'baden-wuerttemberg' in writers and (state == 'Baden-Württemberg' or name == 'Baden-Württemberg'):
+                if not bounds and 'baden-wuerttemberg' in writers and (state == 'Baden-Württemberg' or name == 'Baden-Württemberg'):
                     writers['baden-wuerttemberg'].add(p)
                 if p.get('address_type') == 'state' and p.get('geometry'):
                     geom = mapping(shape(p['geometry']).simplify(.003, preserve_topology=True))

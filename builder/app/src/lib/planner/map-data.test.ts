@@ -8,6 +8,14 @@ afterEach(() => {
 });
 
 describe('planner map hosting', () => {
+    it('uses cached XYZ tiles for the hosted vector map', async () => {
+        vi.stubGlobal('window', { location: { href: 'https://planner.example/plan/' } });
+        vi.stubEnv('VITE_PLANNER_TILEJSON_URL', 'https://tiles.example/releases/id/basemap.json');
+        const data = await import('./map-data');
+        const { mapStyle } = await import('./map-style');
+        expect(data.BASEMAP_URL).toBe('https://tiles.example/releases/id/basemap.json');
+        expect(mapStyle('light', 'dem://tiles', 'contours://tiles').sources.basemap).toHaveProperty('url', data.BASEMAP_URL);
+    });
     it('keeps all default map requests on the host, including a mounted preview', async () => {
         vi.stubGlobal('window', { location: { href: 'http://localhost:4175/preview/planner.html' } });
         const data = await import('./map-data');

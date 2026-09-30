@@ -32,6 +32,69 @@ fn package_with_profiles(graph: &Graph, profiles: &[Profile]) -> (Memory, Vec<u8
     .unwrap();
     (Memory(Arc::new(objects)), serde_json::to_vec(&manifest).unwrap())
 }
+
+#[test]
+fn profile_selection_keeps_closed_routes_and_removes_unused_objects() {
+    use route_engine::directory::{Directory, Writer};
+    let root = std::env::temp_dir().join(format!("route-select-test-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
+    let input = root.join("input");
+    std::fs::create_dir(&input).unwrap();
+    let (source, manifest) = package_with_profiles(&fixture(), &Profile::presets());
+    let mut writer = Writer::create(&input).unwrap();
+    for bytes in source.0.values() {
+        writer.write(bytes).unwrap();
+    }
+    writer.finish().unwrap();
+    std::fs::write(input.join("manifest.json"), &manifest).unwrap();
+    let output = root.join("selected");
+    let command = |profiles: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_route-select"))
+            .arg(&input)
+            .arg("--output")
+            .arg(&output)
+            .arg("--profiles")
+            .arg(profiles)
+            .output()
+            .unwrap()
+    };
+    assert!(!command("unknown").status.success());
+    assert!(!output.exists());
+    assert!(command("touring,touring/less-climbing").status.success());
+    let selected = Directory::open(&output).unwrap();
+    selected.verify().unwrap();
+    assert_eq!(selected.manifest().metrics.len(), 2);
+    let index = std::fs::read(output.join("pages.idx")).unwrap();
+    assert_eq!(u64::from_le_bytes(index[8..16].try_into().unwrap()) as usize, selected.objects().unwrap().len());
+    assert!(
+        std::fs::metadata(output.join("pages.bin")).unwrap().len()
+            < std::fs::metadata(input.join("pages.bin")).unwrap().len()
+    );
+    assert!(selected.metric("road").is_err());
+    let mut before = Router::new(Package::open(source, &manifest).unwrap(), 4 * 1024 * 1024);
+    let mut after = Router::new(selected, 4 * 1024 * 1024);
+    for profile in ["touring", "touring/less-climbing"] {
+        let request = Request {
+            points: vec![[0.001, 0.0], [0.029, 0.02]],
+            profile: profile.into(),
+            pace: Pace::default(),
+            alternatives: false,
+            turnarounds: vec![],
+        };
+        let expected = before.route(&request, &Control::default()).unwrap();
+        let actual = after.route(&request, &Control::default()).unwrap();
+        assert_eq!(actual.cost, expected.cost);
+        assert_eq!(actual.geometry, expected.geometry);
+    }
+    assert!(!command("touring").status.success());
+}
 fn fixture() -> Graph {
     let points: Vec<_> =
         (0..12).map(|i| Point { lat: i / 4 * 10_000, lon: i % 4 * 10_000, elevation: NO_ELEVATION }).collect();
@@ -202,7 +265,7 @@ fn query_does_not_read_source_tag_pages_but_installation_verifies_them() {
     let package = Package::open(source.clone(), &manifest).unwrap();
     package.verify().unwrap();
     let mut objects = (*source.0).clone();
-    for key in package.manifest().osm.objects() {
+    for key in package.manifest().osm.tables().flat_map(|t| &t.blocks) {
         objects.remove(key);
     }
     let incomplete = Package::open(Memory(Arc::new(objects)), &manifest).unwrap();
@@ -260,7 +323,7 @@ fn via_direction_pace_and_failure_states_are_explicit() {
     request.points[0] = [10.0, 10.0];
     assert!(matches!(router.route(&request, &Control::default()), Err(Error::MissingRegion(_))));
     let mut broken = (*source.0).clone();
-    let key = router.package().manifest().geometry[0].clone();
+    let key = router.package().key(&router.package().manifest().geometry, 0).unwrap();
     broken.get_mut(&key).unwrap()[0] ^= 1;
     let mut package = Package::open(Memory(Arc::new(broken)), &manifest).unwrap();
     assert!(matches!(package.road(0), Err(Error::InvalidData(_))));
@@ -366,7 +429,7 @@ fn closed_packages_route_across_multiple_summary_pages() {
         Graph { points, roads, forbidden: vec![], forbidden_foot: vec![], warnings: vec![], ..Graph::default() };
     let (source, manifest) = package(&graph);
     let mut router = Router::new(Package::open(source, &manifest).unwrap(), 64 * 1024);
-    assert!(router.package().manifest().metrics["touring"].graph.len() > 1);
+    assert!(router.package().manifest().metrics["touring"].graph.len > 1);
     let request = Request {
         points: vec![[0.0002, 0.0], [0.3988, 0.0]],
         profile: "touring".into(),
@@ -463,17 +526,25 @@ fn geometry_cache_retains_a_snap_working_set_across_many_small_pages() {
     let mut objects = (*source.0).clone();
     let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
     manifest.roads = 20 * 128;
-    manifest.geometry.clear();
+    let original = Package::open(source.clone(), &bytes).unwrap();
+    let mut geometry = Vec::new();
     for page in 0..20 {
         let road = Road { way: page, ..graph.roads[0].clone() };
         let bytes = encode(&vec![road; 128]).unwrap();
         let key = digest(&bytes);
-        manifest.geometry.push(key.clone());
+        geometry.push(key.clone());
         objects.insert(key, bytes);
     }
-    for metric in manifest.metrics.values_mut() {
-        metric.endpoints.resize(20, metric.endpoints[0].clone());
-        metric.allowed.resize((20 * 128usize).div_ceil(64), u64::MAX);
+    let mut write = |bytes: &[u8]| {
+        let key = digest(bytes);
+        objects.insert(key.clone(), bytes.to_vec());
+        Ok(key)
+    };
+    manifest.geometry = route_engine::table::Table::write(&geometry, &mut write).unwrap();
+    for (name, metric) in &mut manifest.metrics {
+        let key = original.key(&original.metric(name).unwrap().endpoints, 0).unwrap();
+        metric.endpoints = route_engine::table::Table::write(&vec![key; 20], &mut write).unwrap();
+        metric.allowed = route_engine::table::Table::write(&vec![u64::MAX; 40], &mut write).unwrap();
     }
     let reads = Cell::new(0);
     let mut package =
@@ -483,7 +554,7 @@ fn geometry_cache_retains_a_snap_working_set_across_many_small_pages() {
             assert_eq!(package.road(page * 128).unwrap().way, page as i64);
         }
     }
-    assert_eq!(reads.get(), 20);
+    assert_eq!(reads.get(), 21);
 }
 
 #[test]

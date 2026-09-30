@@ -23,6 +23,15 @@ test('distant named results survive local matches; ambiguity uses proximity',()=
   assert.equal(search(db,{q:'Hotel Krone',view}).results.length,2);
   assert.equal(search(db,{q:'Munich',view}).results[0].source,'r5');
 });
+test('a short city name outranks a nearby district with default geographic importance',()=>{
+  const {db,conn}=database([
+    ['r30','Freiburg im Breisgau','city',7.8494,47.9961,'',.24],
+    ['r31','Freiburg','locality',7.7713,47.9958,'',.067],
+  ]);
+  for(const q of ['Freiburg','Freibug','Xreiburg'])
+    assert.equal(search(db,{q,view}).results[0].source,'r30',q);
+  conn.close();
+});
 test('free-form addresses retain house precision and label fallback',()=>{
   const house=search(db,{q:'12 Kaiser Joseph Str Freiburg',view});
   assert.equal(house.results[0].source,'w123');

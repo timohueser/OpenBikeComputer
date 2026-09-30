@@ -41,7 +41,24 @@ export function corridorTiles(coordinates: Coordinate[], bufferKm: number, zoom:
     return [...keys];
 }
 
-let archive: PMTiles | undefined;
+type TileSource = { maxZoom: number; getZxy: (z: number, x: number, y: number) => Promise<{ data: ArrayBuffer } | undefined> };
+let source: Promise<TileSource> | undefined;
+async function tileSource(url: string): Promise<TileSource> {
+    if (!url.endsWith('.json')) {
+        const archive = new PMTiles(url);
+        return { maxZoom: (await archive.getHeader()).maxZoom, getZxy: (z, x, y) => archive.getZxy(z, x, y) };
+    }
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('Place tiles are unavailable.');
+    const info = await response.json();
+    if (!Number.isInteger(info.maxzoom) || info.maxzoom < 0 || info.maxzoom > 14 || !info.tiles?.[0]) throw new Error('Invalid place tile source.');
+    return { maxZoom: info.maxzoom, async getZxy(z, x, y) {
+        const response = await fetch(info.tiles[0].replace('{z}', z).replace('{x}', x).replace('{y}', y));
+        if (response.status === 204) return undefined;
+        if (!response.ok) throw new Error('Place tiles are unavailable.');
+        return { data: await response.arrayBuffer() };
+    } };
+}
 const tiles = new Map<string, Promise<Place[]>>();
 // Hundreds of parallel range requests fail in the browser, so tiles load a few at a time.
 const parallel = 8;
@@ -61,18 +78,19 @@ async function queued<T>(task: () => Promise<T>): Promise<T> {
 
 /** Rider places in the archive's most detailed tiles around the route. Each tile loads once per session. */
 export async function corridorPlaces(url: string, coordinates: Coordinate[], bufferKm = 5): Promise<Place[]> {
-    archive ??= new PMTiles(url);
-    const { maxZoom } = await archive.getHeader();
+    source ??= tileSource(url).catch(error => { source = undefined; throw error; });
+    const archive = await source;
+    const { maxZoom } = archive;
     const loaded = await Promise.all(corridorTiles(coordinates, bufferKm, maxZoom).map(key => {
         // A dropped range request is retried once; a tile that still fails loads again on the next call.
-        const load = () => loadTile(archive!, key);
+        const load = () => loadTile(archive, key);
         if (!tiles.has(key)) tiles.set(key, queued(() => load().catch(load)).catch(error => { tiles.delete(key); throw error; }));
         return tiles.get(key)!;
     }));
     return [...new Map(loaded.flat().map(place => [place.id, place])).values()];
 }
 
-async function loadTile(source: PMTiles, key: string): Promise<Place[]> {
+async function loadTile(source: TileSource, key: string): Promise<Place[]> {
     const [z, x, y] = key.split('/').map(Number);
     const tile = await source.getZxy(z, x, y);
     const layer = tile && new VectorTile(new PbfReader(new Uint8Array(tile.data))).layers.pois;

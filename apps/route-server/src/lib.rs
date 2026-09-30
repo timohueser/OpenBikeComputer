@@ -21,6 +21,10 @@ use tower_http::compression::CompressionLayer;
 
 mod overlays;
 
+pub fn prepare_overlays(directory: &Path) -> Result<(), Error> {
+    overlays::Overlays::build(directory)
+}
+
 struct Workers {
     routers: Mutex<Vec<Router<Directory>>>,
     permits: Arc<Semaphore>,
@@ -35,10 +39,10 @@ pub fn app(directory: &Path, workers: usize) -> Result<axum::Router, Error> {
     }
     let mut routers = Vec::new();
     for _ in 0..workers {
-        routers.push(Router::new(Directory::open(directory)?, 64 * 1024 * 1024));
+        routers.push(Router::new(Directory::open(directory)?, 128 * 1024 * 1024));
     }
     let package = routers[0].package();
-    let overlays = overlays::Overlays::load(package)?;
+    let overlays = overlays::Overlays::open(directory, package.identity())?;
     let metadata = json!({ "package": package.identity(), "region": package.manifest().region, "bounds": package.manifest().bounds,
         "profiles": package.manifest().metrics.keys().collect::<Vec<_>>(), "attribution": package.manifest().attribution, "warnings": package.manifest().warnings });
     let state = Arc::new(Workers {

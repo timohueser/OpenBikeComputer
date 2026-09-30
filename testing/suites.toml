@@ -203,6 +203,7 @@ triggers = [
   "tools/requirements-test.txt",
   "tools/*.py",
   "tools/**/*.py",
+  "tools/planner-regions/**",
   "testing/*.toml",
   "docs/testing.md",
   ".github/workflows/**",
@@ -726,6 +727,14 @@ command = "npm test --prefix apps/planner-search"
 jobs = ["planner-search"]
 platforms = ["linux", "macos"]
 triggers = ["apps/planner-search/**"]
+
+[[suite]]
+id = "planner.tiles"
+route = "ordinary"
+command = "npm test --prefix apps/planner-tiles && npm run build --prefix apps/planner-tiles"
+jobs = ["planner-search"]
+platforms = ["linux", "macos"]
+triggers = ["apps/planner-tiles/**"]
 
 [[suite]]
 id = "planner.query-decoder"

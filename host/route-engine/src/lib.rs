@@ -10,6 +10,7 @@ pub mod router;
 pub mod search;
 pub mod snap;
 pub mod storage;
+pub mod table;
 pub use router::{Control, Request, Route, Router};
 
 #[derive(Debug, thiserror::Error)]

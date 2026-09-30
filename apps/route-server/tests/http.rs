@@ -3,9 +3,9 @@ use axum::{
     http::{Request, StatusCode},
 };
 use route_engine::{
+    directory::Writer,
     model::{Graph, Pace, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION},
     osm::{Data, Id, Node, Relation, Way},
-    package::digest,
 };
 use tower::ServiceExt;
 
@@ -13,7 +13,7 @@ use tower::ServiceExt;
 async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
     let path = std::env::temp_dir().join(format!("route-server-test-{}", std::process::id()));
     std::fs::create_dir(&path).unwrap();
-    std::fs::create_dir(path.join("objects")).unwrap();
+    let mut writer = Writer::create(&path).unwrap();
     struct Cleanup(std::path::PathBuf);
     impl Drop for Cleanup {
         fn drop(&mut self) {
@@ -89,14 +89,17 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         [-1.0, -1.0, 1.0, 1.0],
         &Profile::presets()[..1],
         vec![],
-        |bytes| {
-            let key = digest(bytes);
-            std::fs::write(path.join("objects").join(&key), bytes).map_err(|e| e.to_string())?;
-            Ok(key)
-        },
+        |bytes| writer.write(bytes),
     )
     .unwrap();
+    writer.finish().unwrap();
     std::fs::write(path.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+    std::fs::write(path.join(".overlays.sqlite.partial"), b"interrupted build").unwrap();
+    rusqlite::Connection::open(path.join("overlays.sqlite"))
+        .unwrap()
+        .execute_batch("CREATE TABLE features(minzoom REAL NOT NULL)")
+        .unwrap();
+    route_server::prepare_overlays(&path).unwrap();
     let app = route_server::app(&path, 1).unwrap();
     for (query, status, count) in [
         ("bbox=-0.1,-0.1,0.1,0.1&zoom=12&layers=cycling,access", StatusCode::OK, 2),

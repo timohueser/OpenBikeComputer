@@ -6,6 +6,7 @@ import { parserProcess } from './parser.mjs';
 import { answerQuery } from './query.mjs';
 import { routeQuery } from './routing.mjs';
 import { validateInput } from './validation.mjs';
+import { allowedOrigin } from './origins.mjs';
 
 const root = import.meta.dirname,
   data = path.resolve(process.env.OBC_SEARCH_DATA || path.join(root, 'data'));
@@ -15,7 +16,7 @@ const parser = parserProcess(
 );
 const databases = new Map();
 for (const region of (process.env.OBC_SEARCH_REGIONS || 'germany,baden-wuerttemberg').split(',')) {
-  if (!['germany', 'baden-wuerttemberg'].includes(region)) throw new Error(`Unknown search region: ${region}`);
+  if (!/^[a-z][a-z0-9-]{0,63}$/.test(region)) throw new Error(`Invalid search region: ${region}`);
   const file = path.join(data, `${region}.sqlite`);
   if (!existsSync(file)) continue;
   const conn = new DatabaseSync(file, { readOnly: true });
@@ -44,24 +45,34 @@ for (const region of (process.env.OBC_SEARCH_REGIONS || 'germany,baden-wuerttemb
     close: () => conn.close(),
   });
 }
+const origins = new Set((process.env.OBC_SEARCH_ORIGINS || '').split(',').filter(Boolean));
+let active = 0;
 const server = http.createServer(async (req, res) => {
+  const origin = req.headers.origin;
+  const allowed = allowedOrigin(origin, origins);
+  const cors = allowed && origin ? { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' } : {};
   const json = (status, value) => {
     res.writeHead(status, {
       'Content-Type': 'application/json',
       'Cache-Control': 'no-store',
+      ...cors,
     });
     res.end(JSON.stringify(value));
   };
+  let admitted = false;
   try {
-    if (
-      req.headers.origin &&
-      !['localhost', '127.0.0.1', '[::1]'].includes(
-        new URL(req.headers.origin).hostname,
-      )
-    ) {
-      json(403, { error: 'Local access only.' });
+    if (!allowed) {
+      json(403, { error: 'Origin is not allowed.' });
       return;
     }
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, { ...cors, 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Max-Age': '600' });
+      res.end();
+      return;
+    }
+    if (active >= 16) { json(503, { error: 'Search is busy. Retry shortly.' }); return; }
+    active++;
+    admitted = true;
     const url = new URL(req.url, 'http://localhost');
     if (url.pathname === '/api/planner-search/status' && req.method === 'GET') {
       json(200, {
@@ -76,7 +87,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/api/planner-search/sample' && req.method === 'GET') {
       const xml = readFileSync(
-        path.resolve(
+        process.env.OBC_SEARCH_SAMPLE || path.resolve(
           root,
           '../../fixtures/sources/route-import/komoot-schwarzwald.gpx',
         ),
@@ -103,7 +114,7 @@ const server = http.createServer(async (req, res) => {
       body += chunk;
       if (body.length > 2000000) {
         json(413, {
-          error: 'This route is too large for the local query service.',
+          error: 'This route is too large for search.',
         });
         return;
       }
@@ -118,7 +129,7 @@ const server = http.createServer(async (req, res) => {
       database = databases.get(region);
     if (!database) {
       json(503, {
-        error: `Build the ${region} search package first. See apps/planner-search/README.md.`,
+        error: 'Search does not cover this region.',
       });
       return;
     }
@@ -131,11 +142,17 @@ const server = http.createServer(async (req, res) => {
     });
   } catch (error) {
     json(400, { error: error.message });
+  } finally {
+    if (admitted) active--;
   }
 });
 const port = Number(process.env.OBC_SEARCH_PORT || 8780);
+server.requestTimeout = 15000;
+server.headersTimeout = 10000;
+server.maxConnections = 64;
+server.setTimeout(30000);
 server.listen(port, '127.0.0.1', () =>
-  console.log(`Local planner search: http://127.0.0.1:${port}`),
+  console.log(`Local planner search: http://127.0.0.1:${server.address().port}`),
 );
 let stopping = false;
 const stop = () => {

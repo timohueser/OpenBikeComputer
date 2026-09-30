@@ -30,6 +30,7 @@
     import { corridorPlaces } from '../../lib/planner/place-index';
     import { landmarks } from '../../lib/planner/landmarks';
     import { BASEMAP_URL } from '../../lib/planner/map-data';
+    import { SEARCH_URL, HOSTED_SEARCH } from '../../lib/planner/search/config';
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileAscent } from '../../lib/planner/profile-data';
     import { searchPlaces, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
@@ -42,6 +43,7 @@
     import { routePreview } from '../../lib/planner/route-preview';
 
     const storageKey = 'obc-planner-routing-v2';
+    const siteBase = import.meta.env.VITE_SITE_BASE || '/';
     import { calculateLine, selectRoute, type EngineRoute } from '../../lib/planner/routing';
     const defaultLabels: Record<EditableKind, string> = {
         via: 'Shaping point',
@@ -299,7 +301,7 @@
             if (abort.signal.aborted) return;
             overnightPlaces = (answer.results ?? []).map(asPlace);
             overnightNote = answer.type === 'unresolved' ? answer.note ?? '' : overnightPlaces.length ? '' : 'No mapped overnight places within 5 km. Search a wider area or pick on the map.';
-        }).catch(() => { if (!abort.signal.aborted) overnightNote = 'Local overnight search is unavailable. Start the search server or pick on the map.'; });
+        }).catch(() => { if (!abort.signal.aborted) overnightNote = 'Overnight search is unavailable. Retry or pick on the map.'; });
         return () => abort.abort();
     });
 
@@ -679,8 +681,8 @@
 
     async function loadSearchSample() {
         try {
-            const response = await fetch('/api/planner-search/sample');
-            if (!response.ok) throw new Error('Start the local search server first.');
+            const response = await fetch(`${SEARCH_URL}/sample`);
+            if (!response.ok) throw new Error('The example route is unavailable. Retry shortly.');
             const { coordinates: line } = await response.json() as { coordinates: Coordinate[] };
             if (line.length < 2) throw new Error('The sample route could not load.');
             commit({ ...emptyTrip('trip'), routeOrder: [], points: [
@@ -739,10 +741,14 @@
 
 <div class="planner-shell" style:--side-width={`${Math.min(sideWidth, maxSide)}px`}>
     <header class="site-header">
-        <a class="brand" href="/"><img src="/brand/app-icon.svg" alt="" /><span>OpenBikeComputer</span></a>
-        <nav aria-label="Preview navigation">
-            {#if import.meta.env.MODE !== 'planner'}<a href="/map-study.html">Map study</a>{/if}
-            <span aria-current="page">Planner</span>
+        <a class="brand" href={siteBase}><img src={`${siteBase}brand/app-icon.svg`} alt="" /><span>OpenBikeComputer</span></a>
+        <nav aria-label="Main navigation">
+            {#if HOSTED_SEARCH}
+                <a href={`${siteBase}docs/`}>Docs</a>
+                <a href={`${siteBase}blog/`}>Blog</a>
+                <a href={`${siteBase}builder/`}>Maps</a>
+            {:else if import.meta.env.MODE !== 'planner'}<a href="/map-study.html">Map study</a>{/if}
+            <span aria-current="page">Route planner</span>
         </nav>
         <button type="button" class="theme" aria-label={theme === 'light' ? 'Use dark theme' : 'Use light theme'} onclick={() => theme = theme === 'light' ? 'dark' : 'light'}>
             <Icon name={theme === 'light' ? 'moon' : 'sun'} />
@@ -1034,6 +1040,9 @@
         gap: 24px;
         height: 100%;
         font-size: 13px;
+        min-width: 0;
+        overflow-x: auto;
+        white-space: nowrap;
     }
     .site-header nav a {
         color: inherit;
@@ -1167,5 +1176,19 @@
         .brand span {
             font-size: 14px;
         }
+    }
+    @media (max-width: 700px) {
+        .planner-shell { min-width: 0; height: auto; min-height: 100dvh; }
+        main { grid-template-columns: minmax(0, 1fr); }
+        main > :global([aria-label="Sidebar width"]) { display: none; }
+        .planner-pane { max-height: 50dvh; }
+        .geography { height: 75dvh; }
+        .status-line { height: auto; min-height: 38px; flex-wrap: wrap; padding-block: 8px; }
+        .lab-note { display: none; }
+        .site-header { gap: 12px; padding-inline: 12px; }
+        .brand { flex: none; }
+        .brand span { display: none; }
+        .site-header nav { gap: 16px; }
+        .theme { flex: none; }
     }
 </style>

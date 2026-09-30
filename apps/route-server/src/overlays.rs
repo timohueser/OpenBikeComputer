@@ -1,25 +1,24 @@
 //! Viewport overlays from the same immutable OSM snapshot as routing.
 use route_engine::{
+    directory::Directory,
     osm::{Id, Node, Relation, Tags, Way},
-    package::{Package, Source},
     Error, Result,
 };
+use rusqlite::{params, Connection, OpenFlags, Transaction};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    path::Path,
+    sync::Mutex,
+};
 
-struct Feature {
-    coordinates: Vec<[f64; 2]>,
-    properties: Value,
-    bounds: [f64; 4],
-    kind: &'static str,
-    minzoom: f64,
+pub struct Overlays {
+    database: Mutex<Connection>,
+    coverage: [f64; 4],
 }
 
-#[derive(Default)]
-pub struct Overlays {
-    features: Vec<Feature>,
-    cells: HashMap<(i32, i32), Vec<usize>>,
-    coverage: [f64; 4],
+fn invalid_data(error: impl std::fmt::Display) -> Error {
+    Error::InvalidData(error.to_string())
 }
 
 fn tag<'a>(tags: &'a Tags, key: &str) -> &'a str {
@@ -48,8 +47,21 @@ fn rank(network: &str) -> u8 {
     }
 }
 
-fn memberships(relations: &BTreeMap<i64, Relation>) -> BTreeMap<i64, Vec<Value>> {
-    let mut members = BTreeMap::<i64, Vec<Value>>::new();
+fn access_zoom(status: &str) -> Option<f64> {
+    Some(match status {
+        "" => return None,
+        "push" => 15.0,
+        "directional" => 14.0,
+        "construction" | "conditional" => 10.0,
+        _ => 13.0,
+    })
+}
+
+type Memberships = BTreeMap<i64, Vec<i64>>;
+
+fn memberships(relations: &BTreeMap<i64, Relation>) -> (Memberships, BTreeMap<i64, Value>) {
+    let mut members = Memberships::new();
+    let mut routes = BTreeMap::new();
     for relation in relations.values().filter(|r| active(&r.tags)) {
         let Some(activity) = kind(&relation.tags) else { continue };
         if !matches!(tag(&relation.tags, "type"), "route" | "superroute") {
@@ -81,94 +93,137 @@ fn memberships(relations: &BTreeMap<i64, Relation>) -> BTreeMap<i64, Vec<Value>>
             }
         }
         for id in ways {
-            members.entry(id).or_default().push(route.clone());
+            members.entry(id).or_default().push(relation.id);
         }
+        routes.insert(relation.id, route);
     }
-    members
+    (members, routes)
 }
 
 impl Overlays {
-    pub fn load<S: Source>(package: &Package<S>) -> Result<Self> {
-        let mut relations = BTreeMap::new();
-        for key in &package.manifest().osm.relations {
-            for relation in package.read::<Vec<Relation>>(key)? {
-                relations.insert(relation.id, relation);
-            }
+    pub fn open(directory: &Path, identity: &str) -> Result<Self> {
+        let database = Connection::open_with_flags(directory.join("overlays.sqlite"), OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(invalid_data)?;
+        let version: i64 = database.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(invalid_data)?;
+        if version != 1 {
+            return Err(Error::InvalidData("Rebuild the overlay index with --build-overlays".into()));
         }
-        let members = memberships(&relations);
-        drop(relations);
-        let mut ways = Vec::new();
-        let mut needed = HashSet::new();
-        for key in &package.manifest().osm.ways {
-            for way in package.read::<Vec<Way>>(key)? {
-                let mut properties = Vec::new();
-                if let Some(access) = crate::access::feature(&way) {
-                    properties.push(("access", access));
-                }
-                if let Some(routes) = members.get(&way.id) {
-                    for activity in ["cycling", "hiking"] {
-                        let mut routes: Vec<_> = routes.iter().filter(|r| r["kind"] == activity).cloned().collect();
-                        routes.sort_by_key(|r| std::cmp::Reverse(r["rank"].as_u64().unwrap_or(0)));
-                        if let Some(first) = routes.first() {
-                            properties.push((
-                                activity,
-                                json!({ "way": way.id, "kind": activity,
-                                "rank": first["rank"], "ref": first["ref"],
-                                "routes": routes }),
-                            ));
-                        }
-                    }
-                }
-                if !properties.is_empty() {
-                    needed.extend(way.nodes.iter().copied());
-                    ways.push((way, properties));
-                }
-            }
+        database.execute_batch("PRAGMA cache_size=-4096; PRAGMA mmap_size=0;").map_err(invalid_data)?;
+        let (package, coverage): (String, String) = database
+            .query_row("SELECT package,coverage FROM metadata", [], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(invalid_data)?;
+        if package != identity {
+            return Err(Error::InvalidData("Overlay index uses another routing package".into()));
         }
-        let mut nodes = HashMap::new();
-        for key in &package.manifest().osm.nodes {
-            for node in package.read::<Vec<Node>>(key)? {
-                if needed.contains(&node.id) {
-                    nodes.insert(node.id, [node.point.lon as f64 * 1e-6, node.point.lat as f64 * 1e-6]);
-                }
-            }
-        }
-        let mut result = Self { coverage: package.manifest().bounds, ..Self::default() };
-        for (way, properties) in ways {
-            let mut run = Vec::new();
-            for point in way.nodes.iter().map(|id| nodes.get(id)).chain(std::iter::once(None)) {
-                if let Some(point) = point {
-                    run.push(*point);
-                    continue;
-                }
-                if run.len() >= 2 {
-                    for (activity, properties) in &properties {
-                        result.insert(run.clone(), activity, properties.clone());
-                    }
-                }
-                run.clear();
-            }
-        }
-        Ok(result)
+        Ok(Self { database: Mutex::new(database), coverage: serde_json::from_str(&coverage).map_err(invalid_data)? })
     }
 
-    fn insert(&mut self, coordinates: Vec<[f64; 2]>, kind: &'static str, properties: Value) {
-        let bounds = coordinates.iter().fold([180.0f64, 90.0f64, -180.0f64, -90.0f64], |b, p| {
-            [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
-        });
-        let minzoom = if kind == "access" {
-            10.0
-        } else {
-            match properties["rank"].as_u64().unwrap_or(0) {
-                3..=4 => 6.0,
-                2 => 8.0,
-                _ => 10.0,
-            }
-        };
-        for cell in cells(bounds) {
-            self.cells.entry(cell).or_default().push(self.features.len());
+    pub fn build(directory: &Path) -> Result<()> {
+        let package = Directory::open(directory)?;
+        let output = directory.join("overlays.sqlite");
+        if output.exists() && Self::open(directory, package.identity()).is_ok() {
+            return Ok(());
         }
-        self.features.push(Feature { coordinates, properties, bounds, kind, minzoom });
+        let partial = directory.join(".overlays.sqlite.partial");
+        if let Err(error) = std::fs::remove_file(&partial) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err(invalid_data(error));
+            }
+        }
+        std::fs::OpenOptions::new().write(true).create_new(true).open(&partial).map_err(invalid_data)?;
+        let result = (|| {
+            let mut database = Connection::open(&partial).map_err(invalid_data)?;
+            database
+                .execute_batch("PRAGMA journal_mode=OFF; PRAGMA cache_size=-65536; PRAGMA user_version=1;")
+                .map_err(invalid_data)?;
+            let transaction = database.transaction().map_err(invalid_data)?;
+            transaction
+                .execute_batch(
+                    "CREATE TABLE metadata(package TEXT NOT NULL, coverage TEXT NOT NULL);
+                CREATE TABLE features(id INTEGER PRIMARY KEY, kind TEXT NOT NULL,
+                    cycling_minzoom REAL, walking_minzoom REAL,
+                    points INTEGER NOT NULL, coordinates TEXT NOT NULL, properties TEXT NOT NULL);
+                CREATE VIRTUAL TABLE bounds USING rtree(id, west, east, south, north);",
+                )
+                .map_err(invalid_data)?;
+            transaction
+                .execute(
+                    "INSERT INTO metadata VALUES (?,?)",
+                    params![
+                        package.identity(),
+                        serde_json::to_string(&package.manifest().bounds).map_err(invalid_data)?
+                    ],
+                )
+                .map_err(invalid_data)?;
+            let mut relations = BTreeMap::new();
+            for key in package.keys(&package.manifest().osm.relations)? {
+                for relation in package.read::<Vec<Relation>>(&key)? {
+                    relations.insert(relation.id, relation);
+                }
+            }
+            let (members, routes) = memberships(&relations);
+            drop(relations);
+            let mut ways = Vec::new();
+            let mut needed = HashSet::new();
+            for key in package.keys(&package.manifest().osm.ways)? {
+                for way in package.read::<Vec<Way>>(&key)? {
+                    let access = crate::access::feature(&way);
+                    let memberships = members.get(&way.id).cloned().unwrap_or_default();
+                    if access.is_some() || !memberships.is_empty() {
+                        needed.extend(way.nodes.iter().copied());
+                        ways.push((way.id, way.nodes, access, memberships));
+                    }
+                }
+            }
+            drop(members);
+            let mut nodes = HashMap::new();
+            for key in package.keys(&package.manifest().osm.nodes)? {
+                for node in package.read::<Vec<Node>>(&key)? {
+                    if needed.contains(&node.id) {
+                        nodes.insert(node.id, [node.point.lon as f64 * 1e-6, node.point.lat as f64 * 1e-6]);
+                    }
+                }
+            }
+            drop(needed);
+            for (way, ids, access, memberships) in ways {
+                let mut properties = Vec::new();
+                if let Some(access) = access {
+                    properties.push(("access", access));
+                }
+                for activity in ["cycling", "hiking"] {
+                    let mut selected: Vec<_> =
+                        memberships.iter().map(|id| &routes[id]).filter(|route| route["kind"] == activity).collect();
+                    selected.sort_by_key(|route| std::cmp::Reverse(route["rank"].as_u64().unwrap_or(0)));
+                    if let Some(first) = selected.first() {
+                        properties.push((
+                            activity,
+                            json!({ "way": way, "kind": activity,
+                            "rank": first["rank"], "ref": first["ref"], "routes": selected }),
+                        ));
+                    }
+                }
+                let mut run = Vec::new();
+                for point in ids.iter().map(|id| nodes.get(id)).chain(std::iter::once(None)) {
+                    if let Some(point) = point {
+                        run.push(*point);
+                        continue;
+                    }
+                    if run.len() >= 2 {
+                        for (activity, properties) in &properties {
+                            insert(&transaction, &run, activity, properties)?;
+                        }
+                    }
+                    run.clear();
+                }
+            }
+            transaction.commit().map_err(invalid_data)?;
+            database.close().map_err(|(_, error)| invalid_data(error))?;
+            std::fs::rename(&partial, output).map_err(invalid_data)
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(partial);
+        }
+        result
     }
 
     pub fn query(&self, params: &HashMap<String, String>) -> Result<Value> {
@@ -208,55 +263,102 @@ impl Overlays {
         if !matches!(mode, "cycling" | "walking") {
             return Err(invalid());
         }
-        let mut ids = BTreeSet::<usize>::new();
-        if intersects(bounds, self.coverage) {
-            let [w, s, e, n] = self.coverage;
-            for cell in cells([bounds[0].max(w), bounds[1].max(s), bounds[2].min(e), bounds[3].min(n)]) {
-                if let Some(found) = self.cells.get(&cell) {
-                    ids.extend(found.iter().copied());
-                }
-            }
+        if bounds[0] > self.coverage[2]
+            || bounds[2] < self.coverage[0]
+            || bounds[1] > self.coverage[3]
+            || bounds[3] < self.coverage[1]
+        {
+            return Ok(json!({ "type": "FeatureCollection", "features": [], "coverage": self.coverage }));
         }
+        let database = self.database.lock().map_err(|_| Error::Limit)?;
+        // Filter each mode in SQLite before reading and decoding its coordinates.
+        let mut statement = database
+            .prepare_cached(
+                "SELECT f.id,f.kind,f.coordinates,f.properties,f.points
+            FROM bounds b CROSS JOIN features f ON f.id=b.id
+            WHERE b.west<=?1 AND b.east>=?2 AND b.south<=?3 AND b.north>=?4
+                AND (CASE ?9 WHEN 'cycling' THEN f.cycling_minzoom ELSE f.walking_minzoom END)<=?5
+                AND f.kind IN (?6,?7,?8)",
+            )
+            .map_err(invalid_data)?;
+        let selected = |kind| if layers.contains(&kind) { kind } else { "" };
+        let mut rows = statement
+            .query(params![
+                bounds[2],
+                bounds[0],
+                bounds[3],
+                bounds[1],
+                zoom,
+                selected("cycling"),
+                selected("hiking"),
+                selected("access"),
+                mode
+            ])
+            .map_err(invalid_data)?;
         let mut features = Vec::new();
         let mut points = 0;
-        for id in ids {
-            let f = &self.features[id];
-            if zoom < f.minzoom || !layers.contains(&f.kind) || !intersects(bounds, f.bounds) {
-                continue;
-            }
-            let mut properties = f.properties.clone();
-            if f.kind == "access" {
-                let status = f.properties[format!("{mode}_status")].as_str().unwrap_or("");
-                let minimum = match status {
-                    "push" => 15.0,
-                    "directional" => 14.0,
-                    "construction" | "conditional" => 10.0,
-                    _ => 13.0,
-                };
-                if status.is_empty() || zoom < minimum {
+        while let Some(row) = rows.next().map_err(invalid_data)? {
+            let id: i64 = row.get(0).map_err(invalid_data)?;
+            let kind: String = row.get(1).map_err(invalid_data)?;
+            let coordinates: String = row.get(2).map_err(invalid_data)?;
+            let mut properties: Value =
+                serde_json::from_str(&row.get::<_, String>(3).map_err(invalid_data)?).map_err(invalid_data)?;
+            if kind == "access" {
+                let status = properties[format!("{mode}_status")].as_str().unwrap_or("");
+                if !access_zoom(status).is_some_and(|minimum| zoom >= minimum) {
                     continue;
                 }
                 properties["status"] = json!(status);
             }
-            points += f.coordinates.len();
+            points += row.get::<_, u32>(4).map_err(invalid_data)?;
             // Bound serialization and browser work independently of the route workers.
             if points > 200_000 {
                 return Err(Error::InvalidRequest("Zoom in to show route networks and access restrictions.".into()));
             }
             features.push(json!({ "type": "Feature", "id": id, "properties": properties,
-                "geometry": { "type": "LineString", "coordinates": f.coordinates } }));
+                "geometry": { "type": "LineString", "coordinates": serde_json::from_str::<Value>(&coordinates).map_err(invalid_data)? } }));
         }
         Ok(json!({ "type": "FeatureCollection", "features": features, "coverage": self.coverage }))
     }
 }
 
-fn intersects(a: [f64; 4], b: [f64; 4]) -> bool {
-    a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1]
-}
-
-fn cells(b: [f64; 4]) -> impl Iterator<Item = (i32, i32)> {
-    let cell = |v: f64| (v * 20.0).floor() as i32;
-    (cell(b[0])..=cell(b[2])).flat_map(move |x| (cell(b[1])..=cell(b[3])).map(move |y| (x, y)))
+fn insert(database: &Transaction<'_>, coordinates: &[[f64; 2]], kind: &str, properties: &Value) -> Result<()> {
+    let bounds = coordinates.iter().fold([180.0f64, 90.0f64, -180.0f64, -90.0f64], |b, p| {
+        [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
+    });
+    let (cycling_minzoom, walking_minzoom) = if kind == "access" {
+        (
+            access_zoom(properties["cycling_status"].as_str().unwrap_or("")),
+            access_zoom(properties["walking_status"].as_str().unwrap_or("")),
+        )
+    } else {
+        let minimum = match properties["rank"].as_u64().unwrap_or(0) {
+            3..=4 => 6.0,
+            2 => 8.0,
+            _ => 10.0,
+        };
+        (Some(minimum), Some(minimum))
+    };
+    database
+        .execute(
+            "INSERT INTO features(kind,cycling_minzoom,walking_minzoom,points,coordinates,properties) VALUES (?,?,?,?,?,?)",
+            params![
+                kind,
+                cycling_minzoom,
+                walking_minzoom,
+                coordinates.len() as i64,
+                serde_json::to_string(coordinates).map_err(invalid_data)?,
+                serde_json::to_string(properties).map_err(invalid_data)?
+            ],
+        )
+        .map_err(invalid_data)?;
+    database
+        .execute(
+            "INSERT INTO bounds VALUES (?,?,?,?,?)",
+            params![database.last_insert_rowid(), bounds[0], bounds[2], bounds[1], bounds[3]],
+        )
+        .map_err(invalid_data)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -282,8 +384,11 @@ mod tests {
         .into_iter()
         .map(|r| (r.id, r))
         .collect();
-        let members = memberships(&relations);
-        assert_eq!(members[&10].iter().map(|r| r["network"].as_str().unwrap()).collect::<Vec<_>>(), ["icn", "rcn"]);
+        let (members, routes) = memberships(&relations);
+        assert_eq!(
+            members[&10].iter().map(|id| routes[id]["network"].as_str().unwrap()).collect::<Vec<_>>(),
+            ["icn", "rcn"]
+        );
         assert!(!members.contains_key(&20));
     }
 }

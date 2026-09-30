@@ -603,6 +603,7 @@ def site_head(site_root, crumb, nav_toggle=""):
     return fill(SITEHEAD_TEMPLATE.read_text(),
                 {"site_root": site_root, "crumb": crumb, "nav_toggle": nav_toggle,
                  "builder_link": builder_link(site_root),
+                 "planner_link": ('<a href="%splan/">Route planner</a>' % esc(site_root)) if os.environ.get("OBC_PLANNER_CATALOG_URL") else "",
                  "docs_current": ' aria-current="page"' if crumb == "/ docs" else "",
                  "blog_current": ' aria-current="page"' if crumb == "/ log" else ""})
 
@@ -705,7 +706,7 @@ def check_links(rendered):
             target = urljoin(url, path).lstrip("/") if path else url
             # The map builder is a sibling *app* in the published artifact, not a page
             # this renderer produces — there is no HTML here to validate it against.
-            if target.startswith("builder/"):
+            if target.startswith(("builder/", "plan/")):
                 continue
             label = "/" + url
             if target not in pages:

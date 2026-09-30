@@ -1,14 +1,17 @@
 use crate::{
     cost::RoadCost,
     model::{Point, Profile, Road},
-    storage, Error, Result,
+    storage,
+    table::{self, Table},
+    Error, Result,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 
-pub const FORMAT: u32 = 2;
+pub const FORMAT: u32 = 3;
 pub const MAX_MANIFEST_BYTES: usize = 128 * 1024 * 1024;
 pub const ROADS_PER_PAGE: u32 = 128;
 pub const CELL: i32 = 10_000;
@@ -17,16 +20,21 @@ pub const CELL: i32 = 10_000;
 /// A source is immutable for the lifetime of a package. A missing object is never an empty page.
 pub trait Source {
     fn read(&self, digest: &str) -> Result<Vec<u8>>;
+
+    /// Packed sources can verify pages in physical order to avoid random disk reads.
+    fn order_for_verify(&self, _digests: &mut [String]) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Metric {
     pub profile: Profile,
-    pub graph: Vec<String>,
-    pub endpoints: Vec<String>,
+    pub graph: Table,
+    pub endpoints: Table,
     pub states: u32,
     /// One eligibility bit per directed road; snapping does not load cost pages.
-    pub allowed: Vec<u64>,
+    pub allowed: Table,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -39,9 +47,9 @@ pub struct Manifest {
     pub attribution: String,
     pub warnings: Vec<String>,
     pub roads: u32,
-    pub geometry: Vec<String>,
+    pub geometry: Table,
     pub osm: OsmPages,
-    /// Cell keys are latitude_index,longitude_index.
+    /// One-degree directories contain the fine snap cells.
     pub spatial: BTreeMap<String, String>,
     pub metrics: BTreeMap<String, Metric>,
 }
@@ -62,14 +70,14 @@ pub struct Departure {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct OsmPages {
-    pub nodes: Vec<String>,
-    pub ways: Vec<String>,
-    pub relations: Vec<String>,
+    pub nodes: Table,
+    pub ways: Table,
+    pub relations: Table,
 }
 
 impl OsmPages {
-    pub fn objects(&self) -> impl Iterator<Item = &String> {
-        self.nodes.iter().chain(&self.ways).chain(&self.relations)
+    pub fn tables(&self) -> impl Iterator<Item = &Table> {
+        [&self.nodes, &self.ways, &self.relations].into_iter()
     }
 }
 
@@ -85,10 +93,15 @@ pub fn cell_key((lat, lon): (i32, i32)) -> String {
     format!("{lat},{lon}")
 }
 
+type SpatialDirectory = Arc<BTreeMap<String, String>>;
+
 pub struct Package<S> {
     pub(crate) manifest: Manifest,
     pub(crate) identity: String,
     source: S,
+    keys: RefCell<table::Cache<String>>,
+    words: RefCell<table::Cache<u64>>,
+    spatial: RefCell<VecDeque<(String, SpatialDirectory)>>,
     // Geometry has a separate byte budget from the query summaries.
     geometry: HashMap<u32, (Arc<Vec<Road>>, usize)>,
     geometry_order: VecDeque<u32>,
@@ -121,7 +134,7 @@ impl<S: Source> Package<S> {
             || b[2] > 180.0
             || b[1] < -85.0
             || b[3] > 85.0
-            || manifest.geometry.len() != manifest.roads.div_ceil(ROADS_PER_PAGE) as usize
+            || manifest.geometry.len != manifest.roads.div_ceil(ROADS_PER_PAGE)
         {
             return Err(Error::InvalidData("Unsupported or incomplete regional manifest".into()));
         }
@@ -129,28 +142,27 @@ impl<S: Source> Package<S> {
             metric.profile.validate().map_err(Error::InvalidData)?;
             if id != &metric.profile.name
                 || metric.states == 0
-                || metric.graph.len() != metric.states.div_ceil(storage::NODES_PER_PAGE) as usize
-                || metric.endpoints.len() != manifest.geometry.len()
-                || metric.allowed.len() != (manifest.roads as usize).div_ceil(64)
+                || metric.graph.len != metric.states.div_ceil(storage::NODES_PER_PAGE)
+                || metric.endpoints.len != manifest.geometry.len
+                || metric.allowed.len != manifest.roads.div_ceil(64)
             {
                 return Err(Error::InvalidData("Incomplete prepared metric".into()));
             }
         }
-        for key in manifest
-            .geometry
-            .iter()
-            .chain(manifest.osm.objects())
-            .chain(manifest.spatial.values())
-            .chain(manifest.metrics.values().flat_map(|m| m.graph.iter().chain(&m.endpoints)))
+        if !manifest.geometry.valid()
+            || manifest.osm.tables().any(|t| !t.valid())
+            || manifest.metrics.values().any(|m| !m.graph.valid() || !m.endpoints.valid() || !m.allowed.valid())
+            || manifest.spatial.values().any(|key| !table::valid_digest(key))
         {
-            if key.len() != 64 || !key.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) {
-                return Err(Error::InvalidData("Invalid object identity".into()));
-            }
+            return Err(Error::InvalidData("Invalid index directory".into()));
         }
         Ok(Self {
             manifest,
             identity,
             source,
+            keys: RefCell::new(table::Cache::default()),
+            words: RefCell::new(table::Cache::default()),
+            spatial: RefCell::new(VecDeque::new()),
             geometry: HashMap::new(),
             geometry_order: VecDeque::new(),
             geometry_bytes: 0,
@@ -160,18 +172,97 @@ impl<S: Source> Package<S> {
 
     /// Check the complete object closure before publishing or installing a region.
     pub fn verify(&self) -> Result<()> {
-        let keys: std::collections::BTreeSet<_> = self
-            .manifest
-            .geometry
-            .iter()
-            .chain(self.manifest.osm.objects())
-            .chain(self.manifest.spatial.values())
-            .chain(self.manifest.metrics.values().flat_map(|m| m.graph.iter().chain(&m.endpoints)))
-            .collect();
-        for key in keys {
-            self.bytes(key)?;
+        for key in self.objects()? {
+            self.bytes(&key)?;
         }
         Ok(())
+    }
+
+    /// All referenced objects, including index blocks, in the source's verification order.
+    pub fn objects(&self) -> Result<Vec<String>> {
+        let mut keys = std::collections::BTreeSet::new();
+        for table in std::iter::once(&self.manifest.geometry)
+            .chain(self.manifest.osm.tables())
+            .chain(self.manifest.metrics.values().flat_map(|m| [&m.graph, &m.endpoints]))
+        {
+            keys.extend(table.blocks.iter().cloned());
+            keys.extend(self.keys(table)?);
+        }
+        for metric in self.manifest.metrics.values() {
+            keys.extend(metric.allowed.blocks.iter().cloned());
+            for block in 0..metric.allowed.blocks.len() {
+                self.words.borrow_mut().block(self, &metric.allowed, block)?;
+            }
+        }
+        for key in self.manifest.spatial.values() {
+            keys.insert(key.clone());
+            let cells: BTreeMap<String, String> = self.read(key)?;
+            if cells.len() > 10_000 || cells.values().any(|id| !table::valid_digest(id)) {
+                return Err(Error::InvalidData("Invalid snap directory".into()));
+            }
+            keys.extend(cells.into_values());
+        }
+        let mut keys: Vec<_> = keys.into_iter().collect();
+        self.source.order_for_verify(&mut keys)?;
+        Ok(keys)
+    }
+
+    pub fn keys(&self, table: &Table) -> Result<Vec<String>> {
+        let mut keys = Vec::new();
+        for block in 0..table.blocks.len() {
+            let values = self.keys.borrow_mut().block(self, table, block)?;
+            if values.iter().any(|key| !table::valid_digest(key)) {
+                return Err(Error::InvalidData("Invalid page identity".into()));
+            }
+            keys.extend(values.iter().cloned());
+        }
+        Ok(keys)
+    }
+
+    pub fn key(&self, table: &Table, index: u32) -> Result<String> {
+        if index >= table.len {
+            return Err(Error::InvalidData("Page outside index".into()));
+        }
+        let values = self.keys.borrow_mut().block(self, table, index as usize / table::ENTRIES)?;
+        let key = &values[index as usize % table::ENTRIES];
+        if !table::valid_digest(key) {
+            return Err(Error::InvalidData("Invalid page identity".into()));
+        }
+        Ok(key.clone())
+    }
+
+    pub fn allowed(&self, metric: &str, road: u32) -> Result<bool> {
+        if road >= self.manifest.roads {
+            return Err(Error::InvalidData("Road outside access index".into()));
+        }
+        let table = &self.metric(metric)?.allowed;
+        let word = road as usize / 64;
+        let values = self.words.borrow_mut().block(self, table, word / table::ENTRIES)?;
+        Ok(values[word % table::ENTRIES] & (1 << (road % 64)) != 0)
+    }
+
+    pub fn spatial_roads(&self, cell: (i32, i32)) -> Result<Vec<u32>> {
+        let group = cell_key((cell.0.div_euclid(100), cell.1.div_euclid(100)));
+        let Some(key) = self.manifest.spatial.get(&group) else { return Ok(Vec::new()) };
+        let mut cache = self.spatial.borrow_mut();
+        let cells = if let Some(at) = cache.iter().position(|(id, _)| id == key) {
+            cache.remove(at).unwrap().1
+        } else {
+            let cells: BTreeMap<String, String> = self.read(key)?;
+            if cells.len() > 10_000 || cells.values().any(|id| !table::valid_digest(id)) {
+                return Err(Error::InvalidData("Invalid snap directory".into()));
+            }
+            Arc::new(cells)
+        };
+        let roads = match cells.get(&cell_key(cell)) {
+            Some(key) => self.read(key)?,
+            None => Vec::new(),
+        };
+        cache.push_back((key.clone(), cells));
+        while cache.len() > 2 {
+            cache.pop_front();
+        }
+        Ok(roads)
     }
 
     pub fn bytes(&self, key: &str) -> Result<Vec<u8>> {
@@ -198,7 +289,7 @@ impl<S: Source> Package<S> {
         let value = if let Some((value, _)) = self.geometry.get(&page) {
             Arc::clone(value)
         } else {
-            let value: Vec<Road> = self.read(&self.manifest.geometry[page as usize])?;
+            let value: Vec<Road> = self.read(&self.key(&self.manifest.geometry, page)?)?;
             if value.len() != (self.manifest.roads - page * ROADS_PER_PAGE).min(ROADS_PER_PAGE) as usize
                 || value.iter().any(|r| {
                     r.class > 6
@@ -242,19 +333,21 @@ impl<S: Source> Package<S> {
             if let Some(index) = self.endpoints.iter().position(|(name, key, _, _)| name == metric && *key == page) {
                 self.endpoints.remove(index).unwrap().2
             } else {
-                let value: Vec<Endpoint> = self.read(&self.metric(metric)?.endpoints[page as usize])?;
+                let value: Vec<Endpoint> = self.read(&self.key(&self.metric(metric)?.endpoints, page)?)?;
                 let states = self.metric(metric)?.states;
-                if value.len() != (self.manifest.roads - page * ROADS_PER_PAGE).min(ROADS_PER_PAGE) as usize
-                    || value.iter().enumerate().any(|(offset, e)| {
-                        let road = page as usize * ROADS_PER_PAGE as usize + offset;
-                        let allowed = self.metric(metric).unwrap().allowed[road / 64] & (1 << (road % 64)) != 0;
-                        allowed != e.cost.is_some()
-                            || e.cost.as_ref().is_some_and(|cost| {
-                                !cost.valid() || e.arrival >= states || e.departures.iter().any(|d| d.state >= states)
-                            })
-                    })
-                {
-                    return Err(Error::InvalidData("Invalid endpoint page".into()));
+                if value.len() != (self.manifest.roads - page * ROADS_PER_PAGE).min(ROADS_PER_PAGE) as usize {
+                    return Err(Error::InvalidData("Incomplete endpoint page".into()));
+                }
+                for (offset, e) in value.iter().enumerate() {
+                    let road = page as usize * ROADS_PER_PAGE as usize + offset;
+                    let allowed = self.allowed(metric, road as u32)?;
+                    if allowed != e.cost.is_some()
+                        || e.cost.as_ref().is_some_and(|cost| {
+                            !cost.valid() || e.arrival >= states || e.departures.iter().any(|d| d.state >= states)
+                        })
+                    {
+                        return Err(Error::InvalidData("Invalid endpoint page".into()));
+                    }
                 }
                 Arc::new(value)
             };

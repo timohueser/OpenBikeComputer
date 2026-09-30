@@ -1473,6 +1473,8 @@ jobs:
       - run: apps/planner-search/.venv/bin/pip install -r apps/planner-search/query/requirements.txt
       - run: npm test --prefix apps/planner-search
       - run: npm run test:query --prefix apps/planner-search
+      - run: npm ci --prefix apps/planner-tiles
+      - run: npm test --prefix apps/planner-tiles && npm run build --prefix apps/planner-tiles
 
   verification:
     needs: selection

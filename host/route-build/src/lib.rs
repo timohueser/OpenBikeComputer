@@ -11,6 +11,7 @@ use route_engine::{
     model::{Graph, Profile},
     package::{self, Manifest, Metric, CELL, ROADS_PER_PAGE},
     storage,
+    table::Table,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -32,16 +33,22 @@ pub fn prepare(
         attribution: "© OpenStreetMap contributors; ODbL 1.0".into(),
         warnings: graph.warnings.clone(),
         roads: u32::try_from(graph.roads.len()).map_err(|_| "Too many roads")?,
-        geometry: Vec::new(),
+        geometry: Table::default(),
         osm: package::OsmPages::default(),
         spatial: BTreeMap::new(),
         metrics: BTreeMap::new(),
     };
     macro_rules! source_pages {
         ($field:ident) => {
-            for page in graph.osm.$field.values().collect::<Vec<_>>().chunks(128) {
-                manifest.osm.$field.push(write(&storage::encode(&page)?)?);
-            }
+            let keys = graph
+                .osm
+                .$field
+                .values()
+                .collect::<Vec<_>>()
+                .chunks(128)
+                .map(|page| write(&storage::encode(&page)?))
+                .collect::<Result<Vec<_>, String>>()?;
+            manifest.osm.$field = Table::write(&keys, &mut write)?;
         };
     }
     source_pages!(nodes);
@@ -64,15 +71,25 @@ pub fn prepare(
             }
         }
     }
-    for roads in graph.roads.chunks(ROADS_PER_PAGE as usize) {
-        manifest.geometry.push(write(&storage::encode(&roads)?)?);
-    }
+    let geometry = graph
+        .roads
+        .chunks(ROADS_PER_PAGE as usize)
+        .map(|roads| write(&storage::encode(&roads)?))
+        .collect::<Result<Vec<_>, String>>()?;
+    manifest.geometry = Table::write(&geometry, &mut write)?;
+    let mut groups = BTreeMap::<String, BTreeMap<String, String>>::new();
     for (cell, roads) in cells {
-        manifest
-            .spatial
+        let group = package::cell_key((cell.0.div_euclid(100), cell.1.div_euclid(100)));
+        groups
+            .entry(group)
+            .or_default()
             .insert(package::cell_key(cell), write(&storage::encode(&roads.into_iter().collect::<Vec<_>>())?)?);
     }
+    for (group, cells) in groups {
+        manifest.spatial.insert(group, write(&storage::encode(&cells)?)?);
+    }
     for profile in profiles {
+        eprintln!("Preparing profile {}", profile.name);
         if manifest.metrics.contains_key(&profile.name) {
             return Err("Duplicate metric identity".into());
         }
@@ -87,7 +104,7 @@ pub fn prepare(
             }
         }
         let mut endpoints = Vec::new();
-        let mut allowed = vec![0; graph.endpoints.len().div_ceil(64)];
+        let mut allowed = vec![0u64; graph.endpoints.len().div_ceil(64)];
         for (id, endpoint) in graph.endpoints.iter().enumerate() {
             if endpoint.cost.is_some() {
                 allowed[id / 64] |= 1 << (id % 64);
@@ -98,7 +115,13 @@ pub fn prepare(
         }
         manifest.metrics.insert(
             profile.name.clone(),
-            Metric { profile: profile.clone(), graph: pages, endpoints, states: ranks.len() as u32, allowed },
+            Metric {
+                profile: profile.clone(),
+                graph: Table::write(&pages, &mut write)?,
+                endpoints: Table::write(&endpoints, &mut write)?,
+                states: ranks.len() as u32,
+                allowed: Table::write(&allowed, &mut write)?,
+            },
         );
     }
     Ok(manifest)
