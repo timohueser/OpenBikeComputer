@@ -56,6 +56,16 @@ this German regional importer as a worldwide release pipeline.
 
 Pass `--profiles all` to prepare all 21 metrics, or supply comma-separated IDs.
 Rebuild packages after changing the profile code. Rider validation is required.
+Use `route-select` to remove profiles without preparing retained metrics again:
+
+```sh
+cargo run --release -p route-build --bin route-select -- \
+  /data/routes/old --output /data/routes/selected \
+  --profiles touring,touring/less-climbing
+```
+
+It copies the complete object closure for the selected profiles. The source
+package stays unchanged. Build the overlay index for the new manifest.
 
 | Road profile | Preference |
 | --- | --- |

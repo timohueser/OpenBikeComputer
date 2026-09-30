@@ -10,7 +10,8 @@ Run from the checkout. Install Rust, Node 24+, Python 3.12+, `uv`, `gh`, `rclone
 and the [PMTiles CLI](https://docs.protomaps.com/pmtiles/cli).
 Authenticate `gh` for the query model release. Set the R2 credential in
 `tools/obc.local`. The [region recipe](../../../../../tools/planner-regions/baden-wuerttemberg.json)
-pins the OSM extract, map inputs, and elevation inputs.
+pins the OSM extract, map inputs, elevation inputs, and routing profiles.
+The BW recipe selects Balanced and Less climbing for each rider mode.
 
 The raw map and search builders require Linux, Java 21, Maven, PostgreSQL 17,
 PostGIS 3, osm2pgsql 2, zstd, and `nominatim-db==5.3.2` in the build environment.
@@ -57,6 +58,19 @@ For a larger region, add a recipe with a new region ID, bounds, and pinned
 inputs. Build into a fresh data directory with `--recipe PATH`. Pass
 `--device-catalog URL` for that region's published device catalogue. Use the
 same three commands, then run **Deploy site** again.
+
+To reduce an existing package without preparing its metrics again:
+
+```sh
+cargo run --release -p route-build --bin route-select -- \
+  /srv/planner/old/routing --output /srv/planner/new/routing \
+  --profiles touring,touring/less-climbing,road,road/less-climbing,gravel,gravel/less-climbing,mtb,mtb/less-climbing,hiking,hiking/less-climbing
+```
+
+Copy the unchanged `maps`, `search`, and `sources` directories into the new
+release directory. Set the recipe's `profiles` list to the same IDs. Run the
+three commands above with the new directory. Preparation checks the profile
+selection and builds a matching overlay index.
 
 Routing currently supports German access defaults. Preparation refuses other
 countries. Add and verify their access rules before extending coverage.
