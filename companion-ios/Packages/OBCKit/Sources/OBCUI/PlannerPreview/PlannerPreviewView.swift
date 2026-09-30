@@ -302,7 +302,10 @@ public struct PlannerPreviewView: View {
     @ViewBuilder private var placePanel: some View {
         if let place = selectedPlace {
             VStack(alignment: .leading, spacing: 4) {
-                Text(place.name).font(.system(.title3, weight: .semibold))
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(place.name).font(.system(.title3, weight: .semibold))
+                    PlannerOpenBadge(place: place)
+                }
                 if place.kind != .town {
                     Text(PlannerPlaceRow.detail(for: place, showsRouteDistances: model.hasRoute))
                         .font(.system(.subheadline).monospacedDigit()).foregroundStyle(OBCTheme.secondary)

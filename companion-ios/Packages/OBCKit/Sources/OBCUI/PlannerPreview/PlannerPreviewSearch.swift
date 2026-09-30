@@ -182,7 +182,10 @@ struct PlannerPlaceRow: View {
             Image(systemName: place.kind.symbol).frame(width: 24).foregroundStyle(OBCTheme.secondary)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text(place.name).font(.system(.body, weight: .semibold)).foregroundStyle(OBCTheme.ink)
+                HStack(spacing: 8) {
+                    Text(place.name).font(.system(.body, weight: .semibold)).foregroundStyle(OBCTheme.ink)
+                    PlannerOpenBadge(place: place)
+                }
                 Text(detail).font(.system(.subheadline).monospacedDigit()).foregroundStyle(OBCTheme.secondary)
             }
             Spacer(minLength: 8)
@@ -200,6 +203,22 @@ struct PlannerPlaceRow: View {
         guard showsRouteDistances, place.kind != .town else { return place.kind.title }
         let distances = "\(OBCFormat.distance(meters: place.alongRouteMeters)) · \(OBCFormat.shortDistance(meters: place.offRouteMeters)) off route"
         return includesKind ? "\(place.kind.title) · \(distances)" : distances
+    }
+}
+
+/// "Open" or "Closed" beside a place's name, only when its hours say so right now.
+struct PlannerOpenBadge: View {
+    let place: PlannerPreviewPlace
+
+    var body: some View {
+        if let hours = place.hours, let open = PlannerPreviewOpeningHours.isOpen(hours) {
+            Text(open ? "Open" : "Closed")
+                .font(.system(.caption2, weight: .semibold))
+                .foregroundStyle(OBCTheme.surface)
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(open ? OBCTheme.day3 : OBCTheme.danger, in: Capsule())
+                .accessibilityLabel(open ? "Open now" : "Closed now")
+        }
     }
 }
 #endif
