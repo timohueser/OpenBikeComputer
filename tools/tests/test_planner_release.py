@@ -63,7 +63,7 @@ class ReleaseTests(unittest.TestCase):
                  patch.object(r2, "run_rclone", side_effect=transfer):
                 with self.assertRaisesRegex(ValueError, "incomplete"):
                     release.publish(args)
-            self.assertEqual([command[0] for command in calls], ["copy", "lsjson"])
+            self.assertNotIn("copyto", [command[0] for command in calls])
 
     def test_site_configuration_uses_one_release_and_rejects_line_injection(self):
         active = release.endpoints("a" * 64, {"region": "test", "bounds": [1, 2, 3, 4],

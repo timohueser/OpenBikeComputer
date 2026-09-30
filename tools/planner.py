@@ -144,7 +144,7 @@ def serve(args):
 
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] in {"prepare", "publish", "deploy", "rollback", "site-config"}:
+    if len(sys.argv) > 1 and sys.argv[1] in {"prepare", "publish", "deploy", "rollback", "finalize", "site-config"}:
         try: from .planner_release import main as release_main
         except ImportError: from planner_release import main as release_main
         release_main(sys.argv[1:])

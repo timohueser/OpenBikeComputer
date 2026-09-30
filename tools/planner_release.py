@@ -128,10 +128,13 @@ def publish(args):
     print(f"Release {identity}\n{document['region']}: {count} objects, {size / 1e9:.2f} GB")
     print(f"R2 storage ceiling for this release: ${size / 1e9 * .015:.2f}/month before the free allowance.")
     print(f"Initial object writes: approximately ${count / 1e6 * 4.5:.3f} before the free allowance.")
-    print("Existing releases remain available. This command does not activate or delete data.")
+    print("Publication stages data. Run deploy, Deploy site, and finalize to complete the rollout.")
     if not args.apply:
         return
     remote = r2.bucket_remote()
+    try: from .planner_cleanup import before_publish
+    except ImportError: from planner_cleanup import before_publish
+    before_publish(remote, identity)
     prefix = f"planner/releases/{identity}"
     with tempfile.TemporaryDirectory(prefix="planner-upload-") as directory:
         if source_files:
@@ -182,7 +185,7 @@ def main(argv=None):
     def stop(_signum, _frame): raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["prepare", "publish", "deploy", "rollback", "site-config"])
+    parser.add_argument("command", choices=["prepare", "publish", "deploy", "rollback", "finalize", "site-config"])
     parser.add_argument("--data-dir", type=Path, default=os.environ.get("OBC_PLANNER_RELEASE", str(Path.home() / ".cache/obc/planner/bw-online")))
     parser.add_argument("--recipe", type=Path, default=maps.ROOT / "tools/planner-regions/baden-wuerttemberg.json")
     parser.add_argument("--source-cache", type=Path, default=Path.home() / ".cache/obc/planner/sources")
@@ -216,6 +219,10 @@ def main(argv=None):
             try: from . import planner_deploy
             except ImportError: import planner_deploy
             getattr(planner_deploy, args.command)(args)
+        elif args.command == "finalize":
+            try: from .planner_cleanup import finalize
+            except ImportError: from planner_cleanup import finalize
+            finalize(args)
         else:
             if not args.output: raise ValueError("Provide --output for site-config")
             site_config(args.catalog, args.output)

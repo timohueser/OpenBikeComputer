@@ -136,6 +136,7 @@ systemctl reload caddy
     active["slot"] = slot
     catalog = {"format": 1, "active": active, "previous": old if old and old["id"] != identity else current["previous"]}
     activate(args.public_url, catalog)
+    print("Rollout is incomplete. After Deploy site succeeds, run: obc planner finalize --apply")
 
 
 def verify_services(active, document, origin):

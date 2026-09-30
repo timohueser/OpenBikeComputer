@@ -26,6 +26,8 @@ and test them from their own directories. The nearest README has the surface's s
 ## Build and verification
 
 - Run `obc` inside the task's checkout and check the printed root. `obc help TASK` describes a task.
+- Obtain explicit owner permission before offloading builds or working data to another machine to bypass local memory or disk limits.
+- Do not run planner publications or deployments concurrently.
 - Test the crates you changed, never the whole workspace by default:
 
   ```sh
