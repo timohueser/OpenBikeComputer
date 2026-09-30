@@ -339,7 +339,10 @@
 		)
 		(polygon
 			(pts
-				(xy -6.91239 0.75) (xy -6.3 0.75) (xy -6.3 4.55817) (xy -6.91239 4.55817)
+				(xy -6.91239 0.75)
+				(xy -6.3 0.75)
+				(xy -6.3 4.55)
+				(xy -6.91239 4.55)
 			)
 		)
 	)
@@ -399,17 +402,15 @@
 		)
 		(polygon
 			(pts
-				(xy 6.7095 0.75) (xy 7.3 0.75) (xy 7.3 4.55645) (xy 6.7095 4.55645)
+				(xy 6.7095 0.75)
+				(xy 7.3 0.75)
+				(xy 7.3 4.55)
+				(xy 6.7095 4.55)
 			)
 		)
 	)
 	(zone
-		(layers "F.Cu" "B.Cu" "In1.Cu" "In2.Cu" "In3.Cu" "In4.Cu" "In5.Cu" "In6.Cu"
-			"In7.Cu" "In8.Cu" "In9.Cu" "In10.Cu" "In11.Cu" "In12.Cu" "In13.Cu" "In14.Cu"
-			"In15.Cu" "In16.Cu" "In17.Cu" "In18.Cu" "In19.Cu" "In20.Cu" "In21.Cu"
-			"In22.Cu" "In23.Cu" "In24.Cu" "In25.Cu" "In26.Cu" "In27.Cu" "In28.Cu"
-			"In29.Cu" "In30.Cu"
-		)
+		(layers "F.Cu" "B.Cu" "In1.Cu" "In2.Cu" "In3.Cu" "In4.Cu" "In5.Cu" "In6.Cu" "In7.Cu" "In8.Cu" "In9.Cu" "In10.Cu" "In11.Cu" "In12.Cu" "In13.Cu" "In14.Cu" "In15.Cu" "In16.Cu" "In17.Cu" "In18.Cu" "In19.Cu" "In20.Cu" "In21.Cu" "In22.Cu" "In23.Cu" "In24.Cu" "In25.Cu" "In26.Cu" "In27.Cu" "In28.Cu" "In29.Cu" "In30.Cu")
 		(uuid "0f2a06d2-e768-4e45-8f0c-aa70d417fbb2")
 		(hatch full 0.508)
 		(connect_pads
@@ -434,7 +435,10 @@
 		)
 		(polygon
 			(pts
-				(xy -6.91224 0.75) (xy -6.3 0.75) (xy -6.3 4.55807) (xy -6.91224 4.55807)
+				(xy -6.91224 0.75)
+				(xy -6.3 0.75)
+				(xy -6.3 4.55)
+				(xy -6.91224 4.55)
 			)
 		)
 	)
@@ -474,12 +478,7 @@
 		)
 	)
 	(zone
-		(layers "F.Cu" "B.Cu" "In1.Cu" "In2.Cu" "In3.Cu" "In4.Cu" "In5.Cu" "In6.Cu"
-			"In7.Cu" "In8.Cu" "In9.Cu" "In10.Cu" "In11.Cu" "In12.Cu" "In13.Cu" "In14.Cu"
-			"In15.Cu" "In16.Cu" "In17.Cu" "In18.Cu" "In19.Cu" "In20.Cu" "In21.Cu"
-			"In22.Cu" "In23.Cu" "In24.Cu" "In25.Cu" "In26.Cu" "In27.Cu" "In28.Cu"
-			"In29.Cu" "In30.Cu"
-		)
+		(layers "F.Cu" "B.Cu" "In1.Cu" "In2.Cu" "In3.Cu" "In4.Cu" "In5.Cu" "In6.Cu" "In7.Cu" "In8.Cu" "In9.Cu" "In10.Cu" "In11.Cu" "In12.Cu" "In13.Cu" "In14.Cu" "In15.Cu" "In16.Cu" "In17.Cu" "In18.Cu" "In19.Cu" "In20.Cu" "In21.Cu" "In22.Cu" "In23.Cu" "In24.Cu" "In25.Cu" "In26.Cu" "In27.Cu" "In28.Cu" "In29.Cu" "In30.Cu")
 		(uuid "d85de286-321c-461e-b085-626b7e019de8")
 		(hatch full 0.508)
 		(connect_pads
@@ -504,14 +503,17 @@
 		)
 		(polygon
 			(pts
-				(xy 6.71152 0.75) (xy 7.3 0.75) (xy 7.3 4.55783) (xy 6.71152 4.55783)
+				(xy 6.71152 0.75)
+				(xy 7.3 0.75)
+				(xy 7.3 4.55)
+				(xy 6.71152 4.55)
 			)
 		)
 	)
 	(embedded_fonts no)
 	(model "../../libraries/3dmodels/DM3CS-SF.stp"
 		(offset
-			(xyz -6.7 -7 1.5)
+			(xyz -6.7 -7 1.63)
 		)
 		(scale
 			(xyz 1 1 1)

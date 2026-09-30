@@ -1,0 +1,91 @@
+(footprint "Taoglas_GGBLA125A_10x3.2mm_ContactPads"
+	(version 20260206)
+	(generator "pcbnew")
+	(layer "F.Cu")
+	(descr "Taoglas GGBLA.125.A, 10x3.2x1.5mm. CONTACT LANDS ONLY: add corner copper extensions and clearance from SPE-19-8-045-N sections 11.13/11.14 during PCB layout. Feed=1, FTE=2/3. https://www.taoglas.com/datasheets/GGBLA.125.A.pdf")
+	(tags "GNSS L1 L5 ceramic loop contact lands")
+	(attr smd)
+	(property "Reference" "REF**"
+		(at 0 -2.5)
+		(layer "F.SilkS")
+		(effects
+			(font
+				(size 0.8 0.8)
+				(thickness 0.12)
+			)
+		)
+	)
+	(property "Value" "GGBLA.125.A"
+		(at 0 2.5)
+		(layer "F.Fab")
+		(effects
+			(font
+				(size 0.8 0.8)
+				(thickness 0.12)
+			)
+		)
+	)
+	(fp_rect
+		(start -5 -1.6)
+		(end 5 1.6)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+	)
+	(fp_rect
+		(start -5.55 -1.85)
+		(end 5.55 1.85)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+	)
+	(fp_line
+		(start -5.1 -1.75)
+		(end 5.1 -1.75)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+	)
+	(fp_line
+		(start -5.1 1.75)
+		(end 5.1 1.75)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+	)
+	(fp_text user "ADD CORNER COPPER / CLEARANCE: DATASHEET SEC. 11"
+		(at 0 4)
+		(layer "Dwgs.User")
+		(effects
+			(font
+				(size 0.6 0.6)
+				(thickness 0.1)
+			)
+		)
+	)
+	(pad "1" smd rect
+		(at 0 0)
+		(size 6.1 2.9)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+	)
+	(pad "2" smd rect
+		(at -4.625 0)
+		(size 1.35 2.9)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+	)
+	(pad "3" smd rect
+		(at 4.625 0)
+		(size 1.35 2.9)
+		(layers "F.Cu" "F.Paste" "F.Mask")
+	)
+
+(model "${KIPRJMOD}/../../libraries/3dmodels/Taoglas_GGBLA125A_envelope.step" (offset (xyz 0 0 0)) (scale (xyz 1 1 1)) (rotate (xyz 0 0 0)))
+)
