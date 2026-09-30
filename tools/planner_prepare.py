@@ -75,7 +75,7 @@ def prepare(args):
         raise ValueError("Prepared inputs do not match the region recipe")
     if provenance["basemap"]["protomaps_commit"] != sources.PROTOMAPS or provenance["search"]["photon_sha256"] != sources.PHOTON_SHA:
         raise ValueError("Prepared inputs use another source builder")
-    for name, item in config["auxiliary"].items():
+    for name, item in config.get("auxiliary", {}).items():
         if provenance["basemap"]["auxiliary"][name]["sha256"] != item["sha256"]:
             raise ValueError(f"Prepared basemap uses another source: {name}")
     if set(provenance["files"]) != {"basemap.pmtiles", "search.jsonl.zst"}:

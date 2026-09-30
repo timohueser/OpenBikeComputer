@@ -59,6 +59,7 @@ const server = http.createServer(async (req, res) => {
     });
     res.end(JSON.stringify(value));
   };
+  let admitted = false;
   try {
     if (!allowed) {
       json(403, { error: 'Origin is not allowed.' });
@@ -71,7 +72,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (active >= 16) { json(503, { error: 'Search is busy. Retry shortly.' }); return; }
     active++;
-    res.once('close', () => active--);
+    admitted = true;
     const url = new URL(req.url, 'http://localhost');
     if (url.pathname === '/api/planner-search/status' && req.method === 'GET') {
       json(200, {
@@ -141,6 +142,8 @@ const server = http.createServer(async (req, res) => {
     });
   } catch (error) {
     json(400, { error: error.message });
+  } finally {
+    if (admitted) active--;
   }
 });
 const port = Number(process.env.OBC_SEARCH_PORT || 8780);
@@ -149,7 +152,7 @@ server.headersTimeout = 10000;
 server.maxConnections = 64;
 server.setTimeout(30000);
 server.listen(port, '127.0.0.1', () =>
-  console.log(`Local planner search: http://127.0.0.1:${port}`),
+  console.log(`Local planner search: http://127.0.0.1:${server.address().port}`),
 );
 let stopping = false;
 const stop = () => {

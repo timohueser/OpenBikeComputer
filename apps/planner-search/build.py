@@ -161,6 +161,8 @@ def main():
     if not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', args.region):
         ap.error('Invalid region ID')
     bounds = list(map(float, args.bounds.split(','))) if args.bounds else None
+    if bounds is None and args.region not in ('all', 'germany', 'baden-wuerttemberg'):
+        ap.error('--bounds is required for a custom region')
     if bounds and (len(bounds) != 4 or not -180 <= bounds[0] < bounds[2] <= 180 or not -85 <= bounds[1] < bounds[3] <= 85 or args.region == 'all'):
         ap.error('Use valid bounds with one region')
     countries = args.countries.lower().split(',')

@@ -62,7 +62,9 @@ def deploy(args):
         if error.code != 404: raise
         current = {"format": 1, "active": None, "previous": None}
     old = current["active"]
-    slot = 0 if not old else 1 - old.get("slot", 1)
+    if old is not None and (not isinstance(old, dict) or type(old.get("slot")) is not int or old["slot"] not in (0, 1)):
+        raise ValueError("The active catalogue entry needs slot 0 or 1; catalogue is unchanged")
+    slot = 0 if old is None else 1 - old["slot"]
     if old and old["id"] == identity:
         slot = old["slot"]
     route_port, search_port = [(8787, 8786), (8785, 8784)][slot]
@@ -170,6 +172,10 @@ def verify_services(active, document, origin):
             return json.load(response)
     answer = post(active["search"] + "/query", {"q": probe["query"], "region": document["region"], "view": probe["view"]})
     if not answer.get("results"): raise ValueError("Place search has no regional results")
+    answer = post(active["search"] + "/query", {"q": "show " + probe["query"], "submitted": True,
+                  "region": document["region"], "view": probe["view"]})
+    if not answer.get("results") or answer.get("canRetry") or answer.get("parserMs", 0) <= 0:
+        raise ValueError("Smart search did not run model inference")
     route = post(active["routing"] + "/v1/route", {"points": probe["points"], "profile": "touring"})
     if not route.get("routes"): raise ValueError("Regional routing did not return a route")
 

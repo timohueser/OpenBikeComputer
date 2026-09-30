@@ -94,6 +94,11 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
     .unwrap();
     writer.finish().unwrap();
     std::fs::write(path.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+    std::fs::write(path.join(".overlays.sqlite.partial"), b"interrupted build").unwrap();
+    rusqlite::Connection::open(path.join("overlays.sqlite"))
+        .unwrap()
+        .execute_batch("CREATE TABLE features(minzoom REAL NOT NULL)")
+        .unwrap();
     route_server::prepare_overlays(&path).unwrap();
     let app = route_server::app(&path, 1).unwrap();
     for (query, status, count) in [

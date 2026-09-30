@@ -73,5 +73,19 @@ class ReleaseTests(unittest.TestCase):
                 planner_deploy.deploy(args)
             activate.assert_not_called()
 
+    def test_missing_active_slot_cannot_restart_live_services(self):
+        args = argparse.Namespace(host="root@vps.example", data_dir=Path("/release"), apply=True,
+                                  site_origin="https://site.example", public_url="https://maps.example",
+                                  tiles_url="https://tiles.example", api_url="https://releases.openbikecomputer.com")
+        document = {"region": "test", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain"}
+        current = {"active": {"id": "b" * 64}, "previous": None}
+        with patch.object(release, "release", return_value=("a" * 64, document)), \
+             patch.object(release, "read_url", side_effect=[document, current]), \
+             patch.object(planner_deploy, "ssh") as ssh, patch.object(planner_deploy.maps, "run") as run:
+            with self.assertRaisesRegex(ValueError, "needs slot"):
+                planner_deploy.deploy(args)
+            ssh.assert_not_called()
+            run.assert_not_called()
+
 
 if __name__ == "__main__": unittest.main()

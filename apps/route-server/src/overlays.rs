@@ -47,6 +47,16 @@ fn rank(network: &str) -> u8 {
     }
 }
 
+fn access_zoom(status: &str) -> Option<f64> {
+    Some(match status {
+        "" => return None,
+        "push" => 15.0,
+        "directional" => 14.0,
+        "construction" | "conditional" => 10.0,
+        _ => 13.0,
+    })
+}
+
 type Memberships = BTreeMap<i64, Vec<i64>>;
 
 fn memberships(relations: &BTreeMap<i64, Relation>) -> (Memberships, BTreeMap<i64, Value>) {
@@ -94,6 +104,10 @@ impl Overlays {
     pub fn open(directory: &Path, identity: &str) -> Result<Self> {
         let database = Connection::open_with_flags(directory.join("overlays.sqlite"), OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(invalid_data)?;
+        let version: i64 = database.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(invalid_data)?;
+        if version != 1 {
+            return Err(Error::InvalidData("Rebuild the overlay index with --build-overlays".into()));
+        }
         database.execute_batch("PRAGMA cache_size=-4096; PRAGMA mmap_size=0;").map_err(invalid_data)?;
         let (package, coverage): (String, String) = database
             .query_row("SELECT package,coverage FROM metadata", [], |row| Ok((row.get(0)?, row.get(1)?)))
@@ -107,20 +121,27 @@ impl Overlays {
     pub fn build(directory: &Path) -> Result<()> {
         let package = Directory::open(directory)?;
         let output = directory.join("overlays.sqlite");
-        if output.exists() {
-            Self::open(directory, package.identity())?;
+        if output.exists() && Self::open(directory, package.identity()).is_ok() {
             return Ok(());
         }
         let partial = directory.join(".overlays.sqlite.partial");
+        if let Err(error) = std::fs::remove_file(&partial) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err(invalid_data(error));
+            }
+        }
         std::fs::OpenOptions::new().write(true).create_new(true).open(&partial).map_err(invalid_data)?;
         let result = (|| {
             let mut database = Connection::open(&partial).map_err(invalid_data)?;
-            database.execute_batch("PRAGMA journal_mode=OFF; PRAGMA cache_size=-65536;").map_err(invalid_data)?;
+            database
+                .execute_batch("PRAGMA journal_mode=OFF; PRAGMA cache_size=-65536; PRAGMA user_version=1;")
+                .map_err(invalid_data)?;
             let transaction = database.transaction().map_err(invalid_data)?;
             transaction
                 .execute_batch(
                     "CREATE TABLE metadata(package TEXT NOT NULL, coverage TEXT NOT NULL);
-                CREATE TABLE features(id INTEGER PRIMARY KEY, kind TEXT NOT NULL, minzoom REAL NOT NULL,
+                CREATE TABLE features(id INTEGER PRIMARY KEY, kind TEXT NOT NULL,
+                    cycling_minzoom REAL, walking_minzoom REAL,
                     points INTEGER NOT NULL, coordinates TEXT NOT NULL, properties TEXT NOT NULL);
                 CREATE VIRTUAL TABLE bounds USING rtree(id, west, east, south, north);",
                 )
@@ -250,13 +271,14 @@ impl Overlays {
             return Ok(json!({ "type": "FeatureCollection", "features": [], "coverage": self.coverage }));
         }
         let database = self.database.lock().map_err(|_| Error::Limit)?;
-        // Stream spatial matches so the response budget also bounds database work.
+        // Filter each mode in SQLite before reading and decoding its coordinates.
         let mut statement = database
             .prepare_cached(
                 "SELECT f.id,f.kind,f.coordinates,f.properties,f.points
             FROM bounds b CROSS JOIN features f ON f.id=b.id
             WHERE b.west<=?1 AND b.east>=?2 AND b.south<=?3 AND b.north>=?4
-                AND f.minzoom<=?5 AND f.kind IN (?6,?7,?8)",
+                AND (CASE ?9 WHEN 'cycling' THEN f.cycling_minzoom ELSE f.walking_minzoom END)<=?5
+                AND f.kind IN (?6,?7,?8)",
             )
             .map_err(invalid_data)?;
         let selected = |kind| if layers.contains(&kind) { kind } else { "" };
@@ -269,7 +291,8 @@ impl Overlays {
                 zoom,
                 selected("cycling"),
                 selected("hiking"),
-                selected("access")
+                selected("access"),
+                mode
             ])
             .map_err(invalid_data)?;
         let mut features = Vec::new();
@@ -282,13 +305,7 @@ impl Overlays {
                 serde_json::from_str(&row.get::<_, String>(3).map_err(invalid_data)?).map_err(invalid_data)?;
             if kind == "access" {
                 let status = properties[format!("{mode}_status")].as_str().unwrap_or("");
-                let minimum = match status {
-                    "push" => 15.0,
-                    "directional" => 14.0,
-                    "construction" | "conditional" => 10.0,
-                    _ => 13.0,
-                };
-                if status.is_empty() || zoom < minimum {
+                if !access_zoom(status).is_some_and(|minimum| zoom >= minimum) {
                     continue;
                 }
                 properties["status"] = json!(status);
@@ -309,21 +326,26 @@ fn insert(database: &Transaction<'_>, coordinates: &[[f64; 2]], kind: &str, prop
     let bounds = coordinates.iter().fold([180.0f64, 90.0f64, -180.0f64, -90.0f64], |b, p| {
         [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
     });
-    let minzoom = if kind == "access" {
-        10.0
+    let (cycling_minzoom, walking_minzoom) = if kind == "access" {
+        (
+            access_zoom(properties["cycling_status"].as_str().unwrap_or("")),
+            access_zoom(properties["walking_status"].as_str().unwrap_or("")),
+        )
     } else {
-        match properties["rank"].as_u64().unwrap_or(0) {
+        let minimum = match properties["rank"].as_u64().unwrap_or(0) {
             3..=4 => 6.0,
             2 => 8.0,
             _ => 10.0,
-        }
+        };
+        (Some(minimum), Some(minimum))
     };
     database
         .execute(
-            "INSERT INTO features(kind,minzoom,points,coordinates,properties) VALUES (?,?,?,?,?)",
+            "INSERT INTO features(kind,cycling_minzoom,walking_minzoom,points,coordinates,properties) VALUES (?,?,?,?,?,?)",
             params![
                 kind,
-                minzoom,
+                cycling_minzoom,
+                walking_minzoom,
                 coordinates.len() as i64,
                 serde_json::to_string(coordinates).map_err(invalid_data)?,
                 serde_json::to_string(properties).map_err(invalid_data)?
