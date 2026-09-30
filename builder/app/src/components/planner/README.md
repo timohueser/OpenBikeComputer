@@ -95,7 +95,7 @@ obc planner rollback --apply
 ```
 
 Then run **Deploy site** again and finalize. Finalization removes the previous
-dataset and clears its catalogue entry. Reload old planner pages after rollout.
+dataset from R2 and clears its catalogue entry. Reload old planner pages after rollout.
 The upload preview reports size and a storage cost ceiling before free allowances.
 Worker requests and the VPS have separate costs.
 

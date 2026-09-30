@@ -49,7 +49,7 @@ remain downloadable from R2.
 
 Routing and search APIs have the prefix `/planner-api/releases/ID/`. The final
 path component selects `routing` or `search`. A rollout serves the active
-release and the previous release on separate VPS ports until finalization.
+release and the previous release on separate VPS ports.
 
 ## Catalogue
 
