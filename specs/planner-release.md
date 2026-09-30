@@ -36,7 +36,9 @@ starts with its SHA-256. Source mirrors can be shared by releases.
 
 `maps/` contains `basemap.pmtiles`, `terrain.pmtiles`, map assets, and their
 manifest. `routing/` contains the three files in the
-[route package contract](route-package.md). `search/` contains `REGION.sqlite`
+[route package contract](route-package.md), plus `overlays.sqlite`. The overlay
+index stores the routing manifest identity and has the same OSM source.
+`search/` contains `REGION.sqlite`
 and `model/`. `device/catalog.json` is a snapshot. Its file references are absolute
 URLs to the original immutable cell objects.
 
