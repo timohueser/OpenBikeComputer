@@ -60,6 +60,29 @@ impl Directory {
 
 impl Source for Directory {
     fn read(&self, digest: &str) -> Result<Vec<u8>> {
+        let (offset, len) = self.location(digest)?;
+        let mut data = self.0.data.lock().map_err(|_| Error::Limit)?;
+        data.seek(SeekFrom::Start(offset)).map_err(invalid)?;
+        let mut bytes = vec![0; len as usize];
+        data.read_exact(&mut bytes).map_err(invalid)?;
+        Ok(bytes)
+    }
+
+    fn order_for_verify(&self, digests: &mut [String]) -> Result<()> {
+        let mut locations = digests
+            .iter_mut()
+            .map(|digest| self.location(digest).map(|(offset, _)| (offset, std::mem::take(digest))))
+            .collect::<Result<Vec<_>>>()?;
+        locations.sort_unstable_by_key(|(offset, _)| *offset);
+        for (digest, (_, ordered)) in digests.iter_mut().zip(locations) {
+            *digest = ordered;
+        }
+        Ok(())
+    }
+}
+
+impl Directory {
+    fn location(&self, digest: &str) -> Result<(u64, u64)> {
         let wanted = key(digest)?;
         let (mut low, mut high) = (0, self.0.count);
         while low < high {
@@ -75,11 +98,7 @@ impl Source for Directory {
                     if len > MAX_PAGE_BYTES as u64 || offset.checked_add(len).is_none_or(|end| end > self.0.bytes) {
                         return Err(Error::InvalidData("Routing page outside archive".into()));
                     }
-                    let mut data = self.0.data.lock().map_err(|_| Error::Limit)?;
-                    data.seek(SeekFrom::Start(offset)).map_err(invalid)?;
-                    let mut bytes = vec![0; len as usize];
-                    data.read_exact(&mut bytes).map_err(invalid)?;
-                    return Ok(bytes);
+                    return Ok((offset, len));
                 }
             }
         }
@@ -185,6 +204,10 @@ mod tests {
         let source = open();
         assert_eq!(source.read(&a).unwrap(), b"first page");
         assert_eq!(source.read(&b).unwrap(), b"second page");
+        let mut keys = [b.clone(), a.clone()];
+        source.order_for_verify(&mut keys).unwrap();
+        assert_eq!(keys, [a.clone(), b.clone()]);
+        assert!(matches!(source.order_for_verify(&mut ["0".repeat(64)]), Err(Error::MissingRegion(_))));
         assert!(matches!(source.read(&"0".repeat(64)), Err(Error::MissingRegion(_))));
         assert!(matches!(source.read("../pages.bin"), Err(Error::InvalidData(_))));
         drop(source);
@@ -194,6 +217,7 @@ mod tests {
         let first = if key(&a).unwrap() < key(&b).unwrap() { a } else { b };
         let source = open();
         assert!(matches!(source.read(&first), Err(Error::InvalidData(_))));
+        assert!(matches!(source.order_for_verify(&mut [first]), Err(Error::InvalidData(_))));
         drop(source);
         std::fs::write(path.join("manifest.json"), b"{}").unwrap();
         index.set_len(HEADER + 1).unwrap();

@@ -20,6 +20,11 @@ pub const CELL: i32 = 10_000;
 /// A source is immutable for the lifetime of a package. A missing object is never an empty page.
 pub trait Source {
     fn read(&self, digest: &str) -> Result<Vec<u8>>;
+
+    /// Packed sources can verify pages in physical order to avoid random disk reads.
+    fn order_for_verify(&self, _digests: &mut [String]) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -186,6 +191,8 @@ impl<S: Source> Package<S> {
             }
             keys.extend(cells.into_values());
         }
+        let mut keys: Vec<_> = keys.into_iter().collect();
+        self.source.order_for_verify(&mut keys)?;
         for key in keys {
             self.bytes(&key)?;
         }
