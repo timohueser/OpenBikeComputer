@@ -10,9 +10,8 @@ name: Deploy site
 #
 # Because the demo is the firmware's own render path compiled to wasm, every push
 # rebuilds it — the site can never show a stale screenshot. And everything here is
-# static files: there is no backend on this tier at all. Route conversion runs as wasm
-# in the tab (#896), maps are cell artifacts listed in a catalog manifest, and the only server involved
-# is whoever serves the bytes.
+# static files: there is no backend on this tier. Route conversion runs as wasm
+# in the tab. Routing and search use the VPS. The tile Worker serves map tiles.
 #
 # ── What GitHub Pages can and cannot do (C6 #905; measured 2026-07-26) ──────────────
 #

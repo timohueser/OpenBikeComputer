@@ -101,6 +101,7 @@ def endpoints(identity, document, public, tiles, api):
     return {"id": identity, "manifest": prefix + "/release.json", "region": document["region"],
             "device_catalog": prefix + "/device/catalog.json", "routing": service + "/routing",
             "search": service + "/search", "basemap": tile_prefix + "/basemap.json",
+            "attribution": document["attribution"],
             "terrain": tile_prefix + "/terrain/{z}/{x}/{y}.webp",
             "glyphs": prefix + "/maps/assets/fonts/{fontstack}/{range}.pbf",
             "sprites": prefix + "/maps/assets/sprites/v4", "bounds": document["bounds"],

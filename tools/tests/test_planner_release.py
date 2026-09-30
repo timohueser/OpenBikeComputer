@@ -45,7 +45,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_site_configuration_uses_one_release_and_rejects_line_injection(self):
         active = release.endpoints("a" * 64, {"region": "test", "bounds": [1, 2, 3, 4],
-                                   "terrain_attribution": "Terrain"}, "https://maps.example", "https://tiles.example", "https://api.example")
+                                   "attribution": "OSM", "terrain_attribution": "Terrain"}, "https://maps.example", "https://tiles.example", "https://api.example")
         env = release.vite_environment(active)
         for key in ["VITE_PLANNER_TILEJSON_URL", "VITE_PLANNER_SEARCH_URL", "VITE_CATALOG_URL"]:
             self.assertIn("a" * 64, env[key])
@@ -63,7 +63,7 @@ class ReleaseTests(unittest.TestCase):
         args = argparse.Namespace(host="root@vps.example", data_dir=Path("/release"), apply=True,
                                   site_origin="https://site.example", public_url="https://maps.example",
                                   tiles_url="https://tiles.example", api_url="https://releases.openbikecomputer.com")
-        document = {"region": "test", "bounds": [1, 2, 3, 4], "terrain_attribution": "Terrain"}
+        document = {"region": "test", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain"}
         with patch.object(release, "release", return_value=("a" * 64, document)), \
              patch.object(release, "read_url", side_effect=[document, {"active": None, "previous": None}]), \
              patch.object(planner_deploy, "ssh"), patch.object(planner_deploy.maps, "run"), \

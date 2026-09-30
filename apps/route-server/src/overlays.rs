@@ -250,12 +250,13 @@ impl Overlays {
             return Ok(json!({ "type": "FeatureCollection", "features": [], "coverage": self.coverage }));
         }
         let database = self.database.lock().map_err(|_| Error::Limit)?;
+        // Stream spatial matches so the response budget also bounds database work.
         let mut statement = database
             .prepare_cached(
                 "SELECT f.id,f.kind,f.coordinates,f.properties,f.points
-            FROM bounds b JOIN features f ON f.id=b.id
+            FROM bounds b CROSS JOIN features f ON f.id=b.id
             WHERE b.west<=?1 AND b.east>=?2 AND b.south<=?3 AND b.north>=?4
-                AND f.minzoom<=?5 AND f.kind IN (?6,?7,?8) ORDER BY f.id",
+                AND f.minzoom<=?5 AND f.kind IN (?6,?7,?8)",
             )
             .map_err(invalid_data)?;
         let selected = |kind| if layers.contains(&kind) { kind } else { "" };
