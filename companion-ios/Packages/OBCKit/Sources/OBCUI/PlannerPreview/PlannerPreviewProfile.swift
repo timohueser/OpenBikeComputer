@@ -16,20 +16,18 @@ struct PlannerPreviewProfile: View {
                 .font(.system(.caption, weight: .semibold).monospacedDigit())
                 .foregroundStyle(OBCTheme.ink)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if let range = visibleRange, range.upperBound > range.lowerBound {
-                plot(profile, range: range)
-                    .background(OBCTheme.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-                HStack {
-                    Text("\(range.lowerBound * profile.distance / 1_000, specifier: "%.1f") km")
-                    Spacer()
-                    Text("\(range.upperBound * profile.distance / 1_000, specifier: "%.1f") km")
-                }
-                .font(.caption2.monospacedDigit()).foregroundStyle(OBCTheme.secondary)
-            } else {
-                Text("Route outside map view").font(.caption).foregroundStyle(OBCTheme.secondary)
-                    .frame(maxWidth: .infinity, minHeight: height)
+            // With no route in view the profile shows the whole route, so the drawer never
+            // swaps content or changes height while the map pans.
+            let range = visibleRange.flatMap { $0.upperBound > $0.lowerBound ? $0 : nil } ?? 0...1
+            plot(profile, range: range)
+                .background(OBCTheme.surface)
+                .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
+            HStack {
+                Text("\(range.lowerBound * profile.distance / 1_000, specifier: "%.1f") km")
+                Spacer()
+                Text("\(range.upperBound * profile.distance / 1_000, specifier: "%.1f") km")
             }
+            .font(.caption2.monospacedDigit()).foregroundStyle(OBCTheme.secondary)
         }
     }
 

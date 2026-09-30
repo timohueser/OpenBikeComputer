@@ -118,6 +118,8 @@ struct PlannerPreviewMap: UIViewRepresentable {
         var distances: [Double] = []
         var pins: [PlannerPreviewMapPin] = []
         var fitRevision: Int?
+        /// A tap on a pin reaches both MapKit's selection and the map tap; the tap yields.
+        private var pinSelectedAt: Date?
         var selectedID: String?
         var pinAppearance: UIUserInterfaceStyle?
         private var networkAppearance: UIUserInterfaceStyle?
@@ -396,14 +398,20 @@ struct PlannerPreviewMap: UIViewRepresentable {
 
         func mapView(_ map: MKMapView, didSelect annotation: any MKAnnotation) {
             guard let pin = annotation as? PinAnnotation else { return }
+            pinSelectedAt = Date()
             parent.onSelect(pin.pin.id, map.convert(pin.coordinate, toPointTo: map))
             map.deselectAnnotation(annotation, animated: false)
         }
 
         @objc func tapMap(_ recognizer: UITapGestureRecognizer) {
             guard let map = recognizer.view as? MKMapView else { return }
-            let point = map.convert(recognizer.location(in: map), toCoordinateFrom: map)
-            parent.onMapPoint(Coordinate(latitude: point.latitude, longitude: point.longitude), recognizer.location(in: map))
+            let location = recognizer.location(in: map)
+            let point = map.convert(location, toCoordinateFrom: map)
+            // MapKit's selection may land just after this tap; give it a moment, then yield to it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self, self.pinSelectedAt.map({ Date().timeIntervalSince($0) > 0.4 }) ?? true else { return }
+                self.parent.onMapPoint(Coordinate(latitude: point.latitude, longitude: point.longitude), location)
+            }
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {

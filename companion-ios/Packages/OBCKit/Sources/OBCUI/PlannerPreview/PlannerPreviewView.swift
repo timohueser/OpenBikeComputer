@@ -16,6 +16,8 @@ public struct PlannerPreviewView: View {
     @State private var planningContentHeight: CGFloat = 220
     @State private var resultsContentHeight: CGFloat = 300
     @State private var drawerShown = false
+    /// Runs once the drawer has gone: a pop or a save that follows it must not race its dismissal.
+    @State private var afterDrawerDismiss: (() -> Void)?
     @State private var drawerPosition = PlannerPreviewDrawerPosition.open
     @State private var editorShown = false
     @State private var layersShown = false
@@ -106,7 +108,7 @@ public struct PlannerPreviewView: View {
                 .overlay(alignment: .topLeading) {
                     if mapPlaceShown { mapContext(in: geometry.size) }
                 }
-                .sheet(isPresented: $drawerShown) {
+                .sheet(isPresented: $drawerShown, onDismiss: { afterDrawerDismiss?(); afterDrawerDismiss = nil }) {
                     PlannerPreviewDrawer(position: $drawerPosition,
                                          openHeight: min(openHeight, geometry.size.height - 80),
                                          expandedHeight: panel == .planning && model.hasRoute
@@ -127,12 +129,12 @@ public struct PlannerPreviewView: View {
                                             ? "This preview keeps the route until the app restarts."
                                             : "This preview saves one route with the overnight point. It keeps the route until the app restarts.",
                                         canSave: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) { name in
-                            drawerShown = false
-                            onSave(model.exportRoute(name: name), model.bike)
+                            let route = model.exportRoute(name: name), bike = model.bike
+                            leave { onSave(route, bike) }
                         }
                         .obcDestructiveConfirm("Discard this route?", isPresented: $closeShown,
                                                message: "Your points and settings go with it.", actionTitle: "Discard") {
-                            drawerShown = false; onClose()
+                            leave(onClose)
                         }
                 }
         }
@@ -145,7 +147,7 @@ public struct PlannerPreviewView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button {
-                    if model.canUndo { closeShown = true } else { drawerShown = false; onClose() }
+                    if model.canUndo { closeShown = true } else { leave(onClose) }
                 } label: { Label("Library", systemImage: "chevron.left") }
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
@@ -584,8 +586,8 @@ public struct PlannerPreviewView: View {
         selectedPlace = place; editingPointID = nil; mapPlaceShown = true
     }
 
+    // A tap on the map always selects what was tapped; an open card just moves there.
     private func selectPin(_ id: String, at location: CGPoint) {
-        guard !hasMapContext else { dismissMapContext(); return }
         let selectionIntent = panel == .results ? intent : .general
         mapAnchor = location; layersShown = false; infoShown = false
         if let point = (model.points + model.markers).first(where: { $0.id == id }) {
@@ -598,14 +600,17 @@ public struct PlannerPreviewView: View {
     }
 
     private func selectMapPoint(_ coordinate: Coordinate, at location: CGPoint) {
-        guard !hasMapContext else { dismissMapContext(); return }
         let selectionIntent = panel == .results ? intent : .general
         mapAnchor = location; editingPointID = nil; layersShown = false; infoShown = false
         selectedPlace = .init(id: UUID().uuidString, name: "Map point", coordinate: coordinate)
         panel = .planning; results = nil; intent = selectionIntent; mapPlaceShown = true
     }
 
-    private var hasMapContext: Bool { mapPlaceShown || layersShown || infoShown }
+    /// Closes the drawer first and runs `action` after it has gone.
+    private func leave(_ action: @escaping () -> Void) {
+        afterDrawerDismiss = action
+        drawerShown = false
+    }
 
     private func dismissMapContext() {
         mapPlaceShown = false; layersShown = false; infoShown = false
