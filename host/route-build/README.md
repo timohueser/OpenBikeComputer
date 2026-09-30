@@ -14,6 +14,26 @@ The output directory must not exist. The builder writes objects to a temporary
 directory and publishes the manifest with a directory rename. Keep old packages
 until their consumers finish. Do not edit an installed package in place.
 
+## Bounding box extraction
+
+Extract from an installed routing package without OSM import or terrain sampling:
+
+```sh
+cargo run --release -p route-build --bin route-extract -- /data/routes/bw \
+  --output /data/routes/freiburg --region freiburg --bounds 7.77,47.965,7.96,48.06
+```
+
+The bounds must lie inside the source coverage. The output retains all source
+profiles. Query endpoints stay inside the requested bounds. Each road that
+intersects the bounds stays complete, so route geometry can leave the box.
+Routes are exact within this retained graph. Outside connections can be absent.
+
+The command rebuilds the shared graph and each profile from prepared costs and turns.
+It copies source OSM pages unless `--runtime` is set. Use compiled source overlays
+with a runtime cutout. The JSON report gives the OSM byte count, the total
+routing size, preparation time, and `geometry_bounds`. Include these geometry
+bounds when you prepare dependent maps and terrain.
+
 ## Terrain
 
 The base crate accepts a height callback through `terrain::apply`. It has no
@@ -66,6 +86,10 @@ cargo run --release -p route-build --bin route-select -- \
 
 It copies the complete object closure for the selected profiles. The source
 package stays unchanged. Build the overlay index for the new manifest.
+Omit `--profiles` to keep all profiles. Add `--runtime` only after all runtime
+attributes and overlays are prepared. It omits build-only OSM tables. Retain
+the input package on the preparation host and bind the compiled overlay index
+to the new manifest before sealing the runtime release.
 
 | Road profile | Preference |
 | --- | --- |
@@ -87,7 +111,7 @@ profiles. Preserve [the licence notice](LICENSE.brouter) when redistributing the
 | Explicit poor surface | Apply a minimum cost even on a paved road class |
 | Smoothness | Apply gravel-profile dry-surface multipliers |
 | Elevation | Filtered fractional heights; 1.5% slope threshold; additive costs |
-| BRouter elevation buffer | Not reproduced; no path-dependent state in CH |
+| BRouter elevation buffer | Not reproduced; no path-dependent state in the graph |
 | Estimated traffic, forest and noise | Not inferred from BRouter's derived data |
 | Access | German importer rules; restricted access is not a soft penalty |
 | Pushing | Allowed where permitted, with distance and entry costs; no cycling permission implied |
@@ -97,8 +121,8 @@ Each has shorter, smoother and less-climbing variants. Shorter ignores road
 class and climb preferences but keeps surface preferences. Smoother raises
 surface costs. Access rules apply to every variant.
 
-The package includes source OSM pages, geometry, snap cells, endpoint states
-and CH pages. Source pages stay outside the query caches.
+The package includes source OSM pages, geometry, snap cells, a shared directed
+graph and profile costs. Source pages stay outside the query caches.
 It is separate from map tiles. See [the package contract](../../specs/route-package.md).
 Preserve OpenStreetMap attribution and ODbL notices when distributing the data.
 

@@ -14,7 +14,8 @@ target/release/route-server /data/routes/freiburg
 | `ROUTE_ORIGIN` | Unset | One allowed browser origin; omit for same-origin proxy |
 
 The service does not queue requests. Extra requests receive `503 busy`.
-Each worker has its own router with a 128 MiB CH cache. A request has a 15-second
+Each worker has its own router with a 768 MiB routing allocation budget.
+Workers share one immutable graph. Each retains one active profile. A request has a 15-second
 cooperative deadline. Disconnects cancel its work. The body limit is 64 KiB.
 Put a public service behind TLS and an OS memory and CPU limit. Keep the package
 read-only. Replace it by starting a new service instance on the new directory.
@@ -32,14 +33,16 @@ uses a dynamic user, a 1536 MiB memory limit and two CPU cores at most.
   returns GeoJSON from the package's OSM snapshot. Select one or more layers.
 
 Overlay requests accept zoom 6 to 22 and bounds up to 30 degrees wide and high.
-The response includes regional coverage bounds. Local routes appear from zoom 10,
+The response includes regional coverage bounds and the routing package ID.
+Discard cached features when that ID changes. Local routes appear from zoom 10,
 regional routes from 8, and national or international routes from 6.
 Construction and conditional access appear from 10; other access restrictions
 appear from 13, directional rules from 14, and pushing sections from 15.
 Access uses `mode=cycling` by default; `mode=walking` selects pedestrian rules.
 Responses distinguish construction, no access, private, limited, conditional,
 directional, pushing and bicycle bans. Dense requests fail with a zoom-in message.
-Prepare `overlays.sqlite` before service startup. Its package identity must match
+Prepare `overlays.sqlite` before service startup. A runtime-only package must
+receive its compiled overlay index from the preparation host. Its package identity must match
 the routing manifest. The service reads the viewport through a disk spatial index
 with a 4 MiB cache. Two overlay requests can run independently of routing workers.
 Geometry is simplified within half a map pixel at the requested zoom. Feature

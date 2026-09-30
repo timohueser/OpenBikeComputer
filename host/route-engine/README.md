@@ -11,7 +11,7 @@ and WebAssembly. Run browser queries in a worker.
 use route_engine::{directory::Directory, Control, Request, Router};
 
 let package = Directory::open(std::path::Path::new("/data/freiburg"))?;
-let mut router = Router::new(package, 64 * 1024 * 1024);
+let mut router = Router::new(package, 768 * 1024 * 1024);
 let request: Request = serde_json::from_str(r#"{
   "points": [[7.849,47.997],[8.154,47.902]],
   "profile": "touring", "alternatives": true
@@ -36,11 +36,12 @@ cargo run --release -p route-engine --example query -- /data/freiburg < request.
 | Module | Responsibility |
 | --- | --- |
 | `model` | Directed roads, prepared profiles, surface data, separate pace |
-| `package` | Manifest, object identity, bounded geometry and endpoint caches |
+| `package` | Manifest, object identity, bounded geometry and cost caches |
 | `snap` | Nearest accessible directed road attachments |
 | `cost` | Prepared road costs and partial-road prefixes |
 | `osm` | Source tags and relation membership, outside query caches |
-| `search` | Resumable bidirectional CH query and shortcut reconstruction |
+| `base` | Shared road-state topology and exact profile cost columns |
+| `search` | Bidirectional search with multiple start and end attachments |
 | `router` | Ordered points, direction continuity, geometry and totals |
 | `directory` | Optional native file adapter |
 
@@ -69,13 +70,20 @@ changes. Use `elapsed` for time at positions along the geometry.
 
 ## Bounds and checks
 
-One router runs one query at a time. It retains up to 256 leg paths with at most
-65,536 road slices and 32 snap results. Geometry and endpoint
-caches each have a 32 MiB ceiling. The endpoint cache also has a 16-page limit. The caller sets the CH cache size. A decoded page is at most
-8 MiB. Default query limits are 64 points, 250,000 labels, 8,192 attachment-pair
-queries, and 250,000 geometry vertices. `Control` can lower these limits and
-supplies a cancellation callback. These are service budgets, not device
-performance claims.
+One router runs one query at a time. The constructor takes an estimated routing
+working-set budget in bytes. Native hosts use 768 MiB by default. The engine
+checks decoded graph, active profile, dense labels and heap allocations. It
+reserves 64 MiB for geometry, index caches and decode scratch. An estimate above
+the budget returns `Limit`. This is not an allocator or process RAM guarantee.
+Manifest memory, source mappings, results and host serialization add memory.
+A profile change reuses the graph and replaces active cost columns. Use
+`Package::fork` to share topology across workers with independent query caches.
+
+The router retains up to 256 leg choices with at most 65,536 road slices and
+32 snap results. The geometry cache has a 32 MiB ceiling. A decoded page is at
+most 8 MiB. Default request limits are 64 points, 8,192 batched attachment
+queries, and 250,000 geometry vertices. `Control` can lower these limits, add a
+label limit, and supply a cancellation callback. These are service budgets.
 
 ```sh
 obc test -p route-engine

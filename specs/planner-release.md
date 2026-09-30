@@ -21,7 +21,7 @@ its files are immutable.
 | `device_catalog_source` | Original device catalogue URL |
 | `files` | Relative file names, each with `bytes` and `sha256` |
 | `source_files` | Local source mirror names, each with `bytes` and `sha256` |
-| `probe` | Regional route points, search query, and view used before activation |
+| `probe` | Regional route points, search query, and view for service deployment; absent from offline cutouts |
 
 File paths stay inside the release directory. File hashes use lowercase
 64-character hex. Maps, search, and routing have the same OSM hash and bounds.
@@ -41,6 +41,21 @@ index stores the routing manifest identity and has the same OSM source.
 `search/` contains `REGION.sqlite`
 and `model/`. `device/catalog.json` is a snapshot. Its file references are absolute
 URLs to the original immutable cell objects.
+
+The overlay database has SQLite `user_version=2`. `features` stores stable IDs,
+layer kinds, cycling and walking minimum zooms, geometry IDs, and attribute IDs.
+`attributes` stores distinct JSON properties without the way ID or layer kind.
+Route memberships are ordered relation IDs. `routes` stores each relation's JSON
+properties once. `geometries` stores the way ID, a point count, and a Postcard `Vec<[i32;2]>`.
+Each coordinate pair is longitude and latitude in microdegrees. The first pair
+is absolute; each later pair is a difference from the previous pair. Decoding
+uses checked addition. Shared geometry retains every source point. `bounds` is
+an R-tree over feature IDs with longitude, latitude, and facet axes. The facet
+is `32 * layer + minimum_zoom`. Cycling, hiking, and access have layer values
+0, 1, and 2. The minimum is the lower non-null mode minimum, or 23 for an
+invisible feature. The facet has equal lower and upper bounds. The query also
+checks each mode's minimum zoom. A cutout retains every referenced geometry,
+attribute, and route.
 
 The tile API serves `/releases/ID/basemap.json`, vector tiles at
 `/releases/ID/basemap/Z/X/Y.mvt`, and Terrarium tiles at
