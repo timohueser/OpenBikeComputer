@@ -132,7 +132,7 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertTrue(delete.waitForExistence(timeout: 5), "delete action missing")
         delete.tap()
         // Confirm the destructive action in the sheet.
-        let confirm = app.sheets.buttons["Delete route"]
+        let confirm = app.buttons["confirm.action.0"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5), "H1 confirm missing")
         snap(app, "H1-delete-from-detail")
         confirm.tap()
@@ -191,7 +191,7 @@ final class RouteDetailTests: XCTestCase {
         let delete = app.buttons["detail.delete"]
         XCTAssertTrue(delete.waitForExistence(timeout: 5), "E3 delete missing")
         delete.tap()
-        let confirm = app.sheets.buttons["Delete ride"]
+        let confirm = app.buttons["confirm.action.0"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5), "H1 confirm missing")
         snap(app, "H1-delete-ride-from-detail")
         confirm.tap()

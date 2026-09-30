@@ -94,8 +94,6 @@ public struct SettingsView: View {
                 showsDivider: false,
                 action: { forgetShown = true }
             )
-            // Hangs off the row, not the scroll root: confirmationDialog anchors to
-            // the attached view on iOS 26.
             .obcDestructiveConfirm(
                 "Forget \(model.deviceName)?",
                 isPresented: $forgetShown,

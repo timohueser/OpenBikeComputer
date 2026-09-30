@@ -20,6 +20,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
     public var showDevPanel: Bool
     /// Present the OBCUI component gallery immediately at launch.
     public var showUIGallery: Bool
+    /// Open the route-planner preview with its sample route.
+    public var showPlanner: Bool
     /// Suppress the Debug scenario tag for product screenshots. The mock transport stays active.
     public var hideMockHUD: Bool
     /// Run the UI with animations off, so an automated capture cannot catch a transition
@@ -55,6 +57,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
         useBLETransport: Bool = false,
         showDevPanel: Bool = false,
         showUIGallery: Bool = false,
+        showPlanner: Bool = false,
         hideMockHUD: Bool = false,
         disableAnimations: Bool = false,
         holdConfirmations: Bool = false,
@@ -73,6 +76,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
         self.useBLETransport = useBLETransport
         self.showDevPanel = showDevPanel
         self.showUIGallery = showUIGallery
+        self.showPlanner = showPlanner
         self.hideMockHUD = hideMockHUD
         self.disableAnimations = disableAnimations
         self.holdConfirmations = holdConfirmations
@@ -107,6 +111,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
             || environment["OBC_SHOW_DEV_PANEL"] == "1"
         let showGallery = arguments.contains("-OBCShowUIGallery")
             || environment["OBC_SHOW_UI_GALLERY"] == "1"
+        let showPlanner = arguments.contains("-OBCShowPlanner")
+            || environment["OBC_SHOW_PLANNER"] == "1"
         let hideMockHUD = arguments.contains("-OBCHideMockHUD")
             || environment["OBC_HIDE_MOCK_HUD"] == "1"
         let disableAnimations = arguments.contains("-OBCDisableAnimations")
@@ -175,6 +181,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
             useBLETransport: transport == "ble",
             showDevPanel: showPanel,
             showUIGallery: showGallery,
+            showPlanner: showPlanner,
             hideMockHUD: hideMockHUD,
             disableAnimations: disableAnimations,
             holdConfirmations: holdConfirmations,

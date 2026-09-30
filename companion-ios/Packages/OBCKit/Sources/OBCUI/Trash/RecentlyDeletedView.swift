@@ -72,21 +72,20 @@ public struct RecentlyDeletedView: View {
         #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
         #endif
-        .confirmationDialog(
+        .obcChoiceSheet(
             selected?.name ?? "",
             isPresented: Binding(
                 get: { selected != nil },
                 set: { if !$0 { selected = nil } }
             ),
-            titleVisibility: .visible,
-            presenting: selected
-        ) { ride in
-            Button("Recover") { model.recoverRide(ride.id) }
-            Button("Delete Permanently", role: .destructive) { model.deleteRideForever(ride.id) }
-            Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("Deleting removes it from this phone for good.")
-        }
+            message: "Deleting removes it from this phone for good.",
+            actions: selected.map { ride in
+                [
+                    OBCSheetAction("Recover") { model.recoverRide(ride.id) },
+                    OBCSheetAction("Delete Permanently", role: .destructive) { model.deleteRideForever(ride.id) },
+                ]
+            } ?? []
+        )
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("trash.screen")
     }

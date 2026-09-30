@@ -17,6 +17,7 @@ public struct MainScreenView: View {
     private let onSelectRide: (RideSummary) -> Void
     private let onSettings: () -> Void
     private let onOpenTrash: () -> Void
+    private let onPlanRoute: (() -> Void)?
 
     @State private var emptyStatePickerShown = false
     @State private var libraryMapShown = false
@@ -35,7 +36,8 @@ public struct MainScreenView: View {
         onSelectTrip: @escaping (Trip) -> Void = { _ in },
         onSelectRide: @escaping (RideSummary) -> Void = { _ in },
         onSettings: @escaping () -> Void = {},
-        onOpenTrash: @escaping () -> Void = {}
+        onOpenTrash: @escaping () -> Void = {},
+        onPlanRoute: (() -> Void)? = nil
     ) {
         self.model = model
         self.importFileExtensions = importFileExtensions
@@ -45,6 +47,7 @@ public struct MainScreenView: View {
         self.onSelectRide = onSelectRide
         self.onSettings = onSettings
         self.onOpenTrash = onOpenTrash
+        self.onPlanRoute = onPlanRoute
     }
 
     public var body: some View {
@@ -172,7 +175,7 @@ public struct MainScreenView: View {
                 }
                 .accessibilityIdentifier("main.select")
             }
-            OBCImportButton(fileExtensions: importFileExtensions, onPick: onImportFile)
+            OBCImportButton(fileExtensions: importFileExtensions, onPick: onImportFile, onNewRoute: onPlanRoute)
         }
     }
 

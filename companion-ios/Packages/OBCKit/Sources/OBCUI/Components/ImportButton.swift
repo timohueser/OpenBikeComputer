@@ -1,20 +1,21 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The large-title `+` button, the screen's one amber action: it opens the system document picker directly, filtered
-/// to the supported route extensions. Pass `RouteImporter.supportedFileExtensions`
-/// from the composition root so the filter always matches the registered decoders.
-///
-/// It is deliberately not a menu: with one in-app action an intermediate popover is a
-/// dead click, and a share from another app arrives through `onOpenURL`.
+/// The large-title `+` button, the screen's one amber action. Without a planner it opens the
+/// system document picker directly, filtered to the supported route extensions; with one it is
+/// a menu of the two ways to add a route. Pass `RouteImporter.supportedFileExtensions` from the
+/// composition root so the filter always matches the registered decoders. A share from another
+/// app arrives through `onOpenURL`.
 public struct OBCImportButton: View {
     let fileExtensions: Set<String>
     let onPick: ([URL]) -> Void
+    let onNewRoute: (() -> Void)?
     @State private var pickerShown = false
 
-    public init(fileExtensions: Set<String>, onPick: @escaping ([URL]) -> Void) {
+    public init(fileExtensions: Set<String>, onPick: @escaping ([URL]) -> Void, onNewRoute: (() -> Void)? = nil) {
         self.fileExtensions = fileExtensions
         self.onPick = onPick
+        self.onNewRoute = onNewRoute
     }
 
     private var contentTypes: [UTType] {
@@ -24,18 +25,21 @@ public struct OBCImportButton: View {
     }
 
     public var body: some View {
-        Button {
-            pickerShown = true
-        } label: {
-            Image(systemName: "plus")
-                .font(.system(.title3, weight: .semibold))
-                .foregroundStyle(OBCTheme.onAmber)
-                .frame(width: 44, height: 44)
-                .background(OBCTheme.amber, in: Circle())
-                .obcFixedGeometryType()
+        Group {
+            if let onNewRoute {
+                Menu {
+                    Button("New route", systemImage: "point.topleft.down.to.point.bottomright.curvepath", action: onNewRoute)
+                        .accessibilityIdentifier("main.newRoute")
+                    Button("Import a file", systemImage: "doc") { pickerShown = true }
+                        .accessibilityIdentifier("main.importFile")
+                } label: { plus }
+                .accessibilityLabel("Add a route")
+            } else {
+                Button { pickerShown = true } label: { plus }
+                    .accessibilityLabel("Import a route")
+            }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Import a route")
         .fileImporter(
             isPresented: $pickerShown,
             allowedContentTypes: contentTypes,
@@ -43,6 +47,15 @@ public struct OBCImportButton: View {
         ) { result in
             if case .success(let urls) = result, !urls.isEmpty { onPick(urls) }
         }
+    }
+
+    private var plus: some View {
+        Image(systemName: "plus")
+            .font(.system(.title3, weight: .semibold))
+            .foregroundStyle(OBCTheme.onAmber)
+            .frame(width: 44, height: 44)
+            .background(OBCTheme.amber, in: Circle())
+            .obcFixedGeometryType()
     }
 }
 
