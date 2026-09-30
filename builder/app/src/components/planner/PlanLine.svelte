@@ -47,7 +47,7 @@
 </script>
 
 {#if trip.mode === 'route'}
-    <p class="plan-line">Single route</p>
+    <p class="plan-line">Route</p>
 {:else if !editing}
     <p class="plan-line">
         <span>{summary}</span>

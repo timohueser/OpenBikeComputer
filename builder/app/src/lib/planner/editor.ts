@@ -11,6 +11,8 @@ export interface RoutePoint {
     id: string;
     coordinate: Coordinate;
     label: string;
+    /** An address or coordinate label follows the point when it moves. */
+    autoLabel?: boolean;
     kind: PointKind;
     progress: number;
     night?: number;
@@ -90,6 +92,12 @@ export function emptyTrip(mode: Trip['mode'] = 'route'): Trip {
 
 export function setEndpoint(trip: Trip, kind: 'start' | 'finish', coordinate: Coordinate, label?: string): Trip {
     const previous = trip.points.find(p => p.kind === kind);
+    if (kind === 'finish' && previous) {
+        if (previous.coordinate[0] === coordinate[0] && previous.coordinate[1] === coordinate[1]) return trip;
+        const point: RoutePoint = { id: crypto.randomUUID(), kind, coordinate: [...coordinate], label: label ?? 'Finish', progress: 1 };
+        const order = orderedRoutePoints(trip).slice(1).map(p => p.id);
+        return { ...trip, points: [...trip.points.map(p => p.id === previous.id ? { ...p, kind: 'waypoint' as const } : p), point], routeOrder: order };
+    }
     const point: RoutePoint = { id: previous?.id ?? crypto.randomUUID(), kind, coordinate: [...coordinate],
         label: label ?? (kind === 'start' ? 'Start' : 'Finish'), progress: kind === 'start' ? 0 : 1 };
     return { ...trip, splits: undefined,
@@ -154,12 +162,29 @@ export function orderedRoutePoints(trip: Trip): RoutePoint[] {
 }
 
 export function reorderPoint(trip: Trip, id: string, offset: number): Trip {
-    const points = orderedRoutePoints(trip);
+    const route = orderedRoutePoints(trip);
+    const points = route.filter(point => point.kind !== 'via');
     const index = points.findIndex(p => p.id === id);
     const target = index + offset;
     if (!Number.isInteger(offset) || !offset || index <= 0 || index >= points.length - 1 || target <= 0 || target >= points.length - 1) return trip;
     points.splice(target, 0, ...points.splice(index, 1));
-    return { ...trip, routeOrder: points.map(p => p.id) };
+    const before = new Map<string, string>();
+    const shapes = new Map<string, RoutePoint[]>();
+    let previous = route[0];
+    let pending: RoutePoint[] = [];
+    for (const point of route.slice(1)) {
+        if (point.kind === 'via') { pending.push(point); continue; }
+        before.set(point.id, previous.id);
+        shapes.set(point.id, pending);
+        pending = [];
+        previous = point;
+    }
+    const changed = new Set(points.slice(1).filter((point, i) => before.get(point.id) !== points[i].id).map(point => point.id));
+    const reordered = points.flatMap(point => [...(changed.has(point.id) ? [] : shapes.get(point.id) ?? []), point]);
+    const retained = new Set(reordered.map(point => point.id));
+    return { ...trip, routeOrder: reordered.map(point => point.id), splits: undefined,
+        points: trip.points.filter(point => point.kind !== 'via' || retained.has(point.id)).map(point =>
+            changed.has(point.id) && (point.leg || point.drawn) ? { ...point, leg: undefined, drawn: undefined } : point) };
 }
 
 type Stop = { point: RoutePoint; distance: number };
@@ -348,7 +373,7 @@ export function tripDays(trip: Trip): Day[] {
     });
 }
 
-/** Visits, out-and-backs, passes and markers inside a day in route order, with their km from the day's start. */
+/** Stops inside a day in route order, with kilometres from the day start. */
 export function dayStops(trip: Trip, day: Pick<Day, 'from' | 'to'>): { point: RoutePoint; km: number }[] {
     const { coordinates, stops } = routeLayout(trip);
     const total = stops.at(-1)?.distance ?? 0;
@@ -453,7 +478,7 @@ export function pinNight(trip: Trip, night: number, coordinate: Coordinate, labe
         points: trip.points.filter(p => p.id !== id && p.id !== sourceId),
         routeOrder: sourceId ? trip.routeOrder?.filter(pointId => pointId !== id || pointId === sourceId).map(pointId => pointId === sourceId ? id : pointId) : trip.routeOrder,
     };
-    const point: RoutePoint = { ...source, id, kind: 'night', night, coordinate, label, progress: trip.live ? nearestProgress(routeCoordinates(trip), coordinate) : anchorProgress(coordinate) };
+    const point: RoutePoint = { ...source, id, kind: 'night', night, coordinate, label, autoLabel: undefined, progress: trip.live ? nearestProgress(routeCoordinates(trip), coordinate) : anchorProgress(coordinate) };
     const next = others.routeOrder && !others.routeOrder.includes(id)
         ? intoLeg(others, point, nearestLegEnd(others, coordinate))
         : { ...others, points: [...others.points, point] };

@@ -88,6 +88,10 @@ remain unknown. No filter predicts arrival time. Distances from the route are ge
 not routed detours. Place gaps depend on map completeness. Search does not interpolate
 house numbers. A missing number returns a clearly labelled street location.
 
+`POST /api/planner-search/reverse` accepts `region` and `[longitude, latitude]` in
+`coordinate`. It returns `label` for the nearest mapped house within 100 metres,
+or `null`. Search packages use schema 2. Rebuild with `build.py` to add the address spatial index.
+
 ## Checks
 
 ```sh

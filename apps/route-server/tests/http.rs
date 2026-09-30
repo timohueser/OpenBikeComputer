@@ -121,6 +121,7 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
             .unwrap();
         assert_eq!(response.status(), status);
         if status == StatusCode::OK {
+            assert_eq!(response.headers()["cache-control"], "public, max-age=3600");
             let data: serde_json::Value =
                 serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap()).unwrap();
             let features = data["features"].as_array().unwrap();
@@ -130,10 +131,11 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
                 assert!(features
                     .iter()
                     .any(|f| f["properties"]["status"] == "construction" && f["properties"]["way"] == 2));
-                assert!(features.iter().any(|f| f["properties"]["routes"][0]["network"] == "rcn"));
                 assert!(features
                     .iter()
-                    .any(|f| f["properties"]["routes"][0]["website"] == "https://example.org/route"));
+                    .any(|f| data["routes"][f["properties"]["routes"][0].to_string()]["network"] == "rcn"));
+                assert!(features.iter().any(|f| data["routes"][f["properties"]["routes"][0].to_string()]["website"]
+                    == "https://example.org/route"));
             }
             if query.ends_with("mode=cycling") {
                 assert!(features.iter().any(|f| f["properties"]["status"] == "push"));

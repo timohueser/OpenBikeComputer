@@ -9,7 +9,6 @@ from pathlib import Path
 import re
 import shutil
 import signal
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -17,9 +16,9 @@ import time
 from urllib.request import urlopen
 
 try:
-    from . import planner_maps as maps
+    from . import planner_maps as maps, planner_release as releases
 except ImportError:
-    import planner_maps as maps
+    import planner_maps as maps, planner_release as releases
 
 ROOT = maps.ROOT
 SEARCH = ROOT / "apps/planner-search"
@@ -92,11 +91,7 @@ def verify(args, full=False):
         if name not in routing["metrics"]:
             raise ValueError(f"Route package lacks {name}.")
     search = args.data_dir / "search"
-    with sqlite3.connect(f'{(search / (REGION + ".sqlite")).as_uri()}?mode=ro', uri=True) as db:
-        if db.execute("SELECT value FROM metadata WHERE key='schema'").fetchone() != ('1',):
-            raise ValueError("Incomplete search package. Repeat setup.")
-        if full and db.execute('PRAGMA quick_check').fetchone() != ('ok',):
-            raise ValueError("Search database failed verification.")
+    releases.search_metadata(search / (REGION + ".sqlite"), full)
     for path in [search / "model" / name for name in
                  ["model.int8.onnx", "tokenizer.json", "tokenizer_config.json", "labels.json"]] + [
                      SEARCH / ".venv/bin/python", SEARCH / "node_modules/opening_hours/package.json",

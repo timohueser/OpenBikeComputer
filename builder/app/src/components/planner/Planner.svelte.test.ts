@@ -76,8 +76,11 @@ describe('route stop handles', () => {
 
     it('commits one move on drop and leaves a cancelled drag unchanged', async () => {
         const onReorder = vi.fn();
-        mounted.push(mount(RouteList, { target: document.body, props: { stops, onReorder, onInspect: vi.fn() } }));
+        const shaped = [...stops.slice(0,2), {point:{...stops[1].point,id:'shape',label:'Shaping point',kind:'via' as const},distance:15}, ...stops.slice(2)];
+        mounted.push(mount(RouteList, { target: document.body, props: { stops: shaped, onReorder, onInspect: vi.fn() } }));
         await tick();
+        expect(document.querySelectorAll('li')).toHaveLength(stops.length);
+        expect(document.querySelector('ol')?.textContent).not.toContain('Shaping point');
         const rect = (top: number, height: number) => ({ top, bottom: top + height, left: 0, right: 360, width: 360, height, x: 0, y: top, toJSON: () => ({}) });
         vi.spyOn(document.querySelector('ol')!, 'getBoundingClientRect').mockReturnValue(rect(0, 250));
         document.querySelectorAll('li').forEach((row, index) => vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(rect(index * 50, 50)));
@@ -92,7 +95,7 @@ describe('route stop handles', () => {
         expect(onReorder).not.toHaveBeenCalled();
         await pointer('pointerup', 175);
         expect(onReorder).toHaveBeenCalledExactlyOnceWith('First', 2);
-        expect(document.querySelector('[role="status"]')?.textContent).toBe('First moved to stop 3 of 3.');
+        expect(document.querySelector('[role="status"]')?.textContent).toBe('First moved to stop 3 of 3. Changed legs follow roads.');
         onReorder.mockClear();
         await pointer('pointerdown', 75);
         await pointer('pointermove', 175);

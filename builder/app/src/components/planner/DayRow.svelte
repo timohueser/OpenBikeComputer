@@ -9,7 +9,7 @@
     import { dayOverTarget, dayStops, routingKey, type ItineraryDay, type OvernightCandidate, type Place, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
 
     let {
-        trip, day, days, theme, scale, expanded, changing, candidates, conflict, selectedId, revealId, calendar,
+        trip, day, days, theme, scale, expanded, changing, candidates, conflict, selectedId, revealId, hoveredId = null, onHover, calendar,
         onToggle, onInspect, onShowEnd, onSelectPlace, onPick, onChangeOvernight, onEditTarget, onShowConflict,
     }: {
         trip: Trip;
@@ -24,6 +24,8 @@
         /** The calendar day whose overnight this day ends before. */
         conflict: number | null;
         selectedId: string | null;
+        hoveredId?: string | null;
+        onHover?: (id: string | null) => void;
         /** The point whose row scrolls into view and lights up for a moment. */
         revealId: string | null;
         /** Riding number → calendar number. */
@@ -43,6 +45,7 @@
     const previous = $derived(days[riding - 2]);
     const start = $derived(riding === 1 ? trip.points.find(p => p.kind === 'start')!.label : previous?.pinned?.label ?? `Day ${calendar[riding - 1]} overnight`);
     const end = $derived(last ? trip.points.find(p => p.kind === 'finish')!.label : day.pinned?.label ?? 'Overnight to choose');
+    const endId = $derived(last ? trip.points.find(p => p.kind === 'finish')!.id : day.pinned?.id ?? null);
     const line = $derived(trip.routing?.key === routingKey(trip) ? trip.routing : undefined);
     const ascent = $derived(profileAscent(day.from, day.to, line));
     const ascentKnown = $derived(line?.elevation.every(h => h !== null));
@@ -114,13 +117,13 @@
             <h3>Stops along the day</h3>
             {#if stops.length}<div class="stop"><span class="dot"></span><span>{start}</span><small>0 km</small></div>{/if}
             {#each stops as { point, km } (point.id)}
-                <button type="button" class="stop" class:chosen={selectedId === point.id} class:flash={revealId === point.id} onclick={() => onInspect(point)} {@attach reveal(point.id)}>
+                <button type="button" class="stop" class:chosen={selectedId === point.id || hoveredId === point.id} class:flash={revealId === point.id} onmouseenter={() => onHover?.(point.id)} onmouseleave={() => onHover?.(null)} onfocus={() => onHover?.(point.id)} onblur={() => onHover?.(null)} onclick={() => onInspect(point)} {@attach reveal(point.id)}>
                     <Icon name={stopKinds[point.kind].icon} size={15} /><span>{point.label}</span>
                     <small>{stopKinds[point.kind].label} · at {km.toFixed(1)} km</small>
                 </button>
             {/each}
             {#if last || day.pinned}
-                <button type="button" class="stop end" class:flash={!!day.pinned && revealId === day.pinned.id} onclick={onShowEnd} {@attach reveal(day.pinned?.id ?? 'finish')}>
+                <button type="button" class="stop end" class:chosen={hoveredId === endId} onmouseenter={() => onHover?.(endId)} onmouseleave={() => onHover?.(null)} onfocus={() => onHover?.(endId)} onblur={() => onHover?.(null)} class:flash={revealId === endId} onclick={onShowEnd} {@attach reveal(endId!)}>
                     <Icon name={last ? 'flag' : 'camp'} size={15} /><span>{end}</span><small>{last ? 'Finish' : 'Pinned'}</small>
                 </button>
             {/if}

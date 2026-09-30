@@ -1,6 +1,7 @@
 """Verify and publish immutable regional planner releases."""
 
 import json
+from contextlib import closing
 import argparse
 import os
 from pathlib import Path
@@ -40,6 +41,20 @@ def release(data):
     return identity, document
 
 
+def search_metadata(database, full=False):
+    with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as db:
+        metadata = {k: json.loads(v) for k, v in db.execute("SELECT key,value FROM metadata")}
+        if metadata.get("schema") != 2:
+            raise ValueError(f"Rebuild search package {database}: incompatible schema.")
+        try:
+            db.execute('SELECT id FROM address_spatial LIMIT 0')
+        except sqlite3.Error as error:
+            raise ValueError(f"Rebuild search package {database}: missing address index.") from error
+        if full and db.execute("PRAGMA quick_check").fetchone() != ("ok",):
+            raise ValueError("Search database failed verification")
+    return metadata
+
+
 def seal(data, region, device_catalog, provenance):
     routing = json.loads((data / "routing/manifest.json").read_bytes())
     if routing["format"] != 3 or routing["region"] != region:
@@ -52,10 +67,7 @@ def seal(data, region, device_catalog, provenance):
     maps.DATA = data / "maps"
     map_manifest = maps.check_bundle(full=True)
     database = data / "search" / f"{region}.sqlite"
-    with sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True) as db:
-        metadata = {k: json.loads(v) for k, v in db.execute("SELECT key,value FROM metadata")}
-        if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
-            raise ValueError("Search database failed verification")
+    metadata = search_metadata(database, full=True)
     osm = map_manifest["osm_sha256"]
     if osm not in routing["source_sha256"] or metadata.get("osm_sha256") != osm:
         raise ValueError("Maps, routing, and search must use one OSM snapshot")

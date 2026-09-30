@@ -22,7 +22,8 @@ function point(value: unknown): value is RoutePoint {
         && coordinate(value.coordinate) && finite(value.progress) && value.progress >= 0 && value.progress <= 1
         && typeof value.kind === 'string' && ['start', 'finish', 'pass', 'via', 'waypoint', 'detour', 'night', 'marker'].includes(value.kind)
         && (value.leg === undefined || (typeof value.leg === 'string' && ['routed', 'straight', 'drawn'].includes(value.leg)))
-        && (value.drawn === undefined || (Array.isArray(value.drawn) && value.drawn.every(coordinate)));
+        && (value.drawn === undefined || (Array.isArray(value.drawn) && value.drawn.every(coordinate)))
+        && (value.autoLabel === undefined || typeof value.autoLabel === 'boolean');
 }
 
 /** Storage crosses a trust boundary: both drafts and versions must satisfy the route model. */

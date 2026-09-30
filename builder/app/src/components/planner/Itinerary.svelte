@@ -5,7 +5,7 @@
     import type { Day, ItineraryDay, OvernightCandidate, Place, RoutePoint, Trip } from '../../lib/planner/editor';
 
     let {
-        trip, itinerary, days, theme, expandedDay, changing, candidates, conflicts, selectedId, revealId,
+        trip, itinerary, days, theme, expandedDay, changing, candidates, conflicts, selectedId, revealId, hoveredId = null, onHover,
         onToggle, onOverview, onInspect, onShowEnd, onSelectPlace, onPick, onChangeOvernight, onEditTarget, onShowConflict,
         onAddRest, onRemoveRest, onNameRest,
     }: {
@@ -19,6 +19,8 @@
         candidates: OvernightCandidate[];
         conflicts: [RoutePoint, RoutePoint][];
         selectedId: string | null;
+        hoveredId?: string | null;
+        onHover?: (id: string | null) => void;
         /** The point whose row lights up for a moment. */
         revealId: string | null;
         onToggle: (ridingDay: number) => void;
@@ -115,7 +117,7 @@
         {:else}
             {@const conflict = conflictOf(day.ridingNumber)}
             <DayRow
-                {trip} {day} {days} {theme} {scale} {changing} {selectedId} {revealId} {calendar}
+                {trip} {day} {days} {theme} {scale} {changing} {selectedId} {revealId} {hoveredId} {onHover} {calendar}
                 expanded={expandedDay === day.ridingNumber}
                 candidates={expandedDay === day.ridingNumber ? candidates : []}
                 conflict={conflict ? calendar[conflict[0].night!] : null}

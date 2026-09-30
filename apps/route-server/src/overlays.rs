@@ -226,7 +226,7 @@ impl Overlays {
         result
     }
 
-    pub fn query(&self, params: &HashMap<String, String>) -> Result<Value> {
+    pub fn query(&self, params: &HashMap<String, String>, cancelled: &dyn Fn() -> bool) -> Result<Value> {
         let invalid = || {
             Error::InvalidRequest(
                 "Provide bbox=west,south,east,north, zoom=6..22 and layers=cycling,hiking,access".into(),
@@ -271,6 +271,9 @@ impl Overlays {
             return Ok(json!({ "type": "FeatureCollection", "features": [], "coverage": self.coverage }));
         }
         let database = self.database.lock().map_err(|_| Error::Limit)?;
+        if cancelled() {
+            return Err(Error::Cancelled);
+        }
         // Filter each mode in SQLite before reading and decoding its coordinates.
         let mut statement = database
             .prepare_cached(
@@ -296,8 +299,12 @@ impl Overlays {
             ])
             .map_err(invalid_data)?;
         let mut features = Vec::new();
+        let mut routes = serde_json::Map::new();
         let mut points = 0;
         while let Some(row) = rows.next().map_err(invalid_data)? {
+            if cancelled() {
+                return Err(Error::Cancelled);
+            }
             let id: i64 = row.get(0).map_err(invalid_data)?;
             let kind: String = row.get(1).map_err(invalid_data)?;
             let coordinates: String = row.get(2).map_err(invalid_data)?;
@@ -309,17 +316,66 @@ impl Overlays {
                     continue;
                 }
                 properties["status"] = json!(status);
+            } else if let Some(memberships) = properties["routes"].as_array() {
+                let ids: Vec<_> = memberships
+                    .iter()
+                    .map(|route| {
+                        let id = route["id"].clone();
+                        routes.entry(id.to_string()).or_insert_with(|| route.clone());
+                        id
+                    })
+                    .collect();
+                properties["routes"] = json!(ids);
             }
-            points += row.get::<_, u32>(4).map_err(invalid_data)?;
+            let coordinates: Vec<[f64; 2]> = serde_json::from_str(&coordinates).map_err(invalid_data)?;
+            let coordinates = simplify(&coordinates, zoom);
+            points += coordinates.len();
             // Bound serialization and browser work independently of the route workers.
             if points > 200_000 {
                 return Err(Error::InvalidRequest("Zoom in to show route networks and access restrictions.".into()));
             }
             features.push(json!({ "type": "Feature", "id": id, "properties": properties,
-                "geometry": { "type": "LineString", "coordinates": serde_json::from_str::<Value>(&coordinates).map_err(invalid_data)? } }));
+                "geometry": { "type": "LineString", "coordinates": coordinates } }));
         }
-        Ok(json!({ "type": "FeatureCollection", "features": features, "coverage": self.coverage }))
+        Ok(json!({ "type": "FeatureCollection", "features": features, "routes": routes, "coverage": self.coverage }))
     }
+}
+
+// Half a map pixel at the requested zoom; keep way endpoints and sharp bends.
+fn simplify(coordinates: &[[f64; 2]], zoom: f64) -> Vec<[f64; 2]> {
+    if coordinates.len() < 2 {
+        return coordinates.to_vec();
+    }
+    let scale = coordinates[0][1].to_radians().cos();
+    let tolerance = (360.0 / (512.0 * 2.0_f64.powf(zoom)) * 0.5 * scale).powi(2);
+    let mut keep = vec![false; coordinates.len()];
+    keep[0] = true;
+    keep[coordinates.len() - 1] = true;
+    let mut pending = vec![(0, coordinates.len() - 1)];
+    while let Some((first, last)) = pending.pop() {
+        let a = coordinates[first];
+        let b = coordinates[last];
+        let dx = (b[0] - a[0]) * scale;
+        let dy = b[1] - a[1];
+        let mut furthest = None;
+        let mut distance = tolerance;
+        for (i, p) in coordinates.iter().enumerate().take(last).skip(first + 1) {
+            let x = (p[0] - a[0]) * scale;
+            let y = p[1] - a[1];
+            let t = ((x * dx + y * dy) / (dx * dx + dy * dy).max(f64::MIN_POSITIVE)).clamp(0.0, 1.0);
+            let d = (x - dx * t).powi(2) + (y - dy * t).powi(2);
+            if d > distance {
+                distance = d;
+                furthest = Some(i);
+            }
+        }
+        if let Some(i) = furthest {
+            keep[i] = true;
+            pending.push((first, i));
+            pending.push((i, last));
+        }
+    }
+    coordinates.iter().zip(keep).filter(|(_, keep)| *keep).map(|(p, _)| p.map(|v| (v * 1e6).round() / 1e6)).collect()
 }
 
 fn insert(database: &Transaction<'_>, coordinates: &[[f64; 2]], kind: &str, properties: &Value) -> Result<()> {
@@ -367,6 +423,14 @@ mod tests {
 
     fn tags(pairs: &[(&str, &str)]) -> Tags {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn geometry_detail_tracks_zoom_and_keeps_endpoints_and_bends() {
+        let coordinates = [[8.0, 48.0], [8.0005, 48.00001], [8.001, 48.0], [8.001, 48.001], [8.002, 48.001]];
+        assert_eq!(simplify(&coordinates, 12.0), [coordinates[0], coordinates[2], coordinates[3], coordinates[4]]);
+        assert_eq!(simplify(&coordinates, 22.0), coordinates);
+        assert_eq!(simplify(&coordinates, 6.0), [coordinates[0], coordinates[4]]);
     }
 
     #[test]
