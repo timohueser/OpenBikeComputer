@@ -26,6 +26,7 @@ class CleanupTests(unittest.TestCase):
         self.rows = [{"Path": key, "Size": size, "ModTime": "2000-01-01T00:00:00Z"} for key, size in [
             (self.prefix + "release.json", len(self.raw)), (self.prefix + "maps/basemap.pmtiles", 8),
             (self.prefix + "extra.bin", 2), ("sources/current.pbf", 7), ("sources/unused.pbf", 4),
+            ("sources/current.pbf ", 1),
             ("releases/" + "b" * 64 + "/routing/pages.bin", 100), ("catalog.json", 3), ("other/reference", 10)]]
 
     def transfer(self, command, *_args, **_kwargs):
@@ -35,8 +36,31 @@ class CleanupTests(unittest.TestCase):
         with patch.object(r2, "run_rclone", side_effect=self.transfer):
             document, stale = cleanup.plan(self.remote, self.current)
         self.assertEqual(document, self.document)
-        self.assertEqual({item.key for item in stale}, {"planner/sources/unused.pbf",
+        self.assertEqual({item.key for item in stale}, {"planner/sources/unused.pbf", "planner/sources/current.pbf ",
                          "planner/releases/" + "b" * 64 + "/routing/pages.bin"})
+
+    def test_rollback_removes_known_newer_release_but_blocks_unknown_uploads(self):
+        previous_document = {**self.document, "files": {"routing/pages.bin": {"bytes": 100}},
+                             "source_files": {**self.document["source_files"], "sources/unused.pbf": {"bytes": 4}}}
+        previous_raw = release.encoded(previous_document).decode()
+        previous_id = hashlib.sha256(previous_raw.encode()).hexdigest()
+        self.current["previous"] = {"id": previous_id, "region": "test"}
+        self.rows = [dict(row, Path=row["Path"].replace("b" * 64, previous_id), ModTime="2000-01-02T00:00:00Z")
+                     if row["Path"].startswith("releases/" + "b" * 64) or row["Path"] == "sources/unused.pbf"
+                     else row for row in self.rows]
+        self.rows.append({"Path": "releases/" + previous_id + "/release.json", "Size": len(previous_raw),
+                          "ModTime": "2000-01-02T00:00:00Z"})
+        def transfer(command, *_args, **_kwargs):
+            if command[0] == "cat" and previous_id in command[1]: return previous_raw
+            return self.transfer(command)
+        with patch.object(r2, "run_rclone", side_effect=transfer):
+            _, stale = cleanup.plan(self.remote, self.current)
+            self.assertIn("planner/sources/unused.pbf", {item.key for item in stale})
+            self.assertIn("planner/releases/" + previous_id + "/release.json", {item.key for item in stale})
+            self.rows.append({"Path": "releases/" + "c" * 64 + "/pending.bin", "Size": 1,
+                              "ModTime": "2000-01-02T00:00:00Z"})
+            with self.assertRaisesRegex(ValueError, "upload is pending"):
+                cleanup.plan(self.remote, self.current)
 
     def test_incomplete_active_data_and_newer_uploads_block_cleanup(self):
         for mutation in ["missing", "newer", "invalid_path", "wrong_hash", "invalid_key"]:
@@ -64,7 +88,9 @@ class CleanupTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "Deploy site"): cleanup.verify_site(self.active, "https://site.example")
 
     def test_apply_rechecks_catalog_and_deletes_only_planned_objects(self):
-        stale = [r2.Target("planner/releases/" + "b" * 64 + "/old.bin", 100, "2000-01-01T00:00:00Z")]
+        stale = [r2.Target(key, 100, "2000-01-01T00:00:00Z") for key in [
+            "planner/releases/" + "b" * 64 + "/old.bin", "planner/sources/current.pbf ",
+            "planner/releases/" + "b" * 64 + "/release.json"]]
         for changed in [False, True]:
             with self.subTest(changed=changed), patch.object(r2, "bucket_remote", return_value=self.remote), \
                  patch.object(cleanup, "catalog", side_effect=[self.current, {**self.current, "active": {}} if changed else self.current, self.current]), \
@@ -74,7 +100,7 @@ class CleanupTests(unittest.TestCase):
                 removed = []
                 def remove(command, *_args, **_kwargs):
                     self.assertEqual(command[:2], ["delete", self.remote.path])
-                    removed.extend(Path(command[command.index("--files-from") + 1]).read_text().splitlines())
+                    removed.extend(Path(command[command.index("--files-from-raw") + 1]).read_text().splitlines())
                 with patch.object(r2, "run_rclone", side_effect=remove):
                     args = argparse.Namespace(apply=True, site_origin="https://site.example", public_url="https://maps.example")
                     if changed:
@@ -84,7 +110,7 @@ class CleanupTests(unittest.TestCase):
                         self.assertEqual(removed, [])
                     else:
                         cleanup.finalize(args)
-                        self.assertEqual(removed, [stale[0].key])
+                        self.assertEqual(removed, [item.key for item in stale])
                         log.assert_called_once()
                         activate.assert_called_once_with(args.public_url, {**self.current, "previous": None})
 

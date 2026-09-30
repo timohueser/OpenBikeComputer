@@ -71,18 +71,19 @@ def verify_site(active, origin):
         raise ValueError("Deploy site must serve the active planner release before cleanup.")
 
 
-def plan(remote, current):
-    identity = active_id(current)
-    if identity is None:
-        raise ValueError("Deploy a planner release before cleanup.")
-    active = current["active"]
+def manifest(remote, entry):
+    identity = active_id({"format": 1, "active": entry})
     prefix = "planner/releases/" + identity + "/"
     raw = r2.run_rclone(["cat", remote.path + "/" + prefix + "release.json"], remote.env, capture=True)
     if hashlib.sha256(raw.encode()).hexdigest() != identity:
         raise ValueError("Active release manifest hash differs; cleanup is blocked.")
     document = json.loads(raw)
-    if document.get("format") != 1 or document.get("region") != active["region"] or not document.get("files"):
+    if document.get("format") != 1 or document.get("region") != entry["region"] or not document.get("files"):
         raise ValueError("Invalid active release manifest")
+    return document, prefix
+
+
+def referenced_keys(document, prefix):
     keep = {prefix + "release.json"}
     for section in ["files", "source_files"]:
         for name in document.get(section, {}):
@@ -92,6 +93,14 @@ def plan(remote, current):
             if section == "source_files" and (len(path.parts) != 2 or path.parts[0] != "sources"):
                 raise ValueError("Invalid active source mirror")
             keep.add(prefix + name if section == "files" else "planner/sources/" + path.name)
+    return keep
+
+
+def plan(remote, current):
+    if active_id(current) is None:
+        raise ValueError("Deploy a planner release before cleanup.")
+    document, prefix = manifest(remote, current["active"])
+    keep = referenced_keys(document, prefix)
     rows = json.loads(r2.run_rclone(["lsjson", remote.path + "/planner", "--recursive", "--files-only"], remote.env, capture=True))
     found = {"planner/" + row["Path"]: row for row in rows}
     for key in found:
@@ -108,8 +117,12 @@ def plan(remote, current):
     stale = [r2.Target(key, row["Size"], row["ModTime"]) for key, row in found.items()
              if key.startswith(("planner/releases/", "planner/sources/")) and not key.startswith(prefix) and key not in keep]
     published = datetime.fromisoformat(found[prefix + "release.json"]["ModTime"])
-    if any(datetime.fromisoformat(item.modified) > published for item in stale):
-        raise ValueError("Another planner upload is pending; finish it before cleanup.")
+    newer = [item for item in stale if datetime.fromisoformat(item.modified) > published]
+    if newer:
+        previous = current.get("previous")
+        abandoned = referenced_keys(*manifest(remote, previous)) if previous else set()
+        if any(item.key not in abandoned for item in newer):
+            raise ValueError("Another planner upload is pending; finish it before cleanup.")
     return document, sorted(stale, key=lambda item: item.key)
 
 
@@ -133,8 +146,12 @@ def finalize(args):
         if stale:
             r2.append_log(remote, staging, stale, "Finalize active planner release " + current["active"]["id"])
             listing = staging / "remove.txt"
-            listing.write_text("".join(item.key + "\n" for item in stale))
-            r2.run_rclone(["delete", remote.path, "--files-from", str(listing)], remote.env)
+            # Keep manifests until their data is removed so a failed rollback cleanup can retry.
+            for manifests in [False, True]:
+                keys = [item.key for item in stale if item.key.endswith("/release.json") == manifests]
+                if keys:
+                    listing.write_text("".join(key + "\n" for key in keys))
+                    r2.run_rclone(["delete", remote.path, "--files-from-raw", str(listing)], remote.env)
     if plan(remote, current)[1]:
         raise ValueError("Inactive planner objects remain; repeat cleanup.")
     if catalog(remote) != current:
