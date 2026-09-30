@@ -17,6 +17,8 @@ For dashboard deployment, create the `obc-planner-tiles` Worker. Paste
 `dist/worker.js` into its code editor. Add an R2 binding named `BUCKET` for
 `obc-maps`. Add the custom domain `tiles.openbikecomputer.com`.
 The Worker needs no bucket access key.
+On Workers Paid, set **Settings > CPU Limits** to `50` ms. This matches the
+CLI configuration. Workers Free has a fixed `10` ms limit.
 
 With a Cloudflare deployment credential, run:
 
