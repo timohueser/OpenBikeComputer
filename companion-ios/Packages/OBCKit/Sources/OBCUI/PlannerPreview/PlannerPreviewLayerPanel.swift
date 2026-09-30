@@ -80,10 +80,7 @@ struct PlannerPreviewLayerPanel: View {
                     .font(.headline)
                 Spacer(minLength: 12)
                 Button("Done", action: onDone)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(OBCTheme.onAmber)
-                    .padding(.horizontal, 18).frame(minHeight: 44)
-                    .background(OBCTheme.amber, in: Capsule())
+                    .font(.body.weight(.semibold)).foregroundStyle(OBCTheme.tint).frame(minHeight: 44)
             }
             .padding(.horizontal, 20).padding(.bottom, 12)
 
@@ -129,9 +126,6 @@ struct PlannerPreviewLayerPanel: View {
                 Text("\(PlannerPreviewPlaceCategory.allCases.count - hidden.count) types shown")
                     .font(.caption).foregroundStyle(OBCTheme.secondary)
             }
-            Text("Use the ring to highlight a place type at every zoom.")
-                .font(.caption).foregroundStyle(OBCTheme.secondary)
-                .fixedSize(horizontal: false, vertical: true)
             ForEach(PlannerPreviewPlaceCategory.groups, id: \.title) { group in
                 Text(group.title)
                     .font(.caption.weight(.semibold)).foregroundStyle(OBCTheme.secondary)
@@ -140,9 +134,6 @@ struct PlannerPreviewLayerPanel: View {
                     ForEach(group.categories) { category in placeRow(category) }
                 }
             }
-            Text("Counts show the sample places in this preview.")
-                .font(.caption).foregroundStyle(OBCTheme.secondary)
-                .padding(.top, 12)
         }
     }
 

@@ -120,8 +120,8 @@ public struct PlannerPreviewView: View {
                                                  isInMapView: isInMapView)
                         }
                         .sheet(isPresented: $editorShown, onDismiss: finishOpeningSearch) { focusedEditor }
-                        .alert("Save ride", isPresented: $saveShown) {
-                            TextField("Ride name", text: $routeName)
+                        .alert("Save route", isPresented: $saveShown) {
+                            TextField("Route name", text: $routeName)
                             Button("Cancel", role: .cancel) {}
                             Button("Save to Library") {
                                 drawerShown = false
@@ -129,15 +129,15 @@ public struct PlannerPreviewView: View {
                                                          ? model.routeTitle : routeName), model.bike)
                             }
                         } message: { Text(model.dayCount == 1
-                            ? "Save this sample route in the mock library. It lasts until the app restarts."
-                            : "This preview saves one route with the overnight waypoint. The day split is not saved. It lasts until the app restarts.") }
-                        .confirmationDialog("Leave this preview?", isPresented: $closeShown, titleVisibility: .visible) {
-                            Button("Discard and return to Library", role: .destructive) { drawerShown = false; onClose() }
+                            ? "This preview keeps the route until the app restarts."
+                            : "This preview saves one route with the overnight point. It keeps the route until the app restarts.") }
+                        .confirmationDialog("Discard this route?", isPresented: $closeShown, titleVisibility: .visible) {
+                            Button("Discard", role: .destructive) { drawerShown = false; onClose() }
                             Button("Cancel", role: .cancel) {}
                         }
                 }
         }
-        .navigationTitle("Plan a ride")
+        .navigationTitle("Plan a route")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden()
         .toolbar(.visible, for: .navigationBar)
@@ -145,7 +145,9 @@ public struct PlannerPreviewView: View {
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button { closeShown = true } label: { Label("Library", systemImage: "chevron.left") }
+                Button {
+                    if model.canUndo { closeShown = true } else { drawerShown = false; onClose() }
+                } label: { Label("Library", systemImage: "chevron.left") }
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { model.undo() } label: { Image(systemName: "arrow.uturn.backward") }
@@ -200,7 +202,7 @@ public struct PlannerPreviewView: View {
                 Button { drawerPosition = .open } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         if drawerPosition != .collapsed || !model.hasRoute {
-                            Text(model.hasRoute ? model.routeTitle : (model.start == nil ? "Where shall we ride?" : "Choose a destination"))
+                            Text(model.hasRoute ? model.routeTitle : (model.start == nil ? "New route" : "Choose a finish"))
                                 .font(.headline).lineLimit(1)
                         }
                         if model.hasRoute { statsRow(model.stats) }
@@ -250,10 +252,11 @@ public struct PlannerPreviewView: View {
         }
     }
 
+    /// Done is quiet text, as on the trip day editor; amber stays for the one action.
     private func doneButton(action: @escaping () -> Void) -> some View {
         Button("Done", action: action)
-            .font(.subheadline.weight(.semibold)).foregroundStyle(OBCTheme.onAmber)
-            .padding(.horizontal, 18).frame(minHeight: 44).background(OBCTheme.amber, in: Capsule()).fixedSize(horizontal: true, vertical: false)
+            .font(.body.weight(.semibold)).foregroundStyle(OBCTheme.tint)
+            .frame(minHeight: 44).fixedSize(horizontal: true, vertical: false)
     }
 
     private func mapContext(in size: CGSize) -> some View {
@@ -274,8 +277,8 @@ public struct PlannerPreviewView: View {
                     Button(action: dismissMapContext) {
                         Image(systemName: "xmark").font(.caption.weight(.semibold))
                             .foregroundStyle(OBCTheme.secondary)
-                            .frame(width: 30, height: 30).background(OBCTheme.surface2, in: Circle())
-                            .frame(width: 44, height: 44)
+                            .frame(width: 30, height: 30).background(OBCTheme.fill, in: Circle())
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
                     }.accessibilityLabel("Close point actions")
                 }.padding(.leading, 16).padding(.trailing, 6).padding(.vertical, 6)
                 Divider().overlay(OBCTheme.hairline)
@@ -298,53 +301,57 @@ public struct PlannerPreviewView: View {
                               visibleRange: visibleRouteRange, selectedFraction: $fraction)
     }
 
+    /// Drawn like `OBCSearchField`, so it reads as the same control as the Library's search.
     private var searchButton: some View {
         Button(action: startSearch) {
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass")
-                Text(model.hasRoute ? "Find stops or change this ride" : "Search places or describe a ride")
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").font(.subheadline.weight(.semibold))
+                Text(PlannerPreviewSearch.prompt(hasRoute: model.hasRoute))
                     .font(.subheadline).frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 14).frame(minHeight: 48)
-            .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.controlRadius))
-            .overlay(RoundedRectangle(cornerRadius: OBCTheme.controlRadius).stroke(OBCTheme.hairlineStrong, lineWidth: 1))
+            .foregroundStyle(OBCTheme.secondary)
+            .padding(.horizontal, 12).frame(minHeight: 44)
+            .background(OBCTheme.fill, in: RoundedRectangle(cornerRadius: OBCTheme.radiusMedium))
+            .contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityIdentifier("planner.search")
     }
 
+    /// The app's self-sizing sheet: the detent fits the content instead of a fixed half screen.
     private var focusedEditor: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    switch editorPanel {
-                    case .preferences: preferences
-                    case .days: days
-                    case .point: pointEditor
-                    default: EmptyView()
-                    }
-                }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .background(OBCTheme.surface2).foregroundStyle(OBCTheme.ink)
-            .navigationTitle(editorPanel == .preferences ? "Ride settings" : editorPanel == .days ? "Days" : "Point")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { editorShown = false; intent = .general }
-                        .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
-                        .tint(OBCTheme.amber).foregroundStyle(OBCTheme.onAmber)
+        OBCSheetContainer {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(editorTitle).font(.system(.title3, weight: .semibold)).lineLimit(1)
+                    Spacer(minLength: 8)
+                    doneButton { editorShown = false; intent = .general }
                 }
-            }
+                switch editorPanel {
+                case .preferences: preferences
+                case .days: days
+                case .point: pointEditor
+                default: EmptyView()
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
         }
-        .tint(OBCTheme.tint)
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
+        .foregroundStyle(OBCTheme.ink).tint(OBCTheme.tint)
+    }
+
+    private var editorTitle: String {
+        switch editorPanel {
+        case .preferences: "Bike"
+        case .days: "Days"
+        default: (model.points + model.markers).first { $0.id == editingPointID }?.place.name ?? "Point"
+        }
     }
 
     @ViewBuilder private var pointEditor: some View {
         if let point = (model.points + model.markers).first(where: { $0.id == editingPointID }) {
-            if !mapPlaceShown { Text(point.place.name).font(.headline) }
-            Picker("Point type", selection: Binding(get: { point.kind }, set: { model.setPointKind(id: point.id, kind: $0) })) {
-                ForEach(PlannerPreviewPointKind.allCases, id: \.self) { Text($0.title).tag($0) }
-            }.pickerStyle(.segmented)
+            // The start and finish are always visits; only the points between them have a kind.
+            if point.id != model.points.first?.id, point.id != model.points.last?.id {
+                Picker("Point type", selection: Binding(get: { point.kind }, set: { model.setPointKind(id: point.id, kind: $0) })) {
+                    ForEach(PlannerPreviewPointKind.allCases, id: \.self) { Text($0.title).tag($0) }
+                }.pickerStyle(.segmented)
+            }
             Button("Replace place", systemImage: "magnifyingglass") {
                 intent = .replace(point.id); searchQuery = ""; openSearchFromDetail()
             }.frame(minHeight: 44)
@@ -361,28 +368,26 @@ public struct PlannerPreviewView: View {
 
     private var preferences: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("How do you want to ride?").font(.title3.weight(.semibold))
             Picker("Bike", selection: Binding(get: { model.bike }, set: { model.setBike($0) })) {
                 ForEach(BikeType.allCases, id: \.self) { Text($0.name).tag($0) }
             }.pickerStyle(.segmented)
-            ForEach(PlannerPreviewPreset.allCases, id: \.self) { preset in
-                Button { model.setPreset(preset) } label: {
-                    HStack {
-                        Text(preset.title)
-                        Spacer()
-                        if model.preset == preset { Image(systemName: "checkmark").fontWeight(.semibold) }
-                    }.frame(minHeight: 44).contentShape(Rectangle())
-                }.buttonStyle(.plain)
-                Divider()
+            VStack(spacing: 0) {
+                ForEach(Array(PlannerPreviewPreset.allCases.enumerated()), id: \.element) { index, preset in
+                    if index > 0 { Divider().overlay(OBCTheme.hairline) }
+                    Button { model.setPreset(preset) } label: {
+                        HStack {
+                            Text(preset.title)
+                            Spacer()
+                            if model.preset == preset { Image(systemName: "checkmark").fontWeight(.semibold) }
+                        }.frame(minHeight: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                }
             }
-            Text("In this preview, bike choice updates riding time. Routing preferences are selectable, but use the same sample route.")
-                .font(.footnote).foregroundStyle(OBCTheme.secondary)
         }
     }
 
     private var days: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(model.dayCount == 1 ? "One good day out" : "Your two-day ride").font(.title3.weight(.semibold))
             if !model.hasRoute {
                 Text("Choose your start and finish first.").foregroundStyle(OBCTheme.secondary)
             } else if let overnight = model.overnight {
@@ -399,15 +404,12 @@ public struct PlannerPreviewView: View {
                     .frame(minHeight: 44)
                 Button("Make it a single day") { model.setOvernight(nil) }.buttonStyle(.obcGhost)
             } else {
-                Text("Keep the whole route together, or choose a place to end your first day.")
-                    .foregroundStyle(OBCTheme.secondary)
                 Button("Add an overnight stop", systemImage: "tent") {
                     searchQuery = "camping"; queryRequest = PlannerPreviewPlaceQuery.parse("camping", hasRoute: model.hasRoute)
                     queryEditor = nil; intent = .general
                     results = queryRequest?.result(in: model, isInMapView: isInMapView) ?? model.lookup("camping")
                     editorShown = false; panel = .results; drawerPosition = .open
                 }.buttonStyle(.obcPrimary)
-                previewNote
             }
         }
     }
@@ -416,43 +418,19 @@ public struct PlannerPreviewView: View {
         if let results {
             if let action = results.action {
                 Text(model.actionSummary(action))
-                Text("Review this change. You can undo it after applying.")
-                    .font(.subheadline).foregroundStyle(OBCTheme.secondary)
                 Button(action.title) { model.apply(action); resetPanel() }.buttonStyle(.obcPrimary)
             } else if results.places.isEmpty {
                 Text(results.explanation).foregroundStyle(OBCTheme.secondary)
                 Button("Try another search") { resumeSearch() }.buttonStyle(.obcGhost)
             } else {
                 ForEach(results.places) { place in
-                    Button {
-                        selectResult(place)
-                    } label: {
-                        HStack {
-                            placeLabel(place)
-                            Image(systemName: "chevron.right").font(.caption)
-                        }.contentShape(Rectangle())
-                    }.buttonStyle(.plain)
-                    Divider()
+                    Button { selectResult(place) } label: { PlannerPlaceRow(place: place, showsRouteDistances: model.hasRoute) }
+                        .buttonStyle(.plain)
+                    Divider().overlay(OBCTheme.hairline)
                 }
                 Text(results.explanation).font(.footnote).foregroundStyle(OBCTheme.secondary)
             }
         }
-    }
-
-    private func placeLabel(_ place: PlannerPreviewPlace) -> some View {
-        HStack(alignment: .center, spacing: 14) {
-            Image(systemName: place.kind.symbol).font(.title3).foregroundStyle(OBCTheme.secondary).frame(width: 30)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(place.name).font(.headline)
-                if place.kind != .town, model.hasRoute {
-                    Text("At \(place.alongRouteMeters / 1_000, specifier: "%.1f") km · \(Int(place.offRouteMeters)) m from route")
-                        .font(.subheadline).foregroundStyle(OBCTheme.secondary)
-                } else {
-                    Text(place.kind.title).font(.subheadline).foregroundStyle(OBCTheme.secondary)
-                }
-            }
-            Spacer(minLength: 0)
-        }.frame(minHeight: 48).contentShape(Rectangle())
     }
 
     @ViewBuilder private func placeActions(_ place: PlannerPreviewPlace) -> some View {
@@ -487,10 +465,11 @@ public struct PlannerPreviewView: View {
             .buttonStyle(.plain).foregroundStyle(OBCTheme.secondary)
     }
 
+    /// The Library's stat line, so the planner and the list agree on every figure.
     private func statsRow(_ stats: PlannerPreviewStats) -> some View {
-        let distance = Text("\(stats.distanceMeters / 1_000, specifier: "%.1f") km")
-        let ascent = Label("\(Int(stats.ascentMeters)) m", systemImage: "arrow.up.right")
-        let duration = Text("\(Int(stats.seconds) / 3600)h \(Int(stats.seconds) / 60 % 60)m")
+        let distance = Text(OBCFormat.distance(meters: stats.distanceMeters))
+        let ascent = Text.obcClimb(meters: stats.ascentMeters)
+        let duration = Text(OBCFormat.estimatedClock(stats.seconds))
         return ViewThatFits(in: .horizontal) {
             HStack(spacing: 14) { distance; ascent; duration }.fixedSize(horizontal: true, vertical: false)
             VStack(alignment: .leading, spacing: 3) {
@@ -498,11 +477,6 @@ public struct PlannerPreviewView: View {
                 ascent
             }
         }.font(.subheadline.monospacedDigit()).foregroundStyle(OBCTheme.secondary)
-    }
-
-    private var previewNote: some View {
-        Text("Interaction preview · sample route and places. Edited connections are illustrative.")
-            .font(.footnote).foregroundStyle(OBCTheme.secondary)
     }
 
     private func startSearch() {
@@ -617,7 +591,7 @@ public struct PlannerPreviewView: View {
         var pins = model.points.enumerated().map { index, point in
             PlannerPreviewMapPin(id: point.id, title: point.place.name, coordinate: point.place.coordinate,
                 symbol: point.id == model.overnightPointID ? "moon.fill" : point.place.kind.symbol,
-                kind: index == 0 ? .start : index == model.points.count - 1 ? .finish : point.kind == .shape ? .shape : .place)
+                kind: index == 0 ? .start : index == model.points.count - 1 ? .finish : point.kind == .shape ? .shape : .stop)
         }
         pins += model.markers.map { .init(id: $0.id, title: $0.place.name, coordinate: $0.place.coordinate, symbol: "mappin", kind: .marker) }
         var places = results?.places ?? []

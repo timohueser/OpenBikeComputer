@@ -2,40 +2,31 @@
 import SwiftUI
 
 private extension PlannerPreviewQueryField {
-    var ink: Color {
-        switch self {
-        case .what, .name: Color(day: 0x3B654C, tent: 0xAED0B5)
-        case .area: Color(day: 0x365F84, tent: 0xA9CCE9)
-        case .radius: OBCTheme.secondary
-        }
-    }
     var symbol: String {
-        switch self { case .what, .name: "magnifyingglass"; case .area: "mappin"; case .radius: "slider.horizontal.3" }
+        switch self { case .what: "tag"; case .name: "textformat"; case .area: "point.topleft.down.to.point.bottomright.curvepath"; case .radius: "circle.dashed" }
     }
 }
 
+/// The parsed search as editable pills: sunken fill, ink text, the field's glyph in olive.
 struct PlannerPreviewQuerySummary: View {
     let request: PlannerPreviewPlaceQuery
-    var edited = false
     let onEdit: (PlannerPreviewQueryField) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(edited ? "Edited request" : "Understood request")
-                .font(.caption).foregroundStyle(OBCTheme.secondary)
             PlannerPreviewQueryRows {
                 ForEach(request.fields) { field in
                     Button { onEdit(field) } label: {
                         HStack(spacing: 6) {
-                            Image(systemName: field.symbol)
+                            Image(systemName: field.symbol).foregroundStyle(OBCTheme.secondary)
                             Text(request.label(for: field)).multilineTextAlignment(.leading)
-                            Image(systemName: "chevron.down").imageScale(.small)
+                            Image(systemName: "chevron.down").imageScale(.small).foregroundStyle(OBCTheme.secondary)
                         }
-                        .font(.subheadline)
-                        .foregroundStyle(field.ink)
-                        .padding(.horizontal, 12).padding(.vertical, 7)
-                        .background(field.ink.opacity(0.11), in: Capsule())
-                        .frame(minHeight: 44)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(OBCTheme.ink)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(OBCTheme.fill, in: Capsule())
+                        .frame(minHeight: 44).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("\(field.title): \(request.label(for: field))")
@@ -72,31 +63,28 @@ struct PlannerPreviewQueryEditor: View {
                 Button(action: onCancel) { Image(systemName: "xmark").frame(width: 44, height: 44) }
                     .accessibilityLabel("Close filter editor")
             }
-            .foregroundStyle(field.ink)
+            .foregroundStyle(OBCTheme.ink)
             .padding(.leading, 14).padding(.trailing, 4)
-            .background(field.ink.opacity(0.11))
+            .background(OBCTheme.surface2)
             VStack(alignment: .leading, spacing: 12) { fields }
                 .padding(14)
             Divider().overlay(OBCTheme.hairline)
             HStack {
                 if field == .radius {
                     Button("Remove filter") { draft.radiusMeters = nil; onApply(draft) }
-                        .foregroundStyle(OBCTheme.secondary)
-                } else {
-                    Button("Cancel", action: onCancel).foregroundStyle(OBCTheme.secondary)
+                        .font(.subheadline.weight(.semibold)).foregroundStyle(OBCTheme.tint).frame(minHeight: 44)
                 }
                 Spacer()
-                Button("Apply", systemImage: "checkmark") { onApply(draft) }
-                    .buttonStyle(.borderedProminent).tint(field.ink)
-                    .foregroundStyle(OBCTheme.surface).buttonBorderShape(.capsule)
+                Button("Apply") { onApply(draft) }
+                    .buttonStyle(.obcPrimary(fullWidth: false))
                     .disabled(field == .what && draft.kinds.isEmpty || field == .name && draft.name.trimmingCharacters(in: .whitespaces).isEmpty)
                     .accessibilityIdentifier("planner.query.apply")
             }
-            .font(.subheadline.weight(.semibold)).frame(minHeight: 44).padding(10)
+            .padding(10)
         }
         .background(OBCTheme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(OBCTheme.hairlineStrong, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
+        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel).stroke(OBCTheme.hairline, lineWidth: 1))
     }
 
     @ViewBuilder private var fields: some View {
@@ -106,7 +94,7 @@ struct PlannerPreviewQueryEditor: View {
                 Toggle(isOn: Binding(get: { draft.kinds.contains(kind) }, set: { selected in
                     if selected { draft.kinds.insert(kind) } else { draft.kinds.remove(kind) }
                 })) { Label(kind.title, systemImage: kind.symbol) }
-                    .tint(field.ink).frame(minHeight: 44)
+                    .frame(minHeight: 44)
             }
         case .name:
             TextField("Place name", text: $draft.name).textFieldStyle(.roundedBorder).frame(minHeight: 44)
@@ -127,7 +115,7 @@ struct PlannerPreviewQueryEditor: View {
                     }
                     .frame(minHeight: 44).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).foregroundStyle(draft.area == area ? field.ink : OBCTheme.ink)
+                .buttonStyle(.plain).foregroundStyle(draft.area == area ? OBCTheme.tint : OBCTheme.ink)
             }
             if draft.area == .section {
                 Stepper(value: $draft.fromMeters, in: 0...max(0, (draft.toMeters ?? routeLengthMeters) - 1_000), step: 1_000) {
@@ -139,8 +127,6 @@ struct PlannerPreviewQueryEditor: View {
                 }
             }
         case .radius:
-            Text("Maximum distance from the route")
-                .font(.subheadline).foregroundStyle(OBCTheme.secondary)
             ForEach([100.0, 500, 1_000, 2_000, 5_000], id: \.self) { meters in
                 Button { draft.radiusMeters = meters } label: {
                     HStack {
@@ -150,7 +136,7 @@ struct PlannerPreviewQueryEditor: View {
                     }
                     .frame(minHeight: 44).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).foregroundStyle(draft.radiusMeters == meters ? field.ink : OBCTheme.ink)
+                .buttonStyle(.plain).foregroundStyle(draft.radiusMeters == meters ? OBCTheme.tint : OBCTheme.ink)
             }
         }
     }

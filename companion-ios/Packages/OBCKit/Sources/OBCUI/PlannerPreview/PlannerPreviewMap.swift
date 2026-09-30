@@ -4,7 +4,9 @@ import OBCDomain
 import SwiftUI
 
 struct PlannerPreviewMapPin: Identifiable, Equatable {
-    enum Kind: Equatable { case start, finish, shape, marker, place }
+    /// A `stop` sits on the route line, so it draws as a disc like the start; a `place` is a
+    /// candidate off the line and hangs from a stem.
+    enum Kind: Equatable { case start, finish, stop, shape, marker, place }
     let id: String
     let title: String
     let coordinate: Coordinate
@@ -135,7 +137,9 @@ struct PlannerPreviewMap: UIViewRepresentable {
         }
 
         func fit(_ map: MKMapView, animated: Bool) {
-            let points = parent.coordinates + parent.pins.map(\.coordinate)
+            // The route, its points and any search hits; ambient places would drag the fit out to
+            // the whole sample area.
+            let points = parent.coordinates + parent.pins.filter { !$0.isAmbient || $0.highlighted }.map(\.coordinate)
             guard !points.isEmpty else { return }
             let bounds = points.reduce(MKMapRect.null) { rect, coordinate in
                 let point = MKMapPoint(MapGeometry.clLocation(coordinate))

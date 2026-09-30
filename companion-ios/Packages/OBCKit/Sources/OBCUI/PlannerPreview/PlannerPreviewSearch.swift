@@ -12,7 +12,6 @@ struct PlannerPreviewSearch: View {
     @State private var query: String
     @State private var request: PlannerPreviewPlaceQuery?
     @State private var activeEditor: PlannerPreviewQueryField?
-    @State private var edited: Bool
     @FocusState private var isFocused: Bool
 
     init(model: PlannerPreviewModel, initialQuery: String = "", initialRequest: PlannerPreviewPlaceQuery? = nil,
@@ -27,7 +26,11 @@ struct PlannerPreviewSearch: View {
         _query = State(initialValue: initialQuery)
         _request = State(initialValue: initialRequest ?? Self.interpret(initialQuery, model: model))
         _activeEditor = State(initialValue: initialEditor)
-        _edited = State(initialValue: initialRequest != nil)
+    }
+
+    /// One prompt for the drawer's search button and the field it opens.
+    static func prompt(hasRoute: Bool) -> String {
+        hasRoute ? "Find stops or change this route" : "Search places or describe a route"
     }
 
     private var hasQuery: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -48,14 +51,14 @@ struct PlannerPreviewSearch: View {
                     VStack(alignment: .leading, spacing: 20) {
                         if let request {
                             VStack(alignment: .leading, spacing: 10) {
-                                PlannerPreviewQuerySummary(request: request, edited: edited) { field in
+                                PlannerPreviewQuerySummary(request: request) { field in
                                     isFocused = false
                                     activeEditor = activeEditor == field ? nil : field
                                 }
                                 if let activeEditor {
                                     PlannerPreviewQueryEditor(field: activeEditor, request: request, hasRoute: model.hasRoute,
                                                               routeLengthMeters: model.stats.distanceMeters) { next in
-                                        self.request = next; edited = true; self.activeEditor = nil
+                                        self.request = next; self.activeEditor = nil
                                         onRequestChange(next)
                                     } onCancel: { self.activeEditor = nil }
                                     .id(activeEditor)
@@ -67,10 +70,11 @@ struct PlannerPreviewSearch: View {
                                 }
                             }
                         }
-                        if hasQuery { results }
+                        // A filter editor is the one open task; the results return once it closes.
+                        if hasQuery, activeEditor == nil { results }
                         if !hasQuery || result.places.isEmpty {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Try an example").font(.headline).padding(.bottom, 4)
+                                Text("Examples").font(.headline).padding(.bottom, 4)
                                 ForEach(suggestions, id: \.title) { suggestion in
                                     Button { query = suggestion.title; isFocused = false } label: {
                                         HStack(spacing: 12) {
@@ -103,30 +107,30 @@ struct PlannerPreviewSearch: View {
         }
         .tint(OBCTheme.tint)
         .onChange(of: query) { _, value in
-            request = Self.interpret(value, model: model); edited = false; activeEditor = nil
+            request = Self.interpret(value, model: model); activeEditor = nil
             onQueryChange(value); onRequestChange(request)
         }
         .task { onRequestChange(request); isFocused = !hasQuery && activeEditor == nil }
     }
 
+    /// `OBCSearchField` with focus and submit, which the shared field does not carry.
     private var searchField: some View {
         HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").foregroundStyle(OBCTheme.secondary)
-            TextField("Find a place, or ask along your route…", text: $query)
-                .font(.body).foregroundStyle(OBCTheme.ink).focused($isFocused)
+            Image(systemName: "magnifyingglass").font(.subheadline.weight(.semibold)).foregroundStyle(OBCTheme.secondary)
+            TextField(Self.prompt(hasRoute: model.hasRoute), text: $query)
+                .font(.subheadline).foregroundStyle(OBCTheme.ink).focused($isFocused)
                 .submitLabel(.search).autocorrectionDisabled().onSubmit { submit() }
-                .accessibilityLabel("Find a place or change the route")
                 .accessibilityIdentifier("planner.searchField")
             if !query.isEmpty {
                 Button { query = ""; isFocused = true } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(OBCTheme.secondary).frame(width: 44, height: 44)
+                    Image(systemName: "xmark.circle.fill").font(.subheadline).foregroundStyle(OBCTheme.secondary)
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
                 }
                 .accessibilityLabel("Clear search")
             }
         }
-        .frame(minHeight: 48).padding(.leading, 12).padding(.trailing, query.isEmpty ? 12 : 0)
-        .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusSmall))
-        .overlay(RoundedRectangle(cornerRadius: OBCTheme.radiusSmall).stroke(OBCTheme.hairlineStrong, lineWidth: 1))
+        .frame(minHeight: 44).padding(.leading, 12).padding(.trailing, query.isEmpty ? 12 : 0)
+        .background(OBCTheme.fill, in: RoundedRectangle(cornerRadius: OBCTheme.radiusMedium))
     }
 
     private var results: some View {
@@ -139,41 +143,19 @@ struct PlannerPreviewSearch: View {
                     .font(.subheadline).foregroundStyle(OBCTheme.secondary)
                 if result.action != nil {
                     Button("Review change") { submit() }
-                        .fontWeight(.semibold).frame(minHeight: 44).buttonStyle(.borderedProminent)
-                        .tint(OBCTheme.amber).foregroundStyle(OBCTheme.onAmber)
-                        .accessibilityIdentifier("planner.searchReview")
+                        .buttonStyle(.obcPrimary).accessibilityIdentifier("planner.searchReview")
                 }
             } else {
                 Button("Show \(result.places.count) \(result.places.count == 1 ? "place" : "places") on map", systemImage: "map") { submit() }
-                    .font(.subheadline.weight(.semibold)).frame(minHeight: 44)
-                    .buttonStyle(.borderedProminent).tint(OBCTheme.secondary).foregroundStyle(OBCTheme.surface)
-                    .buttonBorderShape(.capsule).accessibilityIdentifier("planner.searchShowPlaces")
+                    .buttonStyle(.obcPrimary).accessibilityIdentifier("planner.searchShowPlaces")
                 ForEach(result.places) { place in
-                    Button { select(place) } label: { placeRow(place) }
+                    Button { select(place) } label: { PlannerPlaceRow(place: place, showsRouteDistances: model.hasRoute) }
                         .buttonStyle(.plain).accessibilityIdentifier("planner.searchPlace.\(place.id)")
                     Divider().overlay(OBCTheme.hairline)
                 }
                 Text(result.explanation).font(.caption).foregroundStyle(OBCTheme.secondary)
             }
         }
-    }
-
-    private func placeRow(_ place: PlannerPreviewPlace) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: place.kind.symbol).frame(width: 24).foregroundStyle(OBCTheme.secondary)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(place.name).font(.body).foregroundStyle(OBCTheme.ink)
-                if model.hasRoute && place.kind != .town {
-                    Text("At \(place.alongRouteMeters / 1_000, specifier: "%.1f") km · \(Int(place.offRouteMeters)) m off route")
-                        .font(.caption).foregroundStyle(OBCTheme.secondary)
-                } else {
-                    Text(place.kind.title).font(.caption).foregroundStyle(OBCTheme.secondary)
-                }
-            }
-            Spacer(minLength: 8)
-            Image(systemName: "chevron.right").font(.caption).foregroundStyle(OBCTheme.secondary)
-        }
-        .frame(minHeight: 52).contentShape(Rectangle())
     }
 
     private static func interpret(_ query: String, model: PlannerPreviewModel) -> PlannerPreviewPlaceQuery? {
@@ -185,6 +167,33 @@ struct PlannerPreviewSearch: View {
         isFocused = false
         if let onPlace { onPlace(place) }
         else { onResult(.init(title: place.name, explanation: result.explanation, places: [place], action: nil)) }
+    }
+}
+
+/// One place row for the search screen and the drawer's results: the kind's glyph, the name,
+/// and where it sits relative to the route.
+struct PlannerPlaceRow: View {
+    let place: PlannerPreviewPlace
+    let showsRouteDistances: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: place.kind.symbol).frame(width: 24).foregroundStyle(OBCTheme.secondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(place.name).font(.system(.body, weight: .semibold)).foregroundStyle(OBCTheme.ink)
+                Text(detail).font(.system(.subheadline).monospacedDigit()).foregroundStyle(OBCTheme.secondary)
+            }
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right").font(.system(.caption, weight: .semibold)).foregroundStyle(OBCTheme.secondary)
+                .accessibilityHidden(true)
+        }
+        .frame(minHeight: 52).contentShape(Rectangle())
+    }
+
+    private var detail: String {
+        guard showsRouteDistances, place.kind != .town else { return place.kind.title }
+        return "\(place.kind.title) · \(OBCFormat.distance(meters: place.alongRouteMeters)) · \(OBCFormat.shortDistance(meters: place.offRouteMeters)) off route"
     }
 }
 #endif

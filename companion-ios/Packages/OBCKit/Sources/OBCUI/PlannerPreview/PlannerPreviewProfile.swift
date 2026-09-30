@@ -12,15 +12,14 @@ struct PlannerPreviewProfile: View {
     var body: some View {
         let profile = profile
         VStack(spacing: 4) {
-            HStack {
-                Text(readout(profile)).foregroundStyle(OBCTheme.ink)
-                Spacer(minLength: 4)
-                if !hasVisibleSelection { Text("Map view").fontWeight(.regular) }
-            }
-            .font(.system(.caption, weight: .semibold).monospacedDigit())
-            .foregroundStyle(OBCTheme.secondary)
+            Text(readout(profile))
+                .font(.system(.caption, weight: .semibold).monospacedDigit())
+                .foregroundStyle(OBCTheme.ink)
+                .frame(maxWidth: .infinity, alignment: .leading)
             if let range = visibleRange, range.upperBound > range.lowerBound {
                 plot(profile, range: range)
+                    .background(OBCTheme.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
                 HStack {
                     Text("\(range.lowerBound * profile.distance / 1_000, specifier: "%.1f") km")
                     Spacer()
@@ -45,15 +44,22 @@ struct PlannerPreviewProfile: View {
                     CGPoint(x: (fraction - range.lowerBound) / span * size.width,
                             y: (1 - (elevation - low) / (high - low)) * size.height)
                 }
+                // One fill under the whole curve, as the app's other profiles draw it; the grade
+                // lives in the stroke only.
+                if let first = segments.first, let last = segments.last {
+                    let area = Path { path in
+                        path.move(to: CGPoint(x: point(first.from, low).x, y: size.height))
+                        path.addLine(to: point(first.from, first.start))
+                        for segment in segments { path.addLine(to: point(segment.to, segment.end)) }
+                        path.addLine(to: CGPoint(x: point(last.to, low).x, y: size.height))
+                        path.closeSubpath()
+                    }
+                    context.fill(area, with: .color(OBCTheme.profileFill))
+                }
                 for segment in segments {
                     let a = point(segment.from, segment.start), b = point(segment.to, segment.end)
-                    let color = color(PlannerPreviewGrade.band(segment.grade))
-                    let area = Path { path in
-                        path.move(to: CGPoint(x: a.x, y: size.height)); path.addLine(to: a)
-                        path.addLine(to: b); path.addLine(to: CGPoint(x: b.x, y: size.height)); path.closeSubpath()
-                    }
-                    context.fill(area, with: .color(color.opacity(0.12)))
-                    context.stroke(Path { $0.move(to: a); $0.addLine(to: b) }, with: .color(color),
+                    context.stroke(Path { $0.move(to: a); $0.addLine(to: b) },
+                                   with: .color(color(PlannerPreviewGrade.band(segment.grade))),
                                    style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                 }
                 if let fraction = selectedFraction, range.contains(fraction) {

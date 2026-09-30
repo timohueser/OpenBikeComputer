@@ -14,14 +14,12 @@ struct PlannerPreviewPoints: View {
             Section {
                 ForEach(Array(model.points.enumerated()), id: \.element.id) { index, point in
                     Button { onEdit(point) } label: {
-                        row(point, role: role(at: index), symbol: index == 0 ? "circle" : index == model.points.count - 1 ? "flag.checkered" : point.kind.symbol)
+                        row(point, role: role(at: index), symbol: index == 0 ? "play.fill" : index == model.points.count - 1 ? "flag.checkered" : point.kind.symbol)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("planner.point.\(point.id)")
                 }
                 .onMove { model.movePoint(fromOffsets: $0, toOffset: $1) }
-            } footer: {
-                Text("Hold and drag to reorder. The first and last point set the start and finish. Tap a point to edit it.")
             }
             .listRowBackground(OBCTheme.surface)
 
@@ -39,8 +37,8 @@ struct PlannerPreviewPoints: View {
                     Button("Reverse route", systemImage: "arrow.up.arrow.down", action: onReverse).frame(minHeight: 44)
                 }
                 Menu("Preview") {
-                    Button("Load example ride", action: onExample)
-                    Button("Start a new ride", action: onNew)
+                    Button("Load example route", action: onExample)
+                    Button("Start a new route", action: onNew)
                 }.frame(minHeight: 44)
             } footer: {
                 Text("Interaction preview · sample route and places. Edited connections are illustrative.")
@@ -68,7 +66,6 @@ struct PlannerPreviewPoints: View {
                 Text(point.place.name).font(.body).foregroundStyle(OBCTheme.ink)
             }
             Spacer(minLength: 4)
-            Image(systemName: "chevron.right").font(.caption).foregroundStyle(OBCTheme.secondary)
         }.frame(minHeight: 52).contentShape(Rectangle())
     }
 }

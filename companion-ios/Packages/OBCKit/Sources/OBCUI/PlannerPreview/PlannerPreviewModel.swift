@@ -60,7 +60,7 @@ public struct PlannerPreviewPoint: Identifiable, Equatable, Sendable {
 public enum PlannerPreviewAction: Equatable, Sendable {
     case createSample, reverse, splitDays
     public var title: String {
-        switch self { case .createSample: "Create this ride"; case .reverse: "Reverse route"; case .splitDays: "Split into two days" }
+        switch self { case .createSample: "Create this route"; case .reverse: "Reverse route"; case .splitDays: "Split into two days" }
     }
 }
 
@@ -109,7 +109,7 @@ public final class PlannerPreviewModel {
     public var canRedo: Bool { !future.isEmpty }
     public var dayCount: Int { overnight == nil ? 1 : 2 }
     public var routeTitle: String {
-        guard let start, let finish else { return "New ride" }
+        guard let start, let finish else { return "New route" }
         return "\(start.name) → \(finish.name)"
     }
     public var routePoints: [RoutePoint] { sampledRoute.samples }
@@ -267,7 +267,7 @@ public final class PlannerPreviewModel {
             return result(hasRoute ? "Ride the other way" : "Create a route first", "Review the change before you apply it.", action: hasRoute ? .reverse : nil)
         }
         if q.contains("two day") || q.contains("2 day") || q.contains("split") {
-            return result(hasRoute ? "Make it a two-day ride" : "Create a route first", "This preview uses one sample campsite.", action: hasRoute ? .splitDays : nil)
+            return result(hasRoute ? "Make it two days" : "Create a route first", "This preview uses one sample campsite.", action: hasRoute ? .splitDays : nil)
         }
         if (q.contains("ride") || q.contains("route") || q.contains(" to ")) && (q.contains("titisee") || q.contains("freiburg")) {
             return result("Freiburg → Titisee", "A fixed sample gravel route. Review it before you apply it.", action: .createSample)
