@@ -10553,7 +10553,7 @@
 		)
 		(symbol "nRF54LM20A-QGAA_2_0"
 			(pin bidirectional line
-				(at -17.78 12.7 0)
+				(at -17.78 -20.32 0)
 				(length 3.81)
 				(name "P0.03"
 					(effects
@@ -10571,7 +10571,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at -17.78 -2.54 0)
+				(at -17.78 15.24 0)
 				(length 3.81)
 				(name "P0.04"
 					(effects
@@ -10589,7 +10589,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at -17.78 -7.62 0)
+				(at -17.78 10.16 0)
 				(length 3.81)
 				(name "P0.06"
 					(effects
@@ -10607,7 +10607,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at -17.78 -12.7 0)
+				(at -17.78 5.08 0)
 				(length 3.81)
 				(name "P0.07"
 					(effects
@@ -10625,7 +10625,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at -17.78 -17.78 0)
+				(at -17.78 -5.08 0)
 				(length 3.81)
 				(name "P0.08"
 					(effects
@@ -10643,7 +10643,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at -17.78 7.62 0)
+				(at -17.78 -25.4 0)
 				(length 3.81)
 				(name "P0.09"
 					(effects
@@ -10664,7 +10664,7 @@
 		(symbol "nRF54LM20A-QGAA_2_1"
 			(rectangle
 				(start -13.97 20.32)
-				(end 13.97 -20.32)
+				(end 13.97 -30.48)
 				(stroke
 					(width 0)
 					(type solid)
@@ -10964,7 +10964,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at -17.78 -22.86 0)
+				(at -17.78 5.08 0)
 				(length 3.81)
 				(name "P1.19"
 					(effects
