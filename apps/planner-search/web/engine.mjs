@@ -114,7 +114,7 @@ function score(p,q,focus,fuzzy=false) {
     const remainder=key.startsWith(name)?key.slice(name.length):key.endsWith(name)?key.slice(0,-name.length):null;
     if(remainder&&context.some(c=>compact(c).startsWith(remainder)))match=Math.max(match,98);
   }
-  if(['city','town','village'].includes(p.kind)&&ns.some(n=>n.startsWith(text+' ')))match=Math.max(match,95);
+  if(['city','town','village'].includes(p.kind)&&ns.some(n=>n.startsWith(text+' ')))match=Math.max(match,98);
   if (fuzzy) match-=8*fuzzy;
   const km=distance([p.lon,p.lat],focus);
   const proximity=12/(1+km/20), importance=PROMINENT.includes(p.kind)?Math.min(1,Math.max(0,p.importance))*8:0;

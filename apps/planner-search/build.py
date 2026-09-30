@@ -79,6 +79,9 @@ class Writer:
         return self.next_id
 
     def add(self, p):
+        # Photon derives postcode centroids from addresses without an OSM identity.
+        if p['osm_key'] == 'place' and p['osm_value'] == 'postcode' and not p.get('object_type'):
+            return
         a = p.get('address', {})
         ns = names(p.get('name', {}))
         lon, lat = p['centroid']
