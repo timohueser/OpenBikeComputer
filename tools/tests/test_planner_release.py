@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+import sqlite3
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +13,27 @@ from tools import planner_release as release, planner_prepare, planner_deploy, r
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_search_validation_rejects_old_or_missing_address_indexes_before_preparation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / 'search/baden-wuerttemberg.sqlite'
+            database.parent.mkdir()
+            with sqlite3.connect(database) as db:
+                db.execute('CREATE TABLE metadata(key TEXT,value TEXT)')
+                db.execute("INSERT INTO metadata VALUES('schema','1')")
+            for schema in [1, 2]:
+                with sqlite3.connect(database) as db:
+                    db.execute("UPDATE metadata SET value=? WHERE key='schema'", (str(schema),))
+                with self.assertRaisesRegex(ValueError, 'Rebuild search package'):
+                    release.search_metadata(database)
+                with patch.object(planner_prepare.maps, 'run') as run:
+                    with self.assertRaisesRegex(ValueError, 'Rebuild search package'):
+                        planner_prepare.prepare(argparse.Namespace(data_dir=root, recipe=release.maps.ROOT / 'tools/planner-regions/baden-wuerttemberg.json'))
+                    run.assert_not_called()
+            with sqlite3.connect(database) as db:
+                db.execute('CREATE VIRTUAL TABLE address_spatial USING rtree(id,west,east,south,north)')
+            self.assertEqual(release.search_metadata(database, full=True)['schema'], 2)
+
     def test_changed_or_missing_bytes_fail_release_verification(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

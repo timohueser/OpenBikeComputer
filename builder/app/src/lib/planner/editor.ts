@@ -478,7 +478,7 @@ export function pinNight(trip: Trip, night: number, coordinate: Coordinate, labe
         points: trip.points.filter(p => p.id !== id && p.id !== sourceId),
         routeOrder: sourceId ? trip.routeOrder?.filter(pointId => pointId !== id || pointId === sourceId).map(pointId => pointId === sourceId ? id : pointId) : trip.routeOrder,
     };
-    const point: RoutePoint = { ...source, id, kind: 'night', night, coordinate, label, progress: trip.live ? nearestProgress(routeCoordinates(trip), coordinate) : anchorProgress(coordinate) };
+    const point: RoutePoint = { ...source, id, kind: 'night', night, coordinate, label, autoLabel: undefined, progress: trip.live ? nearestProgress(routeCoordinates(trip), coordinate) : anchorProgress(coordinate) };
     const next = others.routeOrder && !others.routeOrder.includes(id)
         ? intoLeg(others, point, nearestLegEnd(others, coordinate))
         : { ...others, points: [...others.points, point] };

@@ -176,7 +176,7 @@ def main():
     start = time.monotonic()
     n = 0
     outlines = []
-    meta = {'schema': 1, 'source': args.dump.name, 'attribution': '© OpenStreetMap contributors, ODbL 1.0; prepared by Nominatim / Photon'}
+    meta = {'schema': 2, 'source': args.dump.name, 'attribution': '© OpenStreetMap contributors, ODbL 1.0; prepared by Nominatim / Photon'}
     if args.osm_sha256:
         meta.update(osm_sha256=args.osm_sha256, bounds=bounds, countries=countries)
     with args.dump.open('rb') as raw, zstandard.ZstdDecompressor().stream_reader(raw) as stream:

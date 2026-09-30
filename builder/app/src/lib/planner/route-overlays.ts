@@ -74,6 +74,8 @@ export class RouteOverlays {
 
     install(theme: 'light' | 'dark') {
         if (this.map.getSource(source)) return;
+        this.abort?.abort();
+        this.pending = undefined;
         this.displayed = undefined;
         this.map.addSource(source, { type: 'geojson', data: empty, attribution: '<a href="https://www.openstreetmap.org/copyright">Route networks & access © OpenStreetMap</a>' });
         const before = this.map.getStyle().layers?.find(layer => layer.type === 'symbol')?.id;

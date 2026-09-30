@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, routeStops, addRestDay, anchorProgress, addClickedPoint, dayStops, applyBudget, coordinateAt, cumulative, initialTrip, insertPoint, itineraryDays, kilometres, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, removeRestDay, routeCoordinates, routeSlice, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Place, type Coordinate, type RoutePoint, type Trip } from './editor';
+import { emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, routeStops, addRestDay, anchorProgress, addClickedPoint, addPointNear, dayStops, applyBudget, coordinateAt, cumulative, initialTrip, insertPoint, itineraryDays, kilometres, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, removeRestDay, routeCoordinates, routeSlice, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Place, type Coordinate, type RoutePoint, type Trip } from './editor';
 
 // Fictional places keep their geographic positions when the mock route changes.
 const places: Place[] = [
@@ -471,5 +471,15 @@ describe('route endpoints', () => {
         ]);
         expect(next).toMatchObject({ mode: 'trip', days: original.days, target: original.target, restAfter: [1], splits: { 2: .8 } });
         expect(next.points.find(p => p.kind === 'night')).toEqual(original.points.find(p => p.kind === 'night'));
+    });
+
+    it('gives a pinned overnight its explicit name when it comes from an automatically named visit', () => {
+        const visit: RoutePoint = { id: 'visit', kind: 'waypoint', autoLabel: true, label: '48.00000, 7.84000', coordinate: [7.84, 48], progress: .3 };
+        const trip = addPointNear(initialTrip(), visit);
+        const pinned = pinNight(trip, 1, visit.coordinate, visit.label, visit.id);
+        expect(pinned.points.find(p => p.night === 1)?.autoLabel).toBeUndefined();
+        const replaced = pinNight(pinned, 1, [8.088, 48.279], 'Fuxxbau');
+        expect(replaced.points.find(p => p.night === 1)).toMatchObject({ label: 'Fuxxbau', coordinate: [8.088, 48.279] });
+        expect(replaced.points.find(p => p.night === 1)?.autoLabel).toBeUndefined();
     });
 });

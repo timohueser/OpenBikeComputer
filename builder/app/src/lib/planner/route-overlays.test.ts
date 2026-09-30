@@ -10,18 +10,21 @@ function viewport() {
     const data = vi.fn();
     let zoom = 12;
     let bounds = [7.9, 48, 8, 48.1];
+    let target: { setData: typeof data } | undefined = { setData: data };
     const definitions = new Map();
     const map = {
         on: vi.fn(), off: vi.fn(), getZoom: () => zoom,
         getBounds: () => ({ getWest: () => bounds[0], getSouth: () => bounds[1], getEast: () => bounds[2], getNorth: () => bounds[3] }),
-        getSource: () => ({ setData: data }), getLayer: (id: string) => definitions.get(id),
+        getSource: () => target, getLayer: (id: string) => definitions.get(id),
+        addSource: () => target = { setData: data }, getStyle: () => ({ layers: [] }),
+        addLayer: (layer: { id: string; layout?: object }) => definitions.set(layer.id, { ...layer, layout: layer.layout ?? {} }),
         setLayoutProperty: vi.fn((id: string, key: string, value: string) => { definitions.get(id).layout[key] = value; }),
         getLayoutProperty: (id: string, key: string) => definitions.get(id)?.layout[key],
         queryRenderedFeatures: vi.fn(), setFeatureState: vi.fn(),
     };
     const status = vi.fn();
     const overlays = new RouteOverlays(map as unknown as MapLibreMap, status);
-    return { overlays, map, definitions, data, status, move: (b: number[], z = zoom) => { bounds = b; zoom = z; } };
+    return { overlays, map, definitions, data, status, clearStyle: () => { target = undefined; definitions.clear(); }, move: (b: number[], z = zoom) => { bounds = b; zoom = z; } };
 }
 
 const collection = (name: string) => ({ type: 'FeatureCollection', features: [{ name }], coverage: [7.65, 47.85, 8.25, 48.18] });
@@ -120,6 +123,28 @@ it('resolves shared route metadata when a map feature is inspected', () => {
     const route = { id: 42, kind: 'cycling', network: 'rcn', rank: 2, name: 'Regional route', ref: 'R' };
     const feature = { properties: { kind: 'cycling', way: 1, routes: '[42]' } } as unknown as MapGeoJSONFeature;
     expect(overlaySelection(feature, [8, 48], { 42: route }).routes).toEqual([route]);
+});
+
+it('loads a replacement source after the theme changes during a pending request', async () => {
+    const requests: { signal: AbortSignal; resolve: (data: unknown) => void }[] = [];
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => new Promise(resolve => {
+        requests.push({ signal: init.signal as AbortSignal, resolve: data => resolve({ ok: true, json: async () => data }) });
+    })));
+    const view = viewport();
+    view.overlays.set({ network: 'cycling', access: false });
+    view.clearStyle();
+    view.overlays.install('dark');
+    const current = view.overlays.refresh();
+    expect(requests).toHaveLength(2);
+    expect(requests[0].signal.aborted).toBe(true);
+    requests[0].resolve(collection('removed source'));
+    requests[1].resolve(collection('replacement source'));
+    await current;
+    expect(view.data).toHaveBeenCalledTimes(1);
+    expect(view.data).toHaveBeenLastCalledWith(collection('replacement source'));
+    await view.overlays.refresh();
+    expect(view.data).toHaveBeenCalledTimes(1);
+    view.overlays.destroy();
 });
 
 it('retries a busy overlay service, and cancels a retry when the layer is hidden', async () => {

@@ -563,9 +563,10 @@
     }
 
     async function nameVisit(point: RoutePoint) {
-        if (!point.autoLabel) return;
+        if (!point.autoLabel || !['waypoint', 'detour'].includes(point.kind) || point.label !== coordinateName(point.coordinate)) return;
         const coordinate: Coordinate = [...point.coordinate];
         const label = await visitName(coordinate, searchRegion);
+        if (!label) return;
         const current = trip.points.find(p => p.id === point.id);
         if (!mounted || !current?.autoLabel || current.coordinate[0] !== coordinate[0] || current.coordinate[1] !== coordinate[1]) return;
         // Generated names are metadata, so a lookup does not add an Undo step.
@@ -665,7 +666,7 @@
         }
         // A night point takes a fresh id, so its `night-N` id stays free for pinning.
         const id = point.kind === 'night' ? crypto.randomUUID() : point.id;
-        const autoLabel = kind === 'waypoint' && point.kind === 'via' || point.autoLabel;
+        const autoLabel = ['waypoint', 'detour'].includes(kind) && (point.kind === 'via' || point.autoLabel);
         const label = autoLabel ? coordinateName(point.coordinate) : point.label;
         const next = $state.snapshot(trip);
         next.points = next.points.map(p => p.id === point.id ? { ...p, id, kind, night: undefined, label, autoLabel: autoLabel || undefined,

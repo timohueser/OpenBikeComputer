@@ -37,7 +37,7 @@ for (const region of (process.env.OBC_SEARCH_REGIONS || 'germany,baden-wuerttemb
   const metadata = Object.fromEntries(
     db.all('SELECT * FROM metadata').map((r) => [r.key, JSON.parse(r.value)]),
   );
-  if (metadata.schema !== 1)
+  if (metadata.schema !== 2)
     throw new Error(`Rebuild ${region}: incompatible search data.`);
   conn.prepare('SELECT id FROM address_spatial LIMIT 0');
   databases.set(region, {

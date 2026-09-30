@@ -63,6 +63,8 @@ def inputs(osm, config, cache):
 def prepare(args):
     config = recipe(args.recipe)
     data = args.data_dir
+    database = data / "search" / f"{config['region']}.sqlite"
+    if database.exists(): releases.search_metadata(database)
     if (data / "release.json").exists():
         identity, existing = releases.release(data)
         if existing["sources"]["recipe_sha256"] != sources.digest(args.recipe):
@@ -138,7 +140,6 @@ def prepare(args):
                         {"bytes": p.stat().st_size, "sha256": sources.digest(p)} for p in sorted(stage.rglob("*")) if p.is_file()}}
             (stage / "manifest.json").write_bytes(releases.encoded(manifest))
             stage.rename(data / "maps")
-    database = data / "search" / (config["region"] + ".sqlite")
     if not database.exists():
         with tempfile.TemporaryDirectory(prefix=".search-", dir=data) as directory:
             maps.run(maps.ROOT / "apps/planner-search/.venv/bin/python", maps.ROOT / "apps/planner-search/build.py",

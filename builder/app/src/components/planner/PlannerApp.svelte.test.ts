@@ -100,6 +100,16 @@ describe('planner app transitions', () => {
         expect(stored.get('obc-planner-routing-v2')).toBe(snapshot);
     });
 
+    it('keeps a resolved address on reload when search is unavailable', async () => {
+        const saved = JSON.parse(stored.get('obc-planner-routing-v2')!);
+        saved.points.push({ id: 'visit', kind: 'waypoint', autoLabel: true, label: 'Dorfstraße 12, Teningen', coordinate: [7.84, 48], progress: .5 });
+        stored.set('obc-planner-routing-v2', JSON.stringify(saved));
+        vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Search offline')));
+        app = mount(PlannerApp, { target: document.body }); await tick();
+        expect(button('Map point: Dorfstraße 12, Teningen')).toBeDefined();
+        expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith('/reverse'))).toBe(false);
+    });
+
     it('offers any mapped place as an overnight beyond the suggestion area, and keeps the trip intact', async () => {
         const saved = { ...JSON.parse(stored.get('obc-planner-routing-v2')!), mode: 'trip' };
         stored.set('obc-planner-routing-v2', JSON.stringify(saved));
