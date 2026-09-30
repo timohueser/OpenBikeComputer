@@ -1,12 +1,12 @@
 <script lang="ts">
     import { onDestroy, onMount, untrack } from 'svelte';
     import PlannerIcon from './PlannerIcon.svelte';
-    import { HOSTED_SEARCH } from '../../lib/planner/search/config';
+    import { HOSTED_SEARCH, SEARCH_REGIONS } from '../../lib/planner/search/config';
     import QueryChip from './QueryChip.svelte';
     import type { Coordinate } from '../../lib/planner/editor';
     import { searchPlaces, type QueryRequest, type SearchContext, type SearchState, type Where } from '../../lib/planner/search/types';
 
-    let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, selection, region = $bindable('baden-wuerttemberg'), viewRevision = 0, onResults, onSearch, onClear, onLocation, onSample, onDate, onPointing }: {
+    let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, selection, region = $bindable(SEARCH_REGIONS[0]), viewRevision = 0, onResults, onSearch, onClear, onLocation, onSample, onDate, onPointing }: {
         text?: string; region?: string; searchState?: SearchState; context: SearchContext; selection?: Where;
         viewRevision?: number; onResults?: (coordinates: Coordinate[]) => void; onSearch: () => void; onClear: () => void; onLocation: () => void; onSample: () => void; onDate: (date: string) => void; onPointing: (where?: Where) => void;
     } = $props();
@@ -21,7 +21,7 @@
     let requestContext: SearchContext | undefined;
     let limit = 6;
     let settings = $state(false);
-    const regions = (import.meta.env.VITE_PLANNER_SEARCH_REGIONS || 'baden-wuerttemberg,germany').split(',');
+    const regions = SEARCH_REGIONS;
     const regionName = (id: string) => id === 'germany' ? 'Germany' : id === 'baden-wuerttemberg' ? 'Baden-Württemberg' : id.replaceAll('-', ' ');
     let activeFilter = $state<string | null>(null);
     const days = $derived(context.plan.days.filter(d => !d.rest).map(d => d.number));

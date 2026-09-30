@@ -80,9 +80,9 @@ def main():
             try:
                 with sqlite3.connect(f'{package.as_uri()}?mode=ro', uri=True) as db:
                     schema = db.execute("SELECT value FROM metadata WHERE key='schema'").fetchone()
-                    if schema != ('2',) or db.execute('PRAGMA quick_check').fetchone() != ('ok',):
+                    if schema != ('3',) or db.execute('PRAGMA quick_check').fetchone() != ('ok',):
                         raise ValueError('Incomplete data')
-                    db.execute('SELECT id FROM address_spatial LIMIT 0')
+                    db.execute('SELECT rowid FROM addresses INDEXED BY address_cells LIMIT 0')
             except (sqlite3.Error, ValueError):
                 raise SystemExit(f'Invalid search package: {package}. Move it aside, then repeat setup.')
     print(f'Search data ready: {data}')

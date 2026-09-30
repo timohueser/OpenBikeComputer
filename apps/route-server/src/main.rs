@@ -11,7 +11,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if std::env::args().nth(2).as_deref() == Some("--verify") {
-        route_engine::directory::Directory::open(Path::new(&directory))?.verify()?;
+        let path = Path::new(&directory);
+        let package = route_engine::directory::Directory::open(path)?;
+        package.verify()?;
+        if path.join("overlays.sqlite").exists() {
+            route_server::Overlays::open(path, package.identity())?;
+        }
         eprintln!("Package object closure verified");
         return Ok(());
     }

@@ -46,12 +46,12 @@ def street_norm(s):
 
 def index_search(db):
     db.executescript('''
-      DROP TABLE IF EXISTS vocabulary;
-      DROP TABLE IF EXISTS terms;
-      DROP TABLE IF EXISTS names;
-      DROP TABLE IF EXISTS compact_names;
-      DROP TABLE IF EXISTS fuzzy;
-      DROP TABLE IF EXISTS lexicon;
+      DROP TABLE IF EXISTS main.vocabulary;
+      DROP TABLE IF EXISTS main.terms;
+      DROP TABLE IF EXISTS main.names;
+      DROP TABLE IF EXISTS main.compact_names;
+      DROP TABLE IF EXISTS main.fuzzy;
+      DROP TABLE IF EXISTS main.lexicon;
       CREATE TABLE names(term TEXT,place_id INTEGER,PRIMARY KEY(term,place_id)) WITHOUT ROWID;
       CREATE TABLE compact_names(term TEXT,place_id INTEGER,PRIMARY KEY(term,place_id)) WITHOUT ROWID;
       CREATE VIRTUAL TABLE terms USING fts5(name,context,content='',detail=column,
@@ -90,7 +90,7 @@ def index_search(db):
       CREATE VIRTUAL TABLE fuzzy USING fts5(term,content='lexicon',detail=none,tokenize='trigram');
       INSERT INTO fuzzy(fuzzy) VALUES('rebuild');
       INSERT INTO fuzzy(fuzzy) VALUES('optimize');
-      ANALYZE;
+      ANALYZE main;
     ''')
     db.commit()
 

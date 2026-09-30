@@ -330,7 +330,7 @@ export function findPlaces(db, request, context) {
           ).test(name);
         if (!ok) return [];
       }
-      const opening = openingState(p, request.open, context);
+      const opening = (context.openingState || openingState)(p, request.open, context);
       if (opening === 'unknown') unknown++;
       if (opening && opening !== 'open') return [];
       const full =

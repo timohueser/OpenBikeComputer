@@ -40,6 +40,27 @@ def link(source, destination):
         shutil.copyfile(source, destination)
 
 
+def runtime_routing(routing):
+    """Keep compiled routing and overlays; omit their source OSM tables."""
+    manifest = json.loads((routing / "manifest.json").read_bytes())
+    if not any(table["len"] for table in manifest["osm"].values()):
+        return
+    with tempfile.TemporaryDirectory(prefix=".runtime-", dir=routing.parent) as directory:
+        stage = Path(directory) / "routing"
+        maps.run(maps.ROOT / "target/release/route-select", routing, "--output", stage, "--runtime")
+        shutil.copyfile(routing / "overlays.sqlite", stage / "overlays.sqlite")
+        with sqlite3.connect(stage / "overlays.sqlite") as db:
+            db.execute("UPDATE metadata SET package=?", (sources.digest(stage / "manifest.json"),))
+        maps.run(maps.ROOT / "target/release/route-server", stage, "--verify")
+        backup = Path(directory) / "source"
+        routing.rename(backup)
+        try:
+            stage.rename(routing)
+        except BaseException:
+            backup.rename(routing)
+            raise
+
+
 def inputs(osm, config, cache):
     import hashlib
     bounds = config["bounds"]
@@ -117,6 +138,7 @@ def prepare(args):
     if set(json.loads((routing / "manifest.json").read_bytes())["metrics"]) != set(config["profiles"]):
         raise ValueError("Routing profiles differ from the recipe; choose a fresh package")
     maps.run(maps.ROOT / "target/release/route-server", routing, "--build-overlays")
+    runtime_routing(routing)
     if not (data / "maps").exists():
         with tempfile.TemporaryDirectory(prefix=".maps-", dir=data) as directory:
             stage = Path(directory)
@@ -124,6 +146,8 @@ def prepare(args):
             maps.run(maps.ROOT / "target/release/planner-dem", "--dem", args.dem_dir, *reference,
                      "--bounds", ",".join(map(str, terrain_bounds)), "--output", stage / "terrain.mbtiles")
             maps.run(args.pmtiles, "convert", stage / "terrain.mbtiles", stage / "terrain.pmtiles")
+            maps.compact_archive(stage / "terrain.pmtiles", stage / "compact.pmtiles", bounds, terrain=True)
+            (stage / "compact.pmtiles").replace(stage / "terrain.pmtiles")
             with sqlite3.connect(stage / "terrain.mbtiles") as db:
                 attribution = db.execute("SELECT value FROM metadata WHERE name='attribution'").fetchone()[0]
                 terrain_sources = json.loads(db.execute("SELECT value FROM metadata WHERE name='source_sha256'").fetchone()[0])

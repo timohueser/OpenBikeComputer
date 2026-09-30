@@ -11,8 +11,11 @@ struct Args {
     input: PathBuf,
     #[arg(long)]
     output: PathBuf,
-    #[arg(long, required = true, value_delimiter = ',')]
+    #[arg(long, value_delimiter = ',')]
     profiles: Vec<String>,
+    /// Omit build-only OSM objects after all runtime attributes and overlays are prepared.
+    #[arg(long)]
+    runtime: bool,
 }
 
 fn run(args: Args) -> Result<(), String> {
@@ -24,7 +27,12 @@ fn run(args: Args) -> Result<(), String> {
     if args.profiles.iter().any(|id| !manifest.metrics.contains_key(id)) {
         return Err("Selected profile is absent from the input package".into());
     }
-    manifest.metrics.retain(|id, _| args.profiles.contains(id));
+    if !args.profiles.is_empty() {
+        manifest.metrics.retain(|id, _| args.profiles.contains(id));
+    }
+    if args.runtime {
+        manifest.osm = Default::default();
+    }
     let bytes = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
     let package =
         Package::open(Directory::source(&args.input).map_err(|e| e.to_string())?, &bytes).map_err(|e| e.to_string())?;

@@ -2,29 +2,17 @@
 import argparse
 import hashlib
 import io
-import sqlite3
 import time
 import re
-from collections import Counter
 from pathlib import Path
 
 import orjson
 import zstandard
 from shapely.geometry import mapping, shape
-from index import norm, index_search
+from index import norm
+from storage import create, finish
 
 ROOT = Path(__file__).parent
-SCHEMA = """
-PRAGMA journal_mode=OFF;
-PRAGMA synchronous=OFF;
-PRAGMA cache_size=-32768;
-PRAGMA temp_store=FILE;
-CREATE TABLE places(id INTEGER PRIMARY KEY, source TEXT, name TEXT, aliases TEXT,
- kind TEXT, lon REAL, lat REAL, city TEXT, postcode TEXT, importance REAL,
- west REAL, south REAL, east REAL, north REAL, region TEXT, context TEXT, cuisine TEXT, opening_hours TEXT);
-CREATE TABLE addresses(street_id INTEGER, house TEXT, lon REAL, lat REAL, source TEXT);
-CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT);
-"""
 
 
 def values(d, keys):
@@ -62,20 +50,22 @@ def category(p):
 class Writer:
     def __init__(self, name, output):
         self.path = output / f'{name}.sqlite'
-        if self.path.exists():
-            raise SystemExit(f'{self.path} exists; choose a fresh output directory or remove this generated file.')
-        self.db = sqlite3.connect(self.path)
-        self.db.executescript(SCHEMA)
+        self.db = create(self.path)
         self.streets = {}
-        self.counts = Counter()
+        self.contexts = {}
         self.next_id = 0
 
     def place(self, source, name, aliases, kind, lon, lat, city, postcode, importance, bbox, region, context, cuisine='', opening_hours=''):
         self.next_id += 1
-        self.db.execute('INSERT INTO places VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                        (self.next_id, source, name, aliases, kind, lon, lat, city, postcode,
-                         importance, *bbox, region, context, cuisine, opening_hours))
-        self.counts[kind] += 1
+        key = (city, postcode, region, context)
+        context_id = self.contexts.get(key)
+        if context_id is None:
+            context_id = len(self.contexts) + 1
+            self.contexts[key] = context_id
+            self.db.execute('INSERT INTO place_contexts VALUES (?,?,?,?,?)', (context_id, *key))
+        self.db.execute('INSERT INTO place_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                        (self.next_id, source, name, None if aliases == name else aliases,
+                         kind, lon, lat, context_id, importance, *bbox, cuisine, opening_hours))
         return self.next_id
 
     def add(self, p):
@@ -110,7 +100,6 @@ class Writer:
                 self.streets[key] = sid
             if house:
                 self.db.execute('INSERT INTO addresses VALUES (?,?,?,?,?)', (sid, norm(house), lon, lat, source))
-                self.counts['address'] += 1
         if kind == 'street':
             return
         # Unnamed service features remain category-searchable.
@@ -131,23 +120,7 @@ class Writer:
                    p.get('extra', {}).get('cuisine', ''), p.get('extra', {}).get('opening_hours', ''))
 
     def finish(self, meta):
-        self.db.commit()
-        print(f'Indexing {self.path.name}: {self.next_id:,} places, {self.counts["address"]:,} addresses', flush=True)
-        self.db.executescript('''
-          CREATE INDEX address_lookup ON addresses(street_id,house);
-          CREATE VIRTUAL TABLE address_spatial USING rtree(id,west,east,south,north);
-          INSERT INTO address_spatial SELECT rowid,lon,lon,lat,lat FROM addresses;
-          CREATE INDEX category_lookup ON places(kind,lon,lat);
-          CREATE INDEX source_lookup ON places(source);
-          CREATE VIRTUAL TABLE spatial USING rtree(id,west,east,south,north);
-          INSERT INTO spatial SELECT id,lon,lon,lat,lat FROM places;
-        ''')
-        index_search(self.db)
-        meta = {**meta, 'counts': dict(self.counts)}
-        self.db.executemany('INSERT INTO metadata VALUES (?,?)', ((k, orjson.dumps(v).decode()) for k, v in meta.items()))
-        self.db.commit()
-        self.db.close()
-        print(f'{self.path.name}: {self.path.stat().st_size / 1e6:.1f} MB', flush=True)
+        finish(self.db, self.path, meta)
 
 
 def main():
@@ -176,9 +149,11 @@ def main():
     start = time.monotonic()
     n = 0
     outlines = []
-    meta = {'schema': 2, 'source': args.dump.name, 'attribution': '© OpenStreetMap contributors, ODbL 1.0; prepared by Nominatim / Photon'}
+    meta = {'schema': 3, 'source': args.dump.name, 'attribution': '© OpenStreetMap contributors, ODbL 1.0; prepared by Nominatim / Photon'}
+    if bounds:
+        meta.update(bounds=bounds, countries=countries)
     if args.osm_sha256:
-        meta.update(osm_sha256=args.osm_sha256, bounds=bounds, countries=countries)
+        meta['osm_sha256'] = args.osm_sha256
     with args.dump.open('rb') as raw, zstandard.ZstdDecompressor().stream_reader(raw) as stream:
         for line in io.BufferedReader(stream):
             obj = orjson.loads(line)
@@ -191,7 +166,10 @@ def main():
                     continue
                 if bounds:
                     lon, lat = p['centroid']
-                    if not (bounds[0] <= lon <= bounds[2] and bounds[1] <= lat <= bounds[3]):
+                    extent = p.get('bbox', [lon, lat, lon, lat])
+                    if not ((bounds[0] <= lon <= bounds[2] and bounds[1] <= lat <= bounds[3])
+                            or (max(extent[0], extent[2]) >= bounds[0] and max(extent[1], extent[3]) >= bounds[1]
+                                and min(extent[0], extent[2]) <= bounds[2] and min(extent[1], extent[3]) <= bounds[3])):
                         continue
                     writers[args.region].add(p)
                 elif 'germany' in writers:

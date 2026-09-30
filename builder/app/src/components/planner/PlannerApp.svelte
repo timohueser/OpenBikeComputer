@@ -29,9 +29,9 @@
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import { corridorPlaces } from '../../lib/planner/place-index';
     import { landmarks } from '../../lib/planner/landmarks';
-    import { BASEMAP_URL } from '../../lib/planner/map-data';
+    import { BASEMAP_URL, MAP_BOUNDS } from '../../lib/planner/map-data';
     import { coordinateName, visitName } from '../../lib/planner/point-names';
-    import { SEARCH_URL, HOSTED_SEARCH } from '../../lib/planner/search/config';
+    import { SEARCH_URL, HOSTED_SEARCH, SEARCH_REGIONS } from '../../lib/planner/search/config';
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileAscent } from '../../lib/planner/profile-data';
     import { searchPlaces, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
@@ -144,12 +144,12 @@
     let searchState = $state<SearchState>({ loading: false, error: '', answer: null });
     let searchBox: Query | undefined;
     let searchViewRevision = $state(0);
-    let viewBounds = $state<[number, number, number, number]>([7.77,47.965,7.96,48.06]);
+    let viewBounds = $state<[number, number, number, number]>(MAP_BOUNDS ?? [7.77,47.965,7.96,48.06]);
     let here = $state<Coordinate | undefined>();
     let pointing = $state<Where | undefined>();
     let applyingQuery = $state(false);
     let queryApplyError = $state('');
-    let searchRegion = $state('baden-wuerttemberg');
+    let searchRegion = $state(SEARCH_REGIONS[0]);
     let overnightPlaces = $state<Place[]>([]);
     let overnightNote = $state('');
     let message = $state('Plan a ride in Baden-Württemberg');

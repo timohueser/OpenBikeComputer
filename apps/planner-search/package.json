@@ -14,6 +14,10 @@
     "test:model": ".venv/bin/python query/evaluate.py runtime:data/model"
   },
   "dependencies": {
+    "@js-temporal/polyfill": "0.5.1",
     "opening_hours": "3.11.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1"
   }
 }
