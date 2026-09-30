@@ -123,9 +123,7 @@ final class SettingsTests: XCTestCase {
 
         app.staticTexts["Forget device"].tap()
         XCTAssertTrue(app.buttons["confirm.action.0"].waitForExistence(timeout: 5))
-        // Dismiss without confirming: the dialog's Cancel is not a queryable button on this iOS
-        // version, and tapping the scrim is the same user gesture.
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)).tap()
+        app.buttons["confirm.cancel"].tap()
 
         XCTAssertTrue(app.descendants(matching: .any)["settings.screen"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Trailhead"].exists)

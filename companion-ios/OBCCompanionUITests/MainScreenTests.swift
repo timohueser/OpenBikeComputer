@@ -307,13 +307,16 @@ final class MainScreenTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5), "detail missing")
     }
 
-    /// The plus opens the Files picker directly: no intermediate menu with dead rows.
+    /// The plus menu's Import item opens the Files picker directly.
     @MainActor
     func testImportButtonOpensFilePickerDirectly() {
         let app = launch(scenario: "happyPath")
         waitForMain(app)
 
-        app.buttons["Import a route"].tap()
+        app.buttons["Add a route"].tap()
+        let importFile = app.buttons["main.importFile"]
+        XCTAssertTrue(importFile.waitForExistence(timeout: 5), "Import item missing")
+        importFile.tap()
         // The system document picker; Cancel is its stable anchor.
         let cancel = app.buttons["Cancel"]
         XCTAssertTrue(cancel.waitForExistence(timeout: 10), "Files picker did not open")

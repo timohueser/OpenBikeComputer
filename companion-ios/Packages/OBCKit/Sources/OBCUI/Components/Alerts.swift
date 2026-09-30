@@ -1,7 +1,7 @@
 import SwiftUI
 
-// The destructive confirm, the rename sheet, and the system pairing sheet. The first two are
-// the app's own bottom sheets; the pairing alert stays system blue on purpose.
+// The choice sheet, the destructive confirm, the rename sheet, and the system pairing sheet. The
+// first three are the app's own bottom sheets; the pairing alert stays system blue on purpose.
 
 /// One choice on an `obcChoiceSheet`.
 public struct OBCSheetAction {
@@ -68,11 +68,19 @@ public extension View {
 }
 
 private struct OBCChoiceSheet: View {
-    let title: String
-    let message: String?
-    let actions: [OBCSheetAction]
+    // Held from presentation: the caller often clears the state these came from on dismissal,
+    // and the sheet must not change while it animates out.
+    @State private var title: String
+    @State private var message: String?
+    @State private var actions: [OBCSheetAction]
 
     @Environment(\.dismiss) private var dismiss
+
+    init(title: String, message: String?, actions: [OBCSheetAction]) {
+        _title = State(initialValue: title)
+        _message = State(initialValue: message)
+        _actions = State(initialValue: actions)
+    }
 
     private var plain: [(offset: Int, element: OBCSheetAction)] {
         Array(actions.enumerated()).filter { $0.element.role == .normal }
