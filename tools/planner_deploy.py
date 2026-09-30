@@ -70,13 +70,17 @@ def deploy(args):
     print(f"Install {identity} on {args.host}; routing :{route_port}, search :{search_port}.")
     if not args.apply: return
     ssh(args.host, f"mkdir -p {base}/routing {base}/search/data/model {base}/search/node_modules /opt/obc-planner/source /etc/caddy/planner")
-    excludes = [".git", "target", "node_modules", ".venv", ".artifacts", "data", "dist", "pkg", "*.obcm", "*.osm.pbf", "*.tif", "*.pmtiles"]
-    maps.run("rsync", "-az", *[f"--exclude={item}" for item in excludes], str(maps.ROOT) + "/", f"{args.host}:/opt/obc-planner/source/")
+    tracked = maps.run("git", "ls-files", "-z", cwd=maps.ROOT, capture_output=True)
+    maps.run("rsync", "-az", "--from0", "--files-from=-", str(maps.ROOT) + "/",
+             f"{args.host}:/opt/obc-planner/source/", input=tracked.stdout)
     maps.run("rsync", "-az", str(args.data_dir / "routing") + "/", f"{args.host}:{base}/routing/")
     maps.run("rsync", "-az", str(args.data_dir / "search" / (document["region"] + ".sqlite")), f"{args.host}:{base}/search/data/")
     maps.run("rsync", "-az", str(args.data_dir / "search/model") + "/", f"{args.host}:{base}/search/data/model/")
-    maps.run("rsync", "-az", "--exclude=.venv", "--exclude=data", "--exclude=node_modules", "--exclude=.pytest_cache",
-             str(maps.ROOT / "apps/planner-search") + "/", f"{args.host}:{base}/search/")
+    search_prefix = b"apps/planner-search/"
+    search_files = b"\0".join(path[len(search_prefix):] for path in tracked.stdout.split(b"\0")
+                              if path.startswith(search_prefix)) + b"\0"
+    maps.run("rsync", "-az", "--from0", "--files-from=-", str(maps.ROOT / "apps/planner-search") + "/",
+             f"{args.host}:{base}/search/", input=search_files)
     maps.run("rsync", "-az", str(maps.ROOT / "apps/planner-search/node_modules") + "/", f"{args.host}:{base}/search/node_modules/")
     maps.run("rsync", "-az", str(maps.ROOT / "fixtures/sources/route-import/komoot-schwarzwald.gpx"), f"{args.host}:{base}/search/sample.gpx")
     ssh(args.host, f"""cd /opt/obc-planner/source
