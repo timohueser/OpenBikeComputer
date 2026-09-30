@@ -1057,7 +1057,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "RF matching inductor, Nordic PAAA reference selection"
+		(property "Description" "RF matching inductor, provisional QGAA matching; confirm with Nordic"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -1178,7 +1178,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "RF matching inductor, Nordic PAAA reference selection"
+		(property "Description" "RF matching inductor, provisional QGAA matching; confirm with Nordic"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -1299,7 +1299,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "RF matching inductor, Nordic PAAA reference selection"
+		(property "Description" "RF matching inductor, provisional QGAA matching; confirm with Nordic"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -2602,7 +2602,7 @@
 		)
 		(uuid "25a55834-b999-4101-9f1c-557426cd8058")
 	)
-	(text "SoC matching: copy Nordic PAAA reference geometry and ground vias.\nKeep L8/C45/L9/C46/L10 at U6; 50-ohm feed beyond this network."
+	(text "QGAA matching is provisional. Obtain the Nordic LM20 QFN reference circuit.\nVerify L8/C45/L9/C46/L10 values and geometry before fabrication."
 		(at 38.1 129.54 0)
 		(effects
 			(font
@@ -2869,21 +2869,19 @@
 			)
 		)
 		(property "Reference" "J7"
-			(at 157.48000000000002 68.58 90)
+			(at 154.94 63.5 90)
 			(effects
 				(font
 					(size 1 1)
 				)
-				(justify left)
 			)
 		)
 		(property "Value" "RF coax pads"
-			(at 157.48000000000002 71.12 90)
+			(at 154.94 66.04 90)
 			(effects
 				(font
 					(size 1 1)
 				)
-				(justify left)
 			)
 		)
 		(pin "1"

@@ -4156,7 +4156,7 @@
 		)
 		(uuid "d9db78af-8459-46dc-ac3a-f75240881cbe")
 	)
-	(text "UART high-Z while GPS rail is off. Enable after BUCK2 = 3.2V.\nVerify LS2 startup: receiver VCC inrush up to 100mA.\nPreliminary F11N: recheck production pinout and power budget."
+	(text "Release both UART pins before LS2 is off; enable LS2 before UARTE30.\nSet LS2 soft start to 50mA; measure V_IO at 25-3500us/V.\nV_BCKP ramp >=25us/V. Verify the production F11N power budget."
 		(at 85.09 144.78 0)
 		(effects
 			(font
@@ -5038,7 +5038,7 @@
 	)
 	(symbol
 		(lib_id "Device:C_Small")
-		(at 134.62 104.14 0)
+		(at 139.7 104.14 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -5048,7 +5048,7 @@
 		(dnp yes)
 		(uuid "57ebc53b-cd8e-4b65-a590-2bbb6518f9e1")
 		(property "Reference" "C50"
-			(at 137.16 101.6 0)
+			(at 142.24 101.6 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -5059,7 +5059,7 @@
 			)
 		)
 		(property "Value" "DNP"
-			(at 137.16 104.14 0)
+			(at 142.24 104.14 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -5070,7 +5070,7 @@
 			)
 		)
 		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
-			(at 134.62 104.14 0)
+			(at 139.7 104.14 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5081,7 +5081,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.taoglas.com/datasheets/GGBLA.125.A.pdf"
-			(at 134.62 104.14 0)
+			(at 139.7 104.14 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5092,7 +5092,7 @@
 			)
 		)
 		(property "Description" "Optional RF input shunt capacitor; C0G, 25V, 0402; value set by RF measurement"
-			(at 134.62 104.14 0)
+			(at 139.7 104.14 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5117,7 +5117,7 @@
 			)
 		)
 		(property "Manufacturer" "Murata"
-			(at -288.29 12.7 0)
+			(at -283.21 12.7 0)
 			(hide yes)
 			(effects
 				(font
@@ -5127,7 +5127,7 @@
 			)
 		)
 		(property "MPN" ""
-			(at -288.29 12.7 0)
+			(at -283.21 12.7 0)
 			(hide yes)
 			(effects
 				(font
@@ -5137,7 +5137,7 @@
 			)
 		)
 		(property "Voltage" "25V"
-			(at 137.16 106.68 0)
+			(at 142.24 106.68 0)
 			(effects
 				(font
 					(size 1 1)
@@ -5146,7 +5146,7 @@
 			)
 		)
 		(property "Dielectric" "C0G"
-			(at 137.16 109.22 0)
+			(at 142.24 109.22 0)
 			(effects
 				(font
 					(size 1 1)
@@ -5155,7 +5155,7 @@
 			)
 		)
 		(property "Tolerance" "0.1pF"
-			(at -288.29 12.7 0)
+			(at -283.21 12.7 0)
 			(hide yes)
 			(effects
 				(font
@@ -5165,7 +5165,7 @@
 			)
 		)
 		(property "Tuning" "Retune on final assembled PCB"
-			(at -288.29 12.7 0)
+			(at -283.21 12.7 0)
 			(hide yes)
 			(effects
 				(font
@@ -5177,7 +5177,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 134.62 111.76 0)
+		(at 139.7 111.76 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -5188,7 +5188,7 @@
 		(fields_autoplaced yes)
 		(uuid "69490c5f-4f70-44d8-ab0d-70428af8b30b")
 		(property "Reference" "#PWR5001"
-			(at 137.16 107.95 0)
+			(at 142.24 107.95 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5200,7 +5200,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 137.16 109.22 0)
+			(at 142.24 109.22 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5212,7 +5212,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 137.16 110.49 0)
+			(at 142.24 110.49 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5224,7 +5224,7 @@
 			)
 		)
 		(property "Datasheet" "~"
-			(at 137.16 111.76 0)
+			(at 142.24 111.76 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5236,7 +5236,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 137.16 113.03 0)
+			(at 142.24 113.03 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5262,7 +5262,7 @@
 	(wire
 		(pts
 			(xy 132.08 91.44)
-			(xy 134.62 91.44)
+			(xy 139.7 91.44)
 		)
 		(stroke
 			(width 0)
@@ -5272,7 +5272,7 @@
 	)
 	(wire
 		(pts
-			(xy 134.62 91.44)
+			(xy 139.7 91.44)
 			(xy 140.97 91.44)
 		)
 		(stroke
@@ -5283,8 +5283,8 @@
 	)
 	(wire
 		(pts
-			(xy 134.62 91.44)
-			(xy 134.62 101.6)
+			(xy 139.7 91.44)
+			(xy 139.7 101.6)
 		)
 		(stroke
 			(width 0)
@@ -5294,8 +5294,8 @@
 	)
 	(wire
 		(pts
-			(xy 134.62 106.68)
-			(xy 134.62 111.76)
+			(xy 139.7 106.68)
+			(xy 139.7 111.76)
 		)
 		(stroke
 			(width 0)
@@ -5304,7 +5304,7 @@
 		(uuid "75e2378f-0b6d-48be-a633-f00c9b30ba6e")
 	)
 	(junction
-		(at 134.62 91.44)
+		(at 139.7 91.44)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "be9d5355-6298-4b82-8c58-f114f1673bb1")
@@ -5338,7 +5338,7 @@
 		(uuid "4ec374be-fe1c-4f89-ae91-12b6349a5b6c")
 	)
 	(label "GNSS_RF_IN"
-		(at 134.62 97.79 0)
+		(at 139.7 97.79 0)
 		(effects
 			(font
 				(size 1 1)
@@ -5358,7 +5358,7 @@
 		(uuid "82bc4808-c3c3-4220-89b1-c4082aa1509d")
 	)
 	(label "GNSS_RF_MATCH"
-		(at 168.91 91.44 0)
+		(at 165.1 91.44 0)
 		(effects
 			(font
 				(size 1 1)
@@ -5378,22 +5378,22 @@
 		(uuid "f51b4cd9-25f2-4fc1-b3fa-a0ba6284a98b")
 	)
 	(label "GNSS_FTE1"
-		(at 195.58 76.2 90)
+		(at 195.58 77.47 0)
 		(effects
 			(font
 				(size 1 1)
 			)
-			(justify right bottom)
+			(justify left bottom)
 		)
 		(uuid "03ffa17f-ec90-4268-85f2-a55bbafd2ac1")
 	)
 	(label "GNSS_FTE2"
-		(at 203.2 76.2 90)
+		(at 205.74 77.47 0)
 		(effects
 			(font
 				(size 1 1)
 			)
-			(justify right bottom)
+			(justify left bottom)
 		)
 		(uuid "b6336977-6563-4f21-bba4-d665c61caf98")
 	)
