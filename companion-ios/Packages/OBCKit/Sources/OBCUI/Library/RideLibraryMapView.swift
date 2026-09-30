@@ -54,13 +54,9 @@ public struct RideLibraryMapView: View {
                         Button("Done", action: onClose).fontWeight(.semibold)
                     }
                 }
-                .confirmationDialog("Which ride?", isPresented: choicesShown, titleVisibility: .visible) {
-                    ForEach(choices, id: \.self) { id in
-                        if let ride = ride(id) {
-                            Button("\(ride.name) · \(OBCFormat.rideDay(ride.date))") { select(id) }
-                        }
-                    }
-                }
+                .obcChoiceSheet("Which ride?", isPresented: choicesShown, actions: choices.compactMap { id in
+                    ride(id).map { ride in OBCSheetAction("\(ride.name) · \(OBCFormat.rideDay(ride.date))") { select(id) } }
+                })
                 .accessibilityIdentifier("libraryMap.screen")
         }
         .tint(OBCTheme.tint)

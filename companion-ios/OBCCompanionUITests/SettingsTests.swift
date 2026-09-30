@@ -100,11 +100,11 @@ final class SettingsTests: XCTestCase {
         openSettings(app)
 
         app.staticTexts["Forget device"].tap()
-        // Scoped to the sheet: the row shares the "Forget device" label.
-        let confirm = app.sheets.buttons["Forget device"]
+        // By identifier: the row shares the "Forget device" label.
+        let confirm = app.buttons["confirm.action.0"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5), "H2 confirm missing")
         XCTAssertTrue(
-            app.sheets.staticTexts["You'll pair again to use it. Your routes and rides stay on this phone."]
+            app.staticTexts["You'll pair again to use it. Your routes and rides stay on this phone."]
                 .exists,
             "H2 reassurance copy missing")
         snap(app, "H2-forget-confirm")
@@ -122,7 +122,7 @@ final class SettingsTests: XCTestCase {
         openSettings(app)
 
         app.staticTexts["Forget device"].tap()
-        XCTAssertTrue(app.sheets.buttons["Forget device"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["confirm.action.0"].waitForExistence(timeout: 5))
         // Dismiss without confirming: the dialog's Cancel is not a queryable button on this iOS
         // version, and tapping the scrim is the same user gesture.
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)).tap()

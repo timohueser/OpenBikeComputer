@@ -3,10 +3,38 @@ import SwiftUI
 // The destructive confirm, the rename sheet, and the system pairing sheet. The first two are
 // the app's own bottom sheets; the pairing alert stays system blue on purpose.
 
+/// One choice on an `obcChoiceSheet`.
+public struct OBCSheetAction {
+    public enum Role { case normal, destructive }
+    let title: String
+    let role: Role
+    let action: () -> Void
+
+    public init(_ title: String, role: Role = .normal, action: @escaping () -> Void) {
+        self.title = title
+        self.role = role
+        self.action = action
+    }
+}
+
 public extension View {
-    /// A bottom sheet that confirms a destructive action (delete route, forget device). Every
-    /// destructive path routes through this; there is no one-gesture destroy. A sheet, not a
-    /// confirmation dialog: the dialog pops up as a bubble beside its control.
+    /// The app's bottom sheet for a question with a few answers: a title, one line, the choices,
+    /// and Cancel. One plain choice is the amber action; several are grouped rows; a destructive
+    /// choice is red text. A sheet, not a confirmation dialog: the dialog pops up as a bubble
+    /// beside its control.
+    func obcChoiceSheet(
+        _ title: String,
+        isPresented: Binding<Bool>,
+        message: String? = nil,
+        actions: [OBCSheetAction]
+    ) -> some View {
+        sheet(isPresented: isPresented) {
+            OBCChoiceSheet(title: title, message: message, actions: actions)
+        }
+    }
+
+    /// A choice sheet with one destructive answer (delete route, forget device). Every destructive
+    /// path routes through this; there is no one-gesture destroy.
     func obcDestructiveConfirm(
         _ title: String,
         isPresented: Binding<Bool>,
@@ -14,9 +42,8 @@ public extension View {
         actionTitle: String,
         onConfirm: @escaping () -> Void
     ) -> some View {
-        sheet(isPresented: isPresented) {
-            OBCDestructiveConfirmSheet(title: title, message: message, actionTitle: actionTitle, onConfirm: onConfirm)
-        }
+        obcChoiceSheet(title, isPresented: isPresented, message: message,
+                       actions: [OBCSheetAction(actionTitle, role: .destructive, action: onConfirm)])
     }
 
     /// The name sheet, shared by every rename and name prompt: a field that starts at `name`,
@@ -40,13 +67,16 @@ public extension View {
     }
 }
 
-private struct OBCDestructiveConfirmSheet: View {
+private struct OBCChoiceSheet: View {
     let title: String
-    let message: String
-    let actionTitle: String
-    let onConfirm: () -> Void
+    let message: String?
+    let actions: [OBCSheetAction]
 
     @Environment(\.dismiss) private var dismiss
+
+    private var plain: [(offset: Int, element: OBCSheetAction)] {
+        Array(actions.enumerated()).filter { $0.element.role == .normal }
+    }
 
     var body: some View {
         OBCSheetContainer {
@@ -54,18 +84,44 @@ private struct OBCDestructiveConfirmSheet: View {
                 Text(title)
                     .font(.system(.title2, weight: .bold))
                     .foregroundStyle(OBCTheme.ink)
-                Text(message)
-                    .font(.system(.callout))
-                    .foregroundStyle(OBCTheme.secondary)
-                    .padding(.bottom, 6)
-                Button(actionTitle) { dismiss(); onConfirm() }
-                    .buttonStyle(.obcDestructive)
-                    .accessibilityIdentifier("confirm.destructive")
+                if let message {
+                    Text(message)
+                        .font(.system(.callout))
+                        .foregroundStyle(OBCTheme.secondary)
+                        .padding(.bottom, 6)
+                }
+                if plain.count > 1 {
+                    OBCGroupedSection {
+                        ForEach(plain, id: \.offset) { index, action in
+                            OBCListRow(label: action.title, showsChevron: true,
+                                       showsDivider: index != plain.last?.offset) { choose(action) }
+                                .accessibilityIdentifier("confirm.action.\(index)")
+                        }
+                    }
+                }
+                ForEach(Array(actions.enumerated()), id: \.offset) { index, action in
+                    if action.role == .destructive {
+                        Button(action.title) { choose(action) }
+                            .buttonStyle(.obcDestructive)
+                            .accessibilityIdentifier("confirm.action.\(index)")
+                    } else if plain.count == 1 {
+                        Button(action.title) { choose(action) }
+                            .buttonStyle(.obcPrimary)
+                            .accessibilityIdentifier("confirm.action.\(index)")
+                    }
+                }
                 Button("Cancel") { dismiss() }
                     .buttonStyle(.obcGhost)
                     .accessibilityIdentifier("confirm.cancel")
             }
         }
+    }
+
+    // The choice runs before the sheet closes, as a dialog button does, so a model that clears
+    // its question on dismissal still sees the answer.
+    private func choose(_ action: OBCSheetAction) {
+        action.action()
+        dismiss()
     }
 }
 

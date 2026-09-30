@@ -178,16 +178,14 @@ struct RootView: View {
         }
         // A re-import whose name matches a saved route, such as an edited tour: update that route
         // in place, or keep both.
-        .confirmationDialog(
+        .obcChoiceSheet(
             collisionTitle,
             isPresented: collisionShown,
-            titleVisibility: .visible,
-            presenting: importModel.collision
-        ) { _ in
-            Button("Update the existing route") { importModel.chooseReplace() }
-            Button("Add as a new route") { importModel.chooseAddAsNew() }
-            Button("Cancel", role: .cancel) { importModel.cancelCollision() }
-        }
+            actions: [
+                OBCSheetAction("Update the existing route") { importModel.chooseReplace() },
+                OBCSheetAction("Add as a new route") { importModel.chooseAddAsNew() },
+            ]
+        )
         .obcRenameSheet(
             "Name the new route",
             isPresented: addAsNewShown,
@@ -350,13 +348,13 @@ struct RootView: View {
         mainModel.addImportedRoute(file.record(for: detail))
     }
 
-    /// The collision dialog's title: the imported route's name, or the file name, quoted.
+    /// The collision sheet's title: the imported route's name, or the file name, quoted.
     private var collisionTitle: String {
         let name = importModel.collision?.pending.route.name ?? importModel.collision?.pending.fileName ?? ""
         return "\u{201C}\(name)\u{201D} is already in your library"
     }
 
-    /// Presentation binding for the collision dialog; dismissal cancels.
+    /// Presentation binding for the collision sheet; dismissal cancels.
     private var collisionShown: Binding<Bool> {
         Binding(
             get: { importModel.collision != nil },

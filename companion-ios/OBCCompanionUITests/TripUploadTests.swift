@@ -131,7 +131,7 @@ final class TripUploadTests: XCTestCase {
         let delete = app.buttons["trip.delete"]
         XCTAssertTrue(delete.waitForExistence(timeout: 5), "overflow menu did not open")
         delete.tap()
-        app.sheets.buttons["Delete trip"].tap()
+        app.buttons["confirm.action.0"].tap()
 
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons[tripCardID].waitForExistence(timeout: 3), "trip card survived delete")

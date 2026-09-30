@@ -110,13 +110,9 @@ final class MainScreenTests: XCTestCase {
         XCTAssertTrue(reveal.waitForExistence(timeout: 5), "H11 swipe action missing")
         snap(app, "H11-swipe-to-delete")
         reveal.tap()
-        let confirm = app.sheets.buttons["Delete route"]
+        let confirm = app.buttons["confirm.action.0"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5), "route deletion must ask first")
-        if app.sheets.buttons["Cancel"].exists {
-            app.sheets.buttons["Cancel"].tap()
-        } else {
-            app.otherElements["PopoverDismissRegion"].tap()
-        }
+        app.buttons["confirm.cancel"].tap()
         XCTAssertTrue(card.exists, "cancel must keep the route")
         card.swipeLeft()
         reveal.tap()
