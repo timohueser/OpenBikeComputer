@@ -1606,7 +1606,7 @@
 						)
 					)
 				)
-				(alternate "DISABLED" passive line)
+				(alternate "INT(GND)" passive line)
 			)
 			(pin power_in line
 				(at 0 -17.78 90)
@@ -2282,7 +2282,7 @@
 				)
 			)
 			(pin passive line
-				(at -20.32 16.51 0)
+				(at -20.32 11.43 0)
 				(length 5.08)
 				(name "VA"
 					(effects
@@ -13351,7 +13351,7 @@
 						)
 					)
 				)
-				(alternate "DISABLED" passive line)
+				(alternate "LSOUT1(GND)" passive line)
 			)
 			(pin input line
 				(at 35.56 -15.24 180)

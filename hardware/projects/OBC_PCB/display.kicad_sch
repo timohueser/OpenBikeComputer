@@ -1257,7 +1257,7 @@
 					)
 				)
 				(pin passive line
-					(at -20.32 16.51 0)
+					(at -20.32 11.43 0)
 					(length 5.08)
 					(name "VA"
 						(effects
@@ -5674,39 +5674,6 @@
 		(color 0 0 0 0)
 		(uuid "d52496b0-8d6e-56df-9a9d-931618d0e825")
 	)
-	(wire
-		(pts
-			(xy 172.72 71.12)
-			(xy 285.75 71.12)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "7f109839-8d98-591b-8a1f-436d18b4b551")
-	)
-	(wire
-		(pts
-			(xy 285.75 71.12)
-			(xy 285.75 74.93)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "851e8574-b8f5-5da2-becf-19bb4cc7ba1f")
-	)
-	(wire
-		(pts
-			(xy 285.75 74.93)
-			(xy 322.58 74.93)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "50a2fba9-4b07-5764-8b5b-035afc4d8a92")
-	)
 	(symbol
 		(lib_id "Device:C_Small")
 		(at 317.5 45.72 0)
@@ -9979,7 +9946,7 @@
 		(at 20.32 120.65 0)
 		(effects
 			(font
-				(size 1.1 1.1)
+				(size 1.0 1.0)
 			)
 			(justify left top)
 		)
@@ -9989,7 +9956,7 @@
 		(at 20.32 139.7 0)
 		(effects
 			(font
-				(size 1.05 1.05)
+				(size 1.0 1.0)
 			)
 			(justify left top)
 		)
@@ -9999,7 +9966,7 @@
 		(at 177.8 165.1 0)
 		(effects
 			(font
-				(size 1 1)
+				(size 1.0 1.0)
 			)
 			(justify left top)
 		)
@@ -10020,7 +9987,7 @@
 		(at 20.32 184.15 0)
 		(effects
 			(font
-				(size 1.5 1.5)
+				(size 1.8 1.8)
 				(bold yes)
 			)
 			(justify left top)
@@ -10958,11 +10925,44 @@
 		(at 20.32 254 0)
 		(effects
 			(font
-				(size 1.1 1.1)
+				(size 1.0 1.0)
 			)
 			(justify left top)
 		)
 		(uuid "74aec89c-792a-58ff-8eab-a9f49b4d2603")
 	)
 	(embedded_fonts no)
+	(wire
+		(pts
+			(xy 172.72 71.12)
+			(xy 260.35 71.12)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "8768fbb4-0b61-58e4-bb58-2d431f142c30")
+	)
+	(wire
+		(pts
+			(xy 260.35 71.12)
+			(xy 260.35 80.01)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "6f01ffa3-f9a7-51e9-9f9d-eb1bb8ad3d4c")
+	)
+	(wire
+		(pts
+			(xy 260.35 80.01)
+			(xy 322.58 80.01)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "1d32c2bf-f3e8-5720-a09c-1a6eb73c2991")
+	)
 )

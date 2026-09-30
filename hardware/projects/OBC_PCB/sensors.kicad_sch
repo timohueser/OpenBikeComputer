@@ -1377,7 +1377,7 @@
 							)
 						)
 					)
-					(alternate "DISABLED" passive line)
+					(alternate "INT(GND)" passive line)
 				)
 				(pin power_in line
 					(at 0 -17.78 90)
@@ -1572,7 +1572,7 @@
 		(at 17.78 24.13 0)
 		(effects
 			(font
-				(size 1.1 1.1)
+				(size 1.0 1.0)
 			)
 			(justify left top)
 		)
@@ -1945,7 +1945,7 @@
 		(at 104.14 38.1 0)
 		(effects
 			(font
-				(size 1 1)
+				(size 1.0 1.0)
 			)
 			(justify left top)
 		)
@@ -2120,7 +2120,7 @@
 		)
 		(pin "7"
 			(uuid "b1d1d733-eadb-5e37-8e7a-45aef087ea62")
-			(alternate "DISABLED")
+			(alternate "INT(GND)")
 		)
 		(pin "8"
 			(uuid "4b884c35-9d85-5176-9f4d-3c2774b906c0")
@@ -3983,7 +3983,7 @@
 		(at 30.48 138.43 0)
 		(effects
 			(font
-				(size 1.25 1.25)
+				(size 1.27 1.27)
 				(bold yes)
 			)
 			(justify left top)
@@ -3994,7 +3994,7 @@
 		(at 30.48 145.0 0)
 		(effects
 			(font
-				(size 1 1)
+				(size 1.0 1.0)
 			)
 			(justify left top)
 		)
@@ -4004,7 +4004,7 @@
 		(at 115.57 138.43 0)
 		(effects
 			(font
-				(size 1.25 1.25)
+				(size 1.27 1.27)
 				(bold yes)
 			)
 			(justify left top)
@@ -4015,7 +4015,7 @@
 		(at 115.57 145.0 0)
 		(effects
 			(font
-				(size 1 1)
+				(size 1.0 1.0)
 			)
 			(justify left top)
 		)
@@ -5538,7 +5538,7 @@
 		(at 203.2 138.43 0)
 		(effects
 			(font
-				(size 1.25 1.25)
+				(size 1.27 1.27)
 				(bold yes)
 			)
 			(justify left top)
@@ -5549,7 +5549,7 @@
 		(at 203.2 145.0 0)
 		(effects
 			(font
-				(size 1 1)
+				(size 1.0 1.0)
 			)
 			(justify left top)
 		)

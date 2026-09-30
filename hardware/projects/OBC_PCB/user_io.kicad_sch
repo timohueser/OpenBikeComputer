@@ -2911,7 +2911,7 @@
 		(at 20.32 91.44 0)
 		(effects
 			(font
-				(size 1.1 1.1)
+				(size 1.0 1.0)
 			)
 			(justify left top)
 		)
@@ -4361,7 +4361,7 @@
 		(at 147.32 119.38 0)
 		(effects
 			(font
-				(size 1.1 1.1)
+				(size 1.0 1.0)
 			)
 			(justify left top)
 		)
@@ -5829,7 +5829,7 @@
 	)
 	(symbol
 		(lib_id "obc:CPT-9019A-SMT-TR")
-		(at 222.25 171.45 0)
+		(at 222.25 173.99 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -5837,7 +5837,7 @@
 		(dnp no)
 		(uuid "05afe938-5aad-4897-9997-26f8d602c8bc")
 		(property "Value" "CPT-9019A-SMT-TR"
-			(at 217.17 163.82999999999998 0)
+			(at 217.17 166.37 0)
 			(effects
 				(font
 					(size 1 1)
@@ -5846,7 +5846,7 @@
 			)
 		)
 		(property "Footprint" "obc:CPT-9019A-SMT-TR"
-			(at 0 0 0)
+			(at 0 2.54 0)
 			(hide yes)
 			(effects
 				(font
@@ -5856,7 +5856,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.sameskydevices.com/product/resource/cpt-9019a-smt-tr.pdf"
-			(at 0 0 0)
+			(at 0 2.54 0)
 			(hide yes)
 			(effects
 				(font
@@ -5866,7 +5866,7 @@
 			)
 		)
 		(property "Description" "Externally driven non-polar piezo transducer, 9x9x1.9mm, 4kHz"
-			(at 0 0 0)
+			(at 0 2.54 0)
 			(hide yes)
 			(effects
 				(font
@@ -5876,7 +5876,7 @@
 			)
 		)
 		(property "MPN" "CPT-9019A-SMT-TR"
-			(at 0 0 0)
+			(at 0 2.54 0)
 			(hide yes)
 			(effects
 				(font
@@ -5886,7 +5886,7 @@
 			)
 		)
 		(property "Manufacturer" "Same Sky"
-			(at 0 0 0)
+			(at 0 2.54 0)
 			(hide yes)
 			(effects
 				(font
@@ -5896,7 +5896,7 @@
 			)
 		)
 		(property "Rated Drive" "3Vpp, 4kHz, 50% square wave"
-			(at 0 0 0)
+			(at 0 2.54 0)
 			(hide yes)
 			(effects
 				(font
@@ -5906,7 +5906,7 @@
 			)
 		)
 		(property "Sound Pressure" "72dB min at 10cm, rated drive"
-			(at 0 0 0)
+			(at 0 2.54 0)
 			(hide yes)
 			(effects
 				(font
@@ -5916,7 +5916,7 @@
 			)
 		)
 		(property "Capacitance" "12nF +/-30%"
-			(at 0 0 0)
+			(at 0 2.54 0)
 			(hide yes)
 			(effects
 				(font
@@ -5926,7 +5926,7 @@
 			)
 		)
 		(property "Operating Voltage" "1 to 25Vpp"
-			(at 0 0 0)
+			(at 0 2.54 0)
 			(hide yes)
 			(effects
 				(font
@@ -5936,7 +5936,7 @@
 			)
 		)
 		(property "Operating Temperature" "-40 to +85 C"
-			(at 0 0 0)
+			(at 0 2.54 0)
 			(hide yes)
 			(effects
 				(font
@@ -5946,7 +5946,7 @@
 			)
 		)
 		(property "Reference" "BZ1"
-			(at 217.17 161.28999999999996 0)
+			(at 217.17 163.83 0)
 			(effects
 				(font
 					(size 1 1)
@@ -5982,28 +5982,6 @@
 	)
 	(wire
 		(pts
-			(xy 190.5 171.45)
-			(xy 190.5 168.91)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "d3980115-85c2-594d-9ce6-dcce5312a280")
-	)
-	(wire
-		(pts
-			(xy 190.5 168.91)
-			(xy 219.71 168.91)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "15e2b9e2-cca1-57e1-bd8b-06557c1414c3")
-	)
-	(wire
-		(pts
 			(xy 190.5 199.39)
 			(xy 213.36 199.39)
 		)
@@ -6012,28 +5990,6 @@
 			(type default)
 		)
 		(uuid "2ab9eb6b-f2ab-59b4-b677-a9b8fe99661c")
-	)
-	(wire
-		(pts
-			(xy 213.36 199.39)
-			(xy 213.36 173.99)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "ad57cca8-0606-521f-bace-6667ed952de8")
-	)
-	(wire
-		(pts
-			(xy 213.36 173.99)
-			(xy 219.71 173.99)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "bd53a18e-8247-59ef-9a17-d2581903e538")
 	)
 	(symbol
 		(lib_id "Device:R_Small")
@@ -6170,23 +6126,6 @@
 		(pin "2"
 			(uuid "6685fd92-1c4b-504a-b89e-762efa96d455")
 		)
-	)
-	(wire
-		(pts
-			(xy 199.39 181.61)
-			(xy 199.39 168.91)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "21687a26-8f32-528d-b518-ec0586232083")
-	)
-	(junction
-		(at 199.39 168.91)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "3f105853-e65f-5421-abe9-ac52a91786bc")
 	)
 	(wire
 		(pts
@@ -6641,7 +6580,7 @@
 		(at 20.32 235.0 0)
 		(effects
 			(font
-				(size 1.1 1.1)
+				(size 1.0 1.0)
 			)
 			(justify left top)
 		)
@@ -7173,7 +7112,7 @@
 	)
 	(symbol
 		(lib_id "Connector:TestPoint")
-		(at 317.5 80.01 180)
+		(at 317.5 86.36 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom no)
@@ -7181,7 +7120,7 @@
 		(dnp no)
 		(uuid "2c31758d-af16-4df2-b13d-4c53fcc5907f")
 		(property "Footprint" "TestPoint:TestPoint_Pad_D1.0mm"
-			(at 0 0 0)
+			(at 0 6.35 0)
 			(hide yes)
 			(effects
 				(font
@@ -7191,7 +7130,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 0)
+			(at 0 6.35 0)
 			(hide yes)
 			(effects
 				(font
@@ -7201,7 +7140,7 @@
 			)
 		)
 		(property "Description" "Bare 1mm probe pad for GND; no fitted part or solder paste"
-			(at 0 0 0)
+			(at 0 6.35 0)
 			(hide yes)
 			(effects
 				(font
@@ -7216,16 +7155,16 @@
 				(font
 					(size 1 1)
 				)
-				(justify left)
+				(justify right)
 			)
 		)
 		(property "Value" "GND"
-			(at 313.69 87.63000000000001 0)
+			(at 313.69 87.63 0)
 			(effects
 				(font
 					(size 1 1)
 				)
-				(justify left)
+				(justify right)
 			)
 		)
 		(instances
@@ -7243,7 +7182,7 @@
 
 	(symbol
 		(lib_id "power:GND")
-		(at 325.12 85.09 0)
+		(at 317.5 88.9 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom no)
@@ -7251,7 +7190,7 @@
 		(dnp no)
 		(uuid "7c09ad43-8998-5fd8-ba8e-38475318d65c")
 		(property "Reference" "#PWR9000033"
-			(at 320.04 74.93 0)
+			(at 312.42 78.74 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7263,7 +7202,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 325.12 88.9 0)
+			(at 317.5 92.71 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -7273,7 +7212,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 7.62 11.43 0)
+			(at 0 15.24 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7285,7 +7224,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 7.62 11.43 0)
+			(at 0 15.24 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7297,7 +7236,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 7.62 11.43 0)
+			(at 0 15.24 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7309,7 +7248,7 @@
 			)
 		)
 		(property "ki_keywords" "global power"
-			(at 7.62 11.43 0)
+			(at 0 15.24 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8168,24 +8107,63 @@
 	(embedded_fonts no)
 	(wire
 		(pts
-			(xy 317.5 80.01)
-			(xy 325.12 80.01)
+			(xy 190.5 171.45)
+			(xy 219.71 171.45)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "95d4b7bd-c635-4bd9-a767-fc7e830bc777")
+		(uuid "1dc43a4d-e4a7-551e-83e3-a8d1a8102e4a")
+	)
+	(junction
+		(at 199.39 171.45)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "bea3ec88-5f8d-5ddc-b333-ce24b033679a")
 	)
 	(wire
 		(pts
-			(xy 325.12 80.01)
-			(xy 325.12 85.09)
+			(xy 199.39 181.61)
+			(xy 199.39 171.45)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "e4703cbf-0986-45b6-8376-4a15cc3a7cec")
+		(uuid "3d21376f-e4a9-5f23-a596-1958a823640c")
+	)
+	(wire
+		(pts
+			(xy 213.36 199.39)
+			(xy 213.36 176.53)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "ce07e98d-84b0-5ae8-a643-cfd55b3fbd91")
+	)
+	(wire
+		(pts
+			(xy 213.36 176.53)
+			(xy 219.71 176.53)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "eb497b54-1cd0-5334-a7f5-4888ee168986")
+	)
+	(wire
+		(pts
+			(xy 317.5 86.36)
+			(xy 317.5 88.9)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "1dc43a4d-e4a7-551e-83e3-a8d1a8102e4a")
 	)
 )
