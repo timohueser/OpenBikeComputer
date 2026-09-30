@@ -11,14 +11,14 @@ struct PlannerPreviewProfile: View {
 
     var body: some View {
         let profile = profile
+        // With no route in view the profile shows the whole route, so the drawer never
+        // swaps content or changes height while the map pans.
+        let range = visibleRange.flatMap { $0.upperBound > $0.lowerBound ? $0 : nil } ?? 0...1
         VStack(spacing: 4) {
-            Text(readout(profile))
+            Text(readout(profile, range: range))
                 .font(.system(.caption, weight: .semibold).monospacedDigit())
                 .foregroundStyle(OBCTheme.ink)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            // With no route in view the profile shows the whole route, so the drawer never
-            // swaps content or changes height while the map pans.
-            let range = visibleRange.flatMap { $0.upperBound > $0.lowerBound ? $0 : nil } ?? 0...1
             plot(profile, range: range)
                 .background(OBCTheme.surface)
                 .clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
@@ -80,7 +80,7 @@ struct PlannerPreviewProfile: View {
         .frame(height: max(44, height))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Elevation profile in map view")
-        .accessibilityValue("\(readout(profile)). Grade uses a 100 meter average.")
+        .accessibilityValue("\(readout(profile, range: range)). Grade uses a 100 meter average.")
         .accessibilityAdjustableAction { direction in
             let current = selectedFraction.map { min(range.upperBound, max(range.lowerBound, $0)) } ?? range.lowerBound
             selectedFraction = min(range.upperBound, max(range.lowerBound, current + (direction == .increment ? 0.05 : -0.05) * span))
@@ -93,12 +93,8 @@ struct PlannerPreviewProfile: View {
         return Color(day: value.light, tent: value.dark)
     }
 
-    private var hasVisibleSelection: Bool {
-        selectedFraction.map { visibleRange?.contains($0) == true } ?? false
-    }
-
-    private func readout(_ profile: PlannerPreviewGrade) -> String {
-        guard hasVisibleSelection, let fraction = selectedFraction else { return "Elevation" }
+    private func readout(_ profile: PlannerPreviewGrade, range: ClosedRange<Double>) -> String {
+        guard let fraction = selectedFraction, range.contains(fraction) else { return "Elevation" }
         let reading = profile.reading(at: fraction)
         let elevation = reading.elevation.map { "\(Int($0.rounded())) m" } ?? "Elevation unknown"
         return String(format: "%.1f km · %@ · %@", profile.distance * fraction / 1_000, elevation, PlannerPreviewGrade.label(reading.grade))

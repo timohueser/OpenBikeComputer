@@ -18,7 +18,7 @@ struct PlannerPreviewModelTests {
         let orderedPoints = model.points
         let export = model.exportRoute(name: "Black Forest")
         #expect(export.name == "Preview · Black Forest")
-        #expect(export.creator == "OpenBikeComputer interaction preview")
+        #expect(export.creator == "OpenBikeComputer Planner Preview")
         #expect(export.points.map(\.coordinate) == geometry && export.waypoints.count == 2)
         model.newRoute()
         #expect(!model.hasRoute && model.geometry.isEmpty && model.points.isEmpty && model.overnight == nil)
@@ -47,7 +47,7 @@ struct PlannerPreviewModelTests {
         model.undo()
         #expect(model.start?.id == "freiburg" && model.dayCount == 2 && model.points == points)
         model.setOvernight(nil)
-        #expect(model.dayCount == 1 && model.overnightProgress == nil)
+        #expect(model.dayCount == 1)
     }
 
     @Test func unsupportedQueriesAndDuplicateVisitsDoNotChangeThePlan() {
@@ -76,6 +76,8 @@ struct PlannerPreviewModelTests {
         let startID = try #require(model.points.first?.id)
         model.replacePoint(id: startID, with: PlannerPreviewModel.sampleMapPlaces[3])
         #expect(model.points.first?.id == startID && model.start?.id == "water")
+        model.replacePoint(id: startID, with: PlannerPreviewModel.sampleMapPlaces[1])
+        #expect(model.start?.id == "water")
         model.removePoint(id: "titisee")
         #expect(model.start?.id == "water" && model.finish == nil && !model.hasRoute)
         model.addPoint(cafe)

@@ -147,9 +147,9 @@ struct PlannerPreviewLayerPanel: View {
             } label: {
                 Image(systemName: marked ? "eye.fill" : "eye")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(marked ? OBCTheme.onAmber : OBCTheme.secondary)
+                    .foregroundStyle(marked ? OBCTheme.surface : OBCTheme.secondary)
                     .frame(width: 30, height: 30)
-                    .background(marked ? OBCTheme.amber : OBCTheme.fill, in: Circle())
+                    .background(marked ? OBCTheme.ink : OBCTheme.fill, in: Circle())
                     .frame(width: 44, height: 44).contentShape(Rectangle())
             }
             .buttonStyle(.plain)

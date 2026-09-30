@@ -20,7 +20,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
     public var showDevPanel: Bool
     /// Present the OBCUI component gallery immediately at launch.
     public var showUIGallery: Bool
-    /// Open the route-planner preview with its sample ride.
+    /// Open the route-planner preview with its sample route.
     public var showPlanner: Bool
     /// Suppress the Debug scenario tag for product screenshots. The mock transport stays active.
     public var hideMockHUD: Bool

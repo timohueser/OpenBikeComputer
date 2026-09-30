@@ -9,8 +9,10 @@ struct PlannerPreviewOpeningHoursTests {
     private func wednesday(_ hour: Int, _ minute: Int = 0) -> Date {
         calendar.date(from: DateComponents(year: 2026, month: 9, day: 30, hour: hour, minute: minute))!
     }
-    private func sunday(_ hour: Int) -> Date {
-        calendar.date(from: DateComponents(year: 2026, month: 10, day: 4, hour: hour))!
+    private func sunday(_ hour: Int) -> Date { october(4, hour) }
+    /// 2026-10-02 is a Friday.
+    private func october(_ day: Int, _ hour: Int) -> Date {
+        calendar.date(from: DateComponents(year: 2026, month: 10, day: day, hour: hour))!
     }
 
     @Test func dayRangesAndSplitTimesDecideOpenOrClosed() {
@@ -27,6 +29,16 @@ struct PlannerPreviewOpeningHoursTests {
         #expect(PlannerPreviewOpeningHours.isOpen("08:00-19:00; We off", at: wednesday(10), calendar: calendar) == false)
         #expect(PlannerPreviewOpeningHours.isOpen("Sa-Mo 22:00-02:00", at: sunday(1), calendar: calendar) == true)
         #expect(PlannerPreviewOpeningHours.isOpen("24/7", at: sunday(3), calendar: calendar) == true)
+    }
+
+    @Test func timeAfterMidnightBelongsToTheNextDay() {
+        let friday = "Fr 22:00-02:00"
+        #expect(PlannerPreviewOpeningHours.isOpen(friday, at: october(2, 23), calendar: calendar) == true)
+        #expect(PlannerPreviewOpeningHours.isOpen(friday, at: october(3, 1), calendar: calendar) == true)
+        #expect(PlannerPreviewOpeningHours.isOpen(friday, at: october(2, 1), calendar: calendar) == false)
+        let weekend = "Sa-Mo 22:00-02:00"
+        #expect(PlannerPreviewOpeningHours.isOpen(weekend, at: october(3, 1), calendar: calendar) == false)
+        #expect(PlannerPreviewOpeningHours.isOpen(weekend, at: october(6, 1), calendar: calendar) == true)
     }
 
     @Test func unknownShapesStaySilent() {

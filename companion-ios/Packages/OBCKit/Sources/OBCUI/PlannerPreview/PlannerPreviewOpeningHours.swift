@@ -3,8 +3,9 @@ import Foundation
 
 /// Answers "open now?" for the common shape of an OpenStreetMap `opening_hours` value: rules
 /// separated by `;`, each a day set (`Mo-Fr`, `Sa,Su`, none for every day, or `24/7`) and time
-/// ranges (`08:00-12:00,16:00-20:00`, or `off`). A later rule wins for the days it names. Anything
-/// outside that shape answers nil, so the badge stays silent instead of guessing.
+/// ranges (`08:00-12:00,16:00-20:00`, or `off`). A later rule wins for the days it names. A range
+/// past midnight, like `Fr 22:00-02:00`, runs into the next day: its 00:00-02:00 part is Saturday's.
+/// Anything outside that shape answers nil, so the badge stays silent instead of guessing.
 enum PlannerPreviewOpeningHours {
     private static let days = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
 
@@ -14,20 +15,25 @@ enum PlannerPreviewOpeningHours {
         // Calendar weekdays run Sunday = 1; OSM runs Monday first.
         let weekday = (calendar.component(.weekday, from: date) + 5) % 7
         let minute = calendar.component(.hour, from: date) * 60 + calendar.component(.minute, from: date)
-        var verdict: Bool?
+        // Today's own ranges, and the after-midnight parts of yesterday's.
+        var today: Bool?
+        var spill: Bool?
         var parsedAnything = false
         for rule in trimmed.split(separator: ";").map({ $0.trimmingCharacters(in: .whitespaces) }) where !rule.isEmpty {
             guard let (ruleDays, ranges) = parse(rule) else { return nil }
             parsedAnything = true
-            guard ruleDays.contains(weekday) else { continue }
-            verdict = ranges.contains { $0.contains(minute) }
+            if ruleDays.contains(weekday) {
+                today = ranges.contains { $0.from <= minute && minute < ($0.wraps ? 24 * 60 : $0.to) }
+            }
+            if ruleDays.contains((weekday + 6) % 7) {
+                spill = ranges.contains { $0.wraps && minute < $0.to }
+            }
         }
-        return parsedAnything ? (verdict ?? false) : nil
+        return parsedAnything ? (today == true || spill == true) : nil
     }
 
     private struct Range { let from: Int; let to: Int
-        // A range past midnight, like 22:00-02:00, wraps.
-        func contains(_ minute: Int) -> Bool { to >= from ? (from..<to).contains(minute) : minute >= from || minute < to }
+        var wraps: Bool { to < from }
     }
 
     private static func parse(_ rule: String) -> (Set<Int>, [Range])? {

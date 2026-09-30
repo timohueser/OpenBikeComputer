@@ -596,16 +596,11 @@ struct RootView: View {
 
     #if DEBUG
     private func savePlannerPreview(_ route: ImportedRoute, bikeType: BikeType) {
-        guard let end = route.points.last, route.points.count > 1 else { return }
-        var route = route
-        let name = route.name ?? "Day ride"
-        let previewName = name.hasPrefix("Preview · ") ? name : "Preview · \(name)"
-        route.name = previewName
-        route.creator = "OpenBikeComputer Planner Preview"
-        let fileName = GPXFile.fileName(for: previewName)
+        guard let end = route.points.last, route.points.count > 1, let name = route.name else { return }
+        let fileName = GPXFile.fileName(for: name)
         let line = MeasuredLine(routePoints: route.points)
         let trip = Trip(
-            id: TripID(UUID().uuidString), name: previewName, bikeType: bikeType,
+            id: TripID(UUID().uuidString), name: name, bikeType: bikeType,
             line: route.points,
             dayEnds: [DayEnd(coordinate: end.coordinate, distance: line.length)],
             addedAt: Date()

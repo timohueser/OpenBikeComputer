@@ -95,7 +95,7 @@ struct PlannerPreviewPlaceQuery: Equatable {
         }
         let places = filter(candidates, routeLengthMeters: line.length, isInMapView: isInMapView)
         return .init(title: kinds.isEmpty ? name : kindLabel,
-                     explanation: "Sample places. Locations and opening hours are not verified.", places: places, action: nil)
+                     explanation: PlannerPreviewQueryResult.samplePlaces, places: places, action: nil)
     }
 
     func filter(_ places: [PlannerPreviewPlace], routeLengthMeters: Double,

@@ -6,7 +6,7 @@ import SwiftUI
 /// A development-only native study of the map-first planning flow.
 public struct PlannerPreviewView: View {
     private enum Panel { case planning, stops, preferences, days, results, place }
-    private enum SearchIntent: Equatable { case general, replace(String) }
+    private enum SearchIntent: Equatable { case general, overnight, replace(String) }
     @State private var searchAfterDismissal = false
     @State private var searchQuery = ""
     @State private var model: PlannerPreviewModel
@@ -79,7 +79,7 @@ public struct PlannerPreviewView: View {
                     if layersShown {
                         PlannerPreviewLayerPanel(network: $network, hidden: $hiddenCategories,
                                                  highlighted: $highlightedCategories) {
-                            layersShown = false; returnToPlanning()
+                            layersShown = false; drawerPosition = .open
                         }
                         .padding(.top, 16)
                         .frame(width: min(350, geometry.size.width - 24), height: max(240, geometry.size.height - sheetHeight - 32))
@@ -119,9 +119,6 @@ public struct PlannerPreviewView: View {
                         }
                         .sheet(isPresented: $editorShown, onDismiss: finishOpeningSearch) { focusedEditor }
                         .obcRenameSheet("Save route", isPresented: $saveShown, name: model.routeTitle, placeholder: "Route name",
-                                        message: model.dayCount == 1
-                                            ? "This preview keeps the route until the app restarts."
-                                            : "This preview saves one route with the overnight point. It keeps the route until the app restarts.",
                                         canSave: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) { name in
                             let route = model.exportRoute(name: name), bike = model.bike
                             leave { onSave(route, bike) }
@@ -270,7 +267,6 @@ public struct PlannerPreviewView: View {
         }
     }
 
-    /// Done is quiet text, as on the trip day editor; amber stays for the one action.
     private var openHeight: CGFloat {
         let content = switch panel {
         case .planning: planningContentHeight
@@ -292,6 +288,7 @@ public struct PlannerPreviewView: View {
         }.buttonStyle(.plain).accessibilityIdentifier("planner.days")
     }
 
+    /// Done is quiet text, as on the trip day editor; amber stays for the one action.
     private func doneButton(action: @escaping () -> Void) -> some View {
         Button("Done", action: action)
             .font(.body.weight(.semibold)).foregroundStyle(OBCTheme.tint)
@@ -324,10 +321,6 @@ public struct PlannerPreviewView: View {
             VStack(alignment: .leading, spacing: 4) {
                 if editingPointID != nil { pointEditor } else { placeActions(place) }
             }
-            if place.kind != .town {
-                Text("Sample place. Location and opening hours are not verified.")
-                    .font(.footnote).foregroundStyle(OBCTheme.secondary)
-            }
         }
     }
 
@@ -358,7 +351,7 @@ public struct PlannerPreviewView: View {
                 HStack(alignment: .firstTextBaseline) {
                     Text(editorTitle).font(.system(.title3, weight: .semibold)).lineLimit(1)
                     Spacer(minLength: 8)
-                    doneButton { editorShown = false; intent = .general }
+                    doneButton { editorShown = false }
                 }
                 if editorPanel == .days { days } else { preferences }
             }.frame(maxWidth: .infinity, alignment: .leading)
@@ -424,13 +417,15 @@ public struct PlannerPreviewView: View {
                     }.padding(.vertical, 4)
                     Divider()
                 }
-                Button("Change overnight stop", systemImage: "tent") { searchQuery = "camping"; openSearchFromDetail() }
+                Button("Change overnight stop", systemImage: "tent") {
+                    searchQuery = "camping"; intent = .overnight; openSearchFromDetail()
+                }
                     .frame(minHeight: 44)
                 Button("Make it a single day") { model.setOvernight(nil) }.buttonStyle(.obcGhost)
             } else {
                 Button("Add an overnight stop", systemImage: "tent") {
                     searchQuery = "camping"; queryRequest = PlannerPreviewPlaceQuery.parse("camping", hasRoute: model.hasRoute)
-                    queryEditor = nil; intent = .general
+                    queryEditor = nil; intent = .overnight
                     results = queryRequest?.result(in: model, isInMapView: isInMapView) ?? model.lookup("camping")
                     editorShown = false; panel = .results; drawerPosition = .open
                 }.buttonStyle(.obcPrimary)
@@ -452,16 +447,17 @@ public struct PlannerPreviewView: View {
                         .buttonStyle(.plain)
                     Divider().overlay(OBCTheme.hairline)
                 }
-                Text(results.explanation).font(.footnote).foregroundStyle(OBCTheme.secondary)
             }
         }
     }
 
     @ViewBuilder private func placeActions(_ place: PlannerPreviewPlace) -> some View {
-        if case .replace(let id) = intent {
-            Button("Use this place") { model.replacePoint(id: id, with: place); resetPanel() }.buttonStyle(.obcPrimary)
-        } else if let existing = (model.points + model.markers).first(where: { $0.place.id == place.id }) {
+        if let existing = (model.points + model.markers).first(where: { $0.place.id == place.id }) {
             Button("Edit existing point") { editPoint(existing) }.buttonStyle(.obcPrimary)
+        } else if case .replace(let id) = intent {
+            Button("Use this place") { model.replacePoint(id: id, with: place); finishIntent() }.buttonStyle(.obcPrimary)
+        } else if intent == .overnight {
+            Button("End day 1 here", systemImage: "moon") { model.setOvernight(place); finishIntent() }.buttonStyle(.obcPrimary)
         } else if model.start == nil {
             Button("Start here") { model.setStart(place); resetPanel() }.buttonStyle(.obcPrimary)
         } else if model.finish == nil {
@@ -532,7 +528,7 @@ public struct PlannerPreviewView: View {
     }
 
     private func finishOpeningSearch() {
-        guard searchAfterDismissal else { intent = .general; return }
+        guard searchAfterDismissal else { return }
         searchAfterDismissal = false; searchShown = true
     }
 
@@ -560,14 +556,18 @@ public struct PlannerPreviewView: View {
     }
 
     private func showResults() {
-        selectedPlace = nil; editingPointID = nil; intent = .general
+        selectedPlace = nil; editingPointID = nil
         panel = .results; drawerPosition = .open
     }
 
     /// After an edit: back to the list the place came from, else to planning. The camera stays.
     private func resetPanel() {
-        editorShown = false
         if let results, results.action == nil { showResults() } else { queryRequest = nil; returnToPlanning() }
+    }
+
+    /// A replace or an overnight pick answers the search that asked for it, so its list closes.
+    private func finishIntent() {
+        queryRequest = nil; returnToPlanning()
     }
 
     private func receiveSearch(_ result: PlannerPreviewQueryResult) {
@@ -585,12 +585,10 @@ public struct PlannerPreviewView: View {
     private func selectPin(_ id: String, at location: CGPoint) {
         layersShown = false; infoShown = false
         if let point = (model.points + model.markers).first(where: { $0.id == id }) {
-            editingPointID = point.id; selectedPlace = point.place; intent = .general
-        } else {
-            guard let place = ((results?.places ?? []) + PlannerPreviewModel.sampleMapPlaces).first(where: { $0.id == id }) else { return }
-            editingPointID = nil; selectedPlace = place
+            editPoint(point)
+        } else if let place = ((results?.places ?? []) + PlannerPreviewModel.sampleMapPlaces).first(where: { $0.id == id }) {
+            selectResult(place)
         }
-        panel = .place; drawerPosition = .open
     }
 
     private func selectMapPoint(_ coordinate: Coordinate, at location: CGPoint) {

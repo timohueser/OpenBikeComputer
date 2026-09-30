@@ -43,13 +43,6 @@ public enum PlannerPreviewPointKind: String, CaseIterable, Sendable {
     public var symbol: String {
         switch self { case .visit: "flag"; case .shape: "point.topleft.down.to.point.bottomright.curvepath"; case .marker: "mappin" }
     }
-    public var explanation: String {
-        switch self {
-        case .visit: "Ride through this place and keep it as a stop."
-        case .shape: "Shape the route through this place without adding a stop."
-        case .marker: "Mark this place on the map without changing the route."
-        }
-    }
 }
 
 public struct PlannerPreviewPoint: Identifiable, Equatable, Sendable {
@@ -74,12 +67,14 @@ public struct PlannerPreviewQueryResult: Sendable {
     public let explanation: String
     public let places: [PlannerPreviewPlace]
     public let action: PlannerPreviewAction?
+
+    /// The one note for a list of sample places.
+    static let samplePlaces = "Sample places. Locations and opening hours are not verified."
 }
 
 public struct PlannerPreviewStats: Equatable, Sendable {
     public let distanceMeters: Double
     public let ascentMeters: Double
-    public let descentMeters: Double
     public let seconds: Double
 }
 
@@ -120,7 +115,6 @@ public final class PlannerPreviewModel {
     public var routePoints: [RoutePoint] { sampledRoute.samples }
     public var routeLine: MeasuredLine { MeasuredLine(routePoints: routePoints) }
     public var geometry: [Coordinate] { routePoints.map(\.coordinate) }
-    public var elevation: [Double] { routeLine.elevationProfile(count: 96) }
     public var pointDistances: [String: Double] {
         let data = sampledRoute, line = MeasuredLine(routePoints: data.samples)
         return data.indices.mapValues { line.vertices[$0].distance }
@@ -133,10 +127,6 @@ public final class PlannerPreviewModel {
         let line = routeLine
         guard let id = overnightPointID, let split = pointDistances[id] else { return [stats] }
         return [stats(from: 0, to: split, on: line), stats(from: split, to: line.length, on: line)]
-    }
-    public var overnightProgress: Double? {
-        guard let id = overnightPointID, let distance = pointDistances[id], routeLine.length > 0 else { return nil }
-        return distance / routeLine.length
     }
 
     public func exportRoute(name: String) -> ImportedRoute {
@@ -154,7 +144,7 @@ public final class PlannerPreviewModel {
         }
         let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
         return ImportedRoute(name: "Preview · \(title.isEmpty ? routeTitle : title)",
-                             creator: "OpenBikeComputer interaction preview", points: routePoints, waypoints: waypoints)
+                             creator: "OpenBikeComputer Planner Preview", points: routePoints, waypoints: waypoints)
     }
 
     public func newRoute() { edit { $0 = State() } }
@@ -206,6 +196,7 @@ public final class PlannerPreviewModel {
         edit { $0.points.removeAll { $0.id == id }; $0.markers.removeAll { $0.id == id } }
     }
     public func replacePoint(id: String, with place: PlannerPreviewPlace) {
+        guard !(points + markers).contains(where: { $0.place.id == place.id }) else { return }
         edit {
             if let index = $0.points.firstIndex(where: { $0.id == id }) { $0.points[index].place = place }
             if let index = $0.markers.firstIndex(where: { $0.id == id }) { $0.markers[index].place = place }
@@ -282,8 +273,7 @@ public final class PlannerPreviewModel {
             : q.contains("camp") || q.contains("sleep") ? .camping
             : q.contains("shop") || q.contains("supermarket") || q.contains("grocer") ? .shop : nil
         if let kind {
-            return result(kind.title, "Illustrative places for this preview. Locations and opening hours are not verified.",
-                          places: Self.sampleMapPlaces.filter { $0.kind == kind })
+            return result(kind.title, PlannerPreviewQueryResult.samplePlaces, places: Self.sampleMapPlaces.filter { $0.kind == kind })
         }
         let matches = Self.sampleMapPlaces.filter { $0.name.lowercased().contains(q) }
         return result(matches.isEmpty ? "No preview match" : "Places", matches.isEmpty
@@ -347,9 +337,9 @@ public final class PlannerPreviewModel {
         return (samples, pointIndices)
     }
     private func stats(from: Double, to: Double, on line: MeasuredLine) -> PlannerPreviewStats {
-        guard !line.vertices.isEmpty else { return .init(distanceMeters: 0, ascentMeters: 0, descentMeters: 0, seconds: 0) }
+        guard !line.vertices.isEmpty else { return .init(distanceMeters: 0, ascentMeters: 0, seconds: 0) }
         let distance = max(0, to - from), ascent = line.climb(from: from, to: to)
-        return .init(distanceMeters: distance, ascentMeters: ascent, descentMeters: line.descent(from: from, to: to),
+        return .init(distanceMeters: distance, ascentMeters: ascent,
                      seconds: bike.ridingTime(distanceMeters: distance, ascentMeters: ascent))
     }
 }

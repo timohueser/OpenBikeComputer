@@ -5,7 +5,7 @@ struct PlannerPreviewSearch: View {
     let model: PlannerPreviewModel
     let onResult: (PlannerPreviewQueryResult) -> Void
     let onCancel: () -> Void
-    let onPlace: ((PlannerPreviewPlace) -> Void)?
+    let onPlace: (PlannerPreviewPlace) -> Void
     let onQueryChange: (String) -> Void
     let onRequestChange: (PlannerPreviewPlaceQuery?) -> Void
     let isInMapView: (PlannerPreviewPlace) -> Bool
@@ -14,13 +14,13 @@ struct PlannerPreviewSearch: View {
     @State private var activeEditor: PlannerPreviewQueryField?
     @FocusState private var isFocused: Bool
 
-    init(model: PlannerPreviewModel, initialQuery: String = "", initialRequest: PlannerPreviewPlaceQuery? = nil,
-         initialEditor: PlannerPreviewQueryField? = nil,
+    init(model: PlannerPreviewModel, initialQuery: String, initialRequest: PlannerPreviewPlaceQuery?,
+         initialEditor: PlannerPreviewQueryField?,
          onResult: @escaping (PlannerPreviewQueryResult) -> Void, onCancel: @escaping () -> Void,
-         onPlace: ((PlannerPreviewPlace) -> Void)? = nil,
-         onQueryChange: @escaping (String) -> Void = { _ in },
-         onRequestChange: @escaping (PlannerPreviewPlaceQuery?) -> Void = { _ in },
-         isInMapView: @escaping (PlannerPreviewPlace) -> Bool = { _ in true }) {
+         onPlace: @escaping (PlannerPreviewPlace) -> Void,
+         onQueryChange: @escaping (String) -> Void,
+         onRequestChange: @escaping (PlannerPreviewPlaceQuery?) -> Void,
+         isInMapView: @escaping (PlannerPreviewPlace) -> Bool) {
         self.model = model; self.onResult = onResult; self.onCancel = onCancel; self.onPlace = onPlace
         self.onQueryChange = onQueryChange; self.onRequestChange = onRequestChange; self.isInMapView = isInMapView
         _query = State(initialValue: initialQuery)
@@ -153,7 +153,6 @@ struct PlannerPreviewSearch: View {
                         .buttonStyle(.plain).accessibilityIdentifier("planner.searchPlace.\(place.id)")
                     Divider().overlay(OBCTheme.hairline)
                 }
-                Text(result.explanation).font(.caption).foregroundStyle(OBCTheme.secondary)
             }
         }
     }
@@ -166,8 +165,7 @@ struct PlannerPreviewSearch: View {
     // A picked place carries its list along, so the planner can offer the way back to it.
     private func select(_ place: PlannerPreviewPlace) {
         isFocused = false
-        if let onPlace { onResult(result); onPlace(place) }
-        else { onResult(.init(title: place.name, explanation: result.explanation, places: [place], action: nil)) }
+        onResult(result); onPlace(place)
     }
 }
 
@@ -197,12 +195,10 @@ struct PlannerPlaceRow: View {
 
     private var detail: String { Self.detail(for: place, showsRouteDistances: showsRouteDistances) }
 
-    /// "Café · 13.9 km · 80 m off route", or the kind alone without a route. The map card drops
-    /// the kind, which its glyph already shows, so the line fits on one row.
-    static func detail(for place: PlannerPreviewPlace, showsRouteDistances: Bool, includesKind: Bool = true) -> String {
+    /// "Café · 13.9 km · 80 m off route", or the kind alone without a route.
+    static func detail(for place: PlannerPreviewPlace, showsRouteDistances: Bool) -> String {
         guard showsRouteDistances, place.kind != .town else { return place.kind.title }
-        let distances = "\(OBCFormat.distance(meters: place.alongRouteMeters)) · \(OBCFormat.shortDistance(meters: place.offRouteMeters)) off route"
-        return includesKind ? "\(place.kind.title) · \(distances)" : distances
+        return "\(place.kind.title) · \(OBCFormat.distance(meters: place.alongRouteMeters)) · \(OBCFormat.shortDistance(meters: place.offRouteMeters)) off route"
     }
 }
 
