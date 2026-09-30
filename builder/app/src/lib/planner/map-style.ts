@@ -1,6 +1,6 @@
 import { layers, namedFlavor, type Flavor } from "@protomaps/basemaps";
 import type { ExpressionSpecification, StyleSpecification, LayerSpecification } from "maplibre-gl";
-import { BASEMAP_URL, GLYPHS_URL, MAP_BOUNDS, SPRITES_URL } from "./map-data";
+import { BASEMAP_URL, GLYPHS_URL, MAP_BOUNDS, SPRITES_URL, TERRAIN_ATTRIBUTION } from "./map-data";
 import { categoryIds, placeCategories, poiKinds, type PlaceCategory } from "./poi-kinds";
 
 function flavor(dark: boolean): Flavor {
@@ -103,8 +103,8 @@ export function mapStyle(theme: "light" | "dark", demUrl: string, contourUrl: st
         sprite: `${SPRITES_URL}/${theme}`,
         sources: {
             basemap: { type: "vector", url: BASEMAP_URL, attribution: '<a href="https://openstreetmap.org/copyright">© OpenStreetMap contributors</a> · <a href="https://protomaps.com">Protomaps</a>' },
-            terrain: { type: "raster-dem", tiles: [demUrl], ...(MAP_BOUNDS ? { bounds: MAP_BOUNDS } : {}), tileSize: 512, encoding: "terrarium", maxzoom: 12, attribution: '<a href="https://mapterhorn.com/attribution">Terrain © Mapterhorn contributors</a>' },
-            contours: { type: "vector", tiles: [contourUrl], ...(MAP_BOUNDS ? { bounds: MAP_BOUNDS } : {}), maxzoom: 15, attribution: '<a href="https://mapterhorn.com/attribution">Terrain © Mapterhorn contributors</a>' },
+            terrain: { type: "raster-dem", tiles: [demUrl], ...(MAP_BOUNDS ? { bounds: MAP_BOUNDS } : {}), tileSize: 512, encoding: "terrarium", maxzoom: 12, attribution: TERRAIN_ATTRIBUTION },
+            contours: { type: "vector", tiles: [contourUrl], ...(MAP_BOUNDS ? { bounds: MAP_BOUNDS } : {}), maxzoom: 15, attribution: TERRAIN_ATTRIBUTION },
         },
         layers: base,
     };

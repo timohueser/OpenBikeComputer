@@ -64,6 +64,7 @@
                 <a href={siteNav.docs}>Docs</a>
                 <a href={siteNav.blog}>Blog</a>
                 <a href="#/" aria-current="page">Maps</a>
+                {#if import.meta.env.VITE_PLANNER_SEARCH_URL}<a href={`${siteNav.home}plan/`}>Route planner</a>{/if}
                 <a href={siteNav.github}>GitHub</a>
             </nav>
         {:else}

@@ -1,5 +1,5 @@
 use clap::Parser;
-use route_engine::{model::Profile, package::digest};
+use route_engine::{directory::Writer, model::Profile};
 use sha2::{Digest, Sha256};
 use std::{fs, io::Read, path::PathBuf};
 
@@ -84,12 +84,10 @@ fn run(args: Args) -> Result<(), String> {
     let temp = args.output.with_extension(format!("building-{}", std::process::id()));
     fs::create_dir(&temp).map_err(|e| e.to_string())?;
     let result = (|| {
-        fs::create_dir(temp.join("objects")).map_err(|e| e.to_string())?;
-        let manifest = route_build::prepare(&graph, args.region, bounds, &profiles, identities, |bytes| {
-            let key = digest(bytes);
-            fs::write(temp.join("objects").join(&key), bytes).map_err(|e| e.to_string())?;
-            Ok(key)
-        })?;
+        let mut writer = Writer::create(&temp).map_err(|e| e.to_string())?;
+        let manifest =
+            route_build::prepare(&graph, args.region, bounds, &profiles, identities, |bytes| writer.write(bytes))?;
+        writer.finish().map_err(|e| e.to_string())?;
         fs::write(temp.join("manifest.json"), serde_json::to_vec(&manifest).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
         fs::rename(&temp, &args.output).map_err(|e| e.to_string())?;

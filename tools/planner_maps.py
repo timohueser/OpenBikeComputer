@@ -38,11 +38,13 @@ def bounds(value):
 
 
 def run(*args, **kwargs):
+    input_data = kwargs.pop("input", None)
+    if input_data is not None: kwargs["stdin"] = subprocess.PIPE
     if kwargs.pop("capture_output", False):
         kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     process = subprocess.Popen([str(arg) for arg in args], start_new_session=True, **kwargs)
     try:
-        stdout, stderr = process.communicate()
+        stdout, stderr = process.communicate(input_data)
     except BaseException:
         stop_process(process)
         raise

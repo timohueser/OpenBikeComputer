@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare and run the complete Baden-Württemberg planner on loopback."""
+"""Prepare, publish, deploy, or preview regional planner data."""
 
 import argparse
 import fcntl
@@ -146,6 +146,11 @@ def serve(args):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] in {"prepare", "publish", "deploy", "rollback", "site-config"}:
+        try: from .planner_release import main as release_main
+        except ImportError: from planner_release import main as release_main
+        release_main(sys.argv[1:])
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["setup", "serve", "verify"], nargs="?", default="serve")
     parser.add_argument("--data-dir", type=Path, default=os.environ.get(

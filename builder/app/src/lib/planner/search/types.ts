@@ -1,4 +1,5 @@
 import type { Coordinate } from '../editor';
+import { SEARCH_URL } from './config';
 
 export type Quantity = { value: number; unit: 'km' | 'h' | 'm' | '%' };
 export type QueryDay = number | 'today' | 'tomorrow' | 'every';
@@ -39,7 +40,7 @@ export interface SearchAnswer {
 }
 export type SearchState = { loading: boolean; error: string; answer: SearchAnswer | null };
 export async function searchPlaces(q: string, context: SearchContext, region: string, limit: number, signal: AbortSignal, request?: QueryRequest): Promise<SearchAnswer> {
-    const response = await fetch('/api/planner-search/query', { method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
+    const response = await fetch(`${SEARCH_URL}/query`, { method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...context, q, region, limit, submitted: true, request }) });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Search failed. Try again.');

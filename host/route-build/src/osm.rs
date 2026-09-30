@@ -632,10 +632,11 @@ mod tests {
                 Ok(key)
             })
             .unwrap();
-        let retained: Vec<source::Way> = route_engine::storage::decode(&objects[&manifest.osm.ways[0]]).unwrap();
+        let pages: Vec<String> = route_engine::storage::decode(&objects[&manifest.osm.ways.blocks[0]]).unwrap();
+        let retained: Vec<source::Way> = route_engine::storage::decode(&objects[&pages[0]]).unwrap();
         assert_eq!(retained[0].tags, expected);
-        let relations: Vec<source::Relation> =
-            route_engine::storage::decode(&objects[&manifest.osm.relations[0]]).unwrap();
+        let pages: Vec<String> = route_engine::storage::decode(&objects[&manifest.osm.relations.blocks[0]]).unwrap();
+        let relations: Vec<source::Relation> = route_engine::storage::decode(&objects[&pages[0]]).unwrap();
         assert_eq!(relations.len(), 2);
     }
 

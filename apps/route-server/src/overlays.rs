@@ -90,8 +90,8 @@ fn memberships(relations: &BTreeMap<i64, Relation>) -> BTreeMap<i64, Vec<Value>>
 impl Overlays {
     pub fn load<S: Source>(package: &Package<S>) -> Result<Self> {
         let mut relations = BTreeMap::new();
-        for key in &package.manifest().osm.relations {
-            for relation in package.read::<Vec<Relation>>(key)? {
+        for key in package.keys(&package.manifest().osm.relations)? {
+            for relation in package.read::<Vec<Relation>>(&key)? {
                 relations.insert(relation.id, relation);
             }
         }
@@ -99,8 +99,8 @@ impl Overlays {
         drop(relations);
         let mut ways = Vec::new();
         let mut needed = HashSet::new();
-        for key in &package.manifest().osm.ways {
-            for way in package.read::<Vec<Way>>(key)? {
+        for key in package.keys(&package.manifest().osm.ways)? {
+            for way in package.read::<Vec<Way>>(&key)? {
                 let mut properties = Vec::new();
                 if let Some(access) = crate::access::feature(&way) {
                     properties.push(("access", access));
@@ -126,8 +126,8 @@ impl Overlays {
             }
         }
         let mut nodes = HashMap::new();
-        for key in &package.manifest().osm.nodes {
-            for node in package.read::<Vec<Node>>(key)? {
+        for key in package.keys(&package.manifest().osm.nodes)? {
+            for node in package.read::<Vec<Node>>(&key)? {
                 if needed.contains(&node.id) {
                     nodes.insert(node.id, [node.point.lon as f64 * 1e-6, node.point.lat as f64 * 1e-6]);
                 }

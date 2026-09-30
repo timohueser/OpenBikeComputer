@@ -400,13 +400,8 @@ impl<S: Source> Router<S> {
                 Progress::Working { .. } => {}
                 Progress::NeedPages { pages } => {
                     for page in pages.into_iter().take(1) {
-                        let key = self
-                            .package
-                            .metric(&self.metric)?
-                            .graph
-                            .get(page as usize)
-                            .ok_or_else(|| Error::InvalidData("Graph page outside metric".into()))?;
-                        let bytes = self.package.bytes(key)?;
+                        let key = self.package.key(&self.package.metric(&self.metric)?.graph, page)?;
+                        let bytes = self.package.bytes(&key)?;
                         self.cache.insert_page(page, &bytes, self.cache_bytes).map_err(Error::InvalidData)?;
                     }
                 }

@@ -101,6 +101,9 @@ builder/app/tests/browser/node_modules/
 builder/app/tests/device-smoke/node_modules/
 apps/obc-web-demo/tests/browser/node_modules/
 builder/app/dist/
+apps/planner-tiles/dist/
+apps/planner-tiles/node_modules/
+apps/planner-tiles/.wrangler/
 builder/server/static/dist/
 # The static tier's data files (#900): the Geofabrik index is ~1.7 MB of
 # generated JSON that goes stale weekly, and the catalog manifest belongs to the

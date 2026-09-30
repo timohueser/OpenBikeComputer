@@ -202,7 +202,7 @@ fn query_does_not_read_source_tag_pages_but_installation_verifies_them() {
     let package = Package::open(source.clone(), &manifest).unwrap();
     package.verify().unwrap();
     let mut objects = (*source.0).clone();
-    for key in package.manifest().osm.objects() {
+    for key in package.manifest().osm.tables().flat_map(|t| &t.blocks) {
         objects.remove(key);
     }
     let incomplete = Package::open(Memory(Arc::new(objects)), &manifest).unwrap();
@@ -260,7 +260,7 @@ fn via_direction_pace_and_failure_states_are_explicit() {
     request.points[0] = [10.0, 10.0];
     assert!(matches!(router.route(&request, &Control::default()), Err(Error::MissingRegion(_))));
     let mut broken = (*source.0).clone();
-    let key = router.package().manifest().geometry[0].clone();
+    let key = router.package().key(&router.package().manifest().geometry, 0).unwrap();
     broken.get_mut(&key).unwrap()[0] ^= 1;
     let mut package = Package::open(Memory(Arc::new(broken)), &manifest).unwrap();
     assert!(matches!(package.road(0), Err(Error::InvalidData(_))));
@@ -366,7 +366,7 @@ fn closed_packages_route_across_multiple_summary_pages() {
         Graph { points, roads, forbidden: vec![], forbidden_foot: vec![], warnings: vec![], ..Graph::default() };
     let (source, manifest) = package(&graph);
     let mut router = Router::new(Package::open(source, &manifest).unwrap(), 64 * 1024);
-    assert!(router.package().manifest().metrics["touring"].graph.len() > 1);
+    assert!(router.package().manifest().metrics["touring"].graph.len > 1);
     let request = Request {
         points: vec![[0.0002, 0.0], [0.3988, 0.0]],
         profile: "touring".into(),
@@ -463,17 +463,25 @@ fn geometry_cache_retains_a_snap_working_set_across_many_small_pages() {
     let mut objects = (*source.0).clone();
     let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
     manifest.roads = 20 * 128;
-    manifest.geometry.clear();
+    let original = Package::open(source.clone(), &bytes).unwrap();
+    let mut geometry = Vec::new();
     for page in 0..20 {
         let road = Road { way: page, ..graph.roads[0].clone() };
         let bytes = encode(&vec![road; 128]).unwrap();
         let key = digest(&bytes);
-        manifest.geometry.push(key.clone());
+        geometry.push(key.clone());
         objects.insert(key, bytes);
     }
-    for metric in manifest.metrics.values_mut() {
-        metric.endpoints.resize(20, metric.endpoints[0].clone());
-        metric.allowed.resize((20 * 128usize).div_ceil(64), u64::MAX);
+    let mut write = |bytes: &[u8]| {
+        let key = digest(bytes);
+        objects.insert(key.clone(), bytes.to_vec());
+        Ok(key)
+    };
+    manifest.geometry = route_engine::table::Table::write(&geometry, &mut write).unwrap();
+    for (name, metric) in &mut manifest.metrics {
+        let key = original.key(&original.metric(name).unwrap().endpoints, 0).unwrap();
+        metric.endpoints = route_engine::table::Table::write(&vec![key; 20], &mut write).unwrap();
+        metric.allowed = route_engine::table::Table::write(&vec![u64::MAX; 40], &mut write).unwrap();
     }
     let reads = Cell::new(0);
     let mut package =
@@ -483,7 +491,7 @@ fn geometry_cache_retains_a_snap_working_set_across_many_small_pages() {
             assert_eq!(package.road(page * 128).unwrap().way, page as i64);
         }
     }
-    assert_eq!(reads.get(), 20);
+    assert_eq!(reads.get(), 21);
 }
 
 #[test]

@@ -305,12 +305,7 @@ r2 *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/r2.py" "$@"
 
-# Run the complete local Baden-Württemberg planner. `obc planner setup` prepares
-# maps, search, the query model and routing. `obc planner verify` checks the data.
-# Packages stay in $OBC_PLANNER_DATA (default ~/.cache/obc/planner/baden-wuerttemberg).
-# Setup needs Node 24+, Python 3.12+, uv, gh, curl, Rust and the PMTiles CLI.
-# Start after setup with `obc planner`; Ctrl-C stops all four local services.
-# Prepare, verify or run the local Baden-Württemberg planner
+# Prepare, publish, deploy or preview regional planner data. See the planner README.
 [group('maps')]
 planner *args:
     #!/usr/bin/env bash

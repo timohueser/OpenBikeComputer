@@ -6,10 +6,13 @@ function absoluteUrl(value: string): string {
 }
 
 const archive = import.meta.env.VITE_PLANNER_PMTILES_URL || "./data/planner/basemap.pmtiles";
-export const BASEMAP_URL = `pmtiles://${absoluteUrl(archive.replace(/^pmtiles:\/\//, ""))}`;
+export const BASEMAP_URL = import.meta.env.VITE_PLANNER_TILEJSON_URL
+    ? absoluteUrl(import.meta.env.VITE_PLANNER_TILEJSON_URL)
+    : `pmtiles://${absoluteUrl(archive.replace(/^pmtiles:\/\//, ""))}`;
 export const TERRAIN_URL = absoluteUrl(import.meta.env.VITE_PLANNER_DEM_URL || "./tiles/terrain/{z}/{x}/{y}.webp");
 export const GLYPHS_URL = absoluteUrl(import.meta.env.VITE_PLANNER_GLYPHS_URL || "./data/planner/assets/fonts/{fontstack}/{range}.pbf");
 export const SPRITES_URL = absoluteUrl(import.meta.env.VITE_PLANNER_SPRITES_URL || "./data/planner/assets/sprites/v4");
+export const TERRAIN_ATTRIBUTION = import.meta.env.VITE_PLANNER_TERRAIN_ATTRIBUTION || '<a href="https://mapterhorn.com/attribution">Terrain © Mapterhorn contributors</a>';
 function mapBounds(value: string | undefined): [number, number, number, number] | undefined {
     if (!value) return undefined;
     const coordinates = value.split(",").map(Number);

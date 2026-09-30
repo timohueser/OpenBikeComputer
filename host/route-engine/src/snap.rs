@@ -1,6 +1,6 @@
 use crate::{
     model::{Point, Road, NO_ELEVATION},
-    package::{cell_key, Package, Source, CELL},
+    package::{Package, Source, CELL},
     Error, Result,
 };
 use serde::Serialize;
@@ -24,11 +24,9 @@ impl<S: Source> Package<S> {
         self.metric(metric)?;
         let mut roads = BTreeSet::<u32>::new();
         for cell in cells(point, policy.radius_m).map_err(Error::InvalidRequest)? {
-            if let Some(key) = self.manifest.spatial.get(&cell_key(cell)) {
-                roads.extend(self.read::<Vec<u32>>(key)?);
-                if roads.len() > 100_000 {
-                    return Err(Error::Limit);
-                }
+            roads.extend(self.spatial_roads(cell)?);
+            if roads.len() > 100_000 {
+                return Err(Error::Limit);
             }
         }
         let mut found = Vec::new();
@@ -36,7 +34,7 @@ impl<S: Source> Package<S> {
             if id >= self.manifest.roads {
                 return Err(Error::InvalidData("Snap road outside package".into()));
             }
-            if self.metric(metric)?.allowed[id as usize / 64] & (1 << (id % 64)) == 0 {
+            if !self.allowed(metric, id)? {
                 continue;
             }
             let road = self.road(id)?;
