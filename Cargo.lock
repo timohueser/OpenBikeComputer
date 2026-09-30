@@ -4728,6 +4728,7 @@ name = "route-engine"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "memmap2 0.9.10",
  "postcard",
  "serde",
  "serde_json",
@@ -4742,6 +4743,7 @@ dependencies = [
  "axum",
  "route-build",
  "route-engine",
+ "rusqlite",
  "serde_json",
  "tokio",
  "tower",

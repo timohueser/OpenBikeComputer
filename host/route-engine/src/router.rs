@@ -391,7 +391,7 @@ impl<S: Source> Router<S> {
         let starts = [Seed { node: source.arrival, cost: remaining, road: a.road }];
         let ends: Vec<_> =
             target.departures.iter().map(|d| Seed { node: d.state, cost: suffix + d.penalty, road: b.road }).collect();
-        let mut search = Search::new(&starts, &ends, control.max_labels);
+        let mut search = Search::new(&starts, &ends, control.max_labels).without_prefetch();
         loop {
             if (control.cancelled)() {
                 return Err(Error::Cancelled);

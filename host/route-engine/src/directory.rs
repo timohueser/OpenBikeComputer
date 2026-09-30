@@ -19,7 +19,7 @@ const HEADER: u64 = 16;
 const RECORD: u64 = 48;
 
 struct Files {
-    index: Mutex<File>,
+    index: memmap2::Mmap,
     data: Mutex<File>,
     count: u64,
     bytes: u64,
@@ -50,25 +50,22 @@ impl Directory {
         {
             return Err(Error::InvalidData("Incomplete routing index".into()));
         }
+        // SAFETY: Published packages are immutable. Replacement uses another directory.
+        let index = unsafe { memmap2::Mmap::map(&index) }.map_err(invalid)?;
         let data = file(&path.join("pages.bin"))?;
         let bytes = data.metadata().map_err(invalid)?.len();
-        Package::open(
-            Self(Arc::new(Files { index: Mutex::new(index), data: Mutex::new(data), count, bytes })),
-            &manifest,
-        )
+        Package::open(Self(Arc::new(Files { index, data: Mutex::new(data), count, bytes })), &manifest)
     }
 }
 
 impl Source for Directory {
     fn read(&self, digest: &str) -> Result<Vec<u8>> {
         let wanted = key(digest)?;
-        let mut index = self.0.index.lock().map_err(|_| Error::Limit)?;
         let (mut low, mut high) = (0, self.0.count);
         while low < high {
             let at = low + (high - low) / 2;
-            let mut record = [0; RECORD as usize];
-            index.seek(SeekFrom::Start(HEADER + at * RECORD)).map_err(invalid)?;
-            index.read_exact(&mut record).map_err(invalid)?;
+            let start = (HEADER + at * RECORD) as usize;
+            let record = &self.0.index[start..start + RECORD as usize];
             match record[..32].cmp(&wanted) {
                 std::cmp::Ordering::Less => low = at + 1,
                 std::cmp::Ordering::Greater => high = at,
@@ -78,7 +75,6 @@ impl Source for Directory {
                     if len > MAX_PAGE_BYTES as u64 || offset.checked_add(len).is_none_or(|end| end > self.0.bytes) {
                         return Err(Error::InvalidData("Routing page outside archive".into()));
                     }
-                    drop(index);
                     let mut data = self.0.data.lock().map_err(|_| Error::Limit)?;
                     data.seek(SeekFrom::Start(offset)).map_err(invalid)?;
                     let mut bytes = vec![0; len as usize];
@@ -177,21 +173,28 @@ mod tests {
         assert_eq!(writer.write(b"first page").unwrap(), a);
         writer.finish().unwrap();
         assert_eq!(file(&path.join("pages.idx")).unwrap().metadata().unwrap().len(), HEADER + 2 * RECORD);
-        let source = Directory(Arc::new(Files {
-            index: Mutex::new(file(&path.join("pages.idx")).unwrap()),
-            data: Mutex::new(file(&path.join("pages.bin")).unwrap()),
-            count: 2,
-            bytes: 21,
-        }));
+        let open = || {
+            Directory(Arc::new(Files {
+                // SAFETY: The test drops the source before it changes the index.
+                index: unsafe { memmap2::Mmap::map(&file(&path.join("pages.idx")).unwrap()) }.unwrap(),
+                data: Mutex::new(file(&path.join("pages.bin")).unwrap()),
+                count: 2,
+                bytes: 21,
+            }))
+        };
+        let source = open();
         assert_eq!(source.read(&a).unwrap(), b"first page");
         assert_eq!(source.read(&b).unwrap(), b"second page");
         assert!(matches!(source.read(&"0".repeat(64)), Err(Error::MissingRegion(_))));
         assert!(matches!(source.read("../pages.bin"), Err(Error::InvalidData(_))));
+        drop(source);
         let mut index = OpenOptions::new().write(true).open(path.join("pages.idx")).unwrap();
         index.seek(SeekFrom::Start(HEADER + 32)).unwrap();
         index.write_all(&u64::MAX.to_le_bytes()).unwrap();
         let first = if key(&a).unwrap() < key(&b).unwrap() { a } else { b };
+        let source = open();
         assert!(matches!(source.read(&first), Err(Error::InvalidData(_))));
+        drop(source);
         std::fs::write(path.join("manifest.json"), b"{}").unwrap();
         index.set_len(HEADER + 1).unwrap();
         assert!(

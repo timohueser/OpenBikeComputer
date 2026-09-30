@@ -108,6 +108,7 @@ def prepare(args):
                      "--country", config["country"], "--bounds", ",".join(map(str, bounds)), "--profiles", "all",
                      "--dem", args.dem_dir, *reference)
             stage.rename(routing)
+    maps.run(maps.ROOT / "target/release/route-server", routing, "--build-overlays")
     if not (data / "maps").exists():
         with tempfile.TemporaryDirectory(prefix=".maps-", dir=data) as directory:
             stage = Path(directory)

@@ -64,6 +64,7 @@ pub struct Search {
     max_labels: usize,
     cancelled: bool,
     terminal: Option<Progress>,
+    prefetch: bool,
 }
 
 impl Search {
@@ -78,7 +79,13 @@ impl Search {
             max_labels,
             cancelled: false,
             terminal: None,
+            prefetch: true,
         }
+    }
+
+    pub(crate) fn without_prefetch(mut self) -> Self {
+        self.prefetch = false;
+        self
     }
 
     pub fn cancel(&mut self) {
@@ -92,6 +99,9 @@ impl Search {
     fn needed(&self, cache: &Cache, required: u32) -> Progress {
         if cache.pages.contains_key(&(required / NODES_PER_PAGE)) {
             return Progress::Invalid { message: "Loaded page does not contain the requested node".into() };
+        }
+        if !self.prefetch {
+            return Progress::NeedPages { pages: vec![required / NODES_PER_PAGE] };
         }
         let mut pages = BTreeSet::from([required / NODES_PER_PAGE]);
         if let Some(stack) = &self.unpack {

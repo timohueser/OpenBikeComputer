@@ -45,6 +45,11 @@ def seal(data, region, device_catalog, provenance):
     routing = json.loads((data / "routing/manifest.json").read_bytes())
     if routing["format"] != 3 or routing["region"] != region:
         raise ValueError("Build a packed routing package for this region")
+    with sqlite3.connect(f"{(data / 'routing/overlays.sqlite').as_uri()}?mode=ro", uri=True) as db:
+        if db.execute("SELECT package FROM metadata").fetchone() != (sources.digest(data / "routing/manifest.json"),):
+            raise ValueError("Overlay index uses another routing package")
+        if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
+            raise ValueError("Overlay index failed verification")
     maps.DATA = data / "maps"
     map_manifest = maps.check_bundle(full=True)
     database = data / "search" / f"{region}.sqlite"

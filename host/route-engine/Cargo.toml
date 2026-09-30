@@ -13,3 +13,6 @@ postcard = { version = "1", features = ["alloc"] }
 flate2 = "1"
 sha2 = "0.10"
 thiserror = "2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+memmap2 = "0.9"
