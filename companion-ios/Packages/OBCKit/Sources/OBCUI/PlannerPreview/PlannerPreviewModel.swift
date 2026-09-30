@@ -67,9 +67,6 @@ public struct PlannerPreviewQueryResult: Sendable {
     public let explanation: String
     public let places: [PlannerPreviewPlace]
     public let action: PlannerPreviewAction?
-
-    /// The one note for a list of sample places.
-    static let samplePlaces = "Sample places. Locations and opening hours are not verified."
 }
 
 public struct PlannerPreviewStats: Equatable, Sendable {
@@ -273,7 +270,7 @@ public final class PlannerPreviewModel {
             : q.contains("camp") || q.contains("sleep") ? .camping
             : q.contains("shop") || q.contains("supermarket") || q.contains("grocer") ? .shop : nil
         if let kind {
-            return result(kind.title, PlannerPreviewQueryResult.samplePlaces, places: Self.sampleMapPlaces.filter { $0.kind == kind })
+            return result(kind.title, "", places: Self.sampleMapPlaces.filter { $0.kind == kind })
         }
         let matches = Self.sampleMapPlaces.filter { $0.name.lowercased().contains(q) }
         return result(matches.isEmpty ? "No preview match" : "Places", matches.isEmpty

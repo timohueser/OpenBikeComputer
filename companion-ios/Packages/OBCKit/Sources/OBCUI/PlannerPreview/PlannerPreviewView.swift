@@ -439,7 +439,7 @@ public struct PlannerPreviewView: View {
                 Text(model.actionSummary(action))
                 Button(action.title) { model.apply(action); resetPanel() }.buttonStyle(.obcPrimary)
             } else if results.places.isEmpty {
-                Text("No places match these filters.").foregroundStyle(OBCTheme.secondary)
+                Text("No places match these filters").foregroundStyle(OBCTheme.secondary)
                 Button("Try another search") { resumeSearch() }.buttonStyle(.obcGhost)
             } else {
                 ForEach(results.places) { place in
