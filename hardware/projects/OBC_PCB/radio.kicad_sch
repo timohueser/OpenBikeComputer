@@ -1,4 +1,4 @@
-(kicad_sch (version 20250114) (generator "eeschema") (uuid "5be89381-a9d2-4664-b5d2-8bf1221c665a") (paper "A4") (title_block (title "OpenBikeComputer — 2.4GHz radio") (company "OpenBikeComputer") (rev "A")) (lib_symbols
+(kicad_sch (version 20250114) (generator "eeschema") (uuid "5be89381-a9d2-4664-b5d2-8bf1221c665a") (paper "A4") (title_block (title "OpenBikeComputer - 2.4GHz radio") (company "OpenBikeComputer") (rev "QFN")) (lib_symbols
 		(symbol "obc:PCB_2G4_MIFA"
 			(pin_numbers
 				(hide yes)
@@ -1011,10 +1011,10 @@
 	)
 	(hierarchical_label "ANT"
 		(shape passive)
-		(at 38.1 86.36 180)
+		(at 17.78 68.58 180)
 		(effects
 			(font
-				(size 1.27 1.27)
+				(size 1.0 1.0)
 			)
 			(justify right)
 		)
@@ -1022,7 +1022,7 @@
 	)
 	(symbol
 		(lib_id "Device:L_Small")
-		(at 63.5 86.36 90)
+		(at 43.18 68.58 90)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -1038,7 +1038,7 @@
 			)
 		)
 		(property "Footprint" "obc:L_Nordic_0201_0603Metric"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1048,7 +1048,7 @@
 			)
 		)
 		(property "Datasheet" "https://search.murata.co.jp/Ceramy/image/img/P02/JELF243C-0021.pdf"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1057,8 +1057,8 @@
 				(justify left)
 			)
 		)
-		(property "Description" "RF matching inductor, Nordic PAAA reference selection"
-			(at 0 0 0)
+		(property "Description" "RF matching inductor, provisional QGAA matching; confirm with Nordic"
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1068,7 +1068,7 @@
 			)
 		)
 		(property "MPN" "LQP03HQ3N6B02D"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1078,7 +1078,7 @@
 			)
 		)
 		(property "Manufacturer" "Murata"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1088,7 +1088,8 @@
 			)
 		)
 		(property "Tolerance" "0.1nH"
-			(at 60.96 83.82 90)
+			(at 40.64 66.04 90)
+			(hide yes)
 			(effects
 				(font
 					(size 1 1)
@@ -1097,7 +1098,7 @@
 			)
 		)
 		(property "Rated Current" "500mA"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1107,7 +1108,7 @@
 			)
 		)
 		(property "DCR" "170mOhm max"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1117,7 +1118,7 @@
 			)
 		)
 		(property "Reference" "L8"
-			(at 60.96 78.74 90)
+			(at 40.64 60.96 90)
 			(effects
 				(font
 					(size 1 1)
@@ -1126,7 +1127,7 @@
 			)
 		)
 		(property "Value" "3.6nH"
-			(at 60.96 81.28 90)
+			(at 40.64 63.5 90)
 			(effects
 				(font
 					(size 1 1)
@@ -1143,7 +1144,7 @@
 	)
 	(symbol
 		(lib_id "Device:L_Small")
-		(at 99.06 86.36 90)
+		(at 78.74 68.58 90)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -1159,7 +1160,7 @@
 			)
 		)
 		(property "Footprint" "obc:L_Nordic_0201_0603Metric"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1169,7 +1170,7 @@
 			)
 		)
 		(property "Datasheet" "https://search.murata.co.jp/Ceramy/image/img/P02/JELF243C-0021.pdf"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1178,8 +1179,8 @@
 				(justify left)
 			)
 		)
-		(property "Description" "RF matching inductor, Nordic PAAA reference selection"
-			(at 0 0 0)
+		(property "Description" "RF matching inductor, provisional QGAA matching; confirm with Nordic"
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1189,7 +1190,7 @@
 			)
 		)
 		(property "MPN" "LQP03HQ4N7H02D"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1199,7 +1200,7 @@
 			)
 		)
 		(property "Manufacturer" "Murata"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1209,7 +1210,8 @@
 			)
 		)
 		(property "Tolerance" "3%"
-			(at 96.52 83.82 90)
+			(at 76.2 66.04 90)
+			(hide yes)
 			(effects
 				(font
 					(size 1 1)
@@ -1218,7 +1220,7 @@
 			)
 		)
 		(property "Rated Current" "400mA"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1228,7 +1230,7 @@
 			)
 		)
 		(property "DCR" "250mOhm max"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1238,7 +1240,7 @@
 			)
 		)
 		(property "Reference" "L9"
-			(at 96.52 78.74 90)
+			(at 76.2 60.96 90)
 			(effects
 				(font
 					(size 1 1)
@@ -1247,7 +1249,7 @@
 			)
 		)
 		(property "Value" "4.7nH"
-			(at 96.52 81.28 90)
+			(at 76.2 63.5 90)
 			(effects
 				(font
 					(size 1 1)
@@ -1264,7 +1266,7 @@
 	)
 	(symbol
 		(lib_id "Device:L_Small")
-		(at 134.62 86.36 90)
+		(at 114.3 68.58 90)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -1280,7 +1282,7 @@
 			)
 		)
 		(property "Footprint" "obc:L_Nordic_0201_0603Metric"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1290,7 +1292,7 @@
 			)
 		)
 		(property "Datasheet" "https://search.murata.co.jp/Ceramy/image/img/P02/JELF243C-0021.pdf"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1299,8 +1301,8 @@
 				(justify left)
 			)
 		)
-		(property "Description" "RF matching inductor, Nordic PAAA reference selection"
-			(at 0 0 0)
+		(property "Description" "RF matching inductor, provisional QGAA matching; confirm with Nordic"
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1310,7 +1312,7 @@
 			)
 		)
 		(property "MPN" "LQP03HQ3N3B02D"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1320,7 +1322,7 @@
 			)
 		)
 		(property "Manufacturer" "Murata"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1330,7 +1332,8 @@
 			)
 		)
 		(property "Tolerance" "0.1nH"
-			(at 132.08 83.82 90)
+			(at 111.76 66.04 90)
+			(hide yes)
 			(effects
 				(font
 					(size 1 1)
@@ -1339,7 +1342,7 @@
 			)
 		)
 		(property "Rated Current" "500mA"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1349,7 +1352,7 @@
 			)
 		)
 		(property "DCR" "170mOhm max"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1359,7 +1362,7 @@
 			)
 		)
 		(property "Reference" "L10"
-			(at 132.08 78.74 90)
+			(at 111.76 60.96 90)
 			(effects
 				(font
 					(size 1 1)
@@ -1368,7 +1371,7 @@
 			)
 		)
 		(property "Value" "3.3nH"
-			(at 132.08 81.28 90)
+			(at 111.76 63.5 90)
 			(effects
 				(font
 					(size 1 1)
@@ -1385,7 +1388,7 @@
 	)
 	(symbol
 		(lib_id "Device:C_Small")
-		(at 81.28 101.6 0)
+		(at 60.96 83.82 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -1401,7 +1404,7 @@
 			)
 		)
 		(property "Footprint" "obc:C_Nordic_0201_0603Metric"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1411,7 +1414,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1421,7 +1424,7 @@
 			)
 		)
 		(property "Description" "High-Q RF matching capacitor"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1431,7 +1434,8 @@
 			)
 		)
 		(property "Voltage" "50V"
-			(at 83.82000000000001 104.14 0)
+			(at 63.5 86.36 0)
+			(hide yes)
 			(effects
 				(font
 					(size 1 1)
@@ -1440,7 +1444,8 @@
 			)
 		)
 		(property "Dielectric" "C0G"
-			(at 91.44 104.14 0)
+			(at 71.12 86.36 0)
+			(hide yes)
 			(effects
 				(font
 					(size 1 1)
@@ -1449,7 +1454,7 @@
 			)
 		)
 		(property "Tolerance" "0.05pF"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1459,7 +1464,7 @@
 			)
 		)
 		(property "Manufacturer" "Murata"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1469,7 +1474,7 @@
 			)
 		)
 		(property "MPN" "GJM0335C1H1R2WB01D"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1479,7 +1484,7 @@
 			)
 		)
 		(property "Reference" "C45"
-			(at 83.82000000000001 99.05999999999999 0)
+			(at 63.5 81.28 0)
 			(effects
 				(font
 					(size 1 1)
@@ -1488,7 +1493,7 @@
 			)
 		)
 		(property "Value" "1.2p"
-			(at 83.82000000000001 101.6 0)
+			(at 63.5 83.82 0)
 			(effects
 				(font
 					(size 1 1)
@@ -1505,8 +1510,8 @@
 	)
 	(wire
 		(pts
-			(xy 81.28 86.36)
-			(xy 81.28 99.06)
+			(xy 60.96 68.58)
+			(xy 60.96 81.28)
 		)
 		(stroke
 			(width 0)
@@ -1516,8 +1521,8 @@
 	)
 	(wire
 		(pts
-			(xy 81.28 104.14)
-			(xy 81.28 111.76)
+			(xy 60.96 86.36)
+			(xy 60.96 93.98)
 		)
 		(stroke
 			(width 0)
@@ -1527,7 +1532,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 81.28 111.76 0)
+		(at 60.96 93.98 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -1543,7 +1548,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1553,7 +1558,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1563,7 +1568,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1573,7 +1578,7 @@
 			)
 		)
 		(property "Reference" "#PWR2501"
-			(at 83.82000000000001 109.22 0)
+			(at 63.5 91.44 0)
 			(hide yes)
 			(effects
 				(font
@@ -1583,7 +1588,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 83.82000000000001 110.49000000000001 0)
+			(at 63.5 92.71 0)
 			(effects
 				(font
 					(size 1 1)
@@ -1597,14 +1602,14 @@
 		)
 	)
 	(junction
-		(at 81.28 86.36)
+		(at 60.96 68.58)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "d49c07f3-b875-4bd2-a096-4e180d2590b4")
 	)
 	(symbol
 		(lib_id "Device:C_Small")
-		(at 116.84 101.6 0)
+		(at 96.52 83.82 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -1620,7 +1625,7 @@
 			)
 		)
 		(property "Footprint" "obc:C_Nordic_0201_0603Metric"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1630,7 +1635,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1640,7 +1645,7 @@
 			)
 		)
 		(property "Description" "High-Q RF matching capacitor"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1650,7 +1655,8 @@
 			)
 		)
 		(property "Voltage" "25V"
-			(at 119.38000000000001 104.14 0)
+			(at 99.06 86.36 0)
+			(hide yes)
 			(effects
 				(font
 					(size 1 1)
@@ -1659,7 +1665,8 @@
 			)
 		)
 		(property "Dielectric" "C0G"
-			(at 127.0 104.14 0)
+			(at 106.68 86.36 0)
+			(hide yes)
 			(effects
 				(font
 					(size 1 1)
@@ -1668,7 +1675,7 @@
 			)
 		)
 		(property "Tolerance" "0.05pF"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1678,7 +1685,7 @@
 			)
 		)
 		(property "Manufacturer" "Murata"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1688,7 +1695,7 @@
 			)
 		)
 		(property "MPN" "GJM0335C1E1R5WB01D"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1698,7 +1705,7 @@
 			)
 		)
 		(property "Reference" "C46"
-			(at 119.38000000000001 99.05999999999999 0)
+			(at 99.06 81.28 0)
 			(effects
 				(font
 					(size 1 1)
@@ -1707,7 +1714,7 @@
 			)
 		)
 		(property "Value" "1.5p"
-			(at 119.38000000000001 101.6 0)
+			(at 99.06 83.82 0)
 			(effects
 				(font
 					(size 1 1)
@@ -1724,8 +1731,8 @@
 	)
 	(wire
 		(pts
-			(xy 116.84 86.36)
-			(xy 116.84 99.06)
+			(xy 96.52 68.58)
+			(xy 96.52 81.28)
 		)
 		(stroke
 			(width 0)
@@ -1735,8 +1742,8 @@
 	)
 	(wire
 		(pts
-			(xy 116.84 104.14)
-			(xy 116.84 111.76)
+			(xy 96.52 86.36)
+			(xy 96.52 93.98)
 		)
 		(stroke
 			(width 0)
@@ -1746,7 +1753,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 116.84 111.76 0)
+		(at 96.52 93.98 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -1762,7 +1769,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1772,7 +1779,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1782,7 +1789,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1792,7 +1799,7 @@
 			)
 		)
 		(property "Reference" "#PWR2502"
-			(at 119.38000000000001 109.22 0)
+			(at 99.06 91.44 0)
 			(hide yes)
 			(effects
 				(font
@@ -1802,7 +1809,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 119.38000000000001 110.49000000000001 0)
+			(at 99.06 92.71 0)
 			(effects
 				(font
 					(size 1 1)
@@ -1816,14 +1823,14 @@
 		)
 	)
 	(junction
-		(at 116.84 86.36)
+		(at 96.52 68.58)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "1a79177e-18ce-4043-9a0c-1dabd6363e50")
 	)
 	(symbol
 		(lib_id "Device:C_Small")
-		(at 157.48 101.6 0)
+		(at 137.16 83.82 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -1839,7 +1846,7 @@
 			)
 		)
 		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1849,7 +1856,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1859,7 +1866,7 @@
 			)
 		)
 		(property "Description" "Antenna tuning shunt; populate only after RF measurement"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1869,7 +1876,8 @@
 			)
 		)
 		(property "Voltage" "50V"
-			(at 160.01999999999998 104.14 0)
+			(at 139.7 86.36 0)
+			(hide yes)
 			(effects
 				(font
 					(size 1 1)
@@ -1878,7 +1886,8 @@
 			)
 		)
 		(property "Dielectric" "C0G"
-			(at 167.64 104.14 0)
+			(at 147.32 86.36 0)
+			(hide yes)
 			(effects
 				(font
 					(size 1 1)
@@ -1887,7 +1896,7 @@
 			)
 		)
 		(property "Tolerance" "Select after tuning"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1897,7 +1906,7 @@
 			)
 		)
 		(property "Manufacturer" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1907,7 +1916,7 @@
 			)
 		)
 		(property "MPN" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1917,7 +1926,7 @@
 			)
 		)
 		(property "Reference" "C47"
-			(at 160.01999999999998 99.05999999999999 0)
+			(at 139.7 81.28 0)
 			(effects
 				(font
 					(size 1 1)
@@ -1925,8 +1934,8 @@
 				(justify left)
 			)
 		)
-		(property "Value" "DNP"
-			(at 160.01999999999998 101.6 0)
+		(property "Value" "tune (C0G)"
+			(at 139.7 83.82 0)
 			(effects
 				(font
 					(size 1 1)
@@ -1943,8 +1952,8 @@
 	)
 	(wire
 		(pts
-			(xy 157.48 86.36)
-			(xy 157.48 99.06)
+			(xy 137.16 68.58)
+			(xy 137.16 81.28)
 		)
 		(stroke
 			(width 0)
@@ -1954,8 +1963,8 @@
 	)
 	(wire
 		(pts
-			(xy 157.48 104.14)
-			(xy 157.48 111.76)
+			(xy 137.16 86.36)
+			(xy 137.16 93.98)
 		)
 		(stroke
 			(width 0)
@@ -1965,7 +1974,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 157.48 111.76 0)
+		(at 137.16 93.98 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -1981,7 +1990,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -1991,7 +2000,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2001,7 +2010,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2011,7 +2020,7 @@
 			)
 		)
 		(property "Reference" "#PWR2503"
-			(at 160.01999999999998 109.22 0)
+			(at 139.7 91.44 0)
 			(hide yes)
 			(effects
 				(font
@@ -2021,7 +2030,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 160.01999999999998 110.49000000000001 0)
+			(at 139.7 92.71 0)
 			(effects
 				(font
 					(size 1 1)
@@ -2035,14 +2044,14 @@
 		)
 	)
 	(junction
-		(at 157.48 86.36)
+		(at 137.16 68.58)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "d27e45a9-5efd-4c73-8d30-748d20613625")
 	)
 	(symbol
 		(lib_id "Device:C_Small")
-		(at 203.2 101.6 0)
+		(at 182.88 83.82 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -2058,7 +2067,7 @@
 			)
 		)
 		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2068,7 +2077,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2078,7 +2087,7 @@
 			)
 		)
 		(property "Description" "Antenna tuning shunt; populate only after RF measurement"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2088,7 +2097,8 @@
 			)
 		)
 		(property "Voltage" "50V"
-			(at 205.73999999999998 104.14 0)
+			(at 185.42 86.36 0)
+			(hide yes)
 			(effects
 				(font
 					(size 1 1)
@@ -2097,7 +2107,8 @@
 			)
 		)
 		(property "Dielectric" "C0G"
-			(at 213.35999999999999 104.14 0)
+			(at 193.04 86.36 0)
+			(hide yes)
 			(effects
 				(font
 					(size 1 1)
@@ -2106,7 +2117,7 @@
 			)
 		)
 		(property "Tolerance" "Select after tuning"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2116,7 +2127,7 @@
 			)
 		)
 		(property "Manufacturer" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2126,7 +2137,7 @@
 			)
 		)
 		(property "MPN" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2136,7 +2147,7 @@
 			)
 		)
 		(property "Reference" "C48"
-			(at 205.73999999999998 99.05999999999999 0)
+			(at 185.42 81.28 0)
 			(effects
 				(font
 					(size 1 1)
@@ -2144,8 +2155,8 @@
 				(justify left)
 			)
 		)
-		(property "Value" "DNP"
-			(at 205.73999999999998 101.6 0)
+		(property "Value" "tune (C0G)"
+			(at 185.42 83.82 0)
 			(effects
 				(font
 					(size 1 1)
@@ -2162,8 +2173,8 @@
 	)
 	(wire
 		(pts
-			(xy 203.2 86.36)
-			(xy 203.2 99.06)
+			(xy 182.88 68.58)
+			(xy 182.88 81.28)
 		)
 		(stroke
 			(width 0)
@@ -2173,8 +2184,8 @@
 	)
 	(wire
 		(pts
-			(xy 203.2 104.14)
-			(xy 203.2 111.76)
+			(xy 182.88 86.36)
+			(xy 182.88 93.98)
 		)
 		(stroke
 			(width 0)
@@ -2184,7 +2195,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 203.2 111.76 0)
+		(at 182.88 93.98 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -2200,7 +2211,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2210,7 +2221,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2220,7 +2231,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2230,7 +2241,7 @@
 			)
 		)
 		(property "Reference" "#PWR2504"
-			(at 205.73999999999998 109.22 0)
+			(at 185.42 91.44 0)
 			(hide yes)
 			(effects
 				(font
@@ -2240,7 +2251,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 205.73999999999998 110.49000000000001 0)
+			(at 185.42 92.71 0)
 			(effects
 				(font
 					(size 1 1)
@@ -2254,14 +2265,14 @@
 		)
 	)
 	(junction
-		(at 203.2 86.36)
+		(at 182.88 68.58)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "6c947e58-ee96-4b41-afe5-1de83f679fc4")
 	)
 	(symbol
 		(lib_id "Device:R_Small")
-		(at 180.34 86.36 90)
+		(at 160.02 68.58 90)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -2277,7 +2288,7 @@
 			)
 		)
 		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2287,7 +2298,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2297,7 +2308,7 @@
 			)
 		)
 		(property "Description" "Antenna tuning series link; replace with RF reactance if required"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2307,7 +2318,7 @@
 			)
 		)
 		(property "Power" "63mW"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2317,7 +2328,7 @@
 			)
 		)
 		(property "Reference" "R35"
-			(at 180.34 81.28 90)
+			(at 160.02 63.5 90)
 			(effects
 				(font
 					(size 1 1)
@@ -2325,7 +2336,7 @@
 			)
 		)
 		(property "Value" "0R"
-			(at 180.34 83.82 90)
+			(at 160.02 66.04 90)
 			(effects
 				(font
 					(size 1 1)
@@ -2341,8 +2352,8 @@
 	)
 	(wire
 		(pts
-			(xy 38.1 86.36)
-			(xy 60.96 86.36)
+			(xy 17.78 68.58)
+			(xy 40.64 68.58)
 		)
 		(stroke
 			(width 0)
@@ -2352,8 +2363,8 @@
 	)
 	(wire
 		(pts
-			(xy 66.04 86.36)
-			(xy 81.28 86.36)
+			(xy 45.72 68.58)
+			(xy 60.96 68.58)
 		)
 		(stroke
 			(width 0)
@@ -2363,8 +2374,8 @@
 	)
 	(wire
 		(pts
-			(xy 81.28 86.36)
-			(xy 96.52 86.36)
+			(xy 60.96 68.58)
+			(xy 76.2 68.58)
 		)
 		(stroke
 			(width 0)
@@ -2374,8 +2385,8 @@
 	)
 	(wire
 		(pts
-			(xy 101.6 86.36)
-			(xy 116.84 86.36)
+			(xy 81.28 68.58)
+			(xy 96.52 68.58)
 		)
 		(stroke
 			(width 0)
@@ -2385,8 +2396,8 @@
 	)
 	(wire
 		(pts
-			(xy 116.84 86.36)
-			(xy 132.08 86.36)
+			(xy 96.52 68.58)
+			(xy 111.76 68.58)
 		)
 		(stroke
 			(width 0)
@@ -2397,8 +2408,8 @@
 
 	(wire
 		(pts
-			(xy 157.48 86.36)
-			(xy 177.8 86.36)
+			(xy 137.16 68.58)
+			(xy 157.48 68.58)
 		)
 		(stroke
 			(width 0)
@@ -2408,8 +2419,8 @@
 	)
 	(wire
 		(pts
-			(xy 182.88 86.36)
-			(xy 203.2 86.36)
+			(xy 162.56 68.58)
+			(xy 182.88 68.58)
 		)
 		(stroke
 			(width 0)
@@ -2419,8 +2430,8 @@
 	)
 	(wire
 		(pts
-			(xy 203.2 86.36)
-			(xy 231.14 86.36)
+			(xy 182.88 68.58)
+			(xy 210.82 68.58)
 		)
 		(stroke
 			(width 0)
@@ -2430,7 +2441,7 @@
 	)
 	(symbol
 		(lib_id "obc:PCB_2G4_MIFA")
-		(at 231.14 81.28 0)
+		(at 210.82 63.5 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom no)
@@ -2446,7 +2457,7 @@
 			)
 		)
 		(property "Footprint" "RF_Antenna:Texas_SWRA117D_2.4GHz_Right"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2456,7 +2467,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.ti.com/lit/an/swra117d/swra117d.pdf"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2466,7 +2477,7 @@
 			)
 		)
 		(property "Description" "2.4GHz printed meandered inverted-F antenna; TI AN043 reference geometry"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2476,7 +2487,7 @@
 			)
 		)
 		(property "Implementation" "Printed copper, top board edge; do not populate as a purchased part"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2486,7 +2497,7 @@
 			)
 		)
 		(property "Reference" "AE2"
-			(at 233.67999999999998 78.74 0)
+			(at 213.36 60.96 0)
 			(effects
 				(font
 					(size 1 1)
@@ -2495,7 +2506,7 @@
 			)
 		)
 		(property "Value" "PCB MIFA"
-			(at 233.67999999999998 81.28 0)
+			(at 213.36 63.5 0)
 			(effects
 				(font
 					(size 1 1)
@@ -2512,8 +2523,8 @@
 	)
 	(wire
 		(pts
-			(xy 233.68 86.36)
-			(xy 233.68 111.76)
+			(xy 213.36 68.58)
+			(xy 213.36 93.98)
 		)
 		(stroke
 			(width 0)
@@ -2523,7 +2534,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 233.68 111.76 0)
+		(at 213.36 93.98 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -2539,7 +2550,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2549,7 +2560,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2559,7 +2570,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2569,7 +2580,7 @@
 			)
 		)
 		(property "Reference" "#PWR2505"
-			(at 236.22 109.22 0)
+			(at 215.9 91.44 0)
 			(hide yes)
 			(effects
 				(font
@@ -2579,7 +2590,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 236.22 110.49000000000001 0)
+			(at 215.9 92.71 0)
 			(effects
 				(font
 					(size 1 1)
@@ -2592,71 +2603,62 @@
 			(uuid "a03e6abe-3d70-4371-b7d5-68ef52ffe245")
 		)
 	)
-	(text "2.4GHz RADIO — TOP-EDGE PCB ANTENNA"
-		(at 38.1 35.56 0)
+	(text "2.4GHz RADIO / TOP-EDGE PCB ANTENNA"
+		(at 17.78 17.78 0)
 		(effects
 			(font
-				(size 2 2)
+				(size 1.8 1.8)
+				(bold yes)
 			)
 			(justify left top)
 		)
 		(uuid "25a55834-b999-4101-9f1c-557426cd8058")
 	)
-	(text "SoC matching: copy Nordic PAAA reference geometry and ground vias.\nKeep L8/C45/L9/C46/L10 at U6; 50-ohm feed beyond this network."
-		(at 38.1 129.54 0)
+	(text "QGAA matching is provisional. Obtain the Nordic LM20 QFN reference circuit.\nVerify L8/C45/L9/C46/L10 values and geometry before fabrication."
+		(at 17.78 111.76 0)
 		(effects
 			(font
-				(size 1 1)
+				(size 1.0 1.0)
 			)
 			(justify left top)
 		)
 		(uuid "01275870-002d-4693-8c14-4e0aba5781ae")
 	)
 	(text "AE2: TI AN043 starting geometry; copper keepout on all layers below radiator.\nKeep display metal / battery clear. Tune C47/R35/C48 in the final enclosure."
-		(at 38.1 140.97 0)
+		(at 17.78 123.19 0)
 		(effects
 			(font
-				(size 1 1)
+				(size 1.0 1.0)
 			)
 			(justify left top)
 		)
 		(uuid "5ee5300f-153a-4a30-aa2d-0dcd3c7868b2")
 	)
 	(text "SOC MATCHING"
-		(at 63.5 55.88 0)
+		(at 43.18 38.1 0)
 		(effects
 			(font
 				(size 1.27 1.27)
+				(bold yes)
 			)
 			(justify left top)
 		)
 		(uuid "6fb30a71-71b0-4bb6-a681-1c97aab2bc50")
 	)
 	(text "ANTENNA TUNING"
-		(at 157.48 55.88 0)
+		(at 137.16 38.1 0)
 		(effects
 			(font
 				(size 1.27 1.27)
+				(bold yes)
 			)
 			(justify left top)
 		)
 		(uuid "d7b30e94-b56a-4103-8b5a-a25b0b5a27c4")
 	)
-	(rectangle
-		(start 25.4 25.4)
-		(end 266.7 160.02)
-		(stroke
-			(width 0.254)
-			(type dash)
-		)
-		(fill
-			(type none)
-		)
-		(uuid "f09cc761-e70e-4f65-9202-3814a3cd0b88")
-	)
 	(symbol
 		(lib_id "Device:R_Small")
-		(at 144.78 86.36 90)
+		(at 124.46 68.58 90)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -2672,7 +2674,7 @@
 			)
 		)
 		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2682,7 +2684,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2692,7 +2694,7 @@
 			)
 		)
 		(property "Description" "0402 removable RF isolation link; fitted for normal operation"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2702,7 +2704,8 @@
 			)
 		)
 		(property "Tolerance" "Jumper"
-			(at 144.78 88.9 90)
+			(at 124.46 71.12 90)
+			(hide yes)
 			(effects
 				(font
 					(size 1 1)
@@ -2710,7 +2713,7 @@
 			)
 		)
 		(property "Power" "63mW"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2720,7 +2723,7 @@
 			)
 		)
 		(property "Test" "Remove for antenna VNA measurement; keep antenna matching fitted"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2730,7 +2733,7 @@
 			)
 		)
 		(property "Reference" "R39"
-			(at 144.78 81.28 90)
+			(at 124.46 63.5 90)
 			(effects
 				(font
 					(size 1 1)
@@ -2738,7 +2741,7 @@
 			)
 		)
 		(property "Value" "0R"
-			(at 144.78 83.82 90)
+			(at 124.46 66.04 90)
 			(effects
 				(font
 					(size 1 1)
@@ -2754,8 +2757,8 @@
 	)
 	(wire
 		(pts
-			(xy 137.16 86.36)
-			(xy 142.24 86.36)
+			(xy 116.84 68.58)
+			(xy 121.92 68.58)
 		)
 		(stroke
 			(width 0)
@@ -2765,8 +2768,8 @@
 	)
 	(wire
 		(pts
-			(xy 147.32 86.36)
-			(xy 152.4 86.36)
+			(xy 127 68.58)
+			(xy 132.08 68.58)
 		)
 		(stroke
 			(width 0)
@@ -2776,8 +2779,8 @@
 	)
 	(wire
 		(pts
-			(xy 152.4 86.36)
-			(xy 157.48 86.36)
+			(xy 132.08 68.58)
+			(xy 137.16 68.58)
 		)
 		(stroke
 			(width 0)
@@ -2786,14 +2789,14 @@
 		(uuid "6461dcf0-5289-4fc1-aa4d-8503d2ba5430")
 	)
 	(junction
-		(at 152.4 86.36)
+		(at 132.08 68.58)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "3d1d5ab7-ce3e-4830-b051-47028042e3e9")
 	)
 	(symbol
 		(lib_id "Connector:Conn_Coaxial")
-		(at 152.4 71.12 90)
+		(at 132.08 53.34 90)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom no)
@@ -2809,7 +2812,7 @@
 			)
 		)
 		(property "Footprint" "obc:RF_Coax_Solder_GSG"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2819,7 +2822,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2829,7 +2832,7 @@
 			)
 		)
 		(property "Description" "Bare RF coax solder landing; center conductor pad 1, shield pads 2; no fitted connector"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2839,7 +2842,7 @@
 			)
 		)
 		(property "Assembly" "PCB pads only; no solder paste"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2849,7 +2852,7 @@
 			)
 		)
 		(property "Measurement" "Remove R39; VNA toward antenna and matching network. Calibrate at landing or de-embed cable."
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2859,7 +2862,7 @@
 			)
 		)
 		(property "Layout" "Place center pad in the 50-ohm feed, no branch stub; short shield return to ground plane"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2869,21 +2872,19 @@
 			)
 		)
 		(property "Reference" "J7"
-			(at 157.48000000000002 68.58 90)
+			(at 134.62 45.72 90)
 			(effects
 				(font
 					(size 1 1)
 				)
-				(justify left)
 			)
 		)
 		(property "Value" "RF coax pads"
-			(at 157.48000000000002 71.12 90)
+			(at 134.62 48.26 90)
 			(effects
 				(font
 					(size 1 1)
 				)
-				(justify left)
 			)
 		)
 		(pin "1"
@@ -2895,8 +2896,8 @@
 	)
 	(wire
 		(pts
-			(xy 152.4 86.36)
-			(xy 152.4 76.2)
+			(xy 132.08 68.58)
+			(xy 132.08 58.42)
 		)
 		(stroke
 			(width 0)
@@ -2906,8 +2907,8 @@
 	)
 	(wire
 		(pts
-			(xy 157.48 71.12)
-			(xy 162.56 71.12)
+			(xy 137.16 53.34)
+			(xy 142.24 53.34)
 		)
 		(stroke
 			(width 0)
@@ -2917,8 +2918,8 @@
 	)
 	(wire
 		(pts
-			(xy 162.56 71.12)
-			(xy 162.56 76.2)
+			(xy 142.24 53.34)
+			(xy 142.24 58.42)
 		)
 		(stroke
 			(width 0)
@@ -2928,7 +2929,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 162.56 76.2 0)
+		(at 142.24 58.42 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -2944,7 +2945,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2954,7 +2955,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2964,7 +2965,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 0 0 0)
+			(at -20.32 -17.78 0)
 			(hide yes)
 			(effects
 				(font
@@ -2974,7 +2975,7 @@
 			)
 		)
 		(property "Reference" "#PWR2701"
-			(at 165.1 73.66 0)
+			(at 144.78 55.88 0)
 			(hide yes)
 			(effects
 				(font
@@ -2984,7 +2985,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 165.1 74.93 0)
+			(at 144.78 57.15 0)
 			(effects
 				(font
 					(size 1 1)
@@ -2998,17 +2999,17 @@
 		)
 	)
 	(text "VNA: remove R39; keep C47/R35/C48 fitted as tuned.\nJ7 center pad in feed; no stub. Calibrate at pads."
-		(at 38.1 152.4 0)
+		(at 17.78 134.62 0)
 		(effects
 			(font
-				(size 1 1)
+				(size 1.0 1.0)
 			)
 			(justify left top)
 		)
 		(uuid "b327f588-82cd-41e0-80d4-43a37260e79f")
 	)
 	(label "RF24_M1"
-		(at 81.28 93.98 0)
+		(at 60.96 76.2 0)
 		(effects
 			(font
 				(size 1 1)
@@ -3018,7 +3019,7 @@
 		(uuid "7c27c7fe-e1c2-4773-b3f2-93940143d4e1")
 	)
 	(label "RF24_M2"
-		(at 116.84 93.98 0)
+		(at 96.52 76.2 0)
 		(effects
 			(font
 				(size 1 1)
@@ -3028,7 +3029,7 @@
 		(uuid "89d4e9d8-a6c2-421a-a27b-5a93a5931e82")
 	)
 	(label "RF24_LPF"
-		(at 139.7 86.36 90)
+		(at 119.38 68.58 90)
 		(effects
 			(font
 				(size 1 1)
@@ -3038,7 +3039,7 @@
 		(uuid "c54b04ad-fc03-4ca7-a596-c54a537c7865")
 	)
 	(label "RF24_TEST"
-		(at 157.48 93.98 0)
+		(at 137.16 76.2 0)
 		(effects
 			(font
 				(size 1 1)
@@ -3048,7 +3049,7 @@
 		(uuid "33d9c55b-5b10-40bc-abe5-de32c2c768fb")
 	)
 	(label "RF24_FEED"
-		(at 203.2 93.98 0)
+		(at 182.88 76.2 0)
 		(effects
 			(font
 				(size 1 1)
