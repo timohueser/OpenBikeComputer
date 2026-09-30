@@ -116,7 +116,7 @@
         "malformed_courtyard": "error",
         "microvia_drill_out_of_range": "error",
         "mirrored_text_on_front_layer": "warning",
-        "missing_courtyard": "ignore",
+        "missing_courtyard": "error",
         "missing_footprint": "warning",
         "missing_tuning_profile": "warning",
         "net_conflict": "warning",
@@ -138,7 +138,7 @@
         "too_many_vias": "error",
         "track_angle": "error",
         "track_dangling": "warning",
-        "track_not_centered_on_via": "ignore",
+        "track_not_centered_on_via": "warning",
         "track_on_post_machined_layer": "error",
         "track_segment_length": "error",
         "track_width": "error",
@@ -163,10 +163,10 @@
         "min_silk_clearance": 0.15,
         "min_text_height": 0.8,
         "min_text_thickness": 0.15,
-        "min_through_hole_diameter": 0.15,
+        "min_through_hole_diameter": 0.2,
         "min_track_width": 0.065,
         "min_via_annular_width": 0.08,
-        "min_via_diameter": 0.31,
+        "min_via_diameter": 0.4,
         "solder_mask_to_copper_clearance": 0.065,
         "use_height_for_length_calcs": true
       },
@@ -256,24 +256,8 @@
       },
       "via_dimensions": [
         {
-          "diameter": 0,
-          "drill": 0
-        },
-        {
-          "diameter": 0.32,
-          "drill": 0.15
-        },
-        {
           "diameter": 0.4,
           "drill": 0.2
-        },
-        {
-          "diameter": 0.5,
-          "drill": 0.25
-        },
-        {
-          "diameter": 0.6,
-          "drill": 0.3
         }
       ],
       "zones_allow_external_fillets": false
@@ -758,7 +742,7 @@
       },
       {
         "netclass": "Power_Input",
-        "pattern": "Net-(U6A-VBUS)"
+        "pattern": "/SOC_USB_VBUS"
       },
       {
         "netclass": "Power",
@@ -786,19 +770,19 @@
       },
       {
         "netclass": "Switching",
-        "pattern": "Net-(U2-SW1)"
+        "pattern": "/Power Management/PMIC_SW1"
       },
       {
         "netclass": "Switching",
-        "pattern": "Net-(U2-SW2)"
+        "pattern": "/Power Management/PMIC_SW2"
       },
       {
         "netclass": "Switching",
-        "pattern": "Net-(U7-SW)"
+        "pattern": "/Power Management/BOOST_SW"
       },
       {
         "netclass": "Switching",
-        "pattern": "Net-(U6A-DCC)"
+        "pattern": "/SOC_DCC"
       },
       {
         "netclass": "Display_SD",
@@ -822,23 +806,23 @@
       },
       {
         "netclass": "RF_50R_TBD",
-        "pattern": "Net-(L10-Pad2)"
+        "pattern": "/Radio/RF24_LPF"
       },
       {
         "netclass": "RF_50R_TBD",
-        "pattern": "Net-(J7-In)"
+        "pattern": "/Radio/RF24_TEST"
       },
       {
         "netclass": "RF_50R_TBD",
-        "pattern": "Net-(AE2-FEED)"
+        "pattern": "/Radio/RF24_FEED"
       },
       {
         "netclass": "RF_50R_TBD",
-        "pattern": "Net-(U1-RF_IN)"
+        "pattern": "/GNSS/GNSS_RF_IN"
       },
       {
         "netclass": "RF_50R_TBD",
-        "pattern": "Net-(J8-In)"
+        "pattern": "/GNSS/GNSS_RF_TEST"
       },
       {
         "netclass": "RF_Matching",
@@ -846,27 +830,27 @@
       },
       {
         "netclass": "RF_Matching",
-        "pattern": "Net-(C45-Pad1)"
+        "pattern": "/Radio/RF24_M1"
       },
       {
         "netclass": "RF_Matching",
-        "pattern": "Net-(C46-Pad1)"
+        "pattern": "/Radio/RF24_M2"
       },
       {
         "netclass": "RF_Matching",
-        "pattern": "Net-(C27-Pad1)"
+        "pattern": "/GNSS/GNSS_RF_MATCH"
       },
       {
         "netclass": "RF_Matching",
-        "pattern": "Net-(ANT1-~)"
+        "pattern": "/GNSS/GNSS_RF_FEED"
       },
       {
         "netclass": "RF_Matching",
-        "pattern": "Net-(ANT1-FTE-Pad2)"
+        "pattern": "/GNSS/GNSS_FTE1"
       },
       {
         "netclass": "RF_Matching",
-        "pattern": "Net-(ANT1-FTE-Pad3)"
+        "pattern": "/GNSS/GNSS_FTE2"
       }
     ]
   },

@@ -104,3 +104,24 @@
 (rule "Tag-Connect contact clearance"
   (condition "A.memberOfFootprint('J5') && A.Type == 'Pad' && (B.Type == 'Track' || B.Type == 'Via' || B.Type == 'Zone') && A.Net != B.Net")
   (constraint clearance (min 0.508mm)))
+
+# Plane exceptions below are the measured Nordic nRF54LM20A PAAA 0.6 routes.
+# Ordinary signals may only use these layers for the local CSP escape.
+(rule "No tracks on L2 ground outside CSP escape"
+  (layer "In1.Cu")
+  (condition "!A.intersectsCourtyard('U6') && A.NetName != 'Net-(U6A-TXRTUNE)'")
+  (constraint disallow track))
+(rule "No tracks on L4 power outside Nordic DECA"
+  (layer "In3.Cu")
+  (condition "!A.intersectsCourtyard('U6') && A.NetName != 'Net-(U6A-DECA)'")
+  (constraint disallow track))
+(rule "Tracks off the edge"
+  (condition "A.Type == 'Track'")
+  (constraint edge_clearance (min 1mm)))
+
+# Nordic retains the HFXO on L3. Preserve separation from digital routes outside
+# the CSP escape; the nearby DECA connection is part of the reference geometry.
+(rule "HFXO isolation on L3"
+  (layer "In2.Cu")
+  (condition "(A.NetName == 'Net-(U6A-XC1)' || A.NetName == 'Net-(U6A-XC2)') && B.NetName != 'GND' && B.NetName != 'Net-(U6A-XC1)' && B.NetName != 'Net-(U6A-XC2)' && B.NetName != 'Net-(U6A-DECA)' && !B.intersectsCourtyard('U6')")
+  (constraint clearance (min 0.5mm)))
