@@ -118,7 +118,7 @@ handle_path {path}/search/* {{
 }}
 """
     ssh(args.host, f"cat > /etc/caddy/planner/slot-{slot}.caddy <<'CONFIG'\n{caddy}CONFIG\n")
-    ssh(args.host, """python3 - <<'PY'
+    ssh(args.host, r"""python3 - <<'PY'
 from pathlib import Path
 p=Path('/etc/caddy/Caddyfile')
 text=p.read_text()

@@ -66,12 +66,16 @@ class ReleaseTests(unittest.TestCase):
         document = {"region": "test", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain"}
         with patch.object(release, "release", return_value=("a" * 64, document)), \
              patch.object(release, "read_url", side_effect=[document, {"active": None, "previous": None}]), \
-             patch.object(planner_deploy, "ssh"), patch.object(planner_deploy.maps, "run"), \
+             patch.object(planner_deploy, "ssh") as ssh, patch.object(planner_deploy.maps, "run"), \
              patch.object(planner_deploy, "verify_services", side_effect=ValueError("Tiles unavailable")), \
              patch.object(planner_deploy, "activate") as activate:
             with self.assertRaisesRegex(ValueError, "Tiles unavailable"):
                 planner_deploy.deploy(args)
             activate.assert_not_called()
+            for call in ssh.call_args_list:
+                script = call.args[1]
+                if script.startswith("python3 - <<'PY'\n"):
+                    compile(script.split("\n", 1)[1].split("\nPY\n", 1)[0], "remote Caddy setup", "exec")
 
     def test_missing_active_slot_cannot_restart_live_services(self):
         args = argparse.Namespace(host="root@vps.example", data_dir=Path("/release"), apply=True,
