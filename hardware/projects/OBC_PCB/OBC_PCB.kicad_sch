@@ -4909,7 +4909,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "32MHz crystal, 8pF load, Nordic reference selection"
+		(property "Description" "32MHz crystal, 8pF load, +/-10ppm tolerance, +/-15ppm stability, -30 to 85C"
 			(at 360.68 69.85 0)
 			(hide yes)
 			(show_name no)
@@ -4931,7 +4931,7 @@
 				(justify left)
 			)
 		)
-		(property "Frequency tolerance" "40ppm total"
+		(property "Frequency tolerance" "25ppm total"
 			(at 129.54 0 0)
 			(hide yes)
 			(effects
@@ -4951,7 +4951,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "CX2016DB32000D0WZRC1"
+		(property "MPN" "CX2016DB32000D0FLJCC"
 			(at 129.54 0 0)
 			(hide yes)
 			(effects

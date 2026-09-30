@@ -5062,7 +5062,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "DNP"
+		(property "Value" "tune (C0G)"
 			(at 78.74 83.82 0)
 			(show_name no)
 			(do_not_autoplace no)

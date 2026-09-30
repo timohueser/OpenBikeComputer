@@ -10416,7 +10416,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "2.2uF MLCC, 10V, X7R, 0603"
+		(property "Description" "Ceramic MLCC, 2.2uF, 16V, X7R, 10%, 0603"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -10426,7 +10426,7 @@
 				(justify left)
 			)
 		)
-		(property "Voltage" "10V"
+		(property "Voltage" "16V"
 			(at 93.98 142.24 0)
 			(hide yes)
 			(effects

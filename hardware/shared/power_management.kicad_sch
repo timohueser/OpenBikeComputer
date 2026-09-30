@@ -6728,7 +6728,7 @@
 		(color 0 0 0 0)
 		(uuid "c66c7078-dbaa-5b8a-9b7d-ab71f238f64d")
 	)
-	(text "BUCK1: off at boot; set 3.3V for SD.\nBUCK2: 3.0V at boot; set 3.2V before LCD enable.\nLS1 unused: both pins grounded, keep disabled.\nLS2: +3V2_GPS; 50mA soft-start target."
+	(text "BUCK1: off at boot; set 3.2V for SD after BUCK2 is at 3.2V.\nBUCK2: 3.0V at boot; set 3.2V before LCD enable.\nLS1 unused: both pins grounded, keep disabled.\nLS2: +3V2_GPS; 50mA soft-start target."
 		(at 198.12 137.16 0)
 		(effects
 			(font

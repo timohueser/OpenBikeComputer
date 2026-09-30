@@ -1934,7 +1934,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "DNP"
+		(property "Value" "tune (C0G)"
 			(at 139.7 83.82 0)
 			(effects
 				(font
@@ -2155,7 +2155,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "DNP"
+		(property "Value" "tune (C0G)"
 			(at 185.42 83.82 0)
 			(effects
 				(font

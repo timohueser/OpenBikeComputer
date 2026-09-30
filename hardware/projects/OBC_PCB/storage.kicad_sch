@@ -2227,7 +2227,7 @@
 				(justify left)
 			)
 		)
-		(property "Capacitance at bias" "Minimum 4.7uF at 3.3V over tolerance and temperature"
+		(property "Capacitance at bias" "Minimum 4.7uF at 3.2V over tolerance and temperature"
 			(at -149.86 -66.04 0)
 			(hide yes)
 			(effects
