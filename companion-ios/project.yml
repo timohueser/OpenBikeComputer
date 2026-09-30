@@ -143,6 +143,10 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"      # iPhone only
         # The companion core has no Intel simulator slice.
         EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+      configs:
+        # The Debug-only planner preview reads this fixture; Release must not carry it.
+        Release:
+          EXCLUDED_SOURCE_FILE_NAMES: PlannerPreviewNetworks.json
 
   # ─────────────────────────────────────────────── device shell (the Rust host on a phone)
   #

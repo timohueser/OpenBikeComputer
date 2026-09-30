@@ -77,8 +77,9 @@ enum PlannerPreviewNetworkData {
         let geometry: Geometry
     }
 
+    /// The app target carries the fixture in Debug only, so it never ships in Release.
     private static let features: [Feature] = {
-        guard let url = Bundle.module.url(forResource: "PlannerPreviewNetworks", withExtension: "json"),
+        guard let url = Bundle.main.url(forResource: "PlannerPreviewNetworks", withExtension: "json"),
               let data = try? Data(contentsOf: url),
               let collection = try? JSONDecoder().decode(Collection.self, from: data) else {
             assertionFailure("The bundled planner network fixture must decode.")
