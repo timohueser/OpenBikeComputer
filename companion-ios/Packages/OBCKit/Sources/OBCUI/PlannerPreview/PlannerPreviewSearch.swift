@@ -191,9 +191,14 @@ struct PlannerPlaceRow: View {
         .frame(minHeight: 52).contentShape(Rectangle())
     }
 
-    private var detail: String {
+    private var detail: String { Self.detail(for: place, showsRouteDistances: showsRouteDistances) }
+
+    /// "Café · 13.9 km · 80 m off route", or the kind alone without a route. The map card drops
+    /// the kind, which its glyph already shows, so the line fits on one row.
+    static func detail(for place: PlannerPreviewPlace, showsRouteDistances: Bool, includesKind: Bool = true) -> String {
         guard showsRouteDistances, place.kind != .town else { return place.kind.title }
-        return "\(place.kind.title) · \(OBCFormat.distance(meters: place.alongRouteMeters)) · \(OBCFormat.shortDistance(meters: place.offRouteMeters)) off route"
+        let distances = "\(OBCFormat.distance(meters: place.alongRouteMeters)) · \(OBCFormat.shortDistance(meters: place.offRouteMeters)) off route"
+        return includesKind ? "\(place.kind.title) · \(distances)" : distances
     }
 }
 #endif

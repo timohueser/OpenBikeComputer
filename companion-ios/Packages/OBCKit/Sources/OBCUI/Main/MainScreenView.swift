@@ -175,7 +175,7 @@ public struct MainScreenView: View {
                 }
                 .accessibilityIdentifier("main.select")
             }
-            OBCImportButton(fileExtensions: importFileExtensions, onPick: onImportFile)
+            OBCImportButton(fileExtensions: importFileExtensions, onPick: onImportFile, onNewRoute: onPlanRoute)
         }
     }
 
@@ -243,15 +243,6 @@ public struct MainScreenView: View {
             .labelsHidden()
             .padding(.top, 4)
             .plainRow(bottom: 12)
-
-            if model.tab == .planned, !isSelecting, let onPlanRoute {
-                Button(action: onPlanRoute) {
-                    Label("New route", systemImage: "plus")
-                }
-                .buttonStyle(.obcPrimary)
-                .accessibilityIdentifier("main.newRoute")
-                .plainRow(bottom: 12)
-            }
 
             OBCSearchField(
                 text: $model.searchText,

@@ -1,12 +1,12 @@
 import SwiftUI
 
-// System-styled wrappers: the action sheet, the rename sheet, and the system
-// pairing sheet. These are native presentations on purpose: the app tint carries the
-// brand, and the pairing alert stays system blue.
+// The destructive confirm, the rename sheet, and the system pairing sheet. The first two are
+// the app's own bottom sheets; the pairing alert stays system blue on purpose.
 
 public extension View {
-    /// A bottom-anchored destructive confirm (delete route, forget device). Every
-    /// destructive path routes through this; there is no one-gesture destroy.
+    /// A bottom sheet that confirms a destructive action (delete route, forget device). Every
+    /// destructive path routes through this; there is no one-gesture destroy. A sheet, not a
+    /// confirmation dialog: the dialog pops up as a bubble beside its control.
     func obcDestructiveConfirm(
         _ title: String,
         isPresented: Binding<Bool>,
@@ -14,11 +14,8 @@ public extension View {
         actionTitle: String,
         onConfirm: @escaping () -> Void
     ) -> some View {
-        confirmationDialog(title, isPresented: isPresented, titleVisibility: .visible) {
-            Button(actionTitle, role: .destructive, action: onConfirm)
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(message)
+        sheet(isPresented: isPresented) {
+            OBCDestructiveConfirmSheet(title: title, message: message, actionTitle: actionTitle, onConfirm: onConfirm)
         }
     }
 
@@ -39,6 +36,35 @@ public extension View {
             OBCRenameSheet(
                 title: title, name: name, placeholder: placeholder, message: message, saveTitle: saveTitle,
                 canSave: canSave, onSave: onSave)
+        }
+    }
+}
+
+private struct OBCDestructiveConfirmSheet: View {
+    let title: String
+    let message: String
+    let actionTitle: String
+    let onConfirm: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        OBCSheetContainer {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(title)
+                    .font(.system(.title2, weight: .bold))
+                    .foregroundStyle(OBCTheme.ink)
+                Text(message)
+                    .font(.system(.callout))
+                    .foregroundStyle(OBCTheme.secondary)
+                    .padding(.bottom, 6)
+                Button(actionTitle) { dismiss(); onConfirm() }
+                    .buttonStyle(.obcDestructive)
+                    .accessibilityIdentifier("confirm.destructive")
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(.obcGhost)
+                    .accessibilityIdentifier("confirm.cancel")
+            }
         }
     }
 }

@@ -69,7 +69,6 @@ struct PlannerPreviewLayerPanel: View {
     @Binding var network: PlannerPreviewNetwork
     @Binding var hidden: Set<PlannerPreviewPlaceCategory>
     @Binding var highlighted: Set<PlannerPreviewPlaceCategory>
-    let counts: [PlannerPreviewPlaceCategory: Int]
     let onDone: () -> Void
     @Environment(\.colorScheme) private var colorScheme
 
@@ -120,12 +119,7 @@ struct PlannerPreviewLayerPanel: View {
 
     private var placesSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Label("Places", systemImage: "mappin").font(.subheadline.weight(.semibold))
-                Spacer()
-                Text("\(PlannerPreviewPlaceCategory.allCases.count - hidden.count) types shown")
-                    .font(.caption).foregroundStyle(OBCTheme.secondary)
-            }
+            Text("Places").font(.subheadline.weight(.semibold))
             ForEach(PlannerPreviewPlaceCategory.groups, id: \.title) { group in
                 Text(group.title)
                     .font(.caption.weight(.semibold)).foregroundStyle(OBCTheme.secondary)
@@ -137,50 +131,38 @@ struct PlannerPreviewLayerPanel: View {
         }
     }
 
+    /// A toggle shows or hides the type. The eye is the provisional "show these at every zoom"
+    /// control; its final shape is an open design question.
     private func placeRow(_ category: PlannerPreviewPlaceCategory) -> some View {
         let shown = !hidden.contains(category)
         let marked = highlighted.contains(category)
-        return HStack(spacing: 4) {
+        return HStack(spacing: 8) {
+            Image(systemName: category.symbol)
+                .font(.subheadline).foregroundStyle(OBCTheme.secondary)
+                .frame(width: 22).accessibilityHidden(true)
+            Text(category.title).font(.subheadline)
+            Spacer(minLength: 4)
             Button {
-                if shown {
-                    hidden.insert(category)
-                    highlighted.remove(category)
-                } else { hidden.remove(category) }
+                if marked { highlighted.remove(category) } else { highlighted.insert(category) }
             } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: shown ? "checkmark.square.fill" : "square")
-                        .font(.body).foregroundStyle(OBCTheme.tint)
-                        .frame(width: 22)
-                    Image(systemName: category.symbol)
-                        .font(.subheadline).foregroundStyle(OBCTheme.secondary)
-                        .frame(width: 22)
-                    Text(category.title).font(.subheadline)
-                    Spacer(minLength: 4)
-                    Text("\(counts[category, default: 0])")
-                        .font(.caption.monospacedDigit()).foregroundStyle(OBCTheme.secondary)
-                }
-                .frame(minHeight: 44).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("\(category.title), \(counts[category, default: 0]) sample places")
-            .accessibilityValue(shown ? "Shown" : "Hidden")
-            .accessibilityHint("Double tap to \(shown ? "hide" : "show") this place type.")
-
-            Button {
-                if marked { highlighted.remove(category) }
-                else { highlighted.insert(category) }
-            } label: {
-                Circle()
-                    .strokeBorder(marked ? OBCTheme.amber : OBCTheme.hairlineStrong, lineWidth: marked ? 3.5 : 2)
-                    .frame(width: 19, height: 19)
+                Image(systemName: marked ? "eye.fill" : "eye")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(marked ? OBCTheme.onAmber : OBCTheme.secondary)
+                    .frame(width: 30, height: 30)
+                    .background(marked ? OBCTheme.amber : OBCTheme.fill, in: Circle())
                     .frame(width: 44, height: 44).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(!shown)
             .opacity(shown ? 1 : 0.35)
-            .accessibilityLabel("Highlight \(category.title.lowercased()) at every zoom")
+            .accessibilityLabel("Show \(category.title.lowercased()) at every zoom")
             .accessibilityValue(marked ? "On" : "Off")
+            Toggle(category.title, isOn: Binding(get: { shown }, set: { on in
+                if on { hidden.remove(category) } else { hidden.insert(category); highlighted.remove(category) }
+            }))
+            .labelsHidden().tint(OBCTheme.tint)
         }
+        .frame(minHeight: 44)
     }
 
     private func networkKey(_ title: String, rank: Int) -> some View {

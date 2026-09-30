@@ -3,6 +3,8 @@ import SwiftUI
 
 enum PlannerPreviewDrawerPosition {
     case collapsed, open, expanded
+    /// The header band, and the lowest detent. The host scales the same value to size its content.
+    static let collapsedBase: CGFloat = 60
 }
 
 /// The native sheet owns dragging. Map layout only changes when a detent changes.
@@ -13,7 +15,7 @@ struct PlannerPreviewDrawer<Header: View, Content: View>: View {
     let onHeight: (CGFloat) -> Void
     @ViewBuilder let header: () -> Header
     @ViewBuilder let content: () -> Content
-    @ScaledMetric(relativeTo: .body) private var collapsedHeight: CGFloat = 60
+    @ScaledMetric(relativeTo: .body) private var collapsedHeight = PlannerPreviewDrawerPosition.collapsedBase
 
     var body: some View {
         VStack(spacing: 0) {
