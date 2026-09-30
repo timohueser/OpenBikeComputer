@@ -61,6 +61,7 @@ struct TripUploadModelTests {
         startAndConfirm(upload)
         try await waitFor("interrupted", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .interrupted }
 
+        control.latency = .milliseconds(100)
         upload.resume()
         try await waitFor("done after resume", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
         #expect(upload.committedCount == 3)
@@ -68,6 +69,23 @@ struct TripUploadModelTests {
     }
 
     // MARK: Flat catalog vs. resident menu capacity
+
+    @Test
+    func anUnavailableRequiredTransferFailsInsteadOfReportingDone() async throws {
+        let (model, control) = try await makeMain()
+        let plan = try #require(model.planTripUpload(tripID))
+        let upload = TripUploadModel(
+            transport: MockTransport(control: control),
+            card: DeviceTripCard(name: "Trip", days: []), deviceName: "OBC",
+            precheck: plan.precheck,
+            steps: [.transfer(title: "Trip details", makeTransfer: { nil }, commit: { _, _ in
+                Issue.record("an unavailable transfer cannot commit")
+            })], timing: Self.fastTiming)
+        upload.start()
+        try await waitFor("required transfer fails", timeout: .seconds(20)) { upload.phase == .failed }
+        #expect(upload.committedCount == 0)
+        #expect(control.deviceTripCount == 0)
+    }
 
     @Test
     func aFullResidentRouteMenuDoesNotPretendTheFlatStoreIsFull() async throws {

@@ -147,6 +147,11 @@ struct TripReconcileModelTests {
         #expect(control.deviceTripCount == 0, "no trip object while the reversed days land")
         upload.cancel()
 
+        control.connection = .connected
+        try await waitFor("reconnected before retry", timeout: .seconds(20), interval: .milliseconds(5)) {
+            model.connection == .connected && model.connectedScope != nil
+        }
+
         let retry = await model.prepareTripUpload(tripID, timing: Self.fastTiming)!
         retry.start()
         try await waitFor("retry landed", timeout: .seconds(20), interval: .milliseconds(5)) { retry.phase == .done }

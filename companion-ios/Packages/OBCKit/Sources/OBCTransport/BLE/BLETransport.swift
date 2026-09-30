@@ -368,19 +368,18 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         catch { throw deviceError(for: error) }
         let scope = LibraryScope(
             serial: try await readString(GATT.serialNumber), storeID: catalog.storeID.description)
-        var rides: [RideSummary] = []
-        for entry in catalog.entries where !entry.flags.contains(.retained)
-            && !entry.flags.contains(.reserved) && !entry.flags.contains(.recording) {
+        let rides = catalog.entries.filter {
+            !$0.flags.contains(.retained) && !$0.flags.contains(.reserved) && !$0.flags.contains(.recording)
+        }.map { entry in
             let id = RideID(
                 deviceObjectID: DeviceObjectID(entry.objectID.rawValue), scope: scope)
-            // The ride footer is not frozen yet, so the fielded decoder stays behind the GET path.
+            // LIST establishes content identity. Display fields come from the one verified GET
+            // when sync downloads a missing ride, never from a catalog preflight.
             let source = RideSource(storeID: catalog.storeID.description,
                                     objectID: entry.objectID.rawValue, revision: entry.revision.rawValue,
                                     payloadLength: entry.payloadLength, payloadCRC32: entry.payloadCRC32)
-            let downloaded = try await downloadRide(id: id, source: source)
-            var summary = try RideObjectCodec.decode(downloaded.payload, id: id).summary
-            summary.source = downloaded.source
-            rides.append(summary)
+            return RideSummary(id: id, name: entry.displayName, date: .distantPast,
+                               distanceMeters: 0, source: source)
         }
         return RideCatalog(rides: rides, hiddenRideCount: 0)
     }
@@ -1323,11 +1322,14 @@ extension BLETransport: TransferLink {
         do {
             _ = try ControlFrame(decoding: record, direction: .request)
             _ = try await readyChannel()
+            try Task.checkCancellation()
             queue.async { [self] in
                 objectControlReceiveCancelled = false
                 byteChannel?.expectControlResponse(true)
             }  // a request re-arms the lane
             try await write(record, to: GATT.objectControl)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch is WireError {
             throw DeviceError.writeFailed
         } catch {

@@ -55,18 +55,29 @@ struct ArchiveReceiptTests {
         #expect(await link.restores == 0)
     }
 
-    @Test func cancelledReceiveAndQueuedReceiptDoNotWriteAgain() async throws {
+    @Test(arguments: 0..<6)
+    func cancelledReceiveAndQueuedOperationDoNotWriteAgain(operation: Int) async throws {
         let link = ReceiptLink(steps: [.park, .reply(0)])
         let client = TransferClient(link: link)
         let first = Task { try await send(client, store: link.store) }
         await link.waitUntilParked()
-        let queued = Task { try await send(client, store: link.store) }
+        let queued = Task {
+            switch operation {
+            case 0: _ = try await send(client, store: link.store)
+            case 1: _ = try await client.get(objectID: ObjectID(rawValue: 1))
+            case 2: _ = try await client.put(Data([1]), kind: .route, displayName: "Route")
+            case 3: _ = try await client.list()
+            case 4: _ = try await client.remove(objectID: ObjectID(rawValue: 1), expectedRevision: Revision(rawValue: 1))
+            default: _ = try await client.status(objectID: ObjectID(rawValue: 1), revision: Revision(rawValue: 1))
+            }
+        }
         await Task.yield()
         queued.cancel()
         first.cancel()
         await #expect(throws: CancellationError.self) { try await first.value }
         await #expect(throws: CancellationError.self) { try await queued.value }
         #expect(await link.frames.filter { $0.opcode == .archiveRide }.count == 1)
+        #expect(await link.frames.count == 2)
         #expect(try await send(client, store: link.store).timestamp == 0)
     }
 

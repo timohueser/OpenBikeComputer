@@ -771,6 +771,7 @@ public final class MainScreenModel {
         _ id: TripID, timing: TripUploadModel.Timing = TripUploadModel.Timing()
     ) -> TripUploadModel? {
         guard let trip = trip(id), let plan = planTripUpload(id) else { return nil }
+        let scope = connectedScope
         let days = dayRoutes(of: trip)
         var steps: [TripUploadModel.QueueStep] = []
         // A reversed trip has a new key. The device must not keep the old trip object, with the
@@ -830,7 +831,14 @@ public final class MainScreenModel {
             transport: transport, card: DeviceTripCard(name: trip.name, days: days.map { $0.summary(tripID: id) }),
             deviceName: deviceName,
             precheck: plan.precheck, steps: steps,
-            timing: timing, activity: transferActivity
+            timing: timing, activity: transferActivity,
+            verifyConnection: { [weak self] in
+                guard let self else { throw DeviceError.readFailed }
+                await identityTask?.value
+                try Task.checkCancellation()
+                guard connection == .connected, connectedScope != nil,
+                      scope == nil || connectedScope == scope else { throw DeviceError.readFailed }
+            }
         )
     }
 

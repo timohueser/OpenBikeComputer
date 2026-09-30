@@ -74,6 +74,31 @@ struct RideArchiveTests {
         #expect(reopened.archivedRideSource(next.id) == next.summary.source)
     }
 
+    @Test func absentDemoFlagKeepsArchiveProofAndPermitsReplacement() throws {
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = FileLibraryStore(directory: dir)
+        let original = ride()
+        _ = try store.archiveRide(original)
+        let rideDir = try #require(FileManager.default.contentsOfDirectory(
+            at: dir.appendingPathComponent("rides"), includingPropertiesForKeys: nil).first)
+        let manifestURL = rideDir.appendingPathComponent("summary.json")
+        var manifest = try #require(JSONSerialization.jsonObject(
+            with: Data(contentsOf: manifestURL)) as? [String: Any])
+        var summary = try #require(manifest["summary"] as? [String: Any])
+        summary.removeValue(forKey: "isDemo")
+        manifest["summary"] = summary
+        try JSONSerialization.data(withJSONObject: manifest).write(to: manifestURL)
+
+        let reopened = FileLibraryStore(directory: dir)
+        #expect(reopened.rideSummaries() == [original.summary])
+        #expect(reopened.archivedRideSource(original.id) == original.summary.source)
+        #expect(reopened.ridePoints(original.id) == original.points)
+        let next = ride(revision: 2)
+        _ = try reopened.archiveRide(next)
+        #expect(reopened.archivedRideSource(next.id) == next.summary.source)
+    }
+
     @Test func historyAndMissingPointsAreNotArchiveProof() throws {
         let dir = try directory()
         defer { try? FileManager.default.removeItem(at: dir) }
