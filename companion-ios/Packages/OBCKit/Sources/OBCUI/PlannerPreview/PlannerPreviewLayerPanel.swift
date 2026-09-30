@@ -131,15 +131,15 @@ struct PlannerPreviewLayerPanel: View {
         }
     }
 
-    /// A toggle shows or hides the type. The eye is the provisional "show these at every zoom"
-    /// control; its final shape is an open design question.
+    /// A toggle shows or hides the type. The eye spotlights it: those places stay on the map at
+    /// every zoom, ringed in amber.
     private func placeRow(_ category: PlannerPreviewPlaceCategory) -> some View {
         let shown = !hidden.contains(category)
         let marked = highlighted.contains(category)
         return HStack(spacing: 8) {
             Image(systemName: category.symbol)
                 .font(.subheadline).foregroundStyle(OBCTheme.secondary)
-                .frame(width: 22).accessibilityHidden(true)
+                .frame(width: 24).accessibilityHidden(true)
             Text(category.title).font(.subheadline)
             Spacer(minLength: 4)
             Button {

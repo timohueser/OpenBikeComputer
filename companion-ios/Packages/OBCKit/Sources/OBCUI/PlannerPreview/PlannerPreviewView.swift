@@ -269,7 +269,7 @@ public struct PlannerPreviewView: View {
         return collapsedHeight + content
     }
 
-    /// Provisional entry into the day split; its place is still an open design question.
+    /// The Library's trip badge ("2 days"), made tappable: the door into the day split.
     private var dayChip: some View {
         Button { show(.days) } label: {
             Label(model.dayCount == 1 ? "1 day" : "\(model.dayCount) days", systemImage: model.dayCount == 1 ? "sun.max" : "moon")
