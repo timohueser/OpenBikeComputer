@@ -172,19 +172,30 @@ impl<S: Source> Package<S> {
 
     /// Check the complete object closure before publishing or installing a region.
     pub fn verify(&self) -> Result<()> {
+        for key in self.objects()? {
+            self.bytes(&key)?;
+        }
+        Ok(())
+    }
+
+    /// All referenced objects, including index blocks, in the source's verification order.
+    pub fn objects(&self) -> Result<Vec<String>> {
         let mut keys = std::collections::BTreeSet::new();
         for table in std::iter::once(&self.manifest.geometry)
             .chain(self.manifest.osm.tables())
             .chain(self.manifest.metrics.values().flat_map(|m| [&m.graph, &m.endpoints]))
         {
+            keys.extend(table.blocks.iter().cloned());
             keys.extend(self.keys(table)?);
         }
         for metric in self.manifest.metrics.values() {
+            keys.extend(metric.allowed.blocks.iter().cloned());
             for block in 0..metric.allowed.blocks.len() {
                 self.words.borrow_mut().block(self, &metric.allowed, block)?;
             }
         }
         for key in self.manifest.spatial.values() {
+            keys.insert(key.clone());
             let cells: BTreeMap<String, String> = self.read(key)?;
             if cells.len() > 10_000 || cells.values().any(|id| !table::valid_digest(id)) {
                 return Err(Error::InvalidData("Invalid snap directory".into()));
@@ -193,10 +204,7 @@ impl<S: Source> Package<S> {
         }
         let mut keys: Vec<_> = keys.into_iter().collect();
         self.source.order_for_verify(&mut keys)?;
-        for key in keys {
-            self.bytes(&key)?;
-        }
-        Ok(())
+        Ok(keys)
     }
 
     pub fn keys(&self, table: &Table) -> Result<Vec<String>> {

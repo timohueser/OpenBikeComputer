@@ -24,6 +24,11 @@ def recipe(path):
     maps.bounds(",".join(map(str, document["bounds"])))
     if not re.fullmatch(r"[a-f0-9]{64}", document["osm"]["sha256"]):
         raise ValueError("Pin the OSM SHA-256 in the recipe")
+    profiles = document["profiles"]
+    if not isinstance(profiles, list) or not profiles or any(
+            not isinstance(profile, str) or not re.fullmatch(r"(?:touring|road|gravel|mtb|hiking)(?:/(?:shorter|smoother|less-climbing|quieter))?", profile)
+            or profile.endswith("/quieter") and profile != "road/quieter" for profile in profiles) or len(profiles) != len(set(profiles)):
+        raise ValueError("Choose unique routing profile IDs in the recipe")
     return document
 
 
@@ -104,9 +109,11 @@ def prepare(args):
         with tempfile.TemporaryDirectory(prefix=".routing-", dir=data) as directory:
             stage = Path(directory) / "routing"
             maps.run(maps.ROOT / "target/release/route-build", osm, "--output", stage, "--region", config["region"],
-                     "--country", config["country"], "--bounds", ",".join(map(str, bounds)), "--profiles", "all",
+                     "--country", config["country"], "--bounds", ",".join(map(str, bounds)), "--profiles", ",".join(config["profiles"]),
                      "--dem", args.dem_dir, *reference)
             stage.rename(routing)
+    if set(json.loads((routing / "manifest.json").read_bytes())["metrics"]) != set(config["profiles"]):
+        raise ValueError("Routing profiles differ from the recipe; choose a fresh package")
     maps.run(maps.ROOT / "target/release/route-server", routing, "--build-overlays")
     if not (data / "maps").exists():
         with tempfile.TemporaryDirectory(prefix=".maps-", dir=data) as directory:

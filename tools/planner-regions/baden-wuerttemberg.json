@@ -3,6 +3,13 @@
   "region": "baden-wuerttemberg",
   "device_region": "europe/germany/baden-wuerttemberg",
   "country": "DE",
+  "profiles": [
+    "touring", "touring/less-climbing",
+    "road", "road/less-climbing",
+    "gravel", "gravel/less-climbing",
+    "mtb", "mtb/less-climbing",
+    "hiking", "hiking/less-climbing"
+  ],
   "bounds": [
     7.45,
     47.5,

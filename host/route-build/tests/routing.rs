@@ -32,6 +32,69 @@ fn package_with_profiles(graph: &Graph, profiles: &[Profile]) -> (Memory, Vec<u8
     .unwrap();
     (Memory(Arc::new(objects)), serde_json::to_vec(&manifest).unwrap())
 }
+
+#[test]
+fn profile_selection_keeps_closed_routes_and_removes_unused_objects() {
+    use route_engine::directory::{Directory, Writer};
+    let root = std::env::temp_dir().join(format!("route-select-test-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
+    let input = root.join("input");
+    std::fs::create_dir(&input).unwrap();
+    let (source, manifest) = package_with_profiles(&fixture(), &Profile::presets());
+    let mut writer = Writer::create(&input).unwrap();
+    for bytes in source.0.values() {
+        writer.write(bytes).unwrap();
+    }
+    writer.finish().unwrap();
+    std::fs::write(input.join("manifest.json"), &manifest).unwrap();
+    let output = root.join("selected");
+    let command = |profiles: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_route-select"))
+            .arg(&input)
+            .arg("--output")
+            .arg(&output)
+            .arg("--profiles")
+            .arg(profiles)
+            .output()
+            .unwrap()
+    };
+    assert!(!command("unknown").status.success());
+    assert!(!output.exists());
+    assert!(command("touring,touring/less-climbing").status.success());
+    let selected = Directory::open(&output).unwrap();
+    selected.verify().unwrap();
+    assert_eq!(selected.manifest().metrics.len(), 2);
+    let index = std::fs::read(output.join("pages.idx")).unwrap();
+    assert_eq!(u64::from_le_bytes(index[8..16].try_into().unwrap()) as usize, selected.objects().unwrap().len());
+    assert!(
+        std::fs::metadata(output.join("pages.bin")).unwrap().len()
+            < std::fs::metadata(input.join("pages.bin")).unwrap().len()
+    );
+    assert!(selected.metric("road").is_err());
+    let mut before = Router::new(Package::open(source, &manifest).unwrap(), 4 * 1024 * 1024);
+    let mut after = Router::new(selected, 4 * 1024 * 1024);
+    for profile in ["touring", "touring/less-climbing"] {
+        let request = Request {
+            points: vec![[0.001, 0.0], [0.029, 0.02]],
+            profile: profile.into(),
+            pace: Pace::default(),
+            alternatives: false,
+            turnarounds: vec![],
+        };
+        let expected = before.route(&request, &Control::default()).unwrap();
+        let actual = after.route(&request, &Control::default()).unwrap();
+        assert_eq!(actual.cost, expected.cost);
+        assert_eq!(actual.geometry, expected.geometry);
+    }
+    assert!(!command("touring").status.success());
+}
 fn fixture() -> Graph {
     let points: Vec<_> =
         (0..12).map(|i| Point { lat: i / 4 * 10_000, lon: i % 4 * 10_000, elevation: NO_ELEVATION }).collect();

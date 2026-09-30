@@ -59,6 +59,17 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "German access defaults"):
                 planner_prepare.recipe(path)
 
+    def test_recipe_names_explicit_profiles_and_rejects_invalid_selection(self):
+        config = json.loads((release.maps.ROOT / "tools/planner-regions/baden-wuerttemberg.json").read_bytes())
+        self.assertEqual(set(config["profiles"]), {bike + suffix for bike in ["touring", "road", "gravel", "mtb", "hiking"]
+                                                for suffix in ["", "/less-climbing"]})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "region.json"
+            for profiles in [[], ["all"], ["road", "road"], ["mtb/quieter"], [{}]]:
+                path.write_text(json.dumps({**config, "profiles": profiles}))
+                with self.assertRaisesRegex(ValueError, "unique routing profile"):
+                    planner_prepare.recipe(path)
+
     def test_failed_service_probe_does_not_activate_a_release(self):
         args = argparse.Namespace(host="root@vps.example", data_dir=Path("/release"), apply=True,
                                   site_origin="https://site.example", public_url="https://maps.example",

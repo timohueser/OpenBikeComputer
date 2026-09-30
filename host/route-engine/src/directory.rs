@@ -38,6 +38,10 @@ impl Directory {
         if manifest.len() > MAX_MANIFEST_BYTES {
             return Err(Error::Limit);
         }
+        Package::open(Self::source(path)?, &manifest)
+    }
+
+    pub fn source(path: &Path) -> Result<Self> {
         let mut index = file(&path.join("pages.idx"))?;
         let mut header = [0; HEADER as usize];
         index.read_exact(&mut header).map_err(invalid)?;
@@ -54,7 +58,7 @@ impl Directory {
         let index = unsafe { memmap2::Mmap::map(&index) }.map_err(invalid)?;
         let data = file(&path.join("pages.bin"))?;
         let bytes = data.metadata().map_err(invalid)?.len();
-        Package::open(Self(Arc::new(Files { index, data: Mutex::new(data), count, bytes })), &manifest)
+        Ok(Self(Arc::new(Files { index, data: Mutex::new(data), count, bytes })))
     }
 }
 

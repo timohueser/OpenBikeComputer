@@ -3,6 +3,7 @@ name = "route-build"
 version = "0.1.0"
 edition = "2021"
 publish = false
+default-run = "route-build"
 license = "GPL-3.0-only"
 
 [features]
