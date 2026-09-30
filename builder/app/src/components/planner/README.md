@@ -104,7 +104,7 @@ profiles. Normal launch has no downloads. Ctrl-C stops the local services.
 ## Client configuration
 
 `obc planner site-config --output ENV_FILE` writes these settings from the active
-release. Use them for a hosted build or Vite preview.
+release. Use them for a hosted build with the configured API origin.
 
 | Variable | Value |
 | --- | --- |
