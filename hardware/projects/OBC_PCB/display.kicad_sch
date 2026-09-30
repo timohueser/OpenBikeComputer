@@ -4981,7 +4981,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Unpolarized capacitor, small symbol"
+		(property "Description" "Ceramic MLCC, 100nF, 10V, X7R, 10%, 0402"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -5033,6 +5033,16 @@
 			(effects
 				(font
 					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "10%"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
 				)
 				(justify left)
 			)
@@ -5226,7 +5236,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Unpolarized capacitor, small symbol"
+		(property "Description" "Ceramic MLCC, 1uF, 25V, X7R, 10%, 0603"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -5262,7 +5272,7 @@
 				(justify left)
 			)
 		)
-		(property "Voltage" "10V"
+		(property "Voltage" "25V"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -5278,6 +5288,16 @@
 			(effects
 				(font
 					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "10%"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
 				)
 				(justify left)
 			)

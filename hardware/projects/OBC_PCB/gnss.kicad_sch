@@ -2101,7 +2101,7 @@
 				)
 			)
 		)
-		(property "Description" "2.2uF ceramic capacitor, 10V, X5R, 10%"
+		(property "Description" "Ceramic MLCC, 2.2uF, 10V, X5R, 10%, 0402"
 			(at 33.02 34.29 0)
 			(hide yes)
 			(show_name no)
@@ -2212,7 +2212,7 @@
 				)
 			)
 		)
-		(property "Description" "100nF ceramic capacitor, 10V, X7R, 10%"
+		(property "Description" "Ceramic MLCC, 100nF, 10V, X7R, 10%, 0402"
 			(at 52.07 34.29 0)
 			(hide yes)
 			(show_name no)
@@ -2680,7 +2680,7 @@
 				)
 			)
 		)
-		(property "Description" "100nF ceramic capacitor, 10V, X7R, 10%"
+		(property "Description" "Ceramic MLCC, 100nF, 10V, X7R, 10%, 0402"
 			(at 73.66 34.29 0)
 			(hide yes)
 			(show_name no)

@@ -3675,7 +3675,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Ceramic MLCC, 100nF, 10V, X7R, 10%"
+		(property "Description" "Ceramic MLCC, 100nF, 10V, X7R, 10%, 0402"
 			(at 439.42 40.64 0)
 			(hide yes)
 			(show_name no)
@@ -3922,7 +3922,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Ceramic MLCC, 100nF, 10V, X7R, 10%"
+		(property "Description" "Ceramic MLCC, 100nF, 10V, X7R, 10%, 0402"
 			(at 454.66 40.64 0)
 			(hide yes)
 			(show_name no)
@@ -4169,7 +4169,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Ceramic MLCC, 100nF, 10V, X7R, 10%"
+		(property "Description" "Ceramic MLCC, 100nF, 10V, X7R, 10%, 0402"
 			(at 469.9 40.64 0)
 			(hide yes)
 			(show_name no)
@@ -5489,7 +5489,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Ceramic MLCC, 2.2uF, 10V, X5R, 10%"
+		(property "Description" "Ceramic MLCC, 2.2uF, 10V, X5R, 10%, 0402"
 			(at 369.57 113.03 0)
 			(hide yes)
 			(show_name no)

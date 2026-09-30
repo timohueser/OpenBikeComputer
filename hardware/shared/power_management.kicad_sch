@@ -9096,7 +9096,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "VBUS input MLCC, 1uF, 25V, X7R, 10%, 0603"
+		(property "Description" "Ceramic MLCC, 1uF, 25V, X7R, 10%, 0603"
 			(at 124.46 55.88 0)
 			(hide yes)
 			(show_name no)
@@ -9405,7 +9405,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Ceramic MLCC, 10uF, 10V, X5R, 10%"
+		(property "Description" "Ceramic MLCC, 10uF, 10V, X5R, 10%, 0805"
 			(at 248.92 73.66 0)
 			(hide yes)
 			(show_name no)
@@ -9648,7 +9648,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Ceramic MLCC, 100nF, 10V, X5R, 10%"
+		(property "Description" "Ceramic MLCC, 100nF, 10V, X7R, 10%, 0402"
 			(at 261.62 73.66 0)
 			(hide yes)
 			(show_name no)
@@ -9670,7 +9670,7 @@
 				(justify left)
 			)
 		)
-		(property "Dielectric" "X5R"
+		(property "Dielectric" "X7R"
 			(at 269.24 76.2 0)
 			(hide yes)
 			(effects
@@ -9891,7 +9891,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Ceramic MLCC, 10uF, 10V, X5R, 10%"
+		(property "Description" "Ceramic MLCC, 10uF, 10V, X5R, 10%, 0805"
 			(at 274.32 73.66 0)
 			(hide yes)
 			(show_name no)
@@ -10134,7 +10134,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Ceramic MLCC, 10uF, 10V, X5R, 10%"
+		(property "Description" "Ceramic MLCC, 10uF, 10V, X5R, 10%, 0805"
 			(at 287.02 73.66 0)
 			(hide yes)
 			(show_name no)
@@ -10377,7 +10377,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Ceramic MLCC, 100nF, 10V, X5R, 10%"
+		(property "Description" "Ceramic MLCC, 100nF, 10V, X7R, 10%, 0402"
 			(at 299.72 73.66 0)
 			(hide yes)
 			(show_name no)
@@ -10399,7 +10399,7 @@
 				(justify left)
 			)
 		)
-		(property "Dielectric" "X5R"
+		(property "Dielectric" "X7R"
 			(at 307.34 76.2 0)
 			(hide yes)
 			(effects
@@ -10734,7 +10734,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Ceramic MLCC, 100nF, 10V, X5R, 10%"
+		(property "Description" "Ceramic MLCC, 100nF, 10V, X7R, 10%, 0402"
 			(at 114.3 146.05 0)
 			(hide yes)
 			(show_name no)
@@ -10756,7 +10756,7 @@
 				(justify left)
 			)
 		)
-		(property "Dielectric" "X5R"
+		(property "Dielectric" "X7R"
 			(at 121.92 148.59 0)
 			(hide yes)
 			(effects
@@ -10994,7 +10994,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Ceramic MLCC, 1uF, 10V, X5R, 10%"
+		(property "Description" "Ceramic MLCC, 1uF, 25V, X7R, 10%, 0603"
 			(at 248.92 55.88 0)
 			(hide yes)
 			(show_name no)
@@ -11006,7 +11006,7 @@
 				(justify left)
 			)
 		)
-		(property "Voltage" "10V"
+		(property "Voltage" "25V"
 			(at 251.46 58.42 0)
 			(hide yes)
 			(effects
@@ -11016,7 +11016,7 @@
 				(justify left)
 			)
 		)
-		(property "Dielectric" "X5R"
+		(property "Dielectric" "X7R"
 			(at 256.54 58.42 0)
 			(hide yes)
 			(effects
@@ -11237,7 +11237,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Ceramic MLCC, 10uF, 10V, X5R, 10%"
+		(property "Description" "Ceramic MLCC, 10uF, 10V, X5R, 10%, 0805"
 			(at 223.52 81.28 0)
 			(hide yes)
 			(show_name no)
@@ -11899,7 +11899,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Ceramic MLCC, 10uF, 10V, X5R, 10%"
+		(property "Description" "Ceramic MLCC, 10uF, 10V, X5R, 10%, 0805"
 			(at 223.52 104.14 0)
 			(hide yes)
 			(show_name no)
@@ -12286,7 +12286,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Ceramic MLCC, 1uF, 10V, X5R, 10%"
+		(property "Description" "Ceramic MLCC, 1uF, 25V, X7R, 10%, 0603"
 			(at 254.0 156.21 0)
 			(hide yes)
 			(show_name no)
@@ -12298,7 +12298,7 @@
 				(justify left)
 			)
 		)
-		(property "Voltage" "10V"
+		(property "Voltage" "25V"
 			(at 256.54 158.75 0)
 			(hide yes)
 			(effects
@@ -12308,7 +12308,7 @@
 				(justify left)
 			)
 		)
-		(property "Dielectric" "X5R"
+		(property "Dielectric" "X7R"
 			(at 261.62 158.75 0)
 			(hide yes)
 			(effects
@@ -12631,7 +12631,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Ceramic MLCC, 2.2uF, 10V, X5R, 10%"
+		(property "Description" "Ceramic MLCC, 2.2uF, 16V, X7R, 10%, 0603"
 			(at 124.46 78.74 0)
 			(hide yes)
 			(show_name no)
@@ -12643,7 +12643,7 @@
 				(justify left)
 			)
 		)
-		(property "Voltage" "10V"
+		(property "Voltage" "16V"
 			(at 127.0 81.28 0)
 			(hide yes)
 			(effects
@@ -12653,7 +12653,7 @@
 				(justify left)
 			)
 		)
-		(property "Dielectric" "X5R"
+		(property "Dielectric" "X7R"
 			(at 132.08 81.28 0)
 			(hide yes)
 			(effects
