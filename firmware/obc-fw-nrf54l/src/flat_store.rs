@@ -381,6 +381,9 @@ pub(crate) const REQUEST_QUEUE_BYTES: usize =
 /// up atomicity across a batch — are both worse than the roughly 1 KB this costs.
 #[allow(dead_code, clippy::large_enum_variant)]
 pub(crate) enum Request {
+    ClearPersonalData {
+        store: obc_app::device_core::StoreIdentity,
+    },
     WriteCheckpoint {
         scope: obc_app::device_core::StoreRevision,
         change: obc_app::navigator::CheckpointChange,
@@ -533,6 +536,9 @@ pub(crate) enum Request {
 /// What one [`Request`] produced.
 #[allow(dead_code)]
 pub(crate) enum Outcome {
+    PersonalDataCleared {
+        done: bool,
+    },
     CleanedRoute(Option<ObjectId>),
     Metadata(Result<(), obc_app::metadata::MetadataError>),
     Allocated(Allocation),
@@ -1082,6 +1088,17 @@ fn serve(
         Request::RemoveComputedRoute { id, revision } => {
             check_route_change(store, id)?;
             store.commit(&[Mutation::Remove { id, revision }]).map(|_| Outcome::Done)
+        }
+        Request::ClearPersonalData { store: identity } => {
+            if catalog_scope(store).store != identity {
+                return Err(StoreError::Invalid);
+            }
+            let batch = obc_storage::flat::personal_data::next(store)?;
+            let done = batch.is_empty();
+            if !done {
+                store.commit(&batch)?;
+            }
+            Ok(Outcome::PersonalDataCleared { done })
         }
         Request::CleanupRoute { before_utc, store: identity, active } => {
             if catalog_scope(store).store != identity {

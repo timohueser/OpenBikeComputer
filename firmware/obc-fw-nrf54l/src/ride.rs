@@ -1112,6 +1112,19 @@ pub(crate) async fn run_app(
             if let Some(effect) = exec.effects.catalog.take() {
                 use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
                 match effect {
+                    CatalogEffect::ClearPersonalData { token, store } => {
+                        crate::flat_store::reconcile_route(flat, None);
+                        match crate::flat_store::writer().ok_or(()).and_then(|w| {
+                            w.try_call(crate::flat_store::Request::ClearPersonalData { store }, &CATALOG_STORE_REPLY)
+                        }) {
+                            Ok(ticket) => exec.catalog = Some(CatalogRemoval { ticket, token, object: 0 }),
+                            Err(()) => RideExec::deliver(
+                                &mut exec.outcomes.catalog,
+                                CatalogOutcome::Failed { token, error: CatalogError::RemoveFailed },
+                                "catalog",
+                            ),
+                        }
+                    }
                     CatalogEffect::RemoveOrphanRoutes { token } => {
                         let heads = crate::flat_store::route_heads(flat, app.orphan_routes());
                         let result = if heads.is_empty() {
@@ -1216,6 +1229,13 @@ pub(crate) async fn run_app(
                     crate::flat_store::writer().and_then(|w| w.try_result(removal.ticket, &CATALOG_STORE_REPLY));
                 match answer {
                     None => exec.catalog = Some(removal),
+                    Some(Ok(crate::flat_store::Outcome::PersonalDataCleared { done })) => {
+                        RideExec::deliver(
+                            &mut exec.outcomes.catalog,
+                            CatalogOutcome::PersonalDataCleared { token: removal.token, done },
+                            "catalog",
+                        );
+                    }
                     Some(Ok(crate::flat_store::Outcome::CleanedRoute(object))) => {
                         let outcome = match object {
                             Some(object) => {

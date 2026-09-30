@@ -487,6 +487,12 @@ impl NavigatorMachine {
         }
     }
 
+    pub(crate) fn forget_personal_data(&mut self) {
+        self.reset_detour();
+        self.set_active_route(None);
+        self.review = ReviewState::new();
+    }
+
     /// Called only after a complete read and CRC verification on the current card.
     pub(crate) fn offer_checkpoint(&mut self, store: StoreIdentity, checkpoint: Option<NavigatorCheckpoint>) {
         if self.review.recovery_seen || self.review.change.is_some() {

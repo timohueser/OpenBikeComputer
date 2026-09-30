@@ -331,13 +331,15 @@ all_added_sub = "Retirez-en un"
 
 # --- Factory-reset settings screen ---
 [reset]
+erasing = "Effacement des données..."
+data_failed = "Données non effacées. Vérifiez la carte mémoire et réessayez."
 retry = "Réessayer"
 power_cycle = "Éteignez puis rallumez l'OBC."
 phone_failed = "Téléphone non supprimé"
 title = "RÉINITIALISER"
 factory = "Réinit. usine"
-erases = "Efface les réglages"
-saved_time = "& l'heure."
+erases = "Efface réglages, itinéraires, voyages et sorties."
+saved_time = "Conserve les cartes."
 confirm = "Confirmer"
 keep_holding = "Maintenez"
 hold_to_erase = "Tenez: effacer"
