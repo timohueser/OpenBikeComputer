@@ -4401,27 +4401,6 @@
 		)
 		(uuid "55bf4960-0a37-54dc-a969-10f763e1781d")
 	)
-	(wire
-		(pts
-			(xy 232.41 88.9)
-			(xy 240.03 88.9)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "b60a7727-f602-5b5c-9957-ef856caa8bb4")
-	)
-	(label "nRESET"
-		(at 240.03 88.9 0)
-		(effects
-			(font
-				(size 1.0 1.0)
-			)
-			(justify left bottom)
-		)
-		(uuid "8e7f180a-c64d-54dc-8acd-eab632502b79")
-	)
 	(symbol
 		(lib_id "Device:R_Small")
 		(at 149.86 45.72 90)
@@ -6709,7 +6688,7 @@
 			(uuid "c16b92f7-e235-5c22-b442-facbe5673341")
 		)
 	)
-	(text "VDD bypass: C22 at pad 6; C21 and C23 at pad 42; C24 at pad 51.\nSolder the ground pad (53). Configure both crystal load capacitors\nbefore use. Enable the internal DC/DC converter in firmware."
+	(text "VDD bypass: C22 at pad 6; C21 and C23 at pad 42; C24 at pad 51.\nR68 and C55 filter nRESET; place both at pad 33.\nSolder the ground pad (53). Configure both crystal load capacitors\nbefore use. Enable the internal DC/DC converter in firmware."
 		(at 147.32 119.38 0)
 		(effects
 			(font
@@ -9932,5 +9911,410 @@
 		(pin "1"
 			(uuid "c4353ca4-a04c-5b4e-8617-71b0f2757f12")
 		)
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 238.76 88.9 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "7e57c576-a042-5917-ba1c-dd1cc08a1d0c")
+		(property "Reference" "R68"
+			(at 238.76 86 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Value" "1k"
+			(at 238.76 87.3 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
+			(at 436.88 99.06 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 436.88 100.33 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "nRESET RF filter series resistor, 1kOhm, 1%"
+			(at 436.88 101.6 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "1%"
+			(at 434.34 102.87 90)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Power" "63mW"
+			(at 195.58 -2.54 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "50V"
+			(at 195.58 -2.54 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Technology" "Thick film"
+			(at 195.58 -2.54 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "R68")
+					(unit 1)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "81e857f6-25fd-513f-bd04-e6165c97962e")
+		)
+		(pin "2"
+			(uuid "27b9287e-164a-514a-917b-9c049942aaa4")
+		)
+	)
+	(symbol
+		(lib_id "Device:C_Small")
+		(at 237.49 81.28 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "6d67aeaa-0b0e-51d7-8444-560817245b4f")
+		(property "Reference" "C55"
+			(at 237.49 77.47 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Value" "3.9p"
+			(at 237.49 78.74 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" "obc:C_Nordic_0201_0603Metric"
+			(at 386.08 73.66 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" ""
+			(at 386.08 73.66 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "nRESET RF filter capacitor, 3.9pF, 25V, C0G, 0.1pF"
+			(at 386.08 73.66 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "0.1pF"
+			(at 86.36 -19.05 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "MPN" ""
+			(at 86.36 -19.05 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Manufacturer" ""
+			(at 86.36 -19.05 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "25V"
+			(at 386.08 77.47 90)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Dielectric" "C0G"
+			(at 393.7 77.47 90)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "C55")
+					(unit 1)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "2e16bf4e-9e1d-53da-a8d1-e737be548759")
+		)
+		(pin "2"
+			(uuid "7d99c9db-2e66-5d2b-bdb4-12118864d3ea")
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 240.03 81.28 90)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board no)
+		(dnp no)
+		(uuid "2628de9d-16d9-506d-bf03-4e9cf65f00a0")
+		(property "Reference" "#PWR9000091"
+			(at 234.95 71.12 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "GND"
+			(at 245.11 81.28 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 199.39 -13.97 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" ""
+			(at 199.39 -13.97 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 199.39 -13.97 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "ki_keywords" "global power"
+			(at 199.39 -13.97 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "#PWR9000091")
+					(unit 1)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "54d0c575-29a8-55d2-a520-0e481c5ba79d")
+		)
+	)
+	(wire
+		(pts
+			(xy 232.41 88.9)
+			(xy 234.95 88.9)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "a1bc6311-f261-529b-9d62-558a1938b5f5")
+	)
+	(wire
+		(pts
+			(xy 234.95 88.9)
+			(xy 236.22 88.9)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "e94b0e61-3dff-5083-9166-06c64bbeae79")
+	)
+	(junction
+		(at 234.95 88.9)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "c104e8dc-6e45-5bbc-b7b1-b69abdc1cef3")
+	)
+	(wire
+		(pts
+			(xy 234.95 88.9)
+			(xy 234.95 81.28)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "2ef2a1c0-6afd-58a6-822c-d1d80e567a6c")
+	)
+	(wire
+		(pts
+			(xy 241.3 88.9)
+			(xy 243.84 88.9)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "b01bda8e-04b9-5261-9899-dc9b29f25eba")
+	)
+	(label "nRESET"
+		(at 243.84 88.9 0)
+		(effects
+			(font
+				(size 1.0 1.0)
+			)
+			(justify left bottom)
+		)
+		(uuid "c9ade014-6655-5838-8e91-468d22563168")
 	)
 )
