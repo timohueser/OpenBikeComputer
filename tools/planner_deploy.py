@@ -6,13 +6,13 @@ import re
 import tempfile
 import time
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import Request
 from urllib.parse import urlsplit
 
 try:
-    from . import planner_maps as maps, planner_release as releases, r2
+    from . import planner_maps as maps, planner_release as releases, planner_sources as sources, r2
 except ImportError:
-    import planner_maps as maps, planner_release as releases, r2
+    import planner_maps as maps, planner_release as releases, planner_sources as sources, r2
 
 
 def ssh(host, script):
@@ -146,7 +146,7 @@ def verify_services(active, document, origin):
         except (OSError, ValueError, KeyError): pass
         if time.monotonic() >= deadline: raise ValueError("Services did not become ready; catalogue is unchanged")
         time.sleep(1)
-    with urlopen(Request(active["basemap"], headers={"Origin": origin}), timeout=60) as response:
+    with sources.open_url(Request(active["basemap"], headers={"Origin": origin})) as response:
         if response.headers.get("Access-Control-Allow-Origin") != "*": raise ValueError("Tile CORS is absent")
         tilejson = json.load(response)
         if tilejson["maxzoom"] != 14: raise ValueError("Basemap is incomplete")
@@ -158,13 +158,13 @@ def verify_services(active, document, origin):
     y = int((1 - math.asinh(math.tan(lat)) / math.pi) / 2 * (1 << z))
     for url in [tilejson["tiles"][0].replace("{z}", "12").replace("{x}", str(x)).replace("{y}", str(y)),
                 active["terrain"].replace("{z}", "12").replace("{x}", str(x)).replace("{y}", str(y))]:
-        with urlopen(url, timeout=60) as response:
+        with sources.open_url(url) as response:
             if response.status != 200 or not response.read(): raise ValueError("Regional map tiles are absent")
-    with urlopen(active["search"] + "/sample", timeout=60) as response:
+    with sources.open_url(active["search"] + "/sample") as response:
         points = json.load(response)["coordinates"]
         if len(points) < 2: raise ValueError("Example route is absent")
     def post(url, body):
-        with urlopen(Request(url, data=releases.encoded(body), headers={"Origin": origin, "Content-Type": "application/json"}), timeout=60) as response:
+        with sources.open_url(Request(url, data=releases.encoded(body), headers={"Origin": origin, "Content-Type": "application/json"})) as response:
             if response.headers.get("Access-Control-Allow-Origin") not in {origin, "*"}:
                 raise ValueError("Service CORS is absent")
             return json.load(response)

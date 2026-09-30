@@ -8,7 +8,6 @@ import shutil
 import sqlite3
 import sys
 import tempfile
-from urllib.request import urlopen
 
 try:
     from . import planner_maps as maps, planner_sources as sources, planner_release as releases
@@ -122,9 +121,9 @@ def prepare(args):
             (stage / "terrain.mbtiles").unlink()
             for name, kind, zoom in [("basemap", "mvt", 14), ("terrain", "webp", 12)]:
                 maps.verify_archive(args.pmtiles, stage / f"{name}.pmtiles", kind, zoom)
-            with urlopen(maps.ASSETS_URL, timeout=120) as response:
+            with sources.open_url(maps.ASSETS_URL, timeout=120) as response:
                 maps.install_assets(response.read(), stage / "assets")
-            with urlopen(maps.SPRITES_LICENSE_URL, timeout=30) as response:
+            with sources.open_url(maps.SPRITES_LICENSE_URL, timeout=30) as response:
                 (stage / "assets/sprites/LICENSE.txt").write_bytes(response.read())
             manifest = {"bounds": bounds, "terrain_bounds": terrain_bounds, "osm_sha256": config["osm"]["sha256"],
                         "terrain_attribution": attribution, "terrain_sources": terrain_sources,

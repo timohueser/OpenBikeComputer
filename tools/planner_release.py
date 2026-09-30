@@ -9,7 +9,6 @@ import signal
 import sqlite3
 import tempfile
 import subprocess
-from urllib.request import urlopen
 
 try:
     from . import planner_maps as maps, planner_sources as sources, r2
@@ -22,7 +21,7 @@ def encoded(value):
 
 
 def read_url(url):
-    with urlopen(url, timeout=60) as response:
+    with sources.open_url(url) as response:
         return json.load(response)
 
 

@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 try:
     from . import planner_maps as maps
@@ -22,6 +22,12 @@ PHOTON_URL = "https://github.com/komoot/photon/releases/download/1.3.0/photon-1.
 PHOTON_SHA = "a89707c0045e4807b2a1180e132e68e108d998709f48b6c94b98a6e281f571a5"
 
 
+def open_url(url, timeout=60):
+    request = Request(url) if isinstance(url, str) else url
+    request.add_header("User-Agent", "OpenBikeComputer/1.0")
+    return urlopen(request, timeout=timeout)
+
+
 def digest(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
@@ -31,7 +37,7 @@ def download(url, path, sha):
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         partial = path.with_suffix(".download")
-        with urlopen(url, timeout=120) as source, partial.open("wb") as destination:
+        with open_url(url, timeout=120) as source, partial.open("wb") as destination:
             shutil.copyfileobj(source, destination)
         if digest(partial) != sha:
             raise ValueError(f"Source checksum mismatch: {url}")
