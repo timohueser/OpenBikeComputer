@@ -871,7 +871,14 @@ async fn main(_spawner: Spawner) {
                 Err(error) => defmt::error!("factory demo ride: refused: {:?}", defmt::Debug2Format(&error)),
             }
             if cfg!(feature = "factory-demo-ride") {
-                idle_blink(&mut led).await
+                let mut watchdog = board::watchdog!(p.WDT0, ride::WDT_TIMEOUT_TICKS).ok().map(|(_, [handle])| handle);
+                loop {
+                    if let Some(handle) = &mut watchdog {
+                        handle.pet();
+                    }
+                    led.toggle();
+                    Timer::after_millis(500).await;
+                }
             }
         }
         let flat_catalog = flat_store::report(flat, flat_started.elapsed().as_micros());
@@ -1019,6 +1026,7 @@ async fn main(_spawner: Spawner) {
         // between app entry and this line must complete well inside one WDT period (24 s). If it
         // does not, the dog resets a healthy trial image and the bootloader rolls it back. Never move
         // a blocking or open-ended retry loop above this point.
+        #[cfg(not(feature = "factory-demo-ride"))]
         let wdt_handle = match board::watchdog!(p.WDT0, ride::WDT_TIMEOUT_TICKS) {
             Ok((_wdt, [handle])) => Some(handle),
             Err(_) => {
@@ -1026,6 +1034,8 @@ async fn main(_spawner: Spawner) {
                 None
             }
         };
+        #[cfg(feature = "factory-demo-ride")]
+        let wdt_handle: Option<embassy_nrf::wdt::WatchdogHandle> = None;
 
         // The settings store moves behind one async mutex, so the ride loop and both link planes can
         // lock it per operation. The flat store owns the card through its separate command seam.
