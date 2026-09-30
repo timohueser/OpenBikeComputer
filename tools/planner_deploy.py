@@ -88,7 +88,8 @@ def deploy(args):
     ssh(args.host, f"""cd /opt/obc-planner/source
 /root/.cargo/bin/cargo build --locked --release -p route-server -j 2
 mkdir -p {base}/bin
-cp target/release/route-server {base}/bin/route-server
+cp target/release/route-server {base}/bin/.route-server.next
+mv {base}/bin/.route-server.next {base}/bin/route-server
 {base}/bin/route-server {base}/routing --verify
 python3 -m venv {base}/search/.venv
 {base}/search/.venv/bin/pip install -q -r {base}/search/requirements.txt
