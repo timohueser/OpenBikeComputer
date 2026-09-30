@@ -3007,4 +3007,54 @@
 		)
 		(uuid "b327f588-82cd-41e0-80d4-43a37260e79f")
 	)
+	(label "RF24_M1"
+		(at 81.28 93.98 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "7c27c7fe-e1c2-4773-b3f2-93940143d4e1")
+	)
+	(label "RF24_M2"
+		(at 116.84 93.98 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "89d4e9d8-a6c2-421a-a27b-5a93a5931e82")
+	)
+	(label "RF24_LPF"
+		(at 139.7 86.36 90)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify right bottom)
+		)
+		(uuid "c54b04ad-fc03-4ca7-a596-c54a537c7865")
+	)
+	(label "RF24_TEST"
+		(at 157.48 93.98 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "33d9c55b-5b10-40bc-abe5-de32c2c768fb")
+	)
+	(label "RF24_FEED"
+		(at 203.2 93.98 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "e19c3bd8-28bd-4e08-91ee-a7db34125182")
+	)
 )

@@ -17680,4 +17680,24 @@
 		(color 0 0 0 0)
 		(uuid "a4b0d466-da76-4b58-a0bd-80217b38a68b")
 	)
+	(label "SOC_DCC"
+		(at 294.64 57.15 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "d2956a20-23f0-4aa1-aec6-642c03f6e38b")
+	)
+	(label "SOC_USB_VBUS"
+		(at 243.84 54.61 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "e0a1ffe7-2d82-4799-b562-d43f1cc66640")
+	)
 )

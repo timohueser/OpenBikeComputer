@@ -955,7 +955,7 @@
 						)
 					)
 				)
-				(pin no_connect line
+				(pin passive line
 					(at 20.32 -7.619999999999999 180)
 					(length 5.08)
 					(name "MP1"
@@ -973,7 +973,7 @@
 						)
 					)
 				)
-				(pin no_connect line
+				(pin passive line
 					(at 20.32 -15.24 180)
 					(length 5.08)
 					(name "MP2"
@@ -4355,12 +4355,140 @@
 		(at 198.12 101.6)
 		(uuid "9109d838-c4d9-44a4-b41c-cc84a0b073a1")
 	)
-	(no_connect
-		(at 198.12 109.22)
-		(uuid "e8d56e91-b796-498f-8a9f-e95c3dcc3821")
+
+
+	(wire
+		(pts
+			(xy 198.12 109.22)
+			(xy 205.74 109.22)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "623cf534-7802-4c05-b836-606eac478f4a")
 	)
-	(no_connect
-		(at 198.12 116.84)
-		(uuid "5ac6172f-869f-403e-b532-9f06d1dc4eca")
+	(wire
+		(pts
+			(xy 205.74 109.22)
+			(xy 205.74 116.84)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "b1220d99-1c28-48a8-9300-c170e92431c0")
+	)
+	(wire
+		(pts
+			(xy 205.74 116.84)
+			(xy 205.74 124.46)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "1e4fc4a5-88e1-49a1-8eb7-41ee2e8c0d7a")
+	)
+	(wire
+		(pts
+			(xy 198.12 116.84)
+			(xy 205.74 116.84)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "5bc881d0-9ee5-48c0-8066-1baa7c1a11c6")
+	)
+	(junction
+		(at 205.74 116.84)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "3667919e-8987-4e22-8eb1-5ef4810866f3")
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 205.74 124.46 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "da1d4d0c-101b-467c-aa55-7d8a6422e2f1")
+		(property "Reference" "#PWR2403"
+			(at 208.28 120.65 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "GND"
+			(at 208.28 121.92 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" ""
+			(at 208.28 123.19 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 208.28 124.46 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" ""
+			(at 208.28 125.73 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "1bdf50d8-4919-40de-bf02-a8b62be6ba28")
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/6b8cca09-5e52-4203-8b94-2412467f33a4"
+					(reference "#PWR2403")
+					(unit 1)
+				)
+			)
+		)
 	)
 )

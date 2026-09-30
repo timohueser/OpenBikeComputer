@@ -5337,4 +5337,64 @@
 		(color 0 0 0 0)
 		(uuid "4ec374be-fe1c-4f89-ae91-12b6349a5b6c")
 	)
+	(label "GNSS_RF_IN"
+		(at 134.62 97.79 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "9766a35b-fdd5-4597-9b4f-8e780768ac72")
+	)
+	(label "GNSS_RF_TEST"
+		(at 152.4 104.14 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "82bc4808-c3c3-4220-89b1-c4082aa1509d")
+	)
+	(label "GNSS_RF_MATCH"
+		(at 168.91 91.44 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "ecf1d4ba-77a9-4a3e-8113-2955b3ec98c4")
+	)
+	(label "GNSS_RF_FEED"
+		(at 190.5 91.44 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "f51b4cd9-25f2-4fc1-b3fa-a0ba6284a98b")
+	)
+	(label "GNSS_FTE1"
+		(at 195.58 76.2 90)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify right bottom)
+		)
+		(uuid "03ffa17f-ec90-4268-85f2-a55bbafd2ac1")
+	)
+	(label "GNSS_FTE2"
+		(at 203.2 76.2 90)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify right bottom)
+		)
+		(uuid "b6336977-6563-4f21-bba4-d665c61caf98")
+	)
 )

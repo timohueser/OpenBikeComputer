@@ -3921,7 +3921,201 @@
 						)
 					)
 				)
+				(pin passive line
+					(at -2.54 -27.94 90)
+					(length 3.81)
+					(name "SHIELD"
+						(effects
+							(font
+								(size 1 1)
+							)
+						)
+					)
+					(number "MP"
+						(effects
+							(font
+								(size 1 1)
+							)
+						)
+					)
+				)
 			)
+		)
+		(symbol "obc:JST_ACH_2"
+			(pin_names
+				(offset 1.016)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(in_pos_files yes)
+			(duplicate_pin_numbers_are_jumpers no)
+			(property "Reference" "J"
+				(at 0 2.54 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "JST_ACH_2"
+				(at 0 -5.08 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" "obc:JST_ACH_2pin"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Datasheet" ""
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Description" "Two-contact battery connector with grounded solder tabs"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_keywords" "connector"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_fp_filters" "Connector*:*_1x??_*"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(symbol "JST_ACH_2_1_1"
+				(rectangle
+					(start -1.27 1.27)
+					(end 1.27 -3.81)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type background)
+					)
+				)
+				(rectangle
+					(start -1.27 0.127)
+					(end 0 -0.127)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(rectangle
+					(start -1.27 -2.413)
+					(end 0 -2.667)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(pin passive line
+					(at -5.08 0 0)
+					(length 3.81)
+					(name "+"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -5.08 -2.54 0)
+					(length 3.81)
+					(name "-"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 0 -6.35 90)
+					(length 2.54)
+					(name "SHIELD"
+						(effects
+							(font
+								(size 0.8 0.8)
+							)
+							(hide yes)
+						)
+					)
+					(number "MP"
+						(effects
+							(font
+								(size 1 1)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
 		)
 	)
 	(rectangle
@@ -5999,7 +6193,7 @@
 		(uuid "dcf71e4f-db57-4099-a572-56f3727deb53")
 	)
 	(symbol
-		(lib_id "Connector_Generic:Conn_01x02")
+		(lib_id "obc:JST_ACH_2")
 		(at 43.18 119.38 0)
 		(mirror y)
 		(unit 1)
@@ -6011,7 +6205,7 @@
 		(dnp no)
 		(uuid "9a0a7596-8270-45b0-8ed1-35180032159c")
 		(property "Reference" "J4"
-			(at 43.688 116.332 0)
+			(at 43.688 115.062 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -6022,7 +6216,7 @@
 			)
 		)
 		(property "Value" "1S Li-Po"
-			(at 33.02 133.35 0)
+			(at 43.688 116.84 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -6257,17 +6451,7 @@
 		)
 		(uuid "5f45d635-6e5c-483f-9af4-c8d165bec785")
 	)
-	(wire
-		(pts
-			(xy 55.88 121.92)
-			(xy 55.88 132.08)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "bb3fa9fe-757c-4210-a895-d4a56fd25fd4")
-	)
+
 	(symbol
 		(lib_id "power:GND")
 		(at 55.88 132.08 0)
@@ -13280,5 +13464,91 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "0cb37ba0-03fc-4c4e-a19f-f3f60fef8d75")
+	)
+	(label "PMIC_SW1"
+		(at 198.12 83.82 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "572dfdc3-392c-41ad-ae8c-5d904b5bf6d7")
+	)
+	(label "PMIC_SW2"
+		(at 198.12 106.68 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "d3ed3776-00a9-4aa9-8d35-18615f5402d4")
+	)
+	(label "BOOST_SW"
+		(at 133.35 226.06 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify right bottom)
+		)
+		(uuid "0b80026f-3551-4899-bb47-a0a3529e5ba9")
+	)
+	(wire
+		(pts
+			(xy 40.64 88.9)
+			(xy 58.42 88.9)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "8d0af601-f9bf-404d-8aea-c3869e00cc2f")
+	)
+	(junction
+		(at 58.42 88.9)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "18e0f780-f12c-44c7-b1b0-2e009b84949e")
+	)
+	(wire
+		(pts
+			(xy 43.18 125.73)
+			(xy 55.88 125.73)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "a7739823-c799-4e92-9e29-5dd02ebe0a04")
+	)
+	(wire
+		(pts
+			(xy 55.88 121.92)
+			(xy 55.88 125.73)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "bc4f216b-8a6d-4b81-b022-c2766fc45fe7")
+	)
+	(wire
+		(pts
+			(xy 55.88 125.73)
+			(xy 55.88 132.08)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "57101da5-42fa-46bc-86a7-6492c1339764")
+	)
+	(junction
+		(at 55.88 125.73)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "8669259d-ca9b-4416-b7ed-355f8438e214")
 	)
 )

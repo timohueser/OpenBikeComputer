@@ -346,6 +346,24 @@
 						)
 					)
 				)
+				(pin passive line
+					(at -2.54 -27.94 90)
+					(length 3.81)
+					(name "SHIELD"
+						(effects
+							(font
+								(size 1 1)
+							)
+						)
+					)
+					(number "MP"
+						(effects
+							(font
+								(size 1 1)
+							)
+						)
+					)
+				)
 			)
 		)
 		(symbol "obc:TPD4E05U06DQA"
@@ -3867,5 +3885,86 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "9e38819b-3ed1-476b-b86e-65a141c152c4")
+	)
+	(wire
+		(pts
+			(xy 218.44 99.06)
+			(xy 218.44 104.14)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "0c42ecb1-30f7-4173-b1cd-9461203aeb99")
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 218.44 104.14 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "51ddb5f1-ddae-4adb-a2b0-cf167b5255bb")
+		(instances
+			(project "USB_Baseboard"
+				(path "/10e38f64-4447-47dc-969c-f592cdec8231"
+					(reference "#PWR2806")
+					(unit 1)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 154.94 -7.62 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" ""
+			(at 154.94 -7.62 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 154.94 -7.62 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Reference" "#PWR2806"
+			(at 220.98 101.6 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "GND"
+			(at 220.98 102.87 0)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "61b5e55c-52d2-4aa0-b2b6-c3b7ee9fc8f4")
+		)
 	)
 )
