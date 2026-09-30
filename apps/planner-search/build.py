@@ -135,6 +135,8 @@ class Writer:
         print(f'Indexing {self.path.name}: {self.next_id:,} places, {self.counts["address"]:,} addresses', flush=True)
         self.db.executescript('''
           CREATE INDEX address_lookup ON addresses(street_id,house);
+          CREATE VIRTUAL TABLE address_spatial USING rtree(id,west,east,south,north);
+          INSERT INTO address_spatial SELECT rowid,lon,lon,lat,lat FROM addresses;
           CREATE INDEX category_lookup ON places(kind,lon,lat);
           CREATE INDEX source_lookup ON places(source);
           CREATE VIRTUAL TABLE spatial USING rtree(id,west,east,south,north);

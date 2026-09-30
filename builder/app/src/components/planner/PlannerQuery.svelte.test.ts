@@ -19,6 +19,19 @@ async function setup(extra: Record<string, unknown> = {}) {
     return {target,type,component};
 }
 describe('planner query requests',()=>{
+    it('defaults to the map and uses the selected point only after an explicit area edit', async () => {
+        const fetch = vi.fn(async (_url: string, init: RequestInit) => reply(JSON.parse(String(init.body)).request ?? { type: 'places', what: ['hotel'] }));
+        vi.stubGlobal('fetch', fetch);
+        const { target, type } = await setup({ selection: { anchor: [7.9, 48] } });
+        await type('hotels'); await tick();
+        expect(JSON.parse(String(fetch.mock.lastCall![1].body)).pointing).toBeUndefined();
+        const chip = [...target.querySelectorAll<HTMLButtonElement>('.chip')].find(b => b.textContent?.includes('In this map view'))!;
+        chip.click(); await tick();
+        const selected = [...target.querySelectorAll<HTMLButtonElement>('.scopes button')].find(b => b.textContent?.includes('Selected point'))!;
+        selected.click(); await tick();
+        target.querySelector<HTMLButtonElement>('.apply')!.click(); await vi.advanceTimersByTimeAsync(0); await tick();
+        expect(JSON.parse(String(fetch.mock.lastCall![1].body)).request.where).toEqual({ anchor: [7.9, 48] });
+    });
     it('shows and edits a route endpoint without losing its scope', async()=>{
         const fetch=vi.fn(async(_url:string,init:RequestInit)=>reply(JSON.parse(String(init.body)).request??{type:'places',what:['restaurant'],where:{scope:'route',part:'end'}}));
         vi.stubGlobal('fetch',fetch);
@@ -43,7 +56,8 @@ describe('planner query requests',()=>{
         expect(target.querySelector('.meaning')?.textContent).not.toContain('campsite');
         await type('third sentence');await type('');
         pending[2](reply({type:'places',what:['campsite']}));await vi.advanceTimersByTimeAsync(0);await tick();
-        expect(target.querySelector('.meaning')).toBeNull();
+        expect(target.querySelector('.meaning-label')).toBeNull();
+        expect(target.querySelector('.chip')?.textContent).toContain('In this map view');
     });
     it('retries interpretation after a temporary model failure instead of keeping the fallback',async()=>{
         const fetch=vi.fn(async()=>reply({type:'place',name:'hotels near day two'}));

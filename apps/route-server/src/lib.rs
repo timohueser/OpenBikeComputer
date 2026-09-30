@@ -69,13 +69,16 @@ async fn map_overlays(
     let Ok(permit) = workers.overlay_permits.clone().try_acquire_owned() else {
         return failure(Error::Limit);
     };
+    let cancel = Cancel(Arc::new(AtomicBool::new(false)));
+    let flag = cancel.0.clone();
+    let started = Instant::now();
     match tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        workers.overlays.query(&params)
+        workers.overlays.query(&params, &|| flag.load(Ordering::Relaxed) || started.elapsed() > Duration::from_secs(15))
     })
     .await
     {
-        Ok(Ok(data)) => Json(data).into_response(),
+        Ok(Ok(data)) => ([(axum::http::header::CACHE_CONTROL, "public, max-age=3600")], Json(data)).into_response(),
         Ok(Err(error)) => failure(error),
         Err(_) => failure(Error::Limit),
     }

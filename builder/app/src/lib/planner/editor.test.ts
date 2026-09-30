@@ -233,6 +233,22 @@ describe('day budgets', () => {
 });
 
 describe('single-route stop order', () => {
+    it('reorders destinations while retaining shapes and drawings only on unchanged legs', () => {
+        const points = ['start','shape-a','a','shape-b','b','shape-c','c','d','shape-finish','finish'].map((id, i, ids) => ({
+            id, label: id, kind: id.startsWith('shape') ? 'via' as const : id === 'start' ? 'start' as const : id === 'finish' ? 'finish' as const : 'waypoint' as const,
+            coordinate: [7 + i * .001, 48] as Coordinate, progress: i / (ids.length - 1),
+            ...(id === 'd' || id === 'finish' ? {leg: 'drawn' as const, drawn: [[7.1,48.1] as Coordinate]} : {}),
+        }));
+        const trip: Trip = {...emptyTrip(),points,routeOrder:points.map(point => point.id)};
+        const changed = reorderPoint(trip,'b',1);
+        expect(orderedRoutePoints(changed).map(point => point.id)).toEqual(['start','shape-a','a','c','b','d','shape-finish','finish']);
+        expect(changed.points.find(point => point.id === 'd')?.drawn).toBeUndefined();
+        expect(changed.points.find(point => point.id === 'finish')?.drawn).toEqual(points.at(-1)!.drawn);
+        expect(reorderPoint(trip,'shape-b',1)).toBe(trip);
+        const history = new TripHistory();
+        history.commit(trip,changed);
+        expect(history.undo(changed)).toEqual(trip);
+    });
     it('inserts a stop across multiple positions and keeps both endpoints fixed', () => {
         const initial = initialTrip();
         const base = routeCoordinates(initial);
@@ -443,5 +459,17 @@ describe('route endpoints', () => {
         history.commit(trip, next);
         expect(history.undo(next)).toEqual(trip);
         expect(history.redo(trip)).toEqual(next);
+    });
+
+    it('extends the finish through the previous destination and preserves the day plan and manual leg', () => {
+        const original = setLegMode({ ...pinNight(initialTrip(), 1, [7.3, 47.6], 'Camp'), mode: 'trip', restAfter: [1], splits: { 2: .8 } } as Trip, 'finish', 'straight');
+        const next = setEndpoint(original, 'finish', [5.9, 47.2], 'New destination');
+        const order = orderedRoutePoints(next);
+        expect(order.slice(-2)).toEqual([
+            expect.objectContaining({ id: 'finish', kind: 'waypoint', label: 'Besançon', leg: 'straight' }),
+            expect.objectContaining({ kind: 'finish', label: 'New destination' }),
+        ]);
+        expect(next).toMatchObject({ mode: 'trip', days: original.days, target: original.target, restAfter: [1], splits: { 2: .8 } });
+        expect(next.points.find(p => p.kind === 'night')).toEqual(original.points.find(p => p.kind === 'night'));
     });
 });

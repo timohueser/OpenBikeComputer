@@ -35,13 +35,16 @@ const source = 'route-overlays';
 const interactiveLayers = ['network-cycling', 'network-hiking', 'hiking-markers', 'access-symbols'];
 const empty: FeatureCollection = { type: 'FeatureCollection', features: [] };
 const endpoint = import.meta.env.VITE_PLANNER_ROUTING_URL ?? '/routing';
-type OverlayCollection = FeatureCollection & { coverage: [number, number, number, number] };
+type OverlayCollection = FeatureCollection & { coverage: [number, number, number, number]; routes?: Record<string, NetworkRoute> };
+type CachedOverlay = { bounds: number[]; zoom: number; key: string; data: OverlayCollection };
+const contains = (outer: number[], inner: number[]) => inner[0] >= outer[0] && inner[1] >= outer[1] && inner[2] <= outer[2] && inner[3] <= outer[3];
 
-export function overlaySelection(feature: MapGeoJSONFeature, coordinate: Coordinate): OverlaySelection {
+export function overlaySelection(feature: MapGeoJSONFeature, coordinate: Coordinate, catalog?: Record<string, NetworkRoute>): OverlaySelection {
     const p = feature.properties;
     // Vector workers encode nested GeoJSON properties as JSON strings.
     const nested = <T>(value: T | string | undefined): T | undefined => typeof value === 'string' ? JSON.parse(value) : value;
-    return { ...p, way: Number(p.way), kind: p.kind, coordinate, tags: nested(p.tags), routes: nested(p.routes),
+    const routes = nested<(NetworkRoute | number)[]>(p.routes)?.map(route => typeof route === 'number' ? catalog?.[route] : route).filter((route): route is NetworkRoute => !!route);
+    return { ...p, way: Number(p.way), kind: p.kind, coordinate, tags: nested(p.tags), routes,
         riding: nested(p.riding), walking: nested(p.walking), pushing: nested(p.pushing) };
 }
 
@@ -59,7 +62,9 @@ export class RouteOverlays {
     private options: OverlayOptions = { network: 'none', access: false };
     private accessMode: AccessMode = 'cycling';
     private abort?: AbortController;
-    private cached?: { bounds: number[]; zoom: number; key: string; data: OverlayCollection };
+    private cache: CachedOverlay[] = [];
+    private displayed?: OverlayCollection;
+    private pending?: { bounds: number[]; zoom: number; key: string; task: Promise<void> };
     private disposed = false;
     private hovered?: string | number;
 
@@ -69,6 +74,7 @@ export class RouteOverlays {
 
     install(theme: 'light' | 'dark') {
         if (this.map.getSource(source)) return;
+        this.displayed = undefined;
         this.map.addSource(source, { type: 'geojson', data: empty, attribution: '<a href="https://www.openstreetmap.org/copyright">Route networks & access © OpenStreetMap</a>' });
         const before = this.map.getStyle().layers?.find(layer => layer.type === 'symbol')?.id;
         const color: ExpressionSpecification = ['step', ['get', 'rank'], networkLevels[3][theme === 'dark' ? 'dark' : 'color'],
@@ -139,7 +145,7 @@ export class RouteOverlays {
 
     hit(event: MapMouseEvent): OverlaySelection | null {
         const feature = this.featureAt(event);
-        return feature ? overlaySelection(feature, [event.lngLat.lng, event.lngLat.lat]) : null;
+        return feature ? overlaySelection(feature, [event.lngLat.lng, event.lngLat.lat], this.displayed?.routes) : null;
     }
 
     hover(event?: MapMouseEvent): boolean {
@@ -159,49 +165,76 @@ export class RouteOverlays {
         const target = this.map.getSource(source) as GeoJSONSource | undefined;
         if (!target || this.disposed) return;
         this.hover();
-        this.abort?.abort();
         const selected = [this.options.network === 'none' ? '' : this.options.network, this.options.access ? 'access' : ''].filter(Boolean).join(',');
         const key = `${selected}:${this.accessMode}`;
         const zoom = Math.floor(this.map.getZoom());
         if (!selected || zoom < 6) {
+            this.abort?.abort();
+            this.pending = undefined;
+            this.displayed = undefined;
             target.setData(empty);
             this.status(selected ? 'Zoom in to see route networks and access restrictions.' : '');
             return;
         }
         const view = this.map.getBounds();
         const b = [view.getWest(), view.getSouth(), view.getEast(), view.getNorth()];
-        const cached = this.cached;
-        if (cached && cached.key === key && cached.zoom === zoom && b[0] >= cached.bounds[0] && b[1] >= cached.bounds[1]
-            && b[2] <= cached.bounds[2] && b[3] <= cached.bounds[3]) {
-            target.setData(cached.data);
+        const cached = this.cache.find(item => item.key === key && item.zoom === zoom && contains(item.bounds, b));
+        if (cached) {
+            this.abort?.abort();
+            this.pending = undefined;
+            if (this.displayed !== cached.data) target.setData(cached.data);
+            this.displayed = cached.data;
+            this.cache = [cached, ...this.cache.filter(item => item !== cached)];
             this.coverageStatus(b, cached.data);
             return;
         }
+        if (this.pending?.key === key && this.pending.zoom === zoom && contains(this.pending.bounds, b)) return this.pending.task;
+        this.abort?.abort();
+        // Stable bounds let HTTP caches reuse replies across nearby views and users.
+        const step = 360 / (2 ** zoom * 8);
         const dx = (b[2] - b[0]) * 0.15, dy = (b[3] - b[1]) * 0.15;
-        const bounds = [Math.max(-180, b[0] - dx), Math.max(-90, b[1] - dy), Math.min(180, b[2] + dx), Math.min(90, b[3] + dy)];
+        const bounds = [Math.max(-180, Math.floor((b[0] - dx) / step) * step), Math.max(-90, Math.floor((b[1] - dy) / step) * step),
+            Math.min(180, Math.ceil((b[2] + dx) / step) * step), Math.min(90, Math.ceil((b[3] + dy) / step) * step)];
         const abort = this.abort = new AbortController();
         this.status('Loading route networks and access…');
+        const task = this.load(target, bounds, zoom, selected, key, abort);
+        this.pending = { bounds, zoom, key, task };
+        await task;
+        if (this.pending?.task === task) this.pending = undefined;
+    };
+
+    private async load(target: GeoJSONSource, bounds: number[], zoom: number, selected: string, key: string, abort: AbortController) {
         try {
-            const response = await fetch(`${endpoint}/v1/overlays?${new URLSearchParams({ bbox: bounds.join(','), zoom: String(zoom), layers: selected, mode: this.accessMode })}`, { signal: abort.signal });
-            const data = await response.json();
+            const url = `${endpoint}/v1/overlays?${new URLSearchParams({ bbox: bounds.join(','), zoom: String(zoom), layers: selected, mode: this.accessMode })}`;
+            let response = await fetch(url, { signal: abort.signal });
+            for (let retry = 0; response.status === 503 && retry < 2; retry++) {
+                await new Promise(resolve => setTimeout(resolve, 250 * (retry + 1)));
+                if (abort.signal.aborted || this.disposed) return;
+                response = await fetch(url, { signal: abort.signal });
+            }
+            const data = await response.json() as OverlayCollection & { message?: string };
             if (!response.ok) throw new Error(data.message ?? 'Map overlays could not load.');
             if (abort.signal.aborted || this.disposed) return;
             for (const feature of data.features) {
                 const p = feature.properties;
                 if (p?.kind === 'hiking') {
-                    const symbol = p.routes?.find((route: NetworkRoute) => trailMarker(route.symbol))?.symbol;
+                    const routes: NetworkRoute[] = data.routes ? p.routes.map((id: number) => data.routes![id]) : p.routes;
+                    const symbol = routes?.find(route => trailMarker(route.symbol))?.symbol;
                     p.marker = symbol ? `trail:${symbol}` : '';
                 }
             }
-            this.cached = { bounds, zoom, key, data };
+            this.cache = [{ bounds, zoom, key, data }, ...this.cache].slice(0, 6);
+            this.displayed = data;
             target.setData(data);
-            this.coverageStatus(b, data);
+            const view = this.map.getBounds();
+            this.coverageStatus([view.getWest(), view.getSouth(), view.getEast(), view.getNorth()], data);
         } catch (error) {
             if (abort.signal.aborted || this.disposed) return;
+            this.displayed = undefined;
             target.setData(empty);
             this.status(error instanceof Error ? error.message : 'Map overlays could not load.', true);
         }
-    };
+    }
 
     private coverageStatus(view: number[], data: OverlayCollection) {
         const b = data.coverage;

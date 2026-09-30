@@ -56,6 +56,7 @@ records.forEach(([source,name,kind,lon,lat,city,importance,aliases='',cuisine=''
 conn.exec("INSERT INTO lexicon SELECT DISTINCT term FROM compact_names; INSERT INTO fuzzy(fuzzy) VALUES('rebuild')");
 conn.exec("INSERT INTO addresses VALUES (10,'12',7.851,47.991,'w123')");
 conn.exec("INSERT INTO addresses VALUES (14,'10',7.854,48.01,'w14'),(14,'10',7.854,48.03,'w141'),(15,'10',11.57,48.13,'w15')");
+conn.exec('CREATE VIRTUAL TABLE address_spatial USING rtree(id,west,east,south,north); INSERT INTO address_spatial SELECT rowid,lon,lon,lat,lat FROM addresses');
 
 return {db,conn,records};
 }

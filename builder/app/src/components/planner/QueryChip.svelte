@@ -6,8 +6,8 @@
     import QueryPointPicker from './QueryPointPicker.svelte';
     import { allKinds, fieldLabel, kindLabel } from '../../lib/planner/search/presentation';
     import type { QueryRequest, Where, Quantity, QueryPoint } from '../../lib/planner/search/types';
-    let { field, value: currentValue, active = $bindable(null), removed = false, removable = true, days, onChange, onToggle }: {
-        field: string; value: unknown; active?: string | null; removed?: boolean; removable?: boolean; days: number[];
+    let { field, value: currentValue, active = $bindable(null), removed = false, removable = true, days, selection, onChange, onToggle }: {
+        field: string; value: unknown; active?: string | null; removed?: boolean; removable?: boolean; days: number[]; selection?: Where;
         onChange: (value: unknown) => void; onToggle: () => void;
     } = $props();
     let value = $state<unknown>();
@@ -44,7 +44,7 @@
             {#if field === 'what' && Array.isArray(value)}
                 <QueryKinds value={value} onChange={change} />
             {:else if field === 'where'}
-                <QueryAreaPicker value={value as Where} {days} onChange={change} />
+                <QueryAreaPicker value={value as Where} {days} {selection} onChange={change} />
             {:else if field === 'cuisine'}<label>Food<select value={String(value)} onchange={e=>change(e.currentTarget.value)}><option value="pizza">Pizza</option><option value="kebab">Kebab</option></select></label>
             {:else if field === 'open'}
                 <label>Opening filter<select value={opening?.now ? 'now' : opening?.weekday ?? `day:${opening?.day}`} onchange={e => change(e.currentTarget.value === 'now' ? { now: true } : e.currentTarget.value.startsWith('day:') ? { day: /^\d+$/.test(e.currentTarget.value.slice(4)) ? Number(e.currentTarget.value.slice(4)) : e.currentTarget.value.slice(4) } : { weekday: e.currentTarget.value })}>

@@ -10,7 +10,7 @@ import type { RoutingLine } from '../../lib/planner/routing';
 vi.mock('./PlannerMap.svelte', async () => ({ default: (await import('../../../test-support/planner/MapStub.svelte')).default }));
 vi.mock('../../lib/planner/place-index', () => ({ corridorPlaces: vi.fn() }));
 
-let app: ReturnType<typeof mount>;
+let app: ReturnType<typeof mount> | undefined;
 const stored = new Map<string, string>();
 const tilePlace: Place = { id: 'poi-123', kind: 'place', label: 'Tile camp', category: 'camp', description: 'Campsite', progress: .25, coordinate: coordinateAt(routeCoordinates(initialTrip()), .25) };
 
@@ -50,15 +50,96 @@ function button(label: string, scope: ParentNode = document) {
     return found;
 }
 
-async function search(text: string) {
+async function search(text: string, label = tilePlace.label) {
     const input = document.querySelector<HTMLInputElement>('[aria-label="Find a place or ask about the route"]')!;
     input.value = text;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    await vi.waitFor(() => expect(document.querySelector('.results')?.textContent).toContain(tilePlace.label));
+    await vi.waitFor(() => expect(document.querySelector('.results')?.textContent).toContain(label));
 }
 
 describe('planner app transitions', () => {
+    it('names map visits by address without adding an Undo step, and restores names on Redo', async () => {
+        const saved = { ...JSON.parse(stored.get('obc-planner-routing-v2')!), mode: 'route' };
+        stored.set('obc-planner-routing-v2', JSON.stringify(saved));
+        let finish!: (response: unknown) => void;
+        const original = fetch;
+        vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit) => url.endsWith('/reverse')
+            ? new Promise(resolve => finish = resolve) : original(url, init)));
+        app = mount(PlannerApp, { target: document.body }); await tick();
+        button('Pick map location').click(); await tick();
+        button('Visit').click(); await tick();
+        expect(JSON.parse(stored.get('obc-planner-routing-v2')!).points).toContainEqual(expect.objectContaining({ kind: 'waypoint', label: '48.00000, 7.84000' }));
+        const response = { ok: true, json: async () => ({ label: 'Dorfstraße 12, Teningen' }) };
+        finish(response);
+        await vi.waitFor(() => expect(document.querySelector('.route')?.textContent).toContain('Dorfstraße 12, Teningen'));
+        button('Undo').click(); await tick();
+        expect(JSON.parse(stored.get('obc-planner-routing-v2')!)).toEqual(saved);
+        button('Redo').click(); await tick();
+        finish(response);
+        await vi.waitFor(() => expect(JSON.parse(stored.get('obc-planner-routing-v2')!).points).toContainEqual(expect.objectContaining({ label: 'Dorfstraße 12, Teningen' })));
+    });
+
+    it.each(['rename', 'remove', 'leave'] as const)('ignores an address response after %s', async action => {
+        let finish!: (response: unknown) => void;
+        const original = fetch;
+        vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit) => url.endsWith('/reverse')
+            ? new Promise(resolve => finish = resolve) : original(url, init)));
+        app = mount(PlannerApp, { target: document.body }); await tick();
+        button('Pick map location').click(); await tick();
+        button('Visit').click(); await tick();
+        if (action === 'rename') {
+            button('Rename point').click(); await tick();
+            const input = document.querySelector<HTMLInputElement>('[aria-label="Point name"]')!;
+            input.value = 'Picnic'; input.dispatchEvent(new Event('change', { bubbles: true })); await tick();
+        } else if (action === 'remove') { button('Remove point').click(); await tick(); }
+        else { await unmount(app); app = undefined; }
+        const snapshot = stored.get('obc-planner-routing-v2');
+        finish({ ok: true, json: async () => ({ label: 'Late address' }) });
+        await tick(); await tick();
+        expect(stored.get('obc-planner-routing-v2')).toBe(snapshot);
+    });
+
+    it('offers any mapped place as an overnight beyond the suggestion area, and keeps the trip intact', async () => {
+        const saved = { ...JSON.parse(stored.get('obc-planner-routing-v2')!), mode: 'trip' };
+        stored.set('obc-planner-routing-v2', JSON.stringify(saved));
+        vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ type: 'places', request: { type: 'place', name: 'Fuxxbau' }, results: [
+            { source: 'fuxxbau', name: 'Fuxxbau', kind: 'restaurant', lon: 8.088, lat: 48.279, precision: 'place', distance: 0 },
+        ] }) })));
+        app = mount(PlannerApp, { target: document.body }); await tick();
+        button('Open day 1: Basel to Overnight to choose').click(); await tick();
+        await search('Fuxxbau', 'Fuxxbau');
+        button('Map place: Fuxxbau').click(); await tick();
+        const select = document.querySelector<HTMLSelectElement>('.callout select')!;
+        expect(select.value).toBe('1');
+        button('Stay here').click(); await tick();
+        const draft = JSON.parse(stored.get('obc-planner-routing-v2')!);
+        expect(draft).toMatchObject({ mode: 'trip', days: saved.days, target: saved.target });
+        expect(draft.points).toContainEqual(expect.objectContaining({ kind: 'night', night: 1, label: 'Fuxxbau', coordinate: [8.088, 48.279] }));
+        expect(draft.points.find((p: { kind: string }) => p.kind === 'finish')).toEqual(saved.points.find((p: { kind: string }) => p.kind === 'finish'));
+        button('Undo').click(); await tick();
+        expect(JSON.parse(stored.get('obc-planner-routing-v2')!)).toEqual(saved);
+    });
+
+    it('links row and map hover in both directions and searches the map after point inspection', async () => {
+        const saved = { ...JSON.parse(stored.get('obc-planner-routing-v2')!), mode: 'route' };
+        stored.set('obc-planner-routing-v2', JSON.stringify(saved));
+        app = mount(PlannerApp, { target: document.body }); await tick();
+        const row = document.querySelector<HTMLButtonElement>('.route .stop')!;
+        const pin = button('Map point: Basel');
+        row.dispatchEvent(new MouseEvent('mouseenter')); await tick();
+        expect(pin.classList.contains('highlighted')).toBe(true);
+        row.dispatchEvent(new MouseEvent('mouseleave')); await tick();
+        pin.dispatchEvent(new MouseEvent('mouseenter')); await tick();
+        expect(row.classList.contains('highlighted')).toBe(true);
+        pin.dispatchEvent(new MouseEvent('mouseleave')); await tick();
+        expect(row.classList.contains('highlighted')).toBe(false);
+        pin.click(); await tick();
+        await search('Döner');
+        const request = vi.mocked(fetch).mock.calls.find(([, init]) => JSON.parse(String(init?.body)).q === 'Döner');
+        expect(JSON.parse(String(request?.[1]?.body)).pointing).toBeUndefined();
+        expect(document.querySelector('.meaning')?.textContent).toContain('In this map view');
+    });
     it.each(['route', 'trip'] as const)('creates and clears a %s without routing incomplete drafts', async mode => {
         stored.set('obc-planner-routing-v2', JSON.stringify(emptyTrip(mode)));
         const calculate = vi.spyOn(routing, 'calculateLine').mockRejectedValue(new Error('Routing service offline'));

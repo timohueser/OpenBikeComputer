@@ -7,6 +7,7 @@ import { answerQuery } from './query.mjs';
 import { routeQuery } from './routing.mjs';
 import { validateInput } from './validation.mjs';
 import { allowedOrigin } from './origins.mjs';
+import { reverseAddress } from './web/reverse.mjs';
 
 const root = import.meta.dirname,
   data = path.resolve(process.env.OBC_SEARCH_DATA || path.join(root, 'data'));
@@ -38,6 +39,7 @@ for (const region of (process.env.OBC_SEARCH_REGIONS || 'germany,baden-wuerttemb
   );
   if (metadata.schema !== 1)
     throw new Error(`Rebuild ${region}: incompatible search data.`);
+  conn.prepare('SELECT id FROM address_spatial LIMIT 0');
   databases.set(region, {
     db,
     metadata,
@@ -100,7 +102,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (
-      !['/api/planner-search/query', '/api/planner-search/route'].includes(
+      !['/api/planner-search/query', '/api/planner-search/route', '/api/planner-search/reverse'].includes(
         url.pathname,
       ) ||
       req.method !== 'POST'
@@ -124,7 +126,7 @@ const server = http.createServer(async (req, res) => {
       json(200, await routeQuery(input));
       return;
     }
-    validateInput(input);
+    if (url.pathname !== '/api/planner-search/reverse') validateInput(input);
     const region = input.region || 'baden-wuerttemberg',
       database = databases.get(region);
     if (!database) {
@@ -134,6 +136,10 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const { db } = database;
+    if (url.pathname === '/api/planner-search/reverse') {
+      json(200, {label: reverseAddress(db, input.coordinate)});
+      return;
+    }
     const answer = await answerQuery(db, input, parser);
     json(200, {
       ...answer,

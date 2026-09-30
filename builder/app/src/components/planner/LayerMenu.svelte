@@ -4,7 +4,8 @@
     import { placeCategories, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import { networkLevels, type OverlayOptions } from '../../lib/planner/route-overlays';
 
-    let { hillshade = $bindable(), contours = $bindable(), hidden = $bindable(), highlighted = $bindable(), mapOverlays = $bindable(), theme = 'light' }: {
+    let { autoCenter = $bindable(false), hillshade = $bindable(), contours = $bindable(), hidden = $bindable(), highlighted = $bindable(), mapOverlays = $bindable(), theme = 'light' }: {
+        autoCenter?: boolean;
         hillshade: boolean;
         contours: boolean;
         /** Place categories the map leaves out. */
@@ -58,10 +59,10 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="layer-menu" bind:this={root} onkeydown={key}>
-    <button type="button" class="toggle" class:chosen={open} aria-label="Map layers" aria-expanded={open} aria-haspopup="dialog" onclick={() => open = !open}><Icon name="layers" /></button>
+    <button type="button" class="toggle" class:chosen={open} aria-label="Map settings" aria-expanded={open} aria-haspopup="dialog" onclick={() => open = !open}><Icon name="layers" /></button>
     {#if open}
-        <div class="panel" role="dialog" aria-label="Map layers" tabindex="-1">
-            <div class="heading"><strong>Map layers</strong><button class="close" aria-label="Close map layers" onclick={close}><Icon name="close" size={16} /></button></div>
+        <div class="panel" role="dialog" aria-label="Map settings" tabindex="-1">
+            <div class="heading"><strong>Map settings</strong><button class="close" aria-label="Close map settings" onclick={close}><Icon name="close" size={16} /></button></div>
             <section aria-label="Route networks">
                 <Segmented label="Route network" options={networks} value={mapOverlays.network} onChange={network => mapOverlays = { ...mapOverlays, network }} />
             {#if mapOverlays.network !== 'none'}
@@ -69,11 +70,13 @@
                     {#each networkLevels as level (level.rank)}<li title={level.label}><span class="sample" style:color={theme === 'dark' ? level.dark : level.color}></span>{level.rank === 3 ? 'National / intl.' : level.rank === 0 ? 'Unspecified' : level.label}</li>{/each}
                 </ul>
             {/if}
+                <p>Right-click or long-press a route for details.</p>
             </section>
             <section class="access-section" aria-label="Access markings">
                 <label><input type="checkbox" bind:checked={mapOverlays.access} />Closures & access<span class="access-symbol" aria-hidden="true"><Icon path="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM7 12h10" size={17} /></span></label>
-                {#if mapOverlays.access}<p>Bike access: a walking symbol means dismount and push. Click for rules; closure reports are not live.</p>{/if}
+                {#if mapOverlays.access}<p>Bike access: a walking symbol means dismount and push. Click access symbols for rules; closure reports are not live.</p>{/if}
             </section>
+            <section class="access-section" aria-label="Planning controls"><label><input type="checkbox" bind:checked={autoCenter} />Center on added points</label></section>
             <details>
                 <summary><Icon name="mountain" size={17} /><strong>Terrain</strong><span class="detail-value">{[hillshade && 'Relief', contours && 'Contours'].filter(Boolean).join(' · ') || 'Off'}</span><Icon name="chevron" size={14} /></summary>
                 <div class="terrain"><label><input type="checkbox" bind:checked={hillshade} />Relief</label><label><input type="checkbox" bind:checked={contours} />Contours</label></div>

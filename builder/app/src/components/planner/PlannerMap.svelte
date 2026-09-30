@@ -18,14 +18,15 @@
     import MapOverlayDetails from './MapOverlayDetails.svelte';
 
     let {
-        segments = [], coordinates = [], highlightedCoordinates = [], points = [], selectedId = null, callout = null,
+        segments = [], coordinates = [], highlightedCoordinates = [], points = [], selectedId = null, hoveredId = null, callout = null,
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         shownCategories = categoryIds, highlightedPlaces = [], landmarks = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling',
-        onEmptyClick, onPointSelect, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
+        onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
         segments?: MapSegment[]; coordinates?: Coordinate[]; highlightedCoordinates?: Coordinate[]; points?: MapPoint[];
         selectedId?: string | null; callout?: Coordinate | null; drawing?: string | null; highlightedPlaceIds?: string[];
+        hoveredId?: string | null;
         /** While picking, any map click places the overnight; the line takes no edits. */
         pickMode?: boolean; showRoute?: boolean; theme?: "light" | "dark"; hillshade?: boolean; contours?: boolean;
         /** Basemap place categories to draw. */
@@ -42,6 +43,7 @@
         center?: Coordinate; zoom?: number;
         onEmptyClick?: (coordinate: Coordinate) => void;
         onPointSelect?: (id: string) => void;
+        onPointHover?: (id: string | null) => void;
         onPointPreview?: (id: string, coordinate: Coordinate) => void;
         onPointMove?: (id: string, coordinate: Coordinate) => void;
         onDayEndDrag?: (night: number, progress: number) => void;
@@ -90,6 +92,20 @@
     let overlayStatus = $state('');
     let overlayRetry = $state(false);
     let overlaySelection = $state<OverlaySelection | null>(null);
+
+    export function centerOn(coordinate: Coordinate) {
+        wholeRoute = false;
+        map?.panTo(coordinate, { duration: motionDuration() }, { preserveSearch: true });
+    }
+
+    function inspectOverlay(event: maplibregl.MapMouseEvent) {
+        const selected = overlayLayer?.hit(event);
+        if (!selected || drawing || pickMode) return;
+        event.preventDefault();
+        cancelGesture();
+        consumedPress = true;
+        overlaySelection = selected;
+    }
 
     export function fitRoute() {
         if (!map || !coordinates.length) return;
@@ -384,8 +400,13 @@
                 if (place) onPlaceClick?.(place);
                 else if (overlay?.kind === 'access') overlaySelection = overlay;
                 else if (hit) onLegClick?.(hit.legEndId, hit.coordinate);
-                else if (overlay) overlaySelection = overlay;
                 else onEmptyClick?.([event.lngLat.lng, event.lngLat.lat]);
+            });
+            map.on('contextmenu', inspectOverlay);
+            map.on('touchstart', () => consumedPress = false);
+            map.on('touchend', event => {
+                // A long press must not also add a point through a synthetic click.
+                if (consumedPress) event.originalEvent.preventDefault();
             });
             map.on("mousedown", pressMap);
             map.on("mousemove", trackPointer);
@@ -540,6 +561,10 @@
                 button.textContent = point.markerLabel ?? (point.kind === "start" ? "A" : point.kind === "finish" ? "B" : point.kind === "night" ? String(nightNumber) : "");
             }
             button.addEventListener("click", (event) => { event.stopPropagation(); onPointSelect?.(point.id); });
+            button.addEventListener('mouseenter', () => onPointHover?.(point.id));
+            button.addEventListener('mouseleave', () => onPointHover?.(null));
+            button.addEventListener('focus', () => onPointHover?.(point.id));
+            button.addEventListener('blur', () => onPointHover?.(null));
             const marker = new maplibregl.Marker({ element: button, draggable }).setLngLat(point.coordinate).addTo(map!);
             if (dayEnd) {
                 marker.on("drag", () => marker.setLngLat(coordinateAt(coordinates, routeProgress(marker))));
@@ -556,6 +581,7 @@
     $effect(() => {
         for (const [id, button] of pinButtons) {
             button.classList.toggle("selected", id === selectedId);
+            button.classList.toggle('highlighted', id === hoveredId);
             button.classList.toggle("matched", highlightedPlaceIds.includes(id));
             button.setAttribute("aria-pressed", String(id === selectedId));
         }
@@ -628,6 +654,7 @@
     :global(.planner-map-pin.dayend.draggable) { cursor: ew-resize; }
     :global(.planner-map-pin.matched) { border: 3px solid var(--amber, #f4a81d); }
     :global(.planner-map-pin.selected) { outline: 3px solid var(--amber, #f4a81d); outline-offset: 3px; }
+    :global(.planner-map-pin.highlighted) { outline: 3px solid var(--ink, #1c1b14); outline-offset: 3px; }
     :global(.planner-map-pin:hover) { filter: brightness(1.08); }
     :global(.planner-map-pin:focus-visible) { outline: 3px solid var(--amber, #f4a81d); outline-offset: 3px; }
     :global(.planner-hover-dot) { width: 12px; height: 12px; border: 3px solid var(--panel, #fff); border-radius: 50%; background: var(--ink, #1c1b14); pointer-events: none; }

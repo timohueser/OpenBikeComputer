@@ -3,18 +3,18 @@
     import QueryAlong from './QueryAlong.svelte';
     import QueryPointPicker from './QueryPointPicker.svelte';
     import type { Where, QueryDay } from '../../lib/planner/search/types';
-    let { value, days, onChange }: { value: Where; days: number[]; onChange: (value: Where) => void } = $props();
+    let { value, days, selection, onChange }: { value: Where; days: number[]; selection?: Where; onChange: (value: Where) => void } = $props();
     const mode = $derived(value.near ? 'near' : value.along ? 'interval' : value.day ? 'day' : value.anchor ? 'anchor' : value.scope ?? 'view');
     const options = $derived([
         {id:'view', label:'Map view', icon:'fit'}, {id:'route', label:'Route', icon:'route'},
         {id:'near', label:'Near a place', icon:'pin'}, {id:'here', label:'My location', icon:'locate'},
         ...(days.length ? [{id:'day',label:'Trip day',icon:'calendar'}] : []), {id:'interval',label:'Route section',icon:'sliders'},
-        ...(value.anchor ? [{id:'anchor',label:'Selected point',icon:'pin'}] : []),
+        ...(value.anchor || selection ? [{id:'anchor',label:'Selected point',icon:'pin'}] : []),
     ]);
     function choose(nextMode: string) {
         if (nextMode === mode) return;
         const choice = nextMode;
-        if (choice === 'anchor') return;
+        if (choice === 'anchor') { onChange(selection ?? { anchor: value.anchor }); return; }
         onChange(choice === 'near' ? {near:[{name:''}]} : choice === 'day' ? {day:days[0]} : choice === 'interval' ? {along:{ref:'km',from:{value:0,unit:'km'},to:{value:10,unit:'km'}}} : {scope:choice as Where['scope']});
     }
 </script>

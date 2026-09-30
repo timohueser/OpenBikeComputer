@@ -5,7 +5,7 @@ use route_engine::{
     model::{Graph, Point, Profile, RoadBike, Weighting, BIKE, FOOT, NO_ELEVATION, PUSH},
     osm::Id,
 };
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 pub struct Costing<'a> {
     graph: &'a Graph,
@@ -20,38 +20,7 @@ impl<'a> Costing<'a> {
         if graph.node_access.len() != graph.points.len() || graph.node_ids.len() != graph.points.len() {
             return Err("Graph nodes lack source identities or access".into());
         }
-        let mut cycle_routes = HashSet::new();
-        let mut pending: Vec<_> = graph
-            .osm
-            .relations
-            .values()
-            .filter(|relation| {
-                road_bike::tag(&relation.tags, "route") == "bicycle"
-                    && road_bike::tag(&relation.tags, "state") != "proposed"
-            })
-            .map(|r| r.id)
-            .collect();
-        let mut visited = HashSet::new();
-        while let Some(id) = pending.pop() {
-            if !visited.insert(id) {
-                continue;
-            }
-            let Some(relation) = graph.osm.relations.get(&id) else {
-                continue;
-            };
-            if road_bike::tag(&relation.tags, "state") == "proposed" {
-                continue;
-            }
-            for (id, _) in &relation.members {
-                match id {
-                    Id::Way(id) => {
-                        cycle_routes.insert(*id);
-                    }
-                    Id::Relation(id) => pending.push(*id),
-                    _ => {}
-                }
-            }
-        }
+        let cycle_routes = cycle_routes(graph);
         let mut ways = Vec::with_capacity(graph.roads.len());
         let mut roads = Vec::with_capacity(graph.roads.len());
         for road in &graph.roads {
@@ -64,7 +33,7 @@ impl<'a> Costing<'a> {
                 match &profile.weighting {
                     Weighting::RoadBike(variant) => {
                         let source = graph.osm.ways.get(&road.way).ok_or("Road lacks source OSM way")?;
-                        road_bike::way(road, &source.tags, *variant, cycle_routes.contains(&road.way))
+                        road_bike::way(road, &source.tags, *variant, cycle_routes.contains_key(&road.way))
                     }
                     Weighting::Weighted { surface, road: weights, .. } => Some(WayCost {
                         factor: surface[road.surface as usize]
@@ -76,6 +45,15 @@ impl<'a> Costing<'a> {
                     }),
                 }
             };
+            let way = way.map(|mut cost| {
+                if !profile.walking && !cost.pushing && !cost.ferry && !profile.name.ends_with("/shorter") {
+                    if let Some(&rank) = cycle_routes.get(&road.way) {
+                        let touring = profile.name.split('/').next() == Some("touring");
+                        cost.factor *= 1.0 - f64::from(rank) * if touring { 0.1 } else { 0.04 };
+                    }
+                }
+                cost
+            });
             roads.push(way.map(|w| curve(road, profile, w)).transpose()?);
             ways.push(way);
         }
@@ -119,6 +97,54 @@ impl<'a> Costing<'a> {
         }
         Some(cost.round() as u64)
     }
+}
+
+fn cycle_routes(graph: &Graph) -> HashMap<i64, u8> {
+    let mut pending: Vec<_> = graph
+        .osm
+        .relations
+        .values()
+        .filter_map(|relation| {
+            let tags = &relation.tags;
+            if road_bike::tag(tags, "route") != "bicycle"
+                || !matches!(road_bike::tag(tags, "type"), "route" | "superroute")
+            {
+                return None;
+            }
+            let rank = match road_bike::tag(tags, "network") {
+                "icn" => 5,
+                "ncn" => 4,
+                "rcn" => 3,
+                "lcn" => 2,
+                _ => 1,
+            };
+            Some((relation.id, rank))
+        })
+        .collect();
+    let mut visited = HashMap::<i64, u8>::new();
+    let mut ways = HashMap::<i64, u8>::new();
+    while let Some((id, rank)) = pending.pop() {
+        if visited.get(&id).is_some_and(|previous| *previous >= rank) {
+            continue;
+        }
+        visited.insert(id, rank);
+        let Some(relation) = graph.osm.relations.get(&id) else {
+            continue;
+        };
+        if road_bike::tag(&relation.tags, "state") == "proposed" {
+            continue;
+        }
+        for (member, _) in &relation.members {
+            match member {
+                Id::Way(id) => {
+                    ways.entry(*id).and_modify(|value| *value = (*value).max(rank)).or_insert(rank);
+                }
+                Id::Relation(id) => pending.push((*id, rank)),
+                _ => {}
+            }
+        }
+    }
+    ways
 }
 
 fn curve(road: &route_engine::model::Road, profile: &Profile, way: WayCost) -> Result<RoadCost, String> {
@@ -217,6 +243,76 @@ mod tests {
     }
     fn point(lon: i32, elevation: f32) -> Point {
         Point { lat: 0, lon, elevation }
+    }
+
+    #[test]
+    fn cycling_networks_favour_touring_by_level_without_discounting_walks_or_pushing() {
+        use route_engine::osm::{Relation, Way};
+        let shape = vec![point(0, 0.0), point(1000, 0.0)];
+        let mut graph = Graph {
+            points: shape.clone(),
+            node_ids: vec![0, 1],
+            node_access: vec![BIKE | FOOT | PUSH; 2],
+            roads: vec![Road { access: BIKE | FOOT | PUSH, ..road(shape) }],
+            ..Graph::default()
+        };
+        graph.osm.ways.insert(
+            1,
+            Way { id: 1, nodes: vec![0, 1], tags: [("highway".into(), "residential".into())].into_iter().collect() },
+        );
+        let profiles = Profile::presets();
+        let cost = |graph: &Graph, name: &str| {
+            Costing::new(graph, profiles.iter().find(|p| p.name == name).unwrap()).unwrap().roads[0]
+                .as_ref()
+                .unwrap()
+                .total()
+        };
+        let ordinary = cost(&graph, "touring");
+        let walking = cost(&graph, "hiking");
+        let mut previous = ordinary;
+        for network in ["", "lcn", "rcn", "ncn", "icn"] {
+            graph.osm.relations.insert(
+                10,
+                Relation {
+                    id: 10,
+                    tags: [
+                        ("type".into(), "route".into()),
+                        ("route".into(), "bicycle".into()),
+                        ("network".into(), network.into()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    members: vec![(Id::Way(1), String::new())],
+                },
+            );
+            let preferred = cost(&graph, "touring");
+            assert!(preferred < previous);
+            assert_eq!(cost(&graph, "hiking"), walking);
+            previous = preferred;
+        }
+        graph.osm.relations.insert(
+            20,
+            Relation {
+                id: 20,
+                tags: [
+                    ("type".into(), "superroute".into()),
+                    ("route".into(), "bicycle".into()),
+                    ("network".into(), "icn".into()),
+                ]
+                .into_iter()
+                .collect(),
+                members: vec![(Id::Relation(10), String::new())],
+            },
+        );
+        graph.osm.relations.get_mut(&10).unwrap().tags.insert("network".into(), "lcn".into());
+        graph.osm.relations.get_mut(&10).unwrap().members.push((Id::Relation(20), String::new()));
+        assert_eq!(cost(&graph, "touring"), previous);
+        graph.osm.relations.get_mut(&10).unwrap().tags.insert("state".into(), "proposed".into());
+        assert_eq!(cost(&graph, "touring"), ordinary);
+        graph.roads[0].access = FOOT | PUSH;
+        let pushing = cost(&graph, "touring");
+        graph.osm.relations.clear();
+        assert_eq!(cost(&graph, "touring"), pushing);
     }
 
     #[test]

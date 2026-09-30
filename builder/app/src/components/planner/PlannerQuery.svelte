@@ -6,8 +6,8 @@
     import type { Coordinate } from '../../lib/planner/editor';
     import { searchPlaces, type QueryRequest, type SearchContext, type SearchState, type Where } from '../../lib/planner/search/types';
 
-    let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, region = $bindable('baden-wuerttemberg'), viewRevision = 0, onResults, onSearch, onClear, onLocation, onSample, onDate, onPointing }: {
-        text?: string; region?: string; searchState?: SearchState; context: SearchContext;
+    let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, selection, region = $bindable('baden-wuerttemberg'), viewRevision = 0, onResults, onSearch, onClear, onLocation, onSample, onDate, onPointing }: {
+        text?: string; region?: string; searchState?: SearchState; context: SearchContext; selection?: Where;
         viewRevision?: number; onResults?: (coordinates: Coordinate[]) => void; onSearch: () => void; onClear: () => void; onLocation: () => void; onSample: () => void; onDate: (date: string) => void; onPointing: (where?: Where) => void;
     } = $props();
     let edited = $state(false);
@@ -109,19 +109,19 @@
             <div class="meaning" aria-label="Understood request">
                 <span class="meaning-label">{edited ? 'Edited request' : request.type === 'place' ? 'Place search' : request.type.replaceAll('_', ' ')}</span>
                 {#each fields as [field, value] (field)}
-                    <QueryChip bind:active={activeFilter} {field} {value} {days} removable={!required.includes(field)} onChange={value => edit(field, value)} onToggle={() => toggle(field, value)} />
+                    <QueryChip bind:active={activeFilter} {field} {value} {days} {selection} removable={!required.includes(field)} onChange={value => edit(field, value)} onToggle={() => toggle(field, value)} />
                 {/each}
                 {#if request.type === 'places' && !request.where && !('where' in removed)}
-                    <QueryChip bind:active={activeFilter} field="where" value={explicitWhere} {days} removable={false} onChange={value => edit('where', value)} onToggle={() => {}} />
+                    <QueryChip bind:active={activeFilter} field="where" value={explicitWhere} {days} {selection} removable={false} onChange={value => edit('where', value)} onToggle={() => {}} />
                 {/if}
-                {#each Object.entries(removed) as [field, value] (field)}<QueryChip bind:active={activeFilter} {field} {value} {days} removed onChange={value => edit(field, value)} onToggle={() => toggle(field, value)} />{/each}
+                {#each Object.entries(removed) as [field, value] (field)}<QueryChip bind:active={activeFilter} {field} {value} {days} {selection} removed onChange={value => edit(field, value)} onToggle={() => toggle(field, value)} />{/each}
             </div>
             {#if request.ignored?.length}<p class="note" role="status">Not understood: {request.ignored.map(word => `“${word}”`).join(', ')}. These words are ignored.</p>{/if}
         {/if}
         {#if text.length > 80}<p class="note">Smart requests use up to 80 characters. Longer text uses ordinary place search.</p>{/if}
     {/if}
-    {#if !text.trim() && context.pointing}
-        <div class="meaning"><QueryChip bind:active={activeFilter} field="where" value={context.pointing} {days} onChange={value => onPointing(value as Where)} onToggle={() => onPointing()} /></div>
+    {#if !text.trim()}
+        <div class="meaning"><QueryChip bind:active={activeFilter} field="where" value={context.pointing ?? { scope: 'view' }} {days} {selection} onChange={value => onPointing(value as Where)} onToggle={() => onPointing()} /></div>
     {/if}
     <button type="button" class="data-button" aria-expanded={settings} onclick={() => settings = !settings}>{regionName(region)} · {HOSTED_SEARCH ? 'online' : 'local data'}<PlannerIcon name="down" size={12} /></button>
     {#if settings}

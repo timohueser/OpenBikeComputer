@@ -4,7 +4,7 @@ import { RouteOverlays, routeWebsite, overlaySelection } from './route-overlays'
 import type { MapGeoJSONFeature, MapMouseEvent } from 'maplibre-gl';
 import { trailMarker } from './trail-markers';
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 function viewport() {
     const data = vi.fn();
@@ -94,6 +94,51 @@ it('only links valid route websites and preserves worker-encoded mode permission
     const selected = overlaySelection({ properties: { kind: 'access', way: 1, riding: '[false,false]', walking: '[true,true]', pushing: '[true,false]' } } as unknown as MapGeoJSONFeature, [8,48]);
     expect(selected.pushing).toEqual([true,false]);
     expect(selected.walking).toEqual([true,true]);
+});
+
+it('reuses in-flight views and cached network selections without reprocessing GeoJSON', async () => {
+    let resolve!: (response: unknown) => void;
+    const fetcher = vi.fn(() => new Promise(r => resolve = r));
+    vi.stubGlobal('fetch', fetcher);
+    const view = viewport();
+    view.overlays.set({ network: 'cycling', access: false });
+    const pending = view.overlays.refresh();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const data = collection('cycling');
+    resolve({ ok: true, json: async () => data });
+    await pending;
+    await view.overlays.refresh();
+    expect(view.data).toHaveBeenCalledTimes(1);
+    view.overlays.set({ network: 'none', access: false });
+    view.overlays.set({ network: 'cycling', access: false });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(view.data).toHaveBeenLastCalledWith(data);
+    view.overlays.destroy();
+});
+
+it('resolves shared route metadata when a map feature is inspected', () => {
+    const route = { id: 42, kind: 'cycling', network: 'rcn', rank: 2, name: 'Regional route', ref: 'R' };
+    const feature = { properties: { kind: 'cycling', way: 1, routes: '[42]' } } as unknown as MapGeoJSONFeature;
+    expect(overlaySelection(feature, [8, 48], { 42: route }).routes).toEqual([route]);
+});
+
+it('retries a busy overlay service, and cancels a retry when the layer is hidden', async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn().mockResolvedValueOnce({ status: 503 })
+        .mockResolvedValue({ ok: true, status: 200, json: async () => collection('network') });
+    vi.stubGlobal('fetch', fetcher);
+    const view = viewport();
+    view.overlays.set({ network: 'cycling', access: false });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(view.data).toHaveBeenLastCalledWith(collection('network'));
+    fetcher.mockResolvedValue({ status: 503 });
+    view.overlays.set({ network: 'hiking', access: false });
+    await vi.advanceTimersByTimeAsync(0);
+    view.overlays.set({ network: 'none', access: false });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    view.overlays.destroy();
 });
 
 it('renders common OSM blazes without approximating unsupported symbols', () => {

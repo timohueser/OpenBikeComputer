@@ -29,8 +29,8 @@
 <div class="trip-bar">
     <div class="trip-name">
         <h1>{title}</h1>
-        <Select label="Plan type" value={trip.mode ?? 'trip'} options={[{ value: 'trip', label: 'Multi-day trip' }, { value: 'route', label: 'Single route' }]}
-            onChange={(mode) => onChange({ mode: mode as Trip['mode'] }, mode === 'route' ? 'Single route' : 'Multi-day trip')} />
+        <Select label="Plan type" value={trip.mode ?? 'trip'} options={[{ value: 'trip', label: 'Multi-day trip' }, { value: 'route', label: 'Route' }]}
+            onChange={(mode) => onChange({ mode: mode as Trip['mode'] }, mode === 'route' ? 'Route' : 'Multi-day trip')} />
     </div>
     <div class="ride">
         <div class="preference"><span>Bike</span>
