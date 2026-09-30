@@ -51,6 +51,17 @@ Set the GitHub repository variable `OBC_PLANNER_CATALOG_URL` to
 `https://maps.openbikecomputer.com/planner/catalog.json`. Run **Deploy site**
 from `develop`. The workflow publishes `/plan/` and adds **Route planner** to
 site navigation. It uses the release's device catalogue for `/builder/`.
+After the workflow succeeds, finish the rollout:
+
+```sh
+obc planner finalize
+obc planner finalize --apply
+```
+
+Finalization checks the live services and web planner before it removes inactive
+planner releases and unused source mirrors from R2. It keeps one regional dataset.
+It preserves device cell objects and terrain reference data. Publication refuses
+another release while an inactive dataset remains.
 
 ## Replace or restore a release
 
@@ -76,16 +87,15 @@ Routing currently supports German access defaults. Preparation refuses other
 countries. Add and verify their access rules before extending coverage.
 No service code needs a new region name.
 
-Keep the active release and its previous release. Deployment retains both VPS
-slots and their versioned API paths. To restore the previous release:
+Deployment keeps both VPS slots during rollout. Before finalization, restore
+the previous release with:
 
 ```sh
 obc planner rollback --apply
 ```
 
-Then run **Deploy site** again. Old browser pages keep their original release
-URLs. Publication never deletes data. Remove older inactive releases only after
-clients stop using them. Keep shared source mirrors and device cell objects.
+Then run **Deploy site** again and finalize. Finalization removes the previous
+dataset and clears its catalogue entry. Reload old planner pages after rollout.
 The upload preview reports size and a storage cost ceiling before free allowances.
 Worker requests and the VPS have separate costs.
 

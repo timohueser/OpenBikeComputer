@@ -48,8 +48,8 @@ The tile API serves `/releases/ID/basemap.json`, vector tiles at
 remain downloadable from R2.
 
 Routing and search APIs have the prefix `/planner-api/releases/ID/`. The final
-path component selects `routing` or `search`. Each deployment serves the
-active release and the previous release on separate VPS ports.
+path component selects `routing` or `search`. A rollout serves the active
+release and the previous release on separate VPS ports until finalization.
 
 ## Catalogue
 
@@ -64,3 +64,9 @@ catalogue cache lifetime is 30 seconds. Immutable objects have a one-year
 cache lifetime. Rollback swaps `active` and `previous` after service checks.
 A site build reads one active catalogue entry and uses it for every planner
 endpoint and the map builder's device catalogue.
+
+Finalization verifies the live services and site against `active`. It removes
+inactive planner releases and source mirrors that `active` does not name.
+It then sets `previous` to `null`. Device cell objects and terrain reference
+objects remain outside planner cleanup. A completed rollout retains one
+regional planner dataset in R2.
