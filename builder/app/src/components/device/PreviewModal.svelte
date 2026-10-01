@@ -23,6 +23,7 @@
 -->
 <script lang="ts">
     import L from "leaflet";
+    import { addBasemap } from "../../lib/map/basemap";
     import type { RouteWaypoint } from "../../lib/convert/bridge";
     import {
         FULL_WINDOW,
@@ -198,10 +199,8 @@
 
     $effect(() => {
         if (!mapEl) return;
-        const map = L.map(mapEl, { zoomControl: false });
-        L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-            attribution: "&copy; OpenStreetMap contributors",
-        }).addTo(map);
+        const map = L.map(mapEl, { zoomControl: false, maxZoom: 18 });
+        void addBasemap(map);
         const latlngs = points.map((p) => [p.lat, p.lon] as [number, number]);
         if (latlngs.length > 1) {
             // The stages that brought a drawable polyline — for a plain preview, exactly one,

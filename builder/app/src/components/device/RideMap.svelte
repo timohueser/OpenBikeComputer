@@ -13,6 +13,7 @@
 -->
 <script lang="ts">
     import L from "leaflet";
+    import { addBasemap } from "../../lib/map/basemap";
     import { untrack } from "svelte";
     import { clusterRides, clustersAt, type RideTrack } from "../../lib/device/rideMap";
 
@@ -116,10 +117,8 @@
 
     $effect(() => {
         if (!mapEl) return;
-        const m = L.map(mapEl);
-        L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-            attribution: "&copy; OpenStreetMap contributors",
-        }).addTo(m);
+        const m = L.map(mapEl, { maxZoom: 18 });
+        void addBasemap(m);
         layer = L.layerGroup().addTo(m);
         map = m;
         const initial = untrack(() => rides);

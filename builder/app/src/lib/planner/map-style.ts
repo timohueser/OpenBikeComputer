@@ -2,6 +2,13 @@ import { layers, namedFlavor, type Flavor } from "@protomaps/basemaps";
 import type { ExpressionSpecification, StyleSpecification, LayerSpecification } from "maplibre-gl";
 import { BASEMAP_URL, GLYPHS_URL, MAP_BOUNDS, SPRITES_URL, TERRAIN_ATTRIBUTION } from "./map-data";
 import { categoryIds, placeCategories, poiKinds, type PlaceCategory } from "./poi-kinds";
+import type { BasemapConfig } from "../map/basemap-config";
+
+const BASEMAP_SOURCE = {
+    type: "vector",
+    url: BASEMAP_URL,
+    attribution: '<a href="https://openstreetmap.org/copyright">© OpenStreetMap contributors</a> · <a href="https://protomaps.com">Protomaps</a>',
+} as const;
 
 function flavor(dark: boolean): Flavor {
     const paper = dark ? "#181d19" : "#f4f2eb";
@@ -33,6 +40,17 @@ function flavor(dark: boolean): Flavor {
             farmland: field, grassland: field, scrub: field,
             urban_area: dark ? "#292d32" : "#e4e0d7", glacier: dark ? "#3c5558" : "#e5eef0",
         },
+    };
+}
+
+/** The shared basemap omits points of interest and planner overlays. */
+export function basemapStyle(theme: "light" | "dark", config: BasemapConfig = { basemap: BASEMAP_URL, glyphs: GLYPHS_URL, sprites: SPRITES_URL }): StyleSpecification {
+    return {
+        version: 8,
+        glyphs: config.glyphs,
+        sprite: `${config.sprites}/${theme}`,
+        sources: { basemap: { ...BASEMAP_SOURCE, url: config.basemap } },
+        layers: (layers("basemap", flavor(theme === "dark"), { lang: "en" }) as LayerSpecification[]).filter((layer) => layer.id !== "pois"),
     };
 }
 
@@ -102,7 +120,7 @@ export function mapStyle(theme: "light" | "dark", demUrl: string, contourUrl: st
         glyphs: GLYPHS_URL,
         sprite: `${SPRITES_URL}/${theme}`,
         sources: {
-            basemap: { type: "vector", url: BASEMAP_URL, attribution: '<a href="https://openstreetmap.org/copyright">© OpenStreetMap contributors</a> · <a href="https://protomaps.com">Protomaps</a>' },
+            basemap: BASEMAP_SOURCE,
             terrain: { type: "raster-dem", tiles: [demUrl], ...(MAP_BOUNDS ? { bounds: MAP_BOUNDS } : {}), tileSize: 512, encoding: "terrarium", maxzoom: 12, attribution: TERRAIN_ATTRIBUTION },
             contours: { type: "vector", tiles: [contourUrl], ...(MAP_BOUNDS ? { bounds: MAP_BOUNDS } : {}), maxzoom: 15, attribution: TERRAIN_ATTRIBUTION },
         },

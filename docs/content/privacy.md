@@ -75,23 +75,16 @@ For the following requests, your IP address is transmitted to the server concern
 technically necessary so that the server can send the requested data back to the browser.
 The legal basis in each case is Art. 6(1)(f) GDPR.
 
-### 6.1 Map tiles from OpenStreetMap
+### 6.1 Map tiles
 
-Map views load tiles directly from `tile.openstreetmap.org`. It is operated by the
-OpenStreetMap Foundation, St John's Innovation Centre, Cowley Road, Cambridge CB4 0WS,
-United Kingdom. The OpenStreetMap Foundation receives your IP address and the requested map
-area. The tiles appear in the first view of the map builder, because you cannot choose a
-region in a useful way without a map background.
-
-The device pages of the map builder and of the desktop app also load tiles when they show
-tours and recorded rides on a map. The OpenStreetMap Foundation then learns the map area in
-which the routes lie. The route data itself is not transmitted.
-
-The legitimate interest is to show the map that is needed to select a region, to view
-routes and to preview locally. For the United Kingdom, an adequacy decision exists under
-Art. 45 GDPR. The OpenStreetMap Foundation processes the requests under its own
-responsibility. Its [privacy policy](https://osmfoundation.org/wiki/Privacy_Policy) applies
-in addition.
+The region picker, tour previews and recorded ride maps in the map builder and desktop
+app load tiles from `tiles.openbikecomputer.com`. This is the Cloudflare Worker that also
+serves the route planner (section 7.1). Cloudflare receives your IP address and the requested
+tile. From this, Cloudflare can see the map area. The route data itself is not transmitted.
+The map's fonts and symbols come from `maps.openbikecomputer.com` (section 6.3). Builds
+without fixed planner settings also read the active release from the catalog on that host.
+The tiles load when you open a map. The legitimate interest is to show the map needed to
+select a region and view routes or recorded rides.
 
 ### 6.2 Check for new firmware
 
