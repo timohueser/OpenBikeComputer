@@ -28,8 +28,9 @@ die für die Auslieferung und Sicherheit erforderlichen Verbindungsdaten beim Ho
 
 Der Kartenbaukasten unter `/builder/` lädt zusätzlich Kartenkacheln und Kartendaten,
 prüft nach dem Anschluss eines Geräts auf neue Firmware und verarbeitet ausgewählte
-Dateien sowie Gerätedaten lokal im Browser. Einzelheiten stehen in den Abschnitten 6
-bis 9.
+Dateien sowie Gerätedaten lokal im Browser. Der Routenplaner unter `/plan/` sendet
+Suchanfragen und Routen an einen eigenen Server. Die Verifikationskonsole ist nur für
+freigegebene Maintainer bestimmt. Einzelheiten stehen in den Abschnitten 6 bis 10.
 
 ## 3. Hosting über GitHub Pages
 
@@ -60,7 +61,9 @@ Europäische Kommission ein angemessenes Datenschutzniveau festgestellt. Soweit 
 dieser Erklärung beschriebenen Daten in die USA übermittelt werden, beruht dies auf
 Art. 45 Abs. 1 DSGVO. Die Zertifizierungen können über die
 [Teilnehmerliste des Data Privacy Framework](https://www.dataprivacyframework.gov/list)
-geprüft werden.
+geprüft werden. Fällt der Angemessenheitsbeschluss weg, gelten die Standardvertragsklauseln
+nach Art. 46 Abs. 2 lit. c DSGVO aus den Datenverarbeitungsvereinbarungen der beiden
+Anbieter.
 
 ## 5. Verschlüsselung
 
@@ -82,8 +85,13 @@ IP-Adresse und den angefragten Kartenausschnitt. Die Kacheln erscheinen bereits 
 ersten Ansicht des Kartenbaukastens, weil die Auswahl einer Region ohne
 Kartenhintergrund nicht sinnvoll bedienbar wäre.
 
-Das berechtigte Interesse liegt in der Anzeige der für die Regionsauswahl und lokale
-Vorschau erforderlichen Karte. Für das Vereinigte Königreich besteht ein
+Die Geräteseiten des Kartenbaukastens und der Desktop-App laden ebenfalls Kacheln,
+wenn sie Touren und aufgezeichnete Fahrten auf einer Karte zeigen. Die OpenStreetMap
+Foundation erfährt dann den Kartenausschnitt, in dem die Strecken liegen. Die
+Streckendaten selbst werden nicht übertragen.
+
+Das berechtigte Interesse liegt in der Anzeige der für die Regionsauswahl, die
+Streckenansicht und die lokale Vorschau erforderlichen Karte. Für das Vereinigte Königreich besteht ein
 Angemessenheitsbeschluss nach Art. 45 DSGVO. Die OpenStreetMap Foundation verarbeitet
 die Abrufe in eigener Verantwortung; ihre
 [Datenschutzerklärung](https://osmfoundation.org/wiki/Privacy_Policy) gilt ergänzend.
@@ -110,7 +118,8 @@ gewählten Kartenbereich erkennen.
 
 Der verwendete R2-Bucket besitzt **keine EU-Jurisdiktionsbeschränkung**. Cloudflare
 wird damit keine ausschließlich auf die EU begrenzte Speicherung oder Verarbeitung
-vorgegeben. Für Übermittlungen in die USA gilt Abschnitt 4.
+vorgegeben. Für Übermittlungen in die USA gilt Abschnitt 4. Auch die Schriftarten,
+Symbole und der Gerätekatalog des Routenplaners kommen von `maps.openbikecomputer.com`.
 
 Der Verantwortliche hat für R2 **kein Logpush** aktiviert, exportiert oder analysiert
 also keine R2-Zugriffsprotokolle. In R2 nutzt er nur zusammengefasste Betriebsmetriken
@@ -122,7 +131,75 @@ Auslieferung, Sicherheit und Betrieb des Dienstes erforderlich ist.
 Das berechtigte Interesse liegt darin, die unabhängig aktualisierten und für eine
 Einbindung in die Website zu großen Kartendaten bereitzustellen.
 
-## 7. Speicherung auf dem Endgerät
+## 7. Routenplaner
+
+Der Routenplaner unter `/plan/` ist eine eigene Anwendung. Er verbindet sich mit drei
+Servern. Rechtsgrundlage ist Art. 6 Abs. 1 lit. f DSGVO; das berechtigte Interesse liegt
+in der Bereitstellung des angefragten Planers. Beim Standort gilt Abschnitt 7.2.
+
+### 7.1 Kacheln, Suche und Routenberechnung
+
+**Kartenkacheln.** Karten- und Geländekacheln kommen von `tiles.openbikecomputer.com`.
+Das ist ein Cloudflare Worker der Cloudflare, Inc. (Abschnitt 4), der die Kacheln aus
+Cloudflare R2 liest. Cloudflare erhält die IP-Adresse und die angefragte Kachel und
+kann daraus den Kartenausschnitt erkennen. Der Worker schreibt keine Zugriffsdaten.
+Der Verantwortliche wertet keine Zugriffsprotokolle von Cloudflare aus.
+
+**Suche und Routenberechnung.** Suche und Routenberechnung laufen auf einem eigenen
+Server unter `releases.openbikecomputer.com`. Der Server steht bei der **Contabo GmbH**,
+Aschauer Straße 32a, 81549 München, Deutschland, als Auftragsverarbeiter nach Art. 28
+DSGVO. Es findet keine Übermittlung in ein Drittland statt. Der Server ruft keine externen Such- oder Routingdienste auf.
+
+Der Server erhält:
+
+- bei der Suche den eingegebenen Text, den sichtbaren Kartenausschnitt, das Startdatum
+  und die geplante Route mit Wegpunkten, Tagesetappen und Bezeichnungen. Auf Wunsch
+  kommt der Standort nach Abschnitt 7.2 hinzu.
+- bei der Routenberechnung die Wegpunkte, das Profil und den sichtbaren Kartenausschnitt
+  für die Kartenebenen.
+- bei jeder Anfrage die IP-Adresse.
+
+Die Anwendung schreibt keine Anfragen in ein Protokoll und speichert nichts. Der
+Webserver Caddy führt kein Zugriffsprotokoll. Wenn ein Dienst hinter Caddy nicht
+antwortet, zum Beispiel bei einer Aktualisierung, schreibt Caddy einen Fehlereintrag mit
+IP-Adresse, Zeitpunkt und angefragter Adresse in das Systemprotokoll. Das Systemprotokoll
+löscht diese Einträge automatisch nach spätestens einem Monat.
+
+### 7.2 Standort
+
+Die Standortfunktion des Browsers wird nur ausgelöst, wenn die Nutzerin oder der Nutzer
+die Standortschaltfläche betätigt und der Browser nachfragt. Das ist die Einwilligung
+nach Art. 6 Abs. 1 lit. a DSGVO und § 25 Abs. 1 TDDDG. Der Standort wird dann mit jeder
+Suche an den Server nach Abschnitt 7.1 gesendet, um Ergebnisse in der Nähe zu ordnen.
+Er wird nicht gespeichert. Die Einwilligung kann jederzeit durch die Browsereinstellung
+für Standortfreigaben mit Wirkung für die Zukunft widerrufen werden.
+
+## 8. Verifikationskonsole
+
+Die Verifikationskonsole unter `releases.openbikecomputer.com` dient den Maintainern des
+Projekts. Sie ist nur nach einer Anmeldung nutzbar. Besucher ohne Zugang sehen nur die
+Anmeldeseite.
+
+- **Anmeldung über GitHub.** Die Anmeldung leitet zu GitHub weiter (Abschnitt 4). Die
+  Konsole fragt nur die öffentliche Kennung ab und speichert die numerische
+  GitHub-Kennung, den Benutzernamen und die Administratorrolle. Sie speichert weder
+  E-Mail-Adresse noch Zugriffstoken. Alternativ gibt es ein lokales Administratorkonto.
+- **Cookies.** Das Sitzungscookie `obc_session` (12 Stunden) und das Cookie `obc_oauth`
+  (10 Minuten, nur während der Anmeldung) sind für die Anmeldung erforderlich
+  (§ 25 Abs. 2 Nr. 2 TDDDG).
+- **Anmeldeversuche.** Gegen wiederholte Anmeldeversuche speichert die Konsole 15 Minuten
+  lang einen nicht umkehrbaren Schlüsselwert der IP-Adresse.
+- **Inhalte.** Der Benutzername erscheint als Autor oder Entscheider an Anforderungen,
+  Testplänen und Vorschlägen. Er bleibt zusammen mit diesen Einträgen gespeichert. Nach
+  dem Entfernen eines Kontos kann der Name auf Anfrage aus den Einträgen entfernt werden.
+- **Sicherung.** Eine tägliche Sicherung der Datenbank wird sieben Tage aufbewahrt.
+
+Rechtsgrundlage ist Art. 6 Abs. 1 lit. f DSGVO; das berechtigte Interesse liegt in einem
+nachvollziehbaren, gesicherten Freigabeprozess. Der Server steht bei der Contabo GmbH
+(Abschnitt 7.1). Fehlerprotokolle des Systems werden wie dort beschrieben nach spätestens
+einem Monat gelöscht.
+
+## 9. Speicherung auf dem Endgerät
 
 Der Hell-Dunkel-Schalter der Website und des Kartenbaukastens speichert die
 gewählte Darstellung lokal unter `obc-theme` in `localStorage`. Ohne Auswahl gilt die Browsereinstellung. Der
@@ -142,10 +219,14 @@ Verantwortlichen übertragen.
 | Optional weiterverwendete Kartenzellen | Nur wenn „Keep downloaded map cells for future builds“ aktiviert wird; bis zum Deaktivieren, bis „Delete stored map data“ gewählt wird, bis Browserdaten gelöscht werden oder eine neue Kataloggeneration die alte ersetzt. |
 | Entscheidung über die Wiederverwendung von Kartenzellen | Damit die ausdrücklich gewählte Einstellung bei einem späteren Besuch erhalten bleibt; bis zur nächsten Änderung oder zum Löschen der Website-Daten. |
 | Beantwortete Firmware-Hinweise mit Geräte-Seriennummer und angebotener Version | Erst nachdem ein Hinweis geschlossen oder aufgerufen wurde, damit dieselbe Frage für dasselbe Gerät nicht ständig erscheint; höchstens die 32 jüngsten Antworten, bis die Website-Daten gelöscht werden. |
+| Aktueller Reiseplan des Routenplaners (`obc-planner-routing-v2`) | Automatisch gespeicherter Entwurf mit Wegpunkten und Etappen, damit er einen Reload übersteht; bis zum Ersetzen oder Löschen der Website-Daten. Er verlässt den Browser nur als Suchanfrage nach Abschnitt 7.1. |
+| Gespeicherte Planversionen des Routenplaners (`obc-planner-lab-versions-v1`) | Nur auf ausdrückliche Speicherung; bis zum Löschen über die Versionsliste oder durch Löschen der Website-Daten. |
+| Gewähltes Fahrradprofil für Routen (`obcm.routeBikeType`) | Damit die gewählte Einstellung bei einem späteren Besuch erhalten bleibt; bis zur nächsten Änderung oder zum Löschen der Website-Daten. |
 | Routen- und Tourenvorschauen in der Webanwendung | Aus dem angeschlossenen Gerät geladene, ausgedünnte Koordinaten zur Darstellung der Kacheln; nur im Arbeitsspeicher der laufenden Seitensitzung, bis zum Neuladen oder Schließen. |
 | Routen- und Tourenvorschauen in der installierten Desktop-App | Ausgedünnte Koordinaten werden lokal zwischengespeichert, damit sie nach einem App-Neustart nicht erneut vom angeschlossenen Gerät geladen werden müssen. Der Cache ist auf 300 Einträge begrenzt und entfernt ältere, zuletzt nicht verwendete Einträge. Geänderte Objekte erhalten durch Inhaltsmerkmale einen neuen Cache-Schlüssel. Löschung ist auf der Geräteseite über „Delete saved previews“ oder durch Löschen der App-Daten möglich. |
 
-Das kurzfristige Speichern und Auslesen der Arbeitsdaten sowie das Speichern eines vom
+Das kurzfristige Speichern und Auslesen der Arbeitsdaten, das Speichern des Reiseplans,
+gespeicherter Planversionen und gewählter Einstellungen sowie das Speichern eines vom
 Nutzer ausdrücklich gesicherten Skins oder beantworteten Firmware-Hinweises sowie der
 begrenzte Vorschau-Cache der ausdrücklich installierten Desktop-App sind für die jeweils
 angeforderte Funktion erforderlich (§ 25 Abs. 2 Nr. 2 TDDDG). Der Vorschau-Cache
@@ -158,7 +239,7 @@ Option ist die Einwilligung nach § 25 Abs. 1 TDDDG. Sie kann jederzeit durch
 Deaktivieren der Option oder über „Delete stored map data“ mit Wirkung für die Zukunft
 widerrufen werden. Die Rechtmäßigkeit der bisherigen Speicherung bleibt unberührt.
 
-## 8. Lokale Verarbeitung von Dateien und Gerätedaten
+## 10. Lokale Verarbeitung von Dateien und Gerätedaten
 
 Die Gerätedemo, die Umwandlung ausgewählter Routendateien und das Zusammensetzen der
 Karte laufen lokal im Browser. Ausgewählte oder in das Fenster gezogene Dateien werden
@@ -166,19 +247,21 @@ nicht an einen Server übertragen. Das gilt insbesondere für Routendateien, die
 Positionsdaten enthalten können.
 
 Eine WebUSB-Verbindung entsteht erst, nachdem ein Gerät im Auswahldialog des Browsers
-bestätigt wurde. Die Daten fließen unmittelbar zwischen Browser und Gerät. Für die
+bestätigt wurde. Die Daten fließen unmittelbar zwischen Browser und Gerät. Zeigt eine
+Karte Touren oder Fahrten, laden Browser und Desktop-App nur Kartenkacheln nach
+Abschnitt 6.1; die Streckendaten verlassen das Gerät nicht. Für die
 Vorschaubilder der Geräteübersicht werden vereinfachte Streckenverläufe im Arbeitsspeicher
 gehalten, jedoch **nicht dauerhaft im Browser gespeichert**. Sie werden bei einem Reload
 oder beim Ende der Browsersitzung verworfen.
 
-## 9. Externe Links
+## 11. Externe Links
 
 Links zum Quelltext-Repository, zu OpenStreetMap und zu technischen Referenzen werden
 erst nach einem Klick aufgerufen. Es findet kein Vorabruf statt. Nach dem Anklicken gilt
 die Datenschutzerklärung des jeweiligen Anbieters. Beiträge zu GitHub-Issues oder
 Pull Requests können entsprechend den dortigen Einstellungen öffentlich sein.
 
-## 10. Kontakt per E-Mail
+## 12. Kontakt per E-Mail
 
 Bei einer Nachricht an `openbikecomputer@proton.me` werden Absenderadresse, Name,
 Inhalt und freiwillig mitgeteilte Angaben zur Bearbeitung der Anfrage verarbeitet.
@@ -196,7 +279,7 @@ sechs Monate nach abschließender Bearbeitung gelöscht, sofern keine gesetzlich
 Aufbewahrungspflichten oder die Geltendmachung, Ausübung oder Verteidigung von
 Rechtsansprüchen eine längere Speicherung erfordern.
 
-## 11. Rechte betroffener Personen
+## 13. Rechte betroffener Personen
 
 Soweit die gesetzlichen Voraussetzungen vorliegen, bestehen die Rechte auf Auskunft
 (Art. 15 DSGVO), Berichtigung (Art. 16 DSGVO), Löschung (Art. 17 DSGVO), Einschränkung
@@ -207,20 +290,26 @@ DSGVO das Recht, aus Gründen, die sich aus der besonderen Situation der betroff
 Person ergeben, Widerspruch einzulegen. Eine formlose Nachricht an die in Abschnitt 1
 genannte Adresse genügt.
 
+Eine erteilte Einwilligung kann nach Art. 7 Abs. 3 DSGVO jederzeit mit Wirkung für die
+Zukunft widerrufen werden. Die Rechtmäßigkeit der bisherigen Verarbeitung bleibt
+unberührt.
+
 Unabhängig davon besteht nach Art. 77 DSGVO das Recht, sich bei einer
 Datenschutz-Aufsichtsbehörde zu beschweren, insbesondere am Aufenthaltsort, Arbeitsplatz
-oder Ort des mutmaßlichen Verstoßes.
+oder Ort des mutmaßlichen Verstoßes. Für den Verantwortlichen zuständig ist der
+Landesbeauftragte für den Datenschutz und die Informationsfreiheit Baden-Württemberg,
+Lautenschlagerstraße 20, 70173 Stuttgart.
 
-## 12. Automatisierte Entscheidungen
+## 14. Automatisierte Entscheidungen
 
 Eine automatisierte Entscheidungsfindung einschließlich Profiling nach Art. 22 DSGVO
 findet nicht statt.
 
-## 13. Änderungen
+## 15. Änderungen
 
 Diese Erklärung wird angepasst, wenn sich die Website, ihre Anbieter oder die
 beschriebenen Verarbeitungen ändern.
 
 ---
 
-*Stand: 9. August 2026*
+*Stand: 1. Oktober 2026*
