@@ -2,6 +2,7 @@ import { layers, namedFlavor, type Flavor } from "@protomaps/basemaps";
 import type { ExpressionSpecification, StyleSpecification, LayerSpecification } from "maplibre-gl";
 import { BASEMAP_URL, GLYPHS_URL, MAP_BOUNDS, SPRITES_URL, TERRAIN_ATTRIBUTION } from "./map-data";
 import { categoryIds, placeCategories, poiKinds, type PlaceCategory } from "./poi-kinds";
+import type { BasemapConfig } from "../map/basemap-config";
 
 const BASEMAP_SOURCE = {
     type: "vector",
@@ -42,14 +43,14 @@ function flavor(dark: boolean): Flavor {
     };
 }
 
-/** The planner's basemap alone, for the area picker: no points of interest, terrain, cycleways or background, so a fallback layer shows through where tiles are missing. */
-export function basemapStyle(theme: "light" | "dark"): StyleSpecification {
+/** The shared basemap omits points of interest and planner overlays. */
+export function basemapStyle(theme: "light" | "dark", config: BasemapConfig = { basemap: BASEMAP_URL, glyphs: GLYPHS_URL, sprites: SPRITES_URL }): StyleSpecification {
     return {
         version: 8,
-        glyphs: GLYPHS_URL,
-        sprite: `${SPRITES_URL}/${theme}`,
-        sources: { basemap: BASEMAP_SOURCE },
-        layers: (layers("basemap", flavor(theme === "dark"), { lang: "en" }) as LayerSpecification[]).filter((layer) => layer.type !== "background" && layer.id !== "pois"),
+        glyphs: config.glyphs,
+        sprite: `${config.sprites}/${theme}`,
+        sources: { basemap: { ...BASEMAP_SOURCE, url: config.basemap } },
+        layers: (layers("basemap", flavor(theme === "dark"), { lang: "en" }) as LayerSpecification[]).filter((layer) => layer.id !== "pois"),
     };
 }
 

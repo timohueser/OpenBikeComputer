@@ -14,8 +14,10 @@ export function basemapResponse(url) {
     case '/basemap.json':
       return { headers, json: { tilejson: '3.0.0', tiles: [`https://${BASEMAP}/{z}/{x}/{y}.mvt`], maxzoom: 14 } };
     case '/sprites/light.json':
+    case '/sprites/dark.json':
       return { headers, json: {} };
     case '/sprites/light.png':
+    case '/sprites/dark.png':
       return { headers, contentType: 'image/png', body: PIXEL };
     default:
       return { headers, status: 204 };

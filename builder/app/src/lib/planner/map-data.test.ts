@@ -30,7 +30,7 @@ describe('planner map hosting', () => {
         }
     });
 
-    it('gives the area picker the basemap alone, without places, terrain, cycleways or background', async () => {
+    it('gives Leaflet maps the basemap alone, without places, terrain or cycleways', async () => {
         vi.stubGlobal('window', { location: { href: 'https://planner.example/builder/' } });
         const { basemapStyle } = await import('./map-style');
         for (const theme of ['light', 'dark'] as const) {
@@ -39,7 +39,7 @@ describe('planner map hosting', () => {
             expect(style.sprite).toMatch(new RegExp(`/${theme}$`));
             expect(Object.keys(style.sources)).toEqual(['basemap']);
             expect(style.layers.map((layer) => layer.id)).not.toContain('pois');
-            expect(style.layers.some((layer) => layer.type === 'background')).toBe(false);
+            expect(style.layers.some((layer) => layer.type === 'background')).toBe(true);
             expect(style.layers.every((layer) => !('source' in layer) || layer.source === 'basemap')).toBe(true);
         }
     });
