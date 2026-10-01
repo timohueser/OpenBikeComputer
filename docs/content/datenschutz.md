@@ -89,7 +89,9 @@ die Auswahl einer Region ohne Kartenhintergrund nicht sinnvoll bedienbar wäre.
 
 Die Geräteseiten des Kartenbaukastens und der Desktop-App laden Kacheln von
 `tile.openstreetmap.org`, wenn sie Touren und aufgezeichnete Fahrten auf einer Karte
-zeigen. Dieser Server wird von der OpenStreetMap Foundation betrieben, St John's
+zeigen. Die Karte zur Regionsauswahl lädt dieselben Kacheln, wenn
+`tiles.openbikecomputer.com` den sichtbaren Ausschnitt nicht abdeckt oder nicht erreichbar
+ist. Dieser Server wird von der OpenStreetMap Foundation betrieben, St John's
 Innovation Centre, Cowley Road, Cambridge CB4 0WS, Vereinigtes Königreich. Die
 OpenStreetMap Foundation erhält die IP-Adresse und den angefragten Kartenausschnitt und
 erfährt dann den Ausschnitt, in dem die Strecken liegen. Die Streckendaten selbst werden

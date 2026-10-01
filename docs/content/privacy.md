@@ -85,7 +85,9 @@ tiles appear in the first view of the map builder, because you cannot choose a r
 useful way without a map background.
 
 The device pages of the map builder and of the desktop app load tiles from
-`tile.openstreetmap.org` when they show tours and recorded rides on a map. This server is
+`tile.openstreetmap.org` when they show tours and recorded rides on a map. The map for
+choosing a region loads the same tiles when `tiles.openbikecomputer.com` does not cover the
+visible area or cannot be reached. This server is
 operated by the OpenStreetMap Foundation, St John's Innovation Centre, Cowley Road,
 Cambridge CB4 0WS, United Kingdom. The OpenStreetMap Foundation receives your IP address
 and the requested map area. It then learns the map area in which the routes lie. The route
