@@ -12,10 +12,10 @@ import subprocess
 
 try:
     from . import planner_maps as maps, planner_sources as sources, r2
-    from .planner_runtime import encoded, release
+    from .planner_runtime import encoded, release, storage_files, public_metadata
 except ImportError:
     import planner_maps as maps, planner_sources as sources, r2
-    from planner_runtime import encoded, release
+    from planner_runtime import encoded, release, storage_files, public_metadata
 
 
 def read_url(url):
@@ -90,20 +90,26 @@ def seal(data, region, device_catalog, provenance):
 def endpoints(identity, document, public, tiles, api):
     prefix = f"{public}/planner/releases/{identity}"
     tile_prefix = f"{tiles}/releases/{identity}"
+    assets = tile_prefix if document.get("grid") else prefix
     service = f"{api}/planner-api/releases/{identity}"
     return {"id": identity, "manifest": prefix + "/release.json", "region": document["region"],
-            "device_catalog": prefix + "/device/catalog.json", "routing": service + "/routing",
+            "device_catalog": assets + "/device/catalog.json", "routing": service + "/routing",
             "search": service + "/search", "basemap": tile_prefix + "/basemap.json",
             "attribution": document["attribution"],
             "terrain": tile_prefix + "/terrain/{z}/{x}/{y}.webp",
-            "glyphs": prefix + "/maps/assets/fonts/{fontstack}/{range}.pbf",
-            "sprites": prefix + "/maps/assets/sprites/v4", "bounds": document["bounds"],
+            "glyphs": assets + "/maps/assets/fonts/{fontstack}/{range}.pbf",
+            "sprites": assets + "/maps/assets/sprites/v4", "bounds": document["bounds"],
             "terrain_attribution": document["terrain_attribution"]}
 
 
 def publish(args):
     identity, document = release(args.data_dir)
-    files = document["files"]
+    files = storage_files(document)
+    for name, data in public_metadata(document).items():
+        path = args.data_dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        files[name] = {"bytes": len(data)}
     source_files = document.get("source_files", {})
     count = len(files) + len(source_files) + 1
     size = sum(item["bytes"] for item in {**files, **source_files}.values())
@@ -132,7 +138,7 @@ def publish(args):
         r2.run_rclone(["copy", str(args.data_dir), f"{remote.path}/{prefix}", "--files-from", str(listing),
                        "--immutable", "--checksum", "--transfers", "4", "--s3-upload-concurrency", "2",
                        "--header-upload", "Cache-Control: public,max-age=31536000,immutable"], remote.env)
-        rows = json.loads(r2.run_rclone(["lsjson", f"{remote.path}/{prefix}", "--recursive", "--files-only"], remote.env, capture=True))
+        rows = json.loads(r2.run_rclone(["lsjson", f"{remote.path}/{prefix}", "--recursive", "--files-only", "--no-modtime", "--no-mimetype"], remote.env, capture=True))
         sizes = {row["Path"]: row["Size"] for row in rows}
         if any(sizes.get(name) != item["bytes"] for name, item in files.items()):
             raise ValueError("Remote release is incomplete; catalogue is unchanged")
@@ -167,7 +173,8 @@ def main(argv=None):
     def stop(_signum, _frame): raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["prepare", "publish", "deploy", "rollback", "finalize", "site-config"])
+    parser.add_argument("command", choices=["prepare", "grid", "publish", "deploy", "rollback", "finalize", "site-config"])
+    parser.add_argument("--input-release", type=Path, help="Verified regional bake to partition with grid")
     parser.add_argument("--data-dir", type=Path, default=os.environ.get("OBC_PLANNER_RELEASE", str(Path.home() / ".cache/obc/planner/bw-online")))
     parser.add_argument("--recipe", type=Path, default=maps.ROOT / "tools/planner-regions/baden-wuerttemberg.json")
     parser.add_argument("--source-cache", type=Path, default=Path.home() / ".cache/obc/planner/sources")
@@ -188,7 +195,7 @@ def main(argv=None):
     parser.add_argument("--catalog", default=os.environ.get("OBC_PLANNER_CATALOG_URL", "https://maps.openbikecomputer.com/planner/catalog.json"))
     parser.add_argument("--output", type=Path, help="Output environment file for site-config")
     args = parser.parse_args(argv)
-    for name in ["data_dir", "recipe", "source_cache", "osm", "inputs", "dem_dir", "reference", "output"]:
+    for name in ["data_dir", "input_release", "recipe", "source_cache", "osm", "inputs", "dem_dir", "reference", "output"]:
         value = getattr(args, name)
         if value is not None: setattr(args, name, value.expanduser().resolve())
     try:
@@ -196,6 +203,10 @@ def main(argv=None):
             try: from .planner_prepare import prepare
             except ImportError: from planner_prepare import prepare
             prepare(args)
+        elif args.command == "grid":
+            if not args.input_release: raise ValueError("Provide --input-release for grid publication")
+            from tools.planner_blocks import prepare
+            prepare(args.input_release, args.data_dir)
         elif args.command == "publish": publish(args)
         elif args.command in {"deploy", "rollback"}:
             try: from . import planner_deploy

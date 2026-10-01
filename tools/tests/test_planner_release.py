@@ -66,6 +66,49 @@ class ReleaseTests(unittest.TestCase):
                     release.publish(args)
             self.assertNotIn("copyto", [command[0] for command in calls])
 
+    def test_interrupted_grid_database_is_rebuilt_before_publication(self):
+        from tools.planner_blocks import stage_sqlite
+        import sqlite3
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "cell.sqlite"
+            def interrupted(path):
+                path.write_bytes(b"partial database")
+                raise OSError("interrupted")
+            with self.assertRaises(OSError): stage_sqlite(target, interrupted)
+            self.assertFalse(target.exists())
+            self.assertFalse(target.with_suffix(".sqlite.partial").exists())
+            def build(path):
+                db = sqlite3.connect(path)
+                try: db.execute("CREATE TABLE data(id INTEGER)"); db.commit()
+                finally: db.close()
+            stage_sqlite(target, build)
+            self.assertTrue(target.is_file())
+
+    def test_grid_release_uses_one_pool_and_materializes_verified_runtime_files(self):
+        from tools import planner_offline as offline, planner_runtime as runtime, planner_cleanup
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = root / "places.sqlite"
+            raw.write_bytes(b"indexed places" * 1000)
+            entry = offline.pack_file(raw, root / "objects")
+            self.assertEqual(entry["transport"]["encoding"], "gzip")
+            document = {"format": 1, "region": "test", "grid": {"format": 2, "zoom": 9, "map_zoom": 11},
+                "files": {"search/tiles/9-1-1.sqlite": entry, "search/tiles/9-1-2.sqlite": entry}}
+            (root / "release.json").write_bytes(runtime.encoded(document))
+            self.assertEqual(len(runtime.storage_files(document)), 1)
+            _, verified = runtime.release(root)
+            self.assertEqual(verified, document)
+            offline.materialize(root, root / "runtime", ("search/",))
+            for name in document["files"]:
+                self.assertEqual((root / "runtime" / name).read_bytes(), raw.read_bytes())
+            keys = planner_cleanup.referenced_keys(document, "planner/releases/test/")
+            self.assertIn("planner/releases/test/objects/" + entry["transport"]["sha256"], keys)
+            self.assertNotIn("planner/releases/test/search/tiles/9-1-1.sqlite", keys)
+            self.assertIn("planner/releases/test/public/grid.json", keys)
+            (root / "objects" / entry["transport"]["sha256"]).write_bytes(b"corrupt")
+            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                runtime.release(root)
+
     def test_site_configuration_uses_one_release_and_rejects_line_injection(self):
         active = release.endpoints("a" * 64, {"region": "test", "bounds": [1, 2, 3, 4],
                                    "attribution": "OSM", "terrain_attribution": "Terrain"}, "https://maps.example", "https://tiles.example", "https://api.example")

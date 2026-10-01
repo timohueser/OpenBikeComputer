@@ -21,7 +21,9 @@ use std::{
 use tokio::sync::Semaphore;
 use tower_http::compression::CompressionLayer;
 
+mod overlay_source;
 mod overlays;
+pub use overlay_source::OverlaySource;
 pub use overlays::Overlays;
 
 pub fn prepare_overlays(directory: &Path) -> Result<(), Error> {
@@ -29,10 +31,10 @@ pub fn prepare_overlays(directory: &Path) -> Result<(), Error> {
 }
 
 struct Workers {
-    routers: Mutex<Vec<Router<Directory>>>,
+    routers: Mutex<Vec<Router<Box<dyn route_engine::data::RoutingData + Send>>>>,
     permits: Arc<Semaphore>,
     metadata: Value,
-    overlays: overlays::Overlays,
+    overlays: OverlaySource,
     overlay_permits: Arc<Semaphore>,
 }
 
@@ -45,13 +47,20 @@ pub fn app(directory: &Path, workers: usize) -> Result<axum::Router, Error> {
     if !(1..=8).contains(&workers) {
         return Err(Error::InvalidRequest("Use 1 to 8 workers".into()));
     }
-    let source = Directory::open(directory)?;
-    let mut routers = Vec::new();
-    for _ in 0..workers {
-        routers.push(Router::new(source.fork(), default_memory_budget(&source)));
+    let mut routers: Vec<Router<Box<dyn route_engine::data::RoutingData + Send>>> = Vec::new();
+    if directory.join("blocks.json").exists() {
+        let source = route_engine::blocks::Files::open(directory)?;
+        let budget = (768 * 1024 * 1024usize).saturating_add(source.roads() as usize * 16);
+        for _ in 0..workers {
+            routers.push(Router::new(Box::new(source.fork()), budget));
+        }
+    } else {
+        let source = Directory::open(directory)?;
+        for _ in 0..workers {
+            routers.push(Router::new(Box::new(source.fork()), default_memory_budget(&source)));
+        }
     }
-    let package = routers[0].package();
-    let overlays = overlays::Overlays::open(directory, package.identity())?;
+    let overlays = OverlaySource::open(directory)?;
     let metadata = metadata(&routers[0]);
     let state = Arc::new(Workers {
         routers: Mutex::new(routers),
@@ -176,9 +185,8 @@ fn failure(error: Error) -> Response {
     (StatusCode::from_u16(status).unwrap(), Json(body)).into_response()
 }
 
-pub(crate) fn metadata(router: &Router<Directory>) -> Value {
+pub(crate) fn metadata<P: route_engine::data::RoutingData>(router: &Router<P>) -> Value {
     let package = router.package();
-    let manifest = package.manifest();
-    json!({ "package": package.identity(), "region": manifest.region, "bounds": manifest.bounds,
-        "profiles": manifest.metrics.keys().collect::<Vec<_>>(), "attribution": manifest.attribution, "warnings": manifest.warnings })
+    json!({ "package": package.identity(), "region": package.region(), "bounds": package.bounds(),
+        "profiles": package.profiles(), "attribution": package.attribution(), "warnings": package.warnings() })
 }

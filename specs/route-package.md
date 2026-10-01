@@ -157,3 +157,23 @@ down. It omits turn penalties from these lower bounds. Distances saturate at
 
 A bounding box extraction prepares new bounds for its retained graph. It does
 not reuse distance columns whose junction IDs refer to the parent package.
+
+## Grid selections
+
+`routing/blocks.json` has `format: 2`. `source` is the source manifest SHA-256.
+`data` uses the format 7 manifest structure with selected bounds and region.
+Each sparse table adds `pages`, an ascending list of source page numbers,
+parallel to `blocks`. `len` remains the source column length. An absent page
+is unavailable, not an empty page.
+
+`roads` contains sorted, disjoint half-open source road ranges. `arcs` is the
+number of source outgoing transitions for those roads, before transitions to
+absent roads are removed. `snap` maps source spatial keys to page hashes.
+`archives` is the sorted unique list of pack IDs. Each pack is
+`packs/ID/{pages.idx,pages.bin}` and uses the object encoding above.
+
+A selection retains source geometry, weights, turn penalties, and landmark
+values. Runtime road IDs are compact indices in source road order. Queries
+use only transitions whose two roads are present. The source junction IDs
+connect retained roads to the original landmark columns. The selection
+manifest hash is its package identity. Different source releases cannot mix.

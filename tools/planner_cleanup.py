@@ -85,8 +85,10 @@ def manifest(remote, entry):
 
 def referenced_keys(document, prefix):
     keep = {prefix + "release.json"}
-    for section in ["files", "source_files"]:
-        for name in document.get(section, {}):
+    sections = {"files": {**releases.storage_files(document), **releases.public_metadata(document)},
+                "source_files": document.get("source_files", {})}
+    for section, items in sections.items():
+        for name in items:
             path = PurePosixPath(name)
             if path.is_absolute() or ".." in path.parts or path.as_posix() != name or "\\" in name:
                 raise ValueError("Invalid active release file")
@@ -101,7 +103,7 @@ def plan(remote, current):
         raise ValueError("Deploy a planner release before cleanup.")
     document, prefix = manifest(remote, current["active"])
     keep = referenced_keys(document, prefix)
-    rows = json.loads(r2.run_rclone(["lsjson", remote.path + "/planner", "--recursive", "--files-only"], remote.env, capture=True))
+    rows = json.loads(r2.run_rclone(["lsjson", remote.path + "/planner", "--recursive", "--files-only", "--use-server-modtime", "--no-mimetype"], remote.env, capture=True))
     found = {"planner/" + row["Path"]: row for row in rows}
     for key in found:
         if key.startswith(("planner/releases/", "planner/sources/")) and (
@@ -109,8 +111,11 @@ def plan(remote, current):
             raise ValueError("Invalid planner object key; cleanup is blocked.")
     if prefix + "release.json" not in found:
         raise ValueError("Active release manifest is absent")
-    for section in ["files", "source_files"]:
-        for name, item in document.get(section, {}).items():
+    sections = {"files": {**releases.storage_files(document),
+                          **{name: {"bytes": len(data)} for name, data in releases.public_metadata(document).items()}},
+                "source_files": document.get("source_files", {})}
+    for section, items in sections.items():
+        for name, item in items.items():
             key = prefix + name if section == "files" else "planner/sources/" + PurePosixPath(name).name
             if key not in found or found[key]["Size"] != item["bytes"]:
                 raise ValueError("Active release is incomplete; cleanup is blocked.")

@@ -535,6 +535,12 @@ triggers = [
   "companion-ios/Packages/OBCRouting/**",
   "apps/obc-companion-core/**",
   "tools/build-companion-core.sh",
+  "tools/build-planner-ios.sh",
+  "apps/planner-native/*.swift",
+  "apps/planner-search/**",
+  "host/route-engine/**",
+  "apps/route-server/**",
+  "host/route-build/**",
 ]
 
 # Mock and developer-panel code must never ship. The Debug grep rides the build above and
@@ -555,6 +561,12 @@ triggers = [
   "companion-ios/Packages/OBCRouting/**",
   "apps/obc-companion-core/**",
   "tools/build-companion-core.sh",
+  "tools/build-planner-ios.sh",
+  "apps/planner-native/*.swift",
+  "apps/planner-search/**",
+  "host/route-engine/**",
+  "apps/route-server/**",
+  "host/route-build/**",
 ]
 
 # The shell links the Rust host through an XCFramework and no Swift dependency graph

@@ -70,7 +70,10 @@ fn write_column(values: &[u64], write: &mut impl FnMut(&[u8]) -> Result<String>)
         };
         blocks.push(write(&bytes)?);
     }
-    Ok(Column { width, values: Table { len: u32::try_from(values.len()).map_err(|_| "Column exceeds u32")?, blocks } })
+    Ok(Column {
+        width,
+        values: Table { len: u32::try_from(values.len()).map_err(|_| "Column exceeds u32")?, blocks, pages: None },
+    })
 }
 
 pub fn write_weights(
@@ -134,7 +137,7 @@ use crate::{
 use serde::de::DeserializeOwned;
 
 fn read_table<T: DeserializeOwned>(package: &Package<impl Source>, table: &Table) -> crate::Result<Vec<T>> {
-    if !table.valid() {
+    if !table.valid() || table.pages.is_some() {
         return Err(Error::InvalidData("Invalid base column directory".into()));
     }
     let mut values = Vec::new();
@@ -361,8 +364,11 @@ mod tests {
             Ok(key)
         }
         fn package(&self, roads: u32, graph: Topology, weights: Weights) -> Package<Self> {
-            let placeholder =
-                |len: u32| Table { len, blocks: vec!["0".repeat(64); (len as usize).div_ceil(table::ENTRIES)] };
+            let placeholder = |len: u32| Table {
+                len,
+                blocks: vec!["0".repeat(64); (len as usize).div_ceil(table::ENTRIES)],
+                pages: None,
+            };
             let profile = Profile::presets().remove(0);
             let metric = Metric {
                 profile: profile.clone(),

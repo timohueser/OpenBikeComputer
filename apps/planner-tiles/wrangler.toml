@@ -6,6 +6,8 @@ routes = [{ pattern = "tiles.openbikecomputer.com", custom_domain = true }]
 binding = "BUCKET"
 bucket_name = "obc-maps"
 [observability]
-enabled = false
-[limits]
-cpu_ms = 50
+enabled = true
+head_sampling_rate = 0.1
+[observability.traces]
+enabled = true
+head_sampling_rate = 0.1

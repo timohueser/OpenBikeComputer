@@ -1,6 +1,6 @@
 use crate::{
+    data::RoutingData,
     model::{Pace, Point, Road, Surface, Totals, BIKE, NO_ELEVATION},
-    package::{Package, Source},
     search::{Query, Seed, Workspace},
     snap::{self, Candidate, Policy},
     Error, Result,
@@ -95,8 +95,8 @@ struct Work {
     witnesses: usize,
 }
 
-pub struct Router<S> {
-    pub(crate) package: Package<S>,
+pub struct Router<P> {
+    pub(crate) package: P,
     workspace: Workspace,
     metric: String,
     paths: VecDeque<(String, Choice)>,
@@ -104,8 +104,8 @@ pub struct Router<S> {
     snaps: VecDeque<(i32, i32, String, snap::Candidates)>,
 }
 
-impl<S: Source> Router<S> {
-    pub fn package(&self) -> &Package<S> {
+impl<P: RoutingData> Router<P> {
+    pub fn package(&self) -> &P {
         &self.package
     }
 
@@ -113,8 +113,8 @@ impl<S: Source> Router<S> {
         self.package.snap(point, profile, policy)
     }
 
-    pub fn new(mut package: Package<S>, memory_budget_bytes: usize) -> Self {
-        package.memory_budget = memory_budget_bytes;
+    pub fn new(mut package: P, memory_budget_bytes: usize) -> Self {
+        package.set_memory_budget(memory_budget_bytes);
         Self {
             package,
             workspace: Workspace::default(),
@@ -153,12 +153,12 @@ impl<S: Source> Router<S> {
             return Err(Error::InvalidRequest("A turnaround must name an interior point".into()));
         }
         request.pace.validate().map_err(Error::InvalidRequest)?;
-        let profile = self.package.metric(&request.profile)?.profile.clone();
+        let profile = self.package.profile(&request.profile)?.clone();
         if self.metric != request.profile {
             self.workspace.clear_heaps();
             self.metric = request.profile.clone();
         }
-        let bounds = self.package.manifest.bounds;
+        let bounds = self.package.bounds();
         let mut candidates = Vec::new();
         let mut truncated = false;
         for (index, &[lon, lat]) in request.points.iter().enumerate() {
@@ -173,7 +173,7 @@ impl<S: Source> Router<S> {
                 return Err(Error::InvalidRequest("Invalid longitude or latitude".into()));
             }
             if lon < bounds[0] || lon > bounds[2] || lat < bounds[1] || lat > bounds[3] {
-                return Err(Error::MissingRegion(format!("Point {index} is outside {}", self.package.manifest.region)));
+                return Err(Error::MissingRegion(format!("Point {index} is outside {}", self.package.region())));
             }
             let point =
                 Point { lat: (lat * 1e6).round() as i32, lon: (lon * 1e6).round() as i32, elevation: NO_ELEVATION };
@@ -302,7 +302,7 @@ impl<S: Source> Router<S> {
         let mut route = Route {
             id: String::new(),
             reason: "primary",
-            package: self.package.identity.clone(),
+            package: self.package.identity().to_owned(),
             profile: request.profile.clone(),
             cost,
             geometry: Vec::new(),
@@ -314,7 +314,7 @@ impl<S: Source> Router<S> {
             attachments,
             snap_truncated: truncated,
             totals: Totals::default(),
-            warnings: self.package.manifest.warnings.clone(),
+            warnings: self.package.warnings().to_vec(),
         };
         for (start_attachment, path) in paths {
             let from_index = route.geometry.len().saturating_sub(1);
@@ -452,7 +452,7 @@ impl<S: Source> Router<S> {
             }
         }
         let (graph, weights) = self.package.base(&self.metric)?;
-        let heap_bytes = self.package.memory_budget.saturating_sub(self.package.routing_bytes(&self.metric)?);
+        let heap_bytes = self.package.memory_budget().saturating_sub(self.package.routing_bytes(&self.metric)?);
         let ceiling = best.as_ref().map_or(u64::MAX, |b| b.cost);
         let query = Query {
             starts: &starts,
@@ -463,13 +463,7 @@ impl<S: Source> Router<S> {
             heap_bytes,
             cancelled: control.cancelled,
         };
-        let found = if self
-            .package
-            .manifest
-            .landmarks
-            .as_ref()
-            .is_some_and(|index| index.profiles.contains_key(&self.metric))
-        {
+        let found = if self.package.has_landmarks(&self.metric) {
             // Complete small searches before loading global distance columns.
             let probe = query.max_labels.min(262_144);
             match self.workspace.run(&graph, &weights, Query { max_labels: probe, ..query }) {

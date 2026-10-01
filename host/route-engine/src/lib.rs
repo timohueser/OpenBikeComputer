@@ -1,7 +1,9 @@
 //! A routing library independent of transport, filesystem, map rendering and itinerary policy.
 mod alternatives;
 pub mod base;
+pub mod blocks;
 pub mod cost;
+pub mod data;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod directory;
 pub mod endpoints;

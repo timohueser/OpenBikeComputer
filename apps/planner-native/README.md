@@ -2,9 +2,9 @@
 
 This module hosts the shared web planner in one persistent `WKWebView`. It is
 a reusable composition boundary and has a standalone iPhone target. It is not
-a screen in the Companion app. The Companion composition root can retain an
-`OfflinePlannerHost` and present `OfflinePlannerView` without copying planner
-logic. Follow [the iOS on-ramp](../../companion-ios/CLAUDE.md) for that integration.
+a screen in the Companion app. The Companion uses the native route and overlay
+providers and `PlannerSearchRuntime` directly through `OfflinePlanner`.
+Follow [the iOS on-ramp](../../companion-ios/CLAUDE.md) to build that app.
 
 Use iOS 17 or later, Swift 6, XcodeGen, Node.js, and the Rust iOS target. Install
 the locked dependencies for `builder/app` and `apps/planner-search`. Follow the
@@ -49,8 +49,7 @@ router, and overlay providers remain resident after the run.
 With a full Baden-Württemberg release, add `--full-bw` for day and long routes
 and broad-to-detail map views with both route networks. Route summaries retain
 missing-elevation counts and complete totals. `--routing-memory-mib N` overrides
-the routing provider's complete memory budget. The default is 768 MiB plus the
-decoded landmark cache. It excludes the model, search, and WebKit;
+the routing provider's complete memory budget. The default includes the graph, profile, and landmark caches. It excludes the model, search, and WebKit;
 measure their combined memory separately.
 
 For an attach-based Instruments capture, launch with `--wait-for-trace --hold`.
@@ -77,3 +76,20 @@ bash apps/planner-native/test-http.sh
 npm test --prefix apps/planner-search
 npm exec --prefix builder/app -- vitest run --root builder/app src/lib/planner/ src/components/planner/
 ```
+
+## Companion download service
+
+Use a canonical grid release from `obc planner grid`. The standard
+`obc planner deploy` command installs the download service with the online
+services. To replace only its metadata, run from the repository root:
+
+```sh
+python3 -m tools.planner_downloads_deploy --host USER@VPS --source RELEASE --max-cache-bytes 268435456
+# Repeat with --apply to install and start the service.
+```
+
+The service uses port 8790 on loopback and the existing Caddy planner import.
+The VPS holds selection metadata; published payloads stream from R2. Inspect
+`journalctl -u obc-planner-downloads` for failures. The service evicts old
+selection metadata within its cache budget. A phone can select an expired
+area again. Installed maps remain usable.

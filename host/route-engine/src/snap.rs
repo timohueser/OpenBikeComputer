@@ -14,13 +14,6 @@ impl Default for Policy {
 
 impl<S: Source> Package<S> {
     pub fn snap(&mut self, point: Point, metric: &str, policy: Policy) -> Result<Candidates> {
-        if !policy.ambiguity_m.is_finite()
-            || !(0.0..=50.0).contains(&policy.ambiguity_m)
-            || policy.max_candidates == 0
-            || policy.max_candidates > 16
-        {
-            return Err(Error::InvalidRequest("Invalid snapping policy".into()));
-        }
         self.metric(metric)?;
         let mut roads = BTreeSet::<u32>::new();
         for cell in cells(point, policy.radius_m).map_err(Error::InvalidRequest)? {
@@ -29,41 +22,60 @@ impl<S: Source> Package<S> {
                 return Err(Error::Limit);
             }
         }
-        let mut found = Vec::new();
-        for id in roads {
-            if id >= self.manifest.roads {
-                return Err(Error::InvalidData("Snap road outside package".into()));
-            }
-            if !self.allowed(metric, id)? {
-                continue;
-            }
-            let road = self.road(id)?;
-            if let Some(candidate) = project(id, &road, point) {
-                if candidate.snap_distance_m <= policy.radius_m {
-                    found.push(candidate);
-                }
-            }
-        }
-        found.sort_by(|a, b| {
-            a.snap_distance_m.total_cmp(&b.snap_distance_m).then(a.position.road.cmp(&b.position.road))
-        });
-        let eligible_roads_in_radius = found.len();
-        let nearest_distance_m = found.first().map(|c| c.snap_distance_m);
-        if let Some(distance) = nearest_distance_m {
-            found.retain(|c| c.snap_distance_m <= distance + policy.ambiguity_m);
-        }
-        let candidates_in_ambiguity_band = found.len();
-        let truncated = found.len() > policy.max_candidates;
-        found.truncate(policy.max_candidates);
-        Ok(Candidates {
+        candidates(
+            roads,
+            point,
             policy,
-            nearest_distance_m,
-            eligible_roads_in_radius,
-            candidates_in_ambiguity_band,
-            truncated,
-            retained: found,
-        })
+            |id| {
+                if self.allowed(metric, id)? {
+                    self.road(id).map(Some)
+                } else {
+                    Ok(None)
+                }
+            },
+        )
     }
+}
+
+pub(crate) fn candidates(
+    roads: impl IntoIterator<Item = u32>,
+    point: Point,
+    policy: Policy,
+    mut road: impl FnMut(u32) -> Result<Option<Road>>,
+) -> Result<Candidates> {
+    if !policy.ambiguity_m.is_finite()
+        || !(0.0..=50.0).contains(&policy.ambiguity_m)
+        || policy.max_candidates == 0
+        || policy.max_candidates > 16
+    {
+        return Err(Error::InvalidRequest("Invalid snapping policy".into()));
+    }
+    let mut found = Vec::new();
+    for id in roads {
+        let Some(road) = road(id)? else { continue };
+        if let Some(candidate) = project(id, &road, point) {
+            if candidate.snap_distance_m <= policy.radius_m {
+                found.push(candidate);
+            }
+        }
+    }
+    found.sort_by(|a, b| a.snap_distance_m.total_cmp(&b.snap_distance_m).then(a.position.road.cmp(&b.position.road)));
+    let eligible_roads_in_radius = found.len();
+    let nearest_distance_m = found.first().map(|c| c.snap_distance_m);
+    if let Some(distance) = nearest_distance_m {
+        found.retain(|c| c.snap_distance_m <= distance + policy.ambiguity_m);
+    }
+    let candidates_in_ambiguity_band = found.len();
+    let truncated = found.len() > policy.max_candidates;
+    found.truncate(policy.max_candidates);
+    Ok(Candidates {
+        policy,
+        nearest_distance_m,
+        eligible_roads_in_radius,
+        candidates_in_ambiguity_band,
+        truncated,
+        retained: found,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -99,7 +111,7 @@ pub struct Candidates {
     pub retained: Vec<Candidate>,
 }
 
-fn cells(point: Point, radius: f64) -> std::result::Result<BTreeSet<(i32, i32)>, String> {
+pub(crate) fn cells(point: Point, radius: f64) -> std::result::Result<BTreeSet<(i32, i32)>, String> {
     if !radius.is_finite()
         || !(0.0..=5_000.0).contains(&radius)
         || point.lat.unsigned_abs() > 85_000_000

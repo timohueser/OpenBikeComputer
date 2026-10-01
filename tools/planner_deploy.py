@@ -72,12 +72,20 @@ def deploy(args):
     print(f"Install {identity} on {args.host}; routing :{route_port}, search :{search_port}.")
     if not args.apply: return
     ssh(args.host, f"mkdir -p {base}/routing {base}/search/data/model {base}/search/node_modules /opt/obc-planner/source /etc/caddy/planner")
-    tracked = maps.run("git", "ls-files", "-z", cwd=maps.ROOT, capture_output=True)
+    tracked = maps.run("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", cwd=maps.ROOT, capture_output=True)
     maps.run("rsync", "-az", "--from0", "--files-from=-", str(maps.ROOT) + "/",
              f"{args.host}:/opt/obc-planner/source/", input=tracked.stdout)
-    maps.run("rsync", "-az", str(args.data_dir / "routing") + "/", f"{args.host}:{base}/routing/")
-    maps.run("rsync", "-az", str(args.data_dir / "search" / (document["region"] + ".sqlite")), f"{args.host}:{base}/search/data/")
-    maps.run("rsync", "-az", str(args.data_dir / "search/model") + "/", f"{args.host}:{base}/search/data/model/")
+    if document.get("grid"):
+        try: from . import planner_offline
+        except ImportError: import planner_offline
+        runtime = args.data_dir / "runtime"
+        planner_offline.materialize(args.data_dir, runtime, ("routing/", "search/", "offline/"))
+        maps.run("rsync", "-az", str(runtime / "routing") + "/", f"{args.host}:{base}/routing/")
+        maps.run("rsync", "-az", str(runtime / "search") + "/", f"{args.host}:{base}/search/data/")
+    else:
+        maps.run("rsync", "-az", str(args.data_dir / "routing") + "/", f"{args.host}:{base}/routing/")
+        maps.run("rsync", "-az", str(args.data_dir / "search" / (document["region"] + ".sqlite")), f"{args.host}:{base}/search/data/")
+        maps.run("rsync", "-az", str(args.data_dir / "search/model") + "/", f"{args.host}:{base}/search/data/model/")
     search_prefix = b"apps/planner-search/"
     search_files = b"\0".join(path[len(search_prefix):] for path in tracked.stdout.split(b"\0")
                               if path.startswith(search_prefix)) + b"\0"
@@ -133,6 +141,12 @@ caddy validate --config /etc/caddy/Caddyfile
 systemctl reload caddy
 """)
     verify_services(active, document, args.site_origin)
+    if document.get("grid"):
+        try: from . import planner_downloads_deploy
+        except ImportError: import planner_downloads_deploy
+        from types import SimpleNamespace
+        planner_downloads_deploy.install(SimpleNamespace(host=args.host, source=args.data_dir,
+            max_cache_bytes=256 * 1024 * 1024, public_url=args.public_url, apply=True))
     active["slot"] = slot
     catalog = {"format": 1, "active": active, "previous": old if old and old["id"] != identity else current["previous"]}
     activate(args.public_url, catalog)
@@ -161,9 +175,11 @@ def verify_services(active, document, origin):
     lat = math.radians(probe["points"][0][1])
     y = int((1 - math.asinh(math.tan(lat)) / math.pi) / 2 * (1 << z))
     for url in [tilejson["tiles"][0].replace("{z}", "12").replace("{x}", str(x)).replace("{y}", str(y)),
-                active["terrain"].replace("{z}", "12").replace("{x}", str(x)).replace("{y}", str(y))]:
+                active["terrain"].replace("{z}", "12").replace("{x}", str(x)).replace("{y}", str(y)),
+                active["sprites"] + "/light@2x.json", active["sprites"] + "/light@2x.png",
+                active["glyphs"].replace("{fontstack}", "Noto%20Sans%20Regular").replace("{range}", "0-255")]:
         with sources.open_url(url) as response:
-            if response.status != 200 or not response.read(): raise ValueError("Regional map tiles are absent")
+            if response.status != 200 or not response.read(): raise ValueError("Regional map tiles or style assets are absent")
     with sources.open_url(active["search"] + "/sample") as response:
         points = json.load(response)["coordinates"]
         if len(points) < 2: raise ValueError("Example route is absent")

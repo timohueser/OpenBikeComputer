@@ -323,6 +323,37 @@ fn bounding_box_repreparation_preserves_whole_roads_and_matches_independent_sear
             (old as u32, new as u32)
         })
         .collect();
+    let values = |package: &Package<Memory>, table: &route_engine::table::Table| -> Vec<u32> {
+        table
+            .blocks
+            .iter()
+            .flat_map(|key| {
+                let deltas: Vec<i64> = package.read(key).unwrap();
+                let mut value = 0;
+                deltas.into_iter().map(move |delta| {
+                    value += delta;
+                    value as u32
+                })
+            })
+            .collect()
+    };
+    let original = input.manifest().landmarks.as_ref().unwrap();
+    let projected = manifest.landmarks.as_ref().unwrap();
+    let before = values(&input, &original.mapping);
+    let after = values(&package, &projected.mapping);
+    assert_eq!(projected.scale, original.scale);
+    for (profile, columns) in &original.profiles {
+        for (i, column) in columns.iter().enumerate() {
+            let original_values = values(&input, column);
+            let projected_values = values(&package, &projected.profiles[profile][i]);
+            for (&old, &new) in &remap {
+                assert_eq!(
+                    original_values[before[old as usize] as usize],
+                    projected_values[after[new as usize] as usize]
+                );
+            }
+        }
+    }
     let remap_turns = |turns: &[(u32, u32)]| {
         let mut mapped: Vec<_> = turns.iter().filter_map(|(a, b)| Some((*remap.get(a)?, *remap.get(b)?))).collect();
         mapped.sort_unstable();
@@ -886,4 +917,147 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
     let (source, manifest) = package(&graph);
     let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
     assert!(router.route(&request, &Control::default()).is_err());
+}
+
+#[test]
+fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
+    use route_engine::{
+        data::RoutingData,
+        search::{Query, Seed, Workspace},
+    };
+    let (source, bytes) = package_with_profiles(&fixture(), &Profile::presets());
+    let mut original = Package::open(source.clone(), &bytes).unwrap();
+    let n = original.manifest().roads;
+    let bounds = original.manifest().bounds;
+    let make = |ids: &[u32]| {
+        let selection = route_build::blocks::prepare(&original, bounds, ids).unwrap();
+        let objects = selection.objects.iter().map(|key| (key.clone(), source.read(key).unwrap())).collect();
+        let selected = route_engine::blocks::Package::open(
+            Memory(Arc::new(objects)),
+            &serde_json::to_vec(&selection.manifest).unwrap(),
+        )
+        .unwrap();
+        (selection, selected)
+    };
+    let (full, full_package) = make(&(0..n).collect::<Vec<_>>());
+    let selected: Vec<_> = (0..n).filter(|&i| i < n / 3 || i >= 2 * n / 3).collect();
+    let (_, mut partial) = make(&selected);
+    let mut full_router = Router::new(full_package, 768 * 1024 * 1024);
+    let mut original_router = Router::new(original.fork(), 768 * 1024 * 1024);
+    let names: Vec<_> = original.manifest().metrics.keys().cloned().collect();
+    let mut saw_forbidden = false;
+    for name in names {
+        for points in [vec![[0.001, 0.0], [0.029, 0.02]], vec![[0.029, 0.02], [0.001, 0.0]]] {
+            let request = Request {
+                points,
+                profile: name.clone(),
+                pace: Pace::default(),
+                alternatives: false,
+                turnarounds: vec![],
+            };
+            let before = original_router.route(&request, &Control::default()).unwrap();
+            let after = full_router.route(&request, &Control::default()).unwrap();
+            assert_eq!(after.cost, before.cost);
+            assert_eq!(after.geometry, before.geometry);
+            assert_eq!(after.elapsed, before.elapsed);
+        }
+        let (graph, costs) = original.base(&name).unwrap();
+        let (joined, joined_costs) = partial.base(&name).unwrap();
+        let mut masked_roads: Vec<u64> = (0..n).map(|i| costs.roads.get(i as usize)).collect();
+        for id in 0..n {
+            if partial.local_id(id).is_none() {
+                masked_roads[id as usize] = u64::MAX;
+            }
+        }
+        let masked = route_engine::base::Costs {
+            roads: route_engine::base::Numbers::U64(masked_roads),
+            turns: costs.turns.clone(),
+        };
+        let mut expected_work = Workspace::default();
+        let mut actual_work = Workspace::default();
+        for from in 0..joined.nodes() as u32 {
+            let global = partial.source_id(from).unwrap();
+            assert_eq!(partial.local_id(global), Some(from));
+            assert_eq!(
+                serde_json::to_value(partial.road(from).unwrap()).unwrap(),
+                serde_json::to_value(original.road(global).unwrap()).unwrap()
+            );
+            let expected: Vec<_> = (graph.first[global as usize]..graph.first[global as usize + 1])
+                .filter_map(|arc| {
+                    partial.local_id(graph.head[arc as usize]).map(|to| (to, costs.arc(&graph, arc as usize)))
+                })
+                .collect();
+            let actual: Vec<_> = (joined.first[from as usize]..joined.first[from as usize + 1])
+                .map(|arc| (joined.head[arc as usize], joined_costs.arc(&joined, arc as usize)))
+                .collect();
+            saw_forbidden |= actual.iter().any(|(_, c)| *c == u64::MAX);
+            assert_eq!(actual, expected);
+            for to in 0..joined.nodes() as u32 {
+                let starts = [Seed { node: from, cost: 7, road: from, choice: 0 }];
+                let ends = [Seed { node: to, cost: 11, road: to, choice: 0 }];
+                let source_starts = [Seed { node: global, ..starts[0] }];
+                let source_ends = [Seed { node: partial.source_id(to).unwrap(), ..ends[0] }];
+                let query = Query {
+                    starts: &starts,
+                    ends: &ends,
+                    ceiling: u64::MAX,
+                    max_labels: usize::MAX,
+                    max_roads: usize::MAX,
+                    heap_bytes: 1_000_000,
+                    cancelled: &|| false,
+                };
+                let expected = expected_work
+                    .run(&graph, &masked, Query { starts: &source_starts, ends: &source_ends, ..query })
+                    .unwrap();
+                let guidance = partial.landmarks(&name, &starts, &ends).unwrap().unwrap();
+                let source_guidance =
+                    RoutingData::landmarks(&original, &name, &source_starts, &source_ends).unwrap().unwrap();
+                for local in 0..joined.nodes() as u32 {
+                    assert_eq!(guidance.get(local), source_guidance.get(partial.source_id(local).unwrap()));
+                }
+                let mut potential = |road| Ok(guidance.get(road));
+                let actual =
+                    actual_work.run_with_potential(&joined, &joined_costs, query, Some(&mut potential)).unwrap();
+                assert_eq!(actual.as_ref().map(|r| r.cost), expected.as_ref().map(|r| r.cost));
+            }
+        }
+    }
+    assert!(saw_forbidden);
+    let mut incomplete = full.manifest.clone();
+    incomplete.data.graph.head.retain(&Default::default()).unwrap();
+    let mut missing =
+        route_engine::blocks::Package::open(source.clone(), &serde_json::to_vec(&incomplete).unwrap()).unwrap();
+    assert!(matches!(missing.base("touring"), Err(Error::MissingRegion(_))));
+    incomplete = full.manifest.clone();
+    incomplete.roads.push(incomplete.roads[0]);
+    assert!(route_engine::blocks::Package::open(source, &serde_json::to_vec(&incomplete).unwrap()).is_err());
+    let (_, cached) = partial.base("touring").unwrap();
+    partial.set_memory_budget(partial.routing_bytes("touring").unwrap());
+    let (_, again) = partial.base("touring").unwrap();
+    assert!(Arc::ptr_eq(&cached, &again));
+    partial.set_memory_budget(1);
+    assert!(matches!(partial.base("touring"), Err(Error::Limit)));
+}
+
+#[test]
+fn sparse_tables_keep_source_page_numbers_and_last_page_length() {
+    use route_engine::table::{Cache, Table, ENTRIES};
+    let (source, manifest) = package(&fixture());
+    let mut objects = (*source.0).clone();
+    let values: Vec<u32> = (0..(ENTRIES * 3 + 17) as u32).collect();
+    let mut table = Table::write(&values, &mut |bytes| {
+        let key = digest(bytes);
+        objects.insert(key.clone(), bytes.to_vec());
+        Ok(key)
+    })
+    .unwrap();
+    table.retain(&[1, 3].into()).unwrap();
+    assert!(table.valid());
+    let input = Package::open(Memory(Arc::new(objects)), &manifest).unwrap();
+    let mut cache = Cache::<u32>::default();
+    assert_eq!(&*cache.block(&input, &table, 1).unwrap(), &values[ENTRIES..ENTRIES * 2]);
+    assert_eq!(&*cache.block(&input, &table, 3).unwrap(), &values[ENTRIES * 3..]);
+    assert!(matches!(cache.block(&input, &table, 2), Err(Error::MissingRegion(_))));
+    table.pages = Some(vec![3, 1]);
+    assert!(!table.valid());
 }

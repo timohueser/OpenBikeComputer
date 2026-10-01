@@ -18,21 +18,23 @@ behind `#if DEBUG`. Tests enforce these boundaries.
 OBCDomain -> OBCTransport -> OBCMock
          \-> OBCFormats
 OBCUI -> OBCDomain + OBCTransport + OBCPlanner + MapLibre (iOS)
-OBCPlanner -> OBCDomain (online planner data)
+OBCPlanner -> OBCDomain (online client, offline installation and selection)
 OBCRouting -> OBCDomain + OBCCompanionCore (Rust; standalone offline adapter)
 ```
 
 `OBCCompanion/` is the composition root and the only target that chooses a concrete transport and planner provider.
 `PlannerDataSource` supplies one release for maps, search, routes, and viewport layers.
-`obcPlannerSource` passes that provider to map views. The app uses the online provider.
-Region downloads and local-first selection are not implemented.
+`obcPlannerSource` passes that provider to map views. The app uses `LocalFirstPlanner`.
+`OfflinePlanner` connects installed releases to native routing, search and map files.
+Offline maps live in Settings, with a shortcut in the planner's map menu.
 `project.yml` is the Xcode project source of truth; **never edit or commit the generated
 pbxproj.**
 
 ## Build and test
 
 Needs Xcode 26.x, an iOS simulator runtime, XcodeGen, Node.js 22 or later, and the Rust toolchain.
-XcodeGen installs the pinned replay renderer and generates native map styles with npm.
+XcodeGen installs the pinned replay renderer and builds native map styles and search with npm.
+The app build compiles `route-server` for the selected Rust iOS target.
 Map styles and POI kinds come from the web planner sources. Before package tests without XcodeGen, run
 `npm ci --prefix companion-ios/ReplayAssets` from the repository root.
 

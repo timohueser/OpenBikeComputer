@@ -28,6 +28,12 @@ public struct PlannerPreviewView: View {
     @State private var searchShown = false
     @State private var saveShown = false
     @State private var closeShown = false
+    private enum OfflineDestination: String, Identifiable {
+        case library, area
+        var id: String { rawValue }
+    }
+    @State private var offlineDestination: OfflineDestination?
+    @Environment(\.obcOfflineMaps) private var offlineMaps
     @State private var editorPanel = Panel.preferences
     @State private var panel = Panel.planning
     @State private var intent = SearchIntent.general
@@ -127,6 +133,16 @@ public struct PlannerPreviewView: View {
                                 .withViewBounds(searchBounds)
                         }
                         .sheet(isPresented: $editorShown, onDismiss: finishOpeningSearch) { focusedEditor }
+                        .fullScreenCover(item: $offlineDestination) { destination in
+                            if let offlineMaps {
+                                NavigationStack {
+                                    OfflineMapsView(model: offlineMaps, initialBounds: searchBounds, selecting: destination == .area)
+                                        .toolbar { ToolbarItem(placement: .topBarTrailing) {
+                                            Button("Done") { offlineDestination = nil }
+                                        } }
+                                }
+                            }
+                        }
                         .obcRenameSheet("Save route", isPresented: $saveShown, name: model.routeTitle, placeholder: "Route name",
                                         canSave: { model.canSave && !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) { name in
                             let route = model.exportRoute(name: name), bike = model.bike
@@ -183,12 +199,18 @@ public struct PlannerPreviewView: View {
             Button { fitRevision += 1; fraction = nil } label: {
                 Image(systemName: "arrow.up.left.and.arrow.down.right")
             }.accessibilityLabel("Show whole route")
-            Button {
-                infoShown = false
-                layersShown.toggle()
-                if layersShown { drawerPosition = .collapsed }
+            Menu {
+                Button("Map layers", systemImage: "square.3.layers.3d") {
+                    infoShown = false; layersShown = true; drawerPosition = .collapsed
+                }
+                if offlineMaps != nil {
+                    Button("Download this area", systemImage: "arrow.down.to.line") {
+                        offlineDestination = .area
+                    }
+                    Button("Offline maps", systemImage: "map") { offlineDestination = .library }
+                }
             } label: { Image(systemName: "square.3.layers.3d") }
-                .accessibilityLabel("Map layers")
+                .accessibilityLabel("Map options")
             if network != .none {
                 Button { layersShown = false; infoShown.toggle() } label: {
                     Image(systemName: "info.circle")

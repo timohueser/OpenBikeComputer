@@ -101,10 +101,54 @@ fn memberships(relations: &BTreeMap<i64, Relation>) -> (Memberships, BTreeMap<i6
     (members, routes)
 }
 
+pub(crate) fn query_window(params: &HashMap<String, String>) -> Result<([f64; 4], f64, Vec<&str>, &str)> {
+    let invalid = || {
+        Error::InvalidRequest("Provide bbox=west,south,east,north, zoom=6..22 and layers=cycling,hiking,access".into())
+    };
+    let bounds: [f64; 4] = params
+        .get("bbox")
+        .ok_or_else(invalid)?
+        .split(',')
+        .map(str::parse)
+        .collect::<std::result::Result<Vec<f64>, _>>()
+        .map_err(|_| invalid())?
+        .try_into()
+        .map_err(|_| invalid())?;
+    let zoom: f64 = params.get("zoom").ok_or_else(invalid)?.parse().map_err(|_| invalid())?;
+    let layers: Vec<_> = params.get("layers").ok_or_else(invalid)?.split(',').collect();
+    if !zoom.is_finite()
+        || !(6.0..=22.0).contains(&zoom)
+        || bounds.iter().any(|v| !v.is_finite())
+        || bounds[0] < -180.0
+        || bounds[2] > 180.0
+        || bounds[1] < -90.0
+        || bounds[3] > 90.0
+        || bounds[0] >= bounds[2]
+        || bounds[1] >= bounds[3]
+        || layers.iter().any(|l| !matches!(*l, "cycling" | "hiking" | "access"))
+    {
+        return Err(invalid());
+    }
+    if bounds[2] - bounds[0] > 30.0 || bounds[3] - bounds[1] > 30.0 {
+        return Err(Error::InvalidRequest("Zoom in to see route networks and access restrictions.".into()));
+    }
+    let mode = params.get("mode").map(String::as_str).unwrap_or("cycling");
+    if !matches!(mode, "cycling" | "walking") {
+        return Err(invalid());
+    }
+    Ok((bounds, zoom, layers, mode))
+}
+
 impl Overlays {
+    pub(crate) fn coverage(&self) -> [f64; 4] {
+        self.coverage
+    }
     pub fn open(directory: &Path, identity: &str) -> Result<Self> {
-        let database = Connection::open_with_flags(directory.join("overlays.sqlite"), OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(invalid_data)?;
+        Self::open_file(&directory.join("overlays.sqlite"), identity)
+    }
+
+    pub fn open_file(path: &Path, identity: &str) -> Result<Self> {
+        let database = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(invalid_data)?;
         let version: i64 = database.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(invalid_data)?;
         if version != 2 {
             return Err(Error::InvalidData("Rebuild the overlay index with --build-overlays".into()));
@@ -266,42 +310,7 @@ impl Overlays {
     }
 
     pub fn query(&self, params: &HashMap<String, String>, cancelled: &dyn Fn() -> bool) -> Result<Vec<u8>> {
-        let invalid = || {
-            Error::InvalidRequest(
-                "Provide bbox=west,south,east,north, zoom=6..22 and layers=cycling,hiking,access".into(),
-            )
-        };
-        let bounds: [f64; 4] = params
-            .get("bbox")
-            .ok_or_else(invalid)?
-            .split(',')
-            .map(str::parse)
-            .collect::<std::result::Result<Vec<f64>, _>>()
-            .map_err(|_| invalid())?
-            .try_into()
-            .map_err(|_| invalid())?;
-        let zoom: f64 = params.get("zoom").ok_or_else(invalid)?.parse().map_err(|_| invalid())?;
-        let layers: Vec<_> = params.get("layers").ok_or_else(invalid)?.split(',').collect();
-        if !zoom.is_finite()
-            || !(6.0..=22.0).contains(&zoom)
-            || bounds.iter().any(|v| !v.is_finite())
-            || bounds[0] < -180.0
-            || bounds[2] > 180.0
-            || bounds[1] < -90.0
-            || bounds[3] > 90.0
-            || bounds[0] >= bounds[2]
-            || bounds[1] >= bounds[3]
-            || layers.iter().any(|l| !matches!(*l, "cycling" | "hiking" | "access"))
-        {
-            return Err(invalid());
-        }
-        if bounds[2] - bounds[0] > 30.0 || bounds[3] - bounds[1] > 30.0 {
-            return Err(Error::InvalidRequest("Zoom in to see route networks and access restrictions.".into()));
-        }
-        let mode = params.get("mode").map(String::as_str).unwrap_or("cycling");
-        if !matches!(mode, "cycling" | "walking") {
-            return Err(invalid());
-        }
+        let (bounds, zoom, layers, mode) = query_window(params)?;
         if bounds[0] > self.coverage[2]
             || bounds[2] < self.coverage[0]
             || bounds[1] > self.coverage[3]

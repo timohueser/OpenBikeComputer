@@ -68,3 +68,74 @@ and activation writes. `peak_added_bytes` and `added_stored_bytes` subtract the
 initial retained total. `download_cache_bytes` counts pending transport files.
 These are file byte counts. They exclude filesystem allocation overhead and
 caches made by the application.
+
+## Grid publication and selection
+
+A grid release has `grid: {format: 2, zoom: 9, map_zoom: 11}`. Selection cells
+use Web Mercator XYZ coordinates at zoom 9. Cell IDs are `9-X-Y`. A requested
+rectangle selects every intersecting cell, clipped to the release bounds.
+The returned coverage contains the complete requested rectangle.
+
+The publisher creates routing page packs, search databases, overlay databases,
+and PMTiles packs once. Map packs group each tile under its ancestor at
+`min(tile_zoom, 11)`. Original compressed tile payloads remain unchanged.
+A routing pack contains pages with the same cell consumers, up to 16 MiB.
+Search and overlays retain whole intersecting records and their dependencies.
+
+`offline/catalog.json` lists cell bounds, logical file names, map packs, and
+routing cell descriptors. Each routing descriptor has a manifest path and
+SHA-256, source adjacency ranges, and retained geometry bounds. Shared assets
+are listed once. Files carry the decoded and transport hashes above.
+The service selects these objects and writes only the small selection manifests.
+It does not rebuild routing, SQLite databases, or map payloads.
+
+The selected release has `offline.format: 2`, `id`, `zoom`, `map_zoom`,
+`source_routing`, and `cells`. Each cell has `id` and `bounds`.
+`routing/layers.json` lists every required overlay cell ID. A missing listed
+cell is an error. `routing/blocks.json` follows the
+[routing selection contract](route-package.md#grid-selections).
+Map selection covers retained road geometry; terrain includes tile neighbours.
+
+## Download service
+
+The HTTPS prefix is `/planner-offline`. Bounds use west, south, east, north.
+
+| Request | Result |
+| --- | --- |
+| `GET /catalog` | `format: 1`, source `bounds`, and selection `zoom` |
+| `POST /jobs` | JSON `bounds`; returns `id`, `state: ready`, and `progress: 1` |
+| `GET /jobs/ID` | `id` and `state`, either `ready` or `failed` |
+| `GET /bundles/ID/bundle.json` | Selected bundle manifest |
+| `GET /bundles/ID/release.json` | Selected release manifest |
+| `GET /bundles/ID/objects/SHA256` | Transport bytes or HTTP 307 to the immutable object pool |
+
+The ID hashes the publication catalog, rounded bounds, and selection format.
+Repeated selections reuse metadata. There is no queued preparation worker or
+reservation. Cancellation stops the client request. Error responses contain
+`message`. Selections outside source coverage are rejected.
+
+Objects support HEAD and byte ranges. The service stores the publication origin
+with each cached selection. Generated manifests stay in its bounded metadata
+cache. Least recently used selections can expire. A missing selection returns
+404; the client must request a new selection. The companion bundle omits the
+server language model and device catalog.
+
+## iOS library
+
+The iOS installer uses the object and release layout above. `maps.json` replaces
+`active.json` with a list of installed maps. Each entry contains `id`, `name`,
+`region`, `bounds`, and `installedBytes`. `pending.json` holds one resumable
+download. `downloads/SHA256.resume` holds opaque URLSession resume data.
+
+The app checks free space before transfer. Its estimate includes filesystem
+allocation, missing decoded objects, the four largest temporary compressed
+objects, and installation metadata. At most four downloads run at once. Compressed objects are decoded
+and removed individually. Verification precedes the atomic library update.
+The library is excluded from device backups. Deletion retains shared objects
+that another map or the pending download needs.
+
+Each download prohibits cellular, expensive and constrained networks unless
+the user allows them. Maps, routes, search and overlays first use a complete
+installed release that covers the request. Routing graphs are not combined.
+A failed local request falls back to the online service. A valid empty local
+search result does not need a network request.

@@ -1,8 +1,7 @@
 # Route planner
 
-The public planner runs at `/plan/`. The site build reads one active regional
-release. Maps, routing, and search use that release. The map builder reads its
-snapshot of the device catalogue.
+The public planner at `/plan/` uses one active release for maps, routing, and
+search. The map builder uses its device catalogue.
 
 ## Prepare and publish a region
 
@@ -20,16 +19,20 @@ Allow space for the temporary Nominatim database and Planetiler files.
 Builders use two threads. Allow several hours.
 
 ```sh
-obc planner prepare --data-dir /srv/planner/bw --reference /srv/obc-reference
+obc planner prepare --data-dir /srv/planner/bw-source --reference /srv/obc-reference
+obc planner grid --input-release /srv/planner/bw-source --data-dir /srv/planner/bw
 obc planner publish --data-dir /srv/planner/bw --apply
 obc planner deploy --data-dir /srv/planner/bw --host root@YOUR_VPS --apply
 ```
 
 `publish` and `deploy` show their action without `--apply`. Publication uploads
-immutable files and verifies the remote bytes. Deployment checks the routing
+files and verifies remote bytes. Deployment checks the routing
 package, model readiness, CORS, tiles, search, and a real route. It updates
 `planner/catalog.json` only after those checks pass. The
 [release contract](../../../../../specs/planner-release.md) defines the files.
+
+`grid` publishes into a new directory. It builds reusable cells from the verified
+regional bake. Do not run publications or deployments at the same time.
 
 `prepare` accepts `--osm PATH` for a local copy of the pinned extract. On macOS,
 use `--inputs DIRECTORY` to supply verified Linux builder outputs:
@@ -39,12 +42,12 @@ still use the local elevation readers.
 
 The VPS needs Caddy, Python, Rust at `/root/.cargo/bin/cargo`, and Node 24+
 at `/usr/local/bin/node`. Its existing API virtual host is
-`releases.openbikecomputer.com`. Deployment installs two services on loopback.
+`releases.openbikecomputer.com`. Deployment installs routing, search, and offline selection services on loopback.
 Routing uses at most two workers. Search runs SQLite and the query model.
 
 Deploy the [tile Worker](../../../../../apps/planner-tiles/README.md) first.
-It reads two regional PMTiles archives from R2 and caches XYZ tiles at the edge.
-Fonts, sprites, and archive downloads use `maps.openbikecomputer.com`.
+It reads published PMTiles packs from R2 and caches XYZ tiles at the edge.
+Fonts and sprites use the tile service. Downloads read the same object pool.
 
 Set the GitHub repository variable `OBC_PLANNER_CATALOG_URL` to
 `https://maps.openbikecomputer.com/planner/catalog.json`. Run **Deploy site**
@@ -94,8 +97,7 @@ obc planner rollback --apply
 
 Then run **Deploy site** again and finalize. Finalization removes the previous
 dataset from R2 and clears its catalogue entry. Reload old planner pages after rollout.
-The upload preview reports size and a storage cost ceiling before free allowances.
-Worker requests and the VPS have separate costs.
+The upload preview reports storage and write costs. Worker and VPS costs are separate.
 
 ## Local preview
 
@@ -181,7 +183,7 @@ npx vitest run src/lib/planner/ src/components/planner/
 npm run check
 ```
 
-The full type check needs the generated WASM packages from the builder README.
+The full type check needs the generated WASM packages.
 See the [search README](../../../../../apps/planner-search/README.md) for its
 code and real-data suites. iOS rendering and offline downloads have separate
 validation.
