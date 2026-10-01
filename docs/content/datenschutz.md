@@ -78,19 +78,21 @@ Bei den folgenden Abrufen wird die IP-Adresse an den jeweiligen Server übertrag
 Das ist technisch erforderlich, damit der Server die angeforderten Daten an den
 Browser zurücksenden kann. Rechtsgrundlage ist jeweils Art. 6 Abs. 1 lit. f DSGVO.
 
-### 6.1 Kartenkacheln von OpenStreetMap
+### 6.1 Kartenkacheln
 
-Kartenansichten laden Kacheln unmittelbar von `tile.openstreetmap.org`, betrieben von
-der OpenStreetMap Foundation, St John's Innovation Centre, Cowley Road, Cambridge
-CB4 0WS, Vereinigtes Königreich. Dabei erhält die OpenStreetMap Foundation die
-IP-Adresse und den angefragten Kartenausschnitt. Die Kacheln erscheinen bereits in der
-ersten Ansicht des Kartenbaukastens, weil die Auswahl einer Region ohne
-Kartenhintergrund nicht sinnvoll bedienbar wäre.
+Die Karte zur Regionsauswahl lädt ihre Kacheln von `tiles.openbikecomputer.com`. Das ist
+der Cloudflare Worker, der auch den Routenplaner bedient (Abschnitt 7.1). Cloudflare
+erhält die IP-Adresse und die angefragte Kachel. Daraus kann Cloudflare den Kartenausschnitt
+erkennen. Die Kacheln erscheinen bereits in der ersten Ansicht des Kartenbaukastens, weil
+die Auswahl einer Region ohne Kartenhintergrund nicht sinnvoll bedienbar wäre.
 
-Die Geräteseiten des Kartenbaukastens und der Desktop-App laden ebenfalls Kacheln,
-wenn sie Touren und aufgezeichnete Fahrten auf einer Karte zeigen. Die OpenStreetMap
-Foundation erfährt dann den Kartenausschnitt, in dem die Strecken liegen. Die
-Streckendaten selbst werden nicht übertragen.
+Die Geräteseiten des Kartenbaukastens und der Desktop-App laden Kacheln von
+`tile.openstreetmap.org`, wenn sie Touren und aufgezeichnete Fahrten auf einer Karte
+zeigen. Dieser Server wird von der OpenStreetMap Foundation betrieben, St John's
+Innovation Centre, Cowley Road, Cambridge CB4 0WS, Vereinigtes Königreich. Die
+OpenStreetMap Foundation erhält die IP-Adresse und den angefragten Kartenausschnitt und
+erfährt dann den Ausschnitt, in dem die Strecken liegen. Die Streckendaten selbst werden
+nicht übertragen.
 
 Das berechtigte Interesse liegt in der Anzeige der für die Regionsauswahl, die
 Streckenansicht und die lokale Vorschau erforderlichen Karte. Für das Vereinigte Königreich besteht ein
