@@ -11,13 +11,13 @@ and the [PMTiles CLI](https://docs.protomaps.com/pmtiles/cli).
 Authenticate `gh` for the query model release. Set the R2 credential in
 `tools/obc.local`. The [region recipe](../../../../../tools/planner-regions/baden-wuerttemberg.json)
 pins the OSM extract, map inputs, elevation inputs, and routing profiles.
-The BW recipe selects Balanced and Less climbing for each rider mode.
+BW includes Balanced, Shorter, and Less climbing for each rider mode.
 
-The raw map and search builders require Linux, Java 21, Maven, PostgreSQL 17,
-PostGIS 3, osm2pgsql 2, zstd, and `nominatim-db==5.3.2` in the build environment.
+Map and search builders need Linux, Java 21, Maven, PostgreSQL 17,
+PostGIS 3, osm2pgsql 2, zstd, and `nominatim-db==5.3.2`.
 Add PostgreSQL's binary directory to `PATH`. Run preparation as a normal user.
 Allow space for the temporary Nominatim database and Planetiler files.
-The builders use two threads. Preparation can take several hours.
+Builders use two threads. Allow several hours.
 
 ```sh
 obc planner prepare --data-dir /srv/planner/bw --reference /srv/obc-reference
@@ -41,7 +41,6 @@ The VPS needs Caddy, Python, Rust at `/root/.cargo/bin/cargo`, and Node 24+
 at `/usr/local/bin/node`. Its existing API virtual host is
 `releases.openbikecomputer.com`. Deployment installs two services on loopback.
 Routing uses at most two workers. Search runs SQLite and the query model.
-PostgreSQL, Nominatim, and Photon are build tools. They are not public services.
 
 Deploy the [tile Worker](../../../../../apps/planner-tiles/README.md) first.
 It reads two regional PMTiles archives from R2 and caches XYZ tiles at the edge.
@@ -75,7 +74,7 @@ To reduce an existing package without preparing its metrics again:
 ```sh
 cargo run --release -p route-build --bin route-select -- \
   /srv/planner/old/routing --output /srv/planner/new/routing \
-  --profiles touring,touring/less-climbing,road,road/less-climbing,gravel,gravel/less-climbing,mtb,mtb/less-climbing,hiking,hiking/less-climbing
+  --profiles touring,touring/shorter,touring/less-climbing,road,road/shorter,road/less-climbing,gravel,gravel/shorter,gravel/less-climbing,mtb,mtb/shorter,mtb/less-climbing,hiking,hiking/shorter,hiking/less-climbing
 ```
 
 Copy the unchanged `maps`, `search`, and `sources` directories into the new
@@ -85,7 +84,6 @@ selection and builds a matching overlay index.
 
 Routing currently supports German access defaults. Preparation refuses other
 countries. Add and verify their access rules before extending coverage.
-No service code needs a new region name.
 
 Deployment keeps both VPS slots during rollout. Before finalization, restore
 the previous release with:
@@ -100,8 +98,6 @@ The upload preview reports size and a storage cost ceiling before free allowance
 Worker requests and the VPS have separate costs.
 
 ## Local preview
-
-The prepared preview uses independent upstream map and search snapshots:
 
 ```sh
 obc planner setup
@@ -146,6 +142,35 @@ release. Use them for a hosted build with the configured API origin.
 Basemap zooms are 0–14. Terrain zooms are 0–12, with neighbouring tiles for
 contours. The browser creates contours from terrain tiles. Highlighted rider
 places read detailed basemap tiles along the route.
+
+Extract a smaller map archive with bounds inside its source coverage:
+
+```sh
+python3 tools/planner_maps.py compact /srv/planner/bw/maps/terrain.pmtiles \
+  /srv/planner/terrain.pmtiles --bbox=7.8,47.9,8.1,48.2 --terrain
+```
+
+Omit `--terrain` for a basemap. The command uses `uv` with pinned dependencies.
+It keeps one terrain neighbour per zoom, compresses WebP without pixel changes,
+and checks every retained tile after writing the archive. Preparation uses the
+same terrain path. The JSON result gives complete archive bytes, elapsed time,
+and process peak RAM. A map cutout does not change routing or search coverage.
+Use `--no-recompress` to crop compressed terrain without encoding it again.
+
+Build and install a local runtime bundle:
+
+```sh
+cargo build --release -p route-build --bin route-extract -p route-server --bin route-server
+python3 tools/planner_cutout.py /srv/planner/bw /srv/planner/freiburg \
+  --bbox=7.77,47.965,7.96,48.06 --region freiburg
+python3 tools/planner_offline.py pack /srv/planner/freiburg /srv/planner/bundle
+python3 tools/planner_offline.py verify /srv/planner/bundle
+python3 tools/planner_offline.py install /srv/planner/bundle /srv/planner/offline
+```
+
+Installation also accepts an HTTP(S) bundle directory URL. Rerun to resume.
+The [bundle contract](../../../../../specs/planner-offline.md) defines activation,
+retained releases, deduplication, and size fields.
 
 ## Checks
 

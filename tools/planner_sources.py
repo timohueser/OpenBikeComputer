@@ -1,7 +1,6 @@
 """Build planner map and search inputs from one OSM snapshot."""
 
 import getpass
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -9,28 +8,18 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
-from urllib.request import Request, urlopen
 
 try:
     from . import planner_maps as maps
+    from .planner_runtime import digest, open_url
 except ImportError:
     import planner_maps as maps
+    from planner_runtime import digest, open_url
 
 PROTOMAPS = "42ffaaa4a85a41bfcb23e43cc0f5b492a5eca123"
 PROTO_SHA = "f89ff8ee6aff13baf60c83b5e98d3811ddb946cc1089d437c435885395764696"
 PHOTON_URL = "https://github.com/komoot/photon/releases/download/1.3.0/photon-1.3.0.jar"
 PHOTON_SHA = "a89707c0045e4807b2a1180e132e68e108d998709f48b6c94b98a6e281f571a5"
-
-
-def open_url(url, timeout=60):
-    request = Request(url) if isinstance(url, str) else url
-    request.add_header("User-Agent", "OpenBikeComputer/1.0")
-    return urlopen(request, timeout=timeout)
-
-
-def digest(path):
-    with Path(path).open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def download(url, path, sha):

@@ -97,7 +97,7 @@ chmod -R a+rX {base}
 """)
     units = {
         "routing": service(f"{base}/bin/route-server {base}/routing",
-                           {"ROUTE_LISTEN": f"127.0.0.1:{route_port}", "ROUTE_WORKERS": "2", "ROUTE_ORIGIN": args.site_origin}, "1536M"),
+                           {"ROUTE_LISTEN": f"127.0.0.1:{route_port}", "ROUTE_WORKERS": "2", "ROUTE_ORIGIN": args.site_origin}, "2048M"),
         "search": service(f"/usr/local/bin/node {base}/search/server.mjs",
                           {"OBC_SEARCH_PORT": str(search_port), "OBC_SEARCH_DATA": base + "/search/data",
                            "OBC_SEARCH_PYTHON": base + "/search/.venv/bin/python", "OBC_SEARCH_REGIONS": document["region"],

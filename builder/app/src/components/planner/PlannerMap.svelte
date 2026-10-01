@@ -1,3 +1,9 @@
+<script module lang="ts">
+    import { terrainSource } from '../../lib/planner/map-terrain';
+    import { TERRAIN_URL } from '../../lib/planner/map-data';
+    const terrain = terrainSource(TERRAIN_URL);
+</script>
+
 <script lang="ts">
     import { onMount, untrack, type Snippet } from "svelte";
     import * as maplibregl from "maplibre-gl";
@@ -9,7 +15,7 @@
     import "maplibre-gl/dist/maplibre-gl.css";
     import { mapStyle, poiFilter } from "../../lib/planner/map-style";
     import { mapIcon } from "../../lib/planner/map-icons";
-    import { MAP_BOUNDS, TERRAIN_URL } from "../../lib/planner/map-data";
+    import { MAP_BOUNDS } from "../../lib/planner/map-data";
     import { categoryIds, placeCategories, type PlaceCategory } from "../../lib/planner/poi-kinds";
     import { poiPlace } from "../../lib/planner/place-index";
     import { coordinateAt, nearestProgress, type Place } from "../../lib/planner/editor";
@@ -366,8 +372,8 @@
         maplibregl.setWorkerUrl(mapWorkerUrl);
         const protocol = new Protocol();
         maplibregl.addProtocol("pmtiles", protocol.tile);
-        dem = new mlcontour.DemSource({ url: TERRAIN_URL, maxzoom: 12, worker: true, cacheSize: 64, encoding: "terrarium" });
-        dem.setupMaplibre(maplibregl);
+        const terrainLease = terrain.acquire(maplibregl);
+        dem = terrainLease.dem;
         const contourUrl = dem.contourProtocolUrl({ thresholds: { 10: [200, 1000], 11: [100, 500], 13: [50, 250], 14: [20, 100] }, contourLayer: "contours", elevationKey: "ele", levelKey: "level" });
         insertDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-insert-dot" }) });
         hoverDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-hover-dot" }) });
@@ -440,8 +446,7 @@
             calloutPopup?.remove();
             overlayLayer?.destroy();
             map?.remove();
-            maplibregl.removeProtocol(dem.sharedDemProtocolId);
-            maplibregl.removeProtocol(dem.contourProtocolId);
+            terrainLease.release();
         };
     });
 

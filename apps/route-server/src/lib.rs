@@ -1,4 +1,6 @@
 mod access;
+pub mod native;
+mod native_overlays;
 use axum::{
     extract::{rejection::JsonRejection, DefaultBodyLimit, Query, State},
     http::StatusCode,
@@ -20,6 +22,7 @@ use tokio::sync::Semaphore;
 use tower_http::compression::CompressionLayer;
 
 mod overlays;
+pub use overlays::Overlays;
 
 pub fn prepare_overlays(directory: &Path) -> Result<(), Error> {
     overlays::Overlays::build(directory)
@@ -33,18 +36,23 @@ struct Workers {
     overlay_permits: Arc<Semaphore>,
 }
 
+fn default_memory_budget(package: &route_engine::package::Package<impl route_engine::package::Source>) -> usize {
+    (768 * 1024 * 1024usize)
+        .saturating_add(package.manifest().landmarks.as_ref().map_or(0, |index| index.decoded_bytes()))
+}
+
 pub fn app(directory: &Path, workers: usize) -> Result<axum::Router, Error> {
     if !(1..=8).contains(&workers) {
         return Err(Error::InvalidRequest("Use 1 to 8 workers".into()));
     }
+    let source = Directory::open(directory)?;
     let mut routers = Vec::new();
     for _ in 0..workers {
-        routers.push(Router::new(Directory::open(directory)?, 128 * 1024 * 1024));
+        routers.push(Router::new(source.fork(), default_memory_budget(&source)));
     }
     let package = routers[0].package();
     let overlays = overlays::Overlays::open(directory, package.identity())?;
-    let metadata = json!({ "package": package.identity(), "region": package.manifest().region, "bounds": package.manifest().bounds,
-        "profiles": package.manifest().metrics.keys().collect::<Vec<_>>(), "attribution": package.manifest().attribution, "warnings": package.manifest().warnings });
+    let metadata = metadata(&routers[0]);
     let state = Arc::new(Workers {
         routers: Mutex::new(routers),
         permits: Arc::new(Semaphore::new(workers)),
@@ -78,7 +86,14 @@ async fn map_overlays(
     })
     .await
     {
-        Ok(Ok(data)) => ([(axum::http::header::CACHE_CONTROL, "public, max-age=3600")], Json(data)).into_response(),
+        Ok(Ok(data)) => (
+            [
+                (axum::http::header::CACHE_CONTROL, "public, max-age=3600"),
+                (axum::http::header::CONTENT_TYPE, "application/json"),
+            ],
+            data,
+        )
+            .into_response(),
         Ok(Err(error)) => failure(error),
         Err(_) => failure(Error::Limit),
     }
@@ -129,7 +144,7 @@ async fn route(State(workers): State<Arc<Workers>>, request: Result<Json<Request
     }
 }
 
-fn failure(error: Error) -> Response {
+pub(crate) fn error_body(error: Error) -> (u16, Value) {
     let (status, code, message) = match error {
         Error::InvalidRequest(message) => (StatusCode::BAD_REQUEST, "invalid_request", message),
         Error::MissingRegion(_) => (
@@ -153,5 +168,17 @@ fn failure(error: Error) -> Response {
             (StatusCode::INTERNAL_SERVER_ERROR, "invalid_data", "Routing data failed validation.".into())
         }
     };
-    (status, Json(json!({ "code": code, "message": message }))).into_response()
+    (status.as_u16(), json!({ "code": code, "message": message }))
+}
+
+fn failure(error: Error) -> Response {
+    let (status, body) = error_body(error);
+    (StatusCode::from_u16(status).unwrap(), Json(body)).into_response()
+}
+
+pub(crate) fn metadata(router: &Router<Directory>) -> Value {
+    let package = router.package();
+    let manifest = package.manifest();
+    json!({ "package": package.identity(), "region": manifest.region, "bounds": manifest.bounds,
+        "profiles": manifest.metrics.keys().collect::<Vec<_>>(), "attribution": manifest.attribution, "warnings": manifest.warnings })
 }

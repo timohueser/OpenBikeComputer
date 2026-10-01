@@ -9,9 +9,9 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs::{File, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{Read, Write},
     path::Path,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
 const MAGIC: &[u8; 8] = b"OBCRIDX3";
@@ -20,7 +20,7 @@ const RECORD: u64 = 48;
 
 struct Files {
     index: memmap2::Mmap,
-    data: Mutex<File>,
+    data: File,
     count: u64,
     bytes: u64,
 }
@@ -58,17 +58,15 @@ impl Directory {
         let index = unsafe { memmap2::Mmap::map(&index) }.map_err(invalid)?;
         let data = file(&path.join("pages.bin"))?;
         let bytes = data.metadata().map_err(invalid)?.len();
-        Ok(Self(Arc::new(Files { index, data: Mutex::new(data), count, bytes })))
+        Ok(Self(Arc::new(Files { index, data, count, bytes })))
     }
 }
 
 impl Source for Directory {
     fn read(&self, digest: &str) -> Result<Vec<u8>> {
         let (offset, len) = self.location(digest)?;
-        let mut data = self.0.data.lock().map_err(|_| Error::Limit)?;
-        data.seek(SeekFrom::Start(offset)).map_err(invalid)?;
         let mut bytes = vec![0; len as usize];
-        data.read_exact(&mut bytes).map_err(invalid)?;
+        read_at(&self.0.data, &mut bytes, offset).map_err(invalid)?;
         Ok(bytes)
     }
 
@@ -83,6 +81,25 @@ impl Source for Directory {
         }
         Ok(())
     }
+}
+
+fn read_at(file: &File, mut bytes: &mut [u8], mut offset: u64) -> std::io::Result<()> {
+    while !bytes.is_empty() {
+        #[cfg(unix)]
+        let result = std::os::unix::fs::FileExt::read_at(file, bytes, offset);
+        #[cfg(windows)]
+        let result = std::os::windows::fs::FileExt::seek_read(file, bytes, offset);
+        match result {
+            Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+            Ok(read) => {
+                offset += read as u64;
+                bytes = &mut bytes[read..];
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 impl Directory {
@@ -178,6 +195,7 @@ fn file(path: &Path) -> Result<File> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Seek, SeekFrom};
 
     #[test]
     fn packed_pages_deduplicate_and_reject_invalid_ranges() {
@@ -200,7 +218,7 @@ mod tests {
             Directory(Arc::new(Files {
                 // SAFETY: The test drops the source before it changes the index.
                 index: unsafe { memmap2::Mmap::map(&file(&path.join("pages.idx")).unwrap()) }.unwrap(),
-                data: Mutex::new(file(&path.join("pages.bin")).unwrap()),
+                data: file(&path.join("pages.bin")).unwrap(),
                 count: 2,
                 bytes: 21,
             }))

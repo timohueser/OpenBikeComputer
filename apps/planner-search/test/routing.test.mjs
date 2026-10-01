@@ -9,10 +9,11 @@ test('routing adapter uses finite profiles, keeps snapped connectors explicit, a
     sent=JSON.parse(init.body);assert.ok(url.endsWith('/v1/route'));
     return {ok:true,json:async()=>({routes:[route]})};
   });
-  const result=await routeQuery({points,bike:'gravel',goal:'least_unpaved'});
-  assert.equal(sent.profile,'gravel/smoother');assert.deepEqual(result.legs[0][0],points[0]);
+  const result=await routeQuery({points,bike:'gravel',goal:'least_climbing'});
+  assert.equal(sent.profile,'gravel/less-climbing');assert.deepEqual(result.legs[0][0],points[0]);
   assert.equal(result.warnings.length,2);
   await assert.rejects(()=>routeQuery({points,bike:'gravel',goal:'most_climbing'}),/profile/);
+  await assert.rejects(()=>routeQuery({points,bike:'gravel',goal:'least_unpaved'}),/least unpaved/);
   assert.equal(fetch.mock.callCount(),1);
   route.legs[0].to_index=500;
   await assert.rejects(()=>routeQuery({points,bike:'touring',goal:'balanced'}),/incomplete/);

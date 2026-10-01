@@ -115,6 +115,13 @@ def verify_archive(pmtiles, path, tile_type, zoom):
             raise ValueError("The basemap must use the Protomaps layer schema.")
 
 
+def compact_archive(source, destination, region, terrain=False, recompress=True):
+    run("uv", "run", "--with-requirements", ROOT / "tools/requirements-planner-maps.txt",
+        "python", ROOT / "tools/planner_map_archive.py", source, destination,
+        "--bbox=" + ",".join(map(str, region)), *(["--terrain"] if terrain else []),
+        *([] if recompress else ["--no-recompress"]), cwd=ROOT)
+
+
 def prepare(args):
     if DATA.exists():
         raise ValueError(f"{DATA} already exists. Move it aside before preparing another map.")
@@ -128,6 +135,10 @@ def prepare(args):
             extract_bounds = terrain_bounds(args.bbox) if name == "terrain" else args.bbox
             run(args.pmtiles, "extract", source, str(path),
                 "--bbox=" + ",".join(map(str, extract_bounds)), f"--maxzoom={zoom}")
+            if name == "terrain":
+                compact = stage / "compact.pmtiles"
+                compact_archive(path, compact, args.bbox, terrain=True)
+                compact.replace(path)
             verify_archive(args.pmtiles, path, kind, zoom)
         with urlopen(ASSETS_URL, timeout=120) as response:
             install_assets(response.read(), stage / "assets")
@@ -234,18 +245,27 @@ def main():
     download.add_argument("--basemap", required=True, help="Protomaps PMTiles source URL or file")
     download.add_argument("--terrain", default="https://download.mapterhorn.com/planet.pmtiles")
     download.add_argument("--bbox", type=bounds, default=BW_BOUNDS)
+    compact = commands.add_parser("compact", help="Extract a box and losslessly compress its terrain")
+    compact.add_argument("source", type=Path)
+    compact.add_argument("output", type=Path)
+    compact.add_argument("--bbox", type=bounds, required=True)
+    compact.add_argument("--terrain", action="store_true")
+    compact.add_argument("--no-recompress", action="store_true")
     preview = commands.add_parser("serve", help="Run the map tile server and planner")
     preview.add_argument("--port", type=int, default=4175)
     preview.add_argument("--tile-port", type=int, default=8789)
     preview.add_argument("--routing", default="http://127.0.0.1:8788")
     args = parser.parse_args()
-    if not shutil.which(args.pmtiles):
+    if args.command != "compact" and not shutil.which(args.pmtiles):
         parser.error("Install the PMTiles CLI, or pass --pmtiles /path/to/pmtiles.")
     def stop(_signum, _frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop)
     try:
-        (prepare if args.command == "prepare" else serve)(args)
+        if args.command == "compact":
+            compact_archive(args.source, args.output, args.bbox, args.terrain, not args.no_recompress)
+        else:
+            (prepare if args.command == "prepare" else serve)(args)
     except KeyboardInterrupt:
         pass
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:

@@ -81,6 +81,8 @@ fn run(args: Args) -> Result<(), String> {
         graph
     };
     eprintln!("Preparing {} profiles for {} directed roads", profiles.len(), graph.roads.len());
+    let mut graph = graph;
+    route_build::layout::spatial_order(&mut graph)?;
     let temp = args.output.with_extension(format!("building-{}", std::process::id()));
     fs::create_dir(&temp).map_err(|e| e.to_string())?;
     let result = (|| {

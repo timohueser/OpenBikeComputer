@@ -1,5 +1,6 @@
 use crate::{
-    cost::RoadCost,
+    base,
+    cost::{CostBasis, RoadCost},
     model::{Point, Profile, Road},
     storage,
     table::{self, Table},
@@ -9,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-pub const FORMAT: u32 = 3;
+pub const FORMAT: u32 = 7;
 pub const MAX_MANIFEST_BYTES: usize = 128 * 1024 * 1024;
 pub const ROADS_PER_PAGE: u32 = 128;
 pub const CELL: i32 = 10_000;
@@ -30,9 +31,8 @@ pub trait Source {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Metric {
     pub profile: Profile,
-    pub graph: Table,
-    pub endpoints: Table,
-    pub states: u32,
+    pub weights: base::Weights,
+    pub costs: Table,
     /// One eligibility bit per directed road; snapping does not load cost pages.
     pub allowed: Table,
 }
@@ -41,22 +41,26 @@ pub struct Metric {
 pub struct Manifest {
     pub format: u32,
     pub region: String,
-    /// The graph is clipped to these bounds; optimality is within this graph only.
+    /// Endpoint coverage; complete intersecting road geometry can extend outside these bounds.
     pub bounds: [f64; 4],
     pub source_sha256: Vec<String>,
     pub attribution: String,
     pub warnings: Vec<String>,
     pub roads: u32,
+    pub graph: base::Topology,
     pub geometry: Table,
     pub osm: OsmPages,
     /// One-degree directories contain the fine snap cells.
     pub spatial: BTreeMap<String, String>,
     pub metrics: BTreeMap<String, Metric>,
+    pub costs: Table,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landmarks: Option<crate::landmarks::Index>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Endpoint {
-    pub cost: Option<RoadCost>,
+pub struct Endpoint<C = RoadCost> {
+    pub cost: Option<C>,
     pub arrival: u32,
     /// States from which this road can legally be entered.
     pub departures: Vec<Departure>,
@@ -101,12 +105,21 @@ pub struct Package<S> {
     source: S,
     keys: RefCell<table::Cache<String>>,
     words: RefCell<table::Cache<u64>>,
+    numbers: RefCell<table::Cache<u32>>,
+    shorts: RefCell<table::Cache<u16>>,
+    octets: RefCell<table::Cache<u8>>,
+    bases: RefCell<table::Cache<CostBasis>>,
     spatial: RefCell<VecDeque<(String, SpatialDirectory)>>,
     // Geometry has a separate byte budget from the query summaries.
     geometry: HashMap<u32, (Arc<Vec<Road>>, usize)>,
     geometry_order: VecDeque<u32>,
     geometry_bytes: usize,
-    endpoints: VecDeque<(String, u32, Arc<Vec<Endpoint>>, usize)>,
+    graph: Arc<Mutex<Option<Arc<base::Graph>>>>,
+    cached_costs: VecDeque<(String, Arc<base::Costs>)>,
+    junctions: Arc<Mutex<Option<Arc<Vec<u32>>>>>,
+    landmark_columns: RefCell<VecDeque<(Table, Arc<Vec<u16>>)>>,
+    landmark_blocks: RefCell<table::Cache<i64>>,
+    pub(crate) memory_budget: usize,
 }
 
 impl<S: Source> Package<S> {
@@ -141,18 +154,22 @@ impl<S: Source> Package<S> {
         for (id, metric) in &manifest.metrics {
             metric.profile.validate().map_err(Error::InvalidData)?;
             if id != &metric.profile.name
-                || metric.states == 0
-                || metric.graph.len != metric.states.div_ceil(storage::NODES_PER_PAGE)
-                || metric.endpoints.len != manifest.geometry.len
+                || !metric.weights.valid(&manifest.graph, manifest.roads)
+                || metric.costs.len != manifest.roads
                 || metric.allowed.len != manifest.roads.div_ceil(64)
             {
                 return Err(Error::InvalidData("Incomplete prepared metric".into()));
             }
         }
-        if !manifest.geometry.valid()
+        if !manifest.graph.valid(manifest.roads)
+            || !manifest.costs.valid()
+            || !manifest.geometry.valid()
             || manifest.osm.tables().any(|t| !t.valid())
-            || manifest.metrics.values().any(|m| !m.graph.valid() || !m.endpoints.valid() || !m.allowed.valid())
+            || manifest.metrics.values().any(|m| !m.allowed.valid() || !m.costs.valid())
             || manifest.spatial.values().any(|key| !table::valid_digest(key))
+            || manifest.landmarks.as_ref().is_some_and(|index| {
+                !index.valid(manifest.roads) || index.profiles.keys().any(|name| !manifest.metrics.contains_key(name))
+            })
         {
             return Err(Error::InvalidData("Invalid index directory".into()));
         }
@@ -162,12 +179,49 @@ impl<S: Source> Package<S> {
             source,
             keys: RefCell::new(table::Cache::default()),
             words: RefCell::new(table::Cache::default()),
+            numbers: RefCell::new(table::Cache::default()),
+            shorts: RefCell::new(table::Cache::default()),
+            octets: RefCell::new(table::Cache::default()),
+            bases: RefCell::new(table::Cache::default()),
             spatial: RefCell::new(VecDeque::new()),
             geometry: HashMap::new(),
             geometry_order: VecDeque::new(),
             geometry_bytes: 0,
-            endpoints: VecDeque::new(),
+            graph: Arc::new(Mutex::new(None)),
+            cached_costs: VecDeque::new(),
+            junctions: Arc::new(Mutex::new(None)),
+            landmark_columns: RefCell::new(VecDeque::new()),
+            landmark_blocks: RefCell::new(table::Cache::default()),
+            memory_budget: usize::MAX,
         })
+    }
+
+    /// Create an independent query cache that shares the immutable topology and source.
+    pub fn fork(&self) -> Self
+    where
+        S: Clone,
+    {
+        Self {
+            manifest: self.manifest.clone(),
+            identity: self.identity.clone(),
+            source: self.source.clone(),
+            keys: RefCell::new(table::Cache::default()),
+            words: RefCell::new(table::Cache::default()),
+            numbers: RefCell::new(table::Cache::default()),
+            shorts: RefCell::new(table::Cache::default()),
+            octets: RefCell::new(table::Cache::default()),
+            bases: RefCell::new(table::Cache::default()),
+            spatial: RefCell::new(VecDeque::new()),
+            geometry: HashMap::new(),
+            geometry_order: VecDeque::new(),
+            geometry_bytes: 0,
+            graph: Arc::clone(&self.graph),
+            cached_costs: VecDeque::new(),
+            junctions: Arc::clone(&self.junctions),
+            landmark_columns: RefCell::new(VecDeque::new()),
+            landmark_blocks: RefCell::new(table::Cache::default()),
+            memory_budget: self.memory_budget,
+        }
     }
 
     /// Check the complete object closure before publishing or installing a region.
@@ -181,14 +235,35 @@ impl<S: Source> Package<S> {
     /// All referenced objects, including index blocks, in the source's verification order.
     pub fn objects(&self) -> Result<Vec<String>> {
         let mut keys = std::collections::BTreeSet::new();
-        for table in std::iter::once(&self.manifest.geometry)
-            .chain(self.manifest.osm.tables())
-            .chain(self.manifest.metrics.values().flat_map(|m| [&m.graph, &m.endpoints]))
-        {
+        if let Some(index) = &self.manifest.landmarks {
+            for table in index.tables() {
+                keys.extend(table.blocks.iter().cloned());
+            }
+        }
+        keys.extend(self.manifest.costs.blocks.iter().cloned());
+        for block in 0..self.manifest.costs.blocks.len() {
+            let costs = self.bases.borrow_mut().block(self, &self.manifest.costs, block)?;
+            if costs.iter().any(|cost| !cost.valid()) {
+                return Err(Error::InvalidData("Invalid cost dictionary".into()));
+            }
+        }
+        for table in std::iter::once(&self.manifest.geometry).chain(self.manifest.osm.tables()) {
             keys.extend(table.blocks.iter().cloned());
             keys.extend(self.keys(table)?);
         }
+        for table in self.manifest.graph.tables() {
+            keys.extend(table.blocks.iter().cloned());
+        }
         for metric in self.manifest.metrics.values() {
+            for table in metric.weights.tables() {
+                keys.extend(table.blocks.iter().cloned());
+            }
+            for table in [&metric.costs] {
+                keys.extend(table.blocks.iter().cloned());
+                for block in 0..table.blocks.len() {
+                    self.numbers.borrow_mut().block(self, table, block)?;
+                }
+            }
             keys.extend(metric.allowed.blocks.iter().cloned());
             for block in 0..metric.allowed.blocks.len() {
                 self.words.borrow_mut().block(self, &metric.allowed, block)?;
@@ -289,7 +364,8 @@ impl<S: Source> Package<S> {
         let value = if let Some((value, _)) = self.geometry.get(&page) {
             Arc::clone(value)
         } else {
-            let value: Vec<Road> = self.read(&self.key(&self.manifest.geometry, page)?)?;
+            let value = crate::geometry::decode(&self.bytes(&self.key(&self.manifest.geometry, page)?)?)
+                .map_err(Error::InvalidData)?;
             if value.len() != (self.manifest.roads - page * ROADS_PER_PAGE).min(ROADS_PER_PAGE) as usize
                 || value.iter().any(|r| {
                     r.class > 6
@@ -324,50 +400,218 @@ impl<S: Source> Package<S> {
         Ok(road)
     }
 
-    pub fn endpoint(&mut self, metric: &str, id: u32) -> Result<Endpoint> {
+    fn number(&self, table: &Table, index: u32) -> Result<u32> {
+        if index >= table.len {
+            return Err(Error::InvalidData("Number outside table".into()));
+        }
+        let values = self.numbers.borrow_mut().block(self, table, index as usize / table::ENTRIES)?;
+        Ok(values[index as usize % table::ENTRIES])
+    }
+
+    fn graph(&self, metric: &str) -> Result<Arc<base::Graph>> {
+        let required = self.fixed_routing_bytes().saturating_add(self.metric(metric)?.weights.decoded_bytes());
+        if required > self.memory_budget {
+            return Err(Error::Limit);
+        }
+        {
+            let mut shared = self.graph.lock().map_err(|_| Error::Limit)?;
+            if shared.is_none() {
+                *shared = Some(Arc::new(base::Graph::read(self, &self.manifest.graph)?));
+            }
+            Ok(Arc::clone(shared.as_ref().unwrap()))
+        }
+    }
+
+    pub(crate) fn base(&mut self, metric: &str) -> Result<(Arc<base::Graph>, Arc<base::Costs>)> {
+        let graph = self.graph(metric)?;
+        let cached = self
+            .cached_costs
+            .iter()
+            .position(|(name, _)| name == metric)
+            .map(|index| self.cached_costs.remove(index).unwrap());
+        // Leave space for search queues before retaining other profiles.
+        while !self.cached_costs.is_empty()
+            && (self.cached_costs.len() >= 3
+                || self.routing_bytes(metric)?.saturating_add(16 * 1024 * 1024) > self.memory_budget)
+        {
+            self.cached_costs.pop_front();
+        }
+        let cached = if let Some(cached) = cached {
+            cached
+        } else {
+            let weights = &self.metric(metric)?.weights;
+            let turns = self.cached_costs.iter().find_map(|(name, costs)| {
+                (self.manifest.metrics[name].weights.turns == weights.turns).then(|| Arc::clone(&costs.turns))
+            });
+            let costs = base::Costs::read_shared(self, weights, &graph, turns)?;
+            (metric.into(), Arc::new(costs))
+        };
+        let costs = Arc::clone(&cached.1);
+        self.cached_costs.push_back(cached);
+        Ok((graph, costs))
+    }
+
+    pub(crate) fn landmarks(
+        &self,
+        metric: &str,
+        starts: &[crate::search::Seed],
+        ends: &[crate::search::Seed],
+    ) -> Result<Option<crate::landmarks::Prepared>> {
+        let Some(index) = &self.manifest.landmarks else {
+            return Ok(None);
+        };
+        let Some(tables) = index.profiles.get(metric) else {
+            return Ok(None);
+        };
+        if starts.is_empty() || ends.is_empty() {
+            return Ok(None);
+        }
+        let mapping = {
+            let mut shared = self.junctions.lock().map_err(|_| Error::Limit)?;
+            if shared.is_none() {
+                *shared = Some(Arc::new(crate::landmarks::read(self, &index.mapping, index.junctions - 1)?));
+            }
+            Arc::clone(shared.as_ref().unwrap())
+        };
+        let selected = crate::landmarks::select(tables.len(), index.scale, starts, ends, |i, road| {
+            let node =
+                *mapping.get(road as usize).ok_or_else(|| Error::InvalidData("Landmark seed outside mapping".into()))?
+                    as usize;
+            if let Some((_, column)) = self.landmark_columns.borrow().iter().find(|(t, _)| t == &tables[i]) {
+                return Ok(column[node]);
+            }
+            let deltas = self.landmark_blocks.borrow_mut().block(self, &tables[i], node / table::ENTRIES)?;
+            let value = deltas[..=node % table::ENTRIES]
+                .iter()
+                .try_fold(0i64, |sum, &delta| sum.checked_add(delta))
+                .and_then(|v| u16::try_from(v).ok())
+                .ok_or_else(|| Error::InvalidData("Invalid landmark seed distance".into()))?;
+            Ok(value)
+        })?;
+        let mut columns = Vec::new();
+        for (i, from, to) in selected {
+            let mut cache = self.landmark_columns.borrow_mut();
+            let values = if let Some(at) = cache.iter().position(|(t, _)| t == &tables[i]) {
+                cache.remove(at).unwrap().1
+            } else {
+                while cache.len() >= crate::landmarks::CACHED_COLUMNS {
+                    cache.pop_front();
+                }
+                Arc::new(crate::landmarks::read(self, &tables[i], u16::MAX as u32)?)
+            };
+            cache.push_back((tables[i].clone(), Arc::clone(&values)));
+            columns.push((values, from, to));
+        }
+        Ok(Some(crate::landmarks::Prepared { mapping, columns, scale: index.scale }))
+    }
+
+    fn weight(&self, column: &base::Column, index: usize) -> Result<u64> {
+        if index >= column.values.len as usize {
+            return Err(Error::InvalidData("Weight outside column".into()));
+        }
+        let (block, offset) = (index / table::ENTRIES, index % table::ENTRIES);
+        macro_rules! read {
+            ($cache:ident, $ty:ty) => {{
+                let value = self.$cache.borrow_mut().block(self, &column.values, block)?[offset];
+                if value == <$ty>::MAX {
+                    u64::MAX
+                } else {
+                    value as u64
+                }
+            }};
+        }
+        Ok(match column.width {
+            base::Width::U8 => read!(octets, u8),
+            base::Width::U16 => read!(shorts, u16),
+            base::Width::U32 => read!(numbers, u32),
+            base::Width::U64 => read!(words, u64),
+        })
+    }
+
+    fn road_weight(&self, metric: &str, id: u32) -> Result<u64> {
+        match self.cached_costs.iter().find(|(name, _)| name == metric) {
+            Some((_, costs)) => Ok(costs.roads.get(id as usize)),
+            _ => self.weight(&self.metric(metric)?.weights.road_costs, id as usize),
+        }
+    }
+
+    fn fixed_routing_bytes(&self) -> usize {
+        // Reserve a margin for geometry, index caches, compressed pages and decode scratch.
+        self.manifest
+            .graph
+            .decoded_bytes()
+            .saturating_add(crate::search::label_bytes(self.manifest.roads as usize))
+            .saturating_add(64 * 1024 * 1024)
+            .saturating_add(self.manifest.landmarks.as_ref().map_or(0, |index| index.decoded_bytes()))
+    }
+
+    pub(crate) fn routing_bytes(&self, metric: &str) -> Result<usize> {
+        let mut bytes = self.fixed_routing_bytes();
+        let mut turns = Vec::new();
+        for name in std::iter::once(metric)
+            .chain(self.cached_costs.iter().map(|(name, _)| name.as_str()).filter(|&name| name != metric))
+        {
+            let weights = &self.metric(name)?.weights;
+            bytes = bytes.saturating_add(weights.road_costs.decoded_bytes());
+            if !turns.contains(&&weights.turns) {
+                bytes = bytes.saturating_add(weights.turns.decoded_bytes());
+                turns.push(&weights.turns);
+            }
+        }
+        Ok(bytes)
+    }
+
+    pub fn prepared_endpoint(&mut self, metric: &str, id: u32) -> Result<Endpoint<CostBasis>> {
         if id >= self.manifest.roads {
             return Err(Error::InvalidData("Endpoint outside package".into()));
         }
-        let page = id / ROADS_PER_PAGE;
-        let value =
-            if let Some(index) = self.endpoints.iter().position(|(name, key, _, _)| name == metric && *key == page) {
-                self.endpoints.remove(index).unwrap().2
-            } else {
-                let value: Vec<Endpoint> = self.read(&self.key(&self.metric(metric)?.endpoints, page)?)?;
-                let states = self.metric(metric)?.states;
-                if value.len() != (self.manifest.roads - page * ROADS_PER_PAGE).min(ROADS_PER_PAGE) as usize {
-                    return Err(Error::InvalidData("Incomplete endpoint page".into()));
-                }
-                for (offset, e) in value.iter().enumerate() {
-                    let road = page as usize * ROADS_PER_PAGE as usize + offset;
-                    let allowed = self.allowed(metric, road as u32)?;
-                    if allowed != e.cost.is_some()
-                        || e.cost.as_ref().is_some_and(|cost| {
-                            !cost.valid() || e.arrival >= states || e.departures.iter().any(|d| d.state >= states)
-                        })
-                    {
-                        return Err(Error::InvalidData("Invalid endpoint page".into()));
-                    }
-                }
-                Arc::new(value)
-            };
-        let endpoint = value
-            .get((id % ROADS_PER_PAGE) as usize)
-            .cloned()
-            .ok_or_else(|| Error::InvalidData("Missing endpoint".into()))?;
-        let size = value.capacity() * std::mem::size_of::<Endpoint>()
-            + value
-                .iter()
-                .map(|e| {
-                    e.departures.capacity() * std::mem::size_of::<Departure>()
-                        + e.cost.as_ref().map_or(0, |c| c.penalties.capacity() * std::mem::size_of::<(f64, f64)>())
-                })
-                .sum::<usize>();
-        self.endpoints.push_back((metric.into(), page, value, size));
-        while self.endpoints.len() > 16 || self.endpoints.iter().map(|entry| entry.3).sum::<usize>() > 32 * 1024 * 1024
-        {
-            self.endpoints.pop_front();
+        let prepared = self.metric(metric)?;
+        let cost_id = self.number(&prepared.costs, id)?;
+        if self.allowed(metric, id)? != (cost_id != 0) {
+            return Err(Error::InvalidData("Cost and snap eligibility differ".into()));
         }
-        Ok(endpoint)
+        if cost_id == 0 {
+            return Ok(Endpoint { cost: None, arrival: id, departures: Vec::new() });
+        }
+        if cost_id > self.manifest.costs.len {
+            return Err(Error::InvalidData("Unknown cost basis".into()));
+        }
+        let index = cost_id as usize - 1;
+        let basis =
+            self.bases.borrow_mut().block(self, &self.manifest.costs, index / table::ENTRIES)?[index % table::ENTRIES];
+        if !basis.valid() {
+            return Err(Error::InvalidData("Invalid cost basis".into()));
+        }
+        let graph = self.graph(metric)?;
+        if self.road_weight(metric, id)? == u64::MAX {
+            return Err(Error::InvalidData("Missing accessible road cost".into()));
+        }
+        let mut departures = Vec::new();
+        for reverse in graph.reverse_first[id as usize]..graph.reverse_first[id as usize + 1] {
+            let reverse = reverse as usize;
+            let arc = graph.reverse_arc(reverse);
+            let penalty = match self.cached_costs.iter().find(|(name, _)| name == metric) {
+                Some((_, costs)) => costs.turns.get(arc),
+                _ => self.weight(&prepared.weights.turns, arc)?,
+            };
+            if penalty != u64::MAX {
+                departures.push(Departure { state: graph.reverse_tail[reverse], penalty });
+            }
+        }
+        Ok(Endpoint { cost: Some(basis), arrival: id, departures })
+    }
+
+    pub fn endpoint(&mut self, metric: &str, id: u32) -> Result<Endpoint> {
+        let endpoint = self.prepared_endpoint(metric, id)?;
+        let cost = endpoint
+            .cost
+            .map(|cost| cost.compile(&self.road(id)?, &self.metric(metric)?.profile).map_err(Error::InvalidData))
+            .transpose()?;
+        if let Some(cost) = &cost {
+            if self.road_weight(metric, id)? != cost.total() {
+                return Err(Error::InvalidData("Compiled road total differs from base metric".into()));
+            }
+        }
+        Ok(Endpoint { cost, arrival: endpoint.arrival, departures: endpoint.departures })
     }
 }

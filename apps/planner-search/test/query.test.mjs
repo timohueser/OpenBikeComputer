@@ -4,9 +4,52 @@ import {readFileSync} from 'node:fs';
 import {database} from './database.mjs';
 import {answerQuery} from '../query.mjs';
 import {validateRequest} from '../validation.mjs';
+import {searchRuntime} from '../runtime.mjs';
+import {nativeSearch} from '../native.mjs';
 const {db}=database();
 const input={q:'Kandel',view:[7.8,47.9,7.95,48.05],submitted:true};
 const never={parse(){throw new Error('Model must not run');}};
+
+test('shared runtime supplies one clock and explicit calendar capability for filtering and status', async()=>{
+  const times=[], now=Date.parse('2026-09-28T10:00:00Z');
+  const hours={assertEnvironment(){},
+    openingState(_place,_filter,context){times.push(Date.parse(context.now));return 'open';},
+    currentOpening(_place,time){times.push(time);return {state:'open',checkedAt:time};}};
+  assert.throws(()=>searchRuntime({db,parser:never}),/opening-hours adapters/);
+  const runtime=searchRuntime({db,parser:never,hours,clock:()=>now});
+  const result=await runtime.query({...input,q:'hotel',request:{type:'places',what:['hotel'],open:{now:true}}});
+  assert.ok(result.results.length);assert.ok(times.length>result.results.length);
+  assert.ok(times.every(time=>time===now));
+  assert.equal(result.results[0].hoursStatus.checkedAt,now);
+  hours.assertEnvironment=()=>{throw new Error('Wrong calendar zone');};
+  await assert.rejects(runtime.query(input),/Wrong calendar zone/);
+});
+
+test('native JSON capabilities preserve complete replies, metadata and reverse labels', async()=>{
+  const fixture=database();
+  fixture.conn.prepare('INSERT INTO metadata VALUES (?,?)').run('schema','3');
+  fixture.conn.prepare('INSERT INTO metadata VALUES (?,?)').run('attribution',JSON.stringify(['OSM contributors']));
+  const hours={assertEnvironment(){},openingState(){return 'unknown';},currentOpening(){return undefined;}};
+  let calls=0;
+  const native=nativeSearch({region:'test',hours,
+    all:(sql,bind)=>JSON.stringify({rows:fixture.db.all(sql,JSON.parse(bind))}),
+    parse:()=>{calls++;return JSON.stringify({request:{type:'reverse'},elapsed:1});}});
+  const answer=await native.request('query',{...input,q:'reverse this route',now:'2026-09-28T10:00:00Z'});
+  assert.equal(calls,1);assert.equal(answer.request.type,'reverse');
+  assert.equal((await native.request('status',{})).parser.ready,true);
+  const points=[[7.854,48.01],[7.86,48.02]];
+  assert.deepEqual(await native.request('route-request',{points,bike:'touring',goal:'shortest'}),
+    {points,profile:'touring/shorter',alternatives:false});
+  for (const goal of ['least_unpaved','most_climbing'])
+    await assert.rejects(native.request('route-request',{points,bike:'touring',goal}), /routing package has no/);
+  const reply={routes:[{geometry:points,legs:[{from_index:0,to_index:1}]}]};
+  assert.deepEqual((await native.request('route-reply',{input:{points,bike:'touring',goal:'shortest'},reply})).legs,[points]);
+  assert.equal(answer.region,'test');assert.deepEqual(answer.attribution,['OSM contributors']);
+  assert.deepEqual(await native.request('reverse',{coordinate:[7.854,48.01]}),{label:'Habsburgerstraße 10, Freiburg'});
+  await assert.rejects(native.request('query',{...input,region:'missing'}),/does not cover/);
+  await assert.rejects(native.request('reverse',{region:'missing',coordinate:[7.854,48.01]}),/does not cover/);
+  fixture.conn.close();
+});
 
 test('exact names and typed chip edits bypass the model, sentences invoke it',async()=>{
   const exact=await answerQuery(db,input,never);

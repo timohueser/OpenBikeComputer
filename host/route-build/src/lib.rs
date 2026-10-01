@@ -1,6 +1,8 @@
-mod compact;
+mod base;
 pub mod cost;
-mod hierarchy;
+pub mod extract;
+pub mod landmarks;
+pub mod layout;
 #[cfg(feature = "obc-terrain")]
 pub mod obc_terrain;
 pub mod osm;
@@ -8,14 +10,15 @@ mod road_bike;
 pub mod terrain;
 
 use route_engine::{
+    endpoints::Dictionary,
     model::{Graph, Profile},
-    package::{self, Manifest, Metric, CELL, ROADS_PER_PAGE},
+    package::{self, Manifest, CELL, ROADS_PER_PAGE},
     storage,
     table::Table,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Writes a closed regional package. Every shortcut witness and geometry page is included.
+/// Writes a closed regional package with all legal transitions and complete road geometry.
 /// The caller publishes the manifest only after all objects have been written.
 pub fn prepare(
     graph: &Graph,
@@ -25,18 +28,78 @@ pub fn prepare(
     source_sha256: Vec<String>,
     mut write: impl FnMut(&[u8]) -> Result<String, String>,
 ) -> Result<Manifest, String> {
+    if graph.roads.iter().any(|road| road.from as usize >= graph.points.len() || road.to as usize >= graph.points.len())
+    {
+        return Err("Invalid road endpoints".into());
+    }
+    for restrictions in [&graph.forbidden, &graph.forbidden_foot] {
+        if !restrictions.is_sorted() {
+            return Err("Unsorted turn restrictions".into());
+        }
+        for &(before, after) in restrictions {
+            let before = graph.roads.get(before as usize).ok_or("Unknown restriction road")?;
+            let after = graph.roads.get(after as usize).ok_or("Unknown restriction road")?;
+            if before.to != after.from {
+                return Err("Restriction roads do not meet".into());
+            }
+        }
+    }
+    let (mut manifest, edges) = prepare_base(graph, region, bounds, source_sha256, &mut write)?;
+    let mut dictionary = Dictionary::default();
+    let junctions = landmarks::Junctions::new(graph.roads.iter().map(|r| (r.from, r.to)))?;
+    let mut landmarks = junctions.index(&mut write)?;
+    for profile in profiles {
+        eprintln!("Preparing profile {}", profile.name);
+        if manifest.metrics.contains_key(&profile.name) {
+            return Err("Duplicate metric identity".into());
+        }
+        let costing = cost::Costing::new(graph, profile)?;
+        let road_costs: Vec<_> =
+            costing.roads.iter().map(|cost| cost.as_ref().map_or(u64::MAX, |cost| cost.total())).collect();
+        landmarks.profiles.insert(profile.name.clone(), junctions.prepare(&road_costs, &mut write)?);
+        let turns: Vec<_> =
+            edges.iter().map(|&(before, after)| costing.transition(before, after).unwrap_or(u64::MAX)).collect();
+        manifest.metrics.insert(
+            profile.name.clone(),
+            base::metric(
+                profile,
+                (0..graph.roads.len()).map(|road| costing.basis(road)),
+                &road_costs,
+                &turns,
+                &mut dictionary,
+                &mut write,
+            )?,
+        );
+    }
+    manifest.costs = Table::write(&dictionary.into_values(), &mut write)?;
+    manifest.landmarks = Some(landmarks);
+    Ok(manifest)
+}
+
+fn prepare_base(
+    graph: &Graph,
+    region: String,
+    bounds: [f64; 4],
+    source_sha256: Vec<String>,
+    mut write: impl FnMut(&[u8]) -> Result<String, String>,
+) -> Result<(Manifest, Vec<(u32, u32)>), String> {
+    let edges = base::edges(&graph.roads)?;
+    let roads = u32::try_from(graph.roads.len()).map_err(|_| "Too many roads")?;
     let mut manifest = Manifest {
+        landmarks: None,
         format: package::FORMAT,
         region,
         bounds,
         source_sha256,
         attribution: "© OpenStreetMap contributors; ODbL 1.0".into(),
         warnings: graph.warnings.clone(),
-        roads: u32::try_from(graph.roads.len()).map_err(|_| "Too many roads")?,
+        roads,
+        graph: route_engine::base::write_topology(roads, &edges, &mut write)?,
         geometry: Table::default(),
         osm: package::OsmPages::default(),
         spatial: BTreeMap::new(),
         metrics: BTreeMap::new(),
+        costs: Table::default(),
     };
     macro_rules! source_pages {
         ($field:ident) => {
@@ -74,7 +137,7 @@ pub fn prepare(
     let geometry = graph
         .roads
         .chunks(ROADS_PER_PAGE as usize)
-        .map(|roads| write(&storage::encode(&roads)?))
+        .map(|roads| write(&route_engine::geometry::encode(roads)?))
         .collect::<Result<Vec<_>, String>>()?;
     manifest.geometry = Table::write(&geometry, &mut write)?;
     let mut groups = BTreeMap::<String, BTreeMap<String, String>>::new();
@@ -88,41 +151,5 @@ pub fn prepare(
     for (group, cells) in groups {
         manifest.spatial.insert(group, write(&storage::encode(&cells)?)?);
     }
-    for profile in profiles {
-        eprintln!("Preparing profile {}", profile.name);
-        if manifest.metrics.contains_key(&profile.name) {
-            return Err("Duplicate metric identity".into());
-        }
-        let mut graph = compact::Compact::new(graph, profile)?;
-        let (pages, ranks) = hierarchy::export(&graph, &mut write)?;
-        for endpoint in &mut graph.endpoints {
-            if endpoint.cost.is_some() {
-                endpoint.arrival = ranks[endpoint.arrival as usize];
-                for state in &mut endpoint.departures {
-                    state.state = ranks[state.state as usize];
-                }
-            }
-        }
-        let mut endpoints = Vec::new();
-        let mut allowed = vec![0u64; graph.endpoints.len().div_ceil(64)];
-        for (id, endpoint) in graph.endpoints.iter().enumerate() {
-            if endpoint.cost.is_some() {
-                allowed[id / 64] |= 1 << (id % 64);
-            }
-        }
-        for page in graph.endpoints.chunks(ROADS_PER_PAGE as usize) {
-            endpoints.push(write(&storage::encode(&page)?)?);
-        }
-        manifest.metrics.insert(
-            profile.name.clone(),
-            Metric {
-                profile: profile.clone(),
-                graph: Table::write(&pages, &mut write)?,
-                endpoints: Table::write(&endpoints, &mut write)?,
-                states: ranks.len() as u32,
-                allowed: Table::write(&allowed, &mut write)?,
-            },
-        );
-    }
-    Ok(manifest)
+    Ok((manifest, edges))
 }

@@ -21,7 +21,7 @@ class ReleaseTests(unittest.TestCase):
             with sqlite3.connect(database) as db:
                 db.execute('CREATE TABLE metadata(key TEXT,value TEXT)')
                 db.execute("INSERT INTO metadata VALUES('schema','1')")
-            for schema in [1, 2]:
+            for schema in [1, 2, 3]:
                 with sqlite3.connect(database) as db:
                     db.execute("UPDATE metadata SET value=? WHERE key='schema'", (str(schema),))
                 with self.assertRaisesRegex(ValueError, 'Rebuild search package'):
@@ -31,8 +31,9 @@ class ReleaseTests(unittest.TestCase):
                         planner_prepare.prepare(argparse.Namespace(data_dir=root, recipe=release.maps.ROOT / 'tools/planner-regions/baden-wuerttemberg.json'))
                     run.assert_not_called()
             with sqlite3.connect(database) as db:
-                db.execute('CREATE VIRTUAL TABLE address_spatial USING rtree(id,west,east,south,north)')
-            self.assertEqual(release.search_metadata(database, full=True)['schema'], 2)
+                db.execute('CREATE TABLE addresses(lat REAL,lon REAL)')
+                db.execute('CREATE INDEX address_cells ON addresses(CAST((lat+90)*200 AS INTEGER)*72001+CAST((lon+180)*200 AS INTEGER))')
+            self.assertEqual(release.search_metadata(database, full=True)['schema'], 3)
 
     def test_changed_or_missing_bytes_fail_release_verification(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -83,8 +84,9 @@ class ReleaseTests(unittest.TestCase):
 
     def test_recipe_names_explicit_profiles_and_rejects_invalid_selection(self):
         config = json.loads((release.maps.ROOT / "tools/planner-regions/baden-wuerttemberg.json").read_bytes())
-        self.assertEqual(set(config["profiles"]), {bike + suffix for bike in ["touring", "road", "gravel", "mtb", "hiking"]
-                                                for suffix in ["", "/less-climbing"]})
+        expected = {bike + suffix for bike in ["touring", "road", "gravel", "mtb", "hiking"]
+                    for suffix in ["", "/less-climbing", "/shorter"]}
+        self.assertEqual(set(config["profiles"]), expected)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "region.json"
             for profiles in [[], ["all"], ["road", "road"], ["mtb/quieter"], [{}]]:

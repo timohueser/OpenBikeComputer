@@ -1,0 +1,48 @@
+{
+  "Python-Apple-support-3.14-b10/LICENSE": {
+    "url": "https://raw.githubusercontent.com/beeware/Python-Apple-support/3.14-b10/LICENSE",
+    "sha256": "3cfe3712fcd6d53d5055b49d1f2f7e6ad64434b90208bc98c1cbbda126b6dbc6"
+  },
+  "CPython-3.14.6/third-party.rst": {
+    "url": "https://raw.githubusercontent.com/python/cpython/v3.14.6/Doc/license.rst",
+    "sha256": "c695d550b135e53e38807e76496d1db17d22c40e461d1f3f354c86188d3305dd"
+  },
+  "ONNX-Runtime-1.30.0/ThirdPartyNotices.txt": {
+    "url": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.30.0/ThirdPartyNotices.txt",
+    "sha256": "143764b952fdb1a7c69ce653bfba74a7744d6a8a573bfb73e235fba356c83de3"
+  },
+  "bzip2-1.0.8/LICENSE": {
+    "url": "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz",
+    "sha256": "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269",
+    "member": "bzip2-1.0.8/LICENSE"
+  },
+  "libffi-3.4.7/LICENSE": {
+    "url": "https://raw.githubusercontent.com/libffi/libffi/v3.4.7/LICENSE",
+    "sha256": "67894089811f93fca47a76f85e017da6f8582d4ba0905963c6e0f1ad6df7a195"
+  },
+  "mpdecimal-4.0.0/COPYRIGHT.txt": {
+    "url": "https://www.bytereef.org/software/mpdecimal/releases/mpdecimal-4.0.0.tar.gz",
+    "sha256": "942445c3245b22730fd41a67a7c5c231d11cb1b9936b9c0f76334fb7d0b4468c",
+    "member": "mpdecimal-4.0.0/COPYRIGHT.txt"
+  },
+  "OpenSSL-3.5.7/LICENSE.txt": {
+    "url": "https://raw.githubusercontent.com/openssl/openssl/openssl-3.5.7/LICENSE.txt",
+    "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
+  },
+  "xz-5.6.4/COPYING": {
+    "url": "https://raw.githubusercontent.com/tukaani-project/xz/v5.6.4/COPYING",
+    "sha256": "ee3b35b82f7bb0ba5fd9f13ca34ebbe757a59c05bfde5ab9d50ff4188ed33396"
+  },
+  "xz-5.6.4/COPYING.0BSD": {
+    "url": "https://raw.githubusercontent.com/tukaani-project/xz/v5.6.4/COPYING.0BSD",
+    "sha256": "0b01625d853911cd0e2e088dcfb743261034a091bb379246cb25a14cc4c74bf1"
+  },
+  "zstd-1.5.7/LICENSE": {
+    "url": "https://raw.githubusercontent.com/facebook/zstd/v1.5.7/LICENSE",
+    "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8"
+  },
+  "zstd-1.5.7/COPYING": {
+    "url": "https://raw.githubusercontent.com/facebook/zstd/v1.5.7/COPYING",
+    "sha256": "f9c375a1be4a41f7b70301dd83c91cb89e41567478859b77eef375a52d782505"
+  }
+}

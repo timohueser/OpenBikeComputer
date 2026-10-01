@@ -5,7 +5,6 @@ from contextlib import closing
 import argparse
 import os
 from pathlib import Path
-import re
 import signal
 import sqlite3
 import tempfile
@@ -13,12 +12,10 @@ import subprocess
 
 try:
     from . import planner_maps as maps, planner_sources as sources, r2
+    from .planner_runtime import encoded, release
 except ImportError:
     import planner_maps as maps, planner_sources as sources, r2
-
-
-def encoded(value):
-    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+    from planner_runtime import encoded, release
 
 
 def read_url(url):
@@ -26,28 +23,13 @@ def read_url(url):
         return json.load(response)
 
 
-def release(data):
-    path = data / "release.json"
-    document = json.loads(path.read_bytes())
-    identity = sources.digest(path)
-    if document["format"] != 1 or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", document["region"]):
-        raise ValueError("Unsupported planner release")
-    for name, item in {**document["files"], **document.get("source_files", {})}.items():
-        file = data / name
-        if not file.resolve().is_relative_to(data.resolve()) or not re.fullmatch(r"[a-f0-9]{64}", item["sha256"]):
-            raise ValueError("Invalid release file")
-        if file.stat().st_size != item["bytes"] or sources.digest(file) != item["sha256"]:
-            raise ValueError(f"Release checksum mismatch: {name}")
-    return identity, document
-
-
 def search_metadata(database, full=False):
     with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as db:
         metadata = {k: json.loads(v) for k, v in db.execute("SELECT key,value FROM metadata")}
-        if metadata.get("schema") != 2:
+        if metadata.get("schema") != 3:
             raise ValueError(f"Rebuild search package {database}: incompatible schema.")
         try:
-            db.execute('SELECT id FROM address_spatial LIMIT 0')
+            db.execute('SELECT rowid FROM addresses INDEXED BY address_cells LIMIT 0')
         except sqlite3.Error as error:
             raise ValueError(f"Rebuild search package {database}: missing address index.") from error
         if full and db.execute("PRAGMA quick_check").fetchone() != ("ok",):
@@ -57,7 +39,7 @@ def search_metadata(database, full=False):
 
 def seal(data, region, device_catalog, provenance):
     routing = json.loads((data / "routing/manifest.json").read_bytes())
-    if routing["format"] != 3 or routing["region"] != region:
+    if routing["format"] != 7 or routing["region"] != region:
         raise ValueError("Build a packed routing package for this region")
     with sqlite3.connect(f"{(data / 'routing/overlays.sqlite').as_uri()}?mode=ro", uri=True) as db:
         if db.execute("SELECT package FROM metadata").fetchone() != (sources.digest(data / "routing/manifest.json"),):

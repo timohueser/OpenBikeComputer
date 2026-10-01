@@ -1,5 +1,5 @@
 import type { ExpressionSpecification, GeoJSONSource, Map, MapGeoJSONFeature, MapMouseEvent } from 'maplibre-gl';
-import type { FeatureCollection } from 'geojson';
+import type { Feature, FeatureCollection } from 'geojson';
 import type { Coordinate } from './map-types';
 import { trailMarker } from './trail-markers';
 
@@ -32,14 +32,19 @@ export const networkNames: Record<string, string> = {
     iwn: 'International hiking route', nwn: 'National hiking route', rwn: 'Regional hiking route', lwn: 'Local hiking route',
 };
 const source = 'route-overlays';
+const labelZoom = 11;
 const interactiveLayers = ['network-cycling', 'network-hiking', 'hiking-markers', 'access-symbols'];
 const empty: FeatureCollection = { type: 'FeatureCollection', features: [] };
 const endpoint = import.meta.env.VITE_PLANNER_ROUTING_URL ?? '/routing';
-type OverlayCollection = FeatureCollection & { coverage: [number, number, number, number]; routes?: Record<string, NetworkRoute> };
+type OverlayCollection = FeatureCollection & { package: string; coverage: [number, number, number, number]; routes?: Record<string, NetworkRoute> };
 type CachedOverlay = { bounds: number[]; zoom: number; key: string; data: OverlayCollection };
 const contains = (outer: number[], inner: number[]) => inner[0] >= outer[0] && inner[1] >= outer[1] && inner[2] <= outer[2] && inner[3] <= outer[3];
+const renderFeature = ({ type, id, geometry, properties }: Feature): Feature => {
+    const { kind, rank, ref, marker, status } = properties ?? {};
+    return { type, id, geometry, properties: { kind, rank, ref, marker, status } };
+};
 
-export function overlaySelection(feature: MapGeoJSONFeature, coordinate: Coordinate, catalog?: Record<string, NetworkRoute>): OverlaySelection {
+export function overlaySelection(feature: Pick<MapGeoJSONFeature, 'properties'>, coordinate: Coordinate, catalog?: Record<string, NetworkRoute>): OverlaySelection {
     const p = feature.properties;
     // Vector workers encode nested GeoJSON properties as JSON strings.
     const nested = <T>(value: T | string | undefined): T | undefined => typeof value === 'string' ? JSON.parse(value) : value;
@@ -63,7 +68,10 @@ export class RouteOverlays {
     private accessMode: AccessMode = 'cycling';
     private abort?: AbortController;
     private cache: CachedOverlay[] = [];
+    private package?: string;
     private displayed?: OverlayCollection;
+    private displayedKey?: string;
+    private properties = new globalThis.Map<string | number | undefined, Feature['properties']>();
     private pending?: { bounds: number[]; zoom: number; key: string; task: Promise<void> };
     private disposed = false;
     private hovered?: string | number;
@@ -95,7 +103,7 @@ export class RouteOverlays {
                         17, ['case', ['boolean', ['feature-state', 'hover'], false], 6.2, 5]] },
             }, before);
             this.map.addLayer({
-                id: `network-${activity}-labels`, type: 'symbol', source, minzoom: 11,
+                id: `network-${activity}-labels`, type: 'symbol', source, minzoom: labelZoom,
                 filter: ['all', ['==', ['get', 'kind'], activity], ['!=', ['get', 'ref'], '']],
                 layout: { 'symbol-placement': 'line', 'symbol-spacing': 350, 'text-field': ['get', 'ref'],
                     'text-font': ['Noto Sans Medium'], 'text-size': 11, 'text-offset': [0, 0.8], 'text-max-width': 8 },
@@ -147,7 +155,16 @@ export class RouteOverlays {
 
     hit(event: MapMouseEvent): OverlaySelection | null {
         const feature = this.featureAt(event);
-        return feature ? overlaySelection(feature, [event.lngLat.lng, event.lngLat.lat], this.displayed?.routes) : null;
+        return feature ? this.selection(feature, [event.lngLat.lng, event.lngLat.lat]) : null;
+    }
+
+    selection(feature: Pick<MapGeoJSONFeature, 'id' | 'properties'>, coordinate: Coordinate): OverlaySelection {
+        // A worker can still show the preceding viewport while its update runs.
+        const previous = this.properties.has(feature.id) ? undefined
+            : this.cache.find(item => item.data.features.some(row => row.id === feature.id));
+        const properties = this.properties.get(feature.id)
+            ?? previous?.data.features.find(row => row.id === feature.id)?.properties ?? feature.properties;
+        return overlaySelection({ properties }, coordinate, previous?.data.routes ?? this.displayed?.routes);
     }
 
     hover(event?: MapMouseEvent): boolean {
@@ -184,8 +201,7 @@ export class RouteOverlays {
         if (cached) {
             this.abort?.abort();
             this.pending = undefined;
-            if (this.displayed !== cached.data) target.setData(cached.data);
-            this.displayed = cached.data;
+            this.show(target, cached.data, `${key}:${zoom}`);
             this.cache = [cached, ...this.cache.filter(item => item !== cached)];
             this.coverageStatus(b, cached.data);
             return;
@@ -217,17 +233,40 @@ export class RouteOverlays {
             const data = await response.json() as OverlayCollection & { message?: string };
             if (!response.ok) throw new Error(data.message ?? 'Map overlays could not load.');
             if (abort.signal.aborted || this.disposed) return;
+            if (this.package !== data.package) {
+                this.package = data.package;
+                this.cache = [];
+                this.displayed = undefined;
+                this.displayedKey = undefined;
+                this.properties.clear();
+                this.hover();
+            }
+            const markers = new globalThis.Map<string, boolean>();
+            const supported = (symbol?: string) => {
+                if (!symbol) return false;
+                if (!markers.has(symbol)) markers.set(symbol, !!trailMarker(symbol));
+                return markers.get(symbol);
+            };
             for (const feature of data.features) {
                 const p = feature.properties;
                 if (p?.kind === 'hiking') {
                     const routes: NetworkRoute[] = data.routes ? p.routes.map((id: number) => data.routes![id]) : p.routes;
-                    const symbol = routes?.find(route => trailMarker(route.symbol))?.symbol;
+                    const symbol = routes?.find(route => supported(route.symbol))?.symbol;
                     p.marker = symbol ? `trail:${symbol}` : '';
                 }
             }
+            const shared = new globalThis.Map<string | number | undefined, Feature>();
+            for (const item of this.cache) {
+                if (item.data.package !== data.package || item.key !== key || item.zoom !== zoom) continue;
+                for (const feature of item.data.features) shared.set(feature.id, feature);
+                if (data.routes && item.data.routes) {
+                    for (const id of Object.keys(data.routes)) data.routes[id] = item.data.routes[id] ?? data.routes[id];
+                }
+            }
+            // Complete features are immutable for one release, layer/mode selection and zoom.
+            data.features = data.features.map(feature => shared.get(feature.id) ?? feature);
             this.cache = [{ bounds, zoom, key, data }, ...this.cache].slice(0, 6);
-            this.displayed = data;
-            target.setData(data);
+            this.show(target, data, `${key}:${zoom}`);
             const view = this.map.getBounds();
             this.coverageStatus([view.getWest(), view.getSouth(), view.getEast(), view.getNorth()], data);
         } catch (error) {
@@ -235,6 +274,28 @@ export class RouteOverlays {
             this.displayed = undefined;
             target.setData(empty);
             this.status(error instanceof Error ? error.message : 'Map overlays could not load.', true);
+        }
+    }
+
+    private show(target: GeoJSONSource, data: OverlayCollection, key: string) {
+        if (this.displayed === data) return;
+        const previous = this.displayed;
+        this.displayed = data;
+        this.properties = new globalThis.Map(data.features.map(feature => [feature.id, feature.properties]));
+        const viewKey = `${data.package}:${key}`;
+        const sameView = this.displayedKey === viewKey;
+        this.displayedKey = viewKey;
+        // Symbol collision placement depends on feature order.
+        if (previous && sameView && this.map.getZoom() < labelZoom) {
+            // Within a release, IDs and zoom determine complete geometry and properties.
+            const before = new Set(previous.features.map(feature => feature.id));
+            const after = new Set(data.features.map(feature => feature.id));
+            const remove = [...before].filter(id => !after.has(id)) as (string | number)[];
+            const add = data.features.filter(feature => !before.has(feature.id)).map(renderFeature);
+            if (remove.length || add.length) void target.updateData({ remove, add });
+        } else {
+            // Catalogues serve popups; the renderer only needs features.
+            void target.setData({ type: 'FeatureCollection', features: data.features.map(renderFeature) });
         }
     }
 

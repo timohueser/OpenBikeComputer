@@ -1,8 +1,8 @@
-//! Compile source attributes and terrain into additive costs before contraction.
+//! Compile source attributes and terrain into additive routing costs.
 use crate::road_bike::{self, WayCost};
 use route_engine::{
-    cost::RoadCost,
-    model::{Graph, Point, Profile, RoadBike, Weighting, BIKE, FOOT, NO_ELEVATION, PUSH},
+    cost::{turn, CostBasis, CostParameters, RoadCost},
+    model::{Graph, Profile, Weighting, BIKE, FOOT, PUSH},
     osm::Id,
 };
 use std::collections::HashMap;
@@ -54,10 +54,14 @@ impl<'a> Costing<'a> {
                 }
                 cost
             });
-            roads.push(way.map(|w| curve(road, profile, w)).transpose()?);
+            roads.push(way.map(|w| parameters(road, w).compile(road, profile)).transpose()?);
             ways.push(way);
         }
         Ok(Self { graph, profile, ways, roads })
+    }
+
+    pub fn basis(&self, road: usize) -> Option<CostBasis> {
+        self.ways[road].map(|way| CostBasis { factor: way.factor, turn: way.turn, ferry: way.ferry })
     }
 
     pub fn transition(&self, before: u32, after: u32) -> Option<u64> {
@@ -97,6 +101,10 @@ impl<'a> Costing<'a> {
         }
         Some(cost.round() as u64)
     }
+}
+
+fn parameters(road: &route_engine::model::Road, way: WayCost) -> CostParameters {
+    CostParameters { distance: road.length_m as f64 * way.factor, turn: way.turn, ferry: way.ferry }
 }
 
 fn cycle_routes(graph: &Graph) -> HashMap<i64, u8> {
@@ -147,76 +155,10 @@ fn cycle_routes(graph: &Graph) -> HashMap<i64, u8> {
     ways
 }
 
-fn curve(road: &route_engine::model::Road, profile: &Profile, way: WayCost) -> Result<RoadCost, String> {
-    let lengths: Vec<_> = road.shape.windows(2).map(|p| p[0].distance(p[1])).collect();
-    let total: f64 = lengths.iter().sum();
-    if total <= 0.0 {
-        return Err("Road has zero geometric length".into());
-    }
-    let (up, down, cutoff) = match profile.weighting {
-        Weighting::RoadBike(RoadBike::Shorter) => (0.0, 0.0, 0.015),
-        Weighting::RoadBike(RoadBike::LessClimbing) => (60.0, 60.0, 0.015),
-        Weighting::RoadBike(_) => (0.0, 60.0, 0.015),
-        Weighting::Weighted { climb, .. } => (climb, 0.0, 0.0),
-    };
-    let mut result = RoadCost { distance: road.length_m as f64 * way.factor, penalties: Vec::new() };
-    let mut distance = 0.0;
-    let mut penalty = 0.0;
-    for (i, (&length, pair)) in lengths.iter().zip(road.shape.windows(2)).enumerate() {
-        if i > 0 && way.turn != 0.0 {
-            let bend = turn(road.shape[i - 1], road.shape[i], road.shape[i + 1], way.turn);
-            if bend > 0.0 {
-                penalty += bend;
-                knot(&mut result.penalties, distance / total, penalty);
-            }
-        }
-        if pair.iter().all(|p| p.elevation != NO_ELEVATION) && !way.ferry {
-            let delta = pair[1].elevation as f64 - pair[0].elevation as f64;
-            penalty += (delta - length * cutoff).max(0.0) * up + (-delta - length * cutoff).max(0.0) * down;
-        }
-        distance += length;
-        knot(&mut result.penalties, (distance / total).min(1.0), penalty);
-    }
-    if penalty == 0.0 {
-        result.penalties.clear();
-    }
-    if !result.valid() {
-        return Err("Invalid prepared road cost".into());
-    }
-    Ok(result)
-}
-
-fn knot(points: &mut Vec<(f64, f64)>, fraction: f64, cost: f64) {
-    let next = (fraction, cost);
-    if let Some(&last) = points.last() {
-        let previous = if points.len() > 1 { points[points.len() - 2] } else { (0.0, 0.0) };
-        // Keep changes of slope and steps, but omit collinear terrain samples.
-        if fraction > last.0
-            && last.0 > previous.0
-            && ((next.1 - last.1) * (last.0 - previous.0) - (last.1 - previous.1) * (next.0 - last.0)).abs() < 1e-9
-        {
-            points.pop();
-        }
-    }
-    points.push(next);
-}
-
-fn turn(a: Point, b: Point, c: Point, base: f64) -> f64 {
-    let scale = (b.lat as f64 * 1e-6).to_radians().cos();
-    let ab = ((b.lon as f64 - a.lon as f64) * scale, b.lat as f64 - a.lat as f64);
-    let bc = ((c.lon as f64 - b.lon as f64) * scale, c.lat as f64 - b.lat as f64);
-    let lengths = ab.0.hypot(ab.1) * bc.0.hypot(bc.1);
-    if lengths == 0.0 {
-        return 0.0;
-    }
-    let cosine = ((ab.0 * bc.0 + ab.1 * bc.1) / lengths).clamp(-1.0, 1.0);
-    ((1.0 - cosine) * base + 0.2).floor()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use route_engine::model::{Road, Surface};
+    use route_engine::model::{Point, Road, Surface, NO_ELEVATION};
 
     fn road(shape: Vec<Point>) -> Road {
         Road {
@@ -239,7 +181,9 @@ mod tests {
     }
     fn cost(road: &Road, name: &str) -> RoadCost {
         let profile = Profile::presets().into_iter().find(|p| p.name == name).unwrap();
-        curve(road, &profile, WayCost { factor: 1.0, turn: 90.0, ferry: false, pushing: false }).unwrap()
+        parameters(road, WayCost { factor: 1.0, turn: 90.0, ferry: false, pushing: false })
+            .compile(road, &profile)
+            .unwrap()
     }
     fn point(lon: i32, elevation: f32) -> Point {
         Point { lat: 0, lon, elevation }

@@ -3,14 +3,16 @@ import { DatabaseSync } from 'node:sqlite';
 import { existsSync, statSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { parserProcess } from './parser.mjs';
-import { answerQuery } from './query.mjs';
+import { searchRuntime } from './runtime.mjs';
+import { openingHours } from './hours.mjs';
 import { routeQuery } from './routing.mjs';
 import { validateInput } from './validation.mjs';
 import { allowedOrigin } from './origins.mjs';
-import { reverseAddress } from './web/reverse.mjs';
 
 const root = import.meta.dirname,
   data = path.resolve(process.env.OBC_SEARCH_DATA || path.join(root, 'data'));
+process.env.TZ = 'Europe/Berlin';
+const hours = openingHours({countryCode:'de',timeZone:'Europe/Berlin'});
 const parser = parserProcess(
   process.env.OBC_SEARCH_PYTHON || path.join(root, '.venv/bin/python'),
   path.join(data, 'model'),
@@ -37,11 +39,12 @@ for (const region of (process.env.OBC_SEARCH_REGIONS || 'germany,baden-wuerttemb
   const metadata = Object.fromEntries(
     db.all('SELECT * FROM metadata').map((r) => [r.key, JSON.parse(r.value)]),
   );
-  if (metadata.schema !== 2)
+  if (metadata.schema !== 3)
     throw new Error(`Rebuild ${region}: incompatible search data.`);
-  conn.prepare('SELECT id FROM address_spatial LIMIT 0');
+  conn.prepare('SELECT rowid FROM addresses INDEXED BY address_cells LIMIT 0');
   databases.set(region, {
     db,
+    runtime: searchRuntime({db,parser,hours,region,attribution:metadata.attribution}),
     metadata,
     bytes: statSync(file).size,
     close: () => conn.close(),
@@ -135,17 +138,11 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
-    const { db } = database;
     if (url.pathname === '/api/planner-search/reverse') {
-      json(200, {label: reverseAddress(db, input.coordinate)});
+      json(200, database.runtime.reverse(input.coordinate));
       return;
     }
-    const answer = await answerQuery(db, input, parser);
-    json(200, {
-      ...answer,
-      region,
-      attribution: database.metadata.attribution,
-    });
+    json(200, await database.runtime.query(input));
   } catch (error) {
     json(400, { error: error.message });
   } finally {

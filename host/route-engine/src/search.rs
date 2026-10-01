@@ -1,396 +1,572 @@
-use crate::model::Cost;
-use crate::storage::{Cache, EdgeRef, Seed, NODES_PER_PAGE};
-use serde::Serialize;
-use std::cmp::Reverse;
-use std::collections::{BTreeSet, BinaryHeap, HashMap, VecDeque};
+use crate::queue::Queue;
+use crate::{
+    base::{Costs, Graph},
+    Error, Result,
+};
 
-#[derive(Clone, Copy)]
-struct Label {
-    cost: Cost,
-    parent: Option<(u32, EdgeRef)>,
-    road: u32,
+const LABEL_BLOCK: usize = 512;
+// Reuse a bounded pool across short legs and alternative searches.
+const SPARE_BLOCKS: usize = 1024;
+
+struct LabelBlock {
+    costs: [u64; LABEL_BLOCK],
+    parents: [u32; LABEL_BLOCK],
+    origins: [u8; LABEL_BLOCK],
 }
 
 #[derive(Default)]
-struct Frontier {
-    heap: BinaryHeap<Reverse<(Cost, u32)>>,
-    labels: HashMap<u32, Label>,
+struct Labels {
+    blocks: Vec<Vec<LabelBlock>>,
+    spare: Vec<Vec<LabelBlock>>,
+    count: usize,
 }
-
-impl Frontier {
-    fn new(seeds: &[Seed]) -> Self {
-        let mut f = Self::default();
-        for s in seeds {
-            if f.labels.get(&s.node).is_none_or(|old| s.cost < old.cost) {
-                f.labels.insert(s.node, Label { cost: s.cost, parent: None, road: s.road });
-                f.heap.push(Reverse((s.cost, s.node)));
+impl Labels {
+    fn reset(&mut self, nodes: usize) -> Result<()> {
+        let blocks = nodes.div_ceil(LABEL_BLOCK);
+        let retained = blocks.min(SPARE_BLOCKS);
+        self.spare.truncate(retained);
+        self.spare.try_reserve_exact(retained - self.spare.len()).map_err(|_| Error::Limit)?;
+        for block in self.blocks.drain(..) {
+            if !block.is_empty() && self.spare.len() < retained {
+                self.spare.push(block);
             }
         }
-        f
+        self.blocks.try_reserve_exact(blocks).map_err(|_| Error::Limit)?;
+        self.blocks.resize_with(blocks, Vec::new);
+        self.count = 0;
+        Ok(())
     }
-
-    fn peek(&mut self) -> Option<(Cost, u32)> {
-        while let Some(&Reverse((cost, node))) = self.heap.peek() {
-            if self.labels[&node].cost == cost {
-                return Some((cost, node));
+    fn cost(&self, node: usize) -> u64 {
+        self.blocks[node / LABEL_BLOCK].first().map_or(u64::MAX, |b| b.costs[node % LABEL_BLOCK])
+    }
+    fn origin(&self, node: usize) -> u8 {
+        self.blocks[node / LABEL_BLOCK].first().map_or(u8::MAX, |b| b.origins[node % LABEL_BLOCK])
+    }
+    fn parent(&self, node: usize) -> u32 {
+        self.blocks[node / LABEL_BLOCK].first().map_or(u32::MAX, |b| b.parents[node % LABEL_BLOCK])
+    }
+    fn set(&mut self, node: u32, cost: u64, parent: u32, origin: u8) -> Result<()> {
+        let n = node as usize;
+        let slot = &mut self.blocks[n / LABEL_BLOCK];
+        if slot.is_empty() {
+            if let Some(mut block) = self.spare.pop() {
+                block[0].costs.fill(u64::MAX);
+                *slot = block;
+            } else {
+                slot.try_reserve_exact(1).map_err(|_| Error::Limit)?;
+                slot.push(LabelBlock {
+                    costs: [u64::MAX; LABEL_BLOCK],
+                    parents: [u32::MAX; LABEL_BLOCK],
+                    origins: [u8::MAX; LABEL_BLOCK],
+                });
             }
-            self.heap.pop();
         }
-        None
+        let block = &mut slot[0];
+        let index = n % LABEL_BLOCK;
+        if block.costs[index] == u64::MAX {
+            self.count += 1;
+        }
+        block.costs[index] = cost;
+        block.parents[index] = parent;
+        block.origins[index] = origin;
+        Ok(())
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Progress {
-    Working { labels: usize },
-    NeedPages { pages: Vec<u32> },
-    Done { cost: Cost, roads: Vec<u32>, labels: usize },
-    NoPath,
-    Limit,
-    Cancelled,
-    Invalid { message: String },
+pub(crate) fn label_bytes(nodes: usize) -> usize {
+    let blocks = nodes.div_ceil(LABEL_BLOCK);
+    blocks
+        .saturating_mul(2 * (size_of::<LabelBlock>() + size_of::<Vec<LabelBlock>>()))
+        .saturating_add(blocks.min(SPARE_BLOCKS) * 2 * size_of::<Vec<LabelBlock>>())
 }
 
-/// The host supplies immutable pages and calls poll between UI events or from a worker.
-/// The label budget also bounds unpacked roads and the shortcut stack.
-pub struct Search {
-    frontiers: [Frontier; 2],
-    best: Cost,
-    meeting: Option<u32>,
-    unpack: Option<Vec<EdgeRef>>,
-    roads: Vec<u32>,
-    next_side: usize,
-    max_labels: usize,
-    cancelled: bool,
-    terminal: Option<Progress>,
-    prefetch: bool,
+#[derive(Default)]
+pub struct Workspace {
+    labels: [Labels; 2],
+    heaps: [Queue; 2],
 }
 
-impl Search {
-    pub fn new(starts: &[Seed], ends: &[Seed], max_labels: usize) -> Self {
-        Self {
-            frontiers: [Frontier::new(starts), Frontier::new(ends)],
-            best: Cost::MAX,
-            meeting: None,
-            unpack: None,
-            roads: Vec::new(),
-            next_side: 0,
-            max_labels,
-            cancelled: false,
-            terminal: None,
-            prefetch: true,
+pub struct Seed {
+    pub node: u32,
+    pub cost: u64,
+    pub road: u32,
+    pub choice: u8,
+}
+
+#[derive(Clone, Copy)]
+pub struct Query<'a> {
+    pub starts: &'a [Seed],
+    pub ends: &'a [Seed],
+    pub ceiling: u64,
+    pub max_labels: usize,
+    pub max_roads: usize,
+    pub heap_bytes: usize,
+    pub cancelled: &'a dyn Fn() -> bool,
+}
+
+pub struct Found {
+    pub cost: u64,
+    pub roads: Vec<u32>,
+    pub source: usize,
+    pub target: usize,
+}
+
+impl Workspace {
+    pub fn clear_heaps(&mut self) {
+        for heap in &mut self.heaps {
+            heap.clear();
+            heap.shrink_to_fit();
         }
     }
 
-    pub(crate) fn without_prefetch(mut self) -> Self {
-        self.prefetch = false;
-        self
-    }
-
-    pub fn cancel(&mut self) {
-        self.cancelled = true;
-    }
-
-    fn labels(&self) -> usize {
-        self.frontiers.iter().map(|f| f.labels.len()).sum()
-    }
-
-    fn needed(&self, cache: &Cache, required: u32) -> Progress {
-        if cache.pages.contains_key(&(required / NODES_PER_PAGE)) {
-            return Progress::Invalid { message: "Loaded page does not contain the requested node".into() };
+    fn push(
+        &mut self,
+        side: usize,
+        value: (u64, u8, u32),
+        budget: usize,
+        potential: &mut Option<&mut dyn FnMut(u32) -> Result<i128>>,
+    ) -> Result<()> {
+        let (cost, origin, node) = value;
+        let p = match potential {
+            Some(potential) => potential(node)?,
+            None => 0,
+        };
+        let priority = if side == 0 { (cost as i128 * 2).checked_add(p) } else { (cost as i128 * 2).checked_sub(p) }
+            .ok_or(Error::Limit)?;
+        if priority == i128::MAX {
+            return Err(Error::Limit);
         }
-        if !self.prefetch {
-            return Progress::NeedPages { pages: vec![required / NODES_PER_PAGE] };
+        let available = budget.saturating_sub(self.heaps[1 - side].bytes());
+        self.heaps[side].push((priority, cost, origin, node), available)
+    }
+
+    pub fn run(&mut self, graph: &Graph, costs: &Costs, query: Query<'_>) -> Result<Option<Found>> {
+        self.run_with_potential(graph, costs, query, None)
+    }
+
+    /// The potential must satisfy p(u) - p(v) <= 2 * weight(u, v) on every legal arc.
+    pub fn run_with_potential(
+        &mut self,
+        graph: &Graph,
+        costs: &Costs,
+        query: Query<'_>,
+        mut potential: Option<&mut dyn FnMut(u32) -> Result<i128>>,
+    ) -> Result<Option<Found>> {
+        let Query { starts, ends, ceiling, max_labels, max_roads, heap_bytes, cancelled } = query;
+        if starts.is_empty() || ends.is_empty() {
+            return Ok(None);
         }
-        let mut pages = BTreeSet::from([required / NODES_PER_PAGE]);
-        if let Some(stack) = &self.unpack {
-            // Inspect cached descendants across the selected path, not just its next leaf.
-            // Bound planning to one normal poll's work and at most 64 page requests.
-            let work = self.max_labels.min(4096);
-            let mut pending: VecDeque<_> = stack.iter().rev().take(work).copied().collect();
-            for _ in 0..work {
-                let Some(edge) = pending.pop_front() else { break };
-                let page = edge.node / NODES_PER_PAGE;
-                if !cache.pages.contains_key(&page) {
-                    pages.insert(page);
-                    if pages.len() >= 64 {
+        if self.heaps.iter().map(Queue::bytes).sum::<usize>() > heap_bytes {
+            self.clear_heaps();
+        }
+        let nodes = graph.nodes();
+        for side in 0..2 {
+            self.labels[side].reset(nodes)?;
+            self.heaps[side].clear();
+        }
+        for (side, seeds) in [starts, ends].iter().enumerate() {
+            for seed in *seeds {
+                if seed.node as usize >= nodes || seed.cost == u64::MAX {
+                    return Err(Error::InvalidData("Invalid base search seed".into()));
+                }
+                if (seed.cost, seed.choice)
+                    < (self.labels[side].cost(seed.node as usize), self.labels[side].origin(seed.node as usize))
+                {
+                    if self.labels[side].cost(seed.node as usize) == u64::MAX
+                        && self.labels[0].count + self.labels[1].count >= max_labels
+                    {
+                        return Err(Error::Limit);
+                    }
+                    self.labels[side].set(seed.node, seed.cost, u32::MAX, seed.choice)?;
+                    self.push(side, (seed.cost, seed.choice, seed.node), heap_bytes, &mut potential)?;
+                }
+            }
+        }
+        let mut best = ceiling;
+        let mut meeting = None;
+        let mut best_roots = (u8::MAX, u8::MAX);
+        let mut work = 0usize;
+        loop {
+            if work.is_multiple_of(1024) && (cancelled)() {
+                return Err(Error::Cancelled);
+            }
+            for side in 0..2 {
+                let available = heap_bytes.saturating_sub(self.heaps[1 - side].bytes());
+                while let Some((_, cost, origin, node)) = self.heaps[side].front(available)? {
+                    if self.labels[side].cost(node as usize) == cost
+                        && self.labels[side].origin(node as usize) == origin
+                    {
                         break;
                     }
-                    continue;
-                }
-                let Some(arc) = cache.arc(edge) else {
-                    return Progress::Invalid { message: "Shortcut references an absent edge in a loaded page".into() };
-                };
-                if let Some([first, second]) = arc.children {
-                    if first.node >= edge.node || second.node >= edge.node {
-                        return Progress::Invalid { message: "Invalid shortcut rank".into() };
-                    }
-                    pending.extend([first, second]);
+                    self.heaps[side].pop();
                 }
             }
-        } else {
-            // Search-stage speculation stays bounded separately from path reconstruction.
-            for f in &self.frontiers {
-                for &Reverse((_, node)) in f.heap.iter().take(64) {
-                    if !cache.pages.contains_key(&(node / NODES_PER_PAGE)) && pages.len() < 16 {
-                        pages.insert(node / NODES_PER_PAGE);
-                    }
+            let top: [i128; 2] = std::array::from_fn(|i| self.heaps[i].top().map_or(i128::MAX, |v| v.0));
+            if top[0] == i128::MAX || top[1] == i128::MAX || top[0].saturating_add(top[1]) > best as i128 * 2 {
+                break;
+            }
+            let side = usize::from(top[1] < top[0]);
+            let (_, cost, origin, node) = self.heaps[side].pop().unwrap();
+            work += 1;
+            let opposite = self.labels[1 - side].cost(node as usize);
+            if opposite != u64::MAX {
+                let joined = cost.checked_add(opposite).ok_or(Error::Limit)?;
+                if (joined, (self.labels[1].origin(node as usize), self.labels[0].origin(node as usize)))
+                    < (best, best_roots)
+                {
+                    best = joined;
+                    meeting = Some(node);
+                    best_roots = (self.labels[1].origin(node as usize), self.labels[0].origin(node as usize));
                 }
             }
-        }
-        let required = required / NODES_PER_PAGE;
-        pages.remove(&required);
-        Progress::NeedPages { pages: std::iter::once(required).chain(pages).collect() }
-    }
-
-    pub fn poll(&mut self, cache: &Cache, work: usize) -> Progress {
-        if let Some(result) = &self.terminal {
-            return result.clone();
-        }
-        let result = if self.cancelled { Progress::Cancelled } else { self.advance(cache, work) };
-        if matches!(
-            result,
-            Progress::Done { .. } | Progress::NoPath | Progress::Limit | Progress::Cancelled | Progress::Invalid { .. }
-        ) {
-            self.terminal = Some(result.clone());
-        }
-        result
-    }
-
-    fn advance(&mut self, cache: &Cache, work: usize) -> Progress {
-        for _ in 0..work {
-            if self.cancelled {
-                return Progress::Cancelled;
-            }
-            if self.labels() > self.max_labels
-                || self.frontiers.iter().map(|f| f.heap.len()).sum::<usize>() > self.max_labels.saturating_mul(4)
-            {
-                return Progress::Limit;
-            }
-            if let Some(stack) = &mut self.unpack {
-                if let Some(edge) = stack.last().copied() {
-                    let Some(arc) = cache.arc(edge) else {
-                        return if cache.node(edge.node).is_some() {
-                            Progress::Invalid { message: "Shortcut references an absent edge".into() }
-                        } else {
-                            self.needed(cache, edge.node)
-                        };
-                    };
-                    if stack.len() > self.max_labels {
-                        return Progress::Limit;
-                    }
-                    stack.pop();
-                    if let Some([first, second]) = arc.children {
-                        // Both children descend to a lower-rank node. This bounds recursion.
-                        if first.node >= edge.node || second.node >= edge.node {
-                            return Progress::Invalid { message: "Invalid shortcut rank".into() };
-                        }
-                        if stack.len().saturating_add(2) > self.max_labels {
-                            return Progress::Limit;
-                        }
-                        stack.push(second);
-                        stack.push(first);
-                    } else {
-                        if self.roads.len() >= self.max_labels {
-                            return Progress::Limit;
-                        }
-                        self.roads.push(arc.road);
-                    }
-                    continue;
-                }
-                return Progress::Done { cost: self.best, roads: self.roads.clone(), labels: self.labels() };
-            }
-
-            let tops = [self.frontiers[0].peek(), self.frontiers[1].peek()];
-            if tops.iter().all(|top| top.is_none_or(|(cost, _)| cost >= self.best)) {
-                let Some(meet) = self.meeting else {
-                    return Progress::NoPath;
-                };
-                let mut edges = Vec::new();
-                let mut node = meet;
-                while let Some((parent, edge)) = self.frontiers[0].labels[&node].parent {
-                    edges.push(edge);
-                    node = parent;
-                }
-                self.roads.push(self.frontiers[0].labels[&node].road);
-                edges.reverse();
-                node = meet;
-                while let Some((parent, edge)) = self.frontiers[1].labels[&node].parent {
-                    edges.push(edge);
-                    node = parent;
-                }
-                edges.reverse();
-                self.unpack = Some(edges);
-                continue;
-            }
-            let mut side = self.next_side;
-            if tops[side].is_none_or(|(cost, _)| cost >= self.best) {
-                side = 1 - side;
-            }
-            self.next_side = 1 - side;
-            let (cost, node_id) = tops[side].unwrap();
-            let Some(node) = cache.node(node_id) else {
-                return self.needed(cache, node_id);
+            let row = if side == 0 {
+                graph.first[node as usize]..graph.first[node as usize + 1]
+            } else {
+                graph.reverse_first[node as usize]..graph.reverse_first[node as usize + 1]
             };
-            self.frontiers[side].heap.pop();
-            if let Some(other) = self.frontiers[1 - side].labels.get(&node_id) {
-                let Some(joined) = cost.checked_add(other.cost).filter(|&c| c != Cost::MAX) else {
-                    return Progress::Invalid { message: "Route cost overflow".into() };
-                };
-                if joined < self.best {
-                    self.best = joined;
-                    self.meeting = Some(node_id);
+            for index in row {
+                let index = index as usize;
+                let arc = if side == 0 { index } else { graph.reverse_arc(index) };
+                let to = if side == 0 { graph.head[index] } else { graph.reverse_tail[index] };
+                let weight = costs.arc(graph, arc);
+                if weight == u64::MAX {
+                    continue;
                 }
-            }
-            let arcs = if side == 0 { &node.forward } else { &node.backward };
-            let other_labels = self.frontiers[1 - side].labels.len();
-            let other_heap = self.frontiers[1 - side].heap.len();
-            let frontier = &mut self.frontiers[side];
-            for (index, arc) in arcs.iter().enumerate() {
-                if arc.to <= node_id || arc.cost == 0 {
-                    return Progress::Invalid {
-                        message: "Summary arcs must rise in rank and have positive cost".into(),
-                    };
+                let next = cost.checked_add(weight).filter(|&n| n != u64::MAX).ok_or(Error::Limit)?;
+                if (next, origin) >= (self.labels[side].cost(to as usize), self.labels[side].origin(to as usize))
+                    || next > best
+                {
+                    continue;
                 }
-                let Some(next) = cost.checked_add(arc.cost).filter(|&c| c != Cost::MAX) else {
-                    return Progress::Invalid { message: "Route cost overflow".into() };
-                };
-                if next < self.best && frontier.labels.get(&arc.to).is_none_or(|l| next < l.cost) {
-                    if (!frontier.labels.contains_key(&arc.to)
-                        && frontier.labels.len() + other_labels >= self.max_labels)
-                        || frontier.heap.len() + other_heap >= self.max_labels.saturating_mul(4)
+                if self.labels[side].cost(to as usize) == u64::MAX
+                    && self.labels[0].count + self.labels[1].count >= max_labels
+                {
+                    return Err(Error::Limit);
+                }
+                self.labels[side].set(to, next, arc as u32, origin)?;
+                self.push(side, (next, origin, to), heap_bytes, &mut potential)?;
+                let opposite = self.labels[1 - side].cost(to as usize);
+                if opposite != u64::MAX {
+                    let joined = next.checked_add(opposite).ok_or(Error::Limit)?;
+                    if (joined, (self.labels[1].origin(to as usize), self.labels[0].origin(to as usize)))
+                        < (best, best_roots)
                     {
-                        return Progress::Limit;
+                        best = joined;
+                        meeting = Some(to);
+                        best_roots = (self.labels[1].origin(to as usize), self.labels[0].origin(to as usize));
                     }
-                    frontier.labels.insert(
-                        arc.to,
-                        Label {
-                            cost: next,
-                            parent: Some((
-                                node_id,
-                                EdgeRef { node: node_id, index: index as u32, backward: side == 1 },
-                            )),
-                            road: 0,
-                        },
-                    );
-                    frontier.heap.push(Reverse((next, arc.to)));
                 }
             }
         }
-        Progress::Working { labels: self.labels() }
+        let Some(meeting) = meeting else {
+            return Ok(None);
+        };
+        let mut arcs = Vec::new();
+        let mut node = meeting;
+        while self.labels[0].parent(node as usize) != u32::MAX {
+            let arc = self.labels[0].parent(node as usize);
+            if arcs.len() >= max_roads {
+                return Err(Error::Limit);
+            }
+            arcs.push(arc);
+            node = (graph.first.partition_point(|&v| v <= arc) - 1) as u32;
+        }
+        let source = starts
+            .iter()
+            .position(|s| {
+                s.node == node
+                    && s.cost == self.labels[0].cost(node as usize)
+                    && s.choice == self.labels[0].origin(node as usize)
+            })
+            .ok_or_else(|| Error::InvalidData("Missing source witness".into()))?;
+        arcs.reverse();
+        node = meeting;
+        while self.labels[1].parent(node as usize) != u32::MAX {
+            let arc = self.labels[1].parent(node as usize);
+            if arcs.len() >= max_roads {
+                return Err(Error::Limit);
+            }
+            arcs.push(arc);
+            node = graph.head[arc as usize];
+        }
+        let target = ends
+            .iter()
+            .position(|s| {
+                s.node == node
+                    && s.cost == self.labels[1].cost(node as usize)
+                    && s.choice == self.labels[1].origin(node as usize)
+            })
+            .ok_or_else(|| Error::InvalidData("Missing target witness".into()))?;
+        let mut roads = Vec::with_capacity(arcs.len() + 1);
+        roads.push(starts[source].road);
+        let mut check = starts[source].cost.checked_add(ends[target].cost).ok_or(Error::Limit)?;
+        for arc in arcs {
+            check = check.checked_add(costs.arc(graph, arc as usize)).ok_or(Error::Limit)?;
+            roads.push(graph.head[arc as usize]);
+        }
+        if check != best {
+            return Err(Error::InvalidData("Base path witness cost differs".into()));
+        }
+        Ok(Some(Found { cost: best, roads, source, target }))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{encode, Arc, Node, Page};
+    use crate::base::Numbers;
 
-    fn cached(nodes: Vec<Node>) -> Cache {
-        let mut cache = Cache::default();
-        cache.insert_page(0, &encode(&Page { first: 0, nodes }).unwrap(), usize::MAX).unwrap();
-        cache
-    }
-
-    fn seed(node: u32) -> Seed {
-        Seed { node, cost: 0, road: node }
-    }
-
-    fn leaf(to: u32, road: u32) -> Arc {
-        Arc { to, cost: 1, children: None, road }
-    }
-
-    #[test]
-    fn missing_pages_resume_but_incomplete_loaded_pages_are_invalid() {
-        let mut search = Search::new(&[seed(0)], &[seed(1)], 3);
-        let cache = Cache::default();
-        assert!(matches!(search.poll(&cache, 10), Progress::NeedPages { pages } if pages == [0]));
-        let cache = cached(vec![Node { forward: vec![leaf(1, 1)], backward: vec![] }, Node::default()]);
-        assert!(matches!(search.poll(&cache, 20), Progress::Done { cost: 1, roads, .. } if roads == [0, 1]));
-        let mut malformed = Search::new(&[seed(1)], &[seed(2)], 3);
-        let short_page = cached(vec![Node::default()]);
-        assert!(matches!(malformed.poll(&short_page, 10), Progress::Invalid { .. }));
-        assert!(matches!(malformed.poll(&cache, 10), Progress::Invalid { .. }));
-    }
-
-    #[test]
-    fn unpack_prefetch_exposes_independent_descendants_without_mutating_the_path() {
-        let edge = |page, offset| EdgeRef { node: page * NODES_PER_PAGE + offset, index: 0, backward: false };
-        let branch = |children| Node {
-            forward: vec![Arc { to: 2000, cost: 2, children: Some(children), road: 0 }],
-            backward: vec![],
-        };
-        let mut cache = Cache::default();
-        cache
-            .insert_page(
-                10,
-                &encode(&Page {
-                    first: 10 * NODES_PER_PAGE,
-                    nodes: vec![
-                        branch([edge(1, 0), edge(2, 0)]),
-                        branch([edge(3, 0), edge(4, 0)]),
-                        branch([edge(10, 0), edge(10, 1)]),
-                    ],
-                })
-                .unwrap(),
-                usize::MAX,
-            )
-            .unwrap();
-        let mut search = Search::new(&[seed(99 * NODES_PER_PAGE)], &[], 100);
-        search.unpack = Some(vec![edge(10, 2), edge(0, 0)]);
-        assert!(matches!(search.needed(&cache, 0), Progress::NeedPages { pages } if pages == [0, 1, 2, 3, 4]));
-        assert_eq!(search.unpack.as_ref().unwrap().len(), 2);
-        assert!(search.roads.is_empty());
-        search.unpack = Some((0..100).map(|page| edge(page, 0)).collect());
-        assert!(matches!(search.needed(&Cache::default(), 0), Progress::NeedPages { pages } if pages.len() == 64));
-        cache.pages.get_mut(&10).unwrap().nodes[2] = branch([edge(10, 2), edge(1, 0)]);
-        search.unpack = Some(vec![edge(10, 2), edge(0, 0)]);
-        assert!(matches!(search.needed(&cache, 0), Progress::Invalid { .. }));
-    }
-
-    #[test]
-    fn cancellation_and_label_budget_are_terminal() {
-        let cache = cached(vec![Node { forward: vec![leaf(1, 1)], backward: vec![] }, Node::default()]);
-        let mut cancelled = Search::new(&[seed(0)], &[seed(1)], 3);
-        cancelled.cancel();
-        assert!(matches!(cancelled.poll(&cache, 0), Progress::Cancelled));
-        assert!(matches!(cancelled.poll(&cache, 10), Progress::Cancelled));
-        let mut limited = Search::new(&[seed(0)], &[seed(1)], 2);
-        assert!(matches!(limited.poll(&cache, 10), Progress::Limit));
-        assert_eq!(limited.labels(), 2);
-        let mut enough = Search::new(&[seed(0)], &[seed(1)], 3);
-        assert!(matches!(enough.poll(&cache, 20), Progress::Done { .. }));
-    }
-
-    #[test]
-    fn shortcut_unpack_yields_and_rejects_cycles_and_excess_output() {
-        let child = EdgeRef { node: 0, index: 0, backward: false };
-        let shortcut = EdgeRef { node: 1, index: 0, backward: false };
-        let cache = cached(vec![
-            Node { forward: vec![leaf(2, 7)], backward: vec![] },
-            Node { forward: vec![Arc { to: 2, cost: 2, children: Some([child, child]), road: 0 }], backward: vec![] },
-        ]);
-        let mut search = Search::new(&[], &[], 2);
-        search.unpack = Some(vec![shortcut]);
-        search.best = 2;
-        for _ in 0..3 {
-            assert!(matches!(search.poll(&cache, 1), Progress::Working { .. }));
+    fn graph(nodes: usize, edges: &[(u32, u32)]) -> Graph {
+        let mut first = vec![0; nodes + 1];
+        let mut head = Vec::new();
+        let mut reverse_first = vec![0; nodes + 1];
+        for &(from, to) in edges {
+            first[from as usize + 1] += 1;
+            head.push(to);
+            reverse_first[to as usize + 1] += 1;
         }
-        assert!(matches!(search.poll(&cache, 1), Progress::Done { roads, .. } if roads == [7, 7]));
-        let mut limited = Search::new(&[], &[], 2);
-        limited.unpack = Some(vec![shortcut]);
-        limited.roads.push(9);
-        assert!(matches!(limited.poll(&cache, 10), Progress::Limit));
-        let cycle = cached(vec![Node {
-            forward: vec![Arc { to: 1, cost: 2, children: Some([child, child]), road: 0 }],
-            backward: vec![],
-        }]);
-        let mut invalid = Search::new(&[], &[], 10);
-        invalid.unpack = Some(vec![child]);
-        assert!(matches!(invalid.poll(&cycle, 10), Progress::Invalid { .. }));
-        let mut absent = Search::new(&[], &[], 10);
-        absent.unpack = Some(vec![EdgeRef { index: 1, ..child }]);
-        assert!(matches!(absent.poll(&cache, 10), Progress::Invalid { .. }));
+        for n in 0..nodes {
+            first[n + 1] += first[n];
+            reverse_first[n + 1] += reverse_first[n];
+        }
+        let mut cursor = reverse_first.clone();
+        let mut tail = vec![0; edges.len()];
+        let mut offset = vec![0; edges.len()];
+        for (a, &(from, to)) in edges.iter().enumerate() {
+            let i = cursor[to as usize] as usize;
+            tail[i] = from;
+            offset[i] = a as u32 - first[from as usize];
+            cursor[to as usize] += 1;
+        }
+        Graph { first, head, reverse_first, reverse_tail: tail, reverse_offsets: Numbers::U32(offset) }
+    }
+
+    #[test]
+    fn workspace_reuse_clears_reached_labels_after_limits_and_dimension_changes() {
+        let mut workspace = Workspace::default();
+        for nodes in [32_769, 513, 2, 65_537] {
+            let edges: Vec<_> = (1..nodes as u32).map(|to| (to - 1, to)).collect();
+            let graph = graph(nodes, &edges);
+            let costs = Costs { roads: Numbers::U8(vec![1; nodes]), turns: Numbers::U8(vec![0; edges.len()]).into() };
+            for (from, to, limit) in [(0, nodes - 1, 2), (0, nodes - 1, usize::MAX), (nodes - 1, 0, usize::MAX)] {
+                let starts = [Seed { node: from as u32, cost: 0, road: from as u32, choice: 0 }];
+                let ends = [Seed { node: to as u32, cost: 0, road: to as u32, choice: 0 }];
+                let result = workspace.run(
+                    &graph,
+                    &costs,
+                    Query {
+                        starts: &starts,
+                        ends: &ends,
+                        ceiling: u64::MAX,
+                        max_labels: limit,
+                        max_roads: nodes,
+                        heap_bytes: 1024 * 1024,
+                        cancelled: &|| false,
+                    },
+                );
+                if limit == 2 {
+                    assert!(matches!(result, Err(Error::Limit)));
+                } else if from > to {
+                    assert!(result.unwrap().is_none());
+                } else {
+                    let found = result.unwrap().unwrap();
+                    assert_eq!(found.cost, (nodes - 1) as u64);
+                    assert_eq!(found.roads, (0..nodes as u32).collect::<Vec<_>>());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn multi_seed_search_matches_independent_relaxation_and_exact_legal_witnesses() {
+        let mut rng = 41u64;
+        let mut random = || {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng >> 32
+        };
+        let mut workspace = Workspace::default();
+        for trial in 0..32 {
+            let nodes = 8;
+            let mut edges = Vec::new();
+            for from in 0..nodes {
+                for to in 0..nodes {
+                    if random() % 4 == 0 {
+                        edges.push((from as u32, to as u32));
+                    }
+                }
+            }
+            let g = graph(nodes, &edges);
+            let roads: Vec<_> =
+                (0..nodes).map(|n| if n == 1 { u32::MAX as u64 + 7 } else { random() % 13 + 1 }).collect();
+            let turns: Vec<_> =
+                edges.iter().map(|_| if random() % 7 == 0 { u64::MAX } else { random() % 11 }).collect();
+            let costs = Costs { roads: Numbers::U64(roads.clone()), turns: Numbers::U64(turns.clone()).into() };
+            let columns: Vec<std::sync::Arc<Vec<u16>>> = (0..6)
+                .map(|landmark| {
+                    let mut distances = vec![u16::MAX; nodes];
+                    distances[landmark] = 0;
+                    for _ in 1..nodes {
+                        let old = distances.clone();
+                        for &(from, to) in &edges {
+                            distances[from as usize] = distances[from as usize]
+                                .min((roads[to as usize] / 8 + old[to as usize] as u64).min(u16::MAX as u64) as u16);
+                        }
+                    }
+                    std::sync::Arc::new(distances)
+                })
+                .collect();
+            for case in 0..16 {
+                let starts = [
+                    Seed { node: (case % nodes) as u32, cost: 7, road: (case % nodes) as u32, choice: 3 },
+                    Seed { node: ((case + 2) % nodes) as u32, cost: 11, road: ((case + 2) % nodes) as u32, choice: 1 },
+                ];
+                let ends = [
+                    Seed { node: ((case + trial) % nodes) as u32, cost: 17, road: 99, choice: 2 },
+                    Seed { node: ((case + trial + 4) % nodes) as u32, cost: 0, road: 98, choice: 0 },
+                ];
+                let mut distances = vec![(u64::MAX, u8::MAX); nodes];
+                for s in &starts {
+                    distances[s.node as usize] = distances[s.node as usize].min((s.cost, s.choice));
+                }
+                for _ in 0..nodes - 1 {
+                    let old = distances.clone();
+                    for (a, &(from, to)) in edges.iter().enumerate() {
+                        if old[from as usize].0 != u64::MAX && turns[a] != u64::MAX {
+                            distances[to as usize] = distances[to as usize]
+                                .min((old[from as usize].0 + roads[to as usize] + turns[a], old[from as usize].1));
+                        }
+                    }
+                }
+                let expected = ends
+                    .iter()
+                    .filter(|end| distances[end.node as usize].0 != u64::MAX)
+                    .map(|end| (distances[end.node as usize].0 + end.cost, end.choice, distances[end.node as usize].1))
+                    .min();
+                let selected =
+                    crate::landmarks::select(columns.len(), 8, &starts, &ends, |i, node| Ok(columns[i][node as usize]))
+                        .unwrap();
+                let prepared = crate::landmarks::Prepared {
+                    mapping: std::sync::Arc::new((0..nodes as u32).collect()),
+                    columns: selected
+                        .into_iter()
+                        .map(|(i, from, to)| (std::sync::Arc::clone(&columns[i]), from, to))
+                        .collect(),
+                    scale: 8,
+                };
+                for (arc, &(from, to)) in edges.iter().enumerate() {
+                    let weight = costs.arc(&g, arc);
+                    if weight != u64::MAX {
+                        assert!(prepared.get(from) - prepared.get(to) <= 2 * weight as i128);
+                    }
+                }
+                let mut heuristic = |node| Ok(prepared.get(node));
+                for guided in [false, true] {
+                    let result = workspace
+                        .run_with_potential(
+                            &g,
+                            &costs,
+                            Query {
+                                starts: &starts,
+                                ends: &ends,
+                                ceiling: u64::MAX,
+                                max_labels: 1000,
+                                max_roads: 1000,
+                                heap_bytes: 1024 * 1024,
+                                cancelled: &|| false,
+                            },
+                            guided.then_some(&mut heuristic),
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        result.as_ref().map(|r| (r.cost, ends[r.target].choice, starts[r.source].choice)),
+                        expected
+                    );
+                    if let Some(result) = result {
+                        assert_eq!(result.roads[0], starts[result.source].road);
+                        assert_eq!(result.roads.last().copied(), Some(ends[result.target].node));
+                        let mut total = starts[result.source].cost + ends[result.target].cost;
+                        for pair in result.roads.windows(2) {
+                            let arc = edges.binary_search(&(pair[0], pair[1])).unwrap();
+                            assert_ne!(turns[arc], u64::MAX);
+                            total += roads[pair[1] as usize] + turns[arc];
+                        }
+                        assert_eq!(total, result.cost);
+                    }
+                }
+            }
+        }
+        let g = graph(2, &[(0, 1)]);
+        let costs = Costs { roads: Numbers::U8(vec![1, 1]), turns: Numbers::U8(vec![0]).into() };
+        let starts = [Seed { node: 0, cost: 0, road: 0, choice: 0 }];
+        let ends = [Seed { node: 1, cost: 0, road: 1, choice: 0 }];
+        assert!(matches!(
+            workspace.run(
+                &g,
+                &costs,
+                Query {
+                    starts: &starts,
+                    ends: &ends,
+                    ceiling: u64::MAX,
+                    max_labels: 1,
+                    max_roads: 100,
+                    heap_bytes: 1024,
+                    cancelled: &|| false
+                }
+            ),
+            Err(Error::Limit)
+        ));
+        assert!(matches!(
+            workspace.run(
+                &g,
+                &costs,
+                Query {
+                    starts: &starts,
+                    ends: &ends,
+                    ceiling: u64::MAX,
+                    max_labels: 100,
+                    max_roads: 100,
+                    heap_bytes: 1024,
+                    cancelled: &|| true
+                }
+            ),
+            Err(Error::Cancelled)
+        ));
+        workspace.clear_heaps();
+        assert!(matches!(
+            workspace.run(
+                &g,
+                &costs,
+                Query {
+                    starts: &starts,
+                    ends: &ends,
+                    ceiling: u64::MAX,
+                    max_labels: 100,
+                    max_roads: 100,
+                    heap_bytes: 0,
+                    cancelled: &|| false
+                }
+            ),
+            Err(Error::Limit)
+        ));
+        let g = graph(1, &[]);
+        let costs = Costs { roads: Numbers::U8(vec![1]), turns: Numbers::U8(vec![]).into() };
+        let ends = [Seed { node: 0, cost: 3, road: 0, choice: 0 }, Seed { node: 0, cost: 1, road: 0, choice: 1 }];
+        let result = workspace
+            .run(
+                &g,
+                &costs,
+                Query {
+                    starts: &starts,
+                    ends: &ends,
+                    ceiling: u64::MAX,
+                    max_labels: 2,
+                    max_roads: 100,
+                    heap_bytes: 1024,
+                    cancelled: &|| false,
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!((result.cost, result.target), (1, 1));
     }
 }

@@ -1,3 +1,4 @@
+import { clientConfig } from "./client-config";
 import type { Coordinate } from "./map-types";
 
 function absoluteUrl(value: string): string {
@@ -24,7 +25,7 @@ function mapBounds(value: string | undefined): [number, number, number, number] 
     return coordinates as [number, number, number, number];
 }
 
-export const MAP_BOUNDS = mapBounds(import.meta.env.VITE_PLANNER_MAP_BOUNDS);
+export const MAP_BOUNDS = mapBounds(clientConfig.bounds?.join(",") ?? import.meta.env.VITE_PLANNER_MAP_BOUNDS);
 export const MAP_VIEWS: { name: string; center: Coordinate; zoom: number }[] = [
     { name: "Freiburg · street detail", center: [7.849, 47.997], zoom: 14 },
     { name: "Feldberg · mountain detail", center: [8.005, 47.873], zoom: 13 },

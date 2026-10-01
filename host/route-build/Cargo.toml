@@ -17,7 +17,6 @@ required-features = ["planner-dem"]
 
 [dependencies]
 route-engine = { path = "../route-engine" }
-fast_paths = "=1.0.0"
 osmpbfreader = "0.19"
 serde_json = "1"
 sha2 = "0.10"

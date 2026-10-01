@@ -48,7 +48,12 @@ function licenseTextIn(dir: string): string | null {
     } catch {
         return null;
     }
-    const names = entries.filter((e) => LICENSE_FILE.test(e)).sort();
+    const names = entries.filter((e) => LICENSE_FILE.test(e));
+    if (entries.includes("LICENSES") && fs.statSync(path.join(dir, "LICENSES")).isDirectory()) {
+        names.push(...fs.readdirSync(path.join(dir, "LICENSES")).map((name) => `LICENSES/${name}`));
+        if (entries.includes("REUSE.toml")) names.push("REUSE.toml");
+    }
+    names.sort();
     if (!names.length) return null;
     const texts = names
         .map((n) => {
@@ -102,7 +107,11 @@ function noticeFor(dir: string): PackageNotice {
         ? path.resolve(import.meta.dirname, "licenses/pmtiles-4.5.0")
         : name === "@protomaps/basemaps" && pkg.version === "5.7.2"
         ? path.resolve(import.meta.dirname, "licenses/protomaps-basemaps-5.7.2") : undefined;
-    const text = licenseTextIn(dir) ?? (vendored ? licenseTextIn(vendored) : null);
+    let text = licenseTextIn(dir) ?? (vendored ? licenseTextIn(vendored) : null);
+    if (text && name === "opening_hours" && pkg.version === "3.11.0") {
+        const comments = fs.readFileSync(path.join(dir, "build/opening_hours.js"), "utf8").match(/\/\*[\s\S]*?\*\//g) ?? [];
+        text += "\n\n" + comments.filter((comment) => comment.includes("SPDX-FileCopyrightText")).join("\n\n");
+    }
     const license = declaredLicense(pkg);
     if (!text) {
         // Not a warning: a package whose licence text we cannot ship is a package we cannot
@@ -115,10 +124,10 @@ function noticeFor(dir: string): PackageNotice {
     return { name, version: String(pkg.version ?? "?"), license, url: projectUrl(pkg), text };
 }
 
-function render(notices: PackageNotice[]): string {
+function render(notices: PackageNotice[], title: string): string {
     const rule = "=".repeat(92);
     const head = [
-        "OpenBikeComputer map builder — third-party licences",
+        `${title} — third-party licences`,
         "",
         "This file lists every third-party package whose code is compiled into the bundle beside",
         "it, together with the licence text that package ships. It is generated from the modules",
@@ -146,6 +155,16 @@ function render(notices: PackageNotice[]): string {
     return [...head, ...bodies].join("\n");
 }
 
+export function licenseNotices(ids: Iterable<string>, title = "OpenBikeComputer map builder"): string {
+    const roots = new Set<string>();
+    for (const id of ids) {
+        if (id.startsWith("\0")) continue;
+        const root = packageRootOf(id);
+        if (root) roots.add(root);
+    }
+    return render([...roots].map(noticeFor).sort((a, b) => a.name.localeCompare(b.name, "en")), title);
+}
+
 /**
  * Emit `third-party-licenses.txt` next to the bundle it describes.
  *
@@ -157,19 +176,12 @@ export function thirdPartyLicenses(fileName = "third-party-licenses.txt"): Plugi
         name: "obc-third-party-licenses",
         apply: "build",
         generateBundle(_options, bundle) {
-            const roots = new Set<string>();
+            const ids: string[] = [];
             for (const chunk of Object.values(bundle)) {
                 if (chunk.type !== "chunk") continue;
-                for (const id of Object.keys(chunk.modules)) {
-                    if (id.startsWith("\0")) continue; // rollup virtual module
-                    const root = packageRootOf(id);
-                    if (root) roots.add(root);
-                }
+                ids.push(...Object.keys(chunk.modules));
             }
-            const notices = [...roots]
-                .map(noticeFor)
-                .sort((a, b) => a.name.localeCompare(b.name, "en"));
-            this.emitFile({ type: "asset", fileName, source: render(notices) });
+            this.emitFile({ type: "asset", fileName, source: licenseNotices(ids) });
         },
     };
 }
