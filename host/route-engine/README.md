@@ -76,10 +76,11 @@ changes. Use `elapsed` for time at positions along the geometry.
 
 One router runs one query at a time. The constructor takes an estimated routing
 working-set budget in bytes. Native hosts use 768 MiB plus the decoded landmark cache by default. The engine
-checks decoded graph, active profile, dense labels and heap allocations. It
+checks decoded graph, active profile, label blocks and queue allocations. It
 reserves 64 MiB for geometry, index caches and decode scratch. An estimate above
 the budget returns `Limit`. This is not an allocator or process RAM guarantee.
 Manifest memory, source mappings, results and host serialization add memory.
+Search labels allocate only visited blocks. Cached profiles share identical turn columns.
 Up to three profile cost sets stay cached within the budget. Use
 `Package::fork` to share topology across workers with independent query caches.
 
