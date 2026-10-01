@@ -5,7 +5,10 @@ import json
 from pathlib import Path
 import re
 
-from . import planner_deploy as deploy, planner_maps as maps, planner_runtime, planner_offline
+try:
+    from . import planner_deploy as deploy, planner_maps as maps, planner_runtime, planner_offline
+except ImportError:
+    import planner_deploy as deploy, planner_maps as maps, planner_runtime, planner_offline
 
 
 def install(args):
