@@ -109,7 +109,7 @@
     if (fullBW) {
       document.querySelector('button[aria-label="Map settings"]').click();
       for (const network of ['Hiking','Cycling']) {
-        button(network).click();
+        (await wait(() => button(network), 'Route network control did not mount')).click();
         for (const direction of ['Zoom out','Zoom in']) {
           for (let step = 0; step < 6; step++) {
             document.querySelector(`button[aria-label="${direction}"]`).click();

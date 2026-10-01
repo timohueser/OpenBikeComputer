@@ -84,7 +84,7 @@ struct PlannerHostBenchmarkApp: App {
         } catch {
             status = error.localizedDescription
             metadata["exit_code"] = 1
-            try? JSONSerialization.data(withJSONObject: ["error": status]).write(to: root.appendingPathComponent("host-result.json"), options: .atomic)
+            try? JSONSerialization.data(withJSONObject: ["error": status, "details": String(describing: error as NSError)]).write(to: root.appendingPathComponent("host-result.json"), options: .atomic)
         }
         var usage = rusage()
         if getrusage(RUSAGE_SELF, &usage) == 0 { metadata["native_process_peak_rss_bytes"] = usage.ru_maxrss }
