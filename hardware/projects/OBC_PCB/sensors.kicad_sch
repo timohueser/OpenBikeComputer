@@ -1723,7 +1723,7 @@
 		(on_board no)
 		(dnp no)
 		(uuid "d3d122ad-a645-52bf-abe0-57423d1fb9e6")
-		(property "Reference" "#PWR9000119"
+		(property "Reference" "#PWR9900119"
 			(at 55.88 25.400000000000006 0)
 			(hide yes)
 			(show_name no)
@@ -1796,7 +1796,7 @@
 		(instances
 			(project "OBC_PCB"
 				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/07b40b75-96e2-4842-99e0-07d04b88490a"
-					(reference "#PWR9000119")
+					(reference "#PWR9900119")
 					(unit 1)
 				)
 			)
@@ -4100,18 +4100,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "LGA*2x2mm*P0.5mm*"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "MPN" "LIS2MDLTR"
 			(at 0 0 0)
 			(hide yes)
@@ -4627,18 +4615,6 @@
 			)
 		)
 		(property "ki_keywords" "R resistor"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "R_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -5363,18 +5339,6 @@
 			)
 		)
 		(property "ki_keywords" "capacitor cap"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "C_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)

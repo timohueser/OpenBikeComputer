@@ -4984,16 +4984,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "QFN*32*1EP*5x5mm*P0.5mm*EP3.6x3.6mm*"
-			(at 0 0 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "MPN" "NPM1300-QEAA-R"
 			(at 0 0 0)
 			(hide yes)
@@ -6859,18 +6849,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "WSON*10*1EP*2.5x2.5*P0.5*"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "MPN" "TPS63900DSKR"
 			(at 0 0 0)
 			(hide yes)
@@ -7414,18 +7392,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "R_*"
-			(at 45.72 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "Tolerance" "1%"
 			(at 45.72 0 0)
 			(hide yes)
@@ -7651,18 +7617,6 @@
 			)
 		)
 		(property "ki_keywords" "R resistor"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "R_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -7921,18 +7875,6 @@
 			)
 		)
 		(property "ki_keywords" "R resistor"
-			(at -45.72 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "R_*"
 			(at -45.72 0 0)
 			(hide yes)
 			(show_name no)
@@ -8398,18 +8340,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "R_*"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "Tolerance" "1%"
 			(at 0 0 0)
 			(hide yes)
@@ -8646,18 +8576,6 @@
 			)
 		)
 		(property "ki_keywords" "R resistor"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "R_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)

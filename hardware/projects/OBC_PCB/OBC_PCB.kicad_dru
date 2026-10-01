@@ -1,19 +1,22 @@
 (version 1)
 
-# PCBWay HDI planning profile; the production stackup is not yet approved.
+# PCBWay standard eight-layer board with drilled through vias.
+# Use 35 um finished copper on all layers; 0.5 oz outer foil plated to 1 oz.
 # GOVERNS: hardware/projects/OBC_PCB/OBC_PCB.kicad_pcb
-# https://www.pcbway.com/hdi-pcb.html
-# RULE: 0.065 mm trace/space floor; green mask web >= 4 mil (0.102 mm).
-# https://www.pcbway.com/advanced-pcb-capabilities.html
-# RULE: via annulus >= 3 mil, hole-to-copper >= 6 mil; rounded up to 0.08/0.16 mm.
 # https://www.pcbway.com/capabilities.html
-# RULE: mechanical via hole spacing >= 11 mil; rounded up to 0.28 mm.
-# These floors live in Board Setup. Net classes provide wider routing defaults.
-# USB_90R_TBD and RF_50R_TBD widths require the fabricator's impedance calculation.
-# RF_Matching geometry must follow the component reference designs.
+# RULE: trace >= 4 mil (0.1016 mm), rounded up to 0.102 mm.
+# RULE: clearance >= 5 mil (0.127 mm); annulus >= 0.15 mm.
+# RULE: eight-layer hole-to-copper >= 9 mil; via hole spacing >= 11 mil.
+# Board Setup rounds these hole clearances up to 0.23 mm and 0.28 mm.
+# https://www.pcbway.com/pcb_prototype/PCB_Solder_mask.html
+# RULE: green mask web >= 4 mil (0.102 mm); retain mask checks on all pads.
+# USB_90R_TBD targets 90 ohms on L6 between the L5 and L7 ground planes.
+# RF_50R_TBD targets 50 ohms on an outer layer over its adjacent ground plane.
+# Both geometries need the fabricator's impedance calculation.
+# RF_Matching geometry follows the component reference designs.
 
-(rule "Ordinary routing minimum"
-  (constraint track_width (min 0.1mm)))
+(rule "Four mil track minimum"
+  (constraint track_width (min 0.102mm)))
 
 (rule "Power distribution minimum"
   (condition "A.hasNetclass('Power') || A.hasNetclass('Switching')")
@@ -23,59 +26,20 @@
   (condition "A.hasNetclass('Power_Input')")
   (constraint track_width (min 0.3mm)))
 
-# Nordic reference routing uses 0.1 mm local spacing and short supply neckdowns.
-# This does not relax the unapproved microvia fabrication limits below.
-(rule "Nordic local routing"
-  (condition "A.Type != 'Zone' && B.Type != 'Zone' && A.intersectsArea('Nordic routing') && B.intersectsArea('Nordic routing')")
-  (constraint clearance (min 0.1mm)))
+(rule "Drilled through vias only"
+  (constraint disallow micro_via blind_via buried_via))
 
-(rule "Nordic short supply neckdowns"
-  (condition "A.intersectsArea('Nordic routing')")
-  (constraint track_width (min 0.1mm)))
-
-# Local neckdowns only. Keep power neckdowns short; use planes for distribution.
-(rule "Small package escape"
-  (condition "A.Type != 'Zone' && (A.intersectsCourtyard('U6') || A.intersectsCourtyard('U2') || A.intersectsCourtyard('U4') || A.intersectsCourtyard('U7'))")
-  (constraint clearance (min 0.065mm))
-  (constraint track_width (min 0.065mm) (opt 0.1mm)))
-
-(rule "Pads within one footprint"
-  (condition "A.Type == 'Pad' && B.Type == 'Pad' && A.Parent == B.Parent")
-  (constraint clearance (min 0.1mm)))
-
-# 0.27/0.11 mm microvias meet the published 3 mil annulus and 4 mil drill limits.
-# They are NOT a drop-in via-in-pad escape for U6's 0.20 mm lands.
-# Nordic's layout uses smaller via lands and L1-L2, L2-L3, L3-L4 laser steps:
-# https://www.nordicsemi.com/Products/nRF54LM20A/Reference-layout
-# Confirm U6's 0.35 mm pitch, filled/capped via-in-pad, and annuli with PCBWay.
-# Do not shrink U6 lands or waive these limits to copy unapproved geometry.
-(rule "Laser via size"
-  (condition "A.Type == 'Via' && A.Via_Type == 'Micro'")
-  (constraint hole_size (min 0.11mm) (opt 0.11mm) (max 0.2mm))
-  (constraint via_diameter (min 0.27mm) (opt 0.27mm)))
-
-# Tentative 3+2+3 topology: adjacent build-up layers only; no laser via across core.
-# Exact dielectric thicknesses, fill/cap process and stacked vias need fab review.
-(rule "HDI laser layer spans"
-  (condition "A.Type == 'Via' && A.Via_Type == 'Micro' && !((A.Layer_Top == 'F.Cu' && A.Layer_Bottom == 'In1.Cu') || (A.Layer_Top == 'In1.Cu' && A.Layer_Bottom == 'In2.Cu') || (A.Layer_Top == 'In2.Cu' && A.Layer_Bottom == 'In3.Cu') || (A.Layer_Top == 'In4.Cu' && A.Layer_Bottom == 'In5.Cu') || (A.Layer_Top == 'In5.Cu' && A.Layer_Bottom == 'In6.Cu') || (A.Layer_Top == 'In6.Cu' && A.Layer_Bottom == 'B.Cu'))")
-  (constraint disallow micro_via))
-
-(rule "No mechanical blind or buried vias in this profile"
-  (constraint disallow blind_via buried_via))
-
-(rule "Mechanical holes in SMD lands need a filled and capped process"
-  (condition "A.Type == 'Via' && A.Via_Type == 'Through' && B.Pad_Type == 'SMD'")
+# U6 and U2 use ground thermal vias between exposed-pad stencil apertures.
+# Keep all other unfilled holes out of surface lands to prevent solder loss.
+(rule "Through vias clear of surface lands"
+  (condition "A.Type == 'Via' && A.Via_Type == 'Through' && B.Type == 'Pad' && B.Hole_Size_X == 0mm && !(A.NetName == 'GND' && B.NetName == 'GND' && ((B.memberOfFootprint('U6') && B.Pad_Number == '53') || (B.memberOfFootprint('U2') && B.Pad_Number == '33')))")
   (constraint physical_hole_clearance (min 0.15mm)))
 
 (rule "Plated component annulus"
   (condition "A.Type == 'Pad' && A.Pad_Type == 'Through-hole'")
-  (constraint annular_width (min 0.13mm)))
+  (constraint annular_width (min 0.15mm)))
 
-# AE2 pad 2 is a ground via in the printed antenna, not a component lead hole.
-(rule "Printed antenna ground via annulus"
-  (condition "A.memberOfFootprint('AE2') && A.Type == 'Pad' && A.Pad_Number == '2'")
-  (constraint annular_width (min 0.08mm)))
-
+# PCBWay's component-hole spacing is 16 mil, rounded up to 0.41 mm.
 (rule "Component drill spacing"
   (condition "A.Type == 'Pad' || B.Type == 'Pad'")
   (constraint hole_to_hole (min 0.41mm)))
@@ -88,40 +52,44 @@
   (condition "A.Type == 'Pad' && A.Pad_Type == 'NPTH, mechanical' && A.Hole_Size_X != A.Hole_Size_Y")
   (constraint hole_size (min 0.8mm)))
 
-# USB width/gap are provisional. This exception lets the pair router use its gap.
-(rule "USB pair gap"
-  (condition "A.hasNetclass('USB_90R_TBD') && AB.isCoupledDiffPair()")
-  (constraint clearance (min 0.1mm))
-  (constraint diff_pair_gap (min 0.1mm) (opt 0.15mm)))
+(rule "USB inner pair width"
+  (layer "In5.Cu")
+  (condition "A.hasNetclass('USB_90R_TBD')")
+  (constraint track_width (min 0.125mm) (opt 0.125mm) (max 0.125mm)))
 
-# The largest pad mask expansion is 0.102 mm; retain a 0.102 mm mask web.
+(rule "USB inner pair gap"
+  (layer "In5.Cu")
+  (condition "A.hasNetclass('USB_90R_TBD') && AB.isCoupledDiffPair()")
+  (constraint diff_pair_gap (min 0.225mm) (opt 0.225mm) (max 0.225mm)))
+
+(rule "RF feed width"
+  (condition "A.hasNetclass('RF_50R_TBD')")
+  (constraint track_width (min 0.11mm) (opt 0.2mm)))
+
+# Keep the outer pours clear of exposed pads and their solder mask openings.
 (rule "Outer pour solder mask clearance"
   (condition "A.Type == 'Zone' && (A.Layer == 'F.Cu' || A.Layer == 'B.Cu')")
   (constraint clearance (min 0.25mm)))
 
-# Keep copper on other nets clear of probe contacts.
+# A wide coplanar gap preserves the microstrip model outside the matching pads.
+(rule "RF feed coplanar ground setback"
+  (condition "A.Type == 'Track' && A.hasNetclass('RF_50R_TBD') && (A.Layer == 'F.Cu' || A.Layer == 'B.Cu') && B.Type == 'Zone' && B.NetName == 'GND'")
+  (constraint clearance (min 0.5mm)))
+
 # https://www.tag-connect.com/wp-content/uploads/bsk-pdf-manager/2019/12/TC2030-IDC-NL-Datasheet-Rev-B.pdf
 (rule "Tag-Connect contact clearance"
   (condition "A.memberOfFootprint('J5') && A.Type == 'Pad' && (B.Type == 'Track' || B.Type == 'Via' || B.Type == 'Zone') && A.Net != B.Net")
   (constraint clearance (min 0.508mm)))
 
-# Plane exceptions below are the measured Nordic nRF54LM20A PAAA 0.6 routes.
-# Ordinary signals may only use these layers for the local CSP escape.
-(rule "No tracks on L2 ground outside CSP escape"
-  (layer "In1.Cu")
-  (condition "!A.intersectsCourtyard('U6') && A.NetName != 'Net-(U6A-TXRTUNE)'")
+# Preserve continuous reference planes and the dedicated supply plane.
+(rule "No tracks on reference and supply planes"
+  (condition "A.Layer == 'In1.Cu' || A.Layer == 'In3.Cu' || A.Layer == 'In4.Cu' || A.Layer == 'In6.Cu'")
   (constraint disallow track))
-(rule "No tracks on L4 power outside Nordic DECA"
-  (layer "In3.Cu")
-  (condition "!A.intersectsCourtyard('U6') && A.NetName != 'Net-(U6A-DECA)'")
-  (constraint disallow track))
+
 (rule "Tracks off the edge"
   (condition "A.Type == 'Track'")
   (constraint edge_clearance (min 1mm)))
 
-# Nordic retains the HFXO on L3. Preserve separation from digital routes outside
-# the CSP escape; the nearby DECA connection is part of the reference geometry.
-(rule "HFXO isolation on L3"
-  (layer "In2.Cu")
-  (condition "(A.NetName == 'Net-(U6A-XC1)' || A.NetName == 'Net-(U6A-XC2)') && B.NetName != 'GND' && B.NetName != 'Net-(U6A-XC1)' && B.NetName != 'Net-(U6A-XC2)' && B.NetName != 'Net-(U6A-DECA)' && !B.intersectsCourtyard('U6')")
-  (constraint clearance (min 0.5mm)))
+(rule "MCU fanout five mil clearance"
+  (condition "A.Type != 'Zone' && B.Type != 'Zone' && A.enclosedByArea('MCU south-east fanout') && B.enclosedByArea('MCU south-east fanout')")
+  (constraint clearance (min 0.127mm)))

@@ -3037,18 +3037,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "*QFN*52*6x6mm*P0.4mm*"
-			(at 218.44 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "MPN" "nRF54LM20A-QGAA-R7"
 			(at 218.44 0 0)
 			(hide yes)
@@ -7094,18 +7082,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "*QFN*52*6x6mm*P0.4mm*"
-			(at -6.35 -5.08 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "MPN" "nRF54LM20A-QGAA-R7"
 			(at -6.35 -5.08 0)
 			(hide yes)
@@ -7564,18 +7540,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "*QFN*52*6x6mm*P0.4mm*"
-			(at 34.29 -25.4 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "MPN" "nRF54LM20A-QGAA-R7"
 			(at 34.29 -25.4 0)
 			(hide yes)
@@ -7917,18 +7881,6 @@
 			)
 		)
 		(property "ki_locked" ""
-			(at -69.85 2.54 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "*QFN*52*6x6mm*P0.4mm*"
 			(at -69.85 2.54 0)
 			(hide yes)
 			(show_name no)
@@ -9139,7 +9091,7 @@
 		(on_board no)
 		(dnp no)
 		(uuid "2628de9d-16d9-506d-bf03-4e9cf65f00a0")
-		(property "Reference" "#PWR9000091"
+		(property "Reference" "#PWR9900091"
 			(at 323.85 71.12 0)
 			(hide yes)
 			(show_name no)
@@ -9212,7 +9164,7 @@
 		(instances
 			(project "OBC_PCB"
 				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
-					(reference "#PWR9000091")
+					(reference "#PWR9900091")
 					(unit 1)
 				)
 			)

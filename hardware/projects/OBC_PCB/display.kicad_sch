@@ -2957,18 +2957,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "SO14* DIP*W7.62mm*"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "MPN" "SN74LVC02APWR"
 			(at 0 0 0)
 			(hide yes)
@@ -3087,18 +3075,6 @@
 			)
 		)
 		(property "ki_keywords" "HCMOS Nor2"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "SO14* DIP*W7.62mm*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -3239,18 +3215,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "SO14* DIP*W7.62mm*"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "MPN" "SN74LVC02APWR"
 			(at 0 0 0)
 			(hide yes)
@@ -3369,18 +3333,6 @@
 			)
 		)
 		(property "ki_keywords" "HCMOS Nor2"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "SO14* DIP*W7.62mm*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -3521,18 +3473,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "SO14* DIP*W7.62mm*"
-			(at 0.0 -5.08 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "MPN" "SN74LVC02APWR"
 			(at 0.0 -5.08 0)
 			(hide yes)
@@ -3658,18 +3598,6 @@
 			)
 		)
 		(property "ki_keywords" "R resistor"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "R_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -3935,18 +3863,6 @@
 			)
 		)
 		(property "ki_keywords" "R resistor"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "R_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -4516,18 +4432,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "R_*"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "Tolerance" "1%"
 			(at 0 0 0)
 			(hide yes)
@@ -4652,18 +4556,6 @@
 			)
 		)
 		(property "ki_keywords" "R resistor"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "R_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -5005,18 +4897,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "C_*"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "Voltage" "10V"
 			(at 0 0 0)
 			(hide yes)
@@ -5249,18 +5129,6 @@
 			)
 		)
 		(property "ki_keywords" "capacitor cap"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "C_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -5732,18 +5600,6 @@
 			)
 		)
 		(property "ki_keywords" "R resistor"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "R_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -6862,18 +6718,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "R_*"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "Tolerance" "1%"
 			(at 0 0 0)
 			(hide yes)
@@ -7128,18 +6972,6 @@
 			)
 		)
 		(property "ki_keywords" "R resistor"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "R_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -7416,18 +7248,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "R_*"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "Tolerance" "1%"
 			(at 0 0 0)
 			(hide yes)
@@ -7682,18 +7502,6 @@
 			)
 		)
 		(property "ki_keywords" "R resistor"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "R_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -7970,18 +7778,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "R_*"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "Tolerance" "1%"
 			(at 0 0 0)
 			(hide yes)
@@ -8236,18 +8032,6 @@
 			)
 		)
 		(property "ki_keywords" "R resistor"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "R_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -8524,18 +8308,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "R_*"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "Tolerance" "1%"
 			(at 0 0 0)
 			(hide yes)
@@ -8790,18 +8562,6 @@
 			)
 		)
 		(property "ki_keywords" "R resistor"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "R_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -9078,18 +8838,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "R_*"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "Tolerance" "1%"
 			(at 0 0 0)
 			(hide yes)
@@ -9344,18 +9092,6 @@
 			)
 		)
 		(property "ki_keywords" "R resistor"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "R_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -9632,18 +9368,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "R_*"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "Tolerance" "1%"
 			(at 0 0 0)
 			(hide yes)
@@ -9898,18 +9622,6 @@
 			)
 		)
 		(property "ki_keywords" "R resistor"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "R_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)

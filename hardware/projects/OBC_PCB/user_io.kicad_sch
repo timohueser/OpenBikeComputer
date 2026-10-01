@@ -4141,18 +4141,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "TO-???* *_Diode_* *SingleDiode* D_*"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "MPN" "BAS40-7-F"
 			(at 0 0 0)
 			(hide yes)
@@ -4256,18 +4244,6 @@
 			)
 		)
 		(property "ki_keywords" "R resistor"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "R_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -4457,18 +4433,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "SSOP* VSSOP*"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "MPN" "SN74LVC2G00DCTR"
 			(at 0 0 0)
 			(hide yes)
@@ -4586,18 +4550,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "SSOP* VSSOP*"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "MPN" "SN74LVC2G00DCTR"
 			(at 0 0 0)
 			(hide yes)
@@ -4704,18 +4656,6 @@
 			)
 		)
 		(property "ki_keywords" "Dual Gate NAND LVC CMOS"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "SSOP* VSSOP*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -4943,18 +4883,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "R_*"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "Tolerance" "1%"
 			(at 0 0 0)
 			(hide yes)
@@ -5170,18 +5098,6 @@
 			)
 		)
 		(property "ki_keywords" "R resistor"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "R_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -5759,18 +5675,6 @@
 				(justify left)
 			)
 		)
-		(property "ki_fp_filters" "C_*"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(property "Voltage" "25V"
 			(at 0 0 0)
 			(hide yes)
@@ -6069,18 +5973,6 @@
 			)
 		)
 		(property "ki_keywords" "R resistor"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "R_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -6426,18 +6318,6 @@
 			)
 		)
 		(property "ki_keywords" "capacitor cap"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_fp_filters" "C_*"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
