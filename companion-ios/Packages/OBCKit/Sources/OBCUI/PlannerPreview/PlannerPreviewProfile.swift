@@ -1,13 +1,12 @@
-#if DEBUG && os(iOS)
+#if os(iOS)
 import SwiftUI
 import OBCDomain
 
 struct PlannerPreviewProfile: View {
-    let routePoints: [RoutePoint]
+    let profile: PlannerPreviewGrade
     let height: CGFloat
     let visibleRange: ClosedRange<Double>?
     @Binding var selectedFraction: Double?
-    private var profile: PlannerPreviewGrade { PlannerPreviewGrade(routePoints: routePoints) }
 
     var body: some View {
         let profile = profile

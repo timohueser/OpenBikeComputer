@@ -983,7 +983,7 @@ fn next_route_identity() -> Result<u32, Error> {
     // Zero-init keeps the allocator in `.bss`, and the returned token is the stored next value,
     // so zero itself is never live.
     static LAST: AtomicU32 = AtomicU32::new(0);
-    LAST.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |identity| identity.checked_add(1))
+    LAST.try_update(Ordering::Relaxed, Ordering::Relaxed, |identity| identity.checked_add(1))
         .map(|identity| identity + 1)
         .map_err(|_| Error::TooLarge)
 }

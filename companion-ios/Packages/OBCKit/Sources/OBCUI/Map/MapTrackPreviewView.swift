@@ -4,7 +4,7 @@ import OBCDomain
 import MapKit
 #endif
 
-/// A drop-in for `TrackPreviewView` that draws the track over Apple Maps when there
+/// A drop-in for `TrackPreviewView` that draws the track over the OSM basemap when there
 /// is a network path and real geometry, and falls back to the track sketch
 /// otherwise. The fallback is intentional, not a failure state.
 ///
@@ -77,17 +77,10 @@ public struct MapTrackPreviewView: View {
 
     @ViewBuilder
     private var mapPreview: some View {
-        #if canImport(MapKit)
+        #if os(iOS)
         let coordinates = preview?.coordinates ?? []
-        Map(
-            initialPosition: .region(MapGeometry.boundingRegion(for: coordinates)),
-            interactionModes: []
-        ) {
-            TrackMapContent(
-                coordinates: coordinates, ink: ink, dotRadius: style.dotRadius, waypoints: waypoints,
-                photoPins: photoPins, highlightedPhoto: highlightedPhoto, cursor: cursor
-            )
-        }
+        OBCMapView(lines: [MapStroke(coordinates: coordinates, color: ink.color, cased: ink.cased)],
+                   pins: mapPins(coordinates), interactive: false)
         .allowsHitTesting(false)
         .clipShape(RoundedRectangle(cornerRadius: showsChrome ? OBCTheme.radiusPanel : 0))
         .overlay {
@@ -105,77 +98,22 @@ public struct MapTrackPreviewView: View {
         )
         #endif
     }
+    #if os(iOS)
+    private func mapPins(_ coordinates: [Coordinate]) -> [MapPin] {
+        var pins: [MapPin] = []
+        if let first = coordinates.first { pins.append(MapPin(coordinate: first, size: style.dotRadius * 2)) }
+        if let last = coordinates.last, coordinates.count > 1 { pins.append(MapPin(coordinate: last, color: OBCTheme.rust, square: true, size: style.dotRadius * 2)) }
+        pins += waypoints.dropFirst().dropLast().map { MapPin(coordinate: $0.coordinate, color: OBCTheme.secondary, label: "\($0.index + 1)") }
+        let photoOrder = photoPins.indices.filter { $0 != highlightedPhoto } + (highlightedPhoto.map { photoPins.indices.contains($0) ? [$0] : [] } ?? [])
+        pins += photoOrder.map { MapPin(coordinate: photoPins[$0], color: OBCTheme.ride, photo: $0 == highlightedPhoto) }
+        if let cursor { pins.append(MapPin(coordinate: cursor, color: OBCTheme.amber, size: 14)) }
+        return pins
+    }
+    #endif
+
 }
 
 #if canImport(MapKit)
-/// The track polyline, its ink start dot and rust end square, shared by the preview and the full-screen
-/// `TrackMapView` so both look identical. `waypoints` pins the middle waypoints; the
-/// start and end already have dots.
-struct TrackMapContent: MapContent {
-    let coordinates: [Coordinate]
-    var ink: TrackPreviewView.Ink = .route
-    var dotRadius: CGFloat = 5
-    var waypoints: [Waypoint] = []
-    var photoPins: [Coordinate] = []
-    var highlightedPhoto: Int?
-    var cursor: Coordinate?
-
-    var body: some MapContent {
-        let coords = MapGeometry.clLocations(coordinates)
-        if ink.cased {
-            MapPolyline(coordinates: coords)
-                .stroke(OBCTheme.routeCasing, style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
-        }
-        MapPolyline(coordinates: coords)
-            .stroke(ink.color, style: StrokeStyle(lineWidth: 3.4, lineCap: .round, lineJoin: .round))
-        if let first = coords.first {
-            Annotation("", coordinate: first) { endMark(Circle(), fill: OBCTheme.ink) }
-        }
-        if coords.count > 1, let last = coords.last {
-            Annotation("", coordinate: last) { endMark(RoundedRectangle(cornerRadius: 2), fill: OBCTheme.rust) }
-        }
-        ForEach(Array(waypoints.dropFirst().dropLast())) { waypoint in
-            Annotation(
-                "",
-                coordinate: CLLocationCoordinate2D(
-                    latitude: waypoint.coordinate.latitude,
-                    longitude: waypoint.coordinate.longitude
-                )
-            ) {
-                WaypointPinBadge(label: "\(waypoint.index + 1)")
-            }
-        }
-        // The highlighted pin comes last, so it draws over its neighbours.
-        ForEach(photoPinOrder, id: \.self) { index in
-            Annotation("", coordinate: MapGeometry.clLocations([photoPins[index]])[0]) {
-                PhotoPin(highlighted: index == highlightedPhoto)
-            }
-        }
-        if let cursor {
-            Annotation("", coordinate: MapGeometry.clLocations([cursor])[0]) {
-                Circle()
-                    .fill(OBCTheme.amber)
-                    .frame(width: 14, height: 14)
-                    .overlay(Circle().strokeBorder(OBCTheme.surface, lineWidth: 2.5))
-                    .shadow(color: .black.opacity(0.3), radius: 1.5, y: 1)
-            }
-        }
-    }
-
-    private var photoPinOrder: [Int] {
-        let others = photoPins.indices.filter { $0 != highlightedPhoto }
-        guard let highlightedPhoto, photoPins.indices.contains(highlightedPhoto) else { return others }
-        return others + [highlightedPhoto]
-    }
-
-    private func endMark(_ shape: some InsettableShape, fill: Color) -> some View {
-        shape
-            .fill(fill)
-            .frame(width: dotRadius * 2, height: dotRadius * 2)
-            .overlay(shape.strokeBorder(OBCTheme.surface, lineWidth: 2))
-    }
-}
-
 /// The numbered waypoint pin as a live view, olive as in the waypoints list. The sketch draws
 /// the same mark in its `Canvas`.
 struct WaypointPinBadge: View {

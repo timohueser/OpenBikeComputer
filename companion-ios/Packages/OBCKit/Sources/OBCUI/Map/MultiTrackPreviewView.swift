@@ -6,7 +6,7 @@ import MapKit
 
 /// The trip card's multi-stage preview: every stage of a trip on one preview in its
 /// palette color. A sibling of ``MapTrackPreviewView`` that draws N polylines instead
-/// of one, under the same rule: a MapKit basemap when there is a network path and
+/// of one, under the same rule: an OSM basemap when there is a network path and
 /// real geometry, the grid fallback otherwise. Non-interactive at every size, so a
 /// tap reaches the enclosing trip card.
 public struct MultiTrackPreviewView: View {
@@ -154,46 +154,18 @@ public struct MultiTrackPreviewView: View {
         context.stroke(path, with: .color(OBCTheme.sketchLine), lineWidth: 1)
     }
 
-    // MARK: MapKit basemap
+    // MARK: OSM basemap
 
     @ViewBuilder
     private var map: some View {
-        #if canImport(MapKit)
-        let allCoordinates = stages.flatMap(\.coordinates)
-        Map(
-            initialPosition: .region(MapGeometry.boundingRegion(for: allCoordinates)),
-            interactionModes: []
-        ) {
-            ForEach(Array(stages.enumerated()), id: \.offset) { _, stage in
-                let coords = MapGeometry.clLocations(stage.coordinates)
-                if stage.cased {
-                    MapPolyline(coordinates: coords)
-                        .stroke(OBCTheme.routeCasing, style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
-                }
-                MapPolyline(coordinates: coords)
-                    .stroke(stage.color, style: StrokeStyle(
-                        lineWidth: stage.lineWidth, lineCap: .round, lineJoin: .round, dash: stage.dash))
-            }
-            if let ends {
-                Annotation("", coordinate: MapGeometry.clLocations([ends.start])[0]) {
-                    EndMark(shape: Circle(), fill: OBCTheme.ink)
-                }
-                Annotation("", coordinate: MapGeometry.clLocations([ends.end])[0]) {
-                    EndMark(shape: RoundedRectangle(cornerRadius: 2), fill: OBCTheme.rust)
-                }
-            }
-            ForEach(Array(pins.enumerated()), id: \.offset) { _, pin in
-                Annotation("", coordinate: MapGeometry.clLocations([pin.coordinate])[0], anchor: .center) {
-                    PinMark(pin: pin)
-                }
-            }
-        }
-        // `initialPosition` is read once per Map identity, so key the identity on the
-        // stage geometry. Without this, a route added to the trip lay outside the
-        // frozen camera until the next app launch.
-        .id(stages.map(\.coordinates))
-        .allowsHitTesting(false)
-        .modifier(PreviewChrome(showsChrome: showsChrome))
+        #if os(iOS)
+        let lines = stages.map { MapStroke(coordinates: $0.coordinates, color: $0.color,
+                                           width: $0.lineWidth, cased: $0.cased, dash: $0.dash) }
+        let marks = pins.map { MapPin(coordinate: $0.coordinate, color: $0.color, size: 8, symbol: $0.systemImage) }
+            + (ends.map { [MapPin(coordinate: $0.start), MapPin(coordinate: $0.end, color: OBCTheme.rust, square: true)] } ?? [])
+        OBCMapView(lines: lines, pins: marks, interactive: false)
+            .allowsHitTesting(false)
+            .modifier(PreviewChrome(showsChrome: showsChrome))
         #else
         grid
         #endif
