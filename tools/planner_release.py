@@ -138,7 +138,7 @@ def publish(args):
         r2.run_rclone(["copy", str(args.data_dir), f"{remote.path}/{prefix}", "--files-from", str(listing),
                        "--immutable", "--checksum", "--transfers", "4", "--s3-upload-concurrency", "2",
                        "--header-upload", "Cache-Control: public,max-age=31536000,immutable"], remote.env)
-        rows = json.loads(r2.run_rclone(["lsjson", f"{remote.path}/{prefix}", "--recursive", "--files-only", "--no-modtime"], remote.env, capture=True))
+        rows = json.loads(r2.run_rclone(["lsjson", f"{remote.path}/{prefix}", "--recursive", "--files-only", "--no-modtime", "--no-mimetype"], remote.env, capture=True))
         sizes = {row["Path"]: row["Size"] for row in rows}
         if any(sizes.get(name) != item["bytes"] for name, item in files.items()):
             raise ValueError("Remote release is incomplete; catalogue is unchanged")
