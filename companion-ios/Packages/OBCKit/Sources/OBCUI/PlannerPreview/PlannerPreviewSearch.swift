@@ -1,5 +1,6 @@
-#if DEBUG && os(iOS)
+#if os(iOS)
 import SwiftUI
+import OBCPlanner
 
 struct PlannerPreviewSearch: View {
     let model: PlannerPreviewModel
@@ -8,11 +9,17 @@ struct PlannerPreviewSearch: View {
     let onPlace: (PlannerPreviewPlace) -> Void
     let onQueryChange: (String) -> Void
     let onRequestChange: (PlannerPreviewPlaceQuery?) -> Void
+    var viewBounds: [Double]? = nil
     let isInMapView: (PlannerPreviewPlace) -> Bool
     @State private var query: String
     @State private var request: PlannerPreviewPlaceQuery?
     @State private var activeEditor: PlannerPreviewQueryField?
     @FocusState private var isFocused: Bool
+    @State private var remote: PlannerPreviewQueryResult?
+    @State private var isSearching = false
+    @State private var searchError: String?
+    private struct SearchKey: Equatable { let query: String; let request: PlannerPreviewPlaceQuery? }
+    private var searchKey: SearchKey { .init(query: query, request: request) }
 
     init(model: PlannerPreviewModel, initialQuery: String, initialRequest: PlannerPreviewPlaceQuery?,
          initialEditor: PlannerPreviewQueryField?,
@@ -28,13 +35,17 @@ struct PlannerPreviewSearch: View {
         _activeEditor = State(initialValue: initialEditor)
     }
 
+    func withViewBounds(_ bounds: [Double]?) -> Self {
+        var copy = self; copy.viewBounds = bounds; return copy
+    }
+
     /// One prompt for the drawer's search button and the field it opens.
     static func prompt(hasRoute: Bool) -> String {
         hasRoute ? "Find stops or change this route" : "Search places or describe a route"
     }
 
     private var hasQuery: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    private var result: PlannerPreviewQueryResult { request?.result(in: model, isInMapView: isInMapView) ?? model.lookup(query) }
+    private var result: PlannerPreviewQueryResult { remote ?? model.lookup(query) }
     private var suggestions: [(title: String, symbol: String)] {
         model.hasRoute
             ? [("Cafés along route", "cup.and.saucer"), ("Water", "drop"), ("Shops", "basket"),
@@ -71,7 +82,11 @@ struct PlannerPreviewSearch: View {
                             }
                         }
                         // A filter editor is the one open task; the results return once it closes.
-                        if hasQuery, activeEditor == nil { results }
+                        if hasQuery, activeEditor == nil {
+                            if isSearching { ProgressView("Searching places…") }
+                            else if let searchError { Text(searchError).foregroundStyle(OBCTheme.secondary) }
+                            else { results }
+                        }
                         if !hasQuery || result.places.isEmpty {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("Examples").font(.headline).padding(.bottom, 4)
@@ -111,6 +126,26 @@ struct PlannerPreviewSearch: View {
             onQueryChange(value); onRequestChange(request)
         }
         .task { onRequestChange(request); isFocused = !hasQuery && activeEditor == nil }
+        .task(id: searchKey) {
+            let key = searchKey
+            remote = nil; searchError = nil; isSearching = false
+            guard hasQuery, model.lookup(query).action == nil else { return }
+            isSearching = true
+            defer { if key == searchKey { isSearching = false } }
+            do {
+                try await Task.sleep(for: .milliseconds(250))
+                let query = request?.serverQuery(text: key.query, view: viewBounds, model: model)
+                    ?? PlannerSearchQuery(text: key.query, view: viewBounds)
+                let places = try await model.searchPlaces(query)
+                try Task.checkCancellation()
+                guard key == searchKey else { return }
+                remote = .init(title: request.map { $0.kinds.isEmpty ? $0.name : $0.kindLabel } ?? "Places",
+                               explanation: "", places: places, action: nil)
+            } catch is CancellationError {} catch {
+                guard key == searchKey else { return }
+                searchError = error.localizedDescription
+            }
+        }
     }
 
     /// `OBCSearchField` with focus and submit, which the shared field does not carry.
@@ -161,7 +196,7 @@ struct PlannerPreviewSearch: View {
         guard model.lookup(query).action == nil else { return nil }
         return PlannerPreviewPlaceQuery.parse(query, hasRoute: model.hasRoute)
     }
-    private func submit() { guard hasQuery else { return }; isFocused = false; onResult(result) }
+    private func submit() { guard hasQuery, !isSearching, searchError == nil else { return }; isFocused = false; onResult(result) }
     // A picked place carries its list along, so the planner can offer the way back to it.
     private func select(_ place: PlannerPreviewPlace) {
         isFocused = false

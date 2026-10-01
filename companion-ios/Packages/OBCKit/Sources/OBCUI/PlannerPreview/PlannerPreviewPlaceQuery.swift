@@ -1,5 +1,5 @@
-#if DEBUG
 import Foundation
+import OBCPlanner
 
 enum PlannerPreviewQueryField: String, Identifiable {
     case what, name, area, radius
@@ -86,7 +86,7 @@ struct PlannerPreviewPlaceQuery: Equatable {
     @MainActor
     func result(in model: PlannerPreviewModel, isInMapView: (PlannerPreviewPlace) -> Bool) -> PlannerPreviewQueryResult {
         let line = model.routeLine
-        let candidates = PlannerPreviewModel.sampleMapPlaces.map { place in
+        let candidates = model.mapPlaces.map { place in
             guard model.hasRoute else { return place }
             let projection = line.projection(of: place.coordinate, near: line.length / 2, window: line.length)
             return PlannerPreviewPlace(id: place.id, name: place.name, coordinate: place.coordinate, kind: place.kind,
@@ -96,6 +96,27 @@ struct PlannerPreviewPlaceQuery: Equatable {
         let places = filter(candidates, routeLengthMeters: line.length, isInMapView: isInMapView)
         return .init(title: kinds.isEmpty ? name : kindLabel,
                      explanation: "", places: places, action: nil)
+    }
+
+    @MainActor
+    func serverQuery(text: String, view: [Double]?, model: PlannerPreviewModel) -> PlannerSearchQuery {
+        var query = PlannerSearchQuery(text: name.isEmpty ? text : name, view: view)
+        query.kinds = kinds.map { $0 == .camping ? "campsite" : $0 == .shop ? "resupply" : $0.rawValue }.sorted()
+        query.route = model.geometry
+        query.routeLengthMeters = model.routeLine.length
+        query.radiusMeters = radiusMeters
+        if area != .view {
+            query.alongRoute = true
+            let length = model.routeLine.length
+            switch area {
+            case .start: query.toMeters = length / 3
+            case .middle: query.fromMeters = length / 3; query.toMeters = length * 2 / 3
+            case .end: query.fromMeters = length * 2 / 3
+            case .section: query.fromMeters = fromMeters; query.toMeters = toMeters
+            case .view, .route: break
+            }
+        }
+        return query
     }
 
     func filter(_ places: [PlannerPreviewPlace], routeLengthMeters: Double,
@@ -128,4 +149,3 @@ struct PlannerPreviewPlaceQuery: Equatable {
         }
     }
 }
-#endif

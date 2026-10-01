@@ -26,3 +26,9 @@ Packages/*/.build/
 .DS_Store
 *.moved-aside
 *.hmap
+
+# Native map styles are generated from the shared planner palette.
+Packages/OBCKit/Sources/OBCUI/Resources/Map/light.json
+Packages/OBCKit/Sources/OBCUI/Resources/Map/dark.json
+
+Packages/OBCKit/Sources/OBCUI/Resources/Map/poi-kinds.json

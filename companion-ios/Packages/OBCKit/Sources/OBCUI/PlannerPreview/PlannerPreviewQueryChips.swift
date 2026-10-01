@@ -1,4 +1,4 @@
-#if DEBUG && os(iOS)
+#if os(iOS)
 import SwiftUI
 
 private extension PlannerPreviewQueryField {

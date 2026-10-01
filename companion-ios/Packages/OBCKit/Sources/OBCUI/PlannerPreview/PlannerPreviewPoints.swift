@@ -1,4 +1,4 @@
-#if DEBUG && os(iOS)
+#if os(iOS)
 import SwiftUI
 
 struct PlannerPreviewPoints: View {
@@ -36,12 +36,12 @@ struct PlannerPreviewPoints: View {
                 if model.hasRoute {
                     Button("Reverse route", systemImage: "arrow.up.arrow.down", action: onReverse).frame(minHeight: 44)
                 }
-                Menu("Preview") {
+                Menu("Route") {
                     Button("Load example route", action: onExample)
                     Button("Start a new route", action: onNew)
                 }.frame(minHeight: 44)
             } footer: {
-                Text("Interaction preview · sample route and places. Edited connections are illustrative.")
+                Text("Routes need an internet connection and points inside the available map region.")
             }.listRowBackground(OBCTheme.surface)
         }
         .environment(\.editMode, .constant(.active))

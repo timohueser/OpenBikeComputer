@@ -1,16 +1,20 @@
-#if DEBUG
 import Foundation
 import Observation
 import OBCDomain
+import OBCPlanner
 
 public struct PlannerPreviewPlace: Identifiable, Equatable, Sendable {
     public enum Kind: String, Sendable {
-        case town, cafe, water, camping, shop
+        case town, cafe, water, camping, shop, hotel, shelter, food, toilets, bike, pharmacy, station, viewpoint, peak
         public var title: String {
-            switch self { case .town: "Place"; case .cafe: "Café"; case .water: "Water"; case .camping: "Camping"; case .shop: "Food shop" }
+            switch self { case .town: "Place"; case .cafe: "Café"; case .water: "Water"; case .camping: "Camping"; case .shop: "Food shop"
+            case .hotel: "Lodging"; case .shelter: "Shelter"; case .food: "Food"; case .toilets: "Toilets"
+            case .bike: "Bike service"; case .pharmacy: "Pharmacy"; case .station: "Station"; case .viewpoint: "Viewpoint"; case .peak: "Peak" }
         }
         public var symbol: String {
-            switch self { case .town: "mappin"; case .cafe: "cup.and.saucer.fill"; case .water: "drop.fill"; case .camping: "tent.fill"; case .shop: "cart.fill" }
+            switch self { case .town: "mappin"; case .cafe: "cup.and.saucer.fill"; case .water: "drop.fill"; case .camping: "tent.fill"; case .shop: "cart.fill"
+            case .hotel: "bed.double"; case .shelter: "house"; case .food: "fork.knife"; case .toilets: "toilet"
+            case .bike: "bicycle"; case .pharmacy: "cross.case"; case .station: "tram"; case .viewpoint: "eye"; case .peak: "mountain.2" }
         }
     }
     public let id: String
@@ -75,7 +79,7 @@ public struct PlannerPreviewStats: Equatable, Sendable {
     public let seconds: Double
 }
 
-/// A reversible interaction prototype. Route edits use the fixed sample line and straight connectors.
+/// Editing intent is reversible. Geometry comes from the published route service.
 @MainActor @Observable
 public final class PlannerPreviewModel {
     private struct State: Equatable {
@@ -89,8 +93,82 @@ public final class PlannerPreviewModel {
     private var past: [State] = []
     private var future: [State] = []
 
-    public init(sample: Bool = false) {
+    @ObservationIgnored public let service: any PlannerDataSource
+    public private(set) var release: PlannerRelease?
+    public private(set) var routingRevision = 0
+    public private(set) var isRouting = false
+    public private(set) var routeError: String?
+    public var mapPlaces: [PlannerPreviewPlace] = []
+    private var path: PlannedPath?
+    public private(set) var geometry: [Coordinate] = []
+    var profile = PlannerPreviewGrade(routePoints: [])
+    public private(set) var routeLine = MeasuredLine(routePoints: [])
+
+    public init(sample: Bool = false, service: any PlannerDataSource = PlannerService.shared) {
+        self.service = service
         if sample { state = Self.sampleState }
+    }
+
+    private struct RoutingKey: Equatable {
+        let coordinates: [Coordinate]
+        let bike: BikeType
+        let preset: PlannerPreviewPreset
+    }
+    private var routingKey: RoutingKey { .init(coordinates: points.map { $0.place.coordinate }, bike: bike, preset: preset) }
+    public var canSave: Bool { path != nil && !isRouting && routeError == nil }
+    public func retryRoute() { routingRevision += 1 }
+
+    public func calculateRoute() async {
+        let revision = routingRevision, key = routingKey
+        isRouting = hasRoute; routeError = nil
+        defer { if revision == routingRevision { isRouting = false } }
+        do {
+            let selected: PlannerRelease
+            if let release { selected = release } else { selected = try await service.release() }
+            try Task.checkCancellation()
+            guard revision == routingRevision else { return }
+            release = selected
+            guard hasRoute else { return }
+            guard let preference = RoutePreference(rawValue: preset == .lessClimbing ? "less-climbing" : preset.rawValue) else {
+                throw PlannerFailure.invalidData
+            }
+            let result = try await service.route(points: key.coordinates, bike: key.bike, preference: preference, release: selected)
+            try Task.checkCancellation()
+            guard revision == routingRevision else { return }
+            path = result
+            routeLine = MeasuredLine(routePoints: result.points)
+            geometry = result.points.map(\.coordinate)
+            profile = PlannerPreviewGrade(routePoints: result.points)
+        } catch is CancellationError {} catch {
+            guard revision == routingRevision else { return }
+            path = nil; routeLine = MeasuredLine(routePoints: []); geometry = []; profile = PlannerPreviewGrade(routePoints: [])
+            routeError = error.localizedDescription
+        }
+    }
+
+    public func searchPlaces(_ query: PlannerSearchQuery) async throws -> [PlannerPreviewPlace] {
+        let selected: PlannerRelease
+        if let release { selected = release } else { selected = try await service.release() }
+        try Task.checkCancellation()
+        release = selected
+        let places = try await service.search(query, release: selected)
+        try Task.checkCancellation()
+        let line = routeLine
+        return places.map { place in
+            let kind = NativePlaceKind.kind(for: place.kind)
+            let projection = place.position.map { (distance: $0.along * 1000, error: $0.distance * 1000) }
+                ?? line.projection(of: place.coordinate, near: line.length / 2, window: line.length)
+            return .init(id: place.source, name: place.name, coordinate: place.coordinate, kind: kind,
+                         alongRouteMeters: projection.distance, offRouteMeters: projection.error,
+                         hours: place.opening_hours, note: place.city.isEmpty ? nil : place.city)
+        }
+    }
+
+    private func invalidateRoute(from key: RoutingKey) {
+        guard key != routingKey else { return }
+        routingRevision += 1
+        path = nil; routeLine = MeasuredLine(routePoints: []); geometry = []; profile = PlannerPreviewGrade(routePoints: [])
+        routeError = nil; isRouting = hasRoute
     }
 
     public var points: [PlannerPreviewPoint] { state.points }
@@ -109,21 +187,23 @@ public final class PlannerPreviewModel {
         guard let start, let finish else { return "New route" }
         return "\(start.name) → \(finish.name)"
     }
-    public var routePoints: [RoutePoint] { sampledRoute.samples }
-    public var routeLine: MeasuredLine { MeasuredLine(routePoints: routePoints) }
-    public var geometry: [Coordinate] { routePoints.map(\.coordinate) }
+    public var routePoints: [RoutePoint] { path?.points ?? [] }
     public var pointDistances: [String: Double] {
-        let data = sampledRoute, line = MeasuredLine(routePoints: data.samples)
-        return data.indices.mapValues { line.vertices[$0].distance }
+        guard let path else { return [:] }
+        return Dictionary(uniqueKeysWithValues: zip(points, path.pointIndices).map {
+            ($0.0.id, routeLine.vertices[$0.1].distance)
+        })
     }
     public var stats: PlannerPreviewStats {
-        let line = routeLine
-        return stats(from: 0, to: line.length, on: line)
+        .init(distanceMeters: path?.distance ?? 0, ascentMeters: path?.ascent ?? 0, seconds: path?.seconds ?? 0)
     }
     public var dayStats: [PlannerPreviewStats] {
-        let line = routeLine
-        guard let id = overnightPointID, let split = pointDistances[id] else { return [stats] }
-        return [stats(from: 0, to: split, on: line), stats(from: split, to: line.length, on: line)]
+        guard let path, let id = overnightPointID, let position = points.firstIndex(where: { $0.id == id }) else { return [stats] }
+        let index = path.pointIndices[position], split = routeLine.vertices[index].distance
+        let fraction = routeLine.length > 0 ? split / routeLine.length : 0
+        let ascent = routeLine.climb(from: 0, to: split)
+        return [.init(distanceMeters: path.distance * fraction, ascentMeters: min(path.ascent, ascent), seconds: path.elapsed[index]),
+                .init(distanceMeters: path.distance * (1 - fraction), ascentMeters: max(0, path.ascent - ascent), seconds: max(0, path.seconds - path.elapsed[index]))]
     }
 
     public func exportRoute(name: String) -> ImportedRoute {
@@ -134,14 +214,14 @@ public final class PlannerPreviewModel {
             case .water: .water
             case .camping: .campsite
             case .shop: .resupply
-            case .town, .cafe: nil
+            default: nil
             }
-            return Waypoint(index: index, name: entry.0.name, note: "Illustrative preview stop",
+            return Waypoint(index: index, name: entry.0.name, note: entry.0.note,
                             distanceAlongMeters: entry.1, coordinate: entry.0.coordinate, category: category)
         }
         let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return ImportedRoute(name: "Preview · \(title.isEmpty ? routeTitle : title)",
-                             creator: "OpenBikeComputer Planner Preview", points: routePoints, waypoints: waypoints)
+        return ImportedRoute(name: title.isEmpty ? routeTitle : title,
+                             creator: "OpenBikeComputer", points: routePoints, waypoints: waypoints)
     }
 
     public func newRoute() { edit { $0 = State() } }
@@ -222,11 +302,15 @@ public final class PlannerPreviewModel {
     }
     public func undo() {
         guard let previous = past.popLast() else { return }
+        let key = routingKey
         future.append(state); state = previous
+        invalidateRoute(from: key)
     }
     public func redo() {
         guard let next = future.popLast() else { return }
+        let key = routingKey
         past.append(state); state = next
+        invalidateRoute(from: key)
     }
     public func apply(_ action: PlannerPreviewAction) {
         switch action {
@@ -236,14 +320,14 @@ public final class PlannerPreviewModel {
             edit { $0.points.reverse() }
         case .splitDays:
             guard hasRoute else { return }
-            setOvernight(Self.sampleMapPlaces.first { $0.kind == .camping })
+            setOvernight(mapPlaces.first { $0.kind == .camping })
         }
     }
     public func actionSummary(_ action: PlannerPreviewAction) -> String {
         switch action {
-        case .createSample: "Freiburg to Titisee on the sample gravel route."
+        case .createSample: "Freiburg to Titisee with online gravel routing."
         case .reverse: "Start at \(finish?.name ?? "the finish") and ride to \(start?.name ?? "the start"). Your stops reverse too."
-        case .splitDays: "End day 1 at the sample campsite. Continue to \(finish?.name ?? "the finish") on day 2."
+        case .splitDays: "End day 1 at a campsite in the search results. Continue to \(finish?.name ?? "the finish") on day 2."
         }
     }
 
@@ -260,21 +344,21 @@ public final class PlannerPreviewModel {
             return result(hasRoute ? "Ride the other way" : "Create a route first", "Review the change before you apply it.", action: hasRoute ? .reverse : nil)
         }
         if q.contains("two day") || q.contains("2 day") || q.contains("split") {
-            return result(hasRoute ? "Make it two days" : "Create a route first", "This preview uses one sample campsite.", action: hasRoute ? .splitDays : nil)
+            return result(hasRoute ? "Make it two days" : "Create a route first", "Find a campsite, then set it as your overnight stop.", action: hasRoute && mapPlaces.contains(where: { $0.kind == .camping }) ? .splitDays : nil)
         }
         if (q.contains("ride") || q.contains("route") || q.contains(" to ")) && (q.contains("titisee") || q.contains("freiburg")) {
-            return result("Freiburg → Titisee", "A fixed sample gravel route. Review it before you apply it.", action: .createSample)
+            return result("Freiburg → Titisee", "An online gravel route. Review it before you apply it.", action: .createSample)
         }
         let kind: PlannerPreviewPlace.Kind? = q.contains("cafe") || q.contains("coffee") ? .cafe
             : q.contains("water") || q.contains("fountain") ? .water
             : q.contains("camp") || q.contains("sleep") ? .camping
             : q.contains("shop") || q.contains("supermarket") || q.contains("grocer") ? .shop : nil
         if let kind {
-            return result(kind.title, "", places: Self.sampleMapPlaces.filter { $0.kind == kind })
+            return result(kind.title, "", places: mapPlaces.filter { $0.kind == kind })
         }
-        let matches = Self.sampleMapPlaces.filter { $0.name.lowercased().contains(q) }
-        return result(matches.isEmpty ? "No preview match" : "Places", matches.isEmpty
-                      ? "Try Freiburg, Titisee, cafés, water, reverse or two days. This preview supports these examples."
+        let matches = mapPlaces.filter { $0.name.lowercased().contains(q) }
+        return result(matches.isEmpty ? "No places found" : "Places", matches.isEmpty
+                      ? "Try Freiburg, Titisee, cafés, water, reverse or two days. Search for a place to add to your route."
                       : "Choose a place to set an endpoint or add a stop.", places: matches)
     }
 
@@ -284,13 +368,19 @@ public final class PlannerPreviewModel {
             next.overnightPointID = nil
         }
         guard next != state else { return }
+        let key = routingKey
         past.append(state); state = next; future.removeAll()
+        invalidateRoute(from: key)
     }
     private static func newPoint(_ place: PlannerPreviewPlace, kind: PlannerPreviewPointKind = .visit, in state: State) -> PlannerPreviewPoint {
         let id = (state.points + state.markers).contains { $0.id == place.id } ? UUID().uuidString : place.id
         return .init(place: place, kind: kind, id: id)
     }
-    private static var sampleState: State { State(points: sampleMapPlaces.prefix(2).map { .init(place: $0) }) }
+    private static var sampleState: State { State(points: [
+        .init(place: .init(id: "freiburg", name: "Freiburg", coordinate: .init(latitude: 47.997922, longitude: 7.842534))),
+        .init(place: .init(id: "titisee", name: "Titisee", coordinate: .init(latitude: 47.905528, longitude: 8.153371)))
+    ]) }
+    #if DEBUG
     public static let sampleMapPlaces: [PlannerPreviewPlace] = [
         .init(id: "freiburg", name: "Freiburg", coordinate: .init(latitude: 47.997922, longitude: 7.842534)),
         .init(id: "titisee", name: "Titisee", coordinate: .init(latitude: 47.905528, longitude: 8.153371), alongRouteMeters: 30_524),
@@ -312,32 +402,5 @@ public final class PlannerPreviewModel {
               alongRouteMeters: 27_000, offRouteMeters: 160, hours: "08:00-19:00"),
     ]
 
-    private var sampledRoute: (samples: [RoutePoint], indices: [String: Int]) {
-        guard hasRoute else { return ([], [:]) }
-        let base = zip(PlannerPreviewFixture.coordinates, PlannerPreviewFixture.elevation).map {
-            RoutePoint(coordinate: $0.0, elevationMeters: $0.1)
-        }
-        func closest(_ place: PlannerPreviewPlace) -> Int {
-            base.indices.min { base[$0].coordinate.distance(to: place.coordinate) < base[$1].coordinate.distance(to: place.coordinate) }!
-        }
-        var samples: [RoutePoint] = []
-        var pointIndices: [String: Int] = [:]
-        for (a, b) in zip(points, points.dropFirst()) {
-            let from = closest(a.place), to = closest(b.place)
-            if samples.isEmpty { pointIndices[a.id] = 0 }
-            samples.append(RoutePoint(coordinate: a.place.coordinate, elevationMeters: base[from].elevationMeters))
-            let indices = from <= to ? Array(from...to) : Array((to...from).reversed())
-            samples.append(contentsOf: indices.map { base[$0] })
-            samples.append(RoutePoint(coordinate: b.place.coordinate, elevationMeters: base[to].elevationMeters))
-            pointIndices[b.id] = samples.count - 1
-        }
-        return (samples, pointIndices)
-    }
-    private func stats(from: Double, to: Double, on line: MeasuredLine) -> PlannerPreviewStats {
-        guard !line.vertices.isEmpty else { return .init(distanceMeters: 0, ascentMeters: 0, seconds: 0) }
-        let distance = max(0, to - from), ascent = line.climb(from: from, to: to)
-        return .init(distanceMeters: distance, ascentMeters: ascent,
-                     seconds: bike.ridingTime(distanceMeters: distance, ascentMeters: ascent))
-    }
+    #endif
 }
-#endif

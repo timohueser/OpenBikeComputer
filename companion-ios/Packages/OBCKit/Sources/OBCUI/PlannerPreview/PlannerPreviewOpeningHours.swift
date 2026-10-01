@@ -1,4 +1,3 @@
-#if DEBUG
 import Foundation
 
 /// Answers "open now?" for the common shape of an OpenStreetMap `opening_hours` value: rules
@@ -73,4 +72,3 @@ enum PlannerPreviewOpeningHours {
         return h * 60 + m
     }
 }
-#endif

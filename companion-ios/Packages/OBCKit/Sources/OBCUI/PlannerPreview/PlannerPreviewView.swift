@@ -1,9 +1,10 @@
-#if DEBUG && os(iOS)
+#if os(iOS)
 import MapKit
 import OBCDomain
+import OBCPlanner
 import SwiftUI
 
-/// A development-only native study of the map-first planning flow.
+/// The map-first planner uses the same points, search, and drawer interactions in every build.
 public struct PlannerPreviewView: View {
     private enum Panel { case planning, stops, preferences, days, results, place }
     private enum SearchIntent: Equatable { case general, overnight, replace(String) }
@@ -33,6 +34,7 @@ public struct PlannerPreviewView: View {
     @State private var sheetHeight: CGFloat = 340
     @State private var fitRevision = 0
     @State private var fraction: Double?
+    @State private var networkStatus: String?
     @State private var results: PlannerPreviewQueryResult?
     @State private var selectedPlace: PlannerPreviewPlace?
     @State private var editingPointID: String?
@@ -49,8 +51,8 @@ public struct PlannerPreviewView: View {
     private let onClose: () -> Void
 
     public init(onSave: @escaping (ImportedRoute, BikeType) -> Void,
-                onClose: @escaping () -> Void, sample: Bool = false) {
-        _model = State(initialValue: PlannerPreviewModel(sample: sample))
+                onClose: @escaping () -> Void, sample: Bool = false, source: any PlannerDataSource = PlannerService.shared) {
+        _model = State(initialValue: PlannerPreviewModel(sample: sample, service: source))
         self.onSave = onSave
         self.onClose = onClose
     }
@@ -63,11 +65,17 @@ public struct PlannerPreviewView: View {
                               fitRevision: fitRevision, onSelect: selectPin, onMapPoint: selectMapPoint,
                               showCycling: network == .cycling, showHiking: network == .hiking,
                               onVisibleMapRect: { visibleMapRect = $0 },
-                              onVisibleRouteRange: { visibleRouteRange = $0 })
+                              onVisibleRouteRange: { visibleRouteRange = $0 },
+                              release: model.release, source: model.service,
+                              hiddenCategories: hiddenCategories, highlightedCategories: highlightedCategories,
+                              onPlace: selectResult, onNetworkStatus: { networkStatus = $0 })
                 .ignoresSafeArea(edges: .bottom)
                 .overlay(alignment: .topTrailing) { if !layersShown { mapTools.padding(12) } }
                 .overlay(alignment: .topLeading) {
-                    if attributionShown && !layersShown {
+                    if let networkStatus, !layersShown {
+                        Text(networkStatus).font(.caption).foregroundStyle(OBCTheme.ink)
+                            .padding(8).background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusSmall)).padding(12)
+                    } else if attributionShown && !layersShown {
                         Link("© OpenStreetMap", destination: URL(string: "https://www.openstreetmap.org/copyright")!)
                             .font(.caption2).foregroundStyle(OBCTheme.secondary)
                             .padding(.horizontal, 8).frame(minHeight: 44)
@@ -94,7 +102,7 @@ public struct PlannerPreviewView: View {
                                 doneButton { infoShown = false }
                             }
                             Link("© OpenStreetMap contributors", destination: URL(string: "https://www.openstreetmap.org/copyright")!)
-                            Text("Route networks are a sample-area extract, available under the Open Database License.")
+                            Text("Route networks use the published OpenStreetMap data under the Open Database License.")
                                 .font(.footnote).foregroundStyle(OBCTheme.secondary)
                         }
                         .padding(20).frame(width: min(330, geometry.size.width - 24))
@@ -116,10 +124,11 @@ public struct PlannerPreviewView: View {
                                                  onQueryChange: { searchQuery = $0 },
                                                  onRequestChange: { queryRequest = $0 },
                                                  isInMapView: isInMapView)
+                                .withViewBounds(searchBounds)
                         }
                         .sheet(isPresented: $editorShown, onDismiss: finishOpeningSearch) { focusedEditor }
                         .obcRenameSheet("Save route", isPresented: $saveShown, name: model.routeTitle, placeholder: "Route name",
-                                        canSave: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) { name in
+                                        canSave: { model.canSave && !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) { name in
                             let route = model.exportRoute(name: name), bike = model.bike
                             leave { onSave(route, bike) }
                         }
@@ -148,11 +157,17 @@ public struct PlannerPreviewView: View {
                         Button("Redo", systemImage: "arrow.uturn.forward") { model.redo() }.disabled(!model.canRedo)
                     }
                 Button("Save", action: beginSave)
-                    .fontWeight(.semibold).disabled(!model.hasRoute).accessibilityIdentifier("planner.save")
+                    .fontWeight(.semibold).disabled(!model.canSave).accessibilityIdentifier("planner.save")
             }
         }
         .tint(OBCTheme.tint)
         .task { drawerShown = true }
+        .task(id: model.routingRevision) {
+            do {
+                if model.hasRoute { try await Task.sleep(for: .milliseconds(250)) }
+                await model.calculateRoute()
+            } catch { }
+        }
         .onChange(of: drawerPosition) { _, position in
             if position != .collapsed { layersShown = false; infoShown = false }
         }
@@ -206,7 +221,8 @@ public struct PlannerPreviewView: View {
                             Text(model.hasRoute ? model.routeTitle : (model.start == nil ? "New route" : "Choose a finish"))
                                 .font(.headline).lineLimit(1)
                         }
-                        if model.hasRoute { statsRow(model.stats) }
+                        if model.isRouting { ProgressView("Calculating route…").font(.caption) }
+                        else if model.canSave { statsRow(model.stats) }
                     }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityHint("Show planning controls").accessibilityIdentifier("planner.routeSummary")
                 if drawerPosition == .collapsed {
@@ -224,7 +240,13 @@ public struct PlannerPreviewView: View {
         case .planning:
             ScrollView {
                 VStack(spacing: 10) {
-                    if model.hasRoute { elevation(height: 56 + (drawerPosition == .expanded ? max(0, sheetHeight - openHeight) : 0)) }
+                    if let error = model.routeError {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(error).font(.subheadline).foregroundStyle(OBCTheme.secondary)
+                            Button("Try again") { model.retryRoute() }.frame(minHeight: 44)
+                        }
+                    }
+                    if model.canSave { elevation(height: 56 + (drawerPosition == .expanded ? max(0, sheetHeight - openHeight) : 0)) }
                     searchButton
                     OBCGroupedSection {
                         OBCListRow(icon: "point.topleft.down.to.point.bottomright.curvepath", label: "Route points",
@@ -325,7 +347,7 @@ public struct PlannerPreviewView: View {
     }
 
     private func elevation(height: CGFloat) -> some View {
-        PlannerPreviewProfile(routePoints: model.routePoints, height: height,
+        PlannerPreviewProfile(profile: model.profile, height: height,
                               visibleRange: visibleRouteRange, selectedFraction: $fraction)
     }
 
@@ -397,8 +419,9 @@ public struct PlannerPreviewView: View {
                             Spacer()
                             if model.preset == preset { Image(systemName: "checkmark").fontWeight(.semibold) }
                         }.frame(minHeight: 44).contentShape(Rectangle())
-                    }.buttonStyle(.plain)
+                    }.buttonStyle(.plain).disabled(preset == .smoother)
                 }
+                Text("Smoother is not available from the route service.").font(.footnote).foregroundStyle(OBCTheme.secondary)
             }
         }
     }
@@ -426,8 +449,7 @@ public struct PlannerPreviewView: View {
                 Button("Add an overnight stop", systemImage: "tent") {
                     searchQuery = "camping"; queryRequest = PlannerPreviewPlaceQuery.parse("camping", hasRoute: model.hasRoute)
                     queryEditor = nil; intent = .overnight
-                    results = queryRequest?.result(in: model, isInMapView: isInMapView) ?? model.lookup("camping")
-                    editorShown = false; panel = .results; drawerPosition = .open
+                    openSearchFromDetail()
                 }.buttonStyle(.obcPrimary)
             }
         }
@@ -540,7 +562,7 @@ public struct PlannerPreviewView: View {
     }
 
     private func beginSave() {
-        guard model.hasRoute else { return }
+        guard model.canSave else { return }
         saveShown = true
     }
 
@@ -571,6 +593,7 @@ public struct PlannerPreviewView: View {
     }
 
     private func receiveSearch(_ result: PlannerPreviewQueryResult) {
+        model.mapPlaces = result.places
         results = result; selectedPlace = nil; editingPointID = nil
         panel = .results; drawerPosition = .open; searchShown = false
         if !result.places.isEmpty { fitRevision += 1 }
@@ -586,7 +609,7 @@ public struct PlannerPreviewView: View {
         layersShown = false; infoShown = false
         if let point = (model.points + model.markers).first(where: { $0.id == id }) {
             editPoint(point)
-        } else if let place = ((results?.places ?? []) + PlannerPreviewModel.sampleMapPlaces).first(where: { $0.id == id }) {
+        } else if let place = ((results?.places ?? []) + model.mapPlaces).first(where: { $0.id == id }) {
             selectResult(place)
         }
     }
@@ -607,6 +630,13 @@ public struct PlannerPreviewView: View {
         visibleMapRect.contains(MKMapPoint(CLLocationCoordinate2D(latitude: place.coordinate.latitude, longitude: place.coordinate.longitude)))
     }
 
+    private var searchBounds: [Double]? {
+        guard visibleMapRect.size.width < MKMapSize.world.width else { return model.release?.bounds }
+        let nw = MKMapPoint(x: visibleMapRect.minX, y: visibleMapRect.minY).coordinate
+        let se = MKMapPoint(x: visibleMapRect.maxX, y: visibleMapRect.maxY).coordinate
+        return [nw.longitude, se.latitude, se.longitude, nw.latitude]
+    }
+
     private var pins: [PlannerPreviewMapPin] {
         var pins = model.points.enumerated().map { index, point in
             PlannerPreviewMapPin(id: point.id, title: point.place.name, coordinate: point.place.coordinate,
@@ -615,7 +645,7 @@ public struct PlannerPreviewView: View {
         }
         pins += model.markers.map { .init(id: $0.id, title: $0.place.name, coordinate: $0.place.coordinate, symbol: "mappin", kind: .marker) }
         var places = results?.places ?? []
-        places += PlannerPreviewModel.sampleMapPlaces.filter { place in
+        places += model.mapPlaces.filter { place in
             guard let category = PlannerPreviewPlaceCategory.category(for: place) else { return model.points.isEmpty }
             return results == nil && !hiddenCategories.contains(category)
         }
@@ -631,7 +661,7 @@ public struct PlannerPreviewView: View {
     }
     private var cursor: Coordinate? {
         guard let fraction, model.geometry.count > 1 else { return nil }
-        let line = MeasuredLine(routePoints: model.geometry.map { RoutePoint(coordinate: $0) })
+        let line = model.routeLine
         return line.coordinate(at: fraction * line.length)
     }
 }

@@ -22,6 +22,7 @@ struct RootView: View {
     @State private var updateSurfaceModel: UpdateSurfaceModel
     @State private var path: [MainDestination] = []
     @State private var rideRenameShown = false
+    @Environment(\.obcPlannerSource) private var plannerSource
     @Environment(\.scenePhase) private var scenePhase
 
     private let transport: any DeviceTransport
@@ -375,14 +376,12 @@ struct RootView: View {
     @ViewBuilder
     private func detailScreen(for destination: MainDestination) -> some View {
         switch destination {
-        #if DEBUG
         case .planner(let sample):
             PlannerPreviewView(
                 onSave: savePlannerPreview,
                 onClose: { path.removeAll() },
-                sample: sample
+                sample: sample, source: plannerSource
             )
-        #endif
         case .route(let id):
             if let route = mainModel.routes.first(where: { $0.id == id }) {
                 RouteDetailScreen(
@@ -586,15 +585,9 @@ struct RootView: View {
     }
 
     private var plannerOpener: (() -> Void)? {
-        #if DEBUG
-        guard OBCCompanionApp.mockControl != nil else { return nil }
-        return { path.append(.planner(sample: false)) }
-        #else
-        return nil
-        #endif
+        { path.append(.planner(sample: false)) }
     }
 
-    #if DEBUG
     private func savePlannerPreview(_ route: ImportedRoute, bikeType: BikeType) {
         guard let end = route.points.last, route.points.count > 1, let name = route.name else { return }
         let fileName = GPXFile.fileName(for: name)
@@ -615,7 +608,6 @@ struct RootView: View {
         mainModel.searchText = ""
         path.removeAll()
     }
-    #endif
 }
 
 /// Owns the day editor's draft for the screen's life. The destination body runs on every pass
@@ -636,9 +628,7 @@ private struct DayEditorHost: View {
 
 /// Library destinations carry ids so a rename mid-stack reads the live summary.
 enum MainDestination: Hashable {
-    #if DEBUG
     case planner(sample: Bool)
-    #endif
     case route(id: RouteID)
     case trip(id: TripID)
     /// The trip's day editor, in split mode when one file just became the trip.

@@ -1,4 +1,3 @@
-#if DEBUG
 import Foundation
 import OBCDomain
 
@@ -94,4 +93,3 @@ struct PlannerPreviewGrade {
         (0xc72232, 0xff7080), (0x95162c, 0xed4967), (0x77746a, 0xb8b5ac),
     ]
 }
-#endif

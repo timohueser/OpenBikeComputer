@@ -23,8 +23,14 @@ let package = Package(
         .library(name: "OBCFormats", targets: ["OBCFormats"]),
         .library(name: "OBCMock", targets: ["OBCMock"]),
         .library(name: "OBCUI", targets: ["OBCUI"]),
+        .library(name: "OBCPlanner", targets: ["OBCPlanner"]),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/maplibre/maplibre-gl-native-distribution", exact: "6.31.0"),
     ],
     targets: [
+        .target(name: "OBCPlanner", dependencies: ["OBCDomain"], swiftSettings: languageMode),
+        .testTarget(name: "OBCPlannerTests", dependencies: ["OBCPlanner"], swiftSettings: languageMode),
         .target(
             name: "OBCDomain",
             swiftSettings: languageMode
@@ -59,10 +65,11 @@ let package = Package(
         ),
         .target(
             name: "OBCUI",
-            dependencies: ["OBCDomain", "OBCTransport"],
+            dependencies: ["OBCDomain", "OBCTransport", "OBCPlanner",
+                           .product(name: "MapLibre", package: "maplibre-gl-native-distribution", condition: .when(platforms: [.iOS]))],
             // The device's Terminus glyph strips, copied from `firmware/obc-render/fonts/terminus/`.
             // `PixelTextTests` fails when a copy drifts from the firmware file.
-            resources: [.copy("Resources/Terminus"), .copy("Resources/Replay"), .process("Resources/Brand.xcassets")],
+            resources: [.copy("Resources/Terminus"), .copy("Resources/Replay"), .copy("Resources/Map"), .process("Resources/Brand.xcassets")],
             swiftSettings: languageMode
         ),
         .testTarget(
