@@ -1,4 +1,4 @@
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import type { Cookies } from '@sveltejs/kit';
 import type { SQLOutputValue } from 'node:sqlite';
 import type { Actor, AgentToken } from '../types.ts';
@@ -97,10 +97,12 @@ function passwordMatches(password: string, hash: string): boolean {
   const actual = scryptSync(password, valid ? salt : 'unconfigured', 64).toString('hex');
   return valid && sameSecret(actual, expected);
 }
+/** Keyed with a secret that lives only in memory, so a stored rate key cannot be reversed to an IP address. */
+const rateSecret = randomBytes(32);
 function loginAttempt(key: string): string {
   const db = store().db;
   db.prepare('DELETE FROM login_attempts WHERE expires<?').run(Date.now());
-  const rateKey = digest(key);
+  const rateKey = createHmac('sha256', rateSecret).update(key).digest('hex');
   const attempt = db.prepare('SELECT count FROM login_attempts WHERE key=?').get(rateKey);
   assert(Number(attempt?.count ?? 0) < 10, 'Too many login attempts. Try again in 15 minutes.', 429);
   db.prepare('INSERT INTO login_attempts(key,count,expires) VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET count=count+1').run(rateKey, Date.now() + 15 * 60 * 1000);
