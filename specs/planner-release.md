@@ -12,7 +12,7 @@ its files are immutable.
 | `region` | Lowercase region ID, with letters, digits, and hyphens |
 | `bounds` | `[west,south,east,north]` in degrees |
 | `osm_sha256` | Hash of the common OSM PBF |
-| `routing_package` | Hash of `routing/manifest.json` |
+| `routing_package` | Hash of `routing/manifest.json` or `routing/blocks.json` |
 | `profiles` | Sorted routing profile IDs |
 | `attribution` | OSM source credit and licence |
 | `terrain_attribution` | Elevation source credits |
@@ -65,6 +65,25 @@ remain downloadable from R2.
 Routing and search APIs have the prefix `/planner-api/releases/ID/`. The final
 path component selects `routing` or `search`. A rollout serves the active
 release and the previous release on separate VPS ports.
+
+## Canonical grid storage
+
+A grid release adds `grid: {format: 2, zoom: 9, map_zoom: 11}`. Its `files`
+entries retain logical paths and decoded `bytes` and `sha256`. Each also has
+`transport: {bytes, sha256, encoding}`. Encoding is `identity` or `gzip`.
+R2 stores each distinct transport once at `planner/releases/ID/objects/SHA256`.
+The online services and offline installer consume this same pool.
+
+`public/grid.json` contains `format: 2` and `map_zoom`. Each map pack, asset,
+TileJSON, and device catalog has a small pointer at `public/LOGICAL_PATH.json`.
+A pointer repeats the transport entry and adds `decoded_bytes`. The tile
+service resolves a pack through this pointer. No regional map archive is
+required beside the pool. Grid assets use the tile service origin.
+
+The VPS materializes routing, search, and offline selection metadata. Search
+uses `search/REGION.grid.json` to list cell files and coverage. The
+[offline contract](planner-offline.md#grid-publication-and-selection) defines
+cell selection and download manifests.
 
 ## Catalogue
 

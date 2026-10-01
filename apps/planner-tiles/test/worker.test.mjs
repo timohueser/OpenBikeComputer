@@ -44,7 +44,7 @@ test('range reads deliver decoded tiles, cache full GETs, and do not cache missi
   let reads = 0;
   const env = { BUCKET: { async get(path, options) {
     reads++;
-    if (!path.includes(release)) return null;
+    if (!path.includes(release) || path.endsWith('/public/grid.json')) return null;
     assert.equal(path, `planner/releases/${release}/maps/basemap.pmtiles`);
     const { offset, length } = options.range;
     const slice = bytes.subarray(offset, offset + length);
@@ -68,4 +68,29 @@ test('range reads deliver decoded tiles, cache full GETs, and do not cache missi
   }
   assert.ok(!cached.has(missing));
   delete globalThis.caches;
+});
+
+ test('grid archives share download objects and assets stream from their pointers', async () => {
+  const id = 'c'.repeat(64), prefix = `planner/releases/${id}`, bytes = archive();
+  const digest = 'd'.repeat(64), asset = new TextEncoder().encode('{"hello":"map"}');
+  const objects = new Map([
+    [`${prefix}/public/grid.json`, JSON.stringify({format:2,map_zoom:11})],
+    [`${prefix}/public/maps/tiles/basemap/0-0-0.pmtiles.json`, JSON.stringify({sha256:digest,encoding:'identity',bytes:bytes.length,decoded_bytes:bytes.length})],
+    [`${prefix}/public/device/catalog.json.json`, JSON.stringify({sha256:'e'.repeat(64),encoding:'identity',bytes:asset.length,decoded_bytes:asset.length})],
+    [`${prefix}/objects/${digest}`, bytes], [`${prefix}/objects/${'e'.repeat(64)}`, asset],
+  ]);
+  globalThis.caches = {default:{async match(){return undefined},async put(){}}};
+  const env = {BUCKET:{async get(path,options){
+    const value=objects.get(path); if(value===undefined)return null;
+    const raw=typeof value==='string'?new TextEncoder().encode(value):value;
+    const slice=options?.range?raw.subarray(options.range.offset,options.range.offset+options.range.length):raw;
+    return {size:raw.length,etag:path,body:new Response(slice).body,json:async()=>JSON.parse(new TextDecoder().decode(slice)),
+      arrayBuffer:async()=>slice.buffer.slice(slice.byteOffset,slice.byteOffset+slice.byteLength)};
+  }}};
+  const pending=[],ctx={waitUntil(p){pending.push(p)}};
+  const response=await worker.fetch(new Request(`https://tiles.example/releases/${id}/basemap/0/0/0.mvt`),env,ctx);
+  assert.equal(response.status,200);assert.deepEqual(new Uint8Array(await response.arrayBuffer()),new Uint8Array([26,0]));
+  const catalog=await worker.fetch(new Request(`https://tiles.example/releases/${id}/device/catalog.json`),env,ctx);
+  assert.deepEqual(await catalog.json(),{hello:'map'});
+  await Promise.all(pending); delete globalThis.caches;
 });

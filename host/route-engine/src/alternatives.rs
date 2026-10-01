@@ -1,12 +1,12 @@
 use crate::{
+    data::RoutingData,
     model::{Point, Totals},
-    package::Source,
     router::Response,
     snap, Control, Error, Request, Result, Route, Router,
 };
 use std::collections::BTreeSet;
 
-impl<S: Source> Router<S> {
+impl<P: RoutingData> Router<P> {
     /// Alternative discovery is bounded. It does not enumerate all useful routes.
     pub fn routes(&mut self, request: &Request, control: &Control<'_>) -> Result<Response> {
         let primary = self.route(request, control)?;
@@ -17,7 +17,7 @@ impl<S: Source> Router<S> {
         let base = request.profile.split('/').next().unwrap_or(&request.profile);
         for variant in ["shorter", "smoother", "less-climbing"] {
             let name = format!("{base}/{variant}");
-            if name == request.profile || !self.package.manifest.metrics.contains_key(&name) {
+            if name == request.profile || self.package.profile(&name).is_err() {
                 continue;
             }
             let mut candidate =

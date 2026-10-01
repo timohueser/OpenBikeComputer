@@ -40,6 +40,7 @@ struct OBCCompanionApp: App {
     init() {
         // Field-guide nav chrome: the one global UIKit-appearance call the component kit needs.
         OBCNavigationChrome.apply()
+        OfflineTilesProtocol.install()
         // Tapping an update notice must land on the firmware screen even from a cold launch, so
         // the delegate has to be in place before iOS delivers the pending response. Setting a
         // delegate asks for no permission and shows nothing.

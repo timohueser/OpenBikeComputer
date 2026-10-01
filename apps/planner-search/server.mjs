@@ -4,6 +4,7 @@ import { existsSync, statSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { parserProcess } from './parser.mjs';
 import { searchRuntime } from './runtime.mjs';
+import {openCells} from './cells.mjs';
 import { openingHours } from './hours.mjs';
 import { routeQuery } from './routing.mjs';
 import { validateInput } from './validation.mjs';
@@ -21,6 +22,17 @@ const databases = new Map();
 for (const region of (process.env.OBC_SEARCH_REGIONS || 'germany,baden-wuerttemberg').split(',')) {
   if (!/^[a-z][a-z0-9-]{0,63}$/.test(region)) throw new Error(`Invalid search region: ${region}`);
   const file = path.join(data, `${region}.sqlite`);
+  const gridFile = path.join(data, `${region}.grid.json`);
+  if (existsSync(gridFile)) {
+    const grid = JSON.parse(readFileSync(gridFile,'utf8'));
+    if (grid.format !== 2 || grid.metadata?.schema !== 3 || !Array.isArray(grid.cells) ||
+        grid.cells.some(c=>!/^9-[0-9]+-[0-9]+$/.test(c.id))) throw new Error('Invalid search grid.');
+    const files = grid.cells.map(c=>({file:path.join(data,'tiles',`${c.id}.sqlite`),bounds:c.bounds}));
+    const db = openCells(files,grid.metadata);
+    databases.set(region,{db,runtime:searchRuntime({db,parser,hours,region,attribution:grid.metadata.attribution}),
+      metadata:grid.metadata,bytes:files.reduce((n,c)=>n+statSync(c.file).size,0),close:db.close});
+    continue;
+  }
   if (!existsSync(file)) continue;
   const conn = new DatabaseSync(file, { readOnly: true });
   conn.exec(

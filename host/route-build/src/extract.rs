@@ -16,6 +16,8 @@ pub fn prepare<S: Source>(
     include_sources: bool,
     mut write: impl FnMut(&[u8]) -> Result<String, String>,
 ) -> Result<Manifest, String> {
+    let started = std::time::Instant::now();
+    eprintln!("Selecting roads");
     let source = input.manifest().clone();
     if bounds.iter().any(|v| !v.is_finite())
         || bounds[0] >= bounds[2]
@@ -60,15 +62,22 @@ pub fn prepare<S: Source>(
             }
         }
     }
+    eprintln!("Prepared road graph in {:.1}s", started.elapsed().as_secs_f64());
     let mut dictionary = Dictionary::default();
-    let junctions = crate::landmarks::Junctions::new(graph.roads.iter().map(|r| (r.from, r.to)))?;
-    let mut landmarks = junctions.index(&mut write)?;
+    let inherited = route_engine::landmarks::project(input, &ids, &mut write)?;
+    let junctions = if inherited.is_none() {
+        Some(crate::landmarks::Junctions::new(graph.roads.iter().map(|r| (r.from, r.to)))?)
+    } else {
+        None
+    };
+    let mut landmarks = match inherited {
+        Some(index) => index,
+        None => junctions.as_ref().unwrap().index(&mut write)?,
+    };
     for (name, metric) in &source.metrics {
+        let profile_started = std::time::Instant::now();
         eprintln!("Preparing profile {name}");
-        let mut endpoints = Vec::with_capacity(ids.len());
-        for &id in &ids {
-            endpoints.push(input.prepared_endpoint(name, id).map_err(|e| e.to_string())?);
-        }
+        let endpoints = input.prepared_endpoints(name, &ids).map_err(|e| e.to_string())?;
         let mut road_costs = vec![u64::MAX; endpoints.len()];
         for (id, endpoint) in endpoints.iter().enumerate() {
             if let Some(parameters) = endpoint.cost {
@@ -85,7 +94,9 @@ pub fn prepare<S: Source>(
                     .map_or(u64::MAX, |departure| departure.penalty)
             })
             .collect();
-        landmarks.profiles.insert(name.clone(), junctions.prepare(&road_costs, &mut write)?);
+        if let Some(junctions) = &junctions {
+            landmarks.profiles.insert(name.clone(), junctions.prepare(&road_costs, &mut write)?);
+        }
         manifest.metrics.insert(
             name.clone(),
             base::metric(
@@ -97,13 +108,14 @@ pub fn prepare<S: Source>(
                 &mut write,
             )?,
         );
+        eprintln!("Prepared profile {name} in {:.1}s", profile_started.elapsed().as_secs_f64());
     }
     manifest.costs = route_engine::table::Table::write(&dictionary.into_values(), &mut write)?;
     manifest.landmarks = Some(landmarks);
     Ok(manifest)
 }
 
-fn intersects(road: &Road, bounds: [f64; 4]) -> bool {
+pub(crate) fn intersects(road: &Road, bounds: [f64; 4]) -> bool {
     road.shape.windows(2).any(|pair| {
         let a = [pair[0].lon as f64 * 1e-6, pair[0].lat as f64 * 1e-6];
         let b = [pair[1].lon as f64 * 1e-6, pair[1].lat as f64 * 1e-6];

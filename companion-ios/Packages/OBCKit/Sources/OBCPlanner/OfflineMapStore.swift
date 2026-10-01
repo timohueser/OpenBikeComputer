@@ -57,40 +57,26 @@ public actor OfflineMapStore {
         try collectObjects()
     }
 
-    public func regions() async throws -> [OfflineRegion] {
-        struct Catalog: Decodable { let regions: [OfflineRegion] }
-        let regions = try JSONDecoder().decode(Catalog.self, from: await get(api.appending(path: "catalog"))).regions
-        guard Set(regions.map(\.id)).count == regions.count, regions.allSatisfy({ region in
-            OfflineMap.valid(region.bounds) && !region.id.isEmpty && !region.name.isEmpty && !region.rings.isEmpty
-                && region.rings.allSatisfy { ring in ring.count >= 4 && ring.allSatisfy { point in
-                    point.count == 2 && point.allSatisfy(\.isFinite)
-                        && (-180...180).contains(point[0]) && (-85...85).contains(point[1])
-                } }
-        }) else { throw PlannerFailure.invalidData }
-        return regions
+    public func coverage() async throws -> OfflineCoverage {
+        let coverage = try JSONDecoder().decode(OfflineCoverage.self, from: await get(api.appending(path: "catalog")))
+        guard coverage.format == 1, coverage.zoom == 9, OfflineMap.valid(coverage.bounds) else { throw PlannerFailure.invalidData }
+        return coverage
     }
 
-    public func prepare(bounds: [Double], region: String?, name: String,
-                        status: @Sendable (String) -> Void) async throws -> OfflineDownloadQuote {
+    public func prepare(bounds: [Double], name: String,
+                        status: @escaping @Sendable (Double, String) -> Void) async throws -> OfflineDownloadQuote {
         guard OfflineMap.valid(bounds) else { throw PlannerFailure.invalidData }
         var request = URLRequest(url: api.appending(path: "jobs"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: region.map { ["region": $0] } ?? ["bounds": bounds])
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["bounds": bounds])
+        status(0.1, "Checking map coverage")
         struct Job: Decodable { let id: String; let state: String; let message: String? }
-        var job = try JSONDecoder().decode(Job.self, from: await send(request))
-        guard OfflineFile.validHash(job.id) else { throw PlannerFailure.invalidData }
-        let identity = job.id
-        while job.state != "ready" {
-            try Task.checkCancellation()
-            guard job.state == "preparing" else {
-                throw OfflineMapFailure.unavailable(job.message ?? "The map could not be prepared. Try a smaller area.")
-            }
-            status("Preparing your map…")
-            try await Task.sleep(for: .seconds(2))
-            job = try JSONDecoder().decode(Job.self, from: await get(api.appending(path: "jobs/\(job.id)")))
-            guard job.id == identity else { throw PlannerFailure.invalidData }
+        let job = try JSONDecoder().decode(Job.self, from: await send(request))
+        guard OfflineFile.validHash(job.id), job.state == "ready" else {
+            throw OfflineMapFailure.unavailable(job.message ?? "The map size could not be checked. Try again.")
         }
+        status(0.6, "Reading download size")
         let source = api.appending(path: "bundles/\(job.id)")
         let bytes = try await get(source.appending(path: "bundle.json"))
         let bundle = try JSONDecoder().decode(OfflineBundle.self, from: bytes)
@@ -100,6 +86,7 @@ public actor OfflineMapStore {
         let transfer = try sum(bundle.objects.filter { !hasObject($0) }.map(\.transport.bytes))
         let map = OfflineMap(id: bundle.release.sha256, name: name, region: manifest.region,
                              bounds: manifest.bounds, installedBytes: installed)
+        status(1, "Ready to download")
         return OfflineDownloadQuote(map: map, transferBytes: transfer,
                                     requiredBytes: try needed(bundle), source: source, bundle: bundle, release: release)
     }
@@ -131,58 +118,17 @@ public actor OfflineMapStore {
         configuration.waitsForConnectivity = true
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
-        var received: Int64 = 0
-        for entry in quote.bundle.objects {
-            try Task.checkCancellation()
-            let target = root.appending(path: "objects/\(entry.sha256)")
-            let file = OfflineFile(bytes: entry.bytes, sha256: entry.sha256)
-            if hasObject(entry) { continue }
-            let wire = OfflineFile(bytes: entry.transport.bytes, sha256: entry.transport.sha256)
-            try checkSpace(try sum([wire.bytes, entry.transport.encoding == "gzip" ? entry.bytes : 0]))
-            let download = root.appending(path: "downloads/\(wire.sha256)")
-            let resume = download.appendingPathExtension("resume")
-            if !fm.fileExists(atPath: download.path) {
-                let completed = received
-                let delegate = OfflineDownloadProgress { count, waiting in
-                    progress(completed + count, total, waiting ? "Waiting for Wi-Fi…" : "Downloading map…")
-                }
-                do {
-                    let temporary: URL, response: URLResponse
-                    if let data = try? Data(contentsOf: resume) {
-                        (temporary, response) = try await session.download(resumeFrom: data, delegate: delegate)
-                    } else {
-                        var request = URLRequest(url: quote.source.appending(path: "objects/\(wire.sha256)"))
-                        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-                        (temporary, response) = try await session.download(for: request, delegate: delegate)
-                    }
-                    defer { try? fm.removeItem(at: temporary) }
-                    guard let http = response as? HTTPURLResponse, [200, 206].contains(http.statusCode) else {
-                        throw OfflineMapFailure.unavailable("The map download failed. Try again.")
-                    }
-                    try fm.moveItem(at: temporary, to: download)
-                    try? fm.removeItem(at: resume)
-                } catch {
-                    if let data = (error as NSError).userInfo["NSURLSessionDownloadTaskResumeData"] as? Data {
-                        try data.write(to: resume, options: .atomic)
-                    } else { try? fm.removeItem(at: resume) }
-                    throw error
-                }
+        let transfer = OfflineTransfer(root: root, source: quote.source.appending(path: "objects"),
+            total: total, session: session, progress: progress)
+        let missing = quote.bundle.objects.filter { !hasObject($0) }
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            var next = missing.makeIterator()
+            for _ in 0..<4 {
+                if let entry = next.next() { group.addTask { try await transfer.install(entry) } }
             }
-            do { try Self.verify(download, wire) }
-            catch { try? fm.removeItem(at: download); throw error }
-            progress(received, total, "Checking map files…")
-            if fm.fileExists(atPath: target.path) { try fm.removeItem(at: target) }
-            if entry.transport.encoding == "identity" { try fm.moveItem(at: download, to: target) }
-            else {
-                let decoded = target.appendingPathExtension("part")
-                defer { try? fm.removeItem(at: decoded) }
-                try Self.unpack(download, to: decoded, bytes: entry.bytes)
-                try Self.verify(decoded, file)
-                try fm.moveItem(at: decoded, to: target)
-                try fm.removeItem(at: download)
+            while try await group.next() != nil {
+                if let entry = next.next() { group.addTask { try await transfer.install(entry) } }
             }
-            received += wire.bytes
-            progress(received, total, "Downloading map…")
         }
         try Task.checkCancellation()
         let directory = root.appending(path: "releases/\(quote.map.id)")
@@ -251,7 +197,7 @@ public actor OfflineMapStore {
         // Allocate for object tails, directory blocks, and both copies of atomically written metadata.
         let metadata = try JSONEncoder().encode(bundle).count + Int(bundle.release.bytes) * 2
         return try sum(try missing.map { try allocated($0.bytes) } + [
-            allocated(missing.filter { $0.transport.encoding == "gzip" }.map(\.transport.bytes).max() ?? 0),
+            sum(missing.filter { $0.transport.encoding == "gzip" }.map(\.transport.bytes).sorted(by: >).prefix(4).map { try allocated($0) }),
             allocated(Int64(metadata) * 2), block * Int64(directories.count + bundle.files.count + 4)])
     }
 
@@ -300,7 +246,7 @@ public actor OfflineMapStore {
         }
     }
 
-    private static func unpack(_ source: URL, to destination: URL, bytes: Int64) throws {
+    static func unpack(_ source: URL, to destination: URL, bytes: Int64) throws {
         guard let input = gzopen(source.path, "rb") else { throw PlannerFailure.invalidData }
         defer { gzclose(input) }
         FileManager.default.createFile(atPath: destination.path, contents: nil)
@@ -319,13 +265,4 @@ public actor OfflineMapStore {
         guard total == bytes else { throw PlannerFailure.invalidData }
         try output.synchronize()
     }
-}
-
-private final class OfflineDownloadProgress: NSObject, URLSessionDownloadDelegate, Sendable {
-    let update: @Sendable (Int64, Bool) -> Void
-    init(_ update: @escaping @Sendable (Int64, Bool) -> Void) { self.update = update }
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {}
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
-                    totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) { update(totalBytesWritten, false) }
-    func urlSession(_ session: URLSession, taskIsWaitingForConnectivity task: URLSessionTask) { update(0, true) }
 }

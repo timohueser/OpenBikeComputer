@@ -89,6 +89,9 @@ public struct OfflineMapsView: View {
                         .font(.footnote).foregroundStyle(OBCTheme.secondary)
                     Button("Pause download") { model.stop() }.buttonStyle(.obcGhost)
                 } else {
+                    OfflineAreaMap(focus: quote.map.bounds, coverage: nil, selecting: false, onBounds: { _ in })
+                        .frame(height: 160).clipShape(RoundedRectangle(cornerRadius: OBCTheme.radiusMedium))
+                        .allowsHitTesting(false).accessibilityLabel("Selected offline map coverage")
                     OBCGroupedSection {
                         sizeRow("Download", quote.transferBytes)
                         sizeRow("On this iPhone", quote.map.installedBytes)
@@ -112,8 +115,7 @@ public struct OfflineMapsView: View {
                 }
             }
         } else if model.isBusy {
-            ProgressView(model.status)
-            Button("Cancel") { model.stop() }.buttonStyle(.obcGhost)
+            OfflinePreparationView(model: model)
         }
     }
 

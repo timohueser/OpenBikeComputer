@@ -1,20 +1,18 @@
-"""Serve bounded, cached offline planner preparations and resumable bundle objects."""
+"""Select published map blocks and serve their immutable resumable objects."""
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-import logging
 import math
+import os
 from pathlib import Path
 import re
 import shutil
 import threading
-import tomllib
 from urllib.parse import unquote, urlsplit
 
-from . import planner_cutout, planner_offline, planner_runtime
+from . import planner_runtime, planner_blocks, planner_maps, planner_grid, planner_map_archive
 
 
 def contains(outer, inner):
@@ -30,107 +28,114 @@ def bounds(value):
 
 
 class Downloads:
-    def __init__(self, source, cache, max_cache_bytes, regions=None):
+    def __init__(self, source, cache, max_cache_bytes, objects_url=None):
         self.source, self.cache = source.resolve(), cache.resolve()
-        self.identity, self.manifest = planner_runtime.release(source, include_sources=False)
+        self.publication = json.loads((self.source / "catalog.json").read_bytes())
+        if self.publication["format"] != 2:
+            raise ValueError("Unsupported offline publication")
+        self.identity, self.manifest = planner_runtime.digest(self.source / "catalog.json"), self.publication["release"]
+        self.objects_url = objects_url.rstrip("/") if objects_url else None
         self.max_cache_bytes = max_cache_bytes
         self.cache.mkdir(parents=True, exist_ok=True)
-        self.executor = ThreadPoolExecutor(max_workers=1)
         self.lock = threading.Lock()
-        self.jobs = {}
-        self.regions = self.catalog(regions)
-
-    def catalog(self, index=None):
-        source_bounds = bounds(self.manifest["bounds"])
-        path = self.source / "device/catalog.json"
-        regions = []
-        if index:
-            configured = tomllib.loads((Path(__file__).resolve().parents[1] / "host/obc-bake/regions.toml").read_text())["regions"]
-            names = {r["id"].split("/")[-1]: r["name"] for r in configured}
-            for feature in json.loads(index.read_bytes())["features"]:
-                props, geometry = feature["properties"], feature["geometry"]
-                if props["id"] not in names:
-                    continue
-                polygons = geometry["coordinates"] if geometry["type"] == "MultiPolygon" else [geometry["coordinates"]]
-                regions.append({"id": props["id"], "name": names[props["id"]], "parent": props.get("parent"),
-                                "rings": [ring for polygon in polygons for ring in polygon]})
-        elif path.exists():
-            for region in json.loads(path.read_bytes())["regions"]:
-                rings = [[[point[1] / 1e6, point[0] / 1e6] for point in ring] for ring in region["boundary"]["rings"]]
-                regions.append({"id": region["id"], "name": region["name"], "parent": region.get("parent"), "rings": rings})
-        for region in regions:
-            points = [p for ring in region["rings"] for p in ring]
-            box = bounds([min(p[0] for p in points), min(p[1] for p in points),
-                          max(p[0] for p in points), max(p[1] for p in points)])
-            region.update(bounds=box, available=contains(source_bounds, box))
-        # The source's declared rectangle is the available planner coverage.
-        west, south, east, north = source_bounds
-        regions.append({"id": "coverage", "name": "Available map coverage",
-                        "parent": None, "bounds": source_bounds, "available": True,
-                        "rings": [[[west, south], [east, south], [east, north], [west, north], [west, south]]]})
-        return list({region["id"]: region for region in regions}.values())
 
     def prepare(self, request):
-        if set(request) == {"region"}:
-            region = next((r for r in self.regions if r["id"] == request["region"]), None)
-            if not region or not region["available"]:
-                raise ValueError("This region is not available for offline planning.")
-            selection = region["bounds"]
-        elif set(request) == {"bounds"}:
-            selection = bounds(request["bounds"])
-        else:
-            raise ValueError("Choose one region or one map area.")
+        if set(request) != {"bounds"}:
+            raise ValueError("Choose one map area.")
+        selection = bounds(request["bounds"])
         if not contains(self.manifest["bounds"], selection):
             raise ValueError("Choose an area inside the available planner coverage.")
-        identity = hashlib.sha256(planner_runtime.encoded({"source": self.identity, "bounds": selection})).hexdigest()
+        cells = [c for c in self.publication["cells"] if self.overlaps(c["bounds"], selection)]
+        if not cells: raise ValueError("This area has no published map data.")
+        actual = [min(c["bounds"][0] for c in cells), min(c["bounds"][1] for c in cells),
+                  max(c["bounds"][2] for c in cells), max(c["bounds"][3] for c in cells)]
+        identity = hashlib.sha256(planner_runtime.encoded({"format": 2, "source": self.identity, "bounds": actual})).hexdigest()
         with self.lock:
-            if (self.cache / identity / "bundle.json").exists():
-                return {"id": identity, "state": "ready"}
-            if identity in self.jobs and self.jobs[identity]["state"] != "failed":
-                return dict(self.jobs[identity])
-            if any(job["state"] == "preparing" for job in self.jobs.values()):
-                raise ValueError("Another map is being prepared. Try again in a moment.")
-            used = sum(p.stat().st_size for p in self.cache.rglob("*") if p.is_file())
-            runtime = sum(f["bytes"] for f in self.manifest["files"].values())
-            # A cutout and its transport can coexist. Reserve the full source size for each.
-            if used + runtime * 2 > self.max_cache_bytes or shutil.disk_usage(self.cache).free < runtime * 2:
-                raise ValueError("The download service has no space for another map. Try again later.")
-            job = {"id": identity, "state": "preparing"}
-            self.jobs[identity] = job
-            self.executor.submit(self.build, identity, selection)
-            return dict(job)
+            destination = self.cache / identity
+            if not (destination / "bundle.json").exists():
+                self.quote(destination, actual, cells, identity)
+        return {"id": identity, "state": "ready", "progress": 1}
 
-    def build(self, identity, selection):
-        release = self.cache / (identity + ".release")
-        stage = self.cache / (identity + ".part")
+    @staticmethod
+    def overlaps(a, b):
+        return a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
+
+    def quote(self, destination, actual, cells, identity):
+        publication = self.publication
+        selected = [c for c in cells if c.get("routing")]
+        selections = []
+        for cell in selected:
+            path = self.source / cell["routing"]["manifest"]
+            if not path.resolve().is_relative_to(self.source) or planner_runtime.digest(path) != cell["routing"]["sha256"]:
+                raise ValueError("Routing cell checksum mismatch")
+            selections.append(json.loads(path.read_bytes()))
+        graph = planner_grid.routing(selections, [c["routing"]["adjacency"] for c in selected], "area-" + identity[:24], actual)
+        names = set(publication["shared"])
+        geometry = [min([actual[i], *[c["routing"]["geometry_bounds"][i] for c in selected]]) if i < 2
+                    else max([actual[i], *[c["routing"]["geometry_bounds"][i] for c in selected]]) for i in range(4)]
+        terrain = planner_maps.terrain_bounds(geometry)
+        for b in publication["map_blocks"]:
+            if planner_map_archive.selected(b["tile"], geometry, terrain=b["kind"] == "terrain"): names.update(b["files"])
+        for cell in cells: names.update(cell["files"])
+        for archive in graph["archives"]:
+            names.update(f"routing/packs/{archive}/{filename}" for filename in ("pages.bin", "pages.idx"))
+        files = {name: publication["files"][name] for name in sorted(names)}
+        generated = {}
+        def metadata(name, document):
+            data = planner_runtime.encoded(document)
+            sha = hashlib.sha256(data).hexdigest()
+            entry = {"bytes": len(data), "sha256": sha}
+            generated[sha] = data
+            files[name] = {**entry, "transport": {**entry, "encoding": "identity"}}
+            return sha
+        package = metadata("routing/blocks.json", graph)
+        metadata("routing/layers.json", [c["id"] for c in cells])
+        for kind in ("basemap", "terrain"):
+            metadata(f"maps/{kind}.json", {"tilejson": "3.0.0", "tiles": [
+                f"https://offline.openbikecomputer.invalid/{identity}/{kind}/{{z}}/{{x}}/{{y}}"],
+                "minzoom": 0, "maxzoom": 14 if kind == "basemap" else 12,
+                "bounds": geometry if kind == "basemap" else terrain})
+        release = {**self.manifest, "format": 1, "region": graph["data"]["region"], "bounds": actual,
+                   "routing_package": package, "source_files": {}, "terrain_bounds": terrain,
+                   "offline": {"format": 2, "id": identity, "zoom": publication["zoom"], "map_zoom": publication["map_zoom"],
+                               "source_routing": publication["routing_source"],
+                               "cells": [{"id": c["id"], "bounds": c["bounds"]} for c in cells]},
+                   "files": {name: {k: item[k] for k in ("bytes", "sha256")} for name, item in files.items()}}
+        encoded = planner_runtime.encoded(release)
+        bundle = planner_runtime.encoded({"format": 1, "release": {"bytes": len(encoded),
+            "sha256": hashlib.sha256(encoded).hexdigest()}, "files": files})
+        origin = planner_runtime.encoded({"source": str(self.source), "objects_url": self.objects_url})
+        needed = len(encoded) + len(bundle) + len(origin) + sum(map(len, generated.values()))
+        if needed > self.max_cache_bytes or shutil.disk_usage(self.cache).free < needed:
+            raise ValueError("The download service has no space for a new selection.")
+        entries = sorted((p for p in self.cache.iterdir() if p.is_dir() and re.fullmatch(r"[0-9a-f]{64}", p.name)),
+                         key=lambda p: p.stat().st_mtime)
+        sizes = {p: sum(f.stat().st_size for f in p.rglob("*") if f.is_file()) for p in entries}
+        used = sum(sizes.values())
+        for path in entries:
+            if used + needed <= self.max_cache_bytes: break
+            shutil.rmtree(path)
+            used -= sizes[path]
+        temporary = self.cache / ("." + destination.name + ".work")
+        shutil.rmtree(temporary, ignore_errors=True)
         try:
-            for directory in (release, stage):
-                if directory.exists():
-                    shutil.rmtree(directory)
-            source = self.source
-            if selection != self.manifest["bounds"]:
-                planner_cutout.prepare(source, release, selection, "area-" + identity[:24])
-                source = release
-            planner_offline.pack(source, stage)
-            stage.rename(self.cache / identity)
-            with self.lock:
-                self.jobs[identity] = {"id": identity, "state": "ready"}
-        except Exception:
-            logging.exception("Offline preparation failed: %s", identity)
-            with self.lock:
-                self.jobs[identity] = {"id": identity, "state": "failed", "message": "The map could not be prepared. Try a smaller area."}
+            (temporary / "objects").mkdir(parents=True)
+            for sha, data in generated.items(): (temporary / "objects" / sha).write_bytes(data)
+            (temporary / "release.json").write_bytes(encoded)
+            (temporary / "bundle.json").write_bytes(bundle)
+            (temporary / "origin.json").write_bytes(origin)
+            temporary.rename(destination)
         finally:
-            for directory in (release, stage):
-                if directory.exists():
-                    shutil.rmtree(directory)
+            shutil.rmtree(temporary, ignore_errors=True)
 
     def status(self, identity):
-        if not re.fullmatch(r"[0-9a-f]{64}", identity):
-            raise ValueError("Invalid download.")
-        with self.lock:
-            if (self.cache / identity / "bundle.json").exists():
-                return {"id": identity, "state": "ready"}
-            return dict(self.jobs.get(identity, {"id": identity, "state": "failed", "message": "Prepare this map again."}))
+        if not re.fullmatch(r"[0-9a-f]{64}", identity): raise ValueError("Invalid download.")
+        directory = self.cache / identity
+        ready = (directory / "bundle.json").exists()
+        if ready:
+            try: os.utime(directory, None)
+            except FileNotFoundError: ready = False
+        return {"id": identity, "state": "ready" if ready else "failed"}
 
 
 def handler(downloads):
@@ -165,16 +170,34 @@ def handler(downloads):
         def do_GET(self):
             path = unquote(urlsplit(self.path).path)
             if path == "/catalog":
-                return self.json({"format": 1, "bounds": downloads.manifest["bounds"], "regions": downloads.regions})
+                return self.json({"format": 1, "bounds": downloads.manifest["bounds"],
+                                  "zoom": downloads.publication["zoom"]})
             if re.fullmatch(r"/jobs/[0-9a-f]{64}", path):
                 return self.json(downloads.status(path.split("/")[-1]))
             match = re.fullmatch(r"/bundles/([0-9a-f]{64})/(bundle.json|release.json|objects/[0-9a-f]{64})", path)
-            if not match or downloads.status(match[1])["state"] != "ready":
-                return self.json({"message": "Download not found. Prepare the map again."}, 404)
-            file = downloads.cache / match[1] / match[2]
-            if not file.is_file():
-                return self.json({"message": "File not found."}, 404)
-            size = file.stat().st_size
+            with downloads.lock:
+                if not match or downloads.status(match[1])["state"] != "ready":
+                    return self.json({"message": "Download not found. Prepare the map again."}, 404)
+                file = downloads.cache / match[1] / match[2]
+                if not file.is_file() and match[2].startswith("objects/"):
+                    origin = json.loads((downloads.cache / match[1] / "origin.json").read_bytes())
+                    if origin["objects_url"]:
+                        self.send_response(307)
+                        self.send_header("Location", origin["objects_url"] + "/" + file.name)
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
+                    file = Path(origin["source"]) / match[2]
+                try:
+                    stream = file.open("rb")
+                except FileNotFoundError:
+                    return self.json({"message": "File not found."}, 404)
+            # An open descriptor remains valid if the selection is evicted.
+            with stream:
+                self.send_file(stream, match[1], file.name)
+
+        def send_file(self, stream, identity, name):
+            size = os.fstat(stream.fileno()).st_size
             start, end, status = 0, size - 1, 200
             if "Range" in self.headers:
                 byte_range = re.fullmatch(r"bytes=(\d+)-(\d*)", self.headers["Range"])
@@ -191,21 +214,20 @@ def handler(downloads):
             self.send_response(status)
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Accept-Ranges", "bytes")
-            self.send_header("ETag", '"' + match[1] + '-' + file.name + '"')
+            self.send_header("ETag", '"' + identity + '-' + name + '"')
             self.send_header("Content-Length", str(end - start + 1))
             if status == 206:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
             self.end_headers()
             if self.command != "HEAD":
-                with file.open("rb") as stream:
-                    stream.seek(start)
-                    remaining = end - start + 1
-                    while remaining:
-                        chunk = stream.read(min(remaining, 1024 * 1024))
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
-                        remaining -= len(chunk)
+                stream.seek(start)
+                remaining = end - start + 1
+                while remaining:
+                    chunk = stream.read(min(remaining, 1024 * 1024))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
     return Handler
 
 
@@ -214,12 +236,12 @@ def main():
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--cache", type=Path, required=True)
     parser.add_argument("--max-cache-bytes", type=int, required=True)
-    parser.add_argument("--regions", type=Path, help="Geofabrik index-v1.json with boundary geometry")
     parser.add_argument("--port", type=int, default=8790)
+    parser.add_argument("--objects-url", help="Public URL of the release's immutable object pool")
     args = parser.parse_args()
     if args.max_cache_bytes <= 0:
         parser.error("--max-cache-bytes must be positive")
-    downloads = Downloads(args.source, args.cache, args.max_cache_bytes, args.regions)
+    downloads = Downloads(args.source, args.cache, args.max_cache_bytes, args.objects_url)
     ThreadingHTTPServer(("127.0.0.1", args.port), handler(downloads)).serve_forever()
 
 

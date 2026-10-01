@@ -65,7 +65,67 @@ def size_report(manifest, manifest_bytes):
             "objects": len(wire)}
 
 
-def pack(data, destination):
+def pack_file(source, objects):
+    """Publish one immutable object. Compression runs only during publication."""
+    original = item(source)
+    objects.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".pack-", dir=objects.parent) as temporary:
+        compressed = Path(temporary) / "object"
+        if source.suffix not in COMPRESSED:
+            with source.open("rb") as reader, compressed.open("wb") as target:
+                with gzip.GzipFile(filename="", fileobj=target, mode="wb", compresslevel=1, mtime=0) as encoder:
+                    shutil.copyfileobj(reader, encoder, CHUNK)
+        if compressed.exists() and compressed.stat().st_size < original["bytes"]:
+            transport = {**item(compressed), "encoding": "gzip"}
+            target = objects / transport["sha256"]
+            if not target.exists(): compressed.rename(target)
+        else:
+            transport = {**original, "encoding": "identity"}
+            target = objects / original["sha256"]
+            if not target.exists():
+                try: os.link(source, target)
+                except OSError: shutil.copyfile(source, target)
+        verify(target, transport)
+        with target.open("rb") as stream: os.fsync(stream.fileno())
+    return {**original, "transport": transport}
+
+
+def materialize(source, destination, prefixes):
+    """Install only the server's runtime files from the canonical object pool."""
+    _, document = runtime.release(source, include_sources=False)
+    if not document.get("grid"):
+        raise ValueError("Expected a grid publication")
+    for name, entry in document["files"].items():
+        if not name.startswith(prefixes): continue
+        path = destination / name
+        if path.exists():
+            verify(path, entry)
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        transport = entry["transport"]
+        original = source / "objects" / transport["sha256"]
+        temporary = path.with_suffix(path.suffix + ".partial")
+        try:
+            if transport["encoding"] == "identity":
+                try: os.link(original, temporary)
+                except OSError: shutil.copyfile(original, temporary)
+            elif transport["encoding"] == "gzip":
+                with gzip.open(original, "rb") as reader, temporary.open("wb") as writer:
+                    remaining = entry["bytes"]
+                    while chunk := reader.read(min(CHUNK, remaining + 1)):
+                        remaining -= len(chunk)
+                        if remaining < 0: raise ValueError("Decoded object exceeds the release size")
+                        writer.write(chunk)
+            else:
+                raise ValueError("Unsupported object encoding")
+            verify(temporary, entry)
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return document
+
+
+def pack(data, destination, progress=lambda fraction: None):
     identity, document = runtime.release(data, include_sources=False)
     destination.mkdir(parents=True, exist_ok=True)
     if (destination / "bundle.json").exists():
@@ -73,35 +133,15 @@ def pack(data, destination):
     objects = destination / "objects"
     objects.mkdir(exist_ok=True)
     files, cache = {}, {}
+    total = sum(entry["bytes"] for entry in document["files"].values())
+    completed = 0
     for name, original in sorted(document["files"].items()):
         checksum = original["sha256"]
         if checksum not in cache:
-            source = data / name
-            if original["bytes"] >= 64 * CHUNK:
-                print(f"Packing {name}", file=sys.stderr, flush=True)
-            with tempfile.TemporaryDirectory(prefix=".pack-", dir=destination) as temporary:
-                compressed = Path(temporary) / "object"
-                if source.suffix not in COMPRESSED:
-                    with source.open("rb") as reader, compressed.open("wb") as target:
-                        with gzip.GzipFile(filename="", fileobj=target, mode="wb", compresslevel=6, mtime=0) as encoder:
-                            shutil.copyfileobj(reader, encoder, CHUNK)
-                if compressed.exists() and compressed.stat().st_size < original["bytes"]:
-                    transport = {**item(compressed), "encoding": "gzip"}
-                    target = objects / transport["sha256"]
-                    if not target.exists(): compressed.rename(target)
-                else:
-                    transport = {**original, "encoding": "identity"}
-                    target = objects / checksum
-                    if not target.exists():
-                        try:
-                            os.link(source, target)
-                        except OSError:
-                            shutil.copyfile(source, target)
-                verify(target, transport)
-                with target.open("rb") as stream:
-                    os.fsync(stream.fileno())
-                cache[checksum] = transport
-        files[name] = {**original, "transport": cache[checksum]}
+            cache[checksum] = pack_file(data / name, objects)
+        files[name] = cache[checksum]
+        completed += original["bytes"]
+        progress(completed / total if total else 1)
     release_bytes = (data / "release.json").read_bytes()
     manifest = {"format": 1, "release": {"sha256": identity, "bytes": len(release_bytes)}, "files": files}
     encoded = runtime.encoded(manifest)

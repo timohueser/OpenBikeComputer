@@ -7,11 +7,13 @@ import SwiftUI
 @MainActor @Observable
 public final class OfflineMapsModel {
     public private(set) var maps: [OfflineMap] = []
-    public private(set) var regions: [OfflineRegion] = []
+    public private(set) var coverage: OfflineCoverage?
     public private(set) var availableBytes: Int64?
     public private(set) var quote: OfflineDownloadQuote?
     public private(set) var isBusy = false
     public private(set) var isDownloading = false
+    public private(set) var isStopping = false
+    public private(set) var preparationStarted: Date?
     public private(set) var needsMobileConsent = true
     public private(set) var status = ""
     public private(set) var fraction = 0.0
@@ -44,26 +46,33 @@ public final class OfflineMapsModel {
         catch { self.error = error.localizedDescription }
     }
 
-    func loadRegions() async {
-        guard regions.isEmpty else { return }
-        do { regions = try await store.regions() }
-        catch is CancellationError {} catch { self.error = error.localizedDescription }
+    func loadCoverage() async {
+        guard coverage == nil else { return }
+        error = nil
+        do { coverage = try await store.coverage() }
+        catch is CancellationError {}
+        catch { self.error = "Map coverage is unavailable. Check your connection and try again." }
     }
 
-    func prepare(bounds: [Double], region: String?, name: String) {
+    func prepare(bounds: [Double], name: String) {
         guard !isBusy else { return }
-        quote = nil; error = nil; isBusy = true; status = "Preparing your map…"
+        quote = nil; error = nil; isBusy = true; fraction = 0; preparationStarted = Date(); status = "Checking map coverage"
         operation = Task { [weak self, store] in
             guard let self else { return }
-            defer { isBusy = false; operation = nil }
+            defer { isBusy = false; isStopping = false; preparationStarted = nil; operation = nil }
             do {
-                let quote = try await store.prepare(bounds: bounds, region: region, name: name) { _ in }
+                let quote = try await store.prepare(bounds: bounds, name: name) { [weak self] fraction, message in
+                    Task { @MainActor [weak self] in
+                        guard let self, isBusy, !isStopping else { return }
+                        self.fraction = fraction; status = message
+                    }
+                }
                 try Task.checkCancellation()
                 self.quote = quote
                 availableBytes = try await store.availableBytes()
                 status = "Review download"
             } catch is CancellationError { status = "" }
-            catch { if !Task.isCancelled { self.error = error.localizedDescription }; status = "" }
+            catch { self.error = error.localizedDescription; status = "" }
         }
     }
 
@@ -96,7 +105,11 @@ public final class OfflineMapsModel {
         }
     }
 
-    func stop() { operation?.cancel() }
+    func stop() {
+        guard !isStopping else { return }
+        if !isDownloading { isStopping = true; status = "Cancelling…" }
+        operation?.cancel()
+    }
     func clearSelection() { guard !isBusy else { return }; quote = nil; error = nil; status = "" }
 
     func discard() async {

@@ -19,31 +19,6 @@ public struct OfflineMap: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
-public struct OfflineRegion: Decodable, Identifiable, Sendable {
-    public let id: String
-    public let name: String
-    public let parent: String?
-    public let bounds: [Double]
-    public let available: Bool
-    public let rings: [[[Double]]]
-
-    public func contains(longitude x: Double, latitude y: Double) -> Bool {
-        var inside = false
-        for ring in rings where ring.count > 2 {
-            var previous = ring[ring.count - 1]
-            for point in ring {
-                guard point.count == 2, previous.count == 2 else { return false }
-                if (point[1] > y) != (previous[1] > y),
-                   x < (previous[0] - point[0]) * (y - point[1]) / (previous[1] - point[1]) + point[0] {
-                    inside.toggle()
-                }
-                previous = point
-            }
-        }
-        return inside
-    }
-}
-
 struct OfflineFile: Codable, Equatable, Sendable {
     let bytes: Int64
     let sha256: String

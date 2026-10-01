@@ -7,20 +7,28 @@ final class PlannerSearchRuntime {
     private let database: PlannerSearchDatabase
     public let javascriptInitializationMs: Double
 
-    init(database: URL, scripts: URL, region: String, countryCode: String, timeZone: String,
+    convenience init(database: URL, scripts: URL, region: String, countryCode: String, timeZone: String,
          parse: @escaping (String) -> String) throws {
-        self.database = try PlannerSearchDatabase(database)
+        try self.init(databases: [database], scripts: scripts, region: region, countryCode: countryCode, timeZone: timeZone, parse: parse)
+    }
+
+    init(databases: [URL], bounds: [URL: [Double]] = [:], coverage: [Double]? = nil, scripts: URL, region: String, countryCode: String, timeZone: String,
+         parse: @escaping (String) -> String) throws {
+        self.database = try PlannerSearchDatabase(files: databases, bounds: bounds)
         let start = ProcessInfo.processInfo.systemUptime
         guard let context = JSContext() else { throw plannerSearchError("JavaScript runtime failed") }
         self.context = context
-        let all: @convention(block) (String, String) -> String = { [database = self.database] in database.all($0, $1) }
+        let all: @convention(block) (String, String, String) -> String = { [database = self.database] in database.all($0, $1, $2) }
+        let batch: @convention(block) (String) -> String = { [database = self.database] in database.batch($0) }
         let parse: @convention(block) (String) -> String = parse
         let clock: @convention(block) () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }
         context.setObject(all, forKeyedSubscript: "plannerSQL" as NSString)
+        context.setObject(batch, forKeyedSubscript: "plannerSQLBatch" as NSString)
         context.setObject(parse, forKeyedSubscript: "plannerParse" as NSString)
         context.setObject(clock, forKeyedSubscript: "plannerNow" as NSString)
         context.setObject(["region": region, "countryCode": countryCode, "timeZone": timeZone,
-                           "bytes": try database.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0], forKeyedSubscript: "plannerConfig" as NSString)
+                           "bytes": try databases.reduce(0) { $0 + (try $1.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) }], forKeyedSubscript: "plannerConfig" as NSString)
+        if let coverage { context.objectForKeyedSubscript("plannerConfig")?.setObject(coverage, forKeyedSubscript: "bounds" as NSString) }
         context.evaluateScript("globalThis.performance = {now:plannerNow};")
         for file in ["calendar.js", "native.js"] {
             context.evaluateScript(try String(contentsOf: scripts.appendingPathComponent(file), encoding: .utf8))
@@ -28,7 +36,7 @@ final class PlannerSearchRuntime {
         }
         context.evaluateScript("""
         globalThis.plannerRuntime = PlannerNative.nativeSearch({
-          all:plannerSQL,parse:plannerParse,region:plannerConfig.region,bytes:plannerConfig.bytes,
+          all:plannerSQL,batch:plannerSQLBatch,parse:plannerParse,region:plannerConfig.region,bytes:plannerConfig.bytes,bounds:plannerConfig.bounds,
           hours:PlannerCalendar.openingHours(plannerConfig)});
         globalThis.plannerDispatch = async (method,body) => {
           return JSON.stringify(await plannerRuntime.request(method,JSON.parse(body)));

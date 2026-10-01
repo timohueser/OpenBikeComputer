@@ -5,6 +5,18 @@ import Testing
 
 @Suite("Offline maps")
 struct OfflineMapsTests {
+    @Test func gridCoverageRoundsOutwardAndClipsToPublishedBounds() throws {
+        let data = Data(#"{"format":1,"zoom":9,"bounds":[7.45,47.5,10.5,49.85]}"#.utf8)
+        let coverage = try JSONDecoder().decode(OfflineCoverage.self, from: data)
+        let cells = coverage.cells(covering: [7.5,47.6,8.3,48.2])
+        #expect(cells.count == 4)
+        #expect(cells.map { $0[0] }.min() == 7.45)
+        #expect(cells.map { $0[2] }.max() == 8.4375)
+        #expect(coverage.contains([7.5,47.6,8.3,48.2]))
+        #expect(!coverage.contains([7,47.6,8.3,48.2]))
+        #expect(coverage.cells(covering: [0,0,1,1]).isEmpty)
+    }
+
     @Test func installationVerifiesAndLinksFilesBeforeMakingThemAvailable() async throws {
         let root = temporary()
         defer { try? FileManager.default.removeItem(at: root) }

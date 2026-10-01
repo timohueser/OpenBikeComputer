@@ -21,7 +21,7 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
         self.terrain_attribution = terrain_attribution; self.search = search; self.routing = routing; self.manifest = manifest
     }
 
-    public var isLocal: Bool { basemap.scheme == "pmtiles" && basemap.absoluteString.hasPrefix("pmtiles://file:") }
+    public var isLocal: Bool { manifest.isFileURL || (basemap.scheme == "pmtiles" && basemap.absoluteString.hasPrefix("pmtiles://file:")) }
 
     public func contains(_ coordinate: Coordinate) -> Bool {
         bounds.count == 4 && (bounds[0]...bounds[2]).contains(coordinate.longitude)

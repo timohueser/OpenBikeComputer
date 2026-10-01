@@ -49,8 +49,11 @@ targets:
       - path: OBCCompanion
       - path: ../apps/planner-native/RouteProvider.swift
       - path: ../apps/planner-native/OverlayProvider.swift
+      - path: ../apps/planner-native/PMTilesArchive.swift
+      - path: ../apps/planner-search/native/PlannerSearchConnection.swift
       - path: ../apps/planner-search/native/PlannerSearchDatabase.swift
       - path: ../apps/planner-search/native/PlannerSearchRuntime.swift
+      - path: ../apps/planner-search/native/PlannerFuzzyIndex.swift
       - path: ../target/PlannerSearch
         type: folder
         buildPhase: resources

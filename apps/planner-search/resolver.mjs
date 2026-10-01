@@ -253,6 +253,7 @@ function categoryRows(db, kinds, bounds, focus) {
     AND p.kind IN (${kinds.map(() => '?').join(',')})
     ORDER BY (p.lon-?)*(p.lon-?)*?+(p.lat-?)*(p.lat-?) LIMIT 2001`,
     [...bounds, ...kinds, x, x, cos, y, y],
+    {bounds},
   );
 }
 export function findPlaces(db, request, context) {
