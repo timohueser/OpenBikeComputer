@@ -107,7 +107,7 @@ impl Directory {
     pub fn digests(&self) -> Result<Vec<[u8; 32]>> {
         let mut keys = Vec::new();
         keys.try_reserve_exact(self.0.count as usize).map_err(|_| Error::Limit)?;
-        for record in self.0.index[HEADER as usize..].chunks_exact(RECORD as usize) {
+        for record in self.0.index[HEADER as usize..].as_chunks::<{ RECORD as usize }>().0 {
             let key: [u8; 32] = record[..32].try_into().unwrap();
             let offset = u64::from_le_bytes(record[32..40].try_into().unwrap());
             let len = u64::from_le_bytes(record[40..48].try_into().unwrap());
