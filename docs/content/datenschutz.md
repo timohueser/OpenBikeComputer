@@ -83,7 +83,8 @@ Browser zurücksenden kann. Rechtsgrundlage ist jeweils Art. 6 Abs. 1 lit. f DSG
 Die Karte zur Regionsauswahl lädt ihre Kacheln von `tiles.openbikecomputer.com`. Das ist
 der Cloudflare Worker, der auch den Routenplaner bedient (Abschnitt 7.1). Cloudflare
 erhält die IP-Adresse und die angefragte Kachel. Daraus kann Cloudflare den Kartenausschnitt
-erkennen. Die Kacheln erscheinen bereits in der ersten Ansicht des Kartenbaukastens, weil
+erkennen. Schriften und Symbole der Karte kommen von `maps.openbikecomputer.com`
+(Abschnitt 6.3). Die Kacheln erscheinen bereits in der ersten Ansicht des Kartenbaukastens, weil
 die Auswahl einer Region ohne Kartenhintergrund nicht sinnvoll bedienbar wäre.
 
 Die Geräteseiten des Kartenbaukastens und der Desktop-App laden Kacheln von

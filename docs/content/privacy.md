@@ -80,6 +80,7 @@ The legal basis in each case is Art. 6(1)(f) GDPR.
 The map for choosing a region loads its tiles from `tiles.openbikecomputer.com`. This is
 the Cloudflare Worker that also serves the route planner (section 7.1). Cloudflare receives
 your IP address and the requested tile. From this, Cloudflare can see the map area. The
+map's fonts and symbols come from `maps.openbikecomputer.com` (section 6.3). The
 tiles appear in the first view of the map builder, because you cannot choose a region in a
 useful way without a map background.
 
