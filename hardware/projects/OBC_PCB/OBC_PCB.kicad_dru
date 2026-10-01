@@ -1,15 +1,15 @@
 (version 1)
 
-# PCBWay standard eight-layer board with drilled through vias.
-# Use 35 um finished copper on all layers; 0.5 oz outer foil plated to 1 oz.
+# JLCPCB JLC08161H-3313, nominal 1.6 mm, ENIG and green solder mask.
+# Select this stack explicitly: 1 oz outer and 0.5 oz inner copper.
 # GOVERNS: hardware/projects/OBC_PCB/OBC_PCB.kicad_pcb
-# https://www.pcbway.com/capabilities.html
-# RULE: trace >= 4 mil (0.1016 mm), rounded up to 0.102 mm.
-# RULE: clearance >= 5 mil (0.127 mm); annulus >= 0.15 mm.
-# RULE: eight-layer hole-to-copper >= 9 mil; via hole spacing >= 11 mil.
-# Board Setup rounds these hole clearances up to 0.23 mm and 0.28 mm.
-# https://www.pcbway.com/pcb_prototype/PCB_Solder_mask.html
-# RULE: green mask web >= 4 mil (0.102 mm); retain mask checks on all pads.
+# https://jlcpcb.com/capabilities/pcb-capabilities
+# RULE: retain the owner-selected 4 mil track floor and 5 mil clearance.
+# RULE: component-hole spacing >= 0.45 mm; NPTH slot width >= 1.0 mm.
+# RULE: inner component-hole clearance >= 0.30 mm; outer track clearance >= 0.28 mm.
+# RULE: green mask web >= 0.10 mm; mask to neighboring copper >= 0.09 mm.
+# Board Setup retains a 0.102 mm mask web and 0.20 mm minimum via drill.
+# RULE: silk text height >= 1.0 mm and stroke >= 0.15 mm.
 # USB_90R_TBD targets 90 ohms on L6 between the L5 and L7 ground planes.
 # RF_50R_TBD targets 50 ohms on an outer layer over its adjacent ground plane.
 # Both geometries need the fabricator's impedance calculation.
@@ -30,7 +30,7 @@
   (constraint disallow micro_via blind_via buried_via))
 
 # U6 and U2 use ground thermal vias between exposed-pad stencil apertures.
-# Keep all other unfilled holes out of surface lands to prevent solder loss.
+# Retain clearance from other surface lands; all via holes are filled and capped.
 (rule "Through vias clear of surface lands"
   (condition "A.Type == 'Via' && A.Via_Type == 'Through' && B.Type == 'Pad' && B.Hole_Size_X == 0mm && !(A.NetName == 'GND' && B.NetName == 'GND' && ((B.memberOfFootprint('U6') && B.Pad_Number == '53') || (B.memberOfFootprint('U2') && B.Pad_Number == '33')))")
   (constraint physical_hole_clearance (min 0.15mm)))
@@ -39,10 +39,10 @@
   (condition "A.Type == 'Pad' && A.Pad_Type == 'Through-hole'")
   (constraint annular_width (min 0.15mm)))
 
-# PCBWay's component-hole spacing is 16 mil, rounded up to 0.41 mm.
+# JLCPCB component-hole spacing is 0.45 mm.
 (rule "Component drill spacing"
   (condition "A.Type == 'Pad' || B.Type == 'Pad'")
-  (constraint hole_to_hole (min 0.41mm)))
+  (constraint hole_to_hole (min 0.45mm)))
 
 (rule "Plated slots"
   (condition "A.Type == 'Pad' && A.Pad_Type == 'Through-hole' && A.Hole_Size_X != A.Hole_Size_Y")
@@ -50,7 +50,7 @@
 
 (rule "Nonplated slots"
   (condition "A.Type == 'Pad' && A.Pad_Type == 'NPTH, mechanical' && A.Hole_Size_X != A.Hole_Size_Y")
-  (constraint hole_size (min 0.8mm)))
+  (constraint hole_size (min 1mm)))
 
 (rule "USB inner pair width"
   (layer "In5.Cu")
@@ -64,7 +64,7 @@
 
 (rule "RF feed width"
   (condition "A.hasNetclass('RF_50R_TBD')")
-  (constraint track_width (min 0.11mm) (opt 0.2mm)))
+  (constraint track_width (min 0.11mm) (opt 0.18mm)))
 
 # Keep the outer pours clear of exposed pads and their solder mask openings.
 (rule "Outer pour solder mask clearance"
@@ -93,3 +93,11 @@
 (rule "MCU fanout five mil clearance"
   (condition "A.Type != 'Zone' && B.Type != 'Zone' && A.enclosedByArea('MCU south-east fanout') && B.enclosedByArea('MCU south-east fanout')")
   (constraint clearance (min 0.127mm)))
+
+(rule "Inner plated component hole clearance"
+  (condition "A.Type == 'Pad' && A.Pad_Type == 'Through-hole' && B.Layer != 'F.Cu' && B.Layer != 'B.Cu'")
+  (constraint hole_clearance (min 0.3mm)))
+
+(rule "Outer plated component hole to track"
+  (condition "A.Type == 'Pad' && A.Pad_Type == 'Through-hole' && B.Type == 'Track' && (B.Layer == 'F.Cu' || B.Layer == 'B.Cu')")
+  (constraint hole_clearance (min 0.28mm)))
