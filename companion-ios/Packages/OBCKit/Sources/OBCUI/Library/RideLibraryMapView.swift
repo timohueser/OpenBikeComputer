@@ -191,7 +191,14 @@ struct RideLinesMap: UIViewRepresentable {
             redraw(map, selected: selected)
         }
 
+        func mapViewDidFinishLoadingMap(_ mapView: MLNMapView) {
+            (mapView as? OBCNativeMapView)?.didFinishLoadingMap()
+        }
+        func mapViewDidFailLoadingMap(_ mapView: MLNMapView, withError error: Error) {
+            (mapView as? OBCNativeMapView)?.didFailLoadingMap()
+        }
         func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) {
+            (mapView as? OBCNativeMapView)?.updateCoverageStatus()
             guard let map = mapView as? OBCNativeMapView else { return }
             if !fitted, let lines { fit(map, to: lines) }
             redraw(map, selected: selection)

@@ -326,7 +326,7 @@ public struct PlannerPreviewView: View {
                     PlannerOpenBadge(place: place)
                 }
                 if place.kind != .town {
-                    Text(PlannerPlaceRow.detail(for: place, showsRouteDistances: model.hasRoute))
+                    Text(PlannerPlaceRow.detail(for: place, showsRouteDistances: model.canSave))
                         .font(.system(.subheadline).monospacedDigit()).foregroundStyle(OBCTheme.secondary)
                 }
             }
@@ -465,7 +465,7 @@ public struct PlannerPreviewView: View {
                 Button("Try another search") { resumeSearch() }.buttonStyle(.obcGhost)
             } else {
                 ForEach(results.places) { place in
-                    Button { selectResult(place) } label: { PlannerPlaceRow(place: place, showsRouteDistances: model.hasRoute) }
+                    Button { selectResult(place) } label: { PlannerPlaceRow(place: place, showsRouteDistances: model.canSave) }
                         .buttonStyle(.plain)
                     Divider().overlay(OBCTheme.hairline)
                 }
@@ -600,7 +600,7 @@ public struct PlannerPreviewView: View {
     }
 
     private func selectResult(_ place: PlannerPreviewPlace) {
-        selectedPlace = place; editingPointID = nil
+        selectedPlace = model.positionedPlace(place); editingPointID = nil
         panel = .place; drawerPosition = .open
     }
 
@@ -616,7 +616,7 @@ public struct PlannerPreviewView: View {
 
     private func selectMapPoint(_ coordinate: Coordinate, at location: CGPoint) {
         editingPointID = nil; layersShown = false; infoShown = false
-        selectedPlace = .init(id: UUID().uuidString, name: "Map point", coordinate: coordinate)
+        selectedPlace = model.positionedPlace(.init(id: UUID().uuidString, name: "Map point", coordinate: coordinate))
         panel = .place; drawerPosition = .open
     }
 

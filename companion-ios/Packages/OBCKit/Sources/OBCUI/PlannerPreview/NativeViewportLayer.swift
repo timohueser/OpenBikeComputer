@@ -19,6 +19,7 @@ final class NativeViewportLayer {
         }
     }
     private var cached: (viewport: Viewport, url: URL)?
+    private var failed: Viewport?
     private var pending: Viewport?
     private var task: Task<Void, Never>?
     private var files: [URL] = []
@@ -26,7 +27,7 @@ final class NativeViewportLayer {
     func update(_ map: OBCNativeMapView, key: String?, release: PlannerRelease?, minimumZoom: Double = 0,
                 maximumZoom: Double = 24, load: @escaping @Sendable ([Double], Double, PlannerRelease) async throws -> Data) {
         guard let key, let release, map.zoomLevel >= minimumZoom, map.zoomLevel < maximumZoom else {
-            task?.cancel(); pending = nil
+            task?.cancel(); pending = nil; failed = nil
             clear(map)
             status(nil)
             return
@@ -35,7 +36,7 @@ final class NativeViewportLayer {
         let bounds = [max(release.bounds[0], visible.sw.longitude), max(release.bounds[1], visible.sw.latitude),
                       min(release.bounds[2], visible.ne.longitude), min(release.bounds[3], visible.ne.latitude)]
         guard bounds[0] < bounds[2], bounds[1] < bounds[3] else {
-            task?.cancel(); pending = nil
+            task?.cancel(); pending = nil; failed = nil
             clear(map)
             status(nil)
             return
@@ -46,6 +47,11 @@ final class NativeViewportLayer {
             restore(map); status(nil); return
         }
         if let pending, pending.contains(viewport) { return }
+        if let failed, failed.contains(viewport) {
+            status("Map layers are unavailable. Move the map to try again.")
+            return
+        }
+        failed = nil
         task?.cancel()
         let dx = (bounds[2] - bounds[0]) * 0.2, dy = (bounds[3] - bounds[1]) * 0.2
         let padded = [max(release.bounds[0], bounds[0] - dx), max(release.bounds[1], bounds[1] - dy),
@@ -79,6 +85,7 @@ final class NativeViewportLayer {
             } catch {
                 guard !Task.isCancelled, let self else { return }
                 self.pending = nil
+                self.failed = viewport
                 self.status("Map layers are unavailable. Move the map to try again.")
             }
         }
@@ -97,7 +104,7 @@ final class NativeViewportLayer {
     func stop() {
         task?.cancel(); task = nil
         for file in files { try? FileManager.default.removeItem(at: file) }
-        files.removeAll(); cached = nil; pending = nil
+        files.removeAll(); cached = nil; pending = nil; failed = nil
     }
     private nonisolated static func write(_ data: Data) async throws -> URL {
         try await Task.detached(priority: .utility) {

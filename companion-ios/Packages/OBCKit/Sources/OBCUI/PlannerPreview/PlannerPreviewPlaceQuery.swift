@@ -120,7 +120,7 @@ struct PlannerPreviewPlaceQuery: Equatable {
     }
 
     func filter(_ places: [PlannerPreviewPlace], routeLengthMeters: Double,
-                isInMapView: (PlannerPreviewPlace) -> Bool) -> [PlannerPreviewPlace] {
+                isInMapView: (PlannerPreviewPlace) -> Bool, matchesName: Bool = true) -> [PlannerPreviewPlace] {
         let range: ClosedRange<Double> = switch area {
         case .start: 0...(routeLengthMeters / 3)
         case .middle: (routeLengthMeters / 3)...(routeLengthMeters * 2 / 3)
@@ -129,7 +129,7 @@ struct PlannerPreviewPlaceQuery: Equatable {
         case .view, .route: 0...max(0, routeLengthMeters)
         }
         return places.filter { place in
-            guard kinds.isEmpty ? place.name.localizedStandardContains(name) : kinds.contains(place.kind) else { return false }
+            guard kinds.isEmpty ? (!matchesName || place.name.localizedStandardContains(name)) : kinds.contains(place.kind) else { return false }
             if area == .view { return isInMapView(place) }
             guard range.contains(place.alongRouteMeters) else { return false }
             return radiusMeters.map { place.offRouteMeters <= $0 } ?? true

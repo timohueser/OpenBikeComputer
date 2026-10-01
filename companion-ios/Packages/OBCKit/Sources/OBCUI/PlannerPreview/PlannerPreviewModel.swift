@@ -146,6 +146,14 @@ public final class PlannerPreviewModel {
         }
     }
 
+    public func positionedPlace(_ place: PlannerPreviewPlace) -> PlannerPreviewPlace {
+        guard routeLine.length > 0 else { return place }
+        let projection = routeLine.projection(of: place.coordinate, near: routeLine.length / 2, window: routeLine.length)
+        return .init(id: place.id, name: place.name, coordinate: place.coordinate, kind: place.kind,
+                     alongRouteMeters: projection.distance, offRouteMeters: projection.error,
+                     hours: place.hours, note: place.note)
+    }
+
     public func searchPlaces(_ query: PlannerSearchQuery) async throws -> [PlannerPreviewPlace] {
         let selected: PlannerRelease
         if let release { selected = release } else { selected = try await service.release() }

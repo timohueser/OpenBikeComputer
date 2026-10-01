@@ -136,7 +136,9 @@ struct PlannerPreviewSearch: View {
                 try await Task.sleep(for: .milliseconds(250))
                 let query = request?.serverQuery(text: key.query, view: viewBounds, model: model)
                     ?? PlannerSearchQuery(text: key.query, view: viewBounds)
-                let places = try await model.searchPlaces(query)
+                let found = try await model.searchPlaces(query)
+                let places = request?.filter(found, routeLengthMeters: model.routeLine.length,
+                                             isInMapView: isInMapView, matchesName: false) ?? found
                 try Task.checkCancellation()
                 guard key == searchKey else { return }
                 remote = .init(title: request.map { $0.kinds.isEmpty ? $0.name : $0.kindLabel } ?? "Places",

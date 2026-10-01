@@ -104,10 +104,17 @@ struct LineMarkerMapView: UIViewRepresentable {
             map.removeAnnotations((map.annotations ?? []).filter { $0 is NativeStop })
             map.addAnnotations(stops.map(NativeStop.init))
         }
+        func mapViewDidFinishLoadingMap(_ mapView: MLNMapView) {
+            (mapView as? OBCNativeMapView)?.didFinishLoadingMap()
+        }
+        func mapViewDidFailLoadingMap(_ mapView: MLNMapView, withError error: Error) {
+            (mapView as? OBCNativeMapView)?.didFailLoadingMap()
+        }
         func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
             if let map = mapView as? OBCNativeMapView { draw(map, force: true) }
         }
         func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) {
+            (mapView as? OBCNativeMapView)?.updateCoverageStatus()
             if let map = mapView as? OBCNativeMapView { updatePins(map); reportVisible() }
         }
         func reportVisible() {

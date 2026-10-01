@@ -25,6 +25,18 @@ struct PlannerPreviewQueryTests {
         #expect(!model.canUndo && model.points.count == 2)
     }
 
+    @Test func namedServerMatchesStillRespectAreaAndRadius() {
+        let query = PlannerPreviewPlaceQuery(name: "fuzzy name", area: .section, radiusMeters: 100,
+                                             fromMeters: 10_000, toMeters: 20_000)
+        let places = query.filter(PlannerPreviewModel.sampleMapPlaces, routeLengthMeters: 30_524,
+                                  isInMapView: { _ in true }, matchesName: false)
+        #expect(!places.isEmpty)
+        #expect(places.allSatisfy { (10_000...20_000).contains($0.alongRouteMeters) && $0.offRouteMeters <= 100 })
+        var viewQuery = query; viewQuery.area = .view
+        let visible = viewQuery.filter(PlannerPreviewModel.sampleMapPlaces, routeLengthMeters: 30_524,
+                                       isInMapView: { $0.id == "water" }, matchesName: false)
+        #expect(visible.map(\.id) == ["water"])
+    }
     @Test func mapScopeUsesVisiblePlacesAndUnrecognizedTextStaysANameSearch() throws {
         let query = try #require(PlannerPreviewPlaceQuery.parse("cafés in this map view", hasRoute: true))
         #expect(query.area == .view)

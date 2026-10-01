@@ -70,3 +70,16 @@ extension EnvironmentValues {
         set { self[PlannerSourceKey.self] = newValue }
     }
 }
+
+/// Loading failures take precedence over geographic coverage.
+enum NativeMapLoadState: Equatable {
+    case loading, ready, offline, failed
+    func message(outsideRegion: Bool) -> String? {
+        switch self {
+        case .loading: "Loading map…"
+        case .offline: "Map needs an internet connection."
+        case .failed: "Map unavailable. Tap to try again."
+        case .ready: outsideRegion ? "Outside the available map region." : nil
+        }
+    }
+}

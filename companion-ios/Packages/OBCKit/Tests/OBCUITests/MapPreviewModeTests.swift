@@ -1,4 +1,5 @@
 import XCTest
+import Testing
 import OBCTransport
 @testable import OBCUI
 
@@ -21,5 +22,17 @@ final class MapPreviewModeTests: XCTestCase {
         store.start()
         try await waitFor("reachability update") { !store.isOnline }
         XCTAssertFalse(store.isOnline, "converges to the seam's value")
+    }
+}
+
+@Suite("Native map availability")
+struct NativeMapAvailabilityTests {
+    @Test func failuresAndOfflineStatePersistAcrossCoverageChanges() {
+        for outside in [false, true] {
+            #expect(NativeMapLoadState.failed.message(outsideRegion: outside) == "Map unavailable. Tap to try again.")
+            #expect(NativeMapLoadState.offline.message(outsideRegion: outside) == "Map needs an internet connection.")
+        }
+        #expect(NativeMapLoadState.ready.message(outsideRegion: false) == nil)
+        #expect(NativeMapLoadState.ready.message(outsideRegion: true) == "Outside the available map region.")
     }
 }

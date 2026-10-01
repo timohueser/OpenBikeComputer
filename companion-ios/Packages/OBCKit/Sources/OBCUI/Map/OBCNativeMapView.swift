@@ -33,7 +33,8 @@ final class OBCNativeMapView: MLNMapView {
     private var retry: (() -> Void)?
     private var styleKey: String?
     private var selectedRelease: PlannerRelease?
-    private let notice = UILabel()
+    private let notice = UIButton(type: .system)
+    private var availability = NativeMapLoadState.loading
     private var strokes: [MapStroke]?
 
     init() {
@@ -41,15 +42,16 @@ final class OBCNativeMapView: MLNMapView {
         isRotateEnabled = false
         isPitchEnabled = false
         logoView.isHidden = true
-        notice.font = .preferredFont(forTextStyle: .caption1)
-        notice.textColor = UIColor(OBCTheme.ink)
+        notice.titleLabel?.font = .preferredFont(forTextStyle: .caption1)
+        notice.setTitleColor(UIColor(OBCTheme.ink), for: .normal)
         notice.backgroundColor = UIColor(OBCTheme.surface)
         notice.layer.cornerRadius = 5; notice.clipsToBounds = true
-        notice.numberOfLines = 2
+        notice.titleLabel?.numberOfLines = 2
+        notice.accessibilityIdentifier = "map.availability"
         notice.isHidden = true
         addSubview(notice)
         notice.isUserInteractionEnabled = true
-        notice.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(retryLoading)))
+        notice.addTarget(self, action: #selector(retryLoading), for: .touchUpInside)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -73,10 +75,13 @@ final class OBCNativeMapView: MLNMapView {
         }
         loading?.cancel()
         if !online {
-            showNotice("Map needs an internet connection.")
+            availability = .offline
+            updateCoverageStatus()
             styleURL = Bundle.module.url(forResource: "blank", withExtension: "json", subdirectory: "Map")!
             return
         }
+        availability = .loading
+        updateCoverageStatus()
         loading = Task { [weak self] in
             do {
                 let selected: PlannerRelease
@@ -85,15 +90,16 @@ final class OBCNativeMapView: MLNMapView {
                 let url = try Self.styleURL(release: selected, dark: dark)
                 guard let self else { return }
                 self.selectedRelease = selected
-                self.showNotice(nil)
-                if self.styleURL != url { self.styleURL = url }
+                if self.styleURL == url { self.reloadStyle(nil) } else { self.styleURL = url }
                 if abs(self.centerCoordinate.latitude) < 0.01, abs(self.centerCoordinate.longitude) < 0.01 {
                     self.setCenter(CLLocationCoordinate2D(latitude: (selected.bounds[1] + selected.bounds[3]) / 2,
                         longitude: (selected.bounds[0] + selected.bounds[2]) / 2), zoomLevel: 8, animated: false)
                 }
             } catch is CancellationError {} catch {
                 // The drawn track stays visible when the basemap cannot load.
-                self?.showNotice("Map unavailable. Tap to try again.")
+                guard !Task.isCancelled else { return }
+                self?.availability = .failed
+                self?.updateCoverageStatus()
             }
         }
     }
@@ -101,14 +107,26 @@ final class OBCNativeMapView: MLNMapView {
     @objc private func retryLoading() { retry?() }
 
     func showNotice(_ text: String?) {
-        notice.text = text; notice.isHidden = text == nil; setNeedsLayout()
+        notice.setTitle(text, for: .normal); notice.isHidden = text == nil; setNeedsLayout()
     }
     func updateCoverageStatus() {
-        guard let selectedRelease else { return }
         let bounds = visibleCoordinateBounds
-        let outside = bounds.ne.longitude < selectedRelease.bounds[0] || bounds.sw.longitude > selectedRelease.bounds[2]
-            || bounds.ne.latitude < selectedRelease.bounds[1] || bounds.sw.latitude > selectedRelease.bounds[3]
-        showNotice(outside ? "Outside the available map region." : nil)
+        let outside = selectedRelease.map { release in
+            bounds.ne.longitude < release.bounds[0] || bounds.sw.longitude > release.bounds[2]
+                || bounds.ne.latitude < release.bounds[1] || bounds.sw.latitude > release.bounds[3]
+        } ?? false
+        showNotice(availability.message(outsideRegion: outside))
+    }
+
+    func didFinishLoadingMap() {
+        guard availability == .loading, styleURL.lastPathComponent != "blank.json" else { return }
+        availability = .ready
+        updateCoverageStatus()
+    }
+    func didFailLoadingMap() {
+        guard availability != .offline else { return }
+        availability = .failed
+        updateCoverageStatus()
     }
 
     func stop() { loading?.cancel(); loading = nil; delegate = nil }
@@ -274,6 +292,15 @@ struct OBCMapView: UIViewRepresentable {
                 annotation.title = pin.label.isEmpty ? "Route point" : pin.label
                 return annotation
             })
+        }
+        func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) {
+            (mapView as? OBCNativeMapView)?.updateCoverageStatus()
+        }
+        func mapViewDidFinishLoadingMap(_ mapView: MLNMapView) {
+            (mapView as? OBCNativeMapView)?.didFinishLoadingMap()
+        }
+        func mapViewDidFailLoadingMap(_ mapView: MLNMapView, withError error: Error) {
+            (mapView as? OBCNativeMapView)?.didFailLoadingMap()
         }
         func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
             (mapView as? OBCNativeMapView)?.draw(parent.lines, force: true)

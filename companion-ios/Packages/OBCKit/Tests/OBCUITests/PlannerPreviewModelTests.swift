@@ -131,6 +131,17 @@ struct PlannerPreviewModelTests {
         model.undo()
         #expect(model.overnightPointID == id)
     }
+    @Test func mapSelectedPlacesUseTheCurrentRoutePosition() async {
+        let model = PlannerPreviewModel(sample: true, service: PlannerTestSource())
+        await model.calculateRoute()
+        let middle = model.routeLine.coordinate(at: model.routeLine.length / 2)
+        let place = PlannerPreviewPlace(id: "tile-poi", name: "Water", coordinate:
+            Coordinate(latitude: middle.latitude + 0.001, longitude: middle.longitude), kind: .water, hours: "24/7")
+        let positioned = model.positionedPlace(place)
+        #expect(positioned.alongRouteMeters > 0 && positioned.alongRouteMeters < model.routeLine.length)
+        #expect(positioned.offRouteMeters > 0)
+        #expect(positioned.id == place.id && positioned.hours == place.hours && positioned.kind == .water)
+    }
     @Test func staleRepliesAndFailuresCannotReplaceOrSaveTheCurrentRoute() async {
         let source = ControlledPlannerSource()
         let model = PlannerPreviewModel(sample: true, service: source)

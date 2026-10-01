@@ -137,6 +137,16 @@ struct PlannerPreviewMap: UIViewRepresentable {
         private var reportedViewport: MKMapRect?
         let networks = NativeViewportLayer(identifier: "networks")
         let places = NativeViewportLayer(identifier: "highlighted-places")
+        private var layerStatuses: [String: String] = [:]
+        private var reportedLayerStatus: String?
+
+        private func reportLayerStatus(_ status: String?, layer: String) {
+            layerStatuses[layer] = status
+            let message = layerStatuses.keys.sorted().compactMap { layerStatuses[$0] }.first
+            guard message != reportedLayerStatus else { return }
+            reportedLayerStatus = message
+            parent.onNetworkStatus(message)
+        }
 
         init(_ parent: PlannerPreviewMap) {
             self.parent = parent
@@ -151,6 +161,12 @@ struct PlannerPreviewMap: UIViewRepresentable {
         func drawRoute(_ map: OBCNativeMapView, force: Bool = false) {
             map.draw([MapStroke(coordinates: coordinates, color: OBCTheme.route, width: 3.5)], force: force)
         }
+        func mapViewDidFinishLoadingMap(_ mapView: MLNMapView) {
+            (mapView as? OBCNativeMapView)?.didFinishLoadingMap()
+        }
+        func mapViewDidFailLoadingMap(_ mapView: MLNMapView, withError error: Error) {
+            (mapView as? OBCNativeMapView)?.didFailLoadingMap()
+        }
         func mapView(_ map: MLNMapView, didFinishLoading style: MLNStyle) {
             guard let map = map as? OBCNativeMapView else { return }
             drawRoute(map, force: true)
@@ -159,7 +175,7 @@ struct PlannerPreviewMap: UIViewRepresentable {
             updateNetworks(map)
         }
         func updateNetworks(_ map: OBCNativeMapView) {
-            networks.status = parent.onNetworkStatus
+            networks.status = { [weak self] in self?.reportLayerStatus($0, layer: "networks") }
             let network = parent.showCycling ? "cycling" : parent.showHiking ? "hiking" : "none"
             let source = parent.source
             networks.update(map, key: network == "none" ? nil : network, release: parent.release, minimumZoom: 6) { bounds, zoom, release in
@@ -178,7 +194,7 @@ struct PlannerPreviewMap: UIViewRepresentable {
             }
             let source = parent.source
             let categories = highlighted.intersection(shown)
-            places.status = parent.onNetworkStatus
+            places.status = { [weak self] in self?.reportLayerStatus($0, layer: "places") }
             places.update(map, key: categories.isEmpty ? nil : categories.sorted().joined(separator: ","),
                           release: parent.release, maximumZoom: 13) { bounds, _, release in
                 var query = PlannerSearchQuery(text: "places", view: bounds)
