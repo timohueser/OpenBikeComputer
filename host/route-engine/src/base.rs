@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 type Result<T> = std::result::Result<T, String>;
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Width {
     U8,
     U16,
@@ -15,7 +15,7 @@ pub enum Width {
     U64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Column {
     pub width: Width,
     pub values: Table,
@@ -287,16 +287,27 @@ impl Graph {
 
 pub struct Costs {
     pub roads: Numbers,
-    pub turns: Numbers,
+    pub turns: std::sync::Arc<Numbers>,
 }
 impl Costs {
     pub fn read(package: &Package<impl Source>, weights: &Weights, graph: &Graph) -> crate::Result<Self> {
+        Self::read_shared(package, weights, graph, None)
+    }
+    pub(crate) fn read_shared(
+        package: &Package<impl Source>,
+        weights: &Weights,
+        graph: &Graph,
+        turns: Option<std::sync::Arc<Numbers>>,
+    ) -> crate::Result<Self> {
         if !weights.valid(&package.manifest().graph, graph.nodes() as u32) {
             return Err(Error::InvalidData("Invalid base cost columns".into()));
         }
         let costs = Self {
             roads: Numbers::read(package, &weights.road_costs)?,
-            turns: Numbers::read(package, &weights.turns)?,
+            turns: match turns {
+                Some(turns) => turns,
+                None => std::sync::Arc::new(Numbers::read(package, &weights.turns)?),
+            },
         };
         for (arc, &road) in graph.head.iter().enumerate() {
             let total = costs.roads.get(road as usize);
@@ -411,6 +422,29 @@ mod tests {
         assert_eq!(package.identity(), fork.identity());
         assert!(write_topology(2, &[(1, 0), (0, 1)], |b| memory.write(b)).is_err());
         assert!(write_topology(2, &[(0, 1), (0, 1)], |b| memory.write(b)).is_err());
+    }
+
+    #[test]
+    fn profiles_share_only_identical_turn_columns() {
+        let memory = Memory::default();
+        let topology = write_topology(2, &[(0, 1)], |b| memory.write(b)).unwrap();
+        let weights = write_weights(&[1, 2], &[0], |b| memory.write(b)).unwrap();
+        let mut manifest = memory.package(2, topology, weights).manifest().clone();
+        for (name, roads, turns) in [("gravel", [4, 5], [0]), ("hiking", [6, 7], [2])] {
+            let mut metric = manifest.metrics["touring"].clone();
+            metric.profile = Profile::presets().into_iter().find(|p| p.name == name).unwrap();
+            metric.weights = write_weights(&roads, &turns, |b| memory.write(b)).unwrap();
+            manifest.metrics.insert(name.into(), metric);
+        }
+        let mut package = Package::open(memory.clone(), &serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let (graph, touring) = package.base("touring").unwrap();
+        memory.reads.set(0);
+        let (_, gravel) = package.base("gravel").unwrap();
+        assert_eq!(memory.reads.get(), 1);
+        assert!(std::sync::Arc::ptr_eq(&touring.turns, &gravel.turns));
+        let (_, hiking) = package.base("hiking").unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&touring.turns, &hiking.turns));
+        assert_eq!([touring.arc(&graph, 0), gravel.arc(&graph, 0), hiking.arc(&graph, 0)], [2, 5, 9]);
     }
 
     #[test]

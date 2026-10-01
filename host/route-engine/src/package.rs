@@ -439,8 +439,12 @@ impl<S: Source> Package<S> {
         let cached = if let Some(cached) = cached {
             cached
         } else {
-            let weights = base::Costs::read(self, &self.metric(metric)?.weights, &graph)?;
-            (metric.into(), Arc::new(weights))
+            let weights = &self.metric(metric)?.weights;
+            let turns = self.cached_costs.iter().find_map(|(name, costs)| {
+                (self.manifest.metrics[name].weights.turns == weights.turns).then(|| Arc::clone(&costs.turns))
+            });
+            let costs = base::Costs::read_shared(self, weights, &graph, turns)?;
+            (metric.into(), Arc::new(costs))
         };
         let costs = Arc::clone(&cached.1);
         self.cached_costs.push_back(cached);
@@ -536,16 +540,22 @@ impl<S: Source> Package<S> {
         self.manifest
             .graph
             .decoded_bytes()
-            .saturating_add((self.manifest.roads as usize).saturating_mul(26))
+            .saturating_add(crate::search::label_bytes(self.manifest.roads as usize))
             .saturating_add(64 * 1024 * 1024)
             .saturating_add(self.manifest.landmarks.as_ref().map_or(0, |index| index.decoded_bytes()))
     }
 
     pub(crate) fn routing_bytes(&self, metric: &str) -> Result<usize> {
-        let mut bytes = self.fixed_routing_bytes().saturating_add(self.metric(metric)?.weights.decoded_bytes());
-        for (name, _) in &self.cached_costs {
-            if name != metric {
-                bytes = bytes.saturating_add(self.metric(name)?.weights.decoded_bytes());
+        let mut bytes = self.fixed_routing_bytes();
+        let mut turns = Vec::new();
+        for name in std::iter::once(metric)
+            .chain(self.cached_costs.iter().map(|(name, _)| name.as_str()).filter(|&name| name != metric))
+        {
+            let weights = &self.metric(name)?.weights;
+            bytes = bytes.saturating_add(weights.road_costs.decoded_bytes());
+            if !turns.contains(&&weights.turns) {
+                bytes = bytes.saturating_add(weights.turns.decoded_bytes());
+                turns.push(&weights.turns);
             }
         }
         Ok(bytes)

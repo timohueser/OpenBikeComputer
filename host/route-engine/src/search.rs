@@ -4,49 +4,62 @@ use crate::{
     Error, Result,
 };
 
+const LABEL_BLOCK: usize = 512;
+
+struct LabelBlock {
+    costs: [u64; LABEL_BLOCK],
+    parents: [u32; LABEL_BLOCK],
+    origins: [u8; LABEL_BLOCK],
+}
+
 #[derive(Default)]
 struct Labels {
-    costs: Vec<u64>,
-    parents: Vec<u32>,
-    origins: Vec<u8>,
-    dirty: Vec<u64>,
+    blocks: Vec<Vec<LabelBlock>>,
     count: usize,
 }
 impl Labels {
     fn reset(&mut self, nodes: usize) -> Result<()> {
-        if self.costs.len() != nodes {
-            self.costs.clear();
-            self.parents.clear();
-            self.origins.clear();
-            self.costs.try_reserve_exact(nodes).map_err(|_| Error::Limit)?;
-            self.parents.try_reserve_exact(nodes).map_err(|_| Error::Limit)?;
-            self.origins.try_reserve_exact(nodes).map_err(|_| Error::Limit)?;
-            self.origins.resize(nodes, u8::MAX);
-            self.costs.resize(nodes, u64::MAX);
-            self.parents.resize(nodes, u32::MAX);
-            self.dirty = vec![0; nodes.div_ceil(512 * 64)];
-        } else {
-            for (word, bits) in self.dirty.iter_mut().enumerate() {
-                while *bits != 0 {
-                    let start = (word * 64 + bits.trailing_zeros() as usize) * 512;
-                    self.costs[start..(start + 512).min(nodes)].fill(u64::MAX);
-                    *bits &= *bits - 1;
-                }
-            }
-        }
+        self.blocks.clear();
+        let blocks = nodes.div_ceil(LABEL_BLOCK);
+        self.blocks.try_reserve_exact(blocks).map_err(|_| Error::Limit)?;
+        self.blocks.resize_with(blocks, Vec::new);
         self.count = 0;
         Ok(())
     }
-    fn set(&mut self, node: u32, cost: u64, parent: u32, origin: u8) {
-        let n = node as usize;
-        if self.costs[n] == u64::MAX {
-            self.count += 1;
-            self.dirty[n / (512 * 64)] |= 1 << ((n / 512) % 64);
-        }
-        self.costs[n] = cost;
-        self.parents[n] = parent;
-        self.origins[n] = origin;
+    fn cost(&self, node: usize) -> u64 {
+        self.blocks[node / LABEL_BLOCK].first().map_or(u64::MAX, |b| b.costs[node % LABEL_BLOCK])
     }
+    fn origin(&self, node: usize) -> u8 {
+        self.blocks[node / LABEL_BLOCK].first().map_or(u8::MAX, |b| b.origins[node % LABEL_BLOCK])
+    }
+    fn parent(&self, node: usize) -> u32 {
+        self.blocks[node / LABEL_BLOCK].first().map_or(u32::MAX, |b| b.parents[node % LABEL_BLOCK])
+    }
+    fn set(&mut self, node: u32, cost: u64, parent: u32, origin: u8) -> Result<()> {
+        let n = node as usize;
+        let slot = &mut self.blocks[n / LABEL_BLOCK];
+        if slot.is_empty() {
+            slot.try_reserve_exact(1).map_err(|_| Error::Limit)?;
+            slot.push(LabelBlock {
+                costs: [u64::MAX; LABEL_BLOCK],
+                parents: [u32::MAX; LABEL_BLOCK],
+                origins: [u8::MAX; LABEL_BLOCK],
+            });
+        }
+        let block = &mut slot[0];
+        let index = n % LABEL_BLOCK;
+        if block.costs[index] == u64::MAX {
+            self.count += 1;
+        }
+        block.costs[index] = cost;
+        block.parents[index] = parent;
+        block.origins[index] = origin;
+        Ok(())
+    }
+}
+
+pub(crate) fn label_bytes(nodes: usize) -> usize {
+    nodes.div_ceil(LABEL_BLOCK).saturating_mul(2 * (size_of::<LabelBlock>() + size_of::<Vec<LabelBlock>>()))
 }
 
 #[derive(Default)]
@@ -139,14 +152,14 @@ impl Workspace {
                     return Err(Error::InvalidData("Invalid base search seed".into()));
                 }
                 if (seed.cost, seed.choice)
-                    < (self.labels[side].costs[seed.node as usize], self.labels[side].origins[seed.node as usize])
+                    < (self.labels[side].cost(seed.node as usize), self.labels[side].origin(seed.node as usize))
                 {
-                    if self.labels[side].costs[seed.node as usize] == u64::MAX
+                    if self.labels[side].cost(seed.node as usize) == u64::MAX
                         && self.labels[0].count + self.labels[1].count >= max_labels
                     {
                         return Err(Error::Limit);
                     }
-                    self.labels[side].set(seed.node, seed.cost, u32::MAX, seed.choice);
+                    self.labels[side].set(seed.node, seed.cost, u32::MAX, seed.choice)?;
                     self.push(side, (seed.cost, seed.choice, seed.node), heap_bytes, &mut potential)?;
                 }
             }
@@ -162,8 +175,8 @@ impl Workspace {
             for side in 0..2 {
                 let available = heap_bytes.saturating_sub(self.heaps[1 - side].bytes());
                 while let Some((_, cost, origin, node)) = self.heaps[side].front(available)? {
-                    if self.labels[side].costs[node as usize] == cost
-                        && self.labels[side].origins[node as usize] == origin
+                    if self.labels[side].cost(node as usize) == cost
+                        && self.labels[side].origin(node as usize) == origin
                     {
                         break;
                     }
@@ -177,15 +190,15 @@ impl Workspace {
             let side = usize::from(top[1] < top[0]);
             let (_, cost, origin, node) = self.heaps[side].pop().unwrap();
             work += 1;
-            let opposite = self.labels[1 - side].costs[node as usize];
+            let opposite = self.labels[1 - side].cost(node as usize);
             if opposite != u64::MAX {
                 let joined = cost.checked_add(opposite).ok_or(Error::Limit)?;
-                if (joined, (self.labels[1].origins[node as usize], self.labels[0].origins[node as usize]))
+                if (joined, (self.labels[1].origin(node as usize), self.labels[0].origin(node as usize)))
                     < (best, best_roots)
                 {
                     best = joined;
                     meeting = Some(node);
-                    best_roots = (self.labels[1].origins[node as usize], self.labels[0].origins[node as usize]);
+                    best_roots = (self.labels[1].origin(node as usize), self.labels[0].origin(node as usize));
                 }
             }
             let row = if side == 0 {
@@ -202,27 +215,27 @@ impl Workspace {
                     continue;
                 }
                 let next = cost.checked_add(weight).filter(|&n| n != u64::MAX).ok_or(Error::Limit)?;
-                if (next, origin) >= (self.labels[side].costs[to as usize], self.labels[side].origins[to as usize])
+                if (next, origin) >= (self.labels[side].cost(to as usize), self.labels[side].origin(to as usize))
                     || next > best
                 {
                     continue;
                 }
-                if self.labels[side].costs[to as usize] == u64::MAX
+                if self.labels[side].cost(to as usize) == u64::MAX
                     && self.labels[0].count + self.labels[1].count >= max_labels
                 {
                     return Err(Error::Limit);
                 }
-                self.labels[side].set(to, next, arc as u32, origin);
+                self.labels[side].set(to, next, arc as u32, origin)?;
                 self.push(side, (next, origin, to), heap_bytes, &mut potential)?;
-                let opposite = self.labels[1 - side].costs[to as usize];
+                let opposite = self.labels[1 - side].cost(to as usize);
                 if opposite != u64::MAX {
                     let joined = next.checked_add(opposite).ok_or(Error::Limit)?;
-                    if (joined, (self.labels[1].origins[to as usize], self.labels[0].origins[to as usize]))
+                    if (joined, (self.labels[1].origin(to as usize), self.labels[0].origin(to as usize)))
                         < (best, best_roots)
                     {
                         best = joined;
                         meeting = Some(to);
-                        best_roots = (self.labels[1].origins[to as usize], self.labels[0].origins[to as usize]);
+                        best_roots = (self.labels[1].origin(to as usize), self.labels[0].origin(to as usize));
                     }
                 }
             }
@@ -232,8 +245,8 @@ impl Workspace {
         };
         let mut arcs = Vec::new();
         let mut node = meeting;
-        while self.labels[0].parents[node as usize] != u32::MAX {
-            let arc = self.labels[0].parents[node as usize];
+        while self.labels[0].parent(node as usize) != u32::MAX {
+            let arc = self.labels[0].parent(node as usize);
             if arcs.len() >= max_roads {
                 return Err(Error::Limit);
             }
@@ -244,14 +257,14 @@ impl Workspace {
             .iter()
             .position(|s| {
                 s.node == node
-                    && s.cost == self.labels[0].costs[node as usize]
-                    && s.choice == self.labels[0].origins[node as usize]
+                    && s.cost == self.labels[0].cost(node as usize)
+                    && s.choice == self.labels[0].origin(node as usize)
             })
             .ok_or_else(|| Error::InvalidData("Missing source witness".into()))?;
         arcs.reverse();
         node = meeting;
-        while self.labels[1].parents[node as usize] != u32::MAX {
-            let arc = self.labels[1].parents[node as usize];
+        while self.labels[1].parent(node as usize) != u32::MAX {
+            let arc = self.labels[1].parent(node as usize);
             if arcs.len() >= max_roads {
                 return Err(Error::Limit);
             }
@@ -262,8 +275,8 @@ impl Workspace {
             .iter()
             .position(|s| {
                 s.node == node
-                    && s.cost == self.labels[1].costs[node as usize]
-                    && s.choice == self.labels[1].origins[node as usize]
+                    && s.cost == self.labels[1].cost(node as usize)
+                    && s.choice == self.labels[1].origin(node as usize)
             })
             .ok_or_else(|| Error::InvalidData("Missing target witness".into()))?;
         let mut roads = Vec::with_capacity(arcs.len() + 1);
@@ -316,7 +329,7 @@ mod tests {
         for nodes in [32_769, 513, 2, 65_537] {
             let edges: Vec<_> = (1..nodes as u32).map(|to| (to - 1, to)).collect();
             let graph = graph(nodes, &edges);
-            let costs = Costs { roads: Numbers::U8(vec![1; nodes]), turns: Numbers::U8(vec![0; edges.len()]) };
+            let costs = Costs { roads: Numbers::U8(vec![1; nodes]), turns: Numbers::U8(vec![0; edges.len()]).into() };
             for (from, to, limit) in [(0, nodes - 1, 2), (0, nodes - 1, usize::MAX), (nodes - 1, 0, usize::MAX)] {
                 let starts = [Seed { node: from as u32, cost: 0, road: from as u32, choice: 0 }];
                 let ends = [Seed { node: to as u32, cost: 0, road: to as u32, choice: 0 }];
@@ -369,7 +382,7 @@ mod tests {
                 (0..nodes).map(|n| if n == 1 { u32::MAX as u64 + 7 } else { random() % 13 + 1 }).collect();
             let turns: Vec<_> =
                 edges.iter().map(|_| if random() % 7 == 0 { u64::MAX } else { random() % 11 }).collect();
-            let costs = Costs { roads: Numbers::U64(roads.clone()), turns: Numbers::U64(turns.clone()) };
+            let costs = Costs { roads: Numbers::U64(roads.clone()), turns: Numbers::U64(turns.clone()).into() };
             let columns: Vec<std::sync::Arc<Vec<u16>>> = (0..6)
                 .map(|landmark| {
                     let mut distances = vec![u16::MAX; nodes];
@@ -465,7 +478,7 @@ mod tests {
             }
         }
         let g = graph(2, &[(0, 1)]);
-        let costs = Costs { roads: Numbers::U8(vec![1, 1]), turns: Numbers::U8(vec![0]) };
+        let costs = Costs { roads: Numbers::U8(vec![1, 1]), turns: Numbers::U8(vec![0]).into() };
         let starts = [Seed { node: 0, cost: 0, road: 0, choice: 0 }];
         let ends = [Seed { node: 1, cost: 0, road: 1, choice: 0 }];
         assert!(matches!(
@@ -518,7 +531,7 @@ mod tests {
             Err(Error::Limit)
         ));
         let g = graph(1, &[]);
-        let costs = Costs { roads: Numbers::U8(vec![1]), turns: Numbers::U8(vec![]) };
+        let costs = Costs { roads: Numbers::U8(vec![1]), turns: Numbers::U8(vec![]).into() };
         let ends = [Seed { node: 0, cost: 3, road: 0, choice: 0 }, Seed { node: 0, cost: 1, road: 0, choice: 1 }];
         let result = workspace
             .run(
