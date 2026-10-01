@@ -17,29 +17,37 @@ behind `#if DEBUG`. Tests enforce these boundaries.
 ```text
 OBCDomain -> OBCTransport -> OBCMock
          \-> OBCFormats
-OBCUI -> OBCDomain + OBCTransport
-OBCRouting -> OBCDomain + OBCCompanionCore (Rust; its own package, only the app links it)
+OBCUI -> OBCDomain + OBCTransport + OBCPlanner + MapLibre (iOS)
+OBCPlanner -> OBCDomain (online planner data)
+OBCRouting -> OBCDomain + OBCCompanionCore (Rust; standalone offline adapter)
 ```
 
-`OBCCompanion/` is the composition root and the only target that chooses a concrete transport.
+`OBCCompanion/` is the composition root and the only target that chooses a concrete transport and planner provider.
+`PlannerDataSource` supplies one release for maps, search, routes, and viewport layers.
+`obcPlannerSource` passes that provider to map views. The app uses the online provider.
+Region downloads and local-first selection are not implemented.
 `project.yml` is the Xcode project source of truth; **never edit or commit the generated
 pbxproj.**
 
 ## Build and test
 
 Needs Xcode 26.x, an iOS simulator runtime, XcodeGen, Node.js 22 or later, and the Rust toolchain.
-XcodeGen installs the pinned replay renderer with npm. Before package tests without XcodeGen, run
+XcodeGen installs the pinned replay renderer and generates native map styles with npm.
+Map styles and POI kinds come from the web planner sources. Before package tests without XcodeGen, run
 `npm ci --prefix companion-ios/ReplayAssets` from the repository root.
 
 ```sh
-obc companion-core   # the Rust router the app links; run it again after a Rust change
 cd companion-ios
 xcodegen generate
 
 cd Packages/OBCKit
-swift test
-cd ../OBCRouting
-swift test
+swift test --disable-keychain --disable-netrc
+
+# Optional: test the standalone offline adapter after a Rust core change.
+cd ../../..
+obc companion-core
+cd companion-ios/Packages/OBCRouting
+swift test --disable-keychain --disable-netrc
 ```
 
 CI runs the package tests plus Debug and Release simulator builds. For a simulator, generate the
@@ -63,7 +71,7 @@ asynchronously rendered element instead of assuming a delay.**
 The tracked SwiftUI implementation is authoritative. Reuse `OBCTheme` and the `OBCUI` component
 kit, and read the component gallery and the screenshot tests for the current states. Do not
 introduce one-off colours or chrome metrics. List rows draw the track sketch, never a map;
-detail pages use MapKit and fall back to the sketch. Copy stays English-only until localization is a complete feature.
+detail pages use native MapLibre with the published OSM tiles and fall back to the sketch. Copy stays English-only until localization is a complete feature.
 
 ## Conventions
 
