@@ -5,6 +5,8 @@ use crate::{
 };
 
 const LABEL_BLOCK: usize = 512;
+// Reuse a bounded pool across short legs and alternative searches.
+const SPARE_BLOCKS: usize = 1024;
 
 struct LabelBlock {
     costs: [u64; LABEL_BLOCK],
@@ -15,12 +17,20 @@ struct LabelBlock {
 #[derive(Default)]
 struct Labels {
     blocks: Vec<Vec<LabelBlock>>,
+    spare: Vec<Vec<LabelBlock>>,
     count: usize,
 }
 impl Labels {
     fn reset(&mut self, nodes: usize) -> Result<()> {
-        self.blocks.clear();
         let blocks = nodes.div_ceil(LABEL_BLOCK);
+        let retained = blocks.min(SPARE_BLOCKS);
+        self.spare.truncate(retained);
+        self.spare.try_reserve_exact(retained - self.spare.len()).map_err(|_| Error::Limit)?;
+        for block in self.blocks.drain(..) {
+            if !block.is_empty() && self.spare.len() < retained {
+                self.spare.push(block);
+            }
+        }
         self.blocks.try_reserve_exact(blocks).map_err(|_| Error::Limit)?;
         self.blocks.resize_with(blocks, Vec::new);
         self.count = 0;
@@ -39,12 +49,17 @@ impl Labels {
         let n = node as usize;
         let slot = &mut self.blocks[n / LABEL_BLOCK];
         if slot.is_empty() {
-            slot.try_reserve_exact(1).map_err(|_| Error::Limit)?;
-            slot.push(LabelBlock {
-                costs: [u64::MAX; LABEL_BLOCK],
-                parents: [u32::MAX; LABEL_BLOCK],
-                origins: [u8::MAX; LABEL_BLOCK],
-            });
+            if let Some(mut block) = self.spare.pop() {
+                block[0].costs.fill(u64::MAX);
+                *slot = block;
+            } else {
+                slot.try_reserve_exact(1).map_err(|_| Error::Limit)?;
+                slot.push(LabelBlock {
+                    costs: [u64::MAX; LABEL_BLOCK],
+                    parents: [u32::MAX; LABEL_BLOCK],
+                    origins: [u8::MAX; LABEL_BLOCK],
+                });
+            }
         }
         let block = &mut slot[0];
         let index = n % LABEL_BLOCK;
@@ -59,7 +74,10 @@ impl Labels {
 }
 
 pub(crate) fn label_bytes(nodes: usize) -> usize {
-    nodes.div_ceil(LABEL_BLOCK).saturating_mul(2 * (size_of::<LabelBlock>() + size_of::<Vec<LabelBlock>>()))
+    let blocks = nodes.div_ceil(LABEL_BLOCK);
+    blocks
+        .saturating_mul(2 * (size_of::<LabelBlock>() + size_of::<Vec<LabelBlock>>()))
+        .saturating_add(blocks.min(SPARE_BLOCKS) * 2 * size_of::<Vec<LabelBlock>>())
 }
 
 #[derive(Default)]
