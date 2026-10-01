@@ -927,6 +927,7 @@
                 {#if undoable}<span>·</span><button type="button" class="planner-action" onclick={undo}>Undo</button>{/if}
                 {#if placeNote}<span>· {placeNote}</span>{/if}
                 <span class="lab-note">Regional map, search and routing{#if import.meta.env.VITE_PLANNER_DATA_URL} · <a href={import.meta.env.VITE_PLANNER_DATA_URL}>Routing data · ODbL</a>{/if}</span>
+                <span class="legal"><a href={`${siteBase}docs/impressum/`}>Impressum</a> · <a href={`${siteBase}docs/datenschutz/`}>Datenschutz</a></span>
             </div>
         </section>
     </main>
@@ -1195,6 +1196,7 @@
     .lab-note {
         margin-left: auto;
     }
+    .legal { white-space: nowrap; }
     @media (max-width: 1150px) {
         .brand span {
             font-size: 14px;
@@ -1208,6 +1210,7 @@
         .geography { height: 75dvh; }
         .status-line { height: auto; min-height: 38px; flex-wrap: wrap; padding-block: 8px; }
         .lab-note { display: none; }
+        .legal { margin-left: auto; }
         .site-header { gap: 12px; padding-inline: 12px; }
         .brand { flex: none; }
         .brand span { display: none; }
