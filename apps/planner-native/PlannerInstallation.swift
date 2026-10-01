@@ -43,7 +43,7 @@ struct PlannerInstallation: Sendable {
 
 extension OfflinePlannerHost {
     static func open(installation: URL, assets: URL, searchScripts: URL, port: UInt16,
-                     memoryBudgetBytes: Int = 768 * 1024 * 1024) async throws -> OfflinePlannerHost {
+                     memoryBudgetBytes: Int = 0) async throws -> OfflinePlannerHost {
         let bundle = Bundle.main.bundleURL
         let (release, api) = try await Task.detached(priority: .userInitiated) {
             let release = try PlannerInstallation(root: installation)

@@ -1,6 +1,8 @@
 mod base;
 pub mod cost;
 pub mod extract;
+pub mod landmarks;
+pub mod layout;
 #[cfg(feature = "obc-terrain")]
 pub mod obc_terrain;
 pub mod osm;
@@ -44,6 +46,8 @@ pub fn prepare(
     }
     let (mut manifest, edges) = prepare_base(graph, region, bounds, source_sha256, &mut write)?;
     let mut dictionary = Dictionary::default();
+    let junctions = landmarks::Junctions::new(graph.roads.iter().map(|r| (r.from, r.to)))?;
+    let mut landmarks = junctions.index(&mut write)?;
     for profile in profiles {
         eprintln!("Preparing profile {}", profile.name);
         if manifest.metrics.contains_key(&profile.name) {
@@ -52,6 +56,7 @@ pub fn prepare(
         let costing = cost::Costing::new(graph, profile)?;
         let road_costs: Vec<_> =
             costing.roads.iter().map(|cost| cost.as_ref().map_or(u64::MAX, |cost| cost.total())).collect();
+        landmarks.profiles.insert(profile.name.clone(), junctions.prepare(&road_costs, &mut write)?);
         let turns: Vec<_> =
             edges.iter().map(|&(before, after)| costing.transition(before, after).unwrap_or(u64::MAX)).collect();
         manifest.metrics.insert(
@@ -67,6 +72,7 @@ pub fn prepare(
         );
     }
     manifest.costs = Table::write(&dictionary.into_values(), &mut write)?;
+    manifest.landmarks = Some(landmarks);
     Ok(manifest)
 }
 
@@ -80,6 +86,7 @@ fn prepare_base(
     let edges = base::edges(&graph.roads)?;
     let roads = u32::try_from(graph.roads.len()).map_err(|_| "Too many roads")?;
     let mut manifest = Manifest {
+        landmarks: None,
         format: package::FORMAT,
         region,
         bounds,

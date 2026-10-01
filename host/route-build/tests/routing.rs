@@ -149,6 +149,10 @@ fn fixture() -> Graph {
     Graph { points, roads, forbidden, forbidden_foot, warnings: vec![], ..Graph::default() }
 }
 fn with_sources(mut graph: Graph) -> Graph {
+    // Reordering or clipping roads does not change their source way tags.
+    if !graph.osm.ways.is_empty() {
+        return graph;
+    }
     graph.node_ids = (0..graph.points.len() as i64).collect();
     graph.node_access = vec![BIKE | FOOT; graph.points.len()];
     graph.osm = Default::default();
@@ -211,7 +215,22 @@ fn coordinate(road: &Road, fraction: f64) -> [f64; 2] {
 }
 #[test]
 fn prepared_coordinate_routes_match_independent_arrival_road_search() {
-    let graph = fixture();
+    let original = with_sources(fixture());
+    let mut graph = original.clone();
+    let order = route_build::layout::spatial_order(&mut graph).unwrap();
+    for (new, &old) in order.iter().enumerate() {
+        assert_eq!(
+            serde_json::to_value(&graph.roads[new]).unwrap(),
+            serde_json::to_value(&original.roads[old as usize]).unwrap()
+        );
+    }
+    for (actual, expected) in
+        [(&graph.forbidden, &original.forbidden), (&graph.forbidden_foot, &original.forbidden_foot)]
+    {
+        let mut restored: Vec<_> = actual.iter().map(|&(a, b)| (order[a as usize], order[b as usize])).collect();
+        restored.sort_unstable();
+        assert_eq!(&restored, expected);
+    }
     let profiles = Profile::presets();
     let (source, manifest) = package_with_profiles(&graph, &profiles);
     let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
@@ -268,7 +287,7 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
 
 #[test]
 fn bounding_box_repreparation_preserves_whole_roads_and_matches_independent_search() {
-    let graph = fixture();
+    let graph = with_sources(fixture());
     let profiles = Profile::presets();
     let (source, manifest) = package_with_profiles(&graph, &profiles);
     let mut input = Package::open(source, &manifest).unwrap();
@@ -289,18 +308,33 @@ fn bounding_box_repreparation_preserves_whole_roads_and_matches_independent_sear
         graph.roads.iter().enumerate().filter(|(_, r)| r.from % 4 != 0 || r.to % 4 != 0).map(|(id, _)| id).collect();
     assert!(retained.len() < graph.roads.len());
     assert_eq!(manifest.roads as usize, retained.len());
-    let remap: HashMap<_, _> = retained.iter().enumerate().map(|(new, &old)| (old as u32, new as u32)).collect();
-    let remap_turns =
-        |turns: &[(u32, u32)]| turns.iter().filter_map(|(a, b)| Some((*remap.get(a)?, *remap.get(b)?))).collect();
+    let mut package = Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&manifest).unwrap()).unwrap();
+    package.verify().unwrap();
+    let roads: Vec<_> = (0..manifest.roads).map(|id| package.road(id).unwrap()).collect();
+    let remap: HashMap<_, _> = roads
+        .iter()
+        .enumerate()
+        .map(|(new, road)| {
+            let old = retained
+                .iter()
+                .copied()
+                .find(|&old| (graph.roads[old].from, graph.roads[old].to) == (road.from, road.to))
+                .unwrap();
+            (old as u32, new as u32)
+        })
+        .collect();
+    let remap_turns = |turns: &[(u32, u32)]| {
+        let mut mapped: Vec<_> = turns.iter().filter_map(|(a, b)| Some((*remap.get(a)?, *remap.get(b)?))).collect();
+        mapped.sort_unstable();
+        mapped
+    };
     let selected = Graph {
-        roads: retained.iter().map(|&id| graph.roads[id].clone()).collect(),
+        roads,
         forbidden: remap_turns(&graph.forbidden),
         forbidden_foot: remap_turns(&graph.forbidden_foot),
         ..graph.clone()
     };
     assert!(selected.roads.iter().flat_map(|r| &r.shape).any(|p| p.lon == 0));
-    let package = Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&manifest).unwrap()).unwrap();
-    package.verify().unwrap();
     let mut router = Router::new(package, 768 * 1024 * 1024);
     let coordinates = [[0.0075, 0.0], [0.015, 0.01], [0.0225, 0.02]];
     for profile in &profiles {
@@ -670,6 +704,7 @@ fn geometry_cache_retains_a_snap_working_set_across_many_small_pages() {
     let mut objects = (*source.0).clone();
     let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
     manifest.roads = 20 * 128;
+    manifest.landmarks = None;
     let mut geometry = Vec::new();
     for page in 0..20 {
         let road = Road { way: page, ..graph.roads[0].clone() };

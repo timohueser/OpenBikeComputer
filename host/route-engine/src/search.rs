@@ -1,14 +1,15 @@
+use crate::queue::Queue;
 use crate::{
     base::{Costs, Graph},
     Error, Result,
 };
-use std::{cmp::Reverse, collections::BinaryHeap, mem::size_of};
 
 #[derive(Default)]
 struct Labels {
     costs: Vec<u64>,
     parents: Vec<u32>,
     origins: Vec<u8>,
+    dirty: Vec<u64>,
     count: usize,
 }
 impl Labels {
@@ -23,10 +24,15 @@ impl Labels {
             self.origins.resize(nodes, u8::MAX);
             self.costs.resize(nodes, u64::MAX);
             self.parents.resize(nodes, u32::MAX);
+            self.dirty = vec![0; nodes.div_ceil(512 * 64)];
         } else {
-            self.costs.fill(u64::MAX);
-            self.parents.fill(u32::MAX);
-            self.origins.fill(u8::MAX);
+            for (word, bits) in self.dirty.iter_mut().enumerate() {
+                while *bits != 0 {
+                    let start = (word * 64 + bits.trailing_zeros() as usize) * 512;
+                    self.costs[start..(start + 512).min(nodes)].fill(u64::MAX);
+                    *bits &= *bits - 1;
+                }
+            }
         }
         self.count = 0;
         Ok(())
@@ -35,6 +41,7 @@ impl Labels {
         let n = node as usize;
         if self.costs[n] == u64::MAX {
             self.count += 1;
+            self.dirty[n / (512 * 64)] |= 1 << ((n / 512) % 64);
         }
         self.costs[n] = cost;
         self.parents[n] = parent;
@@ -45,7 +52,7 @@ impl Labels {
 #[derive(Default)]
 pub struct Workspace {
     labels: [Labels; 2],
-    heaps: [BinaryHeap<Reverse<(u64, u8, u32)>>; 2],
+    heaps: [Queue; 2],
 }
 
 pub struct Seed {
@@ -55,6 +62,7 @@ pub struct Seed {
     pub choice: u8,
 }
 
+#[derive(Clone, Copy)]
 pub struct Query<'a> {
     pub starts: &'a [Seed],
     pub ends: &'a [Seed],
@@ -80,27 +88,45 @@ impl Workspace {
         }
     }
 
-    fn push(&mut self, side: usize, value: (u64, u8, u32), budget: usize) -> Result<()> {
-        let heap = &self.heaps[side];
-        if heap.len() == heap.capacity() {
-            let wanted = heap.capacity().saturating_mul(2).max(4);
-            // Reserve also accounts for a temporary old allocation during growth.
-            let peak = wanted
-                .saturating_add(self.heaps.iter().map(|h| h.capacity()).sum::<usize>())
-                .saturating_mul(size_of::<Reverse<(u64, u8, u32)>>());
-            if peak > budget {
-                return Err(Error::Limit);
-            }
-            self.heaps[side].try_reserve_exact(wanted - heap.len()).map_err(|_| Error::Limit)?;
+    fn push(
+        &mut self,
+        side: usize,
+        value: (u64, u8, u32),
+        budget: usize,
+        potential: &mut Option<&mut dyn FnMut(u32) -> Result<i128>>,
+    ) -> Result<()> {
+        let (cost, origin, node) = value;
+        let p = match potential {
+            Some(potential) => potential(node)?,
+            None => 0,
+        };
+        let priority = if side == 0 { (cost as i128 * 2).checked_add(p) } else { (cost as i128 * 2).checked_sub(p) }
+            .ok_or(Error::Limit)?;
+        if priority == i128::MAX {
+            return Err(Error::Limit);
         }
-        self.heaps[side].push(Reverse(value));
-        Ok(())
+        let available = budget.saturating_sub(self.heaps[1 - side].bytes());
+        self.heaps[side].push((priority, cost, origin, node), available)
     }
 
     pub fn run(&mut self, graph: &Graph, costs: &Costs, query: Query<'_>) -> Result<Option<Found>> {
+        self.run_with_potential(graph, costs, query, None)
+    }
+
+    /// The potential must satisfy p(u) - p(v) <= 2 * weight(u, v) on every legal arc.
+    pub fn run_with_potential(
+        &mut self,
+        graph: &Graph,
+        costs: &Costs,
+        query: Query<'_>,
+        mut potential: Option<&mut dyn FnMut(u32) -> Result<i128>>,
+    ) -> Result<Option<Found>> {
         let Query { starts, ends, ceiling, max_labels, max_roads, heap_bytes, cancelled } = query;
         if starts.is_empty() || ends.is_empty() {
             return Ok(None);
+        }
+        if self.heaps.iter().map(Queue::bytes).sum::<usize>() > heap_bytes {
+            self.clear_heaps();
         }
         let nodes = graph.nodes();
         for side in 0..2 {
@@ -121,7 +147,7 @@ impl Workspace {
                         return Err(Error::Limit);
                     }
                     self.labels[side].set(seed.node, seed.cost, u32::MAX, seed.choice);
-                    self.push(side, (seed.cost, seed.choice, seed.node), heap_bytes)?;
+                    self.push(side, (seed.cost, seed.choice, seed.node), heap_bytes, &mut potential)?;
                 }
             }
         }
@@ -134,7 +160,8 @@ impl Workspace {
                 return Err(Error::Cancelled);
             }
             for side in 0..2 {
-                while let Some(&Reverse((cost, origin, node))) = self.heaps[side].peek() {
+                let available = heap_bytes.saturating_sub(self.heaps[1 - side].bytes());
+                while let Some((_, cost, origin, node)) = self.heaps[side].front(available)? {
                     if self.labels[side].costs[node as usize] == cost
                         && self.labels[side].origins[node as usize] == origin
                     {
@@ -143,12 +170,12 @@ impl Workspace {
                     self.heaps[side].pop();
                 }
             }
-            let top: [u64; 2] = std::array::from_fn(|i| self.heaps[i].peek().map_or(u64::MAX, |v| v.0 .0));
-            if top[0] == u64::MAX || top[1] == u64::MAX || top[0].saturating_add(top[1]) > best {
+            let top: [i128; 2] = std::array::from_fn(|i| self.heaps[i].top().map_or(i128::MAX, |v| v.0));
+            if top[0] == i128::MAX || top[1] == i128::MAX || top[0].saturating_add(top[1]) > best as i128 * 2 {
                 break;
             }
             let side = usize::from(top[1] < top[0]);
-            let Reverse((cost, origin, node)) = self.heaps[side].pop().unwrap();
+            let (_, cost, origin, node) = self.heaps[side].pop().unwrap();
             work += 1;
             let opposite = self.labels[1 - side].costs[node as usize];
             if opposite != u64::MAX {
@@ -186,7 +213,7 @@ impl Workspace {
                     return Err(Error::Limit);
                 }
                 self.labels[side].set(to, next, arc as u32, origin);
-                self.push(side, (next, origin, to), heap_bytes)?;
+                self.push(side, (next, origin, to), heap_bytes, &mut potential)?;
                 let opposite = self.labels[1 - side].costs[to as usize];
                 if opposite != u64::MAX {
                     let joined = next.checked_add(opposite).ok_or(Error::Limit)?;
@@ -284,6 +311,42 @@ mod tests {
     }
 
     #[test]
+    fn workspace_reuse_clears_reached_labels_after_limits_and_dimension_changes() {
+        let mut workspace = Workspace::default();
+        for nodes in [32_769, 513, 2, 65_537] {
+            let edges: Vec<_> = (1..nodes as u32).map(|to| (to - 1, to)).collect();
+            let graph = graph(nodes, &edges);
+            let costs = Costs { roads: Numbers::U8(vec![1; nodes]), turns: Numbers::U8(vec![0; edges.len()]) };
+            for (from, to, limit) in [(0, nodes - 1, 2), (0, nodes - 1, usize::MAX), (nodes - 1, 0, usize::MAX)] {
+                let starts = [Seed { node: from as u32, cost: 0, road: from as u32, choice: 0 }];
+                let ends = [Seed { node: to as u32, cost: 0, road: to as u32, choice: 0 }];
+                let result = workspace.run(
+                    &graph,
+                    &costs,
+                    Query {
+                        starts: &starts,
+                        ends: &ends,
+                        ceiling: u64::MAX,
+                        max_labels: limit,
+                        max_roads: nodes,
+                        heap_bytes: 1024 * 1024,
+                        cancelled: &|| false,
+                    },
+                );
+                if limit == 2 {
+                    assert!(matches!(result, Err(Error::Limit)));
+                } else if from > to {
+                    assert!(result.unwrap().is_none());
+                } else {
+                    let found = result.unwrap().unwrap();
+                    assert_eq!(found.cost, (nodes - 1) as u64);
+                    assert_eq!(found.roads, (0..nodes as u32).collect::<Vec<_>>());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn multi_seed_search_matches_independent_relaxation_and_exact_legal_witnesses() {
         let mut rng = 41u64;
         let mut random = || {
@@ -307,6 +370,20 @@ mod tests {
             let turns: Vec<_> =
                 edges.iter().map(|_| if random() % 7 == 0 { u64::MAX } else { random() % 11 }).collect();
             let costs = Costs { roads: Numbers::U64(roads.clone()), turns: Numbers::U64(turns.clone()) };
+            let columns: Vec<std::sync::Arc<Vec<u16>>> = (0..6)
+                .map(|landmark| {
+                    let mut distances = vec![u16::MAX; nodes];
+                    distances[landmark] = 0;
+                    for _ in 1..nodes {
+                        let old = distances.clone();
+                        for &(from, to) in &edges {
+                            distances[from as usize] = distances[from as usize]
+                                .min((roads[to as usize] / 8 + old[to as usize] as u64).min(u16::MAX as u64) as u16);
+                        }
+                    }
+                    std::sync::Arc::new(distances)
+                })
+                .collect();
             for case in 0..16 {
                 let starts = [
                     Seed { node: (case % nodes) as u32, cost: 7, road: (case % nodes) as u32, choice: 3 },
@@ -334,32 +411,56 @@ mod tests {
                     .filter(|end| distances[end.node as usize].0 != u64::MAX)
                     .map(|end| (distances[end.node as usize].0 + end.cost, end.choice, distances[end.node as usize].1))
                     .min();
-                let result = workspace
-                    .run(
-                        &g,
-                        &costs,
-                        Query {
-                            starts: &starts,
-                            ends: &ends,
-                            ceiling: u64::MAX,
-                            max_labels: 1000,
-                            max_roads: 1000,
-                            heap_bytes: 1024 * 1024,
-                            cancelled: &|| false,
-                        },
-                    )
-                    .unwrap();
-                assert_eq!(result.as_ref().map(|r| (r.cost, ends[r.target].choice, starts[r.source].choice)), expected);
-                if let Some(result) = result {
-                    assert_eq!(result.roads[0], starts[result.source].road);
-                    assert_eq!(result.roads.last().copied(), Some(ends[result.target].node));
-                    let mut total = starts[result.source].cost + ends[result.target].cost;
-                    for pair in result.roads.windows(2) {
-                        let arc = edges.binary_search(&(pair[0], pair[1])).unwrap();
-                        assert_ne!(turns[arc], u64::MAX);
-                        total += roads[pair[1] as usize] + turns[arc];
+                let selected =
+                    crate::landmarks::select(columns.len(), 8, &starts, &ends, |i, node| Ok(columns[i][node as usize]))
+                        .unwrap();
+                let prepared = crate::landmarks::Prepared {
+                    mapping: std::sync::Arc::new((0..nodes as u32).collect()),
+                    columns: selected
+                        .into_iter()
+                        .map(|(i, from, to)| (std::sync::Arc::clone(&columns[i]), from, to))
+                        .collect(),
+                    scale: 8,
+                };
+                for (arc, &(from, to)) in edges.iter().enumerate() {
+                    let weight = costs.arc(&g, arc);
+                    if weight != u64::MAX {
+                        assert!(prepared.get(from) - prepared.get(to) <= 2 * weight as i128);
                     }
-                    assert_eq!(total, result.cost);
+                }
+                let mut heuristic = |node| Ok(prepared.get(node));
+                for guided in [false, true] {
+                    let result = workspace
+                        .run_with_potential(
+                            &g,
+                            &costs,
+                            Query {
+                                starts: &starts,
+                                ends: &ends,
+                                ceiling: u64::MAX,
+                                max_labels: 1000,
+                                max_roads: 1000,
+                                heap_bytes: 1024 * 1024,
+                                cancelled: &|| false,
+                            },
+                            guided.then_some(&mut heuristic),
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        result.as_ref().map(|r| (r.cost, ends[r.target].choice, starts[r.source].choice)),
+                        expected
+                    );
+                    if let Some(result) = result {
+                        assert_eq!(result.roads[0], starts[result.source].road);
+                        assert_eq!(result.roads.last().copied(), Some(ends[result.target].node));
+                        let mut total = starts[result.source].cost + ends[result.target].cost;
+                        for pair in result.roads.windows(2) {
+                            let arc = edges.binary_search(&(pair[0], pair[1])).unwrap();
+                            assert_ne!(turns[arc], u64::MAX);
+                            total += roads[pair[1] as usize] + turns[arc];
+                        }
+                        assert_eq!(total, result.cost);
+                    }
                 }
             }
         }

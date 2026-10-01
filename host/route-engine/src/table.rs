@@ -5,7 +5,7 @@ use std::{collections::VecDeque, sync::Arc};
 pub const ENTRIES: usize = 4096;
 
 /// A small directory of independently checked index blocks.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Table {
     pub len: u32,
     pub blocks: Vec<String>,

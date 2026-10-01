@@ -29,6 +29,9 @@ fn run(args: Args) -> Result<(), String> {
     }
     if !args.profiles.is_empty() {
         manifest.metrics.retain(|id, _| args.profiles.contains(id));
+        if let Some(index) = &mut manifest.landmarks {
+            index.profiles.retain(|id, _| args.profiles.contains(id));
+        }
     }
     if args.runtime {
         manifest.osm = Default::default();

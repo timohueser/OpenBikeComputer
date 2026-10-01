@@ -27,7 +27,7 @@ struct PlannerHostBenchmarkApp: App {
         let phase = args.contains("--restore") ? "restore" : "create"
         let fullBW = args.contains("--full-bw")
         let budgetIndex = args.firstIndex(of: "--routing-memory-mib")
-        let budgetMiB = budgetIndex.flatMap { $0 + 1 < args.count ? Int(args[$0 + 1]) : nil } ?? 768
+        let budgetMiB = budgetIndex.flatMap { $0 + 1 < args.count ? Int(args[$0 + 1]) : nil } ?? 0
         let index = args.firstIndex(of: "--installation")
         let installation = index.flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } ?? "offline-installed"
         UIApplication.shared.isIdleTimerDisabled = true
@@ -47,8 +47,9 @@ struct PlannerHostBenchmarkApp: App {
             "os": ProcessInfo.processInfo.operatingSystemVersionString,
             "isolation": "WKContentRuleList and CSP restrict all web resources to the fixed loopback origin; native providers use local files; device network settings are unchanged"]
         do {
-            guard budgetMiB > 0, budgetMiB <= Int.max / (1024 * 1024) else { throw plannerSearchError("Invalid routing memory MiB") }
-            metadata["routing_memory_budget_bytes"] = budgetMiB * 1024 * 1024
+            guard budgetMiB >= 0, budgetMiB <= Int.max / (1024 * 1024) else { throw plannerSearchError("Invalid routing memory MiB") }
+            metadata["routing_memory_budget_override_bytes"] = budgetMiB * 1024 * 1024
+            metadata["routing_memory_budget_policy"] = budgetMiB == 0 ? "768 MiB plus decoded landmark cache" : "explicit override"
             let opened = try await OfflinePlannerHost.open(installation: root.appendingPathComponent(installation),
                 assets: root.appendingPathComponent("planner-web"), searchScripts: root.appendingPathComponent("planner-search-runtime"),
                 port: 48763, memoryBudgetBytes: budgetMiB * 1024 * 1024)

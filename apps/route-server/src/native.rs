@@ -43,6 +43,7 @@ pub unsafe extern "C" fn planner_response_free(response: *mut c_char) {
 
 /// # Safety
 /// `root` is a NUL-terminated UTF-8 string. `error` points to writable pointer storage.
+/// A zero budget uses the host default, including the optional index cache.
 /// The returned handle must be closed once, after all of its calls finish.
 #[no_mangle]
 pub unsafe extern "C" fn planner_router_open(
@@ -63,7 +64,10 @@ pub unsafe extern "C" fn planner_router_open(
         let root = unsafe { CStr::from_ptr(root) }
             .to_str()
             .map_err(|_| Error::InvalidRequest("Routing directory must be UTF-8".into()))?;
-        Ok(Router::new(Directory::open(Path::new(root))?, memory_budget_bytes))
+        let package = Directory::open(Path::new(root))?;
+        let budget =
+            if memory_budget_bytes == 0 { crate::default_memory_budget(&package) } else { memory_budget_bytes };
+        Ok(Router::new(package, budget))
     };
     match catch_unwind(run).unwrap_or(Err(Error::Limit)) {
         Ok(router) => Box::into_raw(Box::new(router)),

@@ -10,7 +10,7 @@ Environment=ROUTE_LISTEN=127.0.0.1:8788
 Environment=ROUTE_WORKERS=2
 Restart=on-failure
 RestartSec=3
-MemoryMax=1536M
+MemoryMax=2048M
 CPUQuota=200%
 TasksMax=64
 NoNewPrivileges=yes

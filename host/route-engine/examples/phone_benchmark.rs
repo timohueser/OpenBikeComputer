@@ -6,7 +6,12 @@ use std::ffi::{c_char, CStr};
 /// # Safety
 /// Each argument must point to a valid NUL-terminated UTF-8 string for this call.
 #[no_mangle]
-pub unsafe extern "C" fn planner_benchmark(root: *const c_char, requests: *const c_char, output: *const c_char) -> i32 {
+pub unsafe extern "C" fn planner_benchmark(
+    root: *const c_char,
+    requests: *const c_char,
+    output: *const c_char,
+    retained: i32,
+) -> i32 {
     if root.is_null() || requests.is_null() || output.is_null() {
         return 1;
     }
@@ -16,7 +21,8 @@ pub unsafe extern "C" fn planner_benchmark(root: *const c_char, requests: *const
             (CStr::from_ptr(root).to_str()?, CStr::from_ptr(requests).to_str()?, CStr::from_ptr(output).to_str()?)
         };
         let cases: Vec<benchmark::Case> = serde_json::from_slice(&std::fs::read(requests)?)?;
-        let report = benchmark::run(std::path::Path::new(root), &cases, 3, 768 * 1024 * 1024)?;
+        let options = benchmark::Options { retained: retained & 1 != 0, extra_index_memory: retained & 2 != 0 };
+        let report = benchmark::run(std::path::Path::new(root), &cases, 3, 768 * 1024 * 1024, options)?;
         std::fs::write(output, serde_json::to_vec(&report)?)?;
         Ok(())
     };

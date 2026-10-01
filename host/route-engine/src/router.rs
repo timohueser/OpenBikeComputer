@@ -454,19 +454,42 @@ impl<S: Source> Router<S> {
         let (graph, weights) = self.package.base(&self.metric)?;
         let heap_bytes = self.package.memory_budget.saturating_sub(self.package.routing_bytes(&self.metric)?);
         let ceiling = best.as_ref().map_or(u64::MAX, |b| b.cost);
-        if let Some(found) = self.workspace.run(
-            &graph,
-            &weights,
-            Query {
-                starts: &starts,
-                ends: &ends,
-                ceiling,
-                max_labels: control.max_labels,
-                max_roads: control.max_geometry,
-                heap_bytes,
-                cancelled: control.cancelled,
-            },
-        )? {
+        let query = Query {
+            starts: &starts,
+            ends: &ends,
+            ceiling,
+            max_labels: control.max_labels,
+            max_roads: control.max_geometry,
+            heap_bytes,
+            cancelled: control.cancelled,
+        };
+        let found = if self
+            .package
+            .manifest
+            .landmarks
+            .as_ref()
+            .is_some_and(|index| index.profiles.contains_key(&self.metric))
+        {
+            // Complete small searches before loading global distance columns.
+            let probe = query.max_labels.min(262_144);
+            match self.workspace.run(&graph, &weights, Query { max_labels: probe, ..query }) {
+                Err(Error::Limit) if probe < query.max_labels => {
+                    match self.package.landmarks(&self.metric, &starts, &ends)? {
+                        Some(prepared) => self.workspace.run_with_potential(
+                            &graph,
+                            &weights,
+                            query,
+                            Some(&mut |node| Ok(prepared.get(node))),
+                        )?,
+                        None => self.workspace.run(&graph, &weights, query)?,
+                    }
+                }
+                result => result?,
+            }
+        } else {
+            self.workspace.run(&graph, &weights, query)?
+        };
+        if let Some(found) = found {
             let &(source, from, _) = &sources[found.source];
             let &(target, to) = &targets[end_targets[found.target]];
             if best.as_ref().is_none_or(|b| (found.cost, target, source) < (b.cost, b.target, b.source)) {

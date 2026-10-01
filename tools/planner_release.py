@@ -39,7 +39,7 @@ def search_metadata(database, full=False):
 
 def seal(data, region, device_catalog, provenance):
     routing = json.loads((data / "routing/manifest.json").read_bytes())
-    if routing["format"] != 6 or routing["region"] != region:
+    if routing["format"] != 7 or routing["region"] != region:
         raise ValueError("Build a packed routing package for this region")
     with sqlite3.connect(f"{(data / 'routing/overlays.sqlite').as_uri()}?mode=ro", uri=True) as db:
         if db.execute("SELECT package FROM metadata").fetchone() != (sources.digest(data / "routing/manifest.json"),):

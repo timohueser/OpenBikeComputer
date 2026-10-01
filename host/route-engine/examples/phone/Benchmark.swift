@@ -2,7 +2,7 @@ import Darwin
 import SwiftUI
 
 @_silgen_name("planner_benchmark")
-func plannerBenchmark(_ root: UnsafePointer<CChar>, _ requests: UnsafePointer<CChar>, _ output: UnsafePointer<CChar>) -> Int32
+func plannerBenchmark(_ root: UnsafePointer<CChar>, _ requests: UnsafePointer<CChar>, _ output: UnsafePointer<CChar>, _ retained: Int32) -> Int32
 @_silgen_name("planner_overlay_benchmark")
 func plannerOverlayBenchmark(_ root: UnsafePointer<CChar>, _ output: UnsafePointer<CChar>) -> Int32
 
@@ -24,7 +24,7 @@ struct BenchmarkApp: App {
                 Text(status).padding().task {
                     UIApplication.shared.isIdleTimerDisabled = true
                     let result = await Task.detached(priority: .userInitiated) { await run() }.value
-                    UIApplication.shared.isIdleTimerDisabled = false
+                    if !ProcessInfo.processInfo.arguments.contains("--hold") { UIApplication.shared.isIdleTimerDisabled = false }
                     status = result
                     print(result)
                 }
@@ -117,7 +117,7 @@ private func run() async -> String {
         code = root.appendingPathComponent(package).path.withCString { directory in
             root.appendingPathComponent("requests.json").path.withCString { requests in
                 root.appendingPathComponent("result.json").path.withCString { output in
-                    plannerBenchmark(directory, requests, output)
+                    plannerBenchmark(directory, requests, output, (arguments.contains("--retained") ? 1 : 0) | (arguments.contains("--index-memory") ? 2 : 0))
                 }
             }
         }
@@ -144,6 +144,7 @@ private func run() async -> String {
         : parser ? "Uncontrolled OS cache; model hashes are verified before runtime initialization"
         : install ? "Uncontrolled OS cache; source bundle is verified before installation"
         : overlays ? "Uncontrolled OS cache; one SQLite connection for the complete query corpus"
+        : arguments.contains("--retained") ? "Uncontrolled OS cache; retained router with distinct request coordinates"
         : "Uncontrolled OS cache; each cold sample creates a new router"
     do {
         try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]).write(to: root.appendingPathComponent("device.json"), options: .atomic)

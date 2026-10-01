@@ -49,6 +49,7 @@ pub fn prepare<S: Source>(
     if ids.is_empty() {
         return Err("No roads intersect the requested bounds".into());
     }
+    ids = crate::layout::spatial_order(&mut graph)?.into_iter().map(|old| ids[old as usize]).collect();
     let (mut manifest, edges) = prepare_base(&graph, region, bounds, source.source_sha256, &mut write)?;
     manifest.attribution = source.attribution;
     if include_sources {
@@ -60,6 +61,8 @@ pub fn prepare<S: Source>(
         }
     }
     let mut dictionary = Dictionary::default();
+    let junctions = crate::landmarks::Junctions::new(graph.roads.iter().map(|r| (r.from, r.to)))?;
+    let mut landmarks = junctions.index(&mut write)?;
     for (name, metric) in &source.metrics {
         eprintln!("Preparing profile {name}");
         let mut endpoints = Vec::with_capacity(ids.len());
@@ -82,6 +85,7 @@ pub fn prepare<S: Source>(
                     .map_or(u64::MAX, |departure| departure.penalty)
             })
             .collect();
+        landmarks.profiles.insert(name.clone(), junctions.prepare(&road_costs, &mut write)?);
         manifest.metrics.insert(
             name.clone(),
             base::metric(
@@ -95,6 +99,7 @@ pub fn prepare<S: Source>(
         );
     }
     manifest.costs = route_engine::table::Table::write(&dictionary.into_values(), &mut write)?;
+    manifest.landmarks = Some(landmarks);
     Ok(manifest)
 }
 

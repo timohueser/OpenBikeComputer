@@ -36,6 +36,11 @@ struct Workers {
     overlay_permits: Arc<Semaphore>,
 }
 
+fn default_memory_budget(package: &route_engine::package::Package<impl route_engine::package::Source>) -> usize {
+    (768 * 1024 * 1024usize)
+        .saturating_add(package.manifest().landmarks.as_ref().map_or(0, |index| index.decoded_bytes()))
+}
+
 pub fn app(directory: &Path, workers: usize) -> Result<axum::Router, Error> {
     if !(1..=8).contains(&workers) {
         return Err(Error::InvalidRequest("Use 1 to 8 workers".into()));
@@ -43,7 +48,7 @@ pub fn app(directory: &Path, workers: usize) -> Result<axum::Router, Error> {
     let source = Directory::open(directory)?;
     let mut routers = Vec::new();
     for _ in 0..workers {
-        routers.push(Router::new(source.fork(), 768 * 1024 * 1024));
+        routers.push(Router::new(source.fork(), default_memory_budget(&source)));
     }
     let package = routers[0].package();
     let overlays = overlays::Overlays::open(directory, package.identity())?;

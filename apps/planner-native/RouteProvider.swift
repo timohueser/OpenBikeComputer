@@ -16,7 +16,7 @@ private final class RouterHandle: @unchecked Sendable {
 actor RouteProvider {
     private let handle: RouterHandle
 
-    init(directory: URL, memoryBudgetBytes: Int = 768 * 1024 * 1024) throws {
+    init(directory: URL, memoryBudgetBytes: Int = 0) throws {
         var error: UnsafeMutablePointer<CChar>?
         guard let opened = directory.path.withCString({ routerOpen($0, memoryBudgetBytes, &error) }) else {
             defer { if let error { responseFree(error) } }

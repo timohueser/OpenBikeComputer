@@ -373,6 +373,7 @@ mod tests {
                 spatial: BTreeMap::new(),
                 metrics: BTreeMap::from([(profile.name, metric)]),
                 costs: Table::default(),
+                landmarks: None,
             };
             Package::open(self.clone(), &serde_json::to_vec(&manifest).unwrap()).unwrap()
         }
