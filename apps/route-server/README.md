@@ -14,15 +14,16 @@ target/release/route-server /data/routes/freiburg
 | `ROUTE_ORIGIN` | Unset | One allowed browser origin; omit for same-origin proxy |
 
 The service does not queue requests. Extra requests receive `503 busy`.
-Each worker has its own router with a 768 MiB routing allocation budget.
-Workers share one immutable graph. Each retains one active profile. A request has a 15-second
+Each worker has its own router with a 768 MiB routing budget plus its landmark
+cache. Workers share one immutable graph and road-to-junction mapping. Each
+retains up to three profile cost sets within its budget. A request has a 15-second
 cooperative deadline. Disconnects cancel its work. The body limit is 64 KiB.
 Put a public service behind TLS and an OS memory and CPU limit. Keep the package
 read-only. Replace it by starting a new service instance on the new directory.
 
 For Linux, install `route-server.service` after placing the executable in
 `/opt/obc-routing/bin` and the package in `/opt/obc-routing/region`. The unit
-uses a dynamic user, a 1536 MiB memory limit and two CPU cores at most.
+uses a dynamic user, a 2048 MiB memory limit and two CPU cores at most.
 
 ## HTTP API
 

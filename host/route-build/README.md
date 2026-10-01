@@ -28,7 +28,8 @@ profiles. Query endpoints stay inside the requested bounds. Each road that
 intersects the bounds stays complete, so route geometry can leave the box.
 Routes are exact within this retained graph. Outside connections can be absent.
 
-The command rebuilds the shared graph and each profile from prepared costs and turns.
+The command rebuilds the shared graph, each profile, and its search bounds from
+prepared costs and turns.
 It copies source OSM pages unless `--runtime` is set. Use compiled source overlays
 with a runtime cutout. The JSON report gives the OSM byte count, the total
 routing size, preparation time, and `geometry_bounds`. Include these geometry
@@ -122,7 +123,8 @@ class and climb preferences but keeps surface preferences. Smoother raises
 surface costs. Access rules apply to every variant.
 
 The package includes source OSM pages, geometry, snap cells, a shared directed
-graph and profile costs. Source pages stay outside the query caches.
+graph, profile costs, and compressed landmark bounds. Source pages stay outside
+the query caches.
 It is separate from map tiles. See [the package contract](../../specs/route-package.md).
 Preserve OpenStreetMap attribution and ODbL notices when distributing the data.
 

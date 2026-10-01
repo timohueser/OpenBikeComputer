@@ -1,8 +1,7 @@
 # Routing measurements
 
 Run these commands from the repository root. Use immutable packages and a
-Release build. Keep reports in the pull request. The sample corpus is a starting
-point; add cases for the coverage and rider workload under test.
+Release build. Keep reports in the pull request. Extend the sample corpus for the workload under test.
 
 ```sh
 python3 tools/planner_bench.py corpus PACKAGE host/route-engine/examples/requests.json > /tmp/requests.json
@@ -16,7 +15,11 @@ The native runner records complete route time, object reads, costs, geometry
 and metadata fingerprints, and failures. It runs each case with a fresh router
 and then with the same router. The operating system file cache stays uncontrolled.
 The optional final arguments set iterations and routing memory budget MiB. Timing excludes
-JSON serialization. HTTP timing includes serialization and response transfer.
+JSON serialization. Append `retained` to keep one router and change the first
+coordinate on each iteration. This mode measures fresh requests with retained
+caches. Set `ROUTE_BENCH_INDEX_MEMORY=1` to add the decoded landmark cache to the
+base memory allowance. Reports include the resulting budget. HTTP timing
+includes serialization and response transfer.
 Compare equal request corpora, profile lists, and input identities.
 
 The file audit verifies all runtime hashes and counts complete gzip output.
@@ -57,7 +60,8 @@ search, model initialization, or installation costs.
 Launch each workload in a new process with `--terminate-existing`. Full routes
 use the default workload. Pass `--package RELATIVE_PATH` to use a routing
 directory below Documents, including an active installed release. Copy each
-report before the next launch.
+report before the next launch. Use `--retained --index-memory --hold` for the
+same fresh-request workload with the host memory allowance and an awake screen.
 
 For the parser, copy `MODEL_DIRECTORY` to `Documents/parser/model` and
 `target/planner-parser/parser-reference.json` to `Documents/parser/parser-reference.json`.

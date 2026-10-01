@@ -7,7 +7,7 @@ A digest is lowercase SHA-256 as 64 hexadecimal characters. Each object name
 is the digest of its complete stored bytes. The package ID is the digest of the
 exact UTF-8 manifest bytes. Reformatting a manifest changes its ID.
 
-The manifest format is `6`. Its JSON fields are defined by `Manifest` and
+The manifest format is `7`. Its JSON fields are defined by `Manifest` and
 `Metric` in `host/route-engine/src/package.rs`. Bounds are
 `[west, south, east, north]` in degrees. Metric IDs equal their profile names.
 Source digests identify the input data. Attribution and warnings travel with
@@ -135,3 +135,25 @@ A stored object and its decoded payload must each fit within 8 MiB. The
 manifest must fit within 128 MiB. Consumers verify hashes before decoding.
 These bounds protect installation and query memory; they do not set region
 coverage or a phone performance target.
+
+## Optional search bounds
+
+`landmarks` can be absent. When present, it contains `scale`, `junctions`,
+`mapping`, and `profiles`. `scale` and `junctions` are positive integers.
+`mapping` has one arrival junction ID per directed road. Each ID is less than
+`junctions`. `profiles` maps prepared metric IDs to one through 32 distance
+columns. Each column has `junctions` entries.
+
+These tables store `Vec<i64>` deltas. Values accumulate from zero within each
+4096-entry block. Mapping values fit `u32`. Distance values fit `u16`; 65535 is
+a capped distance, not an unavailable-cost sentinel.
+
+A distance column `d` must satisfy `scale * (d(u) - d(v)) <= w(u, v)` for every
+legal road-state transition, where `u` and `v` use their mapped arrival
+junctions and `w` is the exact transition cost. The builder computes reverse
+junction distances with each legal road cost divided by `scale` and rounded
+down. It omits turn penalties from these lower bounds. Distances saturate at
+65535. The exact search still uses all prepared road and turn costs.
+
+A bounding box extraction prepares new bounds for its retained graph. It does
+not reuse distance columns whose junction IDs refer to the parent package.

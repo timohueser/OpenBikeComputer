@@ -41,7 +41,8 @@ cargo run --release -p route-engine --example query -- /data/freiburg < request.
 | `cost` | Prepared road costs and partial-road prefixes |
 | `osm` | Source tags and relation membership, outside query caches |
 | `base` | Shared road-state topology and exact profile cost columns |
-| `search` | Bidirectional search with multiple start and end attachments |
+| `search` | Exact bidirectional search with optional feasible potentials |
+| `landmarks` | Compressed junction bounds and selection for each request |
 | `router` | Ordered points, direction continuity, geometry and totals |
 | `directory` | Optional native file adapter |
 
@@ -59,6 +60,9 @@ base-cost cap and a material benefit or separation test. Discovery is not
 exhaustive. Corridor probes currently apply to two-point requests. An empty
 alternative set is valid. The primary route remains first.
 
+Optional landmark columns guide long searches. Small searches finish before
+loading these columns. The same search applies with or without this index.
+
 Pace changes moving seconds, not costs or geometry. Keep learned personal pace
 on the rider's device. The engine accepts a time multiplier but does not learn
 from or store rides. Missing terrain stays unknown. Moving time uses a level
@@ -71,12 +75,12 @@ changes. Use `elapsed` for time at positions along the geometry.
 ## Bounds and checks
 
 One router runs one query at a time. The constructor takes an estimated routing
-working-set budget in bytes. Native hosts use 768 MiB by default. The engine
+working-set budget in bytes. Native hosts use 768 MiB plus the decoded landmark cache by default. The engine
 checks decoded graph, active profile, dense labels and heap allocations. It
 reserves 64 MiB for geometry, index caches and decode scratch. An estimate above
 the budget returns `Limit`. This is not an allocator or process RAM guarantee.
 Manifest memory, source mappings, results and host serialization add memory.
-A profile change reuses the graph and replaces active cost columns. Use
+Up to three profile cost sets stay cached within the budget. Use
 `Package::fork` to share topology across workers with independent query caches.
 
 The router retains up to 256 leg choices with at most 65,536 road slices and

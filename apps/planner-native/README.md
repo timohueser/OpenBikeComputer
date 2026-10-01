@@ -49,7 +49,8 @@ router, and overlay providers remain resident after the run.
 With a full Baden-Württemberg release, add `--full-bw` for day and long routes
 and broad-to-detail map views with both route networks. Route summaries retain
 missing-elevation counts and complete totals. `--routing-memory-mib N` overrides
-the routing provider's memory budget. It excludes the model, search, and WebKit;
+the routing provider's complete memory budget. The default is 768 MiB plus the
+decoded landmark cache. It excludes the model, search, and WebKit;
 measure their combined memory separately.
 
 For an attach-based Instruments capture, launch with `--wait-for-trace --hold`.
