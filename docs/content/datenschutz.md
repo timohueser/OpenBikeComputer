@@ -161,9 +161,9 @@ Der Server erhält:
 
 Die Anwendung schreibt keine Anfragen in ein Protokoll und speichert nichts. Der
 Webserver Caddy führt kein Zugriffsprotokoll. Wenn ein Dienst hinter Caddy nicht
-antwortet, zum Beispiel bei einer Aktualisierung, schreibt Caddy einen Fehlereintrag mit
-IP-Adresse, Zeitpunkt und angefragter Adresse in das Systemprotokoll. Das Systemprotokoll
-löscht diese Einträge automatisch nach spätestens einem Monat.
+antwortet, zum Beispiel bei einer Aktualisierung, schreibt Caddy nur Zeitpunkt und
+Fehlermeldung in das Systemprotokoll, ohne IP-Adresse und ohne angefragte Adresse. Das
+Systemprotokoll löscht seine Einträge nach sieben Tagen.
 
 ### 7.2 Standort
 
@@ -196,8 +196,7 @@ Anmeldeseite.
 
 Rechtsgrundlage ist Art. 6 Abs. 1 lit. f DSGVO; das berechtigte Interesse liegt in einem
 nachvollziehbaren, gesicherten Freigabeprozess. Der Server steht bei der Contabo GmbH
-(Abschnitt 7.1). Fehlerprotokolle des Systems werden wie dort beschrieben nach spätestens
-einem Monat gelöscht.
+(Abschnitt 7.1). Das Systemprotokoll wird wie dort beschrieben nach sieben Tagen gelöscht.
 
 ## 9. Speicherung auf dem Endgerät
 
