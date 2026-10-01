@@ -49,8 +49,7 @@ router, and overlay providers remain resident after the run.
 With a full Baden-Württemberg release, add `--full-bw` for day and long routes
 and broad-to-detail map views with both route networks. Route summaries retain
 missing-elevation counts and complete totals. `--routing-memory-mib N` overrides
-the routing provider's complete memory budget. The default is 768 MiB plus the
-decoded landmark cache. It excludes the model, search, and WebKit;
+the routing provider's complete memory budget. The default includes the graph, profile, and landmark caches. It excludes the model, search, and WebKit;
 measure their combined memory separately.
 
 For an attach-based Instruments capture, launch with `--wait-for-trace --hold`.
@@ -80,17 +79,17 @@ npm exec --prefix builder/app -- vitest run --root builder/app src/lib/planner/ 
 
 ## Companion download service
 
-Use the existing planner VPS and a verified runtime release. Save Geofabrik's
-`https://download.geofabrik.de/index-v1.json` locally as `REGIONS`. Choose a cache
-budget that leaves space for online services. Run from the repository root:
+Use a canonical grid release from `obc planner grid`. The standard
+`obc planner deploy` command installs the download service with the online
+services. To replace only its metadata, run from the repository root:
 
 ```sh
-python3 -m tools.planner_downloads_deploy --host USER@VPS --source RELEASE --regions REGIONS --max-cache-bytes BYTES
-# Repeat with --apply to install, build and start the service.
+python3 -m tools.planner_downloads_deploy --host USER@VPS --source RELEASE --max-cache-bytes 268435456
+# Repeat with --apply to install and start the service.
 ```
 
 The service uses port 8790 on loopback and the existing Caddy planner import.
-It installs its source release separately from the online service. Inspect
-`journalctl -u obc-planner-downloads` for preparation failures. Stop the service
-before clearing its bundle cache in `/var/lib/obc-planner-downloads/bundles`.
-Existing phone maps remain usable. Pending downloads must be prepared again.
+The VPS holds selection metadata; published payloads stream from R2. Inspect
+`journalctl -u obc-planner-downloads` for failures. The service evicts old
+selection metadata within its cache budget. A phone can select an expired
+area again. Installed maps remain usable.
