@@ -50,7 +50,7 @@ export default {
         status: route.tile && !data ? 204 : 200,
         headers: { ...headers, 'Content-Type': route.tile ? (route.name === 'basemap' ? 'application/x-protobuf' : 'image/webp') : 'application/json' },
       });
-      if (response.status === 200) ctx.waitUntil(caches.default.put(cacheKey, response.clone()));
+      ctx.waitUntil(caches.default.put(cacheKey, response.clone()));
       return request.method === 'HEAD' ? new Response(null, response) : response;
     } catch (error) {
       return new Response(error instanceof MissingArchive ? 'Archive not found' : 'Tiles are temporarily unavailable', {

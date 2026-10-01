@@ -74,10 +74,9 @@
     let ready = $state(false);
     let failure = $state("");
     let errorDetail = $state("");
-    let markerList: maplibregl.Marker[] = [];
+    const pins = new Map<string, { marker: maplibregl.Marker; button: HTMLButtonElement; key: string }>();
     let pinButtons = $state.raw(new Map<string, HTMLButtonElement>());
     let draggingPin = $state(false);
-    let builtPins = "";
     let calloutPopup: maplibregl.Popup | undefined;
     let dem: InstanceType<typeof mlcontour.DemSource>;
     let appliedTheme: "light" | "dark";
@@ -303,12 +302,12 @@
 
     function pressMap(event: maplibregl.MapMouseEvent) {
         consumedPress = false;
-        if (event.originalEvent.button !== 0) return;
+        if (event.originalEvent.button !== 0 || event.originalEvent.target !== map?.getCanvas()) return;
         const coordinate: Coordinate = [event.lngLat.lng, event.lngLat.lat];
         if (drawing) {
             sketch = [coordinate];
             sketchEnd = event.point;
-        } else if (hover) {
+        } else if (!pickMode && (hover = lineHit(event.point))) {
             // Stops the map from panning: this press may drag a new point out of the line.
             event.preventDefault();
             press = { hit: hover, start: event.point, moved: false };
@@ -434,13 +433,16 @@
             refit = setTimeout(() => { if (wholeRoute) fitRoute(); }, 150);
         });
         observer.observe(container);
+        const preventDrag = (event: DragEvent) => event.preventDefault();
+        container.addEventListener('dragstart', preventDrag);
         const popupObserver = new ResizeObserver(() => { requestAnimationFrame(keepCalloutInside); });
         popupObserver.observe(popupContent);
         return () => {
+            container.removeEventListener('dragstart', preventDrag);
             popupObserver.disconnect();
             observer.disconnect();
             clearTimeout(refit);
-            markerList.forEach((marker) => marker.remove());
+            pins.forEach(({ marker }) => marker.remove());
             insertDot.remove();
             hoverDot.remove();
             calloutPopup?.remove();
@@ -515,6 +517,7 @@
     function markerIcon(path: string) {
         const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
         svg.setAttribute("viewBox", "0 0 24 24");
+        svg.setAttribute("draggable", "false");
         svg.setAttribute("aria-hidden", "true");
         svg.setAttribute("fill", "none");
         svg.setAttribute("stroke", "currentColor");
@@ -537,27 +540,27 @@
         return nearestProgress(coordinates, [at.lng, at.lat]);
     }
 
-    // Pins are rebuilt only when the points change, so a focused pin keeps its focus through a selection.
+    // Keep unchanged marker elements mounted through searches and day selection.
     $effect(() => {
-        if (!map) return;
-        if (draggingPin) return;
+        if (!map || draggingPin) return;
         const shown = points.filter((point) => showRoute || point.kind === "place" || point.kind === "marker");
-        const key = JSON.stringify(shown);
-        if (key === builtPins) return;
-        builtPins = key;
-        markerList.forEach((marker) => marker.remove());
-        const buttons = new Map<string, HTMLButtonElement>();
+        const ids = new Set(shown.map(point => point.id));
+        for (const [id, pin] of pins) if (!ids.has(id)) { pin.marker.remove(); pins.delete(id); }
         let nightNumber = 0;
-        markerList = shown.map((point) => {
+        for (const point of shown) {
             if (point.kind === "night") nightNumber++;
+            const key = JSON.stringify([point, point.kind === 'night' ? nightNumber : 0]);
+            if (pins.get(point.id)?.key === key) continue;
+            pins.get(point.id)?.marker.remove();
             const dayEnd = point.kind === "dayend";
             const draggable = dayEnd ? !!onDayEndDrag : !!onPointMove && !point.fixed && point.kind !== "place";
             const button = document.createElement("button");
+            button.type = 'button';
+            button.draggable = false;
             button.className = `planner-map-pin ${point.kind} ${point.appearance ?? ""}${draggable ? " draggable" : ""}`;
             if (point.color) button.style.setProperty("--pin-color", point.color);
             button.setAttribute("aria-label", point.label);
             button.title = dayEnd ? `${point.appearance === "moved" ? "Day end you moved" : "Day end suggested"} · drag along the route` : point.label + (draggable ? " · drag to move" : "");
-            buttons.set(point.id, button);
             if (point.kind === "place" && point.category) {
                 button.append(markerIcon(placeCategories[point.category].icon));
             } else if (point.kind === "waypoint" || point.kind === "detour") {
@@ -570,18 +573,18 @@
             button.addEventListener('mouseleave', () => onPointHover?.(null));
             button.addEventListener('focus', () => onPointHover?.(point.id));
             button.addEventListener('blur', () => onPointHover?.(null));
-            const marker = new maplibregl.Marker({ element: button, draggable }).setLngLat(point.coordinate).addTo(map!);
+            const marker = new maplibregl.Marker({ element: button, draggable }).setLngLat(point.coordinate).addTo(map);
+            marker.on("dragstart", () => { draggingPin = true; hover = null; });
             if (dayEnd) {
                 marker.on("drag", () => marker.setLngLat(coordinateAt(coordinates, routeProgress(marker))));
-                marker.on("dragend", () => onDayEndDrag?.(point.night!, routeProgress(marker)));
+                marker.on("dragend", () => { onDayEndDrag?.(point.night!, routeProgress(marker)); draggingPin = false; });
             } else {
-                marker.on("dragstart", () => { draggingPin = true; hover = null; });
                 marker.on("drag", () => { const p = marker.getLngLat(); onPointPreview?.(point.id, [p.lng, p.lat]); });
                 marker.on("dragend", () => { const p = marker.getLngLat(); onPointMove?.(point.id, [p.lng, p.lat]); draggingPin = false; });
             }
-            return marker;
-        });
-        pinButtons = buttons;
+            pins.set(point.id, { marker, button, key });
+        }
+        pinButtons = new Map([...pins].map(([id, pin]) => [id, pin.button]));
     });
     $effect(() => {
         for (const [id, button] of pinButtons) {
@@ -633,7 +636,7 @@
 
 <style>
     .map-frame { position: relative; min-height: 240px; height: 100%; isolation: isolate; background: var(--parchment, #f4f2eb); }
-    .map-canvas { width: 100%; height: 100%; min-height: 240px; }
+    .map-canvas { user-select: none; -webkit-user-select: none; width: 100%; height: 100%; min-height: 240px; }
     .popup-storage { display: none; }
     .overlay-status { position: absolute; left: 12px; bottom: 34px; max-width: calc(100% - 80px); padding: 7px 10px; border-radius: 6px; color: var(--ink); background: var(--panel); font-size: 12px; }
     .overlay-status button { margin-left: 8px; border: 0; background: none; color: var(--link); font: inherit; text-decoration: underline; cursor: pointer; }

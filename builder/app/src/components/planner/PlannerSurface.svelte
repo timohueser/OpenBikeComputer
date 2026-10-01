@@ -1,17 +1,17 @@
 <script lang="ts">
     import { surfaceRuns, surfaceWindow } from '../../lib/planner/surface-data';
     import type { RoutingLine, Surface } from '../../lib/planner/routing';
-    let { line, from, to, onHover }: { line?: RoutingLine; from: number; to: number; onHover: (progress: number | null) => void } = $props();
+    let { line, from, to, walking = false, onHover }: { walking?: boolean; line?: RoutingLine; from: number; to: number; onHover: (progress: number | null) => void } = $props();
     const colors: Record<Surface, string> = { Paved: '#536674', Compacted: '#7d8b63', Gravel: '#ba9c5c', Dirt: '#a36d49', Rough: '#875f72', Unknown: '#b8b5ac' };
     const helpId = $props.id();
     const data = $derived(surfaceRuns(line));
     const visible = $derived(surfaceWindow(data.runs, from, to));
-    const hasPushing = $derived(data.runs.some(run => run.pushing));
+    const hasPushing = $derived(!walking && data.runs.some(run => run.pushing));
     const pushingDistance = $derived((line?.pushingKm ?? 0) < 1 ? `${Math.round((line?.pushingKm ?? 0) * 1000)} m` : `${line!.pushingKm.toFixed(1)} km`);
     let position = $state<number | null>(null);
     const at = $derived(Math.max(from, Math.min(to, position ?? from)));
     const current = $derived(visible.find(run => run.to > at) ?? visible.at(-1));
-    const access = $derived(current?.pushing === true ? 'Push bike' : current?.pushing === false ? 'Riding' : 'Access unverified');
+    const access = $derived(current?.pushing == null ? 'Access unverified' : walking ? 'Walking' : current.pushing ? 'Push bike' : 'Riding');
     const description = $derived(current ? `${current.surface === 'Unknown' ? 'Unknown surface' : current.surface} · ${Math.round((data.shares.get(current.surface) ?? 0) * 100) || '<1'}% of route · ${access}` : 'Surface unavailable');
     function inspect(value: number) { if (!visible.length) return; position = Math.max(from, Math.min(to, value)); onHover(position); }
     function leave(event: PointerEvent) { if (document.activeElement !== event.currentTarget) { position = null; onHover(null); } }
@@ -38,8 +38,8 @@
             <span class="hint">{hasPushing ? `${pushingDistance} pushing · ` : ''}{visible.length ? 'Hover to inspect' : 'Surface unavailable'}</span>
         {/if}
     </div>
-    <span class="sr-only" id={helpId}>Use the arrow keys to inspect adjacent surface and access sections. Percentages refer to the whole route. The Push strip marks sections where you must push your bike.</span>
-    <div class="bar" class:with-pushing={hasPushing} role="slider" tabindex={visible.length ? 0 : -1} aria-label="Surface and pushing along route" aria-describedby={helpId} aria-disabled={!visible.length} aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(at * 100)} aria-valuetext={description}
+    <span class="sr-only" id={helpId}>Use the arrow keys to inspect adjacent surface and access sections. Percentages refer to the whole route. {#if !walking}The Push strip marks sections where you must push your bike.{/if}</span>
+    <div class="bar" class:with-pushing={hasPushing} role="slider" tabindex={visible.length ? 0 : -1} aria-label={walking ? 'Surface along route' : 'Surface and pushing along route'} aria-describedby={helpId} aria-disabled={!visible.length} aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(at * 100)} aria-valuetext={description}
         onpointermove={(event) => { const box = event.currentTarget.getBoundingClientRect(); inspect(from + (event.clientX - box.left) / box.width * (to - from)); }}
         onclick={(event) => { const box = event.currentTarget.getBoundingClientRect(); inspect(from + (event.clientX - box.left) / box.width * (to - from)); }}
         onpointerleave={leave} onfocus={() => inspect(from)} onblur={() => { position = null; onHover(null); }} onkeydown={key}>

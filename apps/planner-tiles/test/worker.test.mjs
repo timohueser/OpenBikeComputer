@@ -35,7 +35,7 @@ function archive() {
   header.writeInt32LE(1800000000, 110); header.writeInt32LE(850000000, 114);
   return Buffer.concat([header, directory, metadata, tile]);
 }
-test('range reads deliver decoded tiles, cache full GETs, and do not cache missing archives', async () => {
+test('range reads deliver decoded tiles, cache tiles and empty coverage, and do not cache missing archives', async () => {
   const bytes = archive(), cached = new Map(), pending = [];
   globalThis.caches = { default: {
     async match(key) { return cached.get(key.url)?.clone(); },
@@ -61,6 +61,14 @@ test('range reads deliver decoded tiles, cache full GETs, and do not cache missi
   assert.equal(reads, before);
   const info = await worker.fetch(new Request(`https://tiles.example${base}/basemap.json`), env, ctx);
   assert.equal((await info.json()).tiles[0], `https://tiles.example${base}/basemap/{z}/{x}/{y}.mvt`);
+  const emptyUrl = `https://tiles.example${base}/basemap/1/0/0.mvt`;
+  const empty = await worker.fetch(new Request(emptyUrl), env, ctx);
+  assert.equal(empty.status, 204);
+  await Promise.all(pending);
+  assert.equal(cached.get(emptyUrl).status, 204);
+  const readsBeforeEmpty = reads;
+  assert.equal((await worker.fetch(new Request(emptyUrl), env, ctx)).status, 204);
+  assert.equal(reads, readsBeforeEmpty);
   const missing = `https://tiles.example/releases/${'b'.repeat(64)}/terrain.json`;
   for (let i = 0; i < 2; i++) {
     const response = await worker.fetch(new Request(missing), env, ctx);

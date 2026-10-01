@@ -19,6 +19,9 @@
     let previousContext = '';
     let framePending = false;
     let requestContext: SearchContext | undefined;
+    let searchedView = $state(0);
+    const usesView = $derived(!request?.where && !context.pointing || (request?.where ?? context.pointing)?.scope === 'view');
+    const movedView = $derived(usesView && !!searchState.answer && viewRevision !== searchedView);
     let limit = 6;
     let settings = $state(false);
     const regions = SEARCH_REGIONS;
@@ -39,8 +42,8 @@
         const input = text, signal = controller.signal;
         const searchContext = options.context ?? (background && requestContext ? requestContext : $state.snapshot(context));
         requestContext = searchContext;
-        if (!background) onSearch();
-        searchState = { loading: true, error: '', answer: background ? searchState.answer : null };
+        if (!background) { onSearch(); searchedView = viewRevision; }
+        searchState = { loading: true, error: '', answer: searchState.answer };
         try {
             const answer = await searchPlaces(input, searchContext, region, limit, signal, parsed ? $state.snapshot(parsed) : undefined);
             if (id !== serial) return;
@@ -50,7 +53,7 @@
         } catch (error) {
             if (id !== serial || signal.aborted) return;
             if (background) { searchState = { ...searchState, loading: false }; return; }
-            searchState = { loading: false, answer: null, error: error instanceof TypeError ? 'Search is unavailable. Check your connection and retry.' : (error as Error).message };
+            searchState = { loading: false, answer: searchState.answer, error: error instanceof TypeError ? 'Search is unavailable. Check your connection and retry.' : (error as Error).message };
         }
     }
     function input(value: string) {
@@ -82,15 +85,15 @@
     export function more() { run(Math.min(100, Math.max(20, limit + 20)), request, { context: requestContext }); }
     export function retry() { run(Math.max(20, limit), request, { reparse: !edited, context: requestContext }); }
     $effect(() => {
-        // Result framing and place inspection update live bounds without advancing viewRevision.
-        const current = JSON.stringify([viewRevision, context.here, context.startDate, context.pointing, context.plan]);
+        // Map movement leaves the searched area unchanged until the rider searches it.
+        const current = JSON.stringify([context.here, context.startDate, context.pointing, context.plan]);
         if (current === previousContext) return;
         previousContext = current;
-        untrack(() => { if (text.trim() && current) { clearTimeout(timer); controller?.abort(); serial++; searchState = { loading: true, error: '', answer: null }; timer = setTimeout(() => run(limit, request, { fit: false }), 200); } });
+        untrack(() => { if (text.trim() && current) { clearTimeout(timer); controller?.abort(); serial++; searchState = { ...searchState, loading: true, error: '' }; timer = setTimeout(() => run(limit, request, { fit: false }), 200); } });
     });
     onMount(() => {
         const refresh = setInterval(() => {
-            if (!document.hidden && !searchState.loading && searchState.answer?.results?.some(p => p.opening_hours)) run(limit, request, { fit: false, background: true });
+            if (!document.hidden && !searchState.loading && searchState.answer?.results?.some(p => p.opening_hours && (!p.hoursStatus || p.hoursStatus.validUntil <= Date.now() + 60_000))) run(limit, request, { fit: false, background: true });
         }, 60_000);
         return () => clearInterval(refresh);
     });
@@ -105,6 +108,7 @@
         </div>
     </form>
     {#if text.trim()}
+        {#if movedView}<button type="button" class="search-view" disabled={searchState.loading} onclick={() => run(limit, request, { fit: false })}><PlannerIcon name="search" size={14} />Search this map view</button>{/if}
         {#if request}
             <div class="meaning" aria-label="Understood request">
                 <span class="meaning-label">{edited ? 'Edited request' : request.type === 'place' ? 'Place search' : request.type.replaceAll('_', ' ')}</span>
@@ -148,6 +152,8 @@
     button { font: inherit; color: inherit; cursor: pointer; }
     button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
     .clear { border: 0; background: transparent; width: 28px; height: 32px; padding: 0; display: grid; place-items: center; flex: none; }
+    .search-view { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: 36px; margin-top: 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--parchment-2); color: var(--ink); font-size: 13px; }
+    .search-view:disabled { opacity: .6; cursor: wait; }
     .meaning { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
     .meaning-label { font-size: 11px; color: var(--ink-soft); width: 100%; text-transform: capitalize; }
     .note { margin: 8px 0 0; color: var(--ink-soft); font-size: 13px; line-height: 1.45; }

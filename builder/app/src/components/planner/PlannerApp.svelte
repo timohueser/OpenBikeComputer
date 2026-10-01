@@ -33,7 +33,7 @@
     import { coordinateName, visitName } from '../../lib/planner/point-names';
     import { SEARCH_URL, HOSTED_SEARCH, SEARCH_REGIONS } from '../../lib/planner/search/config';
     import { dayColor } from '../../lib/planner/day-colors';
-    import { profileAscent } from '../../lib/planner/profile-data';
+    import { profileAscent, profileDescent } from '../../lib/planner/profile-data';
     import { searchPlaces, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
     import { asPlace } from '../../lib/planner/search/presentation';
     import { buildQueryRoute } from '../../lib/planner/search/route-client';
@@ -90,8 +90,16 @@
         commit(next, 'Route preference changed');
     }
     const currentRoute = $derived(hasEndpoints && shownTrip.routing?.key === routingKey(shownTrip) ? shownTrip.routing : undefined);
+    let previousRouteTrip = $state<Trip | null>(null);
+    $effect(() => {
+        if (!hasEndpoints) { previousRouteTrip = null; return; }
+        if (currentRoute) previousRouteTrip = untrack(() => $state.snapshot(shownTrip));
+    });
+    // Keep the measured route visible while its replacement is calculated.
+    const visualTrip = $derived(currentRoute || !hasEndpoints ? shownTrip : previousRouteTrip ?? shownTrip);
+    const visualRoute = $derived(currentRoute ?? (hasEndpoints ? previousRouteTrip?.routing : undefined));
     const routingMessage = $derived(draggingPoint ? previewStatus : currentRoute
-        ? `${currentRoute.unknownSurfaceKm.toFixed(1)} km unknown surface${currentRoute.pushingKm ? ` · ${currentRoute.pushingKm.toFixed(1)} km pushing` : ''}${currentRoute.unroutedKm ? ` · ${currentRoute.unroutedKm.toFixed(1)} km manual / access unverified` : ''}${currentRoute.elevation.some(h => h === null) ? ' · elevation incomplete' : ''}`
+        ? `${currentRoute.unknownSurfaceKm.toFixed(1)} km unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${currentRoute.pushingKm.toFixed(1)} km pushing` : ''}${currentRoute.unroutedKm ? ` · ${currentRoute.unroutedKm.toFixed(1)} km manual / access unverified` : ''}${currentRoute.elevation.some(h => h === null) ? ' · elevation incomplete' : ''}`
         : routingStatus);
     let list = $state<'plan' | 'ways'>('plan');
     let waysStatus = $state('');
@@ -172,13 +180,14 @@
     const maxSide = $derived(Math.max(320, Math.min(460, viewportWidth - 540)));
     const canUndo = $derived.by(() => { void revision; return history.canUndo; });
     const canRedo = $derived.by(() => { void revision; return history.canRedo; });
-    const coordinates = $derived(routeCoordinates(shownTrip));
+    const coordinates = $derived(routeCoordinates(visualTrip));
     const lengths = $derived(cumulative(coordinates));
     const total = $derived(lengths.at(-1)!);
     const stops = $derived(routeStops(shownTrip));
-    const days = $derived(tripDays(shownTrip));
+    const visualStops = $derived(routeStops(visualTrip));
+    const days = $derived(tripDays(visualTrip));
     const multi = $derived(trip.mode !== 'route');
-    const itinerary = $derived(itineraryDays(trip));
+    const itinerary = $derived(itineraryDays(visualTrip));
     const focusedDay = $derived(multi && list === 'plan' && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
     const searchContext = $derived<SearchContext>({ view: viewBounds, here, pointing, startDate: trip.startDate,
@@ -191,12 +200,12 @@
         multi && !!currentRoute && expandedDay !== null && !searching && list === 'plan' && night < days.length && (!activeDay?.pinned || changingOvernight),
     );
     const highlighted = $derived(overnightContext && area && !area.blocked ? routeSlice(coordinates, area.from, area.to) : []);
-    const candidates = $derived(multi ? overnightCandidates(trip, night, overnightPlaces) : []);
+    const candidates = $derived(multi ? overnightCandidates(visualTrip, night, overnightPlaces) : []);
     // One stretch per leg and day, so the map can tell legs apart and colour days.
     const segments = $derived.by(() => {
-        const length = stops.at(-1)?.distance || 1;
-        return stops.slice(1).flatMap((stop, i) => days.flatMap((day): MapSegment[] => {
-            const from = Math.max(day.from, stops[i].distance / length);
+        const length = visualStops.at(-1)?.distance || 1;
+        return visualStops.slice(1).flatMap((stop, i) => days.flatMap((day): MapSegment[] => {
+            const from = Math.max(day.from, visualStops[i].distance / length);
             const to = Math.min(day.to, stop.distance / length);
             if (to <= from) return [];
             return [{ coordinates: routeSlice(coordinates, from, to), color: dayColor(day.number, theme), legEndId: stop.point.id, leg: stop.point.leg ?? 'routed' }];
@@ -247,8 +256,8 @@
         }
         if (pending) pins.push({ id: 'pending', coordinate: pending, label: 'Overnight spot', kind: 'place', appearance: 'suggested' });
         // Day ends come last, so they stay on top of a candidate place at the same spot and can be dragged.
-        for (const day of multi && currentRoute ? days.slice(0, -1) : []) {
-            if (day.pinned) continue;
+        for (const day of multi && visualRoute ? days.slice(0, -1) : []) {
+            if (day.pinned || trip.points.some(point => point.kind === 'night' && point.night === day.number)) continue;
             const label = dayLabels[day.number] ?? day.number;
             pins.push({
                 id: `dayend-${day.number}`, kind: 'dayend', night: day.number, coordinate: coordinateAt(coordinates, day.to),
@@ -293,16 +302,29 @@
         return () => { current = false; };
     });
 
+    const overnightKey = $derived(JSON.stringify([searchRegion, dayLabels[night], searchContext.plan, here, trip.startDate]));
+    const overnightCache = new Map<string, { places: Place[]; note: string }>();
     $effect(() => {
-        const context = $state.snapshot(searchContext), region = searchRegion, day = dayLabels[night];
+        const key = overnightKey;
+        const enabled = overnightContext;
+        const { context, region, day } = untrack(() => ({ context: $state.snapshot(searchContext), region: searchRegion, day: dayLabels[night] }));
+        if (!enabled || !day) {
+            if (!hasEndpoints || currentRoute) overnightPlaces = [];
+            overnightNote = ''; return;
+        }
+        const cached = overnightCache.get(key);
+        if (cached) { overnightPlaces = cached.places; overnightNote = cached.note; return; }
         overnightPlaces = [];
-        if (!overnightContext || !day) { overnightNote = ''; return; }
         const abort = new AbortController();
         overnightNote = 'Loading nearby overnight places…';
         searchPlaces('sleep', context, region, 6, abort.signal, { type: 'places', what: ['sleep'], where: { day, part: 'end' }, radius: { value: 5, unit: 'km' } }).then(answer => {
             if (abort.signal.aborted) return;
             overnightPlaces = (answer.results ?? []).map(asPlace);
             overnightNote = answer.type === 'unresolved' ? answer.note ?? '' : overnightPlaces.length ? '' : 'No mapped overnight places within 5 km. Search a wider area or pick on the map.';
+            if (answer.type === 'places') {
+                if (overnightCache.size >= 8) overnightCache.delete(overnightCache.keys().next().value!);
+                overnightCache.set(key, { places: overnightPlaces, note: overnightNote });
+            }
         }).catch(() => { if (!abort.signal.aborted) overnightNote = 'Overnight search is unavailable. Retry or pick on the map.'; });
         return () => abort.abort();
     });
@@ -360,6 +382,7 @@
     }
 
     function clearSelection() {
+        hoveredId = null;
         selectedId = null;
         pending = null;
         pendingSource = null;
@@ -640,6 +663,7 @@
     }
 
     function newPlan() {
+        if (trip.points.length && !window.confirm(`Start a new ${trip.mode === 'route' ? 'route' : 'trip'}? This clears your current plan. You can use Undo to restore it.`)) return;
         commit({ ...emptyTrip(trip.mode), bike: trip.bike, preset: trip.preset }, 'New plan · Undo to restore');
         clearSelection();
         exitSearch();
@@ -784,11 +808,10 @@
     />
     <main>
         <aside class="planner-pane" aria-label="Trip planning">
-            {#if overnightContext && overnightNote}<p class="search-note" role="status">{overnightNote}</p>{/if}
             <Query bind:this={searchBox} bind:text={query} bind:region={searchRegion} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} viewRevision={searchViewRevision} onResults={coordinates => { clearSelection(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} />
             {#if searching}
                 <div class="pane-scroll">
-                    <QueryResults state={searchState} {selectedId} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
+                    <QueryResults state={searchState} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
                 </div>
             {:else if !hasEndpoints}
                 <div class="start-plan pane-scroll">
@@ -813,24 +836,24 @@
                         {/if}
                     </div>
                 {/if}
-                {#if !focusedDay && currentRoute}
-                    <div class="trip-summary"><RouteStats distance={total} ascent={currentRoute?.elevation.every(h => h !== null) ? profileAscent(0, 1, currentRoute) : null} hours={currentRoute ? currentRoute.seconds / 3600 : null} /></div>
+                {#if !focusedDay && visualRoute}
+                    <div class="trip-summary"><RouteStats distance={total} ascent={visualRoute?.elevation.every(h => h !== null) ? profileAscent(0, 1, visualRoute) : null} descent={visualRoute?.elevation.every(h => h !== null) ? profileDescent(0, 1, visualRoute) : null} walking={visualTrip.bike === 'hiking'} hours={visualRoute ? visualRoute.seconds / 3600 : null} /></div>
                 {/if}
                 {#if currentRoute && (!focusedDay || planEditing)}
                     <PlanLine {trip} dayCount={itinerary.length} bind:editing={planEditing} onApply={applyPlan} />
                 {/if}
-                {#if !focusedDay && currentRoute}
+                {#if !focusedDay && visualRoute}
                     <div class="list-switch">
                         <Segmented compact label="List" value={list} onChange={(value) => list = value}
                             options={[{ value: 'plan', label: multi ? 'Days' : 'Route' }, { value: 'ways', label: currentRoute?.alternativesReady ? `Route options · ${currentRoute.alternatives.length}` : 'Route options' }]} />
                     </div>
                 {/if}
-                <div class="pane-scroll">
+                <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
                     {#if list === 'ways'}
                         <WaysList status={needsAlternatives ? waysStatus || 'Open Route options to find alternatives.' : ''} routes={currentRoute?.alternatives ?? []} choiceId={currentRoute?.choiceId ?? ''} onPick={pickRoute} />
-                    {:else if multi && currentRoute}
+                    {:else if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
                         <Itinerary
-                            {trip} {itinerary} {days} {theme} {expandedDay} {candidates} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
+                            trip={visualTrip} {itinerary} {days} overnightNote={overnightContext ? overnightNote : ''} {theme} {expandedDay} {candidates} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
                             changing={changingOvernight}
                             onToggle={showDay} onOverview={showAllDays}
                             onInspect={inspectPoint}
@@ -855,11 +878,11 @@
             {/if}
         </aside>
         <Resize value={Math.min(sideWidth, maxSide)} min={320} max={maxSide} axis="x" label="Sidebar width" onResize={(value) => sideWidth = value} />
-        <section class="geography" aria-label="Map and elevation">
+        <section class="geography" aria-label="Map and elevation" aria-busy={hasEndpoints && !currentRoute}>
             <div class="map-area" bind:clientHeight={mapHeight} style:--map-height={`${mapHeight}px`}>
                 <PlannerMap
                     bind:this={map} {segments} {coordinates} points={mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
-                    {theme} {hillshade} {contours} {mapOverlays} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking}
+                    {theme} {hillshade} {contours} {mapOverlays} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces} {landmarks}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={previewPoint} onDayEndDrag={moveDayEnd}
@@ -870,7 +893,7 @@
                         {#if calloutKind}
                             {#key selectedId}
                                 <MapCallout
-                                    kind={calloutKind} {trip} {days} {dayLabels} {night} {candidates} {legMode}
+                                    kind={calloutKind} {trip} {days} {overnightNote} {dayLabels} {night} {candidates} {legMode}
                                     onEndpoint={chooseEndpoint} point={selectedPoint} place={selectedPlace} coordinate={previewCoordinate}
                                     onClose={clearSelection}
                                     onAddHere={addHere}
@@ -897,7 +920,7 @@
                         <button type="button" disabled={!trip.points.length} onclick={() => focusedDay ? showDay(focusedDay.ridingNumber) : coordinates.length ? map?.fitRoute() : map?.fitCoordinates(trip.points.map(p => p.coordinate))} aria-label={focusedDay ? `Show day ${focusedDay.number} on map` : 'Show whole route'}><Icon name="fit" /></button>
                         <button type="button" disabled={!hasEndpoints} class:chosen={showRoute} aria-label={showRoute ? 'Hide route' : 'Show route'} aria-pressed={showRoute} onclick={() => showRoute = !showRoute}><Icon name="eye" /></button>
                     </div>
-                    <LayerMenu {theme} bind:autoCenter bind:mapOverlays bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
+                    <LayerMenu {theme} walking={trip.bike === 'hiking'} bind:autoCenter bind:mapOverlays bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
                 </div>
                 {#if picking || drawing}
                     <div class="mode-chip" role="status">
@@ -907,20 +930,18 @@
                 {/if}
             </div>
             <Resize value={Math.min(profileHeight, maxProfile)} min={210} max={maxProfile} axis="y" label="Elevation height" onResize={(value) => profileHeight = value} />
-            {#if !currentRoute}
+            {#if !visualRoute}
                 <section class="empty-profile" aria-label="Elevation profile" style:height={`${Math.min(profileHeight, maxProfile)}px`}>
                     <h2>Elevation &amp; surface</h2>
                     <div><Icon name="route" size={24} /><p>{hasEndpoints ? 'The profile appears when your route is ready.' : 'See the climbs and surfaces along your route.'}</p><small>{hasEndpoints ? routingStatus : stops.length ? `Choose a ${nextEndpoint} to see the profile.` : 'Choose a start and finish to get started.'}</small></div>
                 </section>
             {:else}
-            {#key focusedDay?.number ?? 'overview'}
             <Profile
-                lineData={currentRoute} singleRoute={!multi} height={Math.min(profileHeight, maxProfile)} {total} {days} {dayLabels} {theme}
+                lineData={visualRoute} walking={visualTrip.bike === 'hiking'} singleRoute={!multi} height={Math.min(profileHeight, maxProfile)} {total} {days} {dayLabels} {theme}
                 activeNight={focusedDay?.ridingNumber ?? 0} band={overnightContext ? area : null} window={profileWindow}
                 focus={focusedDay ? { from: focusedDay.from, to: focusedDay.to, label: `Day ${focusedDay.number}` } : null}
                 onNight={(riding) => showDay(riding)} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
             />
-            {/key}
             {/if}
             <div class="status-line" role="status">
                 <span class:save-error={!!draftError}>{draftError || `${message} · ${routingMessage}`}</span>
@@ -951,7 +972,6 @@
     .empty-profile p { margin: 12px 0 4px; }
     .empty-profile small { color: var(--ink-soft); }
 
-    .search-note { margin: 8px 16px 0; color: var(--ink-soft); font-size: 13px; line-height: 1.4; }
     :global(*) {
         box-sizing: border-box;
         scrollbar-width: thin;

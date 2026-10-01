@@ -10,7 +10,7 @@ const reply = (request: QueryRequest) => ({ok:true,json:async()=>({type:'places'
 const mounted: ReturnType<typeof mount>[] = [];
 afterEach(async()=>{ for(const component of mounted.splice(0))await unmount(component); vi.unstubAllGlobals(); vi.useRealTimers(); document.body.replaceChildren(); });
 async function setup(extra: Record<string, unknown> = {}) {
-    vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval']});
+    vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']});
     const target=document.createElement('div');document.body.append(target);
     const component=mount(Query,{target,props:{context,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onDate:()=>{},onPointing:()=>{},...extra}});
     mounted.push(component);await tick();
@@ -101,13 +101,13 @@ describe('planner query requests',()=>{
         expect(document.activeElement).toBe(chips[1]);
         expect(target.querySelector('.picker')).toBeNull();
     });
-    it('keeps pagination and retries in the searched area until the rider pans',async()=>{
+    it('keeps searches stable through map movement until the rider requests the new view',async()=>{
         const state=writable({context,viewRevision:0});
         const current=fromStore(state);
         const onResults=vi.fn();
         const fetch=vi.fn(async()=>({ok:true,json:async()=>({type:'places',request:{type:'places',what:['pharmacy']},results:[{lon:7.81,lat:48.12},{lon:7.85,lat:48.14}]})}));
         vi.stubGlobal('fetch',fetch);
-        vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval']});
+        vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']});
         const target=document.createElement('div');document.body.append(target);
         const component=mount(Query,{target,props:{get context(){return current.current.context;},get viewRevision(){return current.current.viewRevision;},onResults,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onDate:()=>{},onPointing:()=>{}}});
         mounted.push(component);await tick();
@@ -127,7 +127,11 @@ describe('planner query requests',()=>{
         expect(onResults).toHaveBeenCalledTimes(2);
         const panned: SearchContext={...context,view:[7.9,48.1,8,48.2]};
         state.set({context:panned,viewRevision:1});await tick();await vi.advanceTimersByTimeAsync(250);
+        expect(fetch).toHaveBeenCalledTimes(3);
+        target.querySelector<HTMLButtonElement>('.search-view')!.click();
+        await vi.advanceTimersByTimeAsync(0);await tick();
         expect(fetch).toHaveBeenCalledTimes(4);
+        expect(target.querySelector('.search-view')).toBeNull();
         expect(onResults).toHaveBeenCalledTimes(2);
         expect(sent().view).toEqual(panned.view);
         state.set({context:fitted,viewRevision:1});await tick();
@@ -135,28 +139,33 @@ describe('planner query requests',()=>{
         expect(sent().view).toEqual(panned.view);
         expect(sent().limit).toBe(46);
     });
-    it('preserves pending result framing when initial map bounds interrupt the first request',async()=>{
+    it('keeps the initial request and result framing when map bounds arrive',async()=>{
         const state=writable({context,viewRevision:0});const current=fromStore(state);
         const onResults=vi.fn();
-        const fetch=vi.fn().mockImplementationOnce(()=>new Promise(()=>{})).mockResolvedValue({ok:true,json:async()=>({type:'places',request:{type:'places',what:['pharmacy']},results:[{lon:7.81,lat:48.12}]})});
-        vi.stubGlobal('fetch',fetch);vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval']});
+        let resolve!: (response: unknown) => void;
+        const fetch=vi.fn(()=>new Promise(done=>resolve=done));
+        vi.stubGlobal('fetch',fetch);vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']});
         const target=document.createElement('div');document.body.append(target);
         const component=mount(Query,{target,props:{get context(){return current.current.context;},get viewRevision(){return current.current.viewRevision;},onResults,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onDate:()=>{},onPointing:()=>{}}});
         mounted.push(component);await tick();
         const input=target.querySelector('input')!;input.value='pharmacies';input.dispatchEvent(new Event('input',{bubbles:true}));await tick();await vi.advanceTimersByTimeAsync(351);
         state.set({context:{...context,view:[7,47,9,49]},viewRevision:1});await tick();await vi.advanceTimersByTimeAsync(250);
-        expect(fetch).toHaveBeenCalledTimes(2);
+        expect(fetch).toHaveBeenCalledTimes(1);
+        resolve({ok:true,json:async()=>({type:'places',request:{type:'places',what:['pharmacy']},results:[{lon:7.81,lat:48.12}]})});
+        await vi.advanceTimersByTimeAsync(0);await tick();
         expect(onResults).toHaveBeenCalledExactlyOnceWith([[7.81,48.12]]);
     });
     it('refreshes current hours without a new search presentation or another map fit', async()=>{
         const onResults=vi.fn(), onSearch=vi.fn();
-        const fetch=vi.fn(async()=>({ok:true,json:async()=>({type:'places',request:{type:'places',what:['pharmacy']},results:[{lon:7.81,lat:48.12,opening_hours:'24/7'}]})}));
+        const fetch=vi.fn(async()=>({ok:true,json:async()=>({type:'places',request:{type:'places',what:['pharmacy']},results:[{lon:7.81,lat:48.12,opening_hours:'24/7',hoursStatus:{state:'open',checkedAt:Date.now(),validUntil:Date.now()+5*60_000}}]})}));
         vi.stubGlobal('fetch',fetch);
         const currentContext={...context};
         const {type}=await setup({onResults,onSearch,context:currentContext});await type('pharmacies');await tick();
         currentContext.view=[7,47,9,49];
         const searches=onSearch.mock.calls.length;
         await vi.advanceTimersByTimeAsync(60_000);await tick();
+        expect(fetch).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(4*60_000);await tick();
         expect(fetch).toHaveBeenCalledTimes(2);
         expect(onSearch).toHaveBeenCalledTimes(searches);
         expect(JSON.parse(String((fetch.mock.lastCall as unknown as [string,RequestInit])[1].body)).view).toEqual(context.view);

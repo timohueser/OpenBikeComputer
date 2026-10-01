@@ -4,8 +4,9 @@
     import { placeCategories, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import { networkLevels, type OverlayOptions } from '../../lib/planner/route-overlays';
 
-    let { autoCenter = $bindable(false), hillshade = $bindable(), contours = $bindable(), hidden = $bindable(), highlighted = $bindable(), mapOverlays = $bindable(), theme = 'light' }: {
+    let { autoCenter = $bindable(false), hillshade = $bindable(), contours = $bindable(), hidden = $bindable(), highlighted = $bindable(), mapOverlays = $bindable(), theme = 'light', walking = false }: {
         autoCenter?: boolean;
+        walking?: boolean;
         hillshade: boolean;
         contours: boolean;
         /** Place categories the map leaves out. */
@@ -74,7 +75,7 @@
             </section>
             <section class="access-section" aria-label="Access markings">
                 <label><input type="checkbox" bind:checked={mapOverlays.access} />Closures & access<span class="access-symbol" aria-hidden="true"><Icon path="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM7 12h10" size={17} /></span></label>
-                {#if mapOverlays.access}<p>Bike access: a walking symbol means dismount and push. Click access symbols for rules; closure reports are not live.</p>{/if}
+                {#if mapOverlays.access}<p>{walking ? 'Walking access.' : 'Bike access: a walking symbol means dismount and push.'} Click access symbols for rules; closure reports are not live.</p>{/if}
             </section>
             <section class="access-section" aria-label="Planning controls"><label><input type="checkbox" bind:checked={autoCenter} />Center on added points</label></section>
             <details>

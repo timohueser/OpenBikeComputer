@@ -10,11 +10,12 @@ function viewport() {
     const data = vi.fn();
     const update = vi.fn();
     let zoom = 12;
+    let moving = false;
     let bounds = [7.9, 48, 8, 48.1];
     let target: { setData: typeof data; updateData: typeof update } | undefined = { setData: data, updateData: update };
     const definitions = new Map();
     const map = {
-        on: vi.fn(), off: vi.fn(), getZoom: () => zoom,
+        on: vi.fn(), off: vi.fn(), isMoving: () => moving, getZoom: () => zoom,
         getBounds: () => ({ getWest: () => bounds[0], getSouth: () => bounds[1], getEast: () => bounds[2], getNorth: () => bounds[3] }),
         getSource: () => target, getLayer: (id: string) => definitions.get(id),
         addSource: () => target = { setData: data, updateData: update }, getStyle: () => ({ layers: [] }),
@@ -25,7 +26,7 @@ function viewport() {
     };
     const status = vi.fn();
     const overlays = new RouteOverlays(map as unknown as MapLibreMap, status);
-    return { overlays, map, definitions, data, update, status, clearStyle: () => { target = undefined; definitions.clear(); }, move: (b: number[], z = zoom) => { bounds = b; zoom = z; } };
+    return { overlays, map, definitions, data, update, status, moving: (value: boolean) => moving = value, clearStyle: () => { target = undefined; definitions.clear(); }, move: (b: number[], z = zoom) => { bounds = b; zoom = z; } };
 }
 
 const rendered = (data: ReturnType<typeof collection>) => ({ type: data.type, features: data.features.map(({ id }) => ({ id, type: 'Feature', geometry: null, properties: { kind: 'cycling', rank: 1, ref: 'R', marker: undefined, status: undefined } })) });
@@ -296,4 +297,34 @@ it('replaces reused feature IDs and popup metadata when a fresh reply changes re
     await view.overlays.refresh();
     expect(fetcher).toHaveBeenCalledTimes(3);
     view.overlays.destroy();
+});
+
+
+it('waits for camera movement to settle and reuses combined layers when access is hidden', async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => collection('network') });
+    vi.stubGlobal('fetch', fetcher);
+    const view = viewport();
+    const moveend = view.map.on.mock.calls.find(([event]) => event === 'moveend')![1] as () => void;
+    view.moving(true);
+    view.overlays.set({ network: 'cycling', access: true }, 'walking');
+    expect(fetcher).not.toHaveBeenCalled();
+    moveend();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(fetcher).not.toHaveBeenCalled();
+    view.moving(false);
+    moveend();
+    await vi.advanceTimersByTimeAsync(50);
+    view.move([8.1, 48, 8.2, 48.1]);
+    moveend();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    view.overlays.set({ network: 'cycling', access: false });
+    view.overlays.set({ network: 'cycling', access: true }, 'walking');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(view.data).toHaveBeenCalledTimes(1);
+    view.overlays.destroy();
+    moveend();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(fetcher).toHaveBeenCalledTimes(1);
 });

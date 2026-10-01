@@ -1,8 +1,9 @@
 export const ridingProfiles = {
-    road: { label: 'Road bike', presets: ['Balanced', 'Shorter', 'Less climbing'] },
-    gravel: { label: 'Gravel bike', presets: ['Balanced', 'Shorter', 'Less climbing'] },
-    touring: { label: 'Touring bike', presets: ['Balanced', 'Shorter', 'Less climbing'] },
-    mtb: { label: 'Mountain bike', presets: ['Balanced', 'Shorter', 'Less climbing'] },
+    road: { icon: 'road', label: 'Road bike', presets: ['Balanced', 'Shorter', 'Less climbing'] },
+    gravel: { icon: 'gravel', label: 'Gravel bike', presets: ['Balanced', 'Shorter', 'Less climbing'] },
+    touring: { icon: 'touring', label: 'Touring bike', presets: ['Balanced', 'Shorter', 'Less climbing'] },
+    mtb: { icon: 'mtb', label: 'Mountain bike', presets: ['Balanced', 'Shorter', 'Less climbing'] },
+    hiking: { icon: 'hiking', label: 'Hiking', presets: ['Balanced', 'Shorter', 'Less climbing'] },
 };
 export type BikeType = keyof typeof ridingProfiles;
 
