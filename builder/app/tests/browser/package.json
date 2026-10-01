@@ -6,7 +6,9 @@
     "pretest": "node -e \"require('node:fs').rmSync('../../../../.artifacts/web-builder', { recursive: true, force: true })\" && VITE_PLANNER_TILEJSON_URL=https://basemap.test/basemap.json VITE_PLANNER_SPRITES_URL=https://basemap.test/sprites VITE_PLANNER_GLYPHS_URL=https://basemap.test/fonts/{fontstack}/{range}.pbf VITE_CATALOG_URL=/catalog/catalog.json npm run build:web --prefix ../..",
     "test": "playwright test",
     "pretest:live": "node -e \"require('node:fs').rmSync('../../../../.artifacts/web-builder-live', { recursive: true, force: true })\" && VITE_PLANNER_TILEJSON_URL=https://basemap.test/basemap.json VITE_PLANNER_SPRITES_URL=https://basemap.test/sprites VITE_PLANNER_GLYPHS_URL=https://basemap.test/fonts/{fontstack}/{range}.pbf VITE_CATALOG_URL=https://maps.openbikecomputer.com/cell-catalog/catalog.json npm run build:web --prefix ../..",
-    "test:live": "playwright test --config playwright.live.config.js"
+    "test:live": "playwright test --config playwright.live.config.js",
+    "pretest:planner": "VITE_PLANNER_TILEJSON_URL=https://tiles.test/basemap.json VITE_PLANNER_DEM_URL=https://tiles.test/terrain/{z}/{x}/{y}.webp VITE_PLANNER_GLYPHS_URL=https://maps.test/fonts/{fontstack}/{range}.pbf VITE_PLANNER_SPRITES_URL=https://maps.test/sprites VITE_PLANNER_ROUTING_URL=https://api.test/routing VITE_PLANNER_SEARCH_URL=https://api.test/search VITE_PLANNER_MAP_BOUNDS=7.45,47.5,10.5,49.85 npm run build:planner --prefix ../..",
+    "test:planner": "playwright test --config playwright.planner.config.js"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0"
