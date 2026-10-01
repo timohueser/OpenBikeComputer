@@ -11,13 +11,13 @@ and the [PMTiles CLI](https://docs.protomaps.com/pmtiles/cli).
 Authenticate `gh` for the query model release. Set the R2 credential in
 `tools/obc.local`. The [region recipe](../../../../../tools/planner-regions/baden-wuerttemberg.json)
 pins the OSM extract, map inputs, elevation inputs, and routing profiles.
-The BW recipe selects Balanced and Less climbing for each rider mode.
+BW includes Balanced, Shorter, and Less climbing for each rider mode.
 
-The raw map and search builders require Linux, Java 21, Maven, PostgreSQL 17,
-PostGIS 3, osm2pgsql 2, zstd, and `nominatim-db==5.3.2` in the build environment.
+Map and search builders need Linux, Java 21, Maven, PostgreSQL 17,
+PostGIS 3, osm2pgsql 2, zstd, and `nominatim-db==5.3.2`.
 Add PostgreSQL's binary directory to `PATH`. Run preparation as a normal user.
 Allow space for the temporary Nominatim database and Planetiler files.
-The builders use two threads. Preparation can take several hours.
+Builders use two threads. Allow several hours.
 
 ```sh
 obc planner prepare --data-dir /srv/planner/bw --reference /srv/obc-reference
@@ -41,7 +41,6 @@ The VPS needs Caddy, Python, Rust at `/root/.cargo/bin/cargo`, and Node 24+
 at `/usr/local/bin/node`. Its existing API virtual host is
 `releases.openbikecomputer.com`. Deployment installs two services on loopback.
 Routing uses at most two workers. Search runs SQLite and the query model.
-PostgreSQL, Nominatim, and Photon are build tools. They are not public services.
 
 Deploy the [tile Worker](../../../../../apps/planner-tiles/README.md) first.
 It reads two regional PMTiles archives from R2 and caches XYZ tiles at the edge.
@@ -74,7 +73,6 @@ selection and builds a matching overlay index.
 
 Routing currently supports German access defaults. Preparation refuses other
 countries. Add and verify their access rules before extending coverage.
-No service code needs a new region name.
 
 Keep the active release and its previous release. Deployment retains both VPS
 slots and their versioned API paths. To restore the previous release:
@@ -90,8 +88,6 @@ The upload preview reports size and a storage cost ceiling before free allowance
 Worker requests and the VPS have separate costs.
 
 ## Local preview
-
-The prepared preview uses independent upstream map and search snapshots:
 
 ```sh
 obc planner setup
