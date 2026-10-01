@@ -80,7 +80,8 @@ checks decoded graph, active profile, label blocks and queue allocations. It
 reserves 64 MiB for geometry, index caches and decode scratch. An estimate above
 the budget returns `Limit`. This is not an allocator or process RAM guarantee.
 Manifest memory, source mappings, results and host serialization add memory.
-Search labels allocate only visited blocks. Cached profiles share identical turn columns.
+Search labels allocate visited blocks and retain a small reuse pool.
+Cached profiles share identical turn columns.
 Up to three profile cost sets stay cached within the budget. Use
 `Package::fork` to share topology across workers with independent query caches.
 
