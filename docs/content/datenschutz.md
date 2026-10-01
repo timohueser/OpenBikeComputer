@@ -7,6 +7,8 @@ copy: ai
 
 # Datenschutzerklärung
 
+Englische Übersetzung: [Privacy notice](../privacy/).
+
 ## 1. Verantwortlicher
 
 Verantwortlicher im Sinne des Art. 4 Nr. 7 DSGVO ist:

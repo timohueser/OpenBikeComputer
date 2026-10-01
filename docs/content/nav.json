@@ -35,7 +35,8 @@
       "title": "Rechtliches",
       "pages": [
         { "path": "impressum", "title": "Impressum" },
-        { "path": "datenschutz", "title": "Datenschutzerklärung" }
+        { "path": "datenschutz", "title": "Datenschutzerklärung" },
+        { "path": "privacy", "title": "Privacy notice (English)" }
       ]
     }
   ]
