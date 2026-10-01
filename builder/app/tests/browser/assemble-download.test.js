@@ -17,18 +17,12 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { BASEMAP, basemapResponse } from './basemap-stub.js';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const EXPECTED = join(REPO, 'apps/obc-web-assemble/tests/fixture/expected/map.obcm');
 const CATALOG_LOG = join(REPO, '.artifacts/web-builder/catalog.jsonl');
 const REGION = 'Bridge Fixture';
-/** The presentational basemap's host. Its tiles are decoration; the journey needs none of them. */
-const BASEMAP = 'tile.openstreetmap.org';
-/** One transparent pixel, so a served tile costs nothing and logs no load failure. */
-const PIXEL = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
-  'base64',
-);
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
@@ -52,9 +46,7 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
     const url = new URL(route.request().url());
     if (url.hostname === '127.0.0.1' || url.hostname === 'localhost') return route.continue();
     offOrigin.push(url.href);
-    if (url.hostname === BASEMAP) {
-      return route.fulfill({ status: 200, contentType: 'image/png', body: PIXEL });
-    }
+    if (url.hostname === BASEMAP) return route.fulfill(basemapResponse(url));
     return route.abort();
   });
 

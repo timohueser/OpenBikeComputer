@@ -3,6 +3,12 @@ import type { ExpressionSpecification, StyleSpecification, LayerSpecification } 
 import { BASEMAP_URL, GLYPHS_URL, MAP_BOUNDS, SPRITES_URL, TERRAIN_ATTRIBUTION } from "./map-data";
 import { categoryIds, placeCategories, poiKinds, type PlaceCategory } from "./poi-kinds";
 
+const BASEMAP_SOURCE = {
+    type: "vector",
+    url: BASEMAP_URL,
+    attribution: '<a href="https://openstreetmap.org/copyright">© OpenStreetMap contributors</a> · <a href="https://protomaps.com">Protomaps</a>',
+} as const;
+
 function flavor(dark: boolean): Flavor {
     const paper = dark ? "#181d19" : "#f4f2eb";
     const wood = dark ? "#23392e" : "#d2dfc5";
@@ -33,6 +39,17 @@ function flavor(dark: boolean): Flavor {
             farmland: field, grassland: field, scrub: field,
             urban_area: dark ? "#292d32" : "#e4e0d7", glacier: dark ? "#3c5558" : "#e5eef0",
         },
+    };
+}
+
+/** The planner's basemap alone, for a picker that only places rectangles: no points of interest, terrain or cycleways. */
+export function basemapStyle(): StyleSpecification {
+    return {
+        version: 8,
+        glyphs: GLYPHS_URL,
+        sprite: `${SPRITES_URL}/light`,
+        sources: { basemap: BASEMAP_SOURCE },
+        layers: (layers("basemap", flavor(false), { lang: "en" }) as LayerSpecification[]).filter((layer) => layer.id !== "pois"),
     };
 }
 
@@ -102,7 +119,7 @@ export function mapStyle(theme: "light" | "dark", demUrl: string, contourUrl: st
         glyphs: GLYPHS_URL,
         sprite: `${SPRITES_URL}/${theme}`,
         sources: {
-            basemap: { type: "vector", url: BASEMAP_URL, attribution: '<a href="https://openstreetmap.org/copyright">© OpenStreetMap contributors</a> · <a href="https://protomaps.com">Protomaps</a>' },
+            basemap: BASEMAP_SOURCE,
             terrain: { type: "raster-dem", tiles: [demUrl], ...(MAP_BOUNDS ? { bounds: MAP_BOUNDS } : {}), tileSize: 512, encoding: "terrarium", maxzoom: 12, attribution: TERRAIN_ATTRIBUTION },
             contours: { type: "vector", tiles: [contourUrl], ...(MAP_BOUNDS ? { bounds: MAP_BOUNDS } : {}), maxzoom: 15, attribution: TERRAIN_ATTRIBUTION },
         },

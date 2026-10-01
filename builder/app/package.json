@@ -19,6 +19,7 @@
     },
     "dependencies": {
         "@mapbox/vector-tile": "^3.0.0",
+        "@maplibre/maplibre-gl-leaflet": "^0.1.4",
         "@protomaps/basemaps": "^5.7.2",
         "@tauri-apps/api": "^2.11.1",
         "leaflet": "^1.9.4",
