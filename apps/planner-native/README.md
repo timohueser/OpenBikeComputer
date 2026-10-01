@@ -2,9 +2,9 @@
 
 This module hosts the shared web planner in one persistent `WKWebView`. It is
 a reusable composition boundary and has a standalone iPhone target. It is not
-a screen in the Companion app. The Companion composition root can retain an
-`OfflinePlannerHost` and present `OfflinePlannerView` without copying planner
-logic. Follow [the iOS on-ramp](../../companion-ios/CLAUDE.md) for that integration.
+a screen in the Companion app. The Companion uses the native route and overlay
+providers and `PlannerSearchRuntime` directly through `OfflinePlanner`.
+Follow [the iOS on-ramp](../../companion-ios/CLAUDE.md) to build that app.
 
 Use iOS 17 or later, Swift 6, XcodeGen, Node.js, and the Rust iOS target. Install
 the locked dependencies for `builder/app` and `apps/planner-search`. Follow the
@@ -77,3 +77,20 @@ bash apps/planner-native/test-http.sh
 npm test --prefix apps/planner-search
 npm exec --prefix builder/app -- vitest run --root builder/app src/lib/planner/ src/components/planner/
 ```
+
+## Companion download service
+
+Use the existing planner VPS and a verified runtime release. Save Geofabrik's
+`https://download.geofabrik.de/index-v1.json` locally as `REGIONS`. Choose a cache
+budget that leaves space for online services. Run from the repository root:
+
+```sh
+python3 -m tools.planner_downloads_deploy --host USER@VPS --source RELEASE --regions REGIONS --max-cache-bytes BYTES
+# Repeat with --apply to install, build and start the service.
+```
+
+The service uses port 8790 on loopback and the existing Caddy planner import.
+It installs its source release separately from the online service. Inspect
+`journalctl -u obc-planner-downloads` for preparation failures. Stop the service
+before clearing its bundle cache in `/var/lib/obc-planner-downloads/bundles`.
+Existing phone maps remain usable. Pending downloads must be prepared again.

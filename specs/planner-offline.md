@@ -68,3 +68,46 @@ and activation writes. `peak_added_bytes` and `added_stored_bytes` subtract the
 initial retained total. `download_cache_bytes` counts pending transport files.
 These are file byte counts. They exclude filesystem allocation overhead and
 caches made by the application.
+
+## Download service
+
+The HTTPS prefix is `/planner-offline`. Bounds use west, south, east, north.
+
+| Request | Result |
+| --- | --- |
+| `GET /catalog` | `format: 1`, source `bounds`, and `regions` |
+| `POST /jobs` | JSON with either `bounds` or a `region` ID; returns a job |
+| `GET /jobs/ID` | Job `id`, `state`, and optional failure `message` |
+| `GET /bundles/ID/bundle.json` | Bundle manifest for a ready job |
+| `GET /bundles/ID/release.json` | Original release manifest |
+| `GET /bundles/ID/objects/SHA256` | Verified transport bytes; supports HEAD and byte ranges |
+
+A job state is `preparing`, `ready`, or `failed`. Its ID hashes the source release
+ID and bounds. Only one preparation runs at a time. Repeated selections reuse a
+complete cached bundle. A failed job can be requested again. Error responses
+contain a `message`. Selections outside source coverage are rejected.
+
+A region has `id`, `name`, nullable `parent`, `bounds`, `available`, and `rings`.
+Rings contain longitude-latitude pairs. The hierarchy preserves all matching
+region choices at a point. A region download selects its enclosing rectangle.
+Regions outside source coverage remain visible but unavailable.
+
+## iOS library
+
+The iOS installer uses the object and release layout above. `maps.json` replaces
+`active.json` with a list of installed maps. Each entry contains `id`, `name`,
+`region`, `bounds`, and `installedBytes`. `pending.json` holds one resumable
+download. `downloads/SHA256.resume` holds opaque URLSession resume data.
+
+The app checks free space before transfer and before each object. Its estimate
+includes filesystem allocation, missing decoded objects, the largest temporary
+compressed object, and installation metadata. Compressed objects are decoded
+and removed individually. Verification precedes the atomic library update.
+The library is excluded from device backups. Deletion retains shared objects
+that another map or the pending download needs.
+
+Each download prohibits cellular, expensive and constrained networks unless
+the user allows them. Maps, routes, search and overlays first use a complete
+installed release that covers the request. Routing graphs are not combined.
+A failed local request falls back to the online service. A valid empty local
+search result does not need a network request.
