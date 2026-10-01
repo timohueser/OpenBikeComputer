@@ -80,28 +80,15 @@ Browser zurücksenden kann. Rechtsgrundlage ist jeweils Art. 6 Abs. 1 lit. f DSG
 
 ### 6.1 Kartenkacheln
 
-Die Karte zur Regionsauswahl lädt ihre Kacheln von `tiles.openbikecomputer.com`. Das ist
-der Cloudflare Worker, der auch den Routenplaner bedient (Abschnitt 7.1). Cloudflare
-erhält die IP-Adresse und die angefragte Kachel. Daraus kann Cloudflare den Kartenausschnitt
-erkennen. Schriften und Symbole der Karte kommen von `maps.openbikecomputer.com`
-(Abschnitt 6.3). Die Kacheln erscheinen bereits in der ersten Ansicht des Kartenbaukastens, weil
-die Auswahl einer Region ohne Kartenhintergrund nicht sinnvoll bedienbar wäre.
-
-Die Geräteseiten des Kartenbaukastens und der Desktop-App laden Kacheln von
-`tile.openstreetmap.org`, wenn sie Touren und aufgezeichnete Fahrten auf einer Karte
-zeigen. Die Karte zur Regionsauswahl lädt dieselben Kacheln, wenn
-`tiles.openbikecomputer.com` den sichtbaren Ausschnitt nicht abdeckt oder nicht erreichbar
-ist. Dieser Server wird von der OpenStreetMap Foundation betrieben, St John's
-Innovation Centre, Cowley Road, Cambridge CB4 0WS, Vereinigtes Königreich. Die
-OpenStreetMap Foundation erhält die IP-Adresse und den angefragten Kartenausschnitt und
-erfährt dann den Ausschnitt, in dem die Strecken liegen. Die Streckendaten selbst werden
-nicht übertragen.
-
-Das berechtigte Interesse liegt in der Anzeige der für die Regionsauswahl, die
-Streckenansicht und die lokale Vorschau erforderlichen Karte. Für das Vereinigte Königreich besteht ein
-Angemessenheitsbeschluss nach Art. 45 DSGVO. Die OpenStreetMap Foundation verarbeitet
-die Abrufe in eigener Verantwortung; ihre
-[Datenschutzerklärung](https://osmfoundation.org/wiki/Privacy_Policy) gilt ergänzend.
+Die Regionsauswahl, Tourenvorschauen und Karten aufgezeichneter Fahrten im Kartenbaukasten
+und in der Desktop-App laden Kacheln von `tiles.openbikecomputer.com`. Das ist der Cloudflare
+Worker, der auch den Routenplaner bedient (Abschnitt 7.1). Cloudflare erhält die IP-Adresse
+und die angefragte Kachel. Daraus kann Cloudflare den Kartenausschnitt erkennen.
+Die Streckendaten selbst werden nicht übertragen. Schriften und Symbole der Karte kommen
+von `maps.openbikecomputer.com` (Abschnitt 6.3). Builds ohne feste Planereinstellungen lesen
+auch die aktive Version aus dem Katalog auf diesem Host. Die Kacheln laden beim Öffnen
+einer Karte. Das berechtigte Interesse liegt in der Anzeige der Karte für die Regionsauswahl
+und die Ansicht von Strecken oder aufgezeichneten Fahrten.
 
 ### 6.2 Prüfung auf neue Firmware
 

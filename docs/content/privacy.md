@@ -77,27 +77,14 @@ The legal basis in each case is Art. 6(1)(f) GDPR.
 
 ### 6.1 Map tiles
 
-The map for choosing a region loads its tiles from `tiles.openbikecomputer.com`. This is
-the Cloudflare Worker that also serves the route planner (section 7.1). Cloudflare receives
-your IP address and the requested tile. From this, Cloudflare can see the map area. The
-map's fonts and symbols come from `maps.openbikecomputer.com` (section 6.3). The
-tiles appear in the first view of the map builder, because you cannot choose a region in a
-useful way without a map background.
-
-The device pages of the map builder and of the desktop app load tiles from
-`tile.openstreetmap.org` when they show tours and recorded rides on a map. The map for
-choosing a region loads the same tiles when `tiles.openbikecomputer.com` does not cover the
-visible area or cannot be reached. This server is
-operated by the OpenStreetMap Foundation, St John's Innovation Centre, Cowley Road,
-Cambridge CB4 0WS, United Kingdom. The OpenStreetMap Foundation receives your IP address
-and the requested map area. It then learns the map area in which the routes lie. The route
-data itself is not transmitted.
-
-The legitimate interest is to show the map that is needed to select a region, to view
-routes and to preview locally. For the United Kingdom, an adequacy decision exists under
-Art. 45 GDPR. The OpenStreetMap Foundation processes its requests under its own
-responsibility. Its [privacy policy](https://osmfoundation.org/wiki/Privacy_Policy) applies
-in addition.
+The region picker, tour previews and recorded ride maps in the map builder and desktop
+app load tiles from `tiles.openbikecomputer.com`. This is the Cloudflare Worker that also
+serves the route planner (section 7.1). Cloudflare receives your IP address and the requested
+tile. From this, Cloudflare can see the map area. The route data itself is not transmitted.
+The map's fonts and symbols come from `maps.openbikecomputer.com` (section 6.3). Builds
+without fixed planner settings also read the active release from the catalog on that host.
+The tiles load when you open a map. The legitimate interest is to show the map needed to
+select a region and view routes or recorded rides.
 
 ### 6.2 Check for new firmware
 
