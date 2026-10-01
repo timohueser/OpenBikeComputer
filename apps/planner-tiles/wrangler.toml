@@ -1,6 +1,8 @@
 name = "obc-planner-tiles"
 main = "src/worker.mjs"
 compatibility_date = "2026-09-30"
+workers_dev = false
+preview_urls = false
 routes = [{ pattern = "tiles.openbikecomputer.com", custom_domain = true }]
 [[r2_buckets]]
 binding = "BUCKET"
@@ -9,3 +11,11 @@ bucket_name = "obc-maps"
 enabled = false
 [limits]
 cpu_ms = 50
+# Per client address and data centre. The limit sits above the fastest honest burst: the web
+# planner's place loader reads 8 tiles in parallel along the whole route.
+[[ratelimits]]
+name = "LIMITER"
+namespace_id = "1001"
+[ratelimits.simple]
+limit = 12000
+period = 60

@@ -40,5 +40,12 @@ npm run deploy --prefix apps/planner-tiles
 return 404. An absent tile returns 204. An absent archive returns 404.
 Read failures return 503 with no cache. The domain root returns 404.
 
+Only `npm run deploy` applies `wrangler.toml`. It turns off `workers.dev` and preview URLs and
+adds the `LIMITER` binding. The Worker answers `429` to a client address that exceeds the limit
+on cache misses. Cache hits are never counted. A dashboard paste has no binding, and the Worker
+then applies no limit. Counters are per data centre. Raise the limit when many riders share one
+address. The rate limit rule, the cache rule and the budget alert are in the
+[Cloudflare runbook](../../ops/cloudflare.md).
+
 Raw archive downloads use the bucket's public domain. See the
 [planner instructions](../../builder/app/src/components/planner/README.md).

@@ -40,6 +40,10 @@ export default {
     const cacheKey = new Request(url.href);
     const cached = await caches.default.match(cacheKey);
     if (cached) return new Response(request.method === 'HEAD' ? null : cached.body, cached);
+    // Only a cache miss reads the bucket, so only a miss counts against the limit.
+    if (env.LIMITER && !(await env.LIMITER.limit({ key: request.headers.get('cf-connecting-ip') ?? '' })).success) {
+      return new Response('Too many requests', { status: 429, headers: { ...headers, 'Cache-Control': 'no-store', 'Retry-After': '60' } });
+    }
     const archive = new PMTiles(new R2Source(env.BUCKET, `planner/releases/${route.release}/maps/${route.name}.pmtiles`), directories, decompress);
     try {
       const header = await archive.getHeader();
