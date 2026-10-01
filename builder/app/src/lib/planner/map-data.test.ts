@@ -33,12 +33,15 @@ describe('planner map hosting', () => {
     it('gives the area picker the basemap alone, without places, terrain, cycleways or background', async () => {
         vi.stubGlobal('window', { location: { href: 'https://planner.example/builder/' } });
         const { basemapStyle } = await import('./map-style');
-        const style = basemapStyle();
-        expect(validateStyleMin(style)).toEqual([]);
-        expect(Object.keys(style.sources)).toEqual(['basemap']);
-        expect(style.layers.map((layer) => layer.id)).not.toContain('pois');
-        expect(style.layers.some((layer) => layer.type === 'background')).toBe(false);
-        expect(style.layers.every((layer) => !('source' in layer) || layer.source === 'basemap')).toBe(true);
+        for (const theme of ['light', 'dark'] as const) {
+            const style = basemapStyle(theme);
+            expect(validateStyleMin(style)).toEqual([]);
+            expect(style.sprite).toMatch(new RegExp(`/${theme}$`));
+            expect(Object.keys(style.sources)).toEqual(['basemap']);
+            expect(style.layers.map((layer) => layer.id)).not.toContain('pois');
+            expect(style.layers.some((layer) => layer.type === 'background')).toBe(false);
+            expect(style.layers.every((layer) => !('source' in layer) || layer.source === 'basemap')).toBe(true);
+        }
     });
 
     it('uses the installed region and bounds before the shared UI loads', async () => {

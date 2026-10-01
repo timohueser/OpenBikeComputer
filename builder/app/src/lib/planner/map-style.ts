@@ -43,13 +43,13 @@ function flavor(dark: boolean): Flavor {
 }
 
 /** The planner's basemap alone, for the area picker: no points of interest, terrain, cycleways or background, so a fallback layer shows through where tiles are missing. */
-export function basemapStyle(): StyleSpecification {
+export function basemapStyle(theme: "light" | "dark"): StyleSpecification {
     return {
         version: 8,
         glyphs: GLYPHS_URL,
-        sprite: `${SPRITES_URL}/light`,
+        sprite: `${SPRITES_URL}/${theme}`,
         sources: { basemap: BASEMAP_SOURCE },
-        layers: (layers("basemap", flavor(false), { lang: "en" }) as LayerSpecification[]).filter((layer) => layer.type !== "background" && layer.id !== "pois"),
+        layers: (layers("basemap", flavor(theme === "dark"), { lang: "en" }) as LayerSpecification[]).filter((layer) => layer.type !== "background" && layer.id !== "pois"),
     };
 }
 
