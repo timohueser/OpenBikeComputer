@@ -88,6 +88,8 @@ builder/app/test-support/flat-device/pkg/
 # virtualenv + the optional local maps drop. The tooling itself (everything in
 # tools/ except obc.local) is committed.
 tools/obc.local
+# Planner tile settings for a local desktop build (see apps/obc-desktop/README.md).
+builder/app/.env.local
 .venv/
 /maps/
 # Web builder frontend: dependencies + the Vite build output (CI builds it).

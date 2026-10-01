@@ -177,7 +177,7 @@ export class CoverageMapView {
         // boxZoom off: shift+drag stays free for a future gesture and never fights
         // the box tool.
         this.map = L.map(el, { worldCopyJump: true, boxZoom: false, maxZoom: 18 }).setView([49, 9], 5);
-        void addBasemap(this.map).catch((error) => console.error("basemap failed to load", error));
+        void addBasemap(this.map);
 
         // Draw order bottom-up: shelf, selection, warnings on top of the
         // selection they annotate, preview above everything settled.
