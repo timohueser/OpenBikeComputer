@@ -30,6 +30,8 @@ class CleanupTests(unittest.TestCase):
             ("releases/" + "b" * 64 + "/routing/pages.bin", 100), ("catalog.json", 3), ("other/reference", 10)]]
 
     def transfer(self, command, *_args, **_kwargs):
+        if "--no-modtime" in command:
+            return json.dumps([dict(row, ModTime="2000-01-01T00:00:00Z") for row in self.rows])
         return self.raw if command[0] == "cat" else json.dumps(self.rows)
 
     def test_plan_keeps_active_objects_and_shared_sources(self):

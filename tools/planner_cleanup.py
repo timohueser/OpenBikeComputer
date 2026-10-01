@@ -103,7 +103,7 @@ def plan(remote, current):
         raise ValueError("Deploy a planner release before cleanup.")
     document, prefix = manifest(remote, current["active"])
     keep = referenced_keys(document, prefix)
-    rows = json.loads(r2.run_rclone(["lsjson", remote.path + "/planner", "--recursive", "--files-only", "--no-modtime"], remote.env, capture=True))
+    rows = json.loads(r2.run_rclone(["lsjson", remote.path + "/planner", "--recursive", "--files-only", "--use-server-modtime"], remote.env, capture=True))
     found = {"planner/" + row["Path"]: row for row in rows}
     for key in found:
         if key.startswith(("planner/releases/", "planner/sources/")) and (
