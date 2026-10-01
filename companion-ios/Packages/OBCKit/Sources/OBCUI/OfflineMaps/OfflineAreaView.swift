@@ -225,6 +225,7 @@
         init(selection: OfflineSelectionFrame) {
             self.selection = selection
             super.init(frame: .zero)
+            clipsToBounds = true
             addSubview(map)
             addSubview(selection)
             accessibilityElements = [map, selection]

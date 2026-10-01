@@ -50,7 +50,7 @@ export function packName(name, tile, zoom) {
 }
 
 export function assetRoute(path) {
-  const match = /^\/releases\/([a-f0-9]{64})\/(device\/catalog\.json|maps\/assets\/(?:fonts\/[A-Za-z0-9 _,-]+\/[0-9]+-[0-9]+\.pbf|sprites\/v[0-9]+(?:@2x)?\.(?:json|png)))$/.exec(path);
+  const match = /^\/releases\/([a-f0-9]{64})\/(device\/catalog\.json|maps\/assets\/(?:fonts\/[A-Za-z0-9 _,-]+\/[0-9]+-[0-9]+\.pbf|sprites\/v[0-9]+\/[a-z]+(?:@2x)?\.(?:json|png)))$/.exec(path);
   if (!match) return null;
   return { release: match[1], file: match[2], type: match[2].endsWith('.json') ? 'application/json'
     : match[2].endsWith('.png') ? 'image/png' : 'application/x-protobuf' };

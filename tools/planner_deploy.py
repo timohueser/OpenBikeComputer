@@ -175,9 +175,11 @@ def verify_services(active, document, origin):
     lat = math.radians(probe["points"][0][1])
     y = int((1 - math.asinh(math.tan(lat)) / math.pi) / 2 * (1 << z))
     for url in [tilejson["tiles"][0].replace("{z}", "12").replace("{x}", str(x)).replace("{y}", str(y)),
-                active["terrain"].replace("{z}", "12").replace("{x}", str(x)).replace("{y}", str(y))]:
+                active["terrain"].replace("{z}", "12").replace("{x}", str(x)).replace("{y}", str(y)),
+                active["sprites"] + "/light@2x.json", active["sprites"] + "/light@2x.png",
+                active["glyphs"].replace("{fontstack}", "Noto%20Sans%20Regular").replace("{range}", "0-255")]:
         with sources.open_url(url) as response:
-            if response.status != 200 or not response.read(): raise ValueError("Regional map tiles are absent")
+            if response.status != 200 or not response.read(): raise ValueError("Regional map tiles or style assets are absent")
     with sources.open_url(active["search"] + "/sample") as response:
         points = json.load(response)["coordinates"]
         if len(points) < 2: raise ValueError("Example route is absent")

@@ -14,7 +14,8 @@ test('tile routes bound archive selection, coordinates and types', () => {
 test('invalid requests perform no bucket access', async () => {
   const env = { BUCKET: { get() { assert.fail('Unexpected bucket access'); } } };
   for (const request of [new Request('https://tiles.example/nope'), new Request(`https://tiles.example${base}/basemap.json?x=1`)]) {
-    assert.equal((await worker.fetch(request, env, {})).status, 404);
+    const response = await worker.fetch(request, env, {});
+    assert.equal(response.status, 404); assert.equal(response.headers.get('Cache-Control'), 'no-store');
   }
   assert.equal((await worker.fetch(new Request('https://tiles.example', { method: 'POST' }), env, {})).status, 405);
 });
@@ -77,6 +78,7 @@ test('range reads deliver decoded tiles, cache full GETs, and do not cache missi
     [`${prefix}/public/grid.json`, JSON.stringify({format:2,map_zoom:11})],
     [`${prefix}/public/maps/tiles/basemap/0-0-0.pmtiles.json`, JSON.stringify({sha256:digest,encoding:'identity',bytes:bytes.length,decoded_bytes:bytes.length})],
     [`${prefix}/public/device/catalog.json.json`, JSON.stringify({sha256:'e'.repeat(64),encoding:'identity',bytes:asset.length,decoded_bytes:asset.length})],
+    [`${prefix}/public/maps/assets/sprites/v4/light@2x.json.json`, JSON.stringify({sha256:'e'.repeat(64),encoding:'identity',bytes:asset.length,decoded_bytes:asset.length})],
     [`${prefix}/objects/${digest}`, bytes], [`${prefix}/objects/${'e'.repeat(64)}`, asset],
   ]);
   globalThis.caches = {default:{async match(){return undefined},async put(){}}};
@@ -92,5 +94,7 @@ test('range reads deliver decoded tiles, cache full GETs, and do not cache missi
   assert.equal(response.status,200);assert.deepEqual(new Uint8Array(await response.arrayBuffer()),new Uint8Array([26,0]));
   const catalog=await worker.fetch(new Request(`https://tiles.example/releases/${id}/device/catalog.json`),env,ctx);
   assert.deepEqual(await catalog.json(),{hello:'map'});
+  const sprite=await worker.fetch(new Request(`https://tiles.example/releases/${id}/maps/assets/sprites/v4/light@2x.json`),env,ctx);
+  assert.equal(sprite.status,200);assert.deepEqual(await sprite.json(),{hello:'map'});
   await Promise.all(pending); delete globalThis.caches;
 });

@@ -38,7 +38,9 @@ export default {
     const url = new URL(request.url), route = tileRoute(url.pathname);
     let asset;
     try { asset = assetRoute(decodeURIComponent(url.pathname)); } catch { asset = null; }
-    if ((!route && !asset) || url.search) return new Response('Tile not found', { status: 404, headers });
+    if ((!route && !asset) || url.search) return new Response('Tile not found', {
+      status: 404, headers: { ...headers, 'Cache-Control': 'no-store' },
+    });
     const cacheKey = new Request(url.href);
     const cached = await caches.default.match(cacheKey);
     if (cached) return new Response(request.method === 'HEAD' ? null : cached.body, cached);
