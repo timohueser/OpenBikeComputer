@@ -14,8 +14,10 @@ export async function addBasemap(map: L.Map): Promise<void> {
         import("../planner/map-style"),
         import("maplibre-gl/dist/maplibre-gl.css"),
     ]);
-    // `remove()` clears the map's id; the import can finish after the view is gone.
-    if (!(map as L.Map & { _leaflet_id?: number })._leaflet_id) return;
+    // `remove()` clears the container's id; the import can finish after the view is gone.
+    // MapLibre 6 needs WebGL2: without it the picker stays usable, just without a basemap.
+    if (!(map.getContainer() as HTMLElement & { _leaflet_id?: number })._leaflet_id) return;
+    if (!document.createElement("canvas").getContext("webgl2")) return;
     maplibregl.setWorkerUrl(workerUrl);
     maplibregl.addProtocol("pmtiles", new Protocol().tile);
     maplibreGL({ style: basemapStyle(), renderWorldCopies: false, interactive: false }).addTo(map);

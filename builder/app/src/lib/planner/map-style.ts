@@ -42,7 +42,7 @@ function flavor(dark: boolean): Flavor {
     };
 }
 
-/** The planner's basemap alone, for a picker that only places rectangles: no points of interest, terrain or cycleways. */
+/** The planner's basemap alone, for the area picker: no points of interest, terrain or cycleways. */
 export function basemapStyle(): StyleSpecification {
     return {
         version: 8,
