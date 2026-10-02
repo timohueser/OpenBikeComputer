@@ -20,7 +20,9 @@ struct OfflineMapsTests {
     @Test func installationVerifiesAndLinksFilesBeforeMakingThemAvailable() async throws {
         let root = temporary()
         defer { try? FileManager.default.removeItem(at: root) }
-        let (quote, bytes) = try fixture()
+        let (prepared, bytes) = try fixture()
+        let quote = prepared.named("Trip area")
+        #expect(quote.map.name == "Trip area")
         let store = OfflineMapStore(root: root)
         try stage(quote, bytes: bytes, root: root)
         try await store.install(quote, allowMobileData: false) { _, _, _ in }
