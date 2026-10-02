@@ -47,6 +47,7 @@ describe('routing integration', () => {
         expect(line.alternativesReady).toBe(false);
         expect(line.surfaces).toEqual(['Paved', 'Gravel']);
         expect(line.pushing).toEqual([false, true]);
+        expect(line.package).toBe('test');
         expect(JSON.parse(fetch.mock.calls[0][1].body).points).toEqual(plan.points.map(p => p.coordinate));
         fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ routes: [{ ...answer, id: 'shorter', reason: 'shorter' }] }) });
         const alternatives = await requestAlternatives(plan, line, new AbortController().signal);
