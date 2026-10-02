@@ -816,11 +816,9 @@ fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profi
     assert!(route.attachments[1].snap_distance_m < 25.0);
     assert_eq!(route.attachments[0].snap_distance_m, 0.0);
     assert_eq!(route.attachments[2].snap_distance_m, 0.0);
-    assert!(route.warnings.iter().any(|w| w.contains("nearby accessible roads")));
     request.profile = "mtb".into();
     let mtb = router.route(&request, &Control::default()).unwrap();
     assert_eq!(mtb.attachments[1].projected.lat, 100);
-    assert!(mtb.warnings.is_empty());
     request.profile = "road".into();
     // An explicit point on the disconnected driveway must not jump to a different road.
     request.points[1][1] = 0.0001;

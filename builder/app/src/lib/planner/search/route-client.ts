@@ -10,7 +10,7 @@ export async function buildQueryRoute(points: ResolvedPoint[], bike: string, goa
     const result = await response.json();
     if (!response.ok) throw new Error(result.error ?? 'The routing engine could not find a route.');
     const [route] = decodeRoutes(result);
-    if (route?.legs.length !== points.length - 1 || route.legs.some((leg, i) => leg.from_index !== (i ? route.legs[i - 1].to_index : 0)
+    if (!Array.isArray(route?.legs) || route.legs.length !== points.length - 1 || route.legs.some((leg, i) => leg.from_index !== (i ? route.legs[i - 1].to_index : 0)
         || leg.to_index <= leg.from_index || leg.to_index >= route.geometry.length))
         throw new Error('The routing engine returned incomplete legs.');
     const warnings = new Set(route.snap_truncated ? ['The routing engine reached its snapping search limit.'] : []);

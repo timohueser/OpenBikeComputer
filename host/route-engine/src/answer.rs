@@ -109,7 +109,6 @@ mod tests {
             attachments: vec![attachment],
             snap_truncated: serde_json::from_value(source["snap_truncated"].clone()).unwrap(),
             totals: serde_json::from_value(source["totals"].clone()).unwrap(),
-            warnings: vec!["Unread by clients".into()],
         };
         assert_eq!(answer(&Response { routes: vec![route] }), vector["answer"]);
     }

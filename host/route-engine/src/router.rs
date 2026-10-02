@@ -65,7 +65,6 @@ pub struct Route {
     pub attachments: Vec<Candidate>,
     pub snap_truncated: bool,
     pub totals: Totals,
-    pub warnings: Vec<String>,
 }
 
 pub struct Control<'a> {
@@ -134,9 +133,7 @@ impl<P: RoutingData> Router<P> {
         match self.route_with_policy(request, control, Policy::default(), false, &mut work) {
             Err(Error::NoPath) => {
                 let policy = Policy { ambiguity_m: 50.0, max_candidates: 16, ..Policy::default() };
-                let mut route = self.route_with_policy(request, control, policy, true, &mut work)?;
-                route.warnings.push("The nearest roads do not connect. The route uses nearby accessible roads.".into());
-                Ok(route)
+                self.route_with_policy(request, control, policy, true, &mut work)
             }
             result => result,
         }
@@ -318,7 +315,6 @@ impl<P: RoutingData> Router<P> {
             attachments,
             snap_truncated: truncated,
             totals: Totals::default(),
-            warnings: self.package.warnings().to_vec(),
         };
         for (start_attachment, path) in paths {
             let from_index = route.geometry.len().saturating_sub(1);
