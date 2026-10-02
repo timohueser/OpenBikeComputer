@@ -79,14 +79,15 @@ const inBox = (p, b) => p.lon >= b[0] && p.lon <= b[2] && p.lat >= b[1] && p.lat
 const pointBoundsSQL = 'p.lon>=? AND p.lat>=? AND p.lon<=? AND p.lat<=?';
 const bboxSQL = 'p.id IN (SELECT id FROM spatial WHERE east>=? AND north>=? AND west<=? AND south<=?)';
 
-export function routePosition(point, route) {
+// With `ds`, positions use the given kilometre of each point instead of the line's own length.
+export function routePosition(point, route, ds) {
   let best = {distance: Infinity, along: 0}, along = 0;
   for (let i = 1; i < route.length; i++) {
     const a = route[i-1], b = route[i], cos = Math.cos(point[1] * Math.PI / 180);
     const vx = (b[0]-a[0])*cos, vy = b[1]-a[1];
     const wx = (point[0]-a[0])*cos, wy = point[1]-a[1];
     const t = Math.max(0, Math.min(1, (vx*wx+vy*wy)/(vx*vx+vy*vy || 1)));
-    const len = distance(a,b), d = distance(point,[a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1])]);
+    const len = ds ? ds[i]-ds[i-1] : distance(a,b), d = distance(point,[a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1])]);
     if (d < best.distance) best = {distance:d, along:along+t*len};
     along += len;
   }
@@ -124,6 +125,11 @@ function score(p,q,focus,fuzzy=false) {
     why:{match,proximity,importance,outdoor,correction:fuzzy}, precision:p.kind==='street'?'street':'place'};
 }
 
+function candidates(db, queries) {
+  const rows=db.candidates?db.candidates(queries):queries.flatMap(({sql,params,options})=>db.all(sql,params,options));
+  return [...new Map(rows.map(p=>[p.id,p])).values()];
+}
+
 function textCandidates(db, q, view, onlyPlaces=false) {
   let exp=expression(q);
   if(!exp) return [];
@@ -131,27 +137,33 @@ function textCandidates(db, q, view, onlyPlaces=false) {
   if(streetNorm(q)!==norm(q))exp=`(${exp}) OR (${expression(streetNorm(q))})`;
   const restriction=onlyPlaces?" AND p.kind IN ('city','town','village','hamlet','locality','district','state','suburb')":'';
   const from=`FROM terms JOIN places p ON p.id=terms.rowid WHERE terms MATCH ?${restriction}`;
-  const exact=db.all(`SELECT p.* FROM names n JOIN places p ON p.id=n.place_id WHERE n.term=?${restriction}
-    ORDER BY ${candidateOrder(view)} LIMIT 400`,[norm(q)]);
-  const prefix=db.all(`SELECT DISTINCT p.* FROM names n JOIN places p ON p.id=n.place_id WHERE n.term>=? AND n.term<?${restriction}
-    ORDER BY ${candidateOrder(view)} LIMIT 100`,[norm(q),norm(q)+'\uffff']);
-  // Both branches precede ranking: a local candidate survives a common global name.
-  const global=db.all(`SELECT p.* ${from} ORDER BY rank, ${candidateOrder(view)} LIMIT 400`,[exp]);
-  const local=db.all(`SELECT p.* ${from} AND ${pointBoundsSQL} ORDER BY ${candidateOrder(view)} LIMIT 800`,[exp,...view]);
   const keys=[...new Set([...spans(q),...spans(streetNorm(q))].map(p=>p.term))];
-  const joined=compactCandidates(db,keys,compact(q),view,restriction);
-  return [...new Map([...exact,...prefix,...global,...local,...joined].map(p=>[p.id,p])).values()];
+  return candidates(db,[
+    {sql:`SELECT p.* FROM names n JOIN places p ON p.id=n.place_id WHERE n.term=?${restriction}
+      ORDER BY ${candidateOrder(view)} LIMIT 400`,params:[norm(q)]},
+    {sql:`SELECT DISTINCT p.* FROM names n JOIN places p ON p.id=n.place_id WHERE n.term>=? AND n.term<?${restriction}
+      ORDER BY ${candidateOrder(view)} LIMIT 100`,params:[norm(q),norm(q)+'\uffff']},
+    // Both branches precede ranking: a local candidate survives a common global name.
+    {sql:`SELECT p.* ${from} ORDER BY rank, ${candidateOrder(view)} LIMIT 400`,params:[exp]},
+    {sql:`SELECT p.* ${from} AND ${pointBoundsSQL} ORDER BY ${candidateOrder(view)} LIMIT 800`,params:[exp,...view],options:{bounds:view}},
+    ...compactQueries(keys,compact(q),view,restriction),
+  ]);
+}
+
+function compactQueries(keys,prefix,view,restriction='') {
+  const joined=`FROM compact_names n JOIN places p ON p.id=n.place_id WHERE n.term IN (${keys.map(()=>'?').join(',')})${restriction}`;
+  // A common query fragment must not exhaust the budget for the complete name.
+  return [
+    ...keys.map(key=>({sql:`SELECT p.* FROM compact_names n JOIN places p ON p.id=n.place_id
+      WHERE n.term=?${restriction} ORDER BY ${candidateOrder(view)} LIMIT 400`,params:[key]})),
+    {sql:`SELECT DISTINCT p.* ${joined} AND ${pointBoundsSQL} ORDER BY ${candidateOrder(view)} LIMIT 800`,params:[...keys,...view],options:{bounds:view}},
+    {sql:`SELECT DISTINCT p.* FROM compact_names n JOIN places p ON p.id=n.place_id
+      WHERE n.term>=? AND n.term<?${restriction} ORDER BY ${candidateOrder(view)} LIMIT 100`,params:[prefix,prefix+'\uffff']},
+  ];
 }
 
 function compactCandidates(db,keys,prefix,view,restriction='') {
-  const joined=`FROM compact_names n JOIN places p ON p.id=n.place_id WHERE n.term IN (${keys.map(()=>'?').join(',')})${restriction}`;
-  // A common query fragment must not exhaust the budget for the complete name.
-  const compactGlobal=keys.flatMap(key=>db.all(`SELECT p.* FROM compact_names n JOIN places p ON p.id=n.place_id
-    WHERE n.term=?${restriction} ORDER BY ${candidateOrder(view)} LIMIT 400`,[key]));
-  const compactLocal=db.all(`SELECT DISTINCT p.* ${joined} AND ${pointBoundsSQL} ORDER BY ${candidateOrder(view)} LIMIT 800`,[...keys,...view]);
-  const compactPrefix=db.all(`SELECT DISTINCT p.* FROM compact_names n JOIN places p ON p.id=n.place_id
-    WHERE n.term>=? AND n.term<?${restriction} ORDER BY ${candidateOrder(view)} LIMIT 100`,[prefix,prefix+'\uffff']);
-  return [...new Map([...compactGlobal,...compactLocal,...compactPrefix].map(p=>[p.id,p])).values()];
+  return candidates(db,compactQueries(keys,prefix,view,restriction));
 }
 
 export function named(db,q,view,onlyPlaces=false) {
@@ -270,7 +282,7 @@ export function search(db,input) {
       }
     }
     const rows=db.all(`SELECT p.* FROM places p WHERE p.kind IN (${kinds.map(()=>'?').join(',')})
-      AND ${bboxSQL}`,[...kinds,...bounds]);
+      AND ${bboxSQL}`,[...kinds,...bounds],{bounds});
     results=rows.filter(p=>inBox(p,bounds)&&(!cuisines.length||cuisines.some(c=>serves(p,c)))).map(p=>{
       const km=distance([p.lon,p.lat],focus);
       const position=route?routePosition([p.lon,p.lat],route):null;

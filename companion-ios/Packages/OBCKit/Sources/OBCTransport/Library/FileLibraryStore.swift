@@ -943,6 +943,7 @@ private struct RidePointDTO: Codable {
 }
 
 private struct RideSummaryDTO: Codable {
+    var isDemo: Bool?
     var source: RideSource?
     var id: String
     var name: String
@@ -969,6 +970,7 @@ private struct RideSummaryDTO: Codable {
 
     init(_ summary: RideSummary) {
         source = summary.source
+        isDemo = summary.isDemo
         id = summary.id.rawValue
         name = summary.name
         date = summary.date
@@ -998,7 +1000,7 @@ private struct RideSummaryDTO: Codable {
             avgHeartRate: avgHeartRate, maxHeartRate: maxHeartRate,
             avgCadence: avgCadence, avgPower: avgPower, maxPower: maxPower, energyKJ: energyKJ,
             bikeType: BikeType(rawValue: bikeType) ?? .road, trip: trip?.domain,
-            zoneLimits: zoneLimits ?? .notSet, source: source
+            zoneLimits: zoneLimits ?? .notSet, source: source, isDemo: isDemo ?? false
         )
     }
 }

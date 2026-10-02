@@ -12,7 +12,7 @@ its files are immutable.
 | `region` | Lowercase region ID, with letters, digits, and hyphens |
 | `bounds` | `[west,south,east,north]` in degrees |
 | `osm_sha256` | Hash of the common OSM PBF |
-| `routing_package` | Hash of `routing/manifest.json` |
+| `routing_package` | Hash of `routing/manifest.json` or `routing/blocks.json` |
 | `profiles` | Sorted routing profile IDs |
 | `attribution` | OSM source credit and licence |
 | `terrain_attribution` | Elevation source credits |
@@ -34,8 +34,8 @@ R2 stores release files under `planner/releases/ID/`. It stores source mirrors
 under `planner/sources/`, without the local `sources/` path prefix. A source name
 starts with its SHA-256. Source mirrors can be shared by releases.
 
-`maps/` contains `basemap.pmtiles`, `terrain.pmtiles`, map assets, and their
-manifest. `routing/` contains the three files in the
+`maps/` contains `basemap.pmtiles`, `places.pmtiles`, `overlays.pmtiles`,
+`terrain.pmtiles`, map assets, and their manifest. `routing/` contains the three files in the
 [route package contract](route-package.md), plus `overlays.sqlite`. The overlay
 index stores the routing manifest identity and has the same OSM source.
 `search/` contains `REGION.sqlite`
@@ -57,14 +57,63 @@ invisible feature. The facet has equal lower and upper bounds. The query also
 checks each mode's minimum zoom. A cutout retains every referenced geometry,
 attribute, and route.
 
+`places.pmtiles` holds the rider places of the basemap. It has gzip MVT tiles
+at zoom 11 only, with extent 4096 and one `pois` layer. Each feature is one
+point with the basemap feature ID and the basemap `kind`, `name`, and `name:en`
+properties. The kinds are the `kinds` keys of the web planner's
+[place categories](../builder/app/src/lib/planner/poi-kinds.json). The bake reads
+the basemap's deepest zoom. Each place occurs once, in the tile that contains it.
+A tile with no places is absent.
+
+`overlays.pmtiles` holds the route networks and access restrictions of the
+overlay index. It has gzip MVT tiles from zoom 6 to 14, with extent 4096. Its
+metadata `routing_package` is the routing manifest identity of the overlay index.
+In a grid release, `maps/overlays.json` names the grid routing package, the
+SHA-256 of `routing/blocks.json`, which packs the same graph.
+
+| Layer | Feature ID | Properties |
+| --- | --- | --- |
+| `cycling`, `hiking` | Way ID of the first way in the line | `rank`, `ref`, and `routes`: a JSON array of relation IDs in rank order. `hiking` adds `marker`, the first route `symbol` that is not empty. |
+| `access` | Way ID | `cycling_status`, `walking_status`, `name`, `ref`, `conditional`; `riding`, `walking`, `pushing` and `tags` as JSON text; `cycling_minzoom` and `walking_minzoom`, the overlay index minimum zoom of each restricted mode |
+| `routes` | Relation ID | The route properties that are not empty: `kind`, `network`, `rank`, `name`, `ref`, `website`, `symbol`, `symbol_text`. The point is the tile origin. |
+
+A feature starts at the lower mode minimum zoom of its overlay index feature,
+at most zoom 14. The planner shows access from the `MODE_minzoom` of its travel mode.
+A line names only the routes that start at or below the tile zoom. Lines with
+equal properties join where exactly two of them meet. The `routes` layer of a
+tile holds each route that its lines name. A tile with no features is absent.
+
 The tile API serves `/releases/ID/basemap.json`, vector tiles at
-`/releases/ID/basemap/Z/X/Y.mvt`, and Terrarium tiles at
+`/releases/ID/basemap/Z/X/Y.mvt`, `/releases/ID/places.json`, places tiles at
+`/releases/ID/places/Z/X/Y.mvt`, `/releases/ID/overlays.json`, overlay tiles at
+`/releases/ID/overlays/Z/X/Y.mvt`, and Terrarium tiles at
 `/releases/ID/terrain/Z/X/Y.webp`. An absent tile returns 204. The raw archives
 remain downloadable from R2.
 
 Routing and search APIs have the prefix `/planner-api/releases/ID/`. The final
 path component selects `routing` or `search`. A rollout serves the active
 release and the previous release on separate VPS ports.
+
+## Canonical grid storage
+
+The online services and `deploy` serve grid releases only. A regional release
+without `grid` is for local preview. A grid release adds `grid: {format: 2, zoom: 9, map_zoom: 11}`. Its `files`
+entries retain logical paths and decoded `bytes` and `sha256`. Each also has
+`transport: {bytes, sha256, encoding}`. Encoding is `identity` or `gzip`.
+R2 stores each distinct transport once at `planner/releases/ID/objects/SHA256`.
+The online services and offline installer consume this same pool.
+
+`public/grid.json` contains `format: 2` and `map_zoom`. Each map pack, asset,
+TileJSON, and device catalog has a small pointer at `public/LOGICAL_PATH.json`.
+A pointer repeats the transport entry and adds `decoded_bytes`. The tile
+service resolves a pack through this pointer. A tile without a pack is absent.
+No regional map archive is required beside the pool. Grid assets use the tile
+service origin.
+
+The VPS materializes routing, search, and offline selection metadata. Search
+uses `search/REGION.grid.json` to list cell files and coverage. The
+[offline contract](planner-offline.md#grid-publication-and-selection) defines
+cell selection and download manifests.
 
 ## Catalogue
 

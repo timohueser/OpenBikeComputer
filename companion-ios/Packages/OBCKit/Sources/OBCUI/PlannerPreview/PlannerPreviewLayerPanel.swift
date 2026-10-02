@@ -9,9 +9,9 @@ enum PlannerPreviewNetwork: String, CaseIterable {
     }
 }
 
-// The groups and names match builder/app/src/lib/planner/poi-kinds.ts.
+// The groups and names match builder/app/src/lib/planner/poi-kinds.json.
 enum PlannerPreviewPlaceCategory: String, CaseIterable, Identifiable {
-    case hotel, camp, shelter, shop, food, water, toilets, bike, pharmacy, station, viewpoint, peak
+    case hotel, camp, shelter, rest, shop, food, water, toilets, bike, pharmacy, station, viewpoint, peak
 
     var id: String { rawValue }
     var title: String {
@@ -19,12 +19,13 @@ enum PlannerPreviewPlaceCategory: String, CaseIterable, Identifiable {
         case .hotel: "Lodging"
         case .camp: "Campsites"
         case .shelter: "Shelters"
+        case .rest: "Rest stops"
         case .shop: "Food shops"
         case .food: "Eating"
         case .water: "Water"
         case .toilets: "Toilets"
         case .bike: "Bike"
-        case .pharmacy: "Pharmacy"
+        case .pharmacy: "Pharmacy & hospital"
         case .station: "Stations"
         case .viewpoint: "Viewpoints"
         case .peak: "Peaks and passes"
@@ -35,6 +36,7 @@ enum PlannerPreviewPlaceCategory: String, CaseIterable, Identifiable {
         case .hotel: "bed.double"
         case .camp: "tent"
         case .shelter: "house"
+        case .rest: "table.furniture"
         case .shop: "cart"
         case .food: "fork.knife"
         case .water: "drop"
@@ -49,7 +51,7 @@ enum PlannerPreviewPlaceCategory: String, CaseIterable, Identifiable {
 
     static let groups: [(title: String, categories: [Self])] = [
         ("Sleep", [.hotel, .camp, .shelter]),
-        ("Eat & drink", [.shop, .food]),
+        ("Eat & drink", [.shop, .food, .rest]),
         ("Water", [.water, .toilets]),
         ("Fix & go", [.bike, .pharmacy, .station]),
         ("See", [.viewpoint, .peak]),
@@ -69,6 +71,7 @@ struct PlannerPreviewLayerPanel: View {
     @Binding var network: PlannerPreviewNetwork
     @Binding var hidden: Set<PlannerPreviewPlaceCategory>
     @Binding var highlighted: Set<PlannerPreviewPlaceCategory>
+    var onDownload: (() -> Void)? = nil
     let onDone: () -> Void
     @Environment(\.colorScheme) private var colorScheme
 
@@ -92,6 +95,13 @@ struct PlannerPreviewLayerPanel: View {
                 .padding(.horizontal, 20).padding(.bottom, 24)
             }
             .scrollBounceBehavior(.basedOnSize)
+            if let onDownload {
+                Divider().overlay(OBCTheme.hairline)
+                Button("Download this map", systemImage: "arrow.down.to.line", action: onDownload)
+                    .font(.subheadline).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .padding(.horizontal, 20).padding(.vertical, 8)
+                    .accessibilityIdentifier("planner.downloadMap")
+            }
         }
         .foregroundStyle(OBCTheme.ink)
         .tint(OBCTheme.tint)

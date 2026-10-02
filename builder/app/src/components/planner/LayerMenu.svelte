@@ -19,7 +19,7 @@
 
     const groups: { title: string; categories: PlaceCategory[] }[] = [
         { title: 'Sleep', categories: ['hotel', 'camp', 'shelter'] },
-        { title: 'Eat & drink', categories: ['shop', 'food'] },
+        { title: 'Eat & drink', categories: ['shop', 'food', 'rest'] },
         { title: 'Water', categories: ['water', 'toilets'] },
         { title: 'Fix & go', categories: ['bike', 'pharmacy', 'station'] },
         { title: 'See', categories: ['viewpoint', 'peak'] },

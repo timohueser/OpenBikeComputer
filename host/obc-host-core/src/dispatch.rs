@@ -611,6 +611,10 @@ impl HostLoop {
         trips: &mut dyn TripCatalog,
     ) -> CatalogOutcome {
         match effect {
+            CatalogEffect::ClearPersonalData { token, store } => match routes.clear_personal_data(store) {
+                Ok(done) => CatalogOutcome::PersonalDataCleared { token, done },
+                Err(error) => CatalogOutcome::Failed { token, error },
+            },
             CatalogEffect::RemoveOrphanRoutes { token } => {
                 let orphans: Vec<_> = app.orphan_routes().collect();
                 match routes.retract_generated_routes(&orphans) {

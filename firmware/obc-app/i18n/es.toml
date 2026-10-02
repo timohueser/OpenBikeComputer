@@ -331,13 +331,15 @@ all_added_sub = "Quita uno antes"
 
 # --- Factory-reset settings screen ---
 [reset]
+erasing = "Borrando datos personales..."
+data_failed = "Datos no borrados. Comprueba la tarjeta y reintenta."
 retry = "Reintentar"
 power_cycle = "Apaga y vuelve a encender el OBC."
 phone_failed = "Teléfono no eliminado"
 title = "RESTABLECER"
 factory = "Restablecer"
-erases = "Borra los ajustes"
-saved_time = "y la hora."
+erases = "Borra ajustes, rutas, viajes y recorridos."
+saved_time = "Conserva los mapas."
 confirm = "Confirmar"
 keep_holding = "Sigue pulsando"
 hold_to_erase = "Mantén: borrar"

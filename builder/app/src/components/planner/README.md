@@ -1,8 +1,7 @@
 # Route planner
 
-The public planner runs at `/plan/`. The site build reads one active regional
-release. Maps, routing, and search use that release. The map builder reads its
-snapshot of the device catalogue.
+The public planner at `/plan/` uses one active release for maps, routing, and
+search. The map builder uses its device catalogue.
 
 ## Prepare and publish a region
 
@@ -11,7 +10,6 @@ and the [PMTiles CLI](https://docs.protomaps.com/pmtiles/cli).
 Authenticate `gh` for the query model release. Set the R2 credential in
 `tools/obc.local`. The [region recipe](../../../../../tools/planner-regions/baden-wuerttemberg.json)
 pins the OSM extract, map inputs, elevation inputs, and routing profiles.
-BW includes Balanced, Shorter, and Less climbing for each rider mode.
 
 Map and search builders need Linux, Java 21, Maven, PostgreSQL 17,
 PostGIS 3, osm2pgsql 2, zstd, and `nominatim-db==5.3.2`.
@@ -20,16 +18,21 @@ Allow space for the temporary Nominatim database and Planetiler files.
 Builders use two threads. Allow several hours.
 
 ```sh
-obc planner prepare --data-dir /srv/planner/bw --reference /srv/obc-reference
+obc planner prepare --data-dir /srv/planner/bw-source --reference /srv/obc-reference
+obc planner grid --input-release /srv/planner/bw-source --data-dir /srv/planner/bw
 obc planner publish --data-dir /srv/planner/bw --apply
 obc planner deploy --data-dir /srv/planner/bw --host root@YOUR_VPS --apply
 ```
 
 `publish` and `deploy` show their action without `--apply`. Publication uploads
-immutable files and verifies the remote bytes. Deployment checks the routing
+files and verifies remote bytes. Deployment checks the routing
 package, model readiness, CORS, tiles, search, and a real route. It updates
-`planner/catalog.json` only after those checks pass. The
+`planner/catalog.json` only after these pass. The
 [release contract](../../../../../specs/planner-release.md) defines the files.
+
+Online releases are grid releases: `grid` publishes into a new directory. It
+builds reusable cells from the regional bake. Run one publication or deployment
+at a time.
 
 `prepare` accepts `--osm PATH` for a local copy of the pinned extract. On macOS,
 use `--inputs DIRECTORY` to supply verified Linux builder outputs:
@@ -39,12 +42,9 @@ still use the local elevation readers.
 
 The VPS needs Caddy, Python, Rust at `/root/.cargo/bin/cargo`, and Node 24+
 at `/usr/local/bin/node`. Its existing API virtual host is
-`releases.openbikecomputer.com`. Deployment installs two services on loopback.
-Routing uses at most two workers. Search runs SQLite and the query model.
+`releases.openbikecomputer.com`. Deployment installs routing, search, and offline selection services on loopback.
 
 Deploy the [tile Worker](../../../../../apps/planner-tiles/README.md) first.
-It reads two regional PMTiles archives from R2 and caches XYZ tiles at the edge.
-Fonts, sprites, and archive downloads use `maps.openbikecomputer.com`.
 
 Set the GitHub repository variable `OBC_PLANNER_CATALOG_URL` to
 `https://maps.openbikecomputer.com/planner/catalog.json`. Run **Deploy site**
@@ -78,24 +78,41 @@ cargo run --release -p route-build --bin route-select -- \
 ```
 
 Copy the unchanged `maps`, `search`, and `sources` directories into the new
-release directory. Set the recipe's `profiles` list to the same IDs. Run the
-three commands above with the new directory. Preparation checks the profile
-selection and builds a matching overlay index.
+release, without `maps/overlays.pmtiles`. Set the recipe's `profiles` to the
+same IDs. Run the three commands above with the new directory. Preparation
+checks the profile selection and builds a matching overlay index and tiles.
 
 Routing currently supports German access defaults. Preparation refuses other
 countries. Add and verify their access rules before extending coverage.
 
-Deployment keeps both VPS slots during rollout. Before finalization, restore
-the previous release with:
+Each kind of change goes out in one way:
+
+- **Code only.** For a route server or planner-search change, deploy the same
+  data directory again. `deploy` restarts the active slot in place. Open pages
+  see a short outage. This is accepted during development.
+- **New data release.** `deploy` installs it into the other slot. The old slot
+  serves open pages until you remove it. Then run **Deploy site** and finalize.
+- **New catalogue field.** Deploy the release from the branch first. Merge the
+  branch second. **Deploy site** fails while the live catalogue does not have
+  the field.
+
+Before finalization, restore the previous release with:
 
 ```sh
 obc planner rollback --apply
 ```
 
-Then run **Deploy site** again and finalize. Finalization removes the previous
-dataset from R2 and clears its catalogue entry. Reload old planner pages after rollout.
-The upload preview reports size and a storage cost ceiling before free allowances.
-Worker requests and the VPS have separate costs.
+Then run **Deploy site** again and finalize. `rollback` and `site-config` need
+every catalogue field, so a rollback across a format change fails.
+
+`finalize` cleans R2 only. Remove the old VPS slot `N` and its release `OLD_ID`
+by hand:
+
+```sh
+ssh root@YOUR_VPS 'systemctl disable --now obc-planner-routing-N obc-planner-search-N'
+ssh root@YOUR_VPS 'rm /etc/caddy/planner/slot-N.caddy && caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy'
+ssh root@YOUR_VPS 'rm -rf /opt/obc-planner/releases/OLD_ID /etc/systemd/system/obc-planner-routing-N.service /etc/systemd/system/obc-planner-search-N.service && systemctl daemon-reload'
+```
 
 ## Local preview
 
@@ -130,6 +147,8 @@ release. Use them for a hosted build with the configured API origin.
 | --- | --- |
 | `VITE_PLANNER_TILEJSON_URL` | Hosted basemap TileJSON |
 | `VITE_PLANNER_PMTILES_URL` | Local basemap archive, when TileJSON is absent |
+| `VITE_PLANNER_PLACES_URL` | Rider places TileJSON or PMTiles archive |
+| `VITE_PLANNER_OVERLAYS_URL` | Overlay TileJSON or PMTiles archive |
 | `VITE_PLANNER_ROUTING_URL` | Routing API prefix |
 | `VITE_PLANNER_SEARCH_URL` | Search API prefix |
 | `VITE_PLANNER_SEARCH_REGIONS` | Comma-separated region IDs |
@@ -140,8 +159,8 @@ release. Use them for a hosted build with the configured API origin.
 | `VITE_PLANNER_MAP_BOUNDS` | `west,south,east,north` |
 
 Basemap zooms are 0–14. Terrain zooms are 0–12, with neighbouring tiles for
-contours. The browser creates contours from terrain tiles. Highlighted rider
-places read detailed basemap tiles along the route.
+contours. The browser creates contours from terrain tiles. Highlighted places
+read the zoom 11 places archive.
 
 Extract a smaller map archive with bounds inside its source coverage:
 
@@ -151,10 +170,7 @@ python3 tools/planner_maps.py compact /srv/planner/bw/maps/terrain.pmtiles \
 ```
 
 Omit `--terrain` for a basemap. The command uses `uv` with pinned dependencies.
-It keeps one terrain neighbour per zoom, compresses WebP without pixel changes,
-and checks every retained tile after writing the archive. Preparation uses the
-same terrain path. The JSON result gives complete archive bytes, elapsed time,
-and process peak RAM. A map cutout does not change routing or search coverage.
+A map cutout does not change routing or search coverage.
 Use `--no-recompress` to crop compressed terrain without encoding it again.
 
 Build and install a local runtime bundle:
@@ -181,7 +197,7 @@ npx vitest run src/lib/planner/ src/components/planner/
 npm run check
 ```
 
-The full type check needs the generated WASM packages from the builder README.
+The full type check needs the generated WASM packages.
 See the [search README](../../../../../apps/planner-search/README.md) for its
 code and real-data suites. iOS rendering and offline downloads have separate
 validation.

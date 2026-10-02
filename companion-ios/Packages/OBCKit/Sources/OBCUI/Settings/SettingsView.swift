@@ -9,6 +9,7 @@ public struct SettingsView: View {
     /// Push the firmware-update screen. `nil` leaves the Update firmware row out (previews, and
     /// any wiring that does not host the update screen).
     private let onOpenFirmwareUpdate: (() -> Void)?
+    private let onReplaySetup: (() -> Void)?
 
     /// Debug-only: five taps on the App version row open the mock dev panel. `nil` in
     /// Release wiring, where the gesture goes nowhere.
@@ -18,6 +19,8 @@ public struct SettingsView: View {
     @State private var forgetShown = false
     @State private var versionTaps = 0
     @Environment(\.openURL) private var openURL
+    @Environment(\.obcOfflineMaps) private var offlineMaps
+    @State private var offlineShown = false
 
     private static let gitHubURL = URL(string: "https://github.com/timohueser/OpenBikeComputer")!
     private static let docsURL = URL(string: "https://openbikecomputer.com/docs/")!
@@ -25,10 +28,12 @@ public struct SettingsView: View {
     public init(
         model: SettingsModel,
         onOpenFirmwareUpdate: (() -> Void)? = nil,
+        onReplaySetup: (() -> Void)? = nil,
         onOpenDevPanel: (() -> Void)? = nil
     ) {
         self.model = model
         self.onOpenFirmwareUpdate = onOpenFirmwareUpdate
+        self.onReplaySetup = onReplaySetup
 
         self.onOpenDevPanel = onOpenDevPanel
     }
@@ -69,6 +74,11 @@ public struct SettingsView: View {
             duration: .seconds(4)
         )
         .task { model.start() }
+        #if os(iOS)
+        .navigationDestination(isPresented: $offlineShown) {
+            if let offlineMaps { OfflineMapsView(model: offlineMaps) }
+        }
+        #endif
     }
 
     // MARK: Device
@@ -168,7 +178,23 @@ public struct SettingsView: View {
 
     private var appGroup: some View {
         OBCGroupedSection("App", footer: "Automatic follows the setting on your iPhone.") {
+            if offlineMaps != nil {
+                OBCListRow(icon: "arrow.down.to.line", iconColor: OBCTheme.tint,
+                           label: "Offline maps", showsChevron: true) { offlineShown = true }
+                    .accessibilityIdentifier("settings.offlineMaps")
+            }
             OBCAppearanceRow()
+            if let onReplaySetup {
+                OBCListRow(
+                    icon: "arrow.counterclockwise",
+                    iconColor: OBCTheme.tint,
+                    label: "Run setup again",
+                    showsChevron: true,
+                    showsDivider: false,
+                    action: onReplaySetup
+                )
+                .accessibilityIdentifier("settings.replaySetup")
+            }
         }
     }
 

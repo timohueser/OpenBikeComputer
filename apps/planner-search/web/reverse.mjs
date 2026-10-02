@@ -15,7 +15,7 @@ export function reverseAddress(db, coordinate) {
     candidates.push(...db.all(`SELECT a.house,a.lon,a.lat,p.name,p.city,a.source
       FROM addresses a JOIN places p ON p.id=a.street_id
       WHERE CAST((a.lat+90)*200 AS INTEGER)*72001+CAST((a.lon+180)*200 AS INTEGER) BETWEEN ? AND ?`,
-      [y*72001+cellX(west),y*72001+cellX(east)]));
+      [y*72001+cellX(west),y*72001+cellX(east)], {bounds:[west,south,east,north]}));
   }
   const nearest = candidates.map(address => ({...address, distance: distance(coordinate,[address.lon,address.lat])}))
     .filter(address => address.distance <= radius)

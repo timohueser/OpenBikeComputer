@@ -2,7 +2,7 @@ mod access;
 pub mod native;
 mod native_overlays;
 use axum::{
-    extract::{rejection::JsonRejection, DefaultBodyLimit, Query, State},
+    extract::{rejection::JsonRejection, DefaultBodyLimit, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -19,9 +19,11 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::Semaphore;
-use tower_http::compression::CompressionLayer;
+use tower_http::{compression::CompressionLayer, CompressionLevel};
 
+mod overlay_source;
 mod overlays;
+pub use overlay_source::OverlaySource;
 pub use overlays::Overlays;
 
 pub fn prepare_overlays(directory: &Path) -> Result<(), Error> {
@@ -29,11 +31,9 @@ pub fn prepare_overlays(directory: &Path) -> Result<(), Error> {
 }
 
 struct Workers {
-    routers: Mutex<Vec<Router<Directory>>>,
+    routers: Mutex<Vec<Router<Box<dyn route_engine::data::RoutingData + Send>>>>,
     permits: Arc<Semaphore>,
     metadata: Value,
-    overlays: overlays::Overlays,
-    overlay_permits: Arc<Semaphore>,
 }
 
 fn default_memory_budget(package: &route_engine::package::Package<impl route_engine::package::Source>) -> usize {
@@ -45,58 +45,30 @@ pub fn app(directory: &Path, workers: usize) -> Result<axum::Router, Error> {
     if !(1..=8).contains(&workers) {
         return Err(Error::InvalidRequest("Use 1 to 8 workers".into()));
     }
-    let source = Directory::open(directory)?;
-    let mut routers = Vec::new();
-    for _ in 0..workers {
-        routers.push(Router::new(source.fork(), default_memory_budget(&source)));
+    let mut routers: Vec<Router<Box<dyn route_engine::data::RoutingData + Send>>> = Vec::new();
+    if directory.join("blocks.json").exists() {
+        let source = route_engine::blocks::Files::open(directory)?;
+        let budget = (768 * 1024 * 1024usize).saturating_add(source.roads() as usize * 16);
+        for _ in 0..workers {
+            routers.push(Router::new(Box::new(source.fork()), budget));
+        }
+    } else {
+        let source = Directory::open(directory)?;
+        for _ in 0..workers {
+            routers.push(Router::new(Box::new(source.fork()), default_memory_budget(&source)));
+        }
     }
-    let package = routers[0].package();
-    let overlays = overlays::Overlays::open(directory, package.identity())?;
     let metadata = metadata(&routers[0]);
-    let state = Arc::new(Workers {
-        routers: Mutex::new(routers),
-        permits: Arc::new(Semaphore::new(workers)),
-        metadata,
-        overlays,
-        overlay_permits: Arc::new(Semaphore::new(2)),
-    });
+    let state =
+        Arc::new(Workers { routers: Mutex::new(routers), permits: Arc::new(Semaphore::new(workers)), metadata });
     Ok(axum::Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/v1/region", get(region))
         .route("/v1/route", post(route))
-        .route("/v1/overlays", get(map_overlays))
         .layer(DefaultBodyLimit::max(64 * 1024))
-        .layer(CompressionLayer::new())
+        // At brotli's default quality 4, a route answer is larger than with gzip. Quality 6 costs about as much as gzip 6.
+        .layer(CompressionLayer::new().quality(CompressionLevel::Precise(6)))
         .with_state(state))
-}
-
-async fn map_overlays(
-    State(workers): State<Arc<Workers>>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    let Ok(permit) = workers.overlay_permits.clone().try_acquire_owned() else {
-        return failure(Error::Limit);
-    };
-    let cancel = Cancel(Arc::new(AtomicBool::new(false)));
-    let flag = cancel.0.clone();
-    let started = Instant::now();
-    match tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        workers.overlays.query(&params, &|| flag.load(Ordering::Relaxed) || started.elapsed() > Duration::from_secs(15))
-    })
-    .await
-    {
-        Ok(Ok(data)) => (
-            [
-                (axum::http::header::CACHE_CONTROL, "public, max-age=3600"),
-                (axum::http::header::CONTENT_TYPE, "application/json"),
-            ],
-            data,
-        )
-            .into_response(),
-        Ok(Err(error)) => failure(error),
-        Err(_) => failure(Error::Limit),
-    }
 }
 
 async fn region(State(workers): State<Arc<Workers>>) -> Json<Value> {
@@ -138,7 +110,7 @@ async fn route(State(workers): State<Arc<Workers>>, request: Result<Json<Request
     })
     .await;
     match result {
-        Ok(Ok(route)) => Json(route).into_response(),
+        Ok(Ok(response)) => Json(route_engine::answer::answer(&response)).into_response(),
         Ok(Err(error)) => failure(error),
         Err(_) => failure(Error::Limit),
     }
@@ -176,9 +148,8 @@ fn failure(error: Error) -> Response {
     (StatusCode::from_u16(status).unwrap(), Json(body)).into_response()
 }
 
-pub(crate) fn metadata(router: &Router<Directory>) -> Value {
+pub(crate) fn metadata<P: route_engine::data::RoutingData>(router: &Router<P>) -> Value {
     let package = router.package();
-    let manifest = package.manifest();
-    json!({ "package": package.identity(), "region": manifest.region, "bounds": manifest.bounds,
-        "profiles": manifest.metrics.keys().collect::<Vec<_>>(), "attribution": manifest.attribution, "warnings": manifest.warnings })
+    json!({ "package": package.identity(), "region": package.region(), "bounds": package.bounds(),
+        "profiles": package.profiles(), "attribution": package.attribution(), "warnings": package.warnings() })
 }

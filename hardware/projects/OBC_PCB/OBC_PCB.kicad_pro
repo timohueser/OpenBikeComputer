@@ -62,7 +62,7 @@
           "hatch_thickness": 1.0,
           "min_clearance": 0.15,
           "min_island_area": 10.0,
-          "min_thickness": 0.1,
+          "min_thickness": 0.102,
           "pad_connection": 1,
           "remove_islands": 1,
           "thermal_relief_gap": 0.2,
@@ -71,14 +71,14 @@
       },
       "diff_pair_dimensions": [
         {
-          "width": 0,
-          "gap": 0,
-          "via_gap": 0
+          "gap": 0.0,
+          "via_gap": 0.0,
+          "width": 0.0
         },
         {
-          "width": 0.15,
-          "gap": 0.15,
-          "via_gap": 0.2
+          "gap": 0.225,
+          "via_gap": 0.2,
+          "width": 0.125
         }
       ],
       "drc_exclusions": [],
@@ -151,23 +151,23 @@
       },
       "rules": {
         "max_error": 0.005,
-        "min_clearance": 0.065,
-        "min_connection": 0.065,
+        "min_clearance": 0.127,
+        "min_connection": 0.102,
         "min_copper_edge_clearance": 0.5,
-        "min_groove_width": 0.8,
-        "min_hole_clearance": 0.16,
+        "min_groove_width": 1.0,
+        "min_hole_clearance": 0.23,
         "min_hole_to_hole": 0.28,
-        "min_microvia_diameter": 0.27,
-        "min_microvia_drill": 0.11,
+        "min_microvia_diameter": 0.2,
+        "min_microvia_drill": 0.1,
         "min_resolved_spokes": 2,
         "min_silk_clearance": 0.15,
-        "min_text_height": 0.8,
+        "min_text_height": 1.0,
         "min_text_thickness": 0.15,
         "min_through_hole_diameter": 0.2,
-        "min_track_width": 0.065,
-        "min_via_annular_width": 0.08,
-        "min_via_diameter": 0.4,
-        "solder_mask_to_copper_clearance": 0.065,
+        "min_track_width": 0.102,
+        "min_via_annular_width": 0.15,
+        "min_via_diameter": 0.5,
+        "solder_mask_to_copper_clearance": 0.09,
         "use_height_for_length_calcs": true
       },
       "teardrop_options": [
@@ -215,11 +215,11 @@
         }
       ],
       "track_widths": [
-        0,
-        0.065,
-        0.075,
-        0.1,
+        0.0,
+        0.11,
+        0.125,
         0.15,
+        0.18,
         0.2,
         0.25,
         0.3,
@@ -256,8 +256,12 @@
       },
       "via_dimensions": [
         {
-          "diameter": 0.4,
+          "diameter": 0.5,
           "drill": 0.2
+        },
+        {
+          "diameter": 0.6,
+          "drill": 0.3
         }
       ],
       "zones_allow_external_fillets": false
@@ -269,50 +273,14 @@
       "internal_id": "",
       "mfg": "",
       "mpn": "",
-      "sch_revision": "A"
+      "sch_revision": "QFN"
     },
     "layer_pairs": [
       {
-        "topLayer": 0,
         "bottomLayer": 2,
         "enabled": true,
-        "name": "L1-L8 through"
-      },
-      {
-        "topLayer": 0,
-        "bottomLayer": 4,
-        "enabled": true,
-        "name": "L1-L2 laser - stackup TBD"
-      },
-      {
-        "topLayer": 4,
-        "bottomLayer": 6,
-        "enabled": true,
-        "name": "L2-L3 laser - stackup TBD"
-      },
-      {
-        "topLayer": 6,
-        "bottomLayer": 8,
-        "enabled": true,
-        "name": "L3-L4 laser - stackup TBD"
-      },
-      {
-        "topLayer": 10,
-        "bottomLayer": 12,
-        "enabled": true,
-        "name": "L5-L6 laser - stackup TBD"
-      },
-      {
-        "topLayer": 12,
-        "bottomLayer": 14,
-        "enabled": true,
-        "name": "L6-L7 laser - stackup TBD"
-      },
-      {
-        "topLayer": 14,
-        "bottomLayer": 2,
-        "enabled": true,
-        "name": "L7-L8 laser - stackup TBD"
+        "name": "L1-L8 through",
+        "topLayer": 0
       }
     ],
     "layer_presets": [],
@@ -572,53 +540,13 @@
         "diff_pair_via_gap": 0.2,
         "diff_pair_width": 0.15,
         "line_style": 0,
-        "microvia_diameter": 0.27,
-        "microvia_drill": 0.11,
         "name": "Default",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 2147483647,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.2,
-        "tuning_profile": "",
-        "via_diameter": 0.4,
-        "via_drill": 0.2,
-        "wire_width": 6
-      },
-      {
-        "bus_width": 12,
-        "clearance": 0.15,
-        "diff_pair_gap": 0.15,
-        "diff_pair_via_gap": 0.2,
-        "diff_pair_width": 0.15,
-        "line_style": 0,
-        "microvia_diameter": 0.27,
-        "microvia_drill": 0.11,
-        "name": "Power_Input",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 0,
-        "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.6,
+        "track_width": 0.15,
         "tuning_profile": "",
         "via_diameter": 0.5,
-        "via_drill": 0.25,
-        "wire_width": 6
-      },
-      {
-        "bus_width": 12,
-        "clearance": 0.15,
-        "diff_pair_gap": 0.15,
-        "diff_pair_via_gap": 0.2,
-        "diff_pair_width": 0.15,
-        "line_style": 0,
-        "microvia_diameter": 0.27,
-        "microvia_drill": 0.11,
-        "name": "Power",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 1,
-        "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.4,
-        "tuning_profile": "",
-        "via_diameter": 0.4,
         "via_drill": 0.2,
         "wire_width": 6
       },
@@ -629,34 +557,13 @@
         "diff_pair_via_gap": 0.2,
         "diff_pair_width": 0.15,
         "line_style": 0,
-        "microvia_diameter": 0.27,
-        "microvia_drill": 0.11,
-        "name": "Switching",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 2,
-        "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.4,
-        "tuning_profile": "",
-        "via_diameter": 0.4,
-        "via_drill": 0.2,
-        "wire_width": 6
-      },
-      {
-        "bus_width": 12,
-        "clearance": 0.15,
-        "diff_pair_gap": 0.15,
-        "diff_pair_via_gap": 0.2,
-        "diff_pair_width": 0.15,
-        "line_style": 0,
-        "microvia_diameter": 0.27,
-        "microvia_drill": 0.11,
         "name": "Display_SD",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 3,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 0.15,
         "tuning_profile": "",
-        "via_diameter": 0.4,
+        "via_diameter": 0.5,
         "via_drill": 0.2,
         "wire_width": 6
       },
@@ -667,16 +574,14 @@
         "diff_pair_via_gap": 0.2,
         "diff_pair_width": 0.15,
         "line_style": 0,
-        "microvia_diameter": 0.27,
-        "microvia_drill": 0.11,
-        "name": "USB_90R_TBD",
+        "name": "Power",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 4,
+        "priority": 1,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.15,
+        "track_width": 0.4,
         "tuning_profile": "",
-        "via_diameter": 0.4,
-        "via_drill": 0.2,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
         "wire_width": 6
       },
       {
@@ -686,15 +591,30 @@
         "diff_pair_via_gap": 0.2,
         "diff_pair_width": 0.15,
         "line_style": 0,
-        "microvia_diameter": 0.27,
-        "microvia_drill": 0.11,
+        "name": "Power_Input",
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 0,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.6,
+        "tuning_profile": "",
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "wire_width": 6
+      },
+      {
+        "bus_width": 12,
+        "clearance": 0.15,
+        "diff_pair_gap": 0.15,
+        "diff_pair_via_gap": 0.2,
+        "diff_pair_width": 0.15,
+        "line_style": 0,
         "name": "RF_50R_TBD",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 5,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.15,
+        "track_width": 0.18,
         "tuning_profile": "",
-        "via_diameter": 0.4,
+        "via_diameter": 0.5,
         "via_drill": 0.2,
         "wire_width": 6
       },
@@ -705,15 +625,47 @@
         "diff_pair_via_gap": 0.2,
         "diff_pair_width": 0.15,
         "line_style": 0,
-        "microvia_diameter": 0.27,
-        "microvia_drill": 0.11,
         "name": "RF_Matching",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 6,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 0.15,
         "tuning_profile": "",
-        "via_diameter": 0.4,
+        "via_diameter": 0.5,
+        "via_drill": 0.2,
+        "wire_width": 6
+      },
+      {
+        "bus_width": 12,
+        "clearance": 0.15,
+        "diff_pair_gap": 0.15,
+        "diff_pair_via_gap": 0.2,
+        "diff_pair_width": 0.15,
+        "line_style": 0,
+        "name": "Switching",
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 2,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.4,
+        "tuning_profile": "",
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "wire_width": 6
+      },
+      {
+        "bus_width": 12,
+        "clearance": 0.15,
+        "diff_pair_gap": 0.225,
+        "diff_pair_via_gap": 0.2,
+        "diff_pair_width": 0.125,
+        "line_style": 0,
+        "name": "USB_90R_TBD",
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 4,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.125,
+        "tuning_profile": "",
+        "via_diameter": 0.5,
         "via_drill": 0.2,
         "wire_width": 6
       }
@@ -742,7 +694,7 @@
       },
       {
         "netclass": "Power_Input",
-        "pattern": "/SOC_USB_VBUS"
+        "pattern": "Net-(U6A-VBUS)"
       },
       {
         "netclass": "Power",
@@ -758,10 +710,6 @@
       },
       {
         "netclass": "Power",
-        "pattern": "+1V8_MAG"
-      },
-      {
-        "netclass": "Power",
         "pattern": "+5V_DISP"
       },
       {
@@ -769,40 +717,60 @@
         "pattern": "GND"
       },
       {
-        "netclass": "Switching",
-        "pattern": "/Power Management/PMIC_SW1"
+        "netclass": "Power",
+        "pattern": "Net-(U6A-DECA)"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "Net-(U6A-DECD)"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "Net-(U6A-DECRF)"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "Net-(U6A-DECUSB)"
       },
       {
         "netclass": "Switching",
-        "pattern": "/Power Management/PMIC_SW2"
+        "pattern": "Net-(U2-SW1)"
       },
       {
         "netclass": "Switching",
-        "pattern": "/Power Management/BOOST_SW"
+        "pattern": "Net-(U2-SW2)"
       },
       {
         "netclass": "Switching",
-        "pattern": "/SOC_DCC"
+        "pattern": "Net-(U7-LX1)"
+      },
+      {
+        "netclass": "Switching",
+        "pattern": "Net-(U7-LX2)"
+      },
+      {
+        "netclass": "Switching",
+        "pattern": "Net-(U6A-DCC)"
       },
       {
         "netclass": "Display_SD",
-        "pattern": "/Display/FLPR.*"
+        "pattern": "/LCD_*"
       },
       {
         "netclass": "Display_SD",
-        "pattern": "/Display/LCD.*"
+        "pattern": "/SD_*"
       },
       {
         "netclass": "Display_SD",
-        "pattern": "/FLPR.*"
+        "pattern": "/Storage/SD_CLK"
       },
       {
         "netclass": "USB_90R_TBD",
-        "pattern": "/Power Management/USB_D+"
+        "pattern": "/USB_D+"
       },
       {
         "netclass": "USB_90R_TBD",
-        "pattern": "/Power Management/USB_D-"
+        "pattern": "/USB_D-"
       },
       {
         "netclass": "RF_50R_TBD",
@@ -1006,7 +974,7 @@
         "uuid": "57e91c39-b072-457b-b097-52c5b44e61c8"
       }
     ],
-    "used_designators": "U1-6,Y1,Y3,J1-3,NT1-2,#PWR1-24,#PWR1010,#PWR2010,#PWR2026-2027,#PWR2045,#PWR2051,ANT1,C1-13,R1-3,R6,L1-6",
+    "used_designators": "L1-6,R1-3,R6,C1-13,ANT1,#PWR1-24,#PWR1010,#PWR2010,#PWR2026-2027,#PWR2045,#PWR2051,NT1-2,J1-3,Y1,Y3,U1-6",
     "variants": []
   },
   "sheets": [
@@ -1017,6 +985,30 @@
     [
       "2eba0217-2e02-4060-a7fa-1e06910a24da",
       "Power Management"
+    ],
+    [
+      "5a14f605-48aa-4460-a539-747803f1a190",
+      "GNSS"
+    ],
+    [
+      "07b40b75-96e2-4842-99e0-07d04b88490a",
+      "Sensors"
+    ],
+    [
+      "6b8cca09-5e52-4203-8b94-2412467f33a4",
+      "Display"
+    ],
+    [
+      "9a104cb0-a286-4930-b68d-caf6373d10a3",
+      "Storage"
+    ],
+    [
+      "5c6eb237-88d4-4a0e-aa53-0a8ee917fa9f",
+      "Radio"
+    ],
+    [
+      "18ec3cbd-3b8c-5be9-a932-db2d42c17956",
+      "User I/O"
     ]
   ],
   "text_variables": {},

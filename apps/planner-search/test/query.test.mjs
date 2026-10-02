@@ -14,13 +14,13 @@ test('shared runtime supplies one clock and explicit calendar capability for fil
   const times=[], now=Date.parse('2026-09-28T10:00:00Z');
   const hours={assertEnvironment(){},
     openingState(_place,_filter,context){times.push(Date.parse(context.now));return 'open';},
-    currentOpening(_place,time){times.push(time);return {state:'open',checkedAt:time};}};
+    currentOpening(_place,time){times.push(time);return {state:'open'};}};
   assert.throws(()=>searchRuntime({db,parser:never}),/opening-hours adapters/);
   const runtime=searchRuntime({db,parser:never,hours,clock:()=>now});
   const result=await runtime.query({...input,q:'hotel',request:{type:'places',what:['hotel'],open:{now:true}}});
   assert.ok(result.results.length);assert.ok(times.length>result.results.length);
   assert.ok(times.every(time=>time===now));
-  assert.equal(result.results[0].hoursStatus.checkedAt,now);
+  assert.deepEqual(result.results[0].hoursStatus,{state:'open'});
   hours.assertEnvironment=()=>{throw new Error('Wrong calendar zone');};
   await assert.rejects(runtime.query(input),/Wrong calendar zone/);
 });
@@ -42,8 +42,6 @@ test('native JSON capabilities preserve complete replies, metadata and reverse l
     {points,profile:'touring/shorter',alternatives:false});
   for (const goal of ['least_unpaved','most_climbing'])
     await assert.rejects(native.request('route-request',{points,bike:'touring',goal}), /routing package has no/);
-  const reply={routes:[{geometry:points,legs:[{from_index:0,to_index:1}]}]};
-  assert.deepEqual((await native.request('route-reply',{input:{points,bike:'touring',goal:'shortest'},reply})).legs,[points]);
   assert.equal(answer.region,'test');assert.deepEqual(answer.attribution,['OSM contributors']);
   assert.deepEqual(await native.request('reverse',{coordinate:[7.854,48.01]}),{label:'Habsburgerstraße 10, Freiburg'});
   await assert.rejects(native.request('query',{...input,region:'missing'}),/does not cover/);

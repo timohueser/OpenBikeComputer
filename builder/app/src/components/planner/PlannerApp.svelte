@@ -21,15 +21,15 @@
     import { isTrip } from '../../lib/planner/trip-validation';
     import {
         addClickedPoint, addPointNear, addRestDay, applyBudget, coordinateAt, cumulative, emptyTrip,
-        insertPoint, itineraryDays, kilometres, nearestProgress, nightOrderConflicts, offRoute, overnightCandidates,
+        insertPoint, itineraryDays, kilometres, nearestProgress, nightOrderConflicts, overnightCandidates,
         overnightWindow, pinNight, removeRestDay, reorderPoint, routeCoordinates, routeSlice, routeStops,
-        setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint, TripHistory, tripDays, routingKey,
+        setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint, TripHistory, tripDays, routingKey, planOf, storedPlan,
         type Coordinate, type Day, type LegMode, type Place, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
-    import { corridorPlaces } from '../../lib/planner/place-index';
+    import { corridorPlaces, routeDistance } from '../../lib/planner/place-index';
     import { landmarks } from '../../lib/planner/landmarks';
-    import { BASEMAP_URL, MAP_BOUNDS } from '../../lib/planner/map-data';
+    import { MAP_BOUNDS, PLACES_URL } from '../../lib/planner/map-data';
     import { coordinateName, visitName } from '../../lib/planner/point-names';
     import { SEARCH_URL, HOSTED_SEARCH, SEARCH_REGIONS } from '../../lib/planner/search/config';
     import { dayColor } from '../../lib/planner/day-colors';
@@ -45,7 +45,8 @@
 
     const storageKey = 'obc-planner-routing-v2';
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
-    import { calculateLine, selectRoute, type EngineRoute } from '../../lib/planner/routing';
+    import { calculateLine, requestAlternatives, selectRoute, type EngineRoute } from '../../lib/planner/routing';
+    import { LegCache } from '../../lib/planner/route-legs';
     const defaultLabels: Record<EditableKind, string> = {
         via: 'Shaping point',
         pass: 'Pass here',
@@ -54,46 +55,49 @@
         marker: 'Marker',
     };
 
-    let trip = $state<Trip>(emptyTrip());
+    // Raw state: a change replaces the trip and never edits it in place, and a route has tens of thousands of points.
+    let trip = $state.raw<Trip>(emptyTrip());
+    const legs = new LegCache();
     let mounted = false;
     const hasEndpoints = $derived(trip.points.some(p => p.kind === 'start') && trip.points.some(p => p.kind === 'finish'));
     const nextEndpoint = $derived(trip.points.some(p => p.kind === 'start') ? 'finish' : 'start');
-    let previewTrip = $state<Trip | null>(null);
+    let previewTrip = $state.raw<Trip | null>(null);
     let draggingPoint = $state(false);
     let previewStatus = $state('');
     const shownTrip = $derived(previewTrip ?? trip);
-    const preview = routePreview(calculateLine, (draft, line) => {
+    const preview = routePreview((draft: Trip, signal: AbortSignal) => calculateLine(draft, signal, legs), (draft, line) => {
         previewTrip = { ...draft, routing: line };
         previewStatus = 'Route preview · release to keep';
     }, error => { previewStatus = error instanceof Error ? error.message : 'Preview unavailable.'; });
     let routingStatus = $state('Choose a start and finish');
     let routeAttempt = $state(0);
     const routingInput = $derived(routingKey(trip));
+    // Undo returns a plan without its route, often with an unchanged routing key.
+    const routed = $derived(trip.routing?.key === routingInput);
     $effect(() => {
         const key = routingInput;
         void routeAttempt;
         if (!hasEndpoints) { routingStatus = 'Choose a start and finish'; return; }
-        const snapshot = untrack(() => $state.snapshot(trip));
-        if (snapshot.routing?.key === key) return;
+        if (routed) return;
+        const plan = untrack(() => trip);
         const abort = new AbortController();
         routingStatus = 'Calculating route…';
-        calculateLine(snapshot, abort.signal).then(line => {
+        calculateLine(plan, abort.signal, legs).then(line => {
                 if (abort.signal.aborted || key !== routingInput) return;
                 trip = { ...trip, routing: line };
-                save();
             }).catch(error => { if (!abort.signal.aborted) routingStatus = error instanceof Error ? error.message : 'Routing is unavailable.'; });
         return () => abort.abort();
     });
     function pickRoute(route: EngineRoute) {
-        const next = { ...$state.snapshot(trip), preset: presetName(route.profile) };
+        const next = { ...trip, preset: presetName(route.profile) };
         next.routing = selectRoute(next, route, trip.routing?.alternatives ?? [route]);
         commit(next, 'Route preference changed');
     }
     const currentRoute = $derived(hasEndpoints && shownTrip.routing?.key === routingKey(shownTrip) ? shownTrip.routing : undefined);
-    let previousRouteTrip = $state<Trip | null>(null);
+    let previousRouteTrip = $state.raw<Trip | null>(null);
     $effect(() => {
-        if (!hasEndpoints) { previousRouteTrip = null; return; }
-        if (currentRoute) previousRouteTrip = untrack(() => $state.snapshot(shownTrip));
+        if (!hasEndpoints) previousRouteTrip = null;
+        else if (currentRoute) previousRouteTrip = shownTrip;
     });
     // Keep the measured route visible while its replacement is calculated.
     const visualTrip = $derived(currentRoute || !hasEndpoints ? shownTrip : previousRouteTrip ?? shownTrip);
@@ -107,14 +111,14 @@
     $effect(() => {
         const key = routingInput;
         if (list !== 'ways' || draggingPoint || !needsAlternatives) return;
-        const snapshot = untrack(() => $state.snapshot(trip));
+        const plan = untrack(() => trip);
         const abort = new AbortController();
         waysStatus = 'Finding alternative routes…';
-        calculateLine(snapshot, abort.signal, true).then(line => {
+        requestAlternatives(plan, plan.routing!, abort.signal).then(alternatives => {
             if (abort.signal.aborted || key !== routingInput) return;
-            trip = { ...trip, routing: { ...trip.routing!, alternatives: line.alternatives, alternativesReady: true } };
+            const routing = { ...trip.routing!, alternatives, alternativesReady: true };
+            trip = { ...trip, routing };
             waysStatus = '';
-            save();
         }).catch(error => { if (!abort.signal.aborted) waysStatus = error instanceof Error ? error.message : 'Alternatives unavailable.'; });
         return () => abort.abort();
     });
@@ -151,6 +155,7 @@
     let query = $state('');
     let searchState = $state<SearchState>({ loading: false, error: '', answer: null });
     let searchBox: Query | undefined;
+    let searchRevision = $state(0);
     let searchViewRevision = $state(0);
     let viewBounds = $state<[number, number, number, number]>(MAP_BOUNDS ?? [7.77,47.965,7.96,48.06]);
     let here = $state<Coordinate | undefined>();
@@ -190,9 +195,10 @@
     const itinerary = $derived(itineraryDays(visualTrip));
     const focusedDay = $derived(multi && list === 'plan' && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
-    const searchContext = $derived<SearchContext>({ view: viewBounds, here, pointing, startDate: trip.startDate,
-        plan: { coordinates, hours: trip.routing?.key === routingInput && trip.routing.unroutedKm === 0 ? trip.routing.elapsed.map(seconds => seconds / 3600) : undefined, days: itinerary.map(d => ({ number: d.number, from: d.from * total, to: d.to * total, rest: d.rest })),
-            points: trip.points.map(p => ({ id: p.id, label: p.label, coordinate: p.coordinate, kind: p.kind, placeKind: p.placeKind })) } });
+    const searchPlan = $derived<SearchContext['plan']>({ coordinates, km: lengths, seconds: currentRoute?.unroutedKm === 0 ? currentRoute.elapsed : undefined,
+        days: itinerary.map(d => ({ number: d.number, from: d.from * total, to: d.to * total, rest: d.rest })),
+        points: trip.points.map(p => ({ id: p.id, label: p.label, coordinate: p.coordinate, kind: p.kind, placeKind: p.placeKind })) });
+    const searchContext = $derived<SearchContext>({ view: viewBounds, here, pointing, startDate: trip.startDate, plan: searchPlan });
     const conflicts = $derived(multi ? nightOrderConflicts(trip) : []);
     const activeDay = $derived(days[Math.min(night - 1, days.length - 1)]);
     const area = $derived(night < days.length ? overnightWindow(trip, night) : null);
@@ -219,10 +225,11 @@
     const highlightCandidates = $derived.by(() => {
         if (!highlights.length || coordinates.length < 2) return [];
         const pinned = new Set(visiblePlaces.map(place => place.id));
+        const distance = routeDistance(coordinates, 5);
         const nearby = corridor
             .filter(place => highlights.includes(place.category))
-            .map(place => ({ place, off: offRoute(coordinates, place.coordinate) }))
-            .filter(({ off }) => off <= 5)
+            .map(place => ({ place, off: distance(place.coordinate) }))
+            .filter(({ off }) => Number.isFinite(off))
             .sort((a, b) => a.off - b.off)
             .map(({ place }) => place);
         return nearby.filter(place => !pinned.has(place.id));
@@ -236,9 +243,12 @@
         : '',
     );
     // The next landmark along the route within 15 km that the route does not visit yet.
-    const nearbyLandmark = $derived(landmarks
-        .filter(landmark => offRoute(coordinates, landmark.coordinate) <= 15 && !trip.points.some(p => kilometres(p.coordinate, landmark.coordinate) < .3))
-        .sort((a, b) => nearestProgress(coordinates, a.coordinate) - nearestProgress(coordinates, b.coordinate))[0]);
+    const nearbyLandmark = $derived.by(() => {
+        const distance = routeDistance(coordinates, 15);
+        return landmarks
+            .filter(landmark => Number.isFinite(distance(landmark.coordinate)) && !trip.points.some(p => kilometres(p.coordinate, landmark.coordinate) < .3))
+            .sort((a, b) => nearestProgress(coordinates, a.coordinate) - nearestProgress(coordinates, b.coordinate))[0];
+    });
     const selectedPlace = $derived(visiblePlaces.find(p => p.id === selectedId) ?? corridor.find(p => p.id === selectedId) ?? (mapPlace?.id === selectedId ? mapPlace : undefined));
     const selectedPoint = $derived(trip.points.find(p => p.id === selectedId));
     const previewCoordinate = $derived(selectedId === 'pending' ? pending : selectedPlace?.coordinate ?? null);
@@ -295,36 +305,38 @@
         const route = coordinates;
         let current = true;
         corridorLoad = 'loading';
-        corridorPlaces(BASEMAP_URL.replace(/^pmtiles:\/\//, ''), route).then(
+        corridorPlaces(PLACES_URL, route).then(
             found => { if (current) { corridor = found; corridorLoad = 'done'; } },
             () => { if (current) corridorLoad = 'failed'; },
         );
         return () => { current = false; };
     });
 
-    const overnightKey = $derived(JSON.stringify([searchRegion, dayLabels[night], searchContext.plan, here, trip.startDate]));
-    const overnightCache = new Map<string, { places: Place[]; note: string }>();
+    // A query runs again when anything it sends other than the map view changes.
+    $effect(() => { void [searchPlan, here, pointing, trip.startDate]; untrack(() => searchRevision++); });
+
+    // Answers per plan, so switching days or region back does not search again.
+    const overnightAnswers = new WeakMap<object, Map<string, { places: Place[]; note: string }>>();
     $effect(() => {
-        const key = overnightKey;
-        const enabled = overnightContext;
-        const { context, region, day } = untrack(() => ({ context: $state.snapshot(searchContext), region: searchRegion, day: dayLabels[night] }));
-        if (!enabled || !day) {
+        const plan = searchPlan!, region = searchRegion, day = dayLabels[night];
+        if (!overnightContext || !day) {
+            // Candidates stay while the replacement route is calculated.
             if (!hasEndpoints || currentRoute) overnightPlaces = [];
             overnightNote = ''; return;
         }
-        const cached = overnightCache.get(key);
-        if (cached) { overnightPlaces = cached.places; overnightNote = cached.note; return; }
+        let answers = overnightAnswers.get(plan);
+        if (!answers) overnightAnswers.set(plan, answers = new Map());
+        const key = `${region}:${day}`, known = answers.get(key);
+        if (known) { overnightPlaces = known.places; overnightNote = known.note; return; }
         overnightPlaces = [];
         const abort = new AbortController();
         overnightNote = 'Loading nearby overnight places…';
-        searchPlaces('sleep', context, region, 6, abort.signal, { type: 'places', what: ['sleep'], where: { day, part: 'end' }, radius: { value: 5, unit: 'km' } }).then(answer => {
+        // The day end and the radius set the area, so the map view does not change the answer.
+        untrack(() => searchPlaces('sleep', { view: viewBounds, plan }, region, 6, abort.signal, { type: 'places', what: ['sleep'], where: { day, part: 'end' }, radius: { value: 5, unit: 'km' } })).then(answer => {
             if (abort.signal.aborted) return;
             overnightPlaces = (answer.results ?? []).map(asPlace);
             overnightNote = answer.type === 'unresolved' ? answer.note ?? '' : overnightPlaces.length ? '' : 'No mapped overnight places within 5 km. Search a wider area or pick on the map.';
-            if (answer.type === 'places') {
-                if (overnightCache.size >= 8) overnightCache.delete(overnightCache.keys().next().value!);
-                overnightCache.set(key, { places: overnightPlaces, note: overnightNote });
-            }
+            if (answer.type === 'places') answers.set(key, { places: overnightPlaces, note: overnightNote });
         }).catch(() => { if (!abort.signal.aborted) overnightNote = 'Overnight search is unavailable. Retry or pick on the map.'; });
         return () => abort.abort();
     });
@@ -334,10 +346,7 @@
         try {
             const raw = localStorage.getItem(storageKey);
             const saved = raw ? JSON.parse(raw) : null;
-            if (isTrip(saved)) {
-                if (saved.routing && (!saved.routing.surfaces || !saved.routing.pushing)) saved.routing = undefined;
-                trip = saved;
-            }
+            if (isTrip(saved)) trip = planOf(saved);
             else if (raw) draftError = 'Saved draft is invalid · new plan opened';
         } catch (error) {
             draftError = error instanceof SyntaxError ? 'Saved draft is invalid · new plan opened' : 'Draft · browser storage unavailable';
@@ -357,7 +366,7 @@
 
     function save() {
         try {
-            localStorage.setItem(storageKey, JSON.stringify(trip));
+            localStorage.setItem(storageKey, JSON.stringify(storedPlan(trip)));
             draftSavedAt = Date.now();
             draftError = '';
         } catch {
@@ -369,7 +378,7 @@
         preview.cancel();
         previewTrip = null;
         draggingPoint = false;
-        trip = history.commit($state.snapshot(trip), next);
+        trip = history.commit(trip, next);
         if (!hasEndpoints) { expandedDay = null; list = 'plan'; planEditing = false; hoverProgress = null; }
         revision++;
         message = description;
@@ -378,7 +387,7 @@
     }
 
     function edit(change: Partial<Trip>, description: string) {
-        commit({ ...$state.snapshot(trip), ...change }, description);
+        commit({ ...trip, ...change }, description);
     }
 
     function clearSelection() {
@@ -424,12 +433,12 @@
     }
 
     function undo() {
-        trip = history.undo($state.snapshot(trip));
+        trip = history.undo(trip);
         afterHistory('Change undone');
     }
 
     function redo() {
-        trip = history.redo($state.snapshot(trip));
+        trip = history.redo(trip);
         afterHistory('Change restored');
     }
 
@@ -546,22 +555,22 @@
             drawing = legEndId;
             return;
         }
-        commit(setLegMode($state.snapshot(trip), legEndId, mode), mode === 'straight' ? 'Leg set to a straight line' : 'Leg set to routed');
+        commit(setLegMode(trip, legEndId, mode), mode === 'straight' ? 'Leg set to a straight line' : 'Leg set to routed');
     }
 
     function insert(legEndId: string, coordinate: Coordinate) {
         clearSelection();
-        commit(insertPoint($state.snapshot(trip), legEndId, coordinate), 'Shaping point inserted');
+        commit(insertPoint(trip, legEndId, coordinate), 'Shaping point inserted');
         if (autoCenter) map?.centerOn(coordinate);
     }
 
     function drawn(legEndId: string, line: Coordinate[]) {
         drawing = null;
-        commit(setDrawnLeg($state.snapshot(trip), legEndId, line), 'Leg drawn');
+        commit(setDrawnLeg(trip, legEndId, line), 'Leg drawn');
     }
 
     function moveDayEnd(number: number, progress: number) {
-        commit(setSplit($state.snapshot(trip), number, progress), 'Day end moved');
+        commit(setSplit(trip, number, progress), 'Day end moved');
     }
 
     function stayHere(sleepDay: number) {
@@ -569,7 +578,7 @@
         const coordinate: Coordinate = [...previewCoordinate];
         const source = trip.points.find(p => p.id === pendingSource);
         const label = selectedPlace?.label ?? (source && !['via', 'pass'].includes(source.kind) ? source.label : 'Overnight spot');
-        const current = $state.snapshot(trip);
+        const current = trip;
         const next = pinNight(current, sleepDay, coordinate, label, pendingSource ?? undefined);
         if (next === current) return;
         next.points.find(p => p.night === sleepDay)!.placeKind = selectedPlace?.placeKind ?? source?.placeKind;
@@ -601,7 +610,7 @@
 
     function addPoint(coordinate: Coordinate, kind: EditableKind) {
         const point = newPoint(coordinate, kind);
-        commit(addClickedPoint($state.snapshot(trip), point), added[kind]!);
+        commit(addClickedPoint(trip, point), added[kind]!);
         clearSelection();
         selectedId = point.id;
         if (kind !== 'via') reveal(point.id, dayOf(point.coordinate));
@@ -611,7 +620,7 @@
 
     function addVisit(place: Place) {
         const point = newPoint(place.coordinate, 'waypoint', place.label);
-        commit(addPointNear($state.snapshot(trip), point), 'Visit added');
+        commit(addPointNear(trip, point), 'Visit added');
         clearSelection();
         selectedId = point.id;
         reveal(point.id, dayOf(point.coordinate));
@@ -619,7 +628,7 @@
     }
 
     function movedPoint(id: string, coordinate: Coordinate): Trip {
-        const next = $state.snapshot(trip);
+        const next = { ...trip };
         const point = next.points.find(p => p.id === id);
         if (point?.kind === 'night') return pinNight(next, point.night!, coordinate, point.label);
         next.points = next.points.map(p => p.id === id
@@ -646,7 +655,7 @@
 
     function removePoint() {
         if (!selectedPoint) return;
-        commit(removeRoutePoint($state.snapshot(trip), selectedPoint.id), 'Point removed');
+        commit(removeRoutePoint(trip, selectedPoint.id), 'Point removed');
         pointing = undefined;
         clearSelection();
     }
@@ -654,7 +663,7 @@
     function chooseEndpoint(kind: 'start' | 'finish') {
         const coordinate = spot?.coordinate ?? selectedPlace?.coordinate;
         if (!coordinate) return;
-        commit(setEndpoint($state.snapshot(trip), kind, coordinate, selectedPlace?.label), kind === 'start' ? 'Start set' : 'Finish set');
+        commit(setEndpoint(trip, kind, coordinate, selectedPlace?.label), kind === 'start' ? 'Start set' : 'Finish set');
         showRoute = true;
         clearSelection();
         exitSearch();
@@ -674,7 +683,7 @@
 
     function rename(label: string) {
         if (!selectedPoint) return;
-        const next = $state.snapshot(trip);
+        const next = { ...trip };
         next.points = next.points.map(p => p.id === selectedId ? { ...p, label, autoLabel: undefined } : p);
         commit(next, 'Point renamed');
     }
@@ -692,7 +701,7 @@
         const id = point.kind === 'night' ? crypto.randomUUID() : point.id;
         const autoLabel = ['waypoint', 'detour'].includes(kind) && (point.kind === 'via' || point.autoLabel);
         const label = autoLabel ? coordinateName(point.coordinate) : point.label;
-        const next = $state.snapshot(trip);
+        const next = { ...trip };
         next.points = next.points.map(p => p.id === point.id ? { ...p, id, kind, night: undefined, label, autoLabel: autoLabel || undefined,
             anchor: kind === 'detour' ? coordinateAt(coordinates, nearestProgress(coordinates, point.coordinate)) : undefined } : p);
         next.routeOrder = next.routeOrder?.map(old => old === point.id ? id : old);
@@ -713,7 +722,7 @@
     }
 
     function applyPlan(budget: Trip['budget'], target: number, limit: number, climb: number) {
-        commit({ ...applyBudget($state.snapshot(trip), budget, target, limit), climbTarget: climb || undefined }, 'Day plan updated');
+        commit({ ...applyBudget(trip, budget, target, limit), climbTarget: climb || undefined }, 'Day plan updated');
         night = Math.min(night, trip.days);
         if (expandedDay !== null) expandedDay = night;
     }
@@ -743,12 +752,12 @@
     async function applySearch() {
         const answer = $state.snapshot(searchState.answer);
         if (!answer?.changes || applyingQuery) return;
-        const before = $state.snapshot(trip);
+        const before = trip;
         applyingQuery = true; queryApplyError = '';
         try {
             let routingNote = '';
-            const next = await applyQueryChanges(before, answer.changes, (points,bike,goal) => buildQueryRoute(points,bike,goal,note => routingNote = note), next => calculateLine(next, new AbortController().signal));
-            if (JSON.stringify(answer.changes) !== JSON.stringify(searchState.answer?.changes) || JSON.stringify(before) !== JSON.stringify($state.snapshot(trip))) throw new Error('The plan changed. Review the search again.');
+            const next = await applyQueryChanges(before, answer.changes, (points,bike,goal) => buildQueryRoute(points,bike,goal,note => routingNote = note), next => calculateLine(next, new AbortController().signal, legs));
+            if (JSON.stringify(answer.changes) !== JSON.stringify(searchState.answer?.changes) || before !== trip) throw new Error('The plan changed. Review the search again.');
             commit(next, [answer.description ?? 'Query applied', routingNote].filter(Boolean).join(' · '));
             exitSearch(); clearSelection();
         } catch (error) { queryApplyError = (error as Error).message; }
@@ -761,7 +770,7 @@
     }
 
     function restoreVersion(saved: Trip, name: string) {
-        commit({ ...saved, routing: saved.routing?.pushing ? saved.routing : undefined }, `Restored ‘${name}’`);
+        commit(planOf(saved), `Restored ‘${name}’`);
         undoable = true;
         clearSelection();
         night = Math.max(1, Math.min(night, tripDays(trip).length));
@@ -808,7 +817,7 @@
     />
     <main>
         <aside class="planner-pane" aria-label="Trip planning">
-            <Query bind:this={searchBox} bind:text={query} bind:region={searchRegion} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} viewRevision={searchViewRevision} onResults={coordinates => { clearSelection(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} />
+            <Query bind:this={searchBox} bind:text={query} bind:region={searchRegion} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { clearSelection(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} />
             {#if searching}
                 <div class="pane-scroll">
                     <QueryResults state={searchState} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
@@ -863,13 +872,13 @@
                             onChangeOvernight={(changing) => { changingOvernight = changing; clearSelection(); }}
                             onEditTarget={() => planEditing = true}
                             onShowConflict={([before, after]) => map?.fitCoordinates([before.coordinate, after.coordinate])}
-                            onAddRest={(after) => commit(addRestDay($state.snapshot(trip), after), 'Rest day added')}
-                            onRemoveRest={(index) => commit(removeRestDay($state.snapshot(trip), index), 'Rest day removed')}
+                            onAddRest={(after) => commit(addRestDay(trip, after), 'Rest day added')}
+                            onRemoveRest={(index) => commit(removeRestDay(trip, index), 'Rest day removed')}
                             onNameRest={nameRest}
                         />
                     {:else}
                         <RouteList {stops} {hoveredId} onHover={(id) => hoveredId = id} measured={!!currentRoute} onInspect={inspectPoint}
-                            onReorder={(id, offset) => commit(reorderPoint($state.snapshot(trip), id, offset), 'Stops reordered · changed legs follow roads')} />
+                            onReorder={(id, offset) => commit(reorderPoint(trip, id, offset), 'Stops reordered · changed legs follow roads')} />
                     {/if}
                     {#if nearbyLandmark && !focusedDay}
                         <NearbyLandmark landmark={nearbyLandmark} onRide={addVisit} onShow={selectPlace} />
@@ -882,7 +891,7 @@
             <div class="map-area" bind:clientHeight={mapHeight} style:--map-height={`${mapHeight}px`}>
                 <PlannerMap
                     bind:this={map} {segments} {coordinates} points={mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
-                    {theme} {hillshade} {contours} {mapOverlays} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking}
+                    {theme} {hillshade} {contours} {mapOverlays} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces} {landmarks}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={previewPoint} onDayEndDrag={moveDayEnd}

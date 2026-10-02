@@ -291,6 +291,9 @@ public struct RouteDetailView: View {
                     .accessibilityIdentifier("detail.rename")
                 }
             }
+            if case let .tracked(ride) = model.dressing, ride.isDemo {
+                DemoRideBadge()
+            }
             if let subtitle = model.subtitle {
                 Text(subtitle)
                     .font(.system(.subheadline))

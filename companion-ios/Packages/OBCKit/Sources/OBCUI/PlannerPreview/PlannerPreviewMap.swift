@@ -40,6 +40,7 @@ struct PlannerPreviewMap: UIViewRepresentable {
     var onNetworkStatus: (String?) -> Void = { _ in }
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.obcIsOnline) private var online
+    @Environment(\.obcOfflineMaps) private var offlineMaps
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -61,7 +62,7 @@ struct PlannerPreviewMap: UIViewRepresentable {
     func updateUIView(_ map: OBCNativeMapView, context: Context) {
         let coordinator = context.coordinator
         coordinator.parent = self
-        map.load(release: release, dark: colorScheme == .dark, online: online, source: source)
+        map.load(release: release, dark: colorScheme == .dark, online: online, source: source, revision: offlineMaps?.revision ?? 0)
         map.attributionButtonMargins = CGPoint(x: 8, y: bottomInset + 8)
         coordinator.updatePOIs(map)
         if coordinator.coordinates != coordinates {
@@ -177,8 +178,15 @@ struct PlannerPreviewMap: UIViewRepresentable {
         func updateNetworks(_ map: OBCNativeMapView) {
             networks.status = { [weak self] in self?.reportLayerStatus($0, layer: "networks") }
             let network = parent.showCycling ? "cycling" : parent.showHiking ? "hiking" : "none"
+            if map.style?.source(withIdentifier: "networks") is MLNVectorTileSource {
+                networks.update(map, key: nil, release: nil) { _, _, _ in Data() }
+                for id in ["planner-networks", "planner-network-labels"] {
+                    for kind in ["cycling", "hiking"] { map.style?.layer(withIdentifier: "\(id)-\(kind)")?.isVisible = kind == network }
+                }
+                return
+            }
             let source = parent.source
-            networks.update(map, key: network == "none" ? nil : network, release: parent.release, minimumZoom: 6) { bounds, zoom, release in
+            networks.update(map, key: network == "none" ? nil : network, release: map.selectedRelease, minimumZoom: 6) { bounds, zoom, release in
                 try await source.overlays(bounds: bounds, zoom: zoom, network: network, release: release)
             }
         }
@@ -196,7 +204,7 @@ struct PlannerPreviewMap: UIViewRepresentable {
             let categories = highlighted.intersection(shown)
             places.status = { [weak self] in self?.reportLayerStatus($0, layer: "places") }
             places.update(map, key: categories.isEmpty ? nil : categories.sorted().joined(separator: ","),
-                          release: parent.release, maximumZoom: 13) { bounds, _, release in
+                          release: map.selectedRelease, maximumZoom: 13) { bounds, _, release in
                 var query = PlannerSearchQuery(text: "places", view: bounds)
                 query.kinds = NativePlaceKind.searchKinds(in: categories)
                 return try await NativePlaceKind.geoJSON(source.search(query, release: release))
@@ -304,7 +312,7 @@ struct PlannerPreviewMap: UIViewRepresentable {
             queueVisibleRange(map)
         }
         func mapView(_ map: MLNMapView, regionDidChangeAnimated animated: Bool) {
-            if let map = map as? OBCNativeMapView { updateNetworks(map); updatePOIs(map); map.updateCoverageStatus() }
+            if let map = map as? OBCNativeMapView { updateNetworks(map); updatePOIs(map); map.updateCoverageStatus(); map.viewportSettled() }
             updatePlaceVisibility(map)
             queueVisibleRange(map)
         }

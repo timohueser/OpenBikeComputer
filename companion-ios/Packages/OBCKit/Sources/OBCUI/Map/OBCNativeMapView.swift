@@ -32,65 +32,82 @@ final class OBCNativeMapView: MLNMapView {
     private var loading: Task<Void, Never>?
     private var retry: (() -> Void)?
     private var styleKey: String?
-    private var selectedRelease: PlannerRelease?
+    private(set) var selectedRelease: PlannerRelease?
     private let notice = UIButton(type: .system)
+    private let noticeText = UILabel()
     private var availability = NativeMapLoadState.loading
     private var strokes: [MapStroke]?
+    private var refreshViewport: (() -> Void)?
 
     init() {
         super.init(frame: .zero, styleURL: Bundle.module.url(forResource: "blank", withExtension: "json", subdirectory: "Map")!)
         isRotateEnabled = false
         isPitchEnabled = false
         logoView.isHidden = true
-        notice.titleLabel?.font = .preferredFont(forTextStyle: .caption1)
-        notice.setTitleColor(UIColor(OBCTheme.ink), for: .normal)
+        noticeText.font = .preferredFont(forTextStyle: .caption1)
+        noticeText.adjustsFontForContentSizeCategory = true
+        noticeText.textColor = UIColor(OBCTheme.ink)
         notice.backgroundColor = UIColor(OBCTheme.surface)
         notice.layer.cornerRadius = 5; notice.clipsToBounds = true
-        notice.titleLabel?.numberOfLines = 2
+        noticeText.numberOfLines = 0
+        noticeText.isAccessibilityElement = false
+        notice.addSubview(noticeText)
         notice.accessibilityIdentifier = "map.availability"
         notice.isHidden = true
         addSubview(notice)
         notice.isUserInteractionEnabled = true
         notice.addTarget(self, action: #selector(retryLoading), for: .touchUpInside)
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (map: OBCNativeMapView, _) in
+            map.setNeedsLayout()
+        }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        let size = notice.sizeThatFits(CGSize(width: max(0, bounds.width - 90), height: 60))
+        let size = noticeText.sizeThatFits(CGSize(width: max(0, bounds.width - 102), height: .greatestFiniteMagnitude))
         notice.frame = CGRect(x: 8, y: safeAreaInsets.top + 8, width: size.width + 12, height: size.height + 8)
+        noticeText.frame = notice.bounds.insetBy(dx: 6, dy: 4)
         if !laidOut, bounds.width > 0, bounds.height > 0 {
             laidOut = true
             onFirstLayout?()
         }
     }
 
-    func load(release: PlannerRelease? = nil, dark: Bool, online: Bool = true, source: any PlannerDataSource = PlannerService.shared) {
-        let key = "\(release?.id ?? "active")-\(dark)-\(online)"
+    func load(release: PlannerRelease? = nil, dark: Bool, online: Bool = true, source: any PlannerDataSource = PlannerService.shared,
+              revision: Int = 0) {
+        let visible = visibleCoordinateBounds
+        let bounds = [visible.sw.longitude, visible.sw.latitude, visible.ne.longitude, visible.ne.latitude]
+        let key = "\(release?.id ?? "active")-\(dark)-\(online)-\(revision)-\(source.supportsOffline ? bounds.description : "")"
         guard key != styleKey else { return }
         styleKey = key
+        refreshViewport = { [weak self] in
+            self?.load(release: release, dark: dark, online: online, source: source, revision: revision)
+        }
         retry = { [weak self] in
             self?.styleKey = nil
-            self?.load(release: release, dark: dark, online: online, source: source)
+            self?.load(release: release, dark: dark, online: online, source: source, revision: revision)
         }
         loading?.cancel()
-        if !online {
+        if !online && !source.supportsOffline {
             availability = .offline
             updateCoverageStatus()
             styleURL = Bundle.module.url(forResource: "blank", withExtension: "json", subdirectory: "Map")!
             return
         }
-        availability = .loading
-        updateCoverageStatus()
+        if selectedRelease == nil { availability = .loading; updateCoverageStatus() }
         loading = Task { [weak self] in
             do {
                 let selected: PlannerRelease
-                if let release { selected = release } else { selected = try await source.release() }
+                if source.supportsOffline {
+                    selected = try await source.mapRelease(bounds: OfflineMap.valid(bounds) ? bounds : nil, allowNetwork: online)
+                } else if let release { selected = release } else { selected = try await source.release() }
                 try Task.checkCancellation()
                 let url = try Self.styleURL(release: selected, dark: dark)
                 guard let self else { return }
                 self.selectedRelease = selected
-                if self.styleURL == url { self.reloadStyle(nil) } else { self.styleURL = url }
+                if self.styleURL != url || self.availability == .failed { self.availability = .loading; self.styleURL = url }
+                else { self.updateCoverageStatus() }
                 if abs(self.centerCoordinate.latitude) < 0.01, abs(self.centerCoordinate.longitude) < 0.01 {
                     self.setCenter(CLLocationCoordinate2D(latitude: (selected.bounds[1] + selected.bounds[3]) / 2,
                         longitude: (selected.bounds[0] + selected.bounds[2]) / 2), zoomLevel: 8, animated: false)
@@ -105,9 +122,11 @@ final class OBCNativeMapView: MLNMapView {
     }
 
     @objc private func retryLoading() { retry?() }
+    func viewportSettled() { refreshViewport?() }
 
     func showNotice(_ text: String?) {
-        notice.setTitle(text, for: .normal); notice.isHidden = text == nil; setNeedsLayout()
+        noticeText.text = text; notice.accessibilityLabel = text
+        notice.isHidden = text == nil; setNeedsLayout()
     }
     func updateCoverageStatus() {
         let bounds = visibleCoordinateBounds
@@ -115,12 +134,19 @@ final class OBCNativeMapView: MLNMapView {
             bounds.ne.longitude < release.bounds[0] || bounds.sw.longitude > release.bounds[2]
                 || bounds.ne.latitude < release.bounds[1] || bounds.sw.latitude > release.bounds[3]
         } ?? false
-        showNotice(availability.message(outsideRegion: outside))
+        if availability == .ready, selectedRelease?.isLocal == true {
+            let covered = selectedRelease.map { release in
+                bounds.sw.longitude >= release.bounds[0] && bounds.sw.latitude >= release.bounds[1]
+                    && bounds.ne.longitude <= release.bounds[2] && bounds.ne.latitude <= release.bounds[3]
+            } ?? false
+            showNotice(covered ? "Offline map" : "Offline map · Part of this area is not downloaded.")
+        } else { showNotice(availability.message(outsideRegion: outside)) }
     }
 
     func didFinishLoadingMap() {
         guard availability == .loading, styleURL.lastPathComponent != "blank.json" else { return }
         availability = .ready
+        if let strokes { draw(strokes, force: true) }
         updateCoverageStatus()
     }
     func didFailLoadingMap() {
@@ -134,7 +160,7 @@ final class OBCNativeMapView: MLNMapView {
     private static func styleURL(release: PlannerRelease, dark: Bool) throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appending(path: "OBCMapStyles")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let url = directory.appending(path: "\(release.id)-\(dark ? "dark" : "light").json")
+        let url = directory.appending(path: "\(release.id)-\(release.isLocal ? "local" : "online")-\(dark ? "dark" : "light").json")
         let template = Bundle.module.url(forResource: dark ? "dark" : "light", withExtension: "json", subdirectory: "Map")!
         var data = try JSONSerialization.jsonObject(with: Data(contentsOf: template)) as! [String: Any]
         data["glyphs"] = release.glyphs
@@ -142,8 +168,26 @@ final class OBCNativeMapView: MLNMapView {
         var sources = data["sources"] as! [String: [String: Any]]
         sources["basemap"]?["url"] = release.basemap.absoluteString
         sources["terrain"]?["tiles"] = [release.terrain]
+        if release.isLocal {
+            sources["terrain"]?.removeValue(forKey: "tiles")
+            sources["terrain"]?["url"] = release.terrain
+        }
         sources["terrain"]?["bounds"] = release.bounds
         sources["terrain"]?["attribution"] = release.terrain_attribution
+        if let overlays = release.overlays, !release.isLocal {
+            // Each network layer draws one layer of the tiles; the planner map shows one network at a time.
+            sources["networks"] = ["type": "vector", "url": overlays.absoluteString]
+            data["layers"] = (data["layers"] as! [[String: Any]]).flatMap { layer -> [[String: Any]] in
+                guard layer["source"] as? String == "networks" else { return [layer] }
+                return ["cycling", "hiking"].map { network in
+                    var copy = layer
+                    copy["id"] = "\(layer["id"]!)-\(network)"
+                    copy["source-layer"] = network
+                    copy["layout"] = (layer["layout"] as? [String: Any] ?? [:]).merging(["visibility": "none"]) { $1 }
+                    return copy
+                }
+            }
+        }
         data["sources"] = sources
         try JSONSerialization.data(withJSONObject: data).write(to: url, options: .atomic)
         return url

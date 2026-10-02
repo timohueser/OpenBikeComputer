@@ -1,14 +1,15 @@
 // @vitest-environment happy-dom
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { coordinateAt, cumulative, emptyTrip, initialTrip, maxRidingDays, routeCoordinates, routingKey, type Place } from '../../lib/planner/editor';
+import { coordinateAt, cumulative, emptyTrip, initialTrip, maxRidingDays, routeCoordinates, routingKey, type Coordinate, type Place } from '../../lib/planner/editor';
 import { corridorPlaces } from '../../lib/planner/place-index';
 import PlannerApp from './PlannerApp.svelte';
 import * as routing from '../../lib/planner/routing';
-import type { RoutingLine } from '../../lib/planner/routing';
+import type { EngineRoute, RoutingLine } from '../../lib/planner/routing';
 
+import { routeService } from '../../../test-support/planner/route-service';
 vi.mock('./PlannerMap.svelte', async () => ({ default: (await import('../../../test-support/planner/MapStub.svelte')).default }));
-vi.mock('../../lib/planner/place-index', () => ({ corridorPlaces: vi.fn() }));
+vi.mock('../../lib/planner/place-index', async original => ({ ...await original<object>(), corridorPlaces: vi.fn() }));
 
 let app: ReturnType<typeof mount> | undefined;
 const stored = new Map<string, string>();
@@ -27,7 +28,8 @@ beforeEach(() => {
         stops: [{ id: 'start', distance: 0 }, { id: 'finish', distance: distance.at(-1)! }],
         alternatives: [], alternativesReady: true, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0,
     };
-    stored.set('obc-planner-routing-v2', JSON.stringify({ ...trip, routing: line }));
+    stored.set('obc-planner-routing-v2', JSON.stringify(trip));
+    vi.spyOn(routing, 'calculateLine').mockImplementation(async plan => ({ ...line, key: routingKey(plan) }));
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
         if (!_url.includes('planner-search')) throw new Error('Routing service offline');
         const input = JSON.parse(String(init.body));
@@ -63,12 +65,10 @@ describe('planner app transitions', () => {
     it('uses walking access and language for a hiking route', async () => {
         const saved = JSON.parse(stored.get('obc-planner-routing-v2')!);
         saved.bike = 'hiking';
-        saved.routing.profile = 'hiking';
-        saved.routing.key = routingKey(saved);
         stored.set('obc-planner-routing-v2', JSON.stringify(saved));
         app = mount(PlannerApp, { target: document.body }); await tick();
         expect(button('Pan map').dataset.accessMode).toBe('walking');
-        expect(document.querySelector('.trip-summary')?.textContent).toContain('Walking time');
+        await vi.waitFor(() => expect(document.querySelector('.trip-summary')?.textContent).toContain('Walking time'));
         const surface = document.querySelector<HTMLElement>('[aria-label="Surface along route"]')!;
         surface.focus(); await tick();
         expect(surface.getAttribute('aria-valuetext')).toContain('Walking');
@@ -149,6 +149,28 @@ describe('planner app transitions', () => {
         expect(JSON.parse(stored.get('obc-planner-routing-v2')!)).toEqual(saved);
     });
 
+    it('runs an open search again after a plan edit', async () => {
+        app = mount(PlannerApp, { target: document.body }); await tick();
+        await search('campsites');
+        const sent = () => vi.mocked(fetch).mock.calls.map(([, init]) => JSON.parse(String(init?.body))).filter(body => body.q === 'campsites');
+        const before = sent().length;
+        button('Map point: Basel').click(); await tick();
+        button('Remove point').click(); await tick();
+        await vi.waitFor(() => expect(sent().length).toBe(before + 1));
+        expect(sent().at(-1).plan.points.map((p: { label: string }) => p.label)).not.toContain('Basel');
+    });
+
+    it('sends no overnight query when the map pans', async () => {
+        stored.set('obc-planner-routing-v2', JSON.stringify({ ...JSON.parse(stored.get('obc-planner-routing-v2')!), mode: 'trip' }));
+        app = mount(PlannerApp, { target: document.body }); await tick();
+        const overnight = () => vi.mocked(fetch).mock.calls.filter(([, init]) => JSON.parse(String(init?.body)).q === 'sleep').length;
+        button('Open day 1: Basel to Overnight to choose').click(); await tick();
+        await vi.waitFor(() => expect(overnight()).toBe(1));
+        button('Pan map').click(); await tick();
+        button('Pan map').click(); await tick();
+        expect(overnight()).toBe(1);
+    });
+
     it('links row and map hover in both directions and searches the map after point inspection', async () => {
         const saved = { ...JSON.parse(stored.get('obc-planner-routing-v2')!), mode: 'route' };
         stored.set('obc-planner-routing-v2', JSON.stringify(saved));
@@ -223,8 +245,6 @@ describe('planner app transitions', () => {
 
     it('ignores an in-flight route after an endpoint is removed', async () => {
         const saved = JSON.parse(stored.get('obc-planner-routing-v2')!);
-        delete saved.routing;
-        stored.set('obc-planner-routing-v2', JSON.stringify(saved));
         let finish!: (line: RoutingLine) => void;
         const calculate = vi.spyOn(routing, 'calculateLine').mockImplementation(() => new Promise(resolve => finish = resolve));
         app = mount(PlannerApp, { target: document.body }); await tick();
@@ -233,7 +253,74 @@ describe('planner app transitions', () => {
         expect(calculate.mock.calls[0][1].aborted).toBe(true);
         finish({ key: routingKey(saved) } as RoutingLine); await tick();
         expect(document.body.textContent).toContain('Choose your start');
-        expect(JSON.parse(stored.get('obc-planner-routing-v2')!).routing).toBeUndefined();
+    });
+
+    it('returns to an earlier bike and undoes without a route request', async () => {
+        vi.mocked(routing.calculateLine).mockRestore();
+        const search = globalThis.fetch, service = routeService();
+        const fetch = vi.fn((url: string, init: RequestInit) => url.endsWith('/v1/route') ? service(url, init) : search(url, init));
+        vi.stubGlobal('fetch', fetch);
+        const routeRequests = () => fetch.mock.calls.filter(([url]) => url.endsWith('/v1/route')).length;
+        app = mount(PlannerApp, { target: document.body });
+        for (const [bike, requests] of [['Gravel bike', 1], ['Touring bike', 2]] as const) {
+            await vi.waitFor(() => expect(document.querySelector('section.elevation')).not.toBeNull());
+            expect(routeRequests()).toBe(requests);
+            button('Activity').click(); await tick();
+            button(bike).click(); await tick();
+        }
+        for (const action of ['Undo', 'Undo', 'Redo']) {
+            button(action).click(); await tick();
+            await vi.waitFor(() => expect(document.querySelector('section.elevation')).not.toBeNull());
+        }
+        expect(routeRequests()).toBe(2);
+    });
+
+    it('keeps a picked corridor, without its alternatives, through undo, redo, a saved version and a reload', async () => {
+        const engine = (id: string, reason: string, geometry: Coordinate[]): EngineRoute => {
+            const km = cumulative(geometry).at(-1)!;
+            const totals = { distance_m: km * 1000, ascent_m: 0, seconds: km * 240, surface_m: [0, km * 1000, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 };
+            return { id, reason, package: 'test', profile: 'touring', geometry, elevation: geometry.map(() => 200), elapsed: cumulative(geometry).map(d => d * 240),
+                surfaces: geometry.slice(1).map(() => 'Paved'), pushing: geometry.slice(1).map(() => false), totals,
+                legs: [{ from_index: 0, to_index: geometry.length - 1, start: 'a', end: 'b', totals }], snap_truncated: false };
+        };
+        const coordinates = routeCoordinates(initialTrip());
+        const primary = engine('primary', 'primary', coordinates);
+        const corridor = engine('corridor', 'corridor', coordinates.map(([x, y], i) => (i && i < coordinates.length - 1 ? [x, y + .02] : [x, y]) as Coordinate));
+        vi.mocked(routing.calculateLine).mockImplementation(async plan => routing.selectRoute(plan, primary, [primary, corridor]));
+        vi.spyOn(routing, 'requestAlternatives').mockResolvedValue([primary, corridor]);
+        const chosen = () => document.querySelector('.ways [aria-checked="true"]')?.textContent ?? '';
+        const options = async () => { await vi.waitFor(() => button('Route options · 2').click()); await tick(); };
+        app = mount(PlannerApp, { target: document.body });
+        await options();
+        [...document.querySelectorAll<HTMLButtonElement>('.ways [role="radio"]')].find(way => way.textContent?.includes('Different corridor'))!.click(); await tick();
+        expect(chosen()).toContain('Different corridor');
+        expect(JSON.parse(stored.get('obc-planner-routing-v2')!).routing).toMatchObject({ choiceId: 'corridor', picked: true, alternatives: [] });
+        button('Undo').click(); await tick();
+        await vi.waitFor(() => expect(chosen()).toContain('Balanced'));
+        button('Redo').click(); await tick();
+        expect(chosen()).toContain('Different corridor');
+        button('Save').click(); await tick();
+        document.querySelector('form.name')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); await tick();
+        button('Undo').click(); await tick();
+        await vi.waitFor(() => expect(chosen()).toContain('Balanced'));
+        button('Restore').click(); await tick();
+        await vi.waitFor(() => expect(chosen()).toContain('Different corridor'));
+        await unmount(app);
+        const calculated = vi.mocked(routing.calculateLine).mock.calls.length;
+        app = mount(PlannerApp, { target: document.body }); await tick();
+        expect(routing.calculateLine).toHaveBeenCalledTimes(calculated);
+        expect(routing.requestAlternatives).toHaveBeenCalledTimes(1);
+        button('Route options').click();
+        await vi.waitFor(() => expect(chosen()).toContain('Different corridor'));
+        for (const bike of ['Gravel bike', 'Touring bike']) {
+            button('Activity').click(); await tick();
+            button(bike).click(); await tick();
+            await vi.waitFor(() => expect(chosen()).not.toBe(''));
+        }
+        expect(chosen()).toContain('Balanced');
+        button('Undo').click(); await tick();
+        button('Undo').click(); await tick();
+        expect(chosen()).toContain('Different corridor');
     });
 
     it('opens a tile place from both a search row and its map pin, then adds a visit', async () => {
@@ -307,11 +394,13 @@ describe('planner app transitions', () => {
     });
 
     it('keeps the profile mounted while an overnight reroutes and when the reply arrives', async () => {
-        const saved = JSON.parse(stored.get('obc-planner-routing-v2')!);
-        let finish!: (line: RoutingLine) => void;
-        const calculate = vi.spyOn(routing, 'calculateLine').mockImplementation(() => new Promise(resolve => finish = resolve));
-        app = mount(PlannerApp, { target: document.body }); await tick();
-        button('Open day 1: Basel to Overnight to choose').click(); await tick();
+        const measured = vi.mocked(routing.calculateLine).getMockImplementation()!;
+        let line!: RoutingLine, finish!: (line: RoutingLine) => void;
+        const calculate = vi.mocked(routing.calculateLine)
+            .mockImplementationOnce(async (...args) => line = await measured(...args))
+            .mockImplementation(() => new Promise(resolve => finish = resolve));
+        app = mount(PlannerApp, { target: document.body });
+        await vi.waitFor(() => button('Open day 1: Basel to Overnight to choose').click()); await tick();
         await vi.waitFor(() => expect(document.querySelector('.choose')?.textContent).toContain(tilePlace.label));
         const profile = document.querySelector('.elevation');
         button(`Map place: ${tilePlace.label}`).click(); await tick();
@@ -319,11 +408,9 @@ describe('planner app transitions', () => {
         expect(document.querySelector('.elevation')).toBe(profile);
         expect(document.querySelector('.route-status')?.textContent).toContain('Calculating route');
         button('Pan map').click(); await tick();
-        expect(calculate).toHaveBeenCalledTimes(1);
+        expect(calculate).toHaveBeenCalledTimes(2);
         const draft = JSON.parse(stored.get('obc-planner-routing-v2')!);
-        finish({ ...saved.routing, key: routingKey(draft), stops: [
-            saved.routing.stops[0], { id: 'night-1', distance: saved.routing.stops[1].distance * .25 }, saved.routing.stops[1],
-        ] });
+        finish({ ...line, key: routingKey(draft), stops: [line.stops[0], { id: 'night-1', distance: line.stops[1].distance * .25 }, line.stops[1]] });
         await vi.waitFor(() => expect(document.querySelector('.route-status')).toBeNull());
         expect(document.querySelector('.elevation')).toBe(profile);
         expect(document.querySelector('.day h2')?.textContent).toContain(tilePlace.label);

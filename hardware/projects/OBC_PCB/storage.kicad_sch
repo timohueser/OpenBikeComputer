@@ -1,5 +1,5 @@
 (kicad_sch
-	(version 20250114)
+	(version 20260306)
 	(generator "eeschema")
 	(generator_version "10.0")
 	(uuid "0b8eab8e-e31a-4584-b904-1b944b1c5b1a")
@@ -103,8 +103,7 @@
 			(symbol "C_Small_0_1"
 				(polyline
 					(pts
-						(xy -1.524 0.508)
-						(xy 1.524 0.508)
+						(xy -1.524 0.508) (xy 1.524 0.508)
 					)
 					(stroke
 						(width 0.3048)
@@ -116,8 +115,7 @@
 				)
 				(polyline
 					(pts
-						(xy -1.524 -0.508)
-						(xy 1.524 -0.508)
+						(xy -1.524 -0.508) (xy 1.524 -0.508)
 					)
 					(stroke
 						(width 0.3302)
@@ -391,8 +389,7 @@
 			(symbol "+3V3_SD_0_1"
 				(polyline
 					(pts
-						(xy -0.762 1.27)
-						(xy 0 2.54)
+						(xy -0.762 1.27) (xy 0 2.54)
 					)
 					(stroke
 						(width 0)
@@ -404,8 +401,7 @@
 				)
 				(polyline
 					(pts
-						(xy 0 2.54)
-						(xy 0.762 1.27)
+						(xy 0 2.54) (xy 0.762 1.27)
 					)
 					(stroke
 						(width 0)
@@ -417,8 +413,7 @@
 				)
 				(polyline
 					(pts
-						(xy 0 0)
-						(xy 0 2.54)
+						(xy 0 0) (xy 0 2.54)
 					)
 					(stroke
 						(width 0)
@@ -898,12 +893,7 @@
 			(symbol "GND_0_1"
 				(polyline
 					(pts
-						(xy 0 0)
-						(xy 0 -1.27)
-						(xy 1.27 -1.27)
-						(xy 0 -2.54)
-						(xy -1.27 -1.27)
-						(xy 0 -1.27)
+						(xy 0 0) (xy 0 -1.27) (xy 1.27 -1.27) (xy 0 -2.54) (xy -1.27 -1.27) (xy 0 -1.27)
 					)
 					(stroke
 						(width 0)
@@ -938,6 +928,7 @@
 		)
 	)
 	(text "microSD / DEDICATED sEMMC BUS"
+		(exclude_from_sim no)
 		(at 22.86 20.32 0)
 		(effects
 			(font
@@ -947,6 +938,1678 @@
 			(justify left top)
 		)
 		(uuid "4ce025a9-0723-59e6-a1ae-99d00297a227")
+	)
+	(text "47k pull-ups to the switched card rail. No CLK pull-up.\nC41/C43 at J2; verify card start-up and write bursts within BUCK1 200mA.\nRelease all six MCU pins before switching the card rail off.\nCard-detect contacts are unused."
+		(exclude_from_sim no)
+		(at 30.48 142.24 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left top)
+		)
+		(uuid "ec378f06-2455-5b89-866b-30bd7621c8c2")
+	)
+	(junction
+		(at 100.33 53.34)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "1bd3b318-d025-56bf-b1bb-5640f76f1708")
+	)
+	(junction
+		(at 87.63 53.34)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "2037da51-8421-5278-b4b1-c862600553bb")
+	)
+	(junction
+		(at 165.1 53.34)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "24b3b106-72b1-525f-a62f-4061a044b85a")
+	)
+	(junction
+		(at 87.63 83.82)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "642439be-a387-5d2d-82a4-6a6526c17107")
+	)
+	(junction
+		(at 125.73 53.34)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "76c9a0f6-6a52-5694-8b38-54be1ad412c9")
+	)
+	(junction
+		(at 125.73 91.44)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "7d4f1034-6268-5bb2-b9b3-02c73404f6dc")
+	)
+	(junction
+		(at 113.03 53.34)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "84905d50-aa3b-56d6-aa0a-65aac3a5eb4c")
+	)
+	(junction
+		(at 138.43 93.98)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "a6601126-f0c9-5b18-9f94-743075d3ac71")
+	)
+	(junction
+		(at 138.43 53.34)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "b6237855-a524-54e3-914d-53b856d015e7")
+	)
+	(junction
+		(at 113.03 88.9)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "de2cced4-a589-5a94-af9e-87fe3a058557")
+	)
+	(junction
+		(at 100.33 86.36)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "fa5f2d13-c25a-5c6e-a21b-cbf045eb0651")
+	)
+	(junction
+		(at 210.82 53.34)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "fe0a8f91-7c7f-59b5-abdb-4a20c0b4c58c")
+	)
+	(no_connect
+		(at 149.86 99.06)
+		(uuid "1d316ef6-426a-5c9d-8a10-1347b2c3b4cd")
+	)
+	(wire
+		(pts
+			(xy 238.76 68.58) (xy 238.76 72.39)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "083936dd-5826-5677-bce7-5a38b98db09d")
+	)
+	(wire
+		(pts
+			(xy 87.63 58.42) (xy 87.63 53.34)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "0adcd81b-3668-597a-a86f-72f7e7d13230")
+	)
+	(wire
+		(pts
+			(xy 149.86 88.9) (xy 60.96 88.9)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "1126b3e6-ab4a-5ce1-ac99-08b449b92ca1")
+	)
+	(wire
+		(pts
+			(xy 125.73 58.42) (xy 125.73 53.34)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "17edda03-0a4e-5731-a46c-f473dd627f84")
+	)
+	(wire
+		(pts
+			(xy 100.33 63.5) (xy 100.33 86.36)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "1ffd5040-47cd-5a3f-889d-d634755273f4")
+	)
+	(wire
+		(pts
+			(xy 100.33 58.42) (xy 100.33 53.34)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "2593fc4c-ae0d-57cb-98aa-a0752b5502a1")
+	)
+	(wire
+		(pts
+			(xy 113.03 58.42) (xy 113.03 53.34)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "294cdbd9-29f9-5f7f-b56b-91257d7d64cf")
+	)
+	(wire
+		(pts
+			(xy 210.82 68.58) (xy 210.82 72.39)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "3b64888c-dbbd-5ba3-937b-8a10aa088d5f")
+	)
+	(wire
+		(pts
+			(xy 149.86 93.98) (xy 60.96 93.98)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "3cc3d65f-3ceb-51b0-93c3-e742ba631442")
+	)
+	(wire
+		(pts
+			(xy 165.1 109.22) (xy 165.1 113.03)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "459f0a66-5f26-5642-86ae-5309c783a372")
+	)
+	(wire
+		(pts
+			(xy 238.76 63.5) (xy 238.76 53.34)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "463084f5-3bb0-5e0e-b5d0-f00faf76b3d8")
+	)
+	(wire
+		(pts
+			(xy 149.86 83.82) (xy 60.96 83.82)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "4a32c0d4-f752-5b47-9387-2daecb866489")
+	)
+	(wire
+		(pts
+			(xy 87.63 53.34) (xy 238.76 53.34)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "6897f25f-a784-5b79-9e71-7ba7f50bff5f")
+	)
+	(wire
+		(pts
+			(xy 138.43 63.5) (xy 138.43 93.98)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "70a16471-a3e9-5527-9bc2-3f77a497d51a")
+	)
+	(wire
+		(pts
+			(xy 149.86 81.28) (xy 60.96 81.28)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "72b1c159-d6ec-5708-854a-9202d4d2f604")
+	)
+	(wire
+		(pts
+			(xy 210.82 63.5) (xy 210.82 53.34)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "735c0363-5c19-57b8-ba62-c82ebdfce6f3")
+	)
+	(wire
+		(pts
+			(xy 138.43 58.42) (xy 138.43 53.34)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "774b82d9-4e5b-599c-a187-c146275b3113")
+	)
+	(wire
+		(pts
+			(xy 149.86 91.44) (xy 60.96 91.44)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "9b5c95e4-2f51-5ee3-afcc-f36497372d09")
+	)
+	(wire
+		(pts
+			(xy 165.1 73.66) (xy 165.1 53.34)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "bb3e7d40-f744-5a08-bd9c-1cb0e676759b")
+	)
+	(wire
+		(pts
+			(xy 113.03 63.5) (xy 113.03 88.9)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "c8314c69-2287-5b6b-850f-ab9b5bc41c4a")
+	)
+	(wire
+		(pts
+			(xy 87.63 63.5) (xy 87.63 83.82)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "e52956c9-d98c-5d92-87a6-e6377a3144fa")
+	)
+	(wire
+		(pts
+			(xy 125.73 63.5) (xy 125.73 91.44)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "eff0875d-ac58-5c1f-a764-deb3c6b8b70c")
+	)
+	(wire
+		(pts
+			(xy 149.86 86.36) (xy 60.96 86.36)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "f2e7ca2a-a2d8-5082-888c-6df6c09994fc")
+	)
+	(hierarchical_label "SD_D2"
+		(shape bidirectional)
+		(at 60.96 91.44 180)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify right)
+		)
+		(uuid "4a02dd3a-e92a-5538-81b6-5f9f7a33f7d5")
+	)
+	(hierarchical_label "SD_CLK"
+		(shape input)
+		(at 60.96 81.28 180)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify right)
+		)
+		(uuid "6e8cee70-5b23-53b8-8476-091a7dec1d2b")
+	)
+	(hierarchical_label "SD_D3"
+		(shape bidirectional)
+		(at 60.96 93.98 180)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify right)
+		)
+		(uuid "80388469-9c6e-5ddb-b436-ab8a698968d7")
+	)
+	(hierarchical_label "SD_D1"
+		(shape bidirectional)
+		(at 60.96 88.9 180)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify right)
+		)
+		(uuid "8a79d46b-9f85-50d6-8995-ee67e96bc6e5")
+	)
+	(hierarchical_label "SD_CMD"
+		(shape bidirectional)
+		(at 60.96 83.82 180)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify right)
+		)
+		(uuid "9161139f-6e2d-560c-9af4-8ea7979823d8")
+	)
+	(hierarchical_label "SD_D0"
+		(shape bidirectional)
+		(at 60.96 86.36 180)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify right)
+		)
+		(uuid "eb22589f-0531-5c15-b85f-e760c8250efe")
+	)
+	(symbol
+		(lib_id "Device:C_Small")
+		(at 238.76 66.04 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "11e5d655-9353-4e10-b99c-5c2e90ac79fb")
+		(property "Reference" "C43"
+			(at 240.76 64.77 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "100n"
+			(at 240.76 67.31 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+			(at 210.82 66.04 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" ""
+			(at 210.82 66.04 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Ceramic MLCC, 100nF, 10V, X7R, 10%, 0402"
+			(at 210.82 66.04 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "10%"
+			(at -184.15 24.13 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "10V"
+			(at 213.36 68.58 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Dielectric" "X7R"
+			(at 218.44 68.58 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "c03ce33c-8160-56a0-81fe-b1c9fdbf34b5")
+		)
+		(pin "2"
+			(uuid "ae09891c-8e7d-501b-8eda-ebd8d9905301")
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
+					(reference "C43")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 210.82 72.39 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board no)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "1b04a80f-37e2-5966-b185-cffda61719d3")
+		(property "Reference" "#PWR9000232"
+			(at 205.74 62.23 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "GND"
+			(at 210.82 76.2 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 0 0 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" ""
+			(at 0 0 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 0 0 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "ki_keywords" "global power"
+			(at 0 0 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "0bb1d396-488b-59d5-9b08-a562a3b2fe9b")
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
+					(reference "#PWR9000232")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 113.03 60.96 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "267d83f4-3925-491d-b7a2-2950b02278aa")
+		(property "Reference" "R30"
+			(at 115.03 59.69 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "47k"
+			(at 115.03 62.23 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+			(at 114.3 64.77 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" ""
+			(at 114.3 66.04 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Thick-film resistor, 47kOhm, 1%, 63mW, 50V, 0402"
+			(at 114.3 67.31 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "1%"
+			(at 114.3 68.58 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Power" "63mW"
+			(at -99.06 -256.54 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "50V"
+			(at -99.06 -256.54 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Technology" "Thick film"
+			(at -99.06 -256.54 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "42f7382b-ffe0-5ac1-b67b-ff8b47f4c2ab")
+		)
+		(pin "2"
+			(uuid "078ecaf4-85a6-5acb-9cff-41be4db999f8")
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
+					(reference "R30")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 138.43 60.96 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "3076cd49-e85c-4cdc-9d91-5508991dc923")
+		(property "Reference" "R32"
+			(at 140.43 59.69 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "47k"
+			(at 140.43 62.23 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+			(at 134.62 64.77 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" ""
+			(at 134.62 66.04 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Thick-film resistor, 47kOhm, 1%, 63mW, 50V, 0402"
+			(at 134.62 67.31 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "1%"
+			(at 134.62 68.58 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Power" "63mW"
+			(at -78.74 -256.54 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "50V"
+			(at -78.74 -256.54 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Technology" "Thick film"
+			(at -78.74 -256.54 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "0f4f8573-2b25-5fa7-80dd-ef7d5de2e842")
+		)
+		(pin "2"
+			(uuid "08fdfe1d-f9ed-5426-ae72-59c1e95c5797")
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
+					(reference "R32")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 238.76 72.39 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board no)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "666ecdc4-46ef-5e8e-9229-9b67c09abbe9")
+		(property "Reference" "#PWR9000234"
+			(at 233.68 62.23 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "GND"
+			(at 238.76 76.2 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 0 0 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" ""
+			(at 0 0 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 0 0 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "ki_keywords" "global power"
+			(at 0 0 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "299ddce1-d193-5890-8155-2016664803f1")
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
+					(reference "#PWR9000234")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 165.1 113.03 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board no)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "6e7c8a74-6327-5c3c-99ba-03a491ee9af9")
+		(property "Reference" "#PWR9000230"
+			(at 160.02 102.87 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "GND"
+			(at 165.1 116.84 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 0 0 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" ""
+			(at 0 0 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 0 0 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "ki_keywords" "global power"
+			(at 0 0 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "08ae8dd5-4ebe-582e-b50f-72f04887f37a")
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
+					(reference "#PWR9000230")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "obc:+3V3_SD")
+		(at 87.63 53.34 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board no)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "76f1e0ac-1c46-5855-8a84-9c38d07ac72d")
+		(property "Reference" "#PWR9000235"
+			(at 82.55 43.18 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "+3V3_SD"
+			(at 87.63 49.53 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 0 0 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" ""
+			(at 0 0 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"+3V3_SD\""
+			(at 0 0 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "ki_keywords" "global power"
+			(at 0 0 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "6cac469c-b015-5d05-a960-cf2a88680948")
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
+					(reference "#PWR9000235")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 100.33 60.96 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "b470299f-78d4-440d-b047-7f0f1cc990c5")
+		(property "Reference" "R29"
+			(at 102.33 59.69 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "47k"
+			(at 102.33 62.23 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+			(at 104.14 64.77 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" ""
+			(at 104.14 66.04 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Thick-film resistor, 47kOhm, 1%, 63mW, 50V, 0402"
+			(at 104.14 67.31 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "1%"
+			(at 104.14 68.58 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Power" "63mW"
+			(at -109.22 -256.54 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "50V"
+			(at -109.22 -256.54 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Technology" "Thick film"
+			(at -109.22 -256.54 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "1979d4ad-39dc-57f4-83a9-d0afaf4289d2")
+		)
+		(pin "2"
+			(uuid "fdee26cc-9a73-5d45-944f-dbab3ebda1a7")
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
+					(reference "R29")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 87.63 60.96 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "c59c95a0-8ca9-476d-8aae-628afe8ab9c3")
+		(property "Reference" "R28"
+			(at 89.63 59.69 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "47k"
+			(at 89.63 62.23 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+			(at 93.98 64.77 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" ""
+			(at 93.98 66.04 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Thick-film resistor, 47kOhm, 1%, 63mW, 50V, 0402"
+			(at 93.98 67.31 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "1%"
+			(at 93.98 68.58 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Power" "63mW"
+			(at -119.38 -256.54 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "50V"
+			(at -119.38 -256.54 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Technology" "Thick film"
+			(at -119.38 -256.54 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "c06a25b3-2eda-5385-ad08-221e2370d25b")
+		)
+		(pin "2"
+			(uuid "59d90cf6-9122-51ac-ada5-c02927cc6eb2")
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
+					(reference "R28")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:C_Small")
+		(at 210.82 66.04 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "cfebd74a-4215-46f5-972f-cff202d20c8e")
+		(property "Reference" "C41"
+			(at 212.82 64.77 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "10u"
+			(at 212.82 67.31 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
+			(at 185.42 66.04 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" ""
+			(at 185.42 66.04 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Ceramic MLCC, 10uF, 10V, X5R, 10%, 0603"
+			(at 185.42 66.04 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "10%"
+			(at -209.55 24.13 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "10V"
+			(at 187.96 68.58 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Dielectric" "X5R"
+			(at 193.04 68.58 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Capacitance at bias" "Minimum 4.7uF at 3.2V over tolerance and temperature"
+			(at -149.86 -66.04 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "fa9e0321-f436-5266-b129-3486212f281a")
+		)
+		(pin "2"
+			(uuid "1a2fa901-b953-5ef0-9215-d3a6cb5dae9a")
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
+					(reference "C41")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 125.73 60.96 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "f2a413a6-6732-4c49-8938-137e9288dd26")
+		(property "Reference" "R31"
+			(at 127.73 59.69 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "47k"
+			(at 127.73 62.23 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+			(at 124.46 64.77 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" ""
+			(at 124.46 66.04 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Thick-film resistor, 47kOhm, 1%, 63mW, 50V, 0402"
+			(at 124.46 67.31 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "1%"
+			(at 124.46 68.58 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Power" "63mW"
+			(at -88.9 -256.54 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "50V"
+			(at -88.9 -256.54 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Technology" "Thick film"
+			(at -88.9 -256.54 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "964e411d-3b4d-5838-a7f4-ce8cdc5f753a")
+		)
+		(pin "2"
+			(uuid "9d375f52-a38e-5433-86c6-b24346ad00e9")
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
+					(reference "R31")
+					(unit 1)
+				)
+			)
+		)
 	)
 	(symbol
 		(lib_id "obc:DM3CS-SF")
@@ -1066,14 +2729,6 @@
 				(justify left)
 			)
 		)
-		(instances
-			(project "OBC_PCB"
-				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
-					(reference "J2")
-					(unit 1)
-				)
-			)
-		)
 		(pin "1"
 			(uuid "25794006-a080-5e9f-b05f-bc4d812114a4")
 		)
@@ -1113,1644 +2768,13 @@
 		(pin "S5"
 			(uuid "4d3092a8-95fd-5933-b11a-ab8cebb32507")
 		)
-	)
-	(wire
-		(pts
-			(xy 149.86 91.44)
-			(xy 60.96 91.44)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "9b5c95e4-2f51-5ee3-afcc-f36497372d09")
-	)
-	(hierarchical_label "SD_D2"
-		(shape bidirectional)
-		(at 60.96 91.44 180)
-		(effects
-			(font
-				(size 1.0 1.0)
-			)
-			(justify right)
-		)
-		(uuid "4a02dd3a-e92a-5538-81b6-5f9f7a33f7d5")
-	)
-	(wire
-		(pts
-			(xy 149.86 93.98)
-			(xy 60.96 93.98)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "3cc3d65f-3ceb-51b0-93c3-e742ba631442")
-	)
-	(hierarchical_label "SD_D3"
-		(shape bidirectional)
-		(at 60.96 93.98 180)
-		(effects
-			(font
-				(size 1.0 1.0)
-			)
-			(justify right)
-		)
-		(uuid "80388469-9c6e-5ddb-b436-ab8a698968d7")
-	)
-	(wire
-		(pts
-			(xy 149.86 83.82)
-			(xy 60.96 83.82)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "4a32c0d4-f752-5b47-9387-2daecb866489")
-	)
-	(hierarchical_label "SD_CMD"
-		(shape bidirectional)
-		(at 60.96 83.82 180)
-		(effects
-			(font
-				(size 1.0 1.0)
-			)
-			(justify right)
-		)
-		(uuid "9161139f-6e2d-560c-9af4-8ea7979823d8")
-	)
-	(wire
-		(pts
-			(xy 149.86 81.28)
-			(xy 60.96 81.28)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "72b1c159-d6ec-5708-854a-9202d4d2f604")
-	)
-	(hierarchical_label "SD_CLK"
-		(shape input)
-		(at 60.96 81.28 180)
-		(effects
-			(font
-				(size 1.0 1.0)
-			)
-			(justify right)
-		)
-		(uuid "6e8cee70-5b23-53b8-8476-091a7dec1d2b")
-	)
-	(wire
-		(pts
-			(xy 149.86 86.36)
-			(xy 60.96 86.36)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "f2e7ca2a-a2d8-5082-888c-6df6c09994fc")
-	)
-	(hierarchical_label "SD_D0"
-		(shape bidirectional)
-		(at 60.96 86.36 180)
-		(effects
-			(font
-				(size 1.0 1.0)
-			)
-			(justify right)
-		)
-		(uuid "eb22589f-0531-5c15-b85f-e760c8250efe")
-	)
-	(wire
-		(pts
-			(xy 149.86 88.9)
-			(xy 60.96 88.9)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "1126b3e6-ab4a-5ce1-ac99-08b449b92ca1")
-	)
-	(hierarchical_label "SD_D1"
-		(shape bidirectional)
-		(at 60.96 88.9 180)
-		(effects
-			(font
-				(size 1.0 1.0)
-			)
-			(justify right)
-		)
-		(uuid "8a79d46b-9f85-50d6-8995-ee67e96bc6e5")
-	)
-	(symbol
-		(lib_id "Device:R_Small")
-		(at 87.63 60.96 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "c59c95a0-8ca9-476d-8aae-628afe8ab9c3")
-		(property "Reference" "R28"
-			(at 89.63 59.69 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "47k"
-			(at 89.63 62.230000000000004 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 93.98 64.77 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" ""
-			(at 93.98 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "Thick-film resistor, 47kOhm, 1%, 63mW, 50V, 0402"
-			(at 93.98 67.31 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Tolerance" "1%"
-			(at 93.98 68.58000000000001 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Power" "63mW"
-			(at -119.38 -256.54 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Voltage" "50V"
-			(at -119.38 -256.54 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Technology" "Thick film"
-			(at -119.38 -256.54 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
 		(instances
 			(project "OBC_PCB"
 				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
-					(reference "R28")
+					(reference "J2")
 					(unit 1)
 				)
 			)
 		)
-		(pin "1"
-			(uuid "c06a25b3-2eda-5385-ad08-221e2370d25b")
-		)
-		(pin "2"
-			(uuid "59d90cf6-9122-51ac-ada5-c02927cc6eb2")
-		)
 	)
-	(wire
-		(pts
-			(xy 87.63 63.5)
-			(xy 87.63 83.82)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "e52956c9-d98c-5d92-87a6-e6377a3144fa")
-	)
-	(junction
-		(at 87.63 83.82)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "642439be-a387-5d2d-82a4-6a6526c17107")
-	)
-	(wire
-		(pts
-			(xy 87.63 58.42)
-			(xy 87.63 53.34)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "0adcd81b-3668-597a-a86f-72f7e7d13230")
-	)
-	(symbol
-		(lib_id "Device:R_Small")
-		(at 100.33 60.96 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "b470299f-78d4-440d-b047-7f0f1cc990c5")
-		(property "Reference" "R29"
-			(at 102.33 59.69 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "47k"
-			(at 102.33 62.230000000000004 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 104.14 64.77 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" ""
-			(at 104.14 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "Thick-film resistor, 47kOhm, 1%, 63mW, 50V, 0402"
-			(at 104.14 67.31 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Tolerance" "1%"
-			(at 104.14 68.58000000000001 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Power" "63mW"
-			(at -109.22 -256.54 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Voltage" "50V"
-			(at -109.22 -256.54 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Technology" "Thick film"
-			(at -109.22 -256.54 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(instances
-			(project "OBC_PCB"
-				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
-					(reference "R29")
-					(unit 1)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "1979d4ad-39dc-57f4-83a9-d0afaf4289d2")
-		)
-		(pin "2"
-			(uuid "fdee26cc-9a73-5d45-944f-dbab3ebda1a7")
-		)
-	)
-	(wire
-		(pts
-			(xy 100.33 63.5)
-			(xy 100.33 86.36)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "1ffd5040-47cd-5a3f-889d-d634755273f4")
-	)
-	(junction
-		(at 100.33 86.36)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "fa5f2d13-c25a-5c6e-a21b-cbf045eb0651")
-	)
-	(wire
-		(pts
-			(xy 100.33 58.42)
-			(xy 100.33 53.34)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "2593fc4c-ae0d-57cb-98aa-a0752b5502a1")
-	)
-	(symbol
-		(lib_id "Device:R_Small")
-		(at 113.03 60.96 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "267d83f4-3925-491d-b7a2-2950b02278aa")
-		(property "Reference" "R30"
-			(at 115.03 59.69 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "47k"
-			(at 115.03 62.230000000000004 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 114.3 64.77 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" ""
-			(at 114.3 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "Thick-film resistor, 47kOhm, 1%, 63mW, 50V, 0402"
-			(at 114.3 67.31 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Tolerance" "1%"
-			(at 114.30000000000001 68.58000000000001 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Power" "63mW"
-			(at -99.06 -256.54 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Voltage" "50V"
-			(at -99.06 -256.54 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Technology" "Thick film"
-			(at -99.06 -256.54 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(instances
-			(project "OBC_PCB"
-				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
-					(reference "R30")
-					(unit 1)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "42f7382b-ffe0-5ac1-b67b-ff8b47f4c2ab")
-		)
-		(pin "2"
-			(uuid "078ecaf4-85a6-5acb-9cff-41be4db999f8")
-		)
-	)
-	(wire
-		(pts
-			(xy 113.03 63.5)
-			(xy 113.03 88.9)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "c8314c69-2287-5b6b-850f-ab9b5bc41c4a")
-	)
-	(junction
-		(at 113.03 88.9)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "de2cced4-a589-5a94-af9e-87fe3a058557")
-	)
-	(wire
-		(pts
-			(xy 113.03 58.42)
-			(xy 113.03 53.34)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "294cdbd9-29f9-5f7f-b56b-91257d7d64cf")
-	)
-	(symbol
-		(lib_id "Device:R_Small")
-		(at 125.73 60.96 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "f2a413a6-6732-4c49-8938-137e9288dd26")
-		(property "Reference" "R31"
-			(at 127.73 59.69 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "47k"
-			(at 127.73 62.230000000000004 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 124.46 64.77 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" ""
-			(at 124.46 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "Thick-film resistor, 47kOhm, 1%, 63mW, 50V, 0402"
-			(at 124.46 67.31 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Tolerance" "1%"
-			(at 124.46000000000001 68.58000000000001 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Power" "63mW"
-			(at -88.9 -256.54 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Voltage" "50V"
-			(at -88.9 -256.54 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Technology" "Thick film"
-			(at -88.9 -256.54 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(instances
-			(project "OBC_PCB"
-				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
-					(reference "R31")
-					(unit 1)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "964e411d-3b4d-5838-a7f4-ce8cdc5f753a")
-		)
-		(pin "2"
-			(uuid "9d375f52-a38e-5433-86c6-b24346ad00e9")
-		)
-	)
-	(wire
-		(pts
-			(xy 125.73 63.5)
-			(xy 125.73 91.44)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "eff0875d-ac58-5c1f-a764-deb3c6b8b70c")
-	)
-	(junction
-		(at 125.73 91.44)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "7d4f1034-6268-5bb2-b9b3-02c73404f6dc")
-	)
-	(wire
-		(pts
-			(xy 125.73 58.42)
-			(xy 125.73 53.34)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "17edda03-0a4e-5731-a46c-f473dd627f84")
-	)
-	(symbol
-		(lib_id "Device:R_Small")
-		(at 138.43 60.96 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "3076cd49-e85c-4cdc-9d91-5508991dc923")
-		(property "Reference" "R32"
-			(at 140.43 59.69 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "47k"
-			(at 140.43 62.230000000000004 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 134.62 64.77 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" ""
-			(at 134.62 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "Thick-film resistor, 47kOhm, 1%, 63mW, 50V, 0402"
-			(at 134.62 67.31 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Tolerance" "1%"
-			(at 134.62 68.58000000000001 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Power" "63mW"
-			(at -78.74 -256.54 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Voltage" "50V"
-			(at -78.74 -256.54 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Technology" "Thick film"
-			(at -78.74 -256.54 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(instances
-			(project "OBC_PCB"
-				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
-					(reference "R32")
-					(unit 1)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "0f4f8573-2b25-5fa7-80dd-ef7d5de2e842")
-		)
-		(pin "2"
-			(uuid "08fdfe1d-f9ed-5426-ae72-59c1e95c5797")
-		)
-	)
-	(wire
-		(pts
-			(xy 138.43 63.5)
-			(xy 138.43 93.98)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "70a16471-a3e9-5527-9bc2-3f77a497d51a")
-	)
-	(junction
-		(at 138.43 93.98)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "a6601126-f0c9-5b18-9f94-743075d3ac71")
-	)
-	(wire
-		(pts
-			(xy 138.43 58.42)
-			(xy 138.43 53.34)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "774b82d9-4e5b-599c-a187-c146275b3113")
-	)
-	(wire
-		(pts
-			(xy 165.1 73.66)
-			(xy 165.1 53.34)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "bb3e7d40-f744-5a08-bd9c-1cb0e676759b")
-	)
-	(wire
-		(pts
-			(xy 165.1 109.22)
-			(xy 165.1 113.03)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "459f0a66-5f26-5642-86ae-5309c783a372")
-	)
-	(symbol
-		(lib_id "power:GND")
-		(at 165.1 113.03 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board no)
-		(dnp no)
-		(uuid "6e7c8a74-6327-5c3c-99ba-03a491ee9af9")
-		(property "Reference" "#PWR9000230"
-			(at 160.01999999999998 102.87 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "GND"
-			(at 165.1 116.84 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" ""
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_keywords" "global power"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(instances
-			(project "OBC_PCB"
-				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
-					(reference "#PWR9000230")
-					(unit 1)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "08ae8dd5-4ebe-582e-b50f-72f04887f37a")
-		)
-	)
-	(no_connect
-		(at 149.86 99.06)
-		(uuid "1d316ef6-426a-5c9d-8a10-1347b2c3b4cd")
-	)
-	(symbol
-		(lib_id "Device:C_Small")
-		(at 210.82 66.04 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "cfebd74a-4215-46f5-972f-cff202d20c8e")
-		(property "Reference" "C41"
-			(at 212.82 64.77000000000001 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "10u"
-			(at 212.82 67.31 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
-			(at 185.42 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" ""
-			(at 185.42 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "Ceramic MLCC, 10uF, 10V, X5R, 10%, 0603"
-			(at 185.42 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Tolerance" "10%"
-			(at -209.55 24.13 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Voltage" "10V"
-			(at 187.96 68.58 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Dielectric" "X5R"
-			(at 193.04 68.58 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Capacitance at bias" "Minimum 4.7uF at 3.2V over tolerance and temperature"
-			(at -149.86 -66.04 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(instances
-			(project "OBC_PCB"
-				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
-					(reference "C41")
-					(unit 1)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "fa9e0321-f436-5266-b129-3486212f281a")
-		)
-		(pin "2"
-			(uuid "1a2fa901-b953-5ef0-9215-d3a6cb5dae9a")
-		)
-	)
-	(wire
-		(pts
-			(xy 210.82 68.58)
-			(xy 210.82 72.39)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "3b64888c-dbbd-5ba3-937b-8a10aa088d5f")
-	)
-	(symbol
-		(lib_id "power:GND")
-		(at 210.82 72.39 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board no)
-		(dnp no)
-		(uuid "1b04a80f-37e2-5966-b185-cffda61719d3")
-		(property "Reference" "#PWR9000232"
-			(at 205.73999999999998 62.230000000000004 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "GND"
-			(at 210.82 76.2 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" ""
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_keywords" "global power"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(instances
-			(project "OBC_PCB"
-				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
-					(reference "#PWR9000232")
-					(unit 1)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "0bb1d396-488b-59d5-9b08-a562a3b2fe9b")
-		)
-	)
-	(symbol
-		(lib_id "Device:C_Small")
-		(at 238.76 66.04 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "11e5d655-9353-4e10-b99c-5c2e90ac79fb")
-		(property "Reference" "C43"
-			(at 240.76 64.77000000000001 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "100n"
-			(at 240.76 67.31 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
-			(at 210.82 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" ""
-			(at 210.82 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "Ceramic MLCC, 100nF, 10V, X7R, 10%, 0402"
-			(at 210.82 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Tolerance" "10%"
-			(at -184.15 24.13 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Voltage" "10V"
-			(at 213.36 68.58 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Dielectric" "X7R"
-			(at 218.44 68.58 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(instances
-			(project "OBC_PCB"
-				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
-					(reference "C43")
-					(unit 1)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "c03ce33c-8160-56a0-81fe-b1c9fdbf34b5")
-		)
-		(pin "2"
-			(uuid "ae09891c-8e7d-501b-8eda-ebd8d9905301")
-		)
-	)
-	(wire
-		(pts
-			(xy 238.76 68.58)
-			(xy 238.76 72.39)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "083936dd-5826-5677-bce7-5a38b98db09d")
-	)
-	(symbol
-		(lib_id "power:GND")
-		(at 238.76 72.39 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board no)
-		(dnp no)
-		(uuid "666ecdc4-46ef-5e8e-9229-9b67c09abbe9")
-		(property "Reference" "#PWR9000234"
-			(at 233.67999999999998 62.230000000000004 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "GND"
-			(at 238.76 76.2 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" ""
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_keywords" "global power"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(instances
-			(project "OBC_PCB"
-				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
-					(reference "#PWR9000234")
-					(unit 1)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "299ddce1-d193-5890-8155-2016664803f1")
-		)
-	)
-	(text "47k pull-ups to the switched card rail. No CLK pull-up.\nC41/C43 at J2; verify card start-up and write bursts within BUCK1 200mA.\nRelease all six MCU pins before switching the card rail off.\nCard-detect contacts are unused."
-		(at 30.48 142.24 0)
-		(effects
-			(font
-				(size 1.0 1.0)
-			)
-			(justify left top)
-		)
-		(uuid "ec378f06-2455-5b89-866b-30bd7621c8c2")
-	)
-	(wire
-		(pts
-			(xy 87.63 53.34)
-			(xy 238.76 53.34)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "6897f25f-a784-5b79-9e71-7ba7f50bff5f")
-	)
-	(symbol
-		(lib_id "obc:+3V3_SD")
-		(at 87.63 53.34 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board no)
-		(dnp no)
-		(uuid "76f1e0ac-1c46-5855-8a84-9c38d07ac72d")
-		(property "Reference" "#PWR9000235"
-			(at 82.55 43.18000000000001 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "+3V3_SD"
-			(at 87.63 49.53 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" ""
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"+3V3_SD\""
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(property "ki_keywords" "global power"
-			(at 0 0 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1 1)
-				)
-				(justify left)
-			)
-		)
-		(instances
-			(project "OBC_PCB"
-				(path "/57e91c39-b072-457b-b097-52c5b44e61c8/9a104cb0-a286-4930-b68d-caf6373d10a3"
-					(reference "#PWR9000235")
-					(unit 1)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "6cac469c-b015-5d05-a960-cf2a88680948")
-		)
-	)
-	(wire
-		(pts
-			(xy 210.82 63.5)
-			(xy 210.82 53.34)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "735c0363-5c19-57b8-ba62-c82ebdfce6f3")
-	)
-	(junction
-		(at 210.82 53.34)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "fe0a8f91-7c7f-59b5-abdb-4a20c0b4c58c")
-	)
-	(wire
-		(pts
-			(xy 238.76 63.5)
-			(xy 238.76 53.34)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "463084f5-3bb0-5e0e-b5d0-f00faf76b3d8")
-	)
-	(junction
-		(at 238.76 53.34)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "43ce9c98-97c0-59f3-bc22-226b062193e7")
-	)
-	(junction
-		(at 87.63 53.34)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "2037da51-8421-5278-b4b1-c862600553bb")
-	)
-	(junction
-		(at 100.33 53.34)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "1bd3b318-d025-56bf-b1bb-5640f76f1708")
-	)
-	(junction
-		(at 113.03 53.34)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "84905d50-aa3b-56d6-aa0a-65aac3a5eb4c")
-	)
-	(junction
-		(at 125.73 53.34)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "76c9a0f6-6a52-5694-8b38-54be1ad412c9")
-	)
-	(junction
-		(at 138.43 53.34)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "b6237855-a524-54e3-914d-53b856d015e7")
-	)
-	(junction
-		(at 165.1 53.34)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "24b3b106-72b1-525f-a62f-4061a044b85a")
-	)
-	(embedded_fonts no)
 )

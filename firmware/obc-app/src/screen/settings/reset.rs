@@ -2,7 +2,7 @@
 //! safe alone, so a reset takes two steps: a press to arm, then a hold to erase. A hold on an
 //! un-armed screen does nothing. A paired device waits for bond removal before it clears the
 //! settings. Unconfirmed controller clearance asks for a restart before first-use setup. The
-//! reset keeps the files on the card.
+//! reset keeps maps and deletes personal card data before it clears settings.
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
@@ -15,19 +15,30 @@ use crate::ble::BondStatus;
 use crate::input::Gesture;
 use crate::screen::vocab::chrome::{card_triangle, copy_w, title_frame, wrapped, TITLE_BAR_H};
 use crate::screen::{palette, Ctx, QuickDrawerScreen, Render, Screen, Transition};
-use crate::settings::Settings;
 use crate::Msg;
+
+#[derive(Debug, Default, PartialEq, Eq)]
+enum DataReset {
+    #[default]
+    Waiting,
+    Requested,
+    Running,
+    Failed,
+    Done,
+    Committed,
+}
 
 /// `armed` is set by the first press, and only an armed screen can erase.
 #[derive(Debug, Default)]
 pub struct ResetScreen {
     armed: bool,
     removing: bool,
+    data: DataReset,
 }
 
 impl ResetScreen {
     pub fn new() -> Self {
-        ResetScreen { armed: false, removing: false }
+        Self::default()
     }
 
     /// True while the hold-to-erase bar is on screen and fills with the live hold progress.
@@ -39,8 +50,41 @@ impl ResetScreen {
         self.removing
     }
 
+    pub(crate) fn request_data_clear(&mut self) {
+        if self.removing && self.data == DataReset::Waiting {
+            self.data = DataReset::Requested;
+        }
+    }
+
+    pub(crate) fn data_clear_requested(&self) -> bool {
+        self.removing && self.data == DataReset::Requested
+    }
+
+    pub(crate) fn data_clear_started(&mut self) {
+        self.data = DataReset::Running;
+    }
+
+    pub(crate) fn data_clear_finished(&mut self, success: bool) {
+        self.data = if success { DataReset::Done } else { DataReset::Failed };
+    }
+
+    pub(crate) fn data_cleared(&self) -> bool {
+        self.data == DataReset::Done
+    }
+
+    pub(crate) fn committed(&mut self) {
+        self.data = DataReset::Committed;
+    }
+
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         if self.removing {
+            if self.data == DataReset::Failed && g == Gesture::Press {
+                self.data = DataReset::Requested;
+                return Transition::None;
+            }
+            if matches!(self.data, DataReset::Requested | DataReset::Running | DataReset::Failed) {
+                return Transition::None;
+            }
             return match (g, cx.state.bond_status) {
                 (Gesture::Press, BondStatus::Failed(_)) => {
                     cx.state.ble_forget_requested = true;
@@ -60,7 +104,7 @@ impl ResetScreen {
             }
             Gesture::Hold if self.armed && cx.state.bond_status == BondStatus::RestartRequired => {
                 self.removing = true;
-                *cx.settings = Settings::FACTORY;
+                self.data = DataReset::Requested;
                 Transition::None
             }
             // Keep the settings until bond removal succeeds. A failed clear must not boot setup
@@ -76,8 +120,9 @@ impl ResetScreen {
                 Transition::None
             }
             Gesture::Hold if self.armed => {
-                *cx.settings = Settings::FACTORY;
-                crate::screen::setup::go_to(cx.settings)
+                self.removing = true;
+                self.data = DataReset::Requested;
+                Transition::None
             }
             Gesture::Back => Transition::Pop,
             _ => Transition::None,
@@ -91,10 +136,16 @@ impl ResetScreen {
 
         card_triangle(cv, Point::new(w / 2, TITLE_BAR_H + 50), 24);
         if self.removing {
-            let (message, action) = match rx.state.bond_status {
-                BondStatus::Failed(_) => (Msg::ResetPhoneFailed, Some(Msg::ResetRetry)),
-                BondStatus::RestartRequired => (Msg::BluetoothRestart, Some(Msg::QuickPower)),
-                _ => (Msg::BluetoothRemoving, None),
+            let (message, action) = if self.data == DataReset::Failed {
+                (Msg::ResetDataFailed, Some(Msg::ResetRetry))
+            } else if matches!(self.data, DataReset::Requested | DataReset::Running) {
+                (Msg::ResetErasing, None)
+            } else {
+                match rx.state.bond_status {
+                    BondStatus::Failed(_) => (Msg::ResetPhoneFailed, Some(Msg::ResetRetry)),
+                    BondStatus::RestartRequired => (Msg::BluetoothRestart, Some(Msg::QuickPower)),
+                    _ => (Msg::BluetoothRemoving, None),
+                }
             };
             let y = wrapped(cv, rx.t(message), w / 2, TITLE_BAR_H + 96, copy_w(w), Font::Body, INK);
             if rx.state.bond_status == BondStatus::RestartRequired {
@@ -140,6 +191,7 @@ mod tests {
     use super::*;
     use crate::activity::Activity;
     use crate::screen::test_ctx;
+    use crate::settings::Settings;
     use crate::{AppState, Mode, Units};
 
     fn run(scr: &mut ResetScreen, s: &mut Settings, g: Gesture) -> Transition {
@@ -153,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn arm_then_hold_resets_an_unpaired_device_and_starts_setup() {
+    fn arm_then_hold_waits_for_personal_data_clear_on_an_unpaired_device() {
         let mut s = Settings { units: Units::Imperial, power_saver: true, fix_interval_s: 30, ..Settings::default() };
         let before = s;
         let mut st = AppState::new(0, 0, 1.0);
@@ -166,8 +218,9 @@ mod tests {
         run_in(&mut scr, &mut s, &mut st, Gesture::Press);
         assert!(scr.armed);
         let t = run_in(&mut scr, &mut s, &mut st, Gesture::Hold);
-        assert!(matches!(t, Transition::Root(crate::Screen::Hello(_))), "setup opens at once");
-        assert_eq!(s, Settings::FACTORY, "settings were cleared to factory defaults");
+        assert!(matches!(t, Transition::None));
+        assert_eq!(s, before, "settings wait for confirmed deletion");
+        assert!(scr.data_clear_requested());
         assert!(!st.ble_forget_requested, "there is no phone to forget");
     }
 

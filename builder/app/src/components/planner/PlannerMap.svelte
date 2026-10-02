@@ -1,5 +1,5 @@
 <script module lang="ts">
-    import { terrainSource } from '../../lib/planner/map-terrain';
+    import { terrainRetry, terrainSource } from '../../lib/planner/map-terrain';
     import { TERRAIN_URL } from '../../lib/planner/map-data';
     const terrain = terrainSource(TERRAIN_URL);
 </script>
@@ -15,7 +15,7 @@
     import "maplibre-gl/dist/maplibre-gl.css";
     import { mapStyle, poiFilter } from "../../lib/planner/map-style";
     import { mapIcon } from "../../lib/planner/map-icons";
-    import { MAP_BOUNDS } from "../../lib/planner/map-data";
+    import { MAP_BOUNDS, OVERLAYS_URL } from "../../lib/planner/map-data";
     import { categoryIds, placeCategories, type PlaceCategory } from "../../lib/planner/poi-kinds";
     import { poiPlace } from "../../lib/planner/place-index";
     import { coordinateAt, nearestProgress, type Place } from "../../lib/planner/editor";
@@ -27,7 +27,7 @@
         segments = [], coordinates = [], highlightedCoordinates = [], points = [], selectedId = null, hoveredId = null, callout = null,
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
-        shownCategories = categoryIds, highlightedPlaces = [], landmarks = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling',
+        shownCategories = categoryIds, highlightedPlaces = [], landmarks = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage,
         onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
         segments?: MapSegment[]; coordinates?: Coordinate[]; highlightedCoordinates?: Coordinate[]; points?: MapPoint[];
@@ -44,6 +44,8 @@
         mapOverlays?: OverlayOptions;
         /** Travel mode, independent of the network chosen for display. */
         accessMode?: AccessMode;
+        /** Routing package of the shown route. Overlays from another package stay hidden. */
+        routingPackage?: string;
         /** Route progress the elevation profile points at. */
         hoverProgress?: number | null;
         center?: Coordinate; zoom?: number;
@@ -94,6 +96,8 @@
     let consumedPress = false;
     let wholeRoute = false;
     let overlayLayer: RouteOverlays | undefined;
+    // Terrain and overlays wait for the first complete basemap, so their downloads never delay it.
+    let basemapComplete = false;
     let overlayStatus = $state('');
     let overlayRetry = $state(false);
     let overlaySelection = $state<OverlaySelection | null>(null);
@@ -237,7 +241,6 @@
             paint: textPaint,
         });
         syncRouteVisibility();
-        syncTerrain();
     }
 
     function syncRouteVisibility() {
@@ -245,10 +248,16 @@
         for (const id of ["trip-line", "trip-casing", "trip-casing-drawn", "trip-highlight"]) map.setLayoutProperty(id, "visibility", showRoute ? "visible" : "none");
     }
 
+    function syncTerrainAndOverlays() {
+        if (basemapComplete) overlayLayer?.install(theme);
+        syncTerrain();
+    }
+
+    // A hidden layer leaves its source unused, so MapLibre requests none of its tiles.
     function syncTerrain() {
         if (!map?.getLayer("relief")) return;
-        for (const id of ["contour-lines", "contour-labels"]) map.setLayoutProperty(id, "visibility", contours ? "visible" : "none");
-        map.setLayoutProperty("relief", "visibility", hillshade ? "visible" : "none");
+        for (const id of ["contour-lines", "contour-labels"]) map.setLayoutProperty(id, "visibility", basemapComplete && contours ? "visible" : "none");
+        map.setLayoutProperty("relief", "visibility", basemapComplete && hillshade ? "visible" : "none");
     }
 
     function reportView(event?: { type: string; preserveSearch?: boolean }) {
@@ -378,22 +387,31 @@
         hoverDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-hover-dot" }) });
         try {
             map = new maplibregl.Map({ container, center, zoom, maxBounds: MAP_BOUNDS, style: mapStyle(theme, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false });
-            overlayLayer = new RouteOverlays(map, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; });
+            overlayLayer = new RouteOverlays(map, OVERLAYS_URL, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; });
             fitInitialRoute();
             map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 90, unit: "metric" }), "bottom-left");
             map.dragRotate.disable();
             map.touchZoomRotate.disableRotation();
-            map.on("style.load", () => { overlayLayer?.install(theme); ready = true; installRoute(); });
+            map.on("style.load", () => { ready = true; installRoute(); syncTerrainAndOverlays(); });
+            map.once("load", () => { basemapComplete = true; syncTerrainAndOverlays(); });
             map.setMissingStyleImageResolver((id) => {
                 const icon = mapIcon(id);
                 if (icon && !map!.hasImage(id)) map!.addImage(id, icon.image, { pixelRatio: icon.pixelRatio });
             });
             map.once("load", reportView);
+            const terrainError = terrainRetry(map);
             map.on("error", (event) => {
+                if (terrainError(event)) {
+                    console.warn("Planner terrain:", event.error);
+                    return;
+                }
                 failure = "Some map data could not load. Check your connection, then retry.";
                 errorDetail = event.error.message;
                 console.error("Planner map:", event.error);
+                // MapLibre does not repaint after a failed request, so the first load would wait for a camera move.
+                // A failed tile also marks its source loaded, so an earlier repaint would fire load too soon.
+                if (!basemapComplete && map!.areTilesLoaded()) map!.triggerRepaint();
             });
             map.on("click", (event) => {
                 const target = event.originalEvent.target;
@@ -469,6 +487,7 @@
     $effect(() => { hillshade; contours; if (ready) syncTerrain(); });
     $effect(() => { const options = { ...mapOverlays }; const mode = accessMode; if (ready) { overlaySelection = null; overOverlay = false; overlayLayer?.set(options, mode); } });
     $effect(() => { showRoute; if (ready) syncRouteVisibility(); });
+    $effect(() => { const routing = routingPackage; if (ready) overlayLayer?.verify(routing); });
     $effect(() => {
         highlightedCoordinates;
         if (map && ready) (map.getSource("trip-highlight") as GeoJSONSource | undefined)?.setData(highlightData());
@@ -491,8 +510,10 @@
     });
     $effect(() => {
         if (!map) return;
-        if (hoverProgress !== null && coordinates.length) hoverDot.setLngLat(coordinateAt(coordinates, hoverProgress)).addTo(map);
-        else hoverDot.remove();
+        if (hoverProgress === null || !coordinates.length) { hoverDot.remove(); return; }
+        hoverDot.setLngLat(coordinateAt(coordinates, hoverProgress));
+        // `addTo` removes and inserts the element again, so it runs only when the dot is absent.
+        if (!hoverDot.getElement().isConnected) hoverDot.addTo(map);
     });
     $effect(() => {
         if (!map) return;
@@ -623,7 +644,7 @@
             onuse={() => { const coordinate = overlaySelection!.coordinate; overlaySelection = null; onEmptyClick?.(coordinate); }} />
     {/if}
     {#if overlayStatus && !failure && !overlaySelection}
-        <div class="overlay-status" role="status">{overlayStatus}{#if overlayRetry}<button onclick={() => overlayLayer?.refresh()}>Retry</button>{/if}</div>
+        <div class="overlay-status" role="status">{overlayStatus}{#if overlayRetry}<button onclick={() => overlayLayer?.retry()}>Retry</button>{/if}</div>
     {/if}
     {#if !ready && !failure}<div class="map-status" role="status">Loading map…</div>{/if}
     {#if failure}

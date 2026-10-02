@@ -11,7 +11,7 @@ import {
 } from './web/engine.mjs';
 import {
   centre,
-  lengths,
+  planKm,
   at,
   slice,
   dayRange,
@@ -48,7 +48,8 @@ function lineOf(context) {
   return line;
 }
 function planRange(context) {
-  return [0, lengths(lineOf(context)).at(-1)];
+  lineOf(context);
+  return [0, planKm(context).at(-1)];
 }
 function dayDate(day, context) {
   if (!context.startDate)
@@ -109,7 +110,8 @@ export function resolvePoint(db, point, context, focus = centre(context.view)) {
     return pointResult(context.here, 'Your location');
   }
   const line = lineOf(context),
-    total = lengths(line).at(-1);
+    ds = planKm(context),
+    total = ds.at(-1);
   if (point.plan)
     return pointResult(
       point.plan === 'start' ? line[0] : line.at(-1),
@@ -120,21 +122,22 @@ export function resolvePoint(db, point, context, focus = centre(context.view)) {
       km =
         point.part === 'start' ? a : point.part === 'middle' ? (a + b) / 2 : b;
     return pointResult(
-      at(line, km),
+      at(line, km, ds),
       `Day ${dayNumber(point.day, context)} ${point.part || 'end'}`,
       { along: km },
     );
   }
   if (point.along) {
     const [km] = alongRange(point.along, [0, total], context);
-    return pointResult(at(line, km), `${km.toFixed(1)} km`, { along: km });
+    return pointResult(at(line, km, ds), `${km.toFixed(1)} km`, { along: km });
   }
   throw new Error('Choose a point.');
 }
 
 function scope(db, request, context) {
   const w = request.where || context.pointing || { scope: 'view' },
-    radius = request.radius?.value;
+    radius = request.radius?.value,
+    ds = planKm(context);
   let range = null,
     radial = null,
     line = null,
@@ -187,9 +190,9 @@ function scope(db, request, context) {
           db,
           w[key],
           context,
-          at(line, range[key === 'after' ? 0 : 1]),
+          at(line, range[key === 'after' ? 0 : 1], ds),
         );
-        const position = routePosition(p.coordinate, line);
+        const position = routePosition(p.coordinate, line, ds);
         if (position.distance > 5)
           throw new Error(`“${p.label}” is more than 5 km from the route.`);
         range[key === 'after' ? 0 : 1] =
@@ -207,13 +210,13 @@ function scope(db, request, context) {
           : w.part === 'middle'
             ? (range[0] + range[1]) / 2
             : range[1];
-      focus = at(line, km);
+      focus = at(line, km, ds);
       radial = radius ?? 3;
       bounds = [around(focus, radial)];
       line = null;
       area = `Within ${radial} km of ${w.day ? `Day ${dayNumber(w.day, context)} ${w.part}` : w.part ? `the route ${w.part}` : `km ${km.toFixed(1)}`}`;
     } else {
-      line = slice(line, ...range);
+      line = slice(line, ...range, ds);
       bounds = boxes(line, radius ?? 1);
       focus = line[0];
     }
@@ -227,7 +230,7 @@ function scope(db, request, context) {
       area = `Within ${radial} km of ${points[0].label}`;
     } else {
       const route = lineOf(context),
-        positions = points.map((p) => routePosition(p.coordinate, route));
+        positions = points.map((p) => routePosition(p.coordinate, route, ds));
       if (positions.some((p) => p.distance > 5))
         throw new Error('Both points must be within 5 km of the route.');
       const nearRange = positions.map((p) => p.along).sort((a, b) => a - b);
@@ -235,7 +238,7 @@ function scope(db, request, context) {
         ? [Math.max(range[0], nearRange[0]), Math.min(range[1], nearRange[1])]
         : nearRange;
       if (range[0] > range[1]) throw new Error('These areas do not overlap.');
-      line = slice(route, ...range);
+      line = slice(route, ...range, ds);
       bounds = boxes(line, radius ?? 1);
       area = `Between ${points[0].label} and ${points[1].label}`;
     }
@@ -253,6 +256,7 @@ function categoryRows(db, kinds, bounds, focus) {
     AND p.kind IN (${kinds.map(() => '?').join(',')})
     ORDER BY (p.lon-?)*(p.lon-?)*?+(p.lat-?)*(p.lat-?) LIMIT 2001`,
     [...bounds, ...kinds, x, x, cos, y, y],
+    {bounds},
   );
 }
 export function findPlaces(db, request, context) {
@@ -293,7 +297,8 @@ export function findPlaces(db, request, context) {
     kinds = [...new Set(request.what.flatMap((k) => groups[k] || [k]))];
   if (request.open?.day)
     context = { ...context, openDate: dayDate(request.open.day, context) };
-  const found = new Map();
+  const found = new Map(),
+    ds = planKm(context);
   let truncated = false,
     unknown = 0;
   function collect(bounds) {
@@ -335,7 +340,7 @@ export function findPlaces(db, request, context) {
       if (opening && opening !== 'open') return [];
       const full =
         context.plan?.coordinates?.length > 1
-          ? routePosition([p.lon, p.lat], context.plan.coordinates)
+          ? routePosition([p.lon, p.lat], context.plan.coordinates, ds)
           : null;
       if (
         sc.line &&
@@ -439,7 +444,8 @@ export function resolve(db, request, context) {
   }
   if (request.type === 'places') return findPlaces(db, request, context);
   const line = context.plan?.coordinates || [],
-    total = line.length ? lengths(line).at(-1) : 0;
+    ds = planKm(context),
+    total = ds.at(-1);
   const changes = [];
   let description = '';
   if (request.type === 'route') {
@@ -480,7 +486,7 @@ export function resolve(db, request, context) {
         throw new Error(
           'The final day ends at the route finish. Choose an earlier day.',
         );
-      const p = resolvePoint(db, request.at, context, at(line, range[1]));
+      const p = resolvePoint(db, request.at, context, at(line, range[1], ds));
       changes.push({ op: 'end_day', day, point: p });
     }
     description = `Move ${changes.length === 1 ? `Day ${changes[0].day} end to ${changes[0].point.label}` : 'the day ends'}`;
@@ -513,7 +519,7 @@ export function resolve(db, request, context) {
         if (next <= km) throw new Error('The repeat interval does not advance along the route.');
         if (next >= range[1]) break;
         km = next;
-        const point = resolvePoint(db, request.point, context, at(line, km));
+        const point = resolvePoint(db, request.point, context, at(line, km, ds));
         if (
           !changes.some(
             (c) => distance(c.point.coordinate, point.coordinate) < 0.02,
@@ -647,7 +653,7 @@ export function resolve(db, request, context) {
           from: positions[i],
           to,
           label: `No mapped ${label(request.what.slice(4))}`,
-          coordinates: slice(line, positions[i], to),
+          coordinates: slice(line, positions[i], to, ds),
         }))
         .filter((s) => s.to - s.from >= (request.min?.value || 0))
         .sort((a, b) => b.to - b.from - (a.to - a.from));
@@ -685,7 +691,7 @@ export function resolve(db, request, context) {
       .map((s) => ({
         ...s,
         label: label(request.what),
-        coordinates: slice(line, s.from, s.to),
+        coordinates: slice(line, s.from, s.to, ds),
       }));
     return { type: 'stretches', stretches, area: sc.area };
   } else throw new Error('This request type is not supported.');

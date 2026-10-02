@@ -314,6 +314,9 @@ then removes the host keys, because the order decides what a failure leaves behi
 cleanup has no receipt, so the screen asks for a restart to finish. A disconnect proves nothing
 about stored keys. A factory reset runs the same removal, so the setup that follows can pair a
 phone again.
+It also deletes personal card data. Maps stay installed, so setup does not require another map
+download. Reset waits for card deletion to finish. A card failure keeps the reset screen open for
+Retry.
 
 Device information, the battery level, and the protocol version are readable before pairing.
 Everything else needs an authenticated, encrypted link. The clock is set by the phone or by a GPS

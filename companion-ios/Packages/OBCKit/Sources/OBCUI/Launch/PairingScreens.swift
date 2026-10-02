@@ -1,4 +1,5 @@
 import SwiftUI
+import OBCTransport
 
 // The pairing screens. Dumb views: copy and callbacks, no transport;
 // `LaunchFlowView` binds them to `LaunchFlowModel`.
@@ -60,122 +61,50 @@ struct LaunchMessage: View {
     }
 }
 
-/// The pairing prompt: the device's pairing card, three literal steps, then one action.
-struct PairIntroView: View {
-    let onStart: () -> Void
-
-    var body: some View {
-        LaunchScreenScaffold {
-            VStack(spacing: 0) {
-                DeviceGlyphView(variant: .passkey)
-                    .padding(.bottom, 28)
-
-                LaunchTitle("Pair your OBC")
-                    .accessibilityIdentifier("pair.introTitle")
-                    .padding(.bottom, 20)
-
-                VStack(spacing: 14) {
-                    step(1, "On the OBC, open **Settings ▸ Connections** and check that Bluetooth is on.")
-                    step(2, "Keep the OBC near your phone.")
-                    step(3, "Tap it in the list, then enter the code it shows.")
-                }
-            }
-        } actions: {
-            Button("Start pairing", action: onStart)
-                .buttonStyle(.obcPrimary)
-                .accessibilityIdentifier("pair.start")
-        }
-    }
-
-    private func step(_ number: Int, _ text: LocalizedStringKey) -> some View {
-        HStack(alignment: .top, spacing: 13) {
-            Text("\(number)")
-                .font(.system(.footnote, weight: .semibold).monospacedDigit())
-                .foregroundStyle(OBCTheme.surface)
-                .frame(width: 26, height: 26)
-                .background(OBCTheme.secondary, in: Circle())
-                .obcFixedGeometryType()
-            Text(text)
-                .font(.system(.subheadline))
-                .foregroundStyle(OBCTheme.ink)
-                .lineSpacing(3)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .accessibilityElement(children: .combine)
-    }
-}
-
-/// Scanning: the rings, and the found device slides in as a row to tap.
+/// A scan with several nearby OBCs. Their advertised names also appear under the device QR code.
 struct PairScanningView: View {
-    let discovered: LaunchFlowModel.DiscoveredDevice?
-    let onTapDevice: () -> Void
+    let devices: [PairingDevice]
+    let onTapDevice: (PairingDevice) -> Void
     let onCancel: () -> Void
 
     var body: some View {
         LaunchScreenScaffold {
             VStack(spacing: 0) {
                 ZStack {
-                    PulsingRings()
+                    if devices.isEmpty { PulsingRings() }
                     BluetoothTile()
                 }
-                .frame(width: 200, height: 200)
-                .padding(.bottom, 8)
-
-                LaunchTitle("Looking for your OBC")
+                .frame(width: 200, height: 180)
+                .padding(.bottom, 12)
+                LaunchTitle(devices.isEmpty ? "Looking for your OBC" : "Which OBC is yours?")
                     .accessibilityIdentifier("pair.scanningTitle")
+                    .padding(.bottom, 12)
+                LaunchMessage(devices.isEmpty
+                    ? "Keep your OBC awake and nearby."
+                    : "Choose the name shown under the QR code on your OBC.")
                     .padding(.bottom, 24)
-
-                if let discovered {
-                    deviceRow(discovered)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                if !devices.isEmpty {
+                    OBCGroupedSection {
+                        ForEach(devices) { device in
+                            OBCListRow(label: device.name, showsChevron: true) { onTapDevice(device) }
+                                .accessibilityIdentifier("pair.deviceRow.\(device.id.uuidString)")
+                        }
+                    }
                 }
             }
-            .animation(.spring(duration: 0.45), value: discovered)
         } actions: {
             Button("Cancel", action: onCancel)
                 .buttonStyle(.obcGhost)
                 .accessibilityIdentifier("pair.cancel")
         }
     }
-
-    private func deviceRow(_ device: LaunchFlowModel.DiscoveredDevice) -> some View {
-        Button(action: onTapDevice) {
-            HStack(spacing: 12) {
-                RoundedRectangle(cornerRadius: 9)
-                    .fill(OBCTheme.fill)
-                    .frame(width: 36, height: 36)
-                    .overlay {
-                        BluetoothRune()
-                            .stroke(OBCTheme.ink, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                            .frame(width: 18, height: 18)
-                    }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(device.advertisedName)
-                        .font(.system(.body, weight: .semibold))
-                        .foregroundStyle(OBCTheme.ink)
-                    Text("Tap to pair")
-                        .font(.system(.footnote))
-                        .foregroundStyle(OBCTheme.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Image(systemName: "chevron.right")
-                    .font(.system(.footnote, weight: .semibold))
-                    .foregroundStyle(OBCTheme.secondary)
-            }
-            .padding(.vertical, 14)
-            .padding(.horizontal, 16)
-            .frame(minHeight: 60)
-            .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-            .contentShape(RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("pair.deviceRow")
-    }
 }
 
 /// The beat while pairing completes. On the real path the iOS pairing alert sits over this and
 /// asks for the code the device shows.
 struct PairingBackdropView: View {
+    var onCancel: () -> Void = {}
+
     var body: some View {
         LaunchScreenScaffold {
             VStack(spacing: 0) {
@@ -183,29 +112,68 @@ struct PairingBackdropView: View {
                     .padding(.bottom, 28)
                 LaunchTitle("Enter the code the OBC shows")
                     .accessibilityIdentifier("pair.pairingTitle")
+                    .padding(.bottom, 12)
+                LaunchMessage("Use the iOS pairing window to enter the six-digit code.")
             }
         } actions: {
+            Button("Cancel", action: onCancel)
+                .buttonStyle(.obcGhost)
+                .accessibilityIdentifier("pair.cancel")
         }
     }
 }
 
-/// Paired: the device with its name, and one way forward.
 struct PairedView: View {
     let deviceName: String
-    let onContinue: () -> Void
+    @Binding var name: String
+    var saving = false
+    var error: String?
+    let onSave: () -> Void
+    let onKeepName: () -> Void
+    var canSave: Bool { !saving && !DeviceRenaming.normalized(name).isEmpty }
 
     var body: some View {
         LaunchScreenScaffold {
             VStack(spacing: 0) {
                 DeviceGlyphView(variant: .home(name: deviceName))
-                    .padding(.bottom, 34)
-                LaunchTitle("Paired with \(deviceName)")
+                    .padding(.bottom, 28)
+                LaunchTitle("Your OBC is paired")
                     .accessibilityIdentifier("pair.pairedTitle")
+                    .padding(.bottom, 12)
+                LaunchMessage("Give it a name, or keep \(deviceName). You can change this later in Settings.")
+                    .padding(.bottom, 24)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Device name")
+                        .font(.system(.subheadline, weight: .semibold))
+                        .foregroundStyle(OBCTheme.ink)
+                    TextField("Device name", text: $name)
+                        .font(.system(.body))
+                        .foregroundStyle(OBCTheme.ink)
+                        .padding(16)
+                        .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusPanel))
+                        .autocorrectionDisabled()
+                        .submitLabel(.continue)
+                        .onSubmit { if canSave { onSave() } }
+                        .disabled(saving)
+                        .accessibilityIdentifier("pairing.name")
+                    if let error {
+                        Text(error)
+                            .font(.system(.footnote))
+                            .foregroundStyle(OBCTheme.danger)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("pairing.nameError")
+                    }
+                }
             }
         } actions: {
-            Button("Open Library", action: onContinue)
+            Button(saving ? "Saving name…" : "Continue", action: onSave)
                 .buttonStyle(.obcPrimary)
-                .accessibilityIdentifier("pair.goToRoutes")
+                .disabled(!canSave)
+                .accessibilityIdentifier("pairing.saveName")
+            Button("Keep \(deviceName)", action: onKeepName)
+                .buttonStyle(.obcGhost)
+                .disabled(saving)
+                .accessibilityIdentifier("pairing.keepName")
         }
     }
 }
@@ -264,20 +232,12 @@ struct PairFailedView: View {
     }
 }
 
-#Preview("Prompt") {
-    PairIntroView(onStart: {})
-}
-
-#Preview("Scanning, found") {
-    PairScanningView(discovered: .init(name: "Trailhead"), onTapDevice: {}, onCancel: {})
-}
-
-#Preview("Pairing") {
-    PairingBackdropView()
+#Preview("Scanning") {
+    PairScanningView(devices: [], onTapDevice: { _ in }, onCancel: {})
 }
 
 #Preview("Paired") {
-    PairedView(deviceName: "Trailhead", onContinue: {})
+    PairedView(deviceName: "Trailhead", name: .constant("Trailhead"), onSave: {}, onKeepName: {})
 }
 
 #Preview("Timeout") {

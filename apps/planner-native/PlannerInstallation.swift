@@ -50,9 +50,8 @@ extension OfflinePlannerHost {
             let search = try release.search(scripts: searchScripts, pythonBundle: bundle)
             let directory = release.directory.appendingPathComponent("routing")
             let router = try RouteProvider(directory: directory, memoryBudgetBytes: memoryBudgetBytes)
-            let overlays = try OverlayProvider(directory: directory)
             let api = PlannerAPI(search: search, route: { try await router.route($0) },
-                region: { try await router.region() }, overlays: { try await overlays.request($0) },
+                region: { try await router.region() },
                 sample: try Data(contentsOf: assets.appendingPathComponent("sample.json")))
             return (release, api)
         }.value

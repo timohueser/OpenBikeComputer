@@ -3,7 +3,7 @@
     import Segmented from './Segmented.svelte';
     import { formatGrade, gradeBand, gradeBands, profileGrades } from '../../lib/planner/grade-data';
     import { dayColor } from '../../lib/planner/day-colors';
-    import { profileHeightAt, profileSamples } from '../../lib/planner/profile-data';
+    import { profileHeightAt, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import type { RoutingLine } from '../../lib/planner/routing';
     import type { Day } from '../../lib/planner/editor';
 
@@ -72,8 +72,8 @@
         return paths;
     });
     function color(index: number) { return theme === 'dark' ? gradeBands[index].dark : gradeBands[index].color; }
-    const hoverHeight = $derived(hover === null ? null : profileHeightAt(hover, lineData));
-    const hoverIndex = $derived(hover === null ? -1 : Math.max(0, samples.findIndex(sample => sample.progress >= hover!) - 1));
+    const hoverHeight = $derived(hover === null ? null : profileHeightAt(hover, samples));
+    const hoverIndex = $derived(hover === null ? -1 : Math.max(0, sampleIndex(samples, hover) - 1));
     const hoverGrade = $derived(grades[hoverIndex] ?? null);
     const hoverPushing = $derived(lineData?.pushing?.[hoverIndex]);
     let plot: HTMLDivElement;
@@ -256,6 +256,8 @@
         width: 100%;
         height: 100%;
         overflow: hidden;
+        /* The plot handles the pointer. A hit test on the long profile paths costs more than the rest of a hover step. */
+        pointer-events: none;
     }
     .height {
         position: absolute;

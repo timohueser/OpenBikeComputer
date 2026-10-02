@@ -260,6 +260,23 @@ impl App {
         self.pass.record(PassStage::Outcomes);
         if let Some(outcome) = outcomes.catalog.take() {
             if self.catalogs.accepts(outcome) {
+                if self.catalogs.reset_running() {
+                    use crate::catalog_state::CatalogOutcome;
+                    let finished = match outcome {
+                        CatalogOutcome::PersonalDataCleared { done: true, .. } => Some(true),
+                        CatalogOutcome::Failed { .. } | CatalogOutcome::Cancelled { .. } => Some(false),
+                        _ => None,
+                    };
+                    if let Some(success) = finished {
+                        for screen in self.ui.stack.iter_mut() {
+                            if let crate::Screen::Reset(reset) = screen {
+                                reset.data_clear_finished(success);
+                            }
+                        }
+                        self.finish_factory_reset();
+                        self.ui.map_dirty = true;
+                    }
+                }
                 if self.catalogs.cleanup_running() {
                     for screen in self.ui.stack.iter_mut() {
                         if let crate::screen::Screen::RouteCleanup(screen) = screen {
@@ -368,6 +385,11 @@ impl App {
                             if let crate::screen::Screen::RouteCleanup(screen) = screen {
                                 screen.cancel();
                             }
+                            if let crate::Screen::Reset(reset) = screen {
+                                if reset.removing() {
+                                    reset.data_clear_finished(false);
+                                }
+                            }
                         }
                     }
                     self.metadata.reset_store();
@@ -464,8 +486,38 @@ impl App {
     }
     fn stage_catalog(&mut self, effects: &mut EffectSlots) {
         self.pass.record(PassStage::Catalog);
+        self.finish_factory_reset();
+        if self.catalogs.can_admit_intent() {
+            for screen in self.ui.stack.iter_mut() {
+                if let crate::Screen::Reset(reset) = screen {
+                    if reset.data_clear_requested() {
+                        if let Some(scope) = self.pass.store {
+                            self.catalogs
+                                .admit_intent(CatalogIntent::ClearPersonalData { store: scope.store })
+                                .unwrap();
+                            reset.data_clear_started();
+                            self.navigator.forget_personal_data();
+                            self.metadata = crate::metadata::MetadataMachine::new();
+                        } else {
+                            reset.data_clear_finished(false);
+                        }
+                        self.ui.map_dirty = true;
+                    }
+                }
+            }
+        }
         if self.pass.connections.ride_finalized.take().is_some() {
             self.catalogs.note_ride_finalized();
+        }
+        if self.catalogs.remount_required {
+            for screen in self.ui.stack.iter_mut() {
+                if let crate::Screen::Reset(reset) = screen {
+                    if reset.data_clear_requested() {
+                        reset.data_clear_finished(false);
+                        self.ui.map_dirty = true;
+                    }
+                }
+            }
         }
         // A refused intent goes back into the slot it came from: that slot is its producer's
         // pending state until the catalog has room, so a busy pass costs a delay, not a delete.
@@ -501,6 +553,9 @@ impl App {
     }
 
     fn stage_metadata(&mut self, effects: &mut EffectSlots) {
+        if self.factory_reset_pending() {
+            return;
+        }
         let Some(scope) = self.catalogs.loaded_scope.filter(|_| effects.metadata.is_empty()) else {
             return;
         };
@@ -793,6 +848,7 @@ mod tests {
             assert!(app.ui.stack.push(Screen::Reset(ResetScreen::new())).is_ok());
             let mut outcomes = OutcomeSlots::new();
             let mut facts = ExternalFacts::NONE;
+            app.pass.store = Some(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(1) });
             let mut plan = pass_with(&mut app, 10, &[Gesture::Press, Gesture::Hold], &mut outcomes, &mut facts);
             let removal = plan.effects.bond.take().expect("the confirmed reset removes the phone first");
             assert!(plan.effects.settings.is_empty());
@@ -817,13 +873,38 @@ mod tests {
             outcomes.bond.try_put(BondOutcome::KeysRemoved { token: retry.token(), controller }).unwrap();
             app.set_ble_status(BleStatus::DISCONNECTED);
             let mut plan = pass_with(&mut app, 60_030, &[], &mut outcomes, &mut facts);
+            assert_eq!(*app.settings(), original, "bond removal is not card deletion");
+            let deletion = plan.effects.catalog.take().expect("personal card data is next");
+            assert!(matches!(deletion, CatalogEffect::ClearPersonalData { .. }));
+            outcomes
+                .catalog
+                .try_put(CatalogOutcome::Failed { token: deletion.token(), error: CatalogError::RemoveFailed })
+                .unwrap();
+            let plan = pass_with(&mut app, 60_040, &[], &mut outcomes, &mut facts);
+            assert_eq!(*app.settings(), original, "failed card deletion preserves settings");
+            assert!(plan.effects.settings.is_empty());
+            assert!(plan.effects.catalog.is_empty(), "failed deletion needs explicit retry");
+            let mut plan = pass_with(&mut app, 60_050, &[Gesture::Press], &mut outcomes, &mut facts);
+            let deletion = plan.effects.catalog.take().expect("Select retries card deletion");
+            outcomes
+                .catalog
+                .try_put(CatalogOutcome::PersonalDataCleared { token: deletion.token(), done: false })
+                .unwrap();
+            let mut plan = pass_with(&mut app, 60_060, &[], &mut outcomes, &mut facts);
+            assert_eq!(*app.settings(), original, "one batch does not finish reset");
+            let deletion = plan.effects.catalog.take().expect("deletion continues in bounded batches");
+            outcomes
+                .catalog
+                .try_put(CatalogOutcome::PersonalDataCleared { token: deletion.token(), done: true })
+                .unwrap();
+            let mut plan = pass_with(&mut app, 60_070, &[], &mut outcomes, &mut facts);
             assert_eq!(*app.settings(), Settings::FACTORY);
             assert!(plan.effects.settings.take().is_some(), "the successful reset saves at once");
             match controller {
                 ControllerClearance::Confirmed => assert!(matches!(app.top_screen(), Screen::Hello(_))),
                 ControllerClearance::Unconfirmed => {
                     assert!(matches!(app.top_screen(), Screen::Reset(_)), "restart is required before setup");
-                    pass_with(&mut app, 60_040, &[Gesture::Press], &mut outcomes, &mut facts);
+                    pass_with(&mut app, 60_080, &[Gesture::Press], &mut outcomes, &mut facts);
                     assert!(matches!(app.top_screen(), Screen::QuickDrawer(d) if d.selection_is_guarded()));
                 }
             }

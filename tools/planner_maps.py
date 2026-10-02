@@ -122,6 +122,16 @@ def compact_archive(source, destination, region, terrain=False, recompress=True)
         *([] if recompress else ["--no-recompress"]), cwd=ROOT)
 
 
+def places_archive(basemap, destination):
+    run("uv", "run", "--with-requirements", ROOT / "tools/requirements-planner-maps.txt",
+        "python", "-m", "tools.planner_places", basemap, destination, cwd=ROOT)
+
+
+def overlays_archive(index, destination):
+    run("uv", "run", "--with-requirements", ROOT / "tools/requirements-planner-maps.txt",
+        "python", "-m", "tools.planner_overlays", index, destination, cwd=ROOT)
+
+
 def prepare(args):
     if DATA.exists():
         raise ValueError(f"{DATA} already exists. Move it aside before preparing another map.")
@@ -140,6 +150,7 @@ def prepare(args):
                 compact_archive(path, compact, args.bbox, terrain=True)
                 compact.replace(path)
             verify_archive(args.pmtiles, path, kind, zoom)
+        places_archive(stage / "basemap.pmtiles", stage / "places.pmtiles")
         with urlopen(ASSETS_URL, timeout=120) as response:
             install_assets(response.read(), stage / "assets")
         with urlopen(SPRITES_LICENSE_URL, timeout=30) as response:
@@ -196,6 +207,8 @@ def preview(args):
         "OBC_PLANNER_ROUTING_URL": args.routing,
         "VITE_PLANNER_ROUTING_URL": "/routing",
         "VITE_PLANNER_PMTILES_URL": base + "/basemap.pmtiles",
+        "VITE_PLANNER_PLACES_URL": base + "/places.pmtiles",
+        "VITE_PLANNER_OVERLAYS_URL": base + "/overlays.pmtiles",
         "VITE_PLANNER_DEM_URL": "/tiles/terrain/{z}/{x}/{y}.webp",
         "VITE_PLANNER_GLYPHS_URL": base + "/assets/fonts/{fontstack}/{range}.pbf",
         "VITE_PLANNER_SPRITES_URL": base + "/assets/sprites/v4",

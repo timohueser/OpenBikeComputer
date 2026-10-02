@@ -2,6 +2,9 @@ import Foundation
 
 @_silgen_name("planner_overlays_open")
 private func overlaysOpen(_ root: UnsafePointer<CChar>, _ error: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> UnsafeMutableRawPointer?
+@_silgen_name("planner_overlays_open_package")
+private func overlaysOpenPackage(_ file: UnsafePointer<CChar>, _ package: UnsafePointer<CChar>,
+                                 _ error: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> UnsafeMutableRawPointer?
 @_silgen_name("planner_overlays_query")
 private func overlaysQuery(_ handle: UnsafeRawPointer, _ params: UnsafePointer<UInt8>, _ length: Int,
                            _ status: UnsafeMutablePointer<UInt16>) -> UnsafeMutablePointer<CChar>?
@@ -23,6 +26,18 @@ public actor OverlayProvider {
     public init(directory: URL) throws {
         var error: UnsafeMutablePointer<CChar>?
         guard let handle = directory.path.withCString({ overlaysOpen($0, &error) }) else {
+            defer { if let error { overlaysResponseFree(error) } }
+            throw NSError(domain: "PlannerOverlays", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: error.map { String(cString: $0) } ?? "Overlay data could not open"])
+        }
+        self.handle = OverlayHandle(handle)
+    }
+
+    public init(file: URL, package: String) throws {
+        var error: UnsafeMutablePointer<CChar>?
+        guard let handle = file.path.withCString({ file in
+            package.withCString { overlaysOpenPackage(file, $0, &error) }
+        }) else {
             defer { if let error { overlaysResponseFree(error) } }
             throw NSError(domain: "PlannerOverlays", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: error.map { String(cString: $0) } ?? "Overlay data could not open"])

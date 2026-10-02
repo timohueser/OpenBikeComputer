@@ -25,7 +25,11 @@ struct OBCCompanionApp: App {
         launchOptions.useBLETransport ? nil : launchOptions.makeControl()
     #endif
 
-    private static let plannerSource: any PlannerDataSource = PlannerService.shared
+    private static let offlineStore = OfflineMapStore(root: URL.applicationSupportDirectory.appending(path: "OfflineMaps"))
+    private static let offlineMaps = OfflineMapsModel(store: offlineStore)
+    private static let plannerSource: any PlannerDataSource = LocalFirstPlanner(store: offlineStore) {
+        try await OfflinePlanner.open(map: $0, directory: $1)
+    }
 
     @MainActor private static let liveTransport = BLETransport()
 
@@ -36,6 +40,7 @@ struct OBCCompanionApp: App {
     init() {
         // Field-guide nav chrome: the one global UIKit-appearance call the component kit needs.
         OBCNavigationChrome.apply()
+        OfflineTilesProtocol.install()
         // Tapping an update notice must land on the firmware screen even from a cold launch, so
         // the delegate has to be in place before iOS delivers the pending response. Setting a
         // delegate asks for no permission and shows nothing.
@@ -62,6 +67,8 @@ struct OBCCompanionApp: App {
             RootView(
                 transport: Self.makeTransport(),
                 bondStore: Self.makeBondStore(),
+                onboarding: Self.makeOnboardingProgress(),
+                updateChecker: Self.makeSetupUpdateChecker(),
                 library: Self.makeLibraryStore(),
                 photoLibrary: Self.makePhotoLibrary(),
                 lastBikeType: Self.makeLastBikeTypeStore(),
@@ -75,6 +82,7 @@ struct OBCCompanionApp: App {
                 stopSearch: Self.makeStopSearch(),
                 legRouter: Self.makeLegRouter())
                 .environment(\.obcPlannerSource, Self.plannerSource)
+                .environment(\.obcOfflineMaps, Self.offlineMaps)
                 .obcAppearance()
             #if DEBUG
                 .devMockOverlay(
@@ -249,6 +257,20 @@ struct OBCCompanionApp: App {
         if let online = launchOptions.networkOnline { return ConstantReachability(online) }
         #endif
         return PathMonitorReachability()
+    }
+
+    static func makeOnboardingProgress() -> OnboardingProgress {
+        #if DEBUG
+        if mockControl != nil { return OnboardingProgress() }
+        #endif
+        return OnboardingProgress(defaults: .standard)
+    }
+
+    static func makeSetupUpdateChecker() -> UpdateChecker? {
+        #if DEBUG
+        if let mockControl { return OnboardingFixtures.updateChecker(for: mockControl.scenario) }
+        #endif
+        return UpdateChecker()
     }
 
     /// The bond record behind the launch branch. Mock runs read it from the scenario, so the dev

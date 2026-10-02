@@ -130,9 +130,11 @@ def main():
             RCLONE_CONFIG_OBCR2_ACCESS_KEY_ID=os.environ["OBC_R2_ACCESS_KEY_ID"],
             RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY=os.environ["OBC_R2_SECRET_ACCESS_KEY"])
         prefix = f"obcr2:{os.environ['OBC_R2_BUCKET']}/fw"
-        subprocess.run(["rclone", "copyto", "--checksum", "--immutable", str(directory / "UPDATE.BIN"), f"{prefix}/{version}/UPDATE.BIN"], env=remote, check=True)
+        subprocess.run(["rclone", "copyto", "--checksum", "--immutable", "--header-upload", "Content-Type: application/octet-stream",
+                        "--header-upload", "Cache-Control: public,max-age=31536000,immutable", str(directory / "UPDATE.BIN"), f"{prefix}/{version}/UPDATE.BIN"], env=remote, check=True)
         channel = "prerelease/" if prerelease else ""
-        subprocess.run(["rclone", "copyto", str(directory / "manifest.json"), f"{prefix}/{channel}manifest.json"], env=remote, check=True)
+        subprocess.run(["rclone", "copyto", "--header-upload", "Content-Type: application/json", "--header-upload", "Cache-Control: public,max-age=60,must-revalidate",
+                        str(directory / "manifest.json"), f"{prefix}/{channel}manifest.json"], env=remote, check=True)
         with open(os.environ["GITHUB_OUTPUT"], "a") as output:
             output.write(f"source_sha={source}\nrelease_url={release_url}\n")
 

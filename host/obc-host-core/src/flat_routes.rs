@@ -125,6 +125,19 @@ impl FlatRouteStore {
 }
 
 impl RouteRepository for FlatRouteStore {
+    fn clear_personal_data(&mut self, identity: obc_app::device_core::StoreIdentity) -> Result<bool, CatalogError> {
+        let mut owner = self.owner.0.lock().map_err(|_| CatalogError::Unreadable)?;
+        let store = owner.ready().map_err(|_| CatalogError::RemountRequired)?;
+        if scope(store).store != identity {
+            return Err(CatalogError::Stale);
+        }
+        let batch = obc_storage::flat::personal_data::next(store).map_err(|_| CatalogError::Unreadable)?;
+        if batch.is_empty() {
+            return Ok(true);
+        }
+        owner.commit(&batch).map_err(|_| CatalogError::RemoveFailed)?;
+        Ok(false)
+    }
     fn set_route_clock(&mut self, utc: Option<u32>) {
         if let Ok(owner) = self.owner.0.lock() {
             if let Ok(store) = owner.ready() {

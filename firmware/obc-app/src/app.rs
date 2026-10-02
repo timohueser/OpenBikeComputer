@@ -1905,26 +1905,46 @@ impl App {
         self.ui.map_dirty = true;
     }
 
-    /// Commit a confirmed factory reset only after the bond store acknowledges removal. The
+    /// Commit a confirmed factory reset after bond removal and personal-data deletion. The
     /// board's unconfirmed controller clearance keeps the restart instruction on screen.
     pub(crate) fn finish_factory_reset(&mut self) {
         use crate::ble::BondStatus;
-        if !matches!(self.state.bond_status, BondStatus::Removed | BondStatus::RestartRequired)
-            || !self.factory_reset_pending()
-        {
+        if !self.factory_reset_pending() {
             return;
+        }
+        let bond_cleared = !self.state.bonding
+            || (!self.state.device.ble_paired
+                && !matches!(self.state.bond_status, BondStatus::Pending | BondStatus::Failed(_)))
+            || matches!(self.state.bond_status, BondStatus::Removed | BondStatus::RestartRequired);
+        if !bond_cleared {
+            return;
+        }
+        let mut data_cleared = false;
+        for screen in self.ui.stack.iter_mut() {
+            if let Screen::Reset(reset) = screen {
+                reset.request_data_clear();
+                data_cleared = reset.data_cleared();
+            }
+        }
+        if !data_cleared {
+            return;
+        }
+        for screen in self.ui.stack.iter_mut() {
+            if let Screen::Reset(reset) = screen {
+                reset.committed();
+            }
         }
         self.settings = Settings::FACTORY;
         self.wall_clock.set(self.settings.local_clock(), self.ui.now_ms);
         self.sync_find_preferences();
         self.settings_ops.note_edited();
-        if self.state.bond_status == BondStatus::Removed {
+        if self.state.bond_status != BondStatus::RestartRequired {
             screen::apply(&mut self.ui.stack, screen::setup::go_to(&self.settings));
             self.ui.cancel_holds();
         }
     }
 
-    fn factory_reset_pending(&self) -> bool {
+    pub(crate) fn factory_reset_pending(&self) -> bool {
         self.ui.stack.iter().any(|s| matches!(s, Screen::Reset(r) if r.removing()))
     }
 
@@ -4622,9 +4642,8 @@ mod tests {
     /// cannot loop forever.
     const MAX_DEPTH_BACKOUT: usize = crate::screen::MAX_DEPTH;
 
-    /// An unpaired device needs no bond receipt: reset saves at once and opens setup.
     #[test]
-    fn an_unpaired_factory_reset_saves_at_once_and_opens_setup() {
+    fn an_unpaired_factory_reset_waits_for_data_deletion_then_opens_setup() {
         use crate::screen::{ResetScreen, SettingsPage};
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.set_settings(Settings::default());
@@ -4632,6 +4651,14 @@ mod tests {
         let _ = app.ui.stack.push(Screen::Reset(ResetScreen::new()));
         app.apply_gesture(Gesture::Press);
         app.apply_gesture(Gesture::Hold);
+        app.finish_factory_reset();
+        assert_eq!(*app.settings(), Settings::default());
+        let Some(Screen::Reset(reset)) = app.ui.stack.last_mut() else {
+            panic!("reset stays visible");
+        };
+        assert!(reset.data_clear_requested());
+        reset.data_clear_finished(true);
+        app.finish_factory_reset();
         assert!(matches!(app.ui.stack.as_slice(), [Screen::Home(_), Screen::Hello(_)]));
         assert_eq!(*app.settings(), Settings::FACTORY);
         assert!(!app.state.ble_forget_requested, "there is no phone to forget");

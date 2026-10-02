@@ -61,7 +61,7 @@
         const typed = name.trim() === suggested ? '' : name;
         error = '';
         try {
-            if (what === 'new') onSaved(saveVersion($state.snapshot(trip), typed));
+            if (what === 'new') onSaved(saveVersion(trip, typed));
             else renameLatest(typed);
         } catch {
             error = 'Could not save the version. Press Enter to try again.';

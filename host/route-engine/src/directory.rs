@@ -103,6 +103,25 @@ fn read_at(file: &File, mut bytes: &mut [u8], mut offset: u64) -> std::io::Resul
 }
 
 impl Directory {
+    /// Enumerate a pack index without loading its page payloads.
+    pub fn digests(&self) -> Result<Vec<[u8; 32]>> {
+        let mut keys = Vec::new();
+        keys.try_reserve_exact(self.0.count as usize).map_err(|_| Error::Limit)?;
+        for record in self.0.index[HEADER as usize..].as_chunks::<{ RECORD as usize }>().0 {
+            let key: [u8; 32] = record[..32].try_into().unwrap();
+            let offset = u64::from_le_bytes(record[32..40].try_into().unwrap());
+            let len = u64::from_le_bytes(record[40..48].try_into().unwrap());
+            if keys.last().is_some_and(|previous| previous >= &key)
+                || len > MAX_PAGE_BYTES as u64
+                || offset.checked_add(len).is_none_or(|end| end > self.0.bytes)
+            {
+                return Err(Error::InvalidData("Invalid routing pack index".into()));
+            }
+            keys.push(key);
+        }
+        Ok(keys)
+    }
+
     fn location(&self, digest: &str) -> Result<(u64, u64)> {
         let wanted = key(digest)?;
         let (mut low, mut high) = (0, self.0.count);

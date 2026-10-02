@@ -7,6 +7,7 @@ import OBCDomain
 /// sketch carries its day count in the corner, as the device's route menu badges a trip. At accessibility text sizes the sketch moves above the text.
 public struct TrackRow: View {
     let name: String
+    let isDemo: Bool
     let stats: Text
     /// The stat line as VoiceOver reads it, with the on-device state.
     let statsLabel: String
@@ -49,7 +50,7 @@ public struct TrackRow: View {
         self.init(
             name: ride.name, stats: stats, detail: nil,
             sketch: TrackPreviewView(ride.trackPreview, ink: .ride, showsChrome: false),
-            onDevice: .notOnDevice, dayCount: nil, isSelected: nil
+            onDevice: .notOnDevice, dayCount: nil, isSelected: nil, isDemo: ride.isDemo
         )
     }
 
@@ -79,11 +80,12 @@ public struct TrackRow: View {
 
     private init(
         name: String, stats: RowStats, detail: String?, sketch: TrackPreviewView,
-        onDevice: OnDeviceState, dayCount: Int?, isSelected: Bool?
+        onDevice: OnDeviceState, dayCount: Int?, isSelected: Bool?, isDemo: Bool = false
     ) {
         self.name = name
+        self.isDemo = isDemo
         self.stats = stats.text
-        self.statsLabel = [stats.label, OnDeviceChip.label(for: onDevice)]
+        self.statsLabel = [stats.label, OnDeviceChip.label(for: onDevice), isDemo ? "Demo ride, excluded from totals" : nil]
             .compactMap { $0 }
             .joined(separator: ", ")
         self.detail = detail
@@ -149,10 +151,13 @@ public struct TrackRow: View {
             .font(.system(.subheadline).monospacedDigit())
             .foregroundStyle(OBCTheme.secondary)
             .accessibilityLabel(statsLabel)
-        if onDevice == .notOnDevice {
+        if onDevice == .notOnDevice && !isDemo {
             styled
         } else {
-            let chip = OnDeviceChip(upToDate: onDevice == .upToDate).accessibilityHidden(true)
+            let chip = Group {
+                if isDemo { DemoRideBadge() }
+                else { OnDeviceChip(upToDate: onDevice == .upToDate) }
+            }.accessibilityHidden(true)
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
                     styled.fixedSize()
@@ -319,3 +324,14 @@ public struct TrackRowSkeleton: View {
     .background(OBCTheme.page)
 }
 #endif
+
+struct DemoRideBadge: View {
+    var body: some View {
+        PixelText("DEMO", scale: 2 / 3, color: OBCTheme.secondary)
+            .padding(.horizontal, 4)
+            .frame(height: OnDeviceChip.height)
+            .background(OBCTheme.fill, in: RoundedRectangle(cornerRadius: 4))
+            .accessibilityLabel("Demo ride, excluded from totals")
+            .accessibilityIdentifier("ride.demoBadge")
+    }
+}

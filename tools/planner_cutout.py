@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -53,7 +54,7 @@ def overlays(source, destination, selection, coverage, package):
     return {"features": count, "bytes": destination.stat().st_size}
 
 
-def prepare(source, destination, bounds, region):
+def prepare(source, destination, bounds, region, progress=lambda step, message: None):
     started = time.monotonic()
     if destination.exists():
         raise ValueError("Output already exists; choose a fresh directory")
@@ -64,25 +65,42 @@ def prepare(source, destination, bounds, region):
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".cutout-", dir=destination.parent) as temporary:
         stage = Path(temporary)
-        built = maps.run(maps.ROOT / "target/release/route-extract", source / "routing",
-                         "--output", stage / "routing", "--region", region,
-                         "--bounds", ",".join(map(str, bounds)), "--runtime", capture_output=True, text=True)
-        routing = json.loads(built.stdout)
+        progress(0, "Selecting roads")
+        with tempfile.TemporaryFile(mode="w+") as output:
+            command = [str(maps.ROOT / "target/release/route-extract"), str(source / "routing"),
+                       "--output", str(stage / "routing"), "--region", region,
+                       "--bounds", ",".join(map(str, bounds)), "--runtime"]
+            with subprocess.Popen(command, stdout=output, stderr=subprocess.PIPE, text=True) as child:
+                completed = 0
+                for line in child.stderr:
+                    print(line.rstrip(), file=sys.stderr, flush=True)
+                    if line.startswith("Prepared profile "):
+                        completed += 1
+                        progress(completed / (len(original["profiles"]) + 1),
+                                 f"Preparing routing · {completed} of {len(original['profiles'])} profiles")
+                if child.wait():
+                    raise ValueError("Routing preparation failed")
+            output.seek(0)
+            routing = json.load(output)
         geometry = routing["geometry_bounds"]
         envelope = [min(bounds[0], geometry[0]), min(bounds[1], geometry[1]),
                     max(bounds[2], geometry[2]), max(bounds[3], geometry[3])]
         (stage / "maps").mkdir()
-        for name in ("basemap", "terrain"):
+        for step, name in enumerate(("basemap", "terrain"), 1):
+            progress(step, "Preparing map tiles" if name == "basemap" else "Preparing terrain")
             maps.compact_archive(source / "maps" / f"{name}.pmtiles", stage / "maps" / f"{name}.pmtiles",
                                  envelope, terrain=name == "terrain", recompress=False)
         for name in ("maps/assets", "search/model", "device"):
             shutil.copytree(source / name, stage / name, copy_function=lambda a, b: preparation.link(Path(a), Path(b)))
         database = stage / "search" / f"{region}.sqlite"
+        progress(3, "Preparing places and addresses")
         maps.run(sys.executable, maps.ROOT / "apps/planner-search/extract.py",
                  source / "search" / f"{original['region']}.sqlite", database,
                  "--bounds", ",".join(map(str, bounds)))
         package = sources.digest(stage / "routing/manifest.json")
+        progress(4, "Preparing cycling and hiking layers")
         overlay = overlays(source / "routing/overlays.sqlite", stage / "routing/overlays.sqlite", envelope, bounds, package)
+        progress(5, "Checking map files")
         map_manifest = json.loads((source / "maps/manifest.json").read_bytes())
         map_manifest.update(bounds=bounds, terrain_bounds=maps.terrain_bounds(envelope), geometry_bounds=envelope)
         map_manifest["files"] = {

@@ -58,7 +58,7 @@ public actor TransferClient {
     }
 
     public func list(kind: ObjectKind? = nil) async throws -> [CatalogEntry] {
-        await acquire()
+        try await acquire()
         defer { release() }
         do { return try await listAll(kind: kind).entries }
         catch is TransferLinkLost {
@@ -68,7 +68,7 @@ public actor TransferClient {
     }
 
     public func catalog(kind: ObjectKind? = nil) async throws -> (storeID: StoreID, entries: [CatalogEntry]) {
-        await acquire()
+        try await acquire()
         defer { release() }
         do { return try await listAll(kind: kind) }
         catch is TransferLinkLost {
@@ -81,7 +81,7 @@ public actor TransferClient {
     /// A BLE page carries only two entries at the preferred MTU, so `catalog()` would cost
     /// hundreds of needless control writes for one StoreId.
     public func storeID() async throws -> StoreID {
-        await acquire()
+        try await acquire()
         defer { release() }
         do { return try await identifyStore() }
         catch is TransferLinkLost {
@@ -92,7 +92,7 @@ public actor TransferClient {
     }
 
     public func status(objectID: ObjectID, revision: Revision) async throws -> StatusResult {
-        await acquire()
+        try await acquire()
         defer { release() }
         try await ensureIntroduced()
         do { return try await statusOnLiveLink(objectID: objectID, revision: revision) }
@@ -106,7 +106,7 @@ public actor TransferClient {
         objectID: ObjectID, revision: Revision? = nil, expectedStoreID: StoreID? = nil,
         progress: @escaping @Sendable (_ bytesDone: Int, _ total: Int) -> Void = { _, _ in }
     ) async throws -> (result: GetResult, payload: Data) {
-        await acquire()
+        try await acquire()
         defer { release() }
         try await ensureIntroduced()
         if let expectedStoreID { try await checkStore(expectedStoreID) }
@@ -137,7 +137,7 @@ public actor TransferClient {
         kind: ObjectKind, displayName: String,
         progress: @escaping @Sendable (_ bytesDone: Int, _ total: Int) -> Void = { _, _ in }
     ) async throws -> PutResult {
-        await acquire()
+        try await acquire()
         defer { release() }
         try await ensureIntroduced()
         let crc = CRC32.checksum(payload)
@@ -193,7 +193,7 @@ public actor TransferClient {
     }
 
     public func remove(objectID: ObjectID, expectedRevision: Revision) async throws -> RemoveResult {
-        await acquire()
+        try await acquire()
         defer { release() }
         try await ensureIntroduced()
         do {
@@ -212,7 +212,7 @@ public actor TransferClient {
     }
 
     public func cancel(transfer: RequestID) async throws -> CancelResult {
-        await acquire()
+        try await acquire()
         defer { release() }
         try await ensureIntroduced()
         let response = try await request(.cancel(transfer: transfer), opcode: .cancel)
@@ -221,7 +221,7 @@ public actor TransferClient {
     }
 
     public func arm(packageObjectID: ObjectID, expectedRevision: Revision) async throws -> ArmResult {
-        await acquire()
+        try await acquire()
         defer { release() }
         try await ensureIntroduced()
         let response = try await request(
@@ -232,7 +232,7 @@ public actor TransferClient {
 
     /// Destructively initialize the card as a new empty flat store. No iOS surface calls it today.
     public func format(expectedStoreID: StoreID, replacementStoreID: StoreID) async throws -> FormatResult {
-        await acquire()
+        try await acquire()
         defer { release() }
         try await ensureIntroduced()
         let response = try await request(
@@ -247,7 +247,7 @@ public actor TransferClient {
         storeID: StoreID, objectID: ObjectID, revision: Revision,
         payloadLength: UInt64, payloadCRC32: UInt32
     ) async throws -> ArchiveRideResult {
-        await acquire()
+        try await acquire()
         defer { release() }
         try Task.checkCancellation()
         let receipt = ControlRequest.archiveRide(
@@ -413,6 +413,7 @@ public actor TransferClient {
     }
 
     private func request(_ request: ControlRequest, opcode: Opcode) async throws -> ControlResponse {
+        try Task.checkCancellation()
         let requestID = try makeRequestID()
         try await link.sendControlRecord(try request.frame(requestID: requestID).encode())
         return try ControlResponse(
@@ -495,9 +496,12 @@ public actor TransferClient {
         return id
     }
 
-    private func acquire() async {
+    private func acquire() async throws {
+        try Task.checkCancellation()
         if !busy { busy = true; return }
         await withCheckedContinuation { operationWaiters.append($0) }
+        do { try Task.checkCancellation() }
+        catch { release(); throw error }
     }
 
     private func release() {

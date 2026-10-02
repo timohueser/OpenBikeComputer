@@ -54,7 +54,3 @@ final class PlannerParser {
         return try JSONSerialization.jsonObject(with: Data(String(cString: result).utf8)) as? [String: Any] ?? [:]
     }
 }
-
-func plannerSearchError(_ message: String) -> NSError {
-    NSError(domain: "PlannerSearch", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
-}

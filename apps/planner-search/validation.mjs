@@ -69,15 +69,16 @@ export function validateInput(input) {
       )
     )
       fail();
-    if (
-      p.hours &&
-      (!Array.isArray(p.hours) ||
-        p.hours.length !== p.coordinates.length ||
-        p.hours.some(
-          (h, i) => !Number.isFinite(h) || h < 0 || (i && h < p.hours[i - 1]),
-        ))
-    )
-      fail();
+    for (const values of [p.hours, p.km])
+      if (
+        values &&
+        (!Array.isArray(values) ||
+          values.length !== p.coordinates.length ||
+          values.some(
+            (v, i) => !Number.isFinite(v) || v < 0 || (i && v < values[i - 1]),
+          ))
+      )
+        fail();
     if (
       p.days.some(
         (d, i) =>

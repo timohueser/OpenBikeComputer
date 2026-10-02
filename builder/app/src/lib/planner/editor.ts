@@ -238,10 +238,33 @@ export function anchorProgress(coordinate: Coordinate): number {
     return nearestProgress(valley, coordinate);
 }
 
-export function cumulative(coordinates: Coordinate[]): number[] {
+// Coordinate arrays are never changed after they are built, so each array's distances are computed once.
+// Development and test builds freeze a measured array and its pairs, so an in-place edit throws.
+const distances = new WeakMap<Coordinate[], readonly number[]>();
+
+/** Kilometres from the first coordinate to each coordinate. */
+export function cumulative(coordinates: Coordinate[]): readonly number[] {
+    const known = distances.get(coordinates);
+    if (known) return known;
+    if (import.meta.env.DEV) {
+        for (const pair of coordinates) Object.freeze(pair);
+        Object.freeze(coordinates);
+    }
     const result = [0];
-    coordinates.slice(1).forEach((p, i) => result.push(result[i] + kilometres(coordinates[i], p)));
+    for (let i = 1; i < coordinates.length; i++) result.push(result[i - 1] + kilometres(coordinates[i - 1], coordinates[i]));
+    distances.set(coordinates, result);
     return result;
+}
+
+/** The first index at which `reached` is true, or `length`; once true, `reached` must stay true. */
+export function firstIndex(length: number, reached: (index: number) => boolean): number {
+    let low = 0, high = length;
+    while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (reached(middle)) high = middle;
+        else low = middle + 1;
+    }
+    return low;
 }
 
 export function coordinateAt(coordinates: Coordinate[], progress: number): Coordinate {
@@ -249,7 +272,7 @@ export function coordinateAt(coordinates: Coordinate[], progress: number): Coord
     if (coordinates.length === 1) return [...coordinates[0]];
     const distances = cumulative(coordinates);
     const goal = distances.at(-1)! * Math.max(0, Math.min(1, progress));
-    const index = Math.max(1, distances.findIndex(d => d >= goal));
+    const index = Math.max(1, Math.min(distances.length - 1, firstIndex(distances.length, i => distances[i] >= goal)));
     const t = (goal - distances[index - 1]) / (distances[index] - distances[index - 1] || 1);
     return coordinates[index - 1].map((n, axis) => n + (coordinates[index][axis] - n) * t) as Coordinate;
 }
@@ -263,8 +286,11 @@ export function routeSlice(coordinates: Coordinate[], from: number, to: number):
     if (start === end || coordinates.length === 1) return [first];
     const distances = cumulative(coordinates);
     const total = distances.at(-1)!;
-    const inside = coordinates.filter((_, i) => distances[i] > start * total && distances[i] < end * total);
-    return [first, ...inside.map(p => [...p] as Coordinate), coordinateAt(coordinates, end)];
+    const inside = coordinates.slice(
+        firstIndex(distances.length, i => distances[i] > start * total),
+        firstIndex(distances.length, i => distances[i] >= end * total),
+    );
+    return [first, ...inside, coordinateAt(coordinates, end)];
 }
 
 function stopProgress(stops: Stop[], point: RoutePoint): number {
@@ -316,11 +342,6 @@ export function overnightWindow(trip: Trip, night: number): { from: number; to: 
     const to = Math.min(feasibleTo, center + .2 * dayFraction);
     if (from > to + 1e-9) return { from: center, to: center, center, blocked: true };
     return { from, to: Math.max(from, to), center, blocked: false };
-}
-
-/** Straight distance in km from a point to the nearest spot on the route. */
-export function offRoute(coordinates: Coordinate[], point: Coordinate): number {
-    return coordinates.length ? kilometres(point, coordinateAt(coordinates, nearestProgress(coordinates, point))) : Infinity;
 }
 
 export function nearestProgress(coordinates: Coordinate[], point: Coordinate): number {
@@ -561,26 +582,43 @@ export function nightOrderConflicts(trip: Trip): [RoutePoint, RoutePoint][] {
     return nights.slice(1).flatMap((point, i) => stopProgress(stops, point) <= stopProgress(stops, nights[i]) ? [[nights[i], point] as [RoutePoint, RoutePoint]] : []);
 }
 
+/** What the history keeps: the plan without its route, which the leg cache rebuilds.
+ * A picked alternative stays with its plan, because no request for the plan returns it. */
+export function planOf(trip: Trip): Trip {
+    const { routing, ...plan } = trip;
+    return routing?.picked && routing.key === routingKey(trip) ? trip : plan;
+}
+
+/**
+ * What a draft or a version stores: the plan, and a picked alternative without the other routes, which "Route options" requests again.
+ * The routing package stays behind: only a live answer may tell the map which routing data is in use.
+ */
+export function storedPlan(trip: Trip): Trip {
+    const plan = planOf(trip);
+    return plan.routing ? { ...plan, routing: { ...plan.routing, package: undefined, alternatives: [], alternativesReady: false } } : plan;
+}
+
+/** Keeps plans (see `planOf`). A trip is never changed in place, so the history shares its objects. */
 export class TripHistory {
     private past: Trip[] = [];
     private future: Trip[] = [];
     get canUndo() { return this.past.length > 0; }
     get canRedo() { return this.future.length > 0; }
     commit(before: Trip, after: Trip): Trip {
-        this.past = [...this.past.slice(-49), structuredClone(before)];
+        this.past = [...this.past.slice(-49), planOf(before)];
         this.future = [];
         return after;
     }
     undo(current: Trip): Trip {
         const previous = this.past.pop();
         if (!previous) return current;
-        this.future.push(structuredClone(current));
+        this.future.push(planOf(current));
         return previous;
     }
     redo(current: Trip): Trip {
         const next = this.future.pop();
         if (!next) return current;
-        this.past.push(structuredClone(current));
+        this.past.push(planOf(current));
         return next;
     }
 }

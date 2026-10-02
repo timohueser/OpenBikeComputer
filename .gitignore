@@ -73,6 +73,7 @@ user_config.json
 !specs/vectors/*.gpx
 # ...and the iOS companion's bundled GPX import fixture (three OBCKit tests load it).
 !companion-ios/Packages/OBCKit/Sources/OBCMock/Fixtures/sample-import.gpx
+!companion-ios/Packages/OBCKit/Sources/OBCFormats/Resources/grimsel-pass.gpx
 # ...and the captured route-import provider exports, the canonical copy of the same bytes.
 !fixtures/sources/route-import/*.gpx
 !fixtures/sources/kandel-ride/*.gpx

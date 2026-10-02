@@ -8,6 +8,7 @@ pub mod error;
 pub(crate) mod journal;
 pub(crate) mod layout;
 pub mod metadata;
+pub mod personal_data;
 pub(crate) mod raw;
 pub mod seam;
 pub mod source;

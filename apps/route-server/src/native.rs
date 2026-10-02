@@ -1,8 +1,12 @@
 //! Retained native provider. Calls on each handle must be serialized by the host.
-pub use crate::native_overlays::{planner_overlays_close, planner_overlays_open, planner_overlays_query};
+pub use crate::native_overlays::{
+    planner_overlays_close, planner_overlays_open, planner_overlays_open_package, planner_overlays_query,
+};
 use crate::{error_body, metadata};
 use route_engine::{directory::Directory, Control, Error, Request, Router};
 use serde_json::Value;
+
+type NativeRouter = Router<Box<dyn route_engine::data::RoutingData + Send>>;
 use std::{
     ffi::{c_char, CStr, CString},
     panic::{catch_unwind, AssertUnwindSafe},
@@ -50,7 +54,7 @@ pub unsafe extern "C" fn planner_router_open(
     root: *const c_char,
     memory_budget_bytes: usize,
     error: *mut *mut c_char,
-) -> *mut Router<Directory> {
+) -> *mut NativeRouter {
     if error.is_null() {
         return ptr::null_mut();
     }
@@ -64,9 +68,20 @@ pub unsafe extern "C" fn planner_router_open(
         let root = unsafe { CStr::from_ptr(root) }
             .to_str()
             .map_err(|_| Error::InvalidRequest("Routing directory must be UTF-8".into()))?;
-        let package = Directory::open(Path::new(root))?;
-        let budget =
-            if memory_budget_bytes == 0 { crate::default_memory_budget(&package) } else { memory_budget_bytes };
+        let root = Path::new(root);
+        let (package, default): (Box<dyn route_engine::data::RoutingData + Send>, usize) =
+            if root.join("blocks.json").exists() {
+                {
+                    let package = route_engine::blocks::Files::open(root)?;
+                    let roads: usize = package.roads() as usize;
+                    (Box::new(package), (768 * 1024 * 1024usize).saturating_add(roads.saturating_mul(16)))
+                }
+            } else {
+                let package = Directory::open(root)?;
+                let budget = crate::default_memory_budget(&package);
+                (Box::new(package), budget)
+            };
+        let budget = if memory_budget_bytes == 0 { default } else { memory_budget_bytes };
         Ok(Router::new(package, budget))
     };
     match catch_unwind(run).unwrap_or(Err(Error::Limit)) {
@@ -85,7 +100,7 @@ pub unsafe extern "C" fn planner_router_open(
 /// The returned response must be freed with `planner_response_free`.
 #[no_mangle]
 pub unsafe extern "C" fn planner_router_request(
-    router: *mut Router<Directory>,
+    router: *mut NativeRouter,
     body: *const u8,
     length: usize,
     status: *mut u16,
@@ -104,7 +119,8 @@ pub unsafe extern "C" fn planner_router_request(
         let started = Instant::now();
         let cancelled = || started.elapsed() > Duration::from_secs(15);
         let response = router.routes(&request, &Control { cancelled: &cancelled, ..Control::default() })?;
-        serde_json::to_vec(&response).map_err(|error| Error::InvalidData(error.to_string()))
+        serde_json::to_vec(&route_engine::answer::answer(&response))
+            .map_err(|error| Error::InvalidData(error.to_string()))
     };
     match catch_unwind(AssertUnwindSafe(run)).unwrap_or(Err(Error::Limit)) {
         Ok(bytes) => {
@@ -125,7 +141,7 @@ pub unsafe extern "C" fn planner_router_request(
 /// `router` is a live, exclusively borrowed native router handle. `status` points to writable storage.
 /// The returned response must be freed with `planner_response_free`.
 #[no_mangle]
-pub unsafe extern "C" fn planner_router_region(router: *const Router<Directory>, status: *mut u16) -> *mut c_char {
+pub unsafe extern "C" fn planner_router_region(router: *const NativeRouter, status: *mut u16) -> *mut c_char {
     if status.is_null() {
         return ptr::null_mut();
     }
@@ -149,7 +165,7 @@ pub unsafe extern "C" fn planner_router_region(router: *const Router<Directory>,
 /// # Safety
 /// `router` is null or a live native router handle with no calls in progress.
 #[no_mangle]
-pub unsafe extern "C" fn planner_router_close(router: *mut Router<Directory>) {
+pub unsafe extern "C" fn planner_router_close(router: *mut NativeRouter) {
     if !router.is_null() {
         // SAFETY: The caller transfers ownership after the final call.
         drop(unsafe { Box::from_raw(router) });

@@ -25,7 +25,7 @@ by SHA-256. It must not change objects during a package's lifetime. Use
 `Package::verify` to check the full object closure before installation. A
 missing object returns `MissingRegion`. No query needs a network service.
 
-Run a local query without the HTTP service:
+Run a local query without the HTTP service. It writes the wire answer:
 
 ```sh
 cargo run --release -p route-engine --example query -- /data/freiburg < request.json
@@ -44,6 +44,7 @@ cargo run --release -p route-engine --example query -- /data/freiburg < request.
 | `search` | Exact bidirectional search with optional feasible potentials |
 | `landmarks` | Compressed junction bounds and selection for each request |
 | `router` | Ordered points, direction continuity, geometry and totals |
+| `answer` | The wire answer of [the route API](../../specs/route-api.md) |
 | `directory` | Optional native file adapter |
 
 The primary route minimizes the selected metric over retained attachments.
@@ -51,14 +52,16 @@ The snap radius is 250 m. The first attempt retains up to eight roads within
 3 m of the nearest distance. If they cannot connect, one retry widens the band
 to 50 m and 16 candidates. This retry minimizes total snap distance first,
 then route cost. Points already within 3 m of a road keep the narrow band.
-The response reports recovery and truncation. Both attempts share the query
-budgets. A shape point keeps its direction between legs. Only an explicit
-`turnarounds` entry permits reversal there. Prepared access and turn rules apply.
+The route answer reports truncation only, not the retry. Both
+attempts share the query budgets. A shape point keeps its direction between
+legs. Only an explicit `turnarounds` entry permits reversal there. Prepared
+access and turn rules apply.
 
 Alternatives use prepared goals and bounded corridor probes. They must pass a
 base-cost cap and a material benefit or separation test. Discovery is not
 exhaustive. Corridor probes currently apply to two-point requests. An empty
-alternative set is valid. The primary route remains first.
+alternative set is valid. The primary route remains first, except with
+`alternatives_only`, which leaves it out.
 
 Optional landmark columns guide long searches. Small searches finish before
 loading these columns. The same search applies with or without this index.

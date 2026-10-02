@@ -1,0 +1,105 @@
+{
+  "route": {
+    "id": "5e1f0c3a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f",
+    "reason": "primary",
+    "package": "ef6abeb69a7d8e96a9211d8da2ea64ee385bedf41061a914612609cf29ec05be",
+    "profile": "gravel",
+    "geometry": [
+      [7.849123, 47.997456],
+      [7.849311, 47.997402],
+      [7.850002, 47.996987],
+      [7.849876, 47.996501],
+      [7.851204, 47.996599],
+      [7.85201, 47.99712]
+    ],
+    "elevation": [241.37, 241.92, null, 238.06, 237.94, 239.51],
+    "elapsed": [0, 2.6, 13.4, 21.1, 43.8, 60.2],
+    "surfaces": ["Paved", "Paved", "Gravel", "Gravel", "Gravel"],
+    "pushing": [false, false, false, true, false],
+    "legs": [
+      {
+        "from_index": 0,
+        "to_index": 2,
+        "start": { "road": 17, "fraction": 0.25 },
+        "end": { "road": 42, "fraction": 0.6180339887498949 },
+        "totals": {
+          "distance_m": 95,
+          "ascent_m": 1,
+          "descent_m": 0,
+          "seconds": 13.4,
+          "surface_m": [0, 95, 0, 0, 0, 0],
+          "unknown_elevation_m": 64,
+          "uncertain_access_m": 0,
+          "pushing_m": 0
+        }
+      },
+      {
+        "from_index": 2,
+        "to_index": 5,
+        "start": { "road": 42, "fraction": 0.6180339887498949 },
+        "end": { "road": 9, "fraction": 1 },
+        "totals": {
+          "distance_m": 317,
+          "ascent_m": 1,
+          "descent_m": 4,
+          "seconds": 46.8,
+          "surface_m": [0, 0, 0, 317, 0, 0],
+          "unknown_elevation_m": 0,
+          "uncertain_access_m": 0,
+          "pushing_m": 95
+        }
+      }
+    ],
+    "snap_truncated": false,
+    "totals": {
+      "distance_m": 412,
+      "ascent_m": 2,
+      "descent_m": 4,
+      "seconds": 60.2,
+      "surface_m": [0, 95, 0, 317, 0, 0],
+      "unknown_elevation_m": 64,
+      "uncertain_access_m": 0,
+      "pushing_m": 95
+    }
+  },
+  "answer": {
+    "routes": [
+      {
+        "id": "5e1f0c3a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f",
+        "reason": "primary",
+        "package": "ef6abeb69a7d8e96a9211d8da2ea64ee385bedf41061a914612609cf29ec05be",
+        "profile": "gravel",
+        "coordinates_udeg": [7849123, 47997456, 188, -54, 691, -415, -126, -486, 1328, 98, 806, 521],
+        "elevation_dm": [2414, 5, null, -38, -2, 16],
+        "elapsed_s": [0, 3, 10, 8, 23, 16],
+        "surfaces": [["Paved", 2], ["Gravel", 3]],
+        "pushing": [[false, 3], [true, 1], [false, 1]],
+        "legs": [
+          {
+            "from_index": 0,
+            "to_index": 2,
+            "start": "17:0.25",
+            "end": "42:0.6180339887498949",
+            "totals": { "distance_m": 95, "ascent_m": 1, "seconds": 13, "surface_m": [0, 95, 0, 0, 0, 0], "unknown_elevation_m": 64, "pushing_m": 0 }
+          },
+          {
+            "from_index": 2,
+            "to_index": 5,
+            "start": "42:0.6180339887498949",
+            "end": "9:1",
+            "totals": { "distance_m": 317, "ascent_m": 1, "seconds": 47, "surface_m": [0, 0, 0, 317, 0, 0], "unknown_elevation_m": 0, "pushing_m": 95 }
+          }
+        ],
+        "snap_truncated": false,
+        "totals": {
+          "distance_m": 412,
+          "ascent_m": 2,
+          "seconds": 60,
+          "surface_m": [0, 95, 0, 317, 0, 0],
+          "unknown_elevation_m": 64,
+          "pushing_m": 95
+        }
+      }
+    ]
+  }
+}

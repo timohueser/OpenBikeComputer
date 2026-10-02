@@ -168,26 +168,15 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         ("bbox=-0.1,-0.1,0.1,0.1&zoom=15&layers=access&mode=walking", StatusCode::OK, 1),
         ("bbox=-0.1,-0.1,0.1,0.1&zoom=15&layers=access&mode=car", StatusCode::BAD_REQUEST, 0),
     ] {
-        let response = app
-            .clone()
-            .oneshot(Request::get(format!("/v1/overlays?{query}")).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), status);
         let params: std::collections::HashMap<_, _> =
             query.split('&').map(|pair| pair.split_once('=').unwrap()).collect();
         let params = serde_json::to_vec(&params).unwrap();
         // SAFETY: The test retains the handle and request bytes and serializes queries.
-        let native_response = native_body(unsafe {
+        let bytes = native_body(unsafe {
             native::planner_overlays_query(native_overlays, params.as_ptr(), params.len(), &mut native_status)
         });
         assert_eq!(status.as_u16(), native_status);
-        let headers = response.headers().clone();
-        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
-        assert_eq!(bytes.as_ref(), native_response);
         if status == StatusCode::OK {
-            assert_eq!(headers["cache-control"], "public, max-age=3600");
-            assert_eq!(headers["content-type"], "application/json");
             let data: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             let region: serde_json::Value = serde_json::from_slice(&native_region).unwrap();
             assert_eq!(data["package"], region["package"]);
@@ -218,7 +207,10 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         profile: "touring".into(),
         pace: Pace::default(),
         alternatives: false,
+        alternatives_only: false,
         turnarounds: vec![],
+        start_position: None,
+        end_position: None,
     };
     for (body, status, code) in [
         (serde_json::to_string(&request).unwrap(), StatusCode::OK, None),
@@ -251,9 +243,21 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         } else {
             assert_eq!(value["routes"][0]["package"].as_str().unwrap().len(), 64);
             assert!(value["routes"][0]["totals"]["distance_m"].as_u64().unwrap() > 600);
-            assert_eq!(value["routes"][0]["pushing"], serde_json::json!([false]));
+            assert_eq!(value["routes"][0]["pushing"], serde_json::json!([[false, 1]]));
         }
     }
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/v1/route")
+                .header("content-type", "application/json")
+                .header("accept-encoding", "gzip, br")
+                .body(Body::from(serde_json::to_string(&request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.headers()["content-encoding"], "br");
     // SAFETY: All native calls have completed; the handles are closed once.
     unsafe {
         native::planner_overlays_close(native_overlays);

@@ -2,6 +2,7 @@
 """Prepare, publish, deploy, or preview regional planner data."""
 
 import argparse
+from contextlib import closing
 import fcntl
 import json
 import os
@@ -9,6 +10,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -73,8 +75,19 @@ def setup(args):
             run(*command)
             output.rename(route)
     run(ROOT / "target/release/route-server", route, "--build-overlays")
+    if not current_overlays(route):
+        maps.overlays_archive(route / "overlays.sqlite", maps.DATA / "overlays.pmtiles")
     verify(args, full=True)
     print("Setup complete. Run: obc planner", flush=True)
+
+
+def current_overlays(route):
+    """Whether the overlay tiles come from the overlay index of this routing package."""
+    tiles, index = maps.DATA / "overlays.pmtiles", route / "overlays.sqlite"
+    if not tiles.is_file() or not index.is_file(): return False
+    with closing(sqlite3.connect(f"{index.as_uri()}?mode=ro", uri=True)) as db:
+        package = db.execute("SELECT package FROM metadata").fetchone()[0]
+    return releases.archive_metadata(tiles).get("routing_package") == package
 
 
 def verify(args, full=False):
@@ -85,8 +98,8 @@ def verify(args, full=False):
     routing = json.loads((route / "manifest.json").read_text())
     if routing["region"] != REGION or routing["bounds"] != maps.bounds(maps.BW_BOUNDS):
         raise ValueError("The route package must cover Baden-Württemberg. Repeat setup with a fresh data directory.")
-    if not (route / "overlays.sqlite").is_file():
-        raise ValueError("Missing overlay index. Run obc planner setup.")
+    if not current_overlays(route):
+        raise ValueError("Missing or stale overlay index or tiles. Run obc planner setup.")
     for name in ["touring", "road", "gravel", "mtb", "hiking"]:
         if name not in routing["metrics"]:
             raise ValueError(f"Route package lacks {name}.")
@@ -144,7 +157,7 @@ def serve(args):
 
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] in {"prepare", "publish", "deploy", "rollback", "finalize", "site-config"}:
+    if len(sys.argv) > 1 and sys.argv[1] in {"prepare", "grid", "publish", "deploy", "rollback", "finalize", "site-config"}:
         try: from .planner_release import main as release_main
         except ImportError: from planner_release import main as release_main
         release_main(sys.argv[1:])

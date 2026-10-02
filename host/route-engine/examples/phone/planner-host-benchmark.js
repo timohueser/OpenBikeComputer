@@ -65,8 +65,8 @@
       const result = await response.json();
       if (!response.ok) throw Error(`${path}: ${response.status} ${JSON.stringify(result)}`);
       summaries.push({path, ms: performance.now() - start, type: result.type, results: result.results?.length,
-        routes: result.routes?.length, geometry: result.routes?.[0]?.geometry?.length, features: result.features?.length,
-        nullElevationSamples: result.routes?.[0]?.elevation?.filter(v => v === null).length,
+        routes: result.routes?.length, geometry: result.routes?.[0]?.coordinates_udeg?.length / 2, features: result.features?.length,
+        nullElevationSamples: result.routes?.[0]?.elevation_dm?.filter(v => v === null).length,
         totals: result.routes?.[0]?.totals});
       return result;
     }
@@ -85,10 +85,12 @@
     }
     for (const profile of ['touring','road','hiking']) {
       const result = await request('/routing/v1/route', {points, profile, alternatives: true});
-      if (!(result.routes?.[0]?.geometry?.length > 1)) throw Error('Incomplete local routing result');
-      const route = result.routes[0];
+      if (!(result.routes?.[0]?.coordinates_udeg?.length > 2)) throw Error('Incomplete local routing result');
+      // Microdegree deltas, as specs/route-api.md specifies.
+      const deltas = result.routes[0].coordinates_udeg, line = [];
+      for (let i = 0, x = 0, y = 0; i < deltas.length; i += 2) line.push([(x += deltas[i]) / 1e6, (y += deltas[i + 1]) / 1e6]);
       const context = {region, view: [7.8,47.97,7.9,48.04], here: points[0],
-        plan: {coordinates: route.geometry, points: [], days: [{number: 1, from: 0, to: 5, rest: false}]},
+        plan: {coordinates: line, points: [], days: [{number: 1, from: 0, to: 5, rest: false}]},
         startDate: '2026-09-28', now: '2026-09-28T10:58:00Z', limit: 20, submitted: true};
       const places = await request('/api/planner-search/query', {...context, q: 'cafes along the route open now'});
       summaries.at(-1).request = places.request;

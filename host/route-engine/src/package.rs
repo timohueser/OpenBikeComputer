@@ -20,6 +20,10 @@ pub const CELL: i32 = 10_000;
 /// Hosts read local files, browser storage or application assets through this seam.
 /// A source is immutable for the lifetime of a package. A missing object is never an empty page.
 pub trait Source {
+    fn resident_bytes(&self) -> usize {
+        0
+    }
+
     fn read(&self, digest: &str) -> Result<Vec<u8>>;
 
     /// Packed sources can verify pages in physical order to avoid random disk reads.
@@ -241,7 +245,7 @@ impl<S: Source> Package<S> {
             }
         }
         keys.extend(self.manifest.costs.blocks.iter().cloned());
-        for block in 0..self.manifest.costs.blocks.len() {
+        for block in self.manifest.costs.positions() {
             let costs = self.bases.borrow_mut().block(self, &self.manifest.costs, block)?;
             if costs.iter().any(|cost| !cost.valid()) {
                 return Err(Error::InvalidData("Invalid cost dictionary".into()));
@@ -260,12 +264,12 @@ impl<S: Source> Package<S> {
             }
             for table in [&metric.costs] {
                 keys.extend(table.blocks.iter().cloned());
-                for block in 0..table.blocks.len() {
+                for block in table.positions() {
                     self.numbers.borrow_mut().block(self, table, block)?;
                 }
             }
             keys.extend(metric.allowed.blocks.iter().cloned());
-            for block in 0..metric.allowed.blocks.len() {
+            for block in metric.allowed.positions() {
                 self.words.borrow_mut().block(self, &metric.allowed, block)?;
             }
         }
@@ -284,7 +288,7 @@ impl<S: Source> Package<S> {
 
     pub fn keys(&self, table: &Table) -> Result<Vec<String>> {
         let mut keys = Vec::new();
-        for block in 0..table.blocks.len() {
+        for block in table.positions() {
             let values = self.keys.borrow_mut().block(self, table, block)?;
             if values.iter().any(|key| !table::valid_digest(key)) {
                 return Err(Error::InvalidData("Invalid page identity".into()));
@@ -422,7 +426,7 @@ impl<S: Source> Package<S> {
         }
     }
 
-    pub(crate) fn base(&mut self, metric: &str) -> Result<(Arc<base::Graph>, Arc<base::Costs>)> {
+    pub fn base(&mut self, metric: &str) -> Result<(Arc<base::Graph>, Arc<base::Costs>)> {
         let graph = self.graph(metric)?;
         let cached = self
             .cached_costs
@@ -561,7 +565,13 @@ impl<S: Source> Package<S> {
         Ok(bytes)
     }
 
-    pub fn prepared_endpoint(&mut self, metric: &str, id: u32) -> Result<Endpoint<CostBasis>> {
+    /// Bulk extraction reuses decoded weights instead of thrashing the per-request page caches.
+    pub fn prepared_endpoints(&mut self, metric: &str, roads: &[u32]) -> Result<Vec<Endpoint<CostBasis>>> {
+        self.base(metric)?;
+        roads.iter().map(|&id| self.prepared_endpoint(metric, id)).collect()
+    }
+
+    pub fn prepared_cost(&self, metric: &str, id: u32) -> Result<Option<CostBasis>> {
         if id >= self.manifest.roads {
             return Err(Error::InvalidData("Endpoint outside package".into()));
         }
@@ -571,7 +581,7 @@ impl<S: Source> Package<S> {
             return Err(Error::InvalidData("Cost and snap eligibility differ".into()));
         }
         if cost_id == 0 {
-            return Ok(Endpoint { cost: None, arrival: id, departures: Vec::new() });
+            return Ok(None);
         }
         if cost_id > self.manifest.costs.len {
             return Err(Error::InvalidData("Unknown cost basis".into()));
@@ -582,6 +592,14 @@ impl<S: Source> Package<S> {
         if !basis.valid() {
             return Err(Error::InvalidData("Invalid cost basis".into()));
         }
+        Ok(Some(basis))
+    }
+
+    pub fn prepared_endpoint(&mut self, metric: &str, id: u32) -> Result<Endpoint<CostBasis>> {
+        let Some(basis) = self.prepared_cost(metric, id)? else {
+            return Ok(Endpoint { cost: None, arrival: id, departures: Vec::new() });
+        };
+        let prepared = self.metric(metric)?;
         let graph = self.graph(metric)?;
         if self.road_weight(metric, id)? == u64::MAX {
             return Err(Error::InvalidData("Missing accessible road cost".into()));

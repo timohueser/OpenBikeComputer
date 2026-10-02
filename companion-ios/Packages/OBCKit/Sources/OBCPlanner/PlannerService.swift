@@ -13,13 +13,19 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
     public let search: URL
     public let routing: URL
     public let manifest: URL
+    /// Route network tiles of an online release. Offline releases read networks from their routing cells.
+    public let overlays: URL?
 
     public init(id: String, region: String, bounds: [Double], basemap: URL, glyphs: String,
-                sprites: String, terrain: String, terrain_attribution: String, search: URL, routing: URL, manifest: URL) {
+                sprites: String, terrain: String, terrain_attribution: String, search: URL, routing: URL, manifest: URL,
+                overlays: URL? = nil) {
         self.id = id; self.region = region; self.bounds = bounds; self.basemap = basemap
         self.glyphs = glyphs; self.sprites = sprites; self.terrain = terrain
         self.terrain_attribution = terrain_attribution; self.search = search; self.routing = routing; self.manifest = manifest
+        self.overlays = overlays
     }
+
+    public var isLocal: Bool { manifest.isFileURL || (basemap.scheme == "pmtiles" && basemap.absoluteString.hasPrefix("pmtiles://file:")) }
 
     public func contains(_ coordinate: Coordinate) -> Bool {
         bounds.count == 4 && (bounds[0]...bounds[2]).contains(coordinate.longitude)
@@ -67,7 +73,7 @@ public struct PlannerPlace: Decodable, Identifiable, Sendable {
 }
 
 public enum PlannerFailure: Error, Equatable, Sendable, LocalizedError {
-    case unavailable, invalidData, outsideRegion, noRoad, busy
+    case unavailable, invalidData, outsideRegion, noRoad, busy, offlineUnavailable
     public var errorDescription: String? {
         switch self {
         case .unavailable: "The route service is unavailable. Check your connection and try again."
@@ -75,6 +81,7 @@ public enum PlannerFailure: Error, Equatable, Sendable, LocalizedError {
         case .outsideRegion: "Choose points inside the available map region."
         case .noRoad: "No route connects these points. Move a point to a nearby road and try again."
         case .busy: "The route service is busy. Try again in a moment."
+        case .offlineUnavailable: "No usable offline map covers this request, and the online service is unavailable. Check your connection or download this area."
         }
     }
 }
@@ -100,24 +107,38 @@ public struct PlannerSearchQuery: Sendable {
 /// The same release supplies maps, search, routing, and viewport overlays.
 /// A local provider can implement this boundary without changing planner interactions.
 public protocol PlannerDataSource: RoutePlanning {
+    var supportsOffline: Bool { get }
+    func mapRelease(bounds: [Double]?, allowNetwork: Bool) async throws -> PlannerRelease
     func search(_ query: PlannerSearchQuery, release: PlannerRelease) async throws -> [PlannerPlace]
     func overlays(bounds: [Double], zoom: Double, network: String, release: PlannerRelease) async throws -> Data
+}
+
+extension PlannerDataSource {
+    public var supportsOffline: Bool { false }
+    public func mapRelease(bounds: [Double]?, allowNetwork: Bool = true) async throws -> PlannerRelease {
+        guard allowNetwork else { throw PlannerFailure.offlineUnavailable }
+        return try await release()
+    }
 }
 
 /// Pins every request in a planning session to the release that supplies its map.
 public actor PlannerService: PlannerDataSource {
     public static let shared = PlannerService()
     private let catalogURL: URL
-    private let session: URLSession
+    public typealias Transport = @Sendable (URLRequest) async throws -> (Data, URLResponse)
+    private let transport: Transport
+    private let fixedRelease: PlannerRelease?
     private var cached: (release: PlannerRelease, fetched: Date)?
     private var loading: Task<PlannerRelease, Error>?
     private struct Manifest: Decodable { let routing_package: String; let profiles: [String] }
     private var searchLine: (original: [Coordinate], simplified: [Coordinate])?
+    /// Routed legs, so an edit requests only the legs that it changed.
+    private var legs: [LegKey: Leg] = [:]
     private var manifestCache: (id: String, value: Manifest)?
 
     private func manifest(_ release: PlannerRelease) async throws -> Manifest {
         if let cached = manifestCache, cached.id == release.id { return cached.value }
-        let value = try Self.decode(Manifest.self, data: await Self.get(release.manifest, session: session))
+        let value = try Self.decode(Manifest.self, data: await Self.get(release.manifest, transport: transport))
         manifestCache = (release.id, value)
         return value
     }
@@ -125,21 +146,30 @@ public actor PlannerService: PlannerDataSource {
     public init(catalogURL: URL = URL(string: "https://maps.openbikecomputer.com/planner/catalog.json")!,
                 session: URLSession = .shared) {
         self.catalogURL = catalogURL
-        self.session = session
+        self.transport = { try await session.data(for: $0) }
+        self.fixedRelease = nil
+    }
+
+    public init(release: PlannerRelease, transport: @escaping Transport) {
+        self.catalogURL = release.manifest
+        self.fixedRelease = release
+        self.transport = transport
     }
 
     public func release() async throws -> PlannerRelease {
+        if let fixedRelease { return fixedRelease }
         if let cached, Date().timeIntervalSince(cached.fetched) < 30 { return cached.release }
         if let loading { return try await loading.value }
-        let task = Task { [session, catalogURL] in
+        let task = Task { [transport, catalogURL] in
             struct Catalog: Decodable { let format: Int; let active: PlannerRelease }
-            let data = try await Self.get(catalogURL, session: session)
+            let data = try await Self.get(catalogURL, transport: transport)
             let catalog = try Self.decode(Catalog.self, data: data)
             let r = catalog.active
             guard catalog.format == 1, r.id.count == 64, r.id.allSatisfy({ $0.isHexDigit && $0.isASCII }), r.bounds.count == 4,
                   r.bounds.allSatisfy(\.isFinite), r.bounds[0] < r.bounds[2], r.bounds[1] < r.bounds[3],
                   r.bounds[0] >= -180, r.bounds[2] <= 180, r.bounds[1] >= -90, r.bounds[3] <= 90,
                   r.basemap.scheme == "https", r.routing.scheme == "https", r.manifest.scheme == "https", r.search.scheme == "https",
+                  r.overlays.map({ $0.scheme == "https" }) ?? true,
                   [r.glyphs, r.sprites, r.terrain].allSatisfy({ $0.hasPrefix("https://") })
             else { throw PlannerFailure.invalidData }
             return r
@@ -159,45 +189,90 @@ public actor PlannerService: PlannerDataSource {
         let manifest = try await manifest(release)
         let profile = preference.profile(for: bike)
         guard manifest.profiles.contains(profile) else { throw PlannerFailure.invalidData }
-        struct Query: Encodable { let points: [[Double]]; let profile: String; let alternatives = false }
+        return try await route(points, profile: profile, release: release, package: manifest.routing_package, whole: false)
+    }
+
+    /// One request at most: for the legs from the first to the last leg that is not cached, pinned to the cached legs
+    /// before and after it. When it finds no route, one request for the whole route follows: the whole route can pass a
+    /// neighbour point the other way.
+    private func route(_ points: [Coordinate], profile: String, release: PlannerRelease, package: String,
+                       whole: Bool) async throws -> PlannedPath {
+        let keys = zip(points, points.dropFirst()).map { LegKey(package: package, profile: profile, from: $0, to: $1) }
+        var found = keys.map { whole ? nil : legs[$0] }
+        // A leg from another request joins only at the same road position, so a shaping point keeps its direction.
+        for k in found.indices.dropFirst() where found[k - 1].map({ $0.end != found[k]?.start }) ?? false { found[k] = nil }
+        if let first = found.firstIndex(where: { $0 == nil }), let last = found.lastIndex(where: { $0 == nil }) {
+            let before = first > 0 ? found[first - 1] : nil, after = last + 1 < found.count ? found[last + 1] : nil
+            let fresh: [Leg]
+            do {
+                fresh = try await request(Array(points[first...last + 1]), profile: profile, pins: (before?.end, after?.start),
+                                          release: release, package: package)
+            } catch PlannerFailure.noRoad where before != nil || after != nil {
+                // Only a missing path can change with the whole route; a busy service must not get a larger request.
+                return try await route(points, profile: profile, release: release, package: package, whole: true)
+            }
+            // The service ignores a pin that is not a road candidate of its point.
+            if before.map({ $0.end != fresh[0].start }) ?? false || after.map({ $0.start != fresh[fresh.count - 1].end }) ?? false {
+                legs.removeAll()
+                return try await route(points, profile: profile, release: release, package: package, whole: true)
+            }
+            found.replaceSubrange(first...last, with: fresh as [Leg?])
+        }
+        let joined = found.compactMap { $0 }
+        // About ten 300 km trips. Above that, the cache keeps only this route.
+        if legs.values.reduce(0, { $0 + $1.points.count }) > 200_000 { legs.removeAll() }
+        for (key, leg) in zip(keys, joined) { legs[key] = leg }
+        // A leg starts at the last point of the leg before it.
+        var path: [RoutePoint] = [], elapsed: [Double] = [], indices = [0]
+        for leg in joined {
+            let skip = path.isEmpty ? 0 : 1, offset = elapsed.last ?? 0
+            path += leg.points.dropFirst(skip)
+            elapsed += leg.elapsed.dropFirst(skip).map { $0 + offset }
+            indices.append(path.count - 1)
+        }
+        return PlannedPath(points: path, distance: joined.reduce(0) { $0 + $1.totals.distance_m },
+                           ascent: joined.reduce(0) { $0 + $1.totals.ascent_m }, seconds: joined.reduce(0) { $0 + $1.totals.seconds },
+                           pointIndices: indices, elapsed: elapsed)
+    }
+
+    private struct LegKey: Hashable { let package: String; let profile: String; let from: Coordinate; let to: Coordinate }
+    /// One leg cut from a route answer. Its `elapsed` starts at zero.
+    private struct Leg { let points: [RoutePoint]; let elapsed: [Double]; let totals: RouteAnswer.Totals; let start: String; let end: String }
+
+    private func request(_ points: [Coordinate], profile: String, pins: (start: String?, end: String?),
+                         release: PlannerRelease, package: String) async throws -> [Leg] {
+        struct Query: Encodable {
+            let points: [[Double]]; let profile: String; let alternatives = false
+            let start_position: String?; let end_position: String?
+        }
         var request = URLRequest(url: release.routing.appending(path: "v1/route"))
         request.httpMethod = "POST"
         request.timeoutInterval = 25
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(Query(points: points.map { [$0.longitude, $0.latitude] }, profile: profile))
-        let data = try await Self.send(request, session: session)
-        struct Response: Decodable { let routes: [Route] }
-        struct Route: Decodable {
-            let package: String
-            let profile: String
-            let geometry: [[Double]]
-            let elevation: [Double?]
-            let elapsed: [Double]
-            struct Leg: Decodable { let from_index: Int; let to_index: Int }
-            let legs: [Leg]
-            let totals: Totals
-        }
-        struct Totals: Decodable { let distance_m: Double; let ascent_m: Double; let seconds: Double }
+        request.httpBody = try JSONEncoder().encode(Query(points: points.map { [$0.longitude, $0.latitude] }, profile: profile,
+                                                          start_position: pins.start, end_position: pins.end))
+        let data = try await Self.send(request, transport: transport)
+        struct Response: Decodable { let routes: [RouteAnswer] }
         let response = try Self.decode(Response.self, data: data)
-        guard let route = response.routes.first, route.package == manifest.routing_package, route.profile == profile,
-              route.geometry.count > 1, route.geometry.count <= 250_000,
-              route.elevation.count == route.geometry.count,
-              route.elapsed.count == route.geometry.count, route.elapsed.first == 0,
-              route.elapsed.allSatisfy({ $0.isFinite && $0 >= 0 }),
+        guard let route = response.routes.first, route.package == package, route.profile == profile,
+              route.coordinates.count > 1, route.coordinates.count <= 250_000,
+              route.elevation.count == route.coordinates.count,
+              route.elapsed.count == route.coordinates.count, route.elapsed.first == 0,
               zip(route.elapsed, route.elapsed.dropFirst()).allSatisfy({ $0 <= $1 }),
               route.legs.count == points.count - 1, route.legs.first?.from_index == 0,
-              route.legs.last?.to_index == route.geometry.count - 1,
-              route.legs.allSatisfy({ $0.from_index >= 0 && $0.to_index >= $0.from_index && $0.to_index < route.geometry.count }),
+              route.legs.last?.to_index == route.coordinates.count - 1,
+              route.legs.allSatisfy({ $0.from_index >= 0 && $0.to_index >= $0.from_index && $0.to_index < route.coordinates.count }),
               zip(route.legs, route.legs.dropFirst()).allSatisfy({ $0.to_index == $1.from_index }),
-              route.geometry.allSatisfy({ $0.count == 2 && $0.allSatisfy(\.isFinite) && (-180...180).contains($0[0]) && (-90...90).contains($0[1]) }),
-              route.elevation.allSatisfy({ $0?.isFinite ?? true }),
-              [route.totals.distance_m, route.totals.ascent_m, route.totals.seconds].allSatisfy({ $0.isFinite && $0 >= 0 })
+              route.coordinates.allSatisfy({ (-180...180).contains($0.longitude) && (-90...90).contains($0.latitude) }),
+              route.legs.allSatisfy({ [$0.totals.distance_m, $0.totals.ascent_m, $0.totals.seconds].allSatisfy { $0.isFinite && $0 >= 0 } })
         else { throw PlannerFailure.invalidData }
         try Task.checkCancellation()
-        return PlannedPath(points: zip(route.geometry, route.elevation).map {
-            RoutePoint(coordinate: Coordinate(latitude: $0.0[1], longitude: $0.0[0]), elevationMeters: $0.1)
-        }, distance: route.totals.distance_m, ascent: route.totals.ascent_m, seconds: route.totals.seconds,
-           pointIndices: [0] + route.legs.map(\.to_index), elapsed: route.elapsed)
+        return route.legs.map { leg in
+            let range = leg.from_index...leg.to_index
+            return Leg(points: range.map { RoutePoint(coordinate: route.coordinates[$0], elevationMeters: route.elevation[$0]) },
+                       elapsed: route.elapsed[range].map { $0 - route.elapsed[leg.from_index] },
+                       totals: leg.totals, start: leg.start, end: leg.end)
+        }
     }
 
     public func search(_ query: PlannerSearchQuery, release: PlannerRelease) async throws -> [PlannerPlace] {
@@ -234,7 +309,7 @@ public actor PlannerService: PlannerDataSource {
                                   "plan": context, "limit": 100, "submitted": true, "request": queryRequest]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         struct Response: Decodable { let results: [PlannerPlace] }
-        let data = try await Self.send(request, session: session)
+        let data = try await Self.send(request, transport: transport)
         let result = try Self.decode(Response.self, data: data)
         guard result.results.count <= 100, Set(result.results.map(\.id)).count == result.results.count,
               result.results.allSatisfy({ place in
@@ -253,7 +328,7 @@ public actor PlannerService: PlannerDataSource {
                           URLQueryItem(name: "zoom", value: String(min(22, max(6, floor(zoom))))),
                           URLQueryItem(name: "layers", value: network),
                           URLQueryItem(name: "mode", value: network == "hiking" ? "walking" : "cycling")]
-        let data = try await Self.get(url.url!, session: session)
+        let data = try await Self.get(url.url!, transport: transport)
         struct Collection: Codable {
             let package: String
             let type: String
@@ -293,10 +368,10 @@ public actor PlannerService: PlannerDataSource {
         return simplified
     }
 
-    private static func get(_ url: URL, session: URLSession) async throws -> Data {
+    private static func get(_ url: URL, transport: Transport) async throws -> Data {
         var request = URLRequest(url: url)
         request.timeoutInterval = 25
-        return try await send(request, session: session)
+        return try await send(request, transport: transport)
     }
 
     private static func decode<T: Decodable>(_ type: T.Type, data: Data) throws -> T {
@@ -304,9 +379,9 @@ public actor PlannerService: PlannerDataSource {
         catch { throw PlannerFailure.invalidData }
     }
 
-    private static func send(_ request: URLRequest, session: URLSession) async throws -> Data {
+    private static func send(_ request: URLRequest, transport: Transport) async throws -> Data {
         do {
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await transport(request)
             try Task.checkCancellation()
             guard let response = response as? HTTPURLResponse else { throw PlannerFailure.invalidData }
             guard response.statusCode == 200 else {
@@ -339,6 +414,7 @@ public struct OnlineLegRouter: LegRouter {
         catch PlannerFailure.noRoad { throw LegRouteFailure.noRoad }
         catch PlannerFailure.outsideRegion { throw LegRouteFailure.noMap }
         catch PlannerFailure.unavailable { throw LegRouteFailure.noConnection }
+        catch PlannerFailure.offlineUnavailable { throw LegRouteFailure.noConnection }
         catch { throw LegRouteFailure.mapData }
     }
 }

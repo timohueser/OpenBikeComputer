@@ -19,8 +19,8 @@ For dashboard deployment, create the `obc-planner-tiles` Worker. Paste
 The Worker needs no bucket access key.
 Start with Workers Free for private tests. Check cold tile requests for CPU
 limit failures before a public launch. Upgrade if the fixed limit is too low.
-On Workers Paid, set **Settings > CPU Limits** to `50` ms. This matches the
-CLI configuration. Workers Free has a fixed `10` ms limit.
+Workers Free has a fixed `10` ms limit. The configuration does not request
+a paid CPU allowance.
 
 With a Cloudflare deployment credential, run:
 
@@ -32,13 +32,28 @@ npm run deploy --prefix apps/planner-tiles
 | --- | --- |
 | `/releases/ID/basemap.json` | Vector TileJSON |
 | `/releases/ID/basemap/Z/X/Y.mvt` | Vector tile, zoom 0–14 |
+| `/releases/ID/places.json` | Rider places TileJSON |
+| `/releases/ID/places/Z/X/Y.mvt` | Rider places tile, zoom 11 |
+| `/releases/ID/overlays.json` | Route network and access TileJSON |
+| `/releases/ID/overlays/Z/X/Y.mvt` | Route network and access tile, zoom 6–14 |
 | `/releases/ID/terrain.json` | Terrain TileJSON |
 | `/releases/ID/terrain/Z/X/Y.webp` | Terrarium tile, zoom 0–12 |
 
-`ID` is the SHA-256 of `release.json`. The archives live at
-`planner/releases/ID/maps/{basemap,terrain}.pmtiles`. Queries and unknown paths
-return 404. An absent tile returns 204. An absent archive returns 404.
+`ID` is the SHA-256 of `release.json`. Grid archives use the canonical object pool and its small public pointers.
+The [release contract](../../specs/planner-release.md#canonical-grid-storage)
+defines those paths. Queries and unknown paths
+return 404. An absent tile returns 204. A grid tile without a pack is absent.
+An absent archive returns 404.
 Read failures return 503 with no cache. The domain root returns 404.
 
-Raw archive downloads use the bucket's public domain. See the
+The service also serves release font, sprite, and device catalog paths.
+
+Only `npm run deploy` applies `wrangler.toml`. It turns off `workers.dev` and preview URLs and
+adds the `LIMITER` binding. The Worker answers `429` to a client address that exceeds the limit
+on cache misses. Cache hits are never counted. A dashboard paste has no binding, and the Worker
+then applies no limit. Counters are per data centre. Raise the limit when many riders share one
+address. The rate limit rule, the cache rule and the budget alert are in the
+[Cloudflare runbook](../../ops/cloudflare.md).
+
+Offline payload downloads use the bucket's public domain. See the
 [planner instructions](../../builder/app/src/components/planner/README.md).
