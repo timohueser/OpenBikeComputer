@@ -72,8 +72,10 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             lon: lon.round() as i32,
                             elevation: route_engine::model::NO_ELEVATION,
                         })?;
+                        // Whole metres: relief and contours need no finer height, and lossless WebP compresses
+                        // fewer distinct values better.
                         let value = height
-                            .map(|h| ((h + 32768.0) * 256.0).round().clamp(0.0, 16777215.0) as u32)
+                            .map(|h| ((h.round() + 32768.0) * 256.0).clamp(0.0, 16777215.0) as u32)
                             .unwrap_or(8388608);
                         let i = (py * SIZE as usize + px as usize) * 4;
                         rgba[i..i + 4].copy_from_slice(&[
