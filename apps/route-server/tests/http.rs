@@ -218,6 +218,7 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         profile: "touring".into(),
         pace: Pace::default(),
         alternatives: false,
+        alternatives_only: false,
         turnarounds: vec![],
     };
     for (body, status, code) in [

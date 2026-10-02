@@ -12,14 +12,16 @@ the same request. Request and answer bodies are UTF-8 JSON.
 | `profile` | A profile ID from `GET /v1/region` |
 | `pace` | Optional: `cycling_kmh` (1 to 80, default 19), `walking_kmh` (0.5 to 15, default 4.5) and `personal_multiplier` (0.25 to 4, default 1) |
 | `alternatives` | Optional, default `false`. `true` asks for alternative routes |
+| `alternatives_only` | Optional, default `false`. `true` asks for alternative routes and leaves out the primary route |
 | `turnarounds` | Optional interior point indices where a reversal is deliberate |
 
 The service rejects unknown fields.
 
 ## Answer
 
-The answer is `{"routes": [...]}`. The first route is the primary route. Each
-route has these fields:
+The answer is `{"routes": [...]}`. The first route is the primary route. With
+`alternatives_only`, the answer holds only the alternative routes, and it can be
+empty. Each route has these fields:
 
 | Field | Value |
 | --- | --- |

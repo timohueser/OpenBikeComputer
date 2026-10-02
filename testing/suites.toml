@@ -113,7 +113,7 @@ triggers = ["firmware/obc-fw-nrf54l/src/detour.rs", "firmware/obc-fw-nrf54l/src/
 
 # The answer encoder test reads the shared route answer vector; no Cargo edge carries that.
 [[package]]
-name = "route-server"
+name = "route-engine"
 triggers = ["specs/vectors/route-answer.json"]
 
 # The phone's router test reads the web builder's fixture; no Cargo edge carries that.
@@ -794,7 +794,7 @@ route = "ordinary"
 command = "npm test --prefix apps/planner-search"
 jobs = ["planner-search"]
 platforms = ["linux", "macos"]
-triggers = ["apps/planner-search/**", "specs/vectors/route-answer.json"]
+triggers = ["apps/planner-search/**"]
 
 [[suite]]
 id = "planner.tiles"
