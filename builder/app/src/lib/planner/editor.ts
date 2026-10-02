@@ -588,10 +588,13 @@ export function planOf(trip: Trip): Trip {
     return routing?.picked && routing.key === routingKey(trip) ? trip : plan;
 }
 
-/** What a draft or a version stores: the plan, and a picked alternative without the other routes, which "Route options" requests again. */
+/**
+ * What a draft or a version stores: the plan, and a picked alternative without the other routes, which "Route options" requests again.
+ * The routing package stays behind: only a live answer may tell the map which routing data is in use.
+ */
 export function storedPlan(trip: Trip): Trip {
     const plan = planOf(trip);
-    return plan.routing ? { ...plan, routing: { ...plan.routing, alternatives: [], alternativesReady: false } } : plan;
+    return plan.routing ? { ...plan, routing: { ...plan.routing, package: undefined, alternatives: [], alternativesReady: false } } : plan;
 }
 
 /** Keeps plans (see `planOf`). A trip is never changed in place, so the history shares its objects. */

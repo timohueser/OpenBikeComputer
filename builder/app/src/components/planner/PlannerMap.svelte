@@ -15,7 +15,7 @@
     import "maplibre-gl/dist/maplibre-gl.css";
     import { mapStyle, poiFilter } from "../../lib/planner/map-style";
     import { mapIcon } from "../../lib/planner/map-icons";
-    import { MAP_BOUNDS } from "../../lib/planner/map-data";
+    import { MAP_BOUNDS, OVERLAYS_URL } from "../../lib/planner/map-data";
     import { categoryIds, placeCategories, type PlaceCategory } from "../../lib/planner/poi-kinds";
     import { poiPlace } from "../../lib/planner/place-index";
     import { coordinateAt, nearestProgress, type Place } from "../../lib/planner/editor";
@@ -27,7 +27,7 @@
         segments = [], coordinates = [], highlightedCoordinates = [], points = [], selectedId = null, hoveredId = null, callout = null,
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
-        shownCategories = categoryIds, highlightedPlaces = [], landmarks = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling',
+        shownCategories = categoryIds, highlightedPlaces = [], landmarks = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage,
         onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
         segments?: MapSegment[]; coordinates?: Coordinate[]; highlightedCoordinates?: Coordinate[]; points?: MapPoint[];
@@ -44,6 +44,8 @@
         mapOverlays?: OverlayOptions;
         /** Travel mode, independent of the network chosen for display. */
         accessMode?: AccessMode;
+        /** Routing package of the shown route. Overlays from another package stay hidden. */
+        routingPackage?: string;
         /** Route progress the elevation profile points at. */
         hoverProgress?: number | null;
         center?: Coordinate; zoom?: number;
@@ -386,7 +388,7 @@
         hoverDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-hover-dot" }) });
         try {
             map = new maplibregl.Map({ container, center, zoom, maxBounds: MAP_BOUNDS, style: mapStyle(theme, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false });
-            overlayLayer = new RouteOverlays(map, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; });
+            overlayLayer = new RouteOverlays(map, OVERLAYS_URL, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; });
             fitInitialRoute();
             map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 90, unit: "metric" }), "bottom-left");
@@ -483,6 +485,7 @@
     $effect(() => { hillshade; contours; if (ready) syncTerrain(); });
     $effect(() => { const options = { ...mapOverlays }; const mode = accessMode; if (ready) { overlaySelection = null; overOverlay = false; overlayLayer?.set(options, mode); } });
     $effect(() => { showRoute; if (ready) syncRouteVisibility(); });
+    $effect(() => { const routing = routingPackage; if (ready) overlayLayer?.verify(routing); });
     $effect(() => {
         highlightedCoordinates;
         if (map && ready) (map.getSource("trip-highlight") as GeoJSONSource | undefined)?.setData(highlightData());
@@ -638,7 +641,7 @@
             onuse={() => { const coordinate = overlaySelection!.coordinate; overlaySelection = null; onEmptyClick?.(coordinate); }} />
     {/if}
     {#if overlayStatus && !failure && !overlaySelection}
-        <div class="overlay-status" role="status">{overlayStatus}{#if overlayRetry}<button onclick={() => overlayLayer?.refresh()}>Retry</button>{/if}</div>
+        <div class="overlay-status" role="status">{overlayStatus}{#if overlayRetry}<button onclick={() => overlayLayer?.retry()}>Retry</button>{/if}</div>
     {/if}
     {#if !ready && !failure}<div class="map-status" role="status">Loading map…</div>{/if}
     {#if failure}

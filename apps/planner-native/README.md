@@ -43,8 +43,8 @@ The first run creates a route and a named version with the real UI. Copy
 the current draft and saved versions across process restart. Keep the installation
 argument on both launches. Add `--hold` to keep the screen awake until the app
 closes. Capture all processes with Instruments for memory;
-the device report covers the native process only. The map, parser, database,
-router, and overlay providers remain resident after the run.
+the device report covers the native process only. The map, parser, database
+and router providers remain resident after the run.
 
 With a full Baden-Württemberg release, add `--full-bw` for day and long routes
 and broad-to-detail map views with both route networks. Route summaries retain

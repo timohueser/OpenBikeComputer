@@ -178,6 +178,13 @@ struct PlannerPreviewMap: UIViewRepresentable {
         func updateNetworks(_ map: OBCNativeMapView) {
             networks.status = { [weak self] in self?.reportLayerStatus($0, layer: "networks") }
             let network = parent.showCycling ? "cycling" : parent.showHiking ? "hiking" : "none"
+            if map.style?.source(withIdentifier: "networks") is MLNVectorTileSource {
+                networks.update(map, key: nil, release: nil) { _, _, _ in Data() }
+                for id in ["planner-networks", "planner-network-labels"] {
+                    for kind in ["cycling", "hiking"] { map.style?.layer(withIdentifier: "\(id)-\(kind)")?.isVisible = kind == network }
+                }
+                return
+            }
             let source = parent.source
             networks.update(map, key: network == "none" ? nil : network, release: map.selectedRelease, minimumZoom: 6) { bounds, zoom, release in
                 try await source.overlays(bounds: bounds, zoom: zoom, network: network, release: release)

@@ -523,7 +523,7 @@ fn insert(
         let minimum = match properties["rank"].as_u64().unwrap_or(0) {
             3..=4 => 6.0,
             2 => 8.0,
-            _ => 10.0,
+            _ => 11.0,
         };
         (Some(minimum), Some(minimum))
     };

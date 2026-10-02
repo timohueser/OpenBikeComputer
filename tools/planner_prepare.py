@@ -144,6 +144,7 @@ def prepare(args):
             stage = Path(directory)
             link(source / "basemap.pmtiles", stage / "basemap.pmtiles")
             maps.places_archive(stage / "basemap.pmtiles", stage / "places.pmtiles")
+            maps.overlays_archive(routing / "overlays.sqlite", stage / "overlays.pmtiles")
             maps.run(maps.ROOT / "target/release/planner-dem", "--dem", args.dem_dir, *reference,
                      "--bounds", ",".join(map(str, terrain_bounds)), "--output", stage / "terrain.mbtiles")
             maps.run(args.pmtiles, "convert", stage / "terrain.mbtiles", stage / "terrain.pmtiles")
@@ -165,6 +166,13 @@ def prepare(args):
                         {"bytes": p.stat().st_size, "sha256": sources.digest(p)} for p in sorted(stage.rglob("*")) if p.is_file()}}
             (stage / "manifest.json").write_bytes(releases.encoded(manifest))
             stage.rename(data / "maps")
+    elif not (data / "maps/overlays.pmtiles").exists():
+        # A routing selection reuses the maps; only the overlay tiles follow the new routing package.
+        overlays = data / "maps/overlays.pmtiles"
+        maps.overlays_archive(routing / "overlays.sqlite", overlays)
+        manifest = json.loads((data / "maps/manifest.json").read_bytes())
+        manifest["files"]["overlays.pmtiles"] = {"bytes": overlays.stat().st_size, "sha256": sources.digest(overlays)}
+        (data / "maps/manifest.json").write_bytes(releases.encoded(manifest))
     if not database.exists():
         with tempfile.TemporaryDirectory(prefix=".search-", dir=data) as directory:
             maps.run(maps.ROOT / "apps/planner-search/.venv/bin/python", maps.ROOT / "apps/planner-search/build.py",

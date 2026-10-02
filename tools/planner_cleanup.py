@@ -67,7 +67,7 @@ def verify_site(active, origin):
         with sources.open_url(url) as response:
             scripts.append(response.read().decode())
     code = "\n".join(scripts)
-    if not all(active[key] in code for key in ["basemap", "places", "terrain", "routing", "search"]):
+    if not all(active[key] in code for key in ["basemap", "places", "overlays", "terrain", "routing", "search"]):
         raise ValueError("Deploy site must serve the active planner release before cleanup.")
 
 

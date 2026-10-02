@@ -34,6 +34,8 @@ npm run deploy --prefix apps/planner-tiles
 | `/releases/ID/basemap/Z/X/Y.mvt` | Vector tile, zoom 0–14 |
 | `/releases/ID/places.json` | Rider places TileJSON |
 | `/releases/ID/places/Z/X/Y.mvt` | Rider places tile, zoom 11 |
+| `/releases/ID/overlays.json` | Route network and access TileJSON |
+| `/releases/ID/overlays/Z/X/Y.mvt` | Route network and access tile, zoom 6–14 |
 | `/releases/ID/terrain.json` | Terrain TileJSON |
 | `/releases/ID/terrain/Z/X/Y.webp` | Terrarium tile, zoom 0–12 |
 

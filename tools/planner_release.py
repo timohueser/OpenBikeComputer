@@ -37,6 +37,18 @@ def search_metadata(database, full=False):
     return metadata
 
 
+def archive_metadata(path):
+    """The JSON metadata of a PMTiles v3 archive."""
+    import gzip
+    import struct
+    with path.open("rb") as stream:
+        header = stream.read(127)
+        offset, length = struct.unpack_from("<QQ", header, 24)
+        stream.seek(offset)
+        data = stream.read(length)
+    return json.loads(gzip.decompress(data) if header[97] == 2 else data)
+
+
 def seal(data, region, device_catalog, provenance):
     routing = json.loads((data / "routing/manifest.json").read_bytes())
     if routing["format"] != 7 or routing["region"] != region:
@@ -46,6 +58,8 @@ def seal(data, region, device_catalog, provenance):
             raise ValueError("Overlay index uses another routing package")
         if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
             raise ValueError("Overlay index failed verification")
+    if archive_metadata(data / "maps/overlays.pmtiles").get("routing_package") != sources.digest(data / "routing/manifest.json"):
+        raise ValueError("Overlay tiles use another routing package")
     maps.DATA = data / "maps"
     map_manifest = maps.check_bundle(full=True)
     database = data / "search" / f"{region}.sqlite"
@@ -95,6 +109,7 @@ def endpoints(identity, document, public, tiles, api):
     return {"id": identity, "manifest": prefix + "/release.json", "region": document["region"],
             "device_catalog": assets + "/device/catalog.json", "routing": service + "/routing",
             "search": service + "/search", "basemap": tile_prefix + "/basemap.json", "places": tile_prefix + "/places.json",
+            "overlays": tile_prefix + "/overlays.json",
             "attribution": document["attribution"],
             "terrain": tile_prefix + "/terrain/{z}/{x}/{y}.webp",
             "glyphs": assets + "/maps/assets/fonts/{fontstack}/{range}.pbf",
@@ -152,6 +167,7 @@ def publish(args):
 
 def vite_environment(active):
     values = {"VITE_PLANNER_TILEJSON_URL": active["basemap"], "VITE_PLANNER_PLACES_URL": active["places"],
+              "VITE_PLANNER_OVERLAYS_URL": active["overlays"],
               "VITE_PLANNER_DEM_URL": active["terrain"],
               "VITE_PLANNER_ROUTING_URL": active["routing"], "VITE_PLANNER_SEARCH_URL": active["search"],
               "VITE_PLANNER_GLYPHS_URL": active["glyphs"], "VITE_PLANNER_SPRITES_URL": active["sprites"],

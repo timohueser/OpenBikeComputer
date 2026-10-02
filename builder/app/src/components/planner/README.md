@@ -27,11 +27,12 @@ obc planner deploy --data-dir /srv/planner/bw --host root@YOUR_VPS --apply
 `publish` and `deploy` show their action without `--apply`. Publication uploads
 files and verifies remote bytes. Deployment checks the routing
 package, model readiness, CORS, tiles, search, and a real route. It updates
-`planner/catalog.json` only after those checks pass. The
+`planner/catalog.json` only after these pass. The
 [release contract](../../../../../specs/planner-release.md) defines the files.
 
-`grid` publishes into a new directory. It builds reusable cells from the verified
-regional bake. Do not run publications or deployments at the same time.
+Online releases are grid releases: `grid` publishes into a new directory. It
+builds reusable cells from the regional bake. Run one publication or deployment
+at a time.
 
 `prepare` accepts `--osm PATH` for a local copy of the pinned extract. On macOS,
 use `--inputs DIRECTORY` to supply verified Linux builder outputs:
@@ -77,9 +78,9 @@ cargo run --release -p route-build --bin route-select -- \
 ```
 
 Copy the unchanged `maps`, `search`, and `sources` directories into the new
-release directory. Set the recipe's `profiles` list to the same IDs. Run the
-three commands above with the new directory. Preparation checks the profile
-selection and builds a matching overlay index.
+release, without `maps/overlays.pmtiles`. Set the recipe's `profiles` to the
+same IDs. Run the three commands above with the new directory. Preparation
+checks the profile selection and builds a matching overlay index and tiles.
 
 Routing currently supports German access defaults. Preparation refuses other
 countries. Add and verify their access rules before extending coverage.
@@ -147,6 +148,7 @@ release. Use them for a hosted build with the configured API origin.
 | `VITE_PLANNER_TILEJSON_URL` | Hosted basemap TileJSON |
 | `VITE_PLANNER_PMTILES_URL` | Local basemap archive, when TileJSON is absent |
 | `VITE_PLANNER_PLACES_URL` | Rider places TileJSON or PMTiles archive |
+| `VITE_PLANNER_OVERLAYS_URL` | Overlay TileJSON or PMTiles archive |
 | `VITE_PLANNER_ROUTING_URL` | Routing API prefix |
 | `VITE_PLANNER_SEARCH_URL` | Search API prefix |
 | `VITE_PLANNER_SEARCH_REGIONS` | Comma-separated region IDs |
