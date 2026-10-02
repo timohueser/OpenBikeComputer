@@ -13,12 +13,16 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
     public let search: URL
     public let routing: URL
     public let manifest: URL
+    /// Route network tiles of an online release. Offline releases read networks from their routing cells.
+    public let overlays: URL?
 
     public init(id: String, region: String, bounds: [Double], basemap: URL, glyphs: String,
-                sprites: String, terrain: String, terrain_attribution: String, search: URL, routing: URL, manifest: URL) {
+                sprites: String, terrain: String, terrain_attribution: String, search: URL, routing: URL, manifest: URL,
+                overlays: URL? = nil) {
         self.id = id; self.region = region; self.bounds = bounds; self.basemap = basemap
         self.glyphs = glyphs; self.sprites = sprites; self.terrain = terrain
         self.terrain_attribution = terrain_attribution; self.search = search; self.routing = routing; self.manifest = manifest
+        self.overlays = overlays
     }
 
     public var isLocal: Bool { manifest.isFileURL || (basemap.scheme == "pmtiles" && basemap.absoluteString.hasPrefix("pmtiles://file:")) }
@@ -165,6 +169,7 @@ public actor PlannerService: PlannerDataSource {
                   r.bounds.allSatisfy(\.isFinite), r.bounds[0] < r.bounds[2], r.bounds[1] < r.bounds[3],
                   r.bounds[0] >= -180, r.bounds[2] <= 180, r.bounds[1] >= -90, r.bounds[3] <= 90,
                   r.basemap.scheme == "https", r.routing.scheme == "https", r.manifest.scheme == "https", r.search.scheme == "https",
+                  r.overlays.map({ $0.scheme == "https" }) ?? true,
                   [r.glyphs, r.sprites, r.terrain].allSatisfy({ $0.hasPrefix("https://") })
             else { throw PlannerFailure.invalidData }
             return r

@@ -2,110 +2,120 @@
 import SwiftUI
 import UIKit
 
-/// Only the resize handles consume touches. The map keeps its pan and zoom gestures.
-@MainActor final class OfflineSelectionFrame: UIView {
-    var onChange: ((CGRect) -> Void)?
-    var coverageRects: [CGRect] = [] { didSet { render() } }
-    private(set) var selection = CGRect.zero
-    private var previousBounds = CGRect.zero
-    private var dragStart = CGRect.zero
-    private let shade = CAShapeLayer()
+/// The map owns every touch. Only a one-finger drag that starts on a corner resizes the area.
+@MainActor final class OfflineSelectionFrame: UIView, UIGestureRecognizerDelegate {
+    var onResize: ((OfflineAreaSelection.Corner, CGPoint) -> Void)?
     private let outline = CAShapeLayer()
     private let coverage = CAShapeLayer()
     private var handles: [Handle] = []
+    private var dragged: Handle?
+    private var dragOrigin = CGPoint.zero
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        layer.addSublayer(shade); layer.addSublayer(coverage); layer.addSublayer(outline)
-        coverage.lineWidth = 1
-        shade.fillRule = .evenOdd
-        shade.fillColor = UIColor.black.withAlphaComponent(0.25).cgColor
+        layer.addSublayer(coverage)
+        layer.addSublayer(outline)
         outline.fillColor = UIColor.clear.cgColor
         outline.lineWidth = 2
-        for (edges, label) in [(1, "West edge"), (2, "East edge"), (4, "North edge"), (8, "South edge"),
-                               (5, "Northwest corner"), (6, "Northeast corner"), (9, "Southwest corner"), (10, "Southeast corner")] {
-            let handle = Handle()
-            handle.isOpaque = false
-            handle.tag = edges; handle.accessibilityLabel = label
-            handle.accessibilityIdentifier = "offline.resize.\(edges)"
-            handle.isAccessibilityElement = true; handle.accessibilityTraits = .adjustable
-            handle.adjust = { [weak self] amount in
-                guard let self else { return }
-                dragStart = selection
-                resize(edges, by: CGPoint(x: amount, y: amount))
+        outline.lineDashPattern = [6, 4]
+        coverage.lineWidth = 1.5
+        for corner in OfflineAreaSelection.Corner.allCases {
+            let handle = Handle(corner: corner)
+            handle.adjust = { [weak self, weak handle] amount in
+                guard let self, let handle else { return }
+                let direction: CGFloat = corner == .northwest ? -1 : 1
+                onResize?(corner, CGPoint(x: handle.center.x + direction * amount, y: handle.center.y + direction * amount))
             }
-            handle.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(resizeGesture(_:))))
-            addSubview(handle); handles.append(handle)
+            addSubview(handle)
+            handles.append(handle)
         }
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: OfflineSelectionFrame, _) in view.updateColors() }
+        updateColors()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        if previousBounds != bounds, bounds.width > 0, bounds.height > 0 {
-            if previousBounds.isEmpty { selection = bounds.insetBy(dx: 44, dy: 52) }
-            else {
-                selection = CGRect(x: selection.minX * bounds.width / previousBounds.width,
-                    y: selection.minY * bounds.height / previousBounds.height,
-                    width: selection.width * bounds.width / previousBounds.width,
-                    height: selection.height * bounds.height / previousBounds.height)
-            }
-            previousBounds = bounds
-            onChange?(selection)
+    func attach(to map: UIView) {
+        map.addSubview(self)
+        let resize = UIPanGestureRecognizer(target: self, action: #selector(resizeGesture(_:)))
+        resize.maximumNumberOfTouches = 1
+        resize.delegate = self
+        for gesture in map.gestureRecognizers ?? [] where gesture is UIPanGestureRecognizer {
+            gesture.require(toFail: resize)
         }
-        render()
+        map.addGestureRecognizer(resize)
     }
 
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard !isHidden, isUserInteractionEnabled else { return nil }
-        return handles.first { $0.frame.contains(point) }
+    func show(selection: CGRect?, coverage: CGRect?, editable: Bool) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        outline.path = selection.map { UIBezierPath(rect: $0).cgPath }
+        self.coverage.path = coverage.map { UIBezierPath(rect: $0).cgPath }
+        outline.lineDashPattern = editable ? [6, 4] : nil
+        for handle in handles {
+            handle.isHidden = !editable || selection == nil
+            guard let selection else { continue }
+            let point = handle.corner == .northwest
+                ? CGPoint(x: selection.minX, y: selection.minY) : CGPoint(x: selection.maxX, y: selection.maxY)
+            handle.center = point
+        }
+        CATransaction.commit()
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? { nil }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard gestureRecognizer.numberOfTouches == 0 else { return true }
+        dragged = isHidden ? nil : corner(at: touch.location(in: self))
+        dragOrigin = dragged?.center ?? .zero
+        return dragged != nil
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        otherGestureRecognizer is UIPinchGestureRecognizer
+    }
+
+    private func corner(at point: CGPoint) -> Handle? {
+        handles.filter { !$0.isHidden && $0.frame.contains(point) }.min {
+            hypot($0.center.x - point.x, $0.center.y - point.y) < hypot($1.center.x - point.x, $1.center.y - point.y)
+        }
     }
 
     @objc private func resizeGesture(_ gesture: UIPanGestureRecognizer) {
-        if gesture.state == .began { dragStart = selection }
-        resize(gesture.view!.tag, by: gesture.translation(in: self))
-    }
-
-    private func resize(_ edges: Int, by delta: CGPoint) {
-        var left = dragStart.minX, right = dragStart.maxX, top = dragStart.minY, bottom = dragStart.maxY
-        let minimum: CGFloat = 88
-        if edges & 1 != 0 { left = min(right - minimum, max(22, left + delta.x)) }
-        if edges & 2 != 0 { right = max(left + minimum, min(bounds.width - 22, right + delta.x)) }
-        if edges & 4 != 0 { top = min(bottom - minimum, max(22, top + delta.y)) }
-        if edges & 8 != 0 { bottom = max(top + minimum, min(bounds.height - 22, bottom + delta.y)) }
-        selection = CGRect(x: left, y: top, width: right - left, height: bottom - top)
-        render(); onChange?(selection)
-    }
-
-    private func render() {
-        let path = UIBezierPath(rect: bounds); path.append(UIBezierPath(rect: selection))
-        shade.path = path.cgPath; outline.path = UIBezierPath(rect: selection).cgPath
-        outline.strokeColor = UIColor(OBCTheme.ink).resolvedColor(with: traitCollection).cgColor
-        let cells = UIBezierPath()
-        for rect in coverageRects { cells.append(UIBezierPath(rect: rect)) }
-        coverage.path = cells.cgPath
-        let tint = UIColor(OBCTheme.tint).resolvedColor(with: traitCollection)
-        coverage.fillColor = tint.withAlphaComponent(0.12).cgColor
-        coverage.strokeColor = tint.withAlphaComponent(0.7).cgColor
-        for handle in handles {
-            let edges = handle.tag
-            let x = edges & 1 != 0 ? selection.minX : edges & 2 != 0 ? selection.maxX : selection.midX
-            let y = edges & 4 != 0 ? selection.minY : edges & 8 != 0 ? selection.maxY : selection.midY
-            handle.frame = CGRect(x: x - 22, y: y - 22, width: 44, height: 44)
-            handle.setNeedsDisplay()
+        let translation = gesture.translation(in: self)
+        if gesture.state == .began || gesture.state == .changed || gesture.state == .ended, let dragged {
+            onResize?(dragged.corner, CGPoint(x: dragOrigin.x + translation.x, y: dragOrigin.y + translation.y))
         }
+        if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed { dragged = nil }
+    }
+
+    private func updateColors() {
+        outline.strokeColor = UIColor(OBCTheme.ink).resolvedColor(with: traitCollection).cgColor
+        let tint = UIColor(OBCTheme.tint).resolvedColor(with: traitCollection)
+        coverage.fillColor = tint.withAlphaComponent(0.10).cgColor
+        coverage.strokeColor = tint.withAlphaComponent(0.7).cgColor
+        handles.forEach { $0.setNeedsDisplay() }
     }
 
     private final class Handle: UIView {
+        let corner: OfflineAreaSelection.Corner
         var adjust: ((CGFloat) -> Void)?
+        init(corner: OfflineAreaSelection.Corner) {
+            self.corner = corner
+            super.init(frame: CGRect(x: 0, y: 0, width: 72, height: 72))
+            contentMode = .redraw
+            isOpaque = false
+            isAccessibilityElement = true
+            accessibilityTraits = .adjustable
+            accessibilityLabel = corner == .northwest ? "Northwest corner" : "Southeast corner"
+            accessibilityHint = "Swipe up to expand the area, or down to make it smaller."
+            accessibilityIdentifier = corner == .northwest ? "offline.resize.northwest" : "offline.resize.southeast"
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
         override func accessibilityIncrement() { adjust?(12) }
         override func accessibilityDecrement() { adjust?(-12) }
         override func draw(_ rect: CGRect) {
-            let corner = tag.nonzeroBitCount == 2
-            let size = corner ? CGSize(width: 14, height: 14)
-                : tag & 3 != 0 ? CGSize(width: 8, height: 26) : CGSize(width: 26, height: 8)
-            let shape = UIBezierPath(roundedRect: CGRect(x: 22 - size.width / 2, y: 22 - size.height / 2,
-                                                       width: size.width, height: size.height), cornerRadius: 4)
+            let shape = UIBezierPath(ovalIn: CGRect(x: bounds.midX - 12, y: bounds.midY - 12, width: 24, height: 24))
             UIColor(OBCTheme.surface).setFill(); shape.fill()
             UIColor(OBCTheme.ink).setStroke(); shape.lineWidth = 2; shape.stroke()
         }

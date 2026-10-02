@@ -1,6 +1,7 @@
 """Select published map blocks and serve their immutable resumable objects."""
 
 import argparse
+import gzip
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -49,7 +50,7 @@ class Downloads:
         if not cells: raise ValueError("This area has no published map data.")
         actual = [min(c["bounds"][0] for c in cells), min(c["bounds"][1] for c in cells),
                   max(c["bounds"][2] for c in cells), max(c["bounds"][3] for c in cells)]
-        identity = hashlib.sha256(planner_runtime.encoded({"format": 2, "source": self.identity, "bounds": actual})).hexdigest()
+        identity = hashlib.sha256(planner_runtime.encoded({"format": 3, "source": self.identity, "bounds": actual})).hexdigest()
         with self.lock:
             destination = self.cache / identity
             if not (destination / "bundle.json").exists():
@@ -84,11 +85,11 @@ class Downloads:
         generated = {}
         def metadata(name, document):
             data = planner_runtime.encoded(document)
-            sha = hashlib.sha256(data).hexdigest()
-            entry = {"bytes": len(data), "sha256": sha}
-            generated[sha] = data
-            files[name] = {**entry, "transport": {**entry, "encoding": "identity"}}
-            return sha
+            wire = gzip.compress(data, compresslevel=6, mtime=0)
+            transport = {"bytes": len(wire), "sha256": hashlib.sha256(wire).hexdigest(), "encoding": "gzip"}
+            generated[transport["sha256"]] = wire
+            files[name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "transport": transport}
+            return files[name]["sha256"]
         package = metadata("routing/blocks.json", graph)
         metadata("routing/layers.json", [c["id"] for c in cells])
         for kind in ("basemap", "terrain"):

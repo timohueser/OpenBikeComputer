@@ -20,7 +20,9 @@ struct OfflineMapsTests {
     @Test func installationVerifiesAndLinksFilesBeforeMakingThemAvailable() async throws {
         let root = temporary()
         defer { try? FileManager.default.removeItem(at: root) }
-        let (quote, bytes) = try fixture()
+        let (prepared, bytes) = try fixture()
+        let quote = prepared.named("Trip area")
+        #expect(quote.map.name == "Trip area")
         let store = OfflineMapStore(root: root)
         try stage(quote, bytes: bytes, root: root)
         try await store.install(quote, allowMobileData: false) { _, _, _ in }
@@ -146,11 +148,11 @@ struct OfflineMapsTests {
                              ([10.2,50.2,10.8,50.8], "online")] {
             let selected = try await planner.mapRelease(bounds: bounds)
             #expect(selected.id == id)
-            _ = try await planner.overlays(bounds: bounds, zoom: 10, network: "cycling", release: selected)
+            _ = try? await planner.overlays(bounds: bounds, zoom: 10, network: "cycling", release: selected)
         }
         #expect(await a.calls.contains("overlays"))
         #expect(await b.calls.contains("overlays"))
-        #expect(await online.calls.contains("overlays"))
+        #expect(await !online.calls.contains("overlays"))
     }
 
     @Test func searchRadiusMustFitInsideTheDownload() async throws {

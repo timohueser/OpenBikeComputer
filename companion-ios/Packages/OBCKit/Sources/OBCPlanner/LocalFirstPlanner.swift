@@ -85,8 +85,8 @@ public actor LocalFirstPlanner: PlannerDataSource {
                 return try await source.overlays(bounds: bounds, zoom: zoom, network: network, release: local)
             } catch { try cancellation(error) }
         }
-        do { return try await online.overlays(bounds: bounds, zoom: zoom, network: network, release: remoteRelease(release)) }
-        catch { throw try fallbackError(error) }
+        // Online maps draw networks from the release's tiles.
+        throw PlannerFailure.offlineUnavailable
     }
 
     private func remoteRelease(_ release: PlannerRelease) async throws -> PlannerRelease {

@@ -47,6 +47,7 @@ describe('routing integration', () => {
         expect(line.alternativesReady).toBe(false);
         expect(line.surfaces).toEqual(['Paved', 'Gravel']);
         expect(line.pushing).toEqual([false, true]);
+        expect(line.package).toBe('test');
         expect(JSON.parse(fetch.mock.calls[0][1].body).points).toEqual(plan.points.map(p => p.coordinate));
         fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ routes: [{ ...answer, id: 'shorter', reason: 'shorter' }] }) });
         const alternatives = await requestAlternatives(plan, line, new AbortController().signal);
@@ -122,6 +123,7 @@ describe('routing integration', () => {
         const undone = history.undo(shown);
         expect(undone.routing).toBeUndefined();
         expect(storedPlan(shown).routing).toMatchObject({ choiceId: 'corridor', picked: true, alternatives: [] });
+        expect([shown.routing?.package, storedPlan(shown).routing?.package]).toEqual(['test', undefined]);
         expect(history.redo(undone).routing?.choiceId).toBe('corridor');
         expect(planOf({ ...picked, points: picked.points.map(p => p.id === 'shape' ? { ...p, coordinate: [7.95, 48] as Coordinate } : p) }).routing).toBeUndefined();
     });

@@ -77,4 +77,17 @@ describe('planner land use style', () => {
         expect(evaluate(ground, 'fill-opacity', 8, 'forest')).toBeGreaterThan(0.3);
         expect(evaluate(ground, 'fill-opacity', 12, 'farmland')).toBe(1);
     });
+
+    it('draws cliffs and ferries over the water and under the roads', async () => {
+        const { layers } = await landLayers('dark');
+        const ids = layers.map((layer) => layer.id);
+        const drawn = (sourceLayer: string, kind: string) => layers.filter((layer) => 'source-layer' in layer && layer['source-layer'] === sourceLayer
+            && JSON.stringify(layer.filter) === JSON.stringify(['==', ['get', 'kind'], kind]));
+        for (const layer of [...drawn('earth', 'cliff'), ...drawn('roads', 'ferry')]) {
+            expect(ids.indexOf(layer.id)).toBeGreaterThan(ids.indexOf('water_river'));
+            expect(ids.indexOf(layer.id)).toBeLessThan(ids.indexOf('roads_tunnels_other_casing'));
+        }
+        expect(drawn('earth', 'cliff').map((layer) => layer.id)).toEqual(['cliffs', 'cliff-teeth']);
+        expect(drawn('roads', 'ferry').map((layer) => layer.id)).toEqual(['ferries']);
+    });
 });

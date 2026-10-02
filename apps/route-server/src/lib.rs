@@ -2,7 +2,7 @@ mod access;
 pub mod native;
 mod native_overlays;
 use axum::{
-    extract::{rejection::JsonRejection, DefaultBodyLimit, Query, State},
+    extract::{rejection::JsonRejection, DefaultBodyLimit, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -34,8 +34,6 @@ struct Workers {
     routers: Mutex<Vec<Router<Box<dyn route_engine::data::RoutingData + Send>>>>,
     permits: Arc<Semaphore>,
     metadata: Value,
-    overlays: OverlaySource,
-    overlay_permits: Arc<Semaphore>,
 }
 
 fn default_memory_budget(package: &route_engine::package::Package<impl route_engine::package::Source>) -> usize {
@@ -60,53 +58,17 @@ pub fn app(directory: &Path, workers: usize) -> Result<axum::Router, Error> {
             routers.push(Router::new(Box::new(source.fork()), default_memory_budget(&source)));
         }
     }
-    let overlays = OverlaySource::open(directory)?;
     let metadata = metadata(&routers[0]);
-    let state = Arc::new(Workers {
-        routers: Mutex::new(routers),
-        permits: Arc::new(Semaphore::new(workers)),
-        metadata,
-        overlays,
-        overlay_permits: Arc::new(Semaphore::new(2)),
-    });
+    let state =
+        Arc::new(Workers { routers: Mutex::new(routers), permits: Arc::new(Semaphore::new(workers)), metadata });
     Ok(axum::Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/v1/region", get(region))
         .route("/v1/route", post(route))
-        .route("/v1/overlays", get(map_overlays))
         .layer(DefaultBodyLimit::max(64 * 1024))
         // At brotli's default quality 4, a route answer is larger than with gzip. Quality 6 costs about as much as gzip 6.
         .layer(CompressionLayer::new().quality(CompressionLevel::Precise(6)))
         .with_state(state))
-}
-
-async fn map_overlays(
-    State(workers): State<Arc<Workers>>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    let Ok(permit) = workers.overlay_permits.clone().try_acquire_owned() else {
-        return failure(Error::Limit);
-    };
-    let cancel = Cancel(Arc::new(AtomicBool::new(false)));
-    let flag = cancel.0.clone();
-    let started = Instant::now();
-    match tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        workers.overlays.query(&params, &|| flag.load(Ordering::Relaxed) || started.elapsed() > Duration::from_secs(15))
-    })
-    .await
-    {
-        Ok(Ok(data)) => (
-            [
-                (axum::http::header::CACHE_CONTROL, "public, max-age=3600"),
-                (axum::http::header::CONTENT_TYPE, "application/json"),
-            ],
-            data,
-        )
-            .into_response(),
-        Ok(Err(error)) => failure(error),
-        Err(_) => failure(Error::Limit),
-    }
 }
 
 async fn region(State(workers): State<Arc<Workers>>) -> Json<Value> {

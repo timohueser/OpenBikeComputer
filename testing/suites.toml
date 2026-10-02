@@ -468,7 +468,7 @@ route = "ordinary"
 command = "tools/licenses/gen-third-party.sh --check"
 jobs = ["deny"]
 foundation = true
-triggers = ["Cargo.lock", "builder/app/package-lock.json", "about.toml", "THIRD-PARTY.md", "tools/licenses/**"]
+triggers = ["Cargo.lock", "apps/route-server/Cargo.toml", "host/route-engine/Cargo.toml", "builder/app/package-lock.json", "about.toml", "THIRD-PARTY.md", "tools/licenses/**"]
 
 [[suite]]
 id = "ci.fixture-policy"

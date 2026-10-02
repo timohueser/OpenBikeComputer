@@ -13,8 +13,6 @@ head_sampling_rate = 0.1
 [observability.traces]
 enabled = true
 head_sampling_rate = 0.1
-[limits]
-cpu_ms = 50
 # Per client address and data centre. Deliberately loose: the largest honest burst is about 100
 # basemap and terrain tiles in a few seconds of zooming, and a places corridor is about 26 requests.
 [[ratelimits]]

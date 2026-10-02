@@ -79,7 +79,8 @@ def deploy(args):
         try: from . import planner_offline
         except ImportError: import planner_offline
         runtime = args.data_dir / "runtime"
-        planner_offline.materialize(args.data_dir, runtime, ("routing/", "search/", "offline/"))
+        # The route server serves no overlays; phones read their overlay cells from the object pool.
+        planner_offline.materialize(args.data_dir, runtime, ("routing/", "search/", "offline/"), skip=("routing/layers",))
         maps.run("rsync", "-az", str(runtime / "routing") + "/", f"{args.host}:{base}/routing/")
         maps.run("rsync", "-az", str(runtime / "search") + "/", f"{args.host}:{base}/search/data/")
     else:
@@ -170,6 +171,9 @@ def verify_services(active, document, origin):
         if tilejson["maxzoom"] != 14: raise ValueError("Basemap is incomplete")
     with sources.open_url(active["places"]) as response:
         if not json.load(response).get("tiles"): raise ValueError("Rider places are absent")
+    with sources.open_url(active["overlays"]) as response:
+        if json.load(response).get("routing_package") != document["routing_package"]:
+            raise ValueError("Overlay tiles use another routing package")
     probe = document["probe"]
     import math
     z = 12

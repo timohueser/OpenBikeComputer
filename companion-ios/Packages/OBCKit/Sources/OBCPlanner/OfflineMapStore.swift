@@ -101,12 +101,6 @@ public actor OfflineMapStore {
         for name in ["objects", "downloads", "releases"] {
             try fm.createDirectory(at: root.appending(path: name), withIntermediateDirectories: true)
         }
-        for entry in quote.bundle.objects where hasObject(entry) {
-            let target = root.appending(path: "objects/\(entry.sha256)")
-            do { try Self.verify(target, OfflineFile(bytes: entry.bytes, sha256: entry.sha256)) }
-            catch is CancellationError { throw CancellationError() }
-            catch { try fm.removeItem(at: target) }
-        }
         try checkSpace(needed(quote.bundle))
         try JSONEncoder().encode(quote).write(to: root.appending(path: "pending.json"), options: .atomic)
         let total = try sum(quote.bundle.objects.filter { !hasObject($0) }.map(\.transport.bytes))
@@ -201,6 +195,8 @@ public actor OfflineMapStore {
             allocated(Int64(metadata) * 2), block * Int64(directories.count + bundle.files.count + 4)])
     }
 
+    /// An object is named by its content hash and moves into `objects/` only after `OfflineTransfer`
+    /// verifies it, so name and size identify a complete object.
     private func hasObject(_ entry: OfflineBundle.Entry) -> Bool {
         let path = root.appending(path: "objects/\(entry.sha256)")
         return (try? path.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) == entry.bytes } ?? false

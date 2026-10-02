@@ -1,4 +1,4 @@
-"""Publish reusable routing, search and map objects before accepting area downloads."""
+"""Build the canonical planner grid from one verified regional release."""
 import argparse
 from collections import OrderedDict
 from contextlib import closing
@@ -7,9 +7,13 @@ import json
 import math
 from pathlib import Path, PurePosixPath
 import sqlite3
+import subprocess
 import sys
 
-from . import planner_cutout, planner_offline, planner_runtime, planner_maps
+try:
+    from . import planner_cutout, planner_offline, planner_runtime, planner_maps, planner_mvt as mvt
+except ImportError:
+    import planner_cutout, planner_offline, planner_runtime, planner_maps, planner_mvt as mvt
 
 ZOOM = 9
 MAP_ZOOM = 11
@@ -55,7 +59,7 @@ def map_tiles(source, output):
     import tempfile
 
     output.mkdir(parents=True, exist_ok=True)
-    for kind in ("basemap", "places", "terrain"):
+    for kind in ("basemap", "places", "overlays", "terrain"):
         target = output / kind
         target.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".tiles-", dir=output) as temporary:
@@ -91,43 +95,17 @@ def map_tiles(source, output):
                 path.unlink()
 
 
-def varint(data, index):
-    value = shift = 0
-    while True:
-        byte = data[index]; index += 1
-        value |= (byte & 0x7F) << shift
-        if byte < 0x80: return value, index
-        shift += 7
-
-
-def protobuf(data):
-    """Yield the field numbers and values of one message; length-delimited values stay bytes."""
-    index = 0
-    while index < len(data):
-        key, index = varint(data, index)
-        if key & 7 == 0: value, index = varint(data, index)
-        elif key & 7 == 2:
-            size, index = varint(data, index)
-            value, index = data[index:index + size], index + size
-        elif key & 7 in (1, 5): value, index = None, index + (8 if key & 7 == 1 else 4)
-        else: raise ValueError("Unsupported protobuf field")
-        yield key >> 3, value
-
-
 def label_texts(tile):
     """Yield the distinct label strings of each layer of one vector tile."""
-    for field, layer in protobuf(tile):
+    for field, layer in mvt.fields(tile):
         if field != 3: continue
         keys, values, labels = [], [], set()
-        for field, value in protobuf(layer):
+        for field, value in mvt.fields(layer):
             if field == 3: keys.append(value.decode())
-            elif field == 4: values.append(next((text.decode() for number, text in protobuf(value) if number == 1), None))
+            elif field == 4: values.append(next((text.decode() for number, text in mvt.fields(value) if number == 1), None))
             elif field == 2:
-                for packed in (packed for number, packed in protobuf(value) if number == 2):
-                    index, tags = 0, []
-                    while index < len(packed):
-                        tag, index = varint(packed, index)
-                        tags.append(tag)
+                for packed in (packed for number, packed in mvt.fields(value) if number == 2):
+                    tags = mvt.packed(packed)
                     labels.update(zip(tags[::2], tags[1::2]))
         yield from {values[value] for key, value in labels if keys[key] in LABEL_KEYS and values[value]}
 
@@ -268,8 +246,8 @@ def publish(source, routing, output):
     for path in sorted(tiles.glob("*/*.pmtiles")):
         z, x, y = map(int, path.stem.split("-"))
         name = add(path, f"maps/tiles/{path.parent.name}/{path.name}")
-        # Offline planners read places from the basemap and search, so downloads carry no places packs.
-        if path.parent.name != "places":
+        # Offline planners read places from the basemap and search, and overlays from the routing cells.
+        if path.parent.name not in ("places", "overlays"):
             map_blocks.append({"kind": path.parent.name, "tile": [z,x,y], "bounds": box(z, x, y), "files": [name]})
     search = source / "search" / f"{release['region']}.sqlite"
     lookup = work / "search-lookup.sqlite"
@@ -290,10 +268,14 @@ def publish(source, routing, output):
         "cells": [{"id": name, "bounds": bounds} for name, bounds in all_cells]})
     metadata("routing/layers.json", [name for name, _ in all_cells])
     from pmtiles.reader import Reader, MmapSource
-    for kind in ("basemap", "places", "terrain"):
+    for kind in ("basemap", "places", "overlays", "terrain"):
         with (source / "maps" / f"{kind}.pmtiles").open("rb") as stream:
             reader = Reader(MmapSource(stream))
             header, info = reader.header(), reader.metadata()
+        if kind == "overlays":
+            # The grid packs the same routing graph under its own identity, which its route answers carry.
+            if info.get("routing_package") != graph["source"]: raise ValueError("Overlay tiles use another routing package")
+            info["routing_package"] = files["routing/blocks.json"]["sha256"]
         metadata(f"maps/{kind}.json", {**info, "tilejson": "3.0.0", "minzoom": header["min_zoom"],
             "maxzoom": header["max_zoom"], "bounds": release["terrain_bounds"] if kind == "terrain" else release["bounds"]})
     for name in release["files"]:
@@ -311,10 +293,12 @@ def publish(source, routing, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
-    parser.add_argument("routing", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
-    publish(args.source, args.routing, args.output)
+    try:
+        prepare(args.source, args.output)
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        parser.exit(1, f"planner grid: {error}\n")
 
 
 def prepare(source, output):

@@ -12,6 +12,7 @@ public final class OfflineMapsModel {
     public private(set) var quote: OfflineDownloadQuote?
     public private(set) var isBusy = false
     public private(set) var isDownloading = false
+    public private(set) var hasStartedDownload = false
     public private(set) var isStopping = false
     public private(set) var preparationStarted: Date?
     public private(set) var needsMobileConsent = true
@@ -40,7 +41,7 @@ public final class OfflineMapsModel {
         do {
             maps = try await store.maps(); availableBytes = try await store.availableBytes()
             if !isBusy, let pending = try await store.pending() {
-                quote = pending; status = "Download paused"
+                quote = pending; hasStartedDownload = true; status = "Download paused"
             }
         }
         catch { self.error = error.localizedDescription }
@@ -55,7 +56,7 @@ public final class OfflineMapsModel {
     }
 
     func prepare(bounds: [Double], name: String) {
-        guard !isBusy else { return }
+        guard !isBusy, !hasStartedDownload else { return }
         quote = nil; error = nil; isBusy = true; fraction = 0; preparationStarted = Date(); status = "Checking map coverage"
         operation = Task { [weak self, store] in
             guard let self else { return }
@@ -78,12 +79,17 @@ public final class OfflineMapsModel {
 
     func download(allowMobileData: Bool) {
         guard let quote, !isBusy else { return }
+        let name = quote.map.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let namedQuote = quote.named(name)
+        self.quote = namedQuote
+        hasStartedDownload = true
         isBusy = true; isDownloading = true; error = nil; fraction = 0; status = "Starting download…"
-        transferTotal = quote.transferBytes
+        transferTotal = namedQuote.transferBytes
         operation = Task { [weak self, store] in
             guard let self else { return }
             do {
-                try await store.install(quote, allowMobileData: allowMobileData) { [weak self] received, total, message in
+                try await store.install(namedQuote, allowMobileData: allowMobileData) { [weak self] received, total, message in
                     Task { @MainActor [weak self] in
                         guard let self, isDownloading else { return }
                         transferred = received; transferTotal = total
@@ -93,7 +99,7 @@ public final class OfflineMapsModel {
                 }
                 isDownloading = false
                 try Task.checkCancellation()
-                self.quote = nil; status = "Ready offline"; revision += 1
+                self.quote = nil; hasStartedDownload = false; status = "Ready offline"; revision += 1
                 await refresh()
             } catch is CancellationError { status = "Download paused" }
             catch {
@@ -110,11 +116,19 @@ public final class OfflineMapsModel {
         if !isDownloading { isStopping = true; status = "Cancelling…" }
         operation?.cancel()
     }
-    func clearSelection() { guard !isBusy else { return }; quote = nil; error = nil; status = "" }
+    func rename(_ name: String) {
+        guard !isBusy, !hasStartedDownload else { return }
+        quote = quote?.named(name)
+    }
+
+    func clearSelection() {
+        guard !isBusy, !hasStartedDownload else { return }
+        quote = nil; error = nil; status = ""
+    }
 
     func discard() async {
         guard !isBusy else { return }
-        do { try await store.discardPending(); clearSelection(); await refresh() }
+        do { try await store.discardPending(); hasStartedDownload = false; clearSelection(); await refresh() }
         catch { self.error = error.localizedDescription }
     }
 
