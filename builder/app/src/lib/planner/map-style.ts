@@ -10,22 +10,23 @@ const BASEMAP_SOURCE = {
     attribution: '<a href="https://openstreetmap.org/copyright">© OpenStreetMap contributors</a> · <a href="https://protomaps.com">Protomaps</a>',
 } as const;
 
-type Tier = "ground" | "zone" | "detail";
+type Tier = "ground" | "zone" | "detail" | "structure";
 
 // Every land use kind of the planner tiles, in the colour a rider reads it by. Open ground is a
 // quiet family a shade under the paper, told apart by hue, so the relief above it keeps its
-// structure; forest, parks, water and built-up land carry the contrast. Zones draw over the
-// ground they sit in, details over the zones and the water, so overlaps resolve the same way
-// whatever order the tile stores them in.
-const land: { tier: Tier; kinds: string[]; light: string; dark: string }[] = [
-    { tier: "ground", kinds: ["farmland"], light: "#f5efe0", dark: "#25231d" },
-    { tier: "ground", kinds: ["meadow", "grass", "grassland"], light: "#ecf3e2", dark: "#22261d" },
-    { tier: "ground", kinds: ["scrub"], light: "#e4eedd", dark: "#23291e" },
-    { tier: "ground", kinds: ["wood", "forest"], light: "#d2dfc5", dark: "#23392e" },
-    { tier: "ground", kinds: ["wetland"], light: "#e1efea", dark: "#1f2925" },
-    { tier: "ground", kinds: ["bare_rock"], light: "#e3e1de", dark: "#282725" },
-    { tier: "ground", kinds: ["sand", "beach"], light: "#f4edd7", dark: "#2c2920" },
-    { tier: "ground", kinds: ["glacier"], light: "#e5eef0", dark: "#3c5558" },
+// structure; forest, parks, water and built-up land carry the contrast. Overlaps resolve the same
+// way whatever order the tile stores them in: inside the ground `order` lifts forest over grass
+// over fields over built-up land, zones draw over the ground, details over the zones, and
+// structures over the water. A kind missing here gets no fill; none occurs in the planner bounds.
+const land: { tier: Tier; kinds: string[]; light: string; dark: string; order?: number }[] = [
+    { tier: "ground", kinds: ["farmland"], light: "#f5efe0", dark: "#25231d", order: 1 },
+    { tier: "ground", kinds: ["meadow", "grass", "grassland"], light: "#ecf3e2", dark: "#22261d", order: 1 },
+    { tier: "ground", kinds: ["scrub"], light: "#e4eedd", dark: "#23291e", order: 2 },
+    { tier: "ground", kinds: ["wood", "forest"], light: "#d2dfc5", dark: "#23392e", order: 3 },
+    { tier: "ground", kinds: ["wetland"], light: "#e1efea", dark: "#1f2925", order: 2 },
+    { tier: "ground", kinds: ["bare_rock"], light: "#e3e1de", dark: "#282725", order: 2 },
+    { tier: "ground", kinds: ["sand", "beach"], light: "#f4edd7", dark: "#2c2920", order: 2 },
+    { tier: "ground", kinds: ["glacier"], light: "#e5eef0", dark: "#3c5558", order: 2 },
     { tier: "ground", kinds: ["residential"], light: "#e9e7e2", dark: "#2b2a26" },
     { tier: "ground", kinds: ["commercial"], light: "#eae4e1", dark: "#2c2826" },
     { tier: "ground", kinds: ["industrial"], light: "#dfe0e2", dark: "#282a2f" },
@@ -42,7 +43,7 @@ const land: { tier: Tier; kinds: string[]; light: string; dark: string }[] = [
     { tier: "zone", kinds: ["runway", "taxiway"], light: "#d6d6dc", dark: "#383842" },
     { tier: "detail", kinds: ["pitch", "playground"], light: "#c6dfb9", dark: "#384d2d" },
     { tier: "detail", kinds: ["kindergarten"], light: "#f0eadb", dark: "#353127" },
-    { tier: "detail", kinds: ["platform", "pier", "dam"], light: "#dcdad6", dark: "#3b3935" },
+    { tier: "structure", kinds: ["platform", "pier", "dam"], light: "#dcdad6", dark: "#3b3935" },
 ];
 // Protected areas lie over other land, so a boundary shows them and a fill would hide it.
 const protectedKinds = ["national_park", "nature_reserve", "protected_area"];
@@ -51,19 +52,21 @@ const fade = (strong: string[]): ExpressionSpecification =>
     ["interpolate", ["linear"], ["zoom"], 6, 0, 9, strong.length ? ["match", ["get", "kind"], strong, 0.6, 0] : 0, 12, 1] as unknown as ExpressionSpecification;
 
 function landLayers(dark: boolean): Record<Tier | "protected", LayerSpecification> {
+    const byKind = (rows: typeof land, value: (row: (typeof land)[number]) => unknown, fallback: unknown): ExpressionSpecification =>
+        ["match", ["get", "kind"], ...rows.flatMap((row) => [row.kinds, value(row)]), fallback] as unknown as ExpressionSpecification;
     const fill = (tier: Tier, opacity?: ExpressionSpecification): LayerSpecification => {
         const rows = land.filter((row) => row.tier === tier);
+        const ordered = rows.filter((row) => row.order);
         return {
-            id: `land-${tier}`, type: "fill", source: "basemap", "source-layer": "landuse", ...(tier === "detail" ? { minzoom: 13 } : {}),
+            id: `land-${tier}`, type: "fill", source: "basemap", "source-layer": "landuse",
+            ...(tier === "detail" || tier === "structure" ? { minzoom: 13 } : {}),
+            ...(ordered.length ? { layout: { "fill-sort-key": byKind(ordered, (row) => row.order, 0) } } : {}),
             filter: ["in", ["get", "kind"], ["literal", rows.flatMap((row) => row.kinds)]],
-            paint: {
-                "fill-color": ["match", ["get", "kind"], ...rows.flatMap((row) => [row.kinds, dark ? row.dark : row.light]), "transparent"] as unknown as ExpressionSpecification,
-                ...(opacity ? { "fill-opacity": opacity } : {}),
-            },
+            paint: { "fill-color": byKind(rows, (row) => (dark ? row.dark : row.light), "transparent"), ...(opacity ? { "fill-opacity": opacity } : {}) },
         };
     };
     return {
-        ground: fill("ground", fade(["wood", "forest"])), zone: fill("zone", fade([])), detail: fill("detail"),
+        ground: fill("ground", fade(["wood", "forest"])), zone: fill("zone", fade([])), detail: fill("detail"), structure: fill("structure"),
         protected: {
             id: "land-protected", type: "line", source: "basemap", "source-layer": "landuse", minzoom: 11,
             filter: ["in", ["get", "kind"], ["literal", protectedKinds]],
@@ -76,10 +79,11 @@ function landLayers(dark: boolean): Record<Tier | "protected", LayerSpecificatio
 function baseLayers(dark: boolean): LayerSpecification[] {
     const theme = layers("basemap", flavor(dark), { lang: "en" }) as LayerSpecification[];
     const base = theme.filter((layer) => !layer.id.startsWith("landuse_"));
-    const { ground, zone, detail, protected: outline } = landLayers(dark);
-    // The ground and the zones take the theme's land position, under the relief and the water.
-    base.splice(theme.findIndex((layer) => layer.id.startsWith("landuse_")), 0, ground, zone);
-    base.splice(base.findIndex((layer) => layer.id === "water") + 1, 0, detail, outline);
+    const { ground, zone, detail, structure, protected: outline } = landLayers(dark);
+    // The land takes the theme's land position, under the relief and the water; structures and
+    // the protected boundary sit over the water.
+    base.splice(theme.findIndex((layer) => layer.id.startsWith("landuse_")), 0, ground, zone, detail);
+    base.splice(base.findIndex((layer) => layer.id === "water") + 1, 0, structure, outline);
     const river = base.find((layer) => layer.id === "water_river");
     if (river?.type === "line") river.filter = ["in", ["get", "kind"], ["literal", ["river", "canal"]]];
     return base;
@@ -129,7 +133,7 @@ export function basemapStyle(theme: "light" | "dark", config: BasemapConfig = { 
 export function mapStyle(theme: "light" | "dark", demUrl: string, contourUrl: string): StyleSpecification {
     const dark = theme === "dark";
     const base = baseLayers(dark);
-    const afterLand = base.findIndex((layer) => layer.id === "land-zone") + 1;
+    const afterLand = base.findIndex((layer) => layer.id === "land-detail") + 1;
     const terrain: LayerSpecification[] = [
         {
             id: "relief", type: "hillshade", source: "terrain",

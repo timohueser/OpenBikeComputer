@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createExpression } from '@maplibre/maplibre-gl-style-spec';
+import { createPropertyExpression, latest } from '@maplibre/maplibre-gl-style-spec';
 import type { LayerSpecification } from 'maplibre-gl';
 
 afterEach(() => {
@@ -24,6 +24,15 @@ async function landLayers(theme: 'light' | 'dark') {
     return { layers, land: layers.filter((layer) => layer.id.startsWith('land-')), kinds };
 }
 
+/** Evaluates a fill property expression of `layer` for a feature of `kind` at `zoom`, checked against the spec. */
+function evaluate(layer: LayerSpecification, property: 'fill-opacity' | 'fill-sort-key', zoom: number, kind: string): number {
+    const [group, spec] = property === 'fill-opacity' ? ['paint_fill', latest.paint_fill['fill-opacity']] : ['layout_fill', latest.layout_fill['fill-sort-key']];
+    const expression = (layer as unknown as Record<string, Record<string, unknown>>)[group.split('_')[0]][property];
+    const parsed = createPropertyExpression(expression, group, spec as Parameters<typeof createPropertyExpression>[2]);
+    expect(parsed.result, property).toBe('success');
+    return (parsed as { value: { evaluate: (globals: object, feature: object) => number } }).value.evaluate({ zoom }, { type: 'Polygon', properties: { kind } });
+}
+
 describe('planner land use style', () => {
     it.each(['light', 'dark'] as const)('draws every land use kind of the tiles once (%s)', async (theme) => {
         const { land, kinds } = await landLayers(theme);
@@ -31,29 +40,38 @@ describe('planner land use style', () => {
         for (const kind of tileKinds) expect(drawn.filter((drawnKind) => drawnKind === kind), kind).toHaveLength(1);
     });
 
-    it('shades the ground and the zones with the relief, and keeps water and small kinds flat above it', async () => {
+    it('shades the land with the relief, and keeps water and structures flat above it', async () => {
         const { layers, land, kinds } = await landLayers('light');
         const ids = layers.map((layer) => layer.id);
+        const at = (id: string) => ids.indexOf(id);
+        expect(at('land-ground')).toBeLessThan(at('land-zone'));
+        expect(at('land-zone')).toBeLessThan(at('land-detail'));
         for (const terrain of ['relief', 'contour-lines']) {
-            expect(ids.indexOf(terrain)).toBeGreaterThan(ids.indexOf('land-zone'));
-            expect(ids.indexOf(terrain)).toBeLessThan(ids.indexOf('water'));
+            expect(at(terrain)).toBeGreaterThan(at('land-detail'));
+            expect(at(terrain)).toBeLessThan(at('water'));
         }
-        expect(ids.indexOf('land-ground')).toBeLessThan(ids.indexOf('land-zone'));
-        expect(ids.indexOf('land-detail')).toBeGreaterThan(ids.indexOf('water'));
-        expect(ids.indexOf('land-detail')).toBeLessThan(ids.indexOf('buildings'));
-        const detail = land.find((layer) => layer.id === 'land-detail')!;
-        expect(detail).toHaveProperty('minzoom', 13);
-        expect(kinds(detail)).toEqual(expect.arrayContaining(['pitch', 'playground', 'kindergarten']));
+        expect(at('land-structure')).toBeGreaterThan(at('water'));
+        expect(at('land-structure')).toBeLessThan(at('buildings'));
+        for (const id of ['land-detail', 'land-structure']) expect(land.find((layer) => layer.id === id)).toHaveProperty('minzoom', 13);
+        expect(kinds(land.find((layer) => layer.id === 'land-detail')!)).toEqual(expect.arrayContaining(['pitch', 'playground', 'kindergarten']));
+        expect(kinds(land.find((layer) => layer.id === 'land-structure')!)).toEqual(['platform', 'pier', 'dam']);
+    });
+
+    it('lifts forest over grass over fields over built-up land inside the ground, whatever the tile order', async () => {
+        const { land } = await landLayers('light');
+        const ground = land.find((layer) => layer.id === 'land-ground')!;
+        const rank = (kind: string) => evaluate(ground, 'fill-sort-key', 14, kind);
+        expect(rank('residential')).toBeLessThan(rank('farmland'));
+        expect(rank('farmland')).toBeLessThan(rank('scrub'));
+        expect(rank('scrub')).toBeLessThan(rank('forest'));
+        expect(rank('meadow')).toBeLessThan(rank('wood'));
     });
 
     it('keeps the region view calm: open ground is paper below zoom 9, forest fades in first', async () => {
         const { land } = await landLayers('light');
         const ground = land.find((layer) => layer.id === 'land-ground')!;
-        const opacity = createExpression((ground as { paint: { 'fill-opacity': unknown } }).paint['fill-opacity'], 'paint_fill');
-        expect(opacity.result).toBe('success');
-        const at = (zoom: number, kind: string) => (opacity as { value: { evaluate: (globals: object, feature: object) => number } }).value.evaluate({ zoom }, { type: 'Polygon', properties: { kind } });
-        expect(at(8, 'farmland')).toBe(0);
-        expect(at(8, 'forest')).toBeGreaterThan(0.3);
-        expect(at(12, 'farmland')).toBe(1);
+        expect(evaluate(ground, 'fill-opacity', 8, 'farmland')).toBe(0);
+        expect(evaluate(ground, 'fill-opacity', 8, 'forest')).toBeGreaterThan(0.3);
+        expect(evaluate(ground, 'fill-opacity', 12, 'farmland')).toBe(1);
     });
 });
