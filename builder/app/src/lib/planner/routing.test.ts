@@ -119,6 +119,7 @@ describe('routing integration', () => {
         const undone = history.undo(shown);
         expect(undone.routing).toBeUndefined();
         expect(storedPlan(shown).routing).toMatchObject({ choiceId: 'corridor', picked: true, alternatives: [] });
+        expect([shown.routing?.package, storedPlan(shown).routing?.package]).toEqual(['test', undefined]);
         expect(history.redo(undone).routing?.choiceId).toBe('corridor');
         expect(planOf({ ...picked, points: picked.points.map(p => p.id === 'shape' ? { ...p, coordinate: [7.95, 48] as Coordinate } : p) }).routing).toBeUndefined();
     });

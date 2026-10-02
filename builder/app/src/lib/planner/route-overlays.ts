@@ -86,15 +86,18 @@ export class RouteOverlays {
     private loaded?: Archive;
     private failure = '';
     private routingPackage?: string;
+    private installable = false;
     private hovered?: { sourceLayer: string; id: string | number };
 
     constructor(private map: Map, private url: string, private status: (message: string, retry?: boolean) => void) {
         map.on('moveend', this.report);
     }
 
+    /** Called once the basemap is complete; the archive loads when an overlay is first shown. */
     async install(theme: 'light' | 'dark') {
         this.theme = theme;
-        if (this.map.getSource(source)) return;
+        this.installable = true;
+        if (this.map.getSource(source) || (this.options.network === 'none' && !this.options.access)) return;
         this.archive ??= overlayArchive(this.url);
         try {
             this.loaded = await this.archive;
@@ -148,6 +151,7 @@ export class RouteOverlays {
         this.options = { ...options };
         this.accessMode = mode;
         this.sync();
+        if (this.installable) void this.install(this.theme);
     }
 
     /** The routing package of the latest route. The router excludes what the overlay shows as closed, so both must match. */
@@ -168,7 +172,7 @@ export class RouteOverlays {
         }
         if (this.map.getLayer('access-lines')) {
             const status = accessStatus(this.accessMode);
-            const filter: FilterSpecification = ['>=', ['zoom'], ['match', status, '', 99, 'push', 15, 'directional', 14, ['construction', 'conditional'], 10, 13]];
+            const filter: FilterSpecification = ['>=', ['zoom'], ['coalesce', ['get', `${this.accessMode}_minzoom`], 99]];
             for (const id of layers.access) this.map.setFilter(id, filter);
             this.map.setPaintProperty('access-lines', 'line-opacity', ['match', status, ['push', 'directional'], 0, 0.25]);
             this.map.setLayoutProperty('access-symbols', 'icon-image', ['match', status, 'push', `push-${this.theme}`, 'no_bikes', `no-bikes-${this.theme}`,

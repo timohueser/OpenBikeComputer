@@ -77,7 +77,7 @@ class OverlayArchive(unittest.TestCase):
         self.assertEqual(high["cycling"][10]["routes"], "[1, 2]")
         self.assertEqual(high["routes"][2], {"kind": "cycling", "network": "lcn", "rank": 1, "ref": "L1"})
         self.assertEqual(high["access"][12], {**access, "riding": "[false,false]", "walking": "[true,true]", "pushing": "[true,true]",
-                                              "tags": '{"bicycle":"dismount"}'})
+                                              "tags": '{"bicycle":"dismount"}', "cycling_minzoom": 15})
         self.assertEqual(set(low), {"cycling", "routes"})
 
 

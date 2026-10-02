@@ -74,11 +74,11 @@ SHA-256 of `routing/blocks.json`, which packs the same graph.
 | Layer | Feature ID | Properties |
 | --- | --- | --- |
 | `cycling`, `hiking` | Way ID of the first way in the line | `rank`, `ref`, and `routes`: a JSON array of relation IDs in rank order. `hiking` adds `marker`, the first route `symbol` that is not empty. |
-| `access` | Way ID | `cycling_status`, `walking_status`, `name`, `ref`, `conditional`, and `riding`, `walking`, `pushing` and `tags` as JSON text |
+| `access` | Way ID | `cycling_status`, `walking_status`, `name`, `ref`, `conditional`; `riding`, `walking`, `pushing` and `tags` as JSON text; `cycling_minzoom` and `walking_minzoom`, the overlay index minimum zoom of each restricted mode |
 | `routes` | Relation ID | The route properties that are not empty: `kind`, `network`, `rank`, `name`, `ref`, `website`, `symbol`, `symbol_text`. The point is the tile origin. |
 
 A feature starts at the lower mode minimum zoom of its overlay index feature,
-at most zoom 14. The planner shows access from the zoom of its travel mode.
+at most zoom 14. The planner shows access from the `MODE_minzoom` of its travel mode.
 A line names only the routes that start at or below the tile zoom. Lines with
 equal properties join where exactly two of them meet. The `routes` layer of a
 tile holds each route that its lines name. A tile with no features is absent.
@@ -96,7 +96,8 @@ release and the previous release on separate VPS ports.
 
 ## Canonical grid storage
 
-A grid release adds `grid: {format: 2, zoom: 9, map_zoom: 11}`. Its `files`
+The online services and `deploy` serve grid releases only. A regional release
+without `grid` is for local preview. A grid release adds `grid: {format: 2, zoom: 9, map_zoom: 11}`. Its `files`
 entries retain logical paths and decoded `bytes` and `sha256`. Each also has
 `transport: {bytes, sha256, encoding}`. Encoding is `identity` or `gzip`.
 R2 stores each distinct transport once at `planner/releases/ID/objects/SHA256`.

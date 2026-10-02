@@ -29,24 +29,25 @@ function overlays() {
     return { layer, map, definitions, sources, status, visible, zoomTo: (z: number) => { zoom = z; } };
 }
 
-it('draws the chosen network and the access of the travel mode from one vector source', async () => {
+it('loads the archive when an overlay is first shown, then draws the network and the access of the travel mode', async () => {
     const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => tilejson });
     vi.stubGlobal('fetch', fetcher);
     const view = overlays();
-    view.layer.set({ network: 'cycling', access: true });
     await view.layer.install('light');
+    expect(fetcher).not.toHaveBeenCalled();
+    view.layer.set({ network: 'cycling', access: true });
+    await vi.waitFor(() => expect(view.visible()).toEqual(['network-cycling', 'network-cycling-labels', 'access-lines', 'access-symbols']));
     expect(view.sources.get('route-overlays')).toEqual({ type: 'vector', tiles: tilejson.tiles, minzoom: 6, maxzoom: 14, bounds: tilejson.bounds, attribution: 'OSM' });
-    expect(view.visible()).toEqual(['network-cycling', 'network-cycling-labels', 'access-lines', 'access-symbols']);
-    expect(JSON.stringify(view.definitions.get('access-symbols')!.filter)).toContain('cycling_status');
+    expect(JSON.stringify(view.definitions.get('access-symbols')!.filter)).toContain('cycling_minzoom');
     view.layer.set({ network: 'hiking', access: true }, 'walking');
     expect(view.visible()).toEqual(['network-hiking', 'network-hiking-labels', 'hiking-markers', 'access-lines', 'access-symbols']);
-    expect(JSON.stringify(view.definitions.get('access-symbols')!.filter)).toContain('walking_status');
-    view.layer.set({ network: 'none', access: false });
-    expect(view.visible()).toEqual([]);
+    expect(JSON.stringify(view.definitions.get('access-symbols')!.filter)).toContain('walking_minzoom');
     // A new style after a theme change reuses the archive's TileJSON.
     view.sources.clear(); view.definitions.clear();
     await view.layer.install('dark');
     expect(view.definitions.size).toBe(7);
+    view.layer.set({ network: 'none', access: false });
+    expect(view.visible()).toEqual([]);
     expect(fetcher).toHaveBeenCalledTimes(1);
     view.layer.destroy();
 });

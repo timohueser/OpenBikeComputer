@@ -147,6 +147,9 @@ def derive(index, destination):
             minimum = min(MAX_ZOOM, math.floor(min(z for z in (cycling, walking) if z is not None)))
             if geometry not in geometries: geometries[geometry] = coordinates(blob)
             if attribute not in attributes: attributes[attribute] = json.loads(value)
+            if kind == "access":
+                # The planner shows the access of each travel mode from the zoom that the overlay index chose.
+                attributes[attribute].update({f"{mode}_minzoom": int(z) for mode, z in (("cycling", cycling), ("walking", walking)) if z is not None})
             # The overlay index chooses the zoom of each rank: a route line appears with its highest ranked route.
             if kind != "access": zooms[attributes[attribute]["rank"]] = minimum
             features.append((minimum, kind, way, attribute, geometry))
@@ -180,7 +183,9 @@ def derive(index, destination):
         print(f"Overlay zoom {zoom}: {len(layers)} tiles", flush=True)
     west, south, east, north = json.loads(coverage)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with write(destination) as writer:
+    # An interrupted bake leaves no archive that looks complete.
+    partial = destination.with_name(destination.name + ".partial")
+    with write(partial) as writer:
         for tile in sorted(tiles):
             writer.write_tile(tile, tiles[tile])
         e7 = lambda value: round(value * 1e7)
@@ -191,6 +196,7 @@ def derive(index, destination):
             "attribution": '<a href="https://www.openstreetmap.org/copyright">Route networks & access © OpenStreetMap</a>',
             "routing_package": package,
             "vector_layers": [{"id": name, "minzoom": min_zoom, "maxzoom": MAX_ZOOM} for name in LAYERS]})
+    partial.replace(destination)
     return {"tiles": len(tiles), "bytes": sum(map(len, tiles.values()))}
 
 
