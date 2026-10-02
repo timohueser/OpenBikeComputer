@@ -1,4 +1,4 @@
-"""Publish reusable routing, search and map objects before accepting area downloads."""
+"""Build the canonical planner grid from one verified regional release."""
 import argparse
 from collections import OrderedDict
 from contextlib import closing
@@ -7,6 +7,7 @@ import json
 import math
 from pathlib import Path, PurePosixPath
 import sqlite3
+import subprocess
 import sys
 
 try:
@@ -316,7 +317,10 @@ def main():
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
-    prepare(args.source, args.output)
+    try:
+        prepare(args.source, args.output)
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        parser.exit(1, f"planner grid: {error}\n")
 
 
 def prepare(source, output):

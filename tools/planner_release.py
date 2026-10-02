@@ -206,8 +206,11 @@ def main(argv=None):
             prepare(args)
         elif args.command == "grid":
             if not args.input_release: raise ValueError("Provide --input-release for grid publication")
-            maps.run("uv", "run", "--with-requirements", maps.ROOT / "tools/requirements-planner-maps.txt",
-                     "python", maps.ROOT / "tools/planner_blocks.py", args.input_release, args.data_dir, cwd=maps.ROOT)
+            try:
+                maps.run("uv", "run", "--with-requirements", maps.ROOT / "tools/requirements-planner-maps.txt",
+                         "python", maps.ROOT / "tools/planner_blocks.py", args.input_release, args.data_dir, cwd=maps.ROOT)
+            except subprocess.CalledProcessError as error:
+                raise ValueError(f"grid step failed with exit status {error.returncode}") from None
         elif args.command == "publish": publish(args)
         elif args.command in {"deploy", "rollback"}:
             try: from . import planner_deploy
