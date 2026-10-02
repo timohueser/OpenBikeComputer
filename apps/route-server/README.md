@@ -29,7 +29,8 @@ uses a dynamic user, a 2048 MiB memory limit and two CPU cores at most.
 
 - `GET /health` reports process health.
 - `GET /v1/region` reports package identity, coverage, profiles and attribution.
-- `POST /v1/route` calculates a route.
+- `POST /v1/route` calculates a route. The [route API](../../specs/route-api.md)
+  specifies the request, the answer and the errors.
 - `GET /v1/overlays?bbox=7.9,48,8.1,48.1&zoom=12&layers=cycling,hiking,access`
   returns GeoJSON from the package's OSM snapshot. Select one or more layers.
 
@@ -58,23 +59,6 @@ curl http://127.0.0.1:8788/v1/route \
   --data '{"points":[[7.849,47.997],[8.154,47.902]],"profile":"touring","alternatives":true}'
 ```
 
-Coordinates are longitude, latitude. Supply 2 to 64 ordered points. Optional
-`turnarounds` lists interior point indices where a reversal is deliberate.
-Optional `pace` contains `cycling_kmh`, `walking_kmh` and `personal_multiplier`.
-Omitted pace uses 19, 4.5 and 1 respectively.
-
-The response contains `routes`. The first is the primary route. Each result
-has an ID, reason, package identity, profile, cost, coordinates, nullable
-heights, cumulative moving seconds, totals, directed attachments and leg road
-slices. `surfaces[i]` and `pushing[i]` describe the edge from `geometry[i]` to
-`geometry[i + 1]`. Pushing is true where the bicycle must be pushed. Each leg has inclusive geometry indices. Surface totals use this order:
-unknown, paved, compacted, gravel, dirt, rough. Distances and heights are metres.
-Time is seconds. A cost is a prepared preference value, not time.
-
-Errors contain `code` and `message`. Codes are `invalid_request` (400),
-`no_snap`, `no_path`, `missing_region` (422), `cancelled` (408), `busy`, `limit`
-(503), and `invalid_data` (500). An error never contains a substitute route.
-
 ## Planner
 
 Start this service, then start Vite from `builder/app`. Its `/routing` proxy
@@ -83,11 +67,12 @@ time for another endpoint. Build the isolated preview with:
 
 ```sh
 VITE_PLANNER_PMTILES_URL=/planner/data/basemap.pmtiles \
+  VITE_PLANNER_PLACES_URL=/planner/data/places.pmtiles \
   npm run --prefix builder/app build:planner
 ```
 
 Serve `builder/app/dist/planner` under `/planner/` and open
-`/planner/planner.html`. Serve a Protomaps basemap at the configured URL.
+`/planner/planner.html`. Serve a Protomaps basemap and its places archive at the configured URLs.
 Proxy `/routing/*` to this service with that prefix removed. The preview needs
 no user account. Search examples and the map renderer remain separate from
 routing. See the [planner README](../../builder/app/src/components/planner/README.md).

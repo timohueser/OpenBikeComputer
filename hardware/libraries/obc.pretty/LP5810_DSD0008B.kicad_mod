@@ -28,4 +28,9 @@
   (pad "9" smd roundrect (at 0 0) (size 1.65 2.4) (layers "F.Cu" "F.Mask") (roundrect_rratio 0.03030303))
   (pad "" smd roundrect (at 0 -0.635) (size 1.47 1.07) (layers "F.Paste") (roundrect_rratio 0.04672897))
   (pad "" smd roundrect (at 0 0.635) (size 1.47 1.07) (layers "F.Paste") (roundrect_rratio 0.04672897))
+  (model "${KIPRJMOD}/../../libraries/3dmodels/LP5810_DSD_3p1x3p1x0p8_max_envelope.step"
+    (offset (xyz 0 0 0))
+    (scale (xyz 1 1 1))
+    (rotate (xyz 0 0 0))
+  )
 )

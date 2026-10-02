@@ -32,13 +32,16 @@ npm run deploy --prefix apps/planner-tiles
 | --- | --- |
 | `/releases/ID/basemap.json` | Vector TileJSON |
 | `/releases/ID/basemap/Z/X/Y.mvt` | Vector tile, zoom 0–14 |
+| `/releases/ID/places.json` | Rider places TileJSON |
+| `/releases/ID/places/Z/X/Y.mvt` | Rider places tile, zoom 11 |
 | `/releases/ID/terrain.json` | Terrain TileJSON |
 | `/releases/ID/terrain/Z/X/Y.webp` | Terrarium tile, zoom 0–12 |
 
 `ID` is the SHA-256 of `release.json`. Grid archives use the canonical object pool and its small public pointers.
 The [release contract](../../specs/planner-release.md#canonical-grid-storage)
 defines those paths. Queries and unknown paths
-return 404. An absent tile returns 204. An absent archive returns 404.
+return 404. An absent tile returns 204. A grid tile without a pack is absent.
+An absent archive returns 404.
 Read failures return 503 with no cache. The domain root returns 404.
 
 The service also serves release font, sprite, and device catalog paths.

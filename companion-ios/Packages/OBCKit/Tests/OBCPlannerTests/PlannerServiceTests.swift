@@ -122,11 +122,11 @@ private final class StubHTTP: URLProtocol, @unchecked Sendable {
                 let query = body()
                 // This fake server requires longitude first and the requested profile.
                 guard (query["profile"] as? String) == "gravel/shorter", (query["points"] as? [[Double]]) == [[8, 48], [8.1, 48.1]], query["alternatives"] as? Bool == false else { fatalError("Wrong route request") }
-                let heights: [Any] = kind == "short-elevation" ? [270] : [270, NSNull()]
+                let heights: [Any] = kind == "short-elevation" ? [2700] : [2700, NSNull()]
                 let route: [String: Any] = ["package": kind == "wrong-package" ? "other" : packageID,
                     "profile": kind == "wrong-profile" ? "road" : "gravel/shorter",
-                    "geometry": kind == "bad-coordinate" ? [[800, 48], [8.1, 48.1]] : [[8, 48], [8.1, 48.1]],
-                    "elevation": heights, "elapsed": kind == "short-elapsed" ? [0] : [0,400], "legs": [["from_index": 0, "to_index": kind == "bad-leg" ? 2 : 1]],
+                    "coordinates_udeg": kind == "bad-coordinate" ? [800_000_000, 48_000_000, -791_900_000, 100_000] : [8_000_000, 48_000_000, 100_000, 100_000],
+                    "elevation_dm": heights, "elapsed_s": kind == "short-elapsed" ? [0] : [0,400], "legs": [["from_index": 0, "to_index": kind == "bad-leg" ? 2 : 1]],
                     "totals": ["distance_m": 900, "ascent_m": 30, "seconds": 400]]
                 data = try! JSONSerialization.data(withJSONObject: ["routes": [route]])
             }

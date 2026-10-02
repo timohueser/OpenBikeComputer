@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {database} from './database.mjs';
-import {resolve,findPlaces} from '../resolver.mjs';
+import {resolve,findPlaces,resolvePoint} from '../resolver.mjs';
 import {lengths,at,alongRange} from '../web/geography.mjs';
 import {openingState} from '../hours.mjs';
 import {validateInput} from '../validation.mjs';
@@ -44,6 +44,14 @@ test('route and plan mutations return reviewable commands without changing conte
   assert.equal(resolve(db,{type:'join',day:1},context).changes[0].day,1);
   assert.equal(JSON.stringify(context),before);
 });
+test('a simplified line keeps the kilometres of its full line',()=>{
+  // Doubled kilometres stand in for a full line that is longer than its simplification.
+  const plan={coordinates:[line[0],line.at(-1)],km:[0,2*total],days:[{number:1,from:0,to:2*total}],points:[]};
+  const out=findPlaces(db,{type:'places',what:['bakery'],where:{scope:'route'}},{...context,plan});
+  assert.ok(Math.abs(out.results.find(p=>p.source==='n1').position.along-2*ds[1])<1e-9);
+  const middle=resolvePoint(db,{day:1,part:'middle'},{...context,plan});
+  assert.equal(middle.along,total);assert.deepEqual(middle.coordinate,[(line[0][0]+line.at(-1)[0])/2,47.99]);
+});
 test('route gaps are computed from mapped positions and missing attribute data stays unknown',()=>{
   const out=resolve(db,{type:'stretches',what:'gap:bakery'},context);
   assert.ok(out.stretches.length>0);assert.match(out.note,/Missing map data/);
@@ -56,7 +64,7 @@ test('time positions require a monotone time profile, and end offsets run backwa
 });
 test('malformed or unbounded API data is rejected before retrieval',()=>{
   validateInput(context);
-  for(const extra of [{view:[0,0,1,Infinity]},{region:'../../data'},{request:{type:'places',what:[]}},{plan:{...context.plan,coordinates:[[NaN,0]]}},{request:{type:'route',to:{kind:'unknown-kind'}}}])assert.throws(()=>validateInput({...context,...extra}));
+  for(const extra of [{view:[0,0,1,Infinity]},{region:'../../data'},{request:{type:'places',what:[]}},{plan:{...context.plan,coordinates:[[NaN,0]]}},{plan:{...context.plan,km:[0]}},{request:{type:'route',to:{kind:'unknown-kind'}}}])assert.throws(()=>validateInput({...context,...extra}));
 });
 
 test('every day ends resolve separately and riding-time splits use the supplied profile',()=>{

@@ -1,15 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calculateLine, profileId, selectRoute, movingSecondsAt, type EngineRoute } from './routing';
+import { calculateLine, profileId, RouteCache, selectRoute, movingSecondsAt, type EngineRoute } from './routing';
+import { decodeRoutes, type AnswerRoute } from './route-answer';
 import { ridingProfiles, presetName, type BikeType } from './riding-profiles';
 import { surfaceRuns, surfaceWindow } from './surface-data';
-import { initialTrip, cumulative, removeRoutePoint, setEndpoint, routingKey, routeCoordinates, type Trip } from './editor';
+import { initialTrip, cumulative, planOf, removeRoutePoint, storedPlan, setEndpoint, routingKey, routeCoordinates, TripHistory, type Coordinate, type Trip } from './editor';
 
-const route: EngineRoute = {
-    id: 'test-route', surfaces: ['Paved', 'Gravel'], pushing: [false, true], reason: 'primary', elapsed: [0, 3000, 4000], package: 'test', profile: 'touring', geometry: [[7.8, 48], [7.9, 48], [8, 48]], elevation: [200, null, 400],
-    totals: { distance_m: 15000, ascent_m: 0, descent_m: 0, seconds: 4000, surface_m: [1000, 14000, 0, 0, 0, 0], unknown_elevation_m: 15000, pushing_m: 100 },
-    legs: [{ from_index: 0, to_index: 1, totals: { distance_m: 7500 } as EngineRoute['totals'] }, { from_index: 1, to_index: 2, totals: { distance_m: 7500 } as EngineRoute['totals'] }],
+const answer: AnswerRoute = {
+    id: 'test-route', surfaces: [['Paved', 1], ['Gravel', 1]], pushing: [[false, 1], [true, 1]], reason: 'primary', elapsed_s: [0, 3000, 1000], package: 'test', profile: 'touring',
+    coordinates_udeg: [7_800_000, 48_000_000, 100_000, 0, 100_000, 0], elevation_dm: [2000, null, 2000],
+    totals: { distance_m: 15000, ascent_m: 0, seconds: 4000, surface_m: [1000, 14000, 0, 0, 0, 0], unknown_elevation_m: 15000, pushing_m: 100 },
+    legs: [{ from_index: 0, to_index: 1 }, { from_index: 1, to_index: 2 }],
     snap_truncated: false,
 };
+const [route] = decodeRoutes({ routes: [answer] });
 function trip(): Trip {
     return { ...initialTrip(), live: true, points: [
         { id: 'start', kind: 'start', coordinate: [7.8, 48], label: 'Start', progress: 0 },
@@ -30,7 +33,7 @@ describe('routing integration', () => {
         expect(profileId({ ...trip(), bike: 'road', preset: 'Quieter' })).toBe('road/quieter');
     });
     it('keeps directed shaping context in one request and preserves unknown elevation', async () => {
-        const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [route] }) });
+        const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [answer] }) });
         vi.stubGlobal('fetch', fetch);
         const plan = trip();
         const line = await calculateLine(plan, new AbortController().signal);
@@ -64,8 +67,44 @@ describe('routing integration', () => {
         expect(routingKey(moved)).not.toBe(routingKey(plan));
         expect(routeCoordinates(moved)).toEqual([plan.points[0].coordinate]);
     });
+    it('returns the cached route of a plan seen before, by its routing key', () => {
+        const touring = trip();
+        const gravel: Trip = { ...touring, bike: 'gravel' };
+        const moved = { ...touring, points: touring.points.map(p => p.id === 'shape' ? { ...p, coordinate: [7.95, 48] as Coordinate } : p) };
+        const cache = new RouteCache(2);
+        const line = selectRoute(touring, route, [route]);
+        cache.attach({ ...touring, routing: line });
+        expect(cache.attach(gravel).routing).toBeUndefined();
+        expect(cache.attach({ ...touring, days: 5, points: touring.points.map(p => ({ ...p, label: 'Renamed' })) }).routing).toBe(line);
+        expect(cache.attach(moved).routing).toBeUndefined();
+        cache.add(selectRoute(gravel, route, [route]));
+        cache.add(selectRoute(moved, route, [route]));
+        expect(cache.attach(touring).routing).toBeUndefined();
+        expect(cache.attach(gravel).routing?.key).toBe(routingKey(gravel));
+    });
+    it('keeps a picked corridor with its plan and the primary route in the cache', () => {
+        const plan = trip();
+        const corridor: EngineRoute = { ...route, id: 'corridor', reason: 'corridor', geometry: [[7.8, 48], [7.9, 48.05], [8, 48]] };
+        const primary = selectRoute(plan, route, [route, corridor]);
+        const picked = { ...plan, routing: selectRoute(plan, corridor, [route, corridor]) };
+        const cache = new RouteCache(1);
+        cache.add(primary);
+        const history = new TripHistory();
+        const shown = cache.attach(history.commit({ ...plan, routing: primary }, picked));
+        expect(shown.routing?.choiceId).toBe('corridor');
+        expect(planOf(shown)).toBe(picked);
+        const undone = cache.attach(history.undo(shown));
+        expect(undone.routing).toBe(primary);
+        cache.add({ ...picked.routing, alternativesReady: false });
+        expect(cache.attach(plan).routing).toBe(primary);
+        expect(storedPlan(shown).routing).toMatchObject({ choiceId: 'corridor', picked: true, alternatives: [] });
+        expect(storedPlan(undone).routing).toBeUndefined();
+        cache.add(selectRoute({ ...plan, bike: 'gravel' }, route, [route]));
+        expect(cache.attach(history.redo(undone)).routing?.choiceId).toBe('corridor');
+        expect(planOf({ ...picked, points: picked.points.map(p => p.id === 'shape' ? { ...p, coordinate: [7.95, 48] as Coordinate } : p) }).routing).toBeUndefined();
+    });
     it('makes visit reversals explicit and accounts for manual joins', async () => {
-        const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [{ ...route, legs: Array.from({ length: 4 }, (_, i) => ({ from_index: 0, to_index: Math.min(i, 2), totals: route.totals })) }] }) });
+        const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [{ ...answer, legs: Array.from({ length: 4 }, (_, i) => ({ from_index: 0, to_index: Math.min(i, 2) })) }] }) });
         vi.stubGlobal('fetch', fetch);
         const plan = trip();
         plan.points[1] = { ...plan.points[1], kind: 'detour', anchor: [7.85, 48] };

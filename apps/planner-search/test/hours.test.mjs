@@ -12,26 +12,21 @@ const status = (date, tag = place.opening_hours) => currentOpening({...place,ope
 test('current status respects local time, split shifts, and the next closure', () => {
   const morning=status('2026-09-28T10:33:00Z');
   assert.equal(morning.state,'open');
-  assert.equal(morning.closesAt,Date.parse('2026-09-28T11:00:00Z'));
+  assert.deepEqual(morning,{state:'open',closesAt:'13:00'});
   assert.equal(status('2026-09-28T11:00:00Z').state,'closed');
   assert.equal(status('2026-09-28T13:00:00Z').state,'open');
   assert.equal(status('2026-09-28T16:30:00Z').state,'closed');
-  assert.equal(status('2026-12-28T11:33:00Z').closesAt,Date.parse('2026-12-28T12:00:00Z'));
+  assert.equal(status('2026-12-28T11:33:00Z').closesAt,'13:00');
 });
 test('holidays and overnight hours are evaluated without guessing unknown schedules', () => {
   assert.equal(status('2026-12-25T09:00:00Z').state,'closed');
-  assert.equal(status('2026-09-28T23:33:00Z','Mo 22:00-02:00').closesAt,Date.parse('2026-09-29T00:00:00Z'));
+  assert.equal(status('2026-09-28T23:33:00Z','Mo 22:00-02:00').closesAt,'02:00');
   assert.equal(status('2026-09-28T10:00:00Z','"by appointment"').state,'unknown');
   assert.equal(status('2026-09-28T10:00:00Z','not hours').state,'unknown');
   assert.equal(currentOpening({}),undefined);
 });
-test('snapshots expire by their next transition and do not invent a 24/7 closure', () => {
-  const closing=status('2026-09-28T10:58:00Z');
-  assert.equal(closing.validUntil,closing.closesAt);
-  const always=status('2026-09-28T10:00:00Z','24/7');
-  assert.equal(always.state,'open');
-  assert.equal(always.closesAt,undefined);
-  assert.equal(always.validUntil-always.checkedAt,300_000);
+test('a 24/7 place has no closing time', () => {
+  assert.deepEqual(status('2026-09-28T10:00:00Z','24/7'),{state:'open'});
 });
 
 test('open-ended hours do not imply a known closing time or an open badge', () => {

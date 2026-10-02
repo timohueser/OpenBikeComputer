@@ -1,0 +1,73 @@
+(footprint "USB_Flex_Solder_6"
+	(version 20241229)
+	(generator "pcbnew")
+	(layer "F.Cu")
+	(descr "Six-net 2.2mm solder overlap; 5mm landing; pin 1 GND, 2 CC1, 3 D+, 4 D-, 5 CC2, 6 VBUS. No paste stencil.")
+	(attr smd exclude_from_pos_files exclude_from_bom allow_soldermask_bridges)
+	(fp_text reference "REF**"
+		(at 0 -4.5)
+		(layer "F.Fab")
+		(effects
+			(font
+				(size 0.6 0.6)
+				(thickness 0.1)
+			)
+		)
+	)
+	(fp_text value "USB_Flex_Solder_6"
+		(at 0 5.5)
+		(layer "F.Fab")
+		(effects
+			(font
+				(size 0.6 0.6)
+				(thickness 0.1)
+			)
+		)
+	)
+	(pad "1" smd rect
+		(at 0 -1.75)
+		(size 2.2 0.8)
+		(layers "F.Cu" "F.Mask")
+		(solder_mask_margin 0)
+	)
+	(pad "2" smd rect
+		(at 0 -0.95)
+		(size 2.2 0.4)
+		(layers "F.Cu" "F.Mask")
+		(solder_mask_margin 0)
+	)
+	(pad "3" smd rect
+		(at 0 -0.3)
+		(size 2.2 0.35)
+		(layers "F.Cu" "F.Mask")
+		(solder_mask_margin 0)
+	)
+	(pad "4" smd rect
+		(at 0 0.3)
+		(size 2.2 0.35)
+		(layers "F.Cu" "F.Mask")
+		(solder_mask_margin 0)
+	)
+	(pad "5" smd rect
+		(at 0 0.95)
+		(size 2.2 0.4)
+		(layers "F.Cu" "F.Mask")
+		(solder_mask_margin 0)
+	)
+	(pad "6" smd rect
+		(at 0 1.75)
+		(size 2.2 0.8)
+		(layers "F.Cu" "F.Mask")
+		(solder_mask_margin 0)
+	)
+	(fp_rect
+		(start -1.2 -2.25)
+		(end 1.2 2.25)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(fill solid)
+		(layer "F.Mask")
+	)
+)

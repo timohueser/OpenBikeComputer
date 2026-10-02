@@ -1,0 +1,4 @@
+(fp_lib_table
+	(version 7)
+	(lib (name "obc") (type "KiCad") (uri "${KIPRJMOD}/../../libraries/obc.pretty") (options "") (descr ""))
+)

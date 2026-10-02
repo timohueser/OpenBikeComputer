@@ -84,7 +84,8 @@ A routing pack contains pages with the same cell consumers, up to 16 MiB.
 Search and overlays retain whole intersecting records and their dependencies.
 
 `offline/catalog.json` has `format: 3`. It lists cell bounds, logical file
-names, map packs, and routing cell descriptors. Each routing descriptor has a manifest path and
+names, map packs, and routing cell descriptors. Its map packs omit the online
+places archive. Each routing descriptor has a manifest path and
 SHA-256, source adjacency ranges, and retained geometry bounds. `shared` maps
 each map asset path of a selection to its publication file. Files carry the
 decoded and transport hashes above.

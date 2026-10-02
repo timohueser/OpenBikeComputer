@@ -15,8 +15,8 @@ enabled = true
 head_sampling_rate = 0.1
 [limits]
 cpu_ms = 50
-# Per client address and data centre. The limit sits above the fastest honest burst: the web
-# planner's place loader reads 8 tiles in parallel along the whole route.
+# Per client address and data centre. Deliberately loose: the largest honest burst is about 100
+# basemap and terrain tiles in a few seconds of zooming, and a places corridor is about 26 requests.
 [[ratelimits]]
 name = "LIMITER"
 namespace_id = "1001"

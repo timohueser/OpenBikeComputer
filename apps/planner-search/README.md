@@ -49,7 +49,7 @@ python3 apps/planner-search/extract.py SOURCE.sqlite OUTPUT.sqlite --bounds=7.77
 The selection keeps intersecting places and streets referenced by its houses.
 The source must cover the box. Search uses the same indexes.
 
-For local map tiles, place a basemap at `builder/app/public/data/planner/basemap.pmtiles`:
+For local map tiles, place `basemap.pmtiles` and `places.pmtiles` in `builder/app/public/data/planner/`:
 
 ```sh
 VITE_PLANNER_PMTILES_URL=/data/planner/basemap.pmtiles npm run dev --prefix apps/planner-search
@@ -86,9 +86,10 @@ The combined development command passes `OBC_SEARCH_PORT` to the Vite proxy.
 - `routing.mjs` calls `/v1/route` on the separate local routing engine. Routing commands
   fail visibly if it is absent. No route is committed after a failed request.
 
-The request context accepts a cumulative `plan.hours` array aligned with coordinates,
-and `plan.segments` with kilometre bounds and verified route attributes. The UI supplies
-riding time when all legs use the routing engine. Manual legs have no verified time.
+The request context accepts cumulative `plan.km` and `plan.hours` arrays aligned with
+coordinates, and `plan.segments` with kilometre bounds and verified route attributes.
+Without `plan.km`, search measures the line. The UI supplies riding time only when all
+legs use the routing engine.
 Surface, gradient, access, and closure queries report missing segment data.
 The sample line preserves imported coordinates and has no terrain data. Split and join keep the line. They require unpinned nights and no rest days.
 

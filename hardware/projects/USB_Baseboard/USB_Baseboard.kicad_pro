@@ -12,7 +12,12 @@
     },
     "layer_pairs": [],
     "layer_presets": [],
-    "viewports": []
+    "viewports": [],
+    "design_settings": {
+      "rules": {
+        "min_copper_edge_clearance": 0.3
+      }
+    }
   },
   "boards": [],
   "component_class_settings": {

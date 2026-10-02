@@ -1,12 +1,12 @@
 import { presetSuffix } from './riding-profiles';
-import { cumulative, orderedRoutePoints, routingKey, type Coordinate, type Trip } from './editor';
+import { cumulative, firstIndex, orderedRoutePoints, routingKey, type Coordinate, type Trip } from './editor';
+import { decodeRoutes } from './route-answer';
 
 export type Surface = 'Unknown' | 'Paved' | 'Compacted' | 'Gravel' | 'Dirt' | 'Rough';
 
 export interface RouteTotals {
     distance_m: number;
     ascent_m: number;
-    descent_m: number;
     seconds: number;
     surface_m: number[];
     unknown_elevation_m: number;
@@ -23,7 +23,7 @@ export interface EngineRoute {
     surfaces: Surface[];
     pushing: boolean[];
     totals: RouteTotals;
-    legs: { from_index: number; to_index: number; totals: RouteTotals }[];
+    legs: { from_index: number; to_index: number }[];
     snap_truncated: boolean;
 }
 export interface RoutingLine {
@@ -43,6 +43,8 @@ export interface RoutingLine {
     unknownSurfaceKm: number;
     pushingKm: number;
     unroutedKm: number;
+    /** A picked alternative with the profile of its primary route, such as another corridor. No request for its plan returns it. */
+    picked?: boolean;
 }
 
 const endpoint = import.meta.env.VITE_PLANNER_ROUTING_URL ?? '/routing';
@@ -54,8 +56,7 @@ export async function requestRoute(points: Coordinate[], profile: string, signal
     });
     const data = await response.json().catch(() => { throw new Error('The routing service returned an invalid response.'); });
     if (!response.ok) throw new Error(data.message ?? 'Routing is unavailable.');
-    if (!Array.isArray(data.routes) || !data.routes.length) throw new Error('The routing service returned no route.');
-    return data.routes;
+    return decodeRoutes(data);
 }
 
 export function profileId(trip: Trip): string {
@@ -66,10 +67,12 @@ export function profileId(trip: Trip): string {
 export function selectRoute(trip: Trip, route: EngineRoute, alternatives: EngineRoute[]): RoutingLine {
     const points = orderedRoutePoints(trip);
     const distance = cumulative(route.geometry);
+    const primary = alternatives[0] ?? route;
     return {
         choiceId: route.id, key: routingKey(trip), coordinates: route.geometry, elevation: route.elevation, elapsed: route.elapsed, surfaces: route.surfaces, pushing: route.pushing, seconds: route.totals.seconds,
         profile: route.profile, alternatives, alternativesReady: true, unknownSurfaceKm: route.totals.surface_m[0] / 1000, pushingKm: route.totals.pushing_m / 1000, unroutedKm: 0,
         stops: [{ id: points[0].id, distance: 0 }, ...route.legs.map((leg, i) => ({ id: points[i + 1].id, distance: distance[leg.to_index] }))],
+        picked: route.id !== primary.id && route.profile === primary.profile,
     };
 }
 
@@ -153,9 +156,36 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, alternative
 export function movingSecondsAt(line: RoutingLine, progress: number): number {
     const lengths = cumulative(line.coordinates);
     const distance = progress * (lengths.at(-1) ?? 0);
-    const i = lengths.findIndex(d => d >= distance);
-    if (i < 0) return line.seconds;
+    const i = firstIndex(lengths.length, index => lengths[index] >= distance);
+    if (i === lengths.length) return line.seconds;
     if (i === 0) return 0;
     const share = (distance - lengths[i - 1]) / (lengths[i] - lengths[i - 1] || 1);
     return line.elapsed[i - 1] + share * (line.elapsed[i] - line.elapsed[i - 1]);
+}
+
+/** The latest routes by routing key, so undo, redo and a return to an earlier bike need no request.
+ * It keeps the routes that a request for their key returns; the plan keeps a picked alternative. */
+export class RouteCache {
+    private lines = new Map<string, RoutingLine>();
+    constructor(private readonly size = 8) {}
+    /** Keeps a route, but never a picked alternative: it would hide the primary route of its key.
+     * When the cache is full, the least recently used route goes. */
+    add(line: RoutingLine): void {
+        if (line.picked) return;
+        this.lines.delete(line.key);
+        this.lines.set(line.key, line);
+        if (this.lines.size > this.size) this.lines.delete(this.lines.keys().next().value!);
+    }
+    /** The plan with its route. A route that matches the plan goes into the cache; a plan without one takes the cached route. */
+    attach(plan: Trip): Trip {
+        const key = routingKey(plan);
+        if (plan.routing?.key === key) {
+            this.add(plan.routing);
+            return plan;
+        }
+        const line = this.lines.get(key);
+        if (!line) return plan;
+        this.add(line);
+        return { ...plan, routing: line };
+    }
 }

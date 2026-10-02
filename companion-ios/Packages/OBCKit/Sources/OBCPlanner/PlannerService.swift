@@ -189,36 +189,23 @@ public actor PlannerService: PlannerDataSource {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(Query(points: points.map { [$0.longitude, $0.latitude] }, profile: profile))
         let data = try await Self.send(request, transport: transport)
-        struct Response: Decodable { let routes: [Route] }
-        struct Route: Decodable {
-            let package: String
-            let profile: String
-            let geometry: [[Double]]
-            let elevation: [Double?]
-            let elapsed: [Double]
-            struct Leg: Decodable { let from_index: Int; let to_index: Int }
-            let legs: [Leg]
-            let totals: Totals
-        }
-        struct Totals: Decodable { let distance_m: Double; let ascent_m: Double; let seconds: Double }
+        struct Response: Decodable { let routes: [RouteAnswer] }
         let response = try Self.decode(Response.self, data: data)
         guard let route = response.routes.first, route.package == manifest.routing_package, route.profile == profile,
-              route.geometry.count > 1, route.geometry.count <= 250_000,
-              route.elevation.count == route.geometry.count,
-              route.elapsed.count == route.geometry.count, route.elapsed.first == 0,
-              route.elapsed.allSatisfy({ $0.isFinite && $0 >= 0 }),
+              route.coordinates.count > 1, route.coordinates.count <= 250_000,
+              route.elevation.count == route.coordinates.count,
+              route.elapsed.count == route.coordinates.count, route.elapsed.first == 0,
               zip(route.elapsed, route.elapsed.dropFirst()).allSatisfy({ $0 <= $1 }),
               route.legs.count == points.count - 1, route.legs.first?.from_index == 0,
-              route.legs.last?.to_index == route.geometry.count - 1,
-              route.legs.allSatisfy({ $0.from_index >= 0 && $0.to_index >= $0.from_index && $0.to_index < route.geometry.count }),
+              route.legs.last?.to_index == route.coordinates.count - 1,
+              route.legs.allSatisfy({ $0.from_index >= 0 && $0.to_index >= $0.from_index && $0.to_index < route.coordinates.count }),
               zip(route.legs, route.legs.dropFirst()).allSatisfy({ $0.to_index == $1.from_index }),
-              route.geometry.allSatisfy({ $0.count == 2 && $0.allSatisfy(\.isFinite) && (-180...180).contains($0[0]) && (-90...90).contains($0[1]) }),
-              route.elevation.allSatisfy({ $0?.isFinite ?? true }),
+              route.coordinates.allSatisfy({ (-180...180).contains($0.longitude) && (-90...90).contains($0.latitude) }),
               [route.totals.distance_m, route.totals.ascent_m, route.totals.seconds].allSatisfy({ $0.isFinite && $0 >= 0 })
         else { throw PlannerFailure.invalidData }
         try Task.checkCancellation()
-        return PlannedPath(points: zip(route.geometry, route.elevation).map {
-            RoutePoint(coordinate: Coordinate(latitude: $0.0[1], longitude: $0.0[0]), elevationMeters: $0.1)
+        return PlannedPath(points: zip(route.coordinates, route.elevation).map {
+            RoutePoint(coordinate: $0.0, elevationMeters: $0.1)
         }, distance: route.totals.distance_m, ascent: route.totals.ascent_m, seconds: route.totals.seconds,
            pointIndices: [0] + route.legs.map(\.to_index), elapsed: route.elapsed)
     }

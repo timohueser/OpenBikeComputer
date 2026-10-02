@@ -55,7 +55,7 @@ def map_tiles(source, output):
     import tempfile
 
     output.mkdir(parents=True, exist_ok=True)
-    for kind in ("basemap", "terrain"):
+    for kind in ("basemap", "places", "terrain"):
         target = output / kind
         target.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".tiles-", dir=output) as temporary:
@@ -267,7 +267,10 @@ def publish(source, routing, output):
     map_blocks = []
     for path in sorted(tiles.glob("*/*.pmtiles")):
         z, x, y = map(int, path.stem.split("-"))
-        map_blocks.append({"kind": path.parent.name, "tile": [z,x,y], "bounds": box(z, x, y), "files": [add(path, f"maps/tiles/{path.parent.name}/{path.name}")]})
+        name = add(path, f"maps/tiles/{path.parent.name}/{path.name}")
+        # Offline planners read places from the basemap and search, so downloads carry no places packs.
+        if path.parent.name != "places":
+            map_blocks.append({"kind": path.parent.name, "tile": [z,x,y], "bounds": box(z, x, y), "files": [name]})
     search = source / "search" / f"{release['region']}.sqlite"
     lookup = work / "search-lookup.sqlite"
     stage_sqlite(lookup, lambda path: search_lookup(search, path))
@@ -287,12 +290,12 @@ def publish(source, routing, output):
         "cells": [{"id": name, "bounds": bounds} for name, bounds in all_cells]})
     metadata("routing/layers.json", [name for name, _ in all_cells])
     from pmtiles.reader import Reader, MmapSource
-    for kind in ("basemap", "terrain"):
+    for kind in ("basemap", "places", "terrain"):
         with (source / "maps" / f"{kind}.pmtiles").open("rb") as stream:
-            info = Reader(MmapSource(stream)).metadata()
-        metadata(f"maps/{kind}.json", {**info, "tilejson": "3.0.0", "minzoom": 0,
-            "maxzoom": 14 if kind == "basemap" else 12,
-            "bounds": release["bounds"] if kind == "basemap" else release["terrain_bounds"]})
+            reader = Reader(MmapSource(stream))
+            header, info = reader.header(), reader.metadata()
+        metadata(f"maps/{kind}.json", {**info, "tilejson": "3.0.0", "minzoom": header["min_zoom"],
+            "maxzoom": header["max_zoom"], "bounds": release["terrain_bounds"] if kind == "terrain" else release["bounds"]})
     for name in release["files"]:
         if name.startswith(("search/model/", "device/")): add(source / name, name)
     catalog = {"format": 3, "source": identity, "release": {k:v for k,v in release.items() if k not in {"files", "source_files"}},
