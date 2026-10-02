@@ -595,6 +595,8 @@
             button.addEventListener('focus', () => onPointHover?.(point.id));
             button.addEventListener('blur', () => onPointHover?.(null));
             const marker = new maplibregl.Marker({ element: button, draggable }).setLngLat(point.coordinate).addTo(map);
+            // Day ends stay last in the DOM, so a place added later at the same spot does not cover the drag handle.
+            if (!dayEnd) map.getCanvasContainer().querySelector(".planner-map-pin.dayend")?.before(button);
             marker.on("dragstart", () => { draggingPin = true; hover = null; });
             if (dayEnd) {
                 marker.on("drag", () => marker.setLngLat(coordinateAt(coordinates, routeProgress(marker))));
