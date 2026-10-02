@@ -11,10 +11,10 @@ const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Meth
   'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' };
 
 // Each archive's deepest zoom and tile format.
-const archives = { basemap: [14, 'mvt'], places: [11, 'mvt'], terrain: [12, 'webp'] };
+const archives = { basemap: [14, 'mvt'], places: [11, 'mvt'], overlays: [14, 'mvt'], terrain: [12, 'webp'] };
 
 export function tileRoute(path) {
-  const match = /^\/releases\/([a-f0-9]{64})\/(basemap|places|terrain)(?:\.json|\/(0|[1-9]\d*)\/(0|[1-9]\d*)\/(0|[1-9]\d*)\.(mvt|webp))$/.exec(path);
+  const match = /^\/releases\/([a-f0-9]{64})\/(basemap|places|overlays|terrain)(?:\.json|\/(0|[1-9]\d*)\/(0|[1-9]\d*)\/(0|[1-9]\d*)\.(mvt|webp))$/.exec(path);
   if (!match) return null;
   const [, release, name, z, x, y, ext] = match;
   const [maxZoom, format] = archives[name];

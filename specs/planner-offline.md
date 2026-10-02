@@ -85,7 +85,7 @@ Search and overlays retain whole intersecting records and their dependencies.
 
 `offline/catalog.json` has `format: 3`. It lists cell bounds, logical file
 names, map packs, and routing cell descriptors. Its map packs omit the online
-places archive. Each routing descriptor has a manifest path and
+places and overlays archives. Each routing descriptor has a manifest path and
 SHA-256, source adjacency ranges, and retained geometry bounds. `shared` maps
 each map asset path of a selection to its publication file. Files carry the
 decoded and transport hashes above.

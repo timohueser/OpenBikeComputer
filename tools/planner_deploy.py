@@ -170,6 +170,9 @@ def verify_services(active, document, origin):
         if tilejson["maxzoom"] != 14: raise ValueError("Basemap is incomplete")
     with sources.open_url(active["places"]) as response:
         if not json.load(response).get("tiles"): raise ValueError("Rider places are absent")
+    with sources.open_url(active["overlays"]) as response:
+        if json.load(response).get("routing_package") != document["routing_package"]:
+            raise ValueError("Overlay tiles use another routing package")
     probe = document["probe"]
     import math
     z = 12

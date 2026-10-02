@@ -34,8 +34,8 @@ R2 stores release files under `planner/releases/ID/`. It stores source mirrors
 under `planner/sources/`, without the local `sources/` path prefix. A source name
 starts with its SHA-256. Source mirrors can be shared by releases.
 
-`maps/` contains `basemap.pmtiles`, `places.pmtiles`, `terrain.pmtiles`, map
-assets, and their manifest. `routing/` contains the three files in the
+`maps/` contains `basemap.pmtiles`, `places.pmtiles`, `overlays.pmtiles`,
+`terrain.pmtiles`, map assets, and their manifest. `routing/` contains the three files in the
 [route package contract](route-package.md), plus `overlays.sqlite`. The overlay
 index stores the routing manifest identity and has the same OSM source.
 `search/` contains `REGION.sqlite`
@@ -65,9 +65,26 @@ properties. The kinds are the `kinds` keys of the web planner's
 the basemap's deepest zoom. Each place occurs once, in the tile that contains it.
 A tile with no places is absent.
 
+`overlays.pmtiles` holds the route networks and access restrictions of the
+overlay index. It has gzip MVT tiles from zoom 6 to 14, with extent 4096. Its
+metadata `routing_package` is the routing manifest identity of the overlay index.
+
+| Layer | Feature ID | Properties |
+| --- | --- | --- |
+| `cycling`, `hiking` | Way ID of the first way in the line | `rank`, `ref`, and `routes`: a JSON array of relation IDs in rank order. `hiking` adds `marker`, the first route `symbol` that is not empty. |
+| `access` | Way ID | `cycling_status`, `walking_status`, `name`, `ref`, `conditional`, and `riding`, `walking`, `pushing` and `tags` as JSON text |
+| `routes` | Relation ID | The route properties that are not empty: `kind`, `network`, `rank`, `name`, `ref`, `website`, `symbol`, `symbol_text`. The point is the tile origin. |
+
+A feature starts at the lower mode minimum zoom of its overlay index feature,
+at most zoom 14. The planner shows access from the zoom of its travel mode.
+A line names only the routes that start at or below the tile zoom. Lines with
+equal properties join where exactly two of them meet. The `routes` layer of a
+tile holds each route that its lines name. A tile with no features is absent.
+
 The tile API serves `/releases/ID/basemap.json`, vector tiles at
 `/releases/ID/basemap/Z/X/Y.mvt`, `/releases/ID/places.json`, places tiles at
-`/releases/ID/places/Z/X/Y.mvt`, and Terrarium tiles at
+`/releases/ID/places/Z/X/Y.mvt`, `/releases/ID/overlays.json`, overlay tiles at
+`/releases/ID/overlays/Z/X/Y.mvt`, and Terrarium tiles at
 `/releases/ID/terrain/Z/X/Y.webp`. An absent tile returns 204. The raw archives
 remain downloadable from R2.
 
