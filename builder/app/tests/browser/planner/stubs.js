@@ -37,7 +37,7 @@ export function classify(url) {
 const metres = ([lon1, lat1], [lon2, lat2]) =>
   Math.hypot((lon2 - lon1) * 111_320 * Math.cos((lat1 * Math.PI) / 180), (lat2 - lat1) * 110_574);
 
-/** A straight-line route through the points, in the answer format of `specs/route-api.md`. */
+/** A straight-line route through the points, in the answer format of `specs/route-api.md`. A leg position names its point. */
 function route(points, profile, id) {
   const steps = 8;
   const geometry = [points[0]];
@@ -46,10 +46,12 @@ function route(points, profile, id) {
     const [a, b] = [points[i - 1], points[i]];
     const from = geometry.length - 1;
     for (let s = 1; s <= steps; s++) geometry.push([a[0] + ((b[0] - a[0]) * s) / steps, a[1] + ((b[1] - a[1]) * s) / steps]);
-    legs.push({ from_index: from, to_index: geometry.length - 1 });
+    legs.push({ from_index: from, to_index: geometry.length - 1, start: `budget-test:${a}`, end: `budget-test:${b}` });
   }
   const distance = [0];
   for (let i = 1; i < geometry.length; i++) distance.push(distance[i - 1] + metres(geometry[i - 1], geometry[i]));
+  const totals = metres => ({ distance_m: metres, ascent_m: 0, seconds: metres / 5, surface_m: [0, metres, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 });
+  for (const leg of legs) leg.totals = totals(distance[leg.to_index] - distance[leg.from_index]);
   const deltas = values => values.map((value, i) => value - (i ? values[i - 1] : 0));
   const [lon, lat] = [0, 1].map(axis => deltas(geometry.map(p => Math.round(p[axis] * 1e6))));
   const edges = geometry.length - 1;
@@ -60,10 +62,7 @@ function route(points, profile, id) {
     elapsed_s: deltas(distance.map(d => Math.round(d / 5))),
     surfaces: [['Paved', edges]],
     pushing: [[false, edges]],
-    totals: {
-      distance_m: distance[edges], ascent_m: 0, seconds: distance[edges] / 5,
-      surface_m: [0, distance[edges], 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0,
-    },
+    totals: totals(distance[edges]),
     legs,
     snap_truncated: false,
   };

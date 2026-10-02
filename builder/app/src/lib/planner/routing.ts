@@ -1,6 +1,7 @@
 import { presetSuffix } from './riding-profiles';
 import { cumulative, firstIndex, orderedRoutePoints, routingKey, type Coordinate, type Trip } from './editor';
 import { decodeRoutes } from './route-answer';
+import type { LegCache } from './route-legs';
 
 export type Surface = 'Unknown' | 'Paved' | 'Compacted' | 'Gravel' | 'Dirt' | 'Rough';
 
@@ -11,6 +12,14 @@ export interface RouteTotals {
     surface_m: number[];
     unknown_elevation_m: number;
     pushing_m: number;
+}
+/** `start` and `end` are opaque road positions (`specs/route-api.md`). */
+export interface RouteLeg {
+    from_index: number;
+    to_index: number;
+    start: string;
+    end: string;
+    totals: RouteTotals;
 }
 export interface EngineRoute {
     id: string;
@@ -23,7 +32,7 @@ export interface EngineRoute {
     surfaces: Surface[];
     pushing: boolean[];
     totals: RouteTotals;
-    legs: { from_index: number; to_index: number }[];
+    legs: RouteLeg[];
     snap_truncated: boolean;
 }
 export interface RoutingLine {
@@ -50,10 +59,11 @@ export interface RoutingLine {
 const endpoint = import.meta.env.VITE_PLANNER_ROUTING_URL ?? '/routing';
 
 /** With `'only'`, the answer leaves out the primary route and can be empty. */
-export async function requestRoute(points: Coordinate[], profile: string, signal: AbortSignal, alternatives: boolean | 'only' = false, turnarounds: number[] = []): Promise<EngineRoute[]> {
+export async function requestRoute(points: Coordinate[], profile: string, signal: AbortSignal, alternatives: boolean | 'only' = false, turnarounds: number[] = [],
+    pins: { start_position?: string; end_position?: string } = {}): Promise<EngineRoute[]> {
     const response = await fetch(`${endpoint}/v1/route`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
-        body: JSON.stringify({ points, profile, ...(alternatives === 'only' ? { alternatives_only: true } : { alternatives }), turnarounds }),
+        body: JSON.stringify({ points, profile, ...(alternatives === 'only' ? { alternatives_only: true } : { alternatives }), turnarounds, ...pins }),
     });
     const data = await response.json().catch(() => { throw new Error('The routing service returned an invalid response.'); });
     if (!response.ok) throw new Error(data.message ?? 'Routing is unavailable.');
@@ -86,8 +96,8 @@ export function selectRoute(trip: Trip, route: EngineRoute, alternatives: Engine
     };
 }
 
-/** Consecutive routed legs form one request, so a shaping point keeps its road direction. */
-export async function calculateLine(trip: Trip, signal: AbortSignal): Promise<RoutingLine> {
+/** Consecutive routed legs form one run, so a shaping point keeps its road direction. */
+export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCache): Promise<RoutingLine> {
     const points = orderedRoutePoints(trip);
     if (points.length < 2) throw new Error('Choose a start and finish to calculate a route.');
     const result: RoutingLine = { choiceId: '', key: routingKey(trip), coordinates: [], elevation: [], elapsed: [], surfaces: [], pushing: [], stops: [], seconds: 0,
@@ -147,7 +157,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal): Promise<Ro
             }
         }
         const canOfferAlternatives = i === 1 && until === points.length - 1 && !turnarounds.length;
-        const [route] = await requestRoute(expanded, result.profile, signal, false, turnarounds);
+        const route = await legs.route(expanded, turnarounds, result.profile, signal);
         if (canOfferAlternatives) { result.alternatives = [route]; result.choiceId = route.id; result.alternativesReady = false; }
         const start = append(route.geometry, route.elevation, route.elapsed, route.surfaces, route.pushing);
         const lengths = cumulative(route.geometry);
@@ -170,31 +180,4 @@ export function movingSecondsAt(line: RoutingLine, progress: number): number {
     if (i === 0) return 0;
     const share = (distance - lengths[i - 1]) / (lengths[i] - lengths[i - 1] || 1);
     return line.elapsed[i - 1] + share * (line.elapsed[i] - line.elapsed[i - 1]);
-}
-
-/** The latest routes by routing key, so undo, redo and a return to an earlier bike need no request.
- * It keeps the routes that a request for their key returns; the plan keeps a picked alternative. */
-export class RouteCache {
-    private lines = new Map<string, RoutingLine>();
-    constructor(private readonly size = 8) {}
-    /** Keeps a route, but never a picked alternative: it would hide the primary route of its key.
-     * When the cache is full, the least recently used route goes. */
-    add(line: RoutingLine): void {
-        if (line.picked) return;
-        this.lines.delete(line.key);
-        this.lines.set(line.key, line);
-        if (this.lines.size > this.size) this.lines.delete(this.lines.keys().next().value!);
-    }
-    /** The plan with its route. A route that matches the plan goes into the cache; a plan without one takes the cached route. */
-    attach(plan: Trip): Trip {
-        const key = routingKey(plan);
-        if (plan.routing?.key === key) {
-            this.add(plan.routing);
-            return plan;
-        }
-        const line = this.lines.get(key);
-        if (!line) return plan;
-        this.add(line);
-        return { ...plan, routing: line };
-    }
 }

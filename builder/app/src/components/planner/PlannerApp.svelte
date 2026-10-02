@@ -45,7 +45,8 @@
 
     const storageKey = 'obc-planner-routing-v2';
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
-    import { calculateLine, requestAlternatives, RouteCache, selectRoute, type EngineRoute } from '../../lib/planner/routing';
+    import { calculateLine, requestAlternatives, selectRoute, type EngineRoute } from '../../lib/planner/routing';
+    import { LegCache } from '../../lib/planner/route-legs';
     const defaultLabels: Record<EditableKind, string> = {
         via: 'Shaping point',
         pass: 'Pass here',
@@ -56,7 +57,7 @@
 
     // Raw state: a change replaces the trip and never edits it in place, and a route has tens of thousands of points.
     let trip = $state.raw<Trip>(emptyTrip());
-    const routes = new RouteCache();
+    const legs = new LegCache();
     let mounted = false;
     const hasEndpoints = $derived(trip.points.some(p => p.kind === 'start') && trip.points.some(p => p.kind === 'finish'));
     const nextEndpoint = $derived(trip.points.some(p => p.kind === 'start') ? 'finish' : 'start');
@@ -64,24 +65,25 @@
     let draggingPoint = $state(false);
     let previewStatus = $state('');
     const shownTrip = $derived(previewTrip ?? trip);
-    const preview = routePreview(calculateLine, (draft, line) => {
+    const preview = routePreview((draft: Trip, signal: AbortSignal) => calculateLine(draft, signal, legs), (draft, line) => {
         previewTrip = { ...draft, routing: line };
         previewStatus = 'Route preview · release to keep';
     }, error => { previewStatus = error instanceof Error ? error.message : 'Preview unavailable.'; });
     let routingStatus = $state('Choose a start and finish');
     let routeAttempt = $state(0);
     const routingInput = $derived(routingKey(trip));
+    // Undo returns a plan without its route, often with an unchanged routing key.
+    const routed = $derived(trip.routing?.key === routingInput);
     $effect(() => {
         const key = routingInput;
         void routeAttempt;
         if (!hasEndpoints) { routingStatus = 'Choose a start and finish'; return; }
+        if (routed) return;
         const plan = untrack(() => trip);
-        if (plan.routing?.key === key) return;
         const abort = new AbortController();
         routingStatus = 'Calculating route…';
-        calculateLine(plan, abort.signal).then(line => {
+        calculateLine(plan, abort.signal, legs).then(line => {
                 if (abort.signal.aborted || key !== routingInput) return;
-                routes.add(line);
                 trip = { ...trip, routing: line };
             }).catch(error => { if (!abort.signal.aborted) routingStatus = error instanceof Error ? error.message : 'Routing is unavailable.'; });
         return () => abort.abort();
@@ -107,7 +109,6 @@
         requestAlternatives(plan, plan.routing!, abort.signal).then(alternatives => {
             if (abort.signal.aborted || key !== routingInput) return;
             const routing = { ...trip.routing!, alternatives, alternativesReady: true };
-            routes.add(routing);
             trip = { ...trip, routing };
             waysStatus = '';
         }).catch(error => { if (!abort.signal.aborted) waysStatus = error instanceof Error ? error.message : 'Alternatives unavailable.'; });
@@ -356,7 +357,7 @@
         preview.cancel();
         previewTrip = null;
         draggingPoint = false;
-        trip = routes.attach(history.commit(trip, next));
+        trip = history.commit(trip, next);
         if (!hasEndpoints) { expandedDay = null; list = 'plan'; planEditing = false; hoverProgress = null; }
         revision++;
         message = description;
@@ -410,12 +411,12 @@
     }
 
     function undo() {
-        trip = routes.attach(history.undo(trip));
+        trip = history.undo(trip);
         afterHistory('Change undone');
     }
 
     function redo() {
-        trip = routes.attach(history.redo(trip));
+        trip = history.redo(trip);
         afterHistory('Change restored');
     }
 
@@ -732,7 +733,7 @@
         applyingQuery = true; queryApplyError = '';
         try {
             let routingNote = '';
-            const next = await applyQueryChanges(before, answer.changes, (points,bike,goal) => buildQueryRoute(points,bike,goal,note => routingNote = note), next => calculateLine(next, new AbortController().signal));
+            const next = await applyQueryChanges(before, answer.changes, (points,bike,goal) => buildQueryRoute(points,bike,goal,note => routingNote = note), next => calculateLine(next, new AbortController().signal, legs));
             if (JSON.stringify(answer.changes) !== JSON.stringify(searchState.answer?.changes) || before !== trip) throw new Error('The plan changed. Review the search again.');
             commit(next, [answer.description ?? 'Query applied', routingNote].filter(Boolean).join(' · '));
             exitSearch(); clearSelection();

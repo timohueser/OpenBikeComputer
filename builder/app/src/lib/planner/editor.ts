@@ -581,7 +581,7 @@ export function nightOrderConflicts(trip: Trip): [RoutePoint, RoutePoint][] {
     return nights.slice(1).flatMap((point, i) => stopProgress(stops, point) <= stopProgress(stops, nights[i]) ? [[nights[i], point] as [RoutePoint, RoutePoint]] : []);
 }
 
-/** What the history keeps: the plan without its route, which the route cache keeps.
+/** What the history keeps: the plan without its route, which the leg cache rebuilds.
  * A picked alternative stays with its plan, because no request for the plan returns it. */
 export function planOf(trip: Trip): Trip {
     const { routing, ...plan } = trip;
