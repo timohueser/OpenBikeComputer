@@ -73,6 +73,8 @@ def setup(args):
             run(*command)
             output.rename(route)
     run(ROOT / "target/release/route-server", route, "--build-overlays")
+    if not (maps.DATA / "overlays.pmtiles").exists():
+        maps.overlays_archive(route / "overlays.sqlite", maps.DATA / "overlays.pmtiles")
     verify(args, full=True)
     print("Setup complete. Run: obc planner", flush=True)
 
@@ -85,8 +87,8 @@ def verify(args, full=False):
     routing = json.loads((route / "manifest.json").read_text())
     if routing["region"] != REGION or routing["bounds"] != maps.bounds(maps.BW_BOUNDS):
         raise ValueError("The route package must cover Baden-Württemberg. Repeat setup with a fresh data directory.")
-    if not (route / "overlays.sqlite").is_file():
-        raise ValueError("Missing overlay index. Run obc planner setup.")
+    if not (route / "overlays.sqlite").is_file() or not (maps.DATA / "overlays.pmtiles").is_file():
+        raise ValueError("Missing overlay index or tiles. Run obc planner setup.")
     for name in ["touring", "road", "gravel", "mtb", "hiking"]:
         if name not in routing["metrics"]:
             raise ValueError(f"Route package lacks {name}.")

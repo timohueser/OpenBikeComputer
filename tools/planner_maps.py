@@ -124,7 +124,12 @@ def compact_archive(source, destination, region, terrain=False, recompress=True)
 
 def places_archive(basemap, destination):
     run("uv", "run", "--with-requirements", ROOT / "tools/requirements-planner-maps.txt",
-        "python", ROOT / "tools/planner_places.py", basemap, destination, cwd=ROOT)
+        "python", "-m", "tools.planner_places", basemap, destination, cwd=ROOT)
+
+
+def overlays_archive(index, destination):
+    run("uv", "run", "--with-requirements", ROOT / "tools/requirements-planner-maps.txt",
+        "python", "-m", "tools.planner_overlays", index, destination, cwd=ROOT)
 
 
 def prepare(args):
@@ -203,6 +208,7 @@ def preview(args):
         "VITE_PLANNER_ROUTING_URL": "/routing",
         "VITE_PLANNER_PMTILES_URL": base + "/basemap.pmtiles",
         "VITE_PLANNER_PLACES_URL": base + "/places.pmtiles",
+        "VITE_PLANNER_OVERLAYS_URL": base + "/overlays.pmtiles",
         "VITE_PLANNER_DEM_URL": "/tiles/terrain/{z}/{x}/{y}.webp",
         "VITE_PLANNER_GLYPHS_URL": base + "/assets/fonts/{fontstack}/{range}.pbf",
         "VITE_PLANNER_SPRITES_URL": base + "/assets/sprites/v4",
