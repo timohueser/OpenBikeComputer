@@ -19,7 +19,7 @@ export interface QueryRequest {
 export interface SearchContext {
     view: [number, number, number, number]; here?: Coordinate; startDate?: string; pointing?: Where;
     /** The full route: `km` and `seconds` hold one value per coordinate. */
-    plan: { coordinates: Coordinate[]; km: number[]; seconds?: number[]; days: { number: number; from: number; to: number; rest: boolean }[];
+    plan: { coordinates: Coordinate[]; km: readonly number[]; seconds?: number[]; days: { number: number; from: number; to: number; rest: boolean }[];
         points: { id: string; label: string; coordinate: Coordinate; kind: string; placeKind?: string }[] };
 }
 /** The status at search time; `closesAt` is the local clock time of a closure within the next hour. */

@@ -6,17 +6,15 @@ const lines = new WeakMap<Coordinate[], { seconds?: number[]; line: SearchLine }
 /** The route line a search request carries. Each kept point keeps its kilometre and riding
  *  hour on the full line, so route positions do not move when points drop out. A route's
  *  line is computed at its first query and reused until the route changes. */
-export function searchLine(coordinates: Coordinate[], km: number[], seconds?: number[]): SearchLine {
+export function searchLine(coordinates: Coordinate[], km: readonly number[], seconds?: number[]): SearchLine {
     const cached = lines.get(coordinates);
     if (cached && cached.seconds === seconds) return cached.line;
-    // The route lives in deep reactive state, where each read is slow: read it once.
-    const plain = coordinates.map(c => [c[0], c[1]] as Coordinate), time = seconds?.slice();
-    const kept = simplify(plain, km, time);
+    const kept = simplify(coordinates, km, seconds);
     const line = {
-        coordinates: kept.map(i => plain[i].map(v => round(v, 5)) as Coordinate),
+        coordinates: kept.map(i => coordinates[i].map(v => round(v, 5)) as Coordinate),
         // The last kilometre stays exact: the planner sends the last day's end as the route length.
-        km: kept.map(i => i === plain.length - 1 ? km[i] : round(km[i], 3)),
-        hours: time && kept.map(i => round(time[i] / 3600, 3)),
+        km: kept.map(i => i === coordinates.length - 1 ? km[i] : round(km[i], 3)),
+        hours: seconds && kept.map(i => round(seconds[i] / 3600, 3)),
     };
     lines.set(coordinates, { seconds, line });
     return line;
@@ -31,7 +29,7 @@ const DELAY_SECONDS = 10;
 
 /** Douglas–Peucker over two errors: the distance from the kept line, and the riding time
  *  against the time interpolated by kilometre between kept points. */
-function simplify(line: Coordinate[], km: number[], seconds?: number[]): number[] {
+function simplify(line: Coordinate[], km: readonly number[], seconds?: number[]): number[] {
     const keep = new Uint8Array(line.length);
     keep[0] = keep[line.length - 1] = 1;
     const spans = line.length > 2 ? [[0, line.length - 1]] : [];

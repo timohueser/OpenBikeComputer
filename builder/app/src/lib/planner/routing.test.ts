@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calculateLine, profileId, selectRoute, movingSecondsAt, type EngineRoute } from './routing';
+import { calculateLine, profileId, RouteCache, selectRoute, movingSecondsAt, type EngineRoute } from './routing';
 import { ridingProfiles, presetName, type BikeType } from './riding-profiles';
 import { surfaceRuns, surfaceWindow } from './surface-data';
-import { initialTrip, cumulative, removeRoutePoint, setEndpoint, routingKey, routeCoordinates, type Trip } from './editor';
+import { initialTrip, cumulative, planOf, removeRoutePoint, storedPlan, setEndpoint, routingKey, routeCoordinates, TripHistory, type Coordinate, type Trip } from './editor';
 
 const route: EngineRoute = {
     id: 'test-route', surfaces: ['Paved', 'Gravel'], pushing: [false, true], reason: 'primary', elapsed: [0, 3000, 4000], package: 'test', profile: 'touring', geometry: [[7.8, 48], [7.9, 48], [8, 48]], elevation: [200, null, 400],
@@ -63,6 +63,42 @@ describe('routing integration', () => {
         const moved = { ...edited, points: edited.points.map(p => p.id === 'shape' ? { ...p, coordinate: [8.1, 48] as [number, number] } : p) };
         expect(routingKey(moved)).not.toBe(routingKey(plan));
         expect(routeCoordinates(moved)).toEqual([plan.points[0].coordinate]);
+    });
+    it('returns the cached route of a plan seen before, by its routing key', () => {
+        const touring = trip();
+        const gravel: Trip = { ...touring, bike: 'gravel' };
+        const moved = { ...touring, points: touring.points.map(p => p.id === 'shape' ? { ...p, coordinate: [7.95, 48] as Coordinate } : p) };
+        const cache = new RouteCache(2);
+        const line = selectRoute(touring, route, [route]);
+        cache.attach({ ...touring, routing: line });
+        expect(cache.attach(gravel).routing).toBeUndefined();
+        expect(cache.attach({ ...touring, days: 5, points: touring.points.map(p => ({ ...p, label: 'Renamed' })) }).routing).toBe(line);
+        expect(cache.attach(moved).routing).toBeUndefined();
+        cache.add(selectRoute(gravel, route, [route]));
+        cache.add(selectRoute(moved, route, [route]));
+        expect(cache.attach(touring).routing).toBeUndefined();
+        expect(cache.attach(gravel).routing?.key).toBe(routingKey(gravel));
+    });
+    it('keeps a picked corridor with its plan and the primary route in the cache', () => {
+        const plan = trip();
+        const corridor: EngineRoute = { ...route, id: 'corridor', reason: 'corridor', geometry: [[7.8, 48], [7.9, 48.05], [8, 48]] };
+        const primary = selectRoute(plan, route, [route, corridor]);
+        const picked = { ...plan, routing: selectRoute(plan, corridor, [route, corridor]) };
+        const cache = new RouteCache(1);
+        cache.add(primary);
+        const history = new TripHistory();
+        const shown = cache.attach(history.commit({ ...plan, routing: primary }, picked));
+        expect(shown.routing?.choiceId).toBe('corridor');
+        expect(planOf(shown)).toBe(picked);
+        const undone = cache.attach(history.undo(shown));
+        expect(undone.routing).toBe(primary);
+        cache.add({ ...picked.routing, alternativesReady: false });
+        expect(cache.attach(plan).routing).toBe(primary);
+        expect(storedPlan(shown).routing).toMatchObject({ choiceId: 'corridor', picked: true, alternatives: [] });
+        expect(storedPlan(undone).routing).toBeUndefined();
+        cache.add(selectRoute({ ...plan, bike: 'gravel' }, route, [route]));
+        expect(cache.attach(history.redo(undone)).routing?.choiceId).toBe('corridor');
+        expect(planOf({ ...picked, points: picked.points.map(p => p.id === 'shape' ? { ...p, coordinate: [7.95, 48] as Coordinate } : p) }).routing).toBeUndefined();
     });
     it('makes visit reversals explicit and accounts for manual joins', async () => {
         const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [{ ...route, legs: Array.from({ length: 4 }, (_, i) => ({ from_index: 0, to_index: Math.min(i, 2), totals: route.totals })) }] }) });
