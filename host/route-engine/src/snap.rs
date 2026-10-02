@@ -84,6 +84,12 @@ pub struct Position {
     /// Fraction of the directed polyline's geometric length, from zero to one.
     pub fraction: f64,
 }
+impl Position {
+    /// The opaque wire form. It keeps the exact fraction, so a pin matches only this position.
+    pub fn id(&self) -> String {
+        format!("{}:{}", self.road, self.fraction)
+    }
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Candidate {

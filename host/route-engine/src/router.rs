@@ -24,6 +24,13 @@ pub struct Request {
     /// Interior point indices where the rider explicitly permits a reversal.
     #[serde(default)]
     pub turnarounds: Vec<usize>,
+    /// Pins the first point to a leg position of an earlier answer, so a joined leg keeps its direction.
+    /// A position that is not among the point's road candidates is ignored.
+    #[serde(default)]
+    pub start_position: Option<String>,
+    /// Pins the last point in the same way.
+    #[serde(default)]
+    pub end_position: Option<String>,
 }
 
 #[derive(Debug)]
@@ -200,6 +207,14 @@ impl<P: RoutingData> Router<P> {
                 found.retained.retain(|c| c.snap_distance_m <= cutoff);
                 found.truncated = found.retained.len() > Policy::default().max_candidates;
                 found.retained.truncate(Policy::default().max_candidates);
+            }
+            let pin = match index {
+                0 => request.start_position.as_ref(),
+                last if last + 1 == request.points.len() => request.end_position.as_ref(),
+                _ => None,
+            };
+            if let Some(pinned) = pin.and_then(|pin| found.retained.iter().find(|c| c.position.id() == *pin)) {
+                found.retained = vec![pinned.clone()];
             }
             truncated |= found.truncated;
             if found.retained.is_empty() {

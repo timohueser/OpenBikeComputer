@@ -2,7 +2,7 @@ use route_engine::{
     model::{Graph, Pace, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH},
     package::{digest, Package, Source},
     snap::{Candidate, Policy},
-    Control, Error, Request, Router,
+    Control, Error, Request, Route, Router,
 };
 use std::{
     cmp::Reverse,
@@ -95,6 +95,8 @@ fn profile_selection_keeps_closed_routes_and_removes_unused_objects() {
             alternatives: false,
             alternatives_only: false,
             turnarounds: vec![],
+            start_position: None,
+            end_position: None,
         };
         let expected = before.route(&request, &Control::default()).unwrap();
         let actual = after.route(&request, &Control::default()).unwrap();
@@ -268,6 +270,8 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
                         alternatives: false,
                         alternatives_only: false,
                         turnarounds: vec![],
+                        start_position: None,
+                        end_position: None,
                     },
                     &Control::default(),
                 );
@@ -402,6 +406,8 @@ fn bounding_box_repreparation_preserves_whole_roads_and_matches_independent_sear
                         alternatives: false,
                         alternatives_only: false,
                         turnarounds: vec![],
+                        start_position: None,
+                        end_position: None,
                     },
                     &Control::default(),
                 );
@@ -490,6 +496,8 @@ fn query_does_not_read_source_tag_pages_but_installation_verifies_them() {
         alternatives: false,
         alternatives_only: false,
         turnarounds: vec![],
+        start_position: None,
+        end_position: None,
     };
     assert!(router.route(&request, &Control::default()).is_ok());
 }
@@ -510,6 +518,8 @@ fn via_direction_pace_and_failure_states_are_explicit() {
         alternatives: false,
         alternatives_only: false,
         turnarounds: vec![],
+        start_position: None,
+        end_position: None,
     };
     let route = router.route(&request, &Control::default()).unwrap();
     assert_eq!(route.attachments.len(), 3);
@@ -562,6 +572,8 @@ fn a_shape_keeps_direction_and_only_an_explicit_visit_can_reverse() {
         alternatives: false,
         alternatives_only: false,
         turnarounds: vec![],
+        start_position: None,
+        end_position: None,
     };
     let shaped = router.route(&request, &Control::default()).unwrap();
     request.turnarounds = vec![1];
@@ -571,6 +583,47 @@ fn a_shape_keeps_direction_and_only_an_explicit_visit_can_reverse() {
     assert_eq!(visit.geometry.len(), visit.elapsed.len());
     assert!(visit.elapsed.is_sorted_by(|a, b| a <= b));
     assert!((visit.elapsed.last().unwrap() - visit.totals.seconds).abs() < 1e-6);
+}
+
+#[test]
+fn a_window_pinned_to_its_neighbour_legs_repeats_the_whole_trip() {
+    let graph = fixture();
+    let (source, manifest) = package(&graph);
+    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let whole = Request {
+        points: [(0, 0.3), (7, 0.5), (15, 0.5), (20, 0.6), (3, 0.7), (11, 0.4)]
+            .map(|(road, fraction)| coordinate(&graph.roads[road], fraction))
+            .to_vec(),
+        profile: "touring".into(),
+        pace: Pace::default(),
+        alternatives: false,
+        alternatives_only: false,
+        turnarounds: vec![],
+        start_position: None,
+        end_position: None,
+    };
+    let route = router.route(&whole, &Control::default()).unwrap();
+    let leg = |route: &Route, k: usize| {
+        let leg = &route.legs[k];
+        (
+            route.geometry[leg.from_index..=leg.to_index].to_vec(),
+            leg.totals.distance_m,
+            leg.start_attachment.position.id(),
+        )
+    };
+    for k in 1..route.legs.len() {
+        let window = Request {
+            points: whole.points[k - 1..=k + 1].to_vec(),
+            start_position: Some(route.legs[k - 1].start_attachment.position.id()),
+            end_position: Some(route.attachments[k + 1].position.id()),
+            ..whole.clone()
+        };
+        let pinned = router.route(&window, &Control::default()).unwrap();
+        assert_eq!([leg(&pinned, 0), leg(&pinned, 1)], [leg(&route, k - 1), leg(&route, k)], "window at point {k}");
+        assert_eq!(pinned.attachments[2].position.id(), route.attachments[k + 1].position.id());
+    }
+    let foreign = Request { start_position: Some("0:0.5".into()), end_position: Some("x".into()), ..whole.clone() };
+    assert_eq!(router.route(&foreign, &Control::default()).unwrap().geometry, route.geometry);
 }
 
 #[test]
@@ -652,6 +705,8 @@ fn closed_packages_route_across_multiple_checked_blocks() {
         alternatives: true,
         alternatives_only: false,
         turnarounds: vec![],
+        start_position: None,
+        end_position: None,
     };
     let result = router.routes(&request, &Control::default()).unwrap();
     assert_eq!(result.routes.len(), 1, "A single corridor does not need invented alternatives");
@@ -694,6 +749,8 @@ fn alternatives_find_a_separate_corridor_without_an_out_and_back_probe() {
         alternatives: true,
         alternatives_only: false,
         turnarounds: vec![],
+        start_position: None,
+        end_position: None,
     };
     let routes = router.routes(&request, &Control::default()).unwrap().routes;
     assert_eq!(routes.len(), 2);
@@ -810,6 +867,8 @@ fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profi
         alternatives: false,
         alternatives_only: false,
         turnarounds: vec![1],
+        start_position: None,
+        end_position: None,
     };
     let route = router.route(&request, &Control::default()).unwrap();
     assert_eq!(route.attachments[1].projected.lat, 0);
@@ -859,6 +918,8 @@ fn route_goals_preserve_the_bikes_surface_suitability() {
         alternatives: false,
         alternatives_only: false,
         turnarounds: vec![],
+        start_position: None,
+        end_position: None,
     };
     for profile in ["road", "road/shorter", "road/smoother"] {
         request.profile = profile.into();
@@ -917,6 +978,8 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
         alternatives: false,
         alternatives_only: false,
         turnarounds: vec![],
+        start_position: None,
+        end_position: None,
     };
     let (source, manifest) = package(&graph);
     let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
@@ -967,6 +1030,8 @@ fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
                 alternatives: false,
                 alternatives_only: false,
                 turnarounds: vec![],
+                start_position: None,
+                end_position: None,
             };
             let before = original_router.route(&request, &Control::default()).unwrap();
             let after = full_router.route(&request, &Control::default()).unwrap();
