@@ -9,7 +9,10 @@ from pathlib import Path, PurePosixPath
 import sqlite3
 import sys
 
-from . import planner_cutout, planner_offline, planner_runtime, planner_maps
+try:
+    from . import planner_cutout, planner_offline, planner_runtime, planner_maps
+except ImportError:
+    import planner_cutout, planner_offline, planner_runtime, planner_maps
 
 ZOOM = 9
 MAP_ZOOM = 11
@@ -311,10 +314,9 @@ def publish(source, routing, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
-    parser.add_argument("routing", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
-    publish(args.source, args.routing, args.output)
+    prepare(args.source, args.output)
 
 
 def prepare(source, output):
