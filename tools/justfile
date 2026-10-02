@@ -955,6 +955,29 @@ req *args:
     source "{{lib}}"; obc_init
     _run python3 "$OBC_TOOLS/req.py" "$@"
 
+# List and view omit bodies and discussion. Body, comments and checks are separate reads.
+# Pass native `gh` filters or a PR number, URL or branch after the mode; view defaults to this branch.
+# Comments are conversation comments, not inline review threads. Use the GitHub connector for threads.
+#   obc pr list --limit 10          obc pr view N          obc pr body N
+#   obc pr list --jq '.[].title'    obc pr comments N      obc pr checks N
+# Read selected PR fields as JSON. Args: list | view | body | comments | checks [gh args]
+[group('agent')]
+pr *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    mode="${1:-view}"
+    (( $# == 0 )) || shift
+    case "$mode" in
+      list) _run gh pr list "$@" --json number,title,state,url ;;
+      view) _run gh pr view "$@" --json number,title,state,url,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,reviewDecision,mergeStateStatus ;;
+      body) _run gh pr view "$@" --json body ;;
+      comments) _run gh pr view "$@" --json comments ;;
+      checks) _run gh pr checks "$@" --json name,state,bucket,link ;;
+      *) _err "unknown PR read: $mode (want: list, view, body, comments, checks)"; exit 2 ;;
+    esac
+
 # The raw log of one red job is about a megabyte; this prints each failed step's last lines.
 #   obc ci            obc ci --pr N            obc ci RUN_ID
 # Print the failures of a CI run: this branch's latest, a PR's, or one by id. Args: [RUN] [--pr N] [--branch B] [--lines N]
