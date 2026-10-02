@@ -5,9 +5,11 @@ import worker, { tileRoute } from '../src/worker.mjs';
 const release = 'a'.repeat(64), base = `/releases/${release}`;
 test('tile routes bound archive selection, coordinates and types', () => {
   assert.deepEqual(tileRoute(`${base}/basemap/14/16383/16383.mvt`).tile, [14, 16383, 16383]);
+  assert.deepEqual(tileRoute(`${base}/places/11/2047/2047.mvt`).tile, [11, 2047, 2047]);
   assert.equal(tileRoute(`${base}/terrain.json`).name, 'terrain');
-  for (const path of [`${base}/basemap/15/0/0.mvt`, `${base}/terrain/12/4096/0.webp`,
-    `${base}/terrain/0/0/0.mvt`, `${base}/other.json`, '/cell-catalog/catalog.json', `${base}/basemap/01/0/0.mvt`]) {
+  for (const path of [`${base}/basemap/15/0/0.mvt`, `${base}/places/12/0/0.mvt`, `${base}/places/0/0/0.webp`,
+    `${base}/terrain/12/4096/0.webp`, `${base}/terrain/0/0/0.mvt`, `${base}/other.json`, '/cell-catalog/catalog.json',
+    `${base}/basemap/01/0/0.mvt`]) {
     assert.equal(tileRoute(path), null, path);
   }
 });
@@ -77,6 +79,7 @@ test('range reads deliver decoded tiles, cache full GETs, and do not cache missi
   const objects = new Map([
     [`${prefix}/public/grid.json`, JSON.stringify({format:2,map_zoom:11})],
     [`${prefix}/public/maps/tiles/basemap/0-0-0.pmtiles.json`, JSON.stringify({sha256:digest,encoding:'identity',bytes:bytes.length,decoded_bytes:bytes.length})],
+    [`${prefix}/public/maps/tiles/places/0-0-0.pmtiles.json`, JSON.stringify({sha256:digest,encoding:'identity',bytes:bytes.length,decoded_bytes:bytes.length})],
     [`${prefix}/public/device/catalog.json.json`, JSON.stringify({sha256:'e'.repeat(64),encoding:'identity',bytes:asset.length,decoded_bytes:asset.length})],
     [`${prefix}/public/maps/assets/sprites/v4/light@2x.json.json`, JSON.stringify({sha256:'e'.repeat(64),encoding:'identity',bytes:asset.length,decoded_bytes:asset.length})],
     [`${prefix}/objects/${digest}`, bytes], [`${prefix}/objects/${'e'.repeat(64)}`, asset],
@@ -90,8 +93,12 @@ test('range reads deliver decoded tiles, cache full GETs, and do not cache missi
       arrayBuffer:async()=>slice.buffer.slice(slice.byteOffset,slice.byteOffset+slice.byteLength)};
   }}};
   const pending=[],ctx={waitUntil(p){pending.push(p)}};
-  const response=await worker.fetch(new Request(`https://tiles.example/releases/${id}/basemap/0/0/0.mvt`),env,ctx);
-  assert.equal(response.status,200);assert.deepEqual(new Uint8Array(await response.arrayBuffer()),new Uint8Array([26,0]));
+  for (const name of ['basemap','places']) {
+    const response=await worker.fetch(new Request(`https://tiles.example/releases/${id}/${name}/0/0/0.mvt`),env,ctx);
+    assert.equal(response.status,200);assert.deepEqual(new Uint8Array(await response.arrayBuffer()),new Uint8Array([26,0]));
+  }
+  // Places are sparse: a tile without a pack is an absent tile, not a missing release.
+  assert.equal((await worker.fetch(new Request(`https://tiles.example/releases/${id}/places/11/5/5.mvt`),env,ctx)).status,204);
   const catalog=await worker.fetch(new Request(`https://tiles.example/releases/${id}/device/catalog.json`),env,ctx);
   assert.deepEqual(await catalog.json(),{hello:'map'});
   const sprite=await worker.fetch(new Request(`https://tiles.example/releases/${id}/maps/assets/sprites/v4/light@2x.json`),env,ctx);

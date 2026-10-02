@@ -19,7 +19,7 @@ class CleanupTests(unittest.TestCase):
         self.raw = release.encoded(self.document).decode()
         self.identity = hashlib.sha256(self.raw.encode()).hexdigest()
         self.active = {"id": self.identity, "region": "test", **{key: "https://maps.example/" + self.identity + "/" + key
-                       for key in ["basemap", "terrain", "routing", "search"]}}
+                       for key in ["basemap", "places", "terrain", "routing", "search"]}}
         self.current = {"format": 1, "active": self.active, "previous": {"id": "b" * 64}}
         self.remote = r2.Remote("test:bucket", {})
         self.prefix = "releases/" + self.identity + "/"
@@ -82,7 +82,7 @@ class CleanupTests(unittest.TestCase):
 
     def test_site_must_reference_active_endpoints(self):
         for active in [True, False]:
-            code = "\n".join(self.active[key] for key in ["basemap", "terrain", "routing", "search"]) if active else "old release"
+            code = "\n".join(self.active[key] for key in ["basemap", "places", "terrain", "routing", "search"]) if active else "old release"
             with patch.object(cleanup.sources, "open_url", side_effect=[
                     BytesIO(b'<script type="module" src="./assets/planner.js"></script>'), BytesIO(code.encode())]):
                 if active: cleanup.verify_site(self.active, "https://site.example")

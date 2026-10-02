@@ -113,7 +113,7 @@ class ReleaseTests(unittest.TestCase):
         active = release.endpoints("a" * 64, {"region": "test", "bounds": [1, 2, 3, 4],
                                    "attribution": "OSM", "terrain_attribution": "Terrain"}, "https://maps.example", "https://tiles.example", "https://api.example")
         env = release.vite_environment(active)
-        for key in ["VITE_PLANNER_TILEJSON_URL", "VITE_PLANNER_SEARCH_URL", "VITE_CATALOG_URL"]:
+        for key in ["VITE_PLANNER_TILEJSON_URL", "VITE_PLANNER_PLACES_URL", "VITE_PLANNER_SEARCH_URL", "VITE_CATALOG_URL"]:
             self.assertIn("a" * 64, env[key])
         active["terrain_attribution"] = "Terrain\nOTHER=value"
         with self.assertRaisesRegex(ValueError, "configuration"): release.vite_environment(active)

@@ -34,8 +34,8 @@ R2 stores release files under `planner/releases/ID/`. It stores source mirrors
 under `planner/sources/`, without the local `sources/` path prefix. A source name
 starts with its SHA-256. Source mirrors can be shared by releases.
 
-`maps/` contains `basemap.pmtiles`, `terrain.pmtiles`, map assets, and their
-manifest. `routing/` contains the three files in the
+`maps/` contains `basemap.pmtiles`, `places.pmtiles`, `terrain.pmtiles`, map
+assets, and their manifest. `routing/` contains the three files in the
 [route package contract](route-package.md), plus `overlays.sqlite`. The overlay
 index stores the routing manifest identity and has the same OSM source.
 `search/` contains `REGION.sqlite`
@@ -57,8 +57,17 @@ invisible feature. The facet has equal lower and upper bounds. The query also
 checks each mode's minimum zoom. A cutout retains every referenced geometry,
 attribute, and route.
 
+`places.pmtiles` holds the rider places of the basemap. It has gzip MVT tiles
+at zoom 11 only, with extent 4096 and one `pois` layer. Each feature is one
+point with the basemap feature ID and the basemap `kind`, `name`, and `name:en`
+properties. The kinds are the `kinds` keys of the web planner's
+[place categories](../builder/app/src/lib/planner/poi-kinds.ts). The bake reads
+the basemap's deepest zoom. Each place occurs once, in the tile that contains it.
+A tile with no places is absent.
+
 The tile API serves `/releases/ID/basemap.json`, vector tiles at
-`/releases/ID/basemap/Z/X/Y.mvt`, and Terrarium tiles at
+`/releases/ID/basemap/Z/X/Y.mvt`, `/releases/ID/places.json`, places tiles at
+`/releases/ID/places/Z/X/Y.mvt`, and Terrarium tiles at
 `/releases/ID/terrain/Z/X/Y.webp`. An absent tile returns 204. The raw archives
 remain downloadable from R2.
 
@@ -77,8 +86,9 @@ The online services and offline installer consume this same pool.
 `public/grid.json` contains `format: 2` and `map_zoom`. Each map pack, asset,
 TileJSON, and device catalog has a small pointer at `public/LOGICAL_PATH.json`.
 A pointer repeats the transport entry and adds `decoded_bytes`. The tile
-service resolves a pack through this pointer. No regional map archive is
-required beside the pool. Grid assets use the tile service origin.
+service resolves a pack through this pointer. A tile without a pack is absent.
+No regional map archive is required beside the pool. Grid assets use the tile
+service origin.
 
 The VPS materializes routing, search, and offline selection metadata. Search
 uses `search/REGION.grid.json` to list cell files and coverage. The
