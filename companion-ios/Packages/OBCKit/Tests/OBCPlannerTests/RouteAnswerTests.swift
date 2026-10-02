@@ -7,7 +7,7 @@ import Testing
 struct RouteAnswerTests {
     private struct Vector: Decodable {
         struct Source: Decodable {
-            struct Leg: Decodable { let from_index: Int; let to_index: Int }
+            struct Leg: Decodable { let from_index: Int; let to_index: Int; let totals: Totals }
             struct Totals: Decodable { let distance_m: Double; let ascent_m: Double; let seconds: Double }
             let package: String
             let profile: String
@@ -42,7 +42,9 @@ struct RouteAnswerTests {
         #expect(zip(route.elevation, source.elevation).allSatisfy { abs(($0 ?? 0) - ($1 ?? 0)) <= 0.05 + 1e-9 })
         #expect(zip(route.elapsed, source.elapsed).allSatisfy { abs($0 - $1) <= 0.5 })
         #expect(route.legs.map { [$0.from_index, $0.to_index] } == source.legs.map { [$0.from_index, $0.to_index] })
-        #expect(route.totals.distance_m == source.totals.distance_m && route.totals.ascent_m == source.totals.ascent_m)
-        #expect(abs(route.totals.seconds - source.totals.seconds) <= 0.5)
+        for (totals, expected) in zip([route.totals] + route.legs.map(\.totals), [source.totals] + source.legs.map(\.totals)) {
+            #expect(totals.distance_m == expected.distance_m && totals.ascent_m == expected.ascent_m)
+            #expect(abs(totals.seconds - expected.seconds) <= 0.5)
+        }
     }
 }

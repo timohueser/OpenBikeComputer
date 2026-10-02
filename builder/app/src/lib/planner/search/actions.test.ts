@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { addRestDay, coordinateAt, cumulative, emptyTrip, initialTrip, pinNight, routingKey, routeCoordinates, routeSlice, TripHistory, type Trip } from '../editor';
 import { calculateLine } from '../routing';
+import { LegCache } from '../route-legs';
 import { applyQueryChanges, type RouteBuilder } from './actions';
 
 const length = (trip: Trip) => cumulative(routeCoordinates(trip)).at(-1)!;
@@ -11,7 +12,7 @@ describe('query edits', () => {
         const empty = emptyTrip();
         const points = [{coordinate:[8,48] as [number,number],label:'A'},{coordinate:[8.1,48] as [number,number],label:'B'}];
         await expect(applyQueryChanges(empty, [{op:'add_point',point:points[0]}])).rejects.toThrow('Choose a start and finish');
-        const next = await applyQueryChanges(empty, [{op:'route',points}], direct, trip => calculateLine(trip, new AbortController().signal));
+        const next = await applyQueryChanges(empty, [{op:'route',points}], direct, trip => calculateLine(trip, new AbortController().signal, new LegCache()));
         expect(next.points.map(p => p.kind)).toEqual(['start','finish']);
         expect(routeCoordinates(next)).toEqual(points.map(p => p.coordinate));
         expect(empty.points).toEqual([]);
@@ -53,9 +54,9 @@ describe('query edits', () => {
     it('refreshes live geometry between edits and preserves the original on a routing failure', async () => {
         const base = initialTrip(), line = routeCoordinates(base);
         const trip: Trip = {...base, live:true, routeOrder:[], points:[base.points[0], {...base.points.at(-1)!,leg:'drawn',drawn:line.slice(1,-1)}]};
-        trip.routing = await calculateLine(trip, new AbortController().signal);
+        trip.routing = await calculateLine(trip, new AbortController().signal, new LegCache());
         const before = structuredClone(trip);
-        const refresh = vi.fn((next: Trip) => calculateLine(next, new AbortController().signal));
+        const refresh = vi.fn((next: Trip) => calculateLine(next, new AbortController().signal, new LegCache()));
         const next = await applyQueryChanges(trip, [{op:'reverse'}, {op:'reverse'}], undefined, refresh);
         expect(refresh).toHaveBeenCalledTimes(2);
         expect(next.routing?.key).toBe(routingKey(next));

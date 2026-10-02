@@ -1,15 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calculateLine, profileId, requestAlternatives, RouteCache, selectRoute, movingSecondsAt, type EngineRoute } from './routing';
+import { calculateLine, profileId, requestAlternatives, selectRoute, movingSecondsAt, type EngineRoute, type RouteTotals } from './routing';
+import { LegCache } from './route-legs';
+import { routeService } from '../../../test-support/planner/route-service';
 import { decodeRoutes, type AnswerRoute } from './route-answer';
 import { ridingProfiles, presetName, type BikeType } from './riding-profiles';
 import { surfaceRuns, surfaceWindow } from './surface-data';
 import { initialTrip, cumulative, planOf, removeRoutePoint, storedPlan, setEndpoint, routingKey, routeCoordinates, TripHistory, type Coordinate, type Trip } from './editor';
 
+const totals = (metres: number, unknown = 0, pushing = 0): RouteTotals =>
+    ({ distance_m: metres, ascent_m: 0, seconds: metres, surface_m: [unknown, metres - unknown, 0, 0, 0, 0], unknown_elevation_m: metres, pushing_m: pushing });
 const answer: AnswerRoute = {
     id: 'test-route', surfaces: [['Paved', 1], ['Gravel', 1]], pushing: [[false, 1], [true, 1]], reason: 'primary', elapsed_s: [0, 3000, 1000], package: 'test', profile: 'touring',
     coordinates_udeg: [7_800_000, 48_000_000, 100_000, 0, 100_000, 0], elevation_dm: [2000, null, 2000],
-    totals: { distance_m: 15000, ascent_m: 0, seconds: 4000, surface_m: [1000, 14000, 0, 0, 0, 0], unknown_elevation_m: 15000, pushing_m: 100 },
-    legs: [{ from_index: 0, to_index: 1 }, { from_index: 1, to_index: 2 }],
+    totals: { ...totals(15000, 1000, 100), seconds: 4000 },
+    legs: [{ from_index: 0, to_index: 1, start: 'a', end: 'b', totals: { ...totals(7500, 1000), seconds: 3000 } },
+        { from_index: 1, to_index: 2, start: 'b', end: 'c', totals: { ...totals(7500, 0, 100), seconds: 1000 } }],
     snap_truncated: false,
 };
 const [route] = decodeRoutes({ routes: [answer] });
@@ -36,7 +41,7 @@ describe('routing integration', () => {
         const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [answer] }) });
         vi.stubGlobal('fetch', fetch);
         const plan = trip();
-        const line = await calculateLine(plan, new AbortController().signal);
+        const line = await calculateLine(plan, new AbortController().signal, new LegCache());
         expect(fetch).toHaveBeenCalledTimes(1);
         expect(JSON.parse(fetch.mock.calls[0][1].body).alternatives).toBe(false);
         expect(line.alternativesReady).toBe(false);
@@ -47,7 +52,7 @@ describe('routing integration', () => {
         const alternatives = await requestAlternatives(plan, line, new AbortController().signal);
         const { alternatives: _primaryOnly, ...request } = JSON.parse(fetch.mock.calls[0][1].body);
         expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ ...request, alternatives_only: true });
-        expect(alternatives.map(r => r.id)).toEqual(['test-route', 'shorter']);
+        expect(alternatives.map(r => r.id)).toEqual(['primary', 'shorter']);
         expect(movingSecondsAt(line, 0.5)).toBeCloseTo(3000);
         expect(line.elevation).toEqual([200, null, 400]);
         expect(line.stops.map(s => s.distance)).toEqual(cumulative(route.geometry));
@@ -69,48 +74,65 @@ describe('routing integration', () => {
         expect(routingKey(moved)).not.toBe(routingKey(plan));
         expect(routeCoordinates(moved)).toEqual([plan.points[0].coordinate]);
     });
-    it('returns the cached route of a plan seen before, by its routing key', () => {
-        const touring = trip();
-        const gravel: Trip = { ...touring, bike: 'gravel' };
-        const moved = { ...touring, points: touring.points.map(p => p.id === 'shape' ? { ...p, coordinate: [7.95, 48] as Coordinate } : p) };
-        const cache = new RouteCache(2);
-        const line = selectRoute(touring, route, [route]);
-        cache.attach({ ...touring, routing: line });
-        expect(cache.attach(gravel).routing).toBeUndefined();
-        expect(cache.attach({ ...touring, days: 5, points: touring.points.map(p => ({ ...p, label: 'Renamed' })) }).routing).toBe(line);
-        expect(cache.attach(moved).routing).toBeUndefined();
-        cache.add(selectRoute(gravel, route, [route]));
-        cache.add(selectRoute(moved, route, [route]));
-        expect(cache.attach(touring).routing).toBeUndefined();
-        expect(cache.attach(gravel).routing?.key).toBe(routingKey(gravel));
+    it('requests only the legs that an edit changes, pinned to the cached legs on both sides', async () => {
+        const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
+        vi.stubGlobal('fetch', fetch);
+        const body = (call: number) => JSON.parse(fetch.mock.calls[call][1].body as string);
+        const cache = new LegCache();
+        const signal = new AbortController().signal;
+        const plan: Trip = { ...trip(), points: [7.8, 7.85, 7.9, 7.95, 8].map((lon, i) => ({ id: `p${i}`, kind: i ? i < 4 ? 'via' : 'finish' : 'start', coordinate: [lon, 48], label: '', progress: i / 4 })) };
+        const move = (lon: number): Trip => ({ ...plan, points: plan.points.map(p => p.id === 'p2' ? { ...p, coordinate: [lon, 48.01] } : p) });
+        const coordinates = (trip: Trip) => trip.points.map(p => p.coordinate);
+        const whole = await calculateLine(plan, signal, cache);
+        expect(body(0)).toMatchObject({ points: coordinates(plan) });
+        expect(body(0).start_position).toBeUndefined();
+        const moved = await calculateLine(move(7.91), signal, cache);
+        expect(body(1)).toMatchObject({ points: [[7.85, 48], [7.91, 48.01], [7.95, 48]], start_position: 'one:7.85,48', end_position: 'one:7.95,48' });
+        expect(moved.coordinates).toEqual(coordinates(move(7.91)));
+        expect([moved.seconds, moved.unknownSurfaceKm, moved.stops.length]).toEqual([4000, 0, 5]);
+        expect((await calculateLine(plan, signal, cache)).coordinates).toEqual(whole.coordinates);
+        expect(fetch).toHaveBeenCalledTimes(2);
+        await calculateLine({ ...plan, bike: 'gravel' }, signal, cache);
+        expect(body(2)).toMatchObject({ points: coordinates(plan), profile: 'gravel' });
+        fetch.mockImplementation(routeService('two'));
+        await calculateLine(move(7.92), signal, cache);
+        expect(body(3).start_position).toBe('one:7.85,48');
+        expect(body(4)).toMatchObject({ points: coordinates(move(7.92)) });
+        expect(body(4).start_position).toBeUndefined();
+        expect(fetch).toHaveBeenCalledTimes(5);
+        // A pinned window without a path is followed by one request for the whole run.
+        fetch.mockImplementationOnce(async () => ({ ok: false, json: async () => ({ code: 'no_path', message: 'No legal route.' }) }));
+        expect((await calculateLine(move(7.93), signal, cache)).coordinates).toEqual(coordinates(move(7.93)));
+        expect(body(5).start_position).toBe('two:7.85,48');
+        expect(body(6)).toMatchObject({ points: coordinates(move(7.93)) });
+        expect(body(6).start_position).toBeUndefined();
+        fetch.mockImplementationOnce(async () => ({ ok: false, json: async () => ({ code: 'busy', message: 'Busy.' }) }));
+        await expect(calculateLine(move(7.94), signal, cache)).rejects.toThrow('Busy.');
+        expect(fetch).toHaveBeenCalledTimes(8);
     });
-    it('keeps a picked corridor with its plan and the primary route in the cache', () => {
+    it('keeps a picked corridor with its plan', () => {
         const plan = trip();
         const corridor: EngineRoute = { ...route, id: 'corridor', reason: 'corridor', geometry: [[7.8, 48], [7.9, 48.05], [8, 48]] };
         const primary = selectRoute(plan, route, [route, corridor]);
         const picked = { ...plan, routing: selectRoute(plan, corridor, [route, corridor]) };
-        const cache = new RouteCache(1);
-        cache.add(primary);
         const history = new TripHistory();
-        const shown = cache.attach(history.commit({ ...plan, routing: primary }, picked));
+        const shown = history.commit({ ...plan, routing: primary }, picked);
         expect(shown.routing?.choiceId).toBe('corridor');
         expect(planOf(shown)).toBe(picked);
-        const undone = cache.attach(history.undo(shown));
-        expect(undone.routing).toBe(primary);
-        cache.add({ ...picked.routing, alternativesReady: false });
-        expect(cache.attach(plan).routing).toBe(primary);
+        const undone = history.undo(shown);
+        expect(undone.routing).toBeUndefined();
         expect(storedPlan(shown).routing).toMatchObject({ choiceId: 'corridor', picked: true, alternatives: [] });
-        expect(storedPlan(undone).routing).toBeUndefined();
-        cache.add(selectRoute({ ...plan, bike: 'gravel' }, route, [route]));
-        expect(cache.attach(history.redo(undone)).routing?.choiceId).toBe('corridor');
+        expect(history.redo(undone).routing?.choiceId).toBe('corridor');
         expect(planOf({ ...picked, points: picked.points.map(p => p.id === 'shape' ? { ...p, coordinate: [7.95, 48] as Coordinate } : p) }).routing).toBeUndefined();
     });
     it('makes visit reversals explicit and accounts for manual joins', async () => {
-        const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [{ ...answer, legs: Array.from({ length: 4 }, (_, i) => ({ from_index: 0, to_index: Math.min(i, 2) })) }] }) });
+        const visit = { ...answer, legs: [[0, 1], [1, 1], [1, 2], [2, 2]].map(([from_index, to_index], k) => ({ ...answer.legs[0], from_index, to_index, start: `${k}`, end: `${k + 1}` })) };
+        const fetch = vi.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ routes: [visit] }) })
+            .mockResolvedValue({ ok: true, json: async () => ({ routes: [{ ...answer, legs: [{ ...answer.legs[0], to_index: 2 }] }] }) });
         vi.stubGlobal('fetch', fetch);
         const plan = trip();
         plan.points[1] = { ...plan.points[1], kind: 'detour', anchor: [7.85, 48] };
-        await calculateLine(plan, new AbortController().signal);
+        await calculateLine(plan, new AbortController().signal, new LegCache());
         const body = JSON.parse(fetch.mock.calls[0][1].body);
         expect(body.points).toEqual([[7.8, 48], [7.85, 48], [7.9, 48], [7.85, 48], [8, 48]]);
         expect(body.turnarounds).toEqual([2]);
@@ -118,7 +140,7 @@ describe('routing integration', () => {
         const manual = trip();
         manual.points[1].leg = 'straight';
         manual.points[2].leg = 'straight';
-        const line = await calculateLine(manual, new AbortController().signal);
+        const line = await calculateLine(manual, new AbortController().signal, new LegCache());
         expect(line.unroutedKm).toBeCloseTo(line.unknownSurfaceKm);
         expect(line.elapsed.at(-1)).toBe(line.seconds);
         expect(line.elevation.every(h => h === null)).toBe(true);
@@ -126,7 +148,7 @@ describe('routing integration', () => {
         expect(line.surfaces.every(s => s === 'Unknown')).toBe(true);
         expect(line.pushing).toEqual([null, null]);
         manual.points[2].leg = 'routed';
-        const mixed = await calculateLine(manual, new AbortController().signal);
+        const mixed = await calculateLine(manual, new AbortController().signal, new LegCache());
         expect(mixed.surfaces).toEqual(['Unknown', 'Unknown', 'Paved', 'Gravel']);
         expect(mixed.surfaces).toHaveLength(mixed.coordinates.length - 1);
         expect(mixed.pushing).toEqual([null, null, false, true]);
@@ -150,7 +172,7 @@ describe('routing integration', () => {
     it('reports service failure and never substitutes fixture geometry', async () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, json: async () => ({ code: 'no_path', message: 'No legal route.' }) }));
         const plan = trip();
-        await expect(calculateLine(plan, new AbortController().signal)).rejects.toThrow('No legal route.');
+        await expect(calculateLine(plan, new AbortController().signal, new LegCache())).rejects.toThrow('No legal route.');
         expect(routeCoordinates(plan)).toEqual([plan.points[0].coordinate]);
     });
 });

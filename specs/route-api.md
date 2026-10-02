@@ -14,6 +14,8 @@ the same request. Request and answer bodies are UTF-8 JSON.
 | `alternatives` | Optional, default `false`. `true` asks for alternative routes |
 | `alternatives_only` | Optional, default `false`. `true` asks for alternative routes and leaves out the primary route |
 | `turnarounds` | Optional interior point indices where a reversal is deliberate |
+| `start_position` | Optional leg position from an earlier answer. It pins the first point to that road position |
+| `end_position` | Optional leg position from an earlier answer. It pins the last point to that road position |
 
 The service rejects unknown fields.
 
@@ -36,7 +38,7 @@ with an empty answer. Each route has these fields:
 | `elapsed_s` | Integer moving seconds |
 | `surfaces` | Runs of `[surface, edge count]` |
 | `pushing` | Runs of `[pushing, edge count]` |
-| `legs` | `{"from_index", "to_index"}` for each pair of request points |
+| `legs` | `{"from_index", "to_index", "start", "end", "totals"}` for each pair of request points |
 | `snap_truncated` | `true` when the service dropped road candidates for a request point |
 | `totals` | `distance_m`, `ascent_m`, `seconds`, `surface_m`, `unknown_elevation_m` and `pushing_m`, all integers |
 
@@ -69,6 +71,22 @@ Surfaces are `Unknown`, `Paved`, `Compacted`, `Gravel`, `Dirt` and `Rough`.
 first leg starts at index 0. Each leg starts where the previous leg ends. The
 last leg ends at index `n - 1`. `surface_m` gives metres for each surface, in
 the order above. `seconds` is moving time. Distances and heights are metres.
+
+### Leg positions
+
+`start` and `end` are opaque strings. Each names the snapped road position of
+a leg end: the road and the direction of travel on it. Where a point is not a
+turnaround, the `end` of one leg equals the `start` of the next leg. A client
+compares positions only for equality and sends them back unchanged.
+
+A pinned point keeps only the road candidate at that position. Thus a request
+for some legs of a trip joins the legs before and after it in the same
+direction. The service ignores a position that is not a candidate of the
+point, for example a position from a different `package`.
+
+`legs[k].totals` has the fields of the route `totals`, for that leg only. The
+sum of the leg totals is the route total. Only `seconds` can differ, by up to
+0.5 s for each leg.
 
 ### Precision
 

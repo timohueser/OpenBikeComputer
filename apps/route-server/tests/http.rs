@@ -220,6 +220,8 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         alternatives: false,
         alternatives_only: false,
         turnarounds: vec![],
+        start_position: None,
+        end_position: None,
     };
     for (body, status, code) in [
         (serde_json::to_string(&request).unwrap(), StatusCode::OK, None),

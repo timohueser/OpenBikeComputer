@@ -7,6 +7,7 @@ import PlannerApp from './PlannerApp.svelte';
 import * as routing from '../../lib/planner/routing';
 import type { EngineRoute, RoutingLine } from '../../lib/planner/routing';
 
+import { routeService } from '../../../test-support/planner/route-service';
 vi.mock('./PlannerMap.svelte', async () => ({ default: (await import('../../../test-support/planner/MapStub.svelte')).default }));
 vi.mock('../../lib/planner/place-index', async original => ({ ...await original<object>(), corridorPlaces: vi.fn() }));
 
@@ -234,18 +235,23 @@ describe('planner app transitions', () => {
     });
 
     it('returns to an earlier bike and undoes without a route request', async () => {
+        vi.mocked(routing.calculateLine).mockRestore();
+        const search = globalThis.fetch, service = routeService();
+        const fetch = vi.fn((url: string, init: RequestInit) => url.endsWith('/v1/route') ? service(url, init) : search(url, init));
+        vi.stubGlobal('fetch', fetch);
+        const routeRequests = () => fetch.mock.calls.filter(([url]) => url.endsWith('/v1/route')).length;
         app = mount(PlannerApp, { target: document.body });
         for (const [bike, requests] of [['Gravel bike', 1], ['Touring bike', 2]] as const) {
             await vi.waitFor(() => expect(document.querySelector('section.elevation')).not.toBeNull());
-            expect(routing.calculateLine).toHaveBeenCalledTimes(requests);
+            expect(routeRequests()).toBe(requests);
             button('Bike').click(); await tick();
             button(bike).click(); await tick();
         }
         for (const action of ['Undo', 'Undo', 'Redo']) {
             button(action).click(); await tick();
-            expect(document.querySelector('section.elevation')).not.toBeNull();
+            await vi.waitFor(() => expect(document.querySelector('section.elevation')).not.toBeNull());
         }
-        expect(routing.calculateLine).toHaveBeenCalledTimes(2);
+        expect(routeRequests()).toBe(2);
     });
 
     it('keeps a picked corridor, without its alternatives, through undo, redo, a saved version and a reload', async () => {
@@ -254,7 +260,7 @@ describe('planner app transitions', () => {
             const totals = { distance_m: km * 1000, ascent_m: 0, seconds: km * 240, surface_m: [0, km * 1000, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 };
             return { id, reason, package: 'test', profile: 'touring', geometry, elevation: geometry.map(() => 200), elapsed: cumulative(geometry).map(d => d * 240),
                 surfaces: geometry.slice(1).map(() => 'Paved'), pushing: geometry.slice(1).map(() => false), totals,
-                legs: [{ from_index: 0, to_index: geometry.length - 1 }], snap_truncated: false };
+                legs: [{ from_index: 0, to_index: geometry.length - 1, start: 'a', end: 'b', totals }], snap_truncated: false };
         };
         const coordinates = routeCoordinates(initialTrip());
         const primary = engine('primary', 'primary', coordinates);
@@ -269,18 +275,19 @@ describe('planner app transitions', () => {
         expect(chosen()).toContain('Different corridor');
         expect(JSON.parse(stored.get('obc-planner-routing-v2')!).routing).toMatchObject({ choiceId: 'corridor', picked: true, alternatives: [] });
         button('Undo').click(); await tick();
-        expect(chosen()).toContain('Balanced');
+        await vi.waitFor(() => expect(chosen()).toContain('Balanced'));
         button('Redo').click(); await tick();
         expect(chosen()).toContain('Different corridor');
         button('Save').click(); await tick();
         document.querySelector('form.name')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); await tick();
         button('Undo').click(); await tick();
-        expect(chosen()).toContain('Balanced');
+        await vi.waitFor(() => expect(chosen()).toContain('Balanced'));
         button('Restore').click(); await tick();
         await vi.waitFor(() => expect(chosen()).toContain('Different corridor'));
         await unmount(app);
+        const calculated = vi.mocked(routing.calculateLine).mock.calls.length;
         app = mount(PlannerApp, { target: document.body }); await tick();
-        expect(routing.calculateLine).toHaveBeenCalledTimes(1);
+        expect(routing.calculateLine).toHaveBeenCalledTimes(calculated);
         expect(routing.requestAlternatives).toHaveBeenCalledTimes(1);
         button('Route options').click();
         await vi.waitFor(() => expect(chosen()).toContain('Different corridor'));
@@ -293,7 +300,6 @@ describe('planner app transitions', () => {
         button('Undo').click(); await tick();
         button('Undo').click(); await tick();
         expect(chosen()).toContain('Different corridor');
-        expect(routing.calculateLine).toHaveBeenCalledTimes(3);
     });
 
     it('opens a tile place from both a search row and its map pin, then adds a visit', async () => {
