@@ -1,4 +1,4 @@
-import {routeRequest,routeReply} from './routing.mjs';
+import {routeRequest} from './routing.mjs';
 import {searchRuntime} from './runtime.mjs';
 
 const response = text => {
@@ -19,7 +19,6 @@ export function nativeSearch({all,batch,parse,hours,region,bytes,bounds}) {
     async request(method,input) {
       if (method === 'status') return {parser:{ready:true,message:''},regions:[{id:region,metadata,bytes}]};
       if (method === 'route-request') return routeRequest(input);
-      if (method === 'route-reply') return routeReply(input.input,input.reply);
       if (input?.region && input.region !== region) throw new Error('Search does not cover this region.');
       if (method === 'query') return runtime.query(input);
       if (method === 'reverse') return runtime.reverse(input.coordinate);

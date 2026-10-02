@@ -45,7 +45,7 @@
 
     const storageKey = 'obc-planner-routing-v2';
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
-    import { calculateLine, RouteCache, selectRoute, type EngineRoute } from '../../lib/planner/routing';
+    import { calculateLine, requestAlternatives, RouteCache, selectRoute, type EngineRoute } from '../../lib/planner/routing';
     const defaultLabels: Record<EditableKind, string> = {
         via: 'Shaping point',
         pass: 'Pass here',
@@ -104,9 +104,9 @@
         const plan = untrack(() => trip);
         const abort = new AbortController();
         waysStatus = 'Finding alternative routes…';
-        calculateLine(plan, abort.signal, true).then(line => {
+        requestAlternatives(plan, plan.routing!, abort.signal).then(alternatives => {
             if (abort.signal.aborted || key !== routingInput) return;
-            const routing = { ...trip.routing!, alternatives: line.alternatives, alternativesReady: true };
+            const routing = { ...trip.routing!, alternatives, alternativesReady: true };
             routes.add(routing);
             trip = { ...trip, routing };
             waysStatus = '';

@@ -42,11 +42,7 @@ struct PlannerAPI: Sendable {
                     let value = try JSONSerialization.jsonObject(with: reply.body) as? [String: Any]
                     return error(reply.status, value?["message"] as? String ?? "The routing engine could not find a route.")
                 }
-                let body = try JSONSerialization.data(withJSONObject: [
-                    "input": JSONSerialization.jsonObject(with: request.body),
-                    "reply": JSONSerialization.jsonObject(with: reply.body),
-                ])
-                return response(body: try await search.request("route-reply", body: body))
+                return response(body: reply.body)
             default: return error(404, "Not found.")
             }
         } catch {
