@@ -79,14 +79,15 @@ const inBox = (p, b) => p.lon >= b[0] && p.lon <= b[2] && p.lat >= b[1] && p.lat
 const pointBoundsSQL = 'p.lon>=? AND p.lat>=? AND p.lon<=? AND p.lat<=?';
 const bboxSQL = 'p.id IN (SELECT id FROM spatial WHERE east>=? AND north>=? AND west<=? AND south<=?)';
 
-export function routePosition(point, route) {
+// With `ds`, positions use the given kilometre of each point instead of the line's own length.
+export function routePosition(point, route, ds) {
   let best = {distance: Infinity, along: 0}, along = 0;
   for (let i = 1; i < route.length; i++) {
     const a = route[i-1], b = route[i], cos = Math.cos(point[1] * Math.PI / 180);
     const vx = (b[0]-a[0])*cos, vy = b[1]-a[1];
     const wx = (point[0]-a[0])*cos, wy = point[1]-a[1];
     const t = Math.max(0, Math.min(1, (vx*wx+vy*wy)/(vx*vx+vy*vy || 1)));
-    const len = distance(a,b), d = distance(point,[a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1])]);
+    const len = ds ? ds[i]-ds[i-1] : distance(a,b), d = distance(point,[a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1])]);
     if (d < best.distance) best = {distance:d, along:along+t*len};
     along += len;
   }

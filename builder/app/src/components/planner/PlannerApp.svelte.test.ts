@@ -132,6 +132,28 @@ describe('planner app transitions', () => {
         expect(JSON.parse(stored.get('obc-planner-routing-v2')!)).toEqual(saved);
     });
 
+    it('runs an open search again after a plan edit', async () => {
+        app = mount(PlannerApp, { target: document.body }); await tick();
+        await search('campsites');
+        const sent = () => vi.mocked(fetch).mock.calls.map(([, init]) => JSON.parse(String(init?.body))).filter(body => body.q === 'campsites');
+        const before = sent().length;
+        button('Map point: Basel').click(); await tick();
+        button('Remove point').click(); await tick();
+        await vi.waitFor(() => expect(sent().length).toBe(before + 1));
+        expect(sent().at(-1).plan.points.map((p: { label: string }) => p.label)).not.toContain('Basel');
+    });
+
+    it('sends no overnight query when the map pans', async () => {
+        stored.set('obc-planner-routing-v2', JSON.stringify({ ...JSON.parse(stored.get('obc-planner-routing-v2')!), mode: 'trip' }));
+        app = mount(PlannerApp, { target: document.body }); await tick();
+        const overnight = () => vi.mocked(fetch).mock.calls.filter(([, init]) => JSON.parse(String(init?.body)).q === 'sleep').length;
+        button('Open day 1: Basel to Overnight to choose').click(); await tick();
+        await vi.waitFor(() => expect(overnight()).toBe(1));
+        button('Pan map').click(); await tick();
+        button('Pan map').click(); await tick();
+        expect(overnight()).toBe(1);
+    });
+
     it('links row and map hover in both directions and searches the map after point inspection', async () => {
         const saved = { ...JSON.parse(stored.get('obc-planner-routing-v2')!), mode: 'route' };
         stored.set('obc-planner-routing-v2', JSON.stringify(saved));

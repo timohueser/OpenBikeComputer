@@ -45,10 +45,11 @@ export function openingState(place, filter, context, countryCode = 'de') {
   }
 }
 
-/** Current status is independent of a query's weekday or trip-date filter. */
+/** The status at search time, independent of a query's weekday or trip-date filter.
+ *  `closesAt` is the local clock time of a closure within the next hour. */
 export function currentOpening(place, now = Date.now(), countryCode = 'de') {
   if (!place.opening_hours) return undefined;
-  const status = { state: 'unknown', checkedAt: now, validUntil: now + 5 * 60_000 };
+  const status = { state: 'unknown' };
   try {
     const oh = new OpeningHours(place.opening_hours, {
       lat: place.lat, lon: place.lon,
@@ -58,10 +59,8 @@ export function currentOpening(place, now = Date.now(), countryCode = 'de') {
     if (oh.getUnknown(date)) return status;
     status.state = oh.getState(date) ? 'open' : 'closed';
     const next = oh.getNextChange(date, new Date(now + 60 * 60_000));
-    if (next) {
-      status.validUntil = Math.min(status.validUntil, next.valueOf());
-      if (status.state === 'open' && !oh.getUnknown(next) && !oh.getState(next)) status.closesAt = next.valueOf();
-    }
+    if (next && status.state === 'open' && !oh.getUnknown(next) && !oh.getState(next))
+      status.closesAt = `${String(next.getHours()).padStart(2, '0')}:${String(next.getMinutes()).padStart(2, '0')}`;
   } catch { /* Unparseable and conditional schedules must not imply closed. */ }
   return status;
 }

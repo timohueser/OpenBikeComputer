@@ -146,7 +146,7 @@
     let query = $state('');
     let searchState = $state<SearchState>({ loading: false, error: '', answer: null });
     let searchBox: Query | undefined;
-    let searchViewRevision = $state(0);
+    let searchRevision = $state(0);
     let viewBounds = $state<[number, number, number, number]>(MAP_BOUNDS ?? [7.77,47.965,7.96,48.06]);
     let here = $state<Coordinate | undefined>();
     let pointing = $state<Where | undefined>();
@@ -184,9 +184,10 @@
     const itinerary = $derived(itineraryDays(trip));
     const focusedDay = $derived(multi && list === 'plan' && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
-    const searchContext = $derived<SearchContext>({ view: viewBounds, here, pointing, startDate: trip.startDate,
-        plan: { coordinates, hours: trip.routing?.key === routingInput && trip.routing.unroutedKm === 0 ? trip.routing.elapsed.map(seconds => seconds / 3600) : undefined, days: itinerary.map(d => ({ number: d.number, from: d.from * total, to: d.to * total, rest: d.rest })),
-            points: trip.points.map(p => ({ id: p.id, label: p.label, coordinate: p.coordinate, kind: p.kind, placeKind: p.placeKind })) } });
+    const searchPlan = $derived<SearchContext['plan']>({ coordinates, km: lengths, seconds: currentRoute?.unroutedKm === 0 ? currentRoute.elapsed : undefined,
+        days: itinerary.map(d => ({ number: d.number, from: d.from * total, to: d.to * total, rest: d.rest })),
+        points: trip.points.map(p => ({ id: p.id, label: p.label, coordinate: p.coordinate, kind: p.kind, placeKind: p.placeKind })) });
+    const searchContext = $derived<SearchContext>({ view: viewBounds, here, pointing, startDate: trip.startDate, plan: searchPlan });
     const conflicts = $derived(multi ? nightOrderConflicts(trip) : []);
     const activeDay = $derived(days[Math.min(night - 1, days.length - 1)]);
     const area = $derived(night < days.length ? overnightWindow(trip, night) : null);
@@ -296,13 +297,17 @@
         return () => { current = false; };
     });
 
+    // A query runs again when the map view settles or when anything else it sends changes.
+    $effect(() => { void [searchPlan, here, pointing, trip.startDate]; untrack(() => searchRevision++); });
+
     $effect(() => {
-        const context = searchContext, region = searchRegion, day = dayLabels[night];
+        const plan = searchPlan, region = searchRegion, day = dayLabels[night];
         overnightPlaces = [];
         if (!overnightContext || !day) { overnightNote = ''; return; }
         const abort = new AbortController();
         overnightNote = 'Loading nearby overnight places…';
-        searchPlaces('sleep', context, region, 6, abort.signal, { type: 'places', what: ['sleep'], where: { day, part: 'end' }, radius: { value: 5, unit: 'km' } }).then(answer => {
+        // The day end and the radius set the area, so the map view does not change the answer.
+        untrack(() => searchPlaces('sleep', { view: viewBounds, plan }, region, 6, abort.signal, { type: 'places', what: ['sleep'], where: { day, part: 'end' }, radius: { value: 5, unit: 'km' } })).then(answer => {
             if (abort.signal.aborted) return;
             overnightPlaces = (answer.results ?? []).map(asPlace);
             overnightNote = answer.type === 'unresolved' ? answer.note ?? '' : overnightPlaces.length ? '' : 'No mapped overnight places within 5 km. Search a wider area or pick on the map.';
@@ -785,7 +790,7 @@
     <main>
         <aside class="planner-pane" aria-label="Trip planning">
             {#if overnightContext && overnightNote}<p class="search-note" role="status">{overnightNote}</p>{/if}
-            <Query bind:this={searchBox} bind:text={query} bind:region={searchRegion} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} viewRevision={searchViewRevision} onResults={coordinates => { clearSelection(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} />
+            <Query bind:this={searchBox} bind:text={query} bind:region={searchRegion} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} onResults={coordinates => { clearSelection(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} />
             {#if searching}
                 <div class="pane-scroll">
                     <QueryResults state={searchState} {selectedId} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
@@ -862,7 +867,7 @@
                     {theme} {hillshade} {contours} {mapOverlays} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces} {landmarks}
-                    onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={previewPoint} onDayEndDrag={moveDayEnd}
+                    onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={previewPoint} onDayEndDrag={moveDayEnd}
                     onLegClick={legClick} onInsert={insert} onDrawn={drawn} onPlaceClick={choosePlace}
                     onVisibleRange={(range) => visibleRange = range}
                 >

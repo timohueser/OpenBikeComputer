@@ -86,9 +86,10 @@ The combined development command passes `OBC_SEARCH_PORT` to the Vite proxy.
 - `routing.mjs` calls `/v1/route` on the separate local routing engine. Routing commands
   fail visibly if it is absent. No route is committed after a failed request.
 
-The request context accepts a cumulative `plan.hours` array aligned with coordinates,
-and `plan.segments` with kilometre bounds and verified route attributes. The UI supplies
-riding time when all legs use the routing engine. Manual legs have no verified time.
+The request context accepts cumulative `plan.km` and `plan.hours` arrays aligned with
+coordinates, and `plan.segments` with kilometre bounds and verified route attributes.
+Without `plan.km`, search measures the line. The UI supplies riding time only when all
+legs use the routing engine.
 Surface, gradient, access, and closure queries report missing segment data.
 The sample line preserves imported coordinates and has no terrain data. Split and join keep the line. They require unpinned nights and no rest days.
 
