@@ -21,13 +21,13 @@
     import { isTrip } from '../../lib/planner/trip-validation';
     import {
         addClickedPoint, addPointNear, addRestDay, applyBudget, coordinateAt, cumulative, emptyTrip,
-        insertPoint, itineraryDays, kilometres, nearestProgress, nightOrderConflicts, offRoute, overnightCandidates,
+        insertPoint, itineraryDays, kilometres, nearestProgress, nightOrderConflicts, overnightCandidates,
         overnightWindow, pinNight, removeRestDay, reorderPoint, routeCoordinates, routeSlice, routeStops,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint, TripHistory, tripDays, routingKey, planOf, storedPlan,
         type Coordinate, type Day, type LegMode, type Place, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
-    import { corridorPlaces } from '../../lib/planner/place-index';
+    import { corridorPlaces, routeDistance } from '../../lib/planner/place-index';
     import { landmarks } from '../../lib/planner/landmarks';
     import { MAP_BOUNDS, PLACES_URL } from '../../lib/planner/map-data';
     import { coordinateName, visitName } from '../../lib/planner/point-names';
@@ -214,10 +214,11 @@
     const highlightCandidates = $derived.by(() => {
         if (!highlights.length || coordinates.length < 2) return [];
         const pinned = new Set(visiblePlaces.map(place => place.id));
+        const distance = routeDistance(coordinates, 5);
         const nearby = corridor
             .filter(place => highlights.includes(place.category))
-            .map(place => ({ place, off: offRoute(coordinates, place.coordinate) }))
-            .filter(({ off }) => off <= 5)
+            .map(place => ({ place, off: distance(place.coordinate) }))
+            .filter(({ off }) => Number.isFinite(off))
             .sort((a, b) => a.off - b.off)
             .map(({ place }) => place);
         return nearby.filter(place => !pinned.has(place.id));
@@ -231,9 +232,12 @@
         : '',
     );
     // The next landmark along the route within 15 km that the route does not visit yet.
-    const nearbyLandmark = $derived(landmarks
-        .filter(landmark => offRoute(coordinates, landmark.coordinate) <= 15 && !trip.points.some(p => kilometres(p.coordinate, landmark.coordinate) < .3))
-        .sort((a, b) => nearestProgress(coordinates, a.coordinate) - nearestProgress(coordinates, b.coordinate))[0]);
+    const nearbyLandmark = $derived.by(() => {
+        const distance = routeDistance(coordinates, 15);
+        return landmarks
+            .filter(landmark => Number.isFinite(distance(landmark.coordinate)) && !trip.points.some(p => kilometres(p.coordinate, landmark.coordinate) < .3))
+            .sort((a, b) => nearestProgress(coordinates, a.coordinate) - nearestProgress(coordinates, b.coordinate))[0];
+    });
     const selectedPlace = $derived(visiblePlaces.find(p => p.id === selectedId) ?? corridor.find(p => p.id === selectedId) ?? (mapPlace?.id === selectedId ? mapPlace : undefined));
     const selectedPoint = $derived(trip.points.find(p => p.id === selectedId));
     const previewCoordinate = $derived(selectedId === 'pending' ? pending : selectedPlace?.coordinate ?? null);
