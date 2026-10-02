@@ -28,11 +28,11 @@ public struct PlannerPreviewView: View {
     @State private var searchShown = false
     @State private var saveShown = false
     @State private var closeShown = false
-    private enum OfflineDestination: String, Identifiable {
-        case library, area
-        var id: String { rawValue }
+    private struct OfflineAreaRequest: Identifiable {
+        let id = UUID()
+        let bounds: [Double]?
     }
-    @State private var offlineDestination: OfflineDestination?
+    @State private var offlineAreaRequest: OfflineAreaRequest?
     @Environment(\.obcOfflineMaps) private var offlineMaps
     @State private var editorPanel = Panel.preferences
     @State private var panel = Panel.planning
@@ -92,7 +92,12 @@ public struct PlannerPreviewView: View {
                 .overlay(alignment: .topTrailing) {
                     if layersShown {
                         PlannerPreviewLayerPanel(network: $network, hidden: $hiddenCategories,
-                                                 highlighted: $highlightedCategories) {
+                                                 highlighted: $highlightedCategories,
+                                                 onDownload: offlineMaps == nil ? nil : {
+                                                     offlineMaps?.clearSelection()
+                                                     offlineAreaRequest = OfflineAreaRequest(bounds: searchBounds)
+                                                     layersShown = false
+                                                 }) {
                             layersShown = false; drawerPosition = .open
                         }
                         .padding(.top, 16)
@@ -133,13 +138,11 @@ public struct PlannerPreviewView: View {
                                 .withViewBounds(searchBounds)
                         }
                         .sheet(isPresented: $editorShown, onDismiss: finishOpeningSearch) { focusedEditor }
-                        .fullScreenCover(item: $offlineDestination) { destination in
+                        .fullScreenCover(item: $offlineAreaRequest) { request in
                             if let offlineMaps {
                                 NavigationStack {
-                                    OfflineMapsView(model: offlineMaps, initialBounds: searchBounds, selecting: destination == .area)
-                                        .toolbar { ToolbarItem(placement: .topBarTrailing) {
-                                            Button("Done") { offlineDestination = nil }
-                                        } }
+                                    OfflineAreaView(model: offlineMaps, initialBounds: request.bounds,
+                                                    onClose: { offlineAreaRequest = nil })
                                 }
                             }
                         }
@@ -199,18 +202,10 @@ public struct PlannerPreviewView: View {
             Button { fitRevision += 1; fraction = nil } label: {
                 Image(systemName: "arrow.up.left.and.arrow.down.right")
             }.accessibilityLabel("Show whole route")
-            Menu {
-                Button("Map layers", systemImage: "square.3.layers.3d") {
-                    infoShown = false; layersShown = true; drawerPosition = .collapsed
-                }
-                if offlineMaps != nil {
-                    Button("Download this area", systemImage: "arrow.down.to.line") {
-                        offlineDestination = .area
-                    }
-                    Button("Offline maps", systemImage: "map") { offlineDestination = .library }
-                }
+            Button {
+                infoShown = false; layersShown = true; drawerPosition = .collapsed
             } label: { Image(systemName: "square.3.layers.3d") }
-                .accessibilityLabel("Map options")
+                .accessibilityLabel("Map layers").accessibilityIdentifier("planner.layers")
             if network != .none {
                 Button { layersShown = false; infoShown.toggle() } label: {
                     Image(systemName: "info.circle")
