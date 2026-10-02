@@ -273,7 +273,7 @@
       "internal_id": "",
       "mfg": "",
       "mpn": "",
-      "sch_revision": "A"
+      "sch_revision": "QFN"
     },
     "layer_pairs": [
       {
@@ -974,7 +974,7 @@
         "uuid": "57e91c39-b072-457b-b097-52c5b44e61c8"
       }
     ],
-    "used_designators": "U1-6,Y1,Y3,J1-3,NT1-2,#PWR1-24,#PWR1010,#PWR2010,#PWR2026-2027,#PWR2045,#PWR2051,ANT1,C1-13,R1-3,R6,L1-6",
+    "used_designators": "L1-6,R1-3,R6,C1-13,ANT1,#PWR1-24,#PWR1010,#PWR2010,#PWR2026-2027,#PWR2045,#PWR2051,NT1-2,J1-3,Y1,Y3,U1-6",
     "variants": []
   },
   "sheets": [
@@ -985,6 +985,30 @@
     [
       "2eba0217-2e02-4060-a7fa-1e06910a24da",
       "Power Management"
+    ],
+    [
+      "5a14f605-48aa-4460-a539-747803f1a190",
+      "GNSS"
+    ],
+    [
+      "07b40b75-96e2-4842-99e0-07d04b88490a",
+      "Sensors"
+    ],
+    [
+      "6b8cca09-5e52-4203-8b94-2412467f33a4",
+      "Display"
+    ],
+    [
+      "9a104cb0-a286-4930-b68d-caf6373d10a3",
+      "Storage"
+    ],
+    [
+      "5c6eb237-88d4-4a0e-aa53-0a8ee917fa9f",
+      "Radio"
+    ],
+    [
+      "18ec3cbd-3b8c-5be9-a932-db2d42c17956",
+      "User I/O"
     ]
   ],
   "text_variables": {},
