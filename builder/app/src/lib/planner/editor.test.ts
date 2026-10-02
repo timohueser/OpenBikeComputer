@@ -143,6 +143,12 @@ describe('route slices', () => {
         expect(cumulative(slice).at(-1)).toBeCloseTo(cumulative(coordinates).at(-1)! * .6, 7);
         expect(routeSlice(coordinates, .8, .2)).toEqual([...slice].reverse());
     });
+    it('freezes a measured line, so an in-place edit fails', () => {
+        const line: Coordinate[] = [[0, 0], [1, 0]];
+        cumulative(line);
+        expect(() => line.push([2, 0])).toThrow(TypeError);
+        expect(() => { line[1][0] = 2; }).toThrow(TypeError);
+    });
 });
 
 describe('rest days', () => {
