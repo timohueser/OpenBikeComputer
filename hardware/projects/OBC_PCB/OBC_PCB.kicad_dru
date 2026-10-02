@@ -29,10 +29,10 @@
 (rule "Drilled through vias only"
   (constraint disallow micro_via blind_via buried_via))
 
-# U6 and U2 use ground thermal vias between exposed-pad stencil apertures.
+# U6 and U2 use filled, capped ground vias in their exposed pads.
 # Retain clearance from other surface lands; all via holes are filled and capped.
 (rule "Through vias clear of surface lands"
-  (condition "A.Type == 'Via' && A.Via_Type == 'Through' && B.Type == 'Pad' && B.Hole_Size_X == 0mm && !(A.NetName == 'GND' && B.NetName == 'GND' && ((B.memberOfFootprint('U6') && B.Pad_Number == '53') || (B.memberOfFootprint('U2') && B.Pad_Number == '33')))")
+  (condition "A.Type == 'Via' && A.Via_Type == 'Through' && B.Type == 'Pad' && !((B.memberOfFootprint('U2') || B.memberOfFootprint('U6')) && B.Pad_Number == '') && B.Hole_Size_X == 0mm && !(A.NetName == 'GND' && B.NetName == 'GND' && ((B.memberOfFootprint('U6') && B.Pad_Number == '53') || (B.memberOfFootprint('U2') && B.Pad_Number == '33')))")
   (constraint physical_hole_clearance (min 0.15mm)))
 
 (rule "Plated component annulus"
@@ -101,3 +101,22 @@
 (rule "Outer plated component hole to track"
   (condition "A.Type == 'Pad' && A.Pad_Type == 'Through-hole' && B.Type == 'Track' && (B.Layer == 'F.Cu' || B.Layer == 'B.Cu')")
   (constraint hole_clearance (min 0.28mm)))
+
+# R26 needs ground below the corner antenna; retain the reference keepout boundary.
+# Only the F.Cu antenna feed and tuning links can enter this area. Vias and fills stay banned.
+(rule "GNSS reservation excludes unrelated tracks"
+  (condition "A.Type == 'Track' && A.intersectsArea('GNSS RF reservation - Taoglas corner reference; final feed and ground to be tuned') && (A.Layer != 'F.Cu' || (A.NetName != '/GNSS/GNSS_RF_FEED' && A.NetName != '/GNSS/GNSS_FTE1' && A.NetName != '/GNSS/GNSS_FTE2'))")
+  (constraint disallow track))
+
+# The owner-approved GNSS passage lies between the LCD slot and antenna keepout.
+(rule "GNSS corner RF edge clearance"
+ (condition "A.Type == 'Track' && A.Layer == 'F.Cu' && (A.NetName == '/GNSS/GNSS_RF_IN' || A.NetName == '/GNSS/GNSS_RF_TEST' || A.NetName == '/GNSS/GNSS_RF_MATCH' || A.NetName == '/GNSS/GNSS_RF_FEED')")
+ (constraint edge_clearance (min 0.5mm)))
+
+(rule "GNSS local reference edge clearance"
+ (condition "A.Type == 'Zone' && A.Name == 'GNSS In1 local reference' && A.Layer == 'In1.Cu'")
+ (constraint edge_clearance (min 0.3mm)))
+
+(rule "GNSS corridor excludes unrelated tracks"
+ (condition "A.Type == 'Track' && A.intersectsArea('GNSS slot-side RF corridor') && (A.Layer != 'F.Cu' || A.NetName != '/GNSS/GNSS_RF_IN')")
+ (constraint disallow track))

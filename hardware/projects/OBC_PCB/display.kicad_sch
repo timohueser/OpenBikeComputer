@@ -1005,7 +1005,7 @@
 				)
 			)
 		)
-		(symbol "obc:LS021B7DD02"
+		(symbol "obc:LS021B7DD02_Underside"
 			(exclude_from_sim no)
 			(in_bom yes)
 			(on_board yes)
@@ -1057,7 +1057,7 @@
 					(justify left top)
 				)
 			)
-			(property "Description" "FFC & FPC Connectors Easy-On .3mm FPC Conn RA BC 21Ckt"
+			(property "Description" "Sharp LS021B7DD02 with underside Molex 503566-2102: connector pad n mates LCD pin 22-n"
 				(at 1.016 -27.432 0)
 				(show_name no)
 				(do_not_autoplace no)
@@ -1116,7 +1116,7 @@
 					(justify left top)
 				)
 			)
-			(symbol "LS021B7DD02_0_1"
+			(symbol "LS021B7DD02_Underside_0_1"
 				(rectangle
 					(start -15.24 22.8599)
 					(end 15.24 -25.3999)
@@ -1129,7 +1129,7 @@
 					)
 				)
 			)
-			(symbol "LS021B7DD02_1_1"
+			(symbol "LS021B7DD02_Underside_1_1"
 				(pin passive line
 					(at 5.08 27.94 270)
 					(length 5.08)
@@ -1140,7 +1140,7 @@
 							)
 						)
 					)
-					(number "1"
+					(number "21"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1158,7 +1158,7 @@
 							)
 						)
 					)
-					(number "2"
+					(number "20"
 						(effects
 							(font
 								(size 1 1)
@@ -1176,7 +1176,7 @@
 							)
 						)
 					)
-					(number "3"
+					(number "19"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1194,7 +1194,7 @@
 							)
 						)
 					)
-					(number "4"
+					(number "18"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1212,7 +1212,7 @@
 							)
 						)
 					)
-					(number "5"
+					(number "17"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1230,7 +1230,7 @@
 							)
 						)
 					)
-					(number "6"
+					(number "16"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1248,7 +1248,7 @@
 							)
 						)
 					)
-					(number "7"
+					(number "15"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1266,7 +1266,7 @@
 							)
 						)
 					)
-					(number "8"
+					(number "14"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1284,7 +1284,7 @@
 							)
 						)
 					)
-					(number "9"
+					(number "13"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1302,7 +1302,7 @@
 							)
 						)
 					)
-					(number "10"
+					(number "12"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1338,7 +1338,7 @@
 							)
 						)
 					)
-					(number "12"
+					(number "10"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1356,7 +1356,7 @@
 							)
 						)
 					)
-					(number "13"
+					(number "9"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1374,7 +1374,7 @@
 							)
 						)
 					)
-					(number "14"
+					(number "8"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1392,7 +1392,7 @@
 							)
 						)
 					)
-					(number "15"
+					(number "7"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1410,7 +1410,7 @@
 							)
 						)
 					)
-					(number "16"
+					(number "6"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1428,7 +1428,7 @@
 							)
 						)
 					)
-					(number "17"
+					(number "5"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1446,7 +1446,7 @@
 							)
 						)
 					)
-					(number "18"
+					(number "4"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1464,7 +1464,7 @@
 							)
 						)
 					)
-					(number "19"
+					(number "3"
 						(effects
 							(font
 								(size 1 1)
@@ -1482,7 +1482,7 @@
 							)
 						)
 					)
-					(number "20"
+					(number "2"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1500,7 +1500,7 @@
 							)
 						)
 					)
-					(number "21"
+					(number "1"
 						(effects
 							(font
 								(size 1 1)
@@ -1546,8 +1546,18 @@
 				)
 			)
 			(embedded_fonts no)
+			(property "Pin Mapping" "Underside fold: Molex pad n = Sharp pin 22-n; see Sharp rear contact-side outline"
+				(at 0 0 0)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
 		)
-		(symbol "obc:SN74LVC02APWR"
+		(symbol "obc:SN74LVC02ABQAR"
 			(body_styles demorgan)
 			(pin_names
 				(offset 1.016)
@@ -1567,7 +1577,7 @@
 					)
 				)
 			)
-			(property "Value" "SN74LVC02APWR"
+			(property "Value" "SN74LVC02ABQAR"
 				(at 0 -1.27 0)
 				(show_name no)
 				(do_not_autoplace no)
@@ -1577,7 +1587,7 @@
 					)
 				)
 			)
-			(property "Footprint" "Package_SO:TSSOP-14_4.4x5mm_P0.65mm"
+			(property "Footprint" "Package_DFN_QFN:DHWQFN-14-1EP_2.5x3mm_P0.5mm_EP1x1.5mm"
 				(at 0 0 0)
 				(show_name no)
 				(do_not_autoplace no)
@@ -1599,7 +1609,7 @@
 					)
 				)
 			)
-			(property "Description" "Quad 2-input NOR, 1.65-3.6V, TSSOP-14"
+			(property "Description" "Quad 2-input NOR, 1.65-3.6V, WQFN-14 with grounded exposed pad"
 				(at 0 0 0)
 				(show_name no)
 				(do_not_autoplace no)
@@ -1642,7 +1652,7 @@
 					)
 				)
 			)
-			(symbol "SN74LVC02APWR_1_1"
+			(symbol "SN74LVC02ABQAR_1_1"
 				(arc
 					(start -3.81 3.81)
 					(mid -2.589 0)
@@ -1783,7 +1793,7 @@
 					)
 				)
 			)
-			(symbol "SN74LVC02APWR_1_2"
+			(symbol "SN74LVC02ABQAR_1_2"
 				(arc
 					(start 0 3.81)
 					(mid 3.7934 0)
@@ -1866,7 +1876,7 @@
 					)
 				)
 			)
-			(symbol "SN74LVC02APWR_2_1"
+			(symbol "SN74LVC02ABQAR_2_1"
 				(arc
 					(start -3.81 3.81)
 					(mid -2.589 0)
@@ -2007,7 +2017,7 @@
 					)
 				)
 			)
-			(symbol "SN74LVC02APWR_2_2"
+			(symbol "SN74LVC02ABQAR_2_2"
 				(arc
 					(start 0 3.81)
 					(mid 3.7934 0)
@@ -2090,7 +2100,7 @@
 					)
 				)
 			)
-			(symbol "SN74LVC02APWR_3_1"
+			(symbol "SN74LVC02ABQAR_3_1"
 				(arc
 					(start -3.81 3.81)
 					(mid -2.589 0)
@@ -2231,7 +2241,7 @@
 					)
 				)
 			)
-			(symbol "SN74LVC02APWR_3_2"
+			(symbol "SN74LVC02ABQAR_3_2"
 				(arc
 					(start 0 3.81)
 					(mid 3.7934 0)
@@ -2314,7 +2324,7 @@
 					)
 				)
 			)
-			(symbol "SN74LVC02APWR_4_1"
+			(symbol "SN74LVC02ABQAR_4_1"
 				(arc
 					(start -3.81 3.81)
 					(mid -2.589 0)
@@ -2455,7 +2465,7 @@
 					)
 				)
 			)
-			(symbol "SN74LVC02APWR_4_2"
+			(symbol "SN74LVC02ABQAR_4_2"
 				(arc
 					(start 0 3.81)
 					(mid 3.7934 0)
@@ -2538,7 +2548,7 @@
 					)
 				)
 			)
-			(symbol "SN74LVC02APWR_5_0"
+			(symbol "SN74LVC02ABQAR_5_0"
 				(pin power_in line
 					(at 0 -12.7 90)
 					(length 5.08)
@@ -2575,8 +2585,26 @@
 						)
 					)
 				)
+				(pin passive line
+					(at 2.54 -12.7 90)
+					(length 5.08)
+					(name "EP"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "15"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
 			)
-			(symbol "SN74LVC02APWR_5_1"
+			(symbol "SN74LVC02ABQAR_5_1"
 				(rectangle
 					(start -5.08 7.62)
 					(end 5.08 -7.62)
@@ -2590,7 +2618,7 @@
 				)
 			)
 			(embedded_fonts no)
-			(property "MPN" "SN74LVC02APWR"
+			(property "MPN" "SN74LVC02ABQAR"
 				(at 0 0 0)
 				(hide yes)
 				(effects
@@ -2867,7 +2895,7 @@
 		(uuid "dfe7e724-d319-5c7d-80cd-330bfffc761a")
 	)
 	(symbol
-		(lib_id "obc:SN74LVC02APWR")
+		(lib_id "obc:SN74LVC02ABQAR")
 		(at 60.96 50.8 0)
 		(unit 1)
 		(exclude_from_sim no)
@@ -2886,7 +2914,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "SN74LVC02APWR"
+		(property "Value" "SN74LVC02ABQAR"
 			(at 55.88 43.18 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2897,7 +2925,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Package_SO:TSSOP-14_4.4x5mm_P0.65mm"
+		(property "Footprint" "Package_DFN_QFN:DHWQFN-14-1EP_2.5x3mm_P0.5mm_EP1x1.5mm"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -2921,7 +2949,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Quad 2-input NOR, 1.65-3.6V, TSSOP-14"
+		(property "Description" "Quad 2-input NOR, 1.65-3.6V, WQFN-14 with grounded exposed pad"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -2957,7 +2985,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "SN74LVC02APWR"
+		(property "MPN" "SN74LVC02ABQAR"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -2996,7 +3024,7 @@
 		)
 	)
 	(symbol
-		(lib_id "obc:SN74LVC02APWR")
+		(lib_id "obc:SN74LVC02ABQAR")
 		(at 60.96 91.44 0)
 		(unit 2)
 		(exclude_from_sim no)
@@ -3015,7 +3043,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "SN74LVC02APWR"
+		(property "Value" "SN74LVC02ABQAR"
 			(at 55.88 83.82 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3026,7 +3054,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Package_SO:TSSOP-14_4.4x5mm_P0.65mm"
+		(property "Footprint" "Package_DFN_QFN:DHWQFN-14-1EP_2.5x3mm_P0.5mm_EP1x1.5mm"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -3050,7 +3078,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Quad 2-input NOR, 1.65-3.6V, TSSOP-14"
+		(property "Description" "Quad 2-input NOR, 1.65-3.6V, WQFN-14 with grounded exposed pad"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -3086,7 +3114,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "SN74LVC02APWR"
+		(property "MPN" "SN74LVC02ABQAR"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -3125,7 +3153,7 @@
 		)
 	)
 	(symbol
-		(lib_id "obc:SN74LVC02APWR")
+		(lib_id "obc:SN74LVC02ABQAR")
 		(at 129.54 50.8 0)
 		(unit 3)
 		(exclude_from_sim no)
@@ -3144,7 +3172,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "SN74LVC02APWR"
+		(property "Value" "SN74LVC02ABQAR"
 			(at 124.46 43.18 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3155,7 +3183,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Package_SO:TSSOP-14_4.4x5mm_P0.65mm"
+		(property "Footprint" "Package_DFN_QFN:DHWQFN-14-1EP_2.5x3mm_P0.5mm_EP1x1.5mm"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -3179,7 +3207,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Quad 2-input NOR, 1.65-3.6V, TSSOP-14"
+		(property "Description" "Quad 2-input NOR, 1.65-3.6V, WQFN-14 with grounded exposed pad"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -3215,7 +3243,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "SN74LVC02APWR"
+		(property "MPN" "SN74LVC02ABQAR"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -3254,7 +3282,7 @@
 		)
 	)
 	(symbol
-		(lib_id "obc:SN74LVC02APWR")
+		(lib_id "obc:SN74LVC02ABQAR")
 		(at 129.54 71.12 0)
 		(unit 4)
 		(exclude_from_sim no)
@@ -3273,7 +3301,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "SN74LVC02APWR"
+		(property "Value" "SN74LVC02ABQAR"
 			(at 124.46 63.50000000000001 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3284,7 +3312,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Package_SO:TSSOP-14_4.4x5mm_P0.65mm"
+		(property "Footprint" "Package_DFN_QFN:DHWQFN-14-1EP_2.5x3mm_P0.5mm_EP1x1.5mm"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -3308,7 +3336,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Quad 2-input NOR, 1.65-3.6V, TSSOP-14"
+		(property "Description" "Quad 2-input NOR, 1.65-3.6V, WQFN-14 with grounded exposed pad"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -3344,7 +3372,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "SN74LVC02APWR"
+		(property "MPN" "SN74LVC02ABQAR"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -3383,7 +3411,7 @@
 		)
 	)
 	(symbol
-		(lib_id "obc:SN74LVC02APWR")
+		(lib_id "obc:SN74LVC02ABQAR")
 		(at 224.79 30.48 0)
 		(unit 5)
 		(exclude_from_sim no)
@@ -3402,7 +3430,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "SN74LVC02APWR"
+		(property "Value" "SN74LVC02ABQAR"
 			(at 231.14 27.94 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3413,7 +3441,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Package_SO:TSSOP-14_4.4x5mm_P0.65mm"
+		(property "Footprint" "Package_DFN_QFN:DHWQFN-14-1EP_2.5x3mm_P0.5mm_EP1x1.5mm"
 			(at 0.0 -5.08 0)
 			(hide yes)
 			(show_name no)
@@ -3437,7 +3465,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Quad 2-input NOR, 1.65-3.6V, TSSOP-14"
+		(property "Description" "Quad 2-input NOR, 1.65-3.6V, WQFN-14 with grounded exposed pad"
 			(at 0.0 -5.08 0)
 			(hide yes)
 			(show_name no)
@@ -3473,7 +3501,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "SN74LVC02APWR"
+		(property "MPN" "SN74LVC02ABQAR"
 			(at 0.0 -5.08 0)
 			(hide yes)
 			(effects
@@ -3506,6 +3534,9 @@
 		)
 		(pin "14"
 			(uuid "755855a4-0af8-50f9-b52f-9efe0a226075")
+		)
+		(pin "15"
+			(uuid "5fb8f7fe-37d0-4297-b29b-352a5c1dd93e")
 		)
 	)
 	(hierarchical_label "COM_SOURCE"
@@ -5305,7 +5336,7 @@
 		)
 	)
 	(symbol
-		(lib_id "obc:LS021B7DD02")
+		(lib_id "obc:LS021B7DD02_Underside")
 		(at 342.9 91.44 0)
 		(unit 1)
 		(body_style 1)
@@ -5361,7 +5392,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "FFC & FPC Connectors Easy-On .3mm FPC Conn RA BC 21Ckt"
+		(property "Description" "Sharp LS021B7DD02 with underside Molex 503566-2102: connector pad n mates LCD pin 22-n"
 			(at 178.816 129.032 0)
 			(hide yes)
 			(show_name no)
@@ -5429,67 +5460,67 @@
 				)
 			)
 		)
-		(pin "1"
+		(pin "21"
 			(uuid "bd54092f-21ff-5f28-9e39-17c49244cad0")
 		)
-		(pin "2"
+		(pin "20"
 			(uuid "eb1cf9a3-8a28-50dd-b271-d4e861529117")
 		)
-		(pin "3"
+		(pin "19"
 			(uuid "8ec90a72-6548-5324-8662-2a82e8f3607c")
 		)
-		(pin "4"
+		(pin "18"
 			(uuid "aaeea314-1c16-5218-87d0-2ec0926a7ad7")
 		)
-		(pin "5"
+		(pin "17"
 			(uuid "35b9b2c0-278d-51c3-b3ff-afc899772abc")
 		)
-		(pin "6"
+		(pin "16"
 			(uuid "38a1440d-775f-55e5-b34c-0a731a9e55e7")
 		)
-		(pin "7"
+		(pin "15"
 			(uuid "d4e883bf-8e81-52ce-ac60-0bde45addae3")
 		)
-		(pin "8"
+		(pin "14"
 			(uuid "59323e90-46dd-552f-abce-d32c5fb0200c")
 		)
-		(pin "9"
+		(pin "13"
 			(uuid "f2df0576-a76c-5dd0-b7f3-17fa13181e91")
 		)
-		(pin "10"
+		(pin "12"
 			(uuid "7cf0e9eb-ac13-5014-8fe7-546eaab44ee0")
 		)
 		(pin "11"
 			(uuid "a49a5ec1-8470-5903-9cc2-abf50e7bf5b9")
 		)
-		(pin "12"
+		(pin "10"
 			(uuid "8ebb4906-b854-5648-9fba-da9e55286951")
 		)
-		(pin "13"
+		(pin "9"
 			(uuid "dfb642e0-56fc-5e19-9448-56d636db2867")
 		)
-		(pin "14"
+		(pin "8"
 			(uuid "06db5521-5fa0-5b8b-a75b-c5a4166d932b")
 		)
-		(pin "15"
+		(pin "7"
 			(uuid "91bf3c9e-1829-5c01-aa27-39fbce0ae7a3")
 		)
-		(pin "16"
+		(pin "6"
 			(uuid "53830b2e-504a-5057-8433-28dcb6d9762b")
 		)
-		(pin "17"
+		(pin "5"
 			(uuid "4b6372c7-3239-54a3-ad88-3ce3852a7583")
 		)
-		(pin "18"
+		(pin "4"
 			(uuid "ca83cd59-2089-564a-af46-e5cc559146c7")
 		)
-		(pin "19"
+		(pin "3"
 			(uuid "bda21643-76c4-5483-966b-22fd359bea11")
 		)
-		(pin "20"
+		(pin "2"
 			(uuid "e0fa3325-849e-5122-b77c-154fcbb03f74")
 		)
-		(pin "21"
+		(pin "1"
 			(uuid "1911e037-cfaa-5212-9adf-7bcf6d2fbd8b")
 		)
 		(pin "MP1"
@@ -5497,6 +5528,16 @@
 		)
 		(pin "MP2"
 			(uuid "742cf7e7-2cdc-5426-8946-9e47f7d12f31")
+		)
+		(property "Pin Mapping" "Underside fold: Molex pad n = Sharp pin 22-n; see Sharp rear contact-side outline"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
 		)
 	)
 	(wire
@@ -10565,11 +10606,11 @@
 		(at 218.44 215.9 0)
 		(unit 1)
 		(exclude_from_sim no)
-		(in_bom yes)
+		(in_bom no)
 		(on_board yes)
 		(dnp no)
 		(uuid "f10b98d4-e4ec-4be2-9fb6-127292fa4163")
-		(property "Footprint" ""
+		(property "Footprint" "obc:Backlight_Flex_Solder_2_P1.8mm_Provisional"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -10589,7 +10630,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Backlight connector; tail, pinout, LED topology and current not selected"
+		(property "Description" "Two direct-solder pads for custom backlight flex; 1=A (+5V_DISP), 2=K (BL_K); no connector fitted"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -10599,7 +10640,7 @@
 				(justify left)
 			)
 		)
-		(property "Selection Status" "TBD: match backlight tail; do not fabricate connector footprint yet"
+		(property "Selection Status" "PROVISIONAL: confirm tail width, pitch, polarity, LED topology/current, solder process and strain relief with backlight manufacturer before fabrication"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -10618,7 +10659,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "BACKLIGHT A/K - TBD"
+		(property "Value" "BACKLIGHT A/K - PROVISIONAL SOLDER"
 			(at 213.35999999999999 208.28 0)
 			(effects
 				(font
@@ -10969,5 +11010,36 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "d78ee79d-5466-5891-9fcb-9884a66b63a3")
+	)
+	(wire
+		(pts
+			(xy 224.79 43.18)
+			(xy 227.33 43.18)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "34bba980-344c-4c23-b0db-93a18e679348")
+	)
+	(text "J1: underside fold reverses connector numbering. Molex pad n = Sharp LCD pin 22-n."
+		(at 165.1 190.5 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "de07c8cf-466e-4322-9628-1ca30ca226d3")
+	)
+	(text "J6 PROVISIONAL: 1.8 mm pitch, 1.2 x 3.0 mm solder pads. Confirm tail, polarity, LED load and solder/strain-relief process with supplier."
+		(at 165.1 233.68 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "fed83ad1-a553-4051-a990-4cf1dbbf5338")
 	)
 )

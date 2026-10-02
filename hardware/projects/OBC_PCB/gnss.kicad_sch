@@ -3394,7 +3394,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "Capacitor_SMD:C_0201_0603Metric"
 			(at 100.33 69.85 0)
 			(hide yes)
 			(show_name no)
@@ -3406,7 +3406,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" "https://www.taoglas.com/datasheets/GGBLA.125.A.pdf"
+		(property "Datasheet" "https://www.mouser.com/datasheet/2/281/1/GRM0335C1H470JA01_01A-1980894.pdf"
 			(at 100.33 71.12 0)
 			(hide yes)
 			(show_name no)
@@ -3454,7 +3454,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "GRM1555C1H470JA01D"
+		(property "MPN" "GRM0335C1H470JA01D"
 			(at -317.5 -7.62 0)
 			(hide yes)
 			(effects
@@ -3534,7 +3534,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "Capacitor_SMD:C_0201_0603Metric"
 			(at 116.84 71.12 0)
 			(hide yes)
 			(show_name no)
@@ -3545,7 +3545,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.taoglas.com/datasheets/GGBLA.125.A.pdf"
+		(property "Datasheet" "https://pim.murata.com/asset/pim4/ceramicCapacitorSMD/GJM0335C1E100JB01-31A-EN_PDF_CERAMICCAPACITORSMD"
 			(at 116.84 71.12 0)
 			(hide yes)
 			(show_name no)
@@ -3591,7 +3591,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "GRM1555C1H100JA01D"
+		(property "MPN" "GJM0335C1E100JB01D"
 			(at -317.5 -7.62 0)
 			(hide yes)
 			(effects
@@ -3601,7 +3601,7 @@
 				(justify left)
 			)
 		)
-		(property "Voltage" "50V"
+		(property "Voltage" "25V"
 			(at 116.84 74.93 90)
 			(hide yes)
 			(effects
@@ -3905,7 +3905,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "Capacitor_SMD:C_0201_0603Metric"
 			(at 105.41 83.82 0)
 			(hide yes)
 			(show_name no)
@@ -3916,7 +3916,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.taoglas.com/datasheets/GGBLA.125.A.pdf"
+		(property "Datasheet" "https://datasheet.octopart.com/GJM0335C1H4R3BB01D-Murata-datasheet-140568717.pdf"
 			(at 105.41 83.82 0)
 			(hide yes)
 			(show_name no)
@@ -3962,7 +3962,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "GJM1555C1H4R3BB01D"
+		(property "MPN" "GJM0335C1H4R3BB01D"
 			(at -317.5 -7.62 0)
 			(hide yes)
 			(effects

@@ -2946,6 +2946,545 @@
 			)
 			(embedded_fonts no)
 		)
+		(symbol "obc:BMI-S-202-F-20-R"
+			(pin_names
+				(offset 1.016)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(in_pos_files yes)
+			(duplicate_pin_numbers_are_jumpers no)
+			(property "Reference" "SH"
+				(at 0 5.08 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "BMI-S-202-F-20-R"
+				(at 0 2.54 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" "obc:Laird_BMI-S-202-F-20_16.5mm"
+				(at 0 -2.54 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Datasheet" "https://www.laird.com/sites/default/files/2024-04/BMI-S-202-R-20-Sales.pdf"
+				(at 0 -2.54 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Description" "Two-piece RF shield frame"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_keywords" "RF EMI shielding cabinet"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(symbol "BMI-S-202-F-20-R_0_1"
+				(polyline
+					(pts
+						(xy -17.78 5.08)
+						(xy -17.78 11.43)
+						(xy 17.78 11.43)
+						(xy 17.78 5.08)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy -15.24 6.35)
+						(xy -15.24 7.62)
+						(xy -13.97 7.62)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy -15.24 2.54)
+						(xy -15.24 5.08)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy -15.24 -1.27)
+						(xy -15.24 1.27)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy -15.24 -5.08)
+						(xy -15.24 -2.54)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy -13.97 -7.62)
+						(xy -15.24 -7.62)
+						(xy -15.24 -6.35)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy -12.7 7.62)
+						(xy -10.16 7.62)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy -10.16 -7.62)
+						(xy -12.7 -7.62)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy -6.35 7.62)
+						(xy -8.89 7.62)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy -6.35 -7.62)
+						(xy -8.89 -7.62)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy -2.54 7.62)
+						(xy -5.08 7.62)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy -2.54 -7.62)
+						(xy -5.08 -7.62)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy -1.27 -7.62)
+						(xy 1.27 -7.62)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 1.27 7.62)
+						(xy -1.27 7.62)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 2.54 -7.62)
+						(xy 5.08 -7.62)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 5.08 7.62)
+						(xy 2.54 7.62)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 6.35 -7.62)
+						(xy 8.89 -7.62)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 8.89 7.62)
+						(xy 6.35 7.62)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 10.16 -7.62)
+						(xy 12.7 -7.62)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 12.7 7.62)
+						(xy 10.16 7.62)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 13.97 -7.62)
+						(xy 15.24 -7.62)
+						(xy 15.24 -6.35)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 15.24 6.35)
+						(xy 15.24 7.62)
+						(xy 13.97 7.62)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 15.24 2.54)
+						(xy 15.24 5.08)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 15.24 -1.27)
+						(xy 15.24 1.27)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 15.24 -5.08)
+						(xy 15.24 -2.54)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+			)
+			(symbol "BMI-S-202-F-20-R_1_1"
+				(pin passive line
+					(at 0 -10.16 90)
+					(length 2.54)
+					(name "Shield"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+			(property "Manufacturer" "Laird"
+				(at 0 0 0)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
+			(property "MPN" "BMI-S-202-F-20-R"
+				(at 0 0 0)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
+		)
+		(symbol "obc:BMI-S-202-C-20"
+			(pin_names
+				(offset 0)
+			)
+			(exclude_from_sim yes)
+			(in_bom yes)
+			(on_board no)
+			(property "Reference" "SH"
+				(at 0 5.08 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "BMI-S-202-C-20"
+				(at 0 2.54 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(symbol "BMI-S-202-C-20_0_1"
+				(polyline
+					(pts
+						(xy -17.78 -1.27)
+						(xy -17.78 0)
+						(xy 17.78 0)
+						(xy 17.78 -1.27)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+			)
+			(property "Footprint" ""
+				(at 0 0 0)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
+			(property "Datasheet" "https://www.laird.com/sites/default/files/2024-04/BMI-S-202-R-20-Sales.pdf"
+				(at 0 0 0)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
+			(property "Manufacturer" "Laird"
+				(at 0 0 0)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
+			(property "MPN" "BMI-S-202-C-20"
+				(at 0 0 0)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
+			(property "Description" "Removable RF shield lid; fit after reflow"
+				(at 0 0 0)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
+		)
 	)
 	(text "nRF54LM20A / SYSTEM, RF, USB"
 		(at 236.22 13.97 0)
@@ -9359,7 +9898,7 @@
 	(wire
 		(pts
 			(xy 203.2 167.64)
-			(xy 283.21 167.64)
+			(xy 257.81 167.64)
 		)
 		(stroke
 			(width 0)
@@ -9370,7 +9909,7 @@
 	(wire
 		(pts
 			(xy 203.2 172.72)
-			(xy 283.21 172.72)
+			(xy 257.81 172.72)
 		)
 		(stroke
 			(width 0)
@@ -9392,7 +9931,7 @@
 	(wire
 		(pts
 			(xy 203.2 223.52)
-			(xy 283.21 223.52)
+			(xy 257.81 223.52)
 		)
 		(stroke
 			(width 0)
@@ -9414,7 +9953,7 @@
 	(wire
 		(pts
 			(xy 203.2 259.08)
-			(xy 283.21 259.08)
+			(xy 257.81 259.08)
 		)
 		(stroke
 			(width 0)
@@ -9467,22 +10006,22 @@
 		(uuid "b56dbecf-8fd8-569a-934a-1b73dc78b13a")
 	)
 	(label "SCL"
-		(at 269.21 167.64 0)
+		(at 257.81 167.64 180)
 		(effects
 			(font
 				(size 1.0 1.0)
 			)
-			(justify left bottom)
+			(justify right bottom)
 		)
 		(uuid "d16201c0-05eb-54b6-9518-39c0a291a7a7")
 	)
 	(label "SDA"
-		(at 269.21 172.72 0)
+		(at 257.81 172.72 180)
 		(effects
 			(font
 				(size 1.0 1.0)
 			)
-			(justify left bottom)
+			(justify right bottom)
 		)
 		(uuid "9cc3bbdf-c4b7-5598-b663-25b58312fe13")
 	)
@@ -9497,12 +10036,12 @@
 		(uuid "a02b78a6-04b1-5d41-aee7-a6499970c211")
 	)
 	(label "BTN_SELECT"
-		(at 269.21 223.52 0)
+		(at 257.81 223.52 180)
 		(effects
 			(font
 				(size 1.0 1.0)
 			)
-			(justify left bottom)
+			(justify right bottom)
 		)
 		(uuid "48af07b0-f69a-5b99-a6cd-42adc6c1d05c")
 	)
@@ -9517,12 +10056,12 @@
 		(uuid "1f59b3bc-f584-5679-9ea1-cd0b7795e761")
 	)
 	(label "BTN_PREV"
-		(at 269.21 259.08 0)
+		(at 257.81 259.08 180)
 		(effects
 			(font
 				(size 1.0 1.0)
 			)
-			(justify left bottom)
+			(justify right bottom)
 		)
 		(uuid "ff62fad9-18c0-5aa0-bbc2-e76ae438cd92")
 	)
@@ -9750,7 +10289,7 @@
 	(wire
 		(pts
 			(xy 318.77 160.02)
-			(xy 393.7 160.02)
+			(xy 353.06 160.02)
 		)
 		(stroke
 			(width 0)
@@ -9758,7 +10297,7 @@
 		)
 		(uuid "cd5d26ad-0292-5910-a9f4-4489a94be2f1")
 	)
-	(label "LCD_R0"
+	(label "LCD_R0_MCU"
 		(at 325.12 160.02 0)
 		(effects
 			(font
@@ -9771,7 +10310,7 @@
 	(wire
 		(pts
 			(xy 318.77 165.1)
-			(xy 393.7 165.1)
+			(xy 353.06 165.1)
 		)
 		(stroke
 			(width 0)
@@ -9779,7 +10318,7 @@
 		)
 		(uuid "f72c2b0a-dc4f-556b-b44f-fe2ce2f2c53e")
 	)
-	(label "LCD_R1"
+	(label "LCD_R1_MCU"
 		(at 325.12 165.1 0)
 		(effects
 			(font
@@ -9792,7 +10331,7 @@
 	(wire
 		(pts
 			(xy 318.77 170.18)
-			(xy 393.7 170.18)
+			(xy 353.06 170.18)
 		)
 		(stroke
 			(width 0)
@@ -9800,7 +10339,7 @@
 		)
 		(uuid "426a876b-b660-5984-a066-0612040476b4")
 	)
-	(label "LCD_G0"
+	(label "LCD_G0_MCU"
 		(at 325.12 170.18 0)
 		(effects
 			(font
@@ -9813,7 +10352,7 @@
 	(wire
 		(pts
 			(xy 318.77 175.26)
-			(xy 393.7 175.26)
+			(xy 353.06 175.26)
 		)
 		(stroke
 			(width 0)
@@ -9821,7 +10360,7 @@
 		)
 		(uuid "807bde68-8cc4-5b98-8fc7-c11f5afbcab2")
 	)
-	(label "LCD_G1"
+	(label "LCD_G1_MCU"
 		(at 325.12 175.26 0)
 		(effects
 			(font
@@ -9834,7 +10373,7 @@
 	(wire
 		(pts
 			(xy 318.77 180.34)
-			(xy 393.7 180.34)
+			(xy 353.06 180.34)
 		)
 		(stroke
 			(width 0)
@@ -9842,7 +10381,7 @@
 		)
 		(uuid "c0fa70aa-ec5a-5c38-b809-1cd3b13ed287")
 	)
-	(label "LCD_B0"
+	(label "LCD_B0_MCU"
 		(at 325.12 180.34 0)
 		(effects
 			(font
@@ -9855,7 +10394,7 @@
 	(wire
 		(pts
 			(xy 318.77 185.42)
-			(xy 393.7 185.42)
+			(xy 353.06 185.42)
 		)
 		(stroke
 			(width 0)
@@ -9863,7 +10402,7 @@
 		)
 		(uuid "87aafb50-d568-5168-bdee-da54a04158c0")
 	)
-	(label "LCD_B1"
+	(label "LCD_B1_MCU"
 		(at 325.12 185.42 0)
 		(effects
 			(font
@@ -9876,7 +10415,7 @@
 	(wire
 		(pts
 			(xy 318.77 190.5)
-			(xy 393.7 190.5)
+			(xy 353.06 190.5)
 		)
 		(stroke
 			(width 0)
@@ -9884,7 +10423,7 @@
 		)
 		(uuid "ca50e424-f452-5cf9-997d-e2cda12d031c")
 	)
-	(label "LCD_BCK"
+	(label "LCD_BCK_MCU"
 		(at 325.12 190.5 0)
 		(effects
 			(font
@@ -9896,8 +10435,8 @@
 	)
 	(wire
 		(pts
-			(xy 318.77 195.58)
-			(xy 393.7 195.58)
+			(xy 339.09 195.58)
+			(xy 353.06 195.58)
 		)
 		(stroke
 			(width 0)
@@ -9905,8 +10444,8 @@
 		)
 		(uuid "9ae68ae2-f96b-5d1b-b8ca-5b3a3f94b0bb")
 	)
-	(label "LCD_GCK"
-		(at 325.12 195.58 0)
+	(label "LCD_GCK_MCU"
+		(at 339.09 195.58 0)
 		(effects
 			(font
 				(size 1.0 1.0)
@@ -9918,7 +10457,7 @@
 	(wire
 		(pts
 			(xy 318.77 200.66)
-			(xy 393.7 200.66)
+			(xy 353.06 200.66)
 		)
 		(stroke
 			(width 0)
@@ -9926,7 +10465,7 @@
 		)
 		(uuid "05353ca1-e02d-5ee8-a55f-293f92c7da95")
 	)
-	(label "LCD_GSP"
+	(label "LCD_GSP_MCU"
 		(at 325.12 200.66 0)
 		(effects
 			(font
@@ -9939,7 +10478,7 @@
 	(wire
 		(pts
 			(xy 318.77 205.74)
-			(xy 393.7 205.74)
+			(xy 353.06 205.74)
 		)
 		(stroke
 			(width 0)
@@ -9947,7 +10486,7 @@
 		)
 		(uuid "7863e67c-ecc6-5e31-b3fe-d888ce3f92a6")
 	)
-	(label "LCD_GEN"
+	(label "LCD_GEN_MCU"
 		(at 325.12 205.74 0)
 		(effects
 			(font
@@ -9960,7 +10499,7 @@
 	(wire
 		(pts
 			(xy 318.77 210.82)
-			(xy 393.7 210.82)
+			(xy 353.06 210.82)
 		)
 		(stroke
 			(width 0)
@@ -9968,7 +10507,7 @@
 		)
 		(uuid "3c15497a-4543-5953-82bb-39a5ec6b2dad")
 	)
-	(label "LCD_INTB"
+	(label "LCD_INTB_MCU"
 		(at 325.12 210.82 0)
 		(effects
 			(font
@@ -9980,8 +10519,8 @@
 	)
 	(wire
 		(pts
-			(xy 318.77 215.9)
-			(xy 393.7 215.9)
+			(xy 339.09 215.9)
+			(xy 353.06 215.9)
 		)
 		(stroke
 			(width 0)
@@ -9989,8 +10528,8 @@
 		)
 		(uuid "ab58159d-1dfb-572a-95a5-08e5e396a1b1")
 	)
-	(label "LCD_BSP"
-		(at 325.12 215.9 0)
+	(label "LCD_BSP_MCU"
+		(at 339.09 215.9 0)
 		(effects
 			(font
 				(size 1.0 1.0)
@@ -10320,5 +10859,2633 @@
 			(justify left top)
 		)
 		(uuid "338cb9b6-2c5b-505e-be79-520271a71577")
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 63.5 63.5 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board no)
+		(dnp no)
+		(uuid "a103098d-ba94-43a6-9f38-f60530ec339c")
+		(property "Reference" "#PWRSH1"
+			(at 58.42 53.34 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "GND"
+			(at 63.5 67.31 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at -20.32 -45.72 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" ""
+			(at -20.32 -45.72 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at -20.32 -45.72 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "ki_keywords" "global power"
+			(at -20.32 -45.72 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "#PWRSH1")
+					(unit 1)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "cc7f4bd3-dd0f-4fec-a56e-28600acda157")
+		)
+	)
+	(wire
+		(pts
+			(xy 63.5 60.96)
+			(xy 63.5 63.5)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "6a9a596c-52b4-4c19-80e8-e05426162e03")
+	)
+	(symbol
+		(lib_id "obc:BMI-S-202-F-20-R")
+		(at 63.5 50.8 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "4ab08086-c856-4d5d-8a17-3dab0b844965")
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "SH1")
+					(unit 1)
+				)
+			)
+		)
+		(property "Reference" "SH1"
+			(at 63.5 45.72 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "BMI-S-202-F-20-R"
+			(at 63.5 48.26 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "obc:Laird_BMI-S-202-F-20_16.5mm"
+			(at 63.5 50.8 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" "https://www.laird.com/sites/default/files/2024-04/BMI-S-202-R-20-Sales.pdf"
+			(at 63.5 50.8 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Manufacturer" "Laird"
+			(at 63.5 50.8 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "MPN" "BMI-S-202-F-20-R"
+			(at 63.5 50.8 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Mate" "SH3"
+			(at 63.5 50.8 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "c5fdff4c-a263-4338-bae8-f5069bddc830")
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 63.5 132.08 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board no)
+		(dnp no)
+		(uuid "566a7a14-a78a-4a7a-9e3d-0ee6a954d274")
+		(property "Reference" "#PWRSH2"
+			(at 58.42 121.92 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "GND"
+			(at 63.5 135.89 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at -20.32 22.86 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" ""
+			(at -20.32 22.86 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at -20.32 22.86 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "ki_keywords" "global power"
+			(at -20.32 22.86 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "#PWRSH2")
+					(unit 1)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "78a6018f-9b10-464b-bc88-5f6c05332cfe")
+		)
+	)
+	(wire
+		(pts
+			(xy 63.5 129.54)
+			(xy 63.5 132.08)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "8e219e0b-d8c8-4a7a-b6bb-b766c0f38e22")
+	)
+	(symbol
+		(lib_id "obc:BMI-S-202-F-20-R")
+		(at 63.5 119.38 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "01c8e4ab-4a58-431e-b4d3-f553fa524d2f")
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "SH2")
+					(unit 1)
+				)
+			)
+		)
+		(property "Reference" "SH2"
+			(at 63.5 114.3 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "BMI-S-202-F-20-R"
+			(at 63.5 116.83999999999999 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "obc:Laird_BMI-S-202-F-20_16.5mm"
+			(at 63.5 119.38 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" "https://www.laird.com/sites/default/files/2024-04/BMI-S-202-R-20-Sales.pdf"
+			(at 63.5 119.38 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Manufacturer" "Laird"
+			(at 63.5 119.38 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "MPN" "BMI-S-202-F-20-R"
+			(at 63.5 119.38 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Mate" "SH4"
+			(at 63.5 119.38 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "6018f7fa-64dd-4b72-9622-aa98c1536fe3")
+		)
+	)
+	(symbol
+		(lib_id "obc:BMI-S-202-C-20")
+		(at 63.5 78.74 0)
+		(unit 1)
+		(exclude_from_sim yes)
+		(in_bom yes)
+		(on_board no)
+		(dnp no)
+		(uuid "2d37eb07-df47-4cec-84a1-d5acabb32829")
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "SH3")
+					(unit 1)
+				)
+			)
+		)
+		(property "Reference" "SH3"
+			(at 63.5 73.66 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "BMI-S-202-C-20"
+			(at 63.5 76.19999999999999 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 63.5 78.74 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" "https://www.laird.com/sites/default/files/2024-04/BMI-S-202-R-20-Sales.pdf"
+			(at 63.5 78.74 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Manufacturer" "Laird"
+			(at 63.5 78.74 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "MPN" "BMI-S-202-C-20"
+			(at 63.5 78.74 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Mate" "SH1"
+			(at 63.5 78.74 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "obc:BMI-S-202-C-20")
+		(at 63.5 147.32 0)
+		(unit 1)
+		(exclude_from_sim yes)
+		(in_bom yes)
+		(on_board no)
+		(dnp no)
+		(uuid "1218ccc1-67dc-4b08-aa4f-807d6c78fb7e")
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "SH4")
+					(unit 1)
+				)
+			)
+		)
+		(property "Reference" "SH4"
+			(at 63.5 142.23999999999998 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "BMI-S-202-C-20"
+			(at 63.5 144.78 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 63.5 147.32 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" "https://www.laird.com/sites/default/files/2024-04/BMI-S-202-R-20-Sales.pdf"
+			(at 63.5 147.32 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Manufacturer" "Laird"
+			(at 63.5 147.32 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "MPN" "BMI-S-202-C-20"
+			(at 63.5 147.32 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Mate" "SH2"
+			(at 63.5 147.32 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+	)
+	(text "EMI SHIELDS\nSH1 covers the MCU and clocks. Fit SH3.\nSH2 covers the PMIC and 5 V converter. Fit SH4.\nBoth frames are BMI-S-202-F-20-R.\nBoth removable lids are BMI-S-202-C-20.\nBond frames to GND with a close via fence.\nKeep switching loops short and filter exits.\nLimit enclosed components to 1.8 mm height."
+		(at 27.94 172.72 0)
+		(effects
+			(font
+				(size 1.5 1.5)
+			)
+			(justify left top)
+		)
+		(uuid "b979a9f4-5821-43f0-8f2d-ad8d9b1cedc1")
+	)
+	(wire
+		(pts
+			(xy 270.51 167.64)
+			(xy 283.21 167.64)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "f3e25acb-7530-472d-909e-86b3dd92c188")
+	)
+	(label "LCD_BSP_MCU"
+		(at 270.51 167.64 180)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify right bottom)
+		)
+		(uuid "bbd906ad-605d-4c84-b155-d6ca6cd2f1fa")
+	)
+	(wire
+		(pts
+			(xy 270.51 172.72)
+			(xy 283.21 172.72)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "c0575d22-38be-4cd3-9bd3-29ef9928a27e")
+	)
+	(label "LCD_GCK_MCU"
+		(at 270.51 172.72 180)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify right bottom)
+		)
+		(uuid "001bd18d-c4f5-454d-89fa-eb8e0d0b8822")
+	)
+	(wire
+		(pts
+			(xy 270.51 223.52)
+			(xy 283.21 223.52)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "7199b039-6925-4ce1-aff6-c201df85264c")
+	)
+	(label "BTN_PREV"
+		(at 270.51 223.52 180)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify right bottom)
+		)
+		(uuid "e5986ee0-d045-4557-a0aa-b87d5f7470c9")
+	)
+	(wire
+		(pts
+			(xy 270.51 259.08)
+			(xy 283.21 259.08)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "f3e17238-e26d-46de-9ee6-ceb51090b7aa")
+	)
+	(label "BTN_SELECT"
+		(at 270.51 259.08 180)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify right bottom)
+		)
+		(uuid "50038484-4633-4f3d-89a2-6ce1e327d231")
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 355.6 160.02 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "b7ebdf8f-1eaf-4c61-8110-e604de8cd7c7")
+		(property "Reference" "R69"
+			(at 355.6 157.12 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Value" "100"
+			(at 355.6 158.42 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
+			(at 355.6 160.02 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "https://www.yageogroup.com/component-documentation/download/specsheet/RC0201FR-07100RL"
+			(at 355.6 160.02 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "R0 source series resistor, 100 Ohm, 1%; place beside U6 pin 8"
+			(at 355.6 160.02 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "1%"
+			(at 355.6 160.02 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Power" "50mW"
+			(at 355.6 160.02 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "25V"
+			(at 355.6 160.02 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Technology" "Thick film"
+			(at 355.6 160.02 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "R69")
+					(unit 1)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "ec908901-37b5-4741-989e-380184a76a9f")
+		)
+		(pin "2"
+			(uuid "ac672a36-08e2-4e35-8526-25925502d7bf")
+		)
+		(property "MPN" "RC0201FR-07100RL"
+			(at 355.6 160.02 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Manufacturer" "YAGEO"
+			(at 355.6 160.02 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 358.14 160.02)
+			(xy 393.7 160.02)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "2e44c9af-57bf-425a-ba16-dfe02dd8788e")
+	)
+	(label "LCD_R0"
+		(at 365.76 160.02 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "68a1a9b4-d824-4c2f-b18d-f08a39d80409")
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 355.6 165.1 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "8ed48741-d7c2-42b5-87f2-bda4fafb64f2")
+		(property "Reference" "R70"
+			(at 355.6 162.2 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Value" "100"
+			(at 355.6 163.5 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
+			(at 355.6 165.1 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "https://www.yageogroup.com/component-documentation/download/specsheet/RC0201FR-07100RL"
+			(at 355.6 165.1 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "R1 source series resistor, 100 Ohm, 1%; place beside U6 pin 9"
+			(at 355.6 165.1 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "1%"
+			(at 355.6 165.1 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Power" "50mW"
+			(at 355.6 165.1 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "25V"
+			(at 355.6 165.1 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Technology" "Thick film"
+			(at 355.6 165.1 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "R70")
+					(unit 1)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "b3c59819-8da4-4ef4-9f7d-f78ca4fec894")
+		)
+		(pin "2"
+			(uuid "252ea065-203f-4395-94d6-5b6dbf8f0d35")
+		)
+		(property "MPN" "RC0201FR-07100RL"
+			(at 355.6 165.1 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Manufacturer" "YAGEO"
+			(at 355.6 165.1 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 358.14 165.1)
+			(xy 393.7 165.1)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "4fd831ec-3706-4c66-bc1f-2b938fc4dc84")
+	)
+	(label "LCD_R1"
+		(at 365.76 165.1 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "ac64bcbc-1144-4400-a20d-cc98c8e75188")
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 355.6 170.18 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "a6989c51-b37d-4194-b77f-dc6978bde950")
+		(property "Reference" "R71"
+			(at 355.6 167.28 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Value" "100"
+			(at 355.6 168.58 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
+			(at 355.6 170.18 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "https://www.yageogroup.com/component-documentation/download/specsheet/RC0201FR-07100RL"
+			(at 355.6 170.18 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "G0 source series resistor, 100 Ohm, 1%; place beside U6 pin 16"
+			(at 355.6 170.18 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "1%"
+			(at 355.6 170.18 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Power" "50mW"
+			(at 355.6 170.18 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "25V"
+			(at 355.6 170.18 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Technology" "Thick film"
+			(at 355.6 170.18 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "R71")
+					(unit 1)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "ad4ded8f-9a0a-4abb-b15d-81bd678ff9bd")
+		)
+		(pin "2"
+			(uuid "50f1bd61-60b9-4b5c-b8e7-aa6d4c2bdbeb")
+		)
+		(property "MPN" "RC0201FR-07100RL"
+			(at 355.6 170.18 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Manufacturer" "YAGEO"
+			(at 355.6 170.18 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 358.14 170.18)
+			(xy 393.7 170.18)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "9a15202e-e854-4f15-87e3-0faf152c3535")
+	)
+	(label "LCD_G0"
+		(at 365.76 170.18 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "10695a8c-3dea-421e-92b3-e4c3b163b7e9")
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 355.6 175.26 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "dad926d0-e036-4d1e-aa0d-0463ee80718d")
+		(property "Reference" "R72"
+			(at 355.6 172.36 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Value" "100"
+			(at 355.6 173.66 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
+			(at 355.6 175.26 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "https://www.yageogroup.com/component-documentation/download/specsheet/RC0201FR-07100RL"
+			(at 355.6 175.26 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "G1 source series resistor, 100 Ohm, 1%; place beside U6 pin 22"
+			(at 355.6 175.26 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "1%"
+			(at 355.6 175.26 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Power" "50mW"
+			(at 355.6 175.26 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "25V"
+			(at 355.6 175.26 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Technology" "Thick film"
+			(at 355.6 175.26 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "R72")
+					(unit 1)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "43d6040c-4b7d-4bd1-ba24-1f8baa985396")
+		)
+		(pin "2"
+			(uuid "8d592db2-ff9b-442f-8d47-dd918ef073de")
+		)
+		(property "MPN" "RC0201FR-07100RL"
+			(at 355.6 175.26 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Manufacturer" "YAGEO"
+			(at 355.6 175.26 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 358.14 175.26)
+			(xy 393.7 175.26)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "ca55b258-7248-4785-97b7-229f1f58fd96")
+	)
+	(label "LCD_G1"
+		(at 365.76 175.26 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "e2960a1c-9337-49c2-b1ac-6b43a9a0d5a2")
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 355.6 180.34 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "483d4d3e-ad61-485e-aaaf-76c9ca7ca7b0")
+		(property "Reference" "R73"
+			(at 355.6 177.44 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Value" "100"
+			(at 355.6 178.74 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
+			(at 355.6 180.34 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "https://www.yageogroup.com/component-documentation/download/specsheet/RC0201FR-07100RL"
+			(at 355.6 180.34 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "B0 source series resistor, 100 Ohm, 1%; place beside U6 pin 23"
+			(at 355.6 180.34 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "1%"
+			(at 355.6 180.34 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Power" "50mW"
+			(at 355.6 180.34 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "25V"
+			(at 355.6 180.34 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Technology" "Thick film"
+			(at 355.6 180.34 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "R73")
+					(unit 1)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "fc692e1f-f952-4dd7-9d6e-65b28d399483")
+		)
+		(pin "2"
+			(uuid "60998f91-e6e8-4f7c-890a-acf013ef85bf")
+		)
+		(property "MPN" "RC0201FR-07100RL"
+			(at 355.6 180.34 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Manufacturer" "YAGEO"
+			(at 355.6 180.34 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 358.14 180.34)
+			(xy 393.7 180.34)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "c25131fd-fc13-4c5a-b5c6-64b5d9cdb712")
+	)
+	(label "LCD_B0"
+		(at 365.76 180.34 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "0bdb45a4-e2a6-4cc2-b8dd-f74a222dbbc1")
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 355.6 185.42 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "0aaf6d71-0c34-47a3-96a3-278b5c015f59")
+		(property "Reference" "R74"
+			(at 355.6 182.52 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Value" "100"
+			(at 355.6 183.82 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
+			(at 355.6 185.42 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "https://www.yageogroup.com/component-documentation/download/specsheet/RC0201FR-07100RL"
+			(at 355.6 185.42 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "B1 source series resistor, 100 Ohm, 1%; place beside U6 pin 24"
+			(at 355.6 185.42 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "1%"
+			(at 355.6 185.42 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Power" "50mW"
+			(at 355.6 185.42 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "25V"
+			(at 355.6 185.42 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Technology" "Thick film"
+			(at 355.6 185.42 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "R74")
+					(unit 1)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "039d0ac6-0a5f-40b1-b661-40d62e9f1566")
+		)
+		(pin "2"
+			(uuid "ea339ba4-5d7f-4b42-81ac-5a56a1aa3b76")
+		)
+		(property "MPN" "RC0201FR-07100RL"
+			(at 355.6 185.42 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Manufacturer" "YAGEO"
+			(at 355.6 185.42 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 358.14 185.42)
+			(xy 393.7 185.42)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "04183631-2359-4b58-9cb1-c3028485b124")
+	)
+	(label "LCD_B1"
+		(at 365.76 185.42 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "8a12a5cf-007f-4b5f-a527-f9124549bace")
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 355.6 190.5 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "7b0e278b-ffc0-4f3a-91f9-db84f41531bc")
+		(property "Reference" "R75"
+			(at 355.6 187.6 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Value" "100"
+			(at 355.6 188.9 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
+			(at 355.6 190.5 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "https://www.yageogroup.com/component-documentation/download/specsheet/RC0201FR-07100RL"
+			(at 355.6 190.5 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "BCK source series resistor, 100 Ohm, 1%; place beside U6 pin 15"
+			(at 355.6 190.5 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "1%"
+			(at 355.6 190.5 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Power" "50mW"
+			(at 355.6 190.5 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "25V"
+			(at 355.6 190.5 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Technology" "Thick film"
+			(at 355.6 190.5 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "R75")
+					(unit 1)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "f742c63f-6cf4-430d-b446-ed61ffc0d477")
+		)
+		(pin "2"
+			(uuid "dfa59fdf-25fe-4f85-b0c8-4b19e9ceeb00")
+		)
+		(property "MPN" "RC0201FR-07100RL"
+			(at 355.6 190.5 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Manufacturer" "YAGEO"
+			(at 355.6 190.5 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 358.14 190.5)
+			(xy 393.7 190.5)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "d00ee2dc-a830-4479-9bd3-37db979e07a6")
+	)
+	(label "LCD_BCK"
+		(at 365.76 190.5 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "9cb7400d-a623-4d33-ad6a-38a81c392773")
+	)
+	(wire
+		(pts
+			(xy 318.77 195.58)
+			(xy 325.12 195.58)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "85921ed4-27f0-4939-8c88-f22c6a2ef32b")
+	)
+	(label "SDA"
+		(at 325.12 195.58 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "773bb417-8740-49c6-810f-d6f337092d38")
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 355.6 195.58 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "c6a50fc6-10b6-401e-b680-5c21635cfb10")
+		(property "Reference" "R76"
+			(at 355.6 192.68 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Value" "220"
+			(at 355.6 193.98 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
+			(at 355.6 195.58 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "https://www.yageogroup.com/component-documentation/download/specsheet/RC0201FR-07220RL"
+			(at 355.6 195.58 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "GCK source series resistor, 220 Ohm, 1%; place beside U6 pin 14"
+			(at 355.6 195.58 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "1%"
+			(at 355.6 195.58 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Power" "50mW"
+			(at 355.6 195.58 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "25V"
+			(at 355.6 195.58 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Technology" "Thick film"
+			(at 355.6 195.58 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "R76")
+					(unit 1)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "aa45497a-523a-4b12-b5a2-9df071000942")
+		)
+		(pin "2"
+			(uuid "7e30bcd7-ac17-48d2-bf82-d039dd683b02")
+		)
+		(property "MPN" "RC0201FR-07220RL"
+			(at 355.6 195.58 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Manufacturer" "YAGEO"
+			(at 355.6 195.58 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 358.14 195.58)
+			(xy 393.7 195.58)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "968e858c-39dc-4d81-a2c6-ccc14bbf585f")
+	)
+	(label "LCD_GCK"
+		(at 365.76 195.58 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "ade896b4-896f-4327-822b-256b005c8732")
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 355.6 200.66 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "6233ed32-0c64-4275-bb77-53fbd9b9ad95")
+		(property "Reference" "R77"
+			(at 355.6 197.76 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Value" "220"
+			(at 355.6 199.06 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
+			(at 355.6 200.66 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "https://www.yageogroup.com/component-documentation/download/specsheet/RC0201FR-07220RL"
+			(at 355.6 200.66 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "GSP source series resistor, 220 Ohm, 1%; place beside U6 pin 11"
+			(at 355.6 200.66 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "1%"
+			(at 355.6 200.66 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Power" "50mW"
+			(at 355.6 200.66 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "25V"
+			(at 355.6 200.66 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Technology" "Thick film"
+			(at 355.6 200.66 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "R77")
+					(unit 1)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "20914185-fc73-4ff5-b75f-c956e86e602c")
+		)
+		(pin "2"
+			(uuid "a69d871b-32c7-420c-af91-66c416149cae")
+		)
+		(property "MPN" "RC0201FR-07220RL"
+			(at 355.6 200.66 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Manufacturer" "YAGEO"
+			(at 355.6 200.66 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 358.14 200.66)
+			(xy 393.7 200.66)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "3e5cd8ac-dc90-4e6f-a238-d50ee855ba59")
+	)
+	(label "LCD_GSP"
+		(at 365.76 200.66 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "2d88c2ae-36bc-49e0-94c1-8ac87ff63353")
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 355.6 205.74 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "f98aa351-bbf4-402f-9be1-e525be4053b5")
+		(property "Reference" "R78"
+			(at 355.6 202.84 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Value" "220"
+			(at 355.6 204.14 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
+			(at 355.6 205.74 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "https://www.yageogroup.com/component-documentation/download/specsheet/RC0201FR-07220RL"
+			(at 355.6 205.74 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "GEN source series resistor, 220 Ohm, 1%; place beside U6 pin 12"
+			(at 355.6 205.74 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "1%"
+			(at 355.6 205.74 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Power" "50mW"
+			(at 355.6 205.74 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "25V"
+			(at 355.6 205.74 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Technology" "Thick film"
+			(at 355.6 205.74 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "R78")
+					(unit 1)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "166169bf-bdeb-48d7-8e6f-04ae90eebdff")
+		)
+		(pin "2"
+			(uuid "3edc34c1-74f4-4b66-8865-188ebcbfbe9f")
+		)
+		(property "MPN" "RC0201FR-07220RL"
+			(at 355.6 205.74 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Manufacturer" "YAGEO"
+			(at 355.6 205.74 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 358.14 205.74)
+			(xy 393.7 205.74)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "13687079-1505-43c4-aa21-9ee57be6c117")
+	)
+	(label "LCD_GEN"
+		(at 365.76 205.74 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "72d7e2db-25d1-4afc-b97c-27e332e515be")
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 355.6 210.82 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "1a973759-58f4-4ea6-a1ee-c7fd9d696295")
+		(property "Reference" "R79"
+			(at 355.6 207.92 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Value" "220"
+			(at 355.6 209.22 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
+			(at 355.6 210.82 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "https://www.yageogroup.com/component-documentation/download/specsheet/RC0201FR-07220RL"
+			(at 355.6 210.82 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "INTB source series resistor, 220 Ohm, 1%; place beside U6 pin 50"
+			(at 355.6 210.82 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "1%"
+			(at 355.6 210.82 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Power" "50mW"
+			(at 355.6 210.82 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "25V"
+			(at 355.6 210.82 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Technology" "Thick film"
+			(at 355.6 210.82 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "R79")
+					(unit 1)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "6f213b94-e5c8-4e93-84fb-af342a1d51cd")
+		)
+		(pin "2"
+			(uuid "f5167868-38c4-4977-aec2-c9e1cd444703")
+		)
+		(property "MPN" "RC0201FR-07220RL"
+			(at 355.6 210.82 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Manufacturer" "YAGEO"
+			(at 355.6 210.82 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 358.14 210.82)
+			(xy 393.7 210.82)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "9e92f845-9169-4926-97b7-6d3eaced9570")
+	)
+	(label "LCD_INTB"
+		(at 365.76 210.82 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "542ed3db-d759-4eb2-b29b-0ff7bed5a298")
+	)
+	(wire
+		(pts
+			(xy 318.77 215.9)
+			(xy 325.12 215.9)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "9efa5bf5-6399-4029-b723-34811d7645bf")
+	)
+	(label "SCL"
+		(at 325.12 215.9 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "91894dad-e993-40ca-a144-c95e1e940df5")
+	)
+	(symbol
+		(lib_id "Device:R_Small")
+		(at 355.6 215.9 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "501088f8-0168-4b97-b85d-e7574d4ccfe0")
+		(property "Reference" "R80"
+			(at 355.6 213.0 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Value" "220"
+			(at 355.6 214.3 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0201_0603Metric"
+			(at 355.6 215.9 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "https://www.yageogroup.com/component-documentation/download/specsheet/RC0201FR-07220RL"
+			(at 355.6 215.9 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "BSP source series resistor, 220 Ohm, 1%; place beside U6 pin 13"
+			(at 355.6 215.9 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Tolerance" "1%"
+			(at 355.6 215.9 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Power" "50mW"
+			(at 355.6 215.9 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Voltage" "25V"
+			(at 355.6 215.9 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(property "Technology" "Thick film"
+			(at 355.6 215.9 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1 1)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "OBC_PCB"
+				(path "/57e91c39-b072-457b-b097-52c5b44e61c8"
+					(reference "R80")
+					(unit 1)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "31bb8784-ef48-4247-a84a-74bb0916e9f8")
+		)
+		(pin "2"
+			(uuid "02ac880d-224d-4898-b6c6-be24ea7cecf4")
+		)
+		(property "MPN" "RC0201FR-07220RL"
+			(at 355.6 215.9 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Manufacturer" "YAGEO"
+			(at 355.6 215.9 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 358.14 215.9)
+			(xy 393.7 215.9)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "ab1d7dfb-229c-43e1-bccc-b5cd9938d74e")
+	)
+	(label "LCD_BSP"
+		(at 365.76 215.9 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left bottom)
+		)
+		(uuid "295de00f-98e5-4f64-a225-68e1dce05011")
+	)
+	(text "LCD SOURCE DAMPING\nR69-R75: 100 Ohm, BCK and data. R76-R80: 220 Ohm, control.\nPlace within 4 mm of U6. Use standard GPIO drive.\nVerify 10-90% edges at J1: target <=25 ns; panel limit 50 ns."
+		(at 332.74 147.32 0)
+		(effects
+			(font
+				(size 1 1)
+			)
+			(justify left top)
+		)
+		(uuid "3658afb5-cbfe-4e4e-8744-5d829c132511")
 	)
 )
