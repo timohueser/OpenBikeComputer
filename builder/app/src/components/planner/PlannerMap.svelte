@@ -1,5 +1,5 @@
 <script module lang="ts">
-    import { terrainSource } from '../../lib/planner/map-terrain';
+    import { terrainRetry, terrainSource } from '../../lib/planner/map-terrain';
     import { TERRAIN_URL } from '../../lib/planner/map-data';
     const terrain = terrainSource(TERRAIN_URL);
 </script>
@@ -399,8 +399,13 @@
                 if (icon && !map!.hasImage(id)) map!.addImage(id, icon.image, { pixelRatio: icon.pixelRatio });
             });
             map.once("load", reportView);
+            const terrainError = terrainRetry(map);
             map.on("error", (event) => {
-                failure = "Some map data could not load. Check your connection, then retry.";
+                if (terrainError(event)) {
+                    console.warn("Planner terrain:", event.error);
+                    return;
+                }
+                failure ="Some map data could not load. Check your connection, then retry.";
                 errorDetail = event.error.message;
                 console.error("Planner map:", event.error);
                 // MapLibre does not repaint after a failed request, so the first load would wait for a camera move.
