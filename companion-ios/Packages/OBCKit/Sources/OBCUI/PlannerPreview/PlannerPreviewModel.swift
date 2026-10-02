@@ -5,15 +5,15 @@ import OBCPlanner
 
 public struct PlannerPreviewPlace: Identifiable, Equatable, Sendable {
     public enum Kind: String, Sendable {
-        case town, cafe, water, camping, shop, hotel, shelter, food, toilets, bike, pharmacy, station, viewpoint, peak
+        case town, cafe, water, camping, shop, hotel, shelter, rest, food, toilets, bike, pharmacy, station, viewpoint, peak
         public var title: String {
             switch self { case .town: "Place"; case .cafe: "Café"; case .water: "Water"; case .camping: "Camping"; case .shop: "Food shop"
-            case .hotel: "Lodging"; case .shelter: "Shelter"; case .food: "Food"; case .toilets: "Toilets"
-            case .bike: "Bike service"; case .pharmacy: "Pharmacy"; case .station: "Station"; case .viewpoint: "Viewpoint"; case .peak: "Peak" }
+            case .hotel: "Lodging"; case .shelter: "Shelter"; case .rest: "Rest stop"; case .food: "Food"; case .toilets: "Toilets"
+            case .bike: "Bike service"; case .pharmacy: "Pharmacy & hospital"; case .station: "Station"; case .viewpoint: "Viewpoint"; case .peak: "Peak" }
         }
         public var symbol: String {
             switch self { case .town: "mappin"; case .cafe: "cup.and.saucer.fill"; case .water: "drop.fill"; case .camping: "tent.fill"; case .shop: "cart.fill"
-            case .hotel: "bed.double"; case .shelter: "house"; case .food: "fork.knife"; case .toilets: "toilet"
+            case .hotel: "bed.double"; case .shelter: "house"; case .rest: "table.furniture"; case .food: "fork.knife"; case .toilets: "toilet"
             case .bike: "bicycle"; case .pharmacy: "cross.case"; case .station: "tram"; case .viewpoint: "eye"; case .peak: "mountain.2" }
         }
     }
