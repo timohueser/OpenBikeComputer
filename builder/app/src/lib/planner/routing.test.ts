@@ -106,6 +106,9 @@ describe('routing integration', () => {
         expect(body(5).start_position).toBe('two:7.85,48');
         expect(body(6)).toMatchObject({ points: coordinates(move(7.93)) });
         expect(body(6).start_position).toBeUndefined();
+        fetch.mockImplementationOnce(async () => ({ ok: false, json: async () => ({ code: 'busy', message: 'Busy.' }) }));
+        await expect(calculateLine(move(7.94), signal, cache)).rejects.toThrow('Busy.');
+        expect(fetch).toHaveBeenCalledTimes(8);
     });
     it('keeps a picked corridor with its plan', () => {
         const plan = trip();

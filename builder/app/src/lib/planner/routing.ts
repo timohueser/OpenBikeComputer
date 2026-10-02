@@ -66,7 +66,7 @@ export async function requestRoute(points: Coordinate[], profile: string, signal
         body: JSON.stringify({ points, profile, ...(alternatives === 'only' ? { alternatives_only: true } : { alternatives }), turnarounds, ...pins }),
     });
     const data = await response.json().catch(() => { throw new Error('The routing service returned an invalid response.'); });
-    if (!response.ok) throw new Error(data.message ?? 'Routing is unavailable.');
+    if (!response.ok) throw Object.assign(new Error(data.message ?? 'Routing is unavailable.'), { code: data.code as string | undefined });
     const routes = decodeRoutes(data);
     if (!routes.length && alternatives !== 'only') throw new Error('The routing service returned no route.');
     return routes;

@@ -188,7 +188,7 @@ public actor PlannerService: PlannerDataSource {
     }
 
     /// One request at most: for the legs from the first to the last leg that is not cached, pinned to the cached legs
-    /// before and after it. When it fails, one request for the whole route follows: the whole route can pass a
+    /// before and after it. When it finds no route, one request for the whole route follows: the whole route can pass a
     /// neighbour point the other way.
     private func route(_ points: [Coordinate], profile: String, release: PlannerRelease, package: String,
                        whole: Bool) async throws -> PlannedPath {
@@ -202,7 +202,8 @@ public actor PlannerService: PlannerDataSource {
             do {
                 fresh = try await request(Array(points[first...last + 1]), profile: profile, pins: (before?.end, after?.start),
                                           release: release, package: package)
-            } catch let error where !(error is CancellationError) && (before != nil || after != nil) {
+            } catch PlannerFailure.noRoad where before != nil || after != nil {
+                // Only a missing path can change with the whole route; a busy service must not get a larger request.
                 return try await route(points, profile: profile, release: release, package: package, whole: true)
             }
             // The service ignores a pin that is not a road candidate of its point.

@@ -55,7 +55,7 @@ export class LegCache {
 
     /** The route through a run of routed points. It sends at most one request: for the legs from the first to the last
      * leg that is not cached. That request is pinned to the cached legs before and after it, so each join keeps its direction.
-     * When that request fails, one request for the whole run follows: the whole run can pass a neighbour point the other way. */
+     * When that request finds no path, one request for the whole run follows: the whole run can pass a neighbour point the other way. */
     async route(points: Coordinate[], turnarounds: number[], profile: string, signal: AbortSignal, whole = false): Promise<EngineRoute> {
         const turn = (index: number) => turnarounds.includes(index);
         // A turnaround joins legs in either direction.
@@ -76,7 +76,8 @@ export class LegCache {
                 [answer] = await requestRoute(points.slice(first, last + 2), profile, signal, false,
                     turnarounds.filter(t => t > first && t <= last).map(t => t - first), { start_position: before?.end, end_position: after?.start });
             } catch (error) {
-                if (signal.aborted || !(before || after)) throw error;
+                // Only a missing path can change with the whole run; a busy service must not get a larger request.
+                if (!(before || after) || (error as { code?: string }).code !== 'no_path') throw error;
                 return this.route(points, turnarounds, profile, signal, true);
             }
             const fresh = answer.legs.map(leg => cut(answer, leg));
