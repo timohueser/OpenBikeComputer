@@ -57,6 +57,9 @@ targets:
       - path: ../target/PlannerSearch
         type: folder
         buildPhase: resources
+      # Carries the licence texts of the linked route-server crates.
+      - path: ../THIRD-PARTY.md
+        buildPhase: resources
     preBuildScripts:
       - name: Build offline planner
         basedOnDependencyAnalysis: false
