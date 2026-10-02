@@ -42,7 +42,7 @@ export interface SearchAnswer {
     hasMore?: boolean; canRetry?: boolean; area?: string; note?: string; notice?: string; region?: string;
 }
 export type SearchState = { loading: boolean; error: string; answer: SearchAnswer | null };
-/** The route is simplified here, once per request, and never on a route change alone. */
+/** The route is simplified here, at most once per route (see `searchLine`), and never on a route change alone. */
 export async function searchPlaces(q: string, context: SearchContext, region: string, limit: number, signal: AbortSignal, request?: QueryRequest): Promise<SearchAnswer> {
     const { coordinates, km, seconds, ...plan } = context.plan;
     const response = await fetch(`${SEARCH_URL}/query`, { method: 'POST', signal, headers: { 'Content-Type': 'application/json' },

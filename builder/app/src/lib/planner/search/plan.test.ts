@@ -17,4 +17,9 @@ describe('search line', () => {
         const seconds = [0, 450, 900, 1350, 1453, 1556, 1659];
         expect(searchLine(line, [0, 1, 2, 3, 4, 5, 6], seconds).km).toEqual([0, 3, 6]);
     });
+    it('keeps the kilometres rising when a kept point lies just before the end', () => {
+        // A 60 s stop in the last 0.3 m keeps that point; rounding its kilometre up would pass the exact end.
+        const line: Coordinate[] = [[8, 48], [8.01, 48], [8.0100039, 48]];
+        expect(searchLine(line, [0, .7446, .74489], [0, 100, 160]).km).toEqual([0, .74489, .74489]);
+    });
 });

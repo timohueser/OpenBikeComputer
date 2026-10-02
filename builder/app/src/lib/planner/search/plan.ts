@@ -13,7 +13,8 @@ export function searchLine(coordinates: Coordinate[], km: readonly number[], sec
     const line = {
         coordinates: kept.map(i => coordinates[i].map(v => round(v, 5)) as Coordinate),
         // The last kilometre stays exact: the planner sends the last day's end as the route length.
-        km: kept.map(i => i === coordinates.length - 1 ? km[i] : round(km[i], 3)),
+        // No rounded kilometre may pass it, or the kilometres stop rising.
+        km: kept.map(i => i === coordinates.length - 1 ? km[i] : Math.min(round(km[i], 3), km[coordinates.length - 1])),
         hours: seconds && kept.map(i => round(seconds[i] / 3600, 3)),
     };
     lines.set(coordinates, { seconds, line });
