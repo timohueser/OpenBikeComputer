@@ -56,7 +56,7 @@ import UIKit
             guard let selection else { continue }
             let point = handle.corner == .northwest
                 ? CGPoint(x: selection.minX, y: selection.minY) : CGPoint(x: selection.maxX, y: selection.maxY)
-            handle.frame = CGRect(x: point.x - 36, y: point.y - 36, width: 72, height: 72)
+            handle.center = point
         }
         CATransaction.commit()
     }
@@ -102,7 +102,8 @@ import UIKit
         var adjust: ((CGFloat) -> Void)?
         init(corner: OfflineAreaSelection.Corner) {
             self.corner = corner
-            super.init(frame: .zero)
+            super.init(frame: CGRect(x: 0, y: 0, width: 72, height: 72))
+            contentMode = .redraw
             isOpaque = false
             isAccessibilityElement = true
             accessibilityTraits = .adjustable
