@@ -92,7 +92,14 @@
         "icon": "M2 12 12 4l10 8M5 10v10m14-10v10",
         "kinds": {
             "shelter": "Shelter",
-            "wilderness_hut": "Wilderness hut",
+            "wilderness_hut": "Wilderness hut"
+        }
+    },
+    "rest": {
+        "label": "Rest stop",
+        "plural": "Rest stops",
+        "icon": "M4 9h16M2 14h20M8 9 5 20m11-11 3 11",
+        "kinds": {
             "picnic_site": "Picnic site"
         }
     },
