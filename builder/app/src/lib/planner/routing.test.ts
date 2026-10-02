@@ -1,15 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calculateLine, profileId, selectRoute, movingSecondsAt, type EngineRoute } from './routing';
+import { calculateLine, profileId, selectRoute, movingSecondsAt } from './routing';
+import { decodeRoutes, type AnswerRoute } from './route-answer';
 import { ridingProfiles, presetName, type BikeType } from './riding-profiles';
 import { surfaceRuns, surfaceWindow } from './surface-data';
 import { initialTrip, cumulative, removeRoutePoint, setEndpoint, routingKey, routeCoordinates, type Trip } from './editor';
 
-const route: EngineRoute = {
-    id: 'test-route', surfaces: ['Paved', 'Gravel'], pushing: [false, true], reason: 'primary', elapsed: [0, 3000, 4000], package: 'test', profile: 'touring', geometry: [[7.8, 48], [7.9, 48], [8, 48]], elevation: [200, null, 400],
-    totals: { distance_m: 15000, ascent_m: 0, descent_m: 0, seconds: 4000, surface_m: [1000, 14000, 0, 0, 0, 0], unknown_elevation_m: 15000, pushing_m: 100 },
-    legs: [{ from_index: 0, to_index: 1, totals: { distance_m: 7500 } as EngineRoute['totals'] }, { from_index: 1, to_index: 2, totals: { distance_m: 7500 } as EngineRoute['totals'] }],
+const answer: AnswerRoute = {
+    id: 'test-route', surfaces: [['Paved', 1], ['Gravel', 1]], pushing: [[false, 1], [true, 1]], reason: 'primary', elapsed_s: [0, 3000, 1000], package: 'test', profile: 'touring',
+    coordinates_udeg: [7_800_000, 48_000_000, 100_000, 0, 100_000, 0], elevation_dm: [2000, null, 2000],
+    totals: { distance_m: 15000, ascent_m: 0, seconds: 4000, surface_m: [1000, 14000, 0, 0, 0, 0], unknown_elevation_m: 15000, pushing_m: 100 },
+    legs: [{ from_index: 0, to_index: 1 }, { from_index: 1, to_index: 2 }],
     snap_truncated: false,
 };
+const [route] = decodeRoutes({ routes: [answer] });
 function trip(): Trip {
     return { ...initialTrip(), live: true, points: [
         { id: 'start', kind: 'start', coordinate: [7.8, 48], label: 'Start', progress: 0 },
@@ -30,7 +33,7 @@ describe('routing integration', () => {
         expect(profileId({ ...trip(), bike: 'road', preset: 'Quieter' })).toBe('road/quieter');
     });
     it('keeps directed shaping context in one request and preserves unknown elevation', async () => {
-        const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [route] }) });
+        const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [answer] }) });
         vi.stubGlobal('fetch', fetch);
         const plan = trip();
         const line = await calculateLine(plan, new AbortController().signal);
@@ -65,7 +68,7 @@ describe('routing integration', () => {
         expect(routeCoordinates(moved)).toEqual([plan.points[0].coordinate]);
     });
     it('makes visit reversals explicit and accounts for manual joins', async () => {
-        const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [{ ...route, legs: Array.from({ length: 4 }, (_, i) => ({ from_index: 0, to_index: Math.min(i, 2), totals: route.totals })) }] }) });
+        const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [{ ...answer, legs: Array.from({ length: 4 }, (_, i) => ({ from_index: 0, to_index: Math.min(i, 2) })) }] }) });
         vi.stubGlobal('fetch', fetch);
         const plan = trip();
         plan.points[1] = { ...plan.points[1], kind: 'detour', anchor: [7.85, 48] };

@@ -1,12 +1,12 @@
 import { presetSuffix } from './riding-profiles';
 import { cumulative, orderedRoutePoints, routingKey, type Coordinate, type Trip } from './editor';
+import { decodeRoutes } from './route-answer';
 
 export type Surface = 'Unknown' | 'Paved' | 'Compacted' | 'Gravel' | 'Dirt' | 'Rough';
 
 export interface RouteTotals {
     distance_m: number;
     ascent_m: number;
-    descent_m: number;
     seconds: number;
     surface_m: number[];
     unknown_elevation_m: number;
@@ -23,7 +23,7 @@ export interface EngineRoute {
     surfaces: Surface[];
     pushing: boolean[];
     totals: RouteTotals;
-    legs: { from_index: number; to_index: number; totals: RouteTotals }[];
+    legs: { from_index: number; to_index: number }[];
     snap_truncated: boolean;
 }
 export interface RoutingLine {
@@ -54,8 +54,7 @@ export async function requestRoute(points: Coordinate[], profile: string, signal
     });
     const data = await response.json().catch(() => { throw new Error('The routing service returned an invalid response.'); });
     if (!response.ok) throw new Error(data.message ?? 'Routing is unavailable.');
-    if (!Array.isArray(data.routes) || !data.routes.length) throw new Error('The routing service returned no route.');
-    return data.routes;
+    return decodeRoutes(data);
 }
 
 export function profileId(trip: Trip): string {
