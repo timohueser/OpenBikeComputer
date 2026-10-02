@@ -39,12 +39,14 @@ test('a planning session stays inside the request budget', async ({ page }) => {
   await page.goto('/planner.html');
   const canvas = page.locator('.maplibregl-canvas');
   await expect(canvas).toBeVisible();
+  // Terrain and overlays wait for the basemap. Every total stays the same when they do not, so only the order shows it.
+  // They start only after the last basemap tile is drawn, which can be later than a quiet network.
+  const firstDetail = () => order.findIndex(kind => kind === 'terrain' || kind === 'overlays');
+  await expect.poll(firstDetail, { message: 'a terrain or overlay request after the basemap', timeout: 30_000 }).toBeGreaterThan(-1);
   await idle();
   phase('load');
-  // Terrain and overlays wait for the basemap. Every total stays the same when they do not, so only the order shows it.
   const lastBasemap = Math.max(...['basemap', 'glyphs', 'sprites'].map(kind => order.lastIndexOf(kind)));
-  const firstDetail = order.findIndex(kind => kind === 'terrain' || kind === 'overlays');
-  expect(firstDetail, `load order: ${order.join(' ')}`).toBeGreaterThan(lastBasemap);
+  expect(firstDetail(), `load order: ${order.join(' ')}`).toBeGreaterThan(lastBasemap);
   const { x, y, width, height } = await canvas.boundingBox();
   const at = (fx, fy) => [x + width * fx, y + height * fy];
 
