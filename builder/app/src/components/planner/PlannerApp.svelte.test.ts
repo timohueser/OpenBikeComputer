@@ -8,7 +8,7 @@ import * as routing from '../../lib/planner/routing';
 import type { EngineRoute, RoutingLine } from '../../lib/planner/routing';
 
 vi.mock('./PlannerMap.svelte', async () => ({ default: (await import('../../../test-support/planner/MapStub.svelte')).default }));
-vi.mock('../../lib/planner/place-index', () => ({ corridorPlaces: vi.fn() }));
+vi.mock('../../lib/planner/place-index', async original => ({ ...await original<object>(), corridorPlaces: vi.fn() }));
 
 let app: ReturnType<typeof mount> | undefined;
 const stored = new Map<string, string>();

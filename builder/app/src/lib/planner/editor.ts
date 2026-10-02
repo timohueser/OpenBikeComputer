@@ -339,11 +339,6 @@ export function overnightWindow(trip: Trip, night: number): { from: number; to: 
     return { from, to: Math.max(from, to), center, blocked: false };
 }
 
-/** Straight distance in km from a point to the nearest spot on the route. */
-export function offRoute(coordinates: Coordinate[], point: Coordinate): number {
-    return coordinates.length ? kilometres(point, coordinateAt(coordinates, nearestProgress(coordinates, point))) : Infinity;
-}
-
 export function nearestProgress(coordinates: Coordinate[], point: Coordinate): number {
     const lengths = cumulative(coordinates);
     let nearest = Infinity;

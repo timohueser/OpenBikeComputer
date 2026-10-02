@@ -14,6 +14,9 @@ export function poiPlace(id: string | number | undefined, kind: string, name: un
     };
 }
 
+// The sphere of `kilometres`, so the corridor and the route distance measure as the rest of the planner does.
+const kmPerDegree = 6371 * Math.PI / 180;
+
 /** Keys `z/x/y` of the tiles at `zoom` that a square buffer of `bufferKm` around the route touches. */
 export function corridorTiles(coordinates: Coordinate[], bufferKm: number, zoom: number): string[] {
     const n = 2 ** zoom;
@@ -23,7 +26,7 @@ export function corridorTiles(coordinates: Coordinate[], bufferKm: number, zoom:
         return Math.floor((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * n);
     };
     const keys = new Set<string>();
-    const dLat = bufferKm / 110.574;
+    const dLat = bufferKm / kmPerDegree;
     // Samples no further apart than half a box or a quarter tile leave no gap between boxes.
     const step = Math.max(1e-6, Math.min(dLat, 90 / n));
     coordinates.forEach((b, i) => {
@@ -32,7 +35,7 @@ export function corridorTiles(coordinates: Coordinate[], bufferKm: number, zoom:
         for (let s = 0; s <= count; s++) {
             const lon = a[0] + (b[0] - a[0]) * s / count;
             const lat = a[1] + (b[1] - a[1]) * s / count;
-            const dLon = bufferKm / (111.32 * Math.cos(lat * Math.PI / 180));
+            const dLon = bufferKm / (kmPerDegree * Math.cos(lat * Math.PI / 180));
             for (let x = column(lon - dLon); x <= column(lon + dLon); x++) {
                 for (let y = row(lat + dLat); y <= row(lat - dLat); y++) keys.add(`${zoom}/${x}/${y}`);
             }
@@ -42,10 +45,10 @@ export function corridorTiles(coordinates: Coordinate[], bufferKm: number, zoom:
 }
 
 /**
- * A test for points within `km` of the route line. Each piece of the route has a bounding box, so a point
- * skips far pieces at once. A flat projection around the point is exact enough at this scale.
+ * Distance in km from a point to the route line, or Infinity beyond `km`. Each piece of the route has a
+ * bounding box, so a point skips far pieces at once. A flat projection around the point is exact enough at this scale.
  */
-export function nearRoute(coordinates: Coordinate[], km: number): (point: Coordinate) => boolean {
+export function routeDistance(coordinates: Coordinate[], km: number): (point: Coordinate) => number {
     const pieces: { line: Coordinate[]; box: number[] }[] = [];
     for (let i = 0; i < coordinates.length; i += 64) {
         const line = coordinates.slice(Math.max(0, i - 1), i + 64);
@@ -53,15 +56,19 @@ export function nearRoute(coordinates: Coordinate[], km: number): (point: Coordi
         pieces.push({ line, box: [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)] });
     }
     return ([lon, lat]) => {
-        const kx = 111.32 * Math.cos(lat * Math.PI / 180), ky = 110.574;
+        const kx = kmPerDegree * Math.cos(lat * Math.PI / 180), ky = kmPerDegree;
         const dLon = km / kx, dLat = km / ky;
-        return pieces.some(({ line, box }) => box[0] - dLon <= lon && lon <= box[2] + dLon && box[1] - dLat <= lat && lat <= box[3] + dLat
-            && line.some((b, i) => {
+        let nearest = Infinity;
+        for (const { line, box } of pieces) {
+            if (lon < box[0] - dLon || box[2] + dLon < lon || lat < box[1] - dLat || box[3] + dLat < lat) continue;
+            line.forEach((b, i) => {
                 const a = line[Math.max(0, i - 1)];
                 const ax = (a[0] - lon) * kx, ay = (a[1] - lat) * ky, dx = (b[0] - a[0]) * kx, dy = (b[1] - a[1]) * ky;
                 const t = Math.max(0, Math.min(1, -(ax * dx + ay * dy) / (dx * dx + dy * dy || 1)));
-                return (ax + t * dx) ** 2 + (ay + t * dy) ** 2 <= km * km;
-            }));
+                nearest = Math.min(nearest, (ax + t * dx) ** 2 + (ay + t * dy) ** 2);
+            });
+        }
+        return nearest <= km * km ? Math.sqrt(nearest) : Infinity;
     };
 }
 
@@ -94,8 +101,8 @@ export async function corridorPlaces(url: string, coordinates: Coordinate[], buf
         if (!tiles.has(key)) tiles.set(key, loadTile(archive, key).catch(error => { tiles.delete(key); throw error; }));
         return tiles.get(key)!;
     }));
-    const near = nearRoute(coordinates, bufferKm);
-    return [...new Map(loaded.flat().map(place => [place.id, place])).values()].filter(place => near(place.coordinate));
+    const distance = routeDistance(coordinates, bufferKm);
+    return [...new Map(loaded.flat().map(place => [place.id, place])).values()].filter(place => distance(place.coordinate) <= bufferKm);
 }
 
 async function loadTile(source: TileSource, key: string): Promise<Place[]> {

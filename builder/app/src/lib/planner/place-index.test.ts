@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { corridorTiles, nearRoute } from './place-index';
+import { corridorTiles, routeDistance } from './place-index';
 import type { Coordinate } from './editor';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
@@ -27,18 +27,18 @@ describe('corridor tiles', () => {
     });
 });
 
-// At 48° N, one kilometre is 0.00904° of latitude and 0.01343° of longitude.
+// At 48° N, one kilometre is 0.00899° of latitude and 0.01344° of longitude.
 describe('route distance', () => {
     const line = Array.from({ length: 100 }, (_, i): Coordinate => [8 + i / 99, 48]);
-    const near = nearRoute(line, 5);
+    const distance = routeDistance(line, 5);
 
-    it('keeps a place beside any part of the route and drops one beyond the corridor', () => {
-        expect(near([8.9, 48 + 4 * .00904])).toBe(true);
-        expect(near([8.9, 48 + 6 * .00904])).toBe(false);
+    it('measures a place beside any part of the route and drops one beyond the corridor', () => {
+        expect(distance([8.9, 48 + 4 * .00899])).toBeCloseTo(4, 2);
+        expect(distance([8.9, 48 + 6 * .00899])).toBe(Infinity);
     });
 
     it('measures past the route end to the end point', () => {
-        expect(near([9 + 4 * .01343, 48])).toBe(true);
-        expect(near([9 + 6 * .01343, 48])).toBe(false);
+        expect(distance([9 + 4 * .01344, 48])).toBeCloseTo(4, 2);
+        expect(distance([9 + 6 * .01344, 48])).toBe(Infinity);
     });
 });
