@@ -48,7 +48,7 @@ export async function applyQueryChanges(
     if (!refreshRoute) throw new Error('The routing engine must refresh the edited route.');
     return { ...trip, routing: await refreshRoute(trip) };
   }
-  let trip = structuredClone(original);
+  let trip = { ...original };
   for (const change of changes) {
     if (change.op !== 'route' && (!trip.points.some(p => p.kind === 'start') || !trip.points.some(p => p.kind === 'finish')))
       throw new Error('Choose a start and finish before editing the route.');

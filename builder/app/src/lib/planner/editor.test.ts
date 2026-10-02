@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, routeStops, addRestDay, anchorProgress, addClickedPoint, addPointNear, dayStops, applyBudget, coordinateAt, cumulative, initialTrip, insertPoint, itineraryDays, kilometres, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, removeRestDay, routeCoordinates, routeSlice, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Place, type Coordinate, type RoutePoint, type Trip } from './editor';
+import { emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, routeStops, addRestDay, anchorProgress, addClickedPoint, addPointNear, dayStops, applyBudget, coordinateAt, cumulative, initialTrip, insertPoint, itineraryDays, kilometres, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, removeRestDay, routeCoordinates, routeSlice, routingKey, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Place, type Coordinate, type RoutePoint, type Trip } from './editor';
 
 // Fictional places keep their geographic positions when the mock route changes.
 const places: Place[] = [
@@ -61,6 +61,19 @@ describe('planner commitments', () => {
         expect(first.points.find(p => p.night === 1)?.label).toBe('Friend’s house');
         expect(history.undo(moved)).toEqual(first);
         expect(history.redo(first)).toEqual(moved);
+    });
+
+    it('keeps plans without their routes in the history', () => {
+        const plan: Trip = { ...initialTrip(), live: true };
+        const routed: Trip = { ...plan, routing: { key: routingKey(plan), alternatives: [] } as unknown as Trip['routing'] };
+        const history = new TripHistory();
+        const next = history.commit(routed, { ...routed, days: 5 });
+        expect(next.routing).toBe(routed.routing);
+        const previous = history.undo(next);
+        expect(previous).toEqual(plan);
+        expect('routing' in previous).toBe(false);
+        expect(routed.routing).toBeDefined();
+        expect('routing' in history.redo(previous)).toBe(false);
     });
 
     it('reports crossed overnight choices without changing their day assignments', () => {

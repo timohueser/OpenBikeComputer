@@ -95,6 +95,8 @@
     let consumedPress = false;
     let wholeRoute = false;
     let overlayLayer: RouteOverlays | undefined;
+    // Terrain and overlays wait for the first complete basemap, so their downloads never delay it.
+    let basemapComplete = false;
     let overlayStatus = $state('');
     let overlayRetry = $state(false);
     let overlaySelection = $state<OverlaySelection | null>(null);
@@ -238,7 +240,6 @@
             paint: textPaint,
         });
         syncRouteVisibility();
-        syncTerrain();
     }
 
     function syncRouteVisibility() {
@@ -246,10 +247,16 @@
         for (const id of ["trip-line", "trip-casing", "trip-casing-drawn", "trip-highlight"]) map.setLayoutProperty(id, "visibility", showRoute ? "visible" : "none");
     }
 
+    function syncTerrainAndOverlays() {
+        if (basemapComplete) overlayLayer?.install(theme);
+        syncTerrain();
+    }
+
+    // A hidden layer leaves its source unused, so MapLibre requests none of its tiles.
     function syncTerrain() {
         if (!map?.getLayer("relief")) return;
-        for (const id of ["contour-lines", "contour-labels"]) map.setLayoutProperty(id, "visibility", contours ? "visible" : "none");
-        map.setLayoutProperty("relief", "visibility", hillshade ? "visible" : "none");
+        for (const id of ["contour-lines", "contour-labels"]) map.setLayoutProperty(id, "visibility", basemapComplete && contours ? "visible" : "none");
+        map.setLayoutProperty("relief", "visibility", basemapComplete && hillshade ? "visible" : "none");
     }
 
     function reportView(event?: { type: string; preserveSearch?: boolean }) {
@@ -385,7 +392,8 @@
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 90, unit: "metric" }), "bottom-left");
             map.dragRotate.disable();
             map.touchZoomRotate.disableRotation();
-            map.on("style.load", () => { overlayLayer?.install(theme); ready = true; installRoute(); });
+            map.on("style.load", () => { ready = true; installRoute(); syncTerrainAndOverlays(); });
+            map.once("load", () => { basemapComplete = true; syncTerrainAndOverlays(); });
             map.setMissingStyleImageResolver((id) => {
                 const icon = mapIcon(id);
                 if (icon && !map!.hasImage(id)) map!.addImage(id, icon.image, { pixelRatio: icon.pixelRatio });
@@ -395,6 +403,9 @@
                 failure = "Some map data could not load. Check your connection, then retry.";
                 errorDetail = event.error.message;
                 console.error("Planner map:", event.error);
+                // MapLibre does not repaint after a failed request, so the first load would wait for a camera move.
+                // A failed tile also marks its source loaded, so an earlier repaint would fire load too soon.
+                if (!basemapComplete && map!.areTilesLoaded()) map!.triggerRepaint();
             });
             map.on("click", (event) => {
                 const target = event.originalEvent.target;
@@ -489,8 +500,10 @@
     });
     $effect(() => {
         if (!map) return;
-        if (hoverProgress !== null && coordinates.length) hoverDot.setLngLat(coordinateAt(coordinates, hoverProgress)).addTo(map);
-        else hoverDot.remove();
+        if (hoverProgress === null || !coordinates.length) { hoverDot.remove(); return; }
+        hoverDot.setLngLat(coordinateAt(coordinates, hoverProgress));
+        // `addTo` removes and inserts the element again, so it runs only when the dot is absent.
+        if (!hoverDot.getElement().isConnected) hoverDot.addTo(map);
     });
     $effect(() => {
         if (!map) return;
