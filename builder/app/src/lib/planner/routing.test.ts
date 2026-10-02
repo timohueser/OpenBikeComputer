@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { calculateLine, profileId, RouteCache, selectRoute, movingSecondsAt, type EngineRoute } from './routing';
 import { ridingProfiles, presetName, type BikeType } from './riding-profiles';
 import { surfaceRuns, surfaceWindow } from './surface-data';
-import { initialTrip, cumulative, planOf, removeRoutePoint, setEndpoint, routingKey, routeCoordinates, TripHistory, type Coordinate, type Trip } from './editor';
+import { initialTrip, cumulative, planOf, removeRoutePoint, storedPlan, setEndpoint, routingKey, routeCoordinates, TripHistory, type Coordinate, type Trip } from './editor';
 
 const route: EngineRoute = {
     id: 'test-route', surfaces: ['Paved', 'Gravel'], pushing: [false, true], reason: 'primary', elapsed: [0, 3000, 4000], package: 'test', profile: 'touring', geometry: [[7.8, 48], [7.9, 48], [8, 48]], elevation: [200, null, 400],
@@ -92,6 +92,10 @@ describe('routing integration', () => {
         expect(planOf(shown)).toBe(picked);
         const undone = cache.attach(history.undo(shown));
         expect(undone.routing).toBe(primary);
+        cache.add({ ...picked.routing, alternativesReady: false });
+        expect(cache.attach(plan).routing).toBe(primary);
+        expect(storedPlan(shown).routing).toMatchObject({ choiceId: 'corridor', picked: true, alternatives: [] });
+        expect(storedPlan(undone).routing).toBeUndefined();
         cache.add(selectRoute({ ...plan, bike: 'gravel' }, route, [route]));
         expect(cache.attach(history.redo(undone)).routing?.choiceId).toBe('corridor');
         expect(planOf({ ...picked, points: picked.points.map(p => p.id === 'shape' ? { ...p, coordinate: [7.95, 48] as Coordinate } : p) }).routing).toBeUndefined();

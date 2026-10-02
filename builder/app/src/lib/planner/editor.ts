@@ -1,4 +1,4 @@
-import { movingSecondsAt, pickedAlternative } from './routing';
+import { movingSecondsAt } from './routing';
 import { profileAscent } from './profile-data';
 import type { PlaceCategory } from './poi-kinds';
 
@@ -581,11 +581,17 @@ export function nightOrderConflicts(trip: Trip): [RoutePoint, RoutePoint][] {
     return nights.slice(1).flatMap((point, i) => stopProgress(stops, point) <= stopProgress(stops, nights[i]) ? [[nights[i], point] as [RoutePoint, RoutePoint]] : []);
 }
 
-/** What history, drafts and versions keep: the plan without its route, which the route cache keeps.
+/** What the history keeps: the plan without its route, which the route cache keeps.
  * A picked alternative stays with its plan, because no request for the plan returns it. */
 export function planOf(trip: Trip): Trip {
     const { routing, ...plan } = trip;
-    return routing?.key === routingKey(trip) && pickedAlternative(routing) ? trip : plan;
+    return routing?.picked && routing.key === routingKey(trip) ? trip : plan;
+}
+
+/** What a draft or a version stores: the plan, and a picked alternative without the other routes, which "Route options" requests again. */
+export function storedPlan(trip: Trip): Trip {
+    const plan = planOf(trip);
+    return plan.routing ? { ...plan, routing: { ...plan.routing, alternatives: [], alternativesReady: false } } : plan;
 }
 
 /** Keeps plans (see `planOf`). A trip is never changed in place, so the history shares its objects. */

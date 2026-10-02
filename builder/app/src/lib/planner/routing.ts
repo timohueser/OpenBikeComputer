@@ -43,6 +43,8 @@ export interface RoutingLine {
     unknownSurfaceKm: number;
     pushingKm: number;
     unroutedKm: number;
+    /** A picked alternative with the profile of its primary route, such as another corridor. No request for its plan returns it. */
+    picked?: boolean;
 }
 
 const endpoint = import.meta.env.VITE_PLANNER_ROUTING_URL ?? '/routing';
@@ -66,10 +68,12 @@ export function profileId(trip: Trip): string {
 export function selectRoute(trip: Trip, route: EngineRoute, alternatives: EngineRoute[]): RoutingLine {
     const points = orderedRoutePoints(trip);
     const distance = cumulative(route.geometry);
+    const primary = alternatives[0] ?? route;
     return {
         choiceId: route.id, key: routingKey(trip), coordinates: route.geometry, elevation: route.elevation, elapsed: route.elapsed, surfaces: route.surfaces, pushing: route.pushing, seconds: route.totals.seconds,
         profile: route.profile, alternatives, alternativesReady: true, unknownSurfaceKm: route.totals.surface_m[0] / 1000, pushingKm: route.totals.pushing_m / 1000, unroutedKm: 0,
         stops: [{ id: points[0].id, distance: 0 }, ...route.legs.map((leg, i) => ({ id: points[i + 1].id, distance: distance[leg.to_index] }))],
+        picked: route.id !== primary.id && route.profile === primary.profile,
     };
 }
 
@@ -160,19 +164,15 @@ export function movingSecondsAt(line: RoutingLine, progress: number): number {
     return line.elapsed[i - 1] + share * (line.elapsed[i] - line.elapsed[i - 1]);
 }
 
-/** A picked alternative with the profile of its primary route, such as another corridor. No request for its plan returns it. */
-export function pickedAlternative(line: RoutingLine): boolean {
-    const primary = line.alternatives[0];
-    return !!primary && line.choiceId !== primary.id && line.profile === primary.profile;
-}
-
 /** The latest routes by routing key, so undo, redo and a return to an earlier bike need no request.
  * It keeps the routes that a request for their key returns; the plan keeps a picked alternative. */
 export class RouteCache {
     private lines = new Map<string, RoutingLine>();
     constructor(private readonly size = 8) {}
-    /** Keeps a route. When the cache is full, the least recently used route goes. */
+    /** Keeps a route, but never a picked alternative: it would hide the primary route of its key.
+     * When the cache is full, the least recently used route goes. */
     add(line: RoutingLine): void {
+        if (line.picked) return;
         this.lines.delete(line.key);
         this.lines.set(line.key, line);
         if (this.lines.size > this.size) this.lines.delete(this.lines.keys().next().value!);
@@ -181,7 +181,7 @@ export class RouteCache {
     attach(plan: Trip): Trip {
         const key = routingKey(plan);
         if (plan.routing?.key === key) {
-            if (!pickedAlternative(plan.routing)) this.add(plan.routing);
+            this.add(plan.routing);
             return plan;
         }
         const line = this.lines.get(key);

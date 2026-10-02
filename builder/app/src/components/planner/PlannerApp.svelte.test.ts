@@ -226,7 +226,7 @@ describe('planner app transitions', () => {
         expect(routing.calculateLine).toHaveBeenCalledTimes(2);
     });
 
-    it('keeps a picked corridor through undo, redo, a saved version and a reload', async () => {
+    it('keeps a picked corridor, without its alternatives, through undo, redo, a saved version and a reload', async () => {
         const engine = (id: string, reason: string, geometry: Coordinate[]): EngineRoute => {
             const km = cumulative(geometry).at(-1)!;
             const totals = { distance_m: km * 1000, ascent_m: 0, descent_m: 0, seconds: km * 240, surface_m: [0, km * 1000, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 };
@@ -244,6 +244,7 @@ describe('planner app transitions', () => {
         await options();
         [...document.querySelectorAll<HTMLButtonElement>('.ways [role="radio"]')].find(way => way.textContent?.includes('Different corridor'))!.click(); await tick();
         expect(chosen()).toContain('Different corridor');
+        expect(JSON.parse(stored.get('obc-planner-routing-v2')!).routing).toMatchObject({ choiceId: 'corridor', picked: true, alternatives: [] });
         button('Undo').click(); await tick();
         expect(chosen()).toContain('Balanced');
         button('Redo').click(); await tick();
@@ -253,12 +254,22 @@ describe('planner app transitions', () => {
         button('Undo').click(); await tick();
         expect(chosen()).toContain('Balanced');
         button('Restore').click(); await tick();
-        expect(chosen()).toContain('Different corridor');
+        await vi.waitFor(() => expect(chosen()).toContain('Different corridor'));
         await unmount(app);
-        app = mount(PlannerApp, { target: document.body });
-        await options();
+        app = mount(PlannerApp, { target: document.body }); await tick();
+        expect(routing.calculateLine).toHaveBeenCalledTimes(2);
+        button('Route options').click();
+        await vi.waitFor(() => expect(chosen()).toContain('Different corridor'));
+        for (const bike of ['Gravel bike', 'Touring bike']) {
+            button('Bike').click(); await tick();
+            button(bike).click(); await tick();
+            await vi.waitFor(() => expect(chosen()).not.toBe(''));
+        }
+        expect(chosen()).toContain('Balanced');
+        button('Undo').click(); await tick();
+        button('Undo').click(); await tick();
         expect(chosen()).toContain('Different corridor');
-        expect(routing.calculateLine).toHaveBeenCalledTimes(1);
+        expect(routing.calculateLine).toHaveBeenCalledTimes(5);
     });
 
     it('opens a tile place from both a search row and its map pin, then adds a visit', async () => {
