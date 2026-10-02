@@ -42,10 +42,11 @@ struct PlannerServiceTests {
                 return (try JSONSerialization.data(withJSONObject: ["routing_package": packageID, "profiles": ["gravel"]]), ok)
             }
             await sent.append(request.httpBody!)
+            let identity = await sent.identity
             let points = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
             let line = (points["points"] as! [[Double]]).map { $0.map { Int(($0 * 1e6).rounded()) } }
             let legs = line.indices.dropLast().map { k in
-                ["from_index": k, "to_index": k + 1, "start": "\(line[k])", "end": "\(line[k + 1])",
+                ["from_index": k, "to_index": k + 1, "start": "\(identity)\(line[k])", "end": "\(identity)\(line[k + 1])",
                  "totals": ["distance_m": 1000, "ascent_m": 10, "seconds": 200]] as [String: Any]
             }
             let route: [String: Any] = ["package": packageID, "profile": "gravel",
@@ -66,6 +67,13 @@ struct PlannerServiceTests {
         #expect(bodies[1]["start_position"] as? String == "[8100000, 48000000]" && bodies[1]["end_position"] as? String == "[8300000, 48000000]")
         #expect(edited.points.map(\.coordinate) == moved && edited.pointIndices == [0, 1, 2, 3, 4])
         #expect(edited.distance == 4000 && edited.ascent == 40 && edited.seconds == 800 && edited.elapsed.last == 800)
+        // A window whose ends do not join the cached legs is followed by one request for the whole route.
+        await sent.change(identity: "new")
+        moved[2] = Coordinate(latitude: 48.06, longitude: 8.2)
+        #expect(try await service.route(points: moved, bike: .gravel, release: release).points.map(\.coordinate) == moved)
+        let retried = try await sent.values.suffix(2).map { try JSONSerialization.jsonObject(with: $0) as! [String: Any] }
+        #expect(retried[0]["start_position"] as? String == "[8100000, 48000000]")
+        #expect(retried[1]["points"] as? [[Double]] == moved.map { [$0.longitude, $0.latitude] } && retried[1]["start_position"] == nil)
     }
     @Test func searchUsesCanonicalFiltersAndRouteDistances() async throws {
         let service = client(), release = try await service.release()
@@ -111,7 +119,9 @@ private let goodRoute = "good"
 
 private actor Bodies {
     var values: [Data] = []
+    var identity = ""
     func append(_ body: Data) { values.append(body) }
+    func change(identity: String) { self.identity = identity }
 }
 
 private final class StubHTTP: URLProtocol, @unchecked Sendable {

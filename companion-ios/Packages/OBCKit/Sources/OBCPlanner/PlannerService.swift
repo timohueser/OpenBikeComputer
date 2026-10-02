@@ -184,18 +184,31 @@ public actor PlannerService: PlannerDataSource {
         let manifest = try await manifest(release)
         let profile = preference.profile(for: bike)
         guard manifest.profiles.contains(profile) else { throw PlannerFailure.invalidData }
-        let keys = zip(points, points.dropFirst()).map { LegKey(package: manifest.routing_package, profile: profile, from: $0, to: $1) }
-        var found = keys.map { legs[$0] }
+        return try await route(points, profile: profile, release: release, package: manifest.routing_package, whole: false)
+    }
+
+    /// One request at most: for the legs from the first to the last leg that is not cached, pinned to the cached legs
+    /// before and after it. When it fails, one request for the whole route follows: the whole route can pass a
+    /// neighbour point the other way.
+    private func route(_ points: [Coordinate], profile: String, release: PlannerRelease, package: String,
+                       whole: Bool) async throws -> PlannedPath {
+        let keys = zip(points, points.dropFirst()).map { LegKey(package: package, profile: profile, from: $0, to: $1) }
+        var found = keys.map { whole ? nil : legs[$0] }
         // A leg from another request joins only at the same road position, so a shaping point keeps its direction.
         for k in found.indices.dropFirst() where found[k - 1].map({ $0.end != found[k]?.start }) ?? false { found[k] = nil }
         if let first = found.firstIndex(where: { $0 == nil }), let last = found.lastIndex(where: { $0 == nil }) {
             let before = first > 0 ? found[first - 1] : nil, after = last + 1 < found.count ? found[last + 1] : nil
-            let fresh = try await request(Array(points[first...last + 1]), profile: profile, pins: (before?.end, after?.start),
-                                          release: release, package: manifest.routing_package)
+            let fresh: [Leg]
+            do {
+                fresh = try await request(Array(points[first...last + 1]), profile: profile, pins: (before?.end, after?.start),
+                                          release: release, package: package)
+            } catch let error where !(error is CancellationError) && (before != nil || after != nil) {
+                return try await route(points, profile: profile, release: release, package: package, whole: true)
+            }
             // The service ignores a pin that is not a road candidate of its point.
             if before.map({ $0.end != fresh[0].start }) ?? false || after.map({ $0.start != fresh[fresh.count - 1].end }) ?? false {
                 legs.removeAll()
-                return try await route(points: points, bike: bike, preference: preference, release: release)
+                return try await route(points, profile: profile, release: release, package: package, whole: true)
             }
             found.replaceSubrange(first...last, with: fresh as [Leg?])
         }

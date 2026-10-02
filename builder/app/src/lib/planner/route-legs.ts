@@ -54,22 +54,31 @@ export class LegCache {
     constructor(private readonly limit = 200_000) {}
 
     /** The route through a run of routed points. It sends at most one request: for the legs from the first to the last
-     * leg that is not cached. That request is pinned to the cached legs before and after it, so each join keeps its direction. */
-    async route(points: Coordinate[], turnarounds: number[], profile: string, signal: AbortSignal): Promise<EngineRoute> {
+     * leg that is not cached. That request is pinned to the cached legs before and after it, so each join keeps its direction.
+     * When that request fails, one request for the whole run follows: the whole run can pass a neighbour point the other way. */
+    async route(points: Coordinate[], turnarounds: number[], profile: string, signal: AbortSignal, whole = false): Promise<EngineRoute> {
         const turn = (index: number) => turnarounds.includes(index);
-        // A turnaround joins legs in either direction, so it is never pinned.
+        // A turnaround joins legs in either direction.
         const joins = (a: Leg | undefined, b: Leg | undefined, at: number) => !a || !b || a.package === b.package && (turn(at) || a.end === b.start);
         const keys = points.slice(1).map((to, k) => JSON.stringify([profile, points[k], to, turn(k), turn(k + 1)]));
-        const legs = keys.map(key => this.legs.get(key));
+        const legs = keys.map(key => whole ? undefined : this.legs.get(key));
         for (let k = 1; k < legs.length; k++) if (!joins(legs[k - 1], legs[k], k)) legs[k] = undefined;
-        const first = legs.findIndex(leg => !leg);
+        let first = legs.findIndex(leg => !leg);
         if (first >= 0) {
             let last = legs.length - 1;
             while (legs[last]) last--;
+            // A turnaround stays inside the request: only an interior turnaround may depart on the other road.
+            if (turn(first)) first--;
+            if (turn(last + 1)) last++;
             const before = legs[first - 1], after = legs[last + 1];
-            const pins = { start_position: turn(first) ? undefined : before?.end, end_position: turn(last + 1) ? undefined : after?.start };
-            const [answer] = await requestRoute(points.slice(first, last + 2), profile, signal, false,
-                turnarounds.filter(t => t > first && t <= last).map(t => t - first), pins);
+            let answer: EngineRoute;
+            try {
+                [answer] = await requestRoute(points.slice(first, last + 2), profile, signal, false,
+                    turnarounds.filter(t => t > first && t <= last).map(t => t - first), { start_position: before?.end, end_position: after?.start });
+            } catch (error) {
+                if (signal.aborted || !(before || after)) throw error;
+                return this.route(points, turnarounds, profile, signal, true);
+            }
             const fresh = answer.legs.map(leg => cut(answer, leg));
             if (fresh.length !== last + 1 - first) throw new Error('The routing service returned an invalid response.');
             // A new routing package ignores the pins of the old one.
@@ -80,20 +89,24 @@ export class LegCache {
             }
             legs.splice(first, fresh.length, ...fresh);
         }
-        legs.forEach((leg, k) => this.add(keys[k], leg!));
+        this.keep(keys, legs as Leg[]);
         return stitch(legs as Leg[], profile);
     }
 
-    /** Keeps a leg as the most recent. The least recently used legs go when the cache holds too many coordinates. */
-    private add(key: string, leg: Leg): void {
-        const old = this.legs.get(key);
-        if (old) this.coordinates -= old.geometry.length;
-        this.legs.delete(key);
-        this.legs.set(key, leg);
-        this.coordinates += leg.geometry.length;
-        for (const [oldest, { geometry }] of this.legs) {
-            if (this.coordinates <= this.limit || oldest === key) break;
-            this.legs.delete(oldest);
+    /** Keeps the legs of a route as the most recent. When the cache holds too many coordinates, the least recently used
+     * legs of other routes go. */
+    private keep(keys: string[], legs: Leg[]): void {
+        keys.forEach((key, k) => {
+            this.coordinates -= this.legs.get(key)?.geometry.length ?? 0;
+            this.legs.delete(key);
+            this.legs.set(key, legs[k]);
+            this.coordinates += legs[k].geometry.length;
+        });
+        const current = new Set(keys);
+        for (const [key, { geometry }] of this.legs) {
+            if (this.coordinates <= this.limit) break;
+            if (current.has(key)) continue;
+            this.legs.delete(key);
             this.coordinates -= geometry.length;
         }
     }

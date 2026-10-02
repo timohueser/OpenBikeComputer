@@ -75,7 +75,7 @@ describe('routing integration', () => {
         expect(routeCoordinates(moved)).toEqual([plan.points[0].coordinate]);
     });
     it('requests only the legs that an edit changes, pinned to the cached legs on both sides', async () => {
-        const fetch = vi.fn(routeService('one'));
+        const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
         vi.stubGlobal('fetch', fetch);
         const body = (call: number) => JSON.parse(fetch.mock.calls[call][1].body as string);
         const cache = new LegCache();
@@ -100,6 +100,12 @@ describe('routing integration', () => {
         expect(body(4)).toMatchObject({ points: coordinates(move(7.92)) });
         expect(body(4).start_position).toBeUndefined();
         expect(fetch).toHaveBeenCalledTimes(5);
+        // A pinned window without a path is followed by one request for the whole run.
+        fetch.mockImplementationOnce(async () => ({ ok: false, json: async () => ({ code: 'no_path', message: 'No legal route.' }) }));
+        expect((await calculateLine(move(7.93), signal, cache)).coordinates).toEqual(coordinates(move(7.93)));
+        expect(body(5).start_position).toBe('two:7.85,48');
+        expect(body(6)).toMatchObject({ points: coordinates(move(7.93)) });
+        expect(body(6).start_position).toBeUndefined();
     });
     it('keeps a picked corridor with its plan', () => {
         const plan = trip();
