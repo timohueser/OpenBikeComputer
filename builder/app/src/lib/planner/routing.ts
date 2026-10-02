@@ -49,14 +49,24 @@ export interface RoutingLine {
 
 const endpoint = import.meta.env.VITE_PLANNER_ROUTING_URL ?? '/routing';
 
-export async function requestRoute(points: Coordinate[], profile: string, signal: AbortSignal, alternatives = false, turnarounds: number[] = []): Promise<EngineRoute[]> {
+/** With `'only'`, the answer leaves out the primary route and can be empty. */
+export async function requestRoute(points: Coordinate[], profile: string, signal: AbortSignal, alternatives: boolean | 'only' = false, turnarounds: number[] = []): Promise<EngineRoute[]> {
     const response = await fetch(`${endpoint}/v1/route`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
-        body: JSON.stringify({ points, profile, alternatives, turnarounds }),
+        body: JSON.stringify({ points, profile, ...(alternatives === 'only' ? { alternatives_only: true } : { alternatives }), turnarounds }),
     });
     const data = await response.json().catch(() => { throw new Error('The routing service returned an invalid response.'); });
     if (!response.ok) throw new Error(data.message ?? 'Routing is unavailable.');
-    return decodeRoutes(data);
+    const routes = decodeRoutes(data);
+    if (!routes.length && alternatives !== 'only') throw new Error('The routing service returned no route.');
+    return routes;
+}
+
+/** The primary route and the alternatives of a line whose alternatives are not ready. Such a line is one routed request
+ * through the points of its plan. It holds its primary route, unless it was stored without its routes (`storedPlan`). */
+export async function requestAlternatives(trip: Trip, line: RoutingLine, signal: AbortSignal): Promise<EngineRoute[]> {
+    const points = orderedRoutePoints(trip).map(point => point.coordinate);
+    return [...line.alternatives, ...await requestRoute(points, line.profile, signal, line.alternatives.length ? 'only' : true)];
 }
 
 export function profileId(trip: Trip): string {
@@ -77,7 +87,7 @@ export function selectRoute(trip: Trip, route: EngineRoute, alternatives: Engine
 }
 
 /** Consecutive routed legs form one request, so a shaping point keeps its road direction. */
-export async function calculateLine(trip: Trip, signal: AbortSignal, alternatives = false): Promise<RoutingLine> {
+export async function calculateLine(trip: Trip, signal: AbortSignal): Promise<RoutingLine> {
     const points = orderedRoutePoints(trip);
     if (points.length < 2) throw new Error('Choose a start and finish to calculate a route.');
     const result: RoutingLine = { choiceId: '', key: routingKey(trip), coordinates: [], elevation: [], elapsed: [], surfaces: [], pushing: [], stops: [], seconds: 0,
@@ -137,9 +147,8 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, alternative
             }
         }
         const canOfferAlternatives = i === 1 && until === points.length - 1 && !turnarounds.length;
-        const routes = await requestRoute(expanded, result.profile, signal, alternatives && canOfferAlternatives, turnarounds);
-        const route = routes[0];
-        if (canOfferAlternatives) { result.alternatives = routes; result.choiceId = route.id; result.alternativesReady = alternatives; }
+        const [route] = await requestRoute(expanded, result.profile, signal, false, turnarounds);
+        if (canOfferAlternatives) { result.alternatives = [route]; result.choiceId = route.id; result.alternativesReady = false; }
         const start = append(route.geometry, route.elevation, route.elapsed, route.surfaces, route.pushing);
         const lengths = cumulative(route.geometry);
         result.unknownSurfaceKm += route.totals.surface_m[0] / 1000;

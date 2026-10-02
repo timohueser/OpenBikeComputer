@@ -37,7 +37,7 @@ describe('query edits', () => {
         const base = initialTrip();
         const trip = pinNight({...base,splits:{2:.7}},1,coordinateAt(routeCoordinates(base),.3),'Inn');
         const next = await applyQueryChanges(trip,[{op:'reverse'}]);
-        expect(routeCoordinates(next)).toEqual(routeCoordinates(trip).reverse());
+        expect(routeCoordinates(next)).toEqual([...routeCoordinates(trip)].reverse());
         expect(next.points.find(p=>p.label==='Inn')?.night).toBe(2);
         expect(next.splits?.[1]).toBeCloseTo(.3);
     });

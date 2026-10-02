@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calculateLine, profileId, RouteCache, selectRoute, movingSecondsAt, type EngineRoute } from './routing';
+import { calculateLine, profileId, requestAlternatives, RouteCache, selectRoute, movingSecondsAt, type EngineRoute } from './routing';
 import { decodeRoutes, type AnswerRoute } from './route-answer';
 import { ridingProfiles, presetName, type BikeType } from './riding-profiles';
 import { surfaceRuns, surfaceWindow } from './surface-data';
@@ -42,10 +42,12 @@ describe('routing integration', () => {
         expect(line.alternativesReady).toBe(false);
         expect(line.surfaces).toEqual(['Paved', 'Gravel']);
         expect(line.pushing).toEqual([false, true]);
-        const withAlternatives = await calculateLine(plan, new AbortController().signal, true);
-        expect(JSON.parse(fetch.mock.calls[1][1].body).alternatives).toBe(true);
-        expect(withAlternatives.alternativesReady).toBe(true);
         expect(JSON.parse(fetch.mock.calls[0][1].body).points).toEqual(plan.points.map(p => p.coordinate));
+        fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ routes: [{ ...answer, id: 'shorter', reason: 'shorter' }] }) });
+        const alternatives = await requestAlternatives(plan, line, new AbortController().signal);
+        const { alternatives: _primaryOnly, ...request } = JSON.parse(fetch.mock.calls[0][1].body);
+        expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ ...request, alternatives_only: true });
+        expect(alternatives.map(r => r.id)).toEqual(['test-route', 'shorter']);
         expect(movingSecondsAt(line, 0.5)).toBeCloseTo(3000);
         expect(line.elevation).toEqual([200, null, 400]);
         expect(line.stops.map(s => s.distance)).toEqual(cumulative(route.geometry));

@@ -239,12 +239,17 @@ export function anchorProgress(coordinate: Coordinate): number {
 }
 
 // Coordinate arrays are never changed after they are built, so each array's distances are computed once.
+// Development and test builds freeze a measured array and its pairs, so an in-place edit throws.
 const distances = new WeakMap<Coordinate[], readonly number[]>();
 
 /** Kilometres from the first coordinate to each coordinate. */
 export function cumulative(coordinates: Coordinate[]): readonly number[] {
     const known = distances.get(coordinates);
     if (known) return known;
+    if (import.meta.env.DEV) {
+        for (const pair of coordinates) Object.freeze(pair);
+        Object.freeze(coordinates);
+    }
     const result = [0];
     for (let i = 1; i < coordinates.length; i++) result.push(result[i - 1] + kilometres(coordinates[i - 1], coordinates[i]));
     distances.set(coordinates, result);

@@ -260,6 +260,7 @@ describe('planner app transitions', () => {
         const primary = engine('primary', 'primary', coordinates);
         const corridor = engine('corridor', 'corridor', coordinates.map(([x, y], i) => (i && i < coordinates.length - 1 ? [x, y + .02] : [x, y]) as Coordinate));
         vi.mocked(routing.calculateLine).mockImplementation(async plan => routing.selectRoute(plan, primary, [primary, corridor]));
+        vi.spyOn(routing, 'requestAlternatives').mockResolvedValue([primary, corridor]);
         const chosen = () => document.querySelector('.ways [aria-checked="true"]')?.textContent ?? '';
         const options = async () => { await vi.waitFor(() => button('Route options · 2').click()); await tick(); };
         app = mount(PlannerApp, { target: document.body });
@@ -279,7 +280,8 @@ describe('planner app transitions', () => {
         await vi.waitFor(() => expect(chosen()).toContain('Different corridor'));
         await unmount(app);
         app = mount(PlannerApp, { target: document.body }); await tick();
-        expect(routing.calculateLine).toHaveBeenCalledTimes(2);
+        expect(routing.calculateLine).toHaveBeenCalledTimes(1);
+        expect(routing.requestAlternatives).toHaveBeenCalledTimes(1);
         button('Route options').click();
         await vi.waitFor(() => expect(chosen()).toContain('Different corridor'));
         for (const bike of ['Gravel bike', 'Touring bike']) {
@@ -291,7 +293,7 @@ describe('planner app transitions', () => {
         button('Undo').click(); await tick();
         button('Undo').click(); await tick();
         expect(chosen()).toContain('Different corridor');
-        expect(routing.calculateLine).toHaveBeenCalledTimes(5);
+        expect(routing.calculateLine).toHaveBeenCalledTimes(3);
     });
 
     it('opens a tile place from both a search row and its map pin, then adds a visit', async () => {

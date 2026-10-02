@@ -136,7 +136,7 @@ pub fn run(
                         sample.route_count = response.routes.len();
                         sample.cost = response.routes.first().map(|r| r.cost);
                         sample.distance_m = response.routes.first().map(|r| r.totals.distance_m);
-                        let mut value = serde_json::to_value(response)?;
+                        let mut value = route_engine::answer::answer(&response);
                         for route in value["routes"].as_array_mut().ok_or("Missing routes")? {
                             let route = route.as_object_mut().ok_or("Invalid route")?;
                             route.remove("id");

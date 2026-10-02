@@ -1,8 +1,8 @@
 //! The route answer that clients decode, as `specs/route-api.md` specifies it.
-use route_engine::router::{Response, Route};
+use crate::router::{Response, Route};
 use serde_json::{json, Value};
 
-pub(crate) fn answer(response: &Response) -> Value {
+pub fn answer(response: &Response) -> Value {
     json!({ "routes": response.routes.iter().map(route).collect::<Vec<_>>() })
 }
 
@@ -64,7 +64,7 @@ fn runs<T: Copy + PartialEq>(values: &[T]) -> Vec<(T, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use route_engine::{
+    use crate::{
         model::Point,
         router::Leg,
         snap::{Candidate, Position},
@@ -109,7 +109,6 @@ mod tests {
             attachments: vec![attachment],
             snap_truncated: serde_json::from_value(source["snap_truncated"].clone()).unwrap(),
             totals: serde_json::from_value(source["totals"].clone()).unwrap(),
-            warnings: vec!["Unread by clients".into()],
         };
         assert_eq!(answer(&Response { routes: vec![route] }), vector["answer"]);
     }

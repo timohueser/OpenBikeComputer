@@ -11,7 +11,7 @@ impl<P: RoutingData> Router<P> {
     pub fn routes(&mut self, request: &Request, control: &Control<'_>) -> Result<Response> {
         let primary = self.route(request, control)?;
         let mut routes = vec![primary];
-        if !request.alternatives {
+        if !request.alternatives && !request.alternatives_only {
             return Ok(Response { routes });
         }
         let base = request.profile.split('/').next().unwrap_or(&request.profile);
@@ -98,6 +98,9 @@ impl<P: RoutingData> Router<P> {
                 routes.push(candidate);
                 break;
             }
+        }
+        if request.alternatives_only {
+            routes.remove(0);
         }
         Ok(Response { routes })
     }

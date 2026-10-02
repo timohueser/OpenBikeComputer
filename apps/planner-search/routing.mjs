@@ -48,58 +48,5 @@ export async function routeQuery(input) {
     throw new Error(
       result.message || 'The local routing engine could not find a route.',
     );
-  return routeReply(input,result);
-}
-
-/** Longitude, latitude pairs from the answer's microdegree deltas, as `specs/route-api.md` specifies. */
-export function routeLine(route) {
-  const line = [];
-  for (let i = 0, lon = 0, lat = 0; i + 1 < route.coordinates_udeg.length; i += 2)
-    line.push([(lon += route.coordinates_udeg[i]) / 1e6, (lat += route.coordinates_udeg[i + 1]) / 1e6]);
-  return line;
-}
-
-export function routeReply(input,result) {
-  routeRequest(input);
-  const route = result.routes?.[0];
-  const geometry = Array.isArray(route?.coordinates_udeg) ? routeLine(route) : null;
-  if (
-    !geometry ||
-    !Array.isArray(route.legs) || route.legs.length !== input.points.length - 1 ||
-    route.legs.some((l,i)=>!Number.isInteger(l.from_index)||!Number.isInteger(l.to_index)||l.from_index<0||l.to_index>=geometry.length||l.to_index<=l.from_index||l.from_index!==(i?route.legs[i-1].to_index:0))
-  )
-    throw new Error('The routing engine returned incomplete geometry.');
-  const warnings = [];
-  if (route.snap_truncated)
-    warnings.push('The routing engine reached its snapping search limit.');
-  const legs = route.legs.map((l, i) => {
-    const line = geometry.slice(l.from_index, l.to_index + 1);
-    if (line.length < 2) return line;
-    for (const [point, end] of [
-      [input.points[i], 0],
-      [input.points[i + 1], 1],
-    ]) {
-      const vertex = end ? line.at(-1) : line[0];
-      if (point[0] !== vertex[0] || point[1] !== vertex[1]) {
-        if (end) line.push(point);
-        else line.unshift(point);
-        warnings.push(
-          'Connections from the selected places to snapped roads are straight and unverified.',
-        );
-      }
-    }
-    return line;
-  });
-  if (
-    legs.some(
-      (l) =>
-        l.length < 2 ||
-        l.some(
-          (p) =>
-            !Array.isArray(p) || p.length !== 2 || !p.every(Number.isFinite),
-        ),
-    )
-  )
-    throw new Error('The routing engine returned invalid coordinates.');
-  return { legs, warnings: [...new Set(warnings)], totals: route.totals };
+  return result;
 }

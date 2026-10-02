@@ -93,6 +93,7 @@ fn profile_selection_keeps_closed_routes_and_removes_unused_objects() {
             profile: profile.into(),
             pace: Pace::default(),
             alternatives: false,
+            alternatives_only: false,
             turnarounds: vec![],
         };
         let expected = before.route(&request, &Control::default()).unwrap();
@@ -265,6 +266,7 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
                         profile: profile.name.clone(),
                         pace: Pace::default(),
                         alternatives: false,
+                        alternatives_only: false,
                         turnarounds: vec![],
                     },
                     &Control::default(),
@@ -398,6 +400,7 @@ fn bounding_box_repreparation_preserves_whole_roads_and_matches_independent_sear
                         profile: profile.name.clone(),
                         pace: Pace::default(),
                         alternatives: false,
+                        alternatives_only: false,
                         turnarounds: vec![],
                     },
                     &Control::default(),
@@ -485,6 +488,7 @@ fn query_does_not_read_source_tag_pages_but_installation_verifies_them() {
         profile: "road".into(),
         pace: Pace::default(),
         alternatives: false,
+        alternatives_only: false,
         turnarounds: vec![],
     };
     assert!(router.route(&request, &Control::default()).is_ok());
@@ -504,6 +508,7 @@ fn via_direction_pace_and_failure_states_are_explicit() {
         profile: "touring".into(),
         pace: Pace::default(),
         alternatives: false,
+        alternatives_only: false,
         turnarounds: vec![],
     };
     let route = router.route(&request, &Control::default()).unwrap();
@@ -555,6 +560,7 @@ fn a_shape_keeps_direction_and_only_an_explicit_visit_can_reverse() {
         profile: "touring".into(),
         pace: Pace::default(),
         alternatives: false,
+        alternatives_only: false,
         turnarounds: vec![],
     };
     let shaped = router.route(&request, &Control::default()).unwrap();
@@ -644,6 +650,7 @@ fn closed_packages_route_across_multiple_checked_blocks() {
         profile: "touring".into(),
         pace: Pace::default(),
         alternatives: true,
+        alternatives_only: false,
         turnarounds: vec![],
     };
     let result = router.routes(&request, &Control::default()).unwrap();
@@ -685,6 +692,7 @@ fn alternatives_find_a_separate_corridor_without_an_out_and_back_probe() {
         profile: "touring".into(),
         pace: Pace::default(),
         alternatives: true,
+        alternatives_only: false,
         turnarounds: vec![],
     };
     let routes = router.routes(&request, &Control::default()).unwrap().routes;
@@ -694,6 +702,9 @@ fn alternatives_find_a_separate_corridor_without_an_out_and_back_probe() {
     assert_eq!(routes[1].attachments.len(), 2);
     assert_ne!(routes[0].id, routes[1].id);
     assert_eq!(routes[0].totals.distance_m, routes[1].totals.distance_m);
+    let only = Request { alternatives: false, alternatives_only: true, ..request };
+    let alternatives = router.routes(&only, &Control::default()).unwrap().routes;
+    assert_eq!(alternatives.iter().map(|r| &r.id).collect::<Vec<_>>(), [&routes[1].id]);
 }
 
 #[test]
@@ -797,6 +808,7 @@ fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profi
         profile: "road".into(),
         pace: Pace::default(),
         alternatives: false,
+        alternatives_only: false,
         turnarounds: vec![1],
     };
     let route = router.route(&request, &Control::default()).unwrap();
@@ -804,11 +816,9 @@ fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profi
     assert!(route.attachments[1].snap_distance_m < 25.0);
     assert_eq!(route.attachments[0].snap_distance_m, 0.0);
     assert_eq!(route.attachments[2].snap_distance_m, 0.0);
-    assert!(route.warnings.iter().any(|w| w.contains("nearby accessible roads")));
     request.profile = "mtb".into();
     let mtb = router.route(&request, &Control::default()).unwrap();
     assert_eq!(mtb.attachments[1].projected.lat, 100);
-    assert!(mtb.warnings.is_empty());
     request.profile = "road".into();
     // An explicit point on the disconnected driveway must not jump to a different road.
     request.points[1][1] = 0.0001;
@@ -847,6 +857,7 @@ fn route_goals_preserve_the_bikes_surface_suitability() {
         profile: "road".into(),
         pace: Pace::default(),
         alternatives: false,
+        alternatives_only: false,
         turnarounds: vec![],
     };
     for profile in ["road", "road/shorter", "road/smoother"] {
@@ -904,6 +915,7 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
         profile: "road".into(),
         pace: Pace::default(),
         alternatives: false,
+        alternatives_only: false,
         turnarounds: vec![],
     };
     let (source, manifest) = package(&graph);
@@ -953,6 +965,7 @@ fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
                 profile: name.clone(),
                 pace: Pace::default(),
                 alternatives: false,
+                alternatives_only: false,
                 turnarounds: vec![],
             };
             let before = original_router.route(&request, &Control::default()).unwrap();

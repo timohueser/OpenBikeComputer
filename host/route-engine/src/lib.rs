@@ -1,5 +1,6 @@
 //! A routing library independent of transport, filesystem, map rendering and itinerary policy.
 mod alternatives;
+pub mod answer;
 pub mod base;
 pub mod blocks;
 pub mod cost;

@@ -32,7 +32,7 @@ function decodeRoute({ coordinates_udeg, elevation_dm, elapsed_s, surfaces, push
 
 /** The routes of an answer. An answer whose arrays disagree in length is rejected before it is expanded. */
 export function decodeRoutes(data: { routes?: AnswerRoute[] }): EngineRoute[] {
-    if (!Array.isArray(data.routes) || !data.routes.length) throw new Error('The routing service returned no route.');
+    if (!Array.isArray(data.routes)) throw new Error('The routing service returned an invalid response.');
     return data.routes.map(route => {
         const points = route.coordinates_udeg?.length / 2;
         if (!Number.isInteger(points) || points < 1 || route.elevation_dm?.length !== points || route.elapsed_s?.length !== points

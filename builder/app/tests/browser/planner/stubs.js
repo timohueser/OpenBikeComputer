@@ -87,9 +87,9 @@ export function respond(request) {
     case 'sprites':
       return url.pathname.endsWith('.png') ? { headers: CORS, contentType: 'image/png', body: PIXEL } : json({});
     case 'route': {
-      const { points, profile, alternatives } = request.postDataJSON();
-      const routes = [route(points, profile, 'primary')];
-      if (alternatives) routes.push(route(points, profile, 'alternative'));
+      const { points, profile, alternatives, alternatives_only } = request.postDataJSON();
+      const routes = alternatives_only ? [] : [route(points, profile, 'primary')];
+      if (alternatives || alternatives_only) routes.push(route(points, profile, 'alternative'));
       return json({ routes });
     }
     case 'overlays':

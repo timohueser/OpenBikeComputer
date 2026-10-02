@@ -42,8 +42,6 @@ test('native JSON capabilities preserve complete replies, metadata and reverse l
     {points,profile:'touring/shorter',alternatives:false});
   for (const goal of ['least_unpaved','most_climbing'])
     await assert.rejects(native.request('route-request',{points,bike:'touring',goal}), /routing package has no/);
-  const reply={routes:[{coordinates_udeg:[7854000,48010000,6000,10000],legs:[{from_index:0,to_index:1}]}]};
-  assert.deepEqual((await native.request('route-reply',{input:{points,bike:'touring',goal:'shortest'},reply})).legs,[points]);
   assert.equal(answer.region,'test');assert.deepEqual(answer.attribution,['OSM contributors']);
   assert.deepEqual(await native.request('reverse',{coordinate:[7.854,48.01]}),{label:'Habsburgerstraße 10, Freiburg'});
   await assert.rejects(native.request('query',{...input,region:'missing'}),/does not cover/);

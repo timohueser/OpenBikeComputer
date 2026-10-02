@@ -18,23 +18,26 @@ pub struct Request {
     pub pace: Pace,
     #[serde(default)]
     pub alternatives: bool,
+    /// Asks for alternatives and leaves the primary route out of the response.
+    #[serde(default)]
+    pub alternatives_only: bool,
     /// Interior point indices where the rider explicitly permits a reversal.
     #[serde(default)]
     pub turnarounds: Vec<usize>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub struct Response {
     pub routes: Vec<Route>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct Slice {
     pub road: u32,
     pub from: f64,
     pub to: f64,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct Leg {
     pub start_attachment: Candidate,
     pub from_index: usize,
@@ -42,7 +45,8 @@ pub struct Leg {
     pub totals: Totals,
     pub roads: Vec<Slice>,
 }
-#[derive(Clone, Debug, Serialize)]
+/// Serialize a route only through `answer`, the wire shape.
+#[derive(Clone, Debug)]
 pub struct Route {
     pub id: String,
     pub reason: &'static str,
@@ -61,7 +65,6 @@ pub struct Route {
     pub attachments: Vec<Candidate>,
     pub snap_truncated: bool,
     pub totals: Totals,
-    pub warnings: Vec<String>,
 }
 
 pub struct Control<'a> {
@@ -130,9 +133,7 @@ impl<P: RoutingData> Router<P> {
         match self.route_with_policy(request, control, Policy::default(), false, &mut work) {
             Err(Error::NoPath) => {
                 let policy = Policy { ambiguity_m: 50.0, max_candidates: 16, ..Policy::default() };
-                let mut route = self.route_with_policy(request, control, policy, true, &mut work)?;
-                route.warnings.push("The nearest roads do not connect. The route uses nearby accessible roads.".into());
-                Ok(route)
+                self.route_with_policy(request, control, policy, true, &mut work)
             }
             result => result,
         }
@@ -314,7 +315,6 @@ impl<P: RoutingData> Router<P> {
             attachments,
             snap_truncated: truncated,
             totals: Totals::default(),
-            warnings: self.package.warnings().to_vec(),
         };
         for (start_attachment, path) in paths {
             let from_index = route.geometry.len().saturating_sub(1);
