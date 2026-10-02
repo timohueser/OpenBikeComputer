@@ -55,6 +55,8 @@ the CI suite locally before a push; run the affected suites, CI is the gate. `ob
 run's failures; never read a raw CI log. Resource figures come from one head build compared
 against `resource_baseline.json`; never rebuild the base.
 
+Use `obc pr list|view` for PR metadata and `body|comments|checks` when needed; for narrower GitHub reads, select `gh --json` fields or filter connector results before they enter context.
+
 ## What gets recorded where
 
 Every durable artifact answers one question. If it answers two, it is in the wrong place.
