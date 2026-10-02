@@ -10,7 +10,7 @@ const reply = (request: QueryRequest) => ({ok:true,json:async()=>({type:'places'
 const mounted: ReturnType<typeof mount>[] = [];
 afterEach(async()=>{ for(const component of mounted.splice(0))await unmount(component); vi.unstubAllGlobals(); vi.useRealTimers(); document.body.replaceChildren(); });
 async function setup(extra: Record<string, unknown> = {}) {
-    vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval']});
+    vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']});
     const target=document.createElement('div');document.body.append(target);
     const component=mount(Query,{target,props:{context,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onDate:()=>{},onPointing:()=>{},...extra}});
     mounted.push(component);await tick();
@@ -101,14 +101,14 @@ describe('planner query requests',()=>{
         expect(document.activeElement).toBe(chips[1]);
         expect(target.querySelector('.picker')).toBeNull();
     });
-    it('keeps pagination and retries in the searched area until the rider pans',async()=>{
-        const view=fromStore(writable(context)), revision=fromStore(writable(0));
+    it('keeps searches stable through map movement until the rider requests the new view',async()=>{
+        const view=fromStore(writable(context)), viewRevision=fromStore(writable(0));
         const onResults=vi.fn();
         const fetch=vi.fn(async()=>({ok:true,json:async()=>({type:'places',request:{type:'places',what:['pharmacy']},results:[{lon:7.81,lat:48.12},{lon:7.85,lat:48.14}]})}));
         vi.stubGlobal('fetch',fetch);
-        vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval']});
+        vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']});
         const target=document.createElement('div');document.body.append(target);
-        const component=mount(Query,{target,props:{get context(){return view.current;},get revision(){return revision.current;},onResults,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onDate:()=>{},onPointing:()=>{}}});
+        const component=mount(Query,{target,props:{get context(){return view.current;},get viewRevision(){return viewRevision.current;},onResults,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onDate:()=>{},onPointing:()=>{}}});
         mounted.push(component);await tick();
         const input=target.querySelector('input')!;input.value='pharmacies';input.dispatchEvent(new Event('input',{bubbles:true}));await tick();await vi.advanceTimersByTimeAsync(351);
         expect(onResults).toHaveBeenCalledExactlyOnceWith([[7.81,48.12],[7.85,48.14]]);
@@ -125,8 +125,12 @@ describe('planner query requests',()=>{
         expect(fetch).toHaveBeenCalledTimes(3);
         expect(onResults).toHaveBeenCalledTimes(2);
         const panned: SearchContext={...context,view:[7.9,48.1,8,48.2]};
-        view.current=panned;revision.current=1;await tick();await vi.advanceTimersByTimeAsync(250);
+        view.current=panned;viewRevision.current=1;await tick();await vi.advanceTimersByTimeAsync(250);
+        expect(fetch).toHaveBeenCalledTimes(3);
+        target.querySelector<HTMLButtonElement>('.search-view')!.click();
+        await vi.advanceTimersByTimeAsync(0);await tick();
         expect(fetch).toHaveBeenCalledTimes(4);
+        expect(target.querySelector('.search-view')).toBeNull();
         expect(onResults).toHaveBeenCalledTimes(2);
         expect(sent().view).toEqual(panned.view);
         view.current=fitted;await tick();
@@ -134,17 +138,20 @@ describe('planner query requests',()=>{
         expect(sent().view).toEqual(panned.view);
         expect(sent().limit).toBe(46);
     });
-    it('preserves pending result framing when initial map bounds interrupt the first request',async()=>{
-        const view=fromStore(writable(context)), revision=fromStore(writable(0));
+    it('keeps the initial request and result framing when map bounds arrive',async()=>{
+        const view=fromStore(writable(context)), viewRevision=fromStore(writable(0));
         const onResults=vi.fn();
-        const fetch=vi.fn().mockImplementationOnce(()=>new Promise(()=>{})).mockResolvedValue({ok:true,json:async()=>({type:'places',request:{type:'places',what:['pharmacy']},results:[{lon:7.81,lat:48.12}]})});
-        vi.stubGlobal('fetch',fetch);vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval']});
+        let resolve!: (response: unknown) => void;
+        const fetch=vi.fn(()=>new Promise(done=>resolve=done));
+        vi.stubGlobal('fetch',fetch);vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']});
         const target=document.createElement('div');document.body.append(target);
-        const component=mount(Query,{target,props:{get context(){return view.current;},get revision(){return revision.current;},onResults,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onDate:()=>{},onPointing:()=>{}}});
+        const component=mount(Query,{target,props:{get context(){return view.current;},get viewRevision(){return viewRevision.current;},onResults,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onDate:()=>{},onPointing:()=>{}}});
         mounted.push(component);await tick();
         const input=target.querySelector('input')!;input.value='pharmacies';input.dispatchEvent(new Event('input',{bubbles:true}));await tick();await vi.advanceTimersByTimeAsync(351);
-        view.current={...context,view:[7,47,9,49]};revision.current=1;await tick();await vi.advanceTimersByTimeAsync(250);
-        expect(fetch).toHaveBeenCalledTimes(2);
+        view.current={...context,view:[7,47,9,49]};viewRevision.current=1;await tick();await vi.advanceTimersByTimeAsync(250);
+        expect(fetch).toHaveBeenCalledTimes(1);
+        resolve({ok:true,json:async()=>({type:'places',request:{type:'places',what:['pharmacy']},results:[{lon:7.81,lat:48.12}]})});
+        await vi.advanceTimersByTimeAsync(0);await tick();
         expect(onResults).toHaveBeenCalledExactlyOnceWith([[7.81,48.12]]);
     });
 });

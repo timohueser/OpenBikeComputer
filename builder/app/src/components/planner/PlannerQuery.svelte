@@ -6,9 +6,9 @@
     import type { Coordinate } from '../../lib/planner/editor';
     import { searchPlaces, type QueryRequest, type SearchContext, type SearchState, type Where } from '../../lib/planner/search/types';
 
-    let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, selection, region = $bindable(SEARCH_REGIONS[0]), revision = 0, onResults, onSearch, onClear, onLocation, onSample, onDate, onPointing }: {
+    let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, selection, region = $bindable(SEARCH_REGIONS[0]), revision = 0, viewRevision = 0, onResults, onSearch, onClear, onLocation, onSample, onDate, onPointing }: {
         text?: string; region?: string; searchState?: SearchState; context: SearchContext; selection?: Where;
-        revision?: number; onResults?: (coordinates: Coordinate[]) => void; onSearch: () => void; onClear: () => void; onLocation: () => void; onSample: () => void; onDate: (date: string) => void; onPointing: (where?: Where) => void;
+        revision?: number; viewRevision?: number; onResults?: (coordinates: Coordinate[]) => void; onSearch: () => void; onClear: () => void; onLocation: () => void; onSample: () => void; onDate: (date: string) => void; onPointing: (where?: Where) => void;
     } = $props();
     let edited = $state(false);
     let request = $state<QueryRequest | undefined>();
@@ -18,6 +18,9 @@
     let serial = 0;
     let framePending = false;
     let requestContext: SearchContext | undefined;
+    let searchedView = $state(0);
+    const usesView = $derived(!request?.where && !context.pointing || (request?.where ?? context.pointing)?.scope === 'view');
+    const movedView = $derived(usesView && !!searchState.answer && viewRevision !== searchedView);
     let limit = 6;
     let settings = $state(false);
     const regions = SEARCH_REGIONS;
@@ -38,8 +41,8 @@
         const input = text, signal = controller.signal;
         const searchContext = options.context ?? context;
         requestContext = searchContext;
-        onSearch();
-        searchState = { loading: true, error: '', answer: null };
+        onSearch(); searchedView = viewRevision;
+        searchState = { loading: true, error: '', answer: searchState.answer };
         try {
             const answer = await searchPlaces(input, searchContext, region, limit, signal, parsed ? $state.snapshot(parsed) : undefined);
             if (id !== serial) return;
@@ -48,7 +51,7 @@
             framePending = false;
         } catch (error) {
             if (id !== serial || signal.aborted) return;
-            searchState = { loading: false, answer: null, error: error instanceof TypeError ? 'Search is unavailable. Check your connection and retry.' : (error as Error).message };
+            searchState = { loading: false, answer: searchState.answer, error: error instanceof TypeError ? 'Search is unavailable. Check your connection and retry.' : (error as Error).message };
         }
     }
     function input(value: string) {
@@ -80,9 +83,9 @@
     export function more() { run(Math.min(100, Math.max(20, limit + 20)), request, { context: requestContext }); }
     export function retry() { run(Math.max(20, limit), request, { reparse: !edited, context: requestContext }); }
     $effect(() => {
-        // Result framing and place inspection update live bounds without advancing the revision.
+        // Map movement advances viewRevision instead, so the searched area stays until the rider searches the new view.
         void revision;
-        untrack(() => { if (text.trim()) { clearTimeout(timer); controller?.abort(); serial++; searchState = { loading: true, error: '', answer: null }; timer = setTimeout(() => run(limit, request, { fit: false }), 200); } });
+        untrack(() => { if (text.trim()) { clearTimeout(timer); controller?.abort(); serial++; searchState = { ...searchState, loading: true, error: '' }; timer = setTimeout(() => run(limit, request, { fit: false }), 200); } });
     });
     onDestroy(() => { clearTimeout(timer); controller?.abort(); });
 </script>
@@ -95,6 +98,7 @@
         </div>
     </form>
     {#if text.trim()}
+        {#if movedView}<button type="button" class="search-view" disabled={searchState.loading} onclick={() => run(limit, request, { fit: false })}><PlannerIcon name="search" size={14} />Search this map view</button>{/if}
         {#if request}
             <div class="meaning" aria-label="Understood request">
                 <span class="meaning-label">{edited ? 'Edited request' : request.type === 'place' ? 'Place search' : request.type.replaceAll('_', ' ')}</span>
@@ -138,6 +142,8 @@
     button { font: inherit; color: inherit; cursor: pointer; }
     button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
     .clear { border: 0; background: transparent; width: 28px; height: 32px; padding: 0; display: grid; place-items: center; flex: none; }
+    .search-view { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: 36px; margin-top: 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--parchment-2); color: var(--ink); font-size: 13px; }
+    .search-view:disabled { opacity: .6; cursor: wait; }
     .meaning { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
     .meaning-label { font-size: 11px; color: var(--ink-soft); width: 100%; text-transform: capitalize; }
     .note { margin: 8px 0 0; color: var(--ink-soft); font-size: 13px; line-height: 1.45; }

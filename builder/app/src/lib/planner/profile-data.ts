@@ -17,16 +17,24 @@ export function profileSamples(line?: RoutingLine): readonly ProfileSample[] {
     return samples;
 }
 
-export function profileAscent(from = 0, to = 1, line?: RoutingLine): number {
+function profileChange(from: number, to: number, line: RoutingLine | undefined, direction: number): number {
     const samples = profileSamples(line);
     let ascent = 0;
     for (let i = 1; i < samples.length; i++) {
         const a = samples[i - 1], b = samples[i];
         if (a.height === null || b.height === null || b.progress <= a.progress) continue;
         const share = Math.max(0, Math.min(b.progress, to) - Math.max(a.progress, from)) / (b.progress - a.progress);
-        ascent += Math.max(0, b.height - a.height) * share;
+        ascent += Math.max(0, (b.height - a.height) * direction) * share;
     }
     return Math.round(ascent);
+}
+
+export function profileAscent(from = 0, to = 1, line?: RoutingLine): number {
+    return profileChange(from, to, line, 1);
+}
+
+export function profileDescent(from = 0, to = 1, line?: RoutingLine): number {
+    return profileChange(from, to, line, -1);
 }
 
 /** The index of the first sample at or past `progress`, or the sample count. */

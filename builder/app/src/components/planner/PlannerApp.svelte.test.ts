@@ -17,6 +17,7 @@ const tilePlace: Place = { id: 'poi-123', kind: 'place', label: 'Tile camp', cat
 
 beforeEach(() => {
     stored.clear();
+    vi.stubGlobal('confirm', vi.fn(() => true));
     const trip = { ...initialTrip(), live: true };
     const coordinates = routeCoordinates(initialTrip());
     const distance = cumulative(coordinates);
@@ -61,6 +62,21 @@ async function search(text: string, label = tilePlace.label) {
 }
 
 describe('planner app transitions', () => {
+    it('uses walking access and language for a hiking route', async () => {
+        const saved = JSON.parse(stored.get('obc-planner-routing-v2')!);
+        saved.bike = 'hiking';
+        stored.set('obc-planner-routing-v2', JSON.stringify(saved));
+        app = mount(PlannerApp, { target: document.body }); await tick();
+        expect(button('Pan map').dataset.accessMode).toBe('walking');
+        await vi.waitFor(() => expect(document.querySelector('.trip-summary')?.textContent).toContain('Walking time'));
+        const surface = document.querySelector<HTMLElement>('[aria-label="Surface along route"]')!;
+        surface.focus(); await tick();
+        expect(surface.getAttribute('aria-valuetext')).toContain('Walking');
+        expect(document.querySelector('.push-track')).toBeNull();
+        button('Map settings').click(); await tick();
+        expect(document.querySelector('.layer-menu')?.textContent).toContain('Walking access.');
+    });
+
     it('names map visits by address without adding an Undo step, and restores names on Redo', async () => {
         const saved = { ...JSON.parse(stored.get('obc-planner-routing-v2')!), mode: 'route' };
         stored.set('obc-planner-routing-v2', JSON.stringify(saved));
@@ -200,7 +216,12 @@ describe('planner app transitions', () => {
         expect(document.body.textContent).toContain('Where would you like to ride?');
         button('Undo').click(); await tick();
         expect(document.body.textContent).toContain('Choose your start');
+        vi.mocked(window.confirm).mockReturnValueOnce(false);
+        const beforeClear = stored.get('obc-planner-routing-v2');
         button(mode === 'route' ? 'New route' : 'New trip').click(); await tick();
+        expect(stored.get('obc-planner-routing-v2')).toBe(beforeClear);
+        button(mode === 'route' ? 'New route' : 'New trip').click(); await tick();
+        expect(window.confirm).toHaveBeenCalledTimes(2);
         expect(document.body.textContent).toContain('Where would you like to ride?');
         button('Undo').click(); await tick();
         await unmount(app);
@@ -244,7 +265,7 @@ describe('planner app transitions', () => {
         for (const [bike, requests] of [['Gravel bike', 1], ['Touring bike', 2]] as const) {
             await vi.waitFor(() => expect(document.querySelector('section.elevation')).not.toBeNull());
             expect(routeRequests()).toBe(requests);
-            button('Bike').click(); await tick();
+            button('Activity').click(); await tick();
             button(bike).click(); await tick();
         }
         for (const action of ['Undo', 'Undo', 'Redo']) {
@@ -292,7 +313,7 @@ describe('planner app transitions', () => {
         button('Route options').click();
         await vi.waitFor(() => expect(chosen()).toContain('Different corridor'));
         for (const bike of ['Gravel bike', 'Touring bike']) {
-            button('Bike').click(); await tick();
+            button('Activity').click(); await tick();
             button(bike).click(); await tick();
             await vi.waitFor(() => expect(chosen()).not.toBe(''));
         }
@@ -312,6 +333,15 @@ describe('planner app transitions', () => {
         expect(plan.hours.at(-1)).toBeGreaterThan(0);
         const row = [...document.querySelectorAll<HTMLButtonElement>('.results button')].find(button => button.textContent?.includes(tilePlace.label))!;
         expect(row).toBeDefined();
+        const pin = button(`Map place: ${tilePlace.label}`);
+        row.dispatchEvent(new MouseEvent('mouseenter')); await tick();
+        expect(pin.classList.contains('highlighted')).toBe(true);
+        row.dispatchEvent(new MouseEvent('mouseleave')); await tick();
+        expect(pin.classList.contains('highlighted')).toBe(false);
+        pin.dispatchEvent(new MouseEvent('mouseenter')); await tick();
+        expect(row.classList.contains('hovered')).toBe(true);
+        pin.dispatchEvent(new MouseEvent('mouseleave')); await tick();
+        expect(row.classList.contains('hovered')).toBe(false);
         const searches = vi.mocked(fetch).mock.calls.length;
         vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
         row.click();
@@ -342,7 +372,18 @@ describe('planner app transitions', () => {
         await tick();
         button('Open day 1: Basel to Overnight to choose').click();
         await tick();
+        await vi.waitFor(() => expect(document.querySelector('.choose')?.textContent).toContain(tilePlace.label));
         const choices = document.querySelector('.choose')!.textContent;
+        expect(choices).not.toContain('≈ 0.0 km');
+        const profile = document.querySelector('.elevation');
+        const requests = vi.mocked(fetch).mock.calls.length;
+        button('Pan map').click(); await tick();
+        expect(fetch).toHaveBeenCalledTimes(requests);
+        expect(document.querySelector('.choose')!.textContent).toBe(choices);
+        button('All days').click(); await tick();
+        expect(document.querySelector('.elevation')).toBe(profile);
+        button('Open day 1: Basel to Overnight to choose').click(); await tick();
+        expect(fetch).toHaveBeenCalledTimes(requests);
         await search('campsites day 2');
         button('Clear search').click();
         await tick();
@@ -350,6 +391,29 @@ describe('planner app transitions', () => {
         const day = document.querySelector('.day')!;
         expect(day.querySelector('.choose')!.textContent).toBe(choices);
         expect(day.textContent).not.toContain('Meadow camp');
+    });
+
+    it('keeps the profile mounted while an overnight reroutes and when the reply arrives', async () => {
+        const measured = vi.mocked(routing.calculateLine).getMockImplementation()!;
+        let line!: RoutingLine, finish!: (line: RoutingLine) => void;
+        const calculate = vi.mocked(routing.calculateLine)
+            .mockImplementationOnce(async (...args) => line = await measured(...args))
+            .mockImplementation(() => new Promise(resolve => finish = resolve));
+        app = mount(PlannerApp, { target: document.body });
+        await vi.waitFor(() => button('Open day 1: Basel to Overnight to choose').click()); await tick();
+        await vi.waitFor(() => expect(document.querySelector('.choose')?.textContent).toContain(tilePlace.label));
+        const profile = document.querySelector('.elevation');
+        button(`Map place: ${tilePlace.label}`).click(); await tick();
+        button('Stay here').click(); await tick();
+        expect(document.querySelector('.elevation')).toBe(profile);
+        expect(document.querySelector('.route-status')?.textContent).toContain('Calculating route');
+        button('Pan map').click(); await tick();
+        expect(calculate).toHaveBeenCalledTimes(2);
+        const draft = JSON.parse(stored.get('obc-planner-routing-v2')!);
+        finish({ ...line, key: routingKey(draft), stops: [line.stops[0], { id: 'night-1', distance: line.stops[1].distance * .25 }, line.stops[1]] });
+        await vi.waitFor(() => expect(document.querySelector('.route-status')).toBeNull());
+        expect(document.querySelector('.elevation')).toBe(profile);
+        expect(document.querySelector('.day h2')?.textContent).toContain(tilePlace.label);
     });
 
     it('rejects a malformed cached draft without crashing the planner', async () => {

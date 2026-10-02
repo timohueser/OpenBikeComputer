@@ -3,16 +3,17 @@
     import { asPlace } from '../../lib/planner/search/presentation';
     import type { SearchState } from '../../lib/planner/search/types';
     import type { Coordinate, Place } from '../../lib/planner/editor';
-    let { state, selectedId, applying = false, applyError = '', onSelect, onApply, onMore, onRetry, onStretch }: {
-        state: SearchState; selectedId: string | null; applying?: boolean; applyError?: string;
+    let { state, selectedId, hoveredId = null, onHover, applying = false, applyError = '', onSelect, onApply, onMore, onRetry, onStretch }: {
+        state: SearchState; selectedId: string | null; hoveredId?: string | null; onHover?: (id: string | null) => void; applying?: boolean; applyError?: string;
         onSelect: (place: Place) => void; onApply: () => void; onMore: () => void; onRetry: () => void; onStretch: (line: Coordinate[]) => void;
     } = $props();
     const answer = $derived(state.answer);
 </script>
 <div class="results" aria-busy={state.loading}>
     {#if state.loading && !answer}<p role="status">Searching…</p>
-    {:else if state.error}<p role="alert">{state.error}</p><button type="button" onclick={onRetry}>Retry search</button>
-    {:else if answer}
+    {/if}
+    {#if state.error}<p role="alert">{state.error}</p><button type="button" onclick={onRetry}>Retry search</button>{/if}
+    {#if answer}
         {#if answer.notice}<p class="note" role="status">{answer.notice}</p>{/if}
         {#if answer.canRetry}<button type="button" onclick={onRetry}>Retry interpretation</button>{/if}
         {#if answer.type === 'change'}
@@ -30,7 +31,7 @@
         {:else if answer.type === 'places'}
             <div class="result-heading"><p class="count">{answer.area}</p><span>{answer.results?.length ?? 0}{answer.hasMore ? '+' : ''}</span></div>
             {#each answer.results ?? [] as result (result.source)}
-                <PlaceRow wrapDetail place={asPlace(result)} detail={[result.precision === 'street' ? 'Street location only' : '', result.position ? `${result.position.along.toFixed(1)} km along route · ${result.position.distance.toFixed(1)} km off route` : `${result.distance.toFixed(1)} km from search centre`].filter(Boolean).join(' · ')} selected={selectedId === result.source} {onSelect} />
+                <PlaceRow wrapDetail place={asPlace(result)} detail={[result.precision === 'street' ? 'Street location only' : '', result.position ? `${result.position.along.toFixed(1)} km along route · ${result.position.distance.toFixed(1)} km off route` : `${result.distance.toFixed(1)} km from search centre`].filter(Boolean).join(' · ')} selected={selectedId === result.source} hovered={hoveredId === result.source} {onHover} {onSelect} />
             {:else}<p>No mapped places match this request in this package.</p>{/each}
             {#if answer.hasMore && (answer.results?.length ?? 0) < 100}<button type="button" onclick={onMore}>Show more results</button>{:else if answer.hasMore}<p>Zoom in or narrow the request to see more places.</p>{/if}
         {/if}

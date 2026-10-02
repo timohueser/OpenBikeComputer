@@ -5,13 +5,14 @@
     import RouteStats from './RouteStats.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
     import { kindLabel } from '../../lib/planner/search/presentation';
-    import { profileAscent } from '../../lib/planner/profile-data';
+    import { profileAscent, profileDescent } from '../../lib/planner/profile-data';
     import { dayOverTarget, dayStops, routingKey, type ItineraryDay, type OvernightCandidate, type Place, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
 
     let {
-        trip, day, days, theme, scale, expanded, changing, candidates, conflict, selectedId, revealId, hoveredId = null, onHover, calendar,
+        trip, day, days, theme, overnightNote = '', scale, expanded, changing, candidates, conflict, selectedId, revealId, hoveredId = null, onHover, calendar,
         onToggle, onInspect, onShowEnd, onSelectPlace, onPick, onChangeOvernight, onEditTarget, onShowConflict,
     }: {
+        overnightNote?: string;
         trip: Trip;
         day: ItineraryDay;
         days: Day[];
@@ -48,6 +49,7 @@
     const endId = $derived(last ? trip.points.find(p => p.kind === 'finish')!.id : day.pinned?.id ?? null);
     const line = $derived(trip.routing?.key === routingKey(trip) ? trip.routing : undefined);
     const ascent = $derived(profileAscent(day.from, day.to, line));
+    const descent = $derived(profileDescent(day.from, day.to, line));
     const ascentKnown = $derived(line?.elevation.every(h => h !== null));
     const over = $derived(dayOverTarget(trip, day, ascent));
     // Both ends chosen: the figures are what the rider will ride. Otherwise they are a suggestion, shown with ≈.
@@ -60,7 +62,7 @@
     const stops = $derived(expanded ? dayStops(trip, day) : []);
     const stopKinds: Record<string, { label: string; icon: string }> = {
         waypoint: { label: 'Visit', icon: 'flag' },
-        detour: { label: 'Out and back', icon: 'back' },
+        detour: { label: 'Visit', icon: 'flag' },
         pass: { label: 'Pass', icon: 'pin' },
         marker: { label: 'Marker', icon: 'pin' },
     };
@@ -88,14 +90,14 @@
             <span class="badge">{day.number}</span>
             <h2>{start} → {end}</h2>
         </header>
-        <RouteStats distance={day.distance} ascent={ascentKnown ? ascent : null} hours={line ? day.hours : null} />
+        <RouteStats distance={day.distance} ascent={ascentKnown ? ascent : null} descent={ascentKnown ? descent : null} walking={trip.bike === 'hiking'} hours={line ? day.hours : null} />
     {:else}
     <button type="button" class="heading" data-day={riding} onclick={onToggle} aria-label={`Open day ${day.number}: ${start} to ${end}`}>
         <span class="heading-content">
         <span class="badge">{day.number}</span>
         <span class="title">
             <strong>{start} → {end}</strong>
-            <small>{duration(day.hours)} · <span class:over={over.climb > 0}>↑ {ascentKnown ? ascent : '—'} m</span>{day.pinned?.placeKind ? ` · ${kindLabel(day.pinned.placeKind)}` : ''}</small>
+            <small>{duration(day.hours)} · <span class:over={over.climb > 0}>↑ {ascentKnown ? ascent : '—'} m</span> · ↓ {ascentKnown ? descent : '—'} m{day.pinned?.placeKind ? ` · ${kindLabel(day.pinned.placeKind)}` : ''}</small>
         </span>
         <span class="distance" class:over={over.km > 0}>{day.distance.toFixed(1)}<small>km</small></span>
         <Icon name="chevron" size={14} />
@@ -137,11 +139,11 @@
                         <h3>Where to sleep</h3>
                         <button type="button" class="planner-action" onclick={onShowEnd}>Show area</button>
                     </div>
-                    <p class="help">Distance and climb if you stay here.</p>
+                    <p class="help">Estimated distance and climb if you stay here.</p>
                     {#each candidates as candidate (candidate.place.id)}
                         <PlaceRow place={candidate.place} day={candidateDay(candidate)} selected={selectedId === candidate.place.id} onSelect={onSelectPlace} />
                     {:else}
-                        <p class="help">No suggested places here. Pick a spot on the map.</p>
+                        <p class="help" role="status">{overnightNote || 'No suggested places here. Pick a spot on the map.'}</p>
                     {/each}
                     <div class="choose-actions">
                         <button type="button" class="planner-action" onclick={onPick}>Pick another spot on the map</button>

@@ -86,7 +86,7 @@ export default {
           headers: { ...headers, 'Content-Type': route.tile ? (route.format === 'mvt' ? 'application/x-protobuf' : 'image/webp') : 'application/json' },
         });
       }
-      if (response.status === 200) ctx.waitUntil(caches.default.put(cacheKey, response.clone()));
+      ctx.waitUntil(caches.default.put(cacheKey, response.clone()));
       return request.method === 'HEAD' ? new Response(null, response) : response;
     } catch (error) {
       if (!(error instanceof MissingArchive)) console.error(JSON.stringify({ event: 'tile_read_failed', path: url.pathname, error: String(error) }));

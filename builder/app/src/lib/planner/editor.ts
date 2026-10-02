@@ -362,7 +362,7 @@ export function nearestProgress(coordinates: Coordinate[], point: Coordinate): n
     return Math.max(.005, Math.min(.995, progress));
 }
 
-export function tripDays(trip: Trip): Day[] {
+export function tripDays(trip: Trip, provisionalEnd?: { night: number; progress: number }): Day[] {
     if (orderedRoutePoints(trip).length < 2) return [];
     const line = trip.routing?.key === routingKey(trip) ? trip.routing : undefined;
     const hours = (from: number, to: number, distance: number) => line ? (movingSecondsAt(line, to) - movingSecondsAt(line, from)) / 3600 : distance / 15;
@@ -374,6 +374,7 @@ export function tripDays(trip: Trip): Day[] {
     const pinned = trip.points.filter(p => p.kind === 'night');
     const count = nightCount(trip);
     const fixed = fixedNights(trip, stops);
+    if (provisionalEnd) fixed.set(provisionalEnd.night, provisionalEnd.progress);
     const boundaries = [0];
     for (let i = 1; i < count; i++) {
         if (fixed.has(i)) {
@@ -441,8 +442,8 @@ export function overnightCandidates(trip: Trip, night: number, places: Place[]):
         .sort((a, b) => gap(a) - gap(b))
         .slice(0, 3)
         .map(place => {
-            const day = tripDays(pinNight(trip, night, place.coordinate, place.label))[night - 1];
-            return { place, distance: day.distance, ascent: profileAscent(day.from, day.to), from: day.from, to: day.to };
+            const day = tripDays(trip, { night, progress: nearestProgress(coordinates, place.coordinate) })[night - 1];
+            return { place, distance: day.distance, ascent: profileAscent(day.from, day.to, trip.routing), from: day.from, to: day.to };
         })
         .sort((a, b) => a.distance - b.distance);
 }

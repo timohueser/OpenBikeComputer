@@ -8,7 +8,7 @@
     import type { Day } from '../../lib/planner/editor';
 
     let {
-        lineData, total, days, dayLabels, singleRoute = true, theme = 'light', activeNight, band, focus = null, window: view = { from: 0, to: 1 }, height = 260,
+        lineData, total, days, dayLabels, walking = false, singleRoute = true, theme = 'light', activeNight, band, focus = null, window: view = { from: 0, to: 1 }, height = 260,
         onNight, onDayEndDrag, onHover,
     }: {
         /** Route length in km. */
@@ -18,6 +18,7 @@
         /** Riding number → calendar number. */
         dayLabels: Record<number, number>;
         singleRoute?: boolean;
+        walking?: boolean;
         theme?: 'light' | 'dark';
         activeNight: number;
         focus?: { from: number; to: number; label: string } | null;
@@ -35,19 +36,28 @@
     const known = $derived(samples.flatMap(s => s.height === null ? [] : [s.height]));
     const low = $derived(known.length ? Math.floor(known.reduce((a, b) => Math.min(a, b), Infinity) / 100) * 100 : 0);
     const high = $derived(known.length ? Math.max(low + 100, Math.ceil(known.reduce((a, b) => Math.max(a, b), -Infinity) / 100) * 100) : 100);
-    const line = $derived.by(() => {
-        let drawing = false;
-        return samples.map(sample => {
-            if (sample.height === null) { drawing = false; return ''; }
-            const command = `${drawing ? 'L' : 'M'}${sample.progress * 1000} ${105 - (sample.height - low) / (high - low) * 100}`;
-            drawing = true;
-            return command;
-        }).join(' ');
+    const paths = $derived.by(() => {
+        const runs: { line: string; area: string }[] = [];
+        let path = '', first = 0, last = 0;
+        function close() {
+            if (path) runs.push({ line: path, area: `${path}L${last} 105L${first} 105Z` });
+            path = '';
+        }
+        for (const sample of samples) {
+            if (sample.height === null) { close(); continue; }
+            last = sample.progress * 1000;
+            if (!path) first = last;
+            path += `${path ? 'L' : 'M'}${last} ${105 - (sample.height - low) / (high - low) * 100}`;
+        }
+        close();
+        return runs;
     });
+    const line = $derived(paths.map(run => run.line).join(' '));
+    const area = $derived(paths.map(run => run.area).join(' '));
     let hover = $state<number | null>(null);
     let gradeChoice = $state<boolean | null>(null);
     const showGrade = $derived(gradeChoice ?? singleRoute);
-    const grades = $derived(showGrade ? profileGrades(samples, total) : []);
+    const grades = $derived(profileGrades(samples, total));
     const gradePaths = $derived.by(() => {
         const paths = gradeBands.map(() => '');
         let previous = -1;
@@ -140,26 +150,21 @@
         <label class="grade-toggle"><input type="checkbox" checked={showGrade} onchange={(event) => gradeChoice = event.currentTarget.checked} />Grade</label>
         <span class="distance">{(span * total).toFixed(1)} km</span>
     </div>
-    <div class="legend" aria-label={showGrade ? 'Grade color legend' : 'Elevation source'}>
-        <span class="estimate">{known.length ? showGrade ? 'Grade · ~100 m average' : 'Terrain estimate' : 'Elevation unavailable'}</span>
-        {#if showGrade && known.length}
-            <span class="legend-item"><i style:background={color(5)}></i>{gradeBands[5].label}</span>
-            {#if grades.some(grade => grade === null)}<span class="legend-item"><i style:background={color(11)}></i>Unknown</span>{/if}
-            <div class="ramps">
-                {#each [{ label: 'Down', bands: [4, 3, 2, 1, 0] }, { label: 'Up', bands: [6, 7, 8, 9, 10] }] as direction (direction.label)}
-                    <div class="ramp" aria-label={`${direction.label === 'Down' ? 'Descent' : 'Ascent'} grades`}>
-                        <b>{direction.label}</b>
-                        {#each direction.bands as i (i)}<span class="legend-item"><i style:background={color(i)}></i>{gradeBands[i].label}</span>{/each}
-                    </div>
-                {/each}
-            </div>
-        {/if}
-    </div>
+    {#if !known.length}<p class="unavailable">Elevation unavailable</p>{/if}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="plot" bind:this={plot} onpointermove={track} onpointerleave={leave} onpointerup={release} onpointercancel={() => drag = null}>
-        <span class="height" style:top="22%">{high} m</span>
+        <span class="height" style:top="5%">{high} m</span>
         <span class="height" style:top="94%">{low} m</span>
         <svg viewBox={`${shown.from * 1000} 0 ${span * 1000} 112`} preserveAspectRatio="none" role="img" aria-label={`${focus && range === 'map' ? focus.label : 'Route'} elevation profile. Distances start at ${origin > 0 ? 'the day start' : 'the route start'}. The shaded band is the suggested overnight stretch.`}>
+            {#if singleRoute}
+                <path d={area} class="terrain-fill" />
+            {:else}
+                {#each days as day (day.number)}
+                    <svg x={day.from * 1000} width={Math.max(0, day.to - day.from) * 1000} height="112" viewBox={`${day.from * 1000} 0 ${Math.max(0, day.to - day.from) * 1000} 112`} preserveAspectRatio="none" overflow="hidden">
+                        <path d={area} style:--day-color={dayColor(day.number, theme)} class="day-fill" />
+                    </svg>
+                {/each}
+            {/if}
             <path d="M0 25H1000M0 65H1000M0 105H1000" class="grid" />
 
             {#if band && !band.blocked}<rect x={band.from * 1000} width={Math.max(0, band.to - band.from) * 1000} y="0" height="112" class="band" />{/if}
@@ -180,7 +185,7 @@
         </svg>
         {#if hover !== null}
             <span class="readout" style:left={`${x(hover)}%`}>
-                <span class="chip" class:flip={x(hover) > 80}>{((hover - origin) * total).toFixed(1)} km{origin > 0 ? ` into ${focus!.label.toLowerCase()}` : ''} · {hoverHeight === null ? 'Elevation unknown' : `${Math.round(hoverHeight)} m`}{#if showGrade} · {formatGrade(hoverGrade)}{/if}{#if hoverPushing} · Push bike{:else if hoverPushing === null} · Access unverified{/if}</span>
+                <span class="chip" class:flip={x(hover) > 80}>{((hover - origin) * total).toFixed(1)} km{origin > 0 ? ` into ${focus!.label.toLowerCase()}` : ''} · {hoverHeight === null ? 'Elevation unknown' : `${Math.round(hoverHeight)} m`} · {formatGrade(hoverGrade)}{#if hoverPushing && !walking} · Push bike{:else if hoverPushing === null} · Access unverified{/if}</span>
             </span>
         {/if}
         {#each handles as { day, x: left } (day.number)}
@@ -202,12 +207,12 @@
     <div class="axis">
         {#each ticks as km, i (i)}<span>{km.toFixed(span < .25 ? 1 : 0)} km</span>{/each}
     </div>
-    <Surface line={lineData} from={shown.from} to={shown.to} onHover={inspect} />
+    <Surface {walking} line={lineData} from={shown.from} to={shown.to} onHover={inspect} />
 </section>
 
 <style>
     .elevation {
-        --terrain: var(--parchment-2);
+        --terrain: color-mix(in srgb, var(--ink-faint) 10%, var(--panel));
         --band: color-mix(in srgb, var(--amber) 24%, var(--panel));
         display: flex;
         flex-direction: column;
@@ -238,18 +243,8 @@
     .grade-toggle { display: flex; align-items: center; gap: 6px; margin-left: 4px; min-height: 28px; font-weight: 600; cursor: pointer; }
     .grade-toggle input { width: 14px; height: 14px; margin: 0; accent-color: var(--ink-soft); }
     .grade-toggle input:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
-    .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-height: 18px; margin: 0 12px 10px 48px; color: var(--ink-soft); font: 12px var(--sans); font-variant-numeric: tabular-nums; }
-    .estimate { margin-right: auto; }
-    .legend-item { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
-    .legend-item i { width: 12px; height: 3px; border-radius: 1px; }
-    .ramps { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px 20px; width: 100%; }
-    .ramp { display: flex; align-items: center; gap: 8px; font-size: 11px; }
-    .ramp b { font-weight: 600; min-width: 32px; }
-    @container (max-width: 560px) {
-        .legend { gap: 6px 9px; }
-        .estimate { flex-basis: 100%; }
-        .distance { display: none; }
-    }
+    .unavailable { margin: 4px 0 8px 48px; color: var(--ink-soft); font-size: 12px; }
+    @container (max-width: 560px) { .distance { display: none; } }
     .plot {
         position: relative;
         flex: 1;
@@ -278,10 +273,12 @@
         stroke-width: 1;
         vector-effect: non-scaling-stroke;
     }
+    .terrain-fill { fill: var(--terrain); }
+    .day-fill { fill: color-mix(in srgb, var(--day-color) 60%, var(--ink-faint)); opacity: .10; }
     .band {
         fill: var(--band);
     }
-    path:not(.grid) {
+    path:not(.grid):not(.terrain-fill):not(.day-fill) {
         fill: none;
         stroke-width: 2;
         vector-effect: non-scaling-stroke;

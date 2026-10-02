@@ -14,12 +14,13 @@
     import Segmented from './Segmented.svelte';
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import { profileAscent } from '../../lib/planner/profile-data';
-    import { dayOverTarget, maxRidingDays, pinNight, tripDays, type Coordinate, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import { dayOverTarget, maxRidingDays, nearestProgress, routeCoordinates, tripDays, type Coordinate, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
 
     let {
-        kind, trip, days, dayLabels, night, point, place, coordinate, candidates, legMode,
+        kind, trip, days, overnightNote = '', dayLabels, night, point, place, coordinate, candidates, legMode,
         onClose, onEndpoint, onAddHere, onLegMode, onInsert, onPick, onSelectPlace, onStay, onAddVisit, onRename, onKind, onRemove,
     }: {
+        overnightNote?: string;
         kind: CalloutKind;
         trip: Trip;
         days: Day[];
@@ -70,7 +71,7 @@
     const sleeps = $derived(hasEndpoints && days.length > 0 && multi);
     const preview = $derived.by(() => {
         if (!coordinate || sleepDay >= days.length) return null;
-        const day = tripDays(pinNight(trip, sleepDay, coordinate, 'Preview'))[sleepDay - 1];
+        const day = tripDays(trip, { night: sleepDay, progress: nearestProgress(routeCoordinates(trip), coordinate) })[sleepDay - 1];
         const ascent = profileAscent(day.from, day.to, trip.routing);
         const over = dayOverTarget(trip, day, ascent);
         return { distance: day.distance, ascent, over: over.km > 0 || over.climb > 0 };
@@ -133,7 +134,8 @@
         <button type="button" class="secondary" onclick={onInsert}>Insert point here</button>
     {:else if kind === 'dayend'}
         <h2>Day {dayLabels[night]} ends here for now</h2>
-        <div class="column-head"><small>Day {dayLabels[night]} would be</small></div>
+        {#if overnightNote}<p class="hint" role="status">{overnightNote}</p>{/if}
+        {#if candidates.length}<div class="column-head"><small>Day {dayLabels[night]} would be</small></div>{/if}
         {#each candidates as candidate (candidate.place.id)}
             <PlaceRow place={candidate.place} day={candidateDay(candidate)} onSelect={onSelectPlace} />
         {/each}
@@ -158,7 +160,7 @@
                 </select>
             </label>
             {#if preview}
-                <p class="predict">Day {dayLabels[sleepDay]} would be <strong class:over={preview.over}>{preview.distance.toFixed(1)} km ↑ {preview.ascent} m</strong></p>
+                <p class="predict">Day {dayLabels[sleepDay]} would be ≈ <strong class:over={preview.over}>{preview.distance.toFixed(1)} km ↑ {preview.ascent} m</strong></p>
             {/if}
             {#if sleepDay >= maxRidingDays}<p class="hint">A trip can have up to {maxRidingDays} riding days. Choose an earlier day for this overnight.</p>{/if}
             <button type="button" class="primary" disabled={sleepDay >= maxRidingDays} onclick={() => onStay(sleepDay)}>{days[sleepDay - 1]?.pinned ? 'Replace overnight' : 'Stay here'}<Icon name="check" size={15} /></button>
@@ -184,12 +186,6 @@
         {/if}
         {#if hasEndpoints && point.kind !== 'start' && point.kind !== 'finish'}
             <Segmented label="Point type" options={types} columns={types.length > 3 ? 2 : 0} value={point.kind === 'detour' ? 'waypoint' : point.kind as EditableKind} onChange={onKind} />
-            {#if point.kind === 'waypoint' || point.kind === 'detour'}
-                <div class="gap">
-                    <Segmented label="How the route reaches it" value={point.kind} onChange={onKind}
-                        options={[{ value: 'waypoint', label: 'Through' }, { value: 'detour', label: 'Out and back' }]} />
-                </div>
-            {/if}
         {/if}
         <button type="button" class="quiet" onclick={onRemove}><Icon name="trash" size={15} />Remove point</button>
     {/if}
@@ -286,9 +282,6 @@
     }
     .quiet:hover {
         color: var(--ink);
-    }
-    .gap {
-        margin-top: 8px;
     }
     .rename {
         width: 100%;

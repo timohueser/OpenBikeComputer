@@ -5,10 +5,11 @@
     import type { Day, ItineraryDay, OvernightCandidate, Place, RoutePoint, Trip } from '../../lib/planner/editor';
 
     let {
-        trip, itinerary, days, theme, expandedDay, changing, candidates, conflicts, selectedId, revealId, hoveredId = null, onHover,
+        trip, itinerary, days, theme, overnightNote = '', expandedDay, changing, candidates, conflicts, selectedId, revealId, hoveredId = null, onHover,
         onToggle, onOverview, onInspect, onShowEnd, onSelectPlace, onPick, onChangeOvernight, onEditTarget, onShowConflict,
         onAddRest, onRemoveRest, onNameRest,
     }: {
+        overnightNote?: string;
         trip: Trip;
         itinerary: ItineraryDay[];
         days: Day[];
@@ -122,7 +123,7 @@
                 candidates={expandedDay === day.ridingNumber ? candidates : []}
                 conflict={conflict ? calendar[conflict[0].night!] : null}
                 onToggle={() => openDay(day.ridingNumber)}
-                {onInspect} {onSelectPlace} {onPick} {onChangeOvernight} {onEditTarget}
+                {onInspect} {onSelectPlace} {onPick} {overnightNote} {onChangeOvernight} {onEditTarget}
                 onShowEnd={() => onShowEnd(days[day.ridingNumber - 1])}
                 onShowConflict={() => conflict && onShowConflict(conflict)}
             />
