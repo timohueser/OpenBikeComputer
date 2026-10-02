@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createPropertyExpression, latest } from '@maplibre/maplibre-gl-style-spec';
+import { createPropertyExpression, latest, type StylePropertySpecification } from '@maplibre/maplibre-gl-style-spec';
 import type { LayerSpecification } from 'maplibre-gl';
 
 afterEach(() => {
@@ -28,7 +28,7 @@ async function landLayers(theme: 'light' | 'dark') {
 function evaluate(layer: LayerSpecification, property: 'fill-opacity' | 'fill-sort-key', zoom: number, kind: string): number {
     const [group, spec] = property === 'fill-opacity' ? ['paint_fill', latest.paint_fill['fill-opacity']] : ['layout_fill', latest.layout_fill['fill-sort-key']];
     const expression = (layer as unknown as Record<string, Record<string, unknown>>)[group.split('_')[0]][property];
-    const parsed = createPropertyExpression(expression, group, spec as Parameters<typeof createPropertyExpression>[2]);
+    const parsed = createPropertyExpression(expression, group, spec as unknown as StylePropertySpecification);
     expect(parsed.result, property).toBe('success');
     return (parsed as { value: { evaluate: (globals: object, feature: object) => number } }).value.evaluate({ zoom }, { type: 'Polygon', properties: { kind } });
 }
