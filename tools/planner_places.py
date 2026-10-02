@@ -14,7 +14,14 @@ EXTENT = 4096
 
 def rider_kinds():
     """The `pois` kinds the planner shows: the keys of every category's `kinds` in the web planner."""
-    return {kind for block in re.findall(r"kinds: \{(.*?)\}", KINDS.read_text()) for kind in re.findall(r"(\w+): ['\"]", block)}
+    text = KINDS.read_text()
+    blocks = re.findall(r"\bkinds\s*:\s*\{([^{}]*)\}", text)
+    entry = re.compile(r"""(?:(\w+)|'(\w+)'|"(\w+)")\s*:\s*(?:'[^'\\]*'|"[^"\\]*")""")
+    # Every `kinds` object must parse completely, or the archive would silently miss places.
+    if not blocks or len(blocks) != len(re.findall(r"\bkinds\s*:", text)) or any(
+            re.sub(r"[\s,]", "", entry.sub("", block)) for block in blocks):
+        raise ValueError(f"Cannot read every rider place kind from {KINDS.name}")
+    return {"".join(match) for block in blocks for match in entry.findall(block)}
 
 
 def read_varint(data, i):

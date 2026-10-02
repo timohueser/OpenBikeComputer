@@ -10,8 +10,7 @@ const app = path.join(root, 'builder/app');
 execFileSync(process.execPath, [path.join(app,'node_modules/vite/bin/vite.js'), 'build', '--mode', 'planner', '--outDir', output], {
   cwd: app, stdio: 'inherit', env: {...process.env,
     VITE_PLANNER_TILEJSON_URL: '', VITE_PLANNER_PMTILES_URL: '/maps/basemap.pmtiles',
-    // Offline installations have no places archive; the basemap's zoom 14 `pois` layer holds the same places.
-    VITE_PLANNER_PLACES_URL: '/maps/basemap.pmtiles',
+    VITE_PLANNER_PLACES_URL: '/maps/places.pmtiles',
     VITE_PLANNER_DEM_URL: '/maps/terrain/{z}/{x}/{y}.webp', VITE_PLANNER_SEARCH_URL: '',
     VITE_PLANNER_GLYPHS_URL: '/maps/assets/fonts/{fontstack}/{range}.pbf',
     VITE_PLANNER_SPRITES_URL: '/maps/assets/sprites/v4', VITE_PLANNER_ROUTING_URL: '/routing',

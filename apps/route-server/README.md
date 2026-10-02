@@ -83,11 +83,12 @@ time for another endpoint. Build the isolated preview with:
 
 ```sh
 VITE_PLANNER_PMTILES_URL=/planner/data/basemap.pmtiles \
+  VITE_PLANNER_PLACES_URL=/planner/data/places.pmtiles \
   npm run --prefix builder/app build:planner
 ```
 
 Serve `builder/app/dist/planner` under `/planner/` and open
-`/planner/planner.html`. Serve a Protomaps basemap at the configured URL.
+`/planner/planner.html`. Serve a Protomaps basemap and its places archive at the configured URLs.
 Proxy `/routing/*` to this service with that prefix removed. The preview needs
 no user account. Search examples and the map renderer remain separate from
 routing. See the [planner README](../../builder/app/src/components/planner/README.md).
