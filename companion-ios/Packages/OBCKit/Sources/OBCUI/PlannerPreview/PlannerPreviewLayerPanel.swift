@@ -24,7 +24,7 @@ enum PlannerPreviewPlaceCategory: String, CaseIterable, Identifiable {
         case .water: "Water"
         case .toilets: "Toilets"
         case .bike: "Bike"
-        case .pharmacy: "Pharmacy"
+        case .pharmacy: "Pharmacy & hospital"
         case .station: "Stations"
         case .viewpoint: "Viewpoints"
         case .peak: "Peaks and passes"
