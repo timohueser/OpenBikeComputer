@@ -403,6 +403,8 @@
                 failure = "Some map data could not load. Check your connection, then retry.";
                 errorDetail = event.error.message;
                 console.error("Planner map:", event.error);
+                // MapLibre does not repaint after a failed request, so the first load would wait for a camera move.
+                if (!basemapComplete) map!.triggerRepaint();
             });
             map.on("click", (event) => {
                 const target = event.originalEvent.target;
