@@ -61,7 +61,7 @@ attribute, and route.
 at zoom 11 only, with extent 4096 and one `pois` layer. Each feature is one
 point with the basemap feature ID and the basemap `kind`, `name`, and `name:en`
 properties. The kinds are the `kinds` keys of the web planner's
-[place categories](../builder/app/src/lib/planner/poi-kinds.ts). The bake reads
+[place categories](../builder/app/src/lib/planner/poi-kinds.json). The bake reads
 the basemap's deepest zoom. Each place occurs once, in the tile that contains it.
 A tile with no places is absent.
 

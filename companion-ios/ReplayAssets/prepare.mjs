@@ -13,6 +13,7 @@ for (const name of ['LICENSE.md', 'ThirdParty.json']) {
 // Use the web planner's palette, POI categories, and style in the native renderer.
 const cache = new URL('node_modules/.cache/', import.meta.url);
 await mkdir(cache, { recursive: true });
+await cp(new URL('../../builder/app/src/lib/planner/poi-kinds.json', import.meta.url), new URL('poi-kinds.json', cache));
 for (const name of ['poi-kinds', 'map-style']) {
   let text = await readFile(new URL(`../../builder/app/src/lib/planner/${name}.ts`, import.meta.url), 'utf8');
   text = text.replaceAll('"./map-data"', '"./obc-map-data.mjs"').replaceAll('"./poi-kinds"', '"./poi-kinds.mjs"');
