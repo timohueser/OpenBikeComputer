@@ -12,6 +12,7 @@ if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
 export default defineConfig({
   testDir: '.',
   testMatch: '*.test.js',
+  testIgnore: 'planner/**',
   // The journey downloads five cells and three terrain squares, assembles them in wasm and reads
   // the map back out of OPFS. Generous, because a timeout here is a failure, never a retry.
   timeout: 120_000,

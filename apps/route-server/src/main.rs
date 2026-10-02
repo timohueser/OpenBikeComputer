@@ -31,7 +31,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             CorsLayer::new()
                 .allow_origin(origin.parse::<axum::http::HeaderValue>()?)
                 .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
-                .allow_headers([axum::http::header::CONTENT_TYPE]),
+                .allow_headers([axum::http::header::CONTENT_TYPE])
+                .max_age(std::time::Duration::from_secs(600)),
         );
     }
     let listener = tokio::net::TcpListener::bind(&address).await?;
