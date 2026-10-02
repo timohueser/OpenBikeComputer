@@ -4,6 +4,7 @@ import { requestRoute, type EngineRoute, type RouteLeg, type RouteTotals, type S
 /** One leg cut from a route answer. Its `elapsed` starts at zero. */
 interface Leg extends Pick<RouteLeg, 'start' | 'end' | 'totals'> {
     package: string;
+    truncated: boolean;
     geometry: Coordinate[];
     elevation: (number | null)[];
     elapsed: number[];
@@ -13,7 +14,7 @@ interface Leg extends Pick<RouteLeg, 'start' | 'end' | 'totals'> {
 
 function cut(route: EngineRoute, { from_index: from, to_index: to, start, end, totals }: RouteLeg): Leg {
     return {
-        start, end, totals, package: route.package,
+        start, end, totals, package: route.package, truncated: route.snap_truncated,
         geometry: route.geometry.slice(from, to + 1), elevation: route.elevation.slice(from, to + 1),
         elapsed: route.elapsed.slice(from, to + 1).map(seconds => seconds - route.elapsed[from]),
         surfaces: route.surfaces.slice(from, to), pushing: route.pushing.slice(from, to),
@@ -30,11 +31,14 @@ function stitch(legs: Leg[], profile: string): EngineRoute {
         const skip = route.geometry.length ? 1 : 0;
         const offset = route.elapsed.at(-1) ?? 0;
         const from = route.geometry.length - skip;
-        route.geometry.push(...leg.geometry.slice(skip));
-        route.elevation.push(...leg.elevation.slice(skip));
-        route.elapsed.push(...leg.elapsed.slice(skip).map(seconds => seconds + offset));
-        route.surfaces.push(...leg.surfaces);
-        route.pushing.push(...leg.pushing);
+        // A loop, not a spread: a long leg exceeds the argument limit of some engines.
+        for (let i = skip; i < leg.geometry.length; i++) {
+            route.geometry.push(leg.geometry[i]);
+            route.elevation.push(leg.elevation[i]);
+            route.elapsed.push(leg.elapsed[i] + offset);
+            if (i) { route.surfaces.push(leg.surfaces[i - 1]); route.pushing.push(leg.pushing[i - 1]); }
+        }
+        route.snap_truncated ||= leg.truncated;
         route.legs.push({ from_index: from, to_index: route.geometry.length - 1, start: leg.start, end: leg.end, totals: leg.totals });
         for (const key of ['distance_m', 'ascent_m', 'seconds', 'unknown_elevation_m', 'pushing_m'] as const) totals[key] += leg.totals[key];
         leg.totals.surface_m.forEach((metres, i) => totals.surface_m[i] += metres);
