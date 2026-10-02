@@ -73,7 +73,7 @@ def pack_file(source, objects):
         compressed = Path(temporary) / "object"
         if source.suffix not in COMPRESSED:
             with source.open("rb") as reader, compressed.open("wb") as target:
-                with gzip.GzipFile(filename="", fileobj=target, mode="wb", compresslevel=1, mtime=0) as encoder:
+                with gzip.GzipFile(filename="", fileobj=target, mode="wb", compresslevel=6, mtime=0) as encoder:
                     shutil.copyfileobj(reader, encoder, CHUNK)
         if compressed.exists() and compressed.stat().st_size < original["bytes"]:
             transport = {**item(compressed), "encoding": "gzip"}
