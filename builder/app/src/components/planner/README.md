@@ -27,11 +27,12 @@ obc planner deploy --data-dir /srv/planner/bw --host root@YOUR_VPS --apply
 `publish` and `deploy` show their action without `--apply`. Publication uploads
 files and verifies remote bytes. Deployment checks the routing
 package, model readiness, CORS, tiles, search, and a real route. It updates
-`planner/catalog.json` only after those checks pass. The
+`planner/catalog.json` only after these pass. The
 [release contract](../../../../../specs/planner-release.md) defines the files.
 
-`grid` publishes into a new directory. It builds reusable cells from the verified
-regional bake. Do not run publications or deployments at the same time.
+Online releases are grid releases: `grid` publishes into a new directory. It
+builds reusable cells from the regional bake. Run one publication or deployment
+at a time.
 
 `prepare` accepts `--osm PATH` for a local copy of the pinned extract. On macOS,
 use `--inputs DIRECTORY` to supply verified Linux builder outputs:
@@ -76,10 +77,10 @@ cargo run --release -p route-build --bin route-select -- \
   --profiles touring,touring/shorter,touring/less-climbing,road,road/shorter,road/less-climbing,gravel,gravel/shorter,gravel/less-climbing,mtb,mtb/shorter,mtb/less-climbing,hiking,hiking/shorter,hiking/less-climbing
 ```
 
-Copy the unchanged `search` and `sources` directories into the new release.
-Set the recipe's `profiles` to the same IDs. Run the three commands above
-with the new directory. Preparation checks the profile selection, then builds
-the overlay index and `maps` for the new routing identity.
+Copy the unchanged `maps`, `search`, and `sources` directories into the new
+release, without `maps/overlays.pmtiles`. Set the recipe's `profiles` to the
+same IDs. Run the three commands above with the new directory. Preparation
+checks the profile selection and builds a matching overlay index and tiles.
 
 Routing currently supports German access defaults. Preparation refuses other
 countries. Add and verify their access rules before extending coverage.
