@@ -143,6 +143,7 @@ def prepare(args):
         with tempfile.TemporaryDirectory(prefix=".maps-", dir=data) as directory:
             stage = Path(directory)
             link(source / "basemap.pmtiles", stage / "basemap.pmtiles")
+            maps.places_archive(stage / "basemap.pmtiles", stage / "places.pmtiles")
             maps.run(maps.ROOT / "target/release/planner-dem", "--dem", args.dem_dir, *reference,
                      "--bounds", ",".join(map(str, terrain_bounds)), "--output", stage / "terrain.mbtiles")
             maps.run(args.pmtiles, "convert", stage / "terrain.mbtiles", stage / "terrain.pmtiles")

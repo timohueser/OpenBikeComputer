@@ -70,6 +70,7 @@ class PlannerMaps(unittest.TestCase):
             with patch.object(maps, "DATA", destination), \
                  patch.object(maps, "run", side_effect=extract), \
                  patch.object(maps, "compact_archive", side_effect=lambda source, target, *_args, **_kwargs: target.write_bytes(source.read_bytes())), \
+                 patch.object(maps, "places_archive", side_effect=lambda basemap, target: target.write_bytes(b"places")), \
                  patch.object(maps, "verify_archive"), \
                  patch.object(maps, "urlopen", side_effect=[io.BytesIO(assets()), io.BytesIO(b"MIT licence")]):
                 maps.prepare(args)
@@ -83,6 +84,7 @@ class PlannerMaps(unittest.TestCase):
                 "bytes": 4, "sha256": hashlib.sha256(b"base").hexdigest(),
             })
             self.assertIn("assets/fonts/OFL.txt", manifest["files"])
+            self.assertIn("places.pmtiles", manifest["files"])
             self.assertEqual((destination / "assets/sprites/LICENSE.txt").read_bytes(), b"MIT licence")
             self.assertEqual(list(Path(temporary).iterdir()), [destination])
             with patch.object(maps, "DATA", destination):

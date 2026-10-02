@@ -1,4 +1,7 @@
-/** Rider place categories: `label` names one place, `plural` the layer, `icon` is a 24 px stroke path, `kinds` maps basemap `pois` kinds to names. */
+/**
+ * Rider place categories: `label` names one place, `plural` the layer, `icon` is a 24 px stroke path, `kinds` maps basemap
+ * `pois` kinds to names. The places bake (`tools/planner_places.py`) reads the keys of each one-line `kinds` object.
+ */
 export const placeCategories = {
     hotel: {
         label: 'Lodging', plural: 'Lodging',
