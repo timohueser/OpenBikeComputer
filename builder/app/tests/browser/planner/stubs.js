@@ -2,7 +2,7 @@
 export const HOSTS = { tiles: 'tiles.test', api: 'api.test' };
 
 /** The tile Worker serves these, and Cloudflare bills them; the VPS serves `api`. */
-export const CLOUDFLARE = ['basemap', 'places', 'terrain', 'glyphs', 'sprites'];
+export const CLOUDFLARE = ['basemap', 'places', 'overlays', 'terrain', 'glyphs', 'sprites'];
 
 const PIXEL = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
@@ -10,7 +10,7 @@ const PIXEL = Buffer.from(
 );
 const BOUNDS = [7.45, 47.5, 10.5, 49.85];
 /** The zoom range of each vector archive, as the tile Worker's TileJSON gives it. */
-const ZOOMS = { basemap: [0, 14], places: [11, 11] };
+const ZOOMS = { basemap: [0, 14], places: [11, 11], overlays: [6, 14] };
 const CORS = {
   'access-control-allow-origin': '*',
   'access-control-allow-headers': 'content-type',
@@ -24,11 +24,11 @@ export function classify(url) {
     if (pathname.startsWith('/terrain')) return 'terrain';
     if (pathname.startsWith('/fonts')) return 'glyphs';
     if (pathname.startsWith('/sprites')) return 'sprites';
-    return pathname.startsWith('/places') ? 'places' : 'basemap';
+    if (pathname.startsWith('/places')) return 'places';
+    return pathname.startsWith('/overlays') ? 'overlays' : 'basemap';
   }
   if (hostname === HOSTS.api) {
     if (pathname.endsWith('/v1/route')) return 'route';
-    if (pathname.endsWith('/v1/overlays')) return 'overlays';
     return pathname.endsWith('/reverse') ? 'reverse' : 'query';
   }
   return `other:${hostname}`;
@@ -76,8 +76,9 @@ export function respond(request) {
   switch (kind) {
     case 'basemap':
     case 'places':
+    case 'overlays':
       return url.pathname === `/${kind}.json`
-        ? json({ tilejson: '3.0.0', tiles: [`https://${HOSTS.tiles}/${kind}/{z}/{x}/{y}.mvt`], minzoom: ZOOMS[kind][0], maxzoom: ZOOMS[kind][1], bounds: BOUNDS })
+        ? json({ tilejson: '3.0.0', tiles: [`https://${HOSTS.tiles}/${kind}/{z}/{x}/{y}.mvt`], minzoom: ZOOMS[kind][0], maxzoom: ZOOMS[kind][1], bounds: BOUNDS, routing_package: 'budget-test' })
         : { headers: CORS, status: 204 };
     case 'terrain':
       return { headers: CORS, contentType: 'image/png', body: PIXEL };
@@ -91,8 +92,6 @@ export function respond(request) {
       if (alternatives || alternatives_only) routes.push(route(points, profile, 'alternative'));
       return json({ routes });
     }
-    case 'overlays':
-      return json({ type: 'FeatureCollection', features: [], package: 'budget-test', coverage: BOUNDS });
     case 'reverse':
       return json({ label: 'Teststraße 1, Freiburg' });
     case 'query': {

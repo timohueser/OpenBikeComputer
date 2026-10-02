@@ -5,7 +5,6 @@ struct PlannerAPI: Sendable {
     let search: PlannerSearchSession
     let route: @Sendable (Data) async throws -> Reply
     let region: @Sendable () async throws -> Reply
-    let overlays: @Sendable (String) async throws -> Reply
     let sample: Data
 
     func respond(_ request: PlannerHTTPRequest) async -> PlannerHTTPResponse? {
@@ -21,9 +20,6 @@ struct PlannerAPI: Sendable {
                 case "/api/planner-search/sample": return response(body: sample)
                 case "/routing/v1/region":
                     let reply = try await region()
-                    return response(status: reply.status, body: reply.body)
-                case "/routing/v1/overlays":
-                    let reply = try await overlays(url.percentEncodedQuery ?? "")
                     return response(status: reply.status, body: reply.body)
                 default: return error(404, "Not found.")
                 }

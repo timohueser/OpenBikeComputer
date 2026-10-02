@@ -76,10 +76,10 @@ cargo run --release -p route-build --bin route-select -- \
   --profiles touring,touring/shorter,touring/less-climbing,road,road/shorter,road/less-climbing,gravel,gravel/shorter,gravel/less-climbing,mtb,mtb/shorter,mtb/less-climbing,hiking,hiking/shorter,hiking/less-climbing
 ```
 
-Copy the unchanged `maps`, `search`, and `sources` directories into the new
-release directory. Set the recipe's `profiles` list to the same IDs. Run the
-three commands above with the new directory. Preparation checks the profile
-selection and builds a matching overlay index.
+Copy the unchanged `search` and `sources` directories into the new release.
+Set the recipe's `profiles` to the same IDs. Run the three commands above
+with the new directory. Preparation checks the profile selection, then builds
+the overlay index and `maps` for the new routing identity.
 
 Routing currently supports German access defaults. Preparation refuses other
 countries. Add and verify their access rules before extending coverage.
@@ -147,6 +147,7 @@ release. Use them for a hosted build with the configured API origin.
 | `VITE_PLANNER_TILEJSON_URL` | Hosted basemap TileJSON |
 | `VITE_PLANNER_PMTILES_URL` | Local basemap archive, when TileJSON is absent |
 | `VITE_PLANNER_PLACES_URL` | Rider places TileJSON or PMTiles archive |
+| `VITE_PLANNER_OVERLAYS_URL` | Overlay TileJSON or PMTiles archive |
 | `VITE_PLANNER_ROUTING_URL` | Routing API prefix |
 | `VITE_PLANNER_SEARCH_URL` | Search API prefix |
 | `VITE_PLANNER_SEARCH_REGIONS` | Comma-separated region IDs |

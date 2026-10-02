@@ -52,6 +52,8 @@ export interface RoutingLine {
     unknownSurfaceKm: number;
     pushingKm: number;
     unroutedKm: number;
+    /** Routing package of the routed legs. */
+    package?: string;
     /** A picked alternative with the profile of its primary route, such as another corridor. No request for its plan returns it. */
     picked?: boolean;
 }
@@ -90,7 +92,7 @@ export function selectRoute(trip: Trip, route: EngineRoute, alternatives: Engine
     const primary = alternatives[0] ?? route;
     return {
         choiceId: route.id, key: routingKey(trip), coordinates: route.geometry, elevation: route.elevation, elapsed: route.elapsed, surfaces: route.surfaces, pushing: route.pushing, seconds: route.totals.seconds,
-        profile: route.profile, alternatives, alternativesReady: true, unknownSurfaceKm: route.totals.surface_m[0] / 1000, pushingKm: route.totals.pushing_m / 1000, unroutedKm: 0,
+        profile: route.profile, package: route.package, alternatives, alternativesReady: true, unknownSurfaceKm: route.totals.surface_m[0] / 1000, pushingKm: route.totals.pushing_m / 1000, unroutedKm: 0,
         stops: [{ id: points[0].id, distance: 0 }, ...route.legs.map((leg, i) => ({ id: points[i + 1].id, distance: distance[leg.to_index] }))],
         picked: route.id !== primary.id && route.profile === primary.profile,
     };
@@ -158,6 +160,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         }
         const canOfferAlternatives = i === 1 && until === points.length - 1 && !turnarounds.length;
         const route = await legs.route(expanded, turnarounds, result.profile, signal);
+        result.package = route.package;
         if (canOfferAlternatives) { result.alternatives = [route]; result.choiceId = route.id; result.alternativesReady = false; }
         const start = append(route.geometry, route.elevation, route.elapsed, route.surfaces, route.pushing);
         const lengths = cumulative(route.geometry);

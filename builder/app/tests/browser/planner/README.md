@@ -12,9 +12,9 @@ npm run test:planner --prefix builder/app/tests/browser
 limit. The log shows each phase of the session, so the growth is easy to find.
 The test also fails when, at load, a terrain or overlay request comes before the last basemap,
 glyph or sprite request.
-Cloudflare bills `basemap`, `places`, `terrain`, `glyphs` and `sprites`. The VPS serves the rest.
+Cloudflare bills `basemap`, `places`, `overlays`, `terrain`, `glyphs` and `sprites`. The VPS serves the rest.
 
 After a deliberate change, set each limit by the rule in `basis`.
 
 `places` counts the places TileJSON and the zoom 11 places tiles that the place index reads along
-the route.
+the route. `overlays` counts the route network and access TileJSON and its tiles.
