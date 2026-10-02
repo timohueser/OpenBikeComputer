@@ -14,13 +14,13 @@ test('shared runtime supplies one clock and explicit calendar capability for fil
   const times=[], now=Date.parse('2026-09-28T10:00:00Z');
   const hours={assertEnvironment(){},
     openingState(_place,_filter,context){times.push(Date.parse(context.now));return 'open';},
-    currentOpening(_place,time){times.push(time);return {state:'open',checkedAt:time};}};
+    currentOpening(_place,time){times.push(time);return {state:'open'};}};
   assert.throws(()=>searchRuntime({db,parser:never}),/opening-hours adapters/);
   const runtime=searchRuntime({db,parser:never,hours,clock:()=>now});
   const result=await runtime.query({...input,q:'hotel',request:{type:'places',what:['hotel'],open:{now:true}}});
   assert.ok(result.results.length);assert.ok(times.length>result.results.length);
   assert.ok(times.every(time=>time===now));
-  assert.equal(result.results[0].hoursStatus.checkedAt,now);
+  assert.deepEqual(result.results[0].hoursStatus,{state:'open'});
   hours.assertEnvironment=()=>{throw new Error('Wrong calendar zone');};
   await assert.rejects(runtime.query(input),/Wrong calendar zone/);
 });

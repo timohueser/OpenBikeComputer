@@ -1,18 +1,11 @@
 <script lang="ts">
-    import { onMount } from 'svelte';
-    import { openingStatus } from '../../lib/planner/search/opening-status';
     import type { HoursStatus } from '../../lib/planner/search/types';
     let { value }: { value: HoursStatus } = $props();
-    let now = $state(Date.now());
-    const status = $derived(openingStatus(value, Math.max(now, Date.now())));
-    onMount(() => {
-        const timer = setInterval(() => now = Date.now(), 15_000);
-        return () => clearInterval(timer);
-    });
+    const labels = { open: 'Open', closed: 'Closed', unknown: 'Hours unknown' };
 </script>
 <span class="status-line">
-    <span class="badge" data-state={status.state}>{status.label}</span>
-    {#if status.closesIn}<span>Closes in {status.closesIn} min</span>{/if}
+    <span class="badge" data-state={value.state}>{labels[value.state]}</span>
+    {#if value.closesAt}<span>Closes at {value.closesAt}</span>{/if}
 </span>
 <style>
     .status-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 7px; color: var(--ink-soft); font: 400 12px/1.4 var(--sans); font-variant-numeric: tabular-nums; }
