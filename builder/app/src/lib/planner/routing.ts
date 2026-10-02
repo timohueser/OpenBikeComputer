@@ -160,7 +160,14 @@ export function movingSecondsAt(line: RoutingLine, progress: number): number {
     return line.elapsed[i - 1] + share * (line.elapsed[i] - line.elapsed[i - 1]);
 }
 
-/** The latest routes by routing key, so undo, redo and a return to an earlier bike need no request. */
+/** A picked alternative with the profile of its primary route, such as another corridor. No request for its plan returns it. */
+export function pickedAlternative(line: RoutingLine): boolean {
+    const primary = line.alternatives[0];
+    return !!primary && line.choiceId !== primary.id && line.profile === primary.profile;
+}
+
+/** The latest routes by routing key, so undo, redo and a return to an earlier bike need no request.
+ * It keeps the routes that a request for their key returns; the plan keeps a picked alternative. */
 export class RouteCache {
     private lines = new Map<string, RoutingLine>();
     constructor(private readonly size = 8) {}
@@ -174,7 +181,7 @@ export class RouteCache {
     attach(plan: Trip): Trip {
         const key = routingKey(plan);
         if (plan.routing?.key === key) {
-            this.add(plan.routing);
+            if (!pickedAlternative(plan.routing)) this.add(plan.routing);
             return plan;
         }
         const line = this.lines.get(key);

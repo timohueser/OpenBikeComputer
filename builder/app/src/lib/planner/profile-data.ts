@@ -3,11 +3,18 @@ import { cumulative, firstIndex } from './editor';
 
 export type ProfileSample = { progress: number; height: number | null };
 
-export function profileSamples(line?: RoutingLine): ProfileSample[] {
+// A route is never changed after it is built, so each route's samples are computed once.
+const samplesByRoute = new WeakMap<RoutingLine, readonly ProfileSample[]>();
+
+export function profileSamples(line?: RoutingLine): readonly ProfileSample[] {
     if (!line) return [];
+    const known = samplesByRoute.get(line);
+    if (known) return known;
     const distance = cumulative(line.coordinates);
     const total = distance.at(-1) || 1;
-    return line.elevation.map((height, i) => ({ progress: distance[i] / total, height }));
+    const samples = line.elevation.map((height, i) => ({ progress: distance[i] / total, height }));
+    samplesByRoute.set(line, samples);
+    return samples;
 }
 
 export function profileAscent(from = 0, to = 1, line?: RoutingLine): number {
@@ -23,11 +30,11 @@ export function profileAscent(from = 0, to = 1, line?: RoutingLine): number {
 }
 
 /** The index of the first sample at or past `progress`, or the sample count. */
-export function sampleIndex(samples: ProfileSample[], progress: number): number {
+export function sampleIndex(samples: readonly ProfileSample[], progress: number): number {
     return firstIndex(samples.length, i => samples[i].progress >= progress);
 }
 
-export function profileHeightAt(progress: number, samples: ProfileSample[]): number | null {
+export function profileHeightAt(progress: number, samples: readonly ProfileSample[]): number | null {
     const i = sampleIndex(samples, progress);
     if (i === samples.length) return samples.at(-1)?.height ?? null;
     if (i === 0) return samples[0].height;

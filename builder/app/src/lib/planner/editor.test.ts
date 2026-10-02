@@ -65,7 +65,7 @@ describe('planner commitments', () => {
 
     it('keeps plans without their routes in the history', () => {
         const plan: Trip = { ...initialTrip(), live: true };
-        const routed: Trip = { ...plan, routing: { key: routingKey(plan) } as Trip['routing'] };
+        const routed: Trip = { ...plan, routing: { key: routingKey(plan), alternatives: [] } as unknown as Trip['routing'] };
         const history = new TripHistory();
         const next = history.commit(routed, { ...routed, days: 5 });
         expect(next.routing).toBe(routed.routing);

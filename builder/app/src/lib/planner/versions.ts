@@ -1,4 +1,4 @@
-import { cumulative, itineraryDays, routeCoordinates, withoutRoute, type Trip } from './editor';
+import { cumulative, itineraryDays, routeCoordinates, planOf, type Trip } from './editor';
 import { isTrip } from './trip-validation';
 
 export interface Version {
@@ -52,7 +52,7 @@ function isVersion(value: unknown): value is Version {
 
 /** Named versions stay until deleted; only the newest unnamed ones are kept. */
 export function saveVersion(trip: Trip, name?: string, store: VersionStore = localStorage): Version {
-    const version: Version = { id: crypto.randomUUID(), at: new Date().toISOString(), summary: versionSummary(trip), trip: withoutRoute(trip) };
+    const version: Version = { id: crypto.randomUUID(), at: new Date().toISOString(), summary: versionSummary(trip), trip: planOf(trip) };
     if (name?.trim()) version.name = name.trim();
     let unnamed = 0;
     const kept = [version, ...listVersions(store)].filter(v => v.name || ++unnamed <= unnamedKept);

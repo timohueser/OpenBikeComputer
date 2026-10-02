@@ -23,7 +23,7 @@
         addClickedPoint, addPointNear, addRestDay, applyBudget, coordinateAt, cumulative, emptyTrip,
         insertPoint, itineraryDays, kilometres, nearestProgress, nightOrderConflicts, offRoute, overnightCandidates,
         overnightWindow, pinNight, removeRestDay, reorderPoint, routeCoordinates, routeSlice, routeStops,
-        setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint, TripHistory, tripDays, routingKey, withoutRoute,
+        setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint, TripHistory, tripDays, routingKey, planOf,
         type Coordinate, type Day, type LegMode, type Place, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
@@ -315,7 +315,7 @@
         try {
             const raw = localStorage.getItem(storageKey);
             const saved = raw ? JSON.parse(raw) : null;
-            if (isTrip(saved)) trip = withoutRoute(saved);
+            if (isTrip(saved)) trip = planOf(saved);
             else if (raw) draftError = 'Saved draft is invalid · new plan opened';
         } catch (error) {
             draftError = error instanceof SyntaxError ? 'Saved draft is invalid · new plan opened' : 'Draft · browser storage unavailable';
@@ -335,7 +335,7 @@
 
     function save() {
         try {
-            localStorage.setItem(storageKey, JSON.stringify(withoutRoute(trip)));
+            localStorage.setItem(storageKey, JSON.stringify(planOf(trip)));
             draftSavedAt = Date.now();
             draftError = '';
         } catch {
@@ -737,7 +737,7 @@
     }
 
     function restoreVersion(saved: Trip, name: string) {
-        commit(withoutRoute(saved), `Restored ‘${name}’`);
+        commit(planOf(saved), `Restored ‘${name}’`);
         undoable = true;
         clearSelection();
         night = Math.max(1, Math.min(night, tripDays(trip).length));

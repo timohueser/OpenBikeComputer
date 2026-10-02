@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { coordinateAt, cumulative, emptyTrip, initialTrip, maxRidingDays, routeCoordinates, routingKey, type Place } from '../../lib/planner/editor';
+import { coordinateAt, cumulative, emptyTrip, initialTrip, maxRidingDays, routeCoordinates, routingKey, type Coordinate, type Place } from '../../lib/planner/editor';
 import { corridorPlaces } from '../../lib/planner/place-index';
 import PlannerApp from './PlannerApp.svelte';
 import * as routing from '../../lib/planner/routing';
-import type { RoutingLine } from '../../lib/planner/routing';
+import type { EngineRoute, RoutingLine } from '../../lib/planner/routing';
 
 vi.mock('./PlannerMap.svelte', async () => ({ default: (await import('../../../test-support/planner/MapStub.svelte')).default }));
 vi.mock('../../lib/planner/place-index', () => ({ corridorPlaces: vi.fn() }));
@@ -224,6 +224,41 @@ describe('planner app transitions', () => {
             expect(document.querySelector('section.elevation')).not.toBeNull();
         }
         expect(routing.calculateLine).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps a picked corridor through undo, redo, a saved version and a reload', async () => {
+        const engine = (id: string, reason: string, geometry: Coordinate[]): EngineRoute => {
+            const km = cumulative(geometry).at(-1)!;
+            const totals = { distance_m: km * 1000, ascent_m: 0, descent_m: 0, seconds: km * 240, surface_m: [0, km * 1000, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 };
+            return { id, reason, package: 'test', profile: 'touring', geometry, elevation: geometry.map(() => 200), elapsed: cumulative(geometry).map(d => d * 240),
+                surfaces: geometry.slice(1).map(() => 'Paved'), pushing: geometry.slice(1).map(() => false), totals,
+                legs: [{ from_index: 0, to_index: geometry.length - 1, totals }], snap_truncated: false };
+        };
+        const coordinates = routeCoordinates(initialTrip());
+        const primary = engine('primary', 'primary', coordinates);
+        const corridor = engine('corridor', 'corridor', coordinates.map(([x, y], i) => (i && i < coordinates.length - 1 ? [x, y + .02] : [x, y]) as Coordinate));
+        vi.mocked(routing.calculateLine).mockImplementation(async plan => routing.selectRoute(plan, primary, [primary, corridor]));
+        const chosen = () => document.querySelector('.ways [aria-checked="true"]')?.textContent ?? '';
+        const options = async () => { await vi.waitFor(() => button('Route options · 2').click()); await tick(); };
+        app = mount(PlannerApp, { target: document.body });
+        await options();
+        [...document.querySelectorAll<HTMLButtonElement>('.ways [role="radio"]')].find(way => way.textContent?.includes('Different corridor'))!.click(); await tick();
+        expect(chosen()).toContain('Different corridor');
+        button('Undo').click(); await tick();
+        expect(chosen()).toContain('Balanced');
+        button('Redo').click(); await tick();
+        expect(chosen()).toContain('Different corridor');
+        button('Save').click(); await tick();
+        document.querySelector('form.name')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); await tick();
+        button('Undo').click(); await tick();
+        expect(chosen()).toContain('Balanced');
+        button('Restore').click(); await tick();
+        expect(chosen()).toContain('Different corridor');
+        await unmount(app);
+        app = mount(PlannerApp, { target: document.body });
+        await options();
+        expect(chosen()).toContain('Different corridor');
+        expect(routing.calculateLine).toHaveBeenCalledTimes(1);
     });
 
     it('opens a tile place from both a search row and its map pin, then adds a visit', async () => {

@@ -1,4 +1,4 @@
-import { movingSecondsAt } from './routing';
+import { movingSecondsAt, pickedAlternative } from './routing';
 import { profileAscent } from './profile-data';
 import type { PlaceCategory } from './poi-kinds';
 
@@ -581,33 +581,34 @@ export function nightOrderConflicts(trip: Trip): [RoutePoint, RoutePoint][] {
     return nights.slice(1).flatMap((point, i) => stopProgress(stops, point) <= stopProgress(stops, nights[i]) ? [[nights[i], point] as [RoutePoint, RoutePoint]] : []);
 }
 
-/** The plan without its route. History, drafts and versions keep plans; the route cache keeps routes. */
-export function withoutRoute(trip: Trip): Trip {
-    const { routing: _, ...plan } = trip;
-    return plan;
+/** What history, drafts and versions keep: the plan without its route, which the route cache keeps.
+ * A picked alternative stays with its plan, because no request for the plan returns it. */
+export function planOf(trip: Trip): Trip {
+    const { routing, ...plan } = trip;
+    return routing?.key === routingKey(trip) && pickedAlternative(routing) ? trip : plan;
 }
 
-/** Keeps plans, never routes. A trip is never changed in place, so the history shares its objects. */
+/** Keeps plans (see `planOf`). A trip is never changed in place, so the history shares its objects. */
 export class TripHistory {
     private past: Trip[] = [];
     private future: Trip[] = [];
     get canUndo() { return this.past.length > 0; }
     get canRedo() { return this.future.length > 0; }
     commit(before: Trip, after: Trip): Trip {
-        this.past = [...this.past.slice(-49), withoutRoute(before)];
+        this.past = [...this.past.slice(-49), planOf(before)];
         this.future = [];
         return after;
     }
     undo(current: Trip): Trip {
         const previous = this.past.pop();
         if (!previous) return current;
-        this.future.push(withoutRoute(current));
+        this.future.push(planOf(current));
         return previous;
     }
     redo(current: Trip): Trip {
         const next = this.future.pop();
         if (!next) return current;
-        this.past.push(withoutRoute(current));
+        this.past.push(planOf(current));
         return next;
     }
 }

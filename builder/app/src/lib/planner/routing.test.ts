@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { calculateLine, profileId, RouteCache, selectRoute, movingSecondsAt, type EngineRoute } from './routing';
 import { ridingProfiles, presetName, type BikeType } from './riding-profiles';
 import { surfaceRuns, surfaceWindow } from './surface-data';
-import { initialTrip, cumulative, removeRoutePoint, setEndpoint, routingKey, routeCoordinates, type Coordinate, type Trip } from './editor';
+import { initialTrip, cumulative, planOf, removeRoutePoint, setEndpoint, routingKey, routeCoordinates, TripHistory, type Coordinate, type Trip } from './editor';
 
 const route: EngineRoute = {
     id: 'test-route', surfaces: ['Paved', 'Gravel'], pushing: [false, true], reason: 'primary', elapsed: [0, 3000, 4000], package: 'test', profile: 'touring', geometry: [[7.8, 48], [7.9, 48], [8, 48]], elevation: [200, null, 400],
@@ -78,6 +78,23 @@ describe('routing integration', () => {
         cache.add(selectRoute(moved, route, [route]));
         expect(cache.attach(touring).routing).toBeUndefined();
         expect(cache.attach(gravel).routing?.key).toBe(routingKey(gravel));
+    });
+    it('keeps a picked corridor with its plan and the primary route in the cache', () => {
+        const plan = trip();
+        const corridor: EngineRoute = { ...route, id: 'corridor', reason: 'corridor', geometry: [[7.8, 48], [7.9, 48.05], [8, 48]] };
+        const primary = selectRoute(plan, route, [route, corridor]);
+        const picked = { ...plan, routing: selectRoute(plan, corridor, [route, corridor]) };
+        const cache = new RouteCache(1);
+        cache.add(primary);
+        const history = new TripHistory();
+        const shown = cache.attach(history.commit({ ...plan, routing: primary }, picked));
+        expect(shown.routing?.choiceId).toBe('corridor');
+        expect(planOf(shown)).toBe(picked);
+        const undone = cache.attach(history.undo(shown));
+        expect(undone.routing).toBe(primary);
+        cache.add(selectRoute({ ...plan, bike: 'gravel' }, route, [route]));
+        expect(cache.attach(history.redo(undone)).routing?.choiceId).toBe('corridor');
+        expect(planOf({ ...picked, points: picked.points.map(p => p.id === 'shape' ? { ...p, coordinate: [7.95, 48] as Coordinate } : p) }).routing).toBeUndefined();
     });
     it('makes visit reversals explicit and accounts for manual joins', async () => {
         const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [{ ...route, legs: Array.from({ length: 4 }, (_, i) => ({ from_index: 0, to_index: Math.min(i, 2), totals: route.totals })) }] }) });
