@@ -168,6 +168,8 @@ def verify_services(active, document, origin):
         if response.headers.get("Access-Control-Allow-Origin") != "*": raise ValueError("Tile CORS is absent")
         tilejson = json.load(response)
         if tilejson["maxzoom"] != 14: raise ValueError("Basemap is incomplete")
+    with sources.open_url(active["places"]) as response:
+        if not json.load(response).get("tiles"): raise ValueError("Rider places are absent")
     probe = document["probe"]
     import math
     z = 12

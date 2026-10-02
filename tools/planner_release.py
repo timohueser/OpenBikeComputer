@@ -94,7 +94,7 @@ def endpoints(identity, document, public, tiles, api):
     service = f"{api}/planner-api/releases/{identity}"
     return {"id": identity, "manifest": prefix + "/release.json", "region": document["region"],
             "device_catalog": assets + "/device/catalog.json", "routing": service + "/routing",
-            "search": service + "/search", "basemap": tile_prefix + "/basemap.json",
+            "search": service + "/search", "basemap": tile_prefix + "/basemap.json", "places": tile_prefix + "/places.json",
             "attribution": document["attribution"],
             "terrain": tile_prefix + "/terrain/{z}/{x}/{y}.webp",
             "glyphs": assets + "/maps/assets/fonts/{fontstack}/{range}.pbf",
@@ -151,7 +151,8 @@ def publish(args):
 
 
 def vite_environment(active):
-    values = {"VITE_PLANNER_TILEJSON_URL": active["basemap"], "VITE_PLANNER_DEM_URL": active["terrain"],
+    values = {"VITE_PLANNER_TILEJSON_URL": active["basemap"], "VITE_PLANNER_PLACES_URL": active["places"],
+              "VITE_PLANNER_DEM_URL": active["terrain"],
               "VITE_PLANNER_ROUTING_URL": active["routing"], "VITE_PLANNER_SEARCH_URL": active["search"],
               "VITE_PLANNER_GLYPHS_URL": active["glyphs"], "VITE_PLANNER_SPRITES_URL": active["sprites"],
               "VITE_PLANNER_MAP_BOUNDS": ",".join(map(str, active["bounds"])),

@@ -41,6 +41,30 @@ export function corridorTiles(coordinates: Coordinate[], bufferKm: number, zoom:
     return [...keys];
 }
 
+/**
+ * A test for points within `km` of the route line. Each piece of the route has a bounding box, so a point
+ * skips far pieces at once. A flat projection around the point is exact enough at this scale.
+ */
+export function nearRoute(coordinates: Coordinate[], km: number): (point: Coordinate) => boolean {
+    const pieces: { line: Coordinate[]; box: number[] }[] = [];
+    for (let i = 0; i < coordinates.length; i += 64) {
+        const line = coordinates.slice(Math.max(0, i - 1), i + 64);
+        const lons = line.map(c => c[0]), lats = line.map(c => c[1]);
+        pieces.push({ line, box: [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)] });
+    }
+    return ([lon, lat]) => {
+        const kx = 111.32 * Math.cos(lat * Math.PI / 180), ky = 110.574;
+        const dLon = km / kx, dLat = km / ky;
+        return pieces.some(({ line, box }) => box[0] - dLon <= lon && lon <= box[2] + dLon && box[1] - dLat <= lat && lat <= box[3] + dLat
+            && line.some((b, i) => {
+                const a = line[Math.max(0, i - 1)];
+                const ax = (a[0] - lon) * kx, ay = (a[1] - lat) * ky, dx = (b[0] - a[0]) * kx, dy = (b[1] - a[1]) * ky;
+                const t = Math.max(0, Math.min(1, -(ax * dx + ay * dy) / (dx * dx + dy * dy || 1)));
+                return (ax + t * dx) ** 2 + (ay + t * dy) ** 2 <= km * km;
+            }));
+    };
+}
+
 type TileSource = { maxZoom: number; getZxy: (z: number, x: number, y: number) => Promise<{ data: ArrayBuffer } | undefined> };
 let source: Promise<TileSource> | undefined;
 async function tileSource(url: string): Promise<TileSource> {
@@ -60,34 +84,18 @@ async function tileSource(url: string): Promise<TileSource> {
     } };
 }
 const tiles = new Map<string, Promise<Place[]>>();
-// Hundreds of parallel range requests fail in the browser, so tiles load a few at a time.
-const parallel = 8;
-let active = 0;
-const waiting: (() => void)[] = [];
 
-async function queued<T>(task: () => Promise<T>): Promise<T> {
-    if (active >= parallel) await new Promise<void>(resolve => waiting.push(resolve));
-    active++;
-    try {
-        return await task();
-    } finally {
-        active--;
-        waiting.shift()?.();
-    }
-}
-
-/** Rider places in the archive's most detailed tiles around the route. Each tile loads once per session. */
+/** Rider places within `bufferKm` of the route, from the archive's most detailed tiles. Each tile loads once per session. */
 export async function corridorPlaces(url: string, coordinates: Coordinate[], bufferKm = 5): Promise<Place[]> {
     source ??= tileSource(url).catch(error => { source = undefined; throw error; });
     const archive = await source;
-    const { maxZoom } = archive;
-    const loaded = await Promise.all(corridorTiles(coordinates, bufferKm, maxZoom).map(key => {
-        // A dropped range request is retried once; a tile that still fails loads again on the next call.
-        const load = () => loadTile(archive, key);
-        if (!tiles.has(key)) tiles.set(key, queued(() => load().catch(load)).catch(error => { tiles.delete(key); throw error; }));
+    const loaded = await Promise.all(corridorTiles(coordinates, bufferKm, archive.maxZoom).map(key => {
+        // A tile that fails loads again on the next call.
+        if (!tiles.has(key)) tiles.set(key, loadTile(archive, key).catch(error => { tiles.delete(key); throw error; }));
         return tiles.get(key)!;
     }));
-    return [...new Map(loaded.flat().map(place => [place.id, place])).values()];
+    const near = nearRoute(coordinates, bufferKm);
+    return [...new Map(loaded.flat().map(place => [place.id, place])).values()].filter(place => near(place.coordinate));
 }
 
 async function loadTile(source: TileSource, key: string): Promise<Place[]> {

@@ -132,6 +132,7 @@ release. Use them for a hosted build with the configured API origin.
 | --- | --- |
 | `VITE_PLANNER_TILEJSON_URL` | Hosted basemap TileJSON |
 | `VITE_PLANNER_PMTILES_URL` | Local basemap archive, when TileJSON is absent |
+| `VITE_PLANNER_PLACES_URL` | Rider places TileJSON or PMTiles archive |
 | `VITE_PLANNER_ROUTING_URL` | Routing API prefix |
 | `VITE_PLANNER_SEARCH_URL` | Search API prefix |
 | `VITE_PLANNER_SEARCH_REGIONS` | Comma-separated region IDs |
@@ -142,8 +143,8 @@ release. Use them for a hosted build with the configured API origin.
 | `VITE_PLANNER_MAP_BOUNDS` | `west,south,east,north` |
 
 Basemap zooms are 0–14. Terrain zooms are 0–12, with neighbouring tiles for
-contours. The browser creates contours from terrain tiles. Highlighted rider
-places read detailed basemap tiles along the route.
+contours. The browser creates contours from terrain tiles. Highlighted places
+read the zoom 11 places archive.
 
 Extract a smaller map archive with bounds inside its source coverage:
 

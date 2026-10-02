@@ -45,7 +45,7 @@ def public_metadata(document):
         return {}
     result = {"public/grid.json": encoded({"format": 2, "map_zoom": document["grid"]["map_zoom"]})}
     for name, item in document["files"].items():
-        if name.startswith(("maps/tiles/", "maps/assets/")) or name in {"maps/basemap.json", "maps/terrain.json", "device/catalog.json"}:
+        if name.startswith(("maps/tiles/", "maps/assets/")) or name in {"maps/basemap.json", "maps/places.json", "maps/terrain.json", "device/catalog.json"}:
             result["public/" + name + ".json"] = encoded({**item["transport"], "decoded_bytes": item["bytes"]})
     return result
 

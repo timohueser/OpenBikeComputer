@@ -10,14 +10,17 @@ const directories = new ResolvedValueCache(25, undefined, decompress);
 const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
   'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' };
 
+// Each archive's deepest zoom and tile format.
+const archives = { basemap: [14, 'mvt'], places: [11, 'mvt'], terrain: [12, 'webp'] };
+
 export function tileRoute(path) {
-  const match = /^\/releases\/([a-f0-9]{64})\/(basemap|terrain)(?:\.json|\/(0|[1-9]\d*)\/(0|[1-9]\d*)\/(0|[1-9]\d*)\.(mvt|webp))$/.exec(path);
+  const match = /^\/releases\/([a-f0-9]{64})\/(basemap|places|terrain)(?:\.json|\/(0|[1-9]\d*)\/(0|[1-9]\d*)\/(0|[1-9]\d*)\.(mvt|webp))$/.exec(path);
   if (!match) return null;
   const [, release, name, z, x, y, ext] = match;
-  if (z !== undefined && (Number(z) > (name === 'basemap' ? 14 : 12)
-    || Number(x) >= 2 ** Number(z) || Number(y) >= 2 ** Number(z)
-    || ext !== (name === 'basemap' ? 'mvt' : 'webp'))) return null;
-  return { release, name, tile: z === undefined ? null : [Number(z), Number(x), Number(y)] };
+  const [maxZoom, format] = archives[name];
+  if (z !== undefined && (Number(z) > maxZoom
+    || Number(x) >= 2 ** Number(z) || Number(y) >= 2 ** Number(z) || ext !== format)) return null;
+  return { release, name, format, tile: z === undefined ? null : [Number(z), Number(x), Number(y)] };
 }
 
 class R2Source {
@@ -61,22 +64,26 @@ export default {
           const pointer = await objectPointer(env.BUCKET, prefix, `maps/${route.name}.json`);
           if (pointer.decoded_bytes > 1024 * 1024) throw new Error('TileJSON exceeds metadata limit');
           data = await (await publicFile(env.BUCKET, prefix, `maps/${route.name}.json`, 'application/json', headers)).json();
-          data.tiles = [`${base}/{z}/{x}/{y}.${route.name === 'basemap' ? 'mvt' : 'webp'}`];
+          data.tiles = [`${base}/{z}/{x}/{y}.${route.format}`];
         } else {
           let path = `${prefix}/maps/${route.name}.pmtiles`;
           if (grid) {
-            const pointer = await objectPointer(env.BUCKET, prefix, packName(route.name, route.tile, grid.map_zoom));
-            if (pointer.encoding !== 'identity') throw new Error('PMTiles must support byte ranges');
-            path = pointer.path;
+            // A grid has packs only where an archive has tiles, so a tile without a pack is absent.
+            const pointer = await objectPointer(env.BUCKET, prefix, packName(route.name, route.tile, grid.map_zoom))
+              .catch(error => { if (error instanceof MissingArchive) return null; throw error; });
+            if (pointer && pointer.encoding !== 'identity') throw new Error('PMTiles must support byte ranges');
+            path = pointer?.path;
           }
-          const archive = new PMTiles(new R2Source(env.BUCKET, path), directories, decompress);
-          const header = await archive.getHeader();
-          if (header.tileType !== (route.name === 'basemap' ? TileType.Mvt : TileType.Webp)) throw new Error('Invalid archive type');
-          data = route.tile ? await archive.getZxy(...route.tile) : await archive.getTileJson(base);
+          if (path) {
+            const archive = new PMTiles(new R2Source(env.BUCKET, path), directories, decompress);
+            const header = await archive.getHeader();
+            if (header.tileType !== (route.format === 'mvt' ? TileType.Mvt : TileType.Webp)) throw new Error('Invalid archive type');
+            data = route.tile ? await archive.getZxy(...route.tile) : await archive.getTileJson(base);
+          }
         }
         response = new Response(route.tile ? data?.data : JSON.stringify(data), {
           status: route.tile && !data ? 204 : 200,
-          headers: { ...headers, 'Content-Type': route.tile ? (route.name === 'basemap' ? 'application/x-protobuf' : 'image/webp') : 'application/json' },
+          headers: { ...headers, 'Content-Type': route.tile ? (route.format === 'mvt' ? 'application/x-protobuf' : 'image/webp') : 'application/json' },
         });
       }
       if (response.status === 200) ctx.waitUntil(caches.default.put(cacheKey, response.clone()));
