@@ -13,8 +13,10 @@ from . import planner_cutout, planner_offline, planner_runtime, planner_maps
 
 ZOOM = 9
 MAP_ZOOM = 11
-# The basemap fields that the planner style draws as text with `lang: "en"`.
-LABEL_KEYS = {"name", "name:en", "pgf:name", "name2", "pgf:name2", "name3", "pgf:name3",
+# A copy of the basemap text fields: protomaps `layers(..., {lang: "en"})` and `planner-poi-icons`
+# in `map-style.ts`. A style, `lang` or protomaps change must update it. `planner-network-labels`
+# draws the overlay `ref` that `glyph_ranges` reads.
+LABEL_KEYS ={"name", "name:en", "pgf:name", "name2", "pgf:name2", "name3", "pgf:name3",
               "ref", "ref:en", "shield_text", "addr_housenumber"}
 
 
@@ -131,7 +133,7 @@ def label_texts(tile):
 
 
 def glyph_ranges(source):
-    """Return the 256-codepoint ranges of the basemap labels and route network references."""
+    """Return the indices (code point // 256) of the glyph ranges that labels and route references use."""
     from pmtiles.reader import MmapSource, all_tiles
     texts = set()
     with (source / "maps/basemap.pmtiles").open("rb") as file:
@@ -140,7 +142,10 @@ def glyph_ranges(source):
     with closing(sqlite3.connect(f"{(source / 'routing/overlays.sqlite').resolve().as_uri()}?mode=ro", uri=True)) as db:
         texts.update(ref for (ref,) in db.execute("SELECT json_extract(properties, '$.ref') FROM attributes "
                                                   "UNION SELECT json_extract(properties, '$.ref') FROM routes") if ref)
-    return {ord(character) >> 8 for text in texts for character in text}
+    # MapLibre requests the glyphs of the drawn text: the style upper-cases some labels, and Arabic
+    # letters become presentation forms U+FB50-U+FEFF.
+    ranges = {ord(character) >> 8 for text in texts for character in text + text.upper()}
+    return ranges | ({251, 252, 253, 254} if ranges & {6, 7, 8} else set())
 
 
 def offline_fonts(source, release, work):

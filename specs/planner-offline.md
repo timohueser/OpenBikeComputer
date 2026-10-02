@@ -57,8 +57,9 @@ This layout does not provide eviction or combine separately prepared regions.
 
 The pack and install commands return JSON. `transfer_bytes` includes both
 manifests and each distinct transport object. `installed_bytes` counts the logical
-release files and release manifest. `unique_installed_bytes` deduplicates equal
-runtime files by their decoded hashes.
+release files and release manifest, so it counts a shared font file once for
+each range path. `unique_installed_bytes` deduplicates equal runtime files by
+their decoded hashes.
 
 An install also reports bytes received in this run as `downloaded_bytes`, and
 file bytes already retained as `retained_before_bytes`. `stored_bytes` counts
@@ -95,7 +96,9 @@ All range paths of one font stack share `offline/fonts/STACK.pbf`. This file
 joins the stack's range files in range order. It keeps only the ranges that
 contain a character of a basemap label field or a route network reference in
 the release. The label fields are `name`, `name:en`, `name2`, `name3`, their
-`pgf:` forms, `ref`, `ref:en`, `shield_text`, and `addr_housenumber`. MapLibre
+`pgf:` forms, `ref`, `ref:en`, `shield_text`, and `addr_housenumber`. The
+ranges also cover the upper-case form of each text. Text with a character from
+U+0600 to U+08FF adds the Arabic presentation forms, U+FB00 to U+FEFF. MapLibre
 reads only the glyphs of the requested range from the file. A missing range
 file stops the labels of each tile that requests it.
 
