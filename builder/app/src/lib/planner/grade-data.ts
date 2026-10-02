@@ -1,5 +1,5 @@
 /** Display grades use a 100 m window within each continuous stretch of known terrain. */
-export function profileGrades(samples: { progress: number; height: number | null }[], totalKm: number): (number | null)[] {
+export function profileGrades(samples: readonly { progress: number; height: number | null }[], totalKm: number): (number | null)[] {
     const grades = Array<number | null>(Math.max(0, samples.length - 1)).fill(null);
     if (totalKm <= 0) return grades;
     const distance = samples.map(sample => sample.progress * totalKm * 1000);
