@@ -1,4 +1,5 @@
 mod access;
+mod answer;
 pub mod native;
 mod native_overlays;
 use axum::{
@@ -19,7 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::Semaphore;
-use tower_http::compression::CompressionLayer;
+use tower_http::{compression::CompressionLayer, CompressionLevel};
 
 mod overlay_source;
 mod overlays;
@@ -75,7 +76,8 @@ pub fn app(directory: &Path, workers: usize) -> Result<axum::Router, Error> {
         .route("/v1/route", post(route))
         .route("/v1/overlays", get(map_overlays))
         .layer(DefaultBodyLimit::max(64 * 1024))
-        .layer(CompressionLayer::new())
+        // At brotli's default quality 4, a route answer is larger than with gzip. Quality 6 costs about as much as gzip 6.
+        .layer(CompressionLayer::new().quality(CompressionLevel::Precise(6)))
         .with_state(state))
 }
 
@@ -147,7 +149,7 @@ async fn route(State(workers): State<Arc<Workers>>, request: Result<Json<Request
     })
     .await;
     match result {
-        Ok(Ok(route)) => Json(route).into_response(),
+        Ok(Ok(response)) => Json(answer::answer(&response)).into_response(),
         Ok(Err(error)) => failure(error),
         Err(_) => failure(Error::Limit),
     }

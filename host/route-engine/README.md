@@ -51,9 +51,10 @@ The snap radius is 250 m. The first attempt retains up to eight roads within
 3 m of the nearest distance. If they cannot connect, one retry widens the band
 to 50 m and 16 candidates. This retry minimizes total snap distance first,
 then route cost. Points already within 3 m of a road keep the narrow band.
-The response reports recovery and truncation. Both attempts share the query
-budgets. A shape point keeps its direction between legs. Only an explicit
-`turnarounds` entry permits reversal there. Prepared access and turn rules apply.
+The route answer reports truncation; it does not report the retry. Both
+attempts share the query budgets. A shape point keeps its direction between
+legs. Only an explicit `turnarounds` entry permits reversal there. Prepared
+access and turn rules apply.
 
 Alternatives use prepared goals and bounded corridor probes. They must pass a
 base-cost cap and a material benefit or separation test. Discovery is not

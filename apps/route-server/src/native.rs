@@ -119,7 +119,7 @@ pub unsafe extern "C" fn planner_router_request(
         let started = Instant::now();
         let cancelled = || started.elapsed() > Duration::from_secs(15);
         let response = router.routes(&request, &Control { cancelled: &cancelled, ..Control::default() })?;
-        serde_json::to_vec(&response).map_err(|error| Error::InvalidData(error.to_string()))
+        serde_json::to_vec(&crate::answer::answer(&response)).map_err(|error| Error::InvalidData(error.to_string()))
     };
     match catch_unwind(AssertUnwindSafe(run)).unwrap_or(Err(Error::Limit)) {
         Ok(bytes) => {

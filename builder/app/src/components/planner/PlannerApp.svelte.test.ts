@@ -229,10 +229,10 @@ describe('planner app transitions', () => {
     it('keeps a picked corridor, without its alternatives, through undo, redo, a saved version and a reload', async () => {
         const engine = (id: string, reason: string, geometry: Coordinate[]): EngineRoute => {
             const km = cumulative(geometry).at(-1)!;
-            const totals = { distance_m: km * 1000, ascent_m: 0, descent_m: 0, seconds: km * 240, surface_m: [0, km * 1000, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 };
+            const totals = { distance_m: km * 1000, ascent_m: 0, seconds: km * 240, surface_m: [0, km * 1000, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 };
             return { id, reason, package: 'test', profile: 'touring', geometry, elevation: geometry.map(() => 200), elapsed: cumulative(geometry).map(d => d * 240),
                 surfaces: geometry.slice(1).map(() => 'Paved'), pushing: geometry.slice(1).map(() => false), totals,
-                legs: [{ from_index: 0, to_index: geometry.length - 1, totals }], snap_truncated: false };
+                legs: [{ from_index: 0, to_index: geometry.length - 1 }], snap_truncated: false };
         };
         const coordinates = routeCoordinates(initialTrip());
         const primary = engine('primary', 'primary', coordinates);

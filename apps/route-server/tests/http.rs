@@ -251,9 +251,21 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         } else {
             assert_eq!(value["routes"][0]["package"].as_str().unwrap().len(), 64);
             assert!(value["routes"][0]["totals"]["distance_m"].as_u64().unwrap() > 600);
-            assert_eq!(value["routes"][0]["pushing"], serde_json::json!([false]));
+            assert_eq!(value["routes"][0]["pushing"], serde_json::json!([[false, 1]]));
         }
     }
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/v1/route")
+                .header("content-type", "application/json")
+                .header("accept-encoding", "gzip, br")
+                .body(Body::from(serde_json::to_string(&request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.headers()["content-encoding"], "br");
     // SAFETY: All native calls have completed; the handles are closed once.
     unsafe {
         native::planner_overlays_close(native_overlays);

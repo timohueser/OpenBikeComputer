@@ -37,7 +37,7 @@ export function classify(url) {
 const metres = ([lon1, lat1], [lon2, lat2]) =>
   Math.hypot((lon2 - lon1) * 111_320 * Math.cos((lat1 * Math.PI) / 180), (lat2 - lat1) * 110_574);
 
-/** A straight-line route through the points, in the engine's response shape. */
+/** A straight-line route through the points, in the answer format of `specs/route-api.md`. */
 function route(points, profile, id) {
   const steps = 8;
   const geometry = [points[0]];
@@ -50,18 +50,21 @@ function route(points, profile, id) {
   }
   const distance = [0];
   for (let i = 1; i < geometry.length; i++) distance.push(distance[i - 1] + metres(geometry[i - 1], geometry[i]));
-  const totals = (from, to) => ({
-    distance_m: distance[to] - distance[from], ascent_m: 0, descent_m: 0, seconds: (distance[to] - distance[from]) / 5,
-    surface_m: [0, distance[to] - distance[from], 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0,
-  });
+  const deltas = values => values.map((value, i) => value - (i ? values[i - 1] : 0));
+  const [lon, lat] = [0, 1].map(axis => deltas(geometry.map(p => Math.round(p[axis] * 1e6))));
+  const edges = geometry.length - 1;
   return {
-    id, reason: id === 'primary' ? 'primary' : 'alternative', package: 'budget-test', profile, geometry,
-    elevation: geometry.map((_, i) => 300 + 40 * Math.sin(i / 3)),
-    elapsed: distance.map(d => d / 5),
-    surfaces: geometry.slice(1).map(() => 'Paved'),
-    pushing: geometry.slice(1).map(() => false),
-    totals: totals(0, geometry.length - 1),
-    legs: legs.map(leg => ({ ...leg, totals: totals(leg.from_index, leg.to_index) })),
+    id, reason: id === 'primary' ? 'primary' : 'alternative', package: 'budget-test', profile,
+    coordinates_udeg: lon.flatMap((x, i) => [x, lat[i]]),
+    elevation_dm: deltas(geometry.map((_, i) => Math.round(3000 + 400 * Math.sin(i / 3)))),
+    elapsed_s: deltas(distance.map(d => Math.round(d / 5))),
+    surfaces: [['Paved', edges]],
+    pushing: [[false, edges]],
+    totals: {
+      distance_m: distance[edges], ascent_m: 0, seconds: distance[edges] / 5,
+      surface_m: [0, distance[edges], 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0,
+    },
+    legs,
     snap_truncated: false,
   };
 }
