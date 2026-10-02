@@ -2,11 +2,11 @@
 
 import argparse
 import gzip
+import json
 import math
 from pathlib import Path
-import re
 
-KINDS = Path(__file__).resolve().parents[1] / "builder/app/src/lib/planner/poi-kinds.ts"
+KINDS = Path(__file__).resolve().parents[1] / "builder/app/src/lib/planner/poi-kinds.json"
 # The only zoom: a route corridor reads few tiles, and rider places keep each tile small.
 ZOOM = 11
 EXTENT = 4096
@@ -14,14 +14,7 @@ EXTENT = 4096
 
 def rider_kinds():
     """The `pois` kinds the planner shows: the keys of every category's `kinds` in the web planner."""
-    text = KINDS.read_text()
-    blocks = re.findall(r"\bkinds\s*:\s*\{([^{}]*)\}", text)
-    entry = re.compile(r"""(?:(\w+)|'(\w+)'|"(\w+)")\s*:\s*(?:'[^'\\]*'|"[^"\\]*")""")
-    # Every `kinds` object must parse completely, or the archive would silently miss places.
-    if not blocks or len(blocks) != len(re.findall(r"\bkinds\s*:", text)) or any(
-            re.sub(r"[\s,]", "", entry.sub("", block)) for block in blocks):
-        raise ValueError(f"Cannot read every rider place kind from {KINDS.name}")
-    return {"".join(match) for block in blocks for match in entry.findall(block)}
+    return {kind for category in json.loads(KINDS.read_text()).values() for kind in category["kinds"]}
 
 
 def read_varint(data, i):

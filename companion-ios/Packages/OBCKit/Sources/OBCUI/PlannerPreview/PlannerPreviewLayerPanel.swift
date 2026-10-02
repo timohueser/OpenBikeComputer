@@ -9,7 +9,7 @@ enum PlannerPreviewNetwork: String, CaseIterable {
     }
 }
 
-// The groups and names match builder/app/src/lib/planner/poi-kinds.ts.
+// The groups and names match builder/app/src/lib/planner/poi-kinds.json.
 enum PlannerPreviewPlaceCategory: String, CaseIterable, Identifiable {
     case hotel, camp, shelter, shop, food, water, toilets, bike, pharmacy, station, viewpoint, peak
 

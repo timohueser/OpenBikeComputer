@@ -4,29 +4,11 @@ import gzip
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
 
 from tools import planner_places as places
 
 
 class PlacesArchive(unittest.TestCase):
-    def test_reads_every_rider_kind_or_refuses(self):
-        self.assertEqual(len(places.rider_kinds()), 34)
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "poi-kinds.ts"
-            with patch.object(places, "KINDS", source):
-                source.write_text("""camp: { kinds: { camp_site: 'Campsite' } },
-                    bike: { kinds: {
-                        'bicycle_parking': "Bike parking",
-                        bicycle: 'Bike shop',
-                    } },""")
-                self.assertEqual(places.rider_kinds(), {"camp_site", "bicycle_parking", "bicycle"})
-                for broken in ["kinds: { camp_site: 'Campsite', shop: kinds.shop }", "kinds: { camp_site: 'Camp\\'s' }",
-                               "kinds: { camp_site: 'Campsite' }, kinds: other"]:
-                    source.write_text(broken)
-                    with self.assertRaisesRegex(ValueError, "rider place kind"):
-                        places.rider_kinds()
-
     def test_keeps_one_copy_of_each_rider_place_in_its_coarse_tile(self):
         from pmtiles.reader import MmapSource, all_tiles
         from pmtiles.tile import Compression, TileType, zxy_to_tileid
