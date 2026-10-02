@@ -404,7 +404,8 @@
                 errorDetail = event.error.message;
                 console.error("Planner map:", event.error);
                 // MapLibre does not repaint after a failed request, so the first load would wait for a camera move.
-                if (!basemapComplete) map!.triggerRepaint();
+                // A failed tile also marks its source loaded, so an earlier repaint would fire load too soon.
+                if (!basemapComplete && map!.areTilesLoaded()) map!.triggerRepaint();
             });
             map.on("click", (event) => {
                 const target = event.originalEvent.target;
