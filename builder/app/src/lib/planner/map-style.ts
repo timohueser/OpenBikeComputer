@@ -88,6 +88,13 @@ function baseLayers(dark: boolean): LayerSpecification[] {
     base.splice(base.findIndex((layer) => layer.id === "water") + 1, 0, structure, outline);
     const river = base.find((layer) => layer.id === "water_river");
     if (river?.type === "line") river.filter = ["in", ["get", "kind"], ["literal", ["river", "canal"]]];
+    // A region view loads one glyph stack: below zoom 10 the Medium and Italic labels draw in Regular.
+    for (const layer of base) {
+        if (layer.type !== "symbol" || !layer.layout?.["text-font"]) continue;
+        const font = layer.layout["text-font"];
+        const stack = Array.isArray(font) && font.every((name) => typeof name === "string") ? ["literal", font] : font;
+        layer.layout["text-font"] = ["step", ["zoom"], ["literal", ["Noto Sans Regular"]], 10, stack] as unknown as ExpressionSpecification;
+    }
     return base;
 }
 

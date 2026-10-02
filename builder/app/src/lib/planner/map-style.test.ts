@@ -78,3 +78,20 @@ describe('planner land use style', () => {
         expect(evaluate(ground, 'fill-opacity', 12, 'farmland')).toBe(1);
     });
 });
+
+describe('planner label fonts', () => {
+    it('draws a region view with one font stack, and the label weights from zoom 10', async () => {
+        const { layers } = await landLayers('light');
+        const fonts = (zoom: number) => new Set(layers.flatMap((layer) => {
+            const font = layer.type === 'symbol' ? layer.layout?.['text-font'] : undefined;
+            if (!font) return [];
+            if (Array.isArray(font) && font.every((name) => typeof name === 'string')) return font as string[];
+            const parsed = createPropertyExpression(font, 'layout_symbol', latest.layout_symbol['text-font'] as unknown as StylePropertySpecification);
+            expect(parsed.result, layer.id).toBe('success');
+            // `min_zoom` 3 makes a large town, which the theme labels in Medium.
+            return (parsed as { value: { evaluate: (globals: object, feature: object) => string[] } }).value.evaluate({ zoom }, { type: 'Point', properties: { min_zoom: 3 } });
+        }));
+        expect([...fonts(9.9)]).toEqual(['Noto Sans Regular']);
+        expect([...fonts(10)].sort()).toEqual(['Noto Sans Italic', 'Noto Sans Medium', 'Noto Sans Regular']);
+    });
+});
