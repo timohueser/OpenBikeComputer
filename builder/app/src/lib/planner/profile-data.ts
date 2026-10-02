@@ -1,7 +1,9 @@
 import type { RoutingLine } from './routing';
-import { cumulative } from './editor';
+import { cumulative, firstIndex } from './editor';
 
-export function profileSamples(line?: RoutingLine): { progress: number; height: number | null }[] {
+export type ProfileSample = { progress: number; height: number | null };
+
+export function profileSamples(line?: RoutingLine): ProfileSample[] {
     if (!line) return [];
     const distance = cumulative(line.coordinates);
     const total = distance.at(-1) || 1;
@@ -20,10 +22,14 @@ export function profileAscent(from = 0, to = 1, line?: RoutingLine): number {
     return Math.round(ascent);
 }
 
-export function profileHeightAt(progress: number, line?: RoutingLine): number | null {
-    const samples = profileSamples(line);
-    const i = samples.findIndex(p => p.progress >= progress);
-    if (i < 0) return samples.at(-1)?.height ?? null;
+/** The index of the first sample at or past `progress`, or the sample count. */
+export function sampleIndex(samples: ProfileSample[], progress: number): number {
+    return firstIndex(samples.length, i => samples[i].progress >= progress);
+}
+
+export function profileHeightAt(progress: number, samples: ProfileSample[]): number | null {
+    const i = sampleIndex(samples, progress);
+    if (i === samples.length) return samples.at(-1)?.height ?? null;
     if (i === 0) return samples[0].height;
     const a = samples[i - 1], b = samples[i];
     if (a.height === null || b.height === null) return null;

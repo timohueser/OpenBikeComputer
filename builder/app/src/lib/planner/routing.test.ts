@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calculateLine, profileId, selectRoute, movingSecondsAt, type EngineRoute } from './routing';
+import { calculateLine, profileId, RouteCache, selectRoute, movingSecondsAt, type EngineRoute } from './routing';
 import { ridingProfiles, presetName, type BikeType } from './riding-profiles';
 import { surfaceRuns, surfaceWindow } from './surface-data';
-import { initialTrip, cumulative, removeRoutePoint, setEndpoint, routingKey, routeCoordinates, type Trip } from './editor';
+import { initialTrip, cumulative, removeRoutePoint, setEndpoint, routingKey, routeCoordinates, type Coordinate, type Trip } from './editor';
 
 const route: EngineRoute = {
     id: 'test-route', surfaces: ['Paved', 'Gravel'], pushing: [false, true], reason: 'primary', elapsed: [0, 3000, 4000], package: 'test', profile: 'touring', geometry: [[7.8, 48], [7.9, 48], [8, 48]], elevation: [200, null, 400],
@@ -63,6 +63,21 @@ describe('routing integration', () => {
         const moved = { ...edited, points: edited.points.map(p => p.id === 'shape' ? { ...p, coordinate: [8.1, 48] as [number, number] } : p) };
         expect(routingKey(moved)).not.toBe(routingKey(plan));
         expect(routeCoordinates(moved)).toEqual([plan.points[0].coordinate]);
+    });
+    it('returns the cached route of a plan seen before, by its routing key', () => {
+        const touring = trip();
+        const gravel: Trip = { ...touring, bike: 'gravel' };
+        const moved = { ...touring, points: touring.points.map(p => p.id === 'shape' ? { ...p, coordinate: [7.95, 48] as Coordinate } : p) };
+        const cache = new RouteCache(2);
+        const line = selectRoute(touring, route, [route]);
+        cache.attach({ ...touring, routing: line });
+        expect(cache.attach(gravel).routing).toBeUndefined();
+        expect(cache.attach({ ...touring, days: 5, points: touring.points.map(p => ({ ...p, label: 'Renamed' })) }).routing).toBe(line);
+        expect(cache.attach(moved).routing).toBeUndefined();
+        cache.add(selectRoute(gravel, route, [route]));
+        cache.add(selectRoute(moved, route, [route]));
+        expect(cache.attach(touring).routing).toBeUndefined();
+        expect(cache.attach(gravel).routing?.key).toBe(routingKey(gravel));
     });
     it('makes visit reversals explicit and accounts for manual joins', async () => {
         const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [{ ...route, legs: Array.from({ length: 4 }, (_, i) => ({ from_index: 0, to_index: Math.min(i, 2), totals: route.totals })) }] }) });

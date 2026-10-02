@@ -238,10 +238,28 @@ export function anchorProgress(coordinate: Coordinate): number {
     return nearestProgress(valley, coordinate);
 }
 
-export function cumulative(coordinates: Coordinate[]): number[] {
+// Coordinate arrays are never changed after they are built, so each array's distances are computed once.
+const distances = new WeakMap<Coordinate[], readonly number[]>();
+
+/** Kilometres from the first coordinate to each coordinate. */
+export function cumulative(coordinates: Coordinate[]): readonly number[] {
+    const known = distances.get(coordinates);
+    if (known) return known;
     const result = [0];
-    coordinates.slice(1).forEach((p, i) => result.push(result[i] + kilometres(coordinates[i], p)));
+    for (let i = 1; i < coordinates.length; i++) result.push(result[i - 1] + kilometres(coordinates[i - 1], coordinates[i]));
+    distances.set(coordinates, result);
     return result;
+}
+
+/** The first index at which `reached` is true, or `length`; once true, `reached` must stay true. */
+export function firstIndex(length: number, reached: (index: number) => boolean): number {
+    let low = 0, high = length;
+    while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (reached(middle)) high = middle;
+        else low = middle + 1;
+    }
+    return low;
 }
 
 export function coordinateAt(coordinates: Coordinate[], progress: number): Coordinate {
@@ -249,7 +267,7 @@ export function coordinateAt(coordinates: Coordinate[], progress: number): Coord
     if (coordinates.length === 1) return [...coordinates[0]];
     const distances = cumulative(coordinates);
     const goal = distances.at(-1)! * Math.max(0, Math.min(1, progress));
-    const index = Math.max(1, distances.findIndex(d => d >= goal));
+    const index = Math.max(1, Math.min(distances.length - 1, firstIndex(distances.length, i => distances[i] >= goal)));
     const t = (goal - distances[index - 1]) / (distances[index] - distances[index - 1] || 1);
     return coordinates[index - 1].map((n, axis) => n + (coordinates[index][axis] - n) * t) as Coordinate;
 }
@@ -263,8 +281,11 @@ export function routeSlice(coordinates: Coordinate[], from: number, to: number):
     if (start === end || coordinates.length === 1) return [first];
     const distances = cumulative(coordinates);
     const total = distances.at(-1)!;
-    const inside = coordinates.filter((_, i) => distances[i] > start * total && distances[i] < end * total);
-    return [first, ...inside.map(p => [...p] as Coordinate), coordinateAt(coordinates, end)];
+    const inside = coordinates.slice(
+        firstIndex(distances.length, i => distances[i] > start * total),
+        firstIndex(distances.length, i => distances[i] >= end * total),
+    );
+    return [first, ...inside, coordinateAt(coordinates, end)];
 }
 
 function stopProgress(stops: Stop[], point: RoutePoint): number {
@@ -560,26 +581,33 @@ export function nightOrderConflicts(trip: Trip): [RoutePoint, RoutePoint][] {
     return nights.slice(1).flatMap((point, i) => stopProgress(stops, point) <= stopProgress(stops, nights[i]) ? [[nights[i], point] as [RoutePoint, RoutePoint]] : []);
 }
 
+/** The plan without its route. History, drafts and versions keep plans; the route cache keeps routes. */
+export function withoutRoute(trip: Trip): Trip {
+    const { routing: _, ...plan } = trip;
+    return plan;
+}
+
+/** Keeps plans, never routes. A trip is never changed in place, so the history shares its objects. */
 export class TripHistory {
     private past: Trip[] = [];
     private future: Trip[] = [];
     get canUndo() { return this.past.length > 0; }
     get canRedo() { return this.future.length > 0; }
     commit(before: Trip, after: Trip): Trip {
-        this.past = [...this.past.slice(-49), structuredClone(before)];
+        this.past = [...this.past.slice(-49), withoutRoute(before)];
         this.future = [];
         return after;
     }
     undo(current: Trip): Trip {
         const previous = this.past.pop();
         if (!previous) return current;
-        this.future.push(structuredClone(current));
+        this.future.push(withoutRoute(current));
         return previous;
     }
     redo(current: Trip): Trip {
         const next = this.future.pop();
         if (!next) return current;
-        this.past.push(structuredClone(current));
+        this.past.push(withoutRoute(current));
         return next;
     }
 }

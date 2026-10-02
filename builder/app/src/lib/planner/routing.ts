@@ -1,5 +1,5 @@
 import { presetSuffix } from './riding-profiles';
-import { cumulative, orderedRoutePoints, routingKey, type Coordinate, type Trip } from './editor';
+import { cumulative, firstIndex, orderedRoutePoints, routingKey, type Coordinate, type Trip } from './editor';
 
 export type Surface = 'Unknown' | 'Paved' | 'Compacted' | 'Gravel' | 'Dirt' | 'Rough';
 
@@ -153,9 +153,33 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, alternative
 export function movingSecondsAt(line: RoutingLine, progress: number): number {
     const lengths = cumulative(line.coordinates);
     const distance = progress * (lengths.at(-1) ?? 0);
-    const i = lengths.findIndex(d => d >= distance);
-    if (i < 0) return line.seconds;
+    const i = firstIndex(lengths.length, index => lengths[index] >= distance);
+    if (i === lengths.length) return line.seconds;
     if (i === 0) return 0;
     const share = (distance - lengths[i - 1]) / (lengths[i] - lengths[i - 1] || 1);
     return line.elapsed[i - 1] + share * (line.elapsed[i] - line.elapsed[i - 1]);
+}
+
+/** The latest routes by routing key, so undo, redo and a return to an earlier bike need no request. */
+export class RouteCache {
+    private lines = new Map<string, RoutingLine>();
+    constructor(private readonly size = 8) {}
+    /** Keeps a route. When the cache is full, the least recently used route goes. */
+    add(line: RoutingLine): void {
+        this.lines.delete(line.key);
+        this.lines.set(line.key, line);
+        if (this.lines.size > this.size) this.lines.delete(this.lines.keys().next().value!);
+    }
+    /** The plan with its route. A route that matches the plan goes into the cache; a plan without one takes the cached route. */
+    attach(plan: Trip): Trip {
+        const key = routingKey(plan);
+        if (plan.routing?.key === key) {
+            this.add(plan.routing);
+            return plan;
+        }
+        const line = this.lines.get(key);
+        if (!line) return plan;
+        this.add(line);
+        return { ...plan, routing: line };
+    }
 }

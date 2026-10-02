@@ -26,7 +26,8 @@ beforeEach(() => {
         stops: [{ id: 'start', distance: 0 }, { id: 'finish', distance: distance.at(-1)! }],
         alternatives: [], alternativesReady: true, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0,
     };
-    stored.set('obc-planner-routing-v2', JSON.stringify({ ...trip, routing: line }));
+    stored.set('obc-planner-routing-v2', JSON.stringify(trip));
+    vi.spyOn(routing, 'calculateLine').mockImplementation(async plan => ({ ...line, key: routingKey(plan) }));
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
         if (!_url.includes('planner-search')) throw new Error('Routing service offline');
         const input = JSON.parse(String(init.body));
@@ -200,8 +201,6 @@ describe('planner app transitions', () => {
 
     it('ignores an in-flight route after an endpoint is removed', async () => {
         const saved = JSON.parse(stored.get('obc-planner-routing-v2')!);
-        delete saved.routing;
-        stored.set('obc-planner-routing-v2', JSON.stringify(saved));
         let finish!: (line: RoutingLine) => void;
         const calculate = vi.spyOn(routing, 'calculateLine').mockImplementation(() => new Promise(resolve => finish = resolve));
         app = mount(PlannerApp, { target: document.body }); await tick();
@@ -210,7 +209,21 @@ describe('planner app transitions', () => {
         expect(calculate.mock.calls[0][1].aborted).toBe(true);
         finish({ key: routingKey(saved) } as RoutingLine); await tick();
         expect(document.body.textContent).toContain('Choose your start');
-        expect(JSON.parse(stored.get('obc-planner-routing-v2')!).routing).toBeUndefined();
+    });
+
+    it('returns to an earlier bike and undoes without a route request', async () => {
+        app = mount(PlannerApp, { target: document.body });
+        for (const [bike, requests] of [['Gravel bike', 1], ['Touring bike', 2]] as const) {
+            await vi.waitFor(() => expect(document.querySelector('section.elevation')).not.toBeNull());
+            expect(routing.calculateLine).toHaveBeenCalledTimes(requests);
+            button('Bike').click(); await tick();
+            button(bike).click(); await tick();
+        }
+        for (const action of ['Undo', 'Undo', 'Redo']) {
+            button(action).click(); await tick();
+            expect(document.querySelector('section.elevation')).not.toBeNull();
+        }
+        expect(routing.calculateLine).toHaveBeenCalledTimes(2);
     });
 
     it('opens a tile place from both a search row and its map pin, then adds a visit', async () => {

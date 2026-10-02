@@ -489,8 +489,10 @@
     });
     $effect(() => {
         if (!map) return;
-        if (hoverProgress !== null && coordinates.length) hoverDot.setLngLat(coordinateAt(coordinates, hoverProgress)).addTo(map);
-        else hoverDot.remove();
+        if (hoverProgress === null || !coordinates.length) { hoverDot.remove(); return; }
+        hoverDot.setLngLat(coordinateAt(coordinates, hoverProgress));
+        // `addTo` removes and inserts the element again, so it runs only when the dot is absent.
+        if (!hoverDot.getElement().isConnected) hoverDot.addTo(map);
     });
     $effect(() => {
         if (!map) return;
