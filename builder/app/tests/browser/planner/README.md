@@ -14,5 +14,5 @@ Cloudflare bills `basemap`, `places`, `terrain`, `glyphs` and `sprites`. The VPS
 
 After a deliberate change, set each limit by the rule in `basis`.
 
-`places` is the largest kind. It counts the tiles that the place index reads along the route. The
-journey never zooms the map to zoom 14, so a zoom 14 tile belongs to the place index.
+`places` counts the places TileJSON and the zoom 11 places tiles that the place index reads along
+the route.

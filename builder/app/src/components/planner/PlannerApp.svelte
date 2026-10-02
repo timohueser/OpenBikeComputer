@@ -29,7 +29,7 @@
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import { corridorPlaces } from '../../lib/planner/place-index';
     import { landmarks } from '../../lib/planner/landmarks';
-    import { BASEMAP_URL, MAP_BOUNDS } from '../../lib/planner/map-data';
+    import { MAP_BOUNDS, PLACES_URL } from '../../lib/planner/map-data';
     import { coordinateName, visitName } from '../../lib/planner/point-names';
     import { SEARCH_URL, HOSTED_SEARCH, SEARCH_REGIONS } from '../../lib/planner/search/config';
     import { dayColor } from '../../lib/planner/day-colors';
@@ -286,7 +286,7 @@
         const route = coordinates;
         let current = true;
         corridorLoad = 'loading';
-        corridorPlaces(BASEMAP_URL.replace(/^pmtiles:\/\//, ''), route).then(
+        corridorPlaces(PLACES_URL, route).then(
             found => { if (current) { corridor = found; corridorLoad = 'done'; } },
             () => { if (current) corridorLoad = 'failed'; },
         );

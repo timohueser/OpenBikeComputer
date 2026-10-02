@@ -9,6 +9,8 @@ const PIXEL = Buffer.from(
   'base64',
 );
 const BOUNDS = [7.45, 47.5, 10.5, 49.85];
+/** The zoom range of each vector archive, as the tile Worker's TileJSON gives it. */
+const ZOOMS = { basemap: [0, 14], places: [11, 11] };
 const CORS = {
   'access-control-allow-origin': '*',
   'access-control-allow-headers': 'content-type',
@@ -18,13 +20,11 @@ const CORS = {
 /** The request's category: the unit the budget counts. */
 export function classify(url) {
   const { hostname, pathname } = url;
-  // The place index reads the archive's most detailed zoom along the route. The journey never zooms
-  // the map that far, so a zoom 14 tile is a place-index request.
   if (hostname === HOSTS.tiles) {
     if (pathname.startsWith('/terrain')) return 'terrain';
     if (pathname.startsWith('/fonts')) return 'glyphs';
     if (pathname.startsWith('/sprites')) return 'sprites';
-    return pathname.startsWith('/basemap/14/') ? 'places' : 'basemap';
+    return pathname.startsWith('/places') ? 'places' : 'basemap';
   }
   if (hostname === HOSTS.api) {
     if (pathname.endsWith('/v1/route')) return 'route';
@@ -74,8 +74,8 @@ export function respond(request) {
   switch (kind) {
     case 'basemap':
     case 'places':
-      return url.pathname === '/basemap.json'
-        ? json({ tilejson: '3.0.0', tiles: [`https://${HOSTS.tiles}/basemap/{z}/{x}/{y}.mvt`], minzoom: 0, maxzoom: 14, bounds: BOUNDS })
+      return url.pathname === `/${kind}.json`
+        ? json({ tilejson: '3.0.0', tiles: [`https://${HOSTS.tiles}/${kind}/{z}/{x}/{y}.mvt`], minzoom: ZOOMS[kind][0], maxzoom: ZOOMS[kind][1], bounds: BOUNDS })
         : { headers: CORS, status: 204 };
     case 'terrain':
       return { headers: CORS, contentType: 'image/png', body: PIXEL };
