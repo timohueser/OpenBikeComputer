@@ -13,7 +13,7 @@ export interface AnswerRoute extends Omit<EngineRoute, 'geometry' | 'elevation' 
 const expand = <T>(runs: [T, number][]): T[] => runs.flatMap(([value, length]) => Array<T>(length).fill(value));
 const edges = (runs: [unknown, number][]) => runs.reduce((sum, [, length]) => sum + length, 0);
 
-export function decodeRoute({ coordinates_udeg, elevation_dm, elapsed_s, surfaces, pushing, ...route }: AnswerRoute): EngineRoute {
+function decodeRoute({ coordinates_udeg, elevation_dm, elapsed_s, surfaces, pushing, ...route }: AnswerRoute): EngineRoute {
     const geometry: Coordinate[] = [];
     for (let i = 0, lon = 0, lat = 0; i < coordinates_udeg.length; i += 2) {
         lon += coordinates_udeg[i];

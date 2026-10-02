@@ -11,37 +11,13 @@ fn route(route: &Route) -> Value {
     let coordinates: Vec<i64> = route
         .geometry
         .iter()
-        .flat_map(|point| {
-            let current = point.map(|degrees| (degrees * 1e6).round() as i64);
-            let delta = [current[0] - previous[0], current[1] - previous[1]];
-            previous = current;
-            delta
-        })
+        .flat_map(|&[lon, lat]| [delta(&mut previous[0], lon, 1e6), delta(&mut previous[1], lat, 1e6)])
         .collect();
-    let mut height = 0i64;
-    let elevation: Vec<Option<i64>> = route
-        .elevation
-        .iter()
-        .map(|metres| {
-            metres.map(|metres| {
-                let current = (metres as f64 * 10.0).round() as i64;
-                let delta = current - height;
-                height = current;
-                delta
-            })
-        })
-        .collect();
-    let mut time = 0i64;
-    let elapsed: Vec<i64> = route
-        .elapsed
-        .iter()
-        .map(|seconds| {
-            let current = seconds.round() as i64;
-            let delta = current - time;
-            time = current;
-            delta
-        })
-        .collect();
+    let mut height = 0;
+    let elevation: Vec<Option<i64>> =
+        route.elevation.iter().map(|metres| metres.map(|metres| delta(&mut height, metres as f64, 10.0))).collect();
+    let mut time = 0;
+    let elapsed: Vec<i64> = route.elapsed.iter().map(|&seconds| delta(&mut time, seconds, 1.0)).collect();
     let totals = &route.totals;
     json!({
         "id": route.id,
@@ -64,6 +40,14 @@ fn route(route: &Route) -> Value {
             "pushing_m": totals.pushing_m,
         },
     })
+}
+
+/// Rounds the absolute value before the difference, so rounding errors do not add up along the route.
+fn delta(previous: &mut i64, value: f64, scale: f64) -> i64 {
+    let current = (value * scale).round() as i64;
+    let delta = current - *previous;
+    *previous = current;
+    delta
 }
 
 fn runs<T: Copy + PartialEq>(values: &[T]) -> Vec<(T, usize)> {
