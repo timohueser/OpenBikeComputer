@@ -88,8 +88,8 @@ The combined development command passes `OBC_SEARCH_PORT` to the Vite proxy.
 
 The request context accepts cumulative `plan.km` and `plan.hours` arrays aligned with
 coordinates, and `plan.segments` with kilometre bounds and verified route attributes.
-Without `plan.km`, search measures the line. The UI supplies riding time only when all
-legs use the routing engine.
+Without `plan.km`, search measures the line. The UI supplies riding time only when every
+leg is routed.
 Surface, gradient, access, and closure queries report missing segment data.
 The sample line preserves imported coordinates and has no terrain data. Split and join keep the line. They require unpinned nights and no rest days.
 

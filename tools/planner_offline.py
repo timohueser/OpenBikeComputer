@@ -22,7 +22,7 @@ except ImportError:
     import planner_runtime as runtime
 
 
-COMPRESSED = {".bin", ".pmtiles", ".webp", ".png", ".pbf"}
+COMPRESSED = {".bin", ".pmtiles", ".webp", ".png"}
 CHUNK = 1024 * 1024
 
 

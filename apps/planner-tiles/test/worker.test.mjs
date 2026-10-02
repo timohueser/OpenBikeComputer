@@ -76,7 +76,10 @@ test('range reads deliver decoded tiles, cache full GETs, and do not cache missi
  test('grid archives share download objects and assets stream from their pointers', async () => {
   const id = 'c'.repeat(64), prefix = `planner/releases/${id}`, bytes = archive();
   const digest = 'd'.repeat(64), asset = new TextEncoder().encode('{"hello":"map"}');
+  const glyphs = new Uint8Array([10, 2, 8, 0]), packed = gzipSync(glyphs);
   const objects = new Map([
+    [`${prefix}/public/maps/assets/fonts/Noto Sans Regular/0-255.pbf.json`, JSON.stringify({sha256:'f'.repeat(64),encoding:'gzip',bytes:packed.length,decoded_bytes:glyphs.length})],
+    [`${prefix}/objects/${'f'.repeat(64)}`, packed],
     [`${prefix}/public/grid.json`, JSON.stringify({format:2,map_zoom:11})],
     [`${prefix}/public/maps/tiles/basemap/0-0-0.pmtiles.json`, JSON.stringify({sha256:digest,encoding:'identity',bytes:bytes.length,decoded_bytes:bytes.length})],
     [`${prefix}/public/maps/tiles/places/0-0-0.pmtiles.json`, JSON.stringify({sha256:digest,encoding:'identity',bytes:bytes.length,decoded_bytes:bytes.length})],
@@ -103,6 +106,8 @@ test('range reads deliver decoded tiles, cache full GETs, and do not cache missi
   assert.deepEqual(await catalog.json(),{hello:'map'});
   const sprite=await worker.fetch(new Request(`https://tiles.example/releases/${id}/maps/assets/sprites/v4/light@2x.json`),env,ctx);
   assert.equal(sprite.status,200);assert.deepEqual(await sprite.json(),{hello:'map'});
+  const font=await worker.fetch(new Request(`https://tiles.example/releases/${id}/maps/assets/fonts/Noto%20Sans%20Regular/0-255.pbf`),env,ctx);
+  assert.equal(font.headers.get('Content-Type'),'application/x-protobuf');assert.deepEqual(new Uint8Array(await font.arrayBuffer()),glyphs);
   await Promise.all(pending); delete globalThis.caches;
 });
 

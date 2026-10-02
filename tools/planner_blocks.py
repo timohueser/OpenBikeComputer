@@ -2,9 +2,10 @@
 import argparse
 from collections import OrderedDict
 from contextlib import closing
+import gzip
 import json
 import math
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import sqlite3
 import sys
 
@@ -12,6 +13,11 @@ from . import planner_cutout, planner_offline, planner_runtime, planner_maps
 
 ZOOM = 9
 MAP_ZOOM = 11
+# A copy of the basemap text fields: protomaps `layers(..., {lang: "en"})` and `planner-poi-icons`
+# in `map-style.ts`. A style, `lang` or protomaps change must update it. `planner-network-labels`
+# draws the overlay `ref` that `glyph_ranges` reads.
+LABEL_KEYS ={"name", "name:en", "pgf:name", "name2", "pgf:name2", "name3", "pgf:name3",
+              "ref", "ref:en", "shield_text", "addr_housenumber"}
 
 
 def tile(lon, lat, zoom=ZOOM):
@@ -83,6 +89,84 @@ def map_tiles(source, output):
                     finally:
                         writer.tile_f.close()
                 path.unlink()
+
+
+def varint(data, index):
+    value = shift = 0
+    while True:
+        byte = data[index]; index += 1
+        value |= (byte & 0x7F) << shift
+        if byte < 0x80: return value, index
+        shift += 7
+
+
+def protobuf(data):
+    """Yield the field numbers and values of one message; length-delimited values stay bytes."""
+    index = 0
+    while index < len(data):
+        key, index = varint(data, index)
+        if key & 7 == 0: value, index = varint(data, index)
+        elif key & 7 == 2:
+            size, index = varint(data, index)
+            value, index = data[index:index + size], index + size
+        elif key & 7 in (1, 5): value, index = None, index + (8 if key & 7 == 1 else 4)
+        else: raise ValueError("Unsupported protobuf field")
+        yield key >> 3, value
+
+
+def label_texts(tile):
+    """Yield the distinct label strings of each layer of one vector tile."""
+    for field, layer in protobuf(tile):
+        if field != 3: continue
+        keys, values, labels = [], [], set()
+        for field, value in protobuf(layer):
+            if field == 3: keys.append(value.decode())
+            elif field == 4: values.append(next((text.decode() for number, text in protobuf(value) if number == 1), None))
+            elif field == 2:
+                for packed in (packed for number, packed in protobuf(value) if number == 2):
+                    index, tags = 0, []
+                    while index < len(packed):
+                        tag, index = varint(packed, index)
+                        tags.append(tag)
+                    labels.update(zip(tags[::2], tags[1::2]))
+        yield from {values[value] for key, value in labels if keys[key] in LABEL_KEYS and values[value]}
+
+
+def glyph_ranges(source):
+    """Return the indices (code point // 256) of the glyph ranges that labels and route references use."""
+    from pmtiles.reader import MmapSource, all_tiles
+    texts = set()
+    with (source / "maps/basemap.pmtiles").open("rb") as file:
+        for _, tile in all_tiles(MmapSource(file)):
+            texts.update(label_texts(gzip.decompress(tile) if tile[:2] == b"\x1f\x8b" else tile))
+    with closing(sqlite3.connect(f"{(source / 'routing/overlays.sqlite').resolve().as_uri()}?mode=ro", uri=True)) as db:
+        texts.update(ref for (ref,) in db.execute("SELECT json_extract(properties, '$.ref') FROM attributes "
+                                                  "UNION SELECT json_extract(properties, '$.ref') FROM routes") if ref)
+    # MapLibre requests the glyphs of the drawn text: the style upper-cases some labels, and Arabic
+    # letters become presentation forms U+FB50-U+FEFF.
+    ranges = {ord(character) >> 8 for text in texts for character in text + text.upper()}
+    return ranges | ({251, 252, 253, 254} if ranges & {6, 7, 8} else set())
+
+
+def offline_fonts(source, release, work):
+    """Join the used glyph ranges of each font stack into one file for offline selections.
+
+    MapLibre keeps only the glyphs of the requested range, so every range path of a stack can
+    share this file. A missing range file stalls the labels of each tile that requests it."""
+    ranges, stacks = glyph_ranges(source), {}
+    start = lambda name: int(PurePosixPath(name).stem.split("-")[0])
+    for name in release["files"]:
+        path = PurePosixPath(name)
+        if path.parent.parent == PurePosixPath("maps/assets/fonts") and path.suffix == ".pbf":
+            stacks.setdefault(path.parent.name, []).append(name)
+    result = {}
+    for stack, names in sorted(stacks.items()):
+        target = work / "fonts" / f"{stack}.pbf"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"".join((source / name).read_bytes() for name in sorted(names, key=start)
+                                    if start(name) >> 8 in ranges))
+        result[target] = names
+    return result
 
 
 def search_lookup(source, output):
@@ -170,7 +254,10 @@ def publish(source, routing, output):
         name = add(source_manifest, f"offline/routing-cells/{cell_id}.json")
         cell["manifest"] = name.removeprefix("offline/")
         cell["sha256"] = files[name]["sha256"]
-    shared = [add(source / name, name) for name in release["files"] if name.startswith("maps/assets/")]
+    shared = {name: add(source / name, name) for name in release["files"] if name.startswith("maps/assets/")}
+    print("Joining offline fonts", flush=True)
+    for path, names in offline_fonts(source, release, work).items():
+        shared.update(dict.fromkeys(names, add(path, f"offline/fonts/{path.name}")))
     tiles = work / "tiles"
     if not (work / "tiles.complete").exists():
         if tiles.exists(): raise ValueError("Incomplete tile publication; use a fresh output directory")
@@ -211,7 +298,7 @@ def publish(source, routing, output):
             "maxzoom": header["max_zoom"], "bounds": release["terrain_bounds"] if kind == "terrain" else release["bounds"]})
     for name in release["files"]:
         if name.startswith(("search/model/", "device/")): add(source / name, name)
-    catalog = {"format": 2, "source": identity, "release": {k:v for k,v in release.items() if k not in {"files", "source_files"}},
+    catalog = {"format": 3, "source": identity, "release": {k:v for k,v in release.items() if k not in {"files", "source_files"}},
         "routing_source": graph["source"], "map_blocks": map_blocks, "cells": geographic,
         "shared": shared, "files": dict(files), "zoom": ZOOM, "map_zoom": MAP_ZOOM}
     metadata("offline/catalog.json", catalog)
