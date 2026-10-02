@@ -35,7 +35,6 @@
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileAscent } from '../../lib/planner/profile-data';
     import { searchPlaces, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
-    import { searchLine } from '../../lib/planner/search/plan';
     import { asPlace } from '../../lib/planner/search/presentation';
     import { buildQueryRoute } from '../../lib/planner/search/route-client';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
@@ -182,7 +181,7 @@
     const itinerary = $derived(itineraryDays(trip));
     const focusedDay = $derived(multi && list === 'plan' && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
-    const searchPlan = $derived<SearchContext['plan']>({ ...searchLine(coordinates, lengths, currentRoute?.unroutedKm === 0 ? currentRoute.elapsed : undefined),
+    const searchPlan = $derived<SearchContext['plan']>({ coordinates, km: lengths, seconds: currentRoute?.unroutedKm === 0 ? currentRoute.elapsed : undefined,
         days: itinerary.map(d => ({ number: d.number, from: d.from * total, to: d.to * total, rest: d.rest })),
         points: trip.points.map(p => ({ id: p.id, label: p.label, coordinate: p.coordinate, kind: p.kind, placeKind: p.placeKind })) });
     const searchContext = $derived<SearchContext>({ view: viewBounds, here, pointing, startDate: trip.startDate, plan: searchPlan });
@@ -302,11 +301,10 @@
         const plan = searchPlan, region = searchRegion, day = dayLabels[night];
         overnightPlaces = [];
         if (!overnightContext || !day) { overnightNote = ''; return; }
-        // The day end and the radius set the area, so the map view does not change the answer.
-        const view = untrack(() => $state.snapshot(viewBounds));
         const abort = new AbortController();
         overnightNote = 'Loading nearby overnight places…';
-        searchPlaces('sleep', { view, plan }, region, 6, abort.signal, { type: 'places', what: ['sleep'], where: { day, part: 'end' }, radius: { value: 5, unit: 'km' } }).then(answer => {
+        // The day end and the radius set the area, so the map view does not change the answer.
+        untrack(() => searchPlaces('sleep', { view: viewBounds, plan }, region, 6, abort.signal, { type: 'places', what: ['sleep'], where: { day, part: 'end' }, radius: { value: 5, unit: 'km' } })).then(answer => {
             if (abort.signal.aborted) return;
             overnightPlaces = (answer.results ?? []).map(asPlace);
             overnightNote = answer.type === 'unresolved' ? answer.note ?? '' : overnightPlaces.length ? '' : 'No mapped overnight places within 5 km. Search a wider area or pick on the map.';

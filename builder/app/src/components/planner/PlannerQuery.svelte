@@ -36,7 +36,7 @@
         if (!text.trim()) { clear(); return; }
         controller = new AbortController(); limit = nextLimit;
         const input = text, signal = controller.signal;
-        const searchContext = options.context ?? $state.snapshot(context);
+        const searchContext = options.context ?? context;
         requestContext = searchContext;
         onSearch();
         searchState = { loading: true, error: '', answer: null };
