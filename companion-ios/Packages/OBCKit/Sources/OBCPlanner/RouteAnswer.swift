@@ -4,7 +4,8 @@ import OBCDomain
 /// One route of a route answer, decoded from the integer deltas that `specs/route-api.md` specifies.
 /// The companion does not read the surface and pushing runs.
 struct RouteAnswer: Decodable {
-    struct Leg: Decodable { let from_index: Int; let to_index: Int }
+    /// `start` and `end` are opaque road positions. A request can pin its first or last point to one.
+    struct Leg: Decodable { let from_index: Int; let to_index: Int; let start: String; let end: String; let totals: Totals }
     struct Totals: Decodable { let distance_m: Double; let ascent_m: Double; let seconds: Double }
     let package: String
     let profile: String

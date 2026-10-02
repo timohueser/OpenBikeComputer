@@ -128,6 +128,8 @@ public actor PlannerService: PlannerDataSource {
     private var loading: Task<PlannerRelease, Error>?
     private struct Manifest: Decodable { let routing_package: String; let profiles: [String] }
     private var searchLine: (original: [Coordinate], simplified: [Coordinate])?
+    /// Routed legs, so an edit requests only the legs that it changed.
+    private var legs: [LegKey: Leg] = [:]
     private var manifestCache: (id: String, value: Manifest)?
 
     private func manifest(_ release: PlannerRelease) async throws -> Manifest {
@@ -182,16 +184,58 @@ public actor PlannerService: PlannerDataSource {
         let manifest = try await manifest(release)
         let profile = preference.profile(for: bike)
         guard manifest.profiles.contains(profile) else { throw PlannerFailure.invalidData }
-        struct Query: Encodable { let points: [[Double]]; let profile: String; let alternatives = false }
+        let keys = zip(points, points.dropFirst()).map { LegKey(package: manifest.routing_package, profile: profile, from: $0, to: $1) }
+        var found = keys.map { legs[$0] }
+        // A leg from another request joins only at the same road position, so a shaping point keeps its direction.
+        for k in found.indices.dropFirst() where found[k - 1].map({ $0.end != found[k]?.start }) ?? false { found[k] = nil }
+        if let first = found.firstIndex(where: { $0 == nil }), let last = found.lastIndex(where: { $0 == nil }) {
+            let before = first > 0 ? found[first - 1] : nil, after = last + 1 < found.count ? found[last + 1] : nil
+            let fresh = try await request(Array(points[first...last + 1]), profile: profile, pins: (before?.end, after?.start),
+                                          release: release, package: manifest.routing_package)
+            // The service ignores a pin that is not a road candidate of its point.
+            if before.map({ $0.end != fresh[0].start }) ?? false || after.map({ $0.start != fresh[fresh.count - 1].end }) ?? false {
+                legs.removeAll()
+                return try await route(points: points, bike: bike, preference: preference, release: release)
+            }
+            found.replaceSubrange(first...last, with: fresh as [Leg?])
+        }
+        let joined = found.compactMap { $0 }
+        // About ten 300 km trips. Above that, the cache keeps only this route.
+        if legs.values.reduce(0, { $0 + $1.points.count }) > 200_000 { legs.removeAll() }
+        for (key, leg) in zip(keys, joined) { legs[key] = leg }
+        // A leg starts at the last point of the leg before it.
+        var path: [RoutePoint] = [], elapsed: [Double] = [], indices = [0]
+        for leg in joined {
+            let skip = path.isEmpty ? 0 : 1, offset = elapsed.last ?? 0
+            path += leg.points.dropFirst(skip)
+            elapsed += leg.elapsed.dropFirst(skip).map { $0 + offset }
+            indices.append(path.count - 1)
+        }
+        return PlannedPath(points: path, distance: joined.reduce(0) { $0 + $1.totals.distance_m },
+                           ascent: joined.reduce(0) { $0 + $1.totals.ascent_m }, seconds: joined.reduce(0) { $0 + $1.totals.seconds },
+                           pointIndices: indices, elapsed: elapsed)
+    }
+
+    private struct LegKey: Hashable { let package: String; let profile: String; let from: Coordinate; let to: Coordinate }
+    /// One leg cut from a route answer. Its `elapsed` starts at zero.
+    private struct Leg { let points: [RoutePoint]; let elapsed: [Double]; let totals: RouteAnswer.Totals; let start: String; let end: String }
+
+    private func request(_ points: [Coordinate], profile: String, pins: (start: String?, end: String?),
+                         release: PlannerRelease, package: String) async throws -> [Leg] {
+        struct Query: Encodable {
+            let points: [[Double]]; let profile: String; let alternatives = false
+            let start_position: String?; let end_position: String?
+        }
         var request = URLRequest(url: release.routing.appending(path: "v1/route"))
         request.httpMethod = "POST"
         request.timeoutInterval = 25
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(Query(points: points.map { [$0.longitude, $0.latitude] }, profile: profile))
+        request.httpBody = try JSONEncoder().encode(Query(points: points.map { [$0.longitude, $0.latitude] }, profile: profile,
+                                                          start_position: pins.start, end_position: pins.end))
         let data = try await Self.send(request, transport: transport)
         struct Response: Decodable { let routes: [RouteAnswer] }
         let response = try Self.decode(Response.self, data: data)
-        guard let route = response.routes.first, route.package == manifest.routing_package, route.profile == profile,
+        guard let route = response.routes.first, route.package == package, route.profile == profile,
               route.coordinates.count > 1, route.coordinates.count <= 250_000,
               route.elevation.count == route.coordinates.count,
               route.elapsed.count == route.coordinates.count, route.elapsed.first == 0,
@@ -201,13 +245,15 @@ public actor PlannerService: PlannerDataSource {
               route.legs.allSatisfy({ $0.from_index >= 0 && $0.to_index >= $0.from_index && $0.to_index < route.coordinates.count }),
               zip(route.legs, route.legs.dropFirst()).allSatisfy({ $0.to_index == $1.from_index }),
               route.coordinates.allSatisfy({ (-180...180).contains($0.longitude) && (-90...90).contains($0.latitude) }),
-              [route.totals.distance_m, route.totals.ascent_m, route.totals.seconds].allSatisfy({ $0.isFinite && $0 >= 0 })
+              route.legs.allSatisfy({ [$0.totals.distance_m, $0.totals.ascent_m, $0.totals.seconds].allSatisfy { $0.isFinite && $0 >= 0 } })
         else { throw PlannerFailure.invalidData }
         try Task.checkCancellation()
-        return PlannedPath(points: zip(route.coordinates, route.elevation).map {
-            RoutePoint(coordinate: $0.0, elevationMeters: $0.1)
-        }, distance: route.totals.distance_m, ascent: route.totals.ascent_m, seconds: route.totals.seconds,
-           pointIndices: [0] + route.legs.map(\.to_index), elapsed: route.elapsed)
+        return route.legs.map { leg in
+            let range = leg.from_index...leg.to_index
+            return Leg(points: range.map { RoutePoint(coordinate: route.coordinates[$0], elevationMeters: route.elevation[$0]) },
+                       elapsed: route.elapsed[range].map { $0 - route.elapsed[leg.from_index] },
+                       totals: leg.totals, start: leg.start, end: leg.end)
+        }
     }
 
     public func search(_ query: PlannerSearchQuery, release: PlannerRelease) async throws -> [PlannerPlace] {
