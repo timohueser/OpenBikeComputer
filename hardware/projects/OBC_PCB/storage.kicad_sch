@@ -1367,7 +1367,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.murata.com/en-us/products/productdetail?partno=GRM155R71A104KA01D"
 			(at 210.82 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -1440,6 +1440,36 @@
 					(unit 1)
 				)
 			)
+		)
+		(property "Manufacturer" "Murata"
+			(at 238.76 66.04 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "MPN" "GRM155R71A104KA01D"
+			(at 238.76 66.04 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "DigiKey" "https://www.digikey.de/en/products/detail/murata-electronics/GRM155R71A104KA01D/2610881"
+			(at 238.76 66.04 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://www.digikey.de/en/products/detail/murata-electronics/GRM155R71A104KA01D/2610881"
+			(at 238.76 66.04 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.09000;10:0.02100;50:0.01400;100:0.01190;500:0.00830"
+			(at 238.76 66.04 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 238.76 66.04 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 	(symbol
@@ -1581,7 +1611,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.digikey.com/en/resources/datasheets/yageo/rc-series-l-suffix-datasheet"
 			(at 114.3 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -1593,7 +1623,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Thick-film resistor, 47kOhm, 1%, 63mW, 50V, 0402"
+		(property "Description" "Thick-film resistor, 47kOhm, 1%, 62.5mW, 50V, 0402"
 			(at 114.3 67.31 0)
 			(hide yes)
 			(show_name no)
@@ -1617,7 +1647,7 @@
 				(justify left)
 			)
 		)
-		(property "Power" "63mW"
+		(property "Power" "62.5mW"
 			(at -99.06 -256.54 0)
 			(hide yes)
 			(show_name no)
@@ -1667,6 +1697,36 @@
 				)
 			)
 		)
+		(property "MPN" "RC0402FR-0747KL"
+			(at 113.03 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Manufacturer" "YAGEO"
+			(at 113.03 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Mouser" "https://eu.mouser.com/en/ProductDetail/YAGEO/RC0402FR-0747KL?qs=V1yeUXFNrklslMUO6Zhx5g%3D%3D"
+			(at 113.03 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://eu.mouser.com/en/ProductDetail/YAGEO/RC0402FR-0747KL?qs=V1yeUXFNrklslMUO6Zhx5g%3D%3D"
+			(at 113.03 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.086;10:0.009;100:0.006;1000:0.005;2500:0.003"
+			(at 113.03 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 113.03 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
 	)
 	(symbol
 		(lib_id "Device:R_Small")
@@ -1714,7 +1774,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.digikey.com/en/resources/datasheets/yageo/rc-series-l-suffix-datasheet"
 			(at 134.62 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -1726,7 +1786,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Thick-film resistor, 47kOhm, 1%, 63mW, 50V, 0402"
+		(property "Description" "Thick-film resistor, 47kOhm, 1%, 62.5mW, 50V, 0402"
 			(at 134.62 67.31 0)
 			(hide yes)
 			(show_name no)
@@ -1750,7 +1810,7 @@
 				(justify left)
 			)
 		)
-		(property "Power" "63mW"
+		(property "Power" "62.5mW"
 			(at -78.74 -256.54 0)
 			(hide yes)
 			(show_name no)
@@ -1799,6 +1859,36 @@
 					(unit 1)
 				)
 			)
+		)
+		(property "MPN" "RC0402FR-0747KL"
+			(at 138.43 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Manufacturer" "YAGEO"
+			(at 138.43 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Mouser" "https://eu.mouser.com/en/ProductDetail/YAGEO/RC0402FR-0747KL?qs=V1yeUXFNrklslMUO6Zhx5g%3D%3D"
+			(at 138.43 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://eu.mouser.com/en/ProductDetail/YAGEO/RC0402FR-0747KL?qs=V1yeUXFNrklslMUO6Zhx5g%3D%3D"
+			(at 138.43 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.086;10:0.009;100:0.006;1000:0.005;2500:0.003"
+			(at 138.43 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 138.43 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 	(symbol
@@ -2126,7 +2216,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.digikey.com/en/resources/datasheets/yageo/rc-series-l-suffix-datasheet"
 			(at 104.14 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -2138,7 +2228,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Thick-film resistor, 47kOhm, 1%, 63mW, 50V, 0402"
+		(property "Description" "Thick-film resistor, 47kOhm, 1%, 62.5mW, 50V, 0402"
 			(at 104.14 67.31 0)
 			(hide yes)
 			(show_name no)
@@ -2162,7 +2252,7 @@
 				(justify left)
 			)
 		)
-		(property "Power" "63mW"
+		(property "Power" "62.5mW"
 			(at -109.22 -256.54 0)
 			(hide yes)
 			(show_name no)
@@ -2212,6 +2302,36 @@
 				)
 			)
 		)
+		(property "MPN" "RC0402FR-0747KL"
+			(at 100.33 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Manufacturer" "YAGEO"
+			(at 100.33 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Mouser" "https://eu.mouser.com/en/ProductDetail/YAGEO/RC0402FR-0747KL?qs=V1yeUXFNrklslMUO6Zhx5g%3D%3D"
+			(at 100.33 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://eu.mouser.com/en/ProductDetail/YAGEO/RC0402FR-0747KL?qs=V1yeUXFNrklslMUO6Zhx5g%3D%3D"
+			(at 100.33 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.086;10:0.009;100:0.006;1000:0.005;2500:0.003"
+			(at 100.33 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 100.33 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
 	)
 	(symbol
 		(lib_id "Device:R_Small")
@@ -2259,7 +2379,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.digikey.com/en/resources/datasheets/yageo/rc-series-l-suffix-datasheet"
 			(at 93.98 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -2271,7 +2391,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Thick-film resistor, 47kOhm, 1%, 63mW, 50V, 0402"
+		(property "Description" "Thick-film resistor, 47kOhm, 1%, 62.5mW, 50V, 0402"
 			(at 93.98 67.31 0)
 			(hide yes)
 			(show_name no)
@@ -2295,7 +2415,7 @@
 				(justify left)
 			)
 		)
-		(property "Power" "63mW"
+		(property "Power" "62.5mW"
 			(at -119.38 -256.54 0)
 			(hide yes)
 			(show_name no)
@@ -2345,6 +2465,36 @@
 				)
 			)
 		)
+		(property "MPN" "RC0402FR-0747KL"
+			(at 87.63 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Manufacturer" "YAGEO"
+			(at 87.63 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Mouser" "https://eu.mouser.com/en/ProductDetail/YAGEO/RC0402FR-0747KL?qs=V1yeUXFNrklslMUO6Zhx5g%3D%3D"
+			(at 87.63 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://eu.mouser.com/en/ProductDetail/YAGEO/RC0402FR-0747KL?qs=V1yeUXFNrklslMUO6Zhx5g%3D%3D"
+			(at 87.63 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.086;10:0.009;100:0.006;1000:0.005;2500:0.003"
+			(at 87.63 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 87.63 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
 	)
 	(symbol
 		(lib_id "Device:C_Small")
@@ -2391,7 +2541,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://product.tdk.com/en/search/capacitor/ceramic/mlcc/info?part_no=C1608X5R1A106K080AC"
 			(at 185.42 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -2477,6 +2627,46 @@
 				)
 			)
 		)
+		(property "Manufacturer" "TDK"
+			(at 210.82 66.04 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "MPN" "C1608X5R1A106K080AC"
+			(at 210.82 66.04 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Selection notes" "Candidate; verify DC-bias, temperature and tolerance against Capacitance at bias before release."
+			(at 210.82 66.04 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Mouser" "https://eu.mouser.com/en/ProductDetail/TDK/C1608X5R1A106K080AC?qs=NRhsANhppD%252B2Bx3rv7OLbA%3D%3D"
+			(at 210.82 66.04 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Sourcing notes" ""
+			(at 210.82 66.04 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://eu.mouser.com/en/ProductDetail/TDK/C1608X5R1A106K080AC?qs=NRhsANhppD%252B2Bx3rv7OLbA%3D%3D"
+			(at 210.82 66.04 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.215;10:0.095;100:0.084;500:0.065;1000:0.058"
+			(at 210.82 66.04 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 210.82 66.04 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
 	)
 	(symbol
 		(lib_id "Device:R_Small")
@@ -2524,7 +2714,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.digikey.com/en/resources/datasheets/yageo/rc-series-l-suffix-datasheet"
 			(at 124.46 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -2536,7 +2726,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Thick-film resistor, 47kOhm, 1%, 63mW, 50V, 0402"
+		(property "Description" "Thick-film resistor, 47kOhm, 1%, 62.5mW, 50V, 0402"
 			(at 124.46 67.31 0)
 			(hide yes)
 			(show_name no)
@@ -2560,7 +2750,7 @@
 				(justify left)
 			)
 		)
-		(property "Power" "63mW"
+		(property "Power" "62.5mW"
 			(at -88.9 -256.54 0)
 			(hide yes)
 			(show_name no)
@@ -2609,6 +2799,36 @@
 					(unit 1)
 				)
 			)
+		)
+		(property "MPN" "RC0402FR-0747KL"
+			(at 125.73 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Manufacturer" "YAGEO"
+			(at 125.73 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Mouser" "https://eu.mouser.com/en/ProductDetail/YAGEO/RC0402FR-0747KL?qs=V1yeUXFNrklslMUO6Zhx5g%3D%3D"
+			(at 125.73 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://eu.mouser.com/en/ProductDetail/YAGEO/RC0402FR-0747KL?qs=V1yeUXFNrklslMUO6Zhx5g%3D%3D"
+			(at 125.73 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.086;10:0.009;100:0.006;1000:0.005;2500:0.003"
+			(at 125.73 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 125.73 60.96 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 	(symbol
@@ -2775,6 +2995,26 @@
 					(unit 1)
 				)
 			)
+		)
+		(property "Mouser" "https://www.mouser.lu/fr/ProductDetail/Hirose-Connector/DM3CS-SF?qs=tTj%252BmQ3KZwbB9K5zh89Rcw%3D%3D"
+			(at 165.1 91.44 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://www.mouser.lu/fr/ProductDetail/Hirose-Connector/DM3CS-SF?qs=tTj%252BmQ3KZwbB9K5zh89Rcw%3D%3D"
+			(at 165.1 91.44 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:1.72;10:1.47;25:1.31;100:1.25;250:1.12;500:1.06"
+			(at 165.1 91.44 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 165.1 91.44 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 )
