@@ -9,7 +9,7 @@ enum PlannerPreviewNetwork: String, CaseIterable {
     }
 }
 
-// The groups and names match builder/app/src/lib/planner/poi-kinds.ts.
+// The groups and names match builder/app/src/lib/planner/poi-kinds.json.
 enum PlannerPreviewPlaceCategory: String, CaseIterable, Identifiable {
     case hotel, camp, shelter, shop, food, water, toilets, bike, pharmacy, station, viewpoint, peak
 
@@ -69,6 +69,7 @@ struct PlannerPreviewLayerPanel: View {
     @Binding var network: PlannerPreviewNetwork
     @Binding var hidden: Set<PlannerPreviewPlaceCategory>
     @Binding var highlighted: Set<PlannerPreviewPlaceCategory>
+    var onDownload: (() -> Void)? = nil
     let onDone: () -> Void
     @Environment(\.colorScheme) private var colorScheme
 
@@ -92,6 +93,13 @@ struct PlannerPreviewLayerPanel: View {
                 .padding(.horizontal, 20).padding(.bottom, 24)
             }
             .scrollBounceBehavior(.basedOnSize)
+            if let onDownload {
+                Divider().overlay(OBCTheme.hairline)
+                Button("Download this map", systemImage: "arrow.down.to.line", action: onDownload)
+                    .font(.subheadline).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .padding(.horizontal, 20).padding(.vertical, 8)
+                    .accessibilityIdentifier("planner.downloadMap")
+            }
         }
         .foregroundStyle(OBCTheme.ink)
         .tint(OBCTheme.tint)

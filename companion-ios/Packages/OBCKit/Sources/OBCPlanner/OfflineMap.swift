@@ -88,6 +88,11 @@ public struct OfflineDownloadQuote: Codable, Sendable {
     let source: URL
     let bundle: OfflineBundle
     let release: Data
+
+    public func named(_ name: String) -> Self {
+        Self(map: OfflineMap(id: map.id, name: name, region: map.region, bounds: map.bounds, installedBytes: map.installedBytes),
+             transferBytes: transferBytes, requiredBytes: requiredBytes, source: source, bundle: bundle, release: release)
+    }
 }
 
 public enum OfflineMapFailure: Error, LocalizedError {

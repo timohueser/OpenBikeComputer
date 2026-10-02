@@ -64,4 +64,56 @@ final class MapPreviewTests: XCTestCase {
             "offline detail must not offer the interactive map"
         )
     }
+
+    @MainActor
+    func testOfflineSelectionFollowsTheMapAndOnlyCornerDragsResizeIt() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-OBCScenario", "happyPath", "-OBCShowPlanner", "-OBCHideMockHUD",
+                               "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launch()
+        let layers = app.buttons["planner.layers"]
+        XCTAssertTrue(layers.waitForExistence(timeout: 10))
+        layers.tap()
+        app.buttons["planner.downloadMap"].tap()
+
+        let northwest = app.descendants(matching: .any)["offline.resize.northwest"].firstMatch
+        let southeast = app.descendants(matching: .any)["offline.resize.southeast"].firstMatch
+        XCTAssertTrue(northwest.waitForExistence(timeout: 10))
+        XCTAssertTrue(southeast.exists)
+        XCTAssertFalse(app.navigationBars.buttons["Offline maps"].exists)
+        let initialNW = northwest.frame, initialSE = southeast.frame
+        let map = app.descendants(matching: .any)["offline.areaMap"].firstMatch
+        let centre = map.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        centre.press(forDuration: 0.1, thenDragTo: centre.withOffset(CGVector(dx: 25, dy: 20)))
+        XCTAssertTrue(waitUntil { abs(northwest.frame.midX - initialNW.midX) > 10 })
+        let movedNW = northwest.frame, movedSE = southeast.frame
+        XCTAssertEqual(movedSE.midX - movedNW.midX, initialSE.midX - initialNW.midX, accuracy: 2)
+        XCTAssertEqual(movedSE.midY - movedNW.midY, initialSE.midY - initialNW.midY, accuracy: 2)
+
+        // A thumb can land outside the visible handle and still resize the selection.
+        let corner = northwest.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .withOffset(CGVector(dx: 30, dy: 0))
+        corner.press(forDuration: 0.1, thenDragTo: corner.withOffset(CGVector(dx: 25, dy: 25)))
+        XCTAssertTrue(waitUntil { northwest.frame.midX > movedNW.midX + 10 })
+        XCTAssertEqual(southeast.frame.midX, movedSE.midX, accuracy: 2)
+        XCTAssertEqual(southeast.frame.midY, movedSE.midY, accuracy: 2)
+
+        let width = southeast.frame.midX - northwest.frame.midX
+        map.pinch(withScale: 1.2, velocity: 1)
+        XCTAssertTrue(waitUntil { southeast.frame.midX - northwest.frame.midX > width + 10 })
+        app.buttons["offline.fit"].tap()
+        app.buttons["offline.done"].tap()
+        XCTAssertTrue(layers.waitForExistence(timeout: 5))
+        layers.tap()
+        app.buttons["planner.downloadMap"].tap()
+        XCTAssertTrue(northwest.waitForExistence(timeout: 5))
+        app.buttons["offline.done"].tap()
+        XCTAssertTrue(layers.waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    private func waitUntil(_ predicate: @escaping @MainActor () -> Bool) -> Bool {
+        let condition = NSPredicate { _, _ in MainActor.assumeIsolated { predicate() } }
+        return XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: condition, object: nil)], timeout: 5) == .completed
+    }
 }
