@@ -82,12 +82,22 @@ and PMTiles packs once. Map packs group each tile under its ancestor at
 A routing pack contains pages with the same cell consumers, up to 16 MiB.
 Search and overlays retain whole intersecting records and their dependencies.
 
-`offline/catalog.json` lists cell bounds, logical file names, map packs, and
-routing cell descriptors. Each routing descriptor has a manifest path and
-SHA-256, source adjacency ranges, and retained geometry bounds. Shared assets
-are listed once. Files carry the decoded and transport hashes above.
+`offline/catalog.json` has `format: 3`. It lists cell bounds, logical file
+names, map packs, and routing cell descriptors. Each routing descriptor has a manifest path and
+SHA-256, source adjacency ranges, and retained geometry bounds. `shared` maps
+each map asset path of a selection to its publication file. Files carry the
+decoded and transport hashes above.
 The service selects these objects and writes only the small selection manifests.
 It does not rebuild routing, SQLite databases, or map payloads.
+
+A selection keeps every glyph range path, `maps/assets/fonts/STACK/RANGE.pbf`.
+All range paths of one font stack share `offline/fonts/STACK.pbf`. This file
+joins the stack's range files in range order. It keeps only the ranges that
+contain a character of a basemap label field or a route network reference in
+the release. The label fields are `name`, `name:en`, `name2`, `name3`, their
+`pgf:` forms, `ref`, `ref:en`, `shield_text`, and `addr_housenumber`. MapLibre
+reads only the glyphs of the requested range from the file. A missing range
+file stops the labels of each tile that requests it.
 
 The selected release has `offline.format: 2`, `id`, `zoom`, `map_zoom`,
 `source_routing`, and `cells`. Each cell has `id` and `bounds`.

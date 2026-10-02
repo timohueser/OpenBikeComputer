@@ -31,7 +31,7 @@ class Downloads:
     def __init__(self, source, cache, max_cache_bytes, objects_url=None):
         self.source, self.cache = source.resolve(), cache.resolve()
         self.publication = json.loads((self.source / "catalog.json").read_bytes())
-        if self.publication["format"] != 2:
+        if self.publication["format"] != 3:
             raise ValueError("Unsupported offline publication")
         self.identity, self.manifest = planner_runtime.digest(self.source / "catalog.json"), self.publication["release"]
         self.objects_url = objects_url.rstrip("/") if objects_url else None
@@ -70,7 +70,8 @@ class Downloads:
                 raise ValueError("Routing cell checksum mismatch")
             selections.append(json.loads(path.read_bytes()))
         graph = planner_grid.routing(selections, [c["routing"]["adjacency"] for c in selected], "area-" + identity[:24], actual)
-        names = set(publication["shared"])
+        shared = publication["shared"]
+        names = set(shared)
         geometry = [min([actual[i], *[c["routing"]["geometry_bounds"][i] for c in selected]]) if i < 2
                     else max([actual[i], *[c["routing"]["geometry_bounds"][i] for c in selected]]) for i in range(4)]
         terrain = planner_maps.terrain_bounds(geometry)
@@ -79,7 +80,7 @@ class Downloads:
         for cell in cells: names.update(cell["files"])
         for archive in graph["archives"]:
             names.update(f"routing/packs/{archive}/{filename}" for filename in ("pages.bin", "pages.idx"))
-        files = {name: publication["files"][name] for name in sorted(names)}
+        files = {name: publication["files"][shared.get(name, name)] for name in sorted(names)}
         generated = {}
         def metadata(name, document):
             data = planner_runtime.encoded(document)
