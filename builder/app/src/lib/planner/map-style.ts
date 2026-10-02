@@ -77,7 +77,27 @@ function landLayers(dark: boolean): Record<Tier | "protected", LayerSpecificatio
     };
 }
 
-/** The theme's layers with its land use layers replaced by the planner's, which draw every kind. */
+/** Cliffs and ferries, which the theme does not draw. */
+function cliffAndFerryLayers(dark: boolean): LayerSpecification[] {
+    const rock = dark ? "#8d877a" : "#7d766a";
+    return [
+        {
+            id: "cliffs", type: "line", source: "basemap", "source-layer": "earth", minzoom: 12, filter: ["==", ["get", "kind"], "cliff"],
+            paint: { "line-color": rock, "line-width": ["interpolate", ["linear"], ["zoom"], 12, 0.6, 16, 1.2] },
+        },
+        // An OSM cliff way keeps its low side on the right, so the teeth hang off that side.
+        {
+            id: "cliff-teeth", type: "line", source: "basemap", "source-layer": "earth", minzoom: 13, filter: ["==", ["get", "kind"], "cliff"],
+            paint: { "line-color": rock, "line-width": 3, "line-offset": 1.5, "line-dasharray": [0.4, 1.2] },
+        },
+        {
+            id: "ferries", type: "line", source: "basemap", "source-layer": "roads", minzoom: 11, filter: ["==", ["get", "kind"], "ferry"],
+            paint: { "line-color": dark ? "#97bdc8" : "#3e6677", "line-width": ["interpolate", ["linear"], ["zoom"], 11, 0.8, 16, 1.5], "line-dasharray": [3, 2] },
+        },
+    ];
+}
+
+/** The theme's layers with its land use layers replaced by the planner's, which draw every kind, and with cliffs and ferries. */
 function baseLayers(dark: boolean): LayerSpecification[] {
     const theme = layers("basemap", flavor(dark), { lang: "en" }) as LayerSpecification[];
     const base = theme.filter((layer) => !layer.id.startsWith("landuse_"));
@@ -86,6 +106,7 @@ function baseLayers(dark: boolean): LayerSpecification[] {
     // the protected boundary sit over the water.
     base.splice(theme.findIndex((layer) => layer.id.startsWith("landuse_")), 0, ground, zone, detail);
     base.splice(base.findIndex((layer) => layer.id === "water") + 1, 0, structure, outline);
+    base.splice(base.findIndex((layer) => layer.id === "water_river") + 1, 0, ...cliffAndFerryLayers(dark));
     const river = base.find((layer) => layer.id === "water_river");
     if (river?.type === "line") river.filter = ["in", ["get", "kind"], ["literal", ["river", "canal"]]];
     return base;
