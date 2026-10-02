@@ -99,7 +99,7 @@ test('a planning session stays inside the request budget', async ({ page }) => {
   phase('drag markers');
 
   for (const bike of [/Gravel/, /Road/, /Gravel/, /Mountain|MTB/, /Touring/, /Gravel/]) {
-    await page.getByRole('combobox', { name: 'Bike' }).click();
+    await page.getByRole('combobox', { name: 'Activity' }).click();
     await page.getByRole('option', { name: bike }).click();
     await idle();
   }
