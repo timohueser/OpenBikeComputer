@@ -218,7 +218,7 @@
         const nearby = corridor
             .filter(place => highlights.includes(place.category))
             .map(place => ({ place, off: distance(place.coordinate) }))
-            .filter(({ off }) => off <= 5)
+            .filter(({ off }) => Number.isFinite(off))
             .sort((a, b) => a.off - b.off)
             .map(({ place }) => place);
         return nearby.filter(place => !pinned.has(place.id));
@@ -235,7 +235,7 @@
     const nearbyLandmark = $derived.by(() => {
         const distance = routeDistance(coordinates, 15);
         return landmarks
-            .filter(landmark => distance(landmark.coordinate) <= 15 && !trip.points.some(p => kilometres(p.coordinate, landmark.coordinate) < .3))
+            .filter(landmark => Number.isFinite(distance(landmark.coordinate)) && !trip.points.some(p => kilometres(p.coordinate, landmark.coordinate) < .3))
             .sort((a, b) => nearestProgress(coordinates, a.coordinate) - nearestProgress(coordinates, b.coordinate))[0];
     });
     const selectedPlace = $derived(visiblePlaces.find(p => p.id === selectedId) ?? corridor.find(p => p.id === selectedId) ?? (mapPlace?.id === selectedId ? mapPlace : undefined));

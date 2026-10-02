@@ -102,7 +102,7 @@ export async function corridorPlaces(url: string, coordinates: Coordinate[], buf
         return tiles.get(key)!;
     }));
     const distance = routeDistance(coordinates, bufferKm);
-    return [...new Map(loaded.flat().map(place => [place.id, place])).values()].filter(place => distance(place.coordinate) <= bufferKm);
+    return [...new Map(loaded.flat().map(place => [place.id, place])).values()].filter(place => Number.isFinite(distance(place.coordinate)));
 }
 
 async function loadTile(source: TileSource, key: string): Promise<Place[]> {
