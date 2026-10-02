@@ -40,7 +40,8 @@
             "convenience": "Convenience shop",
             "bakery": "Bakery",
             "greengrocer": "Greengrocer",
-            "marketplace": "Market"
+            "marketplace": "Market",
+            "fuel": "Petrol station"
         }
     },
     "food": {
@@ -52,7 +53,8 @@
             "cafe": "Café",
             "fast_food": "Fast food",
             "pub": "Pub",
-            "biergarten": "Beer garden"
+            "biergarten": "Beer garden",
+            "ice_cream": "Ice cream"
         }
     },
     "bike": {
@@ -66,11 +68,12 @@
         }
     },
     "pharmacy": {
-        "label": "Pharmacy",
-        "plural": "Pharmacy",
+        "label": "Pharmacy & hospital",
+        "plural": "Pharmacy & hospital",
         "icon": "M9 4h6v5h5v6h-5v5H9v-5H4V9h5V4Z",
         "kinds": {
-            "pharmacy": "Pharmacy"
+            "pharmacy": "Pharmacy",
+            "hospital": "Hospital"
         }
     },
     "station": {
@@ -88,7 +91,16 @@
         "plural": "Shelters",
         "icon": "M2 12 12 4l10 8M5 10v10m14-10v10",
         "kinds": {
-            "shelter": "Shelter"
+            "shelter": "Shelter",
+            "wilderness_hut": "Wilderness hut"
+        }
+    },
+    "rest": {
+        "label": "Rest stop",
+        "plural": "Rest stops",
+        "icon": "M4 9h16M2 14h20M8 9 5 20m11-11 3 11",
+        "kinds": {
+            "picnic_site": "Picnic site"
         }
     },
     "toilets": {

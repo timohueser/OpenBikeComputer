@@ -4,7 +4,7 @@ import type { QueryPoint, Where, QueryRequest, SearchPlace } from './types';
 export const kindLabel = (kind: string) => kind.replaceAll('_', ' ');
 export const kindGroups: Record<PlaceCategory, string[]> = {
     water: ['water','drinking_water','water_point','water_tap','fountain','spring'],
-    camp: ['campsite'], shelter: ['shelter'], hotel: ['sleep','lodging','hotel','hostel','guest_house','motel','hut'],
+    camp: ['campsite'], shelter: ['shelter'], rest: [], hotel: ['sleep','lodging','hotel','hostel','guest_house','motel','hut'],
     shop: ['resupply','supermarket','convenience','bakery','butcher','marketplace','fuel','shop'],
     food: ['food','cafe','restaurant','fast_food','bar','ice_cream','pub','pizza','kebab'],
     bike: ['bike','bike_shop','repair_station','charging'], toilets: ['toilets','shower','laundry'],
