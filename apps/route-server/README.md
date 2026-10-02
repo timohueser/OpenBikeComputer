@@ -31,33 +31,37 @@ uses a dynamic user, a 2048 MiB memory limit and two CPU cores at most.
 - `GET /v1/region` reports package identity, coverage, profiles and attribution.
 - `POST /v1/route` calculates a route. The [route API](../../specs/route-api.md)
   specifies the request, the answer and the errors.
-- `GET /v1/overlays?bbox=7.9,48,8.1,48.1&zoom=12&layers=cycling,hiking,access`
-  returns GeoJSON from the package's OSM snapshot. Select one or more layers.
-
-Overlay requests accept zoom 6 to 22 and bounds up to 30 degrees wide and high.
-The response includes regional coverage bounds and the routing package ID.
-Discard cached features when that ID changes. Local routes appear from zoom 10,
-regional routes from 8, and national or international routes from 6.
-Construction and conditional access appear from 10; other access restrictions
-appear from 13, directional rules from 14, and pushing sections from 15.
-Access uses `mode=cycling` by default; `mode=walking` selects pedestrian rules.
-Responses distinguish construction, no access, private, limited, conditional,
-directional, pushing and bicycle bans. Dense requests fail with a zoom-in message.
-Prepare `overlays.sqlite` before service startup. A runtime-only package must
-receive its compiled overlay index from the preparation host. Its package identity must match
-the routing manifest. The service reads the viewport through a disk spatial index
-with a 4 MiB cache. Two overlay requests can run independently of routing workers.
-Geometry is simplified within half a map pixel at the requested zoom. Feature
-`routes` contains IDs from the response's `routes` dictionary. Successful responses
-permit caching for one hour.
-Route relations retain names, references, websites, trail symbols, network levels and overlapping memberships.
-Proposed routes are omitted. Access markings are snapshot data, not live closures.
 
 ```sh
 curl http://127.0.0.1:8788/v1/route \
   -H 'Content-Type: application/json' \
   --data '{"points":[[7.849,47.997],[8.154,47.902]],"profile":"touring","alternatives":true}'
 ```
+
+## Overlay index
+
+`--build-overlays` writes `overlays.sqlite` from the package's OSM snapshot. A
+runtime-only package must receive its compiled overlay index from the preparation
+host. Its package identity must match the routing manifest. The planner bake
+derives the overlay tiles from it. The phone reads its offline overlay cells
+through `planner_overlays_query`.
+
+| Feature | Minimum zoom |
+| --- | --- |
+| National or international route | 6 |
+| Regional route | 8 |
+| Local route | 11 |
+| Construction or conditional access | 10 |
+| Other access restriction | 13 |
+| Directional rule | 14 |
+| Pushing section | 15 |
+
+A query has `bbox`, `zoom` from 6 to 22, `layers` from `cycling,hiking,access`
+and `mode` (`cycling` or `walking`). Bounds are at most 30 degrees wide and high.
+The answer is GeoJSON with the coverage bounds, the routing package ID and a
+`routes` dictionary. Geometry is simplified within half a map pixel. Dense
+queries fail with a zoom-in message. Proposed routes are not included. Access
+markings are snapshot data, not live closures.
 
 ## Planner
 
@@ -68,11 +72,12 @@ time for another endpoint. Build the isolated preview with:
 ```sh
 VITE_PLANNER_PMTILES_URL=/planner/data/basemap.pmtiles \
   VITE_PLANNER_PLACES_URL=/planner/data/places.pmtiles \
+  VITE_PLANNER_OVERLAYS_URL=/planner/data/overlays.pmtiles \
   npm run --prefix builder/app build:planner
 ```
 
 Serve `builder/app/dist/planner` under `/planner/` and open
-`/planner/planner.html`. Serve a Protomaps basemap and its places archive at the configured URLs.
+`/planner/planner.html`. Serve a Protomaps basemap, its places archive and the overlay archive at the configured URLs.
 Proxy `/routing/*` to this service with that prefix removed. The preview needs
 no user account. Search examples and the map renderer remain separate from
 routing. See the [planner README](../../builder/app/src/components/planner/README.md).

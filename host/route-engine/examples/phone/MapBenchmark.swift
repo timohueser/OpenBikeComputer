@@ -8,7 +8,7 @@ import WebKit
 private func verifyMapFiles(_ root: URL) throws {
     struct File: Decodable { let bytes: UInt64; let sha256: String }
     struct Archive: Decodable { let sha256: String; let files: [String: File] }
-    struct Config: Decodable { let archives: [String: Archive]; let fixtures: [String: File]?; let renderer_sha256: String }
+    struct Config: Decodable { let archives: [String: Archive]; let renderer_sha256: String }
     let config = try JSONDecoder().decode(Config.self, from: Data(contentsOf: root.appendingPathComponent("map-benchmark/config.json")))
     func verify(_ name: String, _ files: [String: File]) throws {
         let directory = root.appendingPathComponent(name)
@@ -36,10 +36,8 @@ private func verifyMapFiles(_ root: URL) throws {
         files["manifest.json"] = File(bytes: UInt64(try manifest.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0), sha256: archive.sha256)
         try verify(name, files)
     }
-    var fixtures = config.fixtures ?? [:]
     let renderer = root.appendingPathComponent("map-benchmark/main.js")
-    fixtures["main.js"] = File(bytes: UInt64(try renderer.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0), sha256: config.renderer_sha256)
-    try verify("map-benchmark", fixtures)
+    try verify("map-benchmark", ["main.js": File(bytes: UInt64(try renderer.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0), sha256: config.renderer_sha256)])
 }
 
 private final class MapFiles: @unchecked Sendable {
@@ -97,11 +95,7 @@ private final class MapFiles: @unchecked Sendable {
             let parts = lines[0].split(separator: " ")
             guard parts.count == 3, parts[0] == "GET" else { throw failure("Only GET is supported") }
             requested = String(parts[1])
-            var path = URLComponents(string: requested)?.path ?? ""
-            if path == "/routing/v1/overlays" {
-                let key = SHA256.hash(data: Data(requested.utf8)).map { String(format: "%02x", $0) }.joined()
-                path = "/map-benchmark/overlays/\(key).json"
-            }
+            let path = URLComponents(string: requested)?.path ?? ""
             guard ["/map-benchmark/", "/maps/", "/map-cutout/"].contains(where: path.hasPrefix) else {
                 throw failure("Path is outside the map benchmark")
             }
