@@ -206,8 +206,10 @@ command = "mkdir -p .artifacts/coverage/repository-tools && rm -rf .artifacts/py
 jobs = ["guards", "selection"]
 triggers = [
   "tools/requirements-test.txt",
+  "tools/requirements-planner-maps.txt",
   "tools/*.py",
   "tools/**/*.py",
+  "tools/planner-regions/**",
   "testing/*.toml",
   "docs/testing.md",
   ".github/workflows/**",
@@ -538,6 +540,12 @@ triggers = [
   "companion-ios/Packages/OBCRouting/**",
   "apps/obc-companion-core/**",
   "tools/build-companion-core.sh",
+  "tools/build-planner-ios.sh",
+  "apps/planner-native/*.swift",
+  "apps/planner-search/**",
+  "host/route-engine/**",
+  "apps/route-server/**",
+  "host/route-build/**",
 ]
 
 # Mock and developer-panel code must never ship. The Debug grep rides the build above and
@@ -558,6 +566,12 @@ triggers = [
   "companion-ios/Packages/OBCRouting/**",
   "apps/obc-companion-core/**",
   "tools/build-companion-core.sh",
+  "tools/build-planner-ios.sh",
+  "apps/planner-native/*.swift",
+  "apps/planner-search/**",
+  "host/route-engine/**",
+  "apps/route-server/**",
+  "host/route-build/**",
 ]
 
 # The shell links the Rust host through an XCFramework and no Swift dependency graph
@@ -725,12 +739,47 @@ triggers = ["companion-ios/OBCCompanionUITests/**"]
 
 
 [[suite]]
+id = "planner.native-http"
+route = "ordinary"
+command = "bash apps/planner-native/test-http.sh"
+jobs = ["ios-unit"]
+platforms = ["macos"]
+triggers = ["apps/planner-native/PlannerHTTPServer.swift", "apps/planner-native/tests/**", "apps/planner-native/test-http.sh"]
+
+[[suite]]
+id = "planner.native-host"
+route = "ordinary"
+command = "bash apps/planner-native/test-host.sh"
+jobs = ["ios-unit"]
+platforms = ["macos"]
+triggers = [
+  "apps/planner-native/*.swift",
+  "apps/planner-native/build.mjs",
+  "apps/planner-native/test-host.sh",
+  "apps/planner-search/native/*.swift",
+  "apps/planner-search/native-build.mjs",
+  "host/route-engine/examples/phone/prepare-parser.py",
+  "host/route-engine/examples/phone/parser_notices.py",
+  "host/route-engine/examples/phone/parser-notices.json",
+  "host/route-engine/examples/phone/PlannerHostBenchmark.swift",
+  "host/route-engine/examples/phone/planner-host-benchmark.js",
+]
+
+[[suite]]
 id = "planner.search"
 route = "ordinary"
 command = "npm test --prefix apps/planner-search"
 jobs = ["planner-search"]
 platforms = ["linux", "macos"]
 triggers = ["apps/planner-search/**"]
+
+[[suite]]
+id = "planner.tiles"
+route = "ordinary"
+command = "npm test --prefix apps/planner-tiles && npm run build --prefix apps/planner-tiles"
+jobs = ["planner-search"]
+platforms = ["linux", "macos"]
+triggers = ["apps/planner-tiles/**"]
 
 [[suite]]
 id = "planner.query-decoder"

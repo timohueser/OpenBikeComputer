@@ -2,9 +2,8 @@ const variants = {
   balanced: '',
   shortest: '/shorter',
   least_climbing: '/less-climbing',
-  least_unpaved: '/smoother',
 };
-export async function routeQuery(input) {
+export function routeRequest(input) {
   if (
     !input ||
     !['road', 'gravel', 'mtb', 'touring'].includes(input.bike) ||
@@ -23,8 +22,13 @@ export async function routeQuery(input) {
     throw new Error('Invalid route points.');
   if (!Object.hasOwn(variants, input.goal))
     throw new Error(
-      'This routing package has no “most climbing” profile. Choose a different goal.',
+      `This routing package has no “${input.goal === 'least_unpaved' ? 'least unpaved' : 'most climbing'}” profile. Choose balanced, shorter, or less climbing.`,
     );
+  return { points:input.points, profile:input.bike + variants[input.goal], alternatives:false };
+}
+
+export async function routeQuery(input) {
+  const request = routeRequest(input);
   const base = process.env.OBC_QUERY_ROUTER || 'http://127.0.0.1:8788';
   let response;
   try {
@@ -32,11 +36,7 @@ export async function routeQuery(input) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(20000),
-      body: JSON.stringify({
-        points: input.points,
-        profile: input.bike + variants[input.goal],
-        alternatives: false,
-      }),
+      body: JSON.stringify(request),
     });
   } catch {
     throw new Error(
@@ -48,6 +48,11 @@ export async function routeQuery(input) {
     throw new Error(
       result.message || 'The local routing engine could not find a route.',
     );
+  return routeReply(input,result);
+}
+
+export function routeReply(input,result) {
+  routeRequest(input);
   const route = result.routes?.[0];
   if (
     !route ||

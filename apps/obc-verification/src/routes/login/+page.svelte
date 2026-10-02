@@ -29,4 +29,8 @@
     <p class="small muted">Access is restricted to approved maintainers.</p>
   </section>
   <a class="small muted" href="https://openbikecomputer.com">← OpenBikeComputer website</a>
+  <p class="small muted">
+    <a href="https://openbikecomputer.com/docs/impressum/">Impressum</a> ·
+    <a href="https://openbikecomputer.com/docs/datenschutz/#8-verifikationskonsole">Datenschutz</a>
+  </p>
 </main>

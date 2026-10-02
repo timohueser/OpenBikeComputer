@@ -3,19 +3,36 @@ import { DatabaseSync } from 'node:sqlite';
 import { existsSync, statSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { parserProcess } from './parser.mjs';
-import { answerQuery } from './query.mjs';
+import { searchRuntime } from './runtime.mjs';
+import {openCells} from './cells.mjs';
+import { openingHours } from './hours.mjs';
 import { routeQuery } from './routing.mjs';
 import { validateInput } from './validation.mjs';
+import { allowedOrigin } from './origins.mjs';
 
 const root = import.meta.dirname,
   data = path.resolve(process.env.OBC_SEARCH_DATA || path.join(root, 'data'));
+process.env.TZ = 'Europe/Berlin';
+const hours = openingHours({countryCode:'de',timeZone:'Europe/Berlin'});
 const parser = parserProcess(
   process.env.OBC_SEARCH_PYTHON || path.join(root, '.venv/bin/python'),
   path.join(data, 'model'),
 );
 const databases = new Map();
-for (const region of ['germany', 'baden-wuerttemberg']) {
+for (const region of (process.env.OBC_SEARCH_REGIONS || 'germany,baden-wuerttemberg').split(',')) {
+  if (!/^[a-z][a-z0-9-]{0,63}$/.test(region)) throw new Error(`Invalid search region: ${region}`);
   const file = path.join(data, `${region}.sqlite`);
+  const gridFile = path.join(data, `${region}.grid.json`);
+  if (existsSync(gridFile)) {
+    const grid = JSON.parse(readFileSync(gridFile,'utf8'));
+    if (grid.format !== 2 || grid.metadata?.schema !== 3 || !Array.isArray(grid.cells) ||
+        grid.cells.some(c=>!/^9-[0-9]+-[0-9]+$/.test(c.id))) throw new Error('Invalid search grid.');
+    const files = grid.cells.map(c=>({file:path.join(data,'tiles',`${c.id}.sqlite`),bounds:c.bounds}));
+    const db = openCells(files,grid.metadata);
+    databases.set(region,{db,runtime:searchRuntime({db,parser,hours,region,attribution:grid.metadata.attribution}),
+      metadata:grid.metadata,bytes:files.reduce((n,c)=>n+statSync(c.file).size,0),close:db.close});
+    continue;
+  }
   if (!existsSync(file)) continue;
   const conn = new DatabaseSync(file, { readOnly: true });
   conn.exec(
@@ -34,33 +51,45 @@ for (const region of ['germany', 'baden-wuerttemberg']) {
   const metadata = Object.fromEntries(
     db.all('SELECT * FROM metadata').map((r) => [r.key, JSON.parse(r.value)]),
   );
-  if (metadata.schema !== 1)
+  if (metadata.schema !== 3)
     throw new Error(`Rebuild ${region}: incompatible search data.`);
+  conn.prepare('SELECT rowid FROM addresses INDEXED BY address_cells LIMIT 0');
   databases.set(region, {
     db,
+    runtime: searchRuntime({db,parser,hours,region,attribution:metadata.attribution}),
     metadata,
     bytes: statSync(file).size,
     close: () => conn.close(),
   });
 }
+const origins = new Set((process.env.OBC_SEARCH_ORIGINS || '').split(',').filter(Boolean));
+let active = 0;
 const server = http.createServer(async (req, res) => {
+  const origin = req.headers.origin;
+  const allowed = allowedOrigin(origin, origins);
+  const cors = allowed && origin ? { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' } : {};
   const json = (status, value) => {
     res.writeHead(status, {
       'Content-Type': 'application/json',
       'Cache-Control': 'no-store',
+      ...cors,
     });
     res.end(JSON.stringify(value));
   };
+  let admitted = false;
   try {
-    if (
-      req.headers.origin &&
-      !['localhost', '127.0.0.1', '[::1]'].includes(
-        new URL(req.headers.origin).hostname,
-      )
-    ) {
-      json(403, { error: 'Local access only.' });
+    if (!allowed) {
+      json(403, { error: 'Origin is not allowed.' });
       return;
     }
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, { ...cors, 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Max-Age': '600' });
+      res.end();
+      return;
+    }
+    if (active >= 16) { json(503, { error: 'Search is busy. Retry shortly.' }); return; }
+    active++;
+    admitted = true;
     const url = new URL(req.url, 'http://localhost');
     if (url.pathname === '/api/planner-search/status' && req.method === 'GET') {
       json(200, {
@@ -75,7 +104,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/api/planner-search/sample' && req.method === 'GET') {
       const xml = readFileSync(
-        path.resolve(
+        process.env.OBC_SEARCH_SAMPLE || path.resolve(
           root,
           '../../fixtures/sources/route-import/komoot-schwarzwald.gpx',
         ),
@@ -88,7 +117,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (
-      !['/api/planner-search/query', '/api/planner-search/route'].includes(
+      !['/api/planner-search/query', '/api/planner-search/route', '/api/planner-search/reverse'].includes(
         url.pathname,
       ) ||
       req.method !== 'POST'
@@ -102,7 +131,7 @@ const server = http.createServer(async (req, res) => {
       body += chunk;
       if (body.length > 2000000) {
         json(413, {
-          error: 'This route is too large for the local query service.',
+          error: 'This route is too large for search.',
         });
         return;
       }
@@ -112,29 +141,33 @@ const server = http.createServer(async (req, res) => {
       json(200, await routeQuery(input));
       return;
     }
-    validateInput(input);
+    if (url.pathname !== '/api/planner-search/reverse') validateInput(input);
     const region = input.region || 'baden-wuerttemberg',
       database = databases.get(region);
     if (!database) {
       json(503, {
-        error: `Build the ${region} search package first. See apps/planner-search/README.md.`,
+        error: 'Search does not cover this region.',
       });
       return;
     }
-    const { db } = database;
-    const answer = await answerQuery(db, input, parser);
-    json(200, {
-      ...answer,
-      region,
-      attribution: database.metadata.attribution,
-    });
+    if (url.pathname === '/api/planner-search/reverse') {
+      json(200, database.runtime.reverse(input.coordinate));
+      return;
+    }
+    json(200, await database.runtime.query(input));
   } catch (error) {
     json(400, { error: error.message });
+  } finally {
+    if (admitted) active--;
   }
 });
 const port = Number(process.env.OBC_SEARCH_PORT || 8780);
+server.requestTimeout = 15000;
+server.headersTimeout = 10000;
+server.maxConnections = 64;
+server.setTimeout(30000);
 server.listen(port, '127.0.0.1', () =>
-  console.log(`Local planner search: http://127.0.0.1:${port}`),
+  console.log(`Local planner search: http://127.0.0.1:${server.address().port}`),
 );
 let stopping = false;
 const stop = () => {

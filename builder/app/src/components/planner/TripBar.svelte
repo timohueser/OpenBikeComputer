@@ -29,8 +29,8 @@
 <div class="trip-bar">
     <div class="trip-name">
         <h1>{title}</h1>
-        <Select label="Plan type" value={trip.mode ?? 'trip'} options={[{ value: 'trip', label: 'Multi-day trip' }, { value: 'route', label: 'Single route' }]}
-            onChange={(mode) => onChange({ mode: mode as Trip['mode'] }, mode === 'route' ? 'Single route' : 'Multi-day trip')} />
+        <Select label="Plan type" value={trip.mode ?? 'trip'} options={[{ value: 'trip', label: 'Multi-day trip' }, { value: 'route', label: 'Route' }]}
+            onChange={(mode) => onChange({ mode: mode as Trip['mode'] }, mode === 'route' ? 'Route' : 'Multi-day trip')} />
     </div>
     <div class="ride">
         <div class="preference"><span>Bike</span>
@@ -111,6 +111,12 @@
         .trip-bar { grid-template-columns: minmax(0, 1fr) auto; height: auto; min-height: 56px; padding-block: 8px; gap: 8px 16px; }
         .ride { grid-column: 1; grid-row: 2; }
         .actions { grid-column: 2; grid-row: 1 / span 2; }
+    }
+    @media (max-width: 700px) {
+        .trip-bar { grid-template-columns: minmax(0, 1fr); }
+        .trip-name h1 { flex: 1; }
+        .ride { flex-wrap: wrap; }
+        .actions { grid-column: 1; grid-row: 3; justify-content: flex-end; }
     }
     .actions > :global(.versions) {
         margin-left: 8px;

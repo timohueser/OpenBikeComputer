@@ -37,6 +37,33 @@ enter credentials through an HTTP origin.
 The environment file and the SSH private keys are not application assets. Back them up separately
 in a private credential store, and rotate the CI and GitHub credentials independently.
 
+## Keep the logs minimal
+
+The privacy notice says the server logs no visitor data. Two settings keep that true.
+
+- Put this global block at the top of `/etc/caddy/Caddyfile`. Caddy then writes no access
+  log, and an error entry carries no client address or request address:
+
+  ```caddyfile
+  {
+      log {
+          level WARN
+          format filter {
+              wrap json
+              fields {
+                  request delete
+              }
+          }
+      }
+  }
+  ```
+
+- Put `MaxFileSec=1day` and `MaxRetentionSec=7day` in a `[Journal]` drop-in under
+  `/etc/systemd/journald.conf.d/`, named so that it sorts last. Journald deletes entries only
+  with whole files, so the daily file rotation makes the seven days real.
+
+Never add a Caddy `log` directive to a site block.
+
 ## Register the GitHub OAuth app
 
 GitHub is the primary sign-in method. Register an OAuth app in the administrator's GitHub account:

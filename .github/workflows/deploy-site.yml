@@ -1,17 +1,17 @@
 name: Deploy site
 
 # The whole public site, published as ONE GitHub Pages artifact on every push to
-# `develop`. Four surfaces, three builders, one upload:
+# `develop`. Public surfaces, three builders, one upload:
 #
 #   /                     landing page + the live device demo   trunk (obc-web-demo → wasm)
 #   /docs/  /blog/        docs site + expedition log            build_docs.py (trunk pre_build hook)
-#   /builder/             the static map builder (#894 phase C) vite --mode web
+#   /builder/             the static map builder                vite --mode web
+#   /plan/                the regional route planner            vite --mode planner
 #
 # Because the demo is the firmware's own render path compiled to wasm, every push
 # rebuilds it — the site can never show a stale screenshot. And everything here is
-# static files: there is no backend on this tier at all. Route conversion runs as wasm
-# in the tab (#896), maps are cell artifacts listed in a catalog manifest, and the only server involved
-# is whoever serves the bytes.
+# static files: there is no backend on this tier. Route conversion runs as wasm
+# in the tab. Routing and search use the VPS. The tile Worker serves map tiles.
 #
 # ── What GitHub Pages can and cannot do (C6 #905; measured 2026-07-26) ──────────────
 #
@@ -93,6 +93,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  OBC_PLANNER_CATALOG_URL: ${{ vars.OBC_PLANNER_CATALOG_URL }}
   # Where the builder reads the OBCC catalog manifest (#897). A repository variable
   # rather than a code constant, because the manifest lives with the artifacts and B1
   # (#898) owns where that is — the frontend already treats it as configuration
@@ -154,19 +155,35 @@ jobs:
       # they are siblings inside this artifact, so naming them by absolute URL would be
       # the one place a domain move still bit us. Left unset everywhere else (dev
       # server, desktop app), where the site genuinely is somewhere else.
+      - name: Read the active planner release
+        if: env.OBC_PLANNER_CATALOG_URL != ''
+        run: python3 tools/planner.py site-config --catalog "$OBC_PLANNER_CATALOG_URL" --output "$GITHUB_ENV"
+
       - name: Build the static map builder
         working-directory: builder/app
         env:
           VITE_SITE_BASE: "../"
-          VITE_CATALOG_URL: ${{ env.OBC_CATALOG_URL }}
         run: |
           npm ci
+          export VITE_CATALOG_URL="${VITE_CATALOG_URL:-$OBC_CATALOG_URL}"
           npm run build:web
+
+      - name: Build the public route planner
+        if: env.OBC_PLANNER_CATALOG_URL != ''
+        working-directory: builder/app
+        env:
+          VITE_SITE_BASE: "../"
+        run: npm run build:planner
 
       - name: Assemble the site
         run: |
           mkdir -p docs/dist/builder
           cp -R builder/app/dist/web/. docs/dist/builder/
+          if [ -n "$OBC_PLANNER_CATALOG_URL" ]; then
+            mkdir -p docs/dist/plan
+            cp -R builder/app/dist/planner/. docs/dist/plan/
+            mv docs/dist/plan/planner.html docs/dist/plan/index.html
+          fi
           du -sh docs/dist/* | sort -h
 
       - name: Generate sitemap
@@ -225,6 +242,7 @@ jobs:
           check "$base/"
           check "$base/builder/"
           check "$base/docs/"
+          if [ -n "$OBC_PLANNER_CATALOG_URL" ]; then check "$base/plan/"; fi
           [ "$fail" = 0 ] || { echo "::error::the artifact is not mountable at a sub-path"; exit 1; }
 
       - name: Upload Pages artifact

@@ -89,6 +89,8 @@ builder/app/test-support/flat-device/pkg/
 # virtualenv + the optional local maps drop. The tooling itself (everything in
 # tools/ except obc.local) is committed.
 tools/obc.local
+# Planner tile settings for a local desktop build (see apps/obc-desktop/README.md).
+builder/app/.env.local
 .venv/
 /maps/
 # Web builder frontend: dependencies + the Vite build output (CI builds it).
@@ -102,6 +104,9 @@ builder/app/tests/browser/node_modules/
 builder/app/tests/device-smoke/node_modules/
 apps/obc-web-demo/tests/browser/node_modules/
 builder/app/dist/
+apps/planner-tiles/dist/
+apps/planner-tiles/node_modules/
+apps/planner-tiles/.wrangler/
 builder/server/static/dist/
 # The static tier's data files (#900): the Geofabrik index is ~1.7 MB of
 # generated JSON that goes stale weekly, and the catalog manifest belongs to the
@@ -118,3 +123,5 @@ fixtures/build/
 
 # repowise local index and session cache — never committed.
 /.repowise/
+
+.coverage

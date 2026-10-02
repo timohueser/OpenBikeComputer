@@ -131,10 +131,10 @@ final class TripTests: XCTestCase {
         let delete = app.buttons["trip.delete"]
         XCTAssertTrue(delete.waitForExistence(timeout: 5), "overflow menu did not open")
         delete.tap()
-        XCTAssertTrue(app.sheets.staticTexts.matching(
+        XCTAssertTrue(app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS 'trip and day routes'"))
             .firstMatch.waitForExistence(timeout: 5), "confirmation must name device deletion")
-        app.sheets.buttons["Delete trip"].tap()
+        app.buttons["confirm.action.0"].tap()
 
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons[tripCardID].waitForExistence(timeout: 3), "trip card survived delete")
@@ -149,18 +149,14 @@ final class TripTests: XCTestCase {
         let firstDay = day(app, 0).label
         app.buttons["trip.overflow"].tap()
         app.buttons["trip.reverse"].tap()
-        XCTAssertTrue(app.sheets.staticTexts.matching(
+        XCTAssertTrue(app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS 'device progress starts over'"))
             .firstMatch.waitForExistence(timeout: 5))
-        if app.sheets.buttons["Cancel"].exists {
-            app.sheets.buttons["Cancel"].tap()
-        } else {
-            app.otherElements["PopoverDismissRegion"].tap()
-        }
+        app.buttons["confirm.cancel"].tap()
         XCTAssertEqual(day(app, 0).label, firstDay)
         app.buttons["trip.overflow"].tap()
         app.buttons["trip.reverse"].tap()
-        app.sheets.buttons["Reverse trip"].tap()
+        app.buttons["confirm.action.0"].tap()
         wait(for: [expectation(for: NSPredicate(format: "label != %@", firstDay),
                               evaluatedWith: day(app, 0))], timeout: 5)
     }

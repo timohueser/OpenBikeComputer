@@ -3,7 +3,9 @@
     import Icon from './PlannerIcon.svelte';
     import type { RoutePoint } from '../../lib/planner/editor';
 
-    let { stops, onInspect, onReorder, measured = true }: {
+    let { stops, onInspect, onReorder, measured = true, hoveredId = null, onHover }: {
+        hoveredId?: string | null;
+        onHover?: (id: string | null) => void;
         measured?: boolean;
         stops: { point: RoutePoint; distance: number }[];
         onInspect: (point: RoutePoint) => void;
@@ -11,15 +13,16 @@
     } = $props();
 
     const helpId = $props.id();
+    const listed = $derived(stops.filter(stop => stop.point.kind !== 'via'));
     let list: HTMLOListElement;
     let drag = $state<{ id: string; from: number; to: number; y: number; delta: number; centers: number[] } | null>(null);
     let announcement = $state('');
 
     async function move(id: string, from: number, to: number, restoreFocus = false) {
-        if (from === to || to < 1 || to > stops.length - 2) return;
-        const label = stops[from].point.label;
+        if (from === to || to < 1 || to > listed.length - 2) return;
+        const label = listed[from].point.label;
         onReorder(id, to - from);
-        announcement = `${label} moved to stop ${to} of ${stops.length - 2}.`;
+        announcement = `${label} moved to stop ${to} of ${listed.length - 2}. Changed legs follow roads.`;
         if (restoreFocus) {
             await tick();
             [...list.querySelectorAll<HTMLButtonElement>('.handle')].find(handle => handle.dataset.point === id)?.focus();
@@ -27,7 +30,7 @@
     }
 
     function startDrag(event: PointerEvent, id: string, index: number) {
-        if (event.button !== 0 || stops.length < 4) return;
+        if (event.button !== 0 || listed.length < 4) return;
         const centers = [...list.children].map(row => { const rect = row.getBoundingClientRect(); return rect.top + rect.height / 2; });
         drag = { id, from: index, to: index, y: event.clientY, delta: 0, centers };
         event.currentTarget instanceof HTMLElement && event.currentTarget.setPointerCapture(event.pointerId);
@@ -37,7 +40,7 @@
         if (!drag) return;
         drag.delta = event.clientY - drag.y;
         drag.to = drag.centers.reduce((nearest, center, index) =>
-            index > 0 && index < stops.length - 1 && Math.abs(center - event.clientY) < Math.abs(drag!.centers[nearest] - event.clientY) ? index : nearest, drag.from);
+            index > 0 && index < listed.length - 1 && Math.abs(center - event.clientY) < Math.abs(drag!.centers[nearest] - event.clientY) ? index : nearest, drag.from);
     }
 
     function drop(event: PointerEvent) {
@@ -53,21 +56,22 @@
 <svelte:window onkeydown={(event) => { if (event.key === 'Escape') drag = null; }} onblur={() => drag = null} />
 
 <ol class="route" bind:this={list}>
-    {#each stops as { point, distance }, index (point.id)}
+    {#each listed as { point, distance }, index (point.id)}
         <li class:dragging={drag?.id === point.id && Math.abs(drag.delta) > 4}
             class:drop-before={drag?.to === index && drag.to < drag.from}
             class:drop-after={drag?.to === index && drag.to > drag.from}
             style:--drag-y={`${drag?.id === point.id ? drag.delta : 0}px`}>
-            <button type="button" class="stop" onclick={() => onInspect(point)}>
-                <Icon name={point.kind === 'via' ? 'route' : point.kind === 'start' || point.kind === 'finish' ? 'pin' : 'flag'} size={17} />
+            <button type="button" class="stop" class:highlighted={hoveredId === point.id} onclick={() => onInspect(point)}
+                onmouseenter={() => onHover?.(point.id)} onmouseleave={() => onHover?.(null)} onfocus={() => onHover?.(point.id)} onblur={() => onHover?.(null)}>
+                <Icon name={point.kind === 'start' || point.kind === 'finish' ? 'pin' : 'flag'} size={17} />
                 <span>
-                    <strong>{point.kind === 'via' ? 'Shaping point' : point.label}</strong>
+                    <strong>{point.label}</strong>
                     {#if measured}<small>{distance.toFixed(1)} km</small>{/if}
                 </span>
             </button>
-            {#if index > 0 && index < stops.length - 1}
+            {#if index > 0 && index < listed.length - 1}
                 <button type="button" class="handle" data-point={point.id} aria-label={`Reorder ${point.label}`} aria-describedby={helpId}
-                    title="Drag to reorder · use ↑ or ↓ when focused" disabled={stops.length < 4}
+                    title="Drag to reorder · use ↑ or ↓ when focused" disabled={listed.length < 4}
                     onpointerdown={(event) => startDrag(event, point.id, index)} onpointermove={dragMove}
                     onpointerup={drop} onpointercancel={() => drag = null}
                     onkeydown={(event) => {
@@ -83,6 +87,7 @@
     {/each}
 </ol>
 {#if measured}<p class="note">Cumulative from the start</p>{/if}
+{#if stops.some(stop => stop.point.kind === 'via' || stop.point.leg === 'drawn')}<p class="note">Edit shaping points on the map. Reordering stops clears shapes on changed legs. Undo restores them.</p>{/if}
 <span class="sr-only" id={helpId}>Drag to reorder. Use the up and down arrow keys when focused.</span>
 <span class="sr-only" role="status">{announcement}</span>
 
@@ -121,7 +126,7 @@
         border-radius: 6px;
         text-align: left;
     }
-    .stop:hover {
+    .stop:hover, .stop.highlighted {
         background: var(--parchment-2);
     }
     .stop > :global(svg) {

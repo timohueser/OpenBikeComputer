@@ -20,7 +20,8 @@ describe('terrain grade display', () => {
         expect(profileGrades([{ progress: 0, height: 0 }, { progress: 1, height: 5 }], .01)).toEqual([null]);
         expect(profileGrades([{ progress: 0, height: 0 }, { progress: 0, height: 0 }, { progress: 1, height: 10 }], .1)).toEqual([null, 10]);
         expect(profileGrades([], 0)).toEqual([]);
-        expect([-4, 0, 3, 6, 10, null].map(gradeBand)).toEqual([0, 1, 2, 3, 4, 5]);
+        expect([-50, -20, -15, -10, -6, -3, 0, 3, 6, 10, 15, 20, 50, null].map(gradeBand)).toEqual([0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 11]);
+        for (const grade of [2.94, 2.96, 6, 9.99999, 15, 19.96, 50]) expect(gradeBand(-grade) + gradeBand(grade)).toBe(10);
         expect(gradeBand(9.999999)).toBe(gradeBand(10));
         expect(formatGrade(null)).toBe('Grade unknown');
         expect(formatGrade(-.01)).toBe('0.0% grade');

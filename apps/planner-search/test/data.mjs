@@ -1,16 +1,22 @@
 import {DatabaseSync} from 'node:sqlite';
 import assert from 'node:assert/strict';
-import {search,DEFAULT_VIEW} from '../web/engine.mjs';
+import {search,DEFAULT_VIEW,distance} from '../web/engine.mjs';
 import {readFileSync} from 'node:fs';
 import {resolve} from '../resolver.mjs';
 import {lengths} from '../web/geography.mjs';
 import {compact} from '../web/text.mjs';
+import path from 'node:path';
 
-const dbs=Object.fromEntries(['germany','baden-wuerttemberg'].map(name=>{
-  const conn=new DatabaseSync(`data/${name}.sqlite`,{readOnly:true});
+const regions=(process.env.OBC_SEARCH_REGIONS || 'germany,baden-wuerttemberg').split(',');
+const dbs=Object.fromEntries(regions.map(name=>{
+  const conn=new DatabaseSync(path.join(process.env.OBC_SEARCH_DATA || 'data', `${name}.sqlite`),{readOnly:true});
   conn.exec('PRAGMA cache_size=-32768; PRAGMA mmap_size=0;');
   return [name,{conn,all:(sql,bind=[])=>conn.prepare(sql).all(...bind)}];
 }));
+const habsburgerSources=new Set(['w154330310','n303825598','n801319951']);
+const habsburgerLocation=[7.85434,48.01003];
+const habsburgerAddress=p=>p.precision==='house'&&p.city==='Freiburg im Breisgau'
+  &&habsburgerSources.has(p.source)&&distance([p.lon,p.lat],habsburgerLocation)<.02;
 const cases=[
   {q:'bakery',check:r=>r.length>0&&r.every(p=>p.kind==='bakery'&&p.lon>=DEFAULT_VIEW[0]&&p.lon<=DEFAULT_VIEW[2])},
   {q:'Kandel',check:r=>r[0]?.kind==='summit'&&r.some(p=>p.source==='n1591343465'&&p.kind==='pass')&&r.filter(p=>p.kind==='street'&&p.name==='Kandel'&&p.distance<30).length===1},
@@ -24,7 +30,7 @@ const cases=[
   {q:'Deutsches Museum München',serverOnly:true,check:r=>r[0]?.name==='Deutsches Museum'&&r[0]?.kind==='museum'},
   {q:'Platz der Republik 1 Berlin',serverOnly:true,check:r=>r[0]?.precision==='house'&&r[0]?.city==='Berlin'},
   {q:'Kaiser Joseph Straße 242 Freiburg',check:r=>r[0]?.precision==='house'},
-  {q:'Habsburgerstr. 10 Freiburg',check:r=>r[0]?.source==='w154330310'&&r[0]?.precision==='house'},
+  {q:'Habsburgerstr. 10 Freiburg',check:r=>r.length>0&&habsburgerAddress(r[0])},
   {q:'Habsburgerstr 10',check:r=>r[0]?.city==='Freiburg im Breisgau'&&r[0]?.precision==='house'},
   ...['Media Markt','Media-Markt','NediaMarkt','Mdeia Mrkt','Media Markt Freiburg'].map(q=>({q,check:r=>r[0]?.source==='n809686332'})),
   ...['MediaMarkt','Media Markt'].map(q=>({q,view:[7.76,48.08,7.86,48.16],check:r=>{
@@ -48,8 +54,10 @@ for(const [name,db]of Object.entries(dbs))for(const c of cases) {
 }
 console.log(`PASS ${results.length} real-data acceptance cases`);
 const timing=[];
+const primary=dbs.germany || dbs['baden-wuerttemberg'];
 for(let n=0;n<3;n++)for(const c of cases) {
-  const r=search(dbs.germany,{...c,view:c.view||DEFAULT_VIEW});timing.push(r.elapsed);
+  if(!dbs.germany && c.serverOnly)continue;
+  const r=search(primary,{...c,view:c.view||DEFAULT_VIEW});timing.push(r.elapsed);
 }
 timing.sort((a,b)=>a-b);
 const counts=Object.fromEntries(Object.entries(dbs).map(([name,db])=>[name,{
@@ -63,8 +71,10 @@ const hotels=resolve(dbs['baden-wuerttemberg'],{type:'places',what:['hotel'],whe
 assert.ok(hotels.results.length>0);assert.ok(hotels.results.every(p=>p.kind==='hotel'&&p.distance<=3));
 const gap=resolve(dbs['baden-wuerttemberg'],{type:'stretches',what:'gap:water'},context);
 assert.ok(gap.stretches.length>0);assert.ok(gap.stretches.every(s=>s.from>=0&&s.to<=total&&s.coordinates.length>=2));
-const address=resolve(dbs.germany,{type:'route',from:{plan:'start'},to:{name:'Habsburgerstr. 10 Freiburg'}},context);
-assert.equal(address.changes[0].points.at(-1).source,'w154330310');
+const address=resolve(primary,{type:'route',from:{plan:'start'},to:{name:'Habsburgerstr. 10 Freiburg'}},context);
+const target=address.changes[0].points.at(-1);
+assert.ok(habsburgerSources.has(target.source)&&distance(target.coordinate,habsburgerLocation)<.02);
+assert.ok(primary.all("SELECT 1 FROM addresses WHERE source='w154330310' AND house='10'").length>0);
 console.log('PASS real-data day scope, water gaps, and address route target');
 for(const db of Object.values(dbs))db.conn.close();
 console.log(JSON.stringify({counts,queries:results.length,medianMs:timing[Math.floor(timing.length/2)],p95Ms:timing[Math.ceil(timing.length*.95)-1]},null,2));

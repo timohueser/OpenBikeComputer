@@ -17,7 +17,7 @@
     import { dayOverTarget, maxRidingDays, pinNight, tripDays, type Coordinate, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
 
     let {
-        kind, trip, days, dayLabels, night, point, place, coordinate, candidates, legMode, forNight = false,
+        kind, trip, days, dayLabels, night, point, place, coordinate, candidates, legMode,
         onClose, onEndpoint, onAddHere, onLegMode, onInsert, onPick, onSelectPlace, onStay, onAddVisit, onRename, onKind, onRemove,
     }: {
         kind: CalloutKind;
@@ -33,8 +33,6 @@
         coordinate?: Coordinate | null;
         candidates: OvernightCandidate[];
         legMode: LegMode;
-        /** The place was picked for the night, so it offers the night whatever its kind. */
-        forNight?: boolean;
         onEndpoint?: (kind: 'start' | 'finish') => void;
         onClose: () => void;
         onAddHere: (kind: EditableKind) => void;
@@ -58,9 +56,9 @@
         { value: 'marker', label: 'Marker', icon: 'pin' },
     ] as { value: EditableKind; label: string; icon: string }[]).filter(type => multi || type.value !== 'night'));
     const legModes: { value: LegMode; label: string }[] = [
-        { value: 'routed', label: 'Routed' },
-        { value: 'straight', label: 'Straight' },
-        { value: 'drawn', label: 'Drawn' },
+        { value: 'routed', label: 'Follow roads' },
+        { value: 'straight', label: 'Straight lines' },
+        { value: 'drawn', label: 'Freehand' },
     ];
 
     let root: HTMLDivElement;
@@ -69,7 +67,7 @@
     // svelte-ignore state_referenced_locally
     let sleepDay = $state(night);
 
-    const sleeps = $derived(hasEndpoints && days.length > 0 && multi && (!place || forNight || place.category === 'hotel' || place.category === 'camp'));
+    const sleeps = $derived(hasEndpoints && days.length > 0 && multi);
     const preview = $derived.by(() => {
         if (!coordinate || sleepDay >= days.length) return null;
         const day = tripDays(pinNight(trip, sleepDay, coordinate, 'Preview'))[sleepDay - 1];
@@ -131,6 +129,7 @@
     {:else if kind === 'leg'}
         <h2>This leg</h2>
         <Segmented label="Leg mode" options={legModes} value={legMode} onChange={onLegMode} />
+        <p class="hint">Straight lines join shaping points without following roads.</p>
         <button type="button" class="secondary" onclick={onInsert}>Insert point here</button>
     {:else if kind === 'dayend'}
         <h2>Day {dayLabels[night]} ends here for now</h2>

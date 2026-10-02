@@ -175,7 +175,7 @@ fn by_key(a: &[u8; R], b: &[u8; R]) -> Ordering {
 /// Sort `n` records at `budget` and return the peak heap the whole pass cost, output checked.
 fn sort_peak(scratch: &FileScratch, n: u64, budget: usize) -> usize {
     let ((), peak) = peak_of(|| {
-        let mut sort = ExternalSort::<R>::new(scratch, budget, by_key);
+        let mut sort = ExternalSort::<R, _>::new(scratch, budget, by_key);
         // A deterministic scramble, so the runs are genuinely unordered relative to each other.
         let mut x = 0x9E37_79B9_7F4A_7C15u64;
         for i in 0..n {

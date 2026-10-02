@@ -227,9 +227,10 @@ select:focus {
     color: var(--parchment);
 }
 
-/* Filter only the raster tiles; selection overlays retain their semantic colours. */
-:root[data-theme="dark"] .leaflet-tile-pane {
-    filter: invert(1) hue-rotate(180deg) saturate(0.55) brightness(0.85) contrast(0.85);
+.basemap-warning {
+    padding: 6px 10px;
+    background: var(--panel);
+    color: var(--ink);
 }
 
 .leaflet-bar a,

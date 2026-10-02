@@ -130,8 +130,8 @@ export interface AssembleOptions {
     readonly acceptHoles?: boolean;
     readonly acceptPartial?: boolean;
     /** How much of a source cell one {@link AssembleRead} brings back (default 4 KiB, clamped to
-     *  4 MiB). The cache holds sixteen of these. `1` turns the input cache off; only a measurement
-     *  should ask for that. */
+     *  4 MiB). The cache holds a fixed 16 MiB of these. `1` turns the input cache off; only a
+     *  measurement should ask for that. */
     readonly readBlockBytes?: number;
     /** The most memory the nav merge's sorted passes may hold (default 64 MiB, floor 64 KiB). It
      *  bounds what the merge holds, never what it writes: the same selection assembles to the same

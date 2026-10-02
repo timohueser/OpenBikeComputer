@@ -1,0 +1,99 @@
+{
+  "format": 1,
+  "region": "baden-wuerttemberg",
+  "device_region": "europe/germany/baden-wuerttemberg",
+  "country": "DE",
+  "profiles": [
+    "gravel",
+    "gravel/less-climbing",
+    "gravel/shorter",
+    "hiking",
+    "hiking/less-climbing",
+    "hiking/shorter",
+    "mtb",
+    "mtb/less-climbing",
+    "mtb/shorter",
+    "road",
+    "road/less-climbing",
+    "road/shorter",
+    "touring",
+    "touring/less-climbing",
+    "touring/shorter"
+  ],
+  "bounds": [
+    7.45,
+    47.5,
+    10.5,
+    49.85
+  ],
+  "osm": {
+    "url": "https://maps.openbikecomputer.com/planner/sources/02c30ffdc035158daa66d036ee3ee5c0b163a87d2ca5f8d439f6985b036169f8.osm.pbf",
+    "sha256": "02c30ffdc035158daa66d036ee3ee5c0b163a87d2ca5f8d439f6985b036169f8"
+  },
+  "auxiliary": {
+    "daylight-landcover.gpkg": {
+      "url": "https://maps.openbikecomputer.com/planner/sources/46536607dd51665fd2a8b0f2912084a5d95680f4f0f9a31873248d85fcebc199.daylight-landcover.gpkg",
+      "sha256": "46536607dd51665fd2a8b0f2912084a5d95680f4f0f9a31873248d85fcebc199"
+    },
+    "land-polygons-split-3857.zip": {
+      "url": "https://maps.openbikecomputer.com/planner/sources/c4871013f85c257afb44b0be65ab601c8850feeafb3c1f871beaf741d7b8d824.land-polygons-split-3857.zip",
+      "sha256": "c4871013f85c257afb44b0be65ab601c8850feeafb3c1f871beaf741d7b8d824"
+    },
+    "natural_earth_vector.gpkg.zip": {
+      "url": "https://maps.openbikecomputer.com/planner/sources/b9e2e7b3d5c2c59593f6eafc19be2ba87fb04788a90c57ccd6cf32a587b6ecc3.natural_earth_vector.gpkg.zip",
+      "sha256": "b9e2e7b3d5c2c59593f6eafc19be2ba87fb04788a90c57ccd6cf32a587b6ecc3"
+    },
+    "pgf-encoding.zip": {
+      "url": "https://maps.openbikecomputer.com/planner/sources/fd11be3e69ce7f221cf71c2549f35cdf50d6aa54937b2866fc03aa95e54031bb.pgf-encoding.zip",
+      "sha256": "fd11be3e69ce7f221cf71c2549f35cdf50d6aa54937b2866fc03aa95e54031bb"
+    },
+    "qrank.csv.gz": {
+      "url": "https://maps.openbikecomputer.com/planner/sources/daf93ed3eaeeb7d9d88237118db44e34880680921e5e8eb3353626e4e76ed4dd.qrank.csv.gz",
+      "sha256": "daf93ed3eaeeb7d9d88237118db44e34880680921e5e8eb3353626e4e76ed4dd"
+    },
+    "water-polygons-split-3857.zip": {
+      "url": "https://maps.openbikecomputer.com/planner/sources/0e6a980164667f6700b655b28c829905ad1604253fb70048a29a60b69a5ce653.water-polygons-split-3857.zip",
+      "sha256": "0e6a980164667f6700b655b28c829905ad1604253fb70048a29a60b69a5ce653"
+    }
+  },
+  "terrain": {
+    "reference_index_sha256": "9cdbf58a85898160990facae090831b17d090679a51a6d7df261d2f87c8e4740",
+    "dem": {
+      "Copernicus_DSM_COG_10_N47_00_E007_00_DEM.tif": "5012dc32581b4aebbe71dec6f22507a2944b5e6b7f8fa301b0876f947976298b",
+      "Copernicus_DSM_COG_10_N47_00_E008_00_DEM.tif": "4e2917429d65e049a4f1ddee2093f7fc50f11d22d0fd7cee85f5c8334186d7fe",
+      "Copernicus_DSM_COG_10_N47_00_E009_00_DEM.tif": "ca0b7567f5e12b8c814500bcf434855fb2a1084248bb80d3c80a91169887817c",
+      "Copernicus_DSM_COG_10_N47_00_E010_00_DEM.tif": "81da8ebbaa01e294ebf5dac218c66db6ba9c6b6ebe6a45c19f112e339dddaa16",
+      "Copernicus_DSM_COG_10_N48_00_E007_00_DEM.tif": "140fb67fd94815860c45890f3d5600b2084ad638999fc9b1d661493f875bad59",
+      "Copernicus_DSM_COG_10_N48_00_E008_00_DEM.tif": "f674b08626841ee3e1edec7a2bd9dc9e0e12ff189b754113ac514f7ef6c3d546",
+      "Copernicus_DSM_COG_10_N48_00_E009_00_DEM.tif": "4330a081f09d12b8e3ad0660d6e4104f982f5994fc3898cb245d2d85327aaaa0",
+      "Copernicus_DSM_COG_10_N48_00_E010_00_DEM.tif": "385d439240bebb2e50b942d3390d09ad0b1569b2092c3a912888cd832f8489bb",
+      "Copernicus_DSM_COG_10_N49_00_E007_00_DEM.tif": "d825b86e2629692bb3f757854369887421444386c0915a053738a30cca86d1e2",
+      "Copernicus_DSM_COG_10_N49_00_E008_00_DEM.tif": "14deaaca7e44e821111c1947dc65c7cffbe5f67e3986f371d2c967ff999e592b",
+      "Copernicus_DSM_COG_10_N49_00_E009_00_DEM.tif": "58b96ce143fe80f2b30cd8503d1b8008f366289a77ef3a2af54e25e95b0f175a",
+      "Copernicus_DSM_COG_10_N49_00_E010_00_DEM.tif": "d1b86e8cb090c61a9d799d20f0e69bedcd19f906b96bbd029447bf88a76ffc9c",
+      "Copernicus_DSM_COG_10_N50_00_E007_00_DEM.tif": "76375ccf299d0e2d2fe537bfe5a0da02b93e0dad15c26a07afbd563af49fb42c",
+      "Copernicus_DSM_COG_10_N50_00_E008_00_DEM.tif": "7d33346d923e6a12e57de4a205e5b31dc310e27a5b45816ef11298918470f983",
+      "Copernicus_DSM_COG_10_N50_00_E009_00_DEM.tif": "03eb1503af74bf1fe9628ab18075ead8a789cf1ca9558a4ae0f46c6c7e5de941",
+      "Copernicus_DSM_COG_10_N50_00_E010_00_DEM.tif": "1330c6587a7f5ae3d8616d95a2b20ad559aa94fbc7ed0162dfcc2859ed31c8d2"
+    }
+  },
+  "probe": {
+    "points": [
+      [
+        8.375334,
+        48.504053
+      ],
+      [
+        8.376237,
+        48.498711
+      ]
+    ],
+    "query": "bakery",
+    "view": [
+      7.75,
+      47.94,
+      7.9,
+      48.07
+    ]
+  }
+}

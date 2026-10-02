@@ -114,7 +114,7 @@ function score(p,q,focus,fuzzy=false) {
     const remainder=key.startsWith(name)?key.slice(name.length):key.endsWith(name)?key.slice(0,-name.length):null;
     if(remainder&&context.some(c=>compact(c).startsWith(remainder)))match=Math.max(match,98);
   }
-  if(['city','town','village'].includes(p.kind)&&ns.some(n=>n.startsWith(text+' ')))match=Math.max(match,95);
+  if(['city','town','village'].includes(p.kind)&&ns.some(n=>n.startsWith(text+' ')))match=Math.max(match,98);
   if (fuzzy) match-=8*fuzzy;
   const km=distance([p.lon,p.lat],focus);
   const proximity=12/(1+km/20), importance=PROMINENT.includes(p.kind)?Math.min(1,Math.max(0,p.importance))*8:0;
@@ -124,6 +124,11 @@ function score(p,q,focus,fuzzy=false) {
     why:{match,proximity,importance,outdoor,correction:fuzzy}, precision:p.kind==='street'?'street':'place'};
 }
 
+function candidates(db, queries) {
+  const rows=db.candidates?db.candidates(queries):queries.flatMap(({sql,params,options})=>db.all(sql,params,options));
+  return [...new Map(rows.map(p=>[p.id,p])).values()];
+}
+
 function textCandidates(db, q, view, onlyPlaces=false) {
   let exp=expression(q);
   if(!exp) return [];
@@ -131,27 +136,33 @@ function textCandidates(db, q, view, onlyPlaces=false) {
   if(streetNorm(q)!==norm(q))exp=`(${exp}) OR (${expression(streetNorm(q))})`;
   const restriction=onlyPlaces?" AND p.kind IN ('city','town','village','hamlet','locality','district','state','suburb')":'';
   const from=`FROM terms JOIN places p ON p.id=terms.rowid WHERE terms MATCH ?${restriction}`;
-  const exact=db.all(`SELECT p.* FROM names n JOIN places p ON p.id=n.place_id WHERE n.term=?${restriction}
-    ORDER BY ${candidateOrder(view)} LIMIT 400`,[norm(q)]);
-  const prefix=db.all(`SELECT DISTINCT p.* FROM names n JOIN places p ON p.id=n.place_id WHERE n.term>=? AND n.term<?${restriction}
-    ORDER BY ${candidateOrder(view)} LIMIT 100`,[norm(q),norm(q)+'\uffff']);
-  // Both branches precede ranking: a local candidate survives a common global name.
-  const global=db.all(`SELECT p.* ${from} ORDER BY rank, ${candidateOrder(view)} LIMIT 400`,[exp]);
-  const local=db.all(`SELECT p.* ${from} AND ${pointBoundsSQL} ORDER BY ${candidateOrder(view)} LIMIT 800`,[exp,...view]);
   const keys=[...new Set([...spans(q),...spans(streetNorm(q))].map(p=>p.term))];
-  const joined=compactCandidates(db,keys,compact(q),view,restriction);
-  return [...new Map([...exact,...prefix,...global,...local,...joined].map(p=>[p.id,p])).values()];
+  return candidates(db,[
+    {sql:`SELECT p.* FROM names n JOIN places p ON p.id=n.place_id WHERE n.term=?${restriction}
+      ORDER BY ${candidateOrder(view)} LIMIT 400`,params:[norm(q)]},
+    {sql:`SELECT DISTINCT p.* FROM names n JOIN places p ON p.id=n.place_id WHERE n.term>=? AND n.term<?${restriction}
+      ORDER BY ${candidateOrder(view)} LIMIT 100`,params:[norm(q),norm(q)+'\uffff']},
+    // Both branches precede ranking: a local candidate survives a common global name.
+    {sql:`SELECT p.* ${from} ORDER BY rank, ${candidateOrder(view)} LIMIT 400`,params:[exp]},
+    {sql:`SELECT p.* ${from} AND ${pointBoundsSQL} ORDER BY ${candidateOrder(view)} LIMIT 800`,params:[exp,...view],options:{bounds:view}},
+    ...compactQueries(keys,compact(q),view,restriction),
+  ]);
+}
+
+function compactQueries(keys,prefix,view,restriction='') {
+  const joined=`FROM compact_names n JOIN places p ON p.id=n.place_id WHERE n.term IN (${keys.map(()=>'?').join(',')})${restriction}`;
+  // A common query fragment must not exhaust the budget for the complete name.
+  return [
+    ...keys.map(key=>({sql:`SELECT p.* FROM compact_names n JOIN places p ON p.id=n.place_id
+      WHERE n.term=?${restriction} ORDER BY ${candidateOrder(view)} LIMIT 400`,params:[key]})),
+    {sql:`SELECT DISTINCT p.* ${joined} AND ${pointBoundsSQL} ORDER BY ${candidateOrder(view)} LIMIT 800`,params:[...keys,...view],options:{bounds:view}},
+    {sql:`SELECT DISTINCT p.* FROM compact_names n JOIN places p ON p.id=n.place_id
+      WHERE n.term>=? AND n.term<?${restriction} ORDER BY ${candidateOrder(view)} LIMIT 100`,params:[prefix,prefix+'\uffff']},
+  ];
 }
 
 function compactCandidates(db,keys,prefix,view,restriction='') {
-  const joined=`FROM compact_names n JOIN places p ON p.id=n.place_id WHERE n.term IN (${keys.map(()=>'?').join(',')})${restriction}`;
-  // A common query fragment must not exhaust the budget for the complete name.
-  const compactGlobal=keys.flatMap(key=>db.all(`SELECT p.* FROM compact_names n JOIN places p ON p.id=n.place_id
-    WHERE n.term=?${restriction} ORDER BY ${candidateOrder(view)} LIMIT 400`,[key]));
-  const compactLocal=db.all(`SELECT DISTINCT p.* ${joined} AND ${pointBoundsSQL} ORDER BY ${candidateOrder(view)} LIMIT 800`,[...keys,...view]);
-  const compactPrefix=db.all(`SELECT DISTINCT p.* FROM compact_names n JOIN places p ON p.id=n.place_id
-    WHERE n.term>=? AND n.term<?${restriction} ORDER BY ${candidateOrder(view)} LIMIT 100`,[prefix,prefix+'\uffff']);
-  return [...new Map([...compactGlobal,...compactLocal,...compactPrefix].map(p=>[p.id,p])).values()];
+  return candidates(db,compactQueries(keys,prefix,view,restriction));
 }
 
 export function named(db,q,view,onlyPlaces=false) {
@@ -270,7 +281,7 @@ export function search(db,input) {
       }
     }
     const rows=db.all(`SELECT p.* FROM places p WHERE p.kind IN (${kinds.map(()=>'?').join(',')})
-      AND ${bboxSQL}`,[...kinds,...bounds]);
+      AND ${bboxSQL}`,[...kinds,...bounds],{bounds});
     results=rows.filter(p=>inBox(p,bounds)&&(!cuisines.length||cuisines.some(c=>serves(p,c)))).map(p=>{
       const km=distance([p.lon,p.lat],focus);
       const position=route?routePosition([p.lon,p.lat],route):null;

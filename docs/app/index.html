@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#A4501E" />
+  <title>OBC app — coming soon | OpenBikeComputer</title>
+  <meta name="description" content="The OBC app is coming soon. You can use your OpenBikeComputer without a phone. Press BACK on the QR code screen to continue setup." />
+  <link rel="canonical" href="https://openbikecomputer.com/app/" />
+  <link rel="icon" type="image/png" sizes="180x180" href="../docs/assets/brand/apple-touch-icon.png" />
+  <script src="../docs/assets/theme.js"></script>
+  <link rel="stylesheet" href="../docs/assets/theme.css" />
+  <link rel="stylesheet" href="../docs/assets/site-header.css" />
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100svh; display: flex; flex-direction: column; background: var(--parchment); color: var(--ink); font-family: var(--sans); line-height: 1.6; }
+    a { color: var(--forest); text-underline-offset: 3px; }
+    a:hover { color: var(--forest-deep); }
+    :focus-visible { outline: 2px solid var(--forest); outline-offset: 4px; }
+    ::selection { background: var(--amber); color: var(--on-amber); }
+    .site-head .theme-toggle { margin-left: auto; }
+    main, footer { width: min(42rem, 100% - 40px); margin-inline: auto; }
+    main { padding-block: clamp(48px, 10vh, 100px); }
+    h1 { max-width: 14ch; margin: 0 0 24px; font-size: clamp(2.5rem, 6vw, 4rem); line-height: 1.08; letter-spacing: -0.025em; text-wrap: balance; }
+    .intro { max-width: 30ch; margin: 0; font-size: 1.375rem; color: var(--ink-soft); }
+    section { margin-top: 36px; padding-top: 28px; border-top: 1px solid var(--line-strong); }
+    h2 { margin: 0 0 8px; font-size: 1.25rem; }
+    section p { max-width: 40ch; margin: 0 0 28px; font-size: 1.125rem; }
+    .docs-link { display: inline-block; padding: 12px 20px; border-radius: 6px; background: var(--amber); color: var(--on-amber); font-weight: 700; text-decoration: none; }
+    .docs-link:hover { color: var(--on-amber); text-decoration: underline; }
+    footer { margin-top: auto; padding-block: 24px; border-top: 1px solid var(--line); }
+    footer nav { display: flex; flex-wrap: wrap; gap: 8px 24px; }
+    footer a { display: inline-flex; align-items: center; min-height: 44px; color: var(--ink-soft); }
+  </style>
+</head>
+<body>
+  <header class="site-head">
+    <div class="head-inner">
+      <a class="brand" href="../" aria-label="OpenBikeComputer home">
+        <img class="mark" src="../docs/assets/brand/app-icon.svg" width="32" height="32" alt="" />
+        <span class="name">OpenBikeComputer</span>
+        <span class="short-name" aria-hidden="true">OBC</span>
+      </a>
+      <button class="theme-toggle" id="theme_toggle" type="button" aria-label="Dark mode" aria-pressed="false" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path class="moon" d="M20.5 13.2A8.6 8.6 0 0 1 10.8 3.5 8.6 8.6 0 1 0 20.5 13.2Z" />
+          <g class="sun"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></g>
+        </svg>
+      </button>
+    </div>
+  </header>
+  <main>
+    <h1>The OBC app is coming soon.</h1>
+    <p class="intro">You can use your OBC without a phone.</p>
+    <section aria-labelledby="continue-title">
+      <h2 id="continue-title">Continue on your OBC</h2>
+      <p>On the QR code screen, press <strong>BACK</strong> to continue setup.</p>
+      <a class="docs-link" href="../docs/#start-here">Explore the documentation</a>
+    </section>
+  </main>
+  <footer>
+    <nav aria-label="Legal">
+      <a href="../docs/impressum/">Impressum</a>
+      <a href="../docs/datenschutz/">Datenschutz</a>
+    </nav>
+  </footer>
+</body>
+</html>

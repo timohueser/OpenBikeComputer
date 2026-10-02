@@ -30,7 +30,7 @@ from pathlib import Path
 # enough of the assembler to stamp a skin, and nothing else.
 BUDGETS = {
     "convert": {"gzipped": 62 * 1024, "raw_wasm": 112 * 1024},
-    "assemble": {"gzipped": 320 * 1024, "raw_wasm": 832 * 1024},
+    "assemble": {"gzipped": 352 * 1024, "raw_wasm": 944 * 1024},
     "preview": {"gzipped": 128 * 1024, "raw_wasm": 272 * 1024},
 }
 

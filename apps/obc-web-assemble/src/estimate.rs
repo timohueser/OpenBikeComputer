@@ -15,7 +15,7 @@
 //! verdicts differ enough to be computed apart. With no usable OPFS, the cells, the spill and the
 //! whole map are all resident, and such a browser honestly cannot do a country.
 
-use crate::driver::{DEFAULT_READ_BLOCK, READ_CACHE_BLOCKS, VERIFY_READ_BLOCK};
+use crate::driver::{INPUT_CACHE_BYTES, VERIFY_CACHE_BYTES};
 
 /// The engine's residual floor over the sort budget: per-cell transients, the first-fit bin table,
 /// the seam table, both block caches, and slack. It covers a country-scale selection with about
@@ -46,9 +46,9 @@ pub const OUTPUT_PER_CELL_BYTE: f64 = 1.0;
 const REGION_GAP_BYTES: f64 = 50.0 * 15.0;
 
 /// Default input cache residency, shared across all source cells.
-pub const INPUT_READ_CACHE_BYTES: f64 = (READ_CACHE_BLOCKS * DEFAULT_READ_BLOCK) as f64;
+pub const INPUT_READ_CACHE_BYTES: f64 = INPUT_CACHE_BYTES as f64;
 /// Sealed-output verification cache residency.
-pub const VERIFY_READ_CACHE_BYTES: f64 = (READ_CACHE_BLOCKS * VERIFY_READ_BLOCK) as f64;
+pub const VERIFY_READ_CACHE_BYTES: f64 = VERIFY_CACHE_BYTES as f64;
 
 /// wasm32's hard address space. Nothing can be allocated past this, whatever the machine has.
 pub const WASM32_ADDRESS_SPACE: f64 = 4.0 * 1024.0 * 1024.0 * 1024.0;
@@ -210,13 +210,13 @@ mod tests {
         estimate_memory(nav, cells, terrain, SORT, Residency::resident())
     }
 
-    /// A country-scale selection projects at about 0.88 GB on the sunk path: the budget-bounded
+    /// A country-scale selection projects at about 0.89 GB on the sunk path: the budget-bounded
     /// engine, two block caches, and the raster on the way in.
     #[test]
     fn dach_fits_the_sunk_path_and_that_is_the_epic() {
         let e = streamed(catalog::DACH_NAV, catalog::DACH_CELLS, catalog::DACH_TERRAIN);
         assert!(e.fits, "DACH must fit — {} B against {} B", e.peak_bytes, e.budget_bytes);
-        assert!((e.peak_bytes - 0.877e9).abs() < 2e7, "{}", e.peak_bytes);
+        assert!((e.peak_bytes - 0.892e9).abs() < 2e7, "{}", e.peak_bytes);
         assert!(e.headroom_bytes > 0.5 * PRACTICAL_BUDGET, "…with real headroom: {}", e.headroom_bytes);
         assert_eq!(e.output_bytes, 0.0, "a sunk map is never wasm's");
         // The engine term does not scale with the map: the two selections differ only in terrain.
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn the_measured_regions_are_comfortable_and_terrain_shaped() {
         let bw = streamed(catalog::BW_NAV, catalog::BW_CELLS, catalog::BW_TERRAIN);
-        assert!((bw.peak_bytes - 0.485e9).abs() < 1e7, "{}", bw.peak_bytes);
+        assert!((bw.peak_bytes - 0.501e9).abs() < 1e7, "{}", bw.peak_bytes);
         assert!(bw.headroom_bytes > 0.8 * PRACTICAL_BUDGET);
         let phone = estimate_memory_with_budget(
             catalog::FREIBURG_NAV,

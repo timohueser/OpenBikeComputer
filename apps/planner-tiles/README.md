@@ -1,0 +1,46 @@
+# Planner tiles
+
+Serve immutable regional PMTiles from the `obc-maps` R2 bucket. The Worker uses
+the upstream PMTiles reader. It caches tile responses at the Cloudflare edge.
+
+## Build and deploy
+
+Install Node 24 or later. Run from the repository root:
+
+```sh
+npm ci --prefix apps/planner-tiles
+npm test --prefix apps/planner-tiles
+npm run build --prefix apps/planner-tiles
+```
+
+For dashboard deployment, create the `obc-planner-tiles` Worker. Paste
+`dist/worker.js` into its code editor. Add an R2 binding named `BUCKET` for
+`obc-maps`. Add the custom domain `tiles.openbikecomputer.com`.
+The Worker needs no bucket access key.
+Start with Workers Free for private tests. Check cold tile requests for CPU
+limit failures before a public launch. Upgrade if the fixed limit is too low.
+Workers Free has a fixed `10` ms limit. The configuration does not request
+a paid CPU allowance.
+
+With a Cloudflare deployment credential, run:
+
+```sh
+npm run deploy --prefix apps/planner-tiles
+```
+
+| Path | Result |
+| --- | --- |
+| `/releases/ID/basemap.json` | Vector TileJSON |
+| `/releases/ID/basemap/Z/X/Y.mvt` | Vector tile, zoom 0–14 |
+| `/releases/ID/terrain.json` | Terrain TileJSON |
+| `/releases/ID/terrain/Z/X/Y.webp` | Terrarium tile, zoom 0–12 |
+
+`ID` is the SHA-256 of `release.json`. Grid archives use the canonical object pool and its small public pointers.
+The [release contract](../../specs/planner-release.md#canonical-grid-storage)
+defines those paths. Queries and unknown paths
+return 404. An absent tile returns 204. An absent archive returns 404.
+Read failures return 503 with no cache. The domain root returns 404.
+
+The service also serves release font, sprite, and device catalog paths.
+Offline payload downloads use the bucket's public domain. See the
+[planner instructions](../../builder/app/src/components/planner/README.md).

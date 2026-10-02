@@ -3,16 +3,17 @@
     import type { Coordinate } from '../../src/lib/planner/editor';
     import type { MapPoint } from '../../src/lib/planner/map-types';
 
-    let { popup, points = [], onPointSelect, onEmptyClick }: { popup?: Snippet; points?: MapPoint[]; onPointSelect?: (id: string) => void; onEmptyClick?: (coordinate: Coordinate) => void } = $props();
+    let { popup, points = [], onPointSelect, onPointHover, hoveredId, onEmptyClick }: { hoveredId?: string | null; onPointHover?: (id: string | null) => void; popup?: Snippet; points?: MapPoint[]; onPointSelect?: (id: string) => void; onEmptyClick?: (coordinate: Coordinate) => void } = $props();
     export function fitSearchResults() {}
     export function fitRoute() {}
     export function fitCoordinates() {}
     export function showPlace() {}
     export function zoomBy() {}
+    export function centerOn() {}
 </script>
 
 <button type="button" onclick={() => onEmptyClick?.([7.84, 48])}>Pick map location</button>
 {#each points as point (point.id)}
-    <button type="button" aria-label={`Map ${point.kind === 'place' ? 'place' : 'point'}: ${point.label}`} onclick={() => onPointSelect?.(point.id)}>{point.label}</button>
+    <button type="button" aria-label={`Map ${point.kind === 'place' ? 'place' : 'point'}: ${point.label}`} class:highlighted={hoveredId === point.id} onmouseenter={() => onPointHover?.(point.id)} onmouseleave={() => onPointHover?.(null)} onclick={() => onPointSelect?.(point.id)}>{point.label}</button>
 {/each}
 {@render popup?.()}

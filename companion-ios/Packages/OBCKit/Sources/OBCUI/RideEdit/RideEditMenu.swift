@@ -77,11 +77,13 @@ public struct RideEditMenu: View {
             actionTitle: "Delete ride",
             onConfirm: { onDelete?() }
         )
-        .confirmationDialog("Revert to original?", isPresented: $revertShown, titleVisibility: .visible) {
-            Button("Revert", role: .destructive, action: onRevert)
-        } message: {
-            Text("The ride shows as it was synced.")
-        }
+        .obcDestructiveConfirm(
+            "Revert to original?",
+            isPresented: $revertShown,
+            message: "The ride shows as it was synced.",
+            actionTitle: "Revert",
+            onConfirm: onRevert
+        )
         #if os(iOS)
         .fullScreenCover(isPresented: $editorShown, onDismiss: applyPending) { editorScreen }
         #else

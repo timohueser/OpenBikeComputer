@@ -81,38 +81,20 @@ public struct TrackMapView: View {
 
     @ViewBuilder
     private var mapBody: some View {
-        #if canImport(MapKit)
-        MapReader { proxy in
-            Map(initialPosition: .region(MapGeometry.boundingRegion(for: coordinates, pad: 1.4))) {
-                if stages.isEmpty {
-                    TrackMapContent(coordinates: coordinates, ink: ink, dotRadius: 7, waypoints: waypoints)
-                } else {
-                    ForEach(Array(stages.enumerated()), id: \.offset) { index, stage in
-                        let coords = MapGeometry.clLocations(stage.coordinates)
-                        MapPolyline(coordinates: coords)
-                            .stroke(
-                                OBCTheme.routeCasing,
-                                style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
-                        MapPolyline(coordinates: coords)
-                            .stroke(
-                                stage.color,
-                                style: StrokeStyle(
-                                    lineWidth: index == selectedStage ? 5 : 3.5,
-                                    lineCap: .round, lineJoin: .round))
-                    }
-                }
+        #if os(iOS)
+        let lines = stages.isEmpty
+            ? [MapStroke(coordinates: coordinates, color: ink.color, cased: ink.cased)]
+            : stages.enumerated().map { index, stage in
+                MapStroke(coordinates: stage.coordinates, color: stage.color, width: index == selectedStage ? 5 : 3.5)
             }
-            .mapControls {
-                MapCompass()
-                MapScaleView()
-            }
-            .onTapGesture { point in
-                guard !stages.isEmpty, !stageSummaries.isEmpty else { return }
-                withAnimation(.snappy(duration: 0.22)) {
-                    selectedStage = stageIndex(at: point, proxy: proxy)
-                }
-            }
-        }
+        let pins = stages.isEmpty ? waypoints.dropFirst().dropLast().map { MapPin(coordinate: $0.coordinate, label: "\($0.index + 1)") }
+            + (coordinates.first.map { [MapPin(coordinate: $0, size: 14)] } ?? [])
+            + (coordinates.last.map { [MapPin(coordinate: $0, color: OBCTheme.rust, square: true, size: 14)] } ?? []) : []
+        OBCMapView(lines: lines, pins: pins, showsScale: true,
+                   onTap: { _, point, map in
+                       guard !stages.isEmpty, !stageSummaries.isEmpty else { return }
+                       withAnimation(.snappy(duration: 0.22)) { selectedStage = stageIndex(at: point, map: map) }
+                   })
         .overlay(alignment: .bottom) {
             if let index = selectedStage, let summary = stageSummary(index) {
                 stageCallout(index: index, summary: summary)
@@ -187,11 +169,11 @@ public struct TrackMapView: View {
         .accessibilityIdentifier("trackMap.stageCallout")
     }
 
-    #if canImport(MapKit)
+    #if os(iOS)
     /// The stage polyline nearest the tap, within 28 pt, or `nil` for a tap on empty
-    /// map. Tracks are projected through the live `MapProxy` and subsampled: a callout
+    /// map. Tracks are projected through the native map and subsampled: a callout
     /// hit does not need every vertex.
-    private func stageIndex(at point: CGPoint, proxy: MapProxy) -> Int? {
+    private func stageIndex(at point: CGPoint, map: OBCNativeMapView) -> Int? {
         var best: (index: Int, distance: CGFloat)?
         for (index, stage) in stages.enumerated() {
             let coords = stage.coordinates
@@ -201,22 +183,12 @@ public struct TrackMapView: View {
             screen.reserveCapacity(coords.count / step + 2)
             var i = 0
             while i < coords.count {
-                if let p = proxy.convert(
-                    CLLocationCoordinate2D(latitude: coords[i].latitude, longitude: coords[i].longitude),
-                    to: .local)
-                {
-                    screen.append(p)
-                }
+                screen.append(map.convert(MapGeometry.clLocation(coords[i]), toPointTo: map))
                 i += step
             }
             // The stride can skip the endpoint, and a tap near the finish must hit.
             if let last = coords.last, coords.count % step != 1 {
-                if let p = proxy.convert(
-                    CLLocationCoordinate2D(latitude: last.latitude, longitude: last.longitude),
-                    to: .local)
-                {
-                    screen.append(p)
-                }
+                screen.append(map.convert(MapGeometry.clLocation(last), toPointTo: map))
             }
             guard screen.count > 1 else { continue }
             for j in 1..<screen.count {

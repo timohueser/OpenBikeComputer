@@ -47,6 +47,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { estimateMemory, initAssemble } from '../../src/lib/assemble/bridge';
+import { BASEMAP, basemapResponse } from './basemap-stub.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WASM = join(HERE, '../../src/lib/assemble/pkg/obc_web_assemble_bg.wasm');
@@ -54,14 +55,6 @@ const DOWNLOAD_STEP = join(HERE, '../../src/components/coverage/DownloadStep.sve
 
 /** The host the catalogue must come from: a loopback fixture would make this gate meaningless. */
 const LIVE_HOST = 'maps.openbikecomputer.com';
-
-/** The presentational basemap's host. Its tiles are decoration; the measurement needs none. */
-const BASEMAP = 'tile.openstreetmap.org';
-/** One transparent pixel, so a served tile costs nothing and logs no load failure. */
-const PIXEL = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
-  'base64',
-);
 
 /** Below this the gate cannot fail, because buffering the whole selection would still fit. */
 const MEANINGFUL_BYTES = 512 * 1024 * 1024;
@@ -120,7 +113,7 @@ test('holds a country-scale assembly to the memory its estimate promised', async
   // Only the basemap is intercepted. Everything else, the catalogue objects above all, reaches
   // the network untouched: routing them would put 890 MB through the test protocol.
   await page.route(`https://${BASEMAP}/**`, (route) =>
-    route.fulfill({ status: 200, contentType: 'image/png', body: PIXEL }),
+    route.fulfill(basemapResponse(new URL(route.request().url()))),
   );
 
   // Both subscribed before the page loads, because each is posted once and the catalogue lands

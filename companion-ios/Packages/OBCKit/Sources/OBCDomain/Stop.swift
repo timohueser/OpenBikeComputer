@@ -1,6 +1,6 @@
 import Foundation
 
-/// A place where a day of a trip can end: a campsite or a hotel from Apple Maps, another place
+/// A place where a day of a trip can end: a campsite or a hotel from place search, another place
 /// the rider searched for, or a waypoint from the trip's route files.
 public struct Stop: Hashable, Sendable {
     /// The raw value is the stored name.
@@ -16,7 +16,7 @@ public struct Stop: Hashable, Sendable {
     public var name: String
     public var coordinate: Coordinate
     public var kind: Kind
-    /// The Apple Maps identifier (`MKMapItem.identifier`), when the stop came from Apple Maps.
+    /// The place provider identifier, when the stop comes from search.
     public var mapItemID: String?
 
     public init(name: String, coordinate: Coordinate, kind: Kind, mapItemID: String? = nil) {
@@ -59,7 +59,7 @@ public struct PlacedStop: Hashable, Sendable {
     public var isOnLine: Bool { offset <= Trip.onLineMeters }
 }
 
-/// Apple Maps search, behind a seam so tests and the simulator run without a network.
+/// Place search, behind a seam so tests and the simulator run without a network.
 public protocol StopSearch: Sendable {
     /// Campsites and hotels within `radius` metres of `center`.
     func stops(near center: Coordinate, radius: Double) async throws -> [Stop]

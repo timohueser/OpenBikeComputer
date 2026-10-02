@@ -881,8 +881,8 @@ fn boundary_junctions_unify_into_one_node() {
     assert!(on_seam.iter().any(|n| n.3 >= 2), "the unified seam junction must join both sides: {on_seam:?}");
 }
 
-/// The scratch is returned. The merged graph outlives the merge — the node index, the junction
-/// records, the placement plan and the edge-pool plan stay on the scratch seam until the last shard
+/// The scratch is returned. The merged graph outlives the merge — the node index, its chunks and the
+/// edge-pool plan stay on the scratch seam until the last shard
 /// that could name them has been written and verified, which is what lets the section be streamed
 /// instead of buffered. A wrong answer about who deletes them is invisible in the output: the map
 /// is correct and the working area fills. So this runs a whole assembly through an observable store

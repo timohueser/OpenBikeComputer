@@ -19,6 +19,8 @@ public struct SettingsView: View {
     @State private var forgetShown = false
     @State private var versionTaps = 0
     @Environment(\.openURL) private var openURL
+    @Environment(\.obcOfflineMaps) private var offlineMaps
+    @State private var offlineShown = false
 
     private static let gitHubURL = URL(string: "https://github.com/timohueser/OpenBikeComputer")!
     private static let docsURL = URL(string: "https://openbikecomputer.com/docs/")!
@@ -72,6 +74,11 @@ public struct SettingsView: View {
             duration: .seconds(4)
         )
         .task { model.start() }
+        #if os(iOS)
+        .navigationDestination(isPresented: $offlineShown) {
+            if let offlineMaps { OfflineMapsView(model: offlineMaps) }
+        }
+        #endif
     }
 
     // MARK: Device
@@ -97,8 +104,6 @@ public struct SettingsView: View {
                 showsDivider: false,
                 action: { forgetShown = true }
             )
-            // Hangs off the row, not the scroll root: confirmationDialog anchors to
-            // the attached view on iOS 26.
             .obcDestructiveConfirm(
                 "Forget \(model.deviceName)?",
                 isPresented: $forgetShown,
@@ -173,6 +178,11 @@ public struct SettingsView: View {
 
     private var appGroup: some View {
         OBCGroupedSection("App", footer: "Automatic follows the setting on your iPhone.") {
+            if offlineMaps != nil {
+                OBCListRow(icon: "arrow.down.to.line", iconColor: OBCTheme.tint,
+                           label: "Offline maps", showsChevron: true) { offlineShown = true }
+                    .accessibilityIdentifier("settings.offlineMaps")
+            }
             OBCAppearanceRow()
             if let onReplaySetup {
                 OBCListRow(

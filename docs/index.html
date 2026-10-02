@@ -17,9 +17,9 @@
   </script>
   <title>OpenBikeComputer — a from-scratch bikepacking GPS computer</title>
   <meta name="description"
-    content="OpenBikeComputer (OBC) is an open-source bikepacking GPS computer: offline vector maps in a custom binary format, GPX route navigation with live map-matching, and ride recording — firmware and simulator sharing one render path." />
+    content="OpenBikeComputer is an open-source bikepacking GPS computer based on the nRF54LM20, with offline maps, route navigation, and ride recording." />
 
-  <link rel="icon" type="image/svg+xml" href="brand/signpost.svg" />
+  <link rel="icon" type="image/png" sizes="180x180" href="brand/apple-touch-icon.png" />
   <link rel="apple-touch-icon" href="brand/apple-touch-icon.png" />
   <link data-trunk rel="copy-dir" href="assets/brand" />
 
@@ -31,7 +31,7 @@
   <meta property="og:url" content="https://openbikecomputer.com/" />
   <meta property="og:title" content="OpenBikeComputer — own your adventure" />
   <meta property="og:description"
-    content="An open-source bikepacking GPS computer with offline maps, on-device routing, and days of battery — try the real firmware live in your browser." />
+    content="OpenBikeComputer is an open-source bikepacking GPS computer based on the nRF54LM20, with offline maps, route navigation, and ride recording." />
   <meta property="og:image" content="https://openbikecomputer.com/og-card.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
@@ -39,7 +39,7 @@
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="OpenBikeComputer — own your adventure" />
   <meta name="twitter:description"
-    content="An open-source bikepacking GPS computer with offline maps, on-device routing, and days of battery — try the real firmware live in your browser." />
+    content="OpenBikeComputer is an open-source bikepacking GPS computer based on the nRF54LM20, with offline maps, route navigation, and ride recording." />
   <meta name="twitter:image" content="https://openbikecomputer.com/og-card.png" />
 
   <!-- Trunk builds the obc-web-demo crate (in apps/) to wasm — the live device demo:
@@ -51,6 +51,8 @@
   <link data-trunk rel="copy-dir" href="docs" />
   <!-- The blog ("expedition log") — rendered by the same build_docs.py pre_build hook. -->
   <link data-trunk rel="copy-dir" href="blog" />
+  <link data-trunk rel="copy-dir" href="app" />
+  <link data-trunk rel="copy-file" href="404.html" />
   <!-- The device poster (a real sim frame) — shown inside the housing from first paint, behind the
        readiness gate and the wasm fallback. copy-file lands it at the dist root as device-poster.png. -->
   <link data-trunk rel="copy-file" href="assets/device-poster.png" />
@@ -642,6 +644,7 @@
         <a href="docs/">Docs</a>
         <a href="blog/">Blog</a>
         <a href="builder/">Maps</a>
+        <a href="plan/">Route planner</a>
         <a href="https://github.com/timohueser/OpenBikeComputer">GitHub</a>
       </nav>
         <button class="theme-toggle" id="theme_toggle" type="button" aria-label="Dark mode" aria-pressed="false" hidden>
@@ -839,7 +842,7 @@
           <div class="card">
             <div class="card-bar"><span class="px" data-px="20">CLOUD-FREE</span></div>
             <h3>Completely cloud-free</h3>
-            <p>No account, no subscription, no server anywhere. Maps and rides live on the device and your computer — and it all works without a phone.</p>
+            <p>No account, no subscription, no server needed to ride. Maps and rides live on the device and your computer — and it all works without a phone.</p>
           </div>
         </div>
 
@@ -869,6 +872,7 @@
         <a href="https://github.com/timohueser/OpenBikeComputer" target="_blank" rel="noopener">GitHub</a>
         <a href="docs/">Docs</a>
         <a href="builder/">Maps</a>
+        <a href="plan/">Route planner</a>
         <a href="docs/releases/">Releases (coming soon)</a>
         <!-- Reachable from every page: the docs and blog shells and the builder carry
              the same pair in their own footers. -->

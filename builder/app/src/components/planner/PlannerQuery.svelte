@@ -1,12 +1,13 @@
 <script lang="ts">
     import { onDestroy, onMount, untrack } from 'svelte';
     import PlannerIcon from './PlannerIcon.svelte';
+    import { HOSTED_SEARCH, SEARCH_REGIONS } from '../../lib/planner/search/config';
     import QueryChip from './QueryChip.svelte';
     import type { Coordinate } from '../../lib/planner/editor';
     import { searchPlaces, type QueryRequest, type SearchContext, type SearchState, type Where } from '../../lib/planner/search/types';
 
-    let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, region = $bindable('baden-wuerttemberg'), viewRevision = 0, onResults, onSearch, onClear, onLocation, onSample, onDate, onPointing }: {
-        text?: string; region?: string; searchState?: SearchState; context: SearchContext;
+    let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, selection, region = $bindable(SEARCH_REGIONS[0]), viewRevision = 0, onResults, onSearch, onClear, onLocation, onSample, onDate, onPointing }: {
+        text?: string; region?: string; searchState?: SearchState; context: SearchContext; selection?: Where;
         viewRevision?: number; onResults?: (coordinates: Coordinate[]) => void; onSearch: () => void; onClear: () => void; onLocation: () => void; onSample: () => void; onDate: (date: string) => void; onPointing: (where?: Where) => void;
     } = $props();
     let edited = $state(false);
@@ -20,6 +21,8 @@
     let requestContext: SearchContext | undefined;
     let limit = 6;
     let settings = $state(false);
+    const regions = SEARCH_REGIONS;
+    const regionName = (id: string) => id === 'germany' ? 'Germany' : id === 'baden-wuerttemberg' ? 'Baden-Württemberg' : id.replaceAll('-', ' ');
     let activeFilter = $state<string | null>(null);
     const days = $derived(context.plan.days.filter(d => !d.rest).map(d => d.number));
     const fields = $derived(Object.entries(request ?? {}).filter(([key]) => !['type','ignored','via_source'].includes(key)));
@@ -47,7 +50,7 @@
         } catch (error) {
             if (id !== serial || signal.aborted) return;
             if (background) { searchState = { ...searchState, loading: false }; return; }
-            searchState = { loading: false, answer: null, error: error instanceof TypeError ? 'The local search server is not available. Start it, then retry.' : (error as Error).message };
+            searchState = { loading: false, answer: null, error: error instanceof TypeError ? 'Search is unavailable. Check your connection and retry.' : (error as Error).message };
         }
     }
     function input(value: string) {
@@ -106,28 +109,28 @@
             <div class="meaning" aria-label="Understood request">
                 <span class="meaning-label">{edited ? 'Edited request' : request.type === 'place' ? 'Place search' : request.type.replaceAll('_', ' ')}</span>
                 {#each fields as [field, value] (field)}
-                    <QueryChip bind:active={activeFilter} {field} {value} {days} removable={!required.includes(field)} onChange={value => edit(field, value)} onToggle={() => toggle(field, value)} />
+                    <QueryChip bind:active={activeFilter} {field} {value} {days} {selection} removable={!required.includes(field)} onChange={value => edit(field, value)} onToggle={() => toggle(field, value)} />
                 {/each}
                 {#if request.type === 'places' && !request.where && !('where' in removed)}
-                    <QueryChip bind:active={activeFilter} field="where" value={explicitWhere} {days} removable={false} onChange={value => edit('where', value)} onToggle={() => {}} />
+                    <QueryChip bind:active={activeFilter} field="where" value={explicitWhere} {days} {selection} removable={false} onChange={value => edit('where', value)} onToggle={() => {}} />
                 {/if}
-                {#each Object.entries(removed) as [field, value] (field)}<QueryChip bind:active={activeFilter} {field} {value} {days} removed onChange={value => edit(field, value)} onToggle={() => toggle(field, value)} />{/each}
+                {#each Object.entries(removed) as [field, value] (field)}<QueryChip bind:active={activeFilter} {field} {value} {days} {selection} removed onChange={value => edit(field, value)} onToggle={() => toggle(field, value)} />{/each}
             </div>
             {#if request.ignored?.length}<p class="note" role="status">Not understood: {request.ignored.map(word => `“${word}”`).join(', ')}. These words are ignored.</p>{/if}
         {/if}
         {#if text.length > 80}<p class="note">Smart requests use up to 80 characters. Longer text uses ordinary place search.</p>{/if}
     {/if}
-    {#if !text.trim() && context.pointing}
-        <div class="meaning"><QueryChip bind:active={activeFilter} field="where" value={context.pointing} {days} onChange={value => onPointing(value as Where)} onToggle={() => onPointing()} /></div>
+    {#if !text.trim()}
+        <div class="meaning"><QueryChip bind:active={activeFilter} field="where" value={context.pointing ?? { scope: 'view' }} {days} {selection} onChange={value => onPointing(value as Where)} onToggle={() => onPointing()} /></div>
     {/if}
-    <button type="button" class="data-button" aria-expanded={settings} onclick={() => settings = !settings}>{region === 'germany' ? 'Germany' : 'Baden-Württemberg'} · local data<PlannerIcon name="down" size={12} /></button>
+    <button type="button" class="data-button" aria-expanded={settings} onclick={() => settings = !settings}>{regionName(region)} · {HOSTED_SEARCH ? 'online' : 'local data'}<PlannerIcon name="down" size={12} /></button>
     {#if settings}
         <div class="settings">
-            <label>Search coverage<select bind:value={region} onchange={() => { if (text.trim()) run(20); }}><option value="baden-wuerttemberg">Baden-Württemberg</option><option value="germany">Germany</option></select></label>
+            <label>Search coverage<select bind:value={region} onchange={() => { if (text.trim()) run(20); }}>{#each regions as id}<option value={id}>{regionName(id)}</option>{/each}</select></label>
             <label>Trip start date<input type="date" value={context.startDate ?? ''} onchange={e => onDate(e.currentTarget.value)} /></label>
             <button type="button" onclick={onLocation}>{context.here ? 'Update my location' : 'Use my location'}</button>
             <button type="button" onclick={onSample}>Load Black Forest test route</button>
-            <p class="note">Both search packages run on this computer. Map tiles have their own coverage.</p>
+            <p class="note">{HOSTED_SEARCH ? `Maps, routing, and search cover ${regionName(region)}.` : 'Search uses the selected local package. Map tiles have their own coverage.'}</p>
         </div>
     {/if}
 </div>

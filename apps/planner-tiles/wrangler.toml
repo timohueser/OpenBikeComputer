@@ -1,0 +1,13 @@
+name = "obc-planner-tiles"
+main = "src/worker.mjs"
+compatibility_date = "2026-09-30"
+routes = [{ pattern = "tiles.openbikecomputer.com", custom_domain = true }]
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "obc-maps"
+[observability]
+enabled = true
+head_sampling_rate = 0.1
+[observability.traces]
+enabled = true
+head_sampling_rate = 0.1

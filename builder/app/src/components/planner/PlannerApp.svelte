@@ -15,7 +15,9 @@
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
     import LayerMenu from './LayerMenu.svelte';
+    import type { OverlayOptions } from '../../lib/planner/route-overlays';
     import NearbyLandmark from './NearbyLandmark.svelte';
+    import { presetName } from '../../lib/planner/riding-profiles';
     import { isTrip } from '../../lib/planner/trip-validation';
     import {
         addClickedPoint, addPointNear, addRestDay, applyBudget, coordinateAt, cumulative, emptyTrip,
@@ -27,7 +29,9 @@
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import { corridorPlaces } from '../../lib/planner/place-index';
     import { landmarks } from '../../lib/planner/landmarks';
-    import { BASEMAP_URL } from '../../lib/planner/map-data';
+    import { BASEMAP_URL, MAP_BOUNDS } from '../../lib/planner/map-data';
+    import { coordinateName, visitName } from '../../lib/planner/point-names';
+    import { SEARCH_URL, HOSTED_SEARCH, SEARCH_REGIONS } from '../../lib/planner/search/config';
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileAscent } from '../../lib/planner/profile-data';
     import { searchPlaces, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
@@ -40,6 +44,7 @@
     import { routePreview } from '../../lib/planner/route-preview';
 
     const storageKey = 'obc-planner-routing-v2';
+    const siteBase = import.meta.env.VITE_SITE_BASE || '/';
     import { calculateLine, selectRoute, type EngineRoute } from '../../lib/planner/routing';
     const defaultLabels: Record<EditableKind, string> = {
         via: 'Shaping point',
@@ -50,6 +55,7 @@
     };
 
     let trip = $state<Trip>(emptyTrip());
+    let mounted = false;
     const hasEndpoints = $derived(trip.points.some(p => p.kind === 'start') && trip.points.some(p => p.kind === 'finish'));
     const nextEndpoint = $derived(trip.points.some(p => p.kind === 'start') ? 'finish' : 'start');
     let previewTrip = $state<Trip | null>(null);
@@ -79,7 +85,7 @@
         return () => abort.abort();
     });
     function pickRoute(route: EngineRoute) {
-        const next = { ...$state.snapshot(trip), preset: route.profile.endsWith('/shorter') ? 'Shorter' : route.profile.endsWith('/smoother') ? 'Smoother' : route.profile.endsWith('/less-climbing') ? 'Less climbing' : 'Balanced' };
+        const next = { ...$state.snapshot(trip), preset: presetName(route.profile) };
         next.routing = selectRoute(next, route, trip.routing?.alternatives ?? [route]);
         commit(next, 'Route preference changed');
     }
@@ -118,8 +124,6 @@
     let pending = $state<Coordinate | null>(null);
     let pendingSource = $state<string | null>(null);
     let picking = $state(false);
-    // A place chosen while picking offers the night whatever its kind.
-    let pickedForNight = $state(false);
     // Where an add or leg callout opened; a leg callout also names its leg.
     let spot = $state<{ coordinate: Coordinate; legEndId?: string } | null>(null);
     let drawing = $state<string | null>(null);
@@ -130,19 +134,22 @@
     let corridor = $state<Place[]>([]);
     let corridorLoad = $state<'done' | 'loading' | 'failed'>('done');
     let theme = $state<'light' | 'dark'>('light');
+    let autoCenter = $state(false);
+    let hoveredId = $state<string | null>(null);
     let hillshade = $state(true);
     let contours = $state(true);
+    let mapOverlays = $state<OverlayOptions>({ network: 'cycling', access: true });
     let showRoute = $state(true);
     let query = $state('');
     let searchState = $state<SearchState>({ loading: false, error: '', answer: null });
     let searchBox: Query | undefined;
     let searchViewRevision = $state(0);
-    let viewBounds = $state<[number, number, number, number]>([7.77,47.965,7.96,48.06]);
+    let viewBounds = $state<[number, number, number, number]>(MAP_BOUNDS ?? [7.77,47.965,7.96,48.06]);
     let here = $state<Coordinate | undefined>();
     let pointing = $state<Where | undefined>();
     let applyingQuery = $state(false);
     let queryApplyError = $state('');
-    let searchRegion = $state('baden-wuerttemberg');
+    let searchRegion = $state(SEARCH_REGIONS[0]);
     let overnightPlaces = $state<Place[]>([]);
     let overnightNote = $state('');
     let message = $state('Plan a ride in Baden-Württemberg');
@@ -232,7 +239,7 @@
             kind: !multi && p.kind === 'night' ? 'waypoint' : p.kind,
             color: multi && p.kind === 'night' ? dayColor(p.night!, theme) : undefined,
             markerLabel: multi && p.kind === 'night' ? String(dayLabels[p.night!]) : undefined,
-            fixed: p.kind === 'night' || (['waypoint', 'detour'].includes(p.kind) && p.label !== defaultLabels.waypoint),
+            fixed: p.kind === 'night',
         }));
         const shown = selectedPlace && !visiblePlaces.includes(selectedPlace) ? [...visiblePlaces, selectedPlace] : visiblePlaces;
         for (const p of shown) {
@@ -296,27 +303,34 @@
             if (abort.signal.aborted) return;
             overnightPlaces = (answer.results ?? []).map(asPlace);
             overnightNote = answer.type === 'unresolved' ? answer.note ?? '' : overnightPlaces.length ? '' : 'No mapped overnight places within 5 km. Search a wider area or pick on the map.';
-        }).catch(() => { if (!abort.signal.aborted) overnightNote = 'Local overnight search is unavailable. Start the search server or pick on the map.'; });
+        }).catch(() => { if (!abort.signal.aborted) overnightNote = 'Overnight search is unavailable. Retry or pick on the map.'; });
         return () => abort.abort();
     });
 
     onMount(() => {
+        mounted = true;
         try {
             const raw = localStorage.getItem(storageKey);
             const saved = raw ? JSON.parse(raw) : null;
             if (isTrip(saved)) {
-                if (saved.routing && !saved.routing.surfaces) saved.routing = undefined;
+                if (saved.routing && (!saved.routing.surfaces || !saved.routing.pushing)) saved.routing = undefined;
                 trip = saved;
             }
             else if (raw) draftError = 'Saved draft is invalid · new plan opened';
         } catch (error) {
             draftError = error instanceof SyntaxError ? 'Saved draft is invalid · new plan opened' : 'Draft · browser storage unavailable';
         }
-        return () => preview.cancel();
+        try { autoCenter = localStorage.getItem('obc-planner-auto-center') === 'true'; } catch { /* Optional browser preference. */ }
+        trip.points.filter(point => point.autoLabel).forEach(point => void nameVisit(point));
+        return () => { mounted = false; preview.cancel(); };
     });
 
     $effect(() => {
         document.documentElement.dataset.theme = theme;
+    });
+
+    $effect(() => {
+        try { localStorage.setItem('obc-planner-auto-center', String(autoCenter)); } catch { /* Optional browser preference. */ }
     });
 
     function save() {
@@ -351,7 +365,6 @@
         pendingSource = null;
         spot = null;
         picking = false;
-        pickedForNight = false;
     }
 
     function afterHistory(description: string) {
@@ -365,6 +378,7 @@
         save();
         message = description;
         undoable = false;
+        trip.points.filter(point => point.autoLabel).forEach(point => void nameVisit(point));
     }
 
     /** Opens the day a point lies in and lights its row for a moment. */
@@ -439,27 +453,19 @@
         map?.showPlace(place.coordinate, 12);
     }
 
-    /** Opens a place clicked on the map; while picking, the place is offered for the night. */
+    /** Opens a mapped place without changing the search area. */
     function choosePlace(place: Place) {
-        const fromSearch = searching && results.some(result => result.place.id === place.id);
-        if (!fromSearch) pointing = { anchor: place.coordinate };
-        const forNight = picking;
         clearSelection();
         mapPlace = place;
         selectedId = place.id;
-        pickedForNight = forNight;
     }
 
     function selectPoint(id: string) {
         if (id === 'pending') return;
         const place = visiblePlaces.find(p => p.id === id) ?? corridor.find(p => p.id === id) ?? (mapPlace?.id === id ? mapPlace : undefined);
         if (place) { choosePlace(place); return; }
-        const pin = mapPoints.find(p => p.id === id);
-        if (pin) pointing = pin.kind === 'dayend' ? { day: dayLabels[pin.night!], part: 'end' } : { anchor: pin.coordinate };
-        const forNight = picking;
         clearSelection();
         selectedId = id;
-        pickedForNight = forNight;
         const number = id.startsWith('dayend-') ? Number(id.slice('dayend-'.length)) : trip.points.find(p => p.id === id)?.night;
         if (number && multi) {
             night = number;
@@ -505,8 +511,6 @@
     }
 
     function legClick(legEndId: string, coordinate: Coordinate) {
-        const i = stops.findIndex(s => s.point.id === legEndId);
-        if (i > 0) pointing = { along: { ref:'km', from:{value:stops[i-1].distance,unit:'km'}, to:{value:stops[i].distance,unit:'km'} } };
         clearSelection();
         spot = { coordinate, legEndId };
         selectedId = 'leg';
@@ -525,6 +529,7 @@
     function insert(legEndId: string, coordinate: Coordinate) {
         clearSelection();
         commit(insertPoint($state.snapshot(trip), legEndId, coordinate), 'Shaping point inserted');
+        if (autoCenter) map?.centerOn(coordinate);
     }
 
     function drawn(legEndId: string, line: Coordinate[]) {
@@ -548,10 +553,25 @@
         commit(next, 'Overnight pinned');
         clearSelection();
         reveal(`night-${sleepDay}`, sleepDay);
+        if (autoCenter) map?.centerOn(coordinate);
     }
 
     function newPoint(coordinate: Coordinate, kind: EditableKind, label?: string): RoutePoint {
-        return { id: crypto.randomUUID(), coordinate: [...coordinate], label: label ?? defaultLabels[kind], kind, progress: nearestProgress(coordinates, coordinate) };
+        const autoLabel = kind === 'waypoint' && label === undefined;
+        return { id: crypto.randomUUID(), coordinate: [...coordinate], label: label ?? (autoLabel ? coordinateName(coordinate) : defaultLabels[kind]),
+            autoLabel: autoLabel || undefined, kind, progress: nearestProgress(coordinates, coordinate) };
+    }
+
+    async function nameVisit(point: RoutePoint) {
+        if (!point.autoLabel || !['waypoint', 'detour'].includes(point.kind) || point.label !== coordinateName(point.coordinate)) return;
+        const coordinate: Coordinate = [...point.coordinate];
+        const label = await visitName(coordinate, searchRegion);
+        if (!label) return;
+        const current = trip.points.find(p => p.id === point.id);
+        if (!mounted || !current?.autoLabel || current.coordinate[0] !== coordinate[0] || current.coordinate[1] !== coordinate[1]) return;
+        // Generated names are metadata, so a lookup does not add an Undo step.
+        trip = { ...trip, points: trip.points.map(p => p.id === point.id ? { ...p, label } : p) };
+        save();
     }
 
     const added: Partial<Record<PointKind, string>> = { via: 'Shaping point added', waypoint: 'Visit added', night: 'Overnight pinned', marker: 'Marker added', pass: 'Pass added' };
@@ -561,7 +581,9 @@
         commit(addClickedPoint($state.snapshot(trip), point), added[kind]!);
         clearSelection();
         selectedId = point.id;
-        reveal(point.id, dayOf(point.coordinate));
+        if (kind !== 'via') reveal(point.id, dayOf(point.coordinate));
+        if (autoCenter) map?.centerOn(point.coordinate);
+        void nameVisit(point);
     }
 
     function addVisit(place: Place) {
@@ -570,6 +592,7 @@
         clearSelection();
         selectedId = point.id;
         reveal(point.id, dayOf(point.coordinate));
+        if (autoCenter) map?.centerOn(point.coordinate);
     }
 
     function movedPoint(id: string, coordinate: Coordinate): Trip {
@@ -577,7 +600,8 @@
         const point = next.points.find(p => p.id === id);
         if (point?.kind === 'night') return pinNight(next, point.night!, coordinate, point.label);
         next.points = next.points.map(p => p.id === id
-            ? { ...p, coordinate, progress: p.kind === 'start' || p.kind === 'finish' ? p.progress : nearestProgress(coordinates, coordinate) }
+            ? { ...p, coordinate, label: p.autoLabel ? coordinateName(coordinate) : p.label,
+                progress: p.kind === 'start' || p.kind === 'finish' ? p.progress : nearestProgress(coordinates, coordinate) }
             : p);
         return next;
     }
@@ -593,6 +617,8 @@
         const next = movedPoint(id, coordinate);
         if (previewTrip?.routing?.key === routingKey(next)) next.routing = previewTrip.routing;
         commit(next, 'Point moved');
+        const moved = next.points.find(p => p.id === id);
+        if (moved) void nameVisit(moved);
     }
 
     function removePoint() {
@@ -610,6 +636,7 @@
         clearSelection();
         exitSearch();
         list = 'plan';
+        if (autoCenter) map?.centerOn(coordinate);
     }
 
     function newPlan() {
@@ -624,7 +651,7 @@
     function rename(label: string) {
         if (!selectedPoint) return;
         const next = $state.snapshot(trip);
-        next.points = next.points.map(p => p.id === selectedId ? { ...p, label } : p);
+        next.points = next.points.map(p => p.id === selectedId ? { ...p, label, autoLabel: undefined } : p);
         commit(next, 'Point renamed');
     }
 
@@ -639,14 +666,15 @@
         }
         // A night point takes a fresh id, so its `night-N` id stays free for pinning.
         const id = point.kind === 'night' ? crypto.randomUUID() : point.id;
-        const label = kind === 'via' ? defaultLabels.via
-            : point.kind === 'via' ? defaultLabels[kind === 'detour' ? 'waypoint' : kind]
-            : point.label;
+        const autoLabel = ['waypoint', 'detour'].includes(kind) && (point.kind === 'via' || point.autoLabel);
+        const label = autoLabel ? coordinateName(point.coordinate) : point.label;
         const next = $state.snapshot(trip);
-        next.points = next.points.map(p => p.id === point.id ? { ...p, id, kind, night: undefined, label, anchor: kind === 'detour' ? coordinateAt(coordinates, nearestProgress(coordinates, point.coordinate)) : undefined } : p);
+        next.points = next.points.map(p => p.id === point.id ? { ...p, id, kind, night: undefined, label, autoLabel: autoLabel || undefined,
+            anchor: kind === 'detour' ? coordinateAt(coordinates, nearestProgress(coordinates, point.coordinate)) : undefined } : p);
         next.routeOrder = next.routeOrder?.map(old => old === point.id ? id : old);
         commit(next, 'Point type updated');
         selectedId = id;
+        void nameVisit(next.points.find(p => p.id === id)!);
     }
 
     function changeTrip(change: Partial<Trip>, description: string) {
@@ -676,8 +704,8 @@
 
     async function loadSearchSample() {
         try {
-            const response = await fetch('/api/planner-search/sample');
-            if (!response.ok) throw new Error('Start the local search server first.');
+            const response = await fetch(`${SEARCH_URL}/sample`);
+            if (!response.ok) throw new Error('The example route is unavailable. Retry shortly.');
             const { coordinates: line } = await response.json() as { coordinates: Coordinate[] };
             if (line.length < 2) throw new Error('The sample route could not load.');
             commit({ ...emptyTrip('trip'), routeOrder: [], points: [
@@ -709,7 +737,7 @@
     }
 
     function restoreVersion(saved: Trip, name: string) {
-        commit(saved, `Restored ‘${name}’`);
+        commit({ ...saved, routing: saved.routing?.pushing ? saved.routing : undefined }, `Restored ‘${name}’`);
         undoable = true;
         clearSelection();
         night = Math.max(1, Math.min(night, tripDays(trip).length));
@@ -736,10 +764,14 @@
 
 <div class="planner-shell" style:--side-width={`${Math.min(sideWidth, maxSide)}px`}>
     <header class="site-header">
-        <a class="brand" href="/"><img src="/brand/app-icon.svg" alt="" /><span>OpenBikeComputer</span></a>
-        <nav aria-label="Preview navigation">
-            {#if import.meta.env.MODE !== 'planner'}<a href="/map-study.html">Map study</a>{/if}
-            <span aria-current="page">Planner</span>
+        <a class="brand" href={siteBase}><img src={`${siteBase}brand/app-icon.svg`} alt="" /><span>OpenBikeComputer</span></a>
+        <nav aria-label="Main navigation">
+            {#if HOSTED_SEARCH}
+                <a href={`${siteBase}docs/`}>Docs</a>
+                <a href={`${siteBase}blog/`}>Blog</a>
+                <a href={`${siteBase}builder/`}>Maps</a>
+            {:else if import.meta.env.MODE !== 'planner'}<a href="/map-study.html">Map study</a>{/if}
+            <span aria-current="page">Route planner</span>
         </nav>
         <button type="button" class="theme" aria-label={theme === 'light' ? 'Use dark theme' : 'Use light theme'} onclick={() => theme = theme === 'light' ? 'dark' : 'light'}>
             <Icon name={theme === 'light' ? 'moon' : 'sun'} />
@@ -753,7 +785,7 @@
     <main>
         <aside class="planner-pane" aria-label="Trip planning">
             {#if overnightContext && overnightNote}<p class="search-note" role="status">{overnightNote}</p>{/if}
-            <Query bind:this={searchBox} bind:text={query} bind:region={searchRegion} bind:searchState={searchState} context={searchContext} viewRevision={searchViewRevision} onResults={coordinates => { clearSelection(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} />
+            <Query bind:this={searchBox} bind:text={query} bind:region={searchRegion} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} viewRevision={searchViewRevision} onResults={coordinates => { clearSelection(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} />
             {#if searching}
                 <div class="pane-scroll">
                     <QueryResults state={searchState} {selectedId} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
@@ -798,7 +830,7 @@
                         <WaysList status={needsAlternatives ? waysStatus || 'Open Route options to find alternatives.' : ''} routes={currentRoute?.alternatives ?? []} choiceId={currentRoute?.choiceId ?? ''} onPick={pickRoute} />
                     {:else if multi && currentRoute}
                         <Itinerary
-                            {trip} {itinerary} {days} {theme} {expandedDay} {candidates} {conflicts} {selectedId} {revealId}
+                            {trip} {itinerary} {days} {theme} {expandedDay} {candidates} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
                             changing={changingOvernight}
                             onToggle={showDay} onOverview={showAllDays}
                             onInspect={inspectPoint}
@@ -813,8 +845,8 @@
                             onNameRest={nameRest}
                         />
                     {:else}
-                        <RouteList {stops} measured={!!currentRoute} onInspect={inspectPoint}
-                            onReorder={(id, offset) => commit(reorderPoint($state.snapshot(trip), id, offset), 'Stop reordered')} />
+                        <RouteList {stops} {hoveredId} onHover={(id) => hoveredId = id} measured={!!currentRoute} onInspect={inspectPoint}
+                            onReorder={(id, offset) => commit(reorderPoint($state.snapshot(trip), id, offset), 'Stops reordered · changed legs follow roads')} />
                     {/if}
                     {#if nearbyLandmark && !focusedDay}
                         <NearbyLandmark landmark={nearbyLandmark} onRide={addVisit} onShow={selectPlace} />
@@ -826,8 +858,8 @@
         <section class="geography" aria-label="Map and elevation">
             <div class="map-area" bind:clientHeight={mapHeight} style:--map-height={`${mapHeight}px`}>
                 <PlannerMap
-                    bind:this={map} {segments} {coordinates} points={mapPoints} {selectedId} callout={calloutCoordinate} {drawing}
-                    {theme} {hillshade} {contours} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking}
+                    bind:this={map} {segments} {coordinates} points={mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
+                    {theme} {hillshade} {contours} {mapOverlays} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces} {landmarks}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={previewPoint} onDayEndDrag={moveDayEnd}
@@ -839,7 +871,7 @@
                             {#key selectedId}
                                 <MapCallout
                                     kind={calloutKind} {trip} {days} {dayLabels} {night} {candidates} {legMode}
-                                    onEndpoint={chooseEndpoint} point={selectedPoint} place={selectedPlace} coordinate={previewCoordinate} forNight={pickedForNight}
+                                    onEndpoint={chooseEndpoint} point={selectedPoint} place={selectedPlace} coordinate={previewCoordinate}
                                     onClose={clearSelection}
                                     onAddHere={addHere}
                                     onLegMode={setLeg}
@@ -865,7 +897,7 @@
                         <button type="button" disabled={!trip.points.length} onclick={() => focusedDay ? showDay(focusedDay.ridingNumber) : coordinates.length ? map?.fitRoute() : map?.fitCoordinates(trip.points.map(p => p.coordinate))} aria-label={focusedDay ? `Show day ${focusedDay.number} on map` : 'Show whole route'}><Icon name="fit" /></button>
                         <button type="button" disabled={!hasEndpoints} class:chosen={showRoute} aria-label={showRoute ? 'Hide route' : 'Show route'} aria-pressed={showRoute} onclick={() => showRoute = !showRoute}><Icon name="eye" /></button>
                     </div>
-                    <LayerMenu bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
+                    <LayerMenu {theme} bind:autoCenter bind:mapOverlays bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
                 </div>
                 {#if picking || drawing}
                     <div class="mode-chip" role="status">
@@ -894,7 +926,8 @@
                 <span class:save-error={!!draftError}>{draftError || `${message} · ${routingMessage}`}</span>
                 {#if undoable}<span>·</span><button type="button" class="planner-action" onclick={undo}>Undo</button>{/if}
                 {#if placeNote}<span>· {placeNote}</span>{/if}
-                <span class="lab-note">Regional routing · place suggestions are examples{#if import.meta.env.VITE_PLANNER_DATA_URL} · <a href={import.meta.env.VITE_PLANNER_DATA_URL}>Routing data · ODbL</a>{/if}</span>
+                <span class="lab-note">Regional map, search and routing{#if import.meta.env.VITE_PLANNER_DATA_URL} · <a href={import.meta.env.VITE_PLANNER_DATA_URL}>Routing data · ODbL</a>{/if}</span>
+                <span class="legal"><a href={`${siteBase}docs/impressum/`}>Impressum</a> · <a href={`${siteBase}docs/datenschutz/`}>Datenschutz</a></span>
             </div>
         </section>
     </main>
@@ -1031,6 +1064,9 @@
         gap: 24px;
         height: 100%;
         font-size: 13px;
+        min-width: 0;
+        overflow-x: auto;
+        white-space: nowrap;
     }
     .site-header nav a {
         color: inherit;
@@ -1160,9 +1196,25 @@
     .lab-note {
         margin-left: auto;
     }
+    .legal { white-space: nowrap; }
     @media (max-width: 1150px) {
         .brand span {
             font-size: 14px;
         }
+    }
+    @media (max-width: 700px) {
+        .planner-shell { min-width: 0; height: auto; min-height: 100dvh; }
+        main { grid-template-columns: minmax(0, 1fr); }
+        main > :global([aria-label="Sidebar width"]) { display: none; }
+        .planner-pane { max-height: 50dvh; }
+        .geography { height: 75dvh; }
+        .status-line { height: auto; min-height: 38px; flex-wrap: wrap; padding-block: 8px; }
+        .lab-note { display: none; }
+        .legal { margin-left: auto; }
+        .site-header { gap: 12px; padding-inline: 12px; }
+        .brand { flex: none; }
+        .brand span { display: none; }
+        .site-header nav { gap: 16px; }
+        .theme { flex: none; }
     }
 </style>

@@ -9,6 +9,7 @@ import MapCallout from './MapCallout.svelte';
 import VersionsMenu from './VersionsMenu.svelte';
 import Select from './PlannerSelect.svelte';
 import RouteList from './RouteList.svelte';
+import type { RoutingLine } from '../../lib/planner/routing';
 
 const places: Place[] = [{id:'test-camp',kind:'place',label:'Test camp',category:'camp',description:'',progress:.25,coordinate:[7.5,47.5]}];
 
@@ -75,8 +76,11 @@ describe('route stop handles', () => {
 
     it('commits one move on drop and leaves a cancelled drag unchanged', async () => {
         const onReorder = vi.fn();
-        mounted.push(mount(RouteList, { target: document.body, props: { stops, onReorder, onInspect: vi.fn() } }));
+        const shaped = [...stops.slice(0,2), {point:{...stops[1].point,id:'shape',label:'Shaping point',kind:'via' as const},distance:15}, ...stops.slice(2)];
+        mounted.push(mount(RouteList, { target: document.body, props: { stops: shaped, onReorder, onInspect: vi.fn() } }));
         await tick();
+        expect(document.querySelectorAll('li')).toHaveLength(stops.length);
+        expect(document.querySelector('ol')?.textContent).not.toContain('Shaping point');
         const rect = (top: number, height: number) => ({ top, bottom: top + height, left: 0, right: 360, width: 360, height, x: 0, y: top, toJSON: () => ({}) });
         vi.spyOn(document.querySelector('ol')!, 'getBoundingClientRect').mockReturnValue(rect(0, 250));
         document.querySelectorAll('li').forEach((row, index) => vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(rect(index * 50, 50)));
@@ -91,7 +95,7 @@ describe('route stop handles', () => {
         expect(onReorder).not.toHaveBeenCalled();
         await pointer('pointerup', 175);
         expect(onReorder).toHaveBeenCalledExactlyOnceWith('First', 2);
-        expect(document.querySelector('[role="status"]')?.textContent).toBe('First moved to stop 3 of 3.');
+        expect(document.querySelector('[role="status"]')?.textContent).toBe('First moved to stop 3 of 3. Changed legs follow roads.');
         onReorder.mockClear();
         await pointer('pointerdown', 75);
         await pointer('pointermove', 175);
@@ -172,6 +176,34 @@ describe('planner day views', () => {
         await tick();
         expect(axis()).toEqual(['0 km', '36 km', '72 km', '108 km', '144 km']);
         expect(document.querySelector('.distance')?.textContent).toBe('144.0 km');
+    });
+});
+
+describe('profile access', () => {
+    it('keeps pushing boundaries on one surface visible and keyboard-inspectable with grade colors off', async () => {
+        const line: RoutingLine = {
+            key: 'test', choiceId: 'test', profile: 'road', coordinates: [[8,48], [8.001,48], [8.002,48]],
+            elevation: [100, 90, 110], elapsed: [0, 20, 80], surfaces: ['Paved', 'Paved'], pushing: [false, true],
+            stops: [], seconds: 80, alternatives: [], alternativesReady: true, unknownSurfaceKm: 0, pushingKm: .075, unroutedKm: 0,
+        };
+        const onHover = vi.fn();
+        mounted.push(mount(Profile, { target: document.body, props: {
+            lineData: line, total: .15, days: [], dayLabels: {}, activeNight: 0, band: null,
+            onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover,
+        } }));
+        await tick();
+        expect(document.querySelector('.push-track span')).not.toBeNull();
+        expect(document.querySelector('.hint')?.textContent).toContain('75 m pushing');
+        const slider = document.querySelector<HTMLElement>('[role="slider"]')!;
+        slider.focus(); await tick();
+        expect(slider.getAttribute('aria-valuetext')).toContain('Riding');
+        slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); await tick();
+        expect(slider.getAttribute('aria-valuetext')).toContain('Push bike');
+        expect(document.querySelector('.chip')?.textContent).toContain('Push bike');
+        document.querySelector<HTMLInputElement>('.grade-toggle input')!.click(); await tick();
+        expect(document.querySelector('.chip')?.textContent).toContain('Push bike');
+        expect(document.querySelector('.push-track span')).not.toBeNull();
+        expect(onHover).toHaveBeenLastCalledWith(expect.closeTo(.75));
     });
 });
 

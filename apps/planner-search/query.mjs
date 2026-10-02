@@ -4,7 +4,7 @@ import { resolve } from './resolver.mjs';
 import { validateRequest } from './validation.mjs';
 import { localQuery } from './local-query.mjs';
 
-export async function answerQuery(db, input, parser) {
+export async function answerQuery(db, input, parser, hours = {currentOpening}) {
   let canRetry = false;
   const local = !input.request && input.submitted && input.q.length <= 80
     ? localQuery(db, input.q) : null;
@@ -63,7 +63,7 @@ export async function answerQuery(db, input, parser) {
   } catch (error) {
     answer = { type: 'unresolved', results: [], note: error.message };
   }
-  const now = Date.now();
-  if (answer.results) answer.results = answer.results.map(place => ({ ...place, hoursStatus: currentOpening(place, now) }));
+  const now = input.now === undefined ? Date.now() : Date.parse(input.now);
+  if (answer.results) answer.results = answer.results.map(place => ({ ...place, hoursStatus: hours.currentOpening(place, now) }));
   return { ...answer, request, notice, canRetry, parserMs: elapsed };
 }

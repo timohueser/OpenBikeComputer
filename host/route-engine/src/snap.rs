@@ -1,6 +1,6 @@
 use crate::{
-    model::{Point, Profile, Road, BIKE, NO_ELEVATION},
-    package::{cell_key, Package, Source, CELL},
+    model::{Point, Road, NO_ELEVATION},
+    package::{Package, Source, CELL},
     Error, Result,
 };
 use serde::Serialize;
@@ -14,55 +14,68 @@ impl Default for Policy {
 
 impl<S: Source> Package<S> {
     pub fn snap(&mut self, point: Point, metric: &str, policy: Policy) -> Result<Candidates> {
-        if !policy.ambiguity_m.is_finite()
-            || !(0.0..=50.0).contains(&policy.ambiguity_m)
-            || policy.max_candidates == 0
-            || policy.max_candidates > 16
-        {
-            return Err(Error::InvalidRequest("Invalid snapping policy".into()));
-        }
-        let profile = self.metric(metric)?.profile.clone();
+        self.metric(metric)?;
         let mut roads = BTreeSet::<u32>::new();
         for cell in cells(point, policy.radius_m).map_err(Error::InvalidRequest)? {
-            if let Some(key) = self.manifest.spatial.get(&cell_key(cell)) {
-                roads.extend(self.read::<Vec<u32>>(key)?);
-                if roads.len() > 100_000 {
-                    return Err(Error::Limit);
-                }
+            roads.extend(self.spatial_roads(cell)?);
+            if roads.len() > 100_000 {
+                return Err(Error::Limit);
             }
         }
-        let mut found = Vec::new();
-        for id in roads {
-            let road = self.road(id)?;
-            if profile.cost(&road).is_none() {
-                continue;
-            }
-            if let Some(candidate) = project(id, &road, point) {
-                if candidate.snap_distance_m <= policy.radius_m {
-                    found.push(candidate);
-                }
-            }
-        }
-        found.sort_by(|a, b| {
-            a.snap_distance_m.total_cmp(&b.snap_distance_m).then(a.position.road.cmp(&b.position.road))
-        });
-        let eligible_roads_in_radius = found.len();
-        let nearest_distance_m = found.first().map(|c| c.snap_distance_m);
-        if let Some(distance) = nearest_distance_m {
-            found.retain(|c| c.snap_distance_m <= distance + policy.ambiguity_m);
-        }
-        let candidates_in_ambiguity_band = found.len();
-        let truncated = found.len() > policy.max_candidates;
-        found.truncate(policy.max_candidates);
-        Ok(Candidates {
+        candidates(
+            roads,
+            point,
             policy,
-            nearest_distance_m,
-            eligible_roads_in_radius,
-            candidates_in_ambiguity_band,
-            truncated,
-            retained: found,
-        })
+            |id| {
+                if self.allowed(metric, id)? {
+                    self.road(id).map(Some)
+                } else {
+                    Ok(None)
+                }
+            },
+        )
     }
+}
+
+pub(crate) fn candidates(
+    roads: impl IntoIterator<Item = u32>,
+    point: Point,
+    policy: Policy,
+    mut road: impl FnMut(u32) -> Result<Option<Road>>,
+) -> Result<Candidates> {
+    if !policy.ambiguity_m.is_finite()
+        || !(0.0..=50.0).contains(&policy.ambiguity_m)
+        || policy.max_candidates == 0
+        || policy.max_candidates > 16
+    {
+        return Err(Error::InvalidRequest("Invalid snapping policy".into()));
+    }
+    let mut found = Vec::new();
+    for id in roads {
+        let Some(road) = road(id)? else { continue };
+        if let Some(candidate) = project(id, &road, point) {
+            if candidate.snap_distance_m <= policy.radius_m {
+                found.push(candidate);
+            }
+        }
+    }
+    found.sort_by(|a, b| a.snap_distance_m.total_cmp(&b.snap_distance_m).then(a.position.road.cmp(&b.position.road)));
+    let eligible_roads_in_radius = found.len();
+    let nearest_distance_m = found.first().map(|c| c.snap_distance_m);
+    if let Some(distance) = nearest_distance_m {
+        found.retain(|c| c.snap_distance_m <= distance + policy.ambiguity_m);
+    }
+    let candidates_in_ambiguity_band = found.len();
+    let truncated = found.len() > policy.max_candidates;
+    found.truncate(policy.max_candidates);
+    Ok(Candidates {
+        policy,
+        nearest_distance_m,
+        eligible_roads_in_radius,
+        candidates_in_ambiguity_band,
+        truncated,
+        retained: found,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -98,7 +111,7 @@ pub struct Candidates {
     pub retained: Vec<Candidate>,
 }
 
-fn cells(point: Point, radius: f64) -> std::result::Result<BTreeSet<(i32, i32)>, String> {
+pub(crate) fn cells(point: Point, radius: f64) -> std::result::Result<BTreeSet<(i32, i32)>, String> {
     if !radius.is_finite()
         || !(0.0..=5_000.0).contains(&radius)
         || point.lat.unsigned_abs() > 85_000_000
@@ -139,7 +152,7 @@ pub fn project(id: u32, road: &Road, point: Point) -> Option<Candidate> {
             elevation: if pair.iter().any(|p| p.elevation == NO_ELEVATION) {
                 NO_ELEVATION
             } else {
-                (pair[0].elevation as f64 + (pair[1].elevation as f64 - pair[0].elevation as f64) * t).round() as i16
+                (pair[0].elevation as f64 + (pair[1].elevation as f64 - pair[0].elevation as f64) * t) as f32
             },
         };
         let candidate = Candidate {
@@ -155,48 +168,4 @@ pub fn project(id: u32, road: &Road, point: Point) -> Option<Candidate> {
         before += lengths[segment];
     }
     best
-}
-
-/// Cumulative measure preserves the full prepared integer cost. Rounded prefix differences telescope.
-pub fn prefix_cost(road: &Road, profile: &Profile, fraction: f64) -> std::result::Result<u64, String> {
-    profile.validate()?;
-    if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) {
-        return Err("Invalid road offset".into());
-    }
-    let full = profile.cost(road).ok_or("Attachment road is excluded by the profile")?;
-    if fraction == 0.0 {
-        return Ok(0);
-    }
-    if fraction == 1.0 {
-        return Ok(full);
-    }
-    let total: f64 = road.shape.windows(2).map(|p| p[0].distance(p[1])).sum();
-    if total <= 0.0 {
-        return Err("Cannot split a road without geometric length".into());
-    }
-    let mut distance = 0.0;
-    let mut ascent = 0.0;
-    let mut partial_ascent = 0.0;
-    for pair in road.shape.windows(2) {
-        let length = pair[0].distance(pair[1]);
-        let up = if pair.iter().any(|p| p.elevation == NO_ELEVATION) {
-            0.0
-        } else {
-            (pair[1].elevation as f64 - pair[0].elevation as f64).max(0.0)
-        };
-        let used = if length > 0.0 { ((total * fraction - distance) / length).clamp(0.0, 1.0) } else { 0.0 };
-        partial_ascent += up * used;
-        ascent += up;
-        distance += length;
-    }
-    if ascent == 0.0 && road.ascent_m != 0 && profile.climb_weight != 0.0 {
-        return Err("Cannot localize the stored climb cost without elevation samples".into());
-    }
-    let distance_cost = road.length_m as f64
-        * profile.surface_weights[road.surface as usize]
-        * profile.road_weights[road.class as usize]
-        * if !profile.walking && road.access & BIKE == 0 { 4.0 } else { 1.0 };
-    let climb_cost = road.ascent_m as f64 * profile.climb_weight;
-    let partial = distance_cost * fraction + if ascent > 0.0 { climb_cost * partial_ascent / ascent } else { 0.0 };
-    Ok((full as f64 * partial / (distance_cost + climb_cost)).round().clamp(0.0, full as f64) as u64)
 }

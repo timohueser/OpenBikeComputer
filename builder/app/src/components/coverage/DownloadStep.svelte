@@ -160,6 +160,8 @@
     let dlProgress = $state<CellDownloadProgress | null>(null);
     let asmPhase = $state<AssemblePhase>("open");
     let asmFraction = $state(0);
+    /** When each assembly phase began, for the run's debug ledger. */
+    let asmPhaseStart: Partial<Record<AssemblePhase, number>> = {};
     /** The map, once there is one: what it is called, how big it is, and where it
      *  went if the host had somewhere to put it. */
     let savedFile = $state<{ name: string; byteLength: number; path?: string } | null>(null);
@@ -238,6 +240,16 @@
         done: "done",
     };
 
+    /** Milliseconds from each phase's start to the next phase's start, in phase order. */
+    function phaseDurations(starts: Partial<Record<AssemblePhase, number>>): Partial<Record<AssemblePhase, number>> {
+        const seen = (Object.keys(ASM_PHASE_LABEL) as AssemblePhase[]).filter((p) => starts[p] !== undefined);
+        const out: Partial<Record<AssemblePhase, number>> = {};
+        for (let i = 0; i + 1 < seen.length; i++) {
+            out[seen[i]] = Math.round(starts[seen[i + 1]]! - starts[seen[i]]!);
+        }
+        return out;
+    }
+
     async function onWorkerMessage(e: MessageEvent) {
         const msg = e.data as unknown;
         if (!isWorkerResponse(msg)) {
@@ -258,6 +270,7 @@
                 estimateError = null;
                 break;
             case "progress":
+                asmPhaseStart[msg.phase] ??= performance.now();
                 asmPhase = msg.phase;
                 asmFraction = msg.fraction;
                 break;
@@ -288,11 +301,16 @@
                 void delivery.catch(() => {});
                 break;
             case "done":
-                    // The run's ledger: OPFS traffic and the linear memory the assembly ended
-                    // on. For anyone profiling an assembly from DevTools — a worker's own
-                    // console does not surface — and the only place either number is readable
-                    // from outside the worker. Nothing on screen reads them.
-                console.debug("[assemble] run", { wasmMemoryBytes: msg.wasmMemoryBytes, io: msg.io });
+                    // The run's ledger: OPFS traffic, the time each phase took and the linear
+                    // memory the assembly ended on. For anyone profiling an assembly from
+                    // DevTools — a worker's own console does not surface — and the only place
+                    // these numbers are readable from outside the worker. Nothing on screen
+                    // reads them.
+                console.debug("[assemble] run", {
+                    wasmMemoryBytes: msg.wasmMemoryBytes,
+                    io: msg.io,
+                    phaseMs: phaseDurations(asmPhaseStart),
+                });
                 runWarnings = msg.warnings;
                 try {
                     await delivery;
@@ -842,6 +860,7 @@
         phase = "assembling";
         if (out.kind === "device") out.ctx.phase("assembling", 0);
         asmPhase = "open";
+        asmPhaseStart = { open: performance.now() };
         const req: AssembleWorkerRequest = {
             type: "assemble",
             requireDisk,

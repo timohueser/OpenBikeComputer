@@ -110,13 +110,9 @@ final class MainScreenTests: XCTestCase {
         XCTAssertTrue(reveal.waitForExistence(timeout: 5), "H11 swipe action missing")
         snap(app, "H11-swipe-to-delete")
         reveal.tap()
-        let confirm = app.sheets.buttons["Delete route"]
+        let confirm = app.buttons["confirm.action.0"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5), "route deletion must ask first")
-        if app.sheets.buttons["Cancel"].exists {
-            app.sheets.buttons["Cancel"].tap()
-        } else {
-            app.otherElements["PopoverDismissRegion"].tap()
-        }
+        app.buttons["confirm.cancel"].tap()
         XCTAssertTrue(card.exists, "cancel must keep the route")
         card.swipeLeft()
         reveal.tap()
@@ -311,13 +307,16 @@ final class MainScreenTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5), "detail missing")
     }
 
-    /// The plus opens the Files picker directly: no intermediate menu with dead rows.
+    /// The plus menu's Import item opens the Files picker directly.
     @MainActor
     func testImportButtonOpensFilePickerDirectly() {
         let app = launch(scenario: "happyPath")
         waitForMain(app)
 
-        app.buttons["Import a route"].tap()
+        app.buttons["Add a route"].tap()
+        let importFile = app.buttons["main.importFile"]
+        XCTAssertTrue(importFile.waitForExistence(timeout: 5), "Import item missing")
+        importFile.tap()
         // The system document picker; Cancel is its stable anchor.
         let cancel = app.buttons["Cancel"]
         XCTAssertTrue(cancel.waitForExistence(timeout: 10), "Files picker did not open")

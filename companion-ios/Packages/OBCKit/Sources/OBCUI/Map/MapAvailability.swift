@@ -1,7 +1,8 @@
 import SwiftUI
 import OBCTransport
+import OBCPlanner
 
-/// Whether a track preview draws the MapKit basemap or the grid fallback. Extracted
+/// Whether a track preview draws the native basemap or the grid fallback. Extracted
 /// from the view so the decision is unit-testable.
 public enum MapPreviewMode: Equatable, Sendable {
     case map
@@ -56,5 +57,29 @@ extension EnvironmentValues {
     public var obcIsOnline: Bool {
         get { self[IsOnlineKey.self] }
         set { self[IsOnlineKey.self] = newValue }
+    }
+}
+
+private struct PlannerSourceKey: EnvironmentKey {
+    static let defaultValue: any PlannerDataSource = PlannerService.shared
+}
+
+extension EnvironmentValues {
+    public var obcPlannerSource: any PlannerDataSource {
+        get { self[PlannerSourceKey.self] }
+        set { self[PlannerSourceKey.self] = newValue }
+    }
+}
+
+/// Loading failures take precedence over geographic coverage.
+enum NativeMapLoadState: Equatable {
+    case loading, ready, offline, failed
+    func message(outsideRegion: Bool) -> String? {
+        switch self {
+        case .loading: "Loading map…"
+        case .offline: "Map needs an internet connection."
+        case .failed: "Map unavailable. Tap to try again."
+        case .ready: outsideRegion ? "Outside the available map region." : nil
+        }
     }
 }

@@ -19,6 +19,7 @@ public struct MainScreenView: View {
     private let onOpenTrash: () -> Void
     private let showsReadyNote: Bool
     private let onDismissReadyNote: () -> Void
+    private let onPlanRoute: (() -> Void)?
 
     @State private var emptyStatePickerShown = false
     @State private var libraryMapShown = false
@@ -39,7 +40,8 @@ public struct MainScreenView: View {
         onSettings: @escaping () -> Void = {},
         onOpenTrash: @escaping () -> Void = {},
         showsReadyNote: Bool = false,
-        onDismissReadyNote: @escaping () -> Void = {}
+        onDismissReadyNote: @escaping () -> Void = {},
+        onPlanRoute: (() -> Void)? = nil
     ) {
         self.model = model
         self.importFileExtensions = importFileExtensions
@@ -51,6 +53,7 @@ public struct MainScreenView: View {
         self.onOpenTrash = onOpenTrash
         self.showsReadyNote = showsReadyNote
         self.onDismissReadyNote = onDismissReadyNote
+        self.onPlanRoute = onPlanRoute
     }
 
     public var body: some View {
@@ -191,7 +194,7 @@ public struct MainScreenView: View {
                 }
                 .accessibilityIdentifier("main.select")
             }
-            OBCImportButton(fileExtensions: importFileExtensions, onPick: onImportFile)
+            OBCImportButton(fileExtensions: importFileExtensions, onPick: onImportFile, onNewRoute: onPlanRoute)
         }
     }
 

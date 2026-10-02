@@ -1,13 +1,12 @@
 use crate::{
+    data::RoutingData,
     model::{Pace, Point, Road, Surface, Totals, BIKE, NO_ELEVATION},
-    package::{Package, Source},
-    search::{Progress, Search},
+    search::{Query, Seed, Workspace},
     snap::{self, Candidate, Policy},
-    storage::{Cache, Seed},
     Error, Result,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -51,9 +50,11 @@ pub struct Route {
     pub profile: String,
     pub cost: u64,
     pub geometry: Vec<[f64; 2]>,
-    pub elevation: Vec<Option<i16>>,
+    pub elevation: Vec<Option<f32>>,
     /// Surface of each edge from geometry[i] to geometry[i + 1].
     pub surfaces: Vec<Surface>,
+    /// Whether the bicycle must be pushed along each geometry edge.
+    pub pushing: Vec<bool>,
     /// Cumulative moving seconds at each geometry vertex.
     pub elapsed: Vec<f64>,
     pub legs: Vec<Leg>,
@@ -71,14 +72,21 @@ pub struct Control<'a> {
 }
 impl Default for Control<'_> {
     fn default() -> Self {
-        Self { cancelled: &|| false, max_labels: 250_000, max_queries: 8192, max_geometry: 250_000 }
+        Self { cancelled: &|| false, max_labels: usize::MAX, max_queries: 8192, max_geometry: 250_000 }
     }
 }
 
 #[derive(Clone)]
 struct Path {
-    cost: u64,
     roads: Vec<Slice>,
+}
+
+#[derive(Clone)]
+struct Choice {
+    source: usize,
+    target: usize,
+    cost: u64,
+    path: Path,
 }
 
 #[derive(Default)]
@@ -87,18 +95,17 @@ struct Work {
     witnesses: usize,
 }
 
-pub struct Router<S> {
-    pub(crate) package: Package<S>,
-    cache: Cache,
+pub struct Router<P> {
+    pub(crate) package: P,
+    workspace: Workspace,
     metric: String,
-    cache_bytes: usize,
-    paths: VecDeque<(String, Path)>,
+    paths: VecDeque<(String, Choice)>,
     cached_roads: usize,
     snaps: VecDeque<(i32, i32, String, snap::Candidates)>,
 }
 
-impl<S: Source> Router<S> {
-    pub fn package(&self) -> &Package<S> {
+impl<P: RoutingData> Router<P> {
+    pub fn package(&self) -> &P {
         &self.package
     }
 
@@ -106,12 +113,12 @@ impl<S: Source> Router<S> {
         self.package.snap(point, profile, policy)
     }
 
-    pub fn new(package: Package<S>, cache_bytes: usize) -> Self {
+    pub fn new(mut package: P, memory_budget_bytes: usize) -> Self {
+        package.set_memory_budget(memory_budget_bytes);
         Self {
             package,
-            cache: Cache::default(),
+            workspace: Workspace::default(),
             metric: String::new(),
-            cache_bytes,
             paths: VecDeque::new(),
             cached_roads: 0,
             snaps: VecDeque::new(),
@@ -146,12 +153,12 @@ impl<S: Source> Router<S> {
             return Err(Error::InvalidRequest("A turnaround must name an interior point".into()));
         }
         request.pace.validate().map_err(Error::InvalidRequest)?;
-        let profile = self.package.metric(&request.profile)?.profile.clone();
+        let profile = self.package.profile(&request.profile)?.clone();
         if self.metric != request.profile {
-            self.cache = Cache::default();
+            self.workspace.clear_heaps();
             self.metric = request.profile.clone();
         }
-        let bounds = self.package.manifest.bounds;
+        let bounds = self.package.bounds();
         let mut candidates = Vec::new();
         let mut truncated = false;
         for (index, &[lon, lat]) in request.points.iter().enumerate() {
@@ -166,7 +173,7 @@ impl<S: Source> Router<S> {
                 return Err(Error::InvalidRequest("Invalid longitude or latitude".into()));
             }
             if lon < bounds[0] || lon > bounds[2] || lat < bounds[1] || lat > bounds[3] {
-                return Err(Error::MissingRegion(format!("Point {index} is outside {}", self.package.manifest.region)));
+                return Err(Error::MissingRegion(format!("Point {index} is outside {}", self.package.region())));
             }
             let point =
                 Point { lat: (lat * 1e6).round() as i32, lon: (lon * 1e6).round() as i32, elevation: NO_ELEVATION };
@@ -206,42 +213,72 @@ impl<S: Source> Router<S> {
         for (stage_index, pair) in candidates.windows(2).enumerate() {
             let mut next = vec![(u64::MAX, u64::MAX); pair[1].len()];
             let mut paths = vec![None; pair[1].len()];
+            let previous: Vec<_> = pair[0]
+                .iter()
+                .enumerate()
+                .map(|(i, from)| {
+                    if request.turnarounds.contains(&stage_index) {
+                        pair[0]
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, c)| {
+                                c.projected.lat == from.projected.lat && c.projected.lon == from.projected.lon
+                            })
+                            .min_by_key(|(index, _)| costs[*index])
+                            .map(|(index, _)| index)
+                            .unwrap_or(i)
+                    } else {
+                        i
+                    }
+                })
+                .collect();
+            let mut groups = BTreeMap::<u64, Vec<(usize, &Candidate, u64)>>::new();
             for (i, from) in pair[0].iter().enumerate() {
-                let previous = if request.turnarounds.contains(&stage_index) {
-                    pair[0]
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, c)| c.projected.lat == from.projected.lat && c.projected.lon == from.projected.lon)
-                        .min_by_key(|(index, _)| costs[*index])
-                        .map(|(index, _)| index)
-                        .unwrap_or(i)
+                let prior = costs[previous[i]];
+                if prior.1 != u64::MAX {
+                    groups.entry(prior.0).or_default().push((i, from, prior.1));
+                }
+            }
+            let mut targets = BTreeMap::<u64, Vec<(usize, &Candidate)>>::new();
+            if stage_index + 2 == candidates.len() {
+                for (j, to) in pair[1].iter().enumerate() {
+                    targets.entry(snap_cost(to)).or_default().push((j, to));
+                }
+            }
+            let mut batches = Vec::new();
+            for (&snap, starts) in &groups {
+                if targets.is_empty() {
+                    for (j, to) in pair[1].iter().enumerate() {
+                        batches.push((snap.checked_add(snap_cost(to)).ok_or(Error::Limit)?, starts, vec![(j, to)]));
+                    }
                 } else {
-                    i
-                };
-                if costs[previous].1 == u64::MAX {
+                    for (&end_snap, ends) in &targets {
+                        batches.push((snap.checked_add(end_snap).ok_or(Error::Limit)?, starts, ends.clone()));
+                    }
+                }
+            }
+            batches.sort_by_key(|v| v.0);
+            for (snap, starts, ends) in batches {
+                if !targets.is_empty() && next.iter().any(|c| c.0 < snap) {
+                    break;
+                }
+                if targets.is_empty() && next[ends[0].0].0 < snap {
                     continue;
                 }
-                for (j, to) in pair[1].iter().enumerate() {
-                    work.queries += 1;
-                    if work.queries > control.max_queries {
+                work.queries += 1;
+                if work.queries > control.max_queries {
+                    return Err(Error::Limit);
+                }
+                if let Some(found) = self.leg_batch(starts, &ends, control)? {
+                    work.witnesses = work.witnesses.saturating_add(found.path.roads.len());
+                    if work.witnesses > control.max_geometry {
                         return Err(Error::Limit);
                     }
-                    if (control.cancelled)() {
-                        return Err(Error::Cancelled);
-                    }
-                    if let Some(path) = self.leg(from, to, control)? {
-                        work.witnesses = work.witnesses.saturating_add(path.roads.len());
-                        if work.witnesses > control.max_geometry {
-                            return Err(Error::Limit);
-                        }
-                        let cost = (
-                            costs[previous].0.checked_add(snap_cost(to)).ok_or(Error::Limit)?,
-                            costs[previous].1.checked_add(path.cost).ok_or(Error::Limit)?,
-                        );
-                        if cost < next[j] {
-                            next[j] = cost;
-                            paths[j] = Some((previous, i, path));
-                        }
+                    let j = found.target;
+                    let score = (snap, found.cost);
+                    if score < next[j] {
+                        next[j] = score;
+                        paths[j] = Some((previous[found.source], found.source, found.path));
                     }
                 }
             }
@@ -265,18 +302,19 @@ impl<S: Source> Router<S> {
         let mut route = Route {
             id: String::new(),
             reason: "primary",
-            package: self.package.identity.clone(),
+            package: self.package.identity().to_owned(),
             profile: request.profile.clone(),
             cost,
             geometry: Vec::new(),
             elevation: Vec::new(),
             surfaces: Vec::new(),
+            pushing: Vec::new(),
             elapsed: Vec::new(),
             legs: Vec::new(),
             attachments,
             snap_truncated: truncated,
             totals: Totals::default(),
-            warnings: self.package.manifest.warnings.clone(),
+            warnings: self.package.warnings().to_vec(),
         };
         for (start_attachment, path) in paths {
             let from_index = route.geometry.len().saturating_sub(1);
@@ -307,6 +345,7 @@ impl<S: Source> Router<S> {
                     }
                     if !route.geometry.is_empty() {
                         route.surfaces.push(road.surface);
+                        route.pushing.push(!profile.walking && road.access & BIKE == 0);
                     }
                     route.geometry.push(coordinate);
                     route.elapsed.push(seconds);
@@ -333,14 +372,23 @@ impl<S: Source> Router<S> {
         Ok(route)
     }
 
-    fn leg(&mut self, from: &Candidate, to: &Candidate, control: &Control<'_>) -> Result<Option<Path>> {
+    fn leg_batch(
+        &mut self,
+        sources: &[(usize, &Candidate, u64)],
+        targets: &[(usize, &Candidate)],
+        control: &Control<'_>,
+    ) -> Result<Option<Choice>> {
+        if (control.cancelled)() {
+            return Err(Error::Cancelled);
+        }
         let key = format!(
-            "{}:{}:{}:{}:{}",
+            "{}:{:?}:{:?}",
             self.metric,
-            from.position.road,
-            from.position.fraction.to_bits(),
-            to.position.road,
-            to.position.fraction.to_bits()
+            sources
+                .iter()
+                .map(|(i, c, cost)| (*i, c.position.road, c.position.fraction.to_bits(), *cost))
+                .collect::<Vec<_>>(),
+            targets.iter().map(|(i, c)| (*i, c.position.road, c.position.fraction.to_bits())).collect::<Vec<_>>()
         );
         if let Some(index) = self.paths.iter().position(|(id, _)| id == &key) {
             let entry = self.paths.remove(index).unwrap();
@@ -348,82 +396,117 @@ impl<S: Source> Router<S> {
             self.paths.push_back(entry);
             return Ok(Some(result));
         }
-        let result = self.find_leg(from, to, control)?;
-        if let Some(path) = &result {
-            if path.roads.len() <= 65_536 {
-                while self.paths.len() >= 256 || self.cached_roads + path.roads.len() > 65_536 {
-                    if let Some((_, old)) = self.paths.pop_front() {
-                        self.cached_roads -= old.roads.len();
+        let mut starts = Vec::new();
+        let mut source_prefixes = Vec::new();
+        for &(index, from, prior) in sources {
+            let e = self.package.endpoint(&self.metric, from.position.road)?;
+            let cost = e.cost.ok_or_else(|| Error::InvalidData("Excluded source attachment".into()))?;
+            let prefix = cost.prefix(from.position.fraction).map_err(Error::InvalidData)?;
+            let remaining =
+                cost.total().checked_sub(prefix).ok_or_else(|| Error::InvalidData("Invalid source cost".into()))?;
+            source_prefixes.push(prefix);
+            starts.push(Seed {
+                node: e.arrival,
+                cost: prior.checked_add(remaining).ok_or(Error::Limit)?,
+                road: from.position.road,
+                choice: u8::try_from(index).map_err(|_| Error::Limit)?,
+            });
+        }
+        let mut ends = Vec::new();
+        let mut end_targets = Vec::new();
+        let mut best: Option<Choice> = None;
+        for (target, &(index, to)) in targets.iter().enumerate() {
+            let e = self.package.endpoint(&self.metric, to.position.road)?;
+            let cost = e.cost.ok_or_else(|| Error::InvalidData("Excluded target attachment".into()))?;
+            let prefix = cost.prefix(to.position.fraction).map_err(Error::InvalidData)?;
+            for d in e.departures {
+                ends.push(Seed {
+                    node: d.state,
+                    cost: prefix.checked_add(d.penalty).ok_or(Error::Limit)?,
+                    road: to.position.road,
+                    choice: u8::try_from(index).map_err(|_| Error::Limit)?,
+                });
+                end_targets.push(target);
+            }
+            for (source, &(source_index, from, prior)) in sources.iter().enumerate() {
+                if from.position.road == to.position.road && from.position.fraction <= to.position.fraction {
+                    let cost = prefix
+                        .checked_sub(source_prefixes[source])
+                        .ok_or_else(|| Error::InvalidData("Invalid partial road costs".into()))?;
+                    let total = prior.checked_add(cost).ok_or(Error::Limit)?;
+                    if best.as_ref().is_none_or(|b| (total, index, source_index) < (b.cost, b.target, b.source)) {
+                        best = Some(Choice {
+                            source: source_index,
+                            target: index,
+                            cost: total,
+                            path: Path {
+                                roads: vec![Slice {
+                                    road: to.position.road,
+                                    from: from.position.fraction,
+                                    to: to.position.fraction,
+                                }],
+                            },
+                        });
                     }
                 }
-                self.cached_roads += path.roads.len();
-                self.paths.push_back((key, path.clone()));
             }
         }
-        Ok(result)
-    }
-
-    fn find_leg(&mut self, from: &Candidate, to: &Candidate, control: &Control<'_>) -> Result<Option<Path>> {
-        let profile = self.package.metric(&self.metric)?.profile.clone();
-        let a = from.position;
-        let b = to.position;
-        let source = self.package.endpoint(&self.metric, a.road)?;
-        let target = self.package.endpoint(&self.metric, b.road)?;
-        let prefix =
-            snap::prefix_cost(&self.package.road(a.road)?, &profile, a.fraction).map_err(Error::InvalidData)?;
-        let suffix =
-            snap::prefix_cost(&self.package.road(b.road)?, &profile, b.fraction).map_err(Error::InvalidData)?;
-        let mut best = if a.road == b.road && a.fraction <= b.fraction {
-            Some(Path {
-                cost: suffix.checked_sub(prefix).ok_or_else(|| Error::InvalidData("Invalid partial costs".into()))?,
-                roads: vec![Slice { road: a.road, from: a.fraction, to: b.fraction }],
-            })
-        } else {
-            None
+        let (graph, weights) = self.package.base(&self.metric)?;
+        let heap_bytes = self.package.memory_budget().saturating_sub(self.package.routing_bytes(&self.metric)?);
+        let ceiling = best.as_ref().map_or(u64::MAX, |b| b.cost);
+        let query = Query {
+            starts: &starts,
+            ends: &ends,
+            ceiling,
+            max_labels: control.max_labels,
+            max_roads: control.max_geometry,
+            heap_bytes,
+            cancelled: control.cancelled,
         };
-        let remaining = source
-            .cost
-            .ok_or_else(|| Error::InvalidData("Excluded source attachment".into()))?
-            .checked_sub(prefix)
-            .ok_or_else(|| Error::InvalidData("Invalid source cost".into()))?;
-        let starts = [Seed { node: source.arrival, cost: remaining, road: a.road }];
-        let ends: Vec<_> = target.departures.iter().map(|&node| Seed { node, cost: suffix, road: b.road }).collect();
-        let mut search = Search::new(&starts, &ends, control.max_labels);
-        loop {
-            if (control.cancelled)() {
-                return Err(Error::Cancelled);
+        let found = if self.package.has_landmarks(&self.metric) {
+            // Complete small searches before loading global distance columns.
+            let probe = query.max_labels.min(262_144);
+            match self.workspace.run(&graph, &weights, Query { max_labels: probe, ..query }) {
+                Err(Error::Limit) if probe < query.max_labels => {
+                    match self.package.landmarks(&self.metric, &starts, &ends)? {
+                        Some(prepared) => self.workspace.run_with_potential(
+                            &graph,
+                            &weights,
+                            query,
+                            Some(&mut |node| Ok(prepared.get(node))),
+                        )?,
+                        None => self.workspace.run(&graph, &weights, query)?,
+                    }
+                }
+                result => result?,
             }
-            match search.poll(&self.cache, 1024) {
-                Progress::Working { .. } => {}
-                Progress::NeedPages { pages } => {
-                    for page in pages.into_iter().take(1) {
-                        let key = self
-                            .package
-                            .metric(&self.metric)?
-                            .graph
-                            .get(page as usize)
-                            .ok_or_else(|| Error::InvalidData("Graph page outside metric".into()))?;
-                        let bytes = self.package.bytes(key)?;
-                        self.cache.insert_page(page, &bytes, self.cache_bytes).map_err(Error::InvalidData)?;
-                    }
-                }
-                Progress::Done { cost, roads, .. } => {
-                    if best.as_ref().is_none_or(|p| cost < p.cost) {
-                        let mut slices: Vec<_> =
-                            roads.into_iter().map(|road| Slice { road, from: 0.0, to: 1.0 }).collect();
-                        slices[0].from = a.fraction;
-                        slices.push(Slice { road: b.road, from: 0.0, to: b.fraction });
-                        slices.retain(|s| s.from < s.to);
-                        best = Some(Path { cost, roads: slices });
-                    }
-                    return Ok(best);
-                }
-                Progress::NoPath => return Ok(best),
-                Progress::Limit => return Err(Error::Limit),
-                Progress::Cancelled => return Err(Error::Cancelled),
-                Progress::Invalid { message } => return Err(Error::InvalidData(message)),
+        } else {
+            self.workspace.run(&graph, &weights, query)?
+        };
+        if let Some(found) = found {
+            let &(source, from, _) = &sources[found.source];
+            let &(target, to) = &targets[end_targets[found.target]];
+            if best.as_ref().is_none_or(|b| (found.cost, target, source) < (b.cost, b.target, b.source)) {
+                let mut roads: Vec<_> =
+                    found.roads.into_iter().map(|road| Slice { road, from: 0.0, to: 1.0 }).collect();
+                roads[0].from = from.position.fraction;
+                roads.push(Slice { road: to.position.road, from: 0.0, to: to.position.fraction });
+                roads.retain(|r| r.from < r.to);
+                best = Some(Choice { source, target, cost: found.cost, path: Path { roads } });
             }
         }
+        if let Some(found) = &best {
+            if found.path.roads.len() <= 65_536 {
+                while self.paths.len() >= 256 || self.cached_roads + found.path.roads.len() > 65_536 {
+                    if let Some((_, old)) = self.paths.pop_front() {
+                        self.cached_roads -= old.path.roads.len();
+                    }
+                }
+                self.cached_roads += found.path.roads.len();
+                self.paths.push_back((key, found.clone()));
+            }
+        }
+        Ok(best)
     }
 }
 
@@ -444,7 +527,7 @@ fn trim(mut road: Road, from: f64, to: f64) -> Road {
                         NO_ELEVATION
                     } else {
                         (pair[0].elevation as f64 + (pair[1].elevation as f64 - pair[0].elevation as f64) * fraction)
-                            .round() as i16
+                            .clamp(-500.0, 9000.0) as f32
                     },
                 };
                 if shape.last().is_none_or(|p: &Point| p.lat != point.lat || p.lon != point.lon) {
@@ -456,14 +539,16 @@ fn trim(mut road: Road, from: f64, to: f64) -> Road {
     }
     road.shape = shape;
     road.length_m = (total * (to - from)).round() as u32;
-    road.ascent_m = 0;
-    road.descent_m = 0;
+    let mut ascent = 0.0f64;
+    let mut descent = 0.0f64;
     for pair in road.shape.windows(2) {
         if pair.iter().all(|p| p.elevation != NO_ELEVATION) {
-            let difference = pair[1].elevation as i32 - pair[0].elevation as i32;
-            road.ascent_m += difference.max(0) as u32;
-            road.descent_m += (-difference).max(0) as u32;
+            let difference = pair[1].elevation as f64 - pair[0].elevation as f64;
+            ascent += difference.max(0.0);
+            descent += (-difference).max(0.0);
         }
     }
+    road.ascent_m = ascent.round() as u32;
+    road.descent_m = descent.round() as u32;
     road
 }

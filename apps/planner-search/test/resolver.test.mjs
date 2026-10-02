@@ -6,8 +6,7 @@ import {lengths,at,alongRange} from '../web/geography.mjs';
 import {openingState} from '../hours.mjs';
 import {validateInput} from '../validation.mjs';
 const {db,conn}=database();
-conn.exec('ALTER TABLE places ADD COLUMN opening_hours TEXT');
-conn.exec("UPDATE places SET opening_hours='Mo-Sa 08:00-18:00; Su 08:00-12:00' WHERE source='n1'");
+conn.exec("UPDATE place_records SET opening_hours='Mo-Sa 08:00-18:00; Su 08:00-12:00' WHERE source='n1'");
 const line=[[7.82,47.99],[7.85,47.99],[7.87,47.99],[7.9,47.99]],ds=lengths(line),total=ds.at(-1);
 const context={q:'bakery',view:[7.8,47.9,7.95,48.05],plan:{coordinates:line,days:[{number:1,from:0,to:total/2},{number:2,from:total/2,to:total}],points:[]},limit:20};
 

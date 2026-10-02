@@ -1,0 +1,12 @@
+{
+  "name": "@obc/planner-tiles",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/worker.mjs --bundle --format=esm --platform=browser --minify --outfile=dist/worker.js",
+    "test": "node --test test/*.test.mjs",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": { "pmtiles": "4.5.0" },
+  "devDependencies": { "esbuild": "0.28.2", "wrangler": "4.144.0" }
+}

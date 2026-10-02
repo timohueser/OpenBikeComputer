@@ -1,0 +1,7 @@
+[
+  {"name":"urban", "request":{"points":[[9.177,48.776],[9.217,48.792]],"profile":"touring"}},
+  {"name":"hilly", "request":{"points":[[7.849,47.997],[8.154,47.902]],"profile":"touring","alternatives":true}},
+  {"name":"day", "request":{"points":[[7.849,47.997],[8.239,48.473]],"profile":"touring"}},
+  {"name":"long", "request":{"points":[[7.849,47.997],[9.177,48.776]],"profile":"touring"}},
+  {"name":"shaping", "request":{"points":[[7.849,47.997],[7.91,48.03],[8.154,47.902]],"profile":"touring","alternatives":true}}
+]

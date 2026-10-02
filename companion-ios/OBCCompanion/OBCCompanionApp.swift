@@ -4,7 +4,7 @@ import UserNotifications
 import OBCDomain
 import OBCTransport
 import OBCUI
-import OBCRouting
+import OBCPlanner
 
 #if DEBUG
 import OBCMock
@@ -25,6 +25,12 @@ struct OBCCompanionApp: App {
         launchOptions.useBLETransport ? nil : launchOptions.makeControl()
     #endif
 
+    private static let offlineStore = OfflineMapStore(root: URL.applicationSupportDirectory.appending(path: "OfflineMaps"))
+    private static let offlineMaps = OfflineMapsModel(store: offlineStore)
+    private static let plannerSource: any PlannerDataSource = LocalFirstPlanner(store: offlineStore) {
+        try await OfflinePlanner.open(map: $0, directory: $1)
+    }
+
     @MainActor private static let liveTransport = BLETransport()
 
     /// The notification tap router. Held here because `UNUserNotificationCenter.delegate` is a
@@ -34,6 +40,7 @@ struct OBCCompanionApp: App {
     init() {
         // Field-guide nav chrome: the one global UIKit-appearance call the component kit needs.
         OBCNavigationChrome.apply()
+        OfflineTilesProtocol.install()
         // Tapping an update notice must land on the firmware screen even from a cold launch, so
         // the delegate has to be in place before iOS delivers the pending response. Setting a
         // delegate asks for no permission and shows nothing.
@@ -74,6 +81,8 @@ struct OBCCompanionApp: App {
                 placeName: Self.makePlaceName(),
                 stopSearch: Self.makeStopSearch(),
                 legRouter: Self.makeLegRouter())
+                .environment(\.obcPlannerSource, Self.plannerSource)
+                .environment(\.obcOfflineMaps, Self.offlineMaps)
                 .obcAppearance()
             #if DEBUG
                 .devMockOverlay(
@@ -120,23 +129,23 @@ struct OBCCompanionApp: App {
         return PlaceNames.locality(at:)
     }
 
-    /// Stops near a trip line come from Apple Maps. Fixture runs use the fixed stops near the
+    /// Stops near a trip line use the published planner search. Fixture runs use the fixed stops near the
     /// fixture trips, offline and deterministic. A trip imported in any other Debug run needs the
     /// real search: the fixed stops lie in Wisconsin.
     static func makeStopSearch() -> any StopSearch {
         #if DEBUG
         if mockControl != nil, launchOptions.fixtures != nil { return MockStopSearch() }
         #endif
-        return AppleMapsStopSearch()
+        return OnlineStopSearch(source: plannerSource)
     }
 
-    /// The device's router over map cells fetched on demand. Fixture runs route offline with the
+    /// Online routing uses the published planner release. Fixture runs route offline with the
     /// mock, which `-OBCRouter` can make fail.
     static func makeLegRouter() -> any LegRouter {
         #if DEBUG
         if mockControl != nil, launchOptions.fixtures != nil { return MockLegRouter(failure: launchOptions.routerFailure) }
         #endif
-        return CellRouter()
+        return OnlineLegRouter(service: plannerSource)
     }
 
     static func makeUpdateSurfaceStore() -> any UpdateSurfaceStore {

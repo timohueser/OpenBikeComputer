@@ -1,16 +1,14 @@
 import OpeningHours from 'opening_hours';
 
-// This data service contains Germany only. opening_hours evaluates dates in the process timezone.
-process.env.TZ = 'Europe/Berlin';
 const weekdays = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-export function openingState(place, filter, context) {
+export function openingState(place, filter, context, countryCode = 'de') {
   if (!filter) return null;
   if (!place.opening_hours) return 'unknown';
   try {
     const oh = new OpeningHours(place.opening_hours, {
       lat: place.lat,
       lon: place.lon,
-      address: { country_code: 'de', state: place.region },
+      address: { country_code: countryCode, state: place.region },
     });
     if (filter.now) {
       const date = new Date(context.now || Date.now());
@@ -31,7 +29,10 @@ export function openingState(place, filter, context) {
         return 'unknown';
       date = new Date(2024, 0, 7 + weekdays.indexOf(filter.weekday));
     } else {
-      date = new Date(`${context.openDate}T00:00:00`);
+      const [year, month, day] = context.openDate.split('-').map(Number);
+      date = new Date(0);
+      date.setFullYear(year, month - 1, day);
+      date.setHours(0, 0, 0, 0);
       if (!Number.isFinite(date.valueOf())) return 'unknown';
     }
     const end = new Date(date);
@@ -45,13 +46,13 @@ export function openingState(place, filter, context) {
 }
 
 /** Current status is independent of a query's weekday or trip-date filter. */
-export function currentOpening(place, now = Date.now()) {
+export function currentOpening(place, now = Date.now(), countryCode = 'de') {
   if (!place.opening_hours) return undefined;
   const status = { state: 'unknown', checkedAt: now, validUntil: now + 5 * 60_000 };
   try {
     const oh = new OpeningHours(place.opening_hours, {
       lat: place.lat, lon: place.lon,
-      address: { country_code: 'de', state: place.region },
+      address: { country_code: countryCode, state: place.region },
     });
     const date = new Date(now);
     if (oh.getUnknown(date)) return status;
@@ -63,4 +64,18 @@ export function currentOpening(place, now = Date.now()) {
     }
   } catch { /* Unparseable and conditional schedules must not imply closed. */ }
   return status;
+}
+
+export function openingHours({countryCode, timeZone}) {
+  if (!/^[a-z]{2}$/.test(countryCode)) throw new Error('Supply the search country code.');
+  if (typeof timeZone !== 'string' || !timeZone) throw new Error('Supply the search time zone.');
+  const zone = new Intl.DateTimeFormat('en', {timeZone}).resolvedOptions().timeZone;
+  const assertEnvironment = () => {
+    // The evaluator creates local Date values internally, including for DST and holidays.
+    if ((Date.timeZone ?? new Intl.DateTimeFormat('en').resolvedOptions().timeZone) !== zone)
+      throw new Error(`Opening hours require a calendar runtime in ${zone}.`);
+  };
+  return {countryCode,timeZone:zone,assertEnvironment,
+    openingState:(place,filter,context)=>openingState(place,filter,context,countryCode),
+    currentOpening:(place,now)=>currentOpening(place,now,countryCode)};
 }

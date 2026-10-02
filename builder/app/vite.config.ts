@@ -71,12 +71,13 @@ export default defineConfig(({ mode }) => {
             // The product skin editor imports the bakery's canonical Teningen
             // OBCM from `host/obc-bake/assets`. Keep one fixture, and let the
             // dev server expose files only as far as this repository root.
-            fs: { allow: ["../.."] },
+            fs: { allow: ["../..", ...(process.env.OBC_PLANNER_MAPS_DIR ? [process.env.OBC_PLANNER_MAPS_DIR] : [])] },
             // Dev mode: `python -m builder.server --no-browser` on :8000 serves
             // the API; Vite proxies it (plain http-proxy streams SSE fine).
             proxy: {
                 "/api/planner-search": `http://127.0.0.1:${process.env.OBC_SEARCH_PORT || "8780"}`,
-                "/routing": { target: "http://127.0.0.1:8788", rewrite: (path: string) => path.replace(/^\/routing/, '') },
+                "/routing": { target: process.env.OBC_PLANNER_ROUTING_URL || "http://127.0.0.1:8788", rewrite: (path: string) => path.replace(/^\/routing/, '') },
+                "/tiles": { target: process.env.OBC_PLANNER_TILES_URL || "http://127.0.0.1:8789", rewrite: (path: string) => path.replace(/^\/tiles/, '') },
                 "/api": `http://127.0.0.1:${process.env.OBC_BUILDER_PORT || "8000"}`,
             },
         },

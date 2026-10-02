@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calculateLine, selectRoute, movingSecondsAt, type EngineRoute } from './routing';
+import { calculateLine, profileId, selectRoute, movingSecondsAt, type EngineRoute } from './routing';
+import { ridingProfiles, presetName, type BikeType } from './riding-profiles';
 import { surfaceRuns, surfaceWindow } from './surface-data';
 import { initialTrip, cumulative, removeRoutePoint, setEndpoint, routingKey, routeCoordinates, type Trip } from './editor';
 
 const route: EngineRoute = {
-    id: 'test-route', surfaces: ['Paved', 'Gravel'], reason: 'primary', elapsed: [0, 3000, 4000], package: 'test', profile: 'touring', geometry: [[7.8, 48], [7.9, 48], [8, 48]], elevation: [200, null, 400],
+    id: 'test-route', surfaces: ['Paved', 'Gravel'], pushing: [false, true], reason: 'primary', elapsed: [0, 3000, 4000], package: 'test', profile: 'touring', geometry: [[7.8, 48], [7.9, 48], [8, 48]], elevation: [200, null, 400],
     totals: { distance_m: 15000, ascent_m: 0, descent_m: 0, seconds: 4000, surface_m: [1000, 14000, 0, 0, 0, 0], unknown_elevation_m: 15000, pushing_m: 100 },
     legs: [{ from_index: 0, to_index: 1, totals: { distance_m: 7500 } as EngineRoute['totals'] }, { from_index: 1, to_index: 2, totals: { distance_m: 7500 } as EngineRoute['totals'] }],
     snap_truncated: false,
@@ -18,6 +19,16 @@ function trip(): Trip {
 }
 afterEach(() => vi.unstubAllGlobals());
 describe('routing integration', () => {
+    it('round-trips every rider-visible preset through the routing API identifier', () => {
+        for (const [bike, profile] of Object.entries(ridingProfiles)) {
+            for (const preset of profile.presets) {
+                const id = profileId({ ...trip(), bike: bike as BikeType, preset });
+                expect(id.split('/')[0]).toBe(bike);
+                expect(presetName(id)).toBe(preset);
+            }
+        }
+        expect(profileId({ ...trip(), bike: 'road', preset: 'Quieter' })).toBe('road/quieter');
+    });
     it('keeps directed shaping context in one request and preserves unknown elevation', async () => {
         const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [route] }) });
         vi.stubGlobal('fetch', fetch);
@@ -27,6 +38,7 @@ describe('routing integration', () => {
         expect(JSON.parse(fetch.mock.calls[0][1].body).alternatives).toBe(false);
         expect(line.alternativesReady).toBe(false);
         expect(line.surfaces).toEqual(['Paved', 'Gravel']);
+        expect(line.pushing).toEqual([false, true]);
         const withAlternatives = await calculateLine(plan, new AbortController().signal, true);
         expect(JSON.parse(fetch.mock.calls[1][1].body).alternatives).toBe(true);
         expect(withAlternatives.alternativesReady).toBe(true);
@@ -71,10 +83,12 @@ describe('routing integration', () => {
         expect(line.elevation.every(h => h === null)).toBe(true);
         expect(line.surfaces).toHaveLength(line.coordinates.length - 1);
         expect(line.surfaces.every(s => s === 'Unknown')).toBe(true);
+        expect(line.pushing).toEqual([null, null]);
         manual.points[2].leg = 'routed';
         const mixed = await calculateLine(manual, new AbortController().signal);
         expect(mixed.surfaces).toEqual(['Unknown', 'Unknown', 'Paved', 'Gravel']);
         expect(mixed.surfaces).toHaveLength(mixed.coordinates.length - 1);
+        expect(mixed.pushing).toEqual([null, null, false, true]);
     });
     it('aligns surface sections by distance and clips the view without changing route shares', () => {
         const line = selectRoute(trip(), route, [route]);
@@ -88,6 +102,9 @@ describe('routing integration', () => {
         expect(data.shares.get('Gravel')).toBeCloseTo(.5);
         expect(surfaceRuns({ ...line, surfaces: [] }).shares.get('Unknown')).toBe(1);
         expect(surfaceRuns().runs).toEqual([]);
+        const sameSurface = surfaceRuns({ ...line, surfaces: ['Paved', 'Paved'] });
+        expect(sameSurface.runs.map(run => run.pushing)).toEqual([false, true]);
+        expect(sameSurface.shares.get('Paved')).toBe(1);
     });
     it('reports service failure and never substitutes fixture geometry', async () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, json: async () => ({ code: 'no_path', message: 'No legal route.' }) }));

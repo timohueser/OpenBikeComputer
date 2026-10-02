@@ -423,7 +423,7 @@ class ShippedPlanTests(unittest.TestCase):
         whose only build is a non-Cargo command, which a subset assertion let regress once."""
 
         cases = [
-            ("planner search", ["apps/planner-search/server.mjs"], ["planner-search"]),
+            ("planner search", ["apps/planner-search/server.mjs"], ["ios-app", "ios-release", "planner-search"]),
             ("documentation only", ["docs/content/ride.md"], ["docs"]),
             # Agent prose instructs an agent; it decides nothing. It must not build every
             # platform, and the unconditional guards job still validates the policy.

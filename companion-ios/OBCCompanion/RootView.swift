@@ -27,6 +27,7 @@ struct RootView: View {
     @State private var updateSurfaceModel: UpdateSurfaceModel
     @State private var path: [MainDestination] = []
     @State private var rideRenameShown = false
+    @Environment(\.obcPlannerSource) private var plannerSource
     @Environment(\.scenePhase) private var scenePhase
 
     private let transport: any DeviceTransport
@@ -80,6 +81,11 @@ struct RootView: View {
         self.updateSurface = updateSurface
         self.importAtLaunch = importAtLaunch
         self.firmwareDemoAtLaunch = firmwareDemoAtLaunch
+        #if DEBUG
+        if OBCCompanionApp.mockControl != nil, MockLaunchOptions.parse().showPlanner {
+            _path = State(initialValue: [.planner(sample: true)])
+        }
+        #endif
 
         let importer = RouteImporter(decoders: [GPXRouteDecoder(), TCXRouteDecoder()])
         self.importer = importer
@@ -166,7 +172,8 @@ struct RootView: View {
                         path.append(.trash)
                     },
                     showsReadyNote: onboarding.showsReadyNote,
-                    onDismissReadyNote: { onboarding.dismissReadyNote() }
+                    onDismissReadyNote: { onboarding.dismissReadyNote() },
+                    onPlanRoute: plannerOpener
                 )
                 // The main screen draws its own chrome, but the title still names the pop target.
                 .navigationTitle("Library")
@@ -205,16 +212,14 @@ struct RootView: View {
         }
         // A re-import whose name matches a saved route, such as an edited tour: update that route
         // in place, or keep both.
-        .confirmationDialog(
+        .obcChoiceSheet(
             collisionTitle,
             isPresented: collisionShown,
-            titleVisibility: .visible,
-            presenting: importModel.collision
-        ) { _ in
-            Button("Update the existing route") { importModel.chooseReplace() }
-            Button("Add as a new route") { importModel.chooseAddAsNew() }
-            Button("Cancel", role: .cancel) { importModel.cancelCollision() }
-        }
+            actions: [
+                OBCSheetAction("Update the existing route") { importModel.chooseReplace() },
+                OBCSheetAction("Add as a new route") { importModel.chooseAddAsNew() },
+            ]
+        )
         .obcRenameSheet(
             "Name the new route",
             isPresented: addAsNewShown,
@@ -476,13 +481,13 @@ struct RootView: View {
         mainModel.addImportedRoute(file.record(for: detail))
     }
 
-    /// The collision dialog's title: the imported route's name, or the file name, quoted.
+    /// The collision sheet's title: the imported route's name, or the file name, quoted.
     private var collisionTitle: String {
         let name = importModel.collision?.pending.route.name ?? importModel.collision?.pending.fileName ?? ""
         return "\u{201C}\(name)\u{201D} is already in your library"
     }
 
-    /// Presentation binding for the collision dialog; dismissal cancels.
+    /// Presentation binding for the collision sheet; dismissal cancels.
     private var collisionShown: Binding<Bool> {
         Binding(
             get: { importModel.collision != nil },
@@ -503,6 +508,12 @@ struct RootView: View {
     @ViewBuilder
     private func detailScreen(for destination: MainDestination) -> some View {
         switch destination {
+        case .planner(let sample):
+            PlannerPreviewView(
+                onSave: savePlannerPreview,
+                onClose: { path.removeAll() },
+                sample: sample, source: plannerSource
+            )
         case .route(let id):
             if let route = mainModel.routes.first(where: { $0.id == id }) {
                 RouteDetailScreen(
@@ -709,6 +720,31 @@ struct RootView: View {
         return nil
         #endif
     }
+
+    private var plannerOpener: (() -> Void)? {
+        { path.append(.planner(sample: false)) }
+    }
+
+    private func savePlannerPreview(_ route: ImportedRoute, bikeType: BikeType) {
+        guard let end = route.points.last, route.points.count > 1, let name = route.name else { return }
+        let fileName = GPXFile.fileName(for: name)
+        let line = MeasuredLine(routePoints: route.points)
+        let trip = Trip(
+            id: TripID(UUID().uuidString), name: name, bikeType: bikeType,
+            line: route.points,
+            dayEnds: [DayEnd(coordinate: end.coordinate, distance: line.length)],
+            addedAt: Date()
+        )
+        let detail = RouteDetailModel(
+            transport: transport, dressing: .imported(route, fileName: fileName), bikeType: bikeType
+        ).makeDetail()
+        mainModel.addImportedRoute(PlannedRouteRecord(
+            summary: detail.summary, route: route, bikeType: bikeType,
+            sourceFileName: fileName, sourceFileData: GPXTripEncoder.encode(trip)
+        ))
+        mainModel.searchText = ""
+        path.removeAll()
+    }
 }
 
 /// Owns the day editor's draft for the screen's life. The destination body runs on every pass
@@ -727,9 +763,9 @@ private struct DayEditorHost: View {
     }
 }
 
-/// Pushed-detail routing. Carries only ids, so the screens look the live summary up in
-/// `MainScreenModel` and a rename mid-stack stays consistent.
+/// Library destinations carry ids so a rename mid-stack reads the live summary.
 enum MainDestination: Hashable {
+    case planner(sample: Bool)
     case route(id: RouteID)
     case trip(id: TripID)
     /// The trip's day editor, in split mode when one file just became the trip.

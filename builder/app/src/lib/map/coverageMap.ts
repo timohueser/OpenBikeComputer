@@ -14,6 +14,7 @@
 // armed hover and click do point-in-rings over every region.
 
 import L from "leaflet";
+import { addBasemap } from "./basemap";
 
 /** [lat, lon] degrees — Leaflet's own order. */
 export type DegPoint = [number, number];
@@ -175,11 +176,8 @@ export class CoverageMapView {
         this.cb = cb;
         // boxZoom off: shift+drag stays free for a future gesture and never fights
         // the box tool.
-        this.map = L.map(el, { worldCopyJump: true, boxZoom: false }).setView([49, 9], 5);
-        L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-            maxZoom: 19,
-            attribution: "&copy; OpenStreetMap contributors",
-        }).addTo(this.map);
+        this.map = L.map(el, { worldCopyJump: true, boxZoom: false, maxZoom: 18 }).setView([49, 9], 5);
+        void addBasemap(this.map);
 
         // Draw order bottom-up: shelf, selection, warnings on top of the
         // selection they annotate, preview above everything settled.

@@ -956,9 +956,7 @@ fn a_map_written_through_the_sink_is_the_native_clis_bytes() {
     assert!(out.bytes.is_none(), "a sunk map must not be resident too");
     assert_same_bytes(&disk.bytes.borrow(), &want, "map.obcm through the sink");
 
-    // What the caller was told it has matches what the engine says it wrote. The host saved these
-    // bytes without seeing them, so this equality is the only thing between a mislabelled file and
-    // a card.
+    // What the caller was told it has is what the engine says it wrote, and the bytes above are that.
     assert_eq!(hooks.sealed.len(), 1);
     assert_eq!(hooks.sealed[0].sha256, out.sha256);
     assert_eq!(hooks.sealed[0].byte_length, want.len() as u64);

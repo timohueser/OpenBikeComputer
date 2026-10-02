@@ -312,6 +312,15 @@ r2 *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/r2.py" "$@"
 
+# Prepare, publish, deploy or preview regional planner data. See the planner README.
+[group('maps')]
+planner *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    _run python3 "$OBC_TOOLS/planner.py" "$@"
+
 # Bake the published cell catalog. `obc bake` processes every regions.toml entry;
 # positional ids narrow it (`obc bake europe/austria --force`). Output goes to
 # $OBC_BAKE_TREE (default ~/obc-bake). `verify` and `publish` use that same tree

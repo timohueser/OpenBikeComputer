@@ -570,14 +570,11 @@ public struct TripDetailView: View {
             }
             .accessibilityLabel("More")
             .accessibilityIdentifier("trip.overflow")
-            .confirmationDialog(
-                "Reverse this trip?", isPresented: $reverseDialogShown, titleVisibility: .visible
-            ) {
-                Button("Reverse trip") { model.reverseTrip(tripID) }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Reverses the direction and day order of this trip. Its device progress starts over.")
-            }
+            .obcChoiceSheet(
+                "Reverse this trip?", isPresented: $reverseDialogShown,
+                message: "Reverses the direction and day order of this trip. Its device progress starts over.",
+                actions: [OBCSheetAction("Reverse trip") { model.reverseTrip(tripID) }]
+            )
             .obcDestructiveConfirm(
                 "Delete \(trip?.name.quoted ?? "trip")?",
                 isPresented: $deleteDialogShown,
@@ -595,7 +592,7 @@ public struct TripDetailView: View {
 }
 
 extension String {
-    /// The string wrapped in typographic double quotes, the dialog-title idiom.
+    /// The string wrapped in typographic double quotes, the sheet-title idiom.
     fileprivate var quoted: String { "\u{201C}\(self)\u{201D}" }
 }
 

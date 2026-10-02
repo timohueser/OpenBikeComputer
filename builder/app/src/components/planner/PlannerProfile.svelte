@@ -63,7 +63,9 @@
     });
     function color(index: number) { return theme === 'dark' ? gradeBands[index].dark : gradeBands[index].color; }
     const hoverHeight = $derived(hover === null ? null : profileHeightAt(hover, lineData));
-    const hoverGrade = $derived(hover === null ? null : grades[Math.max(0, samples.findIndex(sample => sample.progress >= hover!) - 1)] ?? null);
+    const hoverIndex = $derived(hover === null ? -1 : Math.max(0, samples.findIndex(sample => sample.progress >= hover!) - 1));
+    const hoverGrade = $derived(grades[hoverIndex] ?? null);
+    const hoverPushing = $derived(lineData?.pushing?.[hoverIndex]);
     let plot: HTMLDivElement;
     let drag = $state<{ night: number; progress: number; moved: boolean } | null>(null);
     let range = $state<'map' | 'route'>('map');
@@ -141,11 +143,16 @@
     <div class="legend" aria-label={showGrade ? 'Grade color legend' : 'Elevation source'}>
         <span class="estimate">{known.length ? showGrade ? 'Grade · ~100 m average' : 'Terrain estimate' : 'Elevation unavailable'}</span>
         {#if showGrade && known.length}
-            {#each gradeBands as band, i (band.label)}
-                {#if i < 5 || grades.some(grade => grade === null)}
-                    <span class="legend-item"><i style:background={color(i)}></i>{band.label}</span>
-                {/if}
-            {/each}
+            <span class="legend-item"><i style:background={color(5)}></i>{gradeBands[5].label}</span>
+            {#if grades.some(grade => grade === null)}<span class="legend-item"><i style:background={color(11)}></i>Unknown</span>{/if}
+            <div class="ramps">
+                {#each [{ label: 'Down', bands: [4, 3, 2, 1, 0] }, { label: 'Up', bands: [6, 7, 8, 9, 10] }] as direction (direction.label)}
+                    <div class="ramp" aria-label={`${direction.label === 'Down' ? 'Descent' : 'Ascent'} grades`}>
+                        <b>{direction.label}</b>
+                        {#each direction.bands as i (i)}<span class="legend-item"><i style:background={color(i)}></i>{gradeBands[i].label}</span>{/each}
+                    </div>
+                {/each}
+            </div>
         {/if}
     </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -173,7 +180,7 @@
         </svg>
         {#if hover !== null}
             <span class="readout" style:left={`${x(hover)}%`}>
-                <span class="chip" class:flip={x(hover) > 80}>{((hover - origin) * total).toFixed(1)} km{origin > 0 ? ` into ${focus!.label.toLowerCase()}` : ''} · {hoverHeight === null ? 'Elevation unknown' : `${Math.round(hoverHeight)} m`}{#if showGrade} · {formatGrade(hoverGrade)}{/if}</span>
+                <span class="chip" class:flip={x(hover) > 80}>{((hover - origin) * total).toFixed(1)} km{origin > 0 ? ` into ${focus!.label.toLowerCase()}` : ''} · {hoverHeight === null ? 'Elevation unknown' : `${Math.round(hoverHeight)} m`}{#if showGrade} · {formatGrade(hoverGrade)}{/if}{#if hoverPushing} · Push bike{:else if hoverPushing === null} · Access unverified{/if}</span>
             </span>
         {/if}
         {#each handles as { day, x: left } (day.number)}
@@ -235,6 +242,9 @@
     .estimate { margin-right: auto; }
     .legend-item { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
     .legend-item i { width: 12px; height: 3px; border-radius: 1px; }
+    .ramps { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px 20px; width: 100%; }
+    .ramp { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+    .ramp b { font-weight: 600; min-width: 32px; }
     @container (max-width: 560px) {
         .legend { gap: 6px 9px; }
         .estimate { flex-basis: 100%; }
