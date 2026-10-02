@@ -1243,6 +1243,8 @@ jobs:
         env:
           JOURNEY_OUTCOME: ${{ steps.browser-journey.outcome }}
         run: test "$JOURNEY_OUTCOME" = success
+      - name: Planner request budget
+        run: npm run test:planner --prefix builder/app/tests/browser
       - name: Upload builder browser evidence
         if: ${{ !cancelled() && (steps.browser-journey.outcome == 'success' || steps.browser-journey.outcome == 'failure') }}
         uses: actions/upload-artifact@v4

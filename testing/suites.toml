@@ -196,6 +196,24 @@ fixtures = ["checked-in-web-fixtures"]
 platforms = ["linux", "macos"]
 triggers = ["docs/assets/theme.css", "docs/assets/fonts/**", "builder/app/**", "apps/obc-web-assemble/**", "tools/fixture_catalog.py"]
 
+[[suite]]
+id = "web.planner-requests"
+route = "ordinary"
+command = "npm run test:planner --prefix builder/app/tests/browser"
+jobs = ["web-browser"]
+platforms = ["linux", "macos"]
+triggers = [
+  "builder/app/src/components/planner/**",
+  "builder/app/src/lib/planner/**",
+  "builder/app/src/planner.ts",
+  "builder/app/planner.html",
+  "builder/app/tests/browser/planner/**",
+  "builder/app/tests/browser/playwright.planner.config.js",
+  "builder/app/tests/browser/package.json",
+  "builder/app/package.json",
+  "builder/app/vite.config.ts",
+]
+
 # The job table is not derived from the builders it describes, so the unit tests that pin
 # it against `build-wasm-bridges.sh` and the Trunk page are triggered by those files too.
 # The `guards` job is unconditional, so they also run on every pull request regardless.

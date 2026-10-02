@@ -98,3 +98,19 @@ test('range reads deliver decoded tiles, cache full GETs, and do not cache missi
   assert.equal(sprite.status,200);assert.deepEqual(await sprite.json(),{hello:'map'});
   await Promise.all(pending); delete globalThis.caches;
 });
+
+test('a client over its limit is refused on a cache miss only', async () => {
+  const cached = new Map(), url = `https://tiles.example${base}/basemap.json`;
+  globalThis.caches = { default: { async match(key) { return cached.get(key.url)?.clone(); }, async put() {} } };
+  let keys = [];
+  const env = { BUCKET: { get() { assert.fail('A refused request must not read the bucket'); } },
+    LIMITER: { async limit({ key }) { keys.push(key); return { success: false }; } } };
+  const request = () => new Request(url, { headers: { 'cf-connecting-ip': '203.0.113.7' } });
+  const refused = await worker.fetch(request(), env, {});
+  assert.equal(refused.status, 429); assert.equal(refused.headers.get('Cache-Control'), 'no-store');
+  assert.deepEqual(keys, ['203.0.113.7']);
+  cached.set(url, new Response('{}'));
+  assert.equal((await worker.fetch(request(), env, {})).status, 200);
+  assert.equal(keys.length, 1);
+  delete globalThis.caches;
+});
