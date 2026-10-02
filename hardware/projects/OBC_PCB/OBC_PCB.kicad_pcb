@@ -29693,7 +29693,7 @@
 				(justify mirror)
 			)
 		)
-		(property "Description" "2-pin battery connector, 1.2mm pitch, 1.4mm mated height, 2A with AWG28"
+		(property "Description" "JST ACH, 2 contacts, 1.2 mm pitch, 1.4 mm mated height; 2 A with AWG28"
 			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
@@ -29770,7 +29770,7 @@
 				(justify mirror)
 			)
 		)
-		(property "Wire" "AWG28 for 2A rating"
+		(property "Wire" "AWG28; insulation OD 0.50-0.63 mm"
 			(at 0 0 270)
 			(layer "B.SilkS")
 			(hide yes)
@@ -30161,6 +30161,18 @@
 			)
 			(rotate
 				(xyz 0 0 0)
+			)
+		)
+		(property "3D model source" "JST ACH catalogue; drawing-based model, not vendor CAD"
+			(at 0 0 0)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "7bbdd25d-2dd8-42c8-8efc-b81eb8c95a55")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.15)
+				)
 			)
 		)
 	)

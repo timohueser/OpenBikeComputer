@@ -1521,7 +1521,7 @@
 					)
 				)
 			)
-			(property "Datasheet" ""
+			(property "Datasheet" "https://www.jst-mfg.com/product/pdf/eng/eACH.pdf"
 				(at 0 0 0)
 				(show_name no)
 				(do_not_autoplace no)
@@ -1532,7 +1532,7 @@
 					)
 				)
 			)
-			(property "Description" "Two-contact battery connector with grounded solder tabs"
+			(property "Description" "JST ACH, 2 contacts, 1.2 mm pitch, 1.4 mm mated height; 2 A with AWG28"
 				(at 0 0 0)
 				(show_name no)
 				(do_not_autoplace no)
@@ -1638,11 +1638,12 @@
 				(pin passive line
 					(at 0 -6.35 90)
 					(length 2.54)
-					(name ""
+					(name "~"
 						(effects
 							(font
 								(size 0.8 0.8)
 							)
+							(hide yes)
 						)
 					)
 					(number "MP"
@@ -1655,6 +1656,66 @@
 				)
 			)
 			(embedded_fonts no)
+			(property "MPN" "BM02B-ACHSS-GAN-ETF"
+				(at 0 0 0)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
+			(property "Manufacturer" "JST"
+				(at 0 0 0)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
+			(property "Mating housing" "ACHR-02V-S"
+				(at 0 0 0)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
+			(property "Mating contact" "SACH-003G-P0.2"
+				(at 0 0 0)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
+			(property "Wire" "AWG28; insulation OD 0.50-0.63 mm"
+				(at 0 0 0)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
+			(property "3D model source" "JST ACH catalogue; drawing-based model, not vendor CAD"
+				(at 0 0 0)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
 		)
 		(symbol "obc:TPS63900DSKR"
 			(exclude_from_sim no)
@@ -10250,7 +10311,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "2-pin battery connector, 1.2mm pitch, 1.4mm mated height, 2A with AWG28"
+		(property "Description" "JST ACH, 2 contacts, 1.2 mm pitch, 1.4 mm mated height; 2 A with AWG28"
 			(at 40.64 120.65 0)
 			(hide yes)
 			(show_name no)
@@ -10310,7 +10371,7 @@
 				(justify left)
 			)
 		)
-		(property "Wire" "AWG28 for 2A rating"
+		(property "Wire" "AWG28; insulation OD 0.50-0.63 mm"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -10349,6 +10410,16 @@
 					(reference "J4")
 					(unit 1)
 				)
+			)
+		)
+		(property "3D model source" "JST ACH catalogue; drawing-based model, not vendor CAD"
+			(at 0 0 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
 			)
 		)
 	)
