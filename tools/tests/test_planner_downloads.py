@@ -129,15 +129,26 @@ class PlannerDownloads(unittest.TestCase):
         self.assertEqual(self.service.status(first["id"])["state"], "failed")
         self.assertEqual(self.service.status(second["id"])["state"], "ready")
 
-    def test_http_supports_exact_ranges_and_rejects_traversal(self):
-        job = self.service.prepare(self.request())
+    def serve(self):
         server = downloads.ThreadingHTTPServer(("127.0.0.1", 0), downloads.handler(self.service))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         def close():
             server.shutdown(); server.server_close(); thread.join()
         self.addCleanup(close)
-        base = f"http://127.0.0.1:{server.server_port}"
+        return f"http://127.0.0.1:{server.server_port}"
+
+    def test_generated_metadata_travels_gzip_and_installs_decoded(self):
+        job = self.service.prepare(self.request())
+        bundle = json.loads((self.service.cache / job["id"] / "bundle.json").read_bytes())
+        self.assertEqual(bundle["files"]["routing/blocks.json"]["transport"]["encoding"], "gzip")
+        result = offline.install(f"{self.serve()}/bundles/{job['id']}", self.root / "installed")
+        blocks = json.loads((self.root / "installed/releases" / result["release"] / "routing/blocks.json").read_bytes())
+        self.assertEqual(blocks["archives"], ["c" * 64])
+
+    def test_http_supports_exact_ranges_and_rejects_traversal(self):
+        job = self.service.prepare(self.request())
+        base = self.serve()
         bundle = json.loads((self.service.cache / job["id"] / "bundle.json").read_bytes())
         digest = bundle["files"]["routing/packs/" + "c" * 64 + "/pages.bin"]["transport"]["sha256"]
         url = f"{base}/bundles/{job['id']}/objects/{digest}"
