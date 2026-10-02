@@ -548,6 +548,9 @@ use crate::device_core::{CatalogTag, OperationToken, StoreRevision};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogIntent {
+    ClearPersonalData {
+        store: crate::device_core::StoreIdentity,
+    },
     /// Remove unused temporary directions and abandoned candidates, one commit at a time.
     RemoveOrphanRoutes,
     CleanupRoutes {
@@ -579,6 +582,10 @@ pub enum CatalogObjectKind {
 /// One bounded physical catalog operation, carrying the [`OperationToken`] the domain issued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogEffect {
+    ClearPersonalData {
+        token: OperationToken<CatalogTag>,
+        store: crate::device_core::StoreIdentity,
+    },
     RemoveOrphanRoutes {
         token: OperationToken<CatalogTag>,
     },
@@ -601,7 +608,8 @@ pub enum CatalogEffect {
 impl CatalogEffect {
     pub fn token(&self) -> OperationToken<CatalogTag> {
         match self {
-            CatalogEffect::CleanupRoute { token, .. }
+            CatalogEffect::ClearPersonalData { token, .. }
+            | CatalogEffect::CleanupRoute { token, .. }
             | CatalogEffect::ReadCatalog { token }
             | CatalogEffect::RemoveObject { token, .. }
             | CatalogEffect::RemoveOrphanRoutes { token } => *token,
@@ -623,6 +631,10 @@ pub enum CatalogError {
 /// The result of one [`CatalogEffect`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogOutcome {
+    PersonalDataCleared {
+        token: OperationToken<CatalogTag>,
+        done: bool,
+    },
     OrphanRoutesRemoved {
         token: OperationToken<CatalogTag>,
     },
@@ -655,7 +667,8 @@ pub enum CatalogOutcome {
 impl CatalogOutcome {
     pub fn token(&self) -> OperationToken<CatalogTag> {
         match self {
-            CatalogOutcome::CleanupFinished { token }
+            CatalogOutcome::PersonalDataCleared { token, .. }
+            | CatalogOutcome::CleanupFinished { token }
             | CatalogOutcome::CatalogRead { token, .. }
             | CatalogOutcome::ObjectRemoved { token, .. }
             | CatalogOutcome::OrphanRoutesRemoved { token }
@@ -722,6 +735,10 @@ impl CatalogState {
         self.cleanup_running
     }
 
+    pub(crate) fn reset_running(&self) -> bool {
+        matches!(self.pending, Some(CatalogIntent::ClearPersonalData { .. }))
+    }
+
     pub(crate) fn accepts(&self, outcome: CatalogOutcome) -> bool {
         self.ops.is_current(outcome.token())
     }
@@ -752,6 +769,11 @@ impl CatalogState {
             return Some(CatalogEffect::ReadCatalog { token: self.ops.issue() });
         };
         let effect = match intent {
+            CatalogIntent::ClearPersonalData { store } => {
+                self.cleanup_running = true;
+                self.pending = Some(intent);
+                CatalogEffect::ClearPersonalData { token: self.ops.issue(), store }
+            }
             CatalogIntent::RemoveOrphanRoutes => CatalogEffect::RemoveOrphanRoutes { token: self.ops.issue() },
             CatalogIntent::CleanupRoutes { before_utc, store } => {
                 self.cleanup_running = true;
@@ -821,7 +843,12 @@ impl CatalogState {
         }
         self.ops.invalidate(); // terminal: a duplicate of this answer is no longer current
         self.in_flight = false;
-        if core::mem::take(&mut self.cleanup_running) && !matches!(outcome, CatalogOutcome::ObjectRemoved { .. }) {
+        if core::mem::take(&mut self.cleanup_running)
+            && !matches!(
+                outcome,
+                CatalogOutcome::ObjectRemoved { .. } | CatalogOutcome::PersonalDataCleared { done: false, .. }
+            )
+        {
             self.pending = None;
         }
         if matches!(outcome, CatalogOutcome::Failed { .. })
@@ -832,6 +859,11 @@ impl CatalogState {
             self.cascade = None;
         }
         match outcome {
+            CatalogOutcome::PersonalDataCleared { .. } => {
+                self.loaded_scope = None;
+                self.refresh_owed = true;
+                None
+            }
             CatalogOutcome::CleanupFinished { .. } => {
                 self.refresh_owed = true;
                 None
@@ -1172,7 +1204,9 @@ mod tests {
         for _ in 0..=steps.capacity() {
             let Some(effect) = catalogs.next_effect() else { break };
             match effect {
-                CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveOrphanRoutes { .. } => {
+                CatalogEffect::ClearPersonalData { .. }
+                | CatalogEffect::CleanupRoute { .. }
+                | CatalogEffect::RemoveOrphanRoutes { .. } => {
                     panic!("unexpected cleanup")
                 }
                 CatalogEffect::RemoveObject { token, object, .. } => {

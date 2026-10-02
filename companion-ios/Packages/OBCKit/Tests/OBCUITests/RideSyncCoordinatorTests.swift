@@ -339,6 +339,7 @@ final class RideSyncCoordinatorTests: XCTestCase {
             XCTAssertFalse(try XCTUnwrap(library.ridePoints(first.summary.id)).isEmpty)
             XCTAssertNil(coordinator.lastSyncCount, "transport completion cannot override a local failure")
             XCTAssertEqual(coordinator.syncInterruption?.landed, 1)
+            XCTAssertEqual(coordinator.syncInterruption?.reason, malformedPayload ? .download : .archive)
             XCTAssertFalse(coordinator.upToDateToastVisible)
 
             if !malformedPayload { try FileManager.default.removeItem(at: blocker) }
@@ -368,9 +369,8 @@ final class RideSyncCoordinatorTests: XCTestCase {
         for revision: UInt64 in [1, 2] {
             let source = RideSource(storeID: scope.storeID, objectID: 42, revision: revision,
                                     payloadLength: UInt64(payload.count), payloadCRC32: CRC32.checksum(payload))
-            var catalogSummary = original.summary
-            catalogSummary.name = "Stale catalog display name"
-            catalogSummary.source = source
+            let catalogSummary = RideSummary(id: id, name: "Stale catalog display name",
+                                             date: .distantPast, distanceMeters: 0, source: source)
             library.markRideSynced(id)
             let transport = ScriptedDownloadTransport(
                 base: MockTransport(control: control),
@@ -382,6 +382,8 @@ final class RideSyncCoordinatorTests: XCTestCase {
             try await waitFor("exact revision archived") { coordinator.syncState == .done }
             XCTAssertEqual(library.archivedRideSource(id), source)
             XCTAssertEqual(library.rideSummaries().first?.name, original.summary.name)
+            XCTAssertEqual(library.rideSummaries().first?.date, original.summary.date)
+            XCTAssertEqual(library.rideSummaries().first?.distanceMeters, original.summary.distanceMeters)
             let next = RideSyncCoordinator(transport: transport, library: library, timing: Self.stickyTiming)
             try await startConnected(next)
             next.sync()

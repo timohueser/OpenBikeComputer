@@ -30,7 +30,7 @@ public struct RideFilter: Equatable, Sendable {
 }
 
 /// Sums over rides. The input is the rides as the list shows them, so an edited ride counts once,
-/// with its edited values and bike type.
+/// with its edited values and bike type. Factory demo rides do not count.
 public struct RideTotals: Equatable, Sendable {
     public var rideCount = 0
     public var distanceMeters = 0.0
@@ -39,7 +39,7 @@ public struct RideTotals: Equatable, Sendable {
     public var climbMeters = 0.0
 
     public init(_ rides: some Sequence<RideSummary>) {
-        for ride in rides {
+        for ride in rides where !ride.isDemo {
             rideCount += 1
             distanceMeters += ride.distanceMeters
             movingTime += ride.movingTime
@@ -52,7 +52,7 @@ public struct RideTotals: Equatable, Sendable {
     public static func byBikeType(
         _ rides: some Sequence<RideSummary>
     ) -> [(bikeType: BikeType, totals: RideTotals)] {
-        let groups = Dictionary(grouping: rides, by: \.bikeType)
+        let groups = Dictionary(grouping: rides.filter { !$0.isDemo }, by: \.bikeType)
         return BikeType.allCases.compactMap { type in
             groups[type].map { (type, RideTotals($0)) }
         }

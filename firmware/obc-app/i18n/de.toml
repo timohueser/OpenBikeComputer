@@ -332,13 +332,15 @@ all_added_sub = "Erst eins entfernen"
 
 # --- Factory-reset settings screen ---
 [reset]
+erasing = "Persönliche Daten löschen..."
+data_failed = "Daten nicht gelöscht. Speicherkarte prüfen und erneut versuchen."
 retry = "Wiederholen"
 power_cycle = "Ausschalten und den OBC wieder einschalten."
 phone_failed = "Telefon nicht entfernt"
 title = "ZURÜCKSETZEN"
 factory = "Werksreset"
-erases = "Löscht alle Werte"
-saved_time = "& die Uhrzeit."
+erases = "Löscht Einstellungen, Routen, Touren und Fahrten."
+saved_time = "Karten bleiben erhalten."
 confirm = "Bestätigen"
 keep_holding = "Weiter halten"
 hold_to_erase = "Halten: löschen"

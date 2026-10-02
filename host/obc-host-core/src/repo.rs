@@ -62,6 +62,10 @@ impl ByteSource for RouteLease {
 
 /// Route projections, retained readers and physical writes used by the shared host executor.
 pub trait RouteRepository {
+    /// Delete one batch of personal objects from the shared card; true means it is empty.
+    fn clear_personal_data(&mut self, _store: obc_app::device_core::StoreIdentity) -> Result<bool, CatalogError> {
+        Err(CatalogError::Unsupported)
+    }
     fn set_route_clock(&mut self, _utc: Option<u32>) {}
     fn cleanup_route(
         &mut self,

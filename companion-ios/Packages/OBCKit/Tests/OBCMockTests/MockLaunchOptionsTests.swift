@@ -141,7 +141,7 @@ final class MockLaunchOptionsTests: XCTestCase {
     func testSampleRouteFileServesEveryKind() {
         let names: [SampleRouteFile.Kind: [String]] = [
             .gpx: ["sample-import.gpx"], .tcx: ["sample-import.tcx"], .bad: ["packing-list.pdf"],
-            .grimsel: ["website-import.gpx"], .trip: ["sample-import.gpx", "website-import.gpx"],
+            .grimsel: ["grimsel-pass.gpx"], .trip: ["sample-import.gpx", "grimsel-pass.gpx"],
         ]
         for (kind, expected) in names {
             XCTAssertEqual(SampleRouteFile.files(kind).map(\.fileName), expected, "\(kind) sample must load")

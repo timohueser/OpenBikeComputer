@@ -75,6 +75,8 @@ export interface RideEffortLimits {
 /** A downloaded v6 ride: the recorded sample bytes followed by one fixed summary footer. */
 export interface RideObject {
     version: 6;
+    /** Synthetic onboarding ride; preserved with the recorded payload. */
+    isDemo: boolean;
     name: string;
     startTime: number;
     distanceM: number;
@@ -110,7 +112,8 @@ export function decodeRideObject(data: Uint8Array): RideObject {
     const version = data[footer + 4];
     if (version !== 6) throw new ObjectDecodeError(`ride object version ${version}; this client decodes 6.`);
     const limits = footer + RIDE_LIMITS_AT;
-    if (view.getUint16(footer + 6, true) !== RIDE_FOOTER_LEN || data[footer + 33] !== 0 || data[limits + 1] !== 0) {
+    const flags = data[footer + 33];
+    if (view.getUint16(footer + 6, true) !== RIDE_FOOTER_LEN || (flags & ~1) !== 0 || data[limits + 1] !== 0) {
         throw new ObjectDecodeError("ride object has a non-canonical summary footer.");
     }
     const name = footerName(data, footer + RIDE_NAME_AT, data[footer + 5]);
@@ -149,6 +152,7 @@ export function decodeRideObject(data: Uint8Array): RideObject {
 
     return {
         version: 6,
+        isDemo: (flags & 1) !== 0,
         points,
         name,
         startTime: view.getUint32(footer + 8, true),
@@ -210,6 +214,7 @@ export function encodeRideObject(r: RideObject): Uint8Array {
     out[footer + 30] = r.avgHr ?? NO_U8;
     out[footer + 31] = r.maxHr ?? NO_U8;
     out[footer + 32] = r.avgCadence ?? NO_U8;
+    out[footer + 33] = r.isDemo ? 1 : 0;
     view.setUint16(footer + 34, r.avgPower ?? NO_U16, true);
     view.setUint16(footer + 36, r.maxPower ?? NO_U16, true);
     view.setUint32(footer + 38, r.energyKj ?? NO_U32, true);

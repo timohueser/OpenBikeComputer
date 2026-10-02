@@ -95,6 +95,7 @@ function rideFromTrackLog(log: Uint8Array, name: string, startTime: number): Rid
     }
     return {
         version: 6,
+        isDemo: false,
         effortLimits: { maxHrBpm: null, ftpW: null },
         name,
         startTime,
@@ -132,6 +133,7 @@ function longRide(points: number): RideObject {
     }
     return {
         version: 6,
+        isDemo: false,
         effortLimits: { maxHrBpm: null, ftpW: null },
         name: "Long Way Round",
         startTime: 1_783_598_400,
@@ -231,6 +233,7 @@ describe("the ride object", () => {
         const ride = decodeRideObject(bytes);
         expect(ride).toMatchObject({
             version: 6,
+            isDemo: true,
             name: "Sensor Ride",
             startTime: 1_751_460_000,
             distanceM: 12_345,
@@ -260,6 +263,17 @@ describe("the ride object", () => {
             powerW: 205,
         });
         expect(encodeRideObject(ride)).toEqual(bytes);
+    });
+
+    it("keeps ordinary rides unmarked and rejects reserved footer flags", () => {
+        const bytes = encodeRideObject(longRide(1));
+        const flags = bytes.length - 154 + 33;
+        expect(bytes[flags]).toBe(0);
+        expect(decodeRideObject(bytes).isDemo).toBe(false);
+        for (const reserved of [2, 0x80, 0xff]) {
+            bytes[flags] = reserved;
+            expect(() => decodeRideObject(bytes)).toThrow("non-canonical summary footer");
+        }
     });
 
     it("keeps a zero elevation as the device's 'no barometer yet' value", () => {

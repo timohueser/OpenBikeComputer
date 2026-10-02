@@ -98,6 +98,7 @@ public final class MainScreenModel {
     /// `ride(_:)`.
     @ObservationIgnored private var rideSummaries: [RideID: RideSummary] = [:]
     @ObservationIgnored private var started = false
+    @ObservationIgnored private var connectionRevision = 0
     @ObservationIgnored private var streamTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     /// Set when a reload is requested while `loadTask` is already reading. Bursts coalesce
@@ -126,8 +127,7 @@ public final class MainScreenModel {
     private let legRouter: (any LegRouter)?
     /// The in-flight transfer ledger. Nil in tests and previews.
     @ObservationIgnored private let transferActivity: TransferActivity?
-    /// The in-flight identity read for the current connection. A reconnect replaces it and
-    /// never cancels it: a superseded read settles the same session-stable verdict.
+    /// Reconnect waits for the previous identity read to drain before starting another.
     @ObservationIgnored private var identityTask: Task<Void, Never>?
 
     public static let trashRetentionDays = 30
@@ -207,19 +207,35 @@ public final class MainScreenModel {
             for await state in transport.state {
                 guard let self else { return }
                 connection = state
-                // A regained link, never the stream's replayed first value: re-read the lists
-                // and run the desired-name reconcile for a config write that never landed.
-                if state == .connected, let was = previous, was != .connected {
-                    reload()
-                    // Re-read identity because firmware or the mounted store can change.
-                    identityTask = Task { [weak self] in
-                        await self?.runIdentityCheck()
-                    }
-                    if let nameReconciler {
-                        Task { await nameReconciler.reconcile() }
-                    }
-                }
+                guard state != previous else { continue }
                 previous = state
+                connectionRevision += 1
+                if state == .connected {
+                    identityChecked = false
+                    connectedScope = nil
+                    lastRouteCatalog = nil
+                    lastTripCatalog = nil
+                    deviceRouteCRCs = [:]
+                    deviceTripCRCs = [:]
+                    refreshOnDeviceStates()
+                    // Initial connection and reconnect share the same catalog/identity order.
+                    reload()
+                    let catalogs = loadTask
+                    let priorIdentity = identityTask
+                    let revision = connectionRevision
+                    identityTask = Task { [weak self] in
+                        await priorIdentity?.value
+                        await catalogs?.value
+                        guard let self, connection == .connected,
+                              connectionRevision == revision, !Task.isCancelled else { return }
+                        await runIdentityCheck()
+                        guard connection == .connected, connectionRevision == revision else { return }
+                        await nameReconciler?.reconcile()
+                    }
+                } else {
+                    reloadRequested = false
+                    loadState = .loaded
+                }
             }
         })
         streamTasks.append(Task { [weak self, transport] in
@@ -246,22 +262,6 @@ public final class MainScreenModel {
                 if connection == .connected { reload() }
             }
         })
-        reload()
-        // Identity after the first library read, so a fault armed for the first read hits the
-        // lists and not this fetch. The same read carries the protocol-version check.
-        let firstLoad = loadTask
-        identityTask = Task { [weak self] in
-            await firstLoad?.value
-            await self?.runIdentityCheck()
-        }
-        // The reconnect edge never fires for the stream's replayed first value, so the launch
-        // connection reconciles here. Launched disconnected, the pass skips silently.
-        if let nameReconciler {
-            streamTasks.append(Task {
-                await firstLoad?.value
-                await nameReconciler.reconcile()
-            })
-        }
     }
 
     deinit {
@@ -276,7 +276,7 @@ public final class MainScreenModel {
     public func reload() {
         // Never decode an incompatible device's objects. The library-first content stays up
         // and the banner explains.
-        guard protocolMismatch == nil else {
+        guard connection == .connected, protocolMismatch == nil else {
             reloadRequested = false
             loadState = .loaded
             return
@@ -294,13 +294,15 @@ public final class MainScreenModel {
     /// Drain coalesced catalog requests serially. Main-actor isolation stops the dirty bit and
     /// the `loadTask` retirement from racing a store-change callback.
     private func runReloadLoop() async {
-        while reloadRequested, !Task.isCancelled {
+        while reloadRequested, connection == .connected, !Task.isCancelled {
             reloadRequested = false
+            let revision = connectionRevision
             do {
                 // Only the route catalog: Tracked is library-first, so its rows come from the
                 // local library and device rides are pulled by Sync alone.
                 let deviceRoutes = try await transport.listRoutes()
                 guard !Task.isCancelled else { break }
+                guard connectionRevision == revision else { continue }
                 lastRouteCatalog = deviceRoutes
                 reconcileOnDevice(with: deviceRoutes)
                 // Fail closed: a failed trip read skips the reconcile, because treating it as
@@ -308,15 +310,18 @@ public final class MainScreenModel {
                 // duplicate device trip instead of replacing in place.
                 if let deviceTrips = try? await transport.listTrips() {
                     guard !Task.isCancelled else { break }
+                    guard connectionRevision == revision else { continue }
                     lastTripCatalog = deviceTrips
                     reconcileTripsOnDevice(with: deviceTrips)
                 }
+                guard connectionRevision == revision else { continue }
                 routes = plannedList()
                 reloadTrips()
                 rides = trackedList()
                 loadState = .loaded
             } catch {
                 guard !Task.isCancelled else { break }
+                guard connectionRevision == revision else { continue }
                 loadState = .failed
             }
         }
@@ -327,11 +332,17 @@ public final class MainScreenModel {
     /// A missing scope or failed read leaves device writes disabled until the
     /// next successful connection. Local library browsing remains available.
     private func runIdentityCheck() async {
+        guard connection == .connected else { return }
+        let revision = connectionRevision
+        let wasIncompatible = protocolMismatch != nil
         // Unknown until proven, every connection: the device may have been
         // reinitialized (new StoreId) or swapped since the last read.
         connectedScope = nil
         await stampDeviceClock()
-        if let info = try? await transport.deviceInfo() {
+        guard connectionRevision == revision, !Task.isCancelled else { return }
+        let info = try? await transport.deviceInfo()
+        guard connectionRevision == revision, !Task.isCancelled else { return }
+        if let info {
             deviceName = info.name
             if case let .protocolMismatch(expected, found)? =
                 OBCProtocol.versionMismatch(reportedBy: info.protocolVersion) {
@@ -353,6 +364,7 @@ public final class MainScreenModel {
                 reconcileTripsOnDevice(with: tripCatalog)
             }
             reloadTrips()
+            if wasIncompatible { reload() }
         }
     }
 
@@ -759,6 +771,7 @@ public final class MainScreenModel {
         _ id: TripID, timing: TripUploadModel.Timing = TripUploadModel.Timing()
     ) -> TripUploadModel? {
         guard let trip = trip(id), let plan = planTripUpload(id) else { return nil }
+        let scope = connectedScope
         let days = dayRoutes(of: trip)
         var steps: [TripUploadModel.QueueStep] = []
         // A reversed trip has a new key. The device must not keep the old trip object, with the
@@ -818,7 +831,14 @@ public final class MainScreenModel {
             transport: transport, card: DeviceTripCard(name: trip.name, days: days.map { $0.summary(tripID: id) }),
             deviceName: deviceName,
             precheck: plan.precheck, steps: steps,
-            timing: timing, activity: transferActivity
+            timing: timing, activity: transferActivity,
+            verifyConnection: { [weak self] in
+                guard let self else { throw DeviceError.readFailed }
+                await identityTask?.value
+                try Task.checkCancellation()
+                guard connection == .connected, connectedScope != nil,
+                      scope == nil || connectedScope == scope else { throw DeviceError.readFailed }
+            }
         )
     }
 
@@ -1309,7 +1329,7 @@ public final class MainScreenModel {
     /// The listed ride after `id` in time: the partner of Merge with next.
     public func nextRide(after id: RideID) -> RideSummary? {
         guard let ride = rides.first(where: { $0.id == id }) else { return nil }
-        return rides.filter { $0.date > ride.date }.min { $0.date < $1.date }
+        return rides.filter { $0.date > ride.date && $0.isDemo == ride.isDemo }.min { $0.date < $1.date }
     }
 
     /// Join the next ride onto this one. The time between the two does not count as moving time.

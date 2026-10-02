@@ -79,6 +79,11 @@ targets:
       # is real (grep a Release build: the marker string is absent).
       - package: OBCKit
         product: OBCMock
+    entitlements:
+      path: OBCCompanion/OBCCompanion.entitlements
+      properties:
+        com.apple.developer.associated-domains:
+          - applinks:openbikecomputer.com
     info:
       path: OBCCompanion/Info.plist
       properties:

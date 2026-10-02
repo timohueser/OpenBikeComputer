@@ -35,11 +35,12 @@ summary, all canonical samples, source record and local downloaded flag as one g
 Samples preserve timestamps, coordinates, optional elevation and sensor values, and segment starts.
 Wire bytes are not the library schema.
 
-Each `rides/<library-key>/summary.json` is a version 3 manifest. It contains the canonical summary,
+Each `rides/<library-key>/summary.json` is a version 4 manifest. It contains the canonical summary,
 its source, the downloaded flag, and the name, length and CRC of one immutable
-`points-<UUID>.json` file. That points file contains version 3 canonical point records. The manifest
+`points-<UUID>.json` file. That points file contains version 4 canonical point records. The manifest
 is the only publication point. A list reads manifests without reading track samples. A local
 summary edit keeps the source and points reference; it does not rewrite samples.
+The summary's optional `isDemo` flag is false when absent. It does not change archive proof.
 
 The production persistence anchor is the existing `Library` directory inside the app container.
 The archive can create `Application Support/OBCLibrary` and its descendants below that anchor.

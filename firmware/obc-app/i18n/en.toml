@@ -360,10 +360,12 @@ all_added_sub = "Remove one to swap"
 
 # --- Factory-reset settings screen ---
 [reset]
+erasing = "Erasing personal data..."
+data_failed = "Data not erased. Check the memory card and retry."
 title = "RESET"
 factory = "Factory reset"
-erases = "Erases all settings"
-saved_time = "& saved time."
+erases = "Erases settings, routes, trips, and rides."
+saved_time = "Keeps maps."
 confirm = "Confirm"
 keep_holding = "Keep holding"
 hold_to_erase = "Hold to erase"

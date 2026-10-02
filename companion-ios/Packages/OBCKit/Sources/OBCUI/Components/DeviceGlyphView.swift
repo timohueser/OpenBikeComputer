@@ -7,7 +7,8 @@ import SwiftUI
 /// The screen draws a device page in its exact on-glass colours and Terminus.
 struct DeviceGlyphView: View {
     enum Variant {
-        /// The title bar with the device's name and the amber track squiggle.
+        case welcome
+        /// The title bar with the device's name and the signpost mark.
         case home(name: String)
         /// The device's pairing card. The app never knows the code, so the digits are blanks.
         case passkey
@@ -89,6 +90,8 @@ struct DeviceGlyphView: View {
     @ViewBuilder
     private var screenContent: some View {
         switch variant {
+        case .welcome:
+            DeviceWelcomeScreen()
         case .home(let name):
             DeviceHomeScreen(name: name)
         case .passkey:
@@ -104,6 +107,7 @@ struct DeviceGlyphView: View {
 
     private var accessibilityText: String {
         switch variant {
+        case .welcome: "The bike computer's welcome screen"
         case .home(let name): "\(name), the bike computer"
         case .passkey: "The bike computer's pairing screen, which shows a six-digit code"
         case .routeOverview(let overview): "The bike computer's screen showing \(overview.name)"
@@ -125,7 +129,7 @@ struct DeviceGlyphView: View {
     }
 }
 
-/// The name in the title bar over the amber track squiggle.
+/// The name in the title bar over the signpost mark.
 private struct DeviceHomeScreen: View {
     let name: String
 
@@ -133,16 +137,21 @@ private struct DeviceHomeScreen: View {
         Canvas { context, size in
             let title = name.count <= 15 ? name : String(name.prefix(13)).trimmingCharacters(in: .whitespaces) + ".."
             context.deviceFrame(size: size, title: title)
-            // The source path is "M12 60 C 20 40 34 44 40 52 C 48 62 60 40 68 20" in an 80×74 box.
-            let box = CGRect(x: 24, y: 70, width: 192, height: 200)
-            func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-                CGPoint(x: box.minX + x / 80 * box.width, y: box.minY + y / 74 * box.height)
+            context.draw(Image("Signpost", bundle: .module),
+                         in: CGRect(x: 40, y: 96, width: 160, height: 160))
+        }
+        .environment(\.colorScheme, .light)
+    }
+}
+
+private struct DeviceWelcomeScreen: View {
+    var body: some View {
+        Canvas { context, size in
+            context.deviceFrame(size: size, title: "WELCOME")
+            for (index, greeting) in ["Hello", "Hallo", "Bonjour", "Hola"].enumerated() {
+                context.pixelText(greeting, .display, x: 120, capTop: CGFloat(70 + index * 44),
+                                  color: OBCTheme.deviceInk, centered: true)
             }
-            var path = Path()
-            path.move(to: point(12, 60))
-            path.addCurve(to: point(40, 52), control1: point(20, 40), control2: point(34, 44))
-            path.addCurve(to: point(68, 20), control1: point(48, 62), control2: point(60, 40))
-            context.stroke(path, with: .color(OBCTheme.deviceTrack), style: StrokeStyle(lineWidth: 6, lineCap: .round))
         }
     }
 }

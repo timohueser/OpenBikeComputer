@@ -21,17 +21,20 @@ public final class RideSyncCoordinator {
         public var reason: Reason = .download
 
         public enum Reason: Equatable, Sendable {
-            case download, confirmationPending, unsupported, sourceUnavailable, refused
+            case download, archive, confirmationPending, unsupported, sourceUnavailable, refused
         }
 
-        /// Every reason but `download` is about the mark that tells the OBC a ride is saved on the
-        /// phone: the rides themselves are saved.
         public var title: String {
-            reason == .download ? "Sync interrupted." : "Rides saved on this phone."
+            switch reason {
+            case .download: "Sync interrupted."
+            case .archive: "Ride could not be saved."
+            default: "Rides saved on this phone."
+            }
         }
         public var message: String {
             switch reason {
             case .download: "Got \(landed) of \(total) rides."
+            case .archive: "Saved \(landed) of \(total) rides. The app could not save a ride in this phone's library. Your rides remain on the OBC."
             case .confirmationPending:
                 "The OBC did not answer when the app marked them as synced, so the OBC does not show them as synced yet."
             case .unsupported: "This OBC cannot show rides as synced. Update its firmware."
@@ -271,6 +274,7 @@ public final class RideSyncCoordinator {
             defer { dropWatch.cancel() }
             var landed = 0
             var batchFailed = false
+            var failureReason: SyncInterruption.Reason = .download
             do {
                 for try await downloaded in download.rides {
                     try Task.checkCancellation()
@@ -288,6 +292,7 @@ public final class RideSyncCoordinator {
                         let decoded = ride.summary
                         ride.summary = summary
                         if ride.summary.trackPreview == nil { ride.summary.trackPreview = decoded.trackPreview }
+                        ride.summary.isDemo = decoded.isDemo
                         ride.summary.descentMeters = decoded.descentMeters
                         ride.summary.avgHeartRate = decoded.avgHeartRate
                         ride.summary.maxHeartRate = decoded.maxHeartRate
@@ -296,7 +301,12 @@ public final class RideSyncCoordinator {
                         ride.summary.maxPower = decoded.maxPower
                         ride.summary.energyKJ = decoded.energyKJ
                     }
-                    let receipt = try library.archiveRide(ride)
+                    let receipt: RideArchiveReceipt?
+                    do { receipt = try library.archiveRide(ride) }
+                    catch {
+                        failureReason = .archive
+                        throw error
+                    }
                     syncedRideIDs.insert(downloaded.id)
                     onRideLanded(ride)
                     landed += 1
@@ -321,7 +331,7 @@ public final class RideSyncCoordinator {
                 syncState = .idle
                 syncInterruption = SyncInterruption(
                     landed: landed, total: fresh.count,
-                    reason: batchFailed || outcome != .completed ? .download : confirmationFailure!)
+                    reason: batchFailed || outcome != .completed ? failureReason : confirmationFailure!)
                 return
             }
 

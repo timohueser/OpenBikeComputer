@@ -205,7 +205,7 @@ The final 154 bytes are the summary footer:
 | 30 | 1 | average heart rate; `0xFF` = absent |
 | 31 | 1 | maximum heart rate; `0xFF` = absent |
 | 32 | 1 | average cadence; `0xFF` = absent |
-| 33 | 1 | reserved, zero |
+| 33 | 1 | flags; bit 0 is `demo`, all other bits are zero |
 | 34 | 2 | average power; `0xFFFF` = absent |
 | 36 | 2 | maximum power; `0xFFFF` = absent |
 | 38 | 4 | energy, kJ; `0xFFFF_FFFF` = absent |
@@ -220,6 +220,9 @@ The final 154 bytes are the summary footer:
 | 151 | 1 | reserved, zero |
 | 152 | 2 | FTP limit, watts; `0` = not set |
 
+- **Demo.** The factory sets bit 0 for a sample ride. The recorder writes zero. The app shows a
+  demo badge and excludes the ride from totals. Sync preserves the flag with the ride bytes.
+  A reader rejects any other flag bit.
 - **Climb and descent.** The device counts both with the same dead band, from the same altitude
   samples.
 - **Energy.** Each power sample adds its watts × the time since the previous sample, at most 2 s,
@@ -249,7 +252,7 @@ The footer is last because the flat-store payload pages are write-once. A list r
 `object length == point_count × 20 + 154`. A reader rejects any other footer length.
 Finalize appends this footer and performs one store commit that publishes the final length and CRC
 and clears `RECORDING`. `specs/vectors/ride-v6.bin` pins three sample records — including sensor
-sentinels and segment flags — and a footer on a trip day with both effort limits set.
+sentinels and segment flags — and a footer on a trip day with both effort limits and the demo flag set.
 
 ### 7.3 `config` — the Config object
 

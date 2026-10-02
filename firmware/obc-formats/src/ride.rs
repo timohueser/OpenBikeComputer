@@ -116,6 +116,8 @@ pub struct EffortLimits {
 /// The fixed summary at the end of every finished ride object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Footer {
+    /// Factory sample ride; excluded from the companion app's totals.
+    pub is_demo: bool,
     pub start_time: u32,
     pub distance_m: u32,
     pub moving_time_s: u32,
@@ -159,6 +161,7 @@ impl Footer {
         max_power: Option<u16>,
     ) -> Footer {
         Footer {
+            is_demo: false,
             start_time,
             distance_m,
             moving_time_s,
@@ -218,7 +221,7 @@ pub fn encode_footer(footer: &Footer) -> [u8; FOOTER_LEN] {
     b[30] = footer.avg_hr.unwrap_or(HR_NONE);
     b[31] = footer.max_hr.unwrap_or(HR_NONE);
     b[32] = footer.avg_cadence.unwrap_or(CAD_NONE);
-    // byte 33 is reserved and remains zero, aligning the following u16 values.
+    b[33] = u8::from(footer.is_demo);
     b[34..36].copy_from_slice(&footer.avg_power.unwrap_or(PWR_NONE).to_le_bytes());
     b[36..38].copy_from_slice(&footer.max_power.unwrap_or(PWR_NONE).to_le_bytes());
     b[38..42].copy_from_slice(&footer.energy_kj.unwrap_or(KJ_NONE).to_le_bytes());
@@ -247,7 +250,7 @@ pub fn decode_footer(b: &[u8; FOOTER_LEN]) -> Result<Footer, DecodeError> {
     if b[4] != VERSION {
         return Err(DecodeError::Version);
     }
-    if u16::from_le_bytes([b[6], b[7]]) as usize != FOOTER_LEN || b[33] != 0 || b[LIMITS_AT + 1] != 0 {
+    if u16::from_le_bytes([b[6], b[7]]) as usize != FOOTER_LEN || b[33] & !1 != 0 || b[LIMITS_AT + 1] != 0 {
         return Err(DecodeError::Layout);
     }
     let name = Name::decode(b[5], &b[NAME_AT..TRIP_AT])?;
@@ -262,6 +265,7 @@ pub fn decode_footer(b: &[u8; FOOTER_LEN]) -> Result<Footer, DecodeError> {
     }
 
     Ok(Footer {
+        is_demo: b[33] & 1 != 0,
         start_time: u32::from_le_bytes(b[8..12].try_into().unwrap()),
         distance_m: u32::from_le_bytes(b[12..16].try_into().unwrap()),
         moving_time_s: u32::from_le_bytes(b[16..20].try_into().unwrap()),
@@ -335,6 +339,7 @@ mod tests {
         let bytes = encode_footer(&footer);
         assert_eq!(&bytes[..8], b"OBRF\x06\x0b\x9a\0");
         assert_eq!(&bytes[22..30], &[0x2A, 3, 0x80, 2, 3, 0, 0, 0], "climb, descent, point count");
+        assert_eq!(bytes[33], 0, "recorded rides are not demos");
         assert_eq!(&bytes[34..42], &[210, 0, 224, 1, 0xF4, 2, 0, 0], "power, then energy");
         assert_eq!(&bytes[90..102], &[0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01, 1, 3, 1, 14]);
         assert_eq!(&bytes[150..], &[185, 0, 250, 0], "max HR, reserved, FTP");
@@ -371,6 +376,7 @@ mod tests {
         let decoded = decode_footer(footer).unwrap();
         assert_eq!(decoded.name(), "Sensor Ride");
         assert_eq!(decoded.point_count, 3);
+        assert!(decoded.is_demo);
         assert_eq!(decoded.bike, BikeType::Gravel);
         assert_eq!(decoded.trip(), Some(TRIP));
         assert_eq!(decoded.trip_name(), "Alpen Traverse");
@@ -381,9 +387,9 @@ mod tests {
     #[test]
     fn footer_rejects_noncanonical_fixed_bytes() {
         let bytes = encode_footer(&example());
-        // Magic, version, length, reserved, name padding, a day past the count, a bike type past
+        // Magic, version, length, unknown flags, name padding, a day past the count, a bike type past
         // the four, trip-name padding, and the reserved byte after max HR.
-        for (offset, value) in [(0, 0), (4, 5), (6, 150), (33, 1), (89, 1), (98, 3), (100, 4), (149, 1), (151, 1)] {
+        for (offset, value) in [(0, 0), (4, 5), (6, 150), (33, 2), (89, 1), (98, 3), (100, 4), (149, 1), (151, 1)] {
             let mut bad = bytes;
             bad[offset] = value;
             assert!(decode_footer(&bad).is_err(), "offset {offset}");

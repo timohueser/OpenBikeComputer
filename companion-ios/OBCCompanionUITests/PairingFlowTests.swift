@@ -12,7 +12,7 @@ final class PairingFlowTests: XCTestCase {
     @MainActor
     private func launch(scenario: String) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments += ["-OBCScenario", scenario]
+        app.launchArguments += ["-OBCScenario", scenario, "-OBCHideMockHUD", "-OBCDisableAnimations"]
         app.launch()
         return app
     }
@@ -26,25 +26,41 @@ final class PairingFlowTests: XCTestCase {
         add(attachment)
     }
 
+    @MainActor
+    private func enterPairing(_ app: XCUIApplication, capture: Bool = false) {
+        XCTAssertTrue(app.staticTexts["onboarding.welcomeTitle"].waitForExistence(timeout: 10))
+        if capture { snap(app, "onboarding-P01-welcome") }
+        app.buttons["onboarding.getStarted"].tap()
+        XCTAssertTrue(app.staticTexts["onboarding.switchOnTitle"].waitForExistence(timeout: 10))
+        if capture { snap(app, "onboarding-P02-switch-on") }
+        app.buttons["pair.start"].tap()
+        XCTAssertTrue(app.staticTexts["onboarding.bluetoothTitle"].waitForExistence(timeout: 10))
+        if capture { snap(app, "onboarding-P03-bluetooth") }
+        app.buttons["onboarding.allowBluetooth"].tap()
+    }
+
     /// The intro, the scan with the row sliding in, the pairing beat, then the main screen.
     @MainActor
     func testFirstRunPairingHappyPath() {
-        let app = launch(scenario: "noDevice")
+        let app = launch(scenario: "onboarding")
 
-        XCTAssertTrue(app.staticTexts["pair.introTitle"].waitForExistence(timeout: 10), "D1 missing")
-        snap(app, "D1-pairing-prompt")
-        app.buttons["pair.start"].tap()
-
-        let row = app.buttons["pair.deviceRow"]
-        XCTAssertTrue(row.waitForExistence(timeout: 10), "D2 discovered row missing")
-        snap(app, "D2-scanning-found")
-        row.tap()
+        enterPairing(app, capture: true)
 
         XCTAssertTrue(app.staticTexts["pair.pairedTitle"].waitForExistence(timeout: 10), "D4 missing")
-        snap(app, "D4-paired")
-        app.buttons["pair.goToRoutes"].tap()
-
-        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing after pairing")
+        snap(app, "onboarding-P06-paired")
+        app.buttons["pairing.keepName"].tap()
+        XCTAssertTrue(app.staticTexts["onboarding.sensorsTitle"].waitForExistence(timeout: 10))
+        snap(app, "onboarding-P08-sensors")
+        app.buttons["onboarding.sensorsContinue"].tap()
+        XCTAssertTrue(app.staticTexts["onboarding.routeTitle"].waitForExistence(timeout: 10))
+        snap(app, "onboarding-P10-route")
+        app.buttons["onboarding.routeSkip"].tap()
+        XCTAssertTrue(app.staticTexts["onboarding.rideTitle"].waitForExistence(timeout: 10))
+        snap(app, "onboarding-P11-ride")
+        app.buttons["onboarding.finish"].tap()
+        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing after setup")
+        XCTAssertTrue(app.descendants(matching: .any)["onboarding.readyNote"].firstMatch.exists)
+        snap(app, "onboarding-P12-library")
     }
 
     /// A scan timeout resolves to the failure screen; Try again loops back through scanning.
@@ -52,8 +68,7 @@ final class PairingFlowTests: XCTestCase {
     func testPairingTimeoutShowsD5AndRetryLoops() {
         let app = launch(scenario: "pairingTimeout")
 
-        XCTAssertTrue(app.staticTexts["pair.introTitle"].waitForExistence(timeout: 10))
-        app.buttons["pair.start"].tap()
+        enterPairing(app)
 
         let failed = app.staticTexts["pair.failedTitle"]
         XCTAssertTrue(failed.waitForExistence(timeout: 10), "D5 missing")
@@ -68,14 +83,7 @@ final class PairingFlowTests: XCTestCase {
     func testPairingRejectedShowsD5RejectedCopy() {
         let app = launch(scenario: "pairingRejected")
 
-        XCTAssertTrue(app.staticTexts["pair.introTitle"].waitForExistence(timeout: 10))
-        app.buttons["pair.start"].tap()
-
-        // The row appears first, from un-gated discovery. The passkey is gated and only fires on
-        // the row tap, so a rejection surfaces after confirming, not before.
-        let row = app.buttons["pair.deviceRow"]
-        XCTAssertTrue(row.waitForExistence(timeout: 10), "D2 discovered row missing")
-        row.tap()
+        enterPairing(app)
 
         let failed = app.staticTexts["pair.failedTitle"]
         XCTAssertTrue(failed.waitForExistence(timeout: 10), "D5 missing")
@@ -87,8 +95,7 @@ final class PairingFlowTests: XCTestCase {
     func testBluetoothOffShowsH8AndLibraryStaysReachable() {
         let app = launch(scenario: "bluetoothOff")
 
-        XCTAssertTrue(app.staticTexts["pair.introTitle"].waitForExistence(timeout: 10))
-        app.buttons["pair.start"].tap()
+        enterPairing(app)
 
         let title = app.staticTexts["radio.title"]
         XCTAssertTrue(title.waitForExistence(timeout: 10), "H8 missing")
@@ -104,8 +111,7 @@ final class PairingFlowTests: XCTestCase {
     func testPermissionDeniedShowsH7State() {
         let app = launch(scenario: "permissionDenied")
 
-        XCTAssertTrue(app.staticTexts["pair.introTitle"].waitForExistence(timeout: 10))
-        app.buttons["pair.start"].tap()
+        enterPairing(app)
 
         let title = app.staticTexts["radio.title"]
         XCTAssertTrue(title.waitForExistence(timeout: 10), "H7 state missing")
@@ -131,8 +137,7 @@ final class PairingFlowTests: XCTestCase {
         snap(app, "S4-main-out-of-range")
     }
 
-    /// Bonded but with the link down at launch: the connecting state resolves to the main screen
-    /// within the grace window.
+    /// A saved pairing opens the Library while the link connects in the background.
     @MainActor
     func testBondedColdLaunchResolvesToMain() {
         let app = XCUIApplication()
@@ -141,26 +146,22 @@ final class PairingFlowTests: XCTestCase {
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 15))
     }
 
-    /// Bonded but the device never answers: the grace window expires onto the connect-failed
-    /// screen, never a forever-spinner, and the secondary action still reaches the library.
+    /// An absent device leaves the Library available, with connection status in its header.
     @MainActor
-    func testDeviceUnreachableTimesOutToConnectFailedAndRoutesStayReachable() {
+    func testDeviceUnreachableOpensLibraryWhileReconnecting() {
         let app = launch(scenario: "deviceUnreachable")
-
-        XCTAssertTrue(app.staticTexts["launch.connectingTitle"].waitForExistence(timeout: 10), "A state missing")
-        // The default connect grace must expire onto the timeout screen.
-        let title = app.staticTexts["launch.connectFailedTitle"]
-        XCTAssertTrue(title.waitForExistence(timeout: 15), "connect-failed screen missing")
-        XCTAssertEqual(title.label, "Can't reach Trailhead")
-        XCTAssertTrue(app.buttons["launch.tryAgain"].exists)
-        snap(app, "A-timeout-connect-failed")
-
-        // Try again re-enters the connecting state, and the still-silent device times out again.
-        app.buttons["launch.tryAgain"].tap()
-        XCTAssertTrue(app.staticTexts["launch.connectingTitle"].waitForExistence(timeout: 10), "retry must re-enter A")
-        XCTAssertTrue(title.waitForExistence(timeout: 15), "second timeout missing")
-
-        app.buttons["launch.goToRoutes"].tap()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "library must stay reachable")
+        let header = app.descendants(matching: .any)["topbar.device"].firstMatch
+        let reconnecting = expectation(
+            for: NSPredicate(format: "label CONTAINS[c] 'connecting'"), evaluatedWith: header)
+        wait(for: [reconnecting], timeout: 10)
+        XCTAssertFalse(app.buttons["topbar.sync"].isEnabled)
+        XCTAssertTrue(app.buttons["topbar.settings"].isEnabled)
+        XCTAssertFalse(app.staticTexts["launch.connectingTitle"].exists)
+        XCTAssertFalse(app.staticTexts["launch.connectFailedTitle"].exists)
+        app.segmentedControls.buttons["Rides"].tap()
+        XCTAssertTrue(app.staticTexts["No rides yet"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.descendants(matching: .any)["main.readError"].firstMatch.exists)
+        snap(app, "D5-library-offline")
     }
 }

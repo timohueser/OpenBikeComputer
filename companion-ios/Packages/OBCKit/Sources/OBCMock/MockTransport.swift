@@ -40,9 +40,33 @@ public struct MockTransport: DeviceTransport {
         try await authenticate()
     }
 
+    public func scanForPairing() async throws -> [PairingDevice] {
+        await control.delay()
+        try Task.checkCancellation()
+        try control.radioGate()
+        try control.takePendingFailure()
+        let name = control.deviceInfo.name
+        return control.pairingDevices ?? [PairingDevice(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+            name: name.hasPrefix("OBC-") ? name : "OBC-\(name)"
+        )]
+    }
+
+    public func discover(_ candidate: PairingDevice) async throws {
+        let candidates = try await scanForPairing()
+        guard candidates.contains(where: { $0.id == candidate.id }) else { throw DeviceError.deviceNotFound }
+        try await discover()
+        if control.pairingDevices != nil {
+            var config = control.fixtures.config
+            config.name = candidate.name
+            control.setConfig(config)
+        }
+    }
+
     public func discover() async throws {
         control.connection = .connecting
         await control.delay()
+        try Task.checkCancellation()
         do {
             try control.radioGate()
             try control.takePendingFailure()
@@ -55,6 +79,7 @@ public struct MockTransport: DeviceTransport {
     public func authenticate() async throws {
         // The pairing gate stands in for the real path's LESC passkey sheet.
         await control.delay()
+        try Task.checkCancellation()
         do {
             try control.pairingGate()
         } catch {

@@ -26,6 +26,7 @@ struct RideCodecVectorTests {
         let ride = try RideObjectCodec.decode(bytes, id: RideID("42"))
         let summary = ride.summary
         #expect(summary.name == "Sensor Ride")
+        #expect(summary.isDemo)
         #expect(summary.date == Date(timeIntervalSince1970: 1_751_460_000))
         #expect(summary.distanceMeters == 12_345)
         #expect(summary.movingTime == 3_600)
@@ -59,9 +60,9 @@ struct RideCodecVectorTests {
     @Test func rejectsBadFooterAndReservedSampleFlags() throws {
         let bytes = try vector()
         let footer = bytes.count - RideObjectCodec.footerLength
-        // Reserved byte, a day past the count, a bike type past the four, trip-name padding, and
+        // Unknown flags, a day past the count, a bike type past the four, trip-name padding, and
         // the reserved byte after the max heart rate limit.
-        for (offset, value) in [(33, 1), (98, 3), (100, 4), (149, 1), (151, 1)] as [(Int, UInt8)] {
+        for (offset, value) in [(33, 2), (98, 3), (100, 4), (149, 1), (151, 1)] as [(Int, UInt8)] {
             var badFooter = bytes
             badFooter[footer + offset] = value
             #expect(throws: (any Error).self) {

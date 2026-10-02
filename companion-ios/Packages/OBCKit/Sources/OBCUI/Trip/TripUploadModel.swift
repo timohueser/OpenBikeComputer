@@ -42,7 +42,7 @@ public final class TripUploadModel: Identifiable {
 
     /// One queue step: a skipped day with no bytes, or a transfer of a day route or the trip object.
     /// `makeTransfer` is evaluated at execution time, so the trip-object step reads the day route ids
-    /// the just-committed days landed under. It returns nil to degenerate to a skip.
+    /// the just-committed days landed under. An unavailable required transfer fails the queue.
     public struct QueueStep: Sendable {
         let title: String
         let skip: Bool
@@ -102,6 +102,7 @@ public final class TripUploadModel: Identifiable {
     private let steps: [QueueStep]
     private let precheck: TripUploadPrecheck
     private let timing: Timing
+    private let verifyConnection: @MainActor @Sendable () async throws -> Void
     @ObservationIgnored private let activity: TransferActivity?
     @ObservationIgnored private var activityToken: TransferActivity.Token?
     @ObservationIgnored private var currentHandle: TransferHandle?
@@ -118,7 +119,8 @@ public final class TripUploadModel: Identifiable {
         precheck: TripUploadPrecheck,
         steps: [QueueStep],
         timing: Timing = Timing(),
-        activity: TransferActivity? = nil
+        activity: TransferActivity? = nil,
+        verifyConnection: @escaping @MainActor @Sendable () async throws -> Void = {}
     ) {
         self.transport = transport
         self.card = card
@@ -128,6 +130,7 @@ public final class TripUploadModel: Identifiable {
         self.stepCount = steps.count
         self.timing = timing
         self.activity = activity
+        self.verifyConnection = verifyConnection
         self.phase = .uploading
     }
 
@@ -252,6 +255,11 @@ public final class TripUploadModel: Identifiable {
                 stepIndex += 1
                 continue
             }
+            do { try await verifyConnection() }
+            catch {
+                fail(error)
+                return
+            }
             if let run = step.run {
                 do {
                     try await run()
@@ -265,10 +273,8 @@ public final class TripUploadModel: Identifiable {
                 continue
             }
             guard let (handle, committedCRC) = step.makeTransfer?() else {
-                // Nothing resolvable to send, such as a trip with no on-device days, so treat it
-                // as a skip and move on.
-                stepIndex += 1
-                continue
+                fail(DeviceError.readFailed)
+                return
             }
             currentHandle = handle
             phase = .uploading
@@ -282,6 +288,11 @@ public final class TripUploadModel: Identifiable {
             switch outcome {
             case .completed:
                 let objectID = await handle.assignedObjectID
+                do { try await verifyConnection() }
+                catch {
+                    fail(error)
+                    return
+                }
                 step.commit?(objectID, committedCRC)
                 committedCount += 1
                 stepIndex += 1
@@ -301,6 +312,12 @@ public final class TripUploadModel: Identifiable {
         setActive(false)
         try? await Task.sleep(for: timing.doneAutoDismiss)
         shouldDismiss = true
+    }
+
+    private func fail(_ error: Error) {
+        failure = .device(error as? DeviceError ?? .writeFailed)
+        phase = .failed
+        setActive(false)
     }
 
     private func watchProgress(_ handle: TransferHandle) {

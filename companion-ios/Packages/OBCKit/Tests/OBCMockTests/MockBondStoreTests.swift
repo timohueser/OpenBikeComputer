@@ -8,6 +8,7 @@ final class MockBondStoreTests: XCTestCase {
     func testPairingScenariosBootUnbonded() {
         let unbonded: [Scenario] = [
             .noDevice, .pairingTimeout, .pairingRejected, .bluetoothOff, .permissionDenied,
+            .onboarding, .onboardingNearby, .onboardingUpdate, .onboardingUpdateNeeded,
         ]
         for scenario in Scenario.allCases {
             XCTAssertEqual(

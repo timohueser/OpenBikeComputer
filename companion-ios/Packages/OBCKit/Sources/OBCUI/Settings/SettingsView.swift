@@ -9,6 +9,7 @@ public struct SettingsView: View {
     /// Push the firmware-update screen. `nil` leaves the Update firmware row out (previews, and
     /// any wiring that does not host the update screen).
     private let onOpenFirmwareUpdate: (() -> Void)?
+    private let onReplaySetup: (() -> Void)?
 
     /// Debug-only: five taps on the App version row open the mock dev panel. `nil` in
     /// Release wiring, where the gesture goes nowhere.
@@ -27,10 +28,12 @@ public struct SettingsView: View {
     public init(
         model: SettingsModel,
         onOpenFirmwareUpdate: (() -> Void)? = nil,
+        onReplaySetup: (() -> Void)? = nil,
         onOpenDevPanel: (() -> Void)? = nil
     ) {
         self.model = model
         self.onOpenFirmwareUpdate = onOpenFirmwareUpdate
+        self.onReplaySetup = onReplaySetup
 
         self.onOpenDevPanel = onOpenDevPanel
     }
@@ -181,6 +184,17 @@ public struct SettingsView: View {
                     .accessibilityIdentifier("settings.offlineMaps")
             }
             OBCAppearanceRow()
+            if let onReplaySetup {
+                OBCListRow(
+                    icon: "arrow.counterclockwise",
+                    iconColor: OBCTheme.tint,
+                    label: "Run setup again",
+                    showsChevron: true,
+                    showsDivider: false,
+                    action: onReplaySetup
+                )
+                .accessibilityIdentifier("settings.replaySetup")
+            }
         }
     }
 

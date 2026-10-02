@@ -41,7 +41,7 @@ public enum RideObjectCodec {
         data.append(sensorU8(summary.avgHeartRate))
         data.append(sensorU8(summary.maxHeartRate))
         data.append(sensorU8(summary.avgCadence))
-        data.append(0)
+        data.append(summary.isDemo ? 1 : 0)
         data.appendLE(sensorU16(summary.avgPower))
         data.appendLE(sensorU16(summary.maxPower))
         data.appendLE(summary.energyKJ.map { UInt32(clamping: Swift.min($0, Int(noEnergy) - 1)) } ?? noEnergy)
@@ -85,7 +85,8 @@ public enum RideObjectCodec {
         let avgHR = optSensorU8(try footer.u8())
         let maxHR = optSensorU8(try footer.u8())
         let avgCadence = optSensorU8(try footer.u8())
-        guard try footer.u8() == 0 else { throw DeviceError.readFailed }
+        let flags = try footer.u8()
+        guard flags & ~1 == 0 else { throw DeviceError.readFailed }
         let avgPower = optSensorU16(try footer.u16())
         let maxPower = optSensorU16(try footer.u16())
         let energy = try footer.u32()
@@ -145,7 +146,7 @@ public enum RideObjectCodec {
             trackPreview: TrackPreview.normalizing(points.map(\.coordinate)),
             avgHeartRate: avgHR, maxHeartRate: maxHR, avgCadence: avgCadence,
             avgPower: avgPower, maxPower: maxPower, energyKJ: energy == noEnergy ? nil : Int(energy),
-            bikeType: bikeType, trip: trip, zoneLimits: zoneLimits)
+            bikeType: bikeType, trip: trip, zoneLimits: zoneLimits, isDemo: flags & 1 != 0)
         return Ride(summary: summary, points: points)
     }
 

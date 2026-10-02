@@ -143,10 +143,7 @@ public final class SettingsModel {
     public func rename(to newName: String) -> Bool {
         // Cap at the device's name limit, so the app-side name matches what the codec writes, and
         // trim again in case truncation left a trailing space.
-        let trimmed = newName
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .truncatedToUTF8Bytes(DeviceConfig.maxNameUTF8Bytes)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = DeviceRenaming.normalized(newName)
         guard !trimmed.isEmpty, canRename else { return false }
         deviceName = trimmed
         bondStore.save(BondRecord(deviceName: trimmed))
@@ -155,9 +152,7 @@ public final class SettingsModel {
             // The name rides in the config blob, so read-modify-write and the other fields
             // survive the rename.
             do {
-                var config = try await transport.readConfig()
-                config.name = trimmed
-                try await transport.writeConfig(config)
+                try await DeviceRenaming.save(trimmed, to: transport)
             } catch {
                 // Either leg failing means the device never got the name. Flag it once for the
                 // view's toast; the reconcile pass self-heals on the next connect, and the bond

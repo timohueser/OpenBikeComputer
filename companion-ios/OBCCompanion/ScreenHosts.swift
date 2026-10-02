@@ -12,6 +12,7 @@ import OBCUI
 struct SettingsScreen: View {
     @State private var model: SettingsModel
     private let onOpenFirmwareUpdate: () -> Void
+    private let onReplaySetup: () -> Void
 
     private let onOpenDevPanel: (() -> Void)?
 
@@ -22,6 +23,7 @@ struct SettingsScreen: View {
         onDeviceRenamed: @escaping (String) -> Void,
         onForget: @escaping () -> Void,
         onOpenFirmwareUpdate: @escaping () -> Void,
+        onReplaySetup: @escaping () -> Void,
 
         onOpenDevPanel: (() -> Void)?
     ) {
@@ -33,6 +35,7 @@ struct SettingsScreen: View {
             onForget: onForget
         ))
         self.onOpenFirmwareUpdate = onOpenFirmwareUpdate
+        self.onReplaySetup = onReplaySetup
 
         self.onOpenDevPanel = onOpenDevPanel
     }
@@ -41,6 +44,7 @@ struct SettingsScreen: View {
         SettingsView(
             model: model,
             onOpenFirmwareUpdate: onOpenFirmwareUpdate,
+            onReplaySetup: onReplaySetup,
 
             onOpenDevPanel: onOpenDevPanel
         )
@@ -283,6 +287,7 @@ struct ImportLandingHost: View {
     private let noDevicePaired: Bool
     /// The trips the route can join, most recently edited first.
     private let trips: [TripPickerItem]
+    private let isOnboarding: Bool
     private let onSave: (RouteDetail, TripSelection) -> Void
     private let onPair: (RouteDetail) -> Void
     private let onCancel: () -> Void
@@ -296,6 +301,7 @@ struct ImportLandingHost: View {
         deviceName: String,
         noDevicePaired: Bool,
         trips: [TripPickerItem] = [],
+        isOnboarding: Bool = false,
         // When this import replaces an existing route, the landing reuses its id, so New route
         // updates that route in place instead of adding a duplicate.
         replacing: PlannedRouteRecord? = nil,
@@ -312,6 +318,7 @@ struct ImportLandingHost: View {
         self.deviceName = deviceName
         self.noDevicePaired = noDevicePaired
         self.trips = trips
+        self.isOnboarding = isOnboarding
         self.onSave = onSave
         self.onPair = onPair
         self.onCancel = onCancel
@@ -334,30 +341,32 @@ struct ImportLandingHost: View {
     /// The one save, then the two ways into a trip. Each choice says where the route lands.
     private var rows: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Button("Save to Library") { save(.none) }
+            Button(isOnboarding ? "Save and send to OBC" : "Save to Library") { save(.none) }
                 .buttonStyle(.obcPrimary)
                 .accessibilityIdentifier("import.newRoute")
-            OBCGroupedSection("Or put it in a trip") {
-                if trips.count == 1, let trip = trips.first {
-                    OBCListRow(label: "Add to \(trip.name)", detail: "It becomes day \(trip.dayCount + 1).", showsChevron: true) {
-                        save(.existing(trip.id))
+            if !isOnboarding {
+                OBCGroupedSection("Or put it in a trip") {
+                    if trips.count == 1, let trip = trips.first {
+                        OBCListRow(label: "Add to \(trip.name)", detail: "It becomes day \(trip.dayCount + 1).", showsChevron: true) {
+                            save(.existing(trip.id))
+                        }
+                        .accessibilityIdentifier("import.addToTrip")
+                    } else if trips.count > 1 {
+                        OBCListRow(label: "Add to a trip", detail: "It becomes the last day.", showsChevron: true) {
+                            tripPickerShown = true
+                        }
+                        .accessibilityIdentifier("import.addToTrip")
                     }
-                    .accessibilityIdentifier("import.addToTrip")
-                } else if trips.count > 1 {
-                    OBCListRow(label: "Add to a trip", detail: "It becomes the last day.", showsChevron: true) {
-                        tripPickerShown = true
+                    OBCListRow(
+                        label: "Start a new trip",
+                        detail: "Then split the route into days.",
+                        showsChevron: true,
+                        showsDivider: false
+                    ) {
+                        save(.new(model.name))
                     }
-                    .accessibilityIdentifier("import.addToTrip")
+                    .accessibilityIdentifier("import.startTrip")
                 }
-                OBCListRow(
-                    label: "Start a new trip",
-                    detail: "Then split the route into days.",
-                    showsChevron: true,
-                    showsDivider: false
-                ) {
-                    save(.new(model.name))
-                }
-                .accessibilityIdentifier("import.startTrip")
             }
         }
     }

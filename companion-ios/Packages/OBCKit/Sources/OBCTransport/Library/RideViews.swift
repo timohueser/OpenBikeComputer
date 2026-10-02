@@ -118,6 +118,7 @@ extension LibraryStore {
     /// bike type.
     @discardableResult
     public func mergeRides(_ first: RideSummary, _ second: RideID) -> Bool {
+        guard rideSummaries().first(where: { $0.id == second })?.isDemo == first.isDemo else { return false }
         var edit = RideEditSession(store: self)
         guard let head = edit.slices(of: first.id), let tail = edit.slices(of: second),
               let view = edit.view(id: first.id, summary: first, slices: head + tail)

@@ -55,4 +55,15 @@ struct RideLibraryTests {
         #expect(byType[0].totals.distanceMeters == 120_000)
         #expect(byType[0].totals.rideCount == 2)
     }
+    @Test
+    func demoRemainsInTheLibraryButDoesNotCountInTotals() {
+        var demo = ride("Grimsel Pass", "2026-01-01T09:00:00Z", km: 15, hours: 2, climb: 700)
+        demo.isDemo = true
+        let recorded = ride("mine", "2026-08-01T09:00:00Z", km: 10, climb: 100, type: .gravel)
+        #expect(RideFilter(year: 2026).includes(demo, calendar: zurich))
+        #expect(RideTotals([demo, recorded]) == RideTotals([recorded]))
+        #expect(RideTotals([demo]).rideCount == 0)
+        #expect(RideTotals.byBikeType([demo, recorded]).map(\.bikeType) == [.gravel])
+    }
+
 }

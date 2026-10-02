@@ -16,6 +16,10 @@ public enum Scenario: String, CaseIterable, Sendable {
     case outOfRange
     case deviceUnreachable
     case noDevice
+    case onboarding
+    case onboardingNearby
+    case onboardingUpdate
+    case onboardingUpdateNeeded
     case pairingTimeout
     case pairingRejected
     case bluetoothOff
@@ -90,6 +94,8 @@ extension Scenario {
             // Bonded but the device never answers: connect() parks on the huge latency the
             // way a real scan parks on an absent peripheral. Launch must time out, not hang.
             return ScenarioPreset(connection: .disconnected, latency: .seconds(3_600))
+        case .onboarding, .onboardingNearby, .onboardingUpdate, .onboardingUpdateNeeded:
+            return ScenarioPreset(fixtures: "onboarding", connection: .disconnected, bonded: false)
         case .noDevice:
             return ScenarioPreset(connection: .disconnected, bonded: false)
         case .pairingTimeout:

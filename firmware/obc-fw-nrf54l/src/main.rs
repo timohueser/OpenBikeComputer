@@ -20,9 +20,8 @@
 mod board;
 mod buzzer;
 // The raw-card flat store and the board adapter that binds it to sEMMC.
-#[cfg(feature = "seed-rides")]
-#[allow(dead_code)]
-mod demo_rides;
+#[cfg(feature = "factory-demo-ride")]
+mod factory_demo_ride;
 mod flat_ride;
 mod flat_store;
 // The microSD host over Nordic's sEMMC soft peripheral on the FLPR: native 4-bit SD mode,
@@ -865,35 +864,21 @@ async fn main(_spawner: Spawner) {
         // mount is bounded by the catalog it reads.
         let flat_started = embassy_time::Instant::now();
         let flat = flat_store::mount_at_boot();
-        #[cfg(feature = "seed-rides")]
+        #[cfg(feature = "factory-demo-ride")]
         {
-            #[cfg(demo_ride_file)]
-            let result = demo_rides::seed_file(flat, include_bytes!(concat!(env!("OUT_DIR"), "/demo_ride.obcr")));
-            #[cfg(not(demo_ride_file))]
-            let result = {
-                let start = option_env!("OBC_DEMO_RIDE_START").unwrap_or("0").parse().unwrap_or(0);
-                demo_rides::seed(flat, start)
-            };
-            match result {
-                #[cfg(demo_ride_file)]
-                Ok(id) => {
-                    info!("demo ride: object {}", id.0);
-                    info!("demo rides: complete");
-                }
-                #[cfg(not(demo_ride_file))]
-                Ok(ids) => {
-                    for (name, id) in demo_rides::NAMES.iter().zip(ids) {
-                        info!("demo rides: {} = object {}", name, id.0);
-                    }
-                    info!("demo rides: complete");
-                }
-                Err(error) => {
-                    defmt::error!("demo rides: refused: {:?}", defmt::Debug2Format(&error));
-                    idle_blink(&mut led).await
-                }
+            match factory_demo_ride::seed(flat, include_bytes!(concat!(env!("OUT_DIR"), "/demo_ride.obcr"))) {
+                Ok(id) => info!("factory demo ride: complete, object {}", id.0),
+                Err(error) => defmt::error!("factory demo ride: refused: {:?}", defmt::Debug2Format(&error)),
             }
-            if cfg!(demo_ride_file) {
-                idle_blink(&mut led).await
+            if cfg!(feature = "factory-demo-ride") {
+                let mut watchdog = board::watchdog!(p.WDT0, ride::WDT_TIMEOUT_TICKS).ok().map(|(_, [handle])| handle);
+                loop {
+                    if let Some(handle) = &mut watchdog {
+                        handle.pet();
+                    }
+                    led.toggle();
+                    Timer::after_millis(500).await;
+                }
             }
         }
         let flat_catalog = flat_store::report(flat, flat_started.elapsed().as_micros());
@@ -1041,6 +1026,7 @@ async fn main(_spawner: Spawner) {
         // between app entry and this line must complete well inside one WDT period (24 s). If it
         // does not, the dog resets a healthy trial image and the bootloader rolls it back. Never move
         // a blocking or open-ended retry loop above this point.
+        #[cfg(not(feature = "factory-demo-ride"))]
         let wdt_handle = match board::watchdog!(p.WDT0, ride::WDT_TIMEOUT_TICKS) {
             Ok((_wdt, [handle])) => Some(handle),
             Err(_) => {
@@ -1048,6 +1034,8 @@ async fn main(_spawner: Spawner) {
                 None
             }
         };
+        #[cfg(feature = "factory-demo-ride")]
+        let wdt_handle: Option<embassy_nrf::wdt::WatchdogHandle> = None;
 
         // The settings store moves behind one async mutex, so the ride loop and both link planes can
         // lock it per operation. The flat store owns the card through its separate command seam.

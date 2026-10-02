@@ -165,15 +165,11 @@ fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
 
     println!("cargo:rerun-if-env-changed=OBC_DEMO_RIDE_FILE");
-    println!("cargo:rustc-check-cfg=cfg(demo_ride_file)");
-    if env::var_os("CARGO_FEATURE_SEED_RIDES").is_some() {
-        if let Some(path) = env::var_os("OBC_DEMO_RIDE_FILE") {
-            let path = PathBuf::from(path);
-            assert!(path.is_absolute(), "OBC_DEMO_RIDE_FILE must be an absolute path");
-            println!("cargo:rerun-if-changed={}", path.display());
-            fs::copy(path, out.join("demo_ride.obcr")).expect("copy OBC_DEMO_RIDE_FILE");
-            println!("cargo:rustc-cfg=demo_ride_file");
-        }
+    if env::var_os("CARGO_FEATURE_FACTORY_DEMO_RIDE").is_some() {
+        let path = PathBuf::from(env::var_os("OBC_DEMO_RIDE_FILE").expect("use obc flash factory-demo-ride"));
+        assert!(path.is_absolute(), "OBC_DEMO_RIDE_FILE must be an absolute path");
+        println!("cargo:rerun-if-changed={}", path.display());
+        fs::copy(path, out.join("demo_ride.obcr")).expect("copy OBC_DEMO_RIDE_FILE");
     }
 
     // Cargo sets CARGO_FEATURE_<NAME> for the build script when a feature is enabled.

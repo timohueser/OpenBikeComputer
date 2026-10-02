@@ -284,6 +284,7 @@ function syntheticRide(name: string, startTime: number, points: number, sensors:
     }
     return {
         version: 6,
+        isDemo: false,
         effortLimits: { maxHrBpm: null, ftpW: null },
         name,
         startTime,
