@@ -68,6 +68,8 @@ A tile with no places is absent.
 `overlays.pmtiles` holds the route networks and access restrictions of the
 overlay index. It has gzip MVT tiles from zoom 6 to 14, with extent 4096. Its
 metadata `routing_package` is the routing manifest identity of the overlay index.
+In a grid release, `maps/overlays.json` names the grid routing package, the
+SHA-256 of `routing/blocks.json`, which packs the same graph.
 
 | Layer | Feature ID | Properties |
 | --- | --- | --- |

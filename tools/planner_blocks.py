@@ -272,6 +272,10 @@ def publish(source, routing, output):
         with (source / "maps" / f"{kind}.pmtiles").open("rb") as stream:
             reader = Reader(MmapSource(stream))
             header, info = reader.header(), reader.metadata()
+        if kind == "overlays":
+            # The grid packs the same routing graph under its own identity, which its route answers carry.
+            if info.get("routing_package") != graph["source"]: raise ValueError("Overlay tiles use another routing package")
+            info["routing_package"] = files["routing/blocks.json"]["sha256"]
         metadata(f"maps/{kind}.json", {**info, "tilejson": "3.0.0", "minzoom": header["min_zoom"],
             "maxzoom": header["max_zoom"], "bounds": release["terrain_bounds"] if kind == "terrain" else release["bounds"]})
     for name in release["files"]:
