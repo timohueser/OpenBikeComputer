@@ -7,12 +7,14 @@ const budget = JSON.parse(readFileSync(new URL('./request-budget.json', import.m
 /** Counts every request the page and its workers send to a public host, and answers it from `stubs.js`. */
 async function countRequests(page) {
   const counts = {};
+  const order = [];
   const state = { last: Date.now() };
   await page.route(url => url.hostname !== '127.0.0.1', route => {
     const request = route.request();
     if (request.method() === 'OPTIONS') return route.fulfill(CORS_PREFLIGHT);
     const kind = classify(new URL(request.url()));
     counts[kind] = (counts[kind] ?? 0) + 1;
+    order.push(kind);
     state.last = Date.now();
     const response = respond(request);
     return response ? route.fulfill(response) : route.abort();
@@ -20,7 +22,7 @@ async function countRequests(page) {
   const phases = [];
   let before = {};
   return {
-    counts, phases,
+    counts, phases, order,
     idle: async () => { do await page.waitForTimeout(500); while (Date.now() - state.last < 500); },
     /** Closes the current phase: what it requested, by category. */
     phase(name) {
@@ -33,12 +35,16 @@ async function countRequests(page) {
 
 /** One rider's session: look around, plan a trip, change bike, search, and show places along the route. */
 test('a planning session stays inside the request budget', async ({ page }) => {
-  const { counts, phases, idle, phase } = await countRequests(page);
+  const { counts, phases, order, idle, phase } = await countRequests(page);
   await page.goto('/planner.html');
   const canvas = page.locator('.maplibregl-canvas');
   await expect(canvas).toBeVisible();
   await idle();
   phase('load');
+  // Terrain and overlays wait for the basemap. Every total stays the same when they do not, so only the order shows it.
+  const lastBasemap = Math.max(...['basemap', 'glyphs', 'sprites'].map(kind => order.lastIndexOf(kind)));
+  const firstDetail = order.findIndex(kind => kind === 'terrain' || kind === 'overlays');
+  expect(firstDetail, `load order: ${order.join(' ')}`).toBeGreaterThan(lastBasemap);
   const { x, y, width, height } = await canvas.boundingBox();
   const at = (fx, fy) => [x + width * fx, y + height * fy];
 

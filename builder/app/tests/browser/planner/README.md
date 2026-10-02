@@ -10,6 +10,8 @@ npm run test:planner --prefix builder/app/tests/browser
 
 `request-budget.json` holds one limit per request kind. The test fails when a kind exceeds its
 limit. The log shows each phase of the session, so the growth is easy to find.
+The test also fails when, at load, a terrain or overlay request comes before the last basemap,
+glyph or sprite request.
 Cloudflare bills `basemap`, `places`, `terrain`, `glyphs` and `sprites`. The VPS serves the rest.
 
 After a deliberate change, set each limit by the rule in `basis`.
