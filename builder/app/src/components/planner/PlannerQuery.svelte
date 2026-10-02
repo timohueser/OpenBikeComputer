@@ -1,14 +1,14 @@
 <script lang="ts">
-    import { onDestroy, onMount, untrack } from 'svelte';
+    import { onDestroy, untrack } from 'svelte';
     import PlannerIcon from './PlannerIcon.svelte';
     import { HOSTED_SEARCH, SEARCH_REGIONS } from '../../lib/planner/search/config';
     import QueryChip from './QueryChip.svelte';
     import type { Coordinate } from '../../lib/planner/editor';
     import { searchPlaces, type QueryRequest, type SearchContext, type SearchState, type Where } from '../../lib/planner/search/types';
 
-    let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, selection, region = $bindable(SEARCH_REGIONS[0]), viewRevision = 0, onResults, onSearch, onClear, onLocation, onSample, onDate, onPointing }: {
+    let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, selection, region = $bindable(SEARCH_REGIONS[0]), revision = 0, onResults, onSearch, onClear, onLocation, onSample, onDate, onPointing }: {
         text?: string; region?: string; searchState?: SearchState; context: SearchContext; selection?: Where;
-        viewRevision?: number; onResults?: (coordinates: Coordinate[]) => void; onSearch: () => void; onClear: () => void; onLocation: () => void; onSample: () => void; onDate: (date: string) => void; onPointing: (where?: Where) => void;
+        revision?: number; onResults?: (coordinates: Coordinate[]) => void; onSearch: () => void; onClear: () => void; onLocation: () => void; onSample: () => void; onDate: (date: string) => void; onPointing: (where?: Where) => void;
     } = $props();
     let edited = $state(false);
     let request = $state<QueryRequest | undefined>();
@@ -16,7 +16,6 @@
     let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
     let serial = 0;
-    let previousContext = '';
     let framePending = false;
     let requestContext: SearchContext | undefined;
     let limit = 6;
@@ -29,18 +28,18 @@
     const required = $derived(request?.type === 'places' ? ['what'] : request?.type === 'place' ? ['name'] : request?.type === 'route' ? ['to'] : request?.type === 'end_day' ? ['day','at'] : ['add_point','remove_point'].includes(request?.type ?? '') ? ['point'] : request?.type === 'split' ? ['days','per_day'] : request?.type === 'join' ? ['day'] : request?.type === 'stretches' ? ['what'] : []);
     const explicitWhere = $derived(request?.where ?? context.pointing ?? { scope: 'view' as const });
 
-    async function run(nextLimit = 20, parsed = request, options: { reparse?: boolean; fit?: boolean; background?: boolean; context?: SearchContext } = {}) {
-        const { reparse = false, fit = true, background = false } = options;
+    async function run(nextLimit = 20, parsed = request, options: { reparse?: boolean; fit?: boolean; context?: SearchContext } = {}) {
+        const { reparse = false, fit = true } = options;
         if (fit) framePending = true;
         if (reparse) parsed = undefined;
         clearTimeout(timer); controller?.abort(); const id = ++serial;
         if (!text.trim()) { clear(); return; }
         controller = new AbortController(); limit = nextLimit;
         const input = text, signal = controller.signal;
-        const searchContext = options.context ?? (background && requestContext ? requestContext : $state.snapshot(context));
+        const searchContext = options.context ?? $state.snapshot(context);
         requestContext = searchContext;
-        if (!background) onSearch();
-        searchState = { loading: true, error: '', answer: background ? searchState.answer : null };
+        onSearch();
+        searchState = { loading: true, error: '', answer: null };
         try {
             const answer = await searchPlaces(input, searchContext, region, limit, signal, parsed ? $state.snapshot(parsed) : undefined);
             if (id !== serial) return;
@@ -49,7 +48,6 @@
             framePending = false;
         } catch (error) {
             if (id !== serial || signal.aborted) return;
-            if (background) { searchState = { ...searchState, loading: false }; return; }
             searchState = { loading: false, answer: null, error: error instanceof TypeError ? 'Search is unavailable. Check your connection and retry.' : (error as Error).message };
         }
     }
@@ -82,17 +80,9 @@
     export function more() { run(Math.min(100, Math.max(20, limit + 20)), request, { context: requestContext }); }
     export function retry() { run(Math.max(20, limit), request, { reparse: !edited, context: requestContext }); }
     $effect(() => {
-        // Result framing and place inspection update live bounds without advancing viewRevision.
-        const current = JSON.stringify([viewRevision, context.here, context.startDate, context.pointing, context.plan]);
-        if (current === previousContext) return;
-        previousContext = current;
-        untrack(() => { if (text.trim() && current) { clearTimeout(timer); controller?.abort(); serial++; searchState = { loading: true, error: '', answer: null }; timer = setTimeout(() => run(limit, request, { fit: false }), 200); } });
-    });
-    onMount(() => {
-        const refresh = setInterval(() => {
-            if (!document.hidden && !searchState.loading && searchState.answer?.results?.some(p => p.opening_hours)) run(limit, request, { fit: false, background: true });
-        }, 60_000);
-        return () => clearInterval(refresh);
+        // Result framing and place inspection update live bounds without advancing the revision.
+        void revision;
+        untrack(() => { if (text.trim()) { clearTimeout(timer); controller?.abort(); serial++; searchState = { loading: true, error: '', answer: null }; timer = setTimeout(() => run(limit, request, { fit: false }), 200); } });
     });
     onDestroy(() => { clearTimeout(timer); controller?.abort(); });
 </script>

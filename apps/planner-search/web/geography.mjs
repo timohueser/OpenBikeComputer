@@ -7,9 +7,11 @@ export function lengths(line) {
     out.push(out[i - 1] + distance(line[i - 1], line[i]));
   return out;
 }
-export function at(line, km) {
-  const ds = lengths(line),
-    total = ds.at(-1);
+// A client sends a simplified line with the kilometres of its full line.
+export const planKm = (context) =>
+  context.plan?.km ?? lengths(context.plan?.coordinates ?? []);
+export function at(line, km, ds = lengths(line)) {
+  const total = ds.at(-1);
   if (!line.length) throw new Error('Add a route first.');
   if (km <= 0) return line[0];
   if (km >= total) return line.at(-1);
@@ -17,12 +19,11 @@ export function at(line, km) {
     f = (km - ds[i - 1]) / (ds[i] - ds[i - 1] || 1);
   return line[i - 1].map((v, j) => v + f * (line[i][j] - v));
 }
-export function slice(line, from, to) {
-  const ds = lengths(line);
+export function slice(line, from, to, ds = lengths(line)) {
   return [
-    at(line, from),
+    at(line, from, ds),
     ...line.filter((_, i) => ds[i] > from && ds[i] < to),
-    at(line, to),
+    at(line, to, ds),
   ];
 }
 export function dayNumber(value, context) {
@@ -58,7 +59,7 @@ export function kmQuantity(q, context) {
         'Riding-time data is not available for this route. Use kilometres.',
       );
     const hours = context.plan.hours,
-      ds = lengths(context.plan.coordinates);
+      ds = planKm(context);
     if (q.value < 0 || q.value > hours.at(-1))
       throw new Error('That riding-time mark is beyond the route.');
     const i = Math.max(
@@ -75,13 +76,13 @@ export function kmQuantity(q, context) {
 }
 export function alongRange(along, range, context) {
   const line = context.plan.coordinates,
-    ds = lengths(line),
+    ds = planKm(context),
     total = ds.at(-1);
   let origin =
     along.ref === 'km' ? 0 : along.ref === 'end' ? range[1] : range[0];
   if (along.ref === 'here') {
     if (!context.here) throw new Error('Set your location to use “from here”.');
-    const pos = routePosition(context.here, line);
+    const pos = routePosition(context.here, line, ds);
     if (pos.distance > 1)
       throw new Error('Your location is more than 1 km from the route.');
     origin = pos.along;
@@ -163,7 +164,7 @@ export function boxes(line, radius) {
 
 export function hoursAt(km, context) {
   const hours = context.plan?.hours,
-    ds = lengths(context.plan.coordinates);
+    ds = planKm(context);
   if (!hours?.length)
     throw new Error(
       'Riding-time data is not available for this route. Use kilometres.',

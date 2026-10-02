@@ -17,7 +17,7 @@ export interface QueryRequest {
 }
 export interface SearchContext {
     view: [number, number, number, number]; here?: Coordinate; startDate?: string; pointing?: Where;
-    plan: { coordinates: Coordinate[]; days: { number: number; from: number; to: number; rest: boolean }[];
+    plan: { coordinates: Coordinate[]; km: number[]; days: { number: number; from: number; to: number; rest: boolean }[];
         points: { id: string; label: string; coordinate: Coordinate; kind: string; placeKind?: string }[]; hours?: number[] };
 }
 export interface HoursStatus { state: 'open' | 'closed' | 'unknown'; checkedAt: number; validUntil: number; closesAt?: number }
