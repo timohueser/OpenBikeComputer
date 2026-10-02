@@ -15,18 +15,13 @@ type Tier = "ground" | "zone" | "detail" | "structure";
 // Every land use kind of the planner tiles, in the colour a rider reads it by. Open ground is a
 // quiet family a shade under the paper, told apart by hue, so the relief above it keeps its
 // structure; forest, parks, water and built-up land carry the contrast. Overlaps resolve the same
-// way whatever order the tile stores them in: inside the ground `order` lifts forest over grass
-// over fields over built-up land, zones draw over the ground, details over the zones, and
-// structures over the water. A kind missing here gets no fill; none occurs in the planner bounds.
-const land: { tier: Tier; kinds: string[]; light: string; dark: string; order?: number }[] = [
-    { tier: "ground", kinds: ["farmland"], light: "#f5efe0", dark: "#25231d", order: 1 },
-    { tier: "ground", kinds: ["meadow", "grass", "grassland"], light: "#ecf3e2", dark: "#22261d", order: 1 },
-    { tier: "ground", kinds: ["scrub"], light: "#e4eedd", dark: "#23291e", order: 2 },
-    { tier: "ground", kinds: ["wood", "forest"], light: "#d2dfc5", dark: "#23392e", order: 3 },
-    { tier: "ground", kinds: ["wetland"], light: "#e1efea", dark: "#1f2925", order: 2 },
-    { tier: "ground", kinds: ["bare_rock"], light: "#e3e1de", dark: "#282725", order: 2 },
-    { tier: "ground", kinds: ["sand", "beach"], light: "#f4edd7", dark: "#2c2920", order: 2 },
-    { tier: "ground", kinds: ["glacier"], light: "#e5eef0", dark: "#3c5558", order: 2 },
+// way whatever order the tile stores them in: within a tier a later row draws over an earlier
+// one (its row index is the fill sort key), zones draw over the ground, details over the zones,
+// and structures over the water. The row order follows what the tiles nest inside what: industry
+// in housing, farmland in meadows, woods in fields, gardens in campuses and allotments, plazas in
+// parks, playgrounds in kindergartens. A kind missing here gets no fill; none occurs in the
+// planner bounds.
+const land: { tier: Tier; kinds: string[]; light: string; dark: string }[] = [
     { tier: "ground", kinds: ["residential"], light: "#e9e7e2", dark: "#2b2a26" },
     { tier: "ground", kinds: ["commercial"], light: "#eae4e1", dark: "#2c2826" },
     { tier: "ground", kinds: ["industrial"], light: "#dfe0e2", dark: "#282a2f" },
@@ -34,15 +29,23 @@ const land: { tier: Tier; kinds: string[]; light: string; dark: string; order?: 
     { tier: "ground", kinds: ["military"], light: "#eae1e1", dark: "#2d2525" },
     { tier: "ground", kinds: ["aerodrome", "airfield"], light: "#e6e6ea", dark: "#28282f" },
     { tier: "ground", kinds: ["other"], light: "#e8e8df", dark: "#2a2a25" },
-    { tier: "zone", kinds: ["park", "garden", "village_green", "recreation_ground", "golf_course", "zoo", "dog_park"], light: "#d7eacd", dark: "#2f3e28" },
+    { tier: "ground", kinds: ["meadow", "grass", "grassland"], light: "#ecf3e2", dark: "#22261d" },
+    { tier: "ground", kinds: ["farmland"], light: "#f5efe0", dark: "#25231d" },
+    { tier: "ground", kinds: ["sand", "beach"], light: "#f4edd7", dark: "#2c2920" },
+    { tier: "ground", kinds: ["glacier"], light: "#e5eef0", dark: "#3c5558" },
+    { tier: "ground", kinds: ["bare_rock"], light: "#e3e1de", dark: "#282725" },
+    { tier: "ground", kinds: ["wetland"], light: "#e1efea", dark: "#1f2925" },
+    { tier: "ground", kinds: ["scrub"], light: "#e4eedd", dark: "#23291e" },
+    { tier: "ground", kinds: ["wood", "forest"], light: "#d2dfc5", dark: "#23392e" },
     { tier: "zone", kinds: ["allotments"], light: "#e7ebd1", dark: "#343725" },
     { tier: "zone", kinds: ["cemetery"], light: "#dee4d8", dark: "#2e3328" },
     { tier: "zone", kinds: ["school", "university", "college"], light: "#f0eadb", dark: "#353127" },
     { tier: "zone", kinds: ["hospital"], light: "#f3e5e2", dark: "#392b28" },
-    { tier: "zone", kinds: ["pedestrian"], light: "#e9e6dd", dark: "#32302a" },
     { tier: "zone", kinds: ["runway", "taxiway"], light: "#d6d6dc", dark: "#383842" },
-    { tier: "detail", kinds: ["pitch", "playground"], light: "#c6dfb9", dark: "#384d2d" },
+    { tier: "zone", kinds: ["park", "garden", "village_green", "recreation_ground", "golf_course", "zoo", "dog_park"], light: "#d7eacd", dark: "#2f3e28" },
+    { tier: "zone", kinds: ["pedestrian"], light: "#e9e6dd", dark: "#32302a" },
     { tier: "detail", kinds: ["kindergarten"], light: "#f0eadb", dark: "#353127" },
+    { tier: "detail", kinds: ["pitch", "playground"], light: "#c6dfb9", dark: "#384d2d" },
     { tier: "structure", kinds: ["platform", "pier", "dam"], light: "#dcdad6", dark: "#3b3935" },
 ];
 // Protected areas lie over other land, so a boundary shows them and a fill would hide it.
@@ -56,11 +59,10 @@ function landLayers(dark: boolean): Record<Tier | "protected", LayerSpecificatio
         ["match", ["get", "kind"], ...rows.flatMap((row) => [row.kinds, value(row)]), fallback] as unknown as ExpressionSpecification;
     const fill = (tier: Tier, opacity?: ExpressionSpecification): LayerSpecification => {
         const rows = land.filter((row) => row.tier === tier);
-        const ordered = rows.filter((row) => row.order);
         return {
             id: `land-${tier}`, type: "fill", source: "basemap", "source-layer": "landuse",
             ...(tier === "detail" || tier === "structure" ? { minzoom: 13 } : {}),
-            ...(ordered.length ? { layout: { "fill-sort-key": byKind(ordered, (row) => row.order, 0) } } : {}),
+            ...(rows.length > 1 ? { layout: { "fill-sort-key": byKind(rows, (row) => rows.indexOf(row), 0) } } : {}),
             filter: ["in", ["get", "kind"], ["literal", rows.flatMap((row) => row.kinds)]],
             paint: { "fill-color": byKind(rows, (row) => (dark ? row.dark : row.light), "transparent"), ...(opacity ? { "fill-opacity": opacity } : {}) },
         };

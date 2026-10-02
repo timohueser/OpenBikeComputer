@@ -57,14 +57,17 @@ describe('planner land use style', () => {
         expect(kinds(land.find((layer) => layer.id === 'land-structure')!)).toEqual(['platform', 'pier', 'dam']);
     });
 
-    it('lifts forest over grass over fields over built-up land inside the ground, whatever the tile order', async () => {
+    it('draws a later colour row over an earlier one within a tier, whatever the tile order', async () => {
         const { land } = await landLayers('light');
-        const ground = land.find((layer) => layer.id === 'land-ground')!;
-        const rank = (kind: string) => evaluate(ground, 'fill-sort-key', 14, kind);
-        expect(rank('residential')).toBeLessThan(rank('farmland'));
-        expect(rank('farmland')).toBeLessThan(rank('scrub'));
-        expect(rank('scrub')).toBeLessThan(rank('forest'));
-        expect(rank('meadow')).toBeLessThan(rank('wood'));
+        const rank = (tier: string, kind: string) => evaluate(land.find((layer) => layer.id === `land-${tier}`)!, 'fill-sort-key', 14, kind);
+        const ground = ['residential', 'industrial', 'meadow', 'farmland', 'scrub', 'forest'].map((kind) => rank('ground', kind));
+        expect(ground).toEqual([...ground].sort((a, b) => a - b));
+        expect(new Set(ground).size).toBe(ground.length);
+        expect(rank('ground', 'grass')).toBe(rank('ground', 'meadow'));
+        expect(rank('zone', 'allotments')).toBeLessThan(rank('zone', 'garden'));
+        expect(rank('zone', 'school')).toBeLessThan(rank('zone', 'park'));
+        expect(rank('zone', 'park')).toBeLessThan(rank('zone', 'pedestrian'));
+        expect(rank('detail', 'kindergarten')).toBeLessThan(rank('detail', 'playground'));
     });
 
     it('keeps the region view calm: open ground is paper below zoom 9, forest fades in first', async () => {
