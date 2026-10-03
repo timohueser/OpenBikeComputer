@@ -15,6 +15,10 @@
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
     import LayerMenu from './LayerMenu.svelte';
+    import LayerDateBar from './LayerDateBar.svelte';
+    import LayerInspect from './LayerInspect.svelte';
+    import LayerStrip from './LayerStrip.svelte';
+    import { snow } from '../../lib/planner/layers/snow-layer.svelte';
     import type { OverlayOptions } from '../../lib/planner/route-overlays';
     import NearbyLandmark from './NearbyLandmark.svelte';
     import { presetName } from '../../lib/planner/riding-profiles';
@@ -45,7 +49,7 @@
 
     const storageKey = 'obc-planner-routing-v2';
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
-    import { calculateLine, requestAlternatives, selectRoute, type EngineRoute } from '../../lib/planner/routing';
+    import { calculateLine, requestAlternatives, selectRoute, type EngineRoute, type RoutingLine } from '../../lib/planner/routing';
     import { LegCache } from '../../lib/planner/route-legs';
     const defaultLabels: Record<EditableKind, string> = {
         via: 'Shaping point',
@@ -152,6 +156,12 @@
     let contours = $state(true);
     let mapOverlays = $state<OverlayOptions>({ network: 'cycling', access: true });
     let showRoute = $state(true);
+    let snowOn = $state(false);
+    let dateBarHeight = $state(0);
+    // The layer date follows the trip start until the rider picks another day; it never changes the trip.
+    let layerDate = $state<string | null>(null);
+    const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+    const shownDate = $derived(layerDate ?? trip.startDate ?? today);
     let query = $state('');
     let searchState = $state<SearchState>({ loading: false, error: '', answer: null });
     let searchBox: Query | undefined;
@@ -277,15 +287,15 @@
         }
         return pins;
     });
-    const calloutKind = $derived<CalloutKind | null>(
-        selectedId === 'add' || selectedId === 'leg' ? selectedId
+    const calloutKind = $derived<CalloutKind | 'snow' | null>(
+        selectedId === 'add' || selectedId === 'leg' || selectedId === 'snow' ? selectedId
         : selectedId?.startsWith('dayend-') ? 'dayend'
         : selectedPoint ? 'point'
         : selectedPlace || selectedId === 'pending' ? 'place'
         : null,
     );
     const calloutCoordinate = $derived.by(() => {
-        if (calloutKind === 'add' || calloutKind === 'leg') return spot?.coordinate ?? null;
+        if (calloutKind === 'add' || calloutKind === 'leg' || calloutKind === 'snow') return spot?.coordinate ?? null;
         if (calloutKind === 'place') return previewCoordinate;
         if (!showRoute && selectedPoint?.kind !== 'marker') return null;
         return mapPoints.find(p => p.id === selectedId)?.coordinate ?? null;
@@ -299,6 +309,28 @@
         const to = lengths[Math.max(0, Math.min(last, visibleRange[1] + 1))] / total;
         return to > from ? { from, to } : { from: 0, to: 1 };
     });
+
+    let lineSamples = $state.raw<{ line: RoutingLine; samples: unknown } | null>(null);
+    $effect(() => {
+        const line = visualRoute;
+        if (!snowOn || !line || untrack(() => lineSamples?.line) === line) return;
+        const abort = new AbortController();
+        snow.sample(line.coordinates, abort.signal).then(samples => { if (!abort.signal.aborted) lineSamples = { line, samples }; }, () => {});
+        return () => abort.abort();
+    });
+    const routeSamples = $derived(snowOn && visualRoute && lineSamples?.line === visualRoute ? lineSamples.samples : null);
+    const layerStats = $derived(routeSamples ? snow.stats(routeSamples, cumulative(visualRoute!.coordinates), shownDate, theme) : null);
+    // A map click with the layer shown pins the years at that spot.
+    let pinSamples = $state.raw<{ at: Coordinate; samples: unknown } | null>(null);
+    $effect(() => {
+        const at = calloutKind === 'snow' ? spot?.coordinate : undefined;
+        if (!at) return;
+        const abort = new AbortController();
+        snow.sample([at], abort.signal).then(samples => { if (!abort.signal.aborted) pinSamples = { at, samples }; }, () => {});
+        return () => abort.abort();
+    });
+    const pinInspection = $derived(calloutKind === 'snow' && pinSamples?.at === spot?.coordinate ? snow.inspect(pinSamples!.samples, 0, shownDate, theme) : null);
+    $effect(() => { if (!snowOn && untrack(() => selectedId) === 'snow') clearSelection(); });
 
     $effect(() => {
         if (!highlights.length || coordinates.length < 2) return;
@@ -527,7 +559,7 @@
             clearSelection();
         } else {
             spot = { coordinate };
-            selectedId = 'add';
+            selectedId = snowOn ? 'snow' : 'add';
         }
     }
 
@@ -848,6 +880,12 @@
                 {#if !focusedDay && visualRoute}
                     <div class="trip-summary"><RouteStats distance={total} ascent={visualRoute?.elevation.every(h => h !== null) ? profileAscent(0, 1, visualRoute) : null} descent={visualRoute?.elevation.every(h => h !== null) ? profileDescent(0, 1, visualRoute) : null} walking={visualTrip.bike === 'hiking'} hours={visualRoute ? visualRoute.seconds / 3600 : null} /></div>
                 {/if}
+                {#if !focusedDay && visualRoute && snowOn}
+                    <div class="layer-summary">
+                        <Icon name="snow" />
+                        <p><strong>{layerStats?.headline ?? (snow.error || 'Loading snow data…')}</strong>{#if layerStats?.detail}<span>{layerStats.detail}</span>{/if}</p>
+                    </div>
+                {/if}
                 {#if currentRoute && (!focusedDay || planEditing)}
                     <PlanLine {trip} dayCount={itinerary.length} bind:editing={planEditing} onApply={applyPlan} />
                 {/if}
@@ -891,7 +929,7 @@
             <div class="map-area" bind:clientHeight={mapHeight} style:--map-height={`${mapHeight}px`}>
                 <PlannerMap
                     bind:this={map} {segments} {coordinates} points={mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
-                    {theme} {hillshade} {contours} {mapOverlays} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
+                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layer: snow, shown: snowOn, date: shownDate }} bottomInset={snowOn ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces} {landmarks}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={previewPoint} onDayEndDrag={moveDayEnd}
@@ -899,7 +937,11 @@
                     onVisibleRange={(range) => visibleRange = range}
                 >
                     {#snippet popup()}
-                        {#if calloutKind}
+                        {#if calloutKind === 'snow'}
+                            <LayerInspect title={`${snow.label} here`} inspection={pinInspection} source={snow.source}>
+                                <button type="button" class="planner-action pin-add" onclick={() => selectedId = 'add'}>Add a point here</button>
+                            </LayerInspect>
+                        {:else if calloutKind}
                             {#key selectedId}
                                 <MapCallout
                                     kind={calloutKind} {trip} {days} {overnightNote} {dayLabels} {night} {candidates} {legMode}
@@ -929,8 +971,11 @@
                         <button type="button" disabled={!trip.points.length} onclick={() => focusedDay ? showDay(focusedDay.ridingNumber) : coordinates.length ? map?.fitRoute() : map?.fitCoordinates(trip.points.map(p => p.coordinate))} aria-label={focusedDay ? `Show day ${focusedDay.number} on map` : 'Show whole route'}><Icon name="fit" /></button>
                         <button type="button" disabled={!hasEndpoints} class:chosen={showRoute} aria-label={showRoute ? 'Hide route' : 'Show route'} aria-pressed={showRoute} onclick={() => showRoute = !showRoute}><Icon name="eye" /></button>
                     </div>
-                    <LayerMenu {theme} walking={trip.bike === 'hiking'} bind:autoCenter bind:mapOverlays bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
+                    <LayerMenu {theme} dataLayer={snow} bind:dataLayerOn={snowOn} walking={trip.bike === 'hiking'} bind:autoCenter bind:mapOverlays bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
                 </div>
+                {#if snowOn}
+                    <div class="layer-date" bind:clientHeight={dateBarHeight}><LayerDateBar date={shownDate} year={layerStats?.year ?? null} onDate={(date) => layerDate = date} /></div>
+                {/if}
                 {#if picking || drawing}
                     <div class="mode-chip" role="status">
                         {picking ? `Click the route or the map to end day ${dayLabels[night] ?? night} here · Esc` : 'Drawing the leg · Esc cancels'}
@@ -950,7 +995,11 @@
                 activeNight={focusedDay?.ridingNumber ?? 0} band={overnightContext ? area : null} window={profileWindow}
                 focus={focusedDay ? { from: focusedDay.from, to: focusedDay.to, label: `Day ${focusedDay.number}` } : null}
                 onNight={(riding) => showDay(riding)} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
-            />
+            >
+                {#snippet strip(from, to, onHover)}
+                    {#if snowOn}<LayerStrip layer={snow} line={visualRoute} samples={routeSamples} {total} date={shownDate} {theme} {from} {to} {onHover} />{/if}
+                {/snippet}
+            </Profile>
             {/if}
             <div class="status-line" role="status">
                 <span class:save-error={!!draftError}>{draftError || `${message} · ${routingMessage}`}</span>
@@ -1136,6 +1185,13 @@
         background: var(--panel);
     }
     .trip-summary { padding: 0 16px; }
+    .layer-summary { display: flex; gap: 10px; margin: 0 16px 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .layer-summary :global(svg) { flex: none; margin-top: 1px; color: var(--water); }
+    .layer-summary p { display: flex; flex-direction: column; gap: 2px; margin: 0; }
+    .layer-summary strong { font-weight: 600; }
+    .layer-summary span { font-size: 13px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+    .pin-add { margin-top: 10px; }
+    .layer-date { position: absolute; left: 16px; right: 16px; bottom: 34px; z-index: 2; }
     .list-switch {
         display: flex;
         padding: 12px 16px 8px;

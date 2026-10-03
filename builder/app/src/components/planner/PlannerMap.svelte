@@ -21,13 +21,14 @@
     import { coordinateAt, nearestProgress, type Place } from "../../lib/planner/editor";
     import type { Coordinate, MapPoint, MapSegment } from "../../lib/planner/map-types";
     import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection } from "../../lib/planner/route-overlays";
+    import type { DataLayer } from "../../lib/planner/layers/data-layer";
     import MapOverlayDetails from './MapOverlayDetails.svelte';
 
     let {
         segments = [], coordinates = [], highlightedCoordinates = [], points = [], selectedId = null, hoveredId = null, callout = null,
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
-        shownCategories = categoryIds, highlightedPlaces = [], landmarks = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage,
+        shownCategories = categoryIds, highlightedPlaces = [], landmarks = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
         onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
         segments?: MapSegment[]; coordinates?: Coordinate[]; highlightedCoordinates?: Coordinate[]; points?: MapPoint[];
@@ -42,6 +43,9 @@
         /** Places to ride over, drawn from zoom 10. */
         landmarks?: Place[];
         mapOverlays?: OverlayOptions;
+        dataLayer?: { layer: DataLayer; shown: boolean; date: string };
+        /** Height of a bar over the bottom of the map that fits and callouts keep clear of. */
+        bottomInset?: number;
         /** Travel mode, independent of the network chosen for display. */
         accessMode?: AccessMode;
         /** Routing package of the shown route. Overlays from another package stay hidden. */
@@ -153,7 +157,7 @@
     function fitBounds(region: Coordinate[], maxZoom: number, duration: number, preserveSearch = false) {
         const bounds = new maplibregl.LngLatBounds();
         region.forEach((coordinate) => bounds.extend(coordinate));
-        map!.fitBounds(bounds, { padding: fitPadding, maxZoom, duration }, { preserveSearch });
+        map!.fitBounds(bounds, { padding: { ...fitPadding, bottom: fitPadding.bottom + bottomInset }, maxZoom, duration }, { preserveSearch });
     }
 
     function motionDuration() {
@@ -167,7 +171,7 @@
         const box = calloutPopup.getElement().getBoundingClientRect();
         const margin = 16;
         const right = frame.right - controlsWidth;
-        const bottom = frame.bottom - 48;
+        const bottom = frame.bottom - Math.max(48, bottomInset + 12);
         const dx = box.left < frame.left + margin ? box.left - frame.left - margin : Math.max(0, box.right - right);
         const dy = box.top < frame.top + margin ? box.top - frame.top - margin : Math.max(0, box.bottom - bottom);
         if (dx || dy) map.panBy([dx, dy], { duration: motionDuration() }, { preserveSearch: true });
@@ -393,7 +397,7 @@
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 90, unit: "metric" }), "bottom-left");
             map.dragRotate.disable();
             map.touchZoomRotate.disableRotation();
-            map.on("style.load", () => { ready = true; installRoute(); syncTerrainAndOverlays(); });
+            map.on("style.load", () => { ready = true; installRoute(); syncTerrainAndOverlays(); syncDataLayer(); });
             map.once("load", () => { basemapComplete = true; syncTerrainAndOverlays(); });
             map.setMissingStyleImageResolver((id) => {
                 const icon = mapIcon(id);
@@ -487,6 +491,10 @@
     $effect(() => { hillshade; contours; if (ready) syncTerrain(); });
     $effect(() => { const options = { ...mapOverlays }; const mode = accessMode; if (ready) { overlaySelection = null; overOverlay = false; overlayLayer?.set(options, mode); } });
     $effect(() => { showRoute; if (ready) syncRouteVisibility(); });
+    function syncDataLayer() {
+        if (map && dataLayer) dataLayer.layer.sync(map, { shown: dataLayer.shown, date: dataLayer.date, theme });
+    }
+    $effect(() => { void [dataLayer?.shown, dataLayer?.date]; if (ready) untrack(syncDataLayer); });
     $effect(() => { const routing = routingPackage; if (ready) overlayLayer?.verify(routing); });
     $effect(() => {
         highlightedCoordinates;
