@@ -11,11 +11,9 @@ export interface Swatch {
     lineOnly?: boolean;
 }
 
-/** Rows of cells, one column per two days of the year. A cell value indexes `swatches`; 255 leaves it empty. */
+/** Rows of cells, one column per two days of the calendar year. A cell value indexes `swatches`; 255 leaves it empty. */
 export interface SeasonGrid {
     rows: { label: string; cells: Uint8Array }[];
-    /** Columns run from 1 September to 31 August instead of January to December. */
-    seasonal?: boolean;
     /** The column of the layer date. */
     marker: number;
     swatches: Swatch[];
@@ -54,14 +52,9 @@ export const COLUMNS = 183;
 const DAY_MS = 86_400_000;
 const JANUARY = Date.UTC(2001, 0, 1);
 
-const axis = (start: number) => Array.from({ length: COLUMNS }, (_, column) => new Date(start + 2 * column * DAY_MS));
-const months = (days: Date[]) => days.flatMap((day, i) => i === 0 || day.getUTCMonth() !== days[i - 1].getUTCMonth() ? [i] : []);
 /** The first day of each calendar column in a year without a leap day. */
-export const columnDays = axis(JANUARY);
-export const monthColumns = months(columnDays);
-/** The first day of each season column, from 1 September. */
-export const seasonColumnDays = axis(Date.UTC(2001, 8, 1));
-export const seasonMonthColumns = months(seasonColumnDays);
+export const columnDays = Array.from({ length: COLUMNS }, (_, column) => new Date(JANUARY + 2 * column * DAY_MS));
+export const monthColumns = columnDays.flatMap((day, i) => i === 0 || day.getUTCMonth() !== columnDays[i - 1].getUTCMonth() ? [i] : []);
 
 /** "15 Jun" */
 export function dateLabel(date: Date | string): string {
