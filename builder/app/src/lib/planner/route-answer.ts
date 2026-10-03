@@ -1,5 +1,5 @@
 import type { Coordinate } from './editor';
-import type { EngineRoute, Surface } from './routing';
+import type { EngineRoute, RouteClosure, Surface } from './routing';
 
 /** One route as the routing service sends it: integer deltas and runs, as `specs/route-api.md` specifies. */
 export interface AnswerRoute extends Omit<EngineRoute, 'geometry' | 'elevation' | 'elapsed' | 'surfaces' | 'pushing' | 'closures'> {
@@ -8,7 +8,7 @@ export interface AnswerRoute extends Omit<EngineRoute, 'geometry' | 'elevation' 
     elapsed_s: number[];
     surfaces: [Surface, number][];
     pushing: [boolean, number][];
-    closures: [string | null, number][];
+    closures: [RouteClosure[] | null, number][];
 }
 
 const expand = <T>(runs: [T, number][]): T[] => runs.flatMap(([value, length]) => Array<T>(length).fill(value));

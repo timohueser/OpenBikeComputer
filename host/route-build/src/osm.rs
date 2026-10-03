@@ -50,12 +50,9 @@ struct Restriction {
     walking: bool,
 }
 
+/// Conditional restrictions do not count: the router keeps them open, and the route reports them.
 fn access(tags: &Tags, defaults: u8, direction: &str) -> u8 {
-    source::access(|key| tag(tags, key), defaults, direction)
-}
-
-fn conditional_modes(tags: &Tags) -> u8 {
-    source::conditional_modes(tags.iter().map(|(key, value)| (key.as_str(), value.as_str())), true)
+    source::access(|key| tag(tags, key), defaults, direction, true)
 }
 
 fn attributes(tags: &Tags, counts: &mut Counts) -> Option<Attributes> {
@@ -85,16 +82,6 @@ fn attributes(tags: &Tags, counts: &mut Counts) -> Option<Attributes> {
                 count(counts, "excluded unsupported oneway modes");
             }
         }
-    }
-    let conditional = conditional_modes(tags);
-    if conditional != 0 {
-        for mode in &mut modes {
-            *mode &= !conditional;
-        }
-        count(counts, "ways with excluded conditional modes");
-    }
-    if tags.values().any(|v| matches!(v.as_str(), "destination" | "customers" | "delivery")) {
-        count(counts, "ways with excluded destination or customer modes");
     }
     if modes == [0, 0] {
         return None;
@@ -137,9 +124,11 @@ fn attributes(tags: &Tags, counts: &mut Counts) -> Option<Attributes> {
 
 fn crossing(tags: &Tags, counts: &mut Counts) -> u8 {
     let defaults = match tag(tags, "barrier") {
-        None | Some("no" | "entrance" | "bollard" | "gate" | "lift_gate" | "swing_gate" | "cycle_barrier") => {
-            BIKE | FOOT | PUSH
-        }
+        None
+        | Some(
+            "no" | "entrance" | "bollard" | "gate" | "lift_gate" | "swing_gate" | "cycle_barrier" | "toll_booth"
+            | "border_control" | "cattle_grid" | "kerb" | "block" | "chain" | "height_restrictor",
+        ) => BIKE | FOOT | PUSH,
         Some("stile" | "kissing_gate" | "turnstile") => FOOT,
         Some(_) => {
             count(counts, "conservatively blocked barrier nodes");
@@ -150,11 +139,7 @@ fn crossing(tags: &Tags, counts: &mut Counts) -> u8 {
     if modes & BIKE == 0 && modes & PUSH != 0 {
         count(counts, "dismount-only crossing nodes");
     }
-    let conditional = conditional_modes(tags);
-    if conditional != 0 {
-        count(counts, "nodes with excluded conditional modes");
-    }
-    modes & !conditional
+    modes
 }
 
 fn relation_rules(
@@ -665,12 +650,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(attrs.access, [FOOT; 2]);
-        let attrs = attributes(
-            &tags(&[("highway", "path"), ("bicycle:pushing:conditional", "no @ (wet)")]),
-            &mut Counts::new(),
-        )
-        .unwrap();
-        assert_eq!(attrs.access, [BIKE | FOOT; 2]);
         let attrs = attributes(&tags(&[("highway", "footway"), ("bicycle", "dismount")]), &mut Counts::new()).unwrap();
         assert_eq!(attrs.access, [FOOT | PUSH; 2]);
         assert!(attributes(&tags(&[("highway", "path"), ("bicycle", "dismount"), ("foot", "no")]), &mut Counts::new())
@@ -734,69 +713,24 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_conditions_close_only_affected_modes() {
-        let mut counts = Counts::new();
-        let attrs =
-            attributes(&tags(&[("highway", "path"), ("bicycle:conditional", "no @ (wet)")]), &mut counts).unwrap();
-        assert_eq!(attrs.access, [FOOT | PUSH; 2]);
-        assert_eq!(counts["ways with excluded conditional modes"], 1);
-        let attrs =
-            attributes(&tags(&[("highway", "residential"), ("oneway:foot:conditional", "yes @ (Mo-Fr)")]), &mut counts)
-                .unwrap();
-        assert_eq!(attrs.access, [BIKE; 2]);
-        let attrs = attributes(&tags(&[("highway", "path"), ("bicycle", "destination")]), &mut counts).unwrap();
-        assert_eq!(attrs.access, [FOOT | PUSH; 2]);
-    }
-
-    #[test]
-    fn freight_conditions_do_not_close_a_cycling_ascent() {
-        for condition in ["agricultural @ hazmat:water", "no @ (hazmat)"] {
-            let graph = fixture(
-                vec![way(
-                    10,
-                    &[1, 2, 3],
-                    &[("highway", "tertiary"), ("ref", "L 186"), ("access:conditional", condition)],
-                )],
-                &[1, 2, 3],
-                vec![],
-            );
-            assert_eq!(graph.roads.len(), 2);
-            assert!(graph.roads.iter().all(|r| r.access == BIKE | FOOT | PUSH));
+    fn only_a_certain_restriction_closes_a_way() {
+        let open = |pairs: &[(&str, &str)]| {
+            let pairs = [&[("highway", "secondary")], pairs].concat();
+            attributes(&tags(&pairs), &mut Counts::new()).map(|attrs| attrs.access)
+        };
+        for condition in ["no @ (Nov-May)", "no @ (2025 Mar 10-2025 Oct 1)", "no @ (Mo-Fr)", "no @ (wet)", "no"] {
+            assert_eq!(open(&[("access:conditional", condition)]), Some([BIKE | FOOT | PUSH; 2]), "{condition}");
         }
-        let attrs = attributes(
-            &tags(&[("highway", "tertiary"), ("motor_vehicle:conditional", "no @ (Mo-Fr)")]),
-            &mut Counts::new(),
-        )
-        .unwrap();
-        assert_eq!(attrs.access, [BIKE | FOOT | PUSH; 2]);
-        for condition in ["no @ (wet)", "agricultural @ hazmat:water; no @ (Mo-Fr)", "no @ (!hazmat:water)"] {
-            assert!(attributes(
-                &tags(&[("highway", "tertiary"), ("access:conditional", condition)]),
-                &mut Counts::new()
-            )
-            .is_none());
+        for value in ["permit", "destination", "customers", "unknown"] {
+            assert_eq!(open(&[("access", value)]), Some([BIKE | FOOT | PUSH; 2]), "{value}");
         }
-        assert!(attributes(&tags(&[("highway", "construction"), ("construction", "tertiary")]), &mut Counts::new())
-            .is_none());
-    }
-
-    #[test]
-    fn seasonal_closures_keep_the_road_open() {
-        for condition in
-            ["no @ (Nov-May)", "no @ (nov-may)", "no @ Oct 15th - May 31st", "no @ winter", "no @ (Dec 1-Mar 31)"]
-        {
-            let attrs =
-                attributes(&tags(&[("highway", "secondary"), ("access:conditional", condition)]), &mut Counts::new())
-                    .unwrap();
-            assert_eq!(attrs.access, [BIKE | FOOT | PUSH; 2], "{condition}");
+        assert_eq!(open(&[("access", "permit"), ("bicycle", "no")]), Some([FOOT | PUSH; 2]));
+        for value in ["no", "private", "agricultural;forestry"] {
+            assert_eq!(open(&[("access", value)]), None, "{value}");
         }
-        for condition in ["no @ (2025 Mar 10-2025 Oct 1)", "no @ (Mo-Fr)", "no @ (Nov-May); no @ (wet)"] {
-            assert!(
-                attributes(&tags(&[("highway", "secondary"), ("access:conditional", condition)]), &mut Counts::new())
-                    .is_none(),
-                "{condition}"
-            );
-        }
+        assert!(attributes(&tags(&[("highway", "construction")]), &mut Counts::new()).is_none());
+        assert_eq!(crossing(&tags(&[("barrier", "toll_booth")]), &mut Counts::new()), BIKE | FOOT | PUSH);
+        assert_eq!(crossing(&tags(&[("barrier", "gate"), ("access", "private")]), &mut Counts::new()), 0);
     }
 
     #[test]

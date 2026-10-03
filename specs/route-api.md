@@ -38,7 +38,7 @@ with an empty answer. Each route has these fields:
 | `elapsed_s` | Integer moving seconds |
 | `surfaces` | Runs of `[surface, edge count]` |
 | `pushing` | Runs of `[pushing, edge count]` |
-| `closures` | Runs of `[condition, edge count]` |
+| `closures` | Runs of `[closures, edge count]` |
 | `legs` | `{"from_index", "to_index", "start", "end", "totals"}` for each pair of request points |
 | `snap_truncated` | `true` when the service dropped road candidates for a request point |
 | `totals` | `distance_m`, `ascent_m`, `seconds`, `surface_m`, `unknown_elevation_m` and `pushing_m`, all integers |
@@ -65,10 +65,18 @@ edges. Each run gives one value and the number of consecutive edges with that
 value. The run lengths of `surfaces`, `pushing` and `closures` each add up to `n - 1`.
 Surfaces are `Unknown`, `Paved`, `Compacted`, `Gravel`, `Dirt` and `Rough`.
 `pushing` is `true` where the rider must push the bicycle.
-A `closures` condition is the OSM condition of a seasonal closure on the edge,
-such as `Nov-May`, or `null`. A seasonal closure names only months, days or
-seasons, and it closes the mode that the route uses on the edge. The route can
-use such an edge, because only the date of the ride decides if it is closed.
+A `closures` value is `null` or a list of possible closures on the edge, each
+`{"kind", "condition"}`. The router blocks a mode only where the rider surely
+has no access. It uses an edge that is possibly closed for the mode that the
+route uses on it, and reports it:
+
+| `kind` | Source | `condition` |
+| --- | --- | --- |
+| `permit` | Access value `permit` | `permit` |
+| `limited` | Access value `destination`, `customers`, `delivery` or `residents` | The value |
+| `seasonal` | A conditional restriction that names only months, days or seasons | The OSM condition, such as `Nov-May` |
+| `conditional` | Any other conditional restriction | The OSM condition, such as `wet` |
+| `unclear` | An access value that the router does not know | The value |
 
 ### Legs and totals
 

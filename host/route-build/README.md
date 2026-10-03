@@ -62,8 +62,10 @@ between their endpoints. Without terrain, climb and slope remain unknown.
 | Node identity | Shared OSM node IDs create junctions; geometry crossings do not |
 | Via-node turn restrictions | Mode-specific forbidden transitions |
 | Via-way restrictions | Exclude affected member roads for the restricted mode |
-| Conditional access or turns | Exclude affected rider modes; ignore motor-only and hazardous-load conditions; no date evaluation |
-| Destination, private or unsupported access | Conservative exclusion |
+| Certain closure: `no`, `private`, `military`, `use_sidepath`, `agricultural`, `forestry` | Exclude the mode |
+| Conditional access; `permit`, `destination`, `customers`, `delivery`, `residents` or unknown access | Keep the mode; the route reports a possible closure (`route_engine::osm::classify`) |
+| Conditional turns | Exclude affected rider modes on the member roads |
+| Barrier nodes | Pass gates, bollards, toll booths, cattle grids, kerbs and blocks; stiles admit walkers; exclude other barriers |
 | Bridge and tunnel | Preserve structure flag for terrain |
 | Source data | All tags, way node IDs, relation members and roles retained |
 | Road suitability | Highway, surface, smoothness, tracktype and difficulty remain distinct |

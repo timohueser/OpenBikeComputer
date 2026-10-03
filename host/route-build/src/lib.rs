@@ -80,7 +80,7 @@ pub fn prepare(
         (
             id as u32,
             tags.map_or_else(Vec::new, |tags| {
-                route_engine::osm::seasonal_closures(tags.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+                route_engine::osm::closures(tags.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             }),
         )
     }))?;
@@ -88,7 +88,7 @@ pub fn prepare(
     Ok(manifest)
 }
 
-/// Writes the table only when a road has a seasonal closure.
+/// Writes the table only when a road has a possible closure.
 fn write_closures(
     closures: &Closures,
     write: &mut impl FnMut(&[u8]) -> Result<String, String>,
