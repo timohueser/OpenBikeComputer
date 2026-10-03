@@ -9,7 +9,7 @@
     <p class="title"><strong>{title}</strong>{#if detail}<span>{detail}</span>{/if}</p>
     {#if inspection}
         <p class="headline">{inspection.headline}</p>
-        <SeasonGrid grid={inspection.grid} label={`${inspection.headline}. One row per winter season, newest at the bottom.`} />
+        <SeasonGrid grid={inspection.grid} label={`${inspection.headline}. One row per year, newest at the bottom.`} />
         <ul class="legend">
             {#each inspection.grid.swatches.slice(1) as swatch (swatch.label)}<li><span class="swatch" class:hatch={swatch.hatch} style:--swatch={swatch.color}></span>{swatch.label}</li>{/each}
             <li><span class="line"></span>Your date</li>

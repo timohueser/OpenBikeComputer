@@ -691,6 +691,8 @@
 <style>
     .map-frame { position: relative; min-height: 240px; height: 100%; isolation: isolate; background: var(--parchment, #f4f2eb); }
     .map-canvas { user-select: none; -webkit-user-select: none; width: 100%; height: 100%; min-height: 240px; }
+    /* MapLibre puts the callout inside the map container, which would pass on its user-select: none. */
+    .map-canvas :global(.maplibregl-popup) { user-select: text; -webkit-user-select: text; }
     .popup-storage { display: none; }
     .overlay-status { position: absolute; left: 12px; bottom: 34px; max-width: calc(100% - 80px); padding: 7px 10px; border-radius: 6px; color: var(--ink); background: var(--panel); font-size: 12px; }
     .overlay-status button { margin-left: 8px; border: 0; background: none; color: var(--link); font: inherit; text-decoration: underline; cursor: pointer; }
