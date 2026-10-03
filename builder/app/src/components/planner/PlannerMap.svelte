@@ -47,7 +47,8 @@
         /** Places to ride over, drawn from zoom 10. */
         landmarks?: Place[];
         mapOverlays?: OverlayOptions;
-        dataLayer?: { layer: DataLayer; shown: boolean; date: string };
+        /** The region's data layers, the shown one if any, and the layer date. */
+        dataLayer?: { layers: DataLayer[]; shown?: DataLayer; date: string };
         /** Height of a bar over the bottom of the map that fits and callouts keep clear of. */
         bottomInset?: number;
         /** Travel mode, independent of the network chosen for display. */
@@ -127,13 +128,6 @@
         cancelGesture();
         consumedPress = true;
         overlaySelection = selected;
-    }
-
-    /** Whether the basemap draws forest at a coordinate on screen; false off screen. */
-    export function underTrees(coordinate: Coordinate): boolean {
-        if (!map || !map.getBounds().contains(coordinate)) return false;
-        const layers = ["landcover", "land-ground"].filter((id) => map!.getLayer(id));
-        return map.queryRenderedFeatures(map.project(coordinate), { layers }).some((feature) => ["forest", "wood"].includes(feature.properties.kind));
     }
 
     export function fitRoute() {
@@ -514,9 +508,13 @@
     $effect(() => { const options = { ...mapOverlays }; const mode = accessMode; if (ready) { overlaySelection = null; overOverlay = false; overlayLayer?.set(options, mode); } });
     $effect(() => { showRoute; if (ready) syncRouteVisibility(); });
     function syncDataLayer() {
-        if (map && dataLayer) dataLayer.layer.sync(map, { shown: dataLayer.shown, date: dataLayer.date, theme });
+        if (!map || !dataLayer) return;
+        const { layers, shown, date } = dataLayer;
+        // The hidden layers first, so a hidden layer never undoes what the shown one set on shared base layers.
+        for (const layer of layers) if (layer !== shown) layer.sync(map, { shown: false, date, theme });
+        shown?.sync(map, { shown: true, date, theme });
     }
-    $effect(() => { void [dataLayer?.shown, dataLayer?.date]; if (ready) untrack(syncDataLayer); });
+    $effect(() => { void [dataLayer?.shown, dataLayer?.date, dataLayer?.shown?.variable?.value]; if (ready) untrack(syncDataLayer); });
     $effect(() => { const routing = routingPackage; if (ready) overlayLayer?.verify(routing); });
     $effect(() => {
         highlightedCoordinates;

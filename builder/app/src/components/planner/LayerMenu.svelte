@@ -1,15 +1,17 @@
 <script lang="ts">
     import Icon from './PlannerIcon.svelte';
+    import LayerLegend from './LayerLegend.svelte';
     import Segmented from './Segmented.svelte';
     import { placeCategories, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import { networkLevels, type OverlayOptions } from '../../lib/planner/route-overlays';
     import type { DataLayer } from '../../lib/planner/layers/data-layer';
 
-    let { autoCenter = $bindable(false), hillshade = $bindable(), contours = $bindable(), hidden = $bindable(), highlighted = $bindable(), mapOverlays = $bindable(), dataLayer, dataLayerOn = $bindable(false), theme = 'light', walking = false }: {
+    let { autoCenter = $bindable(false), hillshade = $bindable(), contours = $bindable(), hidden = $bindable(), highlighted = $bindable(), mapOverlays = $bindable(), dataLayers = [], shownLayer = $bindable(''), theme = 'light', walking = false }: {
         autoCenter?: boolean;
-        /** Absent when the region has no data layer. */
-        dataLayer?: DataLayer;
-        dataLayerOn?: boolean;
+        /** The data layers of the region; the map shows one or none. */
+        dataLayers?: DataLayer[];
+        /** The id of the shown data layer, or '' for none. */
+        shownLayer?: string;
         walking?: boolean;
         hillshade: boolean;
         contours: boolean;
@@ -34,6 +36,8 @@
     const networks: { value: OverlayOptions['network']; label: string }[] = [
         { value: 'none', label: 'Off' }, { value: 'cycling', label: 'Cycling' }, { value: 'hiking', label: 'Hiking' },
     ];
+    const layerOptions = $derived([{ value: '', label: 'Off' }, ...dataLayers.map(layer => ({ value: layer.id, label: layer.label }))]);
+    const dataLayer = $derived(dataLayers.find(layer => layer.id === shownLayer));
 
     function show(category: PlaceCategory, shown: boolean) {
         hidden = shown ? hidden.filter(c => c !== category) : [...hidden, category];
@@ -77,16 +81,14 @@
             {/if}
                 <p>Right-click or long-press a route for details.</p>
             </section>
-            {#if dataLayer}<section class="access-section" aria-label="Data layers">
+            {#if dataLayers.length}<section class="access-section" aria-label="Data layers">
                 <h3>Data layers</h3>
-                <label><input type="checkbox" bind:checked={dataLayerOn} />{dataLayer.label}</label>
-                {#if dataLayerOn}
-                    <ul class="legend" aria-label={`${dataLayer.label} classes`}>
-                        {#each dataLayer.swatches(theme).filter(swatch => !swatch.lineOnly) as swatch (swatch.label)}<li><span class="swatch" class:hatch={swatch.hatch} style:--swatch={swatch.color}></span>{swatch.label}</li>{/each}
-                    </ul>
+                <Segmented label="Data layer" options={layerOptions} value={shownLayer} onChange={id => shownLayer = id} />
+                {#if dataLayer}
+                    <div class="layer-legend"><LayerLegend columns legend={dataLayer.legend(theme)} label={`${dataLayer.label} colours`} /></div>
                     <p>{dataLayer.error || (dataLayer.source ? `${dataLayer.source}. ${dataLayer.caveat}` : 'Loading…')}</p>
                 {:else}
-                    <p>{dataLayer.description}</p>
+                    {#each dataLayers as layer (layer.id)}<p><strong>{layer.label}:</strong> {layer.description}</p>{/each}
                 {/if}
             </section>{/if}
             <section class="access-section" aria-label="Access markings">
@@ -183,8 +185,7 @@
     .sample { display: inline-block; flex: 0 0 14px; width: 14px; border-top: 3px solid currentColor; }
     .legend { display: grid; grid-template-columns: 1fr 1fr; column-gap: 8px; margin: 8px 0 0; font-size: 12px; color: var(--ink-soft); }
     .legend li { justify-content: flex-start; min-height: 22px; }
-    .swatch { flex: 0 0 14px; height: 10px; border-radius: 2px; background: var(--swatch); box-shadow: inset 0 0 0 1px var(--line-strong); }
-    .swatch.hatch { background: repeating-linear-gradient(135deg, transparent 0 2px, var(--swatch) 2px 3.5px); }
+    .layer-legend { margin: 8px 0 4px; }
     .access-section h3 { margin: 4px 0 0; }
     p { margin: 2px 0 8px; font-size: 12px; line-height: 1.45; color: var(--ink-soft); }
     ul {

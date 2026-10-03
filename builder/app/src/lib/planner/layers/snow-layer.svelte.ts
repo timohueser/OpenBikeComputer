@@ -1,10 +1,9 @@
 import { addProtocol, type Map, type RequestParameters } from 'maplibre-gl';
 import { PMTiles } from 'pmtiles';
-import { SNOW_URL } from '../map-data';
 import { reliefPaint } from '../map-style';
 import type { Coordinate } from '../map-types';
-import type { DataLayer, Theme } from './data-layer';
-import { colors, paintTile, seasonDay, snowClass, snowClasses, snowGrid, snowMeta, snowStats, type Planar, type SnowMeta } from './snow';
+import type { DataLayer, Line, Theme, View } from './data-layer';
+import { colors, paintTile, seasonDay, snowChart, snowClass, snowClasses, snowMeta, snowYear, type Planar, type SnowMeta } from './snow';
 
 const PROTOCOL = 'obc-snow';
 const TILE = 256;
@@ -62,12 +61,15 @@ function pixel([longitude, latitude]: Coordinate, zoom: number): [number, number
     return [Math.floor((longitude + 180) / 360 * scale), Math.floor((0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * scale)];
 }
 
-class SnowLayer implements DataLayer<Planar> {
+/** The decoded history at each coordinate of a sampled line. */
+interface Samples { p: Planar; coordinates: Coordinate[] }
+
+class SnowLayer implements DataLayer<Samples> {
     id = 'snow';
     label = 'Snow';
+    icon = 'snow';
     description = 'How often past years had snow on your date.';
     caveat = 'Satellites see less snow under trees.';
-    treeNote = 'Under trees: snow often stays a little longer than shown.';
     meta = $state<SnowMeta | null>(null);
     error = $state('');
     private archive?: Promise<Archive>;
@@ -80,15 +82,19 @@ class SnowLayer implements DataLayer<Planar> {
     private colors = palettes.light;
     private frame = 0;
 
+    constructor(private url: string) {}
+
     get source() {
         const meta = this.meta;
         return meta ? `${meta.attribution} · ${meta.resolution} m · ${meta.firstSeason}–${meta.firstSeason + meta.seasons}` : '';
     }
 
-    swatches = snowClasses;
+    legend(theme: Theme) {
+        return { swatches: snowClasses(theme).slice(1) };
+    }
 
     private open(): Promise<Archive> {
-        this.archive ??= openArchive(SNOW_URL).then(archive => {
+        this.archive ??= openArchive(this.url).then(archive => {
             this.meta = archive.meta;
             this.error = '';
             return archive;
@@ -132,7 +138,7 @@ class SnowLayer implements DataLayer<Planar> {
         return { data: await createImageBitmap(image) };
     };
 
-    sync(map: Map, { shown, date, theme }: { shown: boolean; date: string; theme: Theme }) {
+    sync(map: Map, { shown, date, theme }: View & { shown: boolean }) {
         this.colors = palettes[theme];
         this.date = date;
         this.map = map;
@@ -166,7 +172,7 @@ class SnowLayer implements DataLayer<Planar> {
         }, () => {});
     }
 
-    async sample(line: Coordinate[], signal: AbortSignal): Promise<Planar> {
+    async sample({ coordinates: line }: Line, signal: AbortSignal): Promise<Samples> {
         const { meta, maxZoom } = await this.open();
         const size = line.length, seasons = meta.seasons;
         const data = new Uint8Array(2 * seasons * size).fill(255);
@@ -191,19 +197,34 @@ class SnowLayer implements DataLayer<Planar> {
             }
         }));
         signal.throwIfAborted();
-        return { data, size, seasons };
+        return { p: { data, size, seasons }, coordinates: line };
     }
 
-    classes(p: Planar, date: string) {
-        const { index } = seasonDay(date);
-        return Uint8Array.from({ length: p.size }, (_, i) => snowClass(p, i, index));
+    strip = {
+        legend: (theme: Theme) => ({ swatches: snowClasses(theme) }),
+        fills: snowClasses,
+        values({ p }: Samples, date: string) {
+            const { index } = seasonDay(date);
+            return Uint8Array.from({ length: p.size }, (_, i) => snowClass(p, i, index));
+        },
+    };
+
+    chart({ p, coordinates }: Samples, i: number, { date, theme }: View) {
+        const chart = snowChart(p, i, this.meta?.firstSeason ?? 0, date, theme);
+        return this.underTrees(coordinates[i]) ? { ...chart, note: 'Under trees: snow often stays a little longer than shown.' } : chart;
     }
 
-    inspect(p: Planar, i: number, date: string, theme: Theme) {
-        return snowGrid(p, i, this.meta?.firstSeason ?? 0, date, theme);
+    year(samples: Samples | null, { date, theme }: View) {
+        return snowYear(samples?.p ?? null, date, theme);
     }
 
-    stats = snowStats;
+    /** Whether the basemap draws forest at a coordinate on screen; false off screen. */
+    private underTrees(coordinate: Coordinate): boolean {
+        const map = this.map;
+        if (!map || !map.getBounds().contains(coordinate)) return false;
+        const layers = ['landcover', 'land-ground'].filter(id => map.getLayer(id));
+        return map.queryRenderedFeatures(map.project(coordinate), { layers }).some(feature => ['forest', 'wood'].includes(feature.properties.kind));
+    }
 }
 
-export const snow: DataLayer = new SnowLayer();
+export const snowLayer = (url: string): DataLayer => new SnowLayer(url);
