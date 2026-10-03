@@ -161,7 +161,7 @@ The archive metadata is a JSON object:
 | `first_year` | Integer year of year 0 |
 | `years` | `10` |
 | `source` | `era5-land` |
-| `wet_day_mm` | Daily rain in mm from which a day is wet. It is set so that ERA5-Land has as many wet days as stations have days with at least 1 mm |
+| `wet_day_mm` | Daily rain in mm from which a day counts as wet |
 | `attribution` | Text to show with the layer |
 | `inputs` | Object: `doi`, `orography_sha256`, `chunks` |
 
