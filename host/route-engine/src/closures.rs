@@ -51,6 +51,7 @@ impl Closures {
                 table.roads.push((road, u16::try_from(entry).map_err(|_| "Too many closures")?));
             }
             table.roads[start..].sort_unstable();
+            table.roads.dedup();
         }
         table.valid(u32::MAX).then_some(table).ok_or_else(|| "Unsorted closures".into())
     }
@@ -101,7 +102,15 @@ mod tests {
             (closure(Kind::Permit, "permit"), closure(Kind::Seasonal, "Nov-May"), closure(Kind::Conditional, "wet"));
         let table = Closures::build([
             (1, vec![(BIKE, season.clone())]),
-            (3, vec![(BIKE | FOOT | PUSH, permit.clone()), (BIKE, season.clone()), (FOOT | PUSH, wet.clone())]),
+            (
+                3,
+                vec![
+                    (BIKE | FOOT | PUSH, permit.clone()),
+                    (BIKE, season.clone()),
+                    (FOOT | PUSH, wet.clone()),
+                    (BIKE, season.clone()),
+                ],
+            ),
             (7, vec![(BIKE, season.clone())]),
         ])
         .unwrap();

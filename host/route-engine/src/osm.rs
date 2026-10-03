@@ -20,9 +20,11 @@ pub enum Access {
 pub fn classify(value: &str) -> Access {
     let one = |value: &str| match value.trim() {
         // `mtb` designates a way for mountain bikes, as in Switzerland.
-        "yes" | "designated" | "official" | "permissive" | "discouraged" | "mtb" => Access::Open,
-        // `dismount` closes riding only; pushing follows foot access.
-        "no" | "private" | "military" | "use_sidepath" | "dismount" | "agricultural" | "forestry" => Access::Closed,
+        "yes" | "designated" | "official" | "permissive" | "discouraged" | "mtb" | "optional_sidepath" => Access::Open,
+        // `dismount` closes riding only; pushing follows foot access. A motor group such as `psv`
+        // is the only group allowed.
+        "no" | "private" | "military" | "use_sidepath" | "dismount" | "agricultural" | "forestry" | "psv" | "bus"
+        | "emergency" | "hgv" | "taxi" | "motor_vehicle" | "motorcar" => Access::Closed,
         "permit" => Access::Uncertain(Kind::Permit),
         "destination" | "customers" | "delivery" | "residents" => Access::Uncertain(Kind::Limited),
         _ => Access::Uncertain(Kind::Unclear),
@@ -291,6 +293,9 @@ mod tests {
             ("customers", Uncertain(Kind::Limited)),
             ("agricultural;delivery", Uncertain(Kind::Limited)),
             ("mtb", Open),
+            ("optional_sidepath", Open),
+            ("psv", Closed),
+            ("motor_vehicle;emergency", Closed),
             ("service", Uncertain(Kind::Unclear)),
         ] {
             assert_eq!(classify(value), expected, "{value}");

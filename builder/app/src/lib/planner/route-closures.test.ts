@@ -31,6 +31,6 @@ describe('possible closures', () => {
         expect(note(closure('conditional', 'wet'), closure('conditional', 'Mo-Fr 07:00-19:00')))
             .toBe('May be closed (wet, Mo–Fr 07:00–19:00) · 400 m');
         expect(note(closure('limited', 'destination'), closure('limited', 'customers'))).toBe('Access for destination or customers only · 400 m');
-        expect(note(closure('unclear', 'mtb'))).toBe('Access unclear (mtb) · 400 m');
+        expect(note(closure('unclear', 'unknown'))).toBe('Access unclear (unknown) · 400 m');
     });
 });

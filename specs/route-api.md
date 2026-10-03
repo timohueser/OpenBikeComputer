@@ -68,7 +68,8 @@ Surfaces are `Unknown`, `Paved`, `Compacted`, `Gravel`, `Dirt` and `Rough`.
 A `closures` value is `null` or a list of possible closures on the edge, each
 `{"kind", "condition"}`. The router blocks a mode only where the rider surely
 has no access. It uses an edge that is possibly closed for the mode that the
-route uses on it, and reports it:
+route uses on it, and reports it. A closure on a node, such as a gate, belongs to
+the edges of the road that arrives at the node:
 
 | `kind` | Source | `condition` |
 | --- | --- | --- |
@@ -76,7 +77,7 @@ route uses on it, and reports it:
 | `limited` | Access value `destination`, `customers`, `delivery` or `residents` | The value |
 | `seasonal` | A conditional restriction that names only months, days or seasons | The OSM condition, such as `Nov-May` |
 | `conditional` | Any other conditional restriction | The OSM condition, such as `wet` |
-| `unclear` | An access value that the router does not know | The value |
+| `unclear` | An access value or a barrier that the router does not know | The value, or `barrier=VALUE` |
 
 ### Legs and totals
 

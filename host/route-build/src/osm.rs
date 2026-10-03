@@ -1,5 +1,6 @@
 //! Streaming regional OSM import.
 use osmpbfreader::{OsmId, OsmObj, OsmPbfReader, Relation, Tags, Way};
+use route_engine::closures::{Closure, Kind};
 use route_engine::model::{Graph, Point, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH};
 use route_engine::osm as source;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -122,19 +123,35 @@ fn attributes(tags: &Tags, counts: &mut Counts) -> Option<Attributes> {
     })
 }
 
-fn crossing(tags: &Tags, counts: &mut Counts) -> u8 {
-    let defaults = match tag(tags, "barrier") {
+/// The modes that pass a barrier, or `None` for a barrier the router does not know.
+fn barrier(value: Option<&str>) -> Option<u8> {
+    match value {
         None
         | Some(
             "no" | "entrance" | "bollard" | "gate" | "lift_gate" | "swing_gate" | "cycle_barrier" | "toll_booth"
             | "border_control" | "cattle_grid" | "kerb" | "block" | "chain" | "height_restrictor",
-        ) => BIKE | FOOT | PUSH,
-        Some("stile" | "kissing_gate" | "turnstile") => FOOT,
-        Some(_) => {
-            count(counts, "conservatively blocked barrier nodes");
-            0
-        }
-    };
+        ) => Some(BIKE | FOOT | PUSH),
+        Some("stile" | "kissing_gate" | "turnstile") => Some(FOOT),
+        Some(_) => None,
+    }
+}
+
+/// The possible closures of a node: its access tags, and an unknown barrier that a rider may
+/// have to push through.
+pub fn node_closures<'a>(tags: impl Iterator<Item = (&'a str, &'a str)> + Clone) -> Vec<(u8, Closure)> {
+    let mut closures = source::closures(tags.clone());
+    if let Some((_, value)) = tags.into_iter().find(|&(key, value)| key == "barrier" && barrier(Some(value)).is_none())
+    {
+        closures.push((FOOT | PUSH, Closure { kind: Kind::Unclear, condition: format!("barrier={value}") }));
+    }
+    closures
+}
+
+fn crossing(tags: &Tags, counts: &mut Counts) -> u8 {
+    let defaults = barrier(tag(tags, "barrier")).unwrap_or_else(|| {
+        count(counts, "unknown barrier nodes passed on foot");
+        FOOT | PUSH
+    });
     let modes = access(tags, defaults, "forward") & access(tags, defaults, "backward");
     if modes & BIKE == 0 && modes & PUSH != 0 {
         count(counts, "dismount-only crossing nodes");
@@ -405,6 +422,15 @@ fn build_graph(
     );
     junctions.extend(rules.iter().map(|r| r.via));
     junctions.extend(nodes.iter().filter(|(_, n)| n.crossing != (BIKE | FOOT | PUSH)).map(|(id, _)| *id));
+    // A node with a possible closure ends its roads, so the road that arrives there reports it.
+    junctions.extend(
+        nodes
+            .iter()
+            .filter(|(_, n)| {
+                !n.tags.is_empty() && !node_closures(n.tags.iter().map(|(k, v)| (k.as_str(), v.as_str()))).is_empty()
+            })
+            .map(|(id, _)| *id),
+    );
     let mut point_ids = HashMap::new();
     let mut ordered: Vec<_> = ways.into_values().collect();
     ordered.sort_unstable_by_key(|w| w.id);
@@ -803,6 +829,45 @@ mod tests {
         assert!(rules.is_empty());
         assert!(ways.values().all(|w| w.attributes.access == [FOOT; 2]));
         assert_eq!(counts["conservatively excluded unsupported restriction relations"], 1);
+    }
+
+    #[test]
+    fn a_node_closure_stays_routable_and_the_arriving_road_reports_it() {
+        let node = |id: i64, pairs: &[(&str, &str)]| {
+            let tags = tags(pairs);
+            let point = Point { lat: 47_000_000, lon: 10_000_000 + id as i32 * 100, elevation: NO_ELEVATION };
+            (id, RawNode { point, crossing: crossing(&tags, &mut Counts::new()), tags })
+        };
+        let nodes = [
+            node(1, &[]),
+            node(2, &[("barrier", "gate"), ("access:conditional", "no @ (Nov-Apr)")]),
+            node(3, &[("barrier", "yes")]),
+            node(4, &[]),
+        ]
+        .into_iter()
+        .collect();
+        let ways = [(10, way(10, &[1, 2, 3, 4], &[("highway", "residential")]))].into_iter().collect();
+        let usage = (1..=4).map(|id| (id, 1)).collect();
+        let graph = build_graph(ways, nodes, usage, vec![], Counts::new()).unwrap();
+        let point = |id: i64| graph.node_ids.iter().position(|&node| node == id).unwrap();
+        // Riding through an unknown barrier stays closed; walking and pushing pass.
+        assert_eq!((graph.node_access[point(2)], graph.node_access[point(3)]), (BIKE | FOOT | PUSH, FOOT | PUSH));
+        let profile = Profile::presets().into_iter().find(|p| p.name == "road").unwrap();
+        let mut objects = HashMap::new();
+        let manifest = crate::prepare(&graph, "nodes".into(), [9.0, 46.0, 11.0, 48.0], &[profile], vec![], |bytes| {
+            let key = route_engine::package::digest(bytes);
+            objects.insert(key.clone(), bytes.to_vec());
+            Ok(key)
+        })
+        .unwrap();
+        let table: route_engine::closures::Closures =
+            route_engine::storage::decode(&objects[&manifest.closures.unwrap()]).unwrap();
+        let arriving =
+            |id: i64| graph.roads.iter().position(|r| !r.reversed && r.to as usize == point(id)).unwrap() as u32;
+        let closure = |kind, condition: &str| Some(vec![Closure { kind, condition: condition.into() }]);
+        assert_eq!(table.closing(arriving(2), BIKE), closure(Kind::Seasonal, "Nov-Apr"));
+        assert_eq!(table.closing(arriving(3), PUSH), closure(Kind::Unclear, "barrier=yes"));
+        assert_eq!((table.closing(arriving(3), BIKE), table.closing(arriving(4), BIKE)), (None, None));
     }
 
     #[test]
