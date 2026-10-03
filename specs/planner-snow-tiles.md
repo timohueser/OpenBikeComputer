@@ -14,7 +14,10 @@ The planner snow layer reads one archive per region: `snow.pmtiles`. The bake is
 | Bounds | The region bounds |
 | Zoom levels | 0 to the max zoom |
 
-A missing tile is no data. A pixel outside the region bounds is no data.
+A pixel outside the region bounds is no data. Inside the bounds, a missing tile takes
+its nearest stored ancestor: each pixel has the value of the ancestor pixel that
+contains it. A tile without a stored ancestor is no data. No data inside a stored tile
+is explicit: its pixels are 255.
 
 ## Seasons
 
@@ -109,6 +112,23 @@ At a lower zoom, the inputs are the 2 × 2 child pixels, with equal weights. For
 `copernicus-hr-wsi`, each child pixel is smoothed first: it takes the blend of its
 3 × 3 neighbourhood in its tile, with equal weights and the median of the dated
 inputs instead of the mean. A neighbour outside the tile repeats the edge pixel.
+
+## Adaptive depth
+
+The archive stores every tile with data to zoom 9. Below zoom 9, the bake omits the
+tiles that an ancestor can stand in for.
+
+A pixel season of a max-zoom tile matches an ancestor when the ancestor pixel that
+contains it has the same sentinel, or when both are dated and onset and melt-out each
+differ by one day step or less. The match share is the count of matching pixel seasons
+divided by the count of pixel seasons that are not 255 in both. A pixel season that
+is 255 in both does not count.
+
+For each max-zoom tile, the bake finds the coarsest ancestor A, to zoom 9, such that
+A and every ancestor between A and the tile have a match share of 0.98 or more. Each
+share compares with the max-zoom tile, so the errors of the zooms do not add up. The
+archive keeps the tiles from zoom 9 down to A on the path of the tile, or down to the
+tile itself when its parent does not match. It omits the other tiles below zoom 9.
 
 ## Forest
 
