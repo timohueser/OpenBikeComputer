@@ -3,7 +3,7 @@
     import SeasonGrid from './SeasonGrid.svelte';
     import DateCalendar from './DateCalendar.svelte';
     import Segmented from './Segmented.svelte';
-    import { addMonths, columnDate, dateLabel, type DataLayer, type Grid } from '../../lib/planner/layers/data-layer';
+    import { addDays, addMonths, columnDate, dateLabel, type DataLayer, type Grid } from '../../lib/planner/layers/data-layer';
 
     let { date, year, variable, onDate }: { date: string; year: Grid; variable: DataLayer['variable']; onDate: (date: string) => void } = $props();
 
@@ -18,8 +18,7 @@
         onDate(next);
     }
     function shift(days: number) {
-        const [y, m, d] = date.split('-').map(Number);
-        step(new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10));
+        step(addDays(date, days));
     }
     function key(event: KeyboardEvent) {
         const year = date.slice(0, 4);

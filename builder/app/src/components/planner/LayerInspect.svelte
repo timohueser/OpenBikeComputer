@@ -27,7 +27,7 @@
     {#if chart}
         {#each chart.grids as grid, g (g)}
             {#if grid.label}<p class="grid-label">{grid.label}</p>{/if}
-            <SeasonGrid {grid} {date} rowHeight={compact ? 4 : 8} label={`${grid.label || chart.headline}. One row per year, newest at the bottom.`} />
+            <SeasonGrid {grid} {date} rowHeight={compact ? (chart.grids.length > 1 ? 3 : 4) : 8} label={`${grid.label || chart.headline}. One row per year, newest at the bottom.`} />
             {#if !compact && (grid.legend || g === chart.grids.length - 1)}
                 <LayerLegend legend={grid.legend ?? { swatches: [] }} label={`${grid.label || 'Chart'} colours`}>
                     {#if g === chart.grids.length - 1}<li><span class="line"></span>Your date</li>{/if}

@@ -64,6 +64,8 @@ export interface DataLayer<Samples = unknown> {
     sample(line: Line, signal: AbortSignal): Promise<Samples>;
     /** The strip under the profile; a layer without it has no strip. Each sample has a value that indexes `fills`. */
     readonly strip?: {
+        /** The strip title; the layer label without it. */
+        label?: string;
         legend(theme: Theme): Legend;
         fills(theme: Theme): Swatch[];
         values(samples: Samples, date: string): Uint8Array;
@@ -72,6 +74,8 @@ export interface DataLayer<Samples = unknown> {
     chart(samples: Samples, i: number, view: View): Chart;
     /** The year slider of a route: its label line and one row per variable; empty rows without samples. */
     year(samples: Samples | null, view: View): Grid;
+    /** A short label for each overnight stop, at sample `index` on the night of `date`; '' for none. A layer without it labels no stops. */
+    nights?(samples: Samples, stops: { index: number; date: string }[]): string[];
 }
 
 /** The layers whose archive the region has, in list order. */
@@ -120,6 +124,11 @@ export function columnDate(column: number, year: number, columns: number): strin
     if (columns === 52) return new Date(Date.UTC(year, 0, 1 + 7 * column)).toISOString().slice(0, 10);
     const day = columnDay(column, columns);
     return new Date(Date.UTC(year, day.getUTCMonth(), day.getUTCDate())).toISOString().slice(0, 10);
+}
+
+export function addDays(date: string, days: number): string {
+    const [year, month, day] = date.split('-').map(Number);
+    return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
 }
 
 /** The same day `months` later, or the last day of a shorter month. */

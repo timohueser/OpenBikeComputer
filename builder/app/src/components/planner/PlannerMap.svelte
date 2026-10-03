@@ -47,8 +47,8 @@
         /** Places to ride over, drawn from zoom 10. */
         landmarks?: Place[];
         mapOverlays?: OverlayOptions;
-        /** The region's data layers, the shown one if any, and the layer date. */
-        dataLayer?: { layers: DataLayer[]; shown?: DataLayer; date: string };
+        /** The region's data layers, the shown one if any, the layer date, and the shown layer's labels beside the overnight stops. */
+        dataLayer?: { layers: DataLayer[]; shown?: DataLayer; date: string; notes?: { coordinate: Coordinate; text: string }[] };
         /** Height of a bar over the bottom of the map that fits and callouts keep clear of. */
         bottomInset?: number;
         /** Travel mode, independent of the network chosen for display. */
@@ -515,6 +515,16 @@
         shown?.sync(map, { shown: true, date, theme });
     }
     $effect(() => { void [dataLayer?.shown, dataLayer?.date, dataLayer?.shown?.variable?.value]; if (ready) untrack(syncDataLayer); });
+    const notes: maplibregl.Marker[] = [];
+    $effect(() => {
+        const list = showRoute ? dataLayer?.notes ?? [] : [];
+        if (!map) return;
+        for (const marker of notes.splice(0)) marker.remove();
+        for (const { coordinate, text } of list) {
+            const element = Object.assign(document.createElement('div'), { className: 'planner-map-note', textContent: text });
+            notes.push(new maplibregl.Marker({ element, anchor: 'left', offset: [16, 0] }).setLngLat(coordinate).addTo(map));
+        }
+    });
     $effect(() => { const routing = routingPackage; if (ready) overlayLayer?.verify(routing); });
     $effect(() => {
         highlightedCoordinates;
@@ -724,6 +734,7 @@
     :global(.planner-map-pin.highlighted) { outline: 3px solid var(--ink, #1c1b14); outline-offset: 3px; }
     :global(.planner-map-pin:hover) { filter: brightness(1.08); }
     :global(.planner-map-pin:focus-visible) { outline: 3px solid var(--amber, #f4a81d); outline-offset: 3px; }
+    :global(.planner-map-note) { padding: 2px 8px; border-radius: 6px; color: var(--ink, #1c1b14); background: var(--panel, #fff); font: 600 12px/20px var(--sans, sans-serif); font-variant-numeric: tabular-nums; white-space: nowrap; box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); pointer-events: none; }
     :global(.planner-hover-dot) { width: 12px; height: 12px; border: 3px solid var(--panel, #fff); border-radius: 50%; background: var(--ink, #1c1b14); pointer-events: none; }
     :global(.planner-insert-dot) { width: 14px; height: 14px; border: 2.5px solid var(--route, #cc2a93); border-radius: 50%; background: var(--panel, #fff); pointer-events: none; }
     .map-frame :global(.maplibregl-popup-content) { padding: 0; border-radius: 8px; color: var(--ink, #1c1b14); background: var(--panel, white); font-family: var(--sans, sans-serif); box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); }
