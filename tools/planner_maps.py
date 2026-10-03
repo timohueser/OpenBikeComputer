@@ -17,6 +17,10 @@ import time
 from urllib.request import urlopen
 import zipfile
 
+try:
+    from .planner_runtime import DATA_LAYERS
+except ImportError:
+    from planner_runtime import DATA_LAYERS
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "builder/app"
@@ -209,8 +213,9 @@ def preview(args):
         "VITE_PLANNER_PMTILES_URL": base + "/basemap.pmtiles",
         "VITE_PLANNER_PLACES_URL": base + "/places.pmtiles",
         "VITE_PLANNER_OVERLAYS_URL": base + "/overlays.pmtiles",
-        # Without a snow archive, the planner offers no snow layer.
-        "VITE_PLANNER_SNOW_URL": base + "/snow.pmtiles" if "snow.pmtiles" in manifest["files"] else "",
+        # Without its archive, the planner offers no such data layer.
+        **{f"VITE_PLANNER_{layer.upper()}_URL": f"{base}/{layer}.pmtiles" if f"{layer}.pmtiles" in manifest["files"] else ""
+           for layer in DATA_LAYERS},
         "VITE_PLANNER_DEM_URL": "/tiles/terrain/{z}/{x}/{y}.webp",
         "VITE_PLANNER_GLYPHS_URL": base + "/assets/fonts/{fontstack}/{range}.pbf",
         "VITE_PLANNER_SPRITES_URL": base + "/assets/sprites/v4",

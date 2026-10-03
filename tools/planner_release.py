@@ -12,10 +12,10 @@ import subprocess
 
 try:
     from . import planner_maps as maps, planner_sources as sources, r2
-    from .planner_runtime import encoded, release, storage_files, public_metadata
+    from .planner_runtime import DATA_LAYERS, encoded, release, storage_files, public_metadata
 except ImportError:
     import planner_maps as maps, planner_sources as sources, r2
-    from planner_runtime import encoded, release, storage_files, public_metadata
+    from planner_runtime import DATA_LAYERS, encoded, release, storage_files, public_metadata
 
 
 def read_url(url):
@@ -83,7 +83,7 @@ def seal(data, region, device_catalog, provenance):
         return value
     (data / "device").mkdir(exist_ok=True)
     (data / "device/catalog.json").write_bytes(encoded(absolute(device)))
-    # The release carries the verified map bundle, which includes snow when the recipe asks for it.
+    # The release carries the verified map bundle, which includes each data layer that the recipe asks for.
     files = {f"maps/{name}": item for name, item in map_manifest["files"].items()}
     files["maps/manifest.json"] = {"bytes": (data / "maps/manifest.json").stat().st_size, "sha256": sources.digest(data / "maps/manifest.json")}
     for part in ["routing", "search/model", "device"]:
@@ -114,7 +114,8 @@ def endpoints(identity, document, public, tiles, api):
             "overlays": tile_prefix + "/overlays.json",
             "attribution": document["attribution"],
             "terrain": tile_prefix + "/terrain/{z}/{x}/{y}.webp",
-            **({"snow": tile_prefix + "/snow.json"} if {"maps/snow.json", "maps/snow.pmtiles"} & document["files"].keys() else {}),
+            **{layer: f"{tile_prefix}/{layer}.json" for layer in DATA_LAYERS
+               if {f"maps/{layer}.json", f"maps/{layer}.pmtiles"} & document["files"].keys()},
             "glyphs": assets + "/maps/assets/fonts/{fontstack}/{range}.pbf",
             "sprites": assets + "/maps/assets/sprites/v4", "bounds": document["bounds"],
             "terrain_attribution": document["terrain_attribution"]}
@@ -171,7 +172,8 @@ def publish(args):
 def vite_environment(active):
     values = {"VITE_PLANNER_TILEJSON_URL": active["basemap"], "VITE_PLANNER_PLACES_URL": active["places"],
               "VITE_PLANNER_OVERLAYS_URL": active["overlays"],
-              "VITE_PLANNER_DEM_URL": active["terrain"], "VITE_PLANNER_SNOW_URL": active.get("snow", ""),
+              "VITE_PLANNER_DEM_URL": active["terrain"],
+              **{f"VITE_PLANNER_{layer.upper()}_URL": active.get(layer, "") for layer in DATA_LAYERS},
               "VITE_PLANNER_ROUTING_URL": active["routing"], "VITE_PLANNER_SEARCH_URL": active["search"],
               "VITE_PLANNER_GLYPHS_URL": active["glyphs"], "VITE_PLANNER_SPRITES_URL": active["sprites"],
               "VITE_PLANNER_MAP_BOUNDS": ",".join(map(str, active["bounds"])),

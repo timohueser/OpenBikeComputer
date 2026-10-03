@@ -52,8 +52,8 @@ def cells(bounds):
 
 
 def map_kinds(maps):
-    """The tile archives of a map bundle; snow is present only when its recipe asks for it."""
-    return ["basemap", "places", "overlays", "terrain"] + (["snow"] if (maps / "snow.pmtiles").exists() else [])
+    """The tile archives of a map bundle; a data layer is present only when its recipe asks for it."""
+    return ["basemap", "places", "overlays", "terrain"] + [layer for layer in planner_runtime.DATA_LAYERS if (maps / f"{layer}.pmtiles").exists()]
 
 
 def map_tiles(source, output):
@@ -252,8 +252,8 @@ def publish(source, routing, output):
         z, x, y = map(int, path.stem.split("-"))
         name = add(path, f"maps/tiles/{path.parent.name}/{path.name}")
         # Offline planners read places from the basemap and search, and overlays from the routing cells.
-        # They have no snow layer yet.
-        if path.parent.name not in ("places", "overlays", "snow"):
+        # They have no data layers yet.
+        if path.parent.name not in ("places", "overlays", *planner_runtime.DATA_LAYERS):
             map_blocks.append({"kind": path.parent.name, "tile": [z,x,y], "bounds": box(z, x, y), "files": [name]})
     search = source / "search" / f"{release['region']}.sqlite"
     lookup = work / "search-lookup.sqlite"

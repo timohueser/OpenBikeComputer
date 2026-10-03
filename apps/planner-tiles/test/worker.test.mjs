@@ -6,6 +6,7 @@ const release = 'a'.repeat(64), base = `/releases/${release}`;
 test('tile routes bound archive selection and coordinates', () => {
   assert.deepEqual(tileRoute(`${base}/basemap/14/16383/16383.mvt`).tile, [14, 16383, 16383]);
   assert.deepEqual(tileRoute(`${base}/snow/13/4290/2911`).tile, [13, 4290, 2911]);
+  assert.deepEqual(tileRoute(`${base}/climate/9/218/37`).tile, [9, 218, 37]);
   assert.equal(tileRoute(`${base}/terrain.json`).name, 'terrain');
   for (const path of [`${base}/terrain/12/4096/0.webp`, `${base}/basemap/27/0/0.mvt`, `${base}/places/0/0/0.png`,
     `${base}/other.json`, '/cell-catalog/catalog.json', `${base}/basemap/01/0/0.mvt`]) {

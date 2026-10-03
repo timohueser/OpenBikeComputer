@@ -6,6 +6,10 @@ from pathlib import Path, PurePosixPath
 import re
 from urllib.request import Request, urlopen
 
+# Optional data layers. Each is one archive `maps/NAME.pmtiles`, baked by `tools/planner_NAME.py` when
+# the region recipe has the field NAME. The value is a metadata key that every complete archive has.
+DATA_LAYERS = {"snow": "seasons", "climate": "years"}
+
 
 def encoded(value):
     return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
@@ -45,7 +49,8 @@ def public_metadata(document):
         return {}
     result = {"public/grid.json": encoded({"format": 2, "map_zoom": document["grid"]["map_zoom"]})}
     for name, item in document["files"].items():
-        if name.startswith(("maps/tiles/", "maps/assets/")) or name in {"maps/basemap.json", "maps/places.json", "maps/overlays.json", "maps/terrain.json", "maps/snow.json", "device/catalog.json"}:
+        if name.startswith(("maps/tiles/", "maps/assets/")) or name in {"maps/basemap.json", "maps/places.json", "maps/overlays.json", "maps/terrain.json", "device/catalog.json",
+                                                                         *(f"maps/{layer}.json" for layer in DATA_LAYERS)}:
             result["public/" + name + ".json"] = encoded({**item["transport"], "decoded_bytes": item["bytes"]})
     return result
 

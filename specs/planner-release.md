@@ -37,7 +37,9 @@ starts with its SHA-256. Source mirrors can be shared by releases.
 `maps/` contains `basemap.pmtiles`, `places.pmtiles`, `overlays.pmtiles`,
 `terrain.pmtiles`, map assets, and their manifest. When the region recipe names a
 snow source, it also contains `snow.pmtiles` from the
-[snow tile contract](planner-snow-tiles.md). The release `files` hold exactly the
+[snow tile contract](planner-snow-tiles.md). When the recipe has a `climate` field,
+it also contains `climate.pmtiles` from the
+[climate tile contract](planner-climate-tiles.md). The release `files` hold exactly the
 files of the map manifest and the manifest itself. `routing/` contains the three files in the
 [route package contract](route-package.md), plus `overlays.sqlite`. The overlay
 index stores the routing manifest identity and has the same OSM source.

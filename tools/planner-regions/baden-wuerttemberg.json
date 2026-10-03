@@ -80,6 +80,9 @@
       "Copernicus_DSM_COG_10_N50_00_E010_00_DEM.tif": "1330c6587a7f5ae3d8616d95a2b20ad559aa94fbc7ed0162dfcc2859ed31c8d2"
     }
   },
+  "climate": {
+    "first_year": 2016
+  },
   "probe": {
     "points": [
       [
