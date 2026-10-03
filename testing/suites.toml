@@ -230,6 +230,7 @@ jobs = ["guards", "selection"]
 triggers = [
   "tools/requirements-test.txt",
   "tools/requirements-planner-maps.txt",
+  "tools/requirements-planner-snow.txt",
   "tools/*.py",
   "tools/**/*.py",
   "tools/planner-regions/**",
