@@ -22,7 +22,7 @@ test('invalid requests perform no bucket access', async () => {
 });
 
 // One tile in a synthetic PMTiles v3 archive tests the reader and R2 range seam.
-function archive(tileType = 1, meta = { attribution: 'Test data' }) {
+function archive(tileType = 1, meta = { attribution: 'Test data' }, maxZoom = 0) {
   const tile = gzipSync(new Uint8Array([26, 0]));
   const directory = gzipSync(new Uint8Array([1, 0, 1, tile.length, 1]));
   const metadata = gzipSync(Buffer.from(JSON.stringify(meta)));
@@ -32,7 +32,7 @@ function archive(tileType = 1, meta = { attribution: 'Test data' }) {
     127 + directory.length + metadata.length, 0, 127 + directory.length + metadata.length,
     tile.length, 1, 1, 1];
   values.forEach((v, i) => header.writeBigUInt64LE(BigInt(v), 8 + i * 8));
-  header.set([1, 2, 2, tileType, 0, 0], 96);
+  header.set([1, 2, 2, tileType, 0, maxZoom], 96);
   header.writeInt32LE(-1800000000, 102); header.writeInt32LE(-850000000, 106);
   header.writeInt32LE(1800000000, 110); header.writeInt32LE(850000000, 114);
   return Buffer.concat([header, directory, metadata, tile]);
@@ -121,7 +121,7 @@ test('grid archives share download objects and assets stream from their pointers
 });
 
 test('tiles of an unknown type keep their gzip encoding through the edge cache, and TileJSON carries the archive metadata', async () => {
-  const bytes = archive(0, { attribution: 'Snow data', first_season: 2016, seasons: 9 });
+  const bytes = archive(0, { attribution: 'Snow data', first_season: 2016, seasons: 9 }, 1);
   // Node ignores `encodeBody`; the Workers runtime compresses again without 'manual'.
   const NodeResponse = globalThis.Response;
   globalThis.Response = class extends NodeResponse { constructor(body, init) { super(body, init); this.encodeBody = init?.encodeBody; } };
@@ -145,11 +145,17 @@ test('tiles of an unknown type keep their gzip encoding through the edge cache, 
     assert.equal(response.encodeBody, 'manual');
   }
   assert.deepEqual(gunzipSync(new Uint8Array(await hit.arrayBuffer())), Buffer.from([26, 0]));
+  assert.equal(hit.headers.get('OBC-Tile-Zoom'), null);
+  // An omitted snow tile answers with its nearest stored ancestor and that zoom.
+  const omitted = await worker.fetch(new Request(`https://tiles.example${base}/snow/1/1/0`), env, ctx);
+  assert.equal(omitted.status, 200);
+  assert.equal(omitted.headers.get('OBC-Tile-Zoom'), '0');
+  assert.deepEqual(gunzipSync(new Uint8Array(await omitted.arrayBuffer())), Buffer.from([26, 0]));
   // The header is cached, so a TileJSON miss reads only the metadata.
   const before = reads;
   const info = await (await worker.fetch(new Request(`https://tiles.example${base}/snow.json`), env, ctx)).json();
   assert.equal(reads - before, 1);
-  assert.deepEqual([info.first_season, info.seasons, info.maxzoom, info.tiles[0]], [2016, 9, 0, `https://tiles.example${base}/snow/{z}/{x}/{y}`]);
+  assert.deepEqual([info.first_season, info.seasons, info.maxzoom, info.tiles[0]], [2016, 9, 1, `https://tiles.example${base}/snow/{z}/{x}/{y}`]);
   globalThis.Response = NodeResponse;
   delete globalThis.caches;
 });

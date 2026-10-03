@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dateColumn } from './data-layer';
+import { dateColumn, nearestStored } from './data-layer';
 import { FREE, MOSTLY_FREE, MOSTLY_SNOW, SNOW, UNKNOWN, indexLabel, paintTile, seasonDay, snowClass, snowGrid, snowStats, type Planar } from './snow';
 
 /** Planar bytes from per-item [onset, melt] pairs, one list per season. */
@@ -36,6 +36,37 @@ describe('snow tiles', () => {
         paintTile(words, undefined, 30, 1, 0, 0, Uint32Array.of(0, 1, 2, 3, 4));
         expect(new Set(words)).toEqual(new Set([0, UNKNOWN]));
         expect([words[0], words[1], words[2], words[256 + 7]]).toEqual([UNKNOWN, UNKNOWN, 0, UNKNOWN]);
+    });
+
+    it('takes the nearest stored ancestor of an omitted tile', async () => {
+        const stored = new Map([['10/1/2', { data: 'a', z: 10 }], ['9/0/1', { data: 'b', z: 9 }]]);
+        const asked: string[] = [];
+        const tile = async (z: number, x: number, y: number) => { asked.push(`${z}/${x}/${y}`); return stored.get(`${z}/${x}/${y}`); };
+        expect(await nearestStored(tile, 12, 6, 9, 0)).toEqual({ data: 'a', z: 10 });
+        expect(asked).toEqual(['12/6/9', '11/3/4', '10/1/2']);
+        expect(await nearestStored(tile, 12, 0, 8, 0)).toEqual({ data: 'b', z: 9 });
+        expect(await nearestStored(tile, 12, 0, 0, 8)).toBeUndefined();
+        // A tile service answers with the ancestor itself, so one request is enough.
+        asked.length = 0;
+        expect(await nearestStored(async (z, x, y) => (asked.push(`${z}/${x}/${y}`), { data: 'c', z: 9 }), 12, 6, 9, 0)).toEqual({ data: 'c', z: 9 });
+        expect(asked).toEqual(['12/6/9']);
+    });
+
+    it('blends day values above the data zoom, never with a sentinel', () => {
+        // Two pixels across a 4 × 4 part of a tile: melt-out on day 20 and 40, then a no-snow pixel.
+        const pixels = new Array(256 * 256).fill([253, 253]) as [number, number][];
+        pixels[0] = [0, 20];
+        pixels[1] = [0, 40];
+        const words = new Uint32Array(256 * 256);
+        paintTile(words, planar([pixels]), 30, 64, 0, 0, Uint32Array.of(0, 1, 2, 3, 4));
+        // Snow until day 30 reaches halfway between the pixel centres at 32 and 96: a smooth border, not a pixel edge.
+        const row = Array.from({ length: 4 }, (_, k) => words[32 * 256 + 32 + 16 * k]);
+        expect(row).toEqual([0, 0, SNOW, SNOW]);
+        expect(words[32 * 256 + 63]).toBe(0);
+        expect(words[32 * 256 + 64]).toBe(SNOW);
+        // The no-snow pixel next to them stays snow-free: it gives no days to blend.
+        expect(words[32 * 256 + 128 + 32]).toBe(0);
+        expect(words[96 * 256 + 32]).toBe(0);
     });
 
     it('ends the last day index on 31 August', () => {

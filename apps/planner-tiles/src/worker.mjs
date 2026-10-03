@@ -7,7 +7,7 @@ async function decompress(bytes, compression) {
   return new Response(new Response(bytes).body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
 }
 const directories = new ResolvedValueCache(25, undefined, decompress);
-const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS', 'Access-Control-Expose-Headers': 'OBC-Tile-Zoom',
   'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' };
 
 const contentTypes = { [TileType.Mvt]: 'application/x-protobuf', [TileType.Webp]: 'image/webp' };
@@ -68,16 +68,21 @@ export default {
           if (pointer.decoded_bytes > 1024 * 1024) throw new Error('TileJSON exceeds metadata limit');
           data = await (await publicFile(env.BUCKET, prefix, `maps/${route.name}.json`, 'application/json', headers)).json();
         } else {
-          let path = `${prefix}/maps/${route.name}.pmtiles`;
-          if (grid) {
+          const open = async tile => {
+            if (!grid) return new R2Source(env.BUCKET, `${prefix}/maps/${route.name}.pmtiles`);
             // A grid has packs only where an archive has tiles, so a tile without a pack is absent.
-            const pointer = await objectPointer(env.BUCKET, prefix, packName(route.name, route.tile, grid.map_zoom))
+            const pointer = await objectPointer(env.BUCKET, prefix, packName(route.name, tile, grid.map_zoom))
               .catch(error => { if (error instanceof MissingArchive) return null; throw error; });
             if (pointer && pointer.encoding !== 'identity') throw new Error('PMTiles must support byte ranges');
-            path = pointer?.path;
-          }
-          if (path) {
-            const source = new R2Source(env.BUCKET, path);
+            return pointer && new R2Source(env.BUCKET, pointer.path);
+          };
+          // A snow tile that the bake omits stands for its nearest stored ancestor (specs/planner-snow-tiles.md).
+          // The answer carries the ancestor and its zoom, so the client needs no request per zoom.
+          const ancestors = route.name === 'snow' && route.tile ? route.tile[0] : 0;
+          for (let up = 0; up <= ancestors && !data; up++) {
+            const tile = route.tile && [route.tile[0] - up, route.tile[1] >> up, route.tile[2] >> up];
+            const source = await open(tile);
+            if (!source) continue;
             const archive = new PMTiles(source, directories, decompress);
             const header = await archive.getHeader();
             if (!route.tile) {
@@ -85,12 +90,15 @@ export default {
                 bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat], center: [header.centerLon, header.centerLat, header.centerZoom] };
             } else if (route.ext !== undefined && route.ext !== tileTypeExt(header.tileType)) {
               return notFound();
-            } else if (route.tile[0] >= header.minZoom && route.tile[0] <= header.maxZoom) {
+            } else if (tile[0] >= header.minZoom && tile[0] <= header.maxZoom) {
               // Edge compression skips unknown content types, so these tiles keep their stored encoding.
               const raw = !(header.tileType in contentTypes);
-              data = await (raw ? new PMTiles(source, directories, keep) : archive).getZxy(...route.tile);
+              data = await (raw ? new PMTiles(source, directories, keep) : archive).getZxy(...tile);
               tileHeaders = { 'Content-Type': contentTypes[header.tileType] ?? 'application/octet-stream',
-                ...(raw && header.tileCompression === Compression.Gzip ? { 'Content-Encoding': 'gzip' } : {}) };
+                ...(raw && header.tileCompression === Compression.Gzip ? { 'Content-Encoding': 'gzip' } : {}),
+                ...(data && up ? { 'OBC-Tile-Zoom': String(tile[0]) } : {}) };
+            } else {
+              break;
             }
           }
         }
