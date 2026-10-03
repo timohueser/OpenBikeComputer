@@ -5,14 +5,15 @@
         max: number;
         axis: 'x' | 'y';
         label: string;
-        onResize: (value: number) => void;
+        /** `byKey` marks a keyboard step. */
+        onResize: (value: number, byKey: boolean) => void;
     } = $props();
 
     let start: { position: number; value: number } | null = null;
     const steps: Record<string, number> = { ArrowLeft: -16, ArrowRight: 16, ArrowUp: 16, ArrowDown: -16 };
 
-    function update(next: number) {
-        onResize(Math.round(Math.max(min, Math.min(max, next))));
+    function update(next: number, byKey = false) {
+        onResize(Math.round(Math.max(min, Math.min(max, next))), byKey);
     }
 
     function position(event: PointerEvent) {
@@ -31,9 +32,9 @@
     }
 
     function key(event: KeyboardEvent) {
-        if (event.key in steps) update(value + steps[event.key]);
-        else if (event.key === 'Home') update(min);
-        else if (event.key === 'End') update(max);
+        if (event.key in steps) update(value + steps[event.key], true);
+        else if (event.key === 'Home') update(min, true);
+        else if (event.key === 'End') update(max, true);
         else return;
         event.preventDefault();
     }

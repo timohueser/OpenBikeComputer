@@ -50,10 +50,9 @@
 
     const storageKey = 'obc-planner-routing-v2';
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
-    /** Drawer heights: the smallest open one, and the closed one with its title row only. */
-    const PROFILE_MIN = 210, PROFILE_CLOSED = 44;
     import { calculateLine, requestAlternatives, selectRoute, type EngineRoute, type RoutingLine } from '../../lib/planner/routing';
     import { LegCache } from '../../lib/planner/route-legs';
+    import { DRAWER_CLOSED, DRAWER_MIN, resizeDrawer } from '../../lib/planner/drawer';
     import { closureNote, closureStretches, type ClosureStretch } from '../../lib/planner/route-closures';
     const defaultLabels: Record<EditableKind, string> = {
         via: 'Shaping point',
@@ -196,13 +195,13 @@
     const history = new TripHistory();
     let revision = $state(0);
 
-    const maxProfile = $derived(Math.max(PROFILE_MIN, Math.min(340, viewportHeight - 400)));
-    const drawerHeight = $derived(profileOpen ? Math.min(profileHeight, maxProfile) : PROFILE_CLOSED);
+    const maxProfile = $derived(Math.max(DRAWER_MIN, Math.min(340, viewportHeight - 400)));
+    const drawerHeight = $derived(profileOpen ? Math.min(profileHeight, maxProfile) : DRAWER_CLOSED);
     const maxSide = $derived(Math.max(320, Math.min(460, viewportWidth - 540)));
-    // A drag below the open minimum closes the drawer past halfway and holds it at the minimum before.
-    function resizeProfile(value: number) {
-        profileOpen = value >= (PROFILE_MIN + PROFILE_CLOSED) / 2;
-        if (profileOpen) profileHeight = Math.max(PROFILE_MIN, value);
+    function resizeProfile(value: number, byKey: boolean) {
+        const next = resizeDrawer(drawerHeight, value, byKey);
+        profileOpen = next > DRAWER_CLOSED;
+        if (profileOpen) profileHeight = next;
     }
     const canUndo = $derived.by(() => { void revision; return history.canUndo; });
     const canRedo = $derived.by(() => { void revision; return history.canRedo; });
@@ -1005,7 +1004,7 @@
                     </div>
                 {/if}
             </div>
-            <Resize value={drawerHeight} min={PROFILE_CLOSED} max={maxProfile} axis="y" label="Elevation height" onResize={resizeProfile} />
+            <Resize value={drawerHeight} min={DRAWER_CLOSED} max={maxProfile} axis="y" label="Elevation height" onResize={resizeProfile} />
             {#if !visualRoute}
                 <section class="empty-profile" aria-label="Elevation profile" style:height={`${drawerHeight}px`}>
                     <DrawerTitle title="Elevation & surface" open={profileOpen} onToggle={() => profileOpen = !profileOpen} />

@@ -86,6 +86,18 @@
     let plot = $state<HTMLDivElement>();
     let drag = $state<{ night: number; progress: number; moved: boolean } | null>(null);
     let range = $state<'map' | 'route'>('map');
+    let body = $state<HTMLDivElement>();
+    let content = $state<HTMLDivElement>();
+    // More content below the visible part shows as a fade at the bottom edge.
+    let more = $state(false);
+    function measure() { if (body) more = body.scrollTop + body.clientHeight < body.scrollHeight - 1; }
+    $effect(() => {
+        if (!body || !content) return;
+        const observer = new ResizeObserver(measure);
+        observer.observe(body);
+        observer.observe(content);
+        return () => observer.disconnect();
+    });
 
     const shown = $derived(range === 'map' ? focus ?? view : { from: 0, to: 1 });
     const origin = $derived(range === 'map' && focus ? focus.from : 0);
@@ -161,7 +173,7 @@
     </div>
     {#if open}
     <!-- Scrolls when the strips do not fit, so they never cover the line below the drawer. -->
-    <div class="body">
+    <div class="body" class:more bind:this={body} onscroll={measure}><div class="content" bind:this={content}>
     {#if !known.length}<p class="unavailable">Elevation unavailable</p>{/if}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="plot" bind:this={plot} onpointermove={track} onpointerleave={leave} onpointerup={release} onpointercancel={() => drag = null}>
@@ -221,7 +233,7 @@
     </div>
     <Surface {walking} line={lineData} from={shown.from} to={shown.to} onHover={inspect} />
     {@render strip?.(shown.from, shown.to, inspect)}
-    </div>
+    </div></div>
     {/if}
 </section>
 
@@ -238,14 +250,27 @@
     }
     .elevation.open { padding-bottom: 0; }
     .body {
-        display: flex;
-        flex-direction: column;
         flex: 1;
         min-height: 0;
         overflow-y: auto;
-        padding-bottom: 8px;
         scrollbar-width: thin;
         scrollbar-color: var(--line-strong) transparent;
+    }
+    .content {
+        display: flex;
+        flex-direction: column;
+        min-height: 100%;
+        padding-bottom: 8px;
+    }
+    .body.more::after {
+        content: "";
+        position: sticky;
+        bottom: 0;
+        display: block;
+        height: 20px;
+        margin-top: -20px;
+        background: linear-gradient(color-mix(in srgb, var(--panel) 0%, transparent), var(--panel));
+        pointer-events: none;
     }
     .title {
         display: flex;
@@ -277,6 +302,9 @@
         touch-action: none;
     }
     .plot > svg {
+        /* Out of the flow: the viewBox ratio would otherwise set the plot height. */
+        position: absolute;
+        inset: 0;
         width: 100%;
         height: 100%;
         overflow: hidden;
