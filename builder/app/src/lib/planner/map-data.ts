@@ -1,4 +1,5 @@
 import { clientConfig } from "./client-config";
+import type { Archive } from "./layers/data-layer";
 import type { Coordinate } from "./map-types";
 
 function absoluteUrl(value: string): string {
@@ -14,8 +15,12 @@ export const BASEMAP_URL = import.meta.env.VITE_PLANNER_TILEJSON_URL
 export const PLACES_URL = absoluteUrl(import.meta.env.VITE_PLANNER_PLACES_URL || "./data/planner/places.pmtiles");
 /** Route networks and access: a TileJSON URL ending in `.json`, or a PMTiles archive. */
 export const OVERLAYS_URL = absoluteUrl(import.meta.env.VITE_PLANNER_OVERLAYS_URL || "./data/planner/overlays.pmtiles");
-/** Snow history per specs/planner-snow-tiles.md: a TileJSON URL ending in `.json`, a PMTiles archive, or empty for a region without snow data. */
-export const SNOW_URL = import.meta.env.VITE_PLANNER_SNOW_URL ? absoluteUrl(import.meta.env.VITE_PLANNER_SNOW_URL) : "";
+const dataUrl = (value: string | undefined) => value ? absoluteUrl(value) : "";
+/** Data layer archives, such as the snow history of specs/planner-snow-tiles.md: a TileJSON URL ending in `.json`, a PMTiles archive, or empty when the region has none. */
+export const DATA_URLS: Record<Archive, string> = {
+    snow: dataUrl(import.meta.env.VITE_PLANNER_SNOW_URL),
+    climate: dataUrl(import.meta.env.VITE_PLANNER_CLIMATE_URL),
+};
 export const TERRAIN_URL = absoluteUrl(import.meta.env.VITE_PLANNER_DEM_URL || "./tiles/terrain/{z}/{x}/{y}.webp");
 export const GLYPHS_URL = absoluteUrl(import.meta.env.VITE_PLANNER_GLYPHS_URL || "./data/planner/assets/fonts/{fontstack}/{range}.pbf");
 export const SPRITES_URL = absoluteUrl(import.meta.env.VITE_PLANNER_SPRITES_URL || "./data/planner/assets/sprites/v4");

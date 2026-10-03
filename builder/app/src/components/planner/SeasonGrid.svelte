@@ -1,8 +1,10 @@
 <script lang="ts">
-    import { COLUMNS, columnDays, monthColumns, type SeasonGrid } from '../../lib/planner/layers/data-layer';
+    import { columnDay, dateColumn, monthColumns, type Grid } from '../../lib/planner/layers/data-layer';
 
-    let { grid, label, rowHeight = 8, onPick, slider }: {
-        grid: SeasonGrid;
+    let { grid, date, label, rowHeight = 8, onPick, slider }: {
+        grid: Grid;
+        /** The layer date, marked in its column. */
+        date: string;
         label: string;
         rowHeight?: number;
         /** Makes the grid a click and drag target for a column. */
@@ -17,9 +19,11 @@
     const gap = $derived(grid.rows.length > 1 ? Math.min(3, Math.ceil(rowHeight / 3)) : 0);
     const height = $derived(grid.rows.length * (rowHeight + gap) - gap);
     const labelled = $derived(grid.rows.some(row => row.label));
+    const columns = $derived(grid.columns);
+    const marker = $derived(dateColumn(date, columns));
     // Every few rows carry a label, counted from the newest.
     const every = $derived(Math.ceil(14 / (rowHeight + gap)));
-    const monthName = (column: number) => columnDays[column].toLocaleDateString('en-GB', { month: width > 480 ? 'short' : 'narrow', timeZone: 'UTC' });
+    const monthName = (column: number) => columnDay(column, columns).toLocaleDateString('en-GB', { month: width > 480 ? 'short' : 'narrow', timeZone: 'UTC' });
 
     function hatch(context: CanvasRenderingContext2D, color: string, scale: number) {
         const tile = document.createElement('canvas');
@@ -42,12 +46,12 @@
         canvas.width = Math.round(width * scale);
         canvas.height = Math.round(height * scale);
         context.clearRect(0, 0, canvas.width, canvas.height);
-        const fills = grid.swatches.map(swatch => swatch.hatch ? hatch(context, swatch.color, scale) : swatch.color);
-        const x = (column: number) => Math.round(column / COLUMNS * canvas.width);
+        const fills = grid.fills.map(swatch => swatch.hatch ? hatch(context, swatch.color, scale) : swatch.color);
+        const x = (column: number) => Math.round(column / columns * canvas.width);
         grid.rows.forEach((row, r) => {
             const top = Math.round(r * (rowHeight + gap) * scale), bottom = Math.round((r * (rowHeight + gap) + rowHeight) * scale);
-            for (let start = 0, end = 1; start < COLUMNS; start = end++) {
-                while (end < COLUMNS && row.cells[end] === row.cells[start]) end++;
+            for (let start = 0, end = 1; start < columns; start = end++) {
+                while (end < columns && row.cells[end] === row.cells[start]) end++;
                 const fill = fills[row.cells[start]];
                 if (!fill) continue;
                 context.fillStyle = fill;
@@ -59,7 +63,7 @@
     function pick(event: PointerEvent) {
         if (!onPick || (event.type === 'pointermove' && !event.buttons)) return;
         const box = canvas.getBoundingClientRect();
-        onPick(Math.max(0, Math.min(COLUMNS - 1, Math.floor((event.clientX - box.left) / box.width * COLUMNS))));
+        onPick(Math.max(0, Math.min(columns - 1, Math.floor((event.clientX - box.left) / box.width * columns))));
     }
 </script>
 
@@ -75,13 +79,13 @@
         <canvas bind:this={canvas} class:outlined={grid.rows.length === 1} aria-hidden="true" style:height={`${height}px`}
             onpointerdown={(event) => { if (onPick) { canvas.setPointerCapture(event.pointerId); dragging = true; pick(event); } }} onpointermove={pick}
             onpointerup={() => dragging = false} onpointercancel={() => dragging = false}></canvas>
-        <i class={slider ? 'thumb' : 'marker'} style:left={`${(grid.marker + 0.5) / COLUMNS * 100}%`}></i>
+        <i class={slider ? 'thumb' : 'marker'} style:left={`${(marker + 0.5) / columns * 100}%`}></i>
         <ol class="months" aria-hidden="true">
-            {#each monthColumns as column (column)}<li style:left={`${column / COLUMNS * 100}%`}>{monthName(column)}</li>{/each}
+            {#each monthColumns(columns) as column (column)}<li style:left={`${column / columns * 100}%`}>{monthName(column)}</li>{/each}
         </ol>
     {/snippet}
     {#if slider}
-        <div class="plot" role="slider" tabindex="0" aria-label={label} aria-valuemin={0} aria-valuemax={COLUMNS - 1} aria-valuenow={grid.marker}
+        <div class="plot" role="slider" tabindex="0" aria-label={label} aria-valuemin={0} aria-valuemax={columns - 1} aria-valuenow={marker}
             aria-valuetext={slider.valueText} bind:clientWidth={width} onkeydown={slider.onKey}>{@render plot()}</div>
     {:else}
         <div class="plot" role="img" aria-label={label} bind:clientWidth={width}>{@render plot()}</div>

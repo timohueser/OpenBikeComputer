@@ -1,38 +1,59 @@
 <script lang="ts">
+    import Icon from './PlannerIcon.svelte';
+    import LayerLegend from './LayerLegend.svelte';
     import SeasonGrid from './SeasonGrid.svelte';
-    import type { Inspection } from '../../lib/planner/layers/data-layer';
+    import type { Chart } from '../../lib/planner/layers/data-layer';
 
-    let { title, detail = '', inspection, source, note = '' }: { title: string; detail?: string; inspection: Inspection | null; source: string; note?: string } = $props();
+    /** A data layer's years at one point: the strip popover, or with `compact` the map callout. */
+    let { chart, date, title = '', detail = '', source = '', icon = 'pin', error = '', compact = false }: {
+        chart: Chart | null;
+        date: string;
+        title?: string;
+        detail?: string;
+        source?: string;
+        icon?: string;
+        error?: string;
+        compact?: boolean;
+    } = $props();
 </script>
 
-<div class="inspect">
-    <p class="title"><strong>{title}</strong>{#if detail}<span>{detail}</span>{/if}</p>
-    {#if inspection}
-        <p class="headline">{inspection.headline}</p>
-        <SeasonGrid grid={inspection.grid} label={`${inspection.headline}. One row per year, newest at the bottom.`} />
-        <ul class="legend">
-            {#each inspection.grid.swatches.slice(1) as swatch (swatch.label)}<li><span class="swatch" class:hatch={swatch.hatch} style:--swatch={swatch.color}></span>{swatch.label}</li>{/each}
-            <li><span class="line"></span>Your date</li>
-        </ul>
+<section class="inspect" class:compact aria-label="Past years here">
+    {#if compact}
+        <p class="headline"><Icon name={icon} size={15} />{chart?.headline ?? (error || 'Loading past years…')}</p>
     {:else}
-        <p class="headline">Loading the years at this point…</p>
+        <p class="title"><strong>{title}</strong>{#if detail}<span>{detail}</span>{/if}</p>
+        <p class="headline">{chart?.headline ?? (error || 'Loading the years at this point…')}</p>
     {/if}
-    {#if note}<p class="note">{note}</p>{/if}
-    {#if source}<p class="source">{source}</p>{/if}
-</div>
+    {#if chart}
+        {#each chart.grids as grid, g (g)}
+            {#if grid.label}<p class="grid-label">{grid.label}</p>{/if}
+            <SeasonGrid {grid} {date} rowHeight={compact ? 4 : 8} label={`${grid.label || chart.headline}. One row per year, newest at the bottom.`} />
+            {#if !compact && (grid.legend || g === chart.grids.length - 1)}
+                <LayerLegend legend={grid.legend ?? { swatches: [] }} label={`${grid.label || 'Chart'} colours`}>
+                    {#if g === chart.grids.length - 1}<li><span class="line"></span>Your date</li>{/if}
+                </LayerLegend>
+            {/if}
+        {/each}
+        {#if chart.extra}<chart.extra.component {...chart.extra.props} />{/if}
+        {#if chart.note}<p class="note">{chart.note}</p>{/if}
+    {/if}
+    {#if source && !compact}<p class="source">{source}</p>{/if}
+</section>
 
 <style>
     .inspect { width: 340px; max-width: 100%; padding: 12px 14px; font-size: 13px; color: var(--ink); }
+    .compact { width: auto; margin-top: 14px; padding: 12px 0 0; border-top: 1px solid var(--line); font-size: inherit; }
     p { margin: 0; }
     .title { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
     .title strong { font-size: 14px; font-weight: 600; }
-    .title span, .source, .legend { color: var(--ink-soft); font-size: 12px; font-variant-numeric: tabular-nums; }
+    .title span, .source { color: var(--ink-soft); font-size: 12px; font-variant-numeric: tabular-nums; }
     .headline { margin-bottom: 10px; }
-    .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 4px 0 0; padding: 0; list-style: none; }
-    .legend li { display: flex; align-items: center; gap: 6px; }
-    .swatch { width: 14px; height: 8px; border-radius: 2px; background: var(--swatch); }
-    .swatch.hatch { background: repeating-linear-gradient(135deg, transparent 0 2px, var(--swatch) 2px 3.5px); box-shadow: inset 0 0 0 1px var(--swatch); }
+    .compact .headline { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+    .compact .headline :global(svg) { flex: none; color: var(--ink-soft); }
+    .grid-label { margin: 6px 0 4px; font-size: 12px; font-weight: 600; color: var(--ink-soft); }
+    .inspect :global(.legend) { margin-top: 4px; }
     .line { width: 2px; height: 12px; background: var(--ink); }
     .source, .note { margin-top: 8px; }
     .note { font-size: 12px; }
+    .compact .note { margin-top: 4px; color: var(--ink-soft); }
 </style>
