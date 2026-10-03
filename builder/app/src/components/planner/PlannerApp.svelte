@@ -53,7 +53,8 @@
     import { calculateLine, requestAlternatives, selectRoute, type EngineRoute, type RoutingLine } from '../../lib/planner/routing';
     import { LegCache } from '../../lib/planner/route-legs';
     import { DRAWER_CLOSED, DRAWER_MIN, resizeDrawer } from '../../lib/planner/drawer';
-    import { closureNote, closureStretches, type ClosureStretch } from '../../lib/planner/route-closures';
+    import { closureNote, closureStretches, type Stretch } from '../../lib/planner/route-closures';
+    import { alpineNote, alpineStretches } from '../../lib/planner/route-difficulty';
     import { gapNote, routeGaps } from '../../lib/planner/route-gaps';
     const defaultLabels: Record<EditableKind, string> = {
         via: 'Shaping point',
@@ -234,15 +235,18 @@
         multi && !!currentRoute && expandedDay !== null && !searching && list === 'plan' && night < days.length && (!activeDay?.pinned || changingOvernight),
     );
     const closures = $derived(closureStretches(visualRoute));
+    const alpine = $derived(alpineStretches(visualRoute));
     const gaps = $derived(visualRoute ? routeGaps(visualStops, coordinates) : []);
     // A new route makes the shown stretch stale, so the map no longer marks it.
-    let shownClosure = $state.raw<ClosureStretch | null>(null);
-    const closureIndex = $derived(shownClosure ? closures.indexOf(shownClosure) : -1);
-    function showClosure() {
-        shownClosure = closures[closureIndex + 1] ?? null;
-        if (shownClosure) map?.fitCoordinates(shownClosure.coordinates);
+    let shown = $state.raw<Stretch | null>(null);
+    const shownIndex = (stretches: Stretch[]) => shown ? stretches.indexOf(shown) : -1;
+    function showNext(stretches: Stretch[]) {
+        shown = stretches[shownIndex(stretches) + 1] ?? null;
+        if (shown) map?.fitCoordinates(shown.coordinates);
     }
-    const highlighted = $derived(overnightContext && area && !area.blocked ? routeSlice(coordinates, area.from, area.to) : closures[closureIndex]?.coordinates ?? []);
+    const stepLabel = (stretches: Stretch[]) => shownIndex(stretches) < 0 ? 'Show' : shownIndex(stretches) + 1 < stretches.length ? 'Next' : 'Hide';
+    const highlighted = $derived(overnightContext && area && !area.blocked ? routeSlice(coordinates, area.from, area.to)
+        : shown && (shownIndex(closures) >= 0 || shownIndex(alpine) >= 0) ? shown.coordinates : []);
     const candidates = $derived(multi ? overnightCandidates(visualTrip, night, overnightPlaces) : []);
     // One stretch per leg and day, so the map can tell legs apart and colour days.
     const segments = $derived.by(() => {
@@ -911,7 +915,10 @@
                     <p class="closure-note"><Icon name="pin" size={15} /><span>{gapNote(gaps)}</span></p>
                 {/if}
                 {#if !focusedDay && closures.length}
-                    <p class="closure-note"><Icon name="calendar" size={15} /><span>{closureNote(closures)}</span><button type="button" class="planner-action quiet" onclick={showClosure}>{closureIndex < 0 ? 'Show' : closureIndex + 1 < closures.length ? 'Next' : 'Hide'}</button></p>
+                    <p class="closure-note"><Icon name="calendar" size={15} /><span>{closureNote(closures)}</span><button type="button" class="planner-action quiet" onclick={() => showNext(closures)}>{stepLabel(closures)}</button></p>
+                {/if}
+                {#if !focusedDay && alpine.length}
+                    <p class="closure-note"><Icon name="mountain" size={15} /><span>{alpineNote(alpine)}</span><button type="button" class="planner-action quiet" onclick={() => showNext(alpine)}>{stepLabel(alpine)}</button></p>
                 {/if}
                 {#if !focusedDay && visualRoute && snowOn}
                     <div class="layer-summary">

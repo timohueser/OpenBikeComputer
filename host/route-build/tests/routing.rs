@@ -1050,7 +1050,7 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
             class: 1,
             access: BIKE | FOOT | PUSH,
             difficulty: 0,
-            hiking_difficulty: None,
+            hiking_difficulty: (from.min(to) == 1).then_some(2),
             uncertain_access: false,
             structure: false,
             shape: vec![points[from as usize], points[to as usize]],
@@ -1086,6 +1086,8 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
     let route = router.route(&request, &Control::default()).unwrap();
     let walking = Some(vec![permit, closure(Kind::Conditional, "wet")]);
     assert_eq!(route.closures, vec![None, walking.clone(), None]);
+    // The SAC grade travels with the road geometry, like the surface.
+    assert_eq!(route.sac_scale, vec![None, Some(2), None]);
     // An extraction renumbers its roads and keeps their closures.
     let (source, bytes) = package(&graph);
     let mut objects = HashMap::new();

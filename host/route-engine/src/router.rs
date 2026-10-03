@@ -68,6 +68,8 @@ pub struct Route {
     pub pushing: Vec<bool>,
     /// The possible closures of each geometry edge, for the mode used on it.
     pub closures: Vec<Option<Vec<crate::closures::Closure>>>,
+    /// The SAC hiking grade of each geometry edge, 1 (T1) to 6 (T6), where the source has one.
+    pub sac_scale: Vec<Option<u8>>,
     /// Cumulative moving seconds at each geometry vertex.
     pub elapsed: Vec<f64>,
     pub legs: Vec<Leg>,
@@ -349,6 +351,7 @@ impl<P: RoutingData> Router<P> {
             surfaces: Vec::new(),
             pushing: Vec::new(),
             closures: Vec::new(),
+            sac_scale: Vec::new(),
             elapsed: Vec::new(),
             legs: Vec::new(),
             attachments,
@@ -395,6 +398,7 @@ impl<P: RoutingData> Router<P> {
                         route.surfaces.push(road.surface);
                         route.pushing.push(mode == PUSH);
                         route.closures.push(closure.clone());
+                        route.sac_scale.push(road.hiking_difficulty);
                     }
                     route.geometry.push(coordinate);
                     route.elapsed.push(seconds);

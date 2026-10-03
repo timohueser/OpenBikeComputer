@@ -39,6 +39,7 @@ with an empty answer. Each route has these fields:
 | `surfaces` | Runs of `[surface, edge count]` |
 | `pushing` | Runs of `[pushing, edge count]` |
 | `closures` | Runs of `[closures, edge count]` |
+| `sac_scale` | Runs of `[grade, edge count]` |
 | `legs` | `{"from_index", "to_index", "start", "end", "totals"}` for each pair of request points |
 | `snap_truncated` | `true` when the service dropped road candidates for a request point |
 | `totals` | `distance_m`, `ascent_m`, `seconds`, `surface_m`, `unknown_elevation_m` and `pushing_m`, all integers |
@@ -62,9 +63,11 @@ difference. Thus rounding errors do not add up along the route.
 
 An edge joins point `i` and point `i + 1`. A route with `n` points has `n - 1`
 edges. Each run gives one value and the number of consecutive edges with that
-value. The run lengths of `surfaces`, `pushing` and `closures` each add up to `n - 1`.
+value. The run lengths of `surfaces`, `pushing`, `closures` and `sac_scale` each add up to `n - 1`.
 Surfaces are `Unknown`, `Paved`, `Compacted`, `Gravel`, `Dirt` and `Rough`.
 `pushing` is `true` where the rider must push the bicycle.
+A `sac_scale` grade is the OSM `sac_scale` of the edge as an integer from `1`
+(`hiking`, T1) to `6` (`difficult_alpine_hiking`, T6), or `null` when the way has none.
 A `closures` value is `null` or a list of possible closures on the edge, each
 `{"kind", "condition"}`. The router blocks a mode only where the rider surely
 has no access. It uses an edge that is possibly closed for the mode that the

@@ -32,6 +32,7 @@ fn route(route: &Route) -> Value {
         "surfaces": runs(&route.surfaces),
         "pushing": runs(&route.pushing),
         "closures": runs(&route.closures),
+        "sac_scale": runs(&route.sac_scale),
         "legs": route.legs.iter().zip(&route.attachments[1..]).map(|(leg, end)| json!({
             "from_index": leg.from_index,
             "to_index": leg.to_index,
@@ -123,6 +124,7 @@ mod tests {
             surfaces: serde_json::from_value(source["surfaces"].clone()).unwrap(),
             pushing: serde_json::from_value(source["pushing"].clone()).unwrap(),
             closures: serde_json::from_value(source["closures"].clone()).unwrap(),
+            sac_scale: serde_json::from_value(source["sac_scale"].clone()).unwrap(),
             elapsed: serde_json::from_value(source["elapsed"].clone()).unwrap(),
             legs,
             attachments,

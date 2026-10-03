@@ -63,6 +63,7 @@ function route(points, profile, id) {
     surfaces: [['Paved', edges]],
     pushing: [[false, edges]],
     closures: [[null, edges]],
+    sac_scale: [[null, edges]],
     totals: totals(distance[edges]),
     legs,
     snap_truncated: false,

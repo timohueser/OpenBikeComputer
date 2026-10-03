@@ -13,7 +13,7 @@ describe('possible closures', () => {
         const [route] = decodeRoutes({ routes: [{
             id: 'r', reason: 'primary', package: 'p', profile: 'touring', snap_truncated: false, legs: [],
             coordinates_udeg: [0, 0, ...Array(5).fill([10_000, 0]).flat()], elevation_dm: Array(6).fill(null), elapsed_s: Array(6).fill(0),
-            surfaces: [['Paved', 5]], pushing: [[false, 5]],
+            surfaces: [['Paved', 5]], pushing: [[false, 5]], sac_scale: [[null, 5]],
             closures: [[null, 1], [[permit, closure('seasonal', 'Oct 14th - May 31st')], 1], [[permit, closure('seasonal', 'oct 14-may 31')], 2], [null, 1]],
             totals: { distance_m: 0, ascent_m: 0, seconds: 0, surface_m: [0, 0, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 },
         }] });
