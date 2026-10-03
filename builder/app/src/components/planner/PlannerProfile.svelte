@@ -82,7 +82,7 @@
     const hoverHeight = $derived(hover === null ? null : profileHeightAt(hover, samples));
     const hoverIndex = $derived(hover === null ? -1 : Math.max(0, sampleIndex(samples, hover) - 1));
     const hoverGrade = $derived(grades[hoverIndex] ?? null);
-    const hoverPushing = $derived(lineData?.pushing?.[hoverIndex]);
+    const hoverPushing = $derived(lineData?.edges.pushing?.[hoverIndex]);
     let plot = $state<HTMLDivElement>();
     let drag = $state<{ night: number; progress: number; moved: boolean } | null>(null);
     let range = $state<'map' | 'route'>('map');

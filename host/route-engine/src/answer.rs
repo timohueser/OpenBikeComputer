@@ -3,7 +3,25 @@ use crate::{
     model::Totals,
     router::{Response, Route},
 };
+use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
+
+/// The facts of each geometry edge: named channels, each in the run encoding of `specs/route-api.md`.
+/// A route pushes every channel once per edge.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Edges(BTreeMap<&'static str, Vec<(Value, usize)>>);
+
+impl Edges {
+    pub fn push(&mut self, channel: &'static str, value: impl Serialize) {
+        let value = json!(value);
+        let runs = self.0.entry(channel).or_default();
+        match runs.last_mut() {
+            Some((last, length)) if *last == value => *length += 1,
+            _ => runs.push((value, 1)),
+        }
+    }
+}
 
 pub fn answer(response: &Response) -> Value {
     json!({ "routes": response.routes.iter().map(route).collect::<Vec<_>>() })
@@ -29,10 +47,7 @@ fn route(route: &Route) -> Value {
         "coordinates_udeg": coordinates,
         "elevation_dm": elevation,
         "elapsed_s": elapsed,
-        "surfaces": runs(&route.surfaces),
-        "pushing": runs(&route.pushing),
-        "closures": runs(&route.closures),
-        "sac_scale": runs(&route.sac_scale),
+        "edges": route.edges,
         "legs": route.legs.iter().zip(&route.attachments[1..]).map(|(leg, end)| json!({
             "from_index": leg.from_index,
             "to_index": leg.to_index,
@@ -62,17 +77,6 @@ fn delta(previous: &mut i64, value: f64, scale: f64) -> i64 {
     let delta = current - *previous;
     *previous = current;
     delta
-}
-
-fn runs<T: PartialEq>(values: &[T]) -> Vec<(&T, usize)> {
-    let mut runs: Vec<(&T, usize)> = Vec::new();
-    for value in values {
-        match runs.last_mut() {
-            Some((last, length)) if *last == value => *length += 1,
-            _ => runs.push((value, 1)),
-        }
-    }
-    runs
 }
 
 #[cfg(test)]
@@ -113,6 +117,12 @@ mod tests {
             .chain(source_legs.iter().map(|leg| attachment(&leg["end"])))
             .collect();
         assert_eq!(source["reason"], "primary");
+        let mut edges = Edges::default();
+        for index in 0..source["geometry"].as_array().unwrap().len() - 1 {
+            for (channel, values) in source["edges"].as_object().unwrap() {
+                edges.push(channel.clone().leak(), &values[index]);
+            }
+        }
         let route = Route {
             id: serde_json::from_value(source["id"].clone()).unwrap(),
             reason: "primary",
@@ -121,10 +131,7 @@ mod tests {
             cost: 0,
             geometry: serde_json::from_value(source["geometry"].clone()).unwrap(),
             elevation: serde_json::from_value(source["elevation"].clone()).unwrap(),
-            surfaces: serde_json::from_value(source["surfaces"].clone()).unwrap(),
-            pushing: serde_json::from_value(source["pushing"].clone()).unwrap(),
-            closures: serde_json::from_value(source["closures"].clone()).unwrap(),
-            sac_scale: serde_json::from_value(source["sac_scale"].clone()).unwrap(),
+            edges,
             elapsed: serde_json::from_value(source["elapsed"].clone()).unwrap(),
             legs,
             attachments,

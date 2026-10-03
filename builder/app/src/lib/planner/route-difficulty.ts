@@ -5,8 +5,8 @@ import type { RoutingLine } from './routing';
 const ALPINE = 4;
 
 /** The stretches of the line on alpine paths. */
-export function alpineStretches(line?: Pick<RoutingLine, 'coordinates' | 'sacScale'>): Stretch[] {
-    return line ? edgeStretches(line.coordinates, line.sacScale, grade => (grade ?? 0) >= ALPINE) : [];
+export function alpineStretches(line?: Pick<RoutingLine, 'coordinates' | 'edges'>): Stretch[] {
+    return line ? edgeStretches(line.coordinates, line.edges.sac_scale, grade => (grade ?? 0) >= ALPINE) : [];
 }
 
 /** One quiet line, such as "2.1 km alpine path (T4): exposed, sure-footed hikers only". */

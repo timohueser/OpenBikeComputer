@@ -6,7 +6,7 @@ const points = [{ coordinate: [8, 48] as [number, number], label: 'A' }, { coord
 const totals = { distance_m: 7000, ascent_m: 0, seconds: 10, surface_m: [0, 7000, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 };
 const route: AnswerRoute = {
     id: 'route', reason: 'primary', package: 'test', profile: 'gravel/less-climbing', coordinates_udeg: [8_001_000, 48_000_000, 99_000, 0],
-    elevation_dm: [0, 0], elapsed_s: [0, 10], surfaces: [['Paved', 1]], pushing: [[false, 1]], closures: [[null, 1]], sac_scale: [[null, 1]], legs: [{ from_index: 0, to_index: 1, start: 'a', end: 'b', totals }], snap_truncated: true, totals,
+    elevation_dm: [0, 0], elapsed_s: [0, 10], legs: [{ from_index: 0, to_index: 1, start: 'a', end: 'b', totals }], snap_truncated: true, totals,
 };
 const answer = (routes: AnswerRoute[]) => vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes }) }));
 afterEach(() => vi.unstubAllGlobals());
