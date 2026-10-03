@@ -21,7 +21,7 @@ const notFound = () => new Response('Tile not found', { status: 404, headers: { 
 
 // Zooms and tile format come from each archive's header; PMTiles tile IDs end at zoom 26.
 export function tileRoute(path) {
-  const match = /^\/releases\/([a-f0-9]{64})\/(basemap|places|overlays|terrain|snow)(?:\.json|\/(0|[1-9]\d?)\/(0|[1-9]\d*)\/(0|[1-9]\d*)(\.mvt|\.webp)?)$/.exec(path);
+  const match = /^\/releases\/([a-f0-9]{64})\/(basemap|places|overlays|terrain|snow|climate)(?:\.json|\/(0|[1-9]\d?)\/(0|[1-9]\d*)\/(0|[1-9]\d*)(\.mvt|\.webp)?)$/.exec(path);
   if (!match) return null;
   const [, release, name, z, x, y, ext] = match;
   if (z !== undefined && (Number(z) > 26 || Number(x) >= 2 ** Number(z) || Number(y) >= 2 ** Number(z))) return null;

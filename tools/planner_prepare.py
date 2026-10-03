@@ -48,6 +48,24 @@ def add_map(folder, name):
     (folder / "manifest.json").write_bytes(releases.encoded(manifest))
 
 
+def add_layers(data, config):
+    """Bake each data layer that the recipe asks for and that the maps folder does not have yet.
+
+    A layer touches only its own archive and its manifest entry. Its recipe fields are the options of
+    its bake tool and keys of its archive metadata.
+    """
+    for layer in releases.DATA_LAYERS:
+        if layer not in config or f"{layer}.pmtiles" in json.loads((data / "maps/manifest.json").read_bytes())["files"]:
+            continue
+        archive = data / "maps" / f"{layer}.pmtiles"
+        # A bake with the same recipe fields survives an interrupted run.
+        if not archive.exists() or any(releases.archive_metadata(archive).get(key) != value for key, value in config[layer].items()):
+            options = [item for key, value in config[layer].items() for item in (f"--{key.replace('_', '-')}", str(value))]
+            maps.run("uv", "run", "--with-requirements", maps.ROOT / f"tools/requirements-planner-{layer}.txt", "python", "-m", f"tools.planner_{layer}",
+                     config["region"], "--bounds", ",".join(map(str, config["bounds"])), *options, "--output", archive, cwd=maps.ROOT)
+        add_map(data / "maps", f"{layer}.pmtiles")
+
+
 def runtime_routing(routing):
     """Keep compiled routing and overlays; omit their source OSM tables."""
     manifest = json.loads((routing / "manifest.json").read_bytes())
@@ -182,13 +200,7 @@ def prepare(args):
         # A routing selection reuses the maps; only the overlay tiles follow the new routing package.
         maps.overlays_archive(routing / "overlays.sqlite", data / "maps/overlays.pmtiles")
         add_map(data / "maps", "overlays.pmtiles")
-    if "snow" in config and "snow.pmtiles" not in json.loads((data / "maps/manifest.json").read_bytes())["files"]:
-        snow = data / "maps/snow.pmtiles"
-        # A bake of the same source survives an interrupted run.
-        if not snow.exists() or releases.archive_metadata(snow).get("source") != config["snow"]["source"]:
-            maps.run("uv", "run", "--with-requirements", maps.ROOT / "tools/requirements-planner-snow.txt", "python", "-m", "tools.planner_snow",
-                     config["region"], "--bounds", ",".join(map(str, bounds)), "--source", config["snow"]["source"], "--output", snow, cwd=maps.ROOT)
-        add_map(data / "maps", "snow.pmtiles")
+    add_layers(data, config)
     if not database.exists():
         with tempfile.TemporaryDirectory(prefix=".search-", dir=data) as directory:
             maps.run(maps.ROOT / "apps/planner-search/.venv/bin/python", maps.ROOT / "apps/planner-search/build.py",
