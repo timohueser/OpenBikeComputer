@@ -61,20 +61,100 @@ export function snowClass(p: Planar, i: number, index: number): number {
     return shareClass(...snowSeasons(p, i, index));
 }
 
+// The four pixels around a point and their bilinear weights.
+const near = new Int32Array(4), weight = new Float64Array(4);
+
+/**
+ * Snow in season `s` on day `index` by the spec's blend rule over the four pixels in `near`: 1 snow,
+ * 0 clear, -1 no data. Days blend only between dated pixels, so a sentinel never mixes with a date.
+ */
+function blendSeason(p: Planar, s: number, index: number): number {
+    const base = 2 * s * p.size;
+    let dated = 0, full = 0, none = 0, missing = 0, onset = 0, melt = 0;
+    for (let k = 0; k < 4; k++) {
+        const w = weight[k], value = p.data[base + near[k]];
+        if (value < NO_SNOW) {
+            dated += w;
+            onset += w * value;
+            melt += w * p.data[base + p.size + near[k]];
+        } else if (value === WHOLE_SEASON) full += w;
+        else if (value === NO_SNOW) none += w;
+        else missing += w;
+    }
+    if (missing > 0.5) return -1;
+    return (dated >= full && dated >= none ? onset <= index * dated && index * dated <= melt : full >= none) ? 1 : 0;
+}
+
+/**
+ * The four pixels in `near` have the same snow state in season `s` on day `index`, so every blend
+ * between them has it too: a blended day is a weighted mean, so it stays on the same side of `index`.
+ */
+function steady(p: Planar, s: number, index: number): boolean {
+    const base = 2 * s * p.size, first = p.data[base + near[0]];
+    const dated = first < NO_SNOW, after = first > index, before = p.data[base + p.size + near[0]] < index;
+    for (let k = 1; k < 4; k++) {
+        const onset = p.data[base + near[k]];
+        if (dated ? onset >= NO_SNOW || onset > index !== after || p.data[base + p.size + near[k]] < index !== before : onset !== first) return false;
+    }
+    return true;
+}
+
 /**
  * Writes the classes of a 256 px tile for day `index` as `palette` words; a missing tile is no data.
- * Above the archive zoom, the tile is the (`x`, `y`) part of `scale` × `scale` parts of `p`.
+ * Above the data zoom, the tile is the (`x`, `y`) part of `scale` × `scale` parts of `p`, and each
+ * screen pixel blends the day values of the four nearest data pixels, so class borders are smooth.
  */
 export function paintTile(words: Uint32Array, p: Planar | undefined, index: number, scale: number, x: number, y: number, palette: Uint32Array) {
-    const span = 256 / scale, left = x * span, top = y * span;
-    for (let sy = 0; sy < span; sy++) {
-        for (let sx = 0; sx < span; sx++) {
-            const value = p ? snowClass(p, (top + sy) * 256 + left + sx, index) : UNKNOWN;
-            if (!value) continue;
-            for (let py = sy * scale; py < (sy + 1) * scale; py++) {
-                for (let px = sx * scale; px < (sx + 1) * scale; px++) {
-                    // Diagonal lines every 8 px line up across tile edges.
-                    if (value !== UNKNOWN || ((px + py) & 7) < 2) words[py * 256 + px] = palette[value];
+    const draw = (px: number, py: number, value: number) => {
+        // Diagonal lines every 8 px line up across tile edges.
+        if (value && (value !== UNKNOWN || ((px + py) & 7) < 2)) words[py * 256 + px] = palette[value];
+    };
+    if (!p || scale === 1) {
+        for (let i = 0; i < 256 * 256; i++) draw(i & 255, i >> 8, p ? snowClass(p, i, index) : UNKNOWN);
+        return;
+    }
+    // Runs of screen rows or columns whose centres lie between the same two data pixels; the tile edge repeats its pixels.
+    const runs = (start: number) => {
+        const list: { from: number; to: number; low: number; high: number }[] = [], part = new Float64Array(256);
+        for (let s = 0; s < 256; s++) {
+            const at = Math.min(255, Math.max(0, start + (s + 0.5) / scale - 0.5)), low = Math.floor(at), last = list.at(-1);
+            part[s] = at - low;
+            if (last?.low === low) last.to = s + 1;
+            else list.push({ from: s, to: s + 1, low, high: Math.min(255, low + 1) });
+        }
+        return { list, part };
+    };
+    const columns = runs(x * 256 / scale), rows = runs(y * 256 / scale);
+    const crossing = new Int32Array(p.seasons);
+    for (const row of rows.list) {
+        for (const column of columns.list) {
+            near[0] = row.low * 256 + column.low; near[1] = row.low * 256 + column.high;
+            near[2] = row.high * 256 + column.low; near[3] = row.high * 256 + column.high;
+            // A steady season counts once for the whole cell; only the others blend at each screen pixel.
+            let snow = 0, known = 0, count = 0;
+            for (let s = 0; s < p.seasons; s++) {
+                if (!steady(p, s, index)) crossing[count++] = s;
+                else {
+                    const onset = p.data[2 * s * p.size + near[0]], melt = p.data[(2 * s + 1) * p.size + near[0]];
+                    if (onset !== NO_DATA) {
+                        known++;
+                        if (onset === WHOLE_SEASON || (onset <= index && index <= melt)) snow++;
+                    }
+                }
+            }
+            for (let py = row.from; py < row.to; py++) {
+                const fr = rows.part[py];
+                for (let px = column.from; px < column.to; px++) {
+                    let pixelSnow = snow, pixelKnown = known;
+                    if (count) {
+                        const fc = columns.part[px];
+                        weight[0] = (1 - fr) * (1 - fc); weight[1] = (1 - fr) * fc; weight[2] = fr * (1 - fc); weight[3] = fr * fc;
+                        for (let c = 0; c < count; c++) {
+                            const state = blendSeason(p, crossing[c], index);
+                            if (state >= 0) { pixelKnown++; pixelSnow += state; }
+                        }
+                    }
+                    draw(px, py, shareClass(pixelSnow, pixelKnown));
                 }
             }
         }

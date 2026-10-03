@@ -11,7 +11,7 @@ const TILE = 256;
 const PIXELS = TILE * TILE;
 // Decoded tiles stay cached, so a date change only recolours them.
 const CACHE_BYTES = 128 * 2 ** 20;
-// Beyond the archive's zoom, tiles enlarge their ancestor's pixels, so the no-data hatch stays fine.
+// Beyond the archive's zoom, tiles blend their ancestor's pixels, so class borders stay smooth and the no-data hatch stays fine.
 const MAX_ZOOM = 14;
 
 interface Archive {

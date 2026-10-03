@@ -7,7 +7,7 @@ copy. It ends in June 2025. The bake reads only the region window of each daily 
 raw files. Seasons after June 2025 are not supported yet.
 
 `--source copernicus-hr-wsi` reads the HR-WSI Snow Phenology S2 yearly rasters (20 m) instead. It
-reads the region window of each file from the Copernicus Data Space S3 endpoint
+reads the window of one zoom-9 tile at a time from each file on the Copernicus Data Space S3 endpoint
 `https://eodata.dataspace.copernicus.eu`, with `CDSE_S3_ACCESS_KEY` and `CDSE_S3_SECRET_KEY` in
 `~/.config/openbikecomputer/cdse-s3.env`.
 """
@@ -62,6 +62,8 @@ SINUSOIDAL = "+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +R=6371007.181 +units=m +no_defs
 MODIS_TILE_M, MODIS_PIXELS = 1111950.5197665233, 2400
 MODIS_X0, MODIS_Y0 = -20015109.355798, 10007554.677899
 MODIS_SNOW_NDSI = 10
+# The bake reads the source one tile of this zoom at a time, so memory stays small for a large region.
+CHUNK_ZOOM = 9
 
 Grid = namedtuple("Grid", "crs transform shape")
 
@@ -283,14 +285,18 @@ def trails(bounds):
     return lon[inside], lat[inside], metres[inside]
 
 
-def bake(planes, grid, first_season, source, bounds, output, trail_segments=None):
-    """Write the archive; return the tile count and, with trail segments, the share of trail length on no data."""
+def bake(source, first_season, seasons, name, bounds, output, trail_segments=None):
+    """Write the archive; return the tile count and, with trail segments, the share of trail length on no data.
+
+    `source(bounds)` gives the season planes and their grid around the bounds of one chunk tile.
+    """
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import Writer
 
-    top, seasons = max_zoom(SOURCES[source]["resolution_m"], bounds), planes.shape[0]
+    top = max_zoom(SOURCES[name]["resolution_m"], bounds)
+    chunk = min(CHUNK_ZOOM, top)
     west, south, east, north = bounds
-    tiles, masked = {}, 0.0
+    tiles, masked, planes, grid = {}, 0.0, None, None
     if trail_segments is not None:
         lon, lat, metres = trail_segments
         n = 2 ** top * TILE
@@ -298,16 +304,18 @@ def bake(planes, grid, first_season, source, bounds, output, trail_segments=None
         py = ((1 - np.log(np.tan(np.radians(lat)) + 1 / np.cos(np.radians(lat))) / np.pi) / 2 * n).astype(np.int64)
 
     def build(z, x, y):
-        nonlocal masked
+        nonlocal masked, planes, grid
         w, s, e, n_ = tile_bounds(z, x, y)
         if w >= east or e <= west or s >= north or n_ <= south:
             return None
+        if z == chunk:
+            planes, grid = source((max(w, west), max(s, south), min(e, east), min(n_, north)))
         if z == top:
             body = sample(planes, grid, z, x, y)
             lon_c, lat_c = tile_lonlat(z, x, y)
             outside = ((lon_c < west) | (lon_c > east) | (lat_c < south) | (lat_c > north)).reshape(TILE, TILE)
             body[:, :, outside] = NO_DATA
-            if SOURCES[source]["canopy"]:
+            if SOURCES[name]["canopy"]:
                 body[:, :, canopy_cover(z, x, y) > DENSE_CANOPY_PERCENT] = NO_DATA
             if trail_segments is not None:
                 here = (px // TILE == x) & (py // TILE == y)
@@ -315,7 +323,9 @@ def bake(planes, grid, first_season, source, bounds, output, trail_segments=None
                 masked += metres[here][missing[py[here] % TILE, px[here] % TILE]].sum()
         else:
             children = {(dx, dy): build(z + 1, 2 * x + dx, 2 * y + dy) for dx in (0, 1) for dy in (0, 1)}
-            body = parent(children, seasons, SOURCES[source]["smooth"])
+            body = parent(children, seasons, SOURCES[name]["smooth"])
+        if z == chunk:
+            planes = grid = None
         if (body != NO_DATA).any():
             tiles[zxy_to_tileid(z, x, y)] = gzip.compress(body.tobytes(), mtime=0)
         return body
@@ -328,13 +338,13 @@ def bake(planes, grid, first_season, source, bounds, output, trail_segments=None
             writer = Writer(stream)
             for tile_id in sorted(tiles):
                 writer.write_tile(tile_id, tiles[tile_id])
-            meta = SOURCES[source]
+            meta = SOURCES[name]
             writer.finalize({
                 "tile_type": TileType.UNKNOWN, "tile_compression": Compression.GZIP,
                 "min_lon_e7": e7(west), "min_lat_e7": e7(south), "max_lon_e7": e7(east), "max_lat_e7": e7(north),
                 "center_zoom": top, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2),
             }, {
-                "first_season": first_season, "seasons": seasons, "step_days": 2, "source": source,
+                "first_season": first_season, "seasons": seasons, "step_days": 2, "source": name,
                 "resolution_m": meta["resolution_m"], "attribution": meta["attribution"],
             })
             stream.flush()
@@ -470,10 +480,10 @@ def cdse_credentials():
                       AWS_REGION="default", GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR")
 
 
-def copernicus_planes(files, bounds):
-    """Season planes on a 20 m LAEA grid from Snow Phenology S2 rasters {season: {layer: [path]}}.
+def copernicus_planes(files, bounds, seasons):
+    """Season planes on a 20 m LAEA grid around the bounds from Snow Phenology S2 rasters {season: {layer: [path]}}.
 
-    The seasons run from the first to the last season in `files`; a season without files is no data.
+    A season of the range `seasons` without files is no data.
     """
     import rasterio
     from affine import Affine
@@ -486,7 +496,7 @@ def copernicus_planes(files, bounds):
                 (math.ceil((top - bottom) / 20) + 1, math.ceil((right - left) / 20) + 1))
     extent = (left, top - 20 * grid.shape[0], left + 20 * grid.shape[1], top)
     planes = []
-    for season in range(min(files), max(files) + 1):
+    for season in seasons:
         layers = {}
         for name in ("SCO", "SCM", "SCD"):
             # 65535 is no data and 420 inland water.
@@ -503,9 +513,9 @@ def copernicus_planes(files, bounds):
         data = (duration <= 366) & ((duration == 0) | (onset <= 366) & (meltout <= 366))
         length = np.where(duration == 0, 0, meltout - onset + 1)
         planes.append(encode(onset, length, season_start(season, season + 1), data))
-        print(f"Season {season}/{(season + 1) % 100:02d}: {sum(map(len, files.get(season, {}).values()))} files",
-              file=sys.stderr, flush=True)
-    return min(files), np.stack(planes), grid
+    print(f"Read {sum(len(paths) for layers in files.values() for paths in layers.values())} files for {grid.shape} pixels",
+          file=sys.stderr, flush=True)
+    return np.stack(planes), grid
 
 
 def main():
@@ -523,13 +533,15 @@ def main():
     start = time.monotonic()
     if args.source == "copernicus-hr-wsi":
         cdse_credentials()
-        first_season, planes, grid = copernicus_planes(copernicus_files(bounds), bounds)
+        seasons = range(min(files := copernicus_files(bounds)), max(files) + 1)
+        source = lambda chunk: copernicus_planes(copernicus_files(chunk), chunk, seasons)
     else:
-        first_season, (planes, grid) = args.first_season, nasa_planes(bounds, args.first_season, args.last_season)
-    read = time.monotonic() - start
-    count, share = bake(planes, grid, first_season, args.source, bounds, output, trails(bounds) if args.trails else None)
-    report = {"output": str(output), "bytes": output.stat().st_size, "tiles": count, "seasons": planes.shape[0],
-              "read_s": round(read), "total_s": round(time.monotonic() - start)}
+        planes, grid = nasa_planes(bounds, args.first_season, args.last_season)
+        seasons = range(args.first_season, args.first_season + planes.shape[0])
+        source = lambda chunk: (planes, grid)
+    count, share = bake(source, seasons.start, len(seasons), args.source, bounds, output, trails(bounds) if args.trails else None)
+    report = {"output": str(output), "bytes": output.stat().st_size, "tiles": count, "seasons": len(seasons),
+              "total_s": round(time.monotonic() - start)}
     if share is not None:
         report["no_data_trail_share"] = round(share, 3)
     print(json.dumps(report))
