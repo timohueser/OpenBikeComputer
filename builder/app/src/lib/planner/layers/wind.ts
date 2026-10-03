@@ -2,7 +2,7 @@
 // chance along a route and the years at a point. Everywhere, a direction is where the wind blows towards.
 import type { ExpressionSpecification } from 'maplibre-gl';
 import type { FeatureCollection, Point, Polygon } from 'geojson';
-import { OVERVIEW, WEEKS, YEARS, cellAt, cellCentre, cellOf, locate, read, tileCells, weekMonth, windChance, windMode, windRose, type ClimateTile } from './climate';
+import { OVERVIEW, SECTORS, WEEKS, YEARS, cellAt, cellCentre, cellOf, locate, read, tileCells, weekMonth, windChance, windMode, windRose, type ClimateTile } from './climate';
 import type { CellRef } from './climate-source';
 import { dateLabel, weekOf, type Chart, type Grid, type Legend, type Swatch, type Theme } from './data-layer';
 
@@ -74,6 +74,16 @@ export function arrowIcon({ steadiness, opposite }: { steadiness: number; opposi
     return `wind-${opposite === undefined ? 'arrow' : 'double'}-${STEADY.filter(edge => steadiness >= edge).length}`;
 }
 
+/**
+ * The rotation of an arrow in degrees: the main direction, or for two opposite winds the mean axis of
+ * both, so a double arrow is one straight line between the two directions.
+ */
+export function arrowAxis({ towards, opposite }: { towards: number; opposite?: number }): number {
+    if (opposite === undefined) return 22.5 * towards;
+    const offset = ((opposite - towards) % SECTORS + SECTORS) % SECTORS - SECTORS / 2;
+    return (22.5 * (towards + offset / 2) + 360) % 360;
+}
+
 /** The arrow key of the map legend, drawn in a 24 px box. */
 const ARROW_MARKS = [
     { label: 'Most often blows towards', path: 'M4 12h15m-4-4 4 4-4 4', width: 1.5 },
@@ -111,7 +121,7 @@ export function windMap(tiles: ClimateTile[], week: number, month: number, strid
             if (speed >= PAINT_FROM) cells.push({ type: 'Feature', properties: { speed }, geometry: { type: 'Polygon', coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]] } });
             if (cell.col % stride || cell.row % stride) continue;
             const mode = windMode(windRose(tile, index, month));
-            if (mode) arrows.push({ type: 'Feature', properties: { icon: arrowIcon(mode), rotate: 22.5 * mode.towards }, geometry: { type: 'Point', coordinates: cellCentre(cell) } });
+            if (mode) arrows.push({ type: 'Feature', properties: { icon: arrowIcon(mode), rotate: arrowAxis(mode) }, geometry: { type: 'Point', coordinates: cellCentre(cell) } });
         }
     }
     return { cells: { type: 'FeatureCollection', features: cells }, arrows: { type: 'FeatureCollection', features: arrows } };

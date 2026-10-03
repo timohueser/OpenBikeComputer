@@ -18,7 +18,7 @@ const RATIO = 2, SIZE = 28;
 
 /**
  * A slim north-pointing arrow, white on a thin dark halo: the shaft tapers from a swept head to the
- * tail, or to the middle of a double arrow. `weight` 0–2 widens it.
+ * tail. A double arrow is one straight shaft with a head at each end. `weight` 0–2 widens it.
  */
 function arrowImage(icon: string, theme: Theme): ImageData {
     const [, kind, weight] = icon.split('-'), w = Number(weight);
@@ -30,7 +30,7 @@ function arrowImage(icon: string, theme: Theme): ImageData {
     const mid = SIZE / 2, top = 2.5, bottom = SIZE - 2.5, half = 3.4 + 0.8 * w, head = 7 + 0.5 * w, neck = 0.9 + 0.5 * w, tail = 0.35 + 0.25 * w;
     // The right half from the top tip down; the left half mirrors it.
     const right: [number, number][] = kind === 'double'
-        ? [[half, top + head], [neck, top + head - 1.5], [tail, mid], [neck, bottom - head + 1.5], [half, bottom - head], [0, bottom]]
+        ? [[half, top + head], [neck, top + head - 1.5], [neck, bottom - head + 1.5], [half, bottom - head], [0, bottom]]
         : [[half, top + head], [neck, top + head - 1.5], [tail, bottom]];
     const shape = new Path2D();
     shape.moveTo(mid, top);
