@@ -26,13 +26,16 @@
     import MapOverlayDetails from './MapOverlayDetails.svelte';
 
     let {
-        segments = [], coordinates = [], highlightedCoordinates = [], points = [], selectedId = null, hoveredId = null, callout = null,
+        segments = [], gaps = [], coordinates = [], highlightedCoordinates = [], points = [], selectedId = null, hoveredId = null, callout = null,
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         shownCategories = categoryIds, highlightedPlaces = [], landmarks = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
         onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
-        segments?: MapSegment[]; coordinates?: Coordinate[]; highlightedCoordinates?: Coordinate[]; points?: MapPoint[];
+        segments?: MapSegment[];
+        /** Dashed connectors from the route to points that it does not reach. */
+        gaps?: Coordinate[][];
+        coordinates?: Coordinate[]; highlightedCoordinates?: Coordinate[]; points?: MapPoint[];
         selectedId?: string | null; callout?: Coordinate | null; drawing?: string | null; highlightedPlaceIds?: string[];
         hoveredId?: string | null;
         /** While picking, any map click places the overnight; the line takes no edits. */
@@ -204,7 +207,8 @@
     }
 
     function tripData() {
-        return lineData(segments.map(({ coordinates, color, legEndId, leg }) => lineFeature(coordinates, { color, legEndId, leg })));
+        return lineData([...segments.map(({ coordinates, color, legEndId, leg }) => lineFeature(coordinates, { color, legEndId, leg })),
+            ...gaps.map(gap => lineFeature(gap, { leg: "gap" }))]);
     }
 
     function placeData(list: Place[]): FeatureCollection<Point> {
@@ -241,7 +245,8 @@
         map.addSource("trip", { type: "geojson", data: tripData() });
         map.addLayer({ id: "trip-casing", type: "line", source: "trip", filter: ["==", ["get", "leg"], "routed"], layout: round, paint: { "line-color": casing, "line-width": 8 } });
         map.addLayer({ id: "trip-casing-drawn", type: "line", source: "trip", filter: ["==", ["get", "leg"], "drawn"], layout: { "line-join": "round" }, paint: { "line-color": dark ? "#bdb47e" : "#5c5a2e", "line-width": 8, "line-dasharray": [1, 0.8] } });
-        map.addLayer({ id: "trip-line", type: "line", source: "trip", layout: round, paint: { "line-color": ["get", "color"], "line-width": 4 } });
+        map.addLayer({ id: "trip-gap", type: "line", source: "trip", filter: ["==", ["get", "leg"], "gap"], paint: { "line-color": dark ? "#bdb47e" : "#5c5a2e", "line-width": 3, "line-dasharray": [1, 0.8] } });
+        map.addLayer({ id: "trip-line", type: "line", source: "trip", filter: ["!=", ["get", "leg"], "gap"], layout: round, paint: { "line-color": ["get", "color"], "line-width": 4 } });
         map.addSource("planner-sketch", { type: "geojson", data: lineData([]) });
         map.addLayer({ id: "planner-sketch", type: "line", source: "planner-sketch", layout: round, paint: { "line-color": dark ? "#f175c5" : "#cc2a93", "line-width": 3, "line-dasharray": [1.5, 1.5] } });
         const panel = dark ? "#201f17" : "#ffffff";
@@ -265,7 +270,7 @@
 
     function syncRouteVisibility() {
         if (!map?.getLayer("trip-line")) return;
-        for (const id of ["trip-line", "trip-casing", "trip-casing-drawn", "trip-highlight"]) map.setLayoutProperty(id, "visibility", showRoute ? "visible" : "none");
+        for (const id of ["trip-line", "trip-casing", "trip-casing-drawn", "trip-gap", "trip-highlight"]) map.setLayoutProperty(id, "visibility", showRoute ? "visible" : "none");
     }
 
     function syncTerrainAndOverlays() {
