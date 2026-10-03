@@ -14,6 +14,11 @@ export function demTile(z: number, x: number, y: number): { z: number; x: number
     return { z: dz, x: Math.floor(x / scale), y: Math.floor(y / scale), scale, left: (x % scale) * part, top: (y % scale) * part };
 }
 
+/** The DEM zoom that the 512 px relief loads at a map zoom: MapLibre rounds the zoom for raster sources. */
+export function reliefZoom(zoom: number): number {
+    return Math.min(Math.max(Math.round(zoom), 0), DEM_MAX_ZOOM);
+}
+
 /** The height in metres of pixel (column, row) of a 512 px Terrarium RGBA tile: R × 256 + G + B ÷ 256 − 32768. */
 export function pixelHeight(rgba: ArrayLike<number>, column: number, row: number): number {
     const p = 4 * (row * DEM_TILE + column);

@@ -5,7 +5,7 @@ import { DEM_MAX_ZOOM, DEM_TILE } from '../map-style';
 import type { Coordinate } from '../map-types';
 import { DETAIL, OVERVIEW, locate, type ClimateMeta } from './climate';
 import { openClimate, sampleLine, type CellRef, type ClimateSource } from './climate-source';
-import { cropHeights, demPixels, demTile, pixelHeight } from './climate-terrain';
+import { cropHeights, demPixels, demTile, pixelHeight, reliefZoom } from './climate-terrain';
 import { weekOf, type DataLayer, type Line, type Theme, type View } from './data-layer';
 import {
     cellBlock, mapLegend, nightLabels, paintWeather, rampWords, sampleHighs, temperatureClass, temperatureFills, tileCells,
@@ -92,7 +92,7 @@ class WeatherLayer implements DataLayer<Samples> {
             const rgba = await this.dems.get(key.join('/'));
             if (rgba) return pixelHeight(rgba, column, row);
         }
-        const { key, column, row } = pixel(demTile(Math.floor(this.map?.getZoom() ?? 0), 0, 0).z);
+        const { key, column, row } = pixel(reliefZoom(this.map?.getZoom() ?? 0));
         const rgba = await this.dem(...key);
         return rgba ? pixelHeight(rgba, column, row) : NaN;
     }
