@@ -11,6 +11,7 @@ interface Leg extends Pick<RouteLeg, 'start' | 'end' | 'totals'> {
     surfaces: Surface[];
     pushing: boolean[];
     closures: (RouteClosure[] | null)[];
+    sac_scale: (number | null)[];
 }
 
 function cut(route: EngineRoute, { from_index: from, to_index: to, start, end, totals }: RouteLeg): Leg {
@@ -19,6 +20,7 @@ function cut(route: EngineRoute, { from_index: from, to_index: to, start, end, t
         geometry: route.geometry.slice(from, to + 1), elevation: route.elevation.slice(from, to + 1),
         elapsed: route.elapsed.slice(from, to + 1).map(seconds => seconds - route.elapsed[from]),
         surfaces: route.surfaces.slice(from, to), pushing: route.pushing.slice(from, to), closures: route.closures.slice(from, to),
+        sac_scale: route.sac_scale.slice(from, to),
     };
 }
 
@@ -27,7 +29,7 @@ function stitch(legs: Leg[], profile: string): EngineRoute {
     const totals: RouteTotals = { distance_m: 0, ascent_m: 0, seconds: 0, surface_m: [0, 0, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 };
     // The id only tells the primary route from its alternatives; the server id needs the whole geometry.
     const route: EngineRoute = { id: 'primary', reason: 'primary', package: legs[0].package, profile, geometry: [], elevation: [], elapsed: [],
-        surfaces: [], pushing: [], closures: [], legs: [], snap_truncated: false, totals };
+        surfaces: [], pushing: [], closures: [], sac_scale: [], legs: [], snap_truncated: false, totals };
     for (const leg of legs) {
         const skip = route.geometry.length ? 1 : 0;
         const offset = route.elapsed.at(-1) ?? 0;
@@ -37,7 +39,7 @@ function stitch(legs: Leg[], profile: string): EngineRoute {
             route.geometry.push(leg.geometry[i]);
             route.elevation.push(leg.elevation[i]);
             route.elapsed.push(leg.elapsed[i] + offset);
-            if (i) { route.surfaces.push(leg.surfaces[i - 1]); route.pushing.push(leg.pushing[i - 1]); route.closures.push(leg.closures[i - 1]); }
+            if (i) { route.surfaces.push(leg.surfaces[i - 1]); route.pushing.push(leg.pushing[i - 1]); route.closures.push(leg.closures[i - 1]); route.sac_scale.push(leg.sac_scale[i - 1]); }
         }
         route.snap_truncated ||= leg.truncated;
         route.legs.push({ from_index: from, to_index: route.geometry.length - 1, start: leg.start, end: leg.end, totals: leg.totals });

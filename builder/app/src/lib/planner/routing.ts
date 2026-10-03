@@ -38,6 +38,8 @@ export interface EngineRoute {
     pushing: boolean[];
     /** The possible closures of each edge. */
     closures: (RouteClosure[] | null)[];
+    /** The SAC hiking grade of each edge: 0 (`strolling`) or 1 (T1) to 6 (T6). */
+    sac_scale: (number | null)[];
     totals: RouteTotals;
     legs: RouteLeg[];
     snap_truncated: boolean;
@@ -52,6 +54,7 @@ export interface RoutingLine {
     /** Null on manual sections, whose access is not verified. */
     pushing: (boolean | null)[];
     closures: (RouteClosure[] | null)[];
+    sacScale: (number | null)[];
     stops: { id: string; distance: number }[];
     seconds: number;
     alternatives: EngineRoute[];
@@ -99,7 +102,7 @@ export function selectRoute(trip: Trip, route: EngineRoute, alternatives: Engine
     const distance = cumulative(route.geometry);
     const primary = alternatives[0] ?? route;
     return {
-        choiceId: route.id, key: routingKey(trip), coordinates: route.geometry, elevation: route.elevation, elapsed: route.elapsed, surfaces: route.surfaces, pushing: route.pushing, closures: route.closures, seconds: route.totals.seconds,
+        choiceId: route.id, key: routingKey(trip), coordinates: route.geometry, elevation: route.elevation, elapsed: route.elapsed, surfaces: route.surfaces, pushing: route.pushing, closures: route.closures, sacScale: route.sac_scale, seconds: route.totals.seconds,
         profile: route.profile, package: route.package, alternatives, alternativesReady: true, unknownSurfaceKm: route.totals.surface_m[0] / 1000, pushingKm: route.totals.pushing_m / 1000, unroutedKm: 0,
         stops: [{ id: points[0].id, distance: 0 }, ...route.legs.map((leg, i) => ({ id: points[i + 1].id, distance: distance[leg.to_index] }))],
         picked: route.id !== primary.id && route.profile === primary.profile,
@@ -110,10 +113,10 @@ export function selectRoute(trip: Trip, route: EngineRoute, alternatives: Engine
 export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCache): Promise<RoutingLine> {
     const points = orderedRoutePoints(trip);
     if (points.length < 2) throw new Error('Choose a start and finish to calculate a route.');
-    const result: RoutingLine = { choiceId: '', key: routingKey(trip), coordinates: [], elevation: [], elapsed: [], surfaces: [], pushing: [], closures: [], stops: [], seconds: 0,
+    const result: RoutingLine = { choiceId: '', key: routingKey(trip), coordinates: [], elevation: [], elapsed: [], surfaces: [], pushing: [], closures: [], sacScale: [], stops: [], seconds: 0,
         alternatives: [], alternativesReady: true, profile: profileId(trip), unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0 };
     let distance = 0;
-    function append(line: Coordinate[], elevation: (number | null)[], elapsed: number[], surfaces: Surface[], pushing: boolean[], closures: (RouteClosure[] | null)[]) {
+    function append(line: Coordinate[], elevation: (number | null)[], elapsed: number[], surfaces: Surface[], pushing: boolean[], closures: (RouteClosure[] | null)[], sacScale: (number | null)[]) {
         const last = result.coordinates.at(-1);
         const gap = last ? cumulative([last, line[0]])[1] : 0;
         // A join to a manually drawn leg is itself an explicit, unverified connector.
@@ -124,6 +127,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
                 result.surfaces.push(i === 0 ? 'Unknown' : surfaces[i - 1] ?? 'Unknown');
                 result.pushing.push(i === 0 ? null : pushing[i - 1] ?? null);
                 result.closures.push(i === 0 ? null : closures[i - 1] ?? null);
+                result.sacScale.push(i === 0 ? null : sacScale[i - 1] ?? null);
             }
             result.coordinates.push(line[i]);
             result.elevation.push(elevation[i]);
@@ -142,7 +146,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         if (end.leg === 'straight' || end.leg === 'drawn') {
             const line = [origin, ...(end.leg === 'drawn' ? end.drawn ?? [] : []), end.coordinate];
             const lengths = cumulative(line);
-            append(line, line.map(() => null), lengths.map(km => km / 15 * 3600), [], [], []);
+            append(line, line.map(() => null), lengths.map(km => km / 15 * 3600), [], [], [], []);
             const km = lengths.at(-1)!;
             result.unknownSurfaceKm += km;
             result.unroutedKm += km;
@@ -171,7 +175,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         const route = await legs.route(expanded, turnarounds, result.profile, signal);
         result.package = route.package;
         if (canOfferAlternatives) { result.alternatives = [route]; result.choiceId = route.id; result.alternativesReady = false; }
-        const start = append(route.geometry, route.elevation, route.elapsed, route.surfaces, route.pushing, route.closures);
+        const start = append(route.geometry, route.elevation, route.elapsed, route.surfaces, route.pushing, route.closures, route.sac_scale);
         const lengths = cumulative(route.geometry);
         result.unknownSurfaceKm += route.totals.surface_m[0] / 1000;
         result.pushingKm += route.totals.pushing_m / 1000;

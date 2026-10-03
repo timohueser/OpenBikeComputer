@@ -24,7 +24,7 @@ beforeEach(() => {
     const line: RoutingLine = {
         key: routingKey(trip), choiceId: 'saved-route', profile: 'touring', coordinates,
         elevation: coordinates.map(() => 200), elapsed: distance.map(km => km * 240),
-        surfaces: coordinates.slice(1).map(() => 'Paved'), pushing: coordinates.slice(1).map(() => false), closures: coordinates.slice(1).map(() => null), seconds: distance.at(-1)! * 240,
+        surfaces: coordinates.slice(1).map(() => 'Paved'), pushing: coordinates.slice(1).map(() => false), closures: coordinates.slice(1).map(() => null), sacScale: coordinates.slice(1).map(() => null), seconds: distance.at(-1)! * 240,
         stops: [{ id: 'start', distance: 0 }, { id: 'finish', distance: distance.at(-1)! }],
         alternatives: [], alternativesReady: true, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0,
     };
@@ -280,7 +280,7 @@ describe('planner app transitions', () => {
             const km = cumulative(geometry).at(-1)!;
             const totals = { distance_m: km * 1000, ascent_m: 0, seconds: km * 240, surface_m: [0, km * 1000, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 };
             return { id, reason, package: 'test', profile: 'touring', geometry, elevation: geometry.map(() => 200), elapsed: cumulative(geometry).map(d => d * 240),
-                surfaces: geometry.slice(1).map(() => 'Paved'), pushing: geometry.slice(1).map(() => false), closures: geometry.slice(1).map(() => null), totals,
+                surfaces: geometry.slice(1).map(() => 'Paved'), pushing: geometry.slice(1).map(() => false), closures: geometry.slice(1).map(() => null), sac_scale: geometry.slice(1).map(() => null), totals,
                 legs: [{ from_index: 0, to_index: geometry.length - 1, start: 'a', end: 'b', totals }], snap_truncated: false };
         };
         const coordinates = routeCoordinates(initialTrip());
