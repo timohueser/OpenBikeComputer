@@ -38,7 +38,7 @@ export interface EngineRoute {
     pushing: boolean[];
     /** The possible closures of each edge. */
     closures: (RouteClosure[] | null)[];
-    /** The SAC hiking grade of each edge, 1 (T1) to 6 (T6). */
+    /** The SAC hiking grade of each edge: 0 (`strolling`) or 1 (T1) to 6 (T6). */
     sac_scale: (number | null)[];
     totals: RouteTotals;
     legs: RouteLeg[];

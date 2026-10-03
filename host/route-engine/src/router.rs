@@ -68,7 +68,7 @@ pub struct Route {
     pub pushing: Vec<bool>,
     /// The possible closures of each geometry edge, for the mode used on it.
     pub closures: Vec<Option<Vec<crate::closures::Closure>>>,
-    /// The SAC hiking grade of each geometry edge, 1 (T1) to 6 (T6), where the source has one.
+    /// The SAC hiking grade of each geometry edge, 0 (`strolling`) or 1 (T1) to 6 (T6), where the source has one.
     pub sac_scale: Vec<Option<u8>>,
     /// Cumulative moving seconds at each geometry vertex.
     pub elapsed: Vec<f64>,
