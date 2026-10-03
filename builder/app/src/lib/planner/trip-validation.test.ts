@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { emptyTrip, setEndpoint, addRestDay, applyBudget, initialTrip, maxRidingDays, pinNight, reorderPoint, setDrawnLeg } from './editor';
-import { isTrip } from './trip-validation';
+import { emptyTrip, setEndpoint, addRestDay, applyBudget, initialTrip, maxRidingDays, pinNight, reorderPoint, routingKey, setDrawnLeg } from './editor';
+import { isTrip, storedTrip } from './trip-validation';
 import { listVersions, readVersion, saveVersion } from './versions';
 
 describe('stored planner data', () => {
@@ -15,6 +15,16 @@ describe('stored planner data', () => {
         const store = { getItem: () => json, setItem: (_: string, value: string) => { json = value; } };
         const version = saveVersion(trip, 'Trip', store);
         expect(readVersion(version.id, store)).toEqual(trip);
+    });
+
+    it('drops a stored routing line without edges from a draft and a version', () => {
+        const trip = initialTrip();
+        const stale = { ...trip, routing: { key: routingKey(trip), coordinates: trip.points.map(p => p.coordinate), surfaces: ['Paved'] } };
+        expect(storedTrip(stale)).toEqual(trip);
+        const current = { ...stale, routing: { ...stale.routing, edges: {} } };
+        expect(storedTrip(current)).toEqual(current);
+        const store = { getItem: () => JSON.stringify([{ id: 'v', at: '2026-01-01T00:00:00Z', summary: 'Trip', trip: stale }]), setItem: () => {} };
+        expect(readVersion('v', store)).toEqual(trip);
     });
 
     it('rejects invalid endpoint roles, invalid geometry and broken route references', () => {

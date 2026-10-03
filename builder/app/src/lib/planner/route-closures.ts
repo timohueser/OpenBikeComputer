@@ -28,11 +28,11 @@ export function edgeStretches<T>(coordinates: Coordinate[], edges: readonly T[] 
 export const noteDistance = (km: number) => km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`;
 
 /** The stretches of the line where the rider may have no access. The router uses them, because nothing says for sure that the road is closed. */
-export function closureStretches(line?: Pick<RoutingLine, 'coordinates' | 'closures'>): ClosureStretch[] {
-    if (!line) return [];
-    return edgeStretches(line.coordinates, line.closures, Boolean).map(({ from, to, coordinates, km }) => {
+export function closureStretches(line?: Pick<RoutingLine, 'coordinates' | 'edges'>): ClosureStretch[] {
+    const edges = line?.edges.closures ?? [];
+    return edgeStretches(line?.coordinates ?? [], edges, Boolean).map(({ from, to, coordinates, km }) => {
         const closures: RouteClosure[] = [];
-        for (const closure of line.closures.slice(from, to).flatMap(edge => edge ?? []))
+        for (const closure of edges.slice(from, to).flatMap(edge => edge ?? []))
             if (!closures.some(known => known.kind === closure.kind && known.condition === closure.condition)) closures.push(closure);
         return { closures, coordinates, km };
     });

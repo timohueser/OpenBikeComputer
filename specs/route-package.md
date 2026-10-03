@@ -59,7 +59,7 @@ always refers to the actual stored bytes.
 
 The optional manifest `closures` is the digest of one object. It is absent when
 no road has a possible closure. An entry is `(modes, {kind, condition})`, as
-[the route API](route-api.md#runs) lists the kinds.
+[the route API](route-api.md#edges) lists the kinds.
 
 Cells span 10,000 microdegrees on each axis. Cell indices use floor division,
 including for negative coordinates. A road appears in all cells crossed by
