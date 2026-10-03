@@ -904,9 +904,15 @@ mod tests {
         let profiles = Profile::presets();
         assert!(profiles.iter().find(|p| p.walking).unwrap().permits(&graph.roads[0]));
         assert!(profiles.iter().filter(|p| !p.walking).all(|p| !p.permits(&graph.roads[0])));
-        let difficult =
+        let alpine =
             fixture(vec![way(10, &[1, 2], &[("highway", "path"), ("sac_scale", "alpine_hiking")])], &[1, 2], vec![]);
-        assert!(profiles.iter().all(|p| !p.permits(&difficult.roads[0])));
+        assert!(profiles.iter().all(|p| p.permits(&alpine.roads[0]) == p.walking));
+        let climbing = fixture(
+            vec![way(10, &[1, 2], &[("highway", "path"), ("sac_scale", "demanding_alpine_hiking")])],
+            &[1, 2],
+            vec![],
+        );
+        assert!(profiles.iter().all(|p| !p.permits(&climbing.roads[0])));
     }
 
     #[test]

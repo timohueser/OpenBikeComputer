@@ -1,7 +1,7 @@
 use route_engine::{
     model::{Graph, Pace, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH},
     package::{digest, Package, Source},
-    snap::{Candidate, Policy},
+    snap::{Candidate, Policy, REACH_M},
     Control, Error, Request, Route, Router,
 };
 use std::{
@@ -551,6 +551,44 @@ fn via_direction_pace_and_failure_states_are_explicit() {
     broken.get_mut(&key).unwrap()[0] ^= 1;
     let mut package = Package::open(Memory(Arc::new(broken)), &manifest).unwrap();
     assert!(matches!(package.road(0), Err(Error::InvalidData(_))));
+}
+
+#[test]
+fn a_point_without_a_road_nearby_attaches_to_the_nearest_road_within_reach() {
+    // A short road that no other road joins, 333 m from the far point.
+    let mut graph = fixture();
+    let first = graph.points.len() as u32;
+    graph.points.extend([14_000, 16_000].map(|lon| Point { lat: -3_000, lon, elevation: NO_ELEVATION }));
+    for (from, to) in [(first, first + 1), (first + 1, first)] {
+        let shape = vec![graph.points[from as usize], graph.points[to as usize]];
+        let road = Road {
+            from,
+            to,
+            reversed: from > to,
+            length_m: shape[0].distance(shape[1]).round() as u32,
+            shape,
+            ..graph.roads[0].clone()
+        };
+        graph.roads.push(road);
+    }
+    let (source, manifest) = package(&graph);
+    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let mut request = Request {
+        points: vec![[0.001, 0.0], [0.015, -0.006]],
+        profile: "touring".into(),
+        pace: Pace::default(),
+        alternatives: false,
+        alternatives_only: false,
+        turnarounds: vec![],
+        start_position: None,
+        end_position: None,
+    };
+    let route = router.route(&request, &Control::default()).unwrap();
+    let end = route.attachments.last().unwrap();
+    assert!((Policy::default().radius_m..=REACH_M).contains(&end.snap_distance_m));
+    assert_eq!((end.projected.lat, end.projected.lon), (0, 15_000));
+    request.points[1] = [0.015, -0.012];
+    assert!(matches!(router.route(&request, &Control::default()), Err(Error::NoSnap(1))));
 }
 
 #[test]

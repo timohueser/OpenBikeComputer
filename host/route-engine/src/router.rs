@@ -113,7 +113,8 @@ pub struct Router<P> {
     metric: String,
     paths: VecDeque<(String, Choice)>,
     cached_roads: usize,
-    snaps: VecDeque<(i32, i32, String, snap::Candidates)>,
+    /// Snaps by point, profile and recovery.
+    snaps: VecDeque<(i32, i32, String, bool, snap::Candidates)>,
 }
 
 impl<P: RoutingData> Router<P> {
@@ -187,20 +188,23 @@ impl<P: RoutingData> Router<P> {
             }
             let point =
                 Point { lat: (lat * 1e6).round() as i32, lon: (lon * 1e6).round() as i32, elevation: NO_ELEVATION };
-            let mut found = if let Some((_, _, _, found)) = self.snaps.iter().find(|(lat, lon, metric, found)| {
-                *lat == point.lat
-                    && *lon == point.lon
-                    && metric == &request.profile
-                    && found.policy.ambiguity_m == policy.ambiguity_m
-                    && found.policy.max_candidates == policy.max_candidates
+            let mut found = if let Some((.., found)) = self.snaps.iter().find(|(lat, lon, metric, recovery, _)| {
+                *lat == point.lat && *lon == point.lon && metric == &request.profile && *recovery == nearest
             }) {
                 found.clone()
             } else {
-                let found = self.package.snap(point, &request.profile, policy)?;
+                let mut found = self.package.snap(point, &request.profile, policy)?;
+                let on_road = found.nearest_distance_m.is_some_and(|d| d <= Policy::default().ambiguity_m);
+                // Recovery may pass over the nearest road of a point off the road: it can be a fragment that no route reaches.
+                if found.retained.is_empty() || nearest && !on_road {
+                    let ambiguity_m = if nearest { snap::REACH_M } else { policy.ambiguity_m };
+                    let far = Policy { radius_m: snap::REACH_M, ambiguity_m, ..policy };
+                    found = self.package.snap(point, &request.profile, far)?;
+                }
                 if self.snaps.len() == 32 {
                     self.snaps.pop_front();
                 }
-                self.snaps.push_back((point.lat, point.lon, request.profile.clone(), found.clone()));
+                self.snaps.push_back((point.lat, point.lon, request.profile.clone(), nearest, found.clone()));
                 found
             };
             // Recovery must not move a point that is already on a road to a different road.

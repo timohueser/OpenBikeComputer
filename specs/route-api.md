@@ -118,6 +118,11 @@ prefers brotli.
 
 An error answer is `{"code", "message"}`. It never contains a substitute route.
 
+The service attaches each point to the nearest road that the profile can use,
+within 250 m. When none is that near, it uses the nearest one within 1 km. When
+no route reaches the nearest road of a point that is not on a road, it uses the
+next nearest road within 1 km. `no_snap` means that no such road is within 1 km.
+
 | Code | Status |
 | --- | --- |
 | `invalid_request` | 400 |

@@ -127,7 +127,7 @@ pub(crate) fn error_body(error: Error) -> (u16, Value) {
         Error::NoSnap(index) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             "no_snap",
-            format!("No accessible road within 250 m of point {}.", index + 1),
+            format!("No accessible road within {} km of point {}.", route_engine::snap::REACH_M / 1000.0, index + 1),
         ),
         Error::NoPath => {
             (StatusCode::UNPROCESSABLE_ENTITY, "no_path", "No legal route connects these points in this region.".into())

@@ -52,6 +52,7 @@
     import { calculateLine, requestAlternatives, selectRoute, type EngineRoute, type RoutingLine } from '../../lib/planner/routing';
     import { LegCache } from '../../lib/planner/route-legs';
     import { closureNote, closureStretches, type ClosureStretch } from '../../lib/planner/route-closures';
+    import { gapNote, routeGaps } from '../../lib/planner/route-gaps';
     const defaultLabels: Record<EditableKind, string> = {
         via: 'Shaping point',
         pass: 'Pass here',
@@ -76,6 +77,7 @@
     }, error => { previewStatus = error instanceof Error ? error.message : 'Preview unavailable.'; });
     let routingStatus = $state('Choose a start and finish');
     let routeAttempt = $state(0);
+    let routeFailed = $state(false);
     const routingInput = $derived(routingKey(trip));
     // Undo returns a plan without its route, often with an unchanged routing key.
     const routed = $derived(trip.routing?.key === routingInput);
@@ -87,10 +89,15 @@
         const plan = untrack(() => trip);
         const abort = new AbortController();
         routingStatus = 'Calculating route…';
+        routeFailed = false;
         calculateLine(plan, abort.signal, legs).then(line => {
                 if (abort.signal.aborted || key !== routingInput) return;
                 trip = { ...trip, routing: line };
-            }).catch(error => { if (!abort.signal.aborted) routingStatus = error instanceof Error ? error.message : 'Routing is unavailable.'; });
+            }).catch(error => {
+                if (abort.signal.aborted) return;
+                routingStatus = error instanceof Error ? error.message : 'Routing is unavailable.';
+                routeFailed = true;
+            });
         return () => abort.abort();
     });
     function pickRoute(route: EngineRoute) {
@@ -104,9 +111,10 @@
         if (!hasEndpoints) previousRouteTrip = null;
         else if (currentRoute) previousRouteTrip = shownTrip;
     });
-    // Keep the measured route visible while its replacement is calculated.
-    const visualTrip = $derived(currentRoute || !hasEndpoints ? shownTrip : previousRouteTrip ?? shownTrip);
-    const visualRoute = $derived(currentRoute ?? (hasEndpoints ? previousRouteTrip?.routing : undefined));
+    // Keep the measured route visible while its replacement is calculated. A failed edit shows no route, as a failed new route does.
+    const keepPrevious = $derived(hasEndpoints && !currentRoute && !routeFailed);
+    const visualTrip = $derived(keepPrevious ? previousRouteTrip ?? shownTrip : shownTrip);
+    const visualRoute = $derived(currentRoute ?? (keepPrevious ? previousRouteTrip?.routing : undefined));
     const routingMessage = $derived(draggingPoint ? previewStatus : currentRoute
         ? `${currentRoute.unknownSurfaceKm.toFixed(1)} km unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${currentRoute.pushingKm.toFixed(1)} km pushing` : ''}${currentRoute.unroutedKm ? ` · ${currentRoute.unroutedKm.toFixed(1)} km manual / access unverified` : ''}${currentRoute.elevation.some(h => h === null) ? ' · elevation incomplete' : ''}`
         : routingStatus);
@@ -217,6 +225,7 @@
         multi && !!currentRoute && expandedDay !== null && !searching && list === 'plan' && night < days.length && (!activeDay?.pinned || changingOvernight),
     );
     const closures = $derived(closureStretches(visualRoute));
+    const gaps = $derived(visualRoute ? routeGaps(visualStops, coordinates) : []);
     // A new route makes the shown stretch stale, so the map no longer marks it.
     let shownClosure = $state.raw<ClosureStretch | null>(null);
     const closureIndex = $derived(shownClosure ? closures.indexOf(shownClosure) : -1);
@@ -889,6 +898,9 @@
                 {#if !focusedDay && visualRoute}
                     <div class="trip-summary"><RouteStats distance={total} ascent={visualRoute?.elevation.every(h => h !== null) ? profileAscent(0, 1, visualRoute) : null} descent={visualRoute?.elevation.every(h => h !== null) ? profileDescent(0, 1, visualRoute) : null} walking={visualTrip.bike === 'hiking'} hours={visualRoute ? visualRoute.seconds / 3600 : null} /></div>
                 {/if}
+                {#if !focusedDay && gaps.length}
+                    <p class="closure-note"><Icon name="pin" size={15} /><span>{gapNote(gaps)}</span></p>
+                {/if}
                 {#if !focusedDay && closures.length}
                     <p class="closure-note"><Icon name="calendar" size={15} /><span>{closureNote(closures)}</span><button type="button" class="planner-action quiet" onclick={showClosure}>{closureIndex < 0 ? 'Show' : closureIndex + 1 < closures.length ? 'Next' : 'Hide'}</button></p>
                 {/if}
@@ -940,7 +952,7 @@
         <section class="geography" aria-label="Map and elevation" aria-busy={hasEndpoints && !currentRoute}>
             <div class="map-area" bind:clientHeight={mapHeight} style:--map-height={`${mapHeight}px`}>
                 <PlannerMap
-                    bind:this={map} {segments} {coordinates} points={mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
+                    bind:this={map} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
                     {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layer: snow, shown: snowOn, date: shownDate }} bottomInset={snowOn ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces} {landmarks}
