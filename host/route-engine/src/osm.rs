@@ -19,7 +19,8 @@ pub enum Access {
 /// A list such as `agricultural;forestry` takes its most open value.
 pub fn classify(value: &str) -> Access {
     let one = |value: &str| match value.trim() {
-        "yes" | "designated" | "official" | "permissive" | "discouraged" => Access::Open,
+        // `mtb` designates a way for mountain bikes, as in Switzerland.
+        "yes" | "designated" | "official" | "permissive" | "discouraged" | "mtb" => Access::Open,
         // `dismount` closes riding only; pushing follows foot access.
         "no" | "private" | "military" | "use_sidepath" | "dismount" | "agricultural" | "forestry" => Access::Closed,
         "permit" => Access::Uncertain(Kind::Permit),
@@ -289,7 +290,8 @@ mod tests {
             ("permit", Uncertain(Kind::Permit)),
             ("customers", Uncertain(Kind::Limited)),
             ("agricultural;delivery", Uncertain(Kind::Limited)),
-            ("mtb", Uncertain(Kind::Unclear)),
+            ("mtb", Open),
+            ("service", Uncertain(Kind::Unclear)),
         ] {
             assert_eq!(classify(value), expected, "{value}");
         }

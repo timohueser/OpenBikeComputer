@@ -163,10 +163,8 @@ fn relation_rules(
     }) {
         mode_rules.push((true, rule));
     }
-    let conditional_bike = tag(&relation.tags, "restriction:bicycle:conditional").is_some()
-        || !except_bike && tag(&relation.tags, "restriction:conditional").is_some();
-    let conditional_foot = tag(&relation.tags, "restriction:foot:conditional").is_some();
-    if mode_rules.is_empty() && !conditional_bike && !conditional_foot {
+    // A conditional restriction restricts a turn only sometimes, so the router ignores it.
+    if mode_rules.is_empty() {
         return;
     }
     let members: Vec<_> = relation.refs.iter().filter_map(|r| r.member.way().map(|id| id.0)).collect();
@@ -180,7 +178,7 @@ fn relation_rules(
     let via: Vec<_> = relation.refs.iter().filter(|r| r.role == "via").map(|r| r.member).collect();
     let via_node = if let [OsmId::Node(id)] = via.as_slice() { Some(id.0) } else { None };
     let supported_shape = from.len() == 1 && to.len() == 1 && via_node.is_some();
-    let mut excluded = if conditional_bike { BIKE | PUSH } else { 0 } | if conditional_foot { FOOT | PUSH } else { 0 };
+    let mut excluded = 0;
     for (walking, value) in mode_rules {
         let supported_rule = matches!(
             value,
@@ -805,6 +803,30 @@ mod tests {
         assert!(rules.is_empty());
         assert!(ways.values().all(|w| w.attributes.access == [FOOT; 2]));
         assert_eq!(counts["conservatively excluded unsupported restriction relations"], 1);
+    }
+
+    #[test]
+    fn a_conditional_turn_restriction_closes_neither_turn_nor_way() {
+        let mut ways: HashMap<_, _> =
+            [way(10, &[1, 2], &[("highway", "path")]), way(20, &[2, 3], &[("highway", "path")])]
+                .into_iter()
+                .map(|w| (w.id, w))
+                .collect();
+        for key in ["restriction:conditional", "restriction:bicycle:conditional", "restriction:foot:conditional"] {
+            let relation = Relation {
+                id: RelationId(1),
+                tags: tags(&[("type", "restriction"), (key, "no_right_turn @ (Mo-Fr 07:00-09:00)")]),
+                refs: vec![
+                    Ref { member: OsmId::Way(WayId(10)), role: "from".into() },
+                    Ref { member: OsmId::Node(NodeId(2)), role: "via".into() },
+                    Ref { member: OsmId::Way(WayId(20)), role: "to".into() },
+                ],
+            };
+            let mut rules = Vec::new();
+            relation_rules(&relation, &mut ways, &mut rules, &mut Counts::new());
+            assert!(rules.is_empty(), "{key}");
+            assert!(ways.values().all(|w| w.attributes.access == [BIKE | FOOT | PUSH; 2]), "{key}");
+        }
     }
 
     #[test]
