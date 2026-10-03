@@ -1,6 +1,6 @@
 // Snow history decoded per specs/planner-snow-tiles.md: every season from 1 September has an onset
 // and a melt-out byte per pixel, as a day index in 2-day steps.
-import { columnDays, dateColumn, dateLabel, reach, type SeasonGrid, type Swatch, type Theme } from './data-layer';
+import { columnDate, dateLabel, type Chart, type Grid, type Swatch, type Theme } from './data-layer';
 
 /** Per season, `size` onset bytes, then `size` melt-out bytes. A tile has 65,536 items; a line has one per sample. */
 export interface Planar { data: Uint8Array; size: number; seasons: number }
@@ -27,13 +27,10 @@ export function seasonDay(date: string): { season: number; index: number } {
     return { season: month >= 9 ? year : year - 1, index: Math.min(DAYS - 1, Math.floor(days / 2)) };
 }
 
-/** "15 Jun" for the first day of a day index, or its last day with `end`. The last index ends on 31 August. */
-export function indexLabel(index: number, end = false): string {
-    return dateLabel(new Date(SEPTEMBER + Math.min(2 * index + (end ? 1 : 0), 364) * DAY_MS));
-}
-
+/** The charts have one column per day index. */
+export const COLUMNS = DAYS;
 // Calendar columns of 2001 in season terms: Jan–Aug belong to season 2000, Sep–Dec to season 2001.
-const columns = columnDays.map(day => seasonDay(day.toISOString().slice(0, 10)));
+const columns = Array.from({ length: COLUMNS }, (_, column) => seasonDay(columnDate(column, 2001, COLUMNS)));
 
 /** The fewest seasons with snow of the Snow class: more than two thirds of `known`. */
 const snowMin = (known: number) => Math.floor(2 * known / 3) + 1;
@@ -184,45 +181,19 @@ const routeCache = new WeakMap<Planar, ReturnType<typeof routeSeasons>>();
 const seasonsOf = (p: Planar) => routeCache.get(p) ?? routeCache.set(p, routeSeasons(p)).get(p)!;
 
 const years = (n: number) => `${n} ${n === 1 ? 'year' : 'years'}`;
-const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
 
-/** The two stats lines and the year strip of a route for a date. `km` holds the distance of each item. */
-export function snowStats(p: Planar, km: ArrayLike<number>, date: string, theme: Theme) {
-    const { index } = seasonDay(date);
-    const on = dateLabel(date);
+/** The year slider of a route: per day, the share of seasons in which some part of the route has snow. */
+export function snowYear(p: Planar | null, date: string, theme: Theme): Grid {
+    const grid = (label: string, cells: Uint8Array): Grid => ({ label, columns: COLUMNS, rows: [{ label: '', cells }], fills: snowClasses(theme) });
+    if (!p) return grid('Plan a route to see when the whole route is snow-free.', new Uint8Array(COLUMNS).fill(255));
     const seasons = seasonsOf(p).filter(season => season !== null);
     const clearOn = (day: number) => seasons.filter(({ melt, onset }) => day > melt || day < onset).length;
     const cells = Uint8Array.from(columns, ({ index }) => shareClass(seasons.length - clearOn(index), seasons.length));
-    const year = { label: seasons.length ? `Whole route snow-free on ${on}: ${clearOn(index)} of ${years(seasons.length)}` : 'No snow data along the route',
-        grid: { rows: [{ label: '', cells }], marker: dateColumn(date), swatches: snowClasses(theme) } satisfies SeasonGrid };
-    if (!seasons.length) return { headline: 'No snow data along the route', detail: '', year };
-    let snowKm = 0;
-    for (let i = 0; i < p.size; i++) if (snowClass(p, i, index) === SNOW) snowKm += reach(km, i);
-    // Counts the same seasons as the year strip, so the two never disagree.
-    const snowing = seasons.length - clearOn(index);
-    const n = seasons.length, most = snowMin(n);
-    const headline = snowKm >= 0.05 ? `${snowKm.toFixed(1)} km under snow ${most < n ? `in most years (${most}–${n} of ${n})` : `in all ${years(n)}`} on ${on}`
-        : snowing ? `Snow on parts of the route in ${snowing} of ${years(n)} on ${on}`
-        : `Whole route snow-free in all ${years(n)} on ${on}`;
-    const snowy = seasons.filter(({ melt }) => melt >= 0);
-    if (!snowy.length) return { headline, detail: `Snow-free in all ${years(seasons.length)}`, year };
-    // The next change after the date: the melt-out inside the typical snow period, else the next onset.
-    const autumn = !(median(snowy.map(s => s.onset)) <= index && index <= median(snowy.map(s => s.melt)));
-    if (!autumn && 2 * clearOn(index) > seasons.length) return { headline, detail: 'Usually clear on this date', year };
-    if (autumn && 2 * snowy.length < seasons.length) return { headline, detail: `Snow in only ${snowy.length} of ${years(seasons.length)}`, year };
-    // Seasons without snow have no change, so only snowy seasons give dates.
-    // The first clear day after melt-out, or the last clear day before the onset; DAYS or -1 when the route never clears.
-    const days = snowy.map(({ melt, onset }) => autumn ? onset - 1 : melt + 1);
-    const never = days.filter(day => day < 0 || day >= DAYS).length;
-    const middle = median(days);
-    const label = (day: number) => indexLabel(day, autumn);
-    if (middle < 0 || middle >= DAYS) return { headline, detail: `Not clear in ${never} of ${years(seasons.length)}`, year };
-    const range = never ? `not clear in ${never} of ${years(seasons.length)}` : `${label(Math.min(...days))} – ${label(Math.max(...days))}`;
-    return { headline, detail: `${autumn ? 'Clear until' : 'Clear from'} ${label(middle)} · ${range}`, year };
+    return grid(seasons.length ? `Whole route snow-free on ${dateLabel(date)}: ${clearOn(seasonDay(date).index)} of ${years(seasons.length)}` : 'No snow data along the route', cells);
 }
 
 /** Calendar years (rows, newest last) × days at item `i`: 0 clear, 1 snow, 2 no data. */
-export function snowGrid(p: Planar, i: number, firstSeason: number, date: string, theme: Theme): { headline: string; grid: SeasonGrid } {
+export function snowChart(p: Planar, i: number, firstSeason: number, date: string, theme: Theme): Chart {
     const [snow, known] = snowSeasons(p, i, seasonDay(date).index);
     const cell = (s: number, day: number) => {
         if (s < 0 || s >= p.seasons) return 2;
@@ -235,11 +206,10 @@ export function snowGrid(p: Planar, i: number, firstSeason: number, date: string
         cells: Uint8Array.from(columns, ({ season, index }) => cell(r + season - 2001, index)),
     }));
     const palette = colors[theme];
+    const history: Swatch[] = [{ label: 'Snow on the ground', color: palette.history }, { label: 'No data', color: palette.unknown, hatch: true }];
     return {
         headline: known ? `Snow on ${dateLabel(date)} in ${snow} of ${years(known)}` : 'No snow data here',
-        grid: { rows, marker: dateColumn(date), swatches: [
-            { label: 'Clear', color: palette.clear }, { label: 'Snow on the ground', color: palette.history }, { label: 'No data', color: palette.unknown, hatch: true },
-        ] },
+        grids: [{ label: '', columns: COLUMNS, rows, fills: [{ label: 'Clear', color: palette.clear }, ...history], legend: { swatches: history } }],
     };
 }
 
@@ -248,11 +218,11 @@ export const colors = {
     dark: { free: '#3b382b', mostlyFree: '#33434e', mostlySnow: '#6a88a3', snow: '#e8f0f8', unknown: '#6b685c', clear: '#2b2a21', history: '#9fb7c6' },
 } as const;
 
-/** Swatches by class value. */
+/** Swatches by class value. The map leaves the first, snow-free, clear. */
 export function snowClasses(theme: Theme): Swatch[] {
     const c = colors[theme];
     return [
-        { label: 'Snow-free', color: c.free, lineOnly: true }, { label: 'Mostly snow-free', color: c.mostlyFree },
+        { label: 'Snow-free', color: c.free }, { label: 'Mostly snow-free', color: c.mostlyFree },
         { label: 'Mostly still snow', color: c.mostlySnow }, { label: 'Snow', color: c.snow }, { label: 'No data', color: c.unknown, hatch: true },
     ];
 }

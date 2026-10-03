@@ -2,16 +2,15 @@
     import Icon from './PlannerIcon.svelte';
     import SeasonGrid from './SeasonGrid.svelte';
     import DateCalendar from './DateCalendar.svelte';
-    import { COLUMNS, addMonths, columnDate, dateColumn, dateLabel, type LineStats } from '../../lib/planner/layers/data-layer';
+    import Segmented from './Segmented.svelte';
+    import { addMonths, columnDate, dateLabel, type DataLayer, type Grid } from '../../lib/planner/layers/data-layer';
 
-    let { date, year, onDate }: { date: string; year: LineStats['year'] | null; onDate: (date: string) => void } = $props();
+    let { date, year, variable, onDate }: { date: string; year: Grid; variable: DataLayer['variable']; onDate: (date: string) => void } = $props();
 
     let open = $state(false);
     let picker: HTMLElement;
     let toggle: HTMLButtonElement;
     const longDate = $derived(new Date(date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' }));
-    // Without a route, the strip is the bare year track.
-    const strip = $derived(year?.grid ?? { rows: [{ label: '', cells: new Uint8Array(COLUMNS).fill(255) }], marker: dateColumn(date), swatches: [] });
 
     /** A step from the stepper or the keyboard; the calendar closes, so it never shows a stale month. */
     function step(next: string) {
@@ -51,10 +50,11 @@
             <div class="popover"><DateCalendar {date} onPick={(day) => { onDate(day); close(); }} onClose={close} /></div>
         {/if}
     </div>
+    {#if variable}<div class="variable"><Segmented compact label={variable.label} options={variable.options} value={variable.value} onChange={(value) => variable.value = value} /></div>{/if}
     <div class="year">
-        <p>{year?.label ?? 'Plan a route to see when the whole route is snow-free.'}</p>
-        <SeasonGrid grid={strip} rowHeight={14} label="Layer date in the year" slider={{ valueText: year ? `${longDate}. ${year.label}` : longDate, onKey: key }}
-            onPick={(column) => step(columnDate(column, Number(date.slice(0, 4))))} />
+        <p>{year.label}</p>
+        <SeasonGrid grid={year} {date} rowHeight={14} label="Layer date in the year" slider={{ valueText: `${longDate}. ${year.label}`, onKey: key }}
+            onPick={(column) => step(columnDate(column, Number(date.slice(0, 4)), year.columns))} />
     </div>
 </div>
 
@@ -78,6 +78,7 @@
     .date[aria-expanded="true"] { background: var(--parchment-2); }
     .date:focus-visible { outline: 2px solid var(--forest); outline-offset: 2px; }
     .popover { position: absolute; left: 0; bottom: calc(100% + 12px); z-index: 1; }
+    .variable { flex: none; }
     .year { flex: 1; min-width: 0; }
     .year p { margin: 0 0 6px; font-size: 12px; color: var(--ink-soft); }
 </style>

@@ -160,6 +160,7 @@ release. Use them for a hosted build with the configured API origin.
 | `VITE_PLANNER_PLACES_URL` | Rider places TileJSON or PMTiles archive |
 | `VITE_PLANNER_OVERLAYS_URL` | Overlay TileJSON or PMTiles archive |
 | `VITE_PLANNER_SNOW_URL` | Snow TileJSON or PMTiles archive, if any |
+| `VITE_PLANNER_CLIMATE_URL` | Climate TileJSON or PMTiles archive, if any |
 | `VITE_PLANNER_ROUTING_URL` | Routing API prefix |
 | `VITE_PLANNER_SEARCH_URL` | Search API prefix |
 | `VITE_PLANNER_SEARCH_REGIONS` | Comma-separated region IDs |
