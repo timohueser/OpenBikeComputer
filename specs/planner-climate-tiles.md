@@ -46,21 +46,23 @@ Zoom 9, the detail tile, has 96 cells and these planes:
 | Plane | Indexes |
 | --- | --- |
 | `orography` | 1 |
-| `lapse` | 12: month − 1 |
+| `lapse_tmax` | 12: month − 1 |
+| `lapse_tmin` | 12: month − 1 |
 | `wet_days` | 520: 52 × year + week |
 | `rain` | 520: 52 × year + week |
 | `tmax` | 520: 52 × year + week |
 | `tmin` | 520: 52 × year + week |
 | `wind` | 520: 52 × year + week |
 
-The detail body is 250,944 bytes.
+The detail body is 252,096 bytes.
 
 Zoom 8, the overview tile, has 384 cells and these planes:
 
 | Plane | Indexes |
 | --- | --- |
 | `orography` | 1 |
-| `lapse` | 12: month − 1 |
+| `lapse_tmax` | 12: month − 1 |
+| `lapse_tmin` | 12: month − 1 |
 | `rose` | 192: 16 × (month − 1) + sector |
 | `wet_share` | 52: week |
 | `rain` | 52: week |
@@ -68,7 +70,7 @@ Zoom 8, the overview tile, has 384 cells and these planes:
 | `tmin` | 52: week |
 | `wind` | 52: week |
 
-The overview body is 178,944 bytes.
+The overview body is 183,552 bytes.
 
 ## Codes
 
@@ -82,9 +84,9 @@ codes of its plane.
 | `rain` | uint8 | 255 | 0–100 | code mm |
 | | | | 101–254 | 100 + 5 (code − 100) mm |
 | `tmax`, `tmin` | int8 | −128 | −127–127 | 0.5 code °C |
-| `wind` | uint8 | 255 | 0–254 | 0.2 code m/s |
+| `wind` | uint8 | 255 | 0–254 | 0.5 code m/s |
 | `orography` | int16 | −32768 | −32767–32767 | code m |
-| `lapse` | int8 | −128 | −127–127 | 0.1 code K/km |
+| `lapse_tmax`, `lapse_tmin` | int8 | −128 | −127–127 | 0.1 code K/km |
 | `rose` | uint8 | 255 | 0–200 | 0.5 code % |
 
 ## Time
@@ -111,7 +113,7 @@ Detail planes, for each year and week:
 
 | Plane | Value |
 | --- | --- |
-| `wet_days` | Days with rain ≥ 1 mm |
+| `wet_days` | Days with rain ≥ `wet_day_mm` |
 | `rain` | Sum of daily rain |
 | `tmax` | Mean of the daily maximum temperatures |
 | `tmin` | Mean of the daily minimum temperatures |
@@ -132,16 +134,19 @@ Static planes:
 | Plane | Value |
 | --- | --- |
 | `orography` | ERA5-Land model height of the cell: the geopotential ÷ 9.80665 m/s² |
-| `lapse` | Change of temperature with height, from the monthly means below |
+| `lapse_tmax`, `lapse_tmin` | Change of the maximum and the minimum temperature with height |
 | `rose` | Share of the daytime hourly samples of the month, in all years, with wind from the sector |
 
-The temperatures of a cell are at its orography. The temperature at height h is
-T + `lapse` × (h − `orography`) ÷ 1000.
+The temperatures of a cell are at its orography. At height h, a maximum
+temperature is T + `lapse_tmax` × (h − `orography`) ÷ 1000, and a minimum
+temperature is T + `lapse_tmin` × (h − `orography`) ÷ 1000, with the rate of the
+month.
 
-`lapse`: the monthly mean of a cell is the mean, over the days of the month in all
-years, of (maximum + minimum temperature) ÷ 2. A least-squares fit
+`lapse_tmax`: the monthly mean of a cell is the mean of the daily maximum
+temperatures over the days of the month in all years. A least-squares fit
 T = a + b × height + c × lon + d × lat through the 5 × 5 cells around the cell gives
 b. When the heights of these cells differ by less than 100 m, b is −6.5 K/km.
+`lapse_tmin` is the same for the daily minimum temperatures.
 
 `rose`: the wind comes from the direction atan2(−u, −v), clockwise from north.
 Sector s holds the directions from 22.5 s − 11.25° up to, but not including,
@@ -156,6 +161,7 @@ The archive metadata is a JSON object:
 | `first_year` | Integer year of year 0 |
 | `years` | `10` |
 | `source` | `era5-land` |
+| `wet_day_mm` | Daily rain in mm from which a day is wet. It is set so that ERA5-Land has as many wet days as stations have days with at least 1 mm |
 | `attribution` | Text to show with the layer |
 | `inputs` | Object: `doi`, `orography_sha256`, `chunks` |
 

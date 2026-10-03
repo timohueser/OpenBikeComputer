@@ -31,7 +31,10 @@ from . import planner_maps as maps
 
 YEARS = 10
 WEEKS = 52
-WET_MM = 1.0
+# ERA5-Land has too many light-rain days. The owner chose a wet day as a day with at least this much
+# ERA5-Land rain: the threshold whose wet-day frequency matches the days with at least 1 mm at the
+# 58 DWD stations in Baden-Württemberg that cover the ten years (DWD Climate Data Center, daily KL).
+WET_MM = 2.3
 SECTORS = 16
 # Final ERA5-Land replaces the preliminary ERA5-Land-T data about two months after each month (ECMWF,
 # "ERA5-Land: data documentation"); DKRZ reports up to three months. The ARCO stores have no `expver`
@@ -89,18 +92,19 @@ CODES = {
     "rain": ("u1", 255, 254, [(0, 0, 1), (100, 100, 5)]),
     "tmax": ("i1", -128, 127, [(-127, -63.5, 0.5)]),
     "tmin": ("i1", -128, 127, [(-127, -63.5, 0.5)]),
-    "wind": ("u1", 255, 254, [(0, 0, 0.2)]),
+    "wind": ("u1", 255, 254, [(0, 0, 0.5)]),
     "orography": ("<i2", -32768, 32767, [(-32767, -32767, 1)]),
-    "lapse": ("i1", -128, 127, [(-127, -12.7, 0.1)]),
+    "lapse_tmax": ("i1", -128, 127, [(-127, -12.7, 0.1)]),
+    "lapse_tmin": ("i1", -128, 127, [(-127, -12.7, 0.1)]),
     "rose": ("u1", 255, 200, [(0, 0, 0.5)]),
 }
 # Tile levels: zoom, then cell columns and rows of a tile and its planes (name, values per cell). Both
 # levels carry the terrain correction, so a route or a chart needs no overview tile.
 OVERVIEW, DETAIL = 8, 9
 LEVELS = {
-    OVERVIEW: (24, 16, [("orography", 1), ("lapse", 12), ("rose", 12 * SECTORS), ("wet_share", WEEKS),
+    OVERVIEW: (24, 16, [("orography", 1), ("lapse_tmax", 12), ("lapse_tmin", 12), ("rose", 12 * SECTORS), ("wet_share", WEEKS),
                         ("rain", WEEKS), ("tmax", WEEKS), ("tmin", WEEKS), ("wind", WEEKS)]),
-    DETAIL: (12, 8, [("orography", 1), ("lapse", 12), *((name, YEARS * WEEKS) for name in WEEKLY)]),
+    DETAIL: (12, 8, [("orography", 1), ("lapse_tmax", 12), ("lapse_tmin", 12), *((name, YEARS * WEEKS) for name in WEEKLY)]),
 }
 
 
@@ -145,7 +149,7 @@ def local_days(values, offset, stamps, days):
 
 
 def aggregate(source, lon, first_year):
-    """Weekly fields {name: (years, weeks, cells)}, the monthly mean daily temperature (12, cells) and the
+    """Weekly fields {name: (years, weeks, cells)}, the monthly means {tmax, tmin: (12, cells)} and the
     daytime wind rose (12, sectors, cells) in percent, from hourly source values {variable: (hours, cells)}."""
     month, week = calendar(first_year)
     hourly = {name: rule(source) for name, rule in HOURLY.items()}
@@ -165,8 +169,7 @@ def aggregate(source, lon, first_year):
         values = daily[value]
         weeks = [np.where(np.isnan(values[a:b]).any(0), np.nan, reducer(values[a:b])) for a, b in zip(edges[:-1], edges[1:])]
         weekly[name] = np.stack(weeks).reshape(YEARS, WEEKS, cells)
-    mean = (daily["tmax"] + daily["tmin"]) / 2
-    monthly = np.stack([mean[month == m].mean(0) for m in range(1, 13)])
+    monthly = {name: np.stack([daily[name][month == m].mean(0) for m in range(1, 13)]) for name in ("tmax", "tmin")}
     # The direction the wind comes from, clockwise from north; sector 0 is centred on north.
     sector = np.floor(np.degrees(np.arctan2(-u, -v)) % 360 / (360 / SECTORS) + 0.5).astype(int) % SECTORS
     counts = np.stack([np.stack([((sector == s) & (month == m)[:, None, None]).sum((0, 1)) for s in range(SECTORS)])
@@ -373,14 +376,14 @@ def orography(region, key=None):
 
 
 def climate(region, first_year, source, workers=8):
-    """Weekly fields, monthly mean temperature and the wind rose over the padded region grid."""
+    """Weekly fields, monthly mean temperatures and the wind rose over the padded region grid."""
     start, end, times, spatial = chunk_plan(region, first_year)
     names = [(variable, f"{t}.{y}.{x}") for y, x in spatial for variable in SOURCE for t in times]
     with ThreadPoolExecutor(workers) as pool:
         list(pool.map(lambda name: source.path(*name), names))
     shape = (len(region.rows), len(region.cols))
     weekly = {name: np.full((YEARS, WEEKS, *shape), np.nan) for name in WEEKLY}
-    monthly = np.full((12, *shape), np.nan)
+    monthly = {name: np.full((12, *shape), np.nan) for name in ("tmax", "tmin")}
     rose = np.full((12, SECTORS, *shape), np.nan)
     zarr_rows, zarr_cols = region.zarr_index()
     for y, x in spatial:
@@ -397,7 +400,8 @@ def climate(region, first_year, source, workers=8):
         grid = np.ix_(rows, cols)
         for name in weekly:
             weekly[name][(slice(None), slice(None), *grid)] = w[name].reshape(YEARS, WEEKS, len(rows), len(cols))
-        monthly[(slice(None), *grid)] = m.reshape(12, len(rows), len(cols))
+        for name in monthly:
+            monthly[name][(slice(None), *grid)] = m[name].reshape(12, len(rows), len(cols))
         rose[(slice(None), slice(None), *grid)] = r.reshape(12, SECTORS, len(rows), len(cols))
     return weekly, monthly, rose
 
@@ -417,7 +421,8 @@ def planes(region, first_year, weekly, monthly, rose, height):
         valid = ~np.isnan(values)
         with np.errstate(invalid="ignore", divide="ignore"):
             return np.where(valid.any(0), np.nansum(values, 0) / (valid * weights).sum(0), np.nan)
-    terrain = {"orography": height[core][None], "lapse": lapse_rates(monthly, height, region.lat, region.lon)[core]}
+    terrain = {"orography": height[core][None],
+               **{f"lapse_{name}": lapse_rates(monthly[name], height, region.lat, region.lon)[core] for name in monthly}}
     overview = {**terrain, "rose": rose[core].reshape(12 * SECTORS, *shape), "wet_share": 100 * mean(detail["wet_days"], days),
                 **{name: mean(detail[name]) for name in ("rain", "tmax", "tmin", "wind")}}
     return {OVERVIEW: overview, DETAIL: {**terrain, **{name: values.reshape(YEARS * WEEKS, *shape) for name, values in detail.items()}}}
@@ -471,7 +476,7 @@ def bake(bounds, first_year, source, output, key=None):
                 "first_year": first_year, "years": YEARS, "source": "era5-land",
                 "attribution": f"Contains modified Copernicus Climate Change Service information {first_year + YEARS}: "
                                f"ERA5-Land (doi:{DOI})",
-                "inputs": {"doi": DOI, "orography_sha256": OROGRAPHY[1], "chunks": source.fingerprint()},
+                "wet_day_mm": WET_MM, "inputs": {"doi": DOI, "orography_sha256": OROGRAPHY[1], "chunks": source.fingerprint()},
             })
             stream.flush()
             os.replace(stream.name, output)

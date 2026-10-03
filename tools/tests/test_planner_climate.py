@@ -44,10 +44,11 @@ class AggregateTest(unittest.TestCase):
         for cell, offset in enumerate(climate.solar_offset([0, 30])):
             def set_(variable, day, hour, value):
                 source[variable][utc(day, hour, offset), cell] = value
-            set_("tp", 0, 24, 0.001)  # the hour that ends at local midnight belongs to day 0: wet
-            set_("tp", 1, 1, 0.0006)
-            set_("tp", 1, 24, 0.0006)  # 1.2 mm on day 1: wet
-            set_("tp", 2, 12, 0.00099)  # just under 1 mm: dry
+            wet = climate.WET_MM / 1000
+            set_("tp", 0, 24, wet)  # the hour that ends at local midnight belongs to day 0: wet
+            set_("tp", 1, 1, wet / 2)
+            set_("tp", 1, 24, wet / 2 + 0.0001)  # wet on day 1
+            set_("tp", 2, 12, wet - 0.00001)  # just under the threshold: dry
             set_("t2m", 3, 23, 30 + 273.15)
             set_("t2m", 3, 24, 40 + 273.15)  # local 00:00 of day 4
             for hour in climate.DAYTIME:
@@ -58,7 +59,7 @@ class AggregateTest(unittest.TestCase):
         weekly, monthly, rose = climate.aggregate(source, np.array([0.0, 30.0]), FIRST)
         for cell in range(2):
             self.assertEqual(weekly["wet_days"][0, 0, cell], 2)
-            self.assertAlmostEqual(weekly["rain"][0, 0, cell], 3.19)
+            self.assertAlmostEqual(weekly["rain"][0, 0, cell], 3 * climate.WET_MM + 0.09)
             self.assertAlmostEqual(weekly["tmax"][0, 0, cell], (5 * 10 + 30 + 40) / 7)
             self.assertAlmostEqual(weekly["tmin"][0, 0, cell], 10)
             self.assertAlmostEqual(weekly["wind"][0, 0, cell], (6 * 1 + 4) / 7)
@@ -66,7 +67,8 @@ class AggregateTest(unittest.TestCase):
             # January has 3,100 daytime samples in ten years: ten from the west on day 5, the rest from the north.
             self.assertAlmostEqual(rose[0, 12, cell], 100 * 10 / 3100)
             self.assertAlmostEqual(rose[0, 0, cell], 100 * 3090 / 3100)
-            self.assertAlmostEqual(monthly[6, cell], 10)
+            self.assertAlmostEqual(monthly["tmax"][6, cell], 10)
+            self.assertAlmostEqual(monthly["tmin"][0, cell], 10)
 
     def test_a_missing_hour_makes_its_week_missing(self):
         source = hourly(1)
@@ -84,8 +86,8 @@ class CodeTest(unittest.TestCase):
     def test_values_take_the_nearest_code_and_clamp(self):
         self.assertEqual(self.round_trip("tmax", [-0.25, 0.25, 0.74, -100, 100]), [0, 0.5, 0.5, -63.5, 63.5])
         self.assertEqual(self.round_trip("rain", [0.4, 99.6, 102.4, 103, 2000]), [0, 100, 100, 105, 870])
-        self.assertEqual(self.round_trip("wind", [0.09, 0.11, 99]), [0, 0.2, 50.8])
-        self.assertEqual(self.round_trip("lapse", [-6.54, 20]), [-6.5, 12.7])
+        self.assertEqual(self.round_trip("wind", [0.24, 0.25, 200]), [0, 0.5, 127])
+        self.assertEqual(self.round_trip("lapse_tmin", [-6.54, 20]), [-6.5, 12.7])
 
     def test_missing_is_its_own_code(self):
         self.assertEqual(climate.encode("tmin", [np.nan, 0]).tolist(), [-128, 0])
@@ -135,9 +137,9 @@ class GridTest(unittest.TestCase):
         from pmtiles.tile import zxy_to_tileid
         self.assertEqual(set(tiles), {zxy_to_tileid(9, 156, 52), zxy_to_tileid(8, 78, 26)})
         body = gzip.decompress(tiles[zxy_to_tileid(9, 156, 52)])
-        self.assertEqual(len(body), 96 * (2 + 12 + 5 * 520))
+        self.assertEqual(len(body), 96 * (2 + 2 * 12 + 5 * 520))
         planes = dict(climate.LEVELS[climate.DETAIL][2])
-        offset = 96 * (2 + 12 + 2 * 520 + 3)  # tmax, index 3 (year 0, week 3)
+        offset = 96 * (2 + 2 * 12 + 2 * 520 + 3)  # tmax, index 3 (year 0, week 3)
         tmax = np.frombuffer(body, np.int8, 96, offset).reshape(8, 12)
         # Row 419 is row 3 of the tile (8 × 52 = 416); column 1880 is column 8 (12 × 156 = 1872).
         self.assertEqual(climate.decode("tmax", tmax[3:5, 8:12]).tolist(), [[0, 1, 2, 3], [4, 5, 6, 7]])
@@ -211,7 +213,7 @@ class BakeTest(unittest.TestCase):
                 reader = Reader(MmapSource(stream))
                 header, metadata = reader.header(), reader.metadata()
         self.assertEqual((header["min_zoom"], header["max_zoom"], metadata["first_year"], metadata["years"]), (8, 9, FIRST, 10))
-        self.assertEqual(sorted(metadata["inputs"]["chunks"]), sorted(climate.SOURCE))
+        self.assertEqual((sorted(metadata["inputs"]["chunks"]), metadata["wet_day_mm"]), (sorted(climate.SOURCE), climate.WET_MM))
 
 
 if __name__ == "__main__":
