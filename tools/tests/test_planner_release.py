@@ -113,7 +113,9 @@ class ReleaseTests(unittest.TestCase):
         document = {"region": "test", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain", "files": {}}
         active = release.endpoints("a" * 64, document, "https://maps.example", "https://tiles.example", "https://api.example")
         self.assertEqual(release.vite_environment(active)["VITE_PLANNER_SNOW_URL"], "")
-        active = release.endpoints("a" * 64, {**document, "files": {"maps/snow.json": {}}}, "https://maps.example", "https://tiles.example", "https://api.example")
+        for name in ["maps/snow.json", "maps/snow.pmtiles"]:
+            active = release.endpoints("a" * 64, {**document, "files": {name: {}}}, "https://maps.example", "https://tiles.example", "https://api.example")
+            self.assertEqual(active["snow"], "https://tiles.example/releases/" + "a" * 64 + "/snow.json")
         env = release.vite_environment(active)
         for key in ["VITE_PLANNER_TILEJSON_URL", "VITE_PLANNER_PLACES_URL", "VITE_PLANNER_SEARCH_URL", "VITE_PLANNER_SNOW_URL", "VITE_CATALOG_URL"]:
             self.assertIn("a" * 64, env[key])

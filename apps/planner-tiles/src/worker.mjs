@@ -12,6 +12,11 @@ const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Meth
 
 const contentTypes = { [TileType.Mvt]: 'application/x-protobuf', [TileType.Webp]: 'image/webp' };
 const keep = async bytes => bytes;
+// A body with a Content-Encoding is stored that way. Without `encodeBody: 'manual'`, the runtime would
+// compress it again, also when the cache stores or returns a copy.
+export function reply(body, { status, headers }) {
+  return new Response(body, { status, headers, ...(new Headers(headers).has('Content-Encoding') ? { encodeBody: 'manual' } : {}) });
+}
 const notFound = () => new Response('Tile not found', { status: 404, headers: { ...headers, 'Cache-Control': 'no-store' } });
 
 // Zooms and tile format come from each archive's header; PMTiles tile IDs end at zoom 26.
@@ -44,7 +49,7 @@ export default {
     if ((!route && !asset) || url.search) return notFound();
     const cacheKey = new Request(url.href);
     const cached = await caches.default.match(cacheKey);
-    if (cached) return new Response(request.method === 'HEAD' ? null : cached.body, cached);
+    if (cached) return reply(request.method === 'HEAD' ? null : cached.body, cached);
     // Only a cache miss reads the bucket, so only a miss counts against the limit.
     if (env.LIMITER && !(await env.LIMITER.limit({ key: request.headers.get('cf-connecting-ip') ?? '' })).success) {
       return new Response('Too many requests', { status: 429, headers: { ...headers, 'Cache-Control': 'no-store', 'Retry-After': '60' } });
@@ -76,7 +81,8 @@ export default {
             const archive = new PMTiles(source, directories, decompress);
             const header = await archive.getHeader();
             if (!route.tile) {
-              data = { ...await archive.getMetadata(), ...await archive.getTileJson(base) };
+              data = { ...await archive.getMetadata(), tilejson: '3.0.0', scheme: 'xyz', minzoom: header.minZoom, maxzoom: header.maxZoom,
+                bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat], center: [header.centerLon, header.centerLat, header.centerZoom] };
             } else if (route.ext !== undefined && route.ext !== tileTypeExt(header.tileType)) {
               return notFound();
             } else if (route.tile[0] >= header.minZoom && route.tile[0] <= header.maxZoom) {
@@ -89,14 +95,12 @@ export default {
           }
         }
         if (!route.tile) data.tiles = [`${base}/{z}/{x}/{y}`];
-        response = new Response(route.tile ? data?.data : JSON.stringify(data), {
+        response = reply(route.tile ? data?.data : JSON.stringify(data), {
           status: route.tile && !data ? 204 : 200,
           headers: { ...headers, ...(route.tile ? tileHeaders : { 'Content-Type': 'application/json' }) },
-          // The Workers runtime sends a manual body as stored.
-          ...(tileHeaders['Content-Encoding'] ? { encodeBody: 'manual' } : {}),
         });
       }
-      ctx.waitUntil(caches.default.put(cacheKey, response.clone()));
+      ctx.waitUntil(caches.default.put(cacheKey, reply(response.clone().body, response)));
       return request.method === 'HEAD' ? new Response(null, response) : response;
     } catch (error) {
       if (!(error instanceof MissingArchive)) console.error(JSON.stringify({ event: 'tile_read_failed', path: url.pathname, error: String(error) }));

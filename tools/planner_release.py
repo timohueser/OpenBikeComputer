@@ -114,7 +114,7 @@ def endpoints(identity, document, public, tiles, api):
             "overlays": tile_prefix + "/overlays.json",
             "attribution": document["attribution"],
             "terrain": tile_prefix + "/terrain/{z}/{x}/{y}.webp",
-            **({"snow": tile_prefix + "/snow.json"} if "maps/snow.json" in document["files"] else {}),
+            **({"snow": tile_prefix + "/snow.json"} if {"maps/snow.json", "maps/snow.pmtiles"} & document["files"].keys() else {}),
             "glyphs": assets + "/maps/assets/fonts/{fontstack}/{range}.pbf",
             "sprites": assets + "/maps/assets/sprites/v4", "bounds": document["bounds"],
             "terrain_attribution": document["terrain_attribution"]}

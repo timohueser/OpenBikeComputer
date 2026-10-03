@@ -120,21 +120,37 @@ test('grid archives share download objects and assets stream from their pointers
   await Promise.all(pending); delete globalThis.caches;
 });
 
-test('tiles of an unknown type keep their gzip encoding, and TileJSON carries the archive metadata', async () => {
+test('tiles of an unknown type keep their gzip encoding through the edge cache, and TileJSON carries the archive metadata', async () => {
   const bytes = archive(0, { attribution: 'Snow data', first_season: 2016, seasons: 9 });
-  globalThis.caches = { default: { async match() { return undefined; }, async put() {} } };
+  // Node ignores `encodeBody`; the Workers runtime compresses again without 'manual'.
+  const NodeResponse = globalThis.Response;
+  globalThis.Response = class extends NodeResponse { constructor(body, init) { super(body, init); this.encodeBody = init?.encodeBody; } };
+  const cached = new Map();
+  globalThis.caches = { default: { async match(key) { return cached.get(key.url); }, async put(key, value) { cached.set(key.url, value); } } };
+  let reads = 0;
   const env = { BUCKET: { async get(path, options) {
     if (!path.endsWith('/maps/snow.pmtiles')) return null;
+    reads++;
     const slice = bytes.subarray(options.range.offset, options.range.offset + options.range.length);
     return { body: true, etag: 'test', async arrayBuffer() { return slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength); } };
   } } };
-  const ctx = { waitUntil() {} };
-  const tile = await worker.fetch(new Request(`https://tiles.example${base}/snow/0/0/0`), env, ctx);
-  assert.equal(tile.headers.get('Content-Type'), 'application/octet-stream');
-  assert.equal(tile.headers.get('Content-Encoding'), 'gzip');
-  assert.deepEqual(gunzipSync(new Uint8Array(await tile.arrayBuffer())), Buffer.from([26, 0]));
+  const pending = [], ctx = { waitUntil(promise) { pending.push(promise); } };
+  const url = `https://tiles.example${base}/snow/0/0/0`;
+  const tile = await worker.fetch(new Request(url), env, ctx);
+  await Promise.all(pending);
+  const hit = await worker.fetch(new Request(url), env, ctx);
+  for (const response of [tile, cached.get(url), hit]) {
+    assert.equal(response.headers.get('Content-Type'), 'application/octet-stream');
+    assert.equal(response.headers.get('Content-Encoding'), 'gzip');
+    assert.equal(response.encodeBody, 'manual');
+  }
+  assert.deepEqual(gunzipSync(new Uint8Array(await hit.arrayBuffer())), Buffer.from([26, 0]));
+  // The header is cached, so a TileJSON miss reads only the metadata.
+  const before = reads;
   const info = await (await worker.fetch(new Request(`https://tiles.example${base}/snow.json`), env, ctx)).json();
+  assert.equal(reads - before, 1);
   assert.deepEqual([info.first_season, info.seasons, info.maxzoom, info.tiles[0]], [2016, 9, 0, `https://tiles.example${base}/snow/{z}/{x}/{y}`]);
+  globalThis.Response = NodeResponse;
   delete globalThis.caches;
 });
 
