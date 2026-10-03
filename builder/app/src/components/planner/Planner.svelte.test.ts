@@ -183,7 +183,7 @@ describe('profile access', () => {
     it('keeps pushing boundaries on one surface visible and keyboard-inspectable with grade colors off', async () => {
         const line: RoutingLine = {
             key: 'test', choiceId: 'test', profile: 'road', coordinates: [[8,48], [8.001,48], [8.002,48]],
-            elevation: [100, 90, 110], elapsed: [0, 20, 80], surfaces: ['Paved', 'Paved'], pushing: [false, true],
+            elevation: [100, 90, 110], elapsed: [0, 20, 80], surfaces: ['Paved', 'Paved'], pushing: [false, true], closures: [null, null],
             stops: [], seconds: 80, alternatives: [], alternativesReady: true, unknownSurfaceKm: 0, pushingKm: .075, unroutedKm: 0,
         };
         const onHover = vi.fn();
