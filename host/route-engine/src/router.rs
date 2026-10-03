@@ -105,6 +105,8 @@ struct Choice {
 struct Work {
     queries: usize,
     witnesses: usize,
+    /// The leg that found no path: it joins this point and the next.
+    failed_leg: Option<usize>,
 }
 
 pub struct Router<P> {
@@ -113,8 +115,8 @@ pub struct Router<P> {
     metric: String,
     paths: VecDeque<(String, Choice)>,
     cached_roads: usize,
-    /// Snaps by point, profile and recovery.
-    snaps: VecDeque<(i32, i32, String, bool, snap::Candidates)>,
+    /// Snaps by point, profile, recovery and a band to `REACH_M`.
+    snaps: VecDeque<(i32, i32, String, bool, bool, snap::Candidates)>,
 }
 
 impl<P: RoutingData> Router<P> {
@@ -140,13 +142,20 @@ impl<P: RoutingData> Router<P> {
 
     pub fn route(&mut self, request: &Request, control: &Control<'_>) -> Result<Route> {
         let mut work = Work::default();
-        match self.route_with_policy(request, control, Policy::default(), false, &mut work) {
-            Err(Error::NoPath) => {
-                let policy = Policy { ambiguity_m: 50.0, max_candidates: 16, ..Policy::default() };
-                self.route_with_policy(request, control, policy, true, &mut work)
+        let mut result = self.route_with_policy(request, control, Policy::default(), None, &mut work);
+        let policy = Policy { ambiguity_m: 50.0, max_candidates: 16, ..Policy::default() };
+        let mut wide = vec![false; request.points.len()];
+        // Each retry searches the bands of the two points of the leg that found no path to `REACH_M`.
+        while let (Err(Error::NoPath), Some(leg)) = (&result, work.failed_leg) {
+            if wide[leg] && wide[leg + 1] {
+                break;
             }
-            result => result,
+            wide[leg] = true;
+            wide[leg + 1] = true;
+            work.failed_leg = None;
+            result = self.route_with_policy(request, control, policy, Some(&wide), &mut work);
         }
+        result
     }
 
     fn route_with_policy(
@@ -154,9 +163,10 @@ impl<P: RoutingData> Router<P> {
         request: &Request,
         control: &Control<'_>,
         policy: Policy,
-        nearest: bool,
+        recovery: Option<&[bool]>,
         work: &mut Work,
     ) -> Result<Route> {
+        let nearest = recovery.is_some();
         if !(2..=64).contains(&request.points.len()) {
             return Err(Error::InvalidRequest("Use 2 to 64 ordered points".into()));
         }
@@ -188,23 +198,29 @@ impl<P: RoutingData> Router<P> {
             }
             let point =
                 Point { lat: (lat * 1e6).round() as i32, lon: (lon * 1e6).round() as i32, elevation: NO_ELEVATION };
-            let mut found = if let Some((.., found)) = self.snaps.iter().find(|(lat, lon, metric, recovery, _)| {
-                *lat == point.lat && *lon == point.lon && metric == &request.profile && *recovery == nearest
-            }) {
+            let wide = recovery.is_some_and(|wide| wide[index]);
+            let mut found = if let Some((.., found)) =
+                self.snaps.iter().find(|(lat, lon, metric, recovery, band, _)| {
+                    *lat == point.lat
+                        && *lon == point.lon
+                        && metric == &request.profile
+                        && *recovery == nearest
+                        && *band == wide
+                }) {
                 found.clone()
             } else {
                 let mut found = self.package.snap(point, &request.profile, policy)?;
                 let on_road = found.nearest_distance_m.is_some_and(|d| d <= Policy::default().ambiguity_m);
-                // Recovery may pass over the nearest road of a point off the road: it can be a fragment that no route reaches.
-                if found.retained.is_empty() || nearest && !on_road {
-                    let ambiguity_m = if nearest { snap::REACH_M } else { policy.ambiguity_m };
+                // A wide band may pass over the nearest road of a point off the road: it can be a fragment that no route reaches.
+                if found.retained.is_empty() || wide && !on_road {
+                    let ambiguity_m = if wide { snap::REACH_M } else { policy.ambiguity_m };
                     let far = Policy { radius_m: snap::REACH_M, ambiguity_m, ..policy };
                     found = self.package.snap(point, &request.profile, far)?;
                 }
                 if self.snaps.len() == 32 {
                     self.snaps.pop_front();
                 }
-                self.snaps.push_back((point.lat, point.lon, request.profile.clone(), nearest, found.clone()));
+                self.snaps.push_back((point.lat, point.lon, request.profile.clone(), nearest, wide, found.clone()));
                 found
             };
             // Recovery must not move a point that is already on a road to a different road.
@@ -305,6 +321,7 @@ impl<P: RoutingData> Router<P> {
                 }
             }
             if next.iter().all(|cost| cost.1 == u64::MAX) {
+                work.failed_leg = Some(stage_index);
                 return Err(Error::NoPath);
             }
             costs = next;
