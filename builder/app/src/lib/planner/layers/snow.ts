@@ -115,7 +115,11 @@ export function snowStats(p: Planar, km: ArrayLike<number>, date: string, theme:
     if (!seasons.length) return { headline: 'No snow data along the route', detail: '', year };
     let snowKm = 0;
     for (let i = 0; i < p.size; i++) if (snowClass(p, i, index) === SNOW) snowKm += reach(km, i);
-    const headline = snowKm >= 0.05 ? `${snowKm.toFixed(1)} km snowed in on ${on}` : `Not snowed in on ${on}`;
+    // Counts the same seasons as the year strip, so the two never disagree.
+    const snowing = seasons.length - clearOn(index);
+    const headline = snowKm >= 0.05 ? `${snowKm.toFixed(1)} km snowed in on ${on}`
+        : snowing ? `Snow on parts of the route on ${on} in ${snowing} of ${years(seasons.length)}`
+        : `Whole route snow-free on ${on} in all ${years(seasons.length)}`;
     const snowy = seasons.filter(({ melt }) => melt >= 0);
     if (!snowy.length) return { headline, detail: `Snow-free in all ${years(seasons.length)}`, year };
     // The next change after the date: the melt-out inside the typical snow period, else the next onset.
