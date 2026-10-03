@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { COLUMNS, columnDays, monthColumns, type SeasonGrid } from '../../lib/planner/layers/data-layer';
+    import { COLUMNS, columnDays, monthColumns, seasonColumnDays, seasonMonthColumns, type SeasonGrid } from '../../lib/planner/layers/data-layer';
 
     let { grid, label, rowHeight = 8, onPick }: {
         grid: SeasonGrid;
@@ -16,7 +16,8 @@
     const labelled = $derived(grid.rows.some(row => row.label));
     // Every few rows carry a label, counted from the newest.
     const every = $derived(Math.ceil(14 / (rowHeight + gap)));
-    const monthName = (column: number) => columnDays[column].toLocaleDateString('en-GB', { month: width > 480 ? 'short' : 'narrow', timeZone: 'UTC' });
+    const days = $derived(grid.seasonal ? seasonColumnDays : columnDays);
+    const monthName = (column: number) => days[column].toLocaleDateString('en-GB', { month: width > 480 ? 'short' : 'narrow', timeZone: 'UTC' });
 
     function hatch(context: CanvasRenderingContext2D, color: string, scale: number) {
         const tile = document.createElement('canvas');
@@ -73,7 +74,7 @@
             onpointerdown={(event) => { if (onPick) { canvas.setPointerCapture(event.pointerId); pick(event); } }} onpointermove={pick}></canvas>
         <i class="marker" style:left={`${(grid.marker + 0.5) / COLUMNS * 100}%`}></i>
         <ol class="months" aria-hidden="true">
-            {#each monthColumns as column (column)}<li style:left={`${column / COLUMNS * 100}%`}>{monthName(column)}</li>{/each}
+            {#each grid.seasonal ? seasonMonthColumns : monthColumns as column (column)}<li style:left={`${column / COLUMNS * 100}%`}>{monthName(column)}</li>{/each}
         </ol>
     </div>
 </div>

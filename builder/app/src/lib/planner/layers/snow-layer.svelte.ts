@@ -138,7 +138,8 @@ class SnowLayer implements DataLayer<Planar> {
         this.map = map;
         this.shown = shown;
         if (map.getLayer('relief')) {
-            for (const [key, value] of Object.entries(reliefPaint(theme === 'dark', shown))) map.setPaintProperty('relief', key, value);
+            const paint = reliefPaint(theme === 'dark', shown);
+            for (const key of Object.keys(paint) as (keyof typeof paint)[]) map.setPaintProperty('relief', key, paint[key]);
         }
         if (map.getLayer(this.id)) {
             map.setLayoutProperty(this.id, 'visibility', shown ? 'visible' : 'none');

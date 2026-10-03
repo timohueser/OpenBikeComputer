@@ -133,14 +133,14 @@ export function snowStats(p: Planar, km: ArrayLike<number>, date: string, theme:
     return { headline, detail: `${autumn ? 'Clear until' : 'Clear from'} ${label(middle)} · ${range}`, year };
 }
 
-// One row per season (Sep–Aug) on the calendar axis: its Jan–Aug part is the year after its Sep–Dec part.
+// One row per season; its columns are the season's day indices, from 1 September.
 const gridRows = (firstSeason: number, seasons: number) => Array.from({ length: seasons }, (_, s) => `${firstSeason + s}/${String((firstSeason + s + 1) % 100).padStart(2, '0')}`);
 
 /** Seasons (rows, newest last) × days at item `i`: 0 clear, 1 snow, 2 no data. */
 export function snowGrid(p: Planar, i: number, firstSeason: number, date: string, theme: Theme): { headline: string; grid: SeasonGrid } {
     const [snow, known] = snowSeasons(p, i, seasonDay(date).index);
     const rows = gridRows(firstSeason, p.seasons).map((label, s) => {
-        const cells = Uint8Array.from(columns, ({ index: day }) => {
+        const cells = Uint8Array.from({ length: DAYS }, (_, day) => {
             const onset = p.data[2 * s * p.size + i], melt = p.data[(2 * s + 1) * p.size + i];
             return onset === NO_DATA || melt === NO_DATA ? 2 : onset === WHOLE_SEASON || (onset <= day && day <= melt) ? 1 : 0;
         });
@@ -149,7 +149,7 @@ export function snowGrid(p: Planar, i: number, firstSeason: number, date: string
     const palette = colors[theme];
     return {
         headline: known ? `Snow on ${dateLabel(date)} in ${snow} of ${years(known)}` : 'No snow data here',
-        grid: { rows, marker: dateColumn(date), swatches: [
+        grid: { rows, seasonal: true, marker: seasonDay(date).index, swatches: [
             { label: 'Clear', color: palette.clear }, { label: 'Snow on the ground', color: palette.history }, { label: 'No data', color: palette.unknown, hatch: true },
         ] },
     };
