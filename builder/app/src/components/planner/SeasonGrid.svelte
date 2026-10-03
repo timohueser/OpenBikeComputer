@@ -1,16 +1,19 @@
 <script lang="ts">
     import { COLUMNS, columnDays, monthColumns, seasonColumnDays, seasonMonthColumns, type SeasonGrid } from '../../lib/planner/layers/data-layer';
 
-    let { grid, label, rowHeight = 8, onPick }: {
+    let { grid, label, rowHeight = 8, onPick, slider }: {
         grid: SeasonGrid;
         label: string;
         rowHeight?: number;
         /** Makes the grid a click and drag target for a column. */
         onPick?: (column: number) => void;
+        /** With `onPick`, makes the grid a slider with a thumb at the marker. */
+        slider?: { valueText: string; onKey: (event: KeyboardEvent) => void };
     } = $props();
 
     let canvas: HTMLCanvasElement;
     let width = $state(0);
+    let dragging = $state(false);
     const gap = $derived(grid.rows.length > 1 ? Math.min(3, Math.ceil(rowHeight / 3)) : 0);
     const height = $derived(grid.rows.length * (rowHeight + gap) - gap);
     const labelled = $derived(grid.rows.some(row => row.label));
@@ -61,7 +64,7 @@
     }
 </script>
 
-<div class="season-grid" class:labelled class:pickable={!!onPick}>
+<div class="season-grid" class:labelled class:pickable={!!onPick} class:slider={!!slider} class:dragging>
     {#if labelled}
         <ol class="rows" aria-hidden="true" style:height={`${height}px`}>
             {#each grid.rows as row, r (row.label)}
@@ -69,14 +72,21 @@
             {/each}
         </ol>
     {/if}
-    <div class="plot" role="img" aria-label={label} bind:clientWidth={width}>
+    {#snippet plot()}
         <canvas bind:this={canvas} class:outlined={grid.rows.length === 1} aria-hidden="true" style:height={`${height}px`}
-            onpointerdown={(event) => { if (onPick) { canvas.setPointerCapture(event.pointerId); pick(event); } }} onpointermove={pick}></canvas>
-        <i class="marker" style:left={`${(grid.marker + 0.5) / COLUMNS * 100}%`}></i>
+            onpointerdown={(event) => { if (onPick) { canvas.setPointerCapture(event.pointerId); dragging = true; pick(event); } }} onpointermove={pick}
+            onpointerup={() => dragging = false} onpointercancel={() => dragging = false}></canvas>
+        <i class={slider ? 'thumb' : 'marker'} style:left={`${(grid.marker + 0.5) / COLUMNS * 100}%`}></i>
         <ol class="months" aria-hidden="true">
             {#each grid.seasonal ? seasonMonthColumns : monthColumns as column (column)}<li style:left={`${column / COLUMNS * 100}%`}>{monthName(column)}</li>{/each}
         </ol>
-    </div>
+    {/snippet}
+    {#if slider}
+        <div class="plot" role="slider" tabindex="0" aria-label={label} aria-valuemin={0} aria-valuemax={COLUMNS - 1} aria-valuenow={grid.marker}
+            aria-valuetext={slider.valueText} bind:clientWidth={width} onkeydown={slider.onKey}>{@render plot()}</div>
+    {:else}
+        <div class="plot" role="img" aria-label={label} bind:clientWidth={width}>{@render plot()}</div>
+    {/if}
 </div>
 
 <style>
@@ -90,6 +100,16 @@
     canvas.outlined { border-radius: 3px; box-shadow: 0 0 0 1px var(--line-strong); }
     .pickable canvas { cursor: pointer; touch-action: none; }
     .marker { position: absolute; top: -4px; bottom: 12px; width: 2px; transform: translateX(-50%); background: var(--ink); pointer-events: none; }
+    /* A slider reads as a track with a handle: the empty track shows, and the thumb stands above and below it. */
+    .slider canvas { background: var(--parchment-2); cursor: grab; }
+    .slider.dragging canvas { cursor: grabbing; }
+    .slider .plot { border-radius: 4px; }
+    .slider .plot:focus-visible { outline: 2px solid var(--forest); outline-offset: 4px; }
+    .thumb { position: absolute; top: -5px; bottom: 11px; width: 12px; transform: translateX(-50%); border: 2px solid var(--ink); border-radius: 4px; background: var(--panel); box-shadow: 0 1px 3px rgba(28, 27, 20, .3); pointer-events: none; }
+    .thumb::after { content: ""; position: absolute; top: 4px; bottom: 4px; left: 50%; width: 2px; transform: translateX(-50%); background: var(--ink); }
+    .slider:hover .thumb { background: var(--parchment-2); }
     .months { position: absolute; left: 0; right: 0; bottom: 0; height: 14px; margin: 0; padding: 0; list-style: none; }
     .months li { position: absolute; padding-left: 3px; border-left: 1px solid var(--line-strong); font-size: 11px; line-height: 14px; color: var(--ink-soft); }
+    .slider .months { height: 16px; }
+    .slider .months li { line-height: 16px; border-left-color: var(--ink-soft); }
 </style>

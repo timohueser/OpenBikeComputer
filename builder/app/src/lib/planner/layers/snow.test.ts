@@ -67,6 +67,14 @@ describe('route stats', () => {
         expect(detail('2025-10-20')).toBe('Clear until 9 Nov · 20 Oct – 9 Nov');
     });
 
+    it('counts the seasons with snow on the route when no part is snowed in', () => {
+        // Snow from 30 Oct to 20 Mar in one of three seasons: never the "Snow" class.
+        const sometimes = planar([[[30, 100]], [[253, 253]], [[253, 253]]]);
+        const headline = (date: string) => snowStats(sometimes, [0], date, 'light').headline;
+        expect(headline('2026-01-10')).toBe('Snow on parts of the route on 10 Jan in 1 of 3 years');
+        expect(headline('2026-05-01')).toBe('Whole route snow-free on 1 May in all 3 years');
+    });
+
     it('gives no dates for seasons without snow', () => {
         // Snow from 30 Oct to 20 Mar in one of three seasons.
         const sometimes = planar([[[30, 100]], [[253, 253]], [[253, 253]]]);

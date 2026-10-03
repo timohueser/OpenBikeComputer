@@ -22,6 +22,7 @@
     import type { Coordinate, MapPoint, MapSegment } from "../../lib/planner/map-types";
     import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection } from "../../lib/planner/route-overlays";
     import type { DataLayer } from "../../lib/planner/layers/data-layer";
+    import { placeCallout } from "../../lib/planner/callout-placement";
     import MapOverlayDetails from './MapOverlayDetails.svelte';
 
     let {
@@ -73,8 +74,13 @@
     // The right inset keeps the route and callouts clear of the map controls.
     const controlsWidth = 68;
     const fitPadding = { top: 60, right: 90, bottom: 40, left: 40 };
+    const calloutOffset = 20;
 
     let container: HTMLDivElement;
+    let frameWidth = $state(0);
+    let frameHeight = $state(0);
+    // The scale and attribution strip, or a bar over the bottom of the map.
+    const bottomClear = $derived(Math.max(48, bottomInset + 12));
     let popupContent: HTMLDivElement;
     let map = $state.raw<maplibregl.Map>();
     let ready = $state(false);
@@ -171,17 +177,20 @@
         return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 400;
     }
 
-    /** Pans the least distance that brings the open callout inside the map, clear of the controls column and the scale strip. */
-    function keepCalloutInside() {
-        if (!map || !calloutPopup) return;
-        const frame = container.getBoundingClientRect();
-        const box = calloutPopup.getElement().getBoundingClientRect();
-        const margin = 16;
-        const right = frame.right - controlsWidth;
-        const bottom = frame.bottom - Math.max(48, bottomInset + 12);
-        const dx = box.left < frame.left + margin ? box.left - frame.left - margin : Math.max(0, box.right - right);
-        const dy = box.top < frame.top + margin ? box.top - frame.top - margin : Math.max(0, box.bottom - bottom);
-        if (dx || dy) map.panBy([dx, dy], { duration: motionDuration() }, { preserveSearch: true });
+    /**
+     * Anchors the open callout where it fits clear of the controls column and the bottom strip.
+     * With `pan`, a callout that fits nowhere pans the map the least distance. A map move only re-anchors, so it never starts another pan.
+     */
+    function fitCallout(pan: boolean) {
+        if (!map || !calloutPopup || !callout) return;
+        const free = { left: 16, top: 16, right: container.clientWidth - controlsWidth, bottom: container.clientHeight - bottomClear };
+        const { x, y } = map.project(callout);
+        const placed = placeCallout([x, y], [popupContent.offsetWidth, popupContent.offsetHeight], free, calloutOffset);
+        if (calloutPopup.options.anchor !== placed.anchor) {
+            calloutPopup.options.anchor = placed.anchor;
+            calloutPopup.setOffset(calloutOffset);
+        }
+        if (pan && (placed.pan[0] || placed.pan[1])) map.panBy(placed.pan, { duration: motionDuration() }, { preserveSearch: true });
     }
 
     function lineFeature(input: Coordinate[], properties: Record<string, string> = {}): Feature<LineString> {
@@ -448,6 +457,7 @@
             map.on("mouseout", () => { if (!press) hover = null; overPoi = false; overOverlay = false; overlayLayer?.hover(); });
             map.on("movestart", (event) => { if (event.originalEvent) wholeRoute = false; overOverlay = false; overlayLayer?.hover(); });
             map.on("moveend", reportView);
+            map.on("move", () => fitCallout(false));
         } catch (error) {
             failure = "The map could not start. This view needs a browser with WebGL enabled.";
             errorDetail = error instanceof Error ? error.message : String(error);
@@ -464,7 +474,7 @@
         observer.observe(container);
         const preventDrag = (event: DragEvent) => event.preventDefault();
         container.addEventListener('dragstart', preventDrag);
-        const popupObserver = new ResizeObserver(() => { requestAnimationFrame(keepCalloutInside); });
+        const popupObserver = new ResizeObserver(() => { requestAnimationFrame(() => fitCallout(true)); });
         popupObserver.observe(popupContent);
         return () => {
             container.removeEventListener('dragstart', preventDrag);
@@ -633,6 +643,10 @@
         }
     });
     $effect(() => {
+        void bottomClear;
+        untrack(() => fitCallout(true));
+    });
+    $effect(() => {
         if (!map || !popupContent) return;
         if (!callout || !popup) {
             calloutPopup?.remove();
@@ -640,11 +654,11 @@
             return;
         }
         calloutPopup ??= new maplibregl.Popup({
-            closeButton: false, closeOnClick: false, offset: 20, maxWidth: "340px",
-            padding: { top: 16, right: controlsWidth, bottom: 48, left: 16 },
+            closeButton: false, closeOnClick: false, offset: calloutOffset, maxWidth: "340px", anchor: "bottom",
         }).setDOMContent(popupContent);
         calloutPopup.setLngLat(callout).addTo(map);
-        const settle = () => requestAnimationFrame(keepCalloutInside);
+        fitCallout(false);
+        const settle = () => requestAnimationFrame(() => fitCallout(true));
         if (map.isMoving()) map.once("moveend", settle);
         else settle();
     });
@@ -653,7 +667,9 @@
 <svelte:window onmouseup={(event) => { if (event.target !== map?.getCanvas()) cancelGesture(); }}
     onblur={cancelGesture} onkeydown={(event) => { if (event.key === 'Escape') { cancelGesture(); overlaySelection = null; } }} />
 
-<div class="map-frame" data-map-theme={theme}>
+<!-- The callout always fits the free map area: inside the margins, clear of the controls and the bottom strip, less its offset and tip. -->
+<div class="map-frame" data-map-theme={theme} bind:clientWidth={frameWidth} bind:clientHeight={frameHeight}
+    style:--callout-width={`${frameWidth - 16 - controlsWidth}px`} style:--callout-room={`${frameHeight - 16 - bottomClear - calloutOffset - 10}px`}>
     <div class="map-canvas" bind:this={container} aria-label="Route map"></div>
     <div class="popup-storage"><div bind:this={popupContent}>{#if popup}{@render popup()}{/if}</div></div>
     {#if overlaySelection}

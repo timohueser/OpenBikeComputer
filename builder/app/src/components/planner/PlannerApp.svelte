@@ -1205,7 +1205,8 @@
     .layer-summary p { display: flex; flex-direction: column; gap: 2px; margin: 0; }
     .layer-summary strong { font-weight: 600; }
     .layer-summary span { font-size: 13px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
-    .layer-date { position: absolute; left: 16px; right: 16px; bottom: 34px; z-index: 2; }
+    /* Clear of the map controls column, which reaches the bottom on a short map. */
+    .layer-date { position: absolute; left: 16px; right: 68px; bottom: 34px; z-index: 2; }
     .list-switch {
         display: flex;
         padding: 12px 16px 8px;
