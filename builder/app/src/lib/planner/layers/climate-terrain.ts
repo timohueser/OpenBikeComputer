@@ -1,8 +1,7 @@
 // Terrain heights for the temperature map, read from the same Terrarium tiles as the map's terrain source.
+import { DEM_MAX_ZOOM, DEM_TILE } from '../map-style';
 
 const TILE = 256;
-/** The terrain source in map-style.ts: 512 px Terrarium tiles up to zoom 12. */
-const DEM_TILE = 512, DEM_MAX_ZOOM = 12;
 
 /**
  * The DEM tile for a 256 px map tile and the part of it that the map tile covers. A 512 px source

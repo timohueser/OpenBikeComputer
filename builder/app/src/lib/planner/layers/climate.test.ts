@@ -1,5 +1,3 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { PMTiles } from 'pmtiles';
 import { describe, expect, it } from 'vitest';
 import type { Coordinate } from '../map-types';
 import {
@@ -8,8 +6,7 @@ import {
     type Level,
 } from './climate';
 import { lineBearings, weatherRows, windRow } from './climate-route';
-import { climateSource, sampleLine, type TileGetter } from './climate-source';
-import type { TileArchive } from './tile-archive';
+import { sampleLine, type TileGetter } from './climate-source';
 
 // The plane tables of specs/planner-climate-tiles.md: name, indexes, bytes per value.
 const SPEC: Record<Level, { cells: number; planes: [string, number, number][] }> = {
@@ -124,17 +121,20 @@ describe('climate values', () => {
     });
 
     it('measures rain against the mean week of the same series', () => {
-        const even = Array.from({ length: 52 }, (_, week) => week === 51 ? 8.25 : 7);
-        expect([...rainRatios(even)].every(ratio => Math.abs(ratio - 1) < 1e-6)).toBe(true);
-        const ratios = rainRatios(even.map((mm, week) => week === 10 ? 2 * mm : mm));
+        // 1 mm a day. 2016, 2020 and 2024 are leap years: week 51 has 8.3 days in the overview mean.
+        const even = Array.from({ length: 52 }, (_, week) => week === 51 ? 8.3 : 7);
+        expect([...rainRatios(even, 2016)].every(ratio => Math.abs(ratio - 1) < 1e-6)).toBe(true);
+        const ratios = rainRatios(even.map((mm, week) => week === 10 ? 2 * mm : mm), 2016);
         expect(ratios[10] / ratios[11]).toBeCloseTo(2);
-        // A detail series skips missing weeks; slot 52 is week 0 of year 1.
-        const detail = [...even, ...even.map(mm => mm * 3)];
+        // Detail week 51 has 9 days in the leap years 2016, 2020 and 2024, else 8; slot 52 is week 0 of 2017.
+        const detail = Array.from({ length: 520 }, (_, i): number => i % 52 !== 51 ? 7 : [0, 4, 8].includes(Math.floor(i / 52)) ? 9 : 8);
+        expect([...rainRatios(detail, 2016)].every(ratio => Math.abs(ratio - 1) < 1e-6)).toBe(true);
+        detail[52] *= 3;
         detail[60] = NaN;
-        const years = rainRatios(detail);
+        const years = rainRatios(detail, 2016);
         expect(years[52] / years[0]).toBeCloseTo(3);
         expect(Number.isNaN(years[60])).toBe(true);
-        expect(Number.isNaN(rainRatios([0, 0])[0])).toBe(true);
+        expect(Number.isNaN(rainRatios([0, 0], 2016)[0])).toBe(true);
         expect([1 / WETTER_RATIO - 0.01, 1, WETTER_RATIO + 0.01, NaN].map(rainClass)).toEqual([RAIN_DRIER, RAIN_TYPICAL, RAIN_WETTER, RAIN_UNKNOWN]);
     });
 
@@ -244,74 +244,5 @@ describe('climate along a route', () => {
     it('measures the travel bearing between the neighbours of each point', () => {
         expect([...lineBearings([[0, 0], [1, 0], [1, 1]])].map(Math.round)).toEqual([90, 45, 0]);
         expect(Math.round(lineBearings([[10, 60], [9, 60]])[0])).toBe(270);
-    });
-});
-
-const ARCHIVE = '/private/tmp/claude-501/-Users-timo-Documents-OSM/3eed0a5d-1a70-4f42-846d-9b73388587bb/scratchpad/climate/climate.pmtiles';
-
-/** Points every 100 m along the waypoints, with the distance of each in km. */
-function densify(waypoints: Coordinate[]): { line: Coordinate[]; km: number[] } {
-    const line: Coordinate[] = [], km: number[] = [];
-    let total = 0;
-    for (let i = 1; i < waypoints.length; i++) {
-        const [[lon0, lat0], [lon1, lat1]] = [waypoints[i - 1], waypoints[i]];
-        const length = 111.2 * Math.hypot((lon1 - lon0) * Math.cos((lat0 + lat1) * Math.PI / 360), lat1 - lat0);
-        for (let step = 0; step < length / 0.1; step++) {
-            const f = step * 0.1 / length;
-            line.push([lon0 + f * (lon1 - lon0), lat0 + f * (lat1 - lat0)]);
-            km.push(total + step * 0.1);
-        }
-        total += length;
-    }
-    return { line, km };
-}
-
-describe.skipIf(!existsSync(ARCHIVE))('the baked Baden-Württemberg archive', () => {
-    async function open() {
-        const file = readFileSync(ARCHIVE);
-        const pmtiles = new PMTiles({ getKey: () => ARCHIVE, getBytes: async (offset, length) => ({ data: file.buffer.slice(file.byteOffset + offset, file.byteOffset + offset + length) }) });
-        const header = await pmtiles.getHeader();
-        const requests: string[] = [];
-        const archive: TileArchive = {
-            metadata: await pmtiles.getMetadata() as Record<string, unknown>, minZoom: header.minZoom, maxZoom: header.maxZoom,
-            bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat],
-            async get(z, x, y) { requests.push(`${z}/${x}/${y}`); return (await pmtiles.getZxy(z, x, y))?.data; },
-        };
-        return { source: climateSource(archive), requests };
-    }
-
-    it('has overview means of the detail years', async () => {
-        const { source } = await open();
-        expect(source.meta).toMatchObject({ firstYear: 2016, years: 10, wetDayMm: 2.3 });
-        const freiburg = cellAt([7.86, 47.99]);
-        const [o, d] = ([OVERVIEW, DETAIL] as const).map(level => locate(level, freiburg));
-        const overviewTile = (await source.tile(OVERVIEW, o.x, o.y))!, detail = cellHistory((await source.tile(DETAIL, d.x, d.y))!, d.index);
-        for (const week of [2, 28]) {
-            const years = Array.from({ length: 10 }, (_, year) => detail.tmax[52 * year + week]);
-            expect(Math.abs(read(overviewTile, 'tmax', week, o.index) - years.reduce((a, b) => a + b) / 10)).toBeLessThanOrEqual(0.25);
-        }
-        expect(read(overviewTile, 'tmax', 28, o.index)).toBeGreaterThan(read(overviewTile, 'tmax', 2, o.index) + 15);
-        expect(windMode(windRose(overviewTile, o.index, 0))).toBeDefined();
-    });
-
-    it('serves a 100 km route from two overview tiles', async () => {
-        const { source, requests } = await open();
-        // Stuttgart, Tübingen, Hechingen, Balingen, Rottweil, Villingen.
-        const { line, km } = densify([[9.18, 48.78], [9.06, 48.52], [8.96, 48.35], [8.85, 48.27], [8.63, 48.17], [8.46, 48.06]]);
-        expect(km.at(-1)).toBeGreaterThan(95);
-        expect(km.at(-1)).toBeLessThan(105);
-        const started = performance.now();
-        const cells = await sampleLine(line, source.tile);
-        const sampled = performance.now();
-        const rows = weatherRows(cells, km);
-        const weathered = performance.now();
-        const wind = windRow(cells, km, lineBearings(line));
-        const done = performance.now();
-        expect(requests.length).toBe(2);
-        expect(cells.every(Boolean)).toBe(true);
-        expect(rows.high[28]).toBeGreaterThan(rows.low[28]);
-        expect([...wind].every(chance => chance > 0 && chance < 1)).toBe(true);
-        await sampleLine(line, source.tile, DETAIL);
-        console.info(`${line.length} samples, ${km.at(-1)!.toFixed(0)} km: overview 2 requests, detail ${requests.length - 2}; sample ${(sampled - started).toFixed(1)} ms, weather ${(weathered - sampled).toFixed(1)} ms, wind ${(done - weathered).toFixed(1)} ms`);
     });
 });

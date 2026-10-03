@@ -134,23 +134,34 @@ export function wetDaysOf7(tile: ClimateTile, cell: number, week: number): numbe
     return 7 * read(tile, 'wet_share', week, cell) / 100;
 }
 
-/** Days in a week of the mean year: week 51 has 8, or 9 in a leap year. */
-const weekDays = (week: number) => week === WEEKS - 1 ? 8.25 : 7;
+const leap = (year: number) => year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+
+/**
+ * Days of week slot i: week 51 has 8 days, or 9 in a leap year. In the 52 overview means it has the
+ * mean over the archive years.
+ */
+function weekDays(i: number, slots: number, firstYear: number): number {
+    if (i % WEEKS !== WEEKS - 1) return 7;
+    if (slots === WEEKS) return 8 + Array.from({ length: YEARS }, (_, year) => leap(firstYear + year)).filter(Boolean).length / YEARS;
+    return leap(firstYear + Math.floor(i / WEEKS)) ? 9 : 8;
+}
 
 /**
  * Rain of each week as a multiple of the mean week of the same series: (rain ÷ days of the week) ÷
- * (total rain ÷ total days), over the weeks that are not missing. Slot i is week i mod 52, so the 52
- * overview means and the 520 detail weeks of a cell both work. A series without rain gives NaN.
+ * (total rain ÷ total days), over the weeks that are not missing. Slot i is week i mod 52 of year
+ * ⌊i ÷ 52⌋, so the 52 overview means and the 520 detail weeks of a cell both work. A series without
+ * rain gives NaN.
  */
-export function rainRatios(rain: ArrayLike<number>): Float32Array {
-    let total = 0, days = 0;
+export function rainRatios(rain: ArrayLike<number>, firstYear: number): Float32Array {
+    const days = Float32Array.from({ length: rain.length }, (_, i) => weekDays(i, rain.length, firstYear));
+    let total = 0, count = 0;
     for (let i = 0; i < rain.length; i++) {
         if (Number.isNaN(rain[i])) continue;
         total += rain[i];
-        days += weekDays(i % WEEKS);
+        count += days[i];
     }
-    const daily = total / days;
-    return Float32Array.from({ length: rain.length }, (_, i) => daily > 0 ? rain[i] / weekDays(i % WEEKS) / daily : NaN);
+    const daily = total / count;
+    return Float32Array.from({ length: rain.length }, (_, i) => daily > 0 ? rain[i] / days[i] / daily : NaN);
 }
 
 export const RAIN_DRIER = 0, RAIN_TYPICAL = 1, RAIN_WETTER = 2, RAIN_UNKNOWN = 3;

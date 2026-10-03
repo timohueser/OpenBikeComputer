@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { cropHeights, demTile } from './climate-terrain';
+import { describe, expect, it, vi } from 'vitest';
+
+// map-style reads the page URL when it loads.
+vi.stubGlobal('window', { location: { href: 'https://planner.example/plan/' } });
+const { cropHeights, demTile } = await import('./climate-terrain');
 
 /** A 512 px Terrarium tile whose height at (column, row) is 10 × row + column − 100. */
 function terrarium(): Uint8ClampedArray {
