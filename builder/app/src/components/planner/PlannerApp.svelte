@@ -23,7 +23,7 @@
     import type { OverlayOptions } from '../../lib/planner/route-overlays';
     import NearbyLandmark from './NearbyLandmark.svelte';
     import { presetName } from '../../lib/planner/riding-profiles';
-    import { isTrip } from '../../lib/planner/trip-validation';
+    import { storedTrip } from '../../lib/planner/trip-validation';
     import {
         addClickedPoint, addPointNear, addRestDay, applyBudget, coordinateAt, cumulative, emptyTrip,
         insertPoint, itineraryDays, kilometres, nearestProgress, nightOrderConflicts, overnightCandidates,
@@ -408,8 +408,8 @@
         mounted = true;
         try {
             const raw = localStorage.getItem(storageKey);
-            const saved = raw ? JSON.parse(raw) : null;
-            if (isTrip(saved)) trip = planOf(saved);
+            const saved = storedTrip(raw ? JSON.parse(raw) : null);
+            if (saved) trip = planOf(saved);
             else if (raw) draftError = 'Saved draft is invalid · new plan opened';
         } catch (error) {
             draftError = error instanceof SyntaxError ? 'Saved draft is invalid · new plan opened' : 'Draft · browser storage unavailable';
