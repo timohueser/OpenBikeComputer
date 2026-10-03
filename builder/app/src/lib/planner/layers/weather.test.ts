@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DETAIL, OVERVIEW, WEEKS, climateTile, type Level } from './climate';
 import {
-    NO_TEMPERATURE, nightLabels, paintWeather, rampColor, spread, temperatureClass, weatherYear, weekLabel, word, type CellBlock, type Samples,
+    NO_TEMPERATURE, nightLabels, paintWeather, rainWeeks, rampColor, spread, temperatureClass, weatherChart, weatherYear, weekLabel, word, type CellBlock, type Samples,
 } from './weather';
 
 // Plane order and value counts of specs/planner-climate-tiles.md; orography is the only 2-byte plane.
@@ -105,15 +105,37 @@ describe('weather along a route', () => {
         return { overview: [{ tile: o, index: 0 }, { tile: o, index: 1 }], detail: [{ tile: d, index: 0 }, undefined], elevation: Float32Array.from(elevation), km: [0, 10] };
     };
 
-    it('has a High, a Rain and a Low row and names the week in its label', () => {
+    it('has a High, a Low and a Rain row and names the week in its label', () => {
         const year = weatherYear(samples([500, 500]), date, 'light');
-        expect(year.rows.map(row => row.label)).toEqual(['High', 'Rain', 'Low']);
-        expect(year.label).toBe('On the route, 14–20 May: highs 12–14 °C · rain on 2.1 of 7 days · lows 4 °C');
+        expect(year.rows.map(row => row.label)).toEqual(['High', 'Low', 'Rain']);
+        expect(year.label).toBe('On the route, 14–20 May: highs 12–14 °C · lows 4 °C · rain on 2.1 of 7 days');
         expect(year.rows[0].cells[week]).toBe(temperatureClass(13));
-        expect(year.rows[2].cells[week]).toBe(temperatureClass(4));
-        expect(year.fills[year.rows[1].cells[week]].label).toBe('2 of 7 days');
+        expect(year.rows[1].cells[week]).toBe(temperatureClass(4));
+        expect(year.fills[year.rows[2].cells[week]].label).toBe('2 of 7 days');
         expect(year.rows[0].cells[0]).toBe(NO_TEMPERATURE);
         expect(weatherYear(null, date, 'light').rows[0].cells.every(cell => cell === 255)).toBe(true);
+    });
+
+    it('charts the wet days of the week for rain, and highs and lows for temperature', () => {
+        const rainy = tile(DETAIL);
+        // Wet days 1 to 5 over the years, two years each, so the extreme years do not narrow the spread. Week 51 has 8 days, 9 in a leap year.
+        for (let year = 0; year < 10; year++) {
+            rainy.set('wet_days', year * WEEKS + week, 0, 1 + Math.floor(year / 2));
+            rainy.set('wet_days', year * WEEKS + 51, 0, 8);
+            rainy.set('rain', year * WEEKS + week, 0, 10);
+            // A dry week elsewhere makes this week twice the mean week.
+            rainy.set('rain', year * WEEKS + 30, 0, 0);
+        }
+        const weeks = rainWeeks({ tile: rainy.tile(), index: 0 }, 2016);
+        expect([weeks.mean[week], weeks.low[week], weeks.high[week]]).toEqual([3, 1, 5]);
+        // 2016, 2020 and 2024 are leap years.
+        expect(weeks.mean[51]).toBeCloseTo((7 * 7 + 3 * 7 * 8 / 9) / 10);
+        const point = { ...samples([500]), detail: [{ tile: rainy.tile(), index: 0 }] };
+        const rain = weatherChart(point, 0, 2016, date, 'light', 'rain');
+        expect(rain.headline).toBe('14–20 May: rain on about 3 of 7 days (1–5 in most years)');
+        expect(rain.grids).toEqual([]);
+        expect(rain.note).toBe('Usually more rain than in an average week here.');
+        expect(weatherChart(samples([500, 500]), 0, 2016, date, 'light', 'temperature').grids.map(grid => grid.label)).toEqual(['Daytime high', 'Night low']);
     });
 
     it('labels each overnight stop with the night lows of its week at its height', () => {

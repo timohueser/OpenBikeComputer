@@ -4,10 +4,9 @@ import { TERRAIN_URL } from '../map-data';
 import { DEM_MAX_ZOOM, DEM_TILE } from '../map-style';
 import type { Coordinate } from '../map-types';
 import { DETAIL, OVERVIEW, locate, type ClimateMeta } from './climate';
-import { climateSource, sampleLine, type CellRef, type ClimateSource } from './climate-source';
+import { openClimate, sampleLine, type CellRef, type ClimateSource } from './climate-source';
 import { cropHeights, demPixels, demTile, pixelHeight } from './climate-terrain';
 import { weekOf, type DataLayer, type Line, type Theme, type View } from './data-layer';
-import { openTileArchive } from './tile-archive';
 import {
     cellBlock, mapLegend, nightLabels, paintWeather, rampWords, sampleHighs, temperatureClass, temperatureFills, tileCells,
     weatherChart, weatherYear, type Samples, type Variable,
@@ -55,8 +54,7 @@ class WeatherLayer implements DataLayer<Samples> {
     }
 
     private open(): Promise<ClimateSource> {
-        this.archive ??= openTileArchive(this.url, 'Climate').then(archive => {
-            const source = climateSource(archive);
+        this.archive ??= openClimate(this.url).then(source => {
             this.meta = source.meta;
             this.error = '';
             return source;
@@ -78,17 +76,25 @@ class WeatherLayer implements DataLayer<Samples> {
         return entry;
     }
 
-    /** The height at a coordinate from the most detailed decoded DEM tile that holds it; NaN when none does. */
+    /**
+     * The height at a coordinate from the most detailed decoded DEM tile that holds it, or else from
+     * the DEM tile of the view zoom, which the relief has loaded; NaN without terrain.
+     */
     private async heightAt([longitude, latitude]: Coordinate): Promise<number> {
         const sin = Math.sin(latitude * Math.PI / 180);
-        for (let z = DEM_MAX_ZOOM; z >= 0; z--) {
+        const pixel = (z: number) => {
             const scale = DEM_TILE * 2 ** z;
             const px = Math.floor((longitude + 180) / 360 * scale), py = Math.floor((0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * scale);
-            const entry = this.dems.get(`${z}/${Math.floor(px / DEM_TILE)}/${Math.floor(py / DEM_TILE)}`);
-            const rgba = entry && await entry;
-            if (rgba) return pixelHeight(rgba, px % DEM_TILE, py % DEM_TILE);
+            return { key: [z, Math.floor(px / DEM_TILE), Math.floor(py / DEM_TILE)] as const, column: px % DEM_TILE, row: py % DEM_TILE };
+        };
+        for (let z = DEM_MAX_ZOOM; z >= 0; z--) {
+            const { key, column, row } = pixel(z);
+            const rgba = await this.dems.get(key.join('/'));
+            if (rgba) return pixelHeight(rgba, column, row);
         }
-        return NaN;
+        const { key, column, row } = pixel(demTile(Math.floor(this.map?.getZoom() ?? 0), 0, 0).z);
+        const rgba = await this.dem(...key);
+        return rgba ? pixelHeight(rgba, column, row) : NaN;
     }
 
     /** Colours one map tile for the layer week and variable. */
@@ -169,7 +175,7 @@ class WeatherLayer implements DataLayer<Samples> {
     };
 
     chart(samples: Samples, i: number, { date, theme }: View) {
-        return weatherChart(samples, i, this.meta?.firstYear ?? 0, date, theme);
+        return weatherChart(samples, i, this.meta?.firstYear ?? 0, date, theme, this.variable.value as Variable);
     }
 
     year(samples: Samples | null, { date, theme }: View) {

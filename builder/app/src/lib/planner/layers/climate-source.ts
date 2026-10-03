@@ -1,6 +1,6 @@
 import type { Coordinate } from '../map-types';
 import { OVERVIEW, cellAt, climateMeta, climateTile, locate, type ClimateMeta, type ClimateTile, type Level } from './climate';
-import type { TileArchive } from './tile-archive';
+import { openTileArchive, type TileArchive } from './tile-archive';
 
 export type TileGetter = (level: Level, x: number, y: number) => Promise<ClimateTile | undefined>;
 
@@ -30,6 +30,19 @@ export function climateSource(archive: TileArchive): ClimateSource {
             return entry;
         },
     };
+}
+
+const opened = new Map<string, Promise<ClimateSource>>();
+
+/** One source per archive URL, so the climate layers share its tiles; a failed open is retried on the next call. */
+export function openClimate(url: string): Promise<ClimateSource> {
+    let entry = opened.get(url);
+    if (!entry) {
+        entry = openTileArchive(url, 'Climate').then(climateSource);
+        opened.set(url, entry);
+        entry.catch(() => opened.delete(url));
+    }
+    return entry;
 }
 
 /** A cell of a decoded tile. */

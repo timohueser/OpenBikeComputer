@@ -1,6 +1,7 @@
 // The Weather layer of the climate archive: daytime highs or the wet-day share on the map; highs,
 // rain and night lows along a route and at a point.
-import { atElevation, rainClass, rainRatios, read, temperatureAt, weekMonth, wetDaysOf7, WEEKS, YEARS } from './climate';
+import RainWeeks from '../../../components/planner/RainWeeks.svelte';
+import { RAIN_DRIER, RAIN_UNKNOWN, RAIN_WETTER, atElevation, rainClass, rainRatios, read, temperatureAt, weekMonth, wetDaysOf7, WEEKS, YEARS } from './climate';
 import type { CellRef } from './climate-source';
 import { weatherRows } from './climate-route';
 import { dateLabel, weekOf, type Chart, type Grid, type Legend, type Swatch, type Theme } from './data-layer';
@@ -13,7 +14,7 @@ const RAMPS: Record<Variable, Ramp> = {
     // Daytime highs in °C: cold blue, a neutral near 10 °C, warm clay; the dark ramp is mixed toward the dark base.
     temperature: {
         from: -10, to: 30,
-        colors: { light: ['#6f8fb3', '#b3c8d9', '#ebe6d2', '#e3b07f', '#c5643d'], dark: ['#3a5674', '#4e6a80', '#57543f', '#86613f', '#a5543a'] },
+        colors: { light: ['#6f8fb3', '#b3c8d9', '#ebe6d2', '#e3b07f', '#c5643d'], dark: ['#3f5f80', '#5f819c', '#8a8664', '#b5844f', '#c8603c'] },
         labels: ['−10', '0', '10', '20', '30 °C'],
     },
     // Wet days of 7: dry cream to deep blue-grey. The scale ends at 6 of 7, so typical weeks get most of the colour range.
@@ -76,17 +77,6 @@ const wetFills = (theme: Theme): Swatch[] =>
 const wetClass = (days: number) => Math.round(Math.min(7, Math.max(0, days)) / WET_STEP);
 /** The year slider fills: temperature classes, then wet-day classes from here. */
 const WET_BASE = NO_TEMPERATURE + 1;
-
-const RAIN_COLORS = {
-    light: ['#e2c9a0', '#e6e3d6', '#6f97b6'],
-    dark: ['#7a6544', '#3f3e33', '#5f88a8'],
-};
-
-/** Swatches by `rainClass`: drier, typical, wetter, no data. */
-export function rainFills(theme: Theme): Swatch[] {
-    const [drier, typical, wetter] = RAIN_COLORS[theme];
-    return [{ label: 'Drier', color: drier }, { label: 'Typical', color: typical }, { label: 'Wetter', color: wetter }, noData(theme)];
-}
 
 /** "−3", "12": whole degrees with a true minus sign. */
 export const celsius = (value: number) => String(Math.round(value)).replace('-', '−');
@@ -206,9 +196,9 @@ const oneDecimal = (value: number) => value.toLocaleString('en-GB', { minimumFra
 export function weatherYear(samples: Samples | null, date: string, theme: Theme): Grid {
     const fills = [...temperatureFills(theme), ...wetFills(theme)];
     const empty = new Uint8Array(WEEKS).fill(255);
-    const grid = (label: string, high: Uint8Array, rain: Uint8Array, low: Uint8Array): Grid => ({
+    const grid = (label: string, high: Uint8Array, low: Uint8Array, rain: Uint8Array): Grid => ({
         label, columns: WEEKS, fills,
-        rows: [{ label: 'High', cells: high }, { label: 'Rain', cells: rain }, { label: 'Low', cells: low }],
+        rows: [{ label: 'High', cells: high }, { label: 'Low', cells: low }, { label: 'Rain', cells: rain }],
     });
     if (!samples) return grid('Plan a route to see its weather through the year.', empty, empty, empty);
     const rows = weatherRows(samples.overview, samples.km, samples.elevation);
@@ -216,34 +206,58 @@ export function weatherYear(samples: Samples | null, date: string, theme: Theme)
     const highs = minMax(sampleHighs(samples, date));
     if (!highs) return grid('No weather data along the route', empty, empty, empty);
     const lows = minMax(Float32Array.from(samples.overview, (ref, i) => ref ? temperatureAt(ref.tile, 'tmin', week, ref.index, samples.elevation[i]) : NaN));
-    const label = `On the route, ${weekLabel(date)}: highs ${range(...highs)} · rain on ${oneDecimal(rows.rain[week])} of 7 days · lows ${lows ? range(...lows) : 'unknown'}`;
-    return grid(label, Uint8Array.from(rows.high, temperatureClass), Uint8Array.from(rows.rain, days => Number.isNaN(days) ? 255 : WET_BASE + wetClass(days)), Uint8Array.from(rows.low, temperatureClass));
+    const label = `On the route, ${weekLabel(date)}: highs ${range(...highs)} · lows ${lows ? range(...lows) : 'unknown'} · rain on ${oneDecimal(rows.rain[week])} of 7 days`;
+    return grid(label, Uint8Array.from(rows.high, temperatureClass), Uint8Array.from(rows.low, temperatureClass), Uint8Array.from(rows.rain, days => Number.isNaN(days) ? 255 : WET_BASE + wetClass(days)));
 }
 
-/** The years at one sample: yearly weeks of highs, lows and rain against a typical week of the cell. */
-export function weatherChart(samples: Samples, i: number, firstYear: number, date: string, theme: Theme): Chart {
+const leap = (year: number) => year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+/** Days of a week of the spec: week 51 also holds the last one or two days of the year. */
+const daysOf = (week: number, year: number) => week < WEEKS - 1 ? 7 : leap(year) ? 9 : 8;
+
+/** Wet days of 7 in each week of the years at a detail cell: the mean, and the spread without the extreme years. */
+export function rainWeeks(ref: CellRef, firstYear: number): { mean: Float32Array; low: Float32Array; high: Float32Array } {
+    const mean = new Float32Array(WEEKS), low = new Float32Array(WEEKS), high = new Float32Array(WEEKS);
+    for (let week = 0; week < WEEKS; week++) {
+        const years = Array.from({ length: YEARS }, (_, year) => 7 * read(ref.tile, 'wet_days', year * WEEKS + week, ref.index) / daysOf(week, firstYear + year));
+        const known = years.filter(v => !Number.isNaN(v));
+        mean[week] = known.length ? known.reduce((a, b) => a + b, 0) / known.length : NaN;
+        [low[week], high[week]] = spread(years) ?? [NaN, NaN];
+    }
+    return { mean, low, high };
+}
+
+/** The years at one sample for the map variable: highs and lows, or wet days through the year. */
+export function weatherChart(samples: Samples, i: number, firstYear: number, date: string, theme: Theme, variable: Variable): Chart {
     const ref = samples.detail[i], height = samples.elevation[i];
     if (!ref) return { headline: 'No weather data here', grids: [] };
     const week = weekOf(date);
+    if (variable === 'rain') {
+        const weeks = rainWeeks(ref, firstYear);
+        if (Number.isNaN(weeks.mean[week])) return { headline: 'No rain data here', grids: [] };
+        const most = Math.round(weeks.low[week]) === Math.round(weeks.high[week]) ? `${Math.round(weeks.low[week])}` : `${Math.round(weeks.low[week])}–${Math.round(weeks.high[week])}`;
+        // The rain amount of the week against the mean week of the cell, over the years.
+        const ratios = rainRatios(Float32Array.from({ length: YEARS * WEEKS }, (_, slot) => read(ref.tile, 'rain', slot, ref.index)), firstYear);
+        const ofWeek = Array.from({ length: YEARS }, (_, year) => ratios[year * WEEKS + week]).filter(v => !Number.isNaN(v));
+        const amount = ofWeek.length ? rainClass(ofWeek.reduce((a, b) => a + b, 0) / ofWeek.length) : RAIN_UNKNOWN;
+        return {
+            headline: `${weekLabel(date)}: rain on about ${Math.round(weeks.mean[week])} of 7 days (${most} in most years)`,
+            grids: [],
+            extra: { component: RainWeeks, props: { ...weeks, week, colors: { line: rampColor('rain', theme, 5), band: rampColor('rain', theme, theme === 'dark' ? 3 : 1.5) } } },
+            note: amount === RAIN_WETTER ? 'Usually more rain than in an average week here.' : amount === RAIN_DRIER ? 'Usually less rain than in an average week here.' : undefined,
+        };
+    }
     const temperatures = (plane: 'tmax' | 'tmin') => Float32Array.from({ length: YEARS * WEEKS }, (_, slot) => temperatureAt(ref.tile, plane, slot, ref.index, height));
     const high = temperatures('tmax'), low = temperatures('tmin');
-    const rain = rainRatios(Float32Array.from({ length: YEARS * WEEKS }, (_, slot) => read(ref.tile, 'rain', slot, ref.index)), firstYear);
     const ofWeek = (values: Float32Array) => spread(Array.from({ length: YEARS }, (_, year) => values[year * WEEKS + week]));
     const highs = ofWeek(high), lows = ofWeek(low);
-    const wet = samples.overview[i] ? wetDaysOf7(samples.overview[i]!.tile, samples.overview[i]!.index, week) : NaN;
-    const parts = [highs && `highs ${range(...highs)}`, lows && `night lows ${range(...lows)}`, !Number.isNaN(wet) && `rain on ${oneDecimal(wet)} of 7 days`].filter(Boolean);
-    const years = (cells: (slot: number) => number, fills: Swatch[], label: string, legend?: Legend): Grid => ({
-        label, columns: WEEKS, fills, legend,
-        rows: Array.from({ length: YEARS }, (_, year) => ({ label: String(firstYear + year), cells: Uint8Array.from({ length: WEEKS }, (_, w) => cells(year * WEEKS + w)) })),
+    const parts = [highs && `highs ${range(...highs)}`, lows && `night lows ${range(...lows)}`].filter(Boolean);
+    const years = (values: Float32Array, label: string, legend?: Legend): Grid => ({
+        label, columns: WEEKS, fills: temperatureFills(theme), legend,
+        rows: Array.from({ length: YEARS }, (_, year) => ({ label: String(firstYear + year), cells: Uint8Array.from({ length: WEEKS }, (_, w) => temperatureClass(values[year * WEEKS + w])) })),
     });
-    const temperature = temperatureFills(theme), rainSwatches = rainFills(theme);
     return {
         headline: parts.length ? `${weekLabel(date)}: ${parts.join(', ')}` : 'No weather data here',
-        grids: [
-            years(slot => temperatureClass(high[slot]), temperature, 'Daytime high'),
-            years(slot => temperatureClass(low[slot]), temperature, 'Night low', mapLegend('temperature', theme)),
-            years(slot => rainClass(rain[slot]), rainSwatches, 'Rain against a typical week here', { swatches: rainSwatches }),
-        ],
+        grids: [years(high, 'Daytime high'), years(low, 'Night low', mapLegend('temperature', theme))],
         note: 'Valleys can be colder on clear nights.',
     };
 }
