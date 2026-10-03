@@ -38,6 +38,7 @@ with an empty answer. Each route has these fields:
 | `elapsed_s` | Integer moving seconds |
 | `surfaces` | Runs of `[surface, edge count]` |
 | `pushing` | Runs of `[pushing, edge count]` |
+| `closures` | Runs of `[condition, edge count]` |
 | `legs` | `{"from_index", "to_index", "start", "end", "totals"}` for each pair of request points |
 | `snap_truncated` | `true` when the service dropped road candidates for a request point |
 | `totals` | `distance_m`, `ascent_m`, `seconds`, `surface_m`, `unknown_elevation_m` and `pushing_m`, all integers |
@@ -61,9 +62,13 @@ difference. Thus rounding errors do not add up along the route.
 
 An edge joins point `i` and point `i + 1`. A route with `n` points has `n - 1`
 edges. Each run gives one value and the number of consecutive edges with that
-value. The run lengths of `surfaces` and of `pushing` each add up to `n - 1`.
+value. The run lengths of `surfaces`, `pushing` and `closures` each add up to `n - 1`.
 Surfaces are `Unknown`, `Paved`, `Compacted`, `Gravel`, `Dirt` and `Rough`.
 `pushing` is `true` where the rider must push the bicycle.
+A `closures` condition is the OSM condition of a seasonal closure on the edge,
+such as `Nov-May`, or `null`. A seasonal closure names only months, days or
+seasons, and it closes the mode that the route uses on the edge. The route can
+use such an edge, because only the date of the ride decides if it is closed.
 
 ### Legs and totals
 

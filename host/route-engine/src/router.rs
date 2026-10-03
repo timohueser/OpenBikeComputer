@@ -1,6 +1,6 @@
 use crate::{
     data::RoutingData,
-    model::{Pace, Point, Road, Surface, Totals, BIKE, NO_ELEVATION},
+    model::{Pace, Point, Road, Surface, Totals, BIKE, FOOT, NO_ELEVATION, PUSH},
     search::{Query, Seed, Workspace},
     snap::{self, Candidate, Policy},
     Error, Result,
@@ -66,6 +66,8 @@ pub struct Route {
     pub surfaces: Vec<Surface>,
     /// Whether the bicycle must be pushed along each geometry edge.
     pub pushing: Vec<bool>,
+    /// The seasonal closure condition of each geometry edge, for the mode used on it.
+    pub closures: Vec<Option<String>>,
     /// Cumulative moving seconds at each geometry vertex.
     pub elapsed: Vec<f64>,
     pub legs: Vec<Leg>,
@@ -325,6 +327,7 @@ impl<P: RoutingData> Router<P> {
             elevation: Vec::new(),
             surfaces: Vec::new(),
             pushing: Vec::new(),
+            closures: Vec::new(),
             elapsed: Vec::new(),
             legs: Vec::new(),
             attachments,
@@ -339,6 +342,14 @@ impl<P: RoutingData> Router<P> {
                     return Err(Error::Cancelled);
                 }
                 let road = trim(self.package.road(slice.road)?, slice.from, slice.to);
+                let mode = if profile.walking {
+                    FOOT
+                } else if road.access & BIKE != 0 {
+                    BIKE
+                } else {
+                    PUSH
+                };
+                let closure = road.seasonal_closure.as_ref().filter(|c| c.modes & mode != 0).map(|c| &c.condition);
                 totals.add(&road, &request.pace, &profile);
                 route.totals.add(&road, &request.pace, &profile);
                 let mut seconds = *route.elapsed.last().unwrap_or(&0.0);
@@ -347,7 +358,7 @@ impl<P: RoutingData> Router<P> {
                         seconds += request.pace.segment_seconds(
                             road.shape[index - 1],
                             *point,
-                            profile.walking || road.access & BIKE == 0,
+                            mode != BIKE,
                             profile.name.starts_with("mtb"),
                         );
                     }
@@ -360,7 +371,8 @@ impl<P: RoutingData> Router<P> {
                     }
                     if !route.geometry.is_empty() {
                         route.surfaces.push(road.surface);
-                        route.pushing.push(!profile.walking && road.access & BIKE == 0);
+                        route.pushing.push(mode == PUSH);
+                        route.closures.push(closure.cloned());
                     }
                     route.geometry.push(coordinate);
                     route.elapsed.push(seconds);

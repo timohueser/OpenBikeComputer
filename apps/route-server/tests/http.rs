@@ -50,6 +50,7 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         hiking_difficulty: None,
         uncertain_access: false,
         structure: false,
+        seasonal_closure: None,
         shape: points.clone(),
     };
     let graph = Graph {

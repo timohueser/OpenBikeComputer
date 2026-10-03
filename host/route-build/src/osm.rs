@@ -1,6 +1,6 @@
 //! Streaming regional OSM import.
 use osmpbfreader::{OsmId, OsmObj, OsmPbfReader, Relation, Tags, Way};
-use route_engine::model::{Graph, Point, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH};
+use route_engine::model::{Graph, Point, Road, SeasonalClosure, Surface, BIKE, FOOT, NO_ELEVATION, PUSH};
 use route_engine::osm as source;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
@@ -25,6 +25,7 @@ struct Attributes {
     hiking_difficulty: Option<u8>,
     uncertain_access: bool,
     structure: bool,
+    seasonal_closure: Option<SeasonalClosure>,
 }
 
 struct RawWay {
@@ -132,6 +133,7 @@ fn attributes(tags: &Tags, counts: &mut Counts) -> Option<Attributes> {
         hiking_difficulty,
         uncertain_access,
         structure: ["bridge", "tunnel"].iter().any(|key| tag(tags, key).is_some_and(|v| v != "no")),
+        seasonal_closure: source::seasonal_closure(tags.iter().map(|(key, value)| (key.as_str(), value.as_str()))),
     })
 }
 
@@ -545,6 +547,7 @@ fn emit_run(
             hiking_difficulty: way.attributes.hiking_difficulty,
             uncertain_access: way.attributes.uncertain_access,
             structure: way.attributes.structure,
+            seasonal_closure: way.attributes.seasonal_closure.clone(),
             shape,
         });
     }
@@ -789,7 +792,25 @@ mod tests {
                 attributes(&tags(&[("highway", "secondary"), ("access:conditional", condition)]), &mut Counts::new())
                     .unwrap();
             assert_eq!(attrs.access, [BIKE | FOOT | PUSH; 2], "{condition}");
+            assert_eq!(attrs.seasonal_closure.unwrap().modes, BIKE | FOOT | PUSH, "{condition}");
         }
+        let attrs = attributes(
+            &tags(&[
+                ("highway", "secondary"),
+                ("bicycle:conditional", "no @ (Nov-May)"),
+                ("foot:conditional", "no @ (Mar 1-Jul 31)"),
+            ]),
+            &mut Counts::new(),
+        )
+        .unwrap();
+        let closure = attrs.seasonal_closure.unwrap();
+        assert_eq!((closure.modes, closure.condition.as_str()), (BIKE | FOOT | PUSH, "Nov-May; Mar 1-Jul 31"));
+        let attrs = attributes(
+            &tags(&[("highway", "secondary"), ("motor_vehicle:conditional", "no @ (Nov-May)")]),
+            &mut Counts::new(),
+        )
+        .unwrap();
+        assert!(attrs.seasonal_closure.is_none());
         for condition in ["no @ (2025 Mar 10-2025 Oct 1)", "no @ (Mo-Fr)", "no @ (Nov-May); no @ (wet)"] {
             assert!(
                 attributes(&tags(&[("highway", "secondary"), ("access:conditional", condition)]), &mut Counts::new())

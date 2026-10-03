@@ -53,7 +53,18 @@ pub struct Road {
     pub uncertain_access: bool,
     /// A bridge or tunnel uses endpoint-interpolated elevation.
     pub structure: bool,
+    pub seasonal_closure: Option<SeasonalClosure>,
     pub shape: Vec<Point>,
+}
+
+/// A closure whose condition names only months, days or seasons. The road stays routable, because
+/// only the rider's date decides whether it applies; the route reports it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeasonalClosure {
+    /// The modes that the closure removes.
+    pub modes: u8,
+    /// The OSM condition, such as `Nov-May`.
+    pub condition: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

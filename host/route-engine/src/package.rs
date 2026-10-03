@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-pub const FORMAT: u32 = 7;
+pub const FORMAT: u32 = 8;
 pub const MAX_MANIFEST_BYTES: usize = 128 * 1024 * 1024;
 pub const ROADS_PER_PAGE: u32 = 128;
 pub const CELL: i32 = 10_000;

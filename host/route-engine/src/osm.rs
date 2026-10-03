@@ -1,5 +1,5 @@
 //! Source OSM data is kept outside the pages used by route searches.
-use crate::model::Point;
+use crate::model::{Point, SeasonalClosure};
 use crate::model::{BIKE, FOOT, PUSH};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -122,14 +122,30 @@ pub fn access<'a>(get: impl Fn(&str) -> Option<&'a str>, defaults: u8, direction
 /// Modes whose conditional access cannot be resolved by the regional importer. With
 /// `routing`, seasonal closures do not count: the router keeps them open, the map still shows them.
 pub fn conditional_modes<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, routing: bool) -> u8 {
-    let mut modes = 0;
-    for (key, value) in tags.filter(|(key, _)| key.ends_with(":conditional")) {
-        if value.split(';').all(|clause| {
-            clause.split_once('@').is_some_and(|(_, condition)| hazmat(condition) || routing && seasonal(condition))
-        }) {
-            continue;
+    conditions(tags).filter(|(_, season)| !routing || season.is_none()).fold(0, |modes, (m, _)| modes | m)
+}
+
+/// The seasonal closures that `conditional_modes` ignores for routing, so that a route can report them.
+pub fn seasonal_closure<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<SeasonalClosure> {
+    let (mut modes, mut seasons) = (0, Vec::new());
+    for (closed, season) in conditions(tags) {
+        if let Some(season) = season.filter(|_| closed != 0) {
+            modes |= closed;
+            if !seasons.contains(&season) {
+                seasons.push(season);
+            }
         }
-        modes |= match key.strip_suffix(":conditional").unwrap_or("") {
+    }
+    (modes != 0).then(|| SeasonalClosure { modes, condition: seasons.join("; ") })
+}
+
+/// The modes of each conditional key, with its condition when every clause is seasonal. A key whose
+/// clauses all concern hazardous loads closes nothing.
+fn conditions<'a, I: Iterator<Item = (&'a str, &'a str)>>(
+    tags: I,
+) -> impl Iterator<Item = (u8, Option<String>)> + use<'a, I> {
+    tags.filter_map(|(key, value)| {
+        let modes = match key.strip_suffix(":conditional")? {
             "access" | "access:forward" | "access:backward" => BIKE | FOOT | PUSH,
             "vehicle" | "vehicle:forward" | "vehicle:backward" | "bicycle" | "bicycle:forward" | "bicycle:backward"
             | "oneway" | "oneway:bicycle" => BIKE,
@@ -137,13 +153,21 @@ pub fn conditional_modes<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, rou
             "foot" | "foot:forward" | "foot:backward" | "oneway:foot" => FOOT | PUSH,
             _ => 0,
         };
-    }
-    modes
+        let mut seasons = Vec::new();
+        for clause in value.split(';') {
+            match clause.split_once('@').map(|(_, condition)| condition.trim().trim_matches(['(', ')']).trim()) {
+                Some(condition) if hazmat(condition) => {}
+                Some(condition) if seasonal(condition) => seasons.push(condition),
+                _ => return Some((modes, None)),
+            }
+        }
+        (!seasons.is_empty()).then(|| (modes, Some(seasons.join("; "))))
+    })
 }
 
 /// A hazardous-load condition never concerns a rider or walker.
 fn hazmat(condition: &str) -> bool {
-    matches!(condition.trim().trim_matches(['(', ')']).trim(), "hazmat" | "hazmat:water")
+    matches!(condition, "hazmat" | "hazmat:water")
 }
 
 /// A closure such as `Nov-May` moves with the snow each year; the snow layer tells the rider
@@ -151,7 +175,7 @@ fn hazmat(condition: &str) -> bool {
 fn seasonal(condition: &str) -> bool {
     const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
     const SEASONS: [&str; 4] = ["winter", "spring", "summer", "autumn"];
-    let condition = condition.trim().trim_matches(['(', ')']).trim().to_ascii_lowercase();
+    let condition = condition.to_ascii_lowercase();
     let mut named = false;
     let dates = condition.split([' ', '-', ',']).filter(|token| !token.is_empty()).all(|token| {
         let day = token.trim_end_matches(char::is_alphabetic);

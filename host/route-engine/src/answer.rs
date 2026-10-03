@@ -31,6 +31,7 @@ fn route(route: &Route) -> Value {
         "elapsed_s": elapsed,
         "surfaces": runs(&route.surfaces),
         "pushing": runs(&route.pushing),
+        "closures": runs(&route.closures),
         "legs": route.legs.iter().zip(&route.attachments[1..]).map(|(leg, end)| json!({
             "from_index": leg.from_index,
             "to_index": leg.to_index,
@@ -62,9 +63,9 @@ fn delta(previous: &mut i64, value: f64, scale: f64) -> i64 {
     delta
 }
 
-fn runs<T: Copy + PartialEq>(values: &[T]) -> Vec<(T, usize)> {
-    let mut runs: Vec<(T, usize)> = Vec::new();
-    for &value in values {
+fn runs<T: PartialEq>(values: &[T]) -> Vec<(&T, usize)> {
+    let mut runs: Vec<(&T, usize)> = Vec::new();
+    for value in values {
         match runs.last_mut() {
             Some((last, length)) if *last == value => *length += 1,
             _ => runs.push((value, 1)),
@@ -121,6 +122,7 @@ mod tests {
             elevation: serde_json::from_value(source["elevation"].clone()).unwrap(),
             surfaces: serde_json::from_value(source["surfaces"].clone()).unwrap(),
             pushing: serde_json::from_value(source["pushing"].clone()).unwrap(),
+            closures: serde_json::from_value(source["closures"].clone()).unwrap(),
             elapsed: serde_json::from_value(source["elapsed"].clone()).unwrap(),
             legs,
             attachments,

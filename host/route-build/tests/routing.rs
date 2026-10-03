@@ -1,5 +1,5 @@
 use route_engine::{
-    model::{Graph, Pace, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH},
+    model::{Graph, Pace, Point, Profile, Road, SeasonalClosure, Surface, BIKE, FOOT, NO_ELEVATION, PUSH},
     package::{digest, Package, Source},
     snap::{Candidate, Policy},
     Control, Error, Request, Route, Router,
@@ -129,6 +129,7 @@ fn fixture() -> Graph {
                     hiking_difficulty: None,
                     uncertain_access: false,
                     structure: false,
+                    seasonal_closure: None,
                     shape: vec![points[from as usize], points[to as usize]],
                 });
             }
@@ -953,6 +954,7 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
                 hiking_difficulty: None,
                 uncertain_access: false,
                 structure: false,
+                seasonal_closure: None,
                 access: if i == 1 {
                     route_engine::osm::access(
                         |key| match key {
@@ -992,6 +994,49 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
     let (source, manifest) = package(&graph);
     let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
     assert!(router.route(&request, &Control::default()).is_err());
+}
+
+#[test]
+fn a_route_reports_a_seasonal_closure_only_for_the_mode_it_uses() {
+    let points: Vec<_> = (0..4).map(|i| Point { lon: i * 1000, lat: 0, elevation: 0.0 }).collect();
+    let roads = (0..3u32)
+        .flat_map(|i| [(i, i + 1), (i + 1, i)])
+        .map(|(from, to)| Road {
+            from,
+            to,
+            way: from.min(to) as i64,
+            reversed: from > to,
+            length_m: 111,
+            ascent_m: 0,
+            descent_m: 0,
+            surface: Surface::Paved,
+            class: 1,
+            access: BIKE | FOOT | PUSH,
+            difficulty: 0,
+            hiking_difficulty: None,
+            uncertain_access: false,
+            structure: false,
+            seasonal_closure: (from.min(to) == 1).then(|| SeasonalClosure { modes: BIKE, condition: "Nov-May".into() }),
+            shape: vec![points[from as usize], points[to as usize]],
+        })
+        .collect();
+    let (source, manifest) = package(&Graph { points, roads, ..Graph::default() });
+    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let mut request = Request {
+        points: vec![[0.0001, 0.0], [0.0029, 0.0]],
+        profile: "road".into(),
+        pace: Pace::default(),
+        alternatives: false,
+        alternatives_only: false,
+        turnarounds: vec![],
+        start_position: None,
+        end_position: None,
+    };
+    let route = router.route(&request, &Control::default()).unwrap();
+    assert_eq!(route.closures, vec![None, Some("Nov-May".into()), None]);
+    request.profile = "hiking".into();
+    let route = router.route(&request, &Control::default()).unwrap();
+    assert_eq!(route.closures, vec![None; 3]);
 }
 
 #[test]
