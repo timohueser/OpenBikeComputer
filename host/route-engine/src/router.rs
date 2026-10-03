@@ -334,6 +334,7 @@ impl<P: RoutingData> Router<P> {
             snap_truncated: truncated,
             totals: Totals::default(),
         };
+        let closures = self.package.closures()?;
         for (start_attachment, path) in paths {
             let from_index = route.geometry.len().saturating_sub(1);
             let mut totals = Totals::default();
@@ -349,7 +350,7 @@ impl<P: RoutingData> Router<P> {
                 } else {
                     PUSH
                 };
-                let closure = road.seasonal_closure.as_ref().filter(|c| c.modes & mode != 0).map(|c| &c.condition);
+                let closure = closures.closing(slice.road, mode);
                 totals.add(&road, &request.pace, &profile);
                 route.totals.add(&road, &request.pace, &profile);
                 let mut seconds = *route.elapsed.last().unwrap_or(&0.0);
@@ -372,7 +373,7 @@ impl<P: RoutingData> Router<P> {
                     if !route.geometry.is_empty() {
                         route.surfaces.push(road.surface);
                         route.pushing.push(mode == PUSH);
-                        route.closures.push(closure.cloned());
+                        route.closures.push(closure.clone());
                     }
                     route.geometry.push(coordinate);
                     route.elapsed.push(seconds);

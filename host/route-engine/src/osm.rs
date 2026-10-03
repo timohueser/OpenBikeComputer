@@ -1,5 +1,5 @@
 //! Source OSM data is kept outside the pages used by route searches.
-use crate::model::{Point, SeasonalClosure};
+use crate::model::Point;
 use crate::model::{BIKE, FOOT, PUSH};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -122,30 +122,38 @@ pub fn access<'a>(get: impl Fn(&str) -> Option<&'a str>, defaults: u8, direction
 /// Modes whose conditional access cannot be resolved by the regional importer. With
 /// `routing`, seasonal closures do not count: the router keeps them open, the map still shows them.
 pub fn conditional_modes<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, routing: bool) -> u8 {
-    conditions(tags).filter(|(_, season)| !routing || season.is_none()).fold(0, |modes, (m, _)| modes | m)
+    conditions(tags).filter(|(_, _, seasons)| !routing || seasons.is_none()).fold(0, |modes, (_, m, _)| modes | m)
 }
 
-/// The seasonal closures that `conditional_modes` ignores for routing, so that a route can report them.
-pub fn seasonal_closure<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<SeasonalClosure> {
-    let (mut modes, mut seasons) = (0, Vec::new());
-    for (closed, season) in conditions(tags) {
-        if let Some(season) = season.filter(|_| closed != 0) {
-            modes |= closed;
-            if !seasons.contains(&season) {
-                seasons.push(season);
+/// The seasonal closures that `conditional_modes` ignores for routing, so that a route can report
+/// them. Only a restricting value closes: `yes @ (May-Oct)` names the open season. A seasonal
+/// one-way closes one direction only, so it is no closure of the road.
+pub fn seasonal_closures<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Vec<(u8, String)> {
+    let mut closures: Vec<(u8, String)> = Vec::new();
+    for (key, modes, seasons) in conditions(tags) {
+        if modes == 0 || key.starts_with("oneway") {
+            continue;
+        }
+        for (_, condition) in seasons.into_iter().flatten().filter(|(value, _)| !granted(value)) {
+            match closures.iter_mut().find(|(_, known)| known == condition) {
+                Some((closed, _)) => *closed |= modes,
+                None => closures.push((modes, condition.to_owned())),
             }
         }
     }
-    (modes != 0).then(|| SeasonalClosure { modes, condition: seasons.join("; ") })
+    closures
 }
 
-/// The modes of each conditional key, with its condition when every clause is seasonal. A key whose
-/// clauses all concern hazardous loads closes nothing.
+type Seasons<'a> = Option<Vec<(&'a str, &'a str)>>;
+
+/// The key, modes and, when every clause is seasonal, the value and condition of each clause of
+/// each conditional tag. A tag whose clauses all concern hazardous loads closes nothing.
 fn conditions<'a, I: Iterator<Item = (&'a str, &'a str)>>(
     tags: I,
-) -> impl Iterator<Item = (u8, Option<String>)> + use<'a, I> {
+) -> impl Iterator<Item = (&'a str, u8, Seasons<'a>)> + use<'a, I> {
     tags.filter_map(|(key, value)| {
-        let modes = match key.strip_suffix(":conditional")? {
+        let key = key.strip_suffix(":conditional")?;
+        let modes = match key {
             "access" | "access:forward" | "access:backward" => BIKE | FOOT | PUSH,
             "vehicle" | "vehicle:forward" | "vehicle:backward" | "bicycle" | "bicycle:forward" | "bicycle:backward"
             | "oneway" | "oneway:bicycle" => BIKE,
@@ -155,13 +163,15 @@ fn conditions<'a, I: Iterator<Item = (&'a str, &'a str)>>(
         };
         let mut seasons = Vec::new();
         for clause in value.split(';') {
-            match clause.split_once('@').map(|(_, condition)| condition.trim().trim_matches(['(', ')']).trim()) {
-                Some(condition) if hazmat(condition) => {}
-                Some(condition) if seasonal(condition) => seasons.push(condition),
-                _ => return Some((modes, None)),
+            let Some((value, condition)) = clause.split_once('@') else { return Some((key, modes, None)) };
+            let condition = condition.trim().trim_matches(['(', ')']).trim();
+            if seasonal(condition) {
+                seasons.push((value.trim(), condition));
+            } else if !hazmat(condition) {
+                return Some((key, modes, None));
             }
         }
-        (!seasons.is_empty()).then(|| (modes, Some(seasons.join("; "))))
+        (!seasons.is_empty()).then_some((key, modes, Some(seasons)))
     })
 }
 
@@ -224,4 +234,31 @@ pub struct Data {
     pub nodes: BTreeMap<i64, Node>,
     pub ways: BTreeMap<i64, Way>,
     pub relations: BTreeMap<i64, Relation>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seasonal_closures_name_only_restricting_conditions_with_their_modes() {
+        let closures = |tags: &[(&'static str, &'static str)]| seasonal_closures(tags.iter().copied());
+        assert_eq!(
+            closures(&[("bicycle:conditional", "no @ (Nov-May)"), ("foot:conditional", "no @ (Mar 1-Jul 31)")]),
+            vec![(BIKE, "Nov-May".into()), (FOOT | PUSH, "Mar 1-Jul 31".into())]
+        );
+        assert_eq!(
+            closures(&[("access:conditional", "no @ (Nov-May)"), ("vehicle:conditional", "no @ (Nov-May)")]),
+            vec![(BIKE | FOOT | PUSH, "Nov-May".into())]
+        );
+        // An open season, a one-way, a motor-vehicle rule and a weather rule close nothing seasonally.
+        for tag in [
+            ("access:conditional", "yes @ (May-Oct)"),
+            ("oneway:conditional", "yes @ (Nov-May)"),
+            ("motor_vehicle:conditional", "no @ (Nov-May)"),
+            ("access:conditional", "no @ (Nov-May); no @ (wet)"),
+        ] {
+            assert_eq!(closures(&[tag]), vec![], "{tag:?}");
+        }
+    }
 }

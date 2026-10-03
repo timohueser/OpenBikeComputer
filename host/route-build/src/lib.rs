@@ -11,6 +11,7 @@ mod road_bike;
 pub mod terrain;
 
 use route_engine::{
+    closures::Closures,
     endpoints::Dictionary,
     model::{Graph, Profile},
     package::{self, Manifest, CELL, ROADS_PER_PAGE},
@@ -74,7 +75,28 @@ pub fn prepare(
     }
     manifest.costs = Table::write(&dictionary.into_values(), &mut write)?;
     manifest.landmarks = Some(landmarks);
+    let closures = Closures::build(graph.roads.iter().enumerate().map(|(id, road)| {
+        let tags = graph.osm.ways.get(&road.way).map(|way| &way.tags);
+        (
+            id as u32,
+            tags.map_or_else(Vec::new, |tags| {
+                route_engine::osm::seasonal_closures(tags.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            }),
+        )
+    }))?;
+    manifest.closures = write_closures(&closures, &mut write)?;
     Ok(manifest)
+}
+
+/// Writes the table only when a road has a seasonal closure.
+fn write_closures(
+    closures: &Closures,
+    write: &mut impl FnMut(&[u8]) -> Result<String, String>,
+) -> Result<Option<String>, String> {
+    if closures.roads.is_empty() {
+        return Ok(None);
+    }
+    write(&storage::encode(closures)?).map(Some)
 }
 
 fn prepare_base(
@@ -88,6 +110,7 @@ fn prepare_base(
     let roads = u32::try_from(graph.roads.len()).map_err(|_| "Too many roads")?;
     let mut manifest = Manifest {
         landmarks: None,
+        closures: None,
         format: package::FORMAT,
         region,
         bounds,

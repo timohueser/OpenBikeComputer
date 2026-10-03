@@ -1,6 +1,8 @@
 //! Query access is independent of whether data is one region or a union of published blocks.
 use crate::{
-    base, landmarks,
+    base,
+    closures::Closures,
+    landmarks,
     model::{Point, Profile, Road},
     package::{Endpoint, Package, Source},
     search::Seed,
@@ -19,6 +21,7 @@ pub trait RoutingData {
     fn profile(&self, name: &str) -> Result<&Profile>;
     fn snap(&mut self, point: Point, metric: &str, policy: Policy) -> Result<Candidates>;
     fn road(&mut self, road: u32) -> Result<Road>;
+    fn closures(&self) -> Result<Closures>;
     fn endpoint(&mut self, metric: &str, road: u32) -> Result<Endpoint>;
     fn base(&mut self, metric: &str) -> Result<(Arc<base::Graph>, Arc<base::Costs>)>;
     fn has_landmarks(&self, metric: &str) -> bool;
@@ -55,6 +58,9 @@ impl<S: Source> RoutingData for Package<S> {
     }
     fn road(&mut self, road: u32) -> Result<Road> {
         self.road(road)
+    }
+    fn closures(&self) -> Result<Closures> {
+        self.closures()
     }
     fn endpoint(&mut self, metric: &str, road: u32) -> Result<Endpoint> {
         self.endpoint(metric, road)
@@ -106,6 +112,9 @@ impl<T: RoutingData + ?Sized> RoutingData for Box<T> {
     }
     fn road(&mut self, road: u32) -> Result<Road> {
         (**self).road(road)
+    }
+    fn closures(&self) -> Result<Closures> {
+        (**self).closures()
     }
     fn endpoint(&mut self, metric: &str, road: u32) -> Result<Endpoint> {
         (**self).endpoint(metric, road)

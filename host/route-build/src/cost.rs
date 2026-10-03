@@ -176,7 +176,6 @@ mod tests {
             hiking_difficulty: None,
             uncertain_access: false,
             structure: false,
-            seasonal_closure: None,
             shape,
         }
     }

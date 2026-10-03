@@ -1,5 +1,5 @@
 use route_engine::{
-    model::{Graph, Pace, Point, Profile, Road, SeasonalClosure, Surface, BIKE, FOOT, NO_ELEVATION, PUSH},
+    model::{Graph, Pace, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH},
     package::{digest, Package, Source},
     snap::{Candidate, Policy},
     Control, Error, Request, Route, Router,
@@ -129,7 +129,6 @@ fn fixture() -> Graph {
                     hiking_difficulty: None,
                     uncertain_access: false,
                     structure: false,
-                    seasonal_closure: None,
                     shape: vec![points[from as usize], points[to as usize]],
                 });
             }
@@ -954,7 +953,6 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
                 hiking_difficulty: None,
                 uncertain_access: false,
                 structure: false,
-                seasonal_closure: None,
                 access: if i == 1 {
                     route_engine::osm::access(
                         |key| match key {
@@ -1016,11 +1014,18 @@ fn a_route_reports_a_seasonal_closure_only_for_the_mode_it_uses() {
             hiking_difficulty: None,
             uncertain_access: false,
             structure: false,
-            seasonal_closure: (from.min(to) == 1).then(|| SeasonalClosure { modes: BIKE, condition: "Nov-May".into() }),
             shape: vec![points[from as usize], points[to as usize]],
         })
         .collect();
-    let (source, manifest) = package(&Graph { points, roads, ..Graph::default() });
+    let node_ids = (0..4).collect();
+    let mut graph = Graph { points, roads, node_ids, node_access: vec![BIKE | FOOT | PUSH; 4], ..Graph::default() };
+    for way in 0..3 {
+        let closures = [("bicycle:conditional", "no @ (Nov-May)"), ("foot:conditional", "no @ (Mar 1-Jul 31)")];
+        let tags = std::iter::once(("highway", "secondary")).chain(if way == 1 { closures.to_vec() } else { vec![] });
+        let tags = tags.map(|(key, value)| (key.to_owned(), value.to_owned())).collect();
+        graph.osm.ways.insert(way, route_engine::osm::Way { id: way, nodes: vec![way, way + 1], tags });
+    }
+    let (source, manifest) = package(&graph);
     let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
     let mut request = Request {
         points: vec![[0.0001, 0.0], [0.0029, 0.0]],
@@ -1036,7 +1041,27 @@ fn a_route_reports_a_seasonal_closure_only_for_the_mode_it_uses() {
     assert_eq!(route.closures, vec![None, Some("Nov-May".into()), None]);
     request.profile = "hiking".into();
     let route = router.route(&request, &Control::default()).unwrap();
-    assert_eq!(route.closures, vec![None; 3]);
+    assert_eq!(route.closures, vec![None, Some("Mar 1-Jul 31".into()), None]);
+    // An extraction renumbers its roads and keeps their closures.
+    let (source, bytes) = package(&graph);
+    let mut objects = HashMap::new();
+    let extracted = route_build::extract::prepare(
+        &mut Package::open(source, &bytes).unwrap(),
+        "box".into(),
+        [0.0015, -0.001, 0.0025, 0.001],
+        false,
+        |bytes| {
+            let key = digest(bytes);
+            objects.insert(key.clone(), bytes.to_vec());
+            Ok(key)
+        },
+    )
+    .unwrap();
+    let package = Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&extracted).unwrap()).unwrap();
+    let mut router = Router::new(package, 768 * 1024 * 1024);
+    request.points = vec![[0.0016, 0.0], [0.0024, 0.0]];
+    let route = router.route(&request, &Control::default()).unwrap();
+    assert_eq!(route.closures, vec![Some("Mar 1-Jul 31".into()), None]);
 }
 
 #[test]

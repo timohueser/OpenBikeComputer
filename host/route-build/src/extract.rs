@@ -112,6 +112,8 @@ pub fn prepare<S: Source>(
     }
     manifest.costs = route_engine::table::Table::write(&dictionary.into_values(), &mut write)?;
     manifest.landmarks = Some(landmarks);
+    let closures = input.closures().map_err(|e| e.to_string())?.select(ids.iter().copied());
+    manifest.closures = crate::write_closures(&closures, &mut write)?;
     Ok(manifest)
 }
 

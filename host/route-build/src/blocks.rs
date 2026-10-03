@@ -94,6 +94,7 @@ pub fn prepare(input: &Package<impl Source>, bounds: [f64; 4], roads: &[u32]) ->
         objects.insert(input.key(&data.geometry, page)?);
     }
     objects.extend(data.costs.blocks.iter().cloned());
+    objects.extend(data.closures.iter().cloned());
     let allowed = pages(roads.iter().map(|id| id / 64));
     for metric in data.metrics.values_mut() {
         retain(&mut metric.allowed, &allowed, &mut objects)?;

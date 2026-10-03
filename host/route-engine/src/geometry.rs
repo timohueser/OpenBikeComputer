@@ -71,7 +71,7 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Road>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{SeasonalClosure, Surface, NO_ELEVATION};
+    use crate::model::{Surface, NO_ELEVATION};
 
     #[test]
     fn geometry_preserves_fields_and_float_bits_and_rejects_invalid_columns() {
@@ -90,7 +90,6 @@ mod tests {
             hiking_difficulty: Some(3),
             uncertain_access: true,
             structure: true,
-            seasonal_closure: Some(SeasonalClosure { modes: 7, condition: "Nov-May".into() }),
             shape: vec![
                 Point { lat: -85_000_000, lon: 180_000_000, elevation: NO_ELEVATION },
                 Point { lat: 85_000_000, lon: -180_000_000, elevation: -0.0 },
