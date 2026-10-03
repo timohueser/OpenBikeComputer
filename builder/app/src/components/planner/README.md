@@ -149,7 +149,7 @@ release. Use them for a hosted build with the configured API origin.
 | `VITE_PLANNER_PMTILES_URL` | Local basemap archive, when TileJSON is absent |
 | `VITE_PLANNER_PLACES_URL` | Rider places TileJSON or PMTiles archive |
 | `VITE_PLANNER_OVERLAYS_URL` | Overlay TileJSON or PMTiles archive |
-| `VITE_PLANNER_SNOW_URL` | Snow PMTiles archive; `test-support/planner/snow_fixture.py` fakes one |
+| `VITE_PLANNER_SNOW_URL` | Snow history PMTiles archive |
 | `VITE_PLANNER_ROUTING_URL` | Routing API prefix |
 | `VITE_PLANNER_SEARCH_URL` | Search API prefix |
 | `VITE_PLANNER_SEARCH_REGIONS` | Comma-separated region IDs |

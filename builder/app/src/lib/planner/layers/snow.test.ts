@@ -47,8 +47,11 @@ describe('route stats', () => {
         expect(stats.year.grid.rows[0].cells[dateColumn('2026-07-01')]).toBe(FREE);
     });
 
-    it('gives the last clear day near the start of the snow season', () => {
-        expect(snowStats(route, [0, 1, 3], '2025-10-20', 'light').detail).toBe('Clear until 9 Nov · 20 Oct – 9 Nov');
+    it('gives the next change after the date', () => {
+        const detail = (date: string) => snowStats(route, [0, 1, 3], date, 'light').detail;
+        expect(detail('2026-01-21')).toBe('Clear from 10 Jun · 21 May – 10 Jun');
+        expect(detail('2026-07-15')).toBe('Clear until 9 Nov · 20 Oct – 9 Nov');
+        expect(detail('2025-10-20')).toBe('Clear until 9 Nov · 20 Oct – 9 Nov');
     });
 });
 

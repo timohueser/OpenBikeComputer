@@ -82,7 +82,6 @@ const seasonsOf = (p: Planar) => routeCache.get(p) ?? routeCache.set(p, routeSea
 
 const years = (n: number) => `${n} ${n === 1 ? 'year' : 'years'}`;
 const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
-const cyclic = (a: number, b: number) => Math.min(Math.abs(a - b), DAYS - Math.abs(a - b));
 
 /** The two stats lines and the year strip of a route for a date. `km` holds the distance of each item. */
 export function snowStats(p: Planar, km: ArrayLike<number>, date: string, theme: Theme) {
@@ -99,7 +98,8 @@ export function snowStats(p: Planar, km: ArrayLike<number>, date: string, theme:
     const headline = snowKm >= 0.05 ? `${snowKm.toFixed(1)} km snowed in on ${on}` : `Not snowed in on ${on}`;
     const snowy = seasons.filter(({ melt }) => melt >= 0);
     if (!snowy.length) return { headline, detail: `Snow-free in all ${years(seasons.length)}`, year };
-    const autumn = cyclic(index, median(snowy.map(s => s.onset))) < cyclic(index, median(snowy.map(s => s.melt)));
+    // The next change after the date: the melt-out inside the typical snow period, else the next onset.
+    const autumn = !(median(snowy.map(s => s.onset)) <= index && index <= median(snowy.map(s => s.melt)));
     // The first clear day after melt-out, or the last clear day before the onset; DAYS or -1 when the route never clears.
     const days = seasons.map(({ melt, onset }) => autumn ? onset - 1 : melt + 1);
     const never = days.filter(day => day < 0 || day >= DAYS).length;
