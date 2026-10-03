@@ -7,7 +7,8 @@
 
     let { autoCenter = $bindable(false), hillshade = $bindable(), contours = $bindable(), hidden = $bindable(), highlighted = $bindable(), mapOverlays = $bindable(), dataLayer, dataLayerOn = $bindable(false), theme = 'light', walking = false }: {
         autoCenter?: boolean;
-        dataLayer: DataLayer;
+        /** Absent when the region has no data layer. */
+        dataLayer?: DataLayer;
         dataLayerOn?: boolean;
         walking?: boolean;
         hillshade: boolean;
@@ -76,7 +77,7 @@
             {/if}
                 <p>Right-click or long-press a route for details.</p>
             </section>
-            <section class="access-section" aria-label="Data layers">
+            {#if dataLayer}<section class="access-section" aria-label="Data layers">
                 <h3>Data layers</h3>
                 <label><input type="checkbox" bind:checked={dataLayerOn} />{dataLayer.label}</label>
                 {#if dataLayerOn}
@@ -87,7 +88,7 @@
                 {:else}
                     <p>{dataLayer.description}</p>
                 {/if}
-            </section>
+            </section>{/if}
             <section class="access-section" aria-label="Access markings">
                 <label><input type="checkbox" bind:checked={mapOverlays.access} />Closures & access<span class="access-symbol" aria-hidden="true"><Icon path="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM7 12h10" size={17} /></span></label>
                 {#if mapOverlays.access}<p>{walking ? 'Walking access.' : 'Bike access: a walking symbol means dismount and push.'} Click access symbols for rules; closure reports are not live.</p>{/if}

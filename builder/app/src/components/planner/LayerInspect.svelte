@@ -1,16 +1,15 @@
 <script lang="ts">
-    import type { Snippet } from 'svelte';
     import SeasonGrid from './SeasonGrid.svelte';
     import type { Inspection } from '../../lib/planner/layers/data-layer';
 
-    let { title, detail = '', inspection, source, note = '', children }: { title: string; detail?: string; inspection: Inspection | null; source: string; note?: string; children?: Snippet } = $props();
+    let { title, detail = '', inspection, source, note = '' }: { title: string; detail?: string; inspection: Inspection | null; source: string; note?: string } = $props();
 </script>
 
 <div class="inspect">
     <p class="title"><strong>{title}</strong>{#if detail}<span>{detail}</span>{/if}</p>
     {#if inspection}
         <p class="headline">{inspection.headline}</p>
-        <SeasonGrid grid={inspection.grid} label={`${inspection.headline}. One row per year, newest at the bottom.`} />
+        <SeasonGrid grid={inspection.grid} label={`${inspection.headline}. One row per winter season, newest at the bottom.`} />
         <ul class="legend">
             {#each inspection.grid.swatches.slice(1) as swatch (swatch.label)}<li><span class="swatch" class:hatch={swatch.hatch} style:--swatch={swatch.color}></span>{swatch.label}</li>{/each}
             <li><span class="line"></span>Your date</li>
@@ -20,7 +19,6 @@
     {/if}
     {#if note}<p class="note">{note}</p>{/if}
     {#if source}<p class="source">{source}</p>{/if}
-    {@render children?.()}
 </div>
 
 <style>

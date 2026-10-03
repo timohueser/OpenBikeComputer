@@ -6,7 +6,7 @@
 </script>
 
 <script lang="ts">
-    import { onMount } from 'svelte';
+    import { onMount, type Snippet } from 'svelte';
     import Icon from './PlannerIcon.svelte';
     import PlaceRow from './PlaceRow.svelte';
     import OpeningHours from './OpeningHours.svelte';
@@ -18,7 +18,7 @@
 
     let {
         kind, trip, days, overnightNote = '', dayLabels, night, point, place, coordinate, candidates, legMode,
-        onClose, onEndpoint, onAddHere, onLegMode, onInsert, onPick, onSelectPlace, onStay, onAddVisit, onRename, onKind, onRemove,
+        onClose, onEndpoint, onAddHere, onLegMode, onInsert, onPick, onSelectPlace, onStay, onAddVisit, onRename, onKind, onRemove, children,
     }: {
         overnightNote?: string;
         kind: CalloutKind;
@@ -46,6 +46,8 @@
         onRename: (label: string) => void;
         onKind: (kind: EditableKind | 'detour') => void;
         onRemove: () => void;
+        /** Extra details below the callout actions, such as a data layer at this spot. */
+        children?: Snippet;
     } = $props();
 
     const hasEndpoints = $derived(trip.points.some(p => p.kind === 'start') && trip.points.some(p => p.kind === 'finish'));
@@ -189,6 +191,7 @@
         {/if}
         <button type="button" class="quiet" onclick={onRemove}><Icon name="trash" size={15} />Remove point</button>
     {/if}
+    {@render children?.()}
 </div>
 
 <style>

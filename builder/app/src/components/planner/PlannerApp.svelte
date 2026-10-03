@@ -16,7 +16,7 @@
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
     import LayerMenu from './LayerMenu.svelte';
     import LayerDateBar from './LayerDateBar.svelte';
-    import LayerInspect from './LayerInspect.svelte';
+    import LayerSpot from './LayerSpot.svelte';
     import LayerStrip from './LayerStrip.svelte';
     import { snow } from '../../lib/planner/layers/snow-layer.svelte';
     import type { OverlayOptions } from '../../lib/planner/route-overlays';
@@ -33,9 +33,9 @@
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import { corridorPlaces, routeDistance } from '../../lib/planner/place-index';
     import { landmarks } from '../../lib/planner/landmarks';
-    import { MAP_BOUNDS, PLACES_URL } from '../../lib/planner/map-data';
+    import { MAP_BOUNDS, PLACES_URL, SNOW_URL } from '../../lib/planner/map-data';
     import { coordinateName, visitName } from '../../lib/planner/point-names';
-    import { SEARCH_URL, HOSTED_SEARCH, SEARCH_REGIONS } from '../../lib/planner/search/config';
+    import { SEARCH_URL, HOSTED_SEARCH, SEARCH_REGIONS, REGION_NAME } from '../../lib/planner/search/config';
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileAscent, profileDescent } from '../../lib/planner/profile-data';
     import { searchPlaces, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
@@ -175,7 +175,7 @@
     let searchRegion = $state(SEARCH_REGIONS[0]);
     let overnightPlaces = $state<Place[]>([]);
     let overnightNote = $state('');
-    let message = $state('Plan a ride in Baden-Württemberg');
+    let message = $state(`Plan a ride in ${REGION_NAME}`);
     // The status line offers Undo after a version restore, until the next change.
     let undoable = $state(false);
     let draftSavedAt = $state<number | null>(null);
@@ -287,15 +287,15 @@
         }
         return pins;
     });
-    const calloutKind = $derived<CalloutKind | 'snow' | null>(
-        selectedId === 'add' || selectedId === 'leg' || selectedId === 'snow' ? selectedId
+    const calloutKind = $derived<CalloutKind | null>(
+        selectedId === 'add' || selectedId === 'leg' ? selectedId
         : selectedId?.startsWith('dayend-') ? 'dayend'
         : selectedPoint ? 'point'
         : selectedPlace || selectedId === 'pending' ? 'place'
         : null,
     );
     const calloutCoordinate = $derived.by(() => {
-        if (calloutKind === 'add' || calloutKind === 'leg' || calloutKind === 'snow') return spot?.coordinate ?? null;
+        if (calloutKind === 'add' || calloutKind === 'leg') return spot?.coordinate ?? null;
         if (calloutKind === 'place') return previewCoordinate;
         if (!showRoute && selectedPoint?.kind !== 'marker') return null;
         return mapPoints.find(p => p.id === selectedId)?.coordinate ?? null;
@@ -320,17 +320,16 @@
     });
     const routeSamples = $derived(snowOn && visualRoute && lineSamples?.line === visualRoute ? lineSamples.samples : null);
     const layerStats = $derived(routeSamples ? snow.stats(routeSamples, cumulative(visualRoute!.coordinates), shownDate, theme) : null);
-    // A map click with the layer shown pins the years at that spot.
+    // A map click with the layer shown adds the years at that spot to the callout.
     let pinSamples = $state.raw<{ at: Coordinate; samples: unknown } | null>(null);
     $effect(() => {
-        const at = calloutKind === 'snow' ? spot?.coordinate : undefined;
+        const at = snowOn && calloutKind === 'add' ? spot?.coordinate : undefined;
         if (!at) return;
         const abort = new AbortController();
         snow.sample([at], abort.signal).then(samples => { if (!abort.signal.aborted) pinSamples = { at, samples }; }, () => {});
         return () => abort.abort();
     });
-    const pinInspection = $derived(calloutKind === 'snow' && pinSamples?.at === spot?.coordinate ? snow.inspect(pinSamples!.samples, 0, shownDate, theme) : null);
-    $effect(() => { if (!snowOn && untrack(() => selectedId) === 'snow') clearSelection(); });
+    const pinInspection = $derived(snowOn && calloutKind === 'add' && pinSamples?.at === spot?.coordinate ? snow.inspect(pinSamples!.samples, 0, shownDate, theme) : null);
     const underTrees = (coordinate: Coordinate) => map?.underTrees(coordinate) ?? false;
 
     $effect(() => {
@@ -560,7 +559,7 @@
             clearSelection();
         } else {
             spot = { coordinate };
-            selectedId = snowOn ? 'snow' : 'add';
+            selectedId = 'add';
         }
     }
 
@@ -874,7 +873,7 @@
                         {#if routingStatus !== 'Calculating route…'}
                             {#if canUndo}<button type="button" class="planner-action" onclick={undo}>Undo last change</button>{/if}
                             <button type="button" class="planner-action" onclick={() => routeAttempt++}>Retry routing</button>
-                            <p>Move a point or choose another place in Baden-Württemberg.</p>
+                            <p>Move a point or choose another place in {REGION_NAME}.</p>
                         {/if}
                     </div>
                 {/if}
@@ -938,11 +937,7 @@
                     onVisibleRange={(range) => visibleRange = range}
                 >
                     {#snippet popup()}
-                        {#if calloutKind === 'snow'}
-                            <LayerInspect title={`${snow.label} here`} inspection={pinInspection} source={snow.source} note={spot && underTrees(spot.coordinate) ? snow.treeNote : ''}>
-                                <button type="button" class="planner-action pin-add" onclick={() => selectedId = 'add'}>Add a point here</button>
-                            </LayerInspect>
-                        {:else if calloutKind}
+                        {#if calloutKind}
                             {#key selectedId}
                                 <MapCallout
                                     kind={calloutKind} {trip} {days} {overnightNote} {dayLabels} {night} {candidates} {legMode}
@@ -958,7 +953,11 @@
                                     onRename={rename}
                                     onKind={changeKind}
                                     onRemove={removePoint}
-                                />
+                                >
+                                    {#if snowOn && calloutKind === 'add'}
+                                        <LayerSpot inspection={pinInspection} error={snow.error} note={spot && underTrees(spot.coordinate) ? snow.treeNote : ''} />
+                                    {/if}
+                                </MapCallout>
                             {/key}
                         {/if}
                     {/snippet}
@@ -972,7 +971,7 @@
                         <button type="button" disabled={!trip.points.length} onclick={() => focusedDay ? showDay(focusedDay.ridingNumber) : coordinates.length ? map?.fitRoute() : map?.fitCoordinates(trip.points.map(p => p.coordinate))} aria-label={focusedDay ? `Show day ${focusedDay.number} on map` : 'Show whole route'}><Icon name="fit" /></button>
                         <button type="button" disabled={!hasEndpoints} class:chosen={showRoute} aria-label={showRoute ? 'Hide route' : 'Show route'} aria-pressed={showRoute} onclick={() => showRoute = !showRoute}><Icon name="eye" /></button>
                     </div>
-                    <LayerMenu {theme} dataLayer={snow} bind:dataLayerOn={snowOn} walking={trip.bike === 'hiking'} bind:autoCenter bind:mapOverlays bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
+                    <LayerMenu {theme} dataLayer={SNOW_URL ? snow : undefined} bind:dataLayerOn={snowOn} walking={trip.bike === 'hiking'} bind:autoCenter bind:mapOverlays bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
                 </div>
                 {#if snowOn}
                     <div class="layer-date" bind:clientHeight={dateBarHeight}><LayerDateBar date={shownDate} year={layerStats?.year ?? null} onDate={(date) => layerDate = date} /></div>
@@ -1191,7 +1190,6 @@
     .layer-summary p { display: flex; flex-direction: column; gap: 2px; margin: 0; }
     .layer-summary strong { font-weight: 600; }
     .layer-summary span { font-size: 13px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
-    .pin-add { margin-top: 10px; }
     .layer-date { position: absolute; left: 16px; right: 16px; bottom: 34px; z-index: 2; }
     .list-switch {
         display: flex;

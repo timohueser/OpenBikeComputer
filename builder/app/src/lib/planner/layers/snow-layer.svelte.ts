@@ -1,6 +1,7 @@
 import { addProtocol, type Map, type RequestParameters } from 'maplibre-gl';
 import { PMTiles } from 'pmtiles';
 import { SNOW_URL } from '../map-data';
+import { reliefPaint } from '../map-style';
 import type { Coordinate } from '../map-types';
 import type { DataLayer, Theme } from './data-layer';
 import { colors, paintTile, seasonDay, snowClass, snowClasses, snowGrid, snowMeta, snowStats, type Planar, type SnowMeta } from './snow';
@@ -13,7 +14,35 @@ const CACHE_BYTES = 128 * 2 ** 20;
 // Beyond the archive's zoom, tiles enlarge their ancestor's pixels, so the no-data hatch stays fine.
 const MAX_ZOOM = 14;
 
-interface Archive { tiles: PMTiles; meta: SnowMeta; minZoom: number; maxZoom: number; bounds: [number, number, number, number] }
+interface Archive {
+    meta: SnowMeta; minZoom: number; maxZoom: number; bounds: [number, number, number, number];
+    get(z: number, x: number, y: number, signal?: AbortSignal): Promise<ArrayBuffer | undefined>;
+}
+
+/** A hosted region serves TileJSON and tiles from the tile service; a local one reads the PMTiles archive. */
+async function openArchive(url: string): Promise<Archive> {
+    if (new URL(url).pathname.endsWith('.json')) {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`Snow TileJSON answered ${response.status}.`);
+        const json = await response.json();
+        const template: string = json.tiles[0];
+        return {
+            meta: snowMeta(json), minZoom: json.minzoom, maxZoom: json.maxzoom, bounds: json.bounds,
+            async get(z, x, y, signal) {
+                const tile = await fetch(template.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y)), { signal });
+                if (tile.status === 204) return undefined;
+                if (!tile.ok) throw new Error(`Snow tile ${z}/${x}/${y} answered ${tile.status}.`);
+                return tile.arrayBuffer();
+            },
+        };
+    }
+    const tiles = new PMTiles(url);
+    const [header, metadata] = await Promise.all([tiles.getHeader(), tiles.getMetadata() as Promise<Record<string, unknown>>]);
+    return {
+        meta: snowMeta(metadata), minZoom: header.minZoom, maxZoom: header.maxZoom, bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat],
+        get: async (z, x, y, signal) => (await tiles.getZxy(z, x, y, signal))?.data,
+    };
+}
 
 /** ABGR words for an ImageData view; index 4 is the no-data hatch. */
 function palette(theme: Theme): Uint32Array {
@@ -59,14 +88,11 @@ class SnowLayer implements DataLayer<Planar> {
     swatches = snowClasses;
 
     private open(): Promise<Archive> {
-        this.archive ??= (async () => {
-            const tiles = new PMTiles(SNOW_URL);
-            const [header, metadata] = await Promise.all([tiles.getHeader(), tiles.getMetadata() as Promise<Record<string, unknown>>]);
-            const meta = snowMeta(metadata);
-            this.meta = meta;
+        this.archive ??= openArchive(SNOW_URL).then(archive => {
+            this.meta = archive.meta;
             this.error = '';
-            return { tiles, meta, minZoom: header.minZoom, maxZoom: header.maxZoom, bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat] as Archive['bounds'] };
-        })().catch(error => {
+            return archive;
+        }).catch(error => {
             this.archive = undefined;
             this.error = 'Snow data could not load for this region.';
             throw error;
@@ -75,10 +101,10 @@ class SnowLayer implements DataLayer<Planar> {
     }
 
     private async fetch(z: number, x: number, y: number, signal?: AbortSignal): Promise<Uint8Array | undefined> {
-        const { tiles, meta } = await this.open();
-        const tile = await tiles.getZxy(z, x, y, signal);
+        const archive = await this.open(), meta = archive.meta;
+        const tile = await archive.get(z, x, y, signal);
         if (!tile) return undefined;
-        const data = new Uint8Array(tile.data);
+        const data = new Uint8Array(tile);
         if (data.length !== 2 * meta.seasons * PIXELS) throw new Error(`Snow tile ${z}/${x}/${y} has ${data.length} bytes.`);
         return data;
     }
@@ -111,6 +137,9 @@ class SnowLayer implements DataLayer<Planar> {
         this.date = date;
         this.map = map;
         this.shown = shown;
+        if (map.getLayer('relief')) {
+            for (const [key, value] of Object.entries(reliefPaint(theme === 'dark', shown))) map.setPaintProperty('relief', key, value);
+        }
         if (map.getLayer(this.id)) {
             map.setLayoutProperty(this.id, 'visibility', shown ? 'visible' : 'none');
             // A hidden layer keeps its old tiles, so a date or theme change while hidden refreshes on show.

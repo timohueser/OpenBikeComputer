@@ -11,7 +11,7 @@
 
     let canvas: HTMLCanvasElement;
     let width = $state(0);
-    const gap = $derived(grid.rows.length > 1 ? 3 : 0);
+    const gap = $derived(grid.rows.length > 1 ? Math.min(3, Math.ceil(rowHeight / 3)) : 0);
     const height = $derived(grid.rows.length * (rowHeight + gap) - gap);
     const labelled = $derived(grid.rows.some(row => row.label));
     // Every few rows carry a label, counted from the newest.
@@ -80,7 +80,7 @@
 
 <style>
     .season-grid { display: grid; grid-template-columns: minmax(0, 1fr); }
-    .season-grid.labelled { grid-template-columns: 36px minmax(0, 1fr); }
+    .season-grid.labelled { grid-template-columns: 48px minmax(0, 1fr); }
     .rows { position: relative; margin: 0; padding: 0; list-style: none; }
     .rows li { position: absolute; right: 6px; transform: translateY(-50%); font-size: 11px; line-height: 1; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
     .plot { position: relative; min-width: 0; padding-bottom: 16px; }
