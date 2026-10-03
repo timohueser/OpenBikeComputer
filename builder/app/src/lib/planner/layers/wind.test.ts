@@ -16,7 +16,7 @@ function setRose(t: ReturnType<typeof specTile>, cell: number, from: Record<numb
 
 function overview() {
     const t = specTile(OVERVIEW, 78, 26);
-    for (const cell of [FREIBURG, EAST, SOUTH]) for (let week = 0; week < 52; week++) t.set('wind', week, cell, 5); // 2.5 m/s
+    for (const [cell, code] of [[FREIBURG, 5], [EAST, 4], [SOUTH, 5]]) for (let week = 0; week < 52; week++) t.set('wind', week, cell, code); // 2.5 and 2 m/s
     setRose(t, FREIBURG, { 8: 170 }); // from the south: blows towards the north, steady
     setRose(t, EAST, { 4: 70, 12: 60 }); // from the east and the west: two opposite winds
     t.set('wind', WEEK, SOUTH, 255);
@@ -24,13 +24,13 @@ function overview() {
 }
 
 describe('wind map', () => {
-    it('colours every cell with data and points an arrow where the wind blows towards', () => {
+    it('colours the cells from 2.5 m/s and points an arrow where the wind blows towards', () => {
         const { cells, arrows } = windMap([overview()], WEEK, APRIL, 1);
-        expect(cells.features.map(f => f.properties.speed)).toEqual([2.5, 2.5]);
+        expect(cells.features.map(f => f.properties.speed)).toEqual([2.5]);
         // Neighbour cells share their edge exactly, so the fill has no seams.
-        const [west, east] = cells.features.map(f => f.geometry.coordinates[0]);
-        expect(west[1][0]).toBe(east[0][0]);
-        expect(west[0]).toEqual([-180 + 0.1 * 1878.5, 90 - 0.1 * 420.5]);
+        const [north, south] = windMap([overview()], 0, APRIL, 1).cells.features.map(f => f.geometry.coordinates[0]);
+        expect(north[0][1]).toBe(south[2][1]);
+        expect(north[0]).toEqual([-180 + 0.1 * 1878.5, 90 - 0.1 * 420.5]);
         expect(arrows.features.map(f => f.properties)).toEqual([{ icon: 'wind-arrow-2', rotate: 0 }, { icon: 'wind-double-1', rotate: 270 }]);
         const [lon, lat] = arrows.features[0].geometry.coordinates;
         expect([lon, lat].map(v => v.toFixed(6))).toEqual(['7.900000', '48.000000']);

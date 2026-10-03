@@ -5,7 +5,7 @@ import {
     climateTile, locate, rainClass, rainRatios, read, temperatureAt, weekMonth, weekValues, wetDaysOf7, windChance, windMode, windRose,
 } from './climate';
 import { lineBearings, weatherRows, windRow } from './climate-route';
-import { sampleLine, type TileGetter } from './climate-source';
+import { climateSource, detailCell, sampleLine, type TileGetter } from './climate-source';
 import { specTile } from '../../../../test-support/planner/climate-tiles';
 
 describe('climate tiles', () => {
@@ -215,5 +215,24 @@ describe('climate along a route', () => {
     it('measures the travel bearing between the neighbours of each point', () => {
         expect([...lineBearings([[0, 0], [1, 0], [1, 1]])].map(Math.round)).toEqual([90, 45, 0]);
         expect(Math.round(lineBearings([[10, 60], [9, 60]])[0])).toBe(270);
+    });
+});
+
+describe('detail tiles for a point chart', () => {
+    it('loads the one tile of a point on its first read and reads it once it has arrived', async () => {
+        const body = specTile(DETAIL, 156, 52).body;
+        const requests: string[] = [];
+        const source = climateSource({
+            metadata: { first_year: 2016, years: 10, wet_day_mm: 2.3 }, minZoom: 8, maxZoom: 9, bounds: [7.45, 47.5, 10.5, 49.85],
+            async get(z, x, y) { requests.push(`${z}/${x}/${y}`); return x === 156 ? body.slice().buffer : undefined; },
+        });
+        expect(detailCell(source, [7.86, 47.99])).toBeUndefined();
+        expect(detailCell(source, [7.86, 47.99])).toBeUndefined();
+        await source.tile(DETAIL, 156, 52);
+        expect(detailCell(source, [7.86, 47.99])?.index).toBe(4 * 12 + 7);
+        detailCell(source, [10.4, 47.99]);
+        await source.tile(DETAIL, 158, 52);
+        expect(detailCell(source, [10.4, 47.99])).toBeNull();
+        expect(requests).toEqual(['9/156/52', '9/158/52']);
     });
 });

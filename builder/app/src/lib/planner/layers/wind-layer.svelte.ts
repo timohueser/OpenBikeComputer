@@ -2,56 +2,51 @@ import type { GeoJSONSource, Map } from 'maplibre-gl';
 import type { FeatureCollection } from 'geojson';
 import WindRose from '../../../components/planner/WindRose.svelte';
 import { cumulative } from '../editor';
-import { DETAIL, OVERVIEW, weekMonth, type ClimateMeta, type ClimateTile } from './climate';
+import { OVERVIEW, weekMonth, type ClimateMeta, type ClimateTile } from './climate';
 import { lineBearings, windRow } from './climate-route';
-import { openClimate, sampleLine, type CellRef, type ClimateSource } from './climate-source';
+import { detailCell, openClimate, sampleLine, type CellRef, type ClimateSource } from './climate-source';
 import { weekOf, type DataLayer, type Line, type Theme, type View } from './data-layer';
-import { ARROW_ICONS, ARROW_MARKS, WIND_NOTE, arrowStride, headClasses, headFills, speedPaint, speedScale, viewTiles, windChart, windMap, windYear } from './wind';
+import { ARROW_ICONS, WIND_NOTE, arrowStride, headClasses, headFills, mapLegend, speedPaint, viewTiles, windChart, windMap, windYear } from './wind';
 
 const CELLS = 'wind', ARROWS = 'wind-arrows';
 const EMPTY: FeatureCollection = { type: 'FeatureCollection', features: [] };
 /** The travel direction of a sample spans this many km each way, so hairpins do not break the strip into specks. */
 const STRETCH_KM = 0.5;
 
-const ink = { light: { line: '#1c1b14', halo: '#ffffff' }, dark: { line: '#f2efe3', halo: '#201f17' } };
+const ink = { light: { fill: '#ffffff', halo: '#2b2a22' }, dark: { fill: '#f2efe3', halo: '#14130e' } };
 const RATIO = 2, SIZE = 28;
 
-/** A north-pointing arrow on a halo; `weight` 0–2 sets the shaft, and a double arrow has a head at each end. */
+/**
+ * A slim north-pointing arrow, white on a thin dark halo: the shaft tapers from a swept head to the
+ * tail, or to the middle of a double arrow. `weight` 0–2 widens it.
+ */
 function arrowImage(icon: string, theme: Theme): ImageData {
     const [, kind, weight] = icon.split('-'), w = Number(weight);
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = SIZE * RATIO;
     const context = canvas.getContext('2d')!;
     context.scale(RATIO, RATIO);
-    context.lineCap = context.lineJoin = 'round';
-    const mid = SIZE / 2, tip = 2.5, half = 3.6 + 0.7 * w, length = 6.5 + w;
-    const heads = kind === 'double' ? [1, -1] : [1];
-    const draw = (color: string, extra: number) => {
-        context.strokeStyle = context.fillStyle = color;
-        context.lineWidth = 1.3 + 1.1 * w + extra;
-        context.beginPath();
-        context.moveTo(mid, SIZE - tip - (heads.length > 1 ? length - 1 : 0));
-        context.lineTo(mid, tip + length - 1);
-        context.stroke();
-        for (const end of heads) {
-            const y = end > 0 ? tip : SIZE - tip;
-            context.lineWidth = 1 + extra;
-            context.beginPath();
-            context.moveTo(mid, y);
-            context.lineTo(mid - half, y + end * length);
-            context.lineTo(mid + half, y + end * length);
-            context.closePath();
-            context.fill();
-            context.stroke();
-        }
-    };
-    draw(ink[theme].halo, 3);
-    draw(ink[theme].line, 0);
+    context.lineJoin = 'round';
+    const mid = SIZE / 2, top = 2.5, bottom = SIZE - 2.5, half = 3.4 + 0.8 * w, head = 7 + 0.5 * w, neck = 0.9 + 0.5 * w, tail = 0.35 + 0.25 * w;
+    // The right half from the top tip down; the left half mirrors it.
+    const right: [number, number][] = kind === 'double'
+        ? [[half, top + head], [neck, top + head - 1.5], [tail, mid], [neck, bottom - head + 1.5], [half, bottom - head], [0, bottom]]
+        : [[half, top + head], [neck, top + head - 1.5], [tail, bottom]];
+    const shape = new Path2D();
+    shape.moveTo(mid, top);
+    for (const [x, y] of right) shape.lineTo(mid + x, y);
+    for (const [x, y] of [...right].reverse()) shape.lineTo(mid - x, y);
+    shape.closePath();
+    context.strokeStyle = ink[theme].halo;
+    context.lineWidth = 2.4;
+    context.stroke(shape);
+    context.fillStyle = ink[theme].fill;
+    context.fill(shape);
     return context.getImageData(0, 0, canvas.width, canvas.height);
 }
 
-/** The cells of each coordinate on both levels, the travel bearings and the headwind row of a route; a map point has neither. */
-interface Samples { overview: (CellRef | undefined)[]; detail: (CellRef | undefined)[]; bearings: Float32Array | null; row: Float32Array | null }
+/** The overview cell of each coordinate, the travel bearings and the headwind row of a route; a map point has neither. */
+interface Samples { climate: ClimateSource; coordinates: Line['coordinates']; overview: (CellRef | undefined)[]; bearings: Float32Array | null; row: Float32Array | null }
 
 class WindLayer implements DataLayer<Samples> {
     id = 'wind';
@@ -79,7 +74,7 @@ class WindLayer implements DataLayer<Samples> {
     }
 
     legend(theme: Theme) {
-        return { ...speedScale(theme), marks: ARROW_MARKS };
+        return mapLegend(theme);
     }
 
     private open(): Promise<ClimateSource> {
@@ -147,26 +142,31 @@ class WindLayer implements DataLayer<Samples> {
     private async draw() {
         const map = this.map, run = ++this.runs;
         if (!map?.getSource(CELLS)) return;
-        const climate = await this.open();
-        const view = map.getBounds(), keys = viewTiles([view.getWest(), view.getSouth(), view.getEast(), view.getNorth()], climate.bounds);
-        const week = weekOf(this.date), stride = arrowStride(map.getZoom());
-        const key = `${keys.join(' ')} ${week} ${stride}`;
-        if (key === this.drawn) return;
-        const tiles = (await Promise.all(keys.map(([x, y]) => climate.tile(OVERVIEW, x, y)))).filter((tile): tile is ClimateTile => !!tile);
-        if (run !== this.runs || map !== this.map || !map.getSource(CELLS)) return;
-        this.drawn = key;
-        const { cells, arrows } = windMap(tiles, week, weekMonth(week), stride);
-        (map.getSource(CELLS) as GeoJSONSource).setData(cells);
-        (map.getSource(ARROWS) as GeoJSONSource).setData(arrows);
+        try {
+            const climate = await this.open();
+            const view = map.getBounds(), keys = viewTiles([view.getWest(), view.getSouth(), view.getEast(), view.getNorth()], climate.bounds);
+            const week = weekOf(this.date), stride = arrowStride(map.getZoom());
+            const key = `${keys.join(' ')} ${week} ${stride}`;
+            if (key === this.drawn) return;
+            const tiles = (await Promise.all(keys.map(([x, y]) => climate.tile(OVERVIEW, x, y)))).filter((tile): tile is ClimateTile => !!tile);
+            if (run !== this.runs || map !== this.map || !map.getSource(CELLS)) return;
+            this.drawn = key;
+            const { cells, arrows } = windMap(tiles, week, weekMonth(week), stride);
+            (map.getSource(CELLS) as GeoJSONSource).setData(cells);
+            (map.getSource(ARROWS) as GeoJSONSource).setData(arrows);
+        } catch {
+            // The view stays undrawn, so the next move or date change retries.
+            this.error = 'Wind data could not load for this region.';
+        }
     }
 
     async sample({ coordinates }: Line, signal: AbortSignal): Promise<Samples> {
         const climate = await this.open();
-        const [overview, detail] = await Promise.all([sampleLine(coordinates, climate.tile), sampleLine(coordinates, climate.tile, DETAIL)]);
+        const overview = await sampleLine(coordinates, climate.tile);
         signal.throwIfAborted();
-        if (coordinates.length < 2) return { overview, detail, bearings: null, row: null };
+        if (coordinates.length < 2) return { climate, coordinates, overview, bearings: null, row: null };
         const km = cumulative(coordinates), bearings = lineBearings(coordinates, km, STRETCH_KM);
-        return { overview, detail, bearings, row: windRow(overview, km, bearings) };
+        return { climate, coordinates, overview, bearings, row: windRow(overview, km, bearings) };
     }
 
     strip = {
@@ -175,8 +175,10 @@ class WindLayer implements DataLayer<Samples> {
         values: ({ overview, bearings }: Samples, date: string) => headClasses(overview, bearings ?? [], weekMonth(weekOf(date))),
     };
 
-    chart({ overview, detail, bearings }: Samples, i: number, { date, theme }: View) {
-        const { chart, rose } = windChart({ overview: overview[i], detail: detail[i], bearing: bearings?.[i] }, this.meta?.firstYear ?? 0, date, theme);
+    /** The weekly grid appears when the detail tile of the point arrives; the headline and the rose read the overview. */
+    chart({ climate, coordinates, overview, bearings }: Samples, i: number, { date, theme }: View) {
+        const detail = detailCell(climate, coordinates[i]) ?? undefined;
+        const { chart, rose } = windChart({ overview: overview[i], detail, bearing: bearings?.[i] }, climate.meta.firstYear, date, theme);
         return rose ? { ...chart, extra: { component: WindRose, props: { ...rose, theme } } } : chart;
     }
 

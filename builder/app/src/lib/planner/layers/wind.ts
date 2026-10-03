@@ -35,6 +35,21 @@ export function speedScale(theme: Theme): Legend {
     return { scale: SPEEDS.map((speed, i) => ({ color: RAMP[theme][i], label: i === SPEEDS.length - 1 ? `${speed}+ m/s` : String(speed) })) };
 }
 
+/** The map paints a cell from this mean speed (owner decision): calm weeks keep the map unpainted, with arrows only. */
+export const PAINT_FROM = 2.5;
+
+/** The map legend: the painted part of the scale in 0.5 m/s steps, the unpainted calm cells and the arrow key. */
+export function mapLegend(theme: Theme): Legend {
+    const top = SPEEDS.at(-1)!, steps = 2 * (top - PAINT_FROM);
+    return {
+        scale: Array.from({ length: steps + 1 }, (_, i) => {
+            const speed = PAINT_FROM + i / 2;
+            return { color: speedColor(speed, theme), label: i === steps ? `${speed}+ m/s` : i % 2 ? '' : String(speed) };
+        }),
+        marks: [{ label: `No colour: under ${PAINT_FROM} m/s`, path: 'M5 8h14v8H5Z', width: 1 }, ...ARROW_MARKS],
+    };
+}
+
 /** Chart codes per 0.5 m/s, the step of the archive, from 0 to 5 m/s and faster. */
 const FASTEST = 10;
 const speedCode = (speed: number) => Number.isNaN(speed) ? 255 : Math.min(FASTEST, Math.round(2 * speed));
@@ -60,7 +75,7 @@ export function arrowIcon({ steadiness, opposite }: { steadiness: number; opposi
 }
 
 /** The arrow key of the map legend, drawn in a 24 px box. */
-export const ARROW_MARKS = [
+const ARROW_MARKS = [
     { label: 'Most often blows towards', path: 'M4 12h15m-4-4 4 4-4 4', width: 1.5 },
     { label: 'Steady', path: 'M4 12h14m-4-4 4 4-4 4', width: 3 },
     { label: 'Two opposite winds', path: 'M5 12h14M9 8l-4 4 4 4m6-8 4 4-4 4', width: 2 },
@@ -84,7 +99,7 @@ export interface WindMap {
     arrows: FeatureCollection<Point, { icon: string; rotate: number }>;
 }
 
-/** Every cell of the tiles with its mean speed of `week`, and an arrow of `month` on every `stride`th cell. */
+/** The cells of the tiles from `PAINT_FROM` with their mean speed of `week`, and an arrow of `month` on every `stride`th cell with data. */
 export function windMap(tiles: ClimateTile[], week: number, month: number, stride: number): WindMap {
     const cells: WindMap['cells']['features'] = [], arrows: WindMap['arrows']['features'] = [];
     for (const tile of tiles) {
@@ -93,7 +108,7 @@ export function windMap(tiles: ClimateTile[], week: number, month: number, strid
             if (Number.isNaN(speed)) continue;
             const cell = cellOf(tile, index);
             const [w, e, n, s] = [edgeLon(cell.col), edgeLon(cell.col + 1), edgeLat(cell.row), edgeLat(cell.row + 1)];
-            cells.push({ type: 'Feature', properties: { speed }, geometry: { type: 'Polygon', coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]] } });
+            if (speed >= PAINT_FROM) cells.push({ type: 'Feature', properties: { speed }, geometry: { type: 'Polygon', coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]] } });
             if (cell.col % stride || cell.row % stride) continue;
             const mode = windMode(windRose(tile, index, month));
             if (mode) arrows.push({ type: 'Feature', properties: { icon: arrowIcon(mode), rotate: 22.5 * mode.towards }, geometry: { type: 'Point', coordinates: cellCentre(cell) } });
