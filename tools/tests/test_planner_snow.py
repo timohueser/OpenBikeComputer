@@ -80,6 +80,16 @@ class BlendTest(unittest.TestCase):
         self.assertEqual(tile[0, :, 0, 128].tolist(), [40, 40])  # (40 + 40 + 41) / 3 = 40.33
         self.assertEqual(tile[0, 0, 0, 0], snow.NO_DATA)
 
+    def test_smoothing_takes_the_majority_class_and_the_median_day(self):
+        tile = np.full((1, 2, 256, 256), 40, np.uint8)
+        tile[:, :, 10, 10] = snow.NO_SNOW
+        tile[:, :, 100, 100] = 120
+        tile[:, :, 101, 100] = 41
+        smoothed = snow.smooth(tile)
+        self.assertEqual(smoothed[0, :, 10, 10].tolist(), [40, 40])
+        self.assertEqual(smoothed[0, :, 100, 100].tolist(), [40, 40])
+        self.assertEqual(smoothed[0, :, 0, 0].tolist(), [40, 40])
+
     def test_tile_rows_run_from_north_to_south(self):
         west, south, east, north = snow.tile_bounds(9, 268, 179)
         rows = np.full((1, 2, 40, 40), snow.NO_SNOW, np.uint8)

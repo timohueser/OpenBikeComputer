@@ -28,6 +28,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
 
 import numpy as np
 
@@ -37,14 +38,17 @@ NO_SNOW, FULL, NO_DATA = 253, 254, 255
 LAST_STEP = 182
 TILE = 256
 RECIPES = maps.ROOT / "tools/planner-regions"
+# `canopy`: MODIS sees the canopy, not the snow under it. The Copernicus input corrects for trees.
+# `smooth`: 20 m day values are noisy, so the lower zooms smooth them before they blend.
 SOURCES = {
-    "nasa-modis": {"resolution_m": 500, "max_zoom": 9,
-                   "attribution": "NASA MODIS snow cover MOD10A1/MYD10A1 (NSIDC)"},
-    "copernicus-hr-wsi": {"resolution_m": 20, "max_zoom": 13,
+    "nasa-modis": {"resolution_m": 500, "max_zoom": 9, "canopy": True, "smooth": False,
+                   "attribution": "NASA MODIS snow cover MOD10A1/MYD10A1 (NSIDC); tree canopy: Hansen/UMD/Google/USGS/NASA"},
+    "copernicus-hr-wsi": {"resolution_m": 20, "max_zoom": 13, "canopy": False, "smooth": True,
                           "attribution": "Copernicus Land Monitoring Service, HR-WSI Snow Phenology"},
 }
-WORLDCOVER = "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_{}_Map.tif"
-WORLDCOVER_ATTRIBUTION = "ESA WorldCover 2021 (CC BY 4.0)"
+CANOPY = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-v1.11/Hansen_GFC-2023-v1.11_treecover2000_{}.tif"
+# The owner chose 75 % canopy cover as "dense": below it, MODIS still sees the snow between the trees.
+DENSE_CANOPY_PERCENT = 75
 STAC = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
 SAS = "https://planetarycomputer.microsoft.com/api/sas/v1/token/{}/{}"
 OVERPASS = "https://overpass-api.de/api/interpreter"
@@ -130,8 +134,11 @@ class SnowSeasons:
         return np.stack(planes)
 
 
-def blend(values, weights):
-    """The spec's blend rule: bytes (inputs, seasons, 2, N) with weights (inputs, N) -> (seasons, 2, N)."""
+def blend(values, weights, median=False):
+    """The spec's blend rule: bytes (inputs, seasons, 2, N) with weights (inputs, N) -> (seasons, 2, N).
+
+    With `median`, dated pixels take the median of the dated inputs instead of the weighted mean.
+    """
     onset = values[:, :, 0]
     w = weights[:, None, :]
     share = lambda mask: (w * mask).sum(0)
@@ -139,8 +146,13 @@ def blend(values, weights):
     dated, full, none, missing = share(dated_mask), share(onset == FULL), share(onset == NO_SNOW), share(onset == NO_DATA)
     winner = np.argmax(np.stack([dated, full, none]), axis=0)[:, None]
     dw = (w * dated_mask)[:, :, None]
-    mean = np.floor((dw * values).sum(0) / np.maximum(dated, 1e-9)[:, None] + 0.5)
-    out = np.where(winner == 0, mean, np.where(winner == 1, FULL, NO_SNOW))
+    if median:
+        with np.errstate(all="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)  # a pixel without dated inputs has no median
+            centre = np.nan_to_num(np.nanmedian(np.where(dated_mask[:, :, None], values, np.nan).astype(np.float32), axis=0))
+    else:
+        centre = (dw * values).sum(0) / np.maximum(dated, 1e-9)[:, None]
+    out = np.where(winner == 0, np.floor(centre + 0.5), np.where(winner == 1, FULL, NO_SNOW))
     return np.where((missing > weights.sum(0) / 2)[:, None], NO_DATA, out).astype(np.uint8)
 
 
@@ -180,62 +192,56 @@ def sample(planes, grid, z, x, y):
     return blend(np.stack(values), np.stack(weights).astype(np.float32)).reshape(planes.shape[0], 2, TILE, TILE)
 
 
-def parent(children, seasons):
+def smooth(tile):
+    """Each pixel from its 3 × 3 neighbourhood in the tile: the majority class and the median day."""
+    seasons = tile.shape[0]
+    padded = np.pad(tile, ((0, 0), (0, 0), (1, 1), (1, 1)), mode="edge")
+    values = np.stack([padded[:, :, r:r + TILE, c:c + TILE] for r in range(3) for c in range(3)])
+    weights = np.full((9, TILE * TILE), 1 / 9, np.float32)
+    return blend(values.reshape(9, seasons, 2, TILE * TILE), weights, median=True).reshape(tile.shape)
+
+
+def parent(children, seasons, smoothed=False):
     """A tile from its four children {(dx, dy): planes or None}, each pixel blended from 2 × 2 children."""
     half = TILE // 2
     out = np.full((seasons, 2, TILE, TILE), NO_DATA, np.uint8)
     for (dx, dy), child in children.items():
         if child is None:
             continue
+        if smoothed:
+            child = smooth(child)
         values = child.reshape(seasons, 2, half, 2, half, 2).transpose(3, 5, 0, 1, 2, 4).reshape(4, seasons, 2, half * half)
         block = blend(values, np.full((4, half * half), 0.25, np.float32))
         out[:, :, dy * half:(dy + 1) * half, dx * half:(dx + 1) * half] = block.reshape(seasons, 2, half, half)
     return out
 
 
-def worldcover_tiles(bounds):
-    """Names of the 3° WorldCover tiles that the bounds touch."""
+def canopy_tiles(bounds):
+    """Names of the 10° Hansen tiles, named by their north-west corner, that the bounds touch."""
     west, south, east, north = bounds
-    names = []
-    for lat in range(math.floor(south / 3) * 3, math.ceil(north / 3) * 3, 3):
-        for lon in range(math.floor(west / 3) * 3, math.ceil(east / 3) * 3, 3):
-            names.append(f"{'N' if lat >= 0 else 'S'}{abs(lat):02d}{'E' if lon >= 0 else 'W'}{abs(lon):03d}")
-    return names
+    return [f"{abs(lat):02d}{'N' if lat >= 0 else 'S'}_{abs(lon):03d}{'E' if lon >= 0 else 'W'}"
+            for lat in range(math.ceil(south / 10) * 10, math.ceil(north / 10) * 10 + 1, 10)
+            for lon in range(math.floor(west / 10) * 10, math.ceil(east / 10) * 10, 10)]
 
 
-def forest(z, x, y, available):
-    """Pixels of tile z/x/y with more than half tree cover (WorldCover class 10)."""
+def canopy_cover(z, x, y):
+    """Mean tree canopy cover in percent of each pixel of tile z/x/y, in the year 2000."""
     import rasterio
     from rasterio.transform import from_bounds
     from rasterio.warp import Resampling, reproject, transform_bounds
     from rasterio.windows import Window, from_bounds as window_from_bounds
 
     bounds = tile_bounds(z, x, y)
-    share = np.zeros((TILE, TILE), np.float32)
+    cover = np.zeros((TILE, TILE), np.float32)
     target = from_bounds(*transform_bounds("EPSG:4326", "EPSG:3857", *bounds), TILE, TILE)
-    for name in worldcover_tiles(bounds):
-        if name not in available:
-            continue
-        with rasterio.open(WORLDCOVER.format(name)) as src:
+    for name in canopy_tiles(bounds):
+        with rasterio.open(CANOPY.format(name)) as src:
             window = window_from_bounds(*bounds, src.transform).intersection(Window(0, 0, src.width, src.height))
             window = window.round_offsets().round_lengths()
-            trees = (src.read(1, window=window) == 10).astype(np.float32)
-            reproject(trees, share, src_transform=src.window_transform(window), src_crs=src.crs, dst_transform=target,
-                      dst_crs="EPSG:3857", resampling=Resampling.average, init_dest_nodata=False)
-    return share > 0.5
-
-
-def existing_worldcover(bounds):
-    """The WorldCover tiles that exist: the ocean has none."""
-    names = set()
-    for name in worldcover_tiles(bounds):
-        try:
-            urllib.request.urlopen(urllib.request.Request(WORLDCOVER.format(name), method="HEAD"), timeout=60)
-            names.add(name)
-        except urllib.error.HTTPError as error:
-            if error.code not in (403, 404):
-                raise
-    return names
+            reproject(src.read(1, window=window).astype(np.float32), cover, src_transform=src.window_transform(window),
+                      src_crs=src.crs, dst_transform=target, dst_crs="EPSG:3857", resampling=Resampling.average,
+                      init_dest_nodata=False)
+    return cover
 
 
 def trails(bounds):
@@ -244,8 +250,16 @@ def trails(bounds):
     query = f'[out:json][timeout:180];way["highway"~"^(path|track)$"]({south},{west},{north},{east});out geom;'
     request = urllib.request.Request(OVERPASS, data=urllib.parse.urlencode({"data": query}).encode(),
                                      headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=300) as response:
-        ways = json.load(response)["elements"]
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(request, timeout=300) as response:
+                ways = json.load(response)["elements"]
+            break
+        except urllib.error.HTTPError as error:
+            # Overpass answers 429 and 504 when it is busy.
+            if error.code not in (429, 504) or attempt == 3:
+                raise
+            time.sleep(60 * (attempt + 1))
     lon, lat, metres = [], [], []
     for way in ways:
         points = np.radians([[p["lon"], p["lat"]] for p in way.get("geometry", [])])
@@ -263,13 +277,12 @@ def trails(bounds):
 
 
 def bake(planes, grid, first_season, source, bounds, output, trail_segments=None):
-    """Write the archive; return the tile count and, with trail segments, the forest-masked trail share."""
+    """Write the archive; return the tile count and, with trail segments, the share of trail length on no data."""
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import Writer
 
     max_zoom, seasons = SOURCES[source]["max_zoom"], planes.shape[0]
     west, south, east, north = bounds
-    available = existing_worldcover(bounds)
     tiles, masked = {}, 0.0
     if trail_segments is not None:
         lon, lat, metres = trail_segments
@@ -286,13 +299,16 @@ def bake(planes, grid, first_season, source, bounds, output, trail_segments=None
             body = sample(planes, grid, z, x, y)
             lon_c, lat_c = tile_lonlat(z, x, y)
             outside = ((lon_c < west) | (lon_c > east) | (lat_c < south) | (lat_c > north)).reshape(TILE, TILE)
-            trees = forest(z, x, y, available)
-            body[:, :, outside | trees] = NO_DATA
+            body[:, :, outside] = NO_DATA
+            if SOURCES[source]["canopy"]:
+                body[:, :, canopy_cover(z, x, y) > DENSE_CANOPY_PERCENT] = NO_DATA
             if trail_segments is not None:
                 here = (px // TILE == x) & (py // TILE == y)
-                masked += metres[here][trees[py[here] % TILE, px[here] % TILE]].sum()
+                missing = (body[:, 0] == NO_DATA).all(0)
+                masked += metres[here][missing[py[here] % TILE, px[here] % TILE]].sum()
         else:
-            body = parent({(dx, dy): build(z + 1, 2 * x + dx, 2 * y + dy) for dx in (0, 1) for dy in (0, 1)}, seasons)
+            children = {(dx, dy): build(z + 1, 2 * x + dx, 2 * y + dy) for dx in (0, 1) for dy in (0, 1)}
+            body = parent(children, seasons, SOURCES[source]["smooth"])
         if (body != NO_DATA).any():
             tiles[zxy_to_tileid(z, x, y)] = gzip.compress(body.tobytes(), mtime=0)
         return body
@@ -312,7 +328,7 @@ def bake(planes, grid, first_season, source, bounds, output, trail_segments=None
                 "center_zoom": max_zoom, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2),
             }, {
                 "first_season": first_season, "seasons": seasons, "step_days": 2, "source": source,
-                "resolution_m": meta["resolution_m"], "attribution": f"{meta['attribution']}; {WORLDCOVER_ATTRIBUTION}",
+                "resolution_m": meta["resolution_m"], "attribution": meta["attribution"],
             })
             stream.flush()
             os.replace(stream.name, output)
@@ -493,7 +509,7 @@ def main():
     parser.add_argument("--source", choices=SOURCES, default="nasa-modis")
     parser.add_argument("--first-season", type=int, default=2000, help="the first NASA season")
     parser.add_argument("--last-season", type=int, default=2024, help="the last NASA season (2024 ends in June 2025)")
-    parser.add_argument("--trails", action="store_true", help="report the OSM path and track length that the forest mask hides")
+    parser.add_argument("--trails", action="store_true", help="report the share of OSM path and track length with no data in every season")
     args = parser.parse_args()
     bounds = args.bounds or json.loads((RECIPES / f"{args.region}.json").read_text())["bounds"]
     output = args.output or Path.home() / ".cache/obc/planner" / args.region / "maps/snow.pmtiles"
@@ -508,7 +524,7 @@ def main():
     report = {"output": str(output), "bytes": output.stat().st_size, "tiles": count, "seasons": planes.shape[0],
               "read_s": round(read), "total_s": round(time.monotonic() - start)}
     if share is not None:
-        report["forest_masked_trail_share"] = round(share, 3)
+        report["no_data_trail_share"] = round(share, 3)
     print(json.dumps(report))
 
 

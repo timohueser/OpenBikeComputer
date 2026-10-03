@@ -101,9 +101,15 @@ for each season:
 At the max zoom, the inputs are the four source pixels around the pixel centre
 with bilinear weights. A source pixel outside the source grid is 255.
 
-At a lower zoom, the inputs are the 2 × 2 child pixels, with equal weights.
+At a lower zoom, the inputs are the 2 × 2 child pixels, with equal weights. For
+`copernicus-hr-wsi`, each child pixel is smoothed first: it takes the blend of its
+3 × 3 neighbourhood in its tile, with equal weights and the median of the dated
+inputs instead of the mean. A neighbour outside the tile repeats the edge pixel.
 
 ## Forest
 
-At the max zoom, a pixel is 255 in all seasons when more than half of its area
-is tree cover (class 10) in ESA WorldCover 2021.
+`nasa-modis`: at the max zoom, a pixel is 255 in all seasons when its mean tree
+canopy cover is more than 75 % in Hansen Global Forest Change `treecover2000`.
+
+`copernicus-hr-wsi` has no forest mask. Its snow cover input estimates the snow on
+the ground under trees from the Copernicus Tree Cover Density, so forest has data.
