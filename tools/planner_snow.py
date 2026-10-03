@@ -62,11 +62,8 @@ SINUSOIDAL = "+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +R=6371007.181 +units=m +no_defs
 MODIS_TILE_M, MODIS_PIXELS = 1111950.5197665233, 2400
 MODIS_X0, MODIS_Y0 = -20015109.355798, 10007554.677899
 MODIS_SNOW_NDSI = 10
-# The archive stores every tile to this zoom; deeper tiles only where they differ from their ancestors.
-OVERVIEW_ZOOM = 9
-# The share of pixel seasons an ancestor must keep to stand in for a max-zoom tile. At 0.98 the map looks
-# the same as with every tile; at 0.95 class borders in low hills become visibly coarser.
-MATCH = 0.98
+# The bake reads the source one tile of this zoom at a time, so memory stays small for a large region.
+CHUNK_ZOOM = 9
 
 Grid = namedtuple("Grid", "crs transform shape")
 
@@ -288,76 +285,30 @@ def trails(bounds):
     return lon[inside], lat[inside], metres[inside]
 
 
-def same_days(full, coarse):
-    """Share of the pixel seasons of `full` (seasons, 2, ...) that `coarse` keeps.
+def bake(source, first_season, seasons, name, bounds, output, trail_segments=None):
+    """Write the archive; return the tile count and, with trail segments, the share of trail length on no data.
 
-    A pixel season keeps its value when both have the same sentinel, or when both are dated and onset and
-    melt-out each differ by one day step at most. Pixel seasons with no data in both do not count.
-    """
-    full, coarse = full.astype(np.int16), coarse.astype(np.int16)
-    dated = (full[:, 0] <= LAST_STEP) & (coarse[:, 0] <= LAST_STEP)
-    kept = np.where(dated, (np.abs(full - coarse) <= 1).all(1), full[:, 0] == coarse[:, 0])
-    counted = (full[:, 0] != NO_DATA) | (coarse[:, 0] != NO_DATA)
-    return (kept & counted).sum() / counted.sum() if counted.any() else 1.0
-
-
-def enlarge(tile, levels, x, y):
-    """The part of `tile` (..., 256, 256) over its descendant (x, y) `levels` zooms deeper, at 256 × 256 pixels."""
-    size, k = TILE >> levels, (1 << levels) - 1
-    part = tile[..., (y & k) * size:((y & k) + 1) * size, (x & k) * size:((x & k) + 1) * size]
-    return part.repeat(1 << levels, -2).repeat(1 << levels, -1)
-
-
-def adaptive_depth(tiles, top, overview, same):
-    """The keys of `tiles` {(z, x, y): array (..., 256, 256)} that the archive stores.
-
-    Every tile to zoom `overview` stays. A tile at zoom `top` gives way to its coarsest ancestor A when
-    `same(tile, enlarged ancestor part)` holds for A and for every ancestor between A and the tile: a
-    reader takes the nearest stored ancestor, which can be any of them. The archive keeps the path from
-    the overview down to A, or down to the tile when its parent does not match. Each test compares with
-    the top tile, so errors do not add up over the zooms. `tiles` holds the ancestors of each top tile.
-    """
-    keep = {key for key in tiles if key[0] <= overview}
-    for (z, x, y), full in tiles.items():
-        if z != top:
-            continue
-        level = top
-        while level > overview and same(full, enlarge(tiles[level - 1, x >> (top - level + 1), y >> (top - level + 1)], top - level + 1, x, y)):
-            level -= 1
-        keep.update((zoom, x >> (top - zoom), y >> (top - zoom)) for zoom in range(overview + 1, level + 1))
-    return keep
-
-
-def bake(source, first_season, seasons, name, bounds, output, match=MATCH, trail_segments=None):
-    """Write the archive; return the stored tiles per zoom and, with trail segments, the share of trail length on no data.
-
-    `source(bounds)` gives the season planes and their grid around the bounds of one overview tile.
+    `source(bounds)` gives the season planes and their grid around the bounds of one chunk tile.
     """
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import Writer
 
     top = max_zoom(SOURCES[name]["resolution_m"], bounds)
-    chunk = min(OVERVIEW_ZOOM, top)
+    chunk = min(CHUNK_ZOOM, top)
     west, south, east, north = bounds
-    tiles, masked, planes, grid, subtree = {}, 0.0, None, None, {}
+    tiles, masked, planes, grid = {}, 0.0, None, None
     if trail_segments is not None:
         lon, lat, metres = trail_segments
         n = 2 ** top * TILE
         px = ((lon + 180) / 360 * n).astype(np.int64)
         py = ((1 - np.log(np.tan(np.radians(lat)) + 1 / np.cos(np.radians(lat))) / np.pi) / 2 * n).astype(np.int64)
 
-    def store(z, x, y, body):
-        # Below the overview, a tile without data stays: else its ancestor's data would stand in for it.
-        if z > OVERVIEW_ZOOM or (body != NO_DATA).any():
-            tiles[z, x, y] = gzip.compress(body.tobytes(), mtime=0)
-
     def build(z, x, y):
-        nonlocal masked, planes, grid, subtree
+        nonlocal masked, planes, grid
         w, s, e, n_ = tile_bounds(z, x, y)
         if w >= east or e <= west or s >= north or n_ <= south:
             return None
         if z == chunk:
-            # One chunk at a time keeps the source window and the unpruned tiles small.
             planes, grid = source((max(w, west), max(s, south), min(e, east), min(n_, north)))
         if z == top:
             body = sample(planes, grid, z, x, y)
@@ -373,15 +324,10 @@ def bake(source, first_season, seasons, name, bounds, output, match=MATCH, trail
         else:
             children = {(dx, dy): build(z + 1, 2 * x + dx, 2 * y + dy) for dx in (0, 1) for dy in (0, 1)}
             body = parent(children, seasons, SOURCES[name]["smooth"])
-        if z < chunk:
-            store(z, x, y, body)
-            return body
-        subtree[z, x, y] = body
         if z == chunk:
-            for key in adaptive_depth(subtree, top, OVERVIEW_ZOOM, lambda a, b: same_days(a, b) >= match):
-                store(*key, subtree[key])
             planes = grid = None
-            subtree = {}
+        if (body != NO_DATA).any():
+            tiles[zxy_to_tileid(z, x, y)] = gzip.compress(body.tobytes(), mtime=0)
         return body
 
     build(0, 0, 0)
@@ -390,8 +336,8 @@ def bake(source, first_season, seasons, name, bounds, output, match=MATCH, trail
     with tempfile.NamedTemporaryFile(dir=output.parent, prefix=".snow-", delete=False) as stream:
         try:
             writer = Writer(stream)
-            for key in sorted(tiles, key=lambda key: zxy_to_tileid(*key)):
-                writer.write_tile(zxy_to_tileid(*key), tiles[key])
+            for tile_id in sorted(tiles):
+                writer.write_tile(tile_id, tiles[tile_id])
             meta = SOURCES[name]
             writer.finalize({
                 "tile_type": TileType.UNKNOWN, "tile_compression": Compression.GZIP,
@@ -406,11 +352,8 @@ def bake(source, first_season, seasons, name, bounds, output, match=MATCH, trail
         except BaseException:
             os.unlink(stream.name)
             raise
-    zooms = {}
-    for z, _, _ in sorted(tiles):
-        zooms[z] = zooms.get(z, 0) + 1
     share = None if trail_segments is None else masked / max(trail_segments[2].sum(), 1e-9)
-    return zooms, share
+    return len(tiles), share
 
 
 def http_json(url, body=None):
@@ -584,8 +527,6 @@ def main():
     parser.add_argument("--first-season", type=int, default=2000, help="the first NASA season")
     parser.add_argument("--last-season", type=int, default=2024, help="the last NASA season (2024 ends in June 2025)")
     parser.add_argument("--trails", action="store_true", help="report the share of OSM path and track length with no data in every season")
-    parser.add_argument("--match", type=float, default=MATCH,
-                        help="share of pixel seasons that an ancestor must keep to stand in for a max-zoom tile")
     args = parser.parse_args()
     bounds = args.bounds or json.loads((RECIPES / f"{args.region}.json").read_text())["bounds"]
     output = args.output or Path.home() / ".cache/obc/planner" / args.region / "maps/snow.pmtiles"
@@ -598,9 +539,8 @@ def main():
         planes, grid = nasa_planes(bounds, args.first_season, args.last_season)
         seasons = range(args.first_season, args.first_season + planes.shape[0])
         source = lambda chunk: (planes, grid)
-    zooms, share = bake(source, seasons.start, len(seasons), args.source, bounds, output, args.match,
-                        trails(bounds) if args.trails else None)
-    report = {"output": str(output), "bytes": output.stat().st_size, "tiles": zooms, "seasons": len(seasons),
+    count, share = bake(source, seasons.start, len(seasons), args.source, bounds, output, trails(bounds) if args.trails else None)
+    report = {"output": str(output), "bytes": output.stat().st_size, "tiles": count, "seasons": len(seasons),
               "total_s": round(time.monotonic() - start)}
     if share is not None:
         report["no_data_trail_share"] = round(share, 3)

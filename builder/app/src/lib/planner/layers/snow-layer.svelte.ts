@@ -3,13 +3,12 @@ import { PMTiles } from 'pmtiles';
 import { SNOW_URL } from '../map-data';
 import { reliefPaint } from '../map-style';
 import type { Coordinate } from '../map-types';
-import { nearestStored, type DataLayer, type Theme } from './data-layer';
+import type { DataLayer, Theme } from './data-layer';
 import { colors, paintTile, seasonDay, snowClass, snowClasses, snowGrid, snowMeta, snowStats, type Planar, type SnowMeta } from './snow';
 
 const PROTOCOL = 'obc-snow';
 const TILE = 256;
 const PIXELS = TILE * TILE;
-type Found = { data: Uint8Array; z: number };
 // Decoded tiles stay cached, so a date change only recolours them.
 const CACHE_BYTES = 128 * 2 ** 20;
 // Beyond the archive's zoom, tiles blend their ancestor's pixels, so class borders stay smooth and the no-data hatch stays fine.
@@ -17,8 +16,7 @@ const MAX_ZOOM = 14;
 
 interface Archive {
     meta: SnowMeta; minZoom: number; maxZoom: number; bounds: [number, number, number, number];
-    /** A stored tile and its zoom; the tile service answers an omitted tile with its nearest stored ancestor. */
-    get(z: number, x: number, y: number): Promise<{ data: ArrayBuffer; z: number } | undefined>;
+    get(z: number, x: number, y: number, signal?: AbortSignal): Promise<ArrayBuffer | undefined>;
 }
 
 /** A hosted region serves TileJSON and tiles from the tile service; a local one reads the PMTiles archive. */
@@ -30,11 +28,11 @@ async function openArchive(url: string): Promise<Archive> {
         const template: string = json.tiles[0];
         return {
             meta: snowMeta(json), minZoom: json.minzoom, maxZoom: json.maxzoom, bounds: json.bounds,
-            async get(z, x, y) {
-                const tile = await fetch(template.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y)));
+            async get(z, x, y, signal) {
+                const tile = await fetch(template.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y)), { signal });
                 if (tile.status === 204) return undefined;
                 if (!tile.ok) throw new Error(`Snow tile ${z}/${x}/${y} answered ${tile.status}.`);
-                return { data: await tile.arrayBuffer(), z: Number(tile.headers.get('OBC-Tile-Zoom') ?? z) };
+                return tile.arrayBuffer();
             },
         };
     }
@@ -42,10 +40,7 @@ async function openArchive(url: string): Promise<Archive> {
     const [header, metadata] = await Promise.all([tiles.getHeader(), tiles.getMetadata() as Promise<Record<string, unknown>>]);
     return {
         meta: snowMeta(metadata), minZoom: header.minZoom, maxZoom: header.maxZoom, bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat],
-        get: async (z, x, y) => {
-            const tile = await tiles.getZxy(z, x, y);
-            return tile && { data: tile.data, z };
-        },
+        get: async (z, x, y, signal) => (await tiles.getZxy(z, x, y, signal))?.data,
     };
 }
 
@@ -76,9 +71,7 @@ class SnowLayer implements DataLayer<Planar> {
     meta = $state<SnowMeta | null>(null);
     error = $state('');
     private archive?: Promise<Archive>;
-    private cache = new globalThis.Map<string, Promise<Found | undefined>>();
-    /** Tiles that the archive omits. */
-    private missing = new Set<string>();
+    private cache = new globalThis.Map<string, Promise<Uint8Array | undefined>>();
     private map?: Map;
     private date = '';
     private shown = false;
@@ -107,51 +100,35 @@ class SnowLayer implements DataLayer<Planar> {
         return this.archive;
     }
 
-    private async fetch(z: number, x: number, y: number): Promise<Found | undefined> {
+    private async fetch(z: number, x: number, y: number, signal?: AbortSignal): Promise<Uint8Array | undefined> {
         const archive = await this.open(), meta = archive.meta;
-        const tile = await archive.get(z, x, y);
+        const tile = await archive.get(z, x, y, signal);
         if (!tile) return undefined;
-        const data = new Uint8Array(tile.data);
+        const data = new Uint8Array(tile);
         if (data.length !== 2 * meta.seasons * PIXELS) throw new Error(`Snow tile ${z}/${x}/${y} has ${data.length} bytes.`);
-        return { data, z: tile.z };
+        return data;
     }
 
-    private async tile(z: number, x: number, y: number): Promise<Found | undefined> {
+    private tile(z: number, x: number, y: number): Promise<Uint8Array | undefined> {
         const key = `${z}/${x}/${y}`;
-        if (this.missing.has(key)) return undefined;
         const entry = this.cache.get(key) ?? this.fetch(z, x, y);
         this.cache.delete(key);
         this.cache.set(key, entry);
+        entry.catch(() => { if (this.cache.get(key) === entry) this.cache.delete(key); });
         const limit = Math.max(8, Math.floor(CACHE_BYTES / (2 * (this.meta?.seasons ?? 1) * PIXELS)));
         for (const old of this.cache.keys()) { if (this.cache.size <= limit) break; this.cache.delete(old); }
-        try {
-            const found = await entry;
-            if (!found && this.cache.get(key) === entry) { this.cache.delete(key); this.missing.add(key); }
-            return found;
-        } catch (error) {
-            if (this.cache.get(key) === entry) this.cache.delete(key);
-            throw error;
-        }
-    }
-
-    /**
-     * The nearest stored tile at or above z/x/y and its zoom, as specs/planner-snow-tiles.md defines.
-     * The PMTiles directory cache knows the omitted tiles, so the walk fetches only the tile it finds;
-     * the tile service finds it on its side.
-     */
-    private async stored(z: number, x: number, y: number) {
-        return nearestStored((z, x, y) => this.tile(z, x, y), z, x, y, (await this.open()).minZoom);
+        return entry;
     }
 
     /** Colours one map tile for the layer date. The source bounds keep MapLibre from asking for tiles outside the archive. */
     private render = async (params: RequestParameters) => {
         const [z, x, y] = params.url.slice(PROTOCOL.length + 3).split('/').map(Number);
         const { maxZoom, meta } = await this.open();
-        const start = Math.min(z, maxZoom);
-        const tile = await this.stored(start, x >> (z - start), y >> (z - start));
-        const scale = 2 ** (z - (tile?.z ?? z));
+        const up = Math.max(0, z - maxZoom), scale = 2 ** up;
+        const data = await this.tile(z - up, Math.floor(x / scale), Math.floor(y / scale));
         const image = new ImageData(TILE, TILE);
-        paintTile(new Uint32Array(image.data.buffer), tile && { data: tile.data, size: PIXELS, seasons: meta.seasons }, seasonDay(this.date).index, scale, x % scale, y % scale, this.colors);
+        // The bake omits tiles without data, so a missing tile is drawn as no data.
+        paintTile(new Uint32Array(image.data.buffer), data && { data, size: PIXELS, seasons: meta.seasons }, seasonDay(this.date).index, scale, x % scale, y % scale, this.colors);
         return { data: await createImageBitmap(image) };
     };
 
@@ -194,23 +171,22 @@ class SnowLayer implements DataLayer<Planar> {
         const size = line.length, seasons = meta.seasons;
         const data = new Uint8Array(2 * seasons * size).fill(255);
         const byTile = new globalThis.Map<string, number[]>();
-        const pixels = line.map(coordinate => pixel(coordinate, maxZoom));
-        pixels.forEach(([px, py], i) => {
+        const offsets = new Int32Array(size);
+        line.forEach((coordinate, i) => {
+            const [px, py] = pixel(coordinate, maxZoom);
+            offsets[i] = (py % TILE) * TILE + (px % TILE);
             const key = `${Math.floor(px / TILE)}/${Math.floor(py / TILE)}`;
             byTile.get(key)?.push(i) ?? byTile.set(key, [i]);
         });
-        // A route crosses tens of tiles at the highest zoom; fetch a few at a time. Omitted tiles share their ancestor.
+        // A route crosses tens of tiles at the highest zoom; fetch a few at a time and keep only the samples.
         const keys = [...byTile.keys()];
         await Promise.all(Array.from({ length: 4 }, async () => {
             for (let key = keys.pop(); key; key = keys.pop()) {
-                signal.throwIfAborted();
                 const [x, y] = key.split('/').map(Number);
-                const tile = await this.stored(maxZoom, x, y);
+                const tile = await this.fetch(maxZoom, x, y, signal);
                 if (!tile) continue;
-                const up = maxZoom - tile.z;
                 for (const i of byTile.get(key)!) {
-                    const offset = ((pixels[i][1] >> up) % TILE) * TILE + ((pixels[i][0] >> up) % TILE);
-                    for (let s = 0; s < 2 * seasons; s++) data[s * size + i] = tile.data[s * PIXELS + offset];
+                    for (let s = 0; s < 2 * seasons; s++) data[s * size + i] = tile[s * PIXELS + offsets[i]];
                 }
             }
         }));

@@ -84,18 +84,6 @@ export function reach(at: ArrayLike<number>, i: number): number {
     return (at[Math.min(i + 1, at.length - 1)] - at[Math.max(i - 1, 0)]) / 2;
 }
 
-/**
- * The nearest stored tile at or above z/x/y: an archive may omit a tile that its ancestor stands in for.
- * `tile` gives a stored tile with its zoom, which is lower when a server found the ancestor, or undefined.
- */
-export async function nearestStored<T extends { z: number }>(tile: (z: number, x: number, y: number) => Promise<T | undefined>, z: number, x: number, y: number, minZoom: number): Promise<T | undefined> {
-    for (let up = 0; z - up >= minZoom; up++) {
-        const found = await tile(z - up, x >> up, y >> up);
-        if (found) return found;
-    }
-    return undefined;
-}
-
 /** Runs of equal values along a line, as progress from 0 to 1. */
 export function valueRuns(values: ArrayLike<number>, progress: ArrayLike<number>): { value: number; from: number; to: number }[] {
     const runs: { value: number; from: number; to: number }[] = [];

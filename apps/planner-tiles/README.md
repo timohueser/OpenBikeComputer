@@ -39,7 +39,7 @@ npm run deploy --prefix apps/planner-tiles
 | `/releases/ID/terrain.json` | Terrain TileJSON |
 | `/releases/ID/terrain/Z/X/Y.webp` | Terrarium tile |
 | `/releases/ID/snow.json` | Snow TileJSON with the archive metadata, when the release has snow |
-| `/releases/ID/snow/Z/X/Y` | Snow tile: gzip-encoded bytes, `application/octet-stream`. For an omitted tile, the nearest stored ancestor and its zoom in `OBC-Tile-Zoom` |
+| `/releases/ID/snow/Z/X/Y` | Snow tile: gzip-encoded bytes, `application/octet-stream` |
 
 The archive header gives the zoom levels and the tile type. A tile extension is
 optional and must match the tile type. TileJSON tile URLs have no extension.

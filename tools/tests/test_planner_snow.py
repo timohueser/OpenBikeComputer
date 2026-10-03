@@ -106,35 +106,9 @@ class BlendTest(unittest.TestCase):
         self.assertEqual(tile[0, 0, 255, 128], snow.NO_SNOW)
 
 
-class AdaptiveDepthTest(unittest.TestCase):
-    def test_a_match_needs_close_days_and_the_same_sentinels(self):
-        full = np.array([[[50, 253, 255, 255]], [[60, 253, 255, 255]]], np.uint8).reshape(1, 2, 4)
-        coarse = np.array([[[51, 254, 40, 255]], [[59, 254, 50, 255]]], np.uint8).reshape(1, 2, 4)
-        # Dated within one step, no snow against a glacier, no data against data; no data in both does not count.
-        self.assertAlmostEqual(snow.same_days(full, coarse), 1 / 3)
-        self.assertEqual(snow.same_days(full, full), 1.0)
-        coarse[0, :, 0] = [52, 60]
-        self.assertAlmostEqual(snow.same_days(full, coarse), 0.0)
-
-    def test_a_tile_gives_way_to_the_coarsest_ancestor_that_it_and_all_tiles_between_match(self):
-        tile = lambda value: np.full((1, 2, 256, 256), value, np.uint8)
-        same = lambda full, coarse: snow.same_days(full, coarse) == 1
-        # Zoom 0 is the overview. Each test compares with the zoom-2 tile, so 50 → 51 → 52 stops at zoom 1.
-        drift = {(0, 0, 0): tile(52), (1, 0, 0): tile(51), (2, 0, 0): tile(50)}
-        self.assertEqual(snow.adaptive_depth(drift, 2, 0, same), {(0, 0, 0), (1, 0, 0)})
-        # The zoom-2 tile matches zoom 0 but not zoom 1, which a reader would take first.
-        gap = {(0, 0, 0): tile(50), (1, 0, 0): tile(70), (2, 0, 0): tile(50), (2, 1, 0): tile(70)}
-        self.assertEqual(snow.adaptive_depth(gap, 2, 0, same), {(0, 0, 0), (1, 0, 0), (2, 0, 0)})
-
-    def test_an_ancestor_stands_in_with_the_pixels_over_the_tile(self):
-        parent = np.zeros((1, 2, 256, 256), np.uint8)
-        parent[..., 128:, :128] = np.arange(128, dtype=np.uint8)[:, None]
-        enlarged = snow.enlarge(parent, 1, 4, 7)
-        self.assertEqual(enlarged.shape, (1, 2, 256, 256))
-        self.assertEqual([enlarged[0, 0, 0, 0], enlarged[0, 0, 1, 255], enlarged[0, 0, 254, 0]], [0, 0, 127])
-
-    def test_the_bake_reads_one_chunk_at_a_time_and_stores_a_uniform_area_to_the_overview_only(self):
-        from pmtiles.reader import MmapSource, Reader, all_tiles
+class BakeTest(unittest.TestCase):
+    def test_the_bake_reads_one_zoom_9_chunk_and_stores_to_the_max_zoom(self):
+        from pmtiles.reader import MmapSource, all_tiles
 
         # One zoom-11 tile, so no tile has pixels outside the bounds.
         bounds = list(snow.tile_bounds(11, 1079, 724))
@@ -148,12 +122,11 @@ class AdaptiveDepthTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "snow.pmtiles"
-            zooms, _ = snow.bake(source, 2016, 2, "copernicus-hr-wsi", bounds, output)
+            snow.bake(source, 2016, 2, "copernicus-hr-wsi", bounds, output)
             with output.open("rb") as file:
                 stored = {z for (z, _, _), _ in all_tiles(MmapSource(file))}
         self.assertEqual(len(chunks), 1)
-        self.assertEqual(max(zooms), snow.OVERVIEW_ZOOM)
-        self.assertEqual(max(stored), snow.OVERVIEW_ZOOM)
+        self.assertEqual(max(stored), 12)
 
 
 class CopernicusTest(unittest.TestCase):

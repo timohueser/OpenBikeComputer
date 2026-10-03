@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dateColumn, nearestStored } from './data-layer';
+import { dateColumn } from './data-layer';
 import { FREE, MOSTLY_FREE, MOSTLY_SNOW, SNOW, UNKNOWN, indexLabel, paintTile, seasonDay, snowClass, snowGrid, snowStats, type Planar } from './snow';
 
 /** Planar bytes from per-item [onset, melt] pairs, one list per season. */
@@ -36,20 +36,6 @@ describe('snow tiles', () => {
         paintTile(words, undefined, 30, 1, 0, 0, Uint32Array.of(0, 1, 2, 3, 4));
         expect(new Set(words)).toEqual(new Set([0, UNKNOWN]));
         expect([words[0], words[1], words[2], words[256 + 7]]).toEqual([UNKNOWN, UNKNOWN, 0, UNKNOWN]);
-    });
-
-    it('takes the nearest stored ancestor of an omitted tile', async () => {
-        const stored = new Map([['10/1/2', { data: 'a', z: 10 }], ['9/0/1', { data: 'b', z: 9 }]]);
-        const asked: string[] = [];
-        const tile = async (z: number, x: number, y: number) => { asked.push(`${z}/${x}/${y}`); return stored.get(`${z}/${x}/${y}`); };
-        expect(await nearestStored(tile, 12, 6, 9, 0)).toEqual({ data: 'a', z: 10 });
-        expect(asked).toEqual(['12/6/9', '11/3/4', '10/1/2']);
-        expect(await nearestStored(tile, 12, 0, 8, 0)).toEqual({ data: 'b', z: 9 });
-        expect(await nearestStored(tile, 12, 0, 0, 8)).toBeUndefined();
-        // A tile service answers with the ancestor itself, so one request is enough.
-        asked.length = 0;
-        expect(await nearestStored(async (z, x, y) => (asked.push(`${z}/${x}/${y}`), { data: 'c', z: 9 }), 12, 6, 9, 0)).toEqual({ data: 'c', z: 9 });
-        expect(asked).toEqual(['12/6/9']);
     });
 
     it('blends day values above the data zoom, never with a sentinel', () => {
