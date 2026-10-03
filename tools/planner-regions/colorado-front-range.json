@@ -1,6 +1,7 @@
 {
   "format": 1,
   "region": "colorado-front-range",
+  "name": "Colorado Front Range",
   "access": "DE",
   "countries": [
     "US"
@@ -67,6 +68,9 @@
       "Copernicus_DSM_COG_10_N40_00_W106_00_DEM.tif": "b4bea49affd8367775c47ee26df44f0651827d2d20209e0f4f70b6f07232c4fe",
       "Copernicus_DSM_COG_10_N40_00_W107_00_DEM.tif": "4813c90c6d83a0e163076965017f6c35b5e5005d4474b4027fa7d44a5447e1b2"
     }
+  },
+  "snow": {
+    "source": "nasa-modis"
   },
   "probe": {
     "points": [

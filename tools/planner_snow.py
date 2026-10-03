@@ -41,9 +41,9 @@ RECIPES = maps.ROOT / "tools/planner-regions"
 # `canopy`: MODIS sees the canopy, not the snow under it. The Copernicus input corrects for trees.
 # `smooth`: 20 m day values are noisy, so the lower zooms smooth them before they blend.
 SOURCES = {
-    "nasa-modis": {"resolution_m": 500, "max_zoom": 9, "canopy": True, "smooth": False,
+    "nasa-modis": {"resolution_m": 500, "canopy": True, "smooth": False,
                    "attribution": "NASA MODIS snow cover MOD10A1/MYD10A1 (NSIDC); tree canopy: Hansen/UMD/Google/USGS/NASA"},
-    "copernicus-hr-wsi": {"resolution_m": 20, "max_zoom": 13, "canopy": False, "smooth": True,
+    "copernicus-hr-wsi": {"resolution_m": 20, "canopy": False, "smooth": True,
                           "attribution": f"© European Union, Copernicus Land Monitoring Service {dt.date.today().year}, "
                                          "European Environment Agency (EEA): HR-WSI Snow Phenology"},
 }
@@ -64,6 +64,12 @@ MODIS_X0, MODIS_Y0 = -20015109.355798, 10007554.677899
 MODIS_SNOW_NDSI = 10
 
 Grid = namedtuple("Grid", "crs transform shape")
+
+
+def max_zoom(resolution_m, bounds):
+    """The zoom whose pixel size at the middle latitude of the bounds is nearest to the source resolution, in log scale."""
+    metres = 2 * math.pi * 6378137 * math.cos(math.radians((bounds[1] + bounds[3]) / 2)) / TILE
+    return min(range(23), key=lambda z: abs(math.log(metres / 2 ** z / resolution_m)))
 
 
 def season_start(first_season, season):
@@ -282,12 +288,12 @@ def bake(planes, grid, first_season, source, bounds, output, trail_segments=None
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import Writer
 
-    max_zoom, seasons = SOURCES[source]["max_zoom"], planes.shape[0]
+    top, seasons = max_zoom(SOURCES[source]["resolution_m"], bounds), planes.shape[0]
     west, south, east, north = bounds
     tiles, masked = {}, 0.0
     if trail_segments is not None:
         lon, lat, metres = trail_segments
-        n = 2 ** max_zoom * TILE
+        n = 2 ** top * TILE
         px = ((lon + 180) / 360 * n).astype(np.int64)
         py = ((1 - np.log(np.tan(np.radians(lat)) + 1 / np.cos(np.radians(lat))) / np.pi) / 2 * n).astype(np.int64)
 
@@ -296,7 +302,7 @@ def bake(planes, grid, first_season, source, bounds, output, trail_segments=None
         w, s, e, n_ = tile_bounds(z, x, y)
         if w >= east or e <= west or s >= north or n_ <= south:
             return None
-        if z == max_zoom:
+        if z == top:
             body = sample(planes, grid, z, x, y)
             lon_c, lat_c = tile_lonlat(z, x, y)
             outside = ((lon_c < west) | (lon_c > east) | (lat_c < south) | (lat_c > north)).reshape(TILE, TILE)
@@ -326,7 +332,7 @@ def bake(planes, grid, first_season, source, bounds, output, trail_segments=None
             writer.finalize({
                 "tile_type": TileType.UNKNOWN, "tile_compression": Compression.GZIP,
                 "min_lon_e7": e7(west), "min_lat_e7": e7(south), "max_lon_e7": e7(east), "max_lat_e7": e7(north),
-                "center_zoom": max_zoom, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2),
+                "center_zoom": top, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2),
             }, {
                 "first_season": first_season, "seasons": seasons, "step_days": 2, "source": source,
                 "resolution_m": meta["resolution_m"], "attribution": meta["attribution"],

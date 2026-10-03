@@ -133,18 +133,14 @@ export function snowStats(p: Planar, km: ArrayLike<number>, date: string, theme:
     return { headline, detail: `${autumn ? 'Clear until' : 'Clear from'} ${label(middle)} · ${range}`, year };
 }
 
-// Rows are calendar years, so a season spans two rows: row r shows Jan–Aug of season r − 1 and
-// Sep–Dec of season r. Seasons as rows (Sep–Aug) would change only these two functions.
-const gridRows = (firstSeason: number, seasons: number) => Array.from({ length: seasons + 1 }, (_, row) => ({ row, label: String(firstSeason + row) }));
-const gridSeason = (row: number, column: { season: number }) => row - 1 + column.season - columns[0].season;
+// One row per season; its columns are the season's day indices, from 1 September.
+const gridRows = (firstSeason: number, seasons: number) => Array.from({ length: seasons }, (_, s) => `${firstSeason + s}/${String((firstSeason + s + 1) % 100).padStart(2, '0')}`);
 
-/** Calendar years (rows, newest last) × days at item `i`: 0 clear, 1 snow, 2 no data, 255 outside the record. */
+/** Seasons (rows, newest last) × days at item `i`: 0 clear, 1 snow, 2 no data. */
 export function snowGrid(p: Planar, i: number, firstSeason: number, date: string, theme: Theme): { headline: string; grid: SeasonGrid } {
     const [snow, known] = snowSeasons(p, i, seasonDay(date).index);
-    const rows = gridRows(firstSeason, p.seasons).map(({ row, label }) => {
-        const cells = Uint8Array.from(columns, column => {
-            const s = gridSeason(row, column), day = column.index;
-            if (s < 0 || s >= p.seasons) return 255;
+    const rows = gridRows(firstSeason, p.seasons).map((label, s) => {
+        const cells = Uint8Array.from({ length: DAYS }, (_, day) => {
             const onset = p.data[2 * s * p.size + i], melt = p.data[(2 * s + 1) * p.size + i];
             return onset === NO_DATA || melt === NO_DATA ? 2 : onset === WHOLE_SEASON || (onset <= day && day <= melt) ? 1 : 0;
         });
@@ -153,15 +149,15 @@ export function snowGrid(p: Planar, i: number, firstSeason: number, date: string
     const palette = colors[theme];
     return {
         headline: known ? `Snow on ${dateLabel(date)} in ${snow} of ${years(known)}` : 'No snow data here',
-        grid: { rows, marker: dateColumn(date), swatches: [
+        grid: { rows, seasonal: true, marker: seasonDay(date).index, swatches: [
             { label: 'Clear', color: palette.clear }, { label: 'Snow on the ground', color: palette.history }, { label: 'No data', color: palette.unknown, hatch: true },
         ] },
     };
 }
 
 export const colors = {
-    light: { free: '#e6e0cc', mostlyFree: '#d8e2e8', mostlySnow: '#a8bfcd', snow: '#ffffff', unknown: '#b8b5ac', clear: '#efede4', history: '#5f7d91' },
-    dark: { free: '#3b382b', mostlyFree: '#34434c', mostlySnow: '#5f7a8c', snow: '#dfe7ec', unknown: '#6b685c', clear: '#2b2a21', history: '#9fb7c6' },
+    light: { free: '#e6e0cc', mostlyFree: '#d3dcdc', mostlySnow: '#a9c1d8', snow: '#e8f1fa', unknown: '#b8b5ac', clear: '#efede4', history: '#5f7d91' },
+    dark: { free: '#3b382b', mostlyFree: '#33434e', mostlySnow: '#6a88a3', snow: '#e8f0f8', unknown: '#6b685c', clear: '#2b2a21', history: '#9fb7c6' },
 } as const;
 
 /** Swatches by class value. */

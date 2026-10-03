@@ -90,6 +90,12 @@ class BlendTest(unittest.TestCase):
         self.assertEqual(smoothed[0, :, 100, 100].tolist(), [40, 40])
         self.assertEqual(smoothed[0, :, 0, 0].tolist(), [40, 40])
 
+    def test_the_max_zoom_has_the_pixel_size_nearest_to_the_source_resolution(self):
+        alps, equator = [9.5, 46.3, 10.3, 46.7], [0, -0.1, 1, 0.1]
+        self.assertEqual([snow.max_zoom(20, alps), snow.max_zoom(500, alps)], [12, 8])
+        # 19.1 m and 38.2 m pixels: 20 m is nearer to zoom 13 at the equator.
+        self.assertEqual(snow.max_zoom(20, equator), 13)
+
     def test_tile_rows_run_from_north_to_south(self):
         west, south, east, north = snow.tile_bounds(9, 268, 179)
         rows = np.full((1, 2, 40, 40), snow.NO_SNOW, np.uint8)

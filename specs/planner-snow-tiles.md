@@ -12,7 +12,7 @@ The planner snow layer reads one archive per region: `snow.pmtiles`. The bake is
 | Tile type | `unknown` (0) |
 | Tile compression | gzip |
 | Bounds | The region bounds |
-| Zoom levels | 0 to the max zoom of the source |
+| Zoom levels | 0 to the max zoom |
 
 A missing tile is no data. A pixel outside the region bounds is no data.
 
@@ -68,10 +68,14 @@ The archive metadata is a JSON object:
 
 ## Sources
 
-| `source` | Data | `resolution_m` | Max zoom |
-| --- | --- | --- | --- |
-| `nasa-modis` | MODIS Terra and Aqua daily snow cover (MOD10A1, MYD10A1, collection 6.1) | 500 | 9 |
-| `copernicus-hr-wsi` | HR-WSI Snow Phenology S2 yearly rasters | 20 | 13 |
+| `source` | Data | `resolution_m` |
+| --- | --- | --- |
+| `nasa-modis` | MODIS Terra and Aqua daily snow cover (MOD10A1, MYD10A1, collection 6.1) | 500 |
+| `copernicus-hr-wsi` | HR-WSI Snow Phenology S2 yearly rasters | 20 |
+
+The max zoom is the zoom whose pixel size at the middle latitude of the bounds is
+nearest to `resolution_m` in log scale. In the Alps, it is 12 for
+`copernicus-hr-wsi` and 8 for `nasa-modis`.
 
 `nasa-modis` snow days:
 

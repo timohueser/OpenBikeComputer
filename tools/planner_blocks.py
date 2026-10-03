@@ -51,6 +51,11 @@ def cells(bounds):
                 yield f"{ZOOM}-{x}-{y}", clipped
 
 
+def map_kinds(maps):
+    """The tile archives of a map bundle; snow is present only when its recipe asks for it."""
+    return ["basemap", "places", "overlays", "terrain"] + (["snow"] if (maps / "snow.pmtiles").exists() else [])
+
+
 def map_tiles(source, output):
     from pmtiles.reader import Reader, MmapSource, all_tiles
     from pmtiles.tile import zxy_to_tileid
@@ -59,7 +64,7 @@ def map_tiles(source, output):
     import tempfile
 
     output.mkdir(parents=True, exist_ok=True)
-    for kind in ("basemap", "places", "overlays", "terrain"):
+    for kind in map_kinds(source):
         target = output / kind
         target.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".tiles-", dir=output) as temporary:
@@ -247,7 +252,8 @@ def publish(source, routing, output):
         z, x, y = map(int, path.stem.split("-"))
         name = add(path, f"maps/tiles/{path.parent.name}/{path.name}")
         # Offline planners read places from the basemap and search, and overlays from the routing cells.
-        if path.parent.name not in ("places", "overlays"):
+        # They have no snow layer yet.
+        if path.parent.name not in ("places", "overlays", "snow"):
             map_blocks.append({"kind": path.parent.name, "tile": [z,x,y], "bounds": box(z, x, y), "files": [name]})
     search = source / "search" / f"{release['region']}.sqlite"
     lookup = work / "search-lookup.sqlite"
@@ -268,7 +274,7 @@ def publish(source, routing, output):
         "cells": [{"id": name, "bounds": bounds} for name, bounds in all_cells]})
     metadata("routing/layers.json", [name for name, _ in all_cells])
     from pmtiles.reader import Reader, MmapSource
-    for kind in ("basemap", "places", "overlays", "terrain"):
+    for kind in map_kinds(source / "maps"):
         with (source / "maps" / f"{kind}.pmtiles").open("rb") as stream:
             reader = Reader(MmapSource(stream))
             header, info = reader.header(), reader.metadata()

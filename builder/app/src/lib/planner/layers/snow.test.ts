@@ -79,19 +79,15 @@ describe('route stats', () => {
 });
 
 describe('season grid', () => {
-    it('shows calendar years, newest last, with seasons split at 1 September', () => {
+    it('shows one row per season from September to August, newest last', () => {
         const { headline, grid } = snowGrid(planar([[[30, 120]], [[255, 255]]]), 0, 2020, '2021-03-01', 'light');
         expect(headline).toBe('Snow on 1 Mar in 1 of 1 year');
-        expect(grid.rows.map(row => row.label)).toEqual(['2020', '2021', '2022']);
-        expect(grid.marker).toBe(dateColumn('2021-03-01'));
-        const [onset, first, last] = grid.rows.map(row => row.cells);
-        expect(onset[dateColumn('2020-07-01')]).toBe(255);
-        expect(onset[dateColumn('2020-09-10')]).toBe(0);
-        expect(onset[dateColumn('2020-11-10')]).toBe(1);
-        expect(first[dateColumn('2021-01-01')]).toBe(1);
-        expect(first[dateColumn('2021-07-01')]).toBe(0);
-        expect(first[dateColumn('2021-09-10')]).toBe(2);
-        expect(last[dateColumn('2022-01-01')]).toBe(2);
-        expect(last[dateColumn('2022-09-10')]).toBe(255);
+        expect(grid.seasonal).toBe(true);
+        expect(grid.rows.map(row => row.label)).toEqual(['2020/21', '2021/22']);
+        const column = (date: string) => seasonDay(date).index;
+        expect(grid.marker).toBe(column('2021-03-01'));
+        const [first, last] = grid.rows.map(row => row.cells);
+        expect([first[0], first[column('2020-10-20')], first[column('2020-11-10')], first[column('2021-01-01')], first[column('2021-07-01')]]).toEqual([0, 0, 1, 1, 0]);
+        expect([last[0], last[182]]).toEqual([2, 2]);
     });
 });

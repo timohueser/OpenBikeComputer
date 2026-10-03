@@ -160,6 +160,16 @@ export function basemapStyle(theme: "light" | "dark", config: BasemapConfig = { 
     };
 }
 
+/** Relief shading; over the snow layer, shadows turn blue-grey so snow reads as snow. */
+export function reliefPaint(dark: boolean, snow = false) {
+    return {
+        "hillshade-exaggeration": dark ? 0.31 : snow ? 0.26 : 0.2,
+        "hillshade-shadow-color": snow ? (dark ? "#070b12" : "#3f5770") : dark ? "#0c120f" : "#657363",
+        "hillshade-highlight-color": snow ? (dark ? "#8a98a6" : "#ffffff") : dark ? "#6c7d68" : "#fffdf5",
+        "hillshade-accent-color": snow ? (dark ? "#1f2d3a" : "#8297ad") : dark ? "#26392f" : "#99a58c",
+    };
+}
+
 export function mapStyle(theme: "light" | "dark", demUrl: string, contourUrl: string): StyleSpecification {
     const dark = theme === "dark";
     const base = baseLayers(dark);
@@ -168,10 +178,7 @@ export function mapStyle(theme: "light" | "dark", demUrl: string, contourUrl: st
         {
             id: "relief", type: "hillshade", source: "terrain",
             paint: {
-                "hillshade-exaggeration": dark ? 0.31 : 0.2,
-                "hillshade-shadow-color": dark ? "#0c120f" : "#657363",
-                "hillshade-highlight-color": dark ? "#6c7d68" : "#fffdf5",
-                "hillshade-accent-color": dark ? "#26392f" : "#99a58c",
+                ...reliefPaint(dark),
                 "hillshade-illumination-direction": 315,
                 "hillshade-illumination-anchor": "map",
             },

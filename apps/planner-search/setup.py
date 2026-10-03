@@ -22,6 +22,16 @@ def run(*args):
     subprocess.run(args, cwd=ROOT, check=True)
 
 
+def npm_ci(directory):
+    """`npm ci` replaces node_modules and breaks a running Vite server, so it runs only for a changed lockfile."""
+    lock = hashlib.sha256((directory / 'package-lock.json').read_bytes()).hexdigest()
+    stamp = directory / 'node_modules/.obc-package-lock.sha256'
+    if stamp.is_file() and stamp.read_text() == lock:
+        return
+    run('npm', 'ci', '--prefix', str(directory))
+    stamp.write_text(lock)
+
+
 def verify(path, expected):
     with path.open('rb') as stream:
         actual = hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -37,11 +47,11 @@ def main():
     args = ap.parse_args()
     data = args.data_dir.resolve()
     data.mkdir(parents=True, exist_ok=True)
-    run('npm', 'ci')
+    npm_ci(ROOT)
     if not (ROOT / '.venv').exists():
         run('uv', 'venv', '--python', '>=3.12', '.venv')
     run('uv', 'pip', 'install', '--python', '.venv/bin/python', '-r', 'requirements.txt', '-r', 'query/requirements.txt')
-    run('npm', 'ci', '--prefix', '../../builder/app')
+    npm_ci(ROOT.parents[1] / 'builder/app')
     archive = data / 'query-parser-v2-int8.tar.gz'
     if not archive.exists():
         run('gh', 'release', 'download', 'spike/query-parser-v2', '-R', 'timohueser/OpenBikeComputer',

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { COLUMNS, columnDays, monthColumns, type SeasonGrid } from '../../lib/planner/layers/data-layer';
+    import { COLUMNS, columnDays, monthColumns, seasonColumnDays, seasonMonthColumns, type SeasonGrid } from '../../lib/planner/layers/data-layer';
 
     let { grid, label, rowHeight = 8, onPick }: {
         grid: SeasonGrid;
@@ -11,12 +11,13 @@
 
     let canvas: HTMLCanvasElement;
     let width = $state(0);
-    const gap = $derived(grid.rows.length > 1 ? 3 : 0);
+    const gap = $derived(grid.rows.length > 1 ? Math.min(3, Math.ceil(rowHeight / 3)) : 0);
     const height = $derived(grid.rows.length * (rowHeight + gap) - gap);
     const labelled = $derived(grid.rows.some(row => row.label));
     // Every few rows carry a label, counted from the newest.
     const every = $derived(Math.ceil(14 / (rowHeight + gap)));
-    const monthName = (column: number) => columnDays[column].toLocaleDateString('en-GB', { month: width > 480 ? 'short' : 'narrow', timeZone: 'UTC' });
+    const days = $derived(grid.seasonal ? seasonColumnDays : columnDays);
+    const monthName = (column: number) => days[column].toLocaleDateString('en-GB', { month: width > 480 ? 'short' : 'narrow', timeZone: 'UTC' });
 
     function hatch(context: CanvasRenderingContext2D, color: string, scale: number) {
         const tile = document.createElement('canvas');
@@ -73,14 +74,14 @@
             onpointerdown={(event) => { if (onPick) { canvas.setPointerCapture(event.pointerId); pick(event); } }} onpointermove={pick}></canvas>
         <i class="marker" style:left={`${(grid.marker + 0.5) / COLUMNS * 100}%`}></i>
         <ol class="months" aria-hidden="true">
-            {#each monthColumns as column (column)}<li style:left={`${column / COLUMNS * 100}%`}>{monthName(column)}</li>{/each}
+            {#each grid.seasonal ? seasonMonthColumns : monthColumns as column (column)}<li style:left={`${column / COLUMNS * 100}%`}>{monthName(column)}</li>{/each}
         </ol>
     </div>
 </div>
 
 <style>
     .season-grid { display: grid; grid-template-columns: minmax(0, 1fr); }
-    .season-grid.labelled { grid-template-columns: 36px minmax(0, 1fr); }
+    .season-grid.labelled { grid-template-columns: 48px minmax(0, 1fr); }
     .rows { position: relative; margin: 0; padding: 0; list-style: none; }
     .rows li { position: absolute; right: 6px; transform: translateY(-50%); font-size: 11px; line-height: 1; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
     .plot { position: relative; min-width: 0; padding-bottom: 16px; }

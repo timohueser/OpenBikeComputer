@@ -174,6 +174,9 @@ def verify_services(active, document, origin):
     with sources.open_url(active["overlays"]) as response:
         if json.load(response).get("routing_package") != document["routing_package"]:
             raise ValueError("Overlay tiles use another routing package")
+    if "snow" in active:
+        with sources.open_url(active["snow"]) as response:
+            if not json.load(response).get("seasons"): raise ValueError("Snow layer is absent")
     probe = document["probe"]
     import math
     z = 12
