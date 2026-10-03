@@ -170,10 +170,11 @@ export function paintWeather(words: Uint32Array, cells: { cols: Float64Array; ro
     }
 }
 
-/** A route or a point: the overview and detail cell of each sample, its height, and the route kilometres. */
+/** A route or a point: the overview cell of each sample, its height, and the route kilometres. */
 export interface Samples {
     overview: (CellRef | undefined)[];
-    detail: (CellRef | undefined)[];
+    /** The detail cell of a sample, loaded on the first read (`detailCell`): undefined while it loads, null without data. */
+    detail: (i: number) => CellRef | null | undefined;
     /** Metres; NaN where unknown. */
     elevation: Float32Array;
     km: ArrayLike<number>;
@@ -228,7 +229,8 @@ export function rainWeeks(ref: CellRef, firstYear: number): { mean: Float32Array
 
 /** The years at one sample for the map variable: highs and lows, or wet days through the year. */
 export function weatherChart(samples: Samples, i: number, firstYear: number, date: string, theme: Theme, variable: Variable): Chart {
-    const ref = samples.detail[i], height = samples.elevation[i];
+    const ref = samples.detail(i), height = samples.elevation[i];
+    if (ref === undefined) return { headline: 'Loading the years at this point…', grids: [] };
     if (!ref) return { headline: 'No weather data here', grids: [] };
     const week = weekOf(date);
     if (variable === 'rain') {
@@ -265,7 +267,7 @@ export function weatherChart(samples: Samples, i: number, firstYear: number, dat
 /** "Night 3–8 °C" at each stop: the night lows of the stop's week over the years, at its height. */
 export function nightLabels(samples: Samples, stops: { index: number; date: string }[]): string[] {
     return stops.map(({ index, date }) => {
-        const ref = samples.detail[index], week = weekOf(date);
+        const ref = samples.detail(index), week = weekOf(date);
         if (!ref) return '';
         const lows = spread(Array.from({ length: YEARS }, (_, year) => temperatureAt(ref.tile, 'tmin', year * WEEKS + week, ref.index, samples.elevation[index])));
         return lows ? `Night ${range(...lows)}` : '';

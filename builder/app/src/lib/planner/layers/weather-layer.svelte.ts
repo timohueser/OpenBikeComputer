@@ -3,8 +3,8 @@ import { kilometres } from '../editor';
 import { TERRAIN_URL } from '../map-data';
 import { DEM_MAX_ZOOM, DEM_TILE } from '../map-style';
 import type { Coordinate } from '../map-types';
-import { DETAIL, OVERVIEW, locate, type ClimateMeta } from './climate';
-import { openClimate, sampleLine, type CellRef, type ClimateSource } from './climate-source';
+import { OVERVIEW, locate, type ClimateMeta } from './climate';
+import { detailCell, openClimate, sampleLine, type CellRef, type ClimateSource } from './climate-source';
 import { cropHeights, demPixels, demTile, pixelHeight, reliefZoom } from './climate-terrain';
 import { weekOf, type DataLayer, type Line, type Theme, type View } from './data-layer';
 import {
@@ -157,14 +157,15 @@ class WeatherLayer implements DataLayer<Samples> {
 
     async sample({ coordinates, elevation }: Line, signal: AbortSignal): Promise<Samples> {
         const source = await this.open();
-        const [overview, detail] = await Promise.all([sampleLine(coordinates, source.tile, OVERVIEW), sampleLine(coordinates, source.tile, DETAIL)]);
+        // A route reads the overview; a chart or a night label reads the detail of its one sample.
+        const overview = await sampleLine(coordinates, source.tile, OVERVIEW);
         // A map point has no profile height, so the rendered terrain gives it one. A route keeps its profile, so its values never depend on the view.
         const heights = coordinates.length === 1 && elevation[0] === null ? [await this.heightAt(coordinates[0])] : elevation.map(height => height ?? NaN);
         signal.throwIfAborted();
         // Not editor's cumulative: it freezes the coordinates, and a map point is a state proxy that cannot freeze.
         const km = new Float64Array(coordinates.length);
         for (let i = 1; i < km.length; i++) km[i] = km[i - 1] + kilometres(coordinates[i - 1], coordinates[i]);
-        return { overview, detail, elevation: Float32Array.from(heights), km };
+        return { overview, detail: i => detailCell(source, coordinates[i]), elevation: Float32Array.from(heights), km };
     }
 
     strip = {

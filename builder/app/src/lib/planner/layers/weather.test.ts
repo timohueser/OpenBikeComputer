@@ -102,7 +102,7 @@ describe('weather along a route', () => {
     for (let year = 0; year < 10; year++) detail.set('tmin', year * WEEKS + week, 0, 2 * (year + 1));
     const samples = (elevation: number[]): Samples => {
         const o = overview.tile(), d = detail.tile();
-        return { overview: [{ tile: o, index: 0 }, { tile: o, index: 1 }], detail: [{ tile: d, index: 0 }, undefined], elevation: Float32Array.from(elevation), km: [0, 10] };
+        return { overview: [{ tile: o, index: 0 }, { tile: o, index: 1 }], detail: i => i ? null : { tile: d, index: 0 }, elevation: Float32Array.from(elevation), km: [0, 10] };
     };
 
     it('has a High, a Low and a Rain row and names the week in its label', () => {
@@ -130,7 +130,7 @@ describe('weather along a route', () => {
         expect([weeks.mean[week], weeks.low[week], weeks.high[week]]).toEqual([3, 1, 5]);
         // 2016, 2020 and 2024 are leap years.
         expect(weeks.mean[51]).toBeCloseTo((7 * 7 + 3 * 7 * 8 / 9) / 10);
-        const point = { ...samples([500]), detail: [{ tile: rainy.tile(), index: 0 }] };
+        const point = { ...samples([500]), detail: () => ({ tile: rainy.tile(), index: 0 }) };
         const rain = weatherChart(point, 0, 2016, date, 'light', 'rain');
         expect(rain.headline).toBe('14–20 May: rain on about 3 of 7 days (1–5 in most years)');
         expect(rain.grids).toEqual([]);
