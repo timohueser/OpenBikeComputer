@@ -33,9 +33,10 @@ YEARS = 10
 WEEKS = 52
 WET_MM = 1.0
 SECTORS = 16
-# Final ERA5-Land replaces the preliminary ERA5-Land-T data about two months after each month. A year
-# enters the bake only from a store that reaches this many days past the end of the year.
-FINAL_AFTER_DAYS = 90
+# Final ERA5-Land replaces the preliminary ERA5-Land-T data about two months after each month (ECMWF,
+# "ERA5-Land: data documentation"); DKRZ reports up to three months. The ARCO stores have no `expver`
+# to tell them apart. So a source hour counts as final only in a store that reaches this many days past it.
+FINAL_AFTER_DAYS = 120
 GRID_COLS, GRID_ROWS = 3600, 1801  # the native 0.1° ERA5-Land grid
 EPOCH = dt.datetime(1950, 1, 2)  # hour 0 of the Zarr time axis
 TIME_CHUNK, CHUNK_ROWS, CHUNK_COLS = 33792, 4, 8  # the Zarr chunk shape
@@ -293,7 +294,7 @@ class Source:
 
     A cached chunk is named `T.Y.X.HOURS.SHA256`: its Zarr key, the store's hour count when it was
     downloaded, and the SHA-256 of its compressed bytes. It serves a bake when that hour count reaches
-    `final_hour`, so every hour it holds for the bake was final data. An empty file is a chunk that the
+    its threshold, so every hour it holds for the bake was final data. An empty file is a chunk that the
     store omits because it has no data.
     """
 
@@ -303,15 +304,20 @@ class Source:
         self.digests = {variable: {} for variable in SOURCE}
         self.downloaded = 0
 
+    def threshold(self, name):
+        """The store hour count from which chunk `name` is final: FINAL_AFTER_DAYS past its end or past the bake."""
+        return min(self.final_hour, (int(name.split(".")[0]) + 1) * TIME_CHUNK + FINAL_AFTER_DAYS * 24)
+
     def path(self, variable, name):
-        found = [path for path in (self.cache / variable).glob(f"{name}.*") if int(path.name.split(".")[3]) >= self.final_hour]
+        threshold = self.threshold(name)
+        found = [path for path in (self.cache / variable).glob(f"{name}.*") if int(path.name.split(".")[3]) >= threshold]
         if found:
             return max(found, key=lambda path: int(path.name.split(".")[3]))
         if self.key is None:
             raise ValueError(f"Source chunk {variable}/{name} is not in the cache")
         self.layout = self.layout or stores(self.key)
         base, hours = self.layout[variable]
-        if hours < self.final_hour:
+        if hours < threshold:
             raise ValueError("ERA5-Land has no final data for the last year yet")
         try:
             data = fetch(f"{base}/{variable}/{name}", self.key)

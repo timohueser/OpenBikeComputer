@@ -146,28 +146,36 @@ class GridTest(unittest.TestCase):
 
 
 class SourceTest(unittest.TestCase):
-    def chunk(self, cache, hours, data=b""):
-        path = Path(cache) / "t2m" / f"17.1.2.{hours}.{hashlib.sha256(data).hexdigest()}"
+    def chunk(self, cache, time_chunk, hours, data=b""):
+        path = Path(cache) / "t2m" / f"{time_chunk}.1.2.{hours}.{hashlib.sha256(data).hexdigest()}"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         return path
 
-    def test_a_cached_chunk_serves_only_bakes_whose_years_it_holds_as_final_data(self):
+    def test_a_cached_chunk_serves_every_bake_whose_hours_it_holds_as_final_data(self):
         final = climate.hour(dt.date(FIRST + climate.YEARS, 1, 1)) + climate.FINAL_AFTER_DAYS * 24
+        next_year = final + 365 * 24
+        margin = climate.FINAL_AFTER_DAYS * 24
         with tempfile.TemporaryDirectory() as cache:
-            self.chunk(cache, final - 1)
+            sources = [climate.Source(hour, cache=Path(cache)) for hour in (final, next_year)]
+            # Chunk 19 holds the end of the years: it is final for this bake only from `final` on.
+            self.chunk(cache, 19, final - 1)
             with self.assertRaisesRegex(ValueError, "not in the cache"):
-                climate.Source(final, cache=Path(cache)).read("t2m", "17.1.2")
-            newest = self.chunk(cache, final)
-            source = climate.Source(final, cache=Path(cache))
-            self.assertEqual(source.path("t2m", "17.1.2"), newest)
-            self.assertTrue(np.isnan(source.read("t2m", "17.1.2")).all())  # a chunk that the store omits
-            # The update a year later needs a chunk downloaded after the next year became final.
+                sources[0].read("t2m", "19.1.2")
+            newest = self.chunk(cache, 19, final)
+            self.assertEqual(sources[0].path("t2m", "19.1.2"), newest)
+            self.assertTrue(np.isnan(sources[0].read("t2m", "19.1.2")).all())  # a chunk that the store omits
             with self.assertRaisesRegex(ValueError, "not in the cache"):
-                climate.Source(final + 366 * 24, cache=Path(cache)).read("t2m", "17.1.2")
+                sources[1].read("t2m", "19.1.2")
+            # Chunk 17 ends years earlier: once final, it serves this bake and every yearly update.
+            self.chunk(cache, 17, 18 * climate.TIME_CHUNK + margin - 1)
+            with self.assertRaisesRegex(ValueError, "not in the cache"):
+                sources[0].read("t2m", "17.1.2")
+            complete = self.chunk(cache, 17, 18 * climate.TIME_CHUNK + margin)
+            self.assertEqual([source.path("t2m", "17.1.2") for source in sources], [complete, complete])
             newest.write_bytes(b"changed")
             with self.assertRaisesRegex(ValueError, "damaged"):
-                source.read("t2m", "17.1.2")
+                sources[0].read("t2m", "19.1.2")
 
 
 class FakeSource(climate.Source):
