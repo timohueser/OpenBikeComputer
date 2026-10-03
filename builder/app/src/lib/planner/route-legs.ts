@@ -1,5 +1,5 @@
 import type { Coordinate } from './editor';
-import { requestRoute, type EngineRoute, type RouteClosure, type RouteLeg, type RouteTotals, type Surface } from './routing';
+import { appendEdges, requestRoute, type Edges, type EngineRoute, type RouteLeg, type RouteTotals } from './routing';
 
 /** One leg cut from a route answer. Its `elapsed` starts at zero. */
 interface Leg extends Pick<RouteLeg, 'start' | 'end' | 'totals'> {
@@ -8,17 +8,17 @@ interface Leg extends Pick<RouteLeg, 'start' | 'end' | 'totals'> {
     geometry: Coordinate[];
     elevation: (number | null)[];
     elapsed: number[];
-    surfaces: Surface[];
-    pushing: boolean[];
-    closures: (RouteClosure[] | null)[];
+    edges: Edges;
 }
 
 function cut(route: EngineRoute, { from_index: from, to_index: to, start, end, totals }: RouteLeg): Leg {
+    const edges: Edges = {};
+    appendEdges(edges, 0, route.edges, from, to);
     return {
         start, end, totals, package: route.package, truncated: route.snap_truncated,
         geometry: route.geometry.slice(from, to + 1), elevation: route.elevation.slice(from, to + 1),
         elapsed: route.elapsed.slice(from, to + 1).map(seconds => seconds - route.elapsed[from]),
-        surfaces: route.surfaces.slice(from, to), pushing: route.pushing.slice(from, to), closures: route.closures.slice(from, to),
+        edges,
     };
 }
 
@@ -27,17 +27,17 @@ function stitch(legs: Leg[], profile: string): EngineRoute {
     const totals: RouteTotals = { distance_m: 0, ascent_m: 0, seconds: 0, surface_m: [0, 0, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 };
     // The id only tells the primary route from its alternatives; the server id needs the whole geometry.
     const route: EngineRoute = { id: 'primary', reason: 'primary', package: legs[0].package, profile, geometry: [], elevation: [], elapsed: [],
-        surfaces: [], pushing: [], closures: [], legs: [], snap_truncated: false, totals };
+        edges: {}, legs: [], snap_truncated: false, totals };
     for (const leg of legs) {
         const skip = route.geometry.length ? 1 : 0;
         const offset = route.elapsed.at(-1) ?? 0;
         const from = route.geometry.length - skip;
+        appendEdges(route.edges, from, leg.edges, 0, leg.geometry.length - 1);
         // A loop, not a spread: a long leg exceeds the argument limit of some engines.
         for (let i = skip; i < leg.geometry.length; i++) {
             route.geometry.push(leg.geometry[i]);
             route.elevation.push(leg.elevation[i]);
             route.elapsed.push(leg.elapsed[i] + offset);
-            if (i) { route.surfaces.push(leg.surfaces[i - 1]); route.pushing.push(leg.pushing[i - 1]); route.closures.push(leg.closures[i - 1]); }
         }
         route.snap_truncated ||= leg.truncated;
         route.legs.push({ from_index: from, to_index: route.geometry.length - 1, start: leg.start, end: leg.end, totals: leg.totals });

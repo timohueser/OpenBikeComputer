@@ -1,5 +1,5 @@
 import { cumulative, itineraryDays, routeCoordinates, storedPlan, type Trip } from './editor';
-import { isTrip } from './trip-validation';
+import { isTrip, storedTrip } from './trip-validation';
 
 export interface Version {
     id: string;
@@ -73,5 +73,5 @@ export function deleteVersion(id: string, store: VersionStore = localStorage): v
 }
 
 export function readVersion(id: string, store: VersionStore = localStorage): Trip | undefined {
-    return listVersions(store).find(v => v.id === id)?.trip;
+    return storedTrip(listVersions(store).find(v => v.id === id)?.trip);
 }

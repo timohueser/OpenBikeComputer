@@ -7,7 +7,7 @@ import { gapNote, routeGaps } from './route-gaps';
 // The router attaches each point to the nearest road: here the equator, from 0° to 0.02°.
 const road: EngineRoute = {
     id: 'r', reason: 'primary', package: 'p', profile: 'hiking', geometry: [[0, 0], [0.01, 0], [0.02, 0]],
-    elevation: [null, null, null], elapsed: [0, 1, 2], surfaces: ['Paved', 'Paved'], pushing: [false, false], closures: [null, null],
+    elevation: [null, null, null], elapsed: [0, 1, 2], edges: {},
     totals: { distance_m: 2224, ascent_m: 0, seconds: 2, surface_m: [0, 0, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 },
     legs: [{ from_index: 0, to_index: 2, start: 'a', end: 'b', totals: { distance_m: 2224, ascent_m: 0, seconds: 2, surface_m: [0, 0, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 } }],
     snap_truncated: false,

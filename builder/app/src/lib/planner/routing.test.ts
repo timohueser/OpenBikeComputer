@@ -10,7 +10,7 @@ import { initialTrip, cumulative, planOf, removeRoutePoint, storedPlan, setEndpo
 const totals = (metres: number, unknown = 0, pushing = 0): RouteTotals =>
     ({ distance_m: metres, ascent_m: 0, seconds: metres, surface_m: [unknown, metres - unknown, 0, 0, 0, 0], unknown_elevation_m: metres, pushing_m: pushing });
 const answer: AnswerRoute = {
-    id: 'test-route', surfaces: [['Paved', 1], ['Gravel', 1]], pushing: [[false, 1], [true, 1]], closures: [[null, 2]], reason: 'primary', elapsed_s: [0, 3000, 1000], package: 'test', profile: 'touring',
+    id: 'test-route', edges: { surfaces: [['Paved', 1], ['Gravel', 1]], pushing: [[false, 1], [true, 1]] }, reason: 'primary', elapsed_s: [0, 3000, 1000], package: 'test', profile: 'touring',
     coordinates_udeg: [7_800_000, 48_000_000, 100_000, 0, 100_000, 0], elevation_dm: [2000, null, 2000],
     totals: { ...totals(15000, 1000, 100), seconds: 4000 },
     legs: [{ from_index: 0, to_index: 1, start: 'a', end: 'b', totals: { ...totals(7500, 1000), seconds: 3000 } },
@@ -45,8 +45,7 @@ describe('routing integration', () => {
         expect(fetch).toHaveBeenCalledTimes(1);
         expect(JSON.parse(fetch.mock.calls[0][1].body).alternatives).toBe(false);
         expect(line.alternativesReady).toBe(false);
-        expect(line.surfaces).toEqual(['Paved', 'Gravel']);
-        expect(line.pushing).toEqual([false, true]);
+        expect(line.edges).toEqual({ surfaces: ['Paved', 'Gravel'], pushing: [false, true] });
         expect(line.package).toBe('test');
         expect(JSON.parse(fetch.mock.calls[0][1].body).points).toEqual(plan.points.map(p => p.coordinate));
         fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ routes: [{ ...answer, id: 'shorter', reason: 'shorter' }] }) });
@@ -146,14 +145,11 @@ describe('routing integration', () => {
         expect(line.unroutedKm).toBeCloseTo(line.unknownSurfaceKm);
         expect(line.elapsed.at(-1)).toBe(line.seconds);
         expect(line.elevation.every(h => h === null)).toBe(true);
-        expect(line.surfaces).toHaveLength(line.coordinates.length - 1);
-        expect(line.surfaces.every(s => s === 'Unknown')).toBe(true);
-        expect(line.pushing).toEqual([null, null]);
+        expect(line.edges).toEqual({});
+        expect(surfaceRuns(line).shares.get('Unknown')).toBe(1);
         manual.points[2].leg = 'routed';
         const mixed = await calculateLine(manual, new AbortController().signal, new LegCache());
-        expect(mixed.surfaces).toEqual(['Unknown', 'Unknown', 'Paved', 'Gravel']);
-        expect(mixed.surfaces).toHaveLength(mixed.coordinates.length - 1);
-        expect(mixed.pushing).toEqual([null, null, false, true]);
+        expect(mixed.edges).toEqual({ surfaces: [null, null, 'Paved', 'Gravel'], pushing: [null, null, false, true] });
     });
     it('aligns surface sections by distance and clips the view without changing route shares', () => {
         const line = selectRoute(trip(), route, [route]);
@@ -165,9 +161,9 @@ describe('routing integration', () => {
         expect(clipped[0]).toEqual({ ...data.runs[0], from: .25 });
         expect(clipped[1]).toEqual({ ...data.runs[1], to: .75 });
         expect(data.shares.get('Gravel')).toBeCloseTo(.5);
-        expect(surfaceRuns({ ...line, surfaces: [] }).shares.get('Unknown')).toBe(1);
+        expect(surfaceRuns({ ...line, edges: {} }).shares.get('Unknown')).toBe(1);
         expect(surfaceRuns().runs).toEqual([]);
-        const sameSurface = surfaceRuns({ ...line, surfaces: ['Paved', 'Paved'] });
+        const sameSurface = surfaceRuns({ ...line, edges: { ...line.edges, surfaces: ['Paved', 'Paved'] } });
         expect(sameSurface.runs.map(run => run.pushing)).toEqual([false, true]);
         expect(sameSurface.shares.get('Paved')).toBe(1);
     });

@@ -106,6 +106,29 @@ class BlendTest(unittest.TestCase):
         self.assertEqual(tile[0, 0, 255, 128], snow.NO_SNOW)
 
 
+class BakeTest(unittest.TestCase):
+    def test_the_bake_reads_one_zoom_9_chunk_and_stores_to_the_max_zoom(self):
+        from pmtiles.reader import MmapSource, all_tiles
+
+        # One zoom-11 tile, so no tile has pixels outside the bounds.
+        bounds = list(snow.tile_bounds(11, 1079, 724))
+        west, north = 9.6, 46.6
+        grid = snow.Grid("EPSG:4326", Affine.translation(west, north) @ Affine.scale(0.001, -0.001), (300, 300))
+        chunks = []
+
+        def source(chunk):
+            chunks.append(chunk)
+            return np.full((2, 2, 300, 300), 60, np.uint8), grid
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "snow.pmtiles"
+            snow.bake(source, 2016, 2, "copernicus-hr-wsi", bounds, output)
+            with output.open("rb") as file:
+                stored = {z for (z, _, _), _ in all_tiles(MmapSource(file))}
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(max(stored), 12)
+
+
 class CopernicusTest(unittest.TestCase):
     def test_yearly_rasters_become_consecutive_season_planes(self):
         import rasterio
@@ -125,8 +148,8 @@ class CopernicusTest(unittest.TestCase):
                     dst.write(np.array([values], np.uint16), 1)
             lon, lat = transform("EPSG:3035", "EPSG:4326", [x + 40], [y - 10])
             bounds = [lon[0] - 0.01, lat[0] - 0.01, lon[0] + 0.01, lat[0] + 0.01]
-            first, planes, grid = snow.copernicus_planes({2021: files, 2023: files}, bounds)
-        self.assertEqual((first, planes.shape[0]), (2021, 3))
+            planes, grid = snow.copernicus_planes({2021: files, 2023: files}, bounds, range(2021, 2024))
+        self.assertEqual(planes.shape[0], 3)
         col, row = ~grid.transform @ (x + 10, y - 10)
         values = planes[0, :, int(row), int(col):int(col) + 4]
         self.assertEqual(values.T.tolist(), [[15, 125], [snow.NO_SNOW] * 2, [snow.FULL] * 2, [snow.NO_DATA] * 2])

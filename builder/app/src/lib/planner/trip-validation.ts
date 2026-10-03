@@ -59,3 +59,12 @@ export function isTrip(value: unknown): value is Trip {
     const bike = (value.bike ?? 'touring') as keyof typeof ridingProfiles;
     return value.preset === undefined || (typeof value.preset === 'string' && ridingProfiles[bike].presets.includes(value.preset));
 }
+
+/** A stored draft or version, or undefined when it is invalid. A stored routing line without `edges` goes, and the planner
+ * routes the line again. */
+export function storedTrip(value: unknown): Trip | undefined {
+    if (!isTrip(value)) return undefined;
+    if (value.routing === undefined || (record(value.routing) && record(value.routing.edges))) return value;
+    const { routing: _, ...plan } = value;
+    return plan;
+}

@@ -1,6 +1,7 @@
 use crate::{
+    answer::Edges,
     data::RoutingData,
-    model::{Pace, Point, Road, Surface, Totals, BIKE, FOOT, NO_ELEVATION, PUSH},
+    model::{Pace, Point, Road, Totals, BIKE, FOOT, NO_ELEVATION, PUSH},
     search::{Query, Seed, Workspace},
     snap::{self, Candidate, Policy},
     Error, Result,
@@ -62,12 +63,8 @@ pub struct Route {
     pub cost: u64,
     pub geometry: Vec<[f64; 2]>,
     pub elevation: Vec<Option<f32>>,
-    /// Surface of each edge from geometry[i] to geometry[i + 1].
-    pub surfaces: Vec<Surface>,
-    /// Whether the bicycle must be pushed along each geometry edge.
-    pub pushing: Vec<bool>,
-    /// The possible closures of each geometry edge, for the mode used on it.
-    pub closures: Vec<Option<Vec<crate::closures::Closure>>>,
+    /// The facts of each edge from geometry[i] to geometry[i + 1].
+    pub edges: Edges,
     /// Cumulative moving seconds at each geometry vertex.
     pub elapsed: Vec<f64>,
     pub legs: Vec<Leg>,
@@ -346,9 +343,7 @@ impl<P: RoutingData> Router<P> {
             cost,
             geometry: Vec::new(),
             elevation: Vec::new(),
-            surfaces: Vec::new(),
-            pushing: Vec::new(),
-            closures: Vec::new(),
+            edges: Edges::default(),
             elapsed: Vec::new(),
             legs: Vec::new(),
             attachments,
@@ -392,9 +387,10 @@ impl<P: RoutingData> Router<P> {
                         return Err(Error::Limit);
                     }
                     if !route.geometry.is_empty() {
-                        route.surfaces.push(road.surface);
-                        route.pushing.push(mode == PUSH);
-                        route.closures.push(closure.clone());
+                        route.edges.push("surfaces", road.surface);
+                        route.edges.push("pushing", mode == PUSH);
+                        route.edges.push("closures", &closure);
+                        route.edges.push("sac_scale", road.hiking_difficulty);
                     }
                     route.geometry.push(coordinate);
                     route.elapsed.push(seconds);

@@ -8,8 +8,8 @@ export function surfaceRuns(line?: RoutingLine) {
     const shares = new Map<Surface, number>();
     if (!total) return { runs, shares };
     for (let i = 1; i < lengths.length; i++) {
-        const surface = line?.surfaces?.[i - 1] ?? 'Unknown';
-        const pushing = line?.pushing?.[i - 1] ?? null;
+        const surface = line?.edges.surfaces?.[i - 1] ?? 'Unknown';
+        const pushing = line?.edges.pushing?.[i - 1] ?? null;
         const from = lengths[i - 1] / total, to = lengths[i] / total;
         if (to <= from) continue;
         shares.set(surface, (shares.get(surface) ?? 0) + to - from);

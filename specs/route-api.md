@@ -36,9 +36,7 @@ with an empty answer. Each route has these fields:
 | `coordinates_udeg` | Integer microdegrees: longitude and latitude of each point, flat |
 | `elevation_dm` | Integer decimetres, or `null` where the height is unknown |
 | `elapsed_s` | Integer moving seconds |
-| `surfaces` | Runs of `[surface, edge count]` |
-| `pushing` | Runs of `[pushing, edge count]` |
-| `closures` | Runs of `[closures, edge count]` |
+| `edges` | One run channel for each fact of an edge, by name |
 | `legs` | `{"from_index", "to_index", "start", "end", "totals"}` for each pair of request points |
 | `snap_truncated` | `true` when the service dropped road candidates for a request point |
 | `totals` | `distance_m`, `ascent_m`, `seconds`, `surface_m`, `unknown_elevation_m` and `pushing_m`, all integers |
@@ -58,15 +56,22 @@ The first elapsed value is zero.
 The encoder rounds the absolute value of each point and then calculates the
 difference. Thus rounding errors do not add up along the route.
 
-### Runs
+### Edges
 
 An edge joins point `i` and point `i + 1`. A route with `n` points has `n - 1`
-edges. Each run gives one value and the number of consecutive edges with that
-value. The run lengths of `surfaces`, `pushing` and `closures` each add up to `n - 1`.
-Surfaces are `Unknown`, `Paved`, `Compacted`, `Gravel`, `Dirt` and `Rough`.
-`pushing` is `true` where the rider must push the bicycle.
-A `closures` value is `null` or a list of possible closures on the edge, each
-`{"kind", "condition"}`. The router blocks a mode only where the rider surely
+edges. `edges` maps each channel name to a list of runs `[value, edge count]`.
+Each run gives one value and the number of consecutive edges with that value.
+The run lengths of a channel add up to `n - 1`. A missing channel is `null` on
+every edge. A client accepts a channel that it does not know.
+
+| Channel | Value of an edge |
+| --- | --- |
+| `surfaces` | `Unknown`, `Paved`, `Compacted`, `Gravel`, `Dirt` or `Rough` |
+| `pushing` | `true` where the rider must push the bicycle |
+| `closures` | `null`, or a list of possible closures, each `{"kind", "condition"}` |
+| `sac_scale` | The OSM `sac_scale` as an integer from `0` (`strolling`) through `1` (`hiking`, T1) to `6` (`difficult_alpine_hiking`, T6), or `null` when the way has none |
+
+The router blocks a mode only where the rider surely
 has no access. It uses an edge that is possibly closed for the mode that the
 route uses on it, and reports it. A closure on a node, such as a gate, belongs to
 the edges of the road that arrives at the node:

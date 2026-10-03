@@ -14,7 +14,7 @@ export function routeService(identity = 'test') {
         const legs = points.slice(1).map((point, k) => ({ from_index: k, to_index: k + 1, start: `${identity}:${points[k]}`, end: `${identity}:${point}`, totals: totals(1000) }));
         const coordinates_udeg = points.flat().map((value, i, flat) => Math.round(value * 1e6) - (i > 1 ? Math.round(flat[i - 2] * 1e6) : 0));
         const routes: AnswerRoute[] = [{ id: 'whole', reason: 'primary', package: identity, profile, coordinates_udeg, elevation_dm: points.map(() => null),
-            elapsed_s: points.map((_, i) => i && 1000), surfaces: [['Paved', edges]], pushing: [[false, edges]], closures: [[null, edges]], legs, snap_truncated: false, totals: totals(1000 * edges) }];
+            elapsed_s: points.map((_, i) => i && 1000), legs, snap_truncated: false, totals: totals(1000 * edges) }];
         return { ok: true, json: async () => ({ routes }) };
     };
 }

@@ -4,6 +4,7 @@ use route_engine::{
     snap::{Candidate, Policy, REACH_M},
     Control, Error, Request, Route, Router,
 };
+use serde_json::{json, Value};
 use std::{
     cmp::Reverse,
     collections::{BinaryHeap, HashMap},
@@ -31,6 +32,11 @@ fn package_with_profiles(graph: &Graph, profiles: &[Profile]) -> (Memory, Vec<u8
     })
     .unwrap();
     (Memory(Arc::new(objects)), serde_json::to_vec(&manifest).unwrap())
+}
+/// One value for each edge of the route, from the runs of one edge channel.
+fn edges(route: &Route, channel: &str) -> Value {
+    let runs = json!(route.edges)[channel].clone();
+    runs.as_array().unwrap().iter().flat_map(|run| vec![run[0].clone(); run[1].as_u64().unwrap() as usize]).collect()
 }
 
 #[test]
@@ -523,11 +529,12 @@ fn via_direction_pace_and_failure_states_are_explicit() {
     };
     let route = router.route(&request, &Control::default()).unwrap();
     assert_eq!(route.attachments.len(), 3);
-    assert_eq!(route.surfaces.len(), route.geometry.len() - 1);
-    assert_eq!(route.pushing.len(), route.surfaces.len());
+    let surfaces = edges(&route, "surfaces");
+    assert_eq!(surfaces.as_array().unwrap().len(), route.geometry.len() - 1);
+    assert_eq!(edges(&route, "pushing").as_array().unwrap().len(), route.geometry.len() - 1);
     for leg in &route.legs {
-        assert_eq!(route.surfaces[leg.from_index], graph.roads[leg.roads[0].road as usize].surface);
-        assert_eq!(route.surfaces[leg.to_index - 1], graph.roads[leg.roads.last().unwrap().road as usize].surface);
+        assert_eq!(surfaces[leg.from_index], json!(graph.roads[leg.roads[0].road as usize].surface));
+        assert_eq!(surfaces[leg.to_index - 1], json!(graph.roads[leg.roads.last().unwrap().road as usize].surface));
     }
     for pair in route.legs.windows(2) {
         let (a, b) = (pair[0].roads.last().unwrap(), pair[1].roads.first().unwrap());
@@ -1024,7 +1031,7 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
     let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
     let route = router.route(&request, &Control::default()).unwrap();
     assert_eq!(route.totals.pushing_m, 111);
-    assert_eq!(route.pushing, vec![false, true, false]);
+    assert_eq!(edges(&route, "pushing"), json!([false, true, false]));
     for road in &mut graph.roads {
         road.access &= !PUSH;
     }
@@ -1050,7 +1057,7 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
             class: 1,
             access: BIKE | FOOT | PUSH,
             difficulty: 0,
-            hiking_difficulty: None,
+            hiking_difficulty: (from.min(to) == 1).then_some(2),
             uncertain_access: false,
             structure: false,
             shape: vec![points[from as usize], points[to as usize]],
@@ -1081,11 +1088,13 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
     let closure = |kind, condition: &str| Closure { kind, condition: condition.into() };
     let permit = closure(Kind::Permit, "permit");
     let route = router.route(&request, &Control::default()).unwrap();
-    assert_eq!(route.closures, vec![None, Some(vec![permit.clone(), closure(Kind::Seasonal, "Nov-May")]), None]);
+    assert_eq!(edges(&route, "closures"), json!([null, [permit, closure(Kind::Seasonal, "Nov-May")], null]));
     request.profile = "hiking".into();
     let route = router.route(&request, &Control::default()).unwrap();
-    let walking = Some(vec![permit, closure(Kind::Conditional, "wet")]);
-    assert_eq!(route.closures, vec![None, walking.clone(), None]);
+    let walking = json!([permit, closure(Kind::Conditional, "wet")]);
+    assert_eq!(edges(&route, "closures"), json!([null, walking, null]));
+    // The SAC grade travels with the road geometry, like the surface.
+    assert_eq!(edges(&route, "sac_scale"), json!([null, 2, null]));
     // An extraction renumbers its roads and keeps their closures.
     let (source, bytes) = package(&graph);
     let mut objects = HashMap::new();
@@ -1105,7 +1114,7 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
     let mut router = Router::new(package, 768 * 1024 * 1024);
     request.points = vec![[0.0016, 0.0], [0.0024, 0.0]];
     let route = router.route(&request, &Control::default()).unwrap();
-    assert_eq!(route.closures, vec![walking, None]);
+    assert_eq!(edges(&route, "closures"), json!([walking, null]));
 }
 
 #[test]

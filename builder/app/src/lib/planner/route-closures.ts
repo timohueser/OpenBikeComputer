@@ -1,26 +1,40 @@
 import { cumulative, type Coordinate } from './editor';
 import type { RouteClosure, RoutingLine } from './routing';
 
-export interface ClosureStretch {
-    closures: RouteClosure[];
+export interface Stretch {
     coordinates: Coordinate[];
     km: number;
 }
 
-/** The stretches of the line where the rider may have no access. The router uses them, because nothing says for sure that the road is closed. */
-export function closureStretches(line?: Pick<RoutingLine, 'coordinates' | 'closures'>): ClosureStretch[] {
-    const runs: { closures: RouteClosure[]; from: number; to: number }[] = [];
-    line?.closures?.forEach((closures, i) => {
-        if (!closures) return;
-        let last = runs.at(-1);
-        if (last?.to !== i) runs.push(last = { closures: [], from: i, to: i });
-        last.to = i + 1;
-        for (const closure of closures)
-            if (!last.closures.some(known => known.kind === closure.kind && known.condition === closure.condition)) last.closures.push(closure);
+export interface ClosureStretch extends Stretch {
+    closures: RouteClosure[];
+}
+
+/** The runs of consecutive edges that `keep` accepts, as edge ranges with their coordinates and length. */
+export function edgeStretches<T>(coordinates: Coordinate[], edges: readonly T[] | undefined, keep: (edge: T) => boolean): (Stretch & { from: number; to: number })[] {
+    const runs: { from: number; to: number }[] = [];
+    edges?.forEach((edge, i) => {
+        if (!keep(edge)) return;
+        const last = runs.at(-1);
+        if (last?.to === i) last.to = i + 1;
+        else runs.push({ from: i, to: i + 1 });
     });
-    return runs.map(({ closures, from, to }) => {
-        const coordinates = line!.coordinates.slice(from, to + 1);
-        return { closures, coordinates, km: cumulative(coordinates).at(-1)! };
+    return runs.map(({ from, to }) => {
+        const stretch = coordinates.slice(from, to + 1);
+        return { from, to, coordinates: stretch, km: cumulative(stretch).at(-1)! };
+    });
+}
+
+export const noteDistance = (km: number) => km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`;
+
+/** The stretches of the line where the rider may have no access. The router uses them, because nothing says for sure that the road is closed. */
+export function closureStretches(line?: Pick<RoutingLine, 'coordinates' | 'edges'>): ClosureStretch[] {
+    const edges = line?.edges.closures ?? [];
+    return edgeStretches(line?.coordinates ?? [], edges, Boolean).map(({ from, to, coordinates, km }) => {
+        const closures: RouteClosure[] = [];
+        for (const closure of edges.slice(from, to).flatMap(edge => edge ?? []))
+            if (!closures.some(known => known.kind === closure.kind && known.condition === closure.condition)) closures.push(closure);
+        return { closures, coordinates, km };
     });
 }
 
@@ -45,6 +59,5 @@ export function closureNote(stretches: ClosureStretch[]): string {
         if (condition) known.add(condition);
     }
     const kinds = (Object.keys(phrases) as RouteClosure['kind'][]).filter(kind => conditions.has(kind));
-    const distance = km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`;
-    return [...kinds.map(kind => phrases[kind]([...conditions.get(kind)!])), distance].join(' · ');
+    return [...kinds.map(kind => phrases[kind]([...conditions.get(kind)!])), noteDistance(km)].join(' · ');
 }

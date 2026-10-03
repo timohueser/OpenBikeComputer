@@ -38,6 +38,23 @@ describe('snow tiles', () => {
         expect([words[0], words[1], words[2], words[256 + 7]]).toEqual([UNKNOWN, UNKNOWN, 0, UNKNOWN]);
     });
 
+    it('blends day values above the data zoom, never with a sentinel', () => {
+        // Two pixels across a 4 × 4 part of a tile: melt-out on day 20 and 40, then a no-snow pixel.
+        const pixels = new Array(256 * 256).fill([253, 253]) as [number, number][];
+        pixels[0] = [0, 20];
+        pixels[1] = [0, 40];
+        const words = new Uint32Array(256 * 256);
+        paintTile(words, planar([pixels]), 30, 64, 0, 0, Uint32Array.of(0, 1, 2, 3, 4));
+        // Snow until day 30 reaches halfway between the pixel centres at 32 and 96: a smooth border, not a pixel edge.
+        const row = Array.from({ length: 4 }, (_, k) => words[32 * 256 + 32 + 16 * k]);
+        expect(row).toEqual([0, 0, SNOW, SNOW]);
+        expect(words[32 * 256 + 63]).toBe(0);
+        expect(words[32 * 256 + 64]).toBe(SNOW);
+        // The no-snow pixel next to them stays snow-free: it gives no days to blend.
+        expect(words[32 * 256 + 128 + 32]).toBe(0);
+        expect(words[96 * 256 + 32]).toBe(0);
+    });
+
     it('ends the last day index on 31 August', () => {
         expect(indexLabel(182)).toBe('31 Aug');
         expect(indexLabel(182, true)).toBe('31 Aug');
