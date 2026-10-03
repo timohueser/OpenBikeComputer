@@ -70,6 +70,7 @@ on:
     branches: [develop]
     paths:
       - "docs/**"
+      - "hardware/**"
       - "firmware/**"
       - "builder/**"
       - "apps/obc-web-assemble/**"
@@ -107,6 +108,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install KiCad 10 for hardware exports
+        run: |
+          sudo add-apt-repository --yes ppa:kicad/kicad-10.0-releases
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends kicad
+          kicad-cli version
+
       - name: Install Rust (wasm target)
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -135,6 +143,7 @@ jobs:
           # catalog" is a broken front door, and the front door is the one place never
           # worth being brave about.
           OBC_BUILDER_PATH: ${{ vars.OBC_CATALOG_URL != '' && 'builder/' || '' }}
+          OBC_BUILD_HARDWARE: "1"
         run: trunk build --release --config docs/Trunk.toml --public-url "./"
 
       # The builder imports the shared obc-route GPX↔OBCR path (#896), the cell
@@ -242,6 +251,10 @@ jobs:
           check "$base/"
           check "$base/builder/"
           check "$base/docs/"
+          check "$base/docs/hardware/bom/"
+          for file in purchasing.csv OBC_PCB.csv USB_Baseboard.csv OBC_PCB.pdf USB_Baseboard.pdf; do
+            curl -fsS -o /dev/null "$base/docs/hardware/bom/$file"
+          done
           if [ -n "$OBC_PLANNER_CATALOG_URL" ]; then check "$base/plan/"; fi
           [ "$fail" = 0 ] || { echo "::error::the artifact is not mountable at a sub-path"; exit 1; }
 

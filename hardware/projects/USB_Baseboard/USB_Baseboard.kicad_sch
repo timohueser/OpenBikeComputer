@@ -1882,6 +1882,26 @@
 				)
 			)
 		)
+		(property "Mouser" "https://www.mouser.de/ProductDetail/GCT/USB4730-GF-A?qs=Z%252BL2brAPG1KuvvEznGJ6ZQ%3D%3D"
+			(at 63.5 83.82 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://www.mouser.de/ProductDetail/GCT/USB4730-GF-A?qs=Z%252BL2brAPG1KuvvEznGJ6ZQ%3D%3D"
+			(at 63.5 83.82 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:1.51;10:1.29;25:1.15;100:1.10"
+			(at 63.5 83.82 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 63.5 83.82 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
 	)
 	(symbol
 		(lib_id "obc:USB_FLEX_SOLDER_6")
@@ -2766,6 +2786,31 @@
 				(justify left)
 			)
 		)
+		(property "Mouser" "https://eu.mouser.com/en/ProductDetail/Texas-Instruments/TPD4E05U06DQAR?qs=%2FCrDlo5IrVPi4woOvWz0qA%3D%3D"
+			(at 124.46 111.76 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://eu.mouser.com/en/ProductDetail/Texas-Instruments/TPD4E05U06DQAR?qs=%2FCrDlo5IrVPi4woOvWz0qA%3D%3D"
+			(at 124.46 111.76 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.636;10:0.302;100:0.252;500:0.192;1000:0.181"
+			(at 124.46 111.76 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 124.46 111.76 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Sourcing notes" "Backorder shown; confirm delivery."
+			(at 124.46 111.76 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
 	)
 	(wire
 		(pts
@@ -3012,6 +3057,26 @@
 		(pin "2"
 			(uuid "5d4310d4-b614-4571-9369-d6b735396cdc")
 		)
+		(property "Mouser" "https://lv.mouser.com/lv/ProductDetail/Texas-Instruments/TPD1E05U06DYAR?qs=Znm5pLBrcAIwZf1BxgD2dA%3D%3D"
+			(at 96.52 55.88 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://lv.mouser.com/lv/ProductDetail/Texas-Instruments/TPD1E05U06DYAR?qs=Znm5pLBrcAIwZf1BxgD2dA%3D%3D"
+			(at 96.52 55.88 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.464;10:0.29;100:0.184;500:0.147;1000:0.124"
+			(at 96.52 55.88 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 96.52 55.88 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
 	)
 	(wire
 		(pts
@@ -3142,7 +3207,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.murata.com/en-us/products/productdetail?partno=GRM155R71E104KE14D"
 			(at 0 0 0)
 			(hide yes)
 			(effects
@@ -3213,6 +3278,36 @@
 		)
 		(pin "2"
 			(uuid "251db581-33fd-4639-b2eb-a61af0f33bcd")
+		)
+		(property "Manufacturer" "Murata"
+			(at 152.4 55.88 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "MPN" "GRM155R71E104KE14D"
+			(at 152.4 55.88 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Mouser" "https://www.mouser.de/de/ProductDetail/Murata-Electronics/GRM155R71E104KE14D?qs=IPQhFcwEUOgaz7Co1ZLU6w%3D%3D"
+			(at 152.4 55.88 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://www.mouser.de/de/ProductDetail/Murata-Electronics/GRM155R71E104KE14D?qs=IPQhFcwEUOgaz7Co1ZLU6w%3D%3D"
+			(at 152.4 55.88 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.086;10:0.013;100:0.011;500:0.008;1000:0.007;2500:0.006;5000:0.005"
+			(at 152.4 55.88 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 152.4 55.88 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 	(wire

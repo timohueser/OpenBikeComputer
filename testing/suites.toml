@@ -232,6 +232,8 @@ triggers = [
   "tools/requirements-planner-maps.txt",
   "tools/*.py",
   "tools/**/*.py",
+  "hardware/bom.py",
+  "docs/build_docs.py",
   "tools/planner-regions/**",
   "testing/*.toml",
   "docs/testing.md",
