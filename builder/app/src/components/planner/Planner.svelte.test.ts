@@ -164,7 +164,7 @@ describe('planner day views', () => {
             props: {
                 total: 144, days: tripDays(initialTrip()), dayLabels: { 1: 1, 2: 3, 3: 4 },
                 activeNight: 2, band: null, focus: { from: 1 / 3, to: 2 / 3, label: 'Day 3' },
-                window: { from: 0, to: 1 }, onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
+                window: { from: 0, to: 1 }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
             },
         }));
         await tick();
@@ -189,7 +189,7 @@ describe('profile access', () => {
         const onHover = vi.fn();
         mounted.push(mount(Profile, { target: document.body, props: {
             lineData: line, total: .15, days: [], dayLabels: {}, activeNight: 0, band: null,
-            onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover,
+            onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover,
         } }));
         await tick();
         expect(document.querySelector('.push-track span')).not.toBeNull();

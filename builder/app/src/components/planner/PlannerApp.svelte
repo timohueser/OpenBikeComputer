@@ -3,6 +3,7 @@
     import PlannerMap from './PlannerMap.svelte';
     import Icon from './PlannerIcon.svelte';
     import Profile from './PlannerProfile.svelte';
+    import DrawerTitle from './DrawerTitle.svelte';
     import Query from './PlannerQuery.svelte';
     import Resize from './PanelResize.svelte';
     import TripBar from './TripBar.svelte';
@@ -49,6 +50,8 @@
 
     const storageKey = 'obc-planner-routing-v2';
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
+    /** Drawer heights: the smallest open one, and the closed one with its title row only. */
+    const PROFILE_MIN = 210, PROFILE_CLOSED = 44;
     import { calculateLine, requestAlternatives, selectRoute, type EngineRoute, type RoutingLine } from '../../lib/planner/routing';
     import { LegCache } from '../../lib/planner/route-legs';
     import { closureNote, closureStretches, type ClosureStretch } from '../../lib/planner/route-closures';
@@ -185,6 +188,7 @@
     let hoverProgress = $state<number | null>(null);
     let sideWidth = $state(360);
     let profileHeight = $state(260);
+    let profileOpen = $state(true);
     let viewportHeight = $state(900);
     let viewportWidth = $state(1200);
     let mapHeight = $state(600);
@@ -192,8 +196,14 @@
     const history = new TripHistory();
     let revision = $state(0);
 
-    const maxProfile = $derived(Math.max(210, Math.min(340, viewportHeight - 400)));
+    const maxProfile = $derived(Math.max(PROFILE_MIN, Math.min(340, viewportHeight - 400)));
+    const drawerHeight = $derived(profileOpen ? Math.min(profileHeight, maxProfile) : PROFILE_CLOSED);
     const maxSide = $derived(Math.max(320, Math.min(460, viewportWidth - 540)));
+    // A drag below the open minimum closes the drawer past halfway and holds it at the minimum before.
+    function resizeProfile(value: number) {
+        profileOpen = value >= (PROFILE_MIN + PROFILE_CLOSED) / 2;
+        if (profileOpen) profileHeight = Math.max(PROFILE_MIN, value);
+    }
     const canUndo = $derived.by(() => { void revision; return history.canUndo; });
     const canRedo = $derived.by(() => { void revision; return history.canRedo; });
     const coordinates = $derived(routeCoordinates(visualTrip));
@@ -995,15 +1005,15 @@
                     </div>
                 {/if}
             </div>
-            <Resize value={Math.min(profileHeight, maxProfile)} min={210} max={maxProfile} axis="y" label="Elevation height" onResize={(value) => profileHeight = value} />
+            <Resize value={drawerHeight} min={PROFILE_CLOSED} max={maxProfile} axis="y" label="Elevation height" onResize={resizeProfile} />
             {#if !visualRoute}
-                <section class="empty-profile" aria-label="Elevation profile" style:height={`${Math.min(profileHeight, maxProfile)}px`}>
-                    <h2>Elevation &amp; surface</h2>
-                    <div><Icon name="route" size={24} /><p>{hasEndpoints ? 'The profile appears when your route is ready.' : 'See the climbs and surfaces along your route.'}</p><small>{hasEndpoints ? routingStatus : stops.length ? `Choose a ${nextEndpoint} to see the profile.` : 'Choose a start and finish to get started.'}</small></div>
+                <section class="empty-profile" aria-label="Elevation profile" style:height={`${drawerHeight}px`}>
+                    <DrawerTitle title="Elevation & surface" open={profileOpen} onToggle={() => profileOpen = !profileOpen} />
+                    {#if profileOpen}<div><Icon name="route" size={24} /><p>{hasEndpoints ? 'The profile appears when your route is ready.' : 'See the climbs and surfaces along your route.'}</p><small>{hasEndpoints ? routingStatus : stops.length ? `Choose a ${nextEndpoint} to see the profile.` : 'Choose a start and finish to get started.'}</small></div>{/if}
                 </section>
             {:else}
             <Profile
-                lineData={visualRoute} walking={visualTrip.bike === 'hiking'} singleRoute={!multi} height={Math.min(profileHeight, maxProfile)} {total} {days} {dayLabels} {theme}
+                lineData={visualRoute} walking={visualTrip.bike === 'hiking'} singleRoute={!multi} height={drawerHeight} open={profileOpen} onToggle={() => profileOpen = !profileOpen} {total} {days} {dayLabels} {theme}
                 activeNight={focusedDay?.ridingNumber ?? 0} band={overnightContext ? area : null} window={profileWindow}
                 focus={focusedDay ? { from: focusedDay.from, to: focusedDay.to, label: `Day ${focusedDay.number}` } : null}
                 onNight={(riding) => showDay(riding)} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
@@ -1036,9 +1046,8 @@
     .chosen-endpoint small, .chosen-endpoint strong { display: block; }
     .chosen-endpoint small { margin-bottom: 4px; color: var(--ink-soft); }
     .route-status { padding: 8px 16px; color: var(--ink-soft); }
-    .empty-profile { flex: none; display: flex; flex-direction: column; padding: 16px 24px; background: var(--panel); }
-    .empty-profile h2 { margin: 0; font: 600 14px var(--sans); }
-    .empty-profile div { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+    .empty-profile { flex: none; display: flex; flex-direction: column; align-items: flex-start; padding: 8px 24px; overflow: hidden; background: var(--panel); }
+    .empty-profile div { flex: 1; align-self: stretch; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
     .empty-profile p { margin: 12px 0 4px; }
     .empty-profile small { color: var(--ink-soft); }
 

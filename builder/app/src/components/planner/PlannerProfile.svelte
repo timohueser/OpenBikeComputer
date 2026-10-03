@@ -1,5 +1,6 @@
 <script lang="ts">
     import type { Snippet } from 'svelte';
+    import DrawerTitle from './DrawerTitle.svelte';
     import Surface from './PlannerSurface.svelte';
     import Segmented from './Segmented.svelte';
     import { formatGrade, gradeBand, gradeBands, profileGrades } from '../../lib/planner/grade-data';
@@ -9,8 +10,8 @@
     import type { Day } from '../../lib/planner/editor';
 
     let {
-        lineData, total, days, dayLabels, walking = false, singleRoute = true, theme = 'light', activeNight, band, focus = null, window: view = { from: 0, to: 1 }, height = 260,
-        onNight, onDayEndDrag, onHover, strip,
+        lineData, total, days, dayLabels, walking = false, singleRoute = true, theme = 'light', activeNight, band, focus = null, window: view = { from: 0, to: 1 }, height = 260, open = true,
+        onToggle, onNight, onDayEndDrag, onHover, strip,
     }: {
         /** Route length in km. */
         lineData?: RoutingLine;
@@ -28,6 +29,9 @@
         /** The stretch of the route the map shows, as route progress. */
         window?: { from: number; to: number };
         height?: number;
+        /** A closed drawer shows its title only. */
+        open?: boolean;
+        onToggle: () => void;
         onNight: (night: number) => void;
         onDayEndDrag: (night: number, progress: number) => void;
         onHover: (progress: number | null) => void;
@@ -79,7 +83,7 @@
     const hoverIndex = $derived(hover === null ? -1 : Math.max(0, sampleIndex(samples, hover) - 1));
     const hoverGrade = $derived(grades[hoverIndex] ?? null);
     const hoverPushing = $derived(lineData?.pushing?.[hoverIndex]);
-    let plot: HTMLDivElement;
+    let plot = $state<HTMLDivElement>();
     let drag = $state<{ night: number; progress: number; moved: boolean } | null>(null);
     let range = $state<'map' | 'route'>('map');
 
@@ -102,7 +106,7 @@
     }
 
     function progressAt(event: PointerEvent) {
-        const box = plot.getBoundingClientRect();
+        const box = plot!.getBoundingClientRect();
         return shown.from + Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)) * span;
     }
 
@@ -145,14 +149,19 @@
     }
 </script>
 
-<section class="elevation" style:height={`${height}px`} aria-label="Elevation profile">
+<section class="elevation" class:open style:height={`${height}px`} aria-label="Elevation profile">
     <div class="title">
-        <strong>Elevation</strong>
+        <DrawerTitle title="Elevation" {open} {onToggle} />
+        {#if open}
         <Segmented compact label="Profile range" value={range} onChange={(value) => range = value}
             options={[{ value: 'map', label: focus?.label ?? 'Map view' }, { value: 'route', label: 'Whole route' }]} />
         <label class="grade-toggle"><input type="checkbox" checked={showGrade} onchange={(event) => gradeChoice = event.currentTarget.checked} />Grade</label>
         <span class="distance">{(span * total).toFixed(1)} km</span>
+        {/if}
     </div>
+    {#if open}
+    <!-- Scrolls when the strips do not fit, so they never cover the line below the drawer. -->
+    <div class="body">
     {#if !known.length}<p class="unavailable">Elevation unavailable</p>{/if}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="plot" bind:this={plot} onpointermove={track} onpointerleave={leave} onpointerup={release} onpointercancel={() => drag = null}>
@@ -212,6 +221,8 @@
     </div>
     <Surface {walking} line={lineData} from={shown.from} to={shown.to} onHover={inspect} />
     {@render strip?.(shown.from, shown.to, inspect)}
+    </div>
+    {/if}
 </section>
 
 <style>
@@ -221,22 +232,30 @@
         display: flex;
         flex-direction: column;
         flex: none;
-        min-height: 210px;
         container-type: inline-size;
-        padding: 12px 24px 8px;
+        padding: 8px 24px;
         background: var(--panel);
+    }
+    .elevation.open { padding-bottom: 0; }
+    .body {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding-bottom: 8px;
+        scrollbar-width: thin;
+        scrollbar-color: var(--line-strong) transparent;
     }
     .title {
         display: flex;
         align-items: center;
         gap: 12px;
         flex-wrap: wrap;
-        margin-bottom: 4px;
+        min-height: 28px;
         font-size: 13px;
     }
-    .title strong {
-        font: 600 14px var(--sans);
-    }
+    .open .title { margin-bottom: 4px; }
     .title span {
         color: var(--ink-faint);
     }
@@ -252,7 +271,8 @@
     .plot {
         position: relative;
         flex: 1;
-        min-height: 40px;
+        /* The strips scroll before the profile gets too flat to read. */
+        min-height: 72px;
         margin: 0 12px 0 48px;
         touch-action: none;
     }
