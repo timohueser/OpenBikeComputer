@@ -18,13 +18,14 @@ import time
 from urllib.request import urlopen
 
 try:
-    from . import planner_maps as maps, planner_release as releases
+    from . import planner_maps as maps, planner_prepare, planner_release as releases
 except ImportError:
-    import planner_maps as maps, planner_release as releases
+    import planner_maps as maps, planner_prepare, planner_release as releases
 
 ROOT = maps.ROOT
 SEARCH = ROOT / "apps/planner-search"
 REGION = "baden-wuerttemberg"
+RECIPES = ROOT / "tools/planner-regions"
 CACHE = Path.home() / ".cache/obcm"
 
 
@@ -42,6 +43,11 @@ def latest_basemap():
 
 
 def setup(args):
+    if args.region != REGION:
+        # Only Baden-Württemberg has prepared development inputs; other regions bake from their recipe.
+        releases.main(["prepare", "--recipe", str(RECIPES / f"{args.region}.json"), "--data-dir", str(args.data_dir)])
+        print(f"Setup complete. Run: obc planner serve --region {args.region}", flush=True)
+        return
     for executable in ["node", "npm", "uv", "gh", "cargo", "curl", args.pmtiles]:
         if not shutil.which(executable):
             raise ValueError(f"Install {executable}, then repeat obc planner setup.")
@@ -51,7 +57,7 @@ def setup(args):
         "--data-dir", args.data_dir / "search")
     if not maps.DATA.exists():
         maps.prepare(argparse.Namespace(pmtiles=args.pmtiles, basemap=args.basemap or latest_basemap(),
-                     terrain="https://download.mapterhorn.com/planet.pmtiles", bbox=maps.bounds(maps.BW_BOUNDS)))
+                     terrain="https://download.mapterhorn.com/planet.pmtiles", bbox=args.bounds))
     route = args.data_dir / "routing"
     if not route.exists():
         source = args.osm or CACHE / "geofabrik/europe_germany_baden-wuerttemberg-latest.osm.pbf"
@@ -63,11 +69,12 @@ def setup(args):
             run("curl", "--fail", "--location", "--retry", "3",
                 "--output", partial, "https://download.geofabrik.de/europe/germany/baden-wuerttemberg-latest.osm.pbf")
             partial.rename(source)
-        run(ROOT / "target/release/obc-dem", "fetch", "--bbox", "47.5,7.45,49.85,10.5", "--out", args.dem_dir)
+        west, south, east, north = args.bounds
+        run(ROOT / "target/release/obc-dem", "fetch", "--bbox", f"{south},{west},{north},{east}", "--out", args.dem_dir)
         with tempfile.TemporaryDirectory(prefix=".routing-", dir=args.data_dir) as stage:
             output = Path(stage) / "routing"
             command = [ROOT / "target/release/route-build", source, "--output", output,
-                       "--region", REGION, "--country", "DE", "--bounds", maps.BW_BOUNDS,
+                       "--region", REGION, "--country", "DE", "--bounds", ",".join(map(str, args.bounds)),
                        "--profiles", "all", "--dem", args.dem_dir]
             if args.reference:
                 command += ["--reference", args.reference]
@@ -92,19 +99,19 @@ def current_overlays(route):
 
 def verify(args, full=False):
     manifest = maps.check_bundle(full)
-    if manifest["bounds"] != maps.bounds(maps.BW_BOUNDS):
-        raise ValueError("The map bundle must cover Baden-Württemberg.")
+    if manifest["bounds"] != args.bounds:
+        raise ValueError(f"The map bundle must cover {args.region}.")
     route = args.data_dir / "routing"
     routing = json.loads((route / "manifest.json").read_text())
-    if routing["region"] != REGION or routing["bounds"] != maps.bounds(maps.BW_BOUNDS):
-        raise ValueError("The route package must cover Baden-Württemberg. Repeat setup with a fresh data directory.")
+    if routing["region"] != args.region or routing["bounds"] != args.bounds:
+        raise ValueError(f"The route package must cover {args.region}. Repeat setup with a fresh data directory.")
     if not current_overlays(route):
         raise ValueError("Missing or stale overlay index or tiles. Run obc planner setup.")
     for name in ["touring", "road", "gravel", "mtb", "hiking"]:
         if name not in routing["metrics"]:
             raise ValueError(f"Route package lacks {name}.")
     search = args.data_dir / "search"
-    releases.search_metadata(search / (REGION + ".sqlite"), full)
+    releases.search_metadata(search / (args.region + ".sqlite"), full)
     for path in [search / "model" / name for name in
                  ["model.int8.onnx", "tokenizer.json", "tokenizer_config.json", "labels.json"]] + [
                      SEARCH / ".venv/bin/python", SEARCH / "node_modules/opening_hours/package.json",
@@ -129,8 +136,8 @@ def serve(args):
         "OBC_SEARCH_PORT": str(args.search_port),
         "OBC_SEARCH_DATA": str(args.data_dir / "search"),
         "OBC_SEARCH_PYTHON": str(SEARCH / ".venv/bin/python"),
-        "OBC_SEARCH_REGIONS": REGION,
-        "VITE_PLANNER_SEARCH_REGIONS": REGION,
+        "OBC_SEARCH_REGIONS": args.region,
+        "VITE_PLANNER_SEARCH_REGIONS": args.region,
         "VITE_PLANNER_DATA_URL": "",
         "OBC_QUERY_ROUTER": args.routing,
     })
@@ -145,8 +152,8 @@ def serve(args):
                     status = json.load(response)
                 with urlopen(args.routing + "/health", timeout=1):
                     pass
-                if status["parser"]["ready"] and [r["id"] for r in status["regions"]] == [REGION]:
-                    print(f"Ready: http://127.0.0.1:{args.port}/planner.html (Baden-Württemberg, local)", flush=True)
+                if status["parser"]["ready"] and [r["id"] for r in status["regions"]] == [args.region]:
+                    print(f"Ready: http://127.0.0.1:{args.port}/planner.html ({args.region}, local)", flush=True)
                     return
             except (OSError, ValueError, KeyError):
                 pass
@@ -164,8 +171,9 @@ def main():
         return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["setup", "serve", "verify"], nargs="?", default="serve")
-    parser.add_argument("--data-dir", type=Path, default=os.environ.get(
-        "OBC_PLANNER_DATA", str(Path.home() / ".cache/obc/planner" / REGION)))
+    parser.add_argument("--region", default=REGION, choices=sorted(p.stem for p in RECIPES.glob("*.json")))
+    parser.add_argument("--data-dir", type=Path, default=os.environ.get("OBC_PLANNER_DATA"),
+                        help="Default: ~/.cache/obc/planner/REGION")
     parser.add_argument("--pmtiles", default=os.environ.get("PMTILES", "pmtiles"))
     parser.add_argument("--basemap", help="Override the available Protomaps v4 build for a new map bundle")
     parser.add_argument("--osm", type=Path, help="Use an existing BW OSM PBF for routing")
@@ -179,7 +187,8 @@ def main():
     parser.add_argument("--route-port", type=int, default=8787)
     parser.add_argument("--search-port", type=int, default=8786)
     args = parser.parse_args()
-    args.data_dir = args.data_dir.expanduser().resolve()
+    args.data_dir = (args.data_dir or Path.home() / ".cache/obc/planner" / args.region).expanduser().resolve()
+    args.bounds = planner_prepare.recipe(RECIPES / f"{args.region}.json")["bounds"]
     maps.DATA = args.data_dir / "maps"
     args.data_dir.mkdir(parents=True, exist_ok=True)
     def stop(_signum, _frame):

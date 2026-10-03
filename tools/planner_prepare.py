@@ -19,8 +19,10 @@ def recipe(path):
     document = json.loads(path.read_text())
     if document["format"] != 1 or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", document["region"]):
         raise ValueError("Invalid region recipe")
-    if document["country"] != "DE":
+    if document["access"] != "DE":
         raise ValueError("Routing has German access defaults. Add and verify each country's access policy before extending coverage.")
+    if not document["countries"] or any(not re.fullmatch(r"[A-Z]{2}", code) for code in document["countries"]):
+        raise ValueError("Name the region's countries as ISO codes")
     maps.bounds(",".join(map(str, document["bounds"])))
     if not re.fullmatch(r"[a-f0-9]{64}", document["osm"]["sha256"]):
         raise ValueError("Pin the OSM SHA-256 in the recipe")
@@ -127,12 +129,13 @@ def prepare(args):
     for name, checksum in terrain["dem"].items():
         if Path(name).name != name or sources.digest(args.dem_dir / name) != checksum:
             raise ValueError(f"DEM input does not match the recipe: {name}")
-    reference = ["--reference", args.reference] if args.reference else []
+    # Only a pinned archive enters the bake; an unpinned one would make it irreproducible.
+    reference = ["--reference", args.reference] if terrain.get("reference_index_sha256") else []
     if not routing.exists():
         with tempfile.TemporaryDirectory(prefix=".routing-", dir=data) as directory:
             stage = Path(directory) / "routing"
             maps.run(maps.ROOT / "target/release/route-build", osm, "--output", stage, "--region", config["region"],
-                     "--country", config["country"], "--bounds", ",".join(map(str, bounds)), "--profiles", ",".join(config["profiles"]),
+                     "--country", config["access"], "--bounds", ",".join(map(str, bounds)), "--profiles", ",".join(config["profiles"]),
                      "--dem", args.dem_dir, *reference)
             stage.rename(routing)
     if set(json.loads((routing / "manifest.json").read_bytes())["metrics"]) != set(config["profiles"]):
@@ -177,7 +180,7 @@ def prepare(args):
         with tempfile.TemporaryDirectory(prefix=".search-", dir=data) as directory:
             maps.run(maps.ROOT / "apps/planner-search/.venv/bin/python", maps.ROOT / "apps/planner-search/build.py",
                      source / "search.jsonl.zst", "--output", directory, "--region", config["region"],
-                     "--bounds", ",".join(map(str, bounds)), "--countries", config["country"], "--osm-sha256", config["osm"]["sha256"])
+                     "--bounds", ",".join(map(str, bounds)), "--countries", ",".join(config["countries"]), "--osm-sha256", config["osm"]["sha256"])
             Path(directory, database.name).rename(database)
     mirror = data / "sources"
     mirror.mkdir(exist_ok=True)

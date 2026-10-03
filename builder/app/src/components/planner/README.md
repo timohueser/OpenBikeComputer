@@ -83,7 +83,7 @@ same IDs. Run the three commands above with the new directory. Preparation
 checks the profile selection and builds a matching overlay index and tiles.
 
 Routing currently supports German access defaults. Preparation refuses other
-countries. Add and verify their access rules before extending coverage.
+`access` values. Add and verify their rules before extending coverage.
 
 Each kind of change goes out in one way:
 
@@ -124,12 +124,13 @@ obc planner verify
 
 Open `http://127.0.0.1:4175/planner.html`. Setup downloads regional PMTiles,
 prepared Photon records, and the query model. It builds BW routing with all
-profiles. Normal launch has no downloads. Ctrl-C stops the local services.
+profiles. Normal launch has no downloads. For a test region, setup runs `prepare`.
 `verify` checks map hashes, SQLite integrity, and routing object closure.
 
 | Setting | Default |
 | --- | --- |
-| `OBC_PLANNER_DATA` or `--data-dir` | `~/.cache/obc/planner/baden-wuerttemberg` |
+| `--region` | `baden-wuerttemberg`; test regions `engadin`, `colorado-front-range` |
+| `OBC_PLANNER_DATA` or `--data-dir` | `~/.cache/obc/planner/REGION` |
 | `OBC_PLANNER_RELEASE` | `~/.cache/obc/planner/bw-online` |
 | `--port` | Planner `4175` |
 | `--tile-port` | Terrain `8789` |

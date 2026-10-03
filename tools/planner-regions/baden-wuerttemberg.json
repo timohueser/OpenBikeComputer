@@ -2,7 +2,10 @@
   "format": 1,
   "region": "baden-wuerttemberg",
   "device_region": "europe/germany/baden-wuerttemberg",
-  "country": "DE",
+  "access": "DE",
+  "countries": [
+    "DE"
+  ],
   "profiles": [
     "gravel",
     "gravel/less-climbing",

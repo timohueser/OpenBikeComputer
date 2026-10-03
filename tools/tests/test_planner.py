@@ -20,7 +20,8 @@ class PlannerTests(unittest.TestCase):
             (root / "maps").mkdir()
             source = root / "bw.osm.pbf"
             source.write_bytes(b"input")
-            args = argparse.Namespace(data_dir=root, pmtiles="pmtiles", osm=source,
+            args = argparse.Namespace(data_dir=root, pmtiles="pmtiles", osm=source, region=planner.REGION,
+                                      bounds=maps.bounds(maps.BW_BOUNDS),
                                       dem_dir=root / "dem", reference=None)
 
             def run(*command):
@@ -44,8 +45,9 @@ class PlannerTests(unittest.TestCase):
                 "region": "freiburg", "bounds": [7.5, 47.7, 8.5, 48.4],
             }))
             with patch.object(maps, "check_bundle", return_value={"bounds": maps.bounds(maps.BW_BOUNDS)}):
-                with self.assertRaisesRegex(ValueError, "route package must cover Baden-Württemberg"):
-                    planner.verify(argparse.Namespace(data_dir=root))
+                with self.assertRaisesRegex(ValueError, "route package must cover baden-wuerttemberg"):
+                    planner.verify(argparse.Namespace(data_dir=root, region=planner.REGION,
+                                                      bounds=maps.bounds(maps.BW_BOUNDS)))
 
     def test_a_failed_start_stops_services_already_started(self):
         children = []
