@@ -14,36 +14,39 @@ export function demTile(z: number, x: number, y: number): { z: number; x: number
     return { z: dz, x: Math.floor(x / scale), y: Math.floor(y / scale), scale, left: (x % scale) * part, top: (y % scale) * part };
 }
 
-/**
- * Heights in metres of the 256 × 256 nearest pixels of the part of a 512 px Terrarium RGBA tile that
- * a map tile covers: R × 256 + G + B ÷ 256 − 32768.
- */
+/** The DEM zoom that the 512 px relief loads at a map zoom: MapLibre rounds the zoom for raster sources. */
+export function reliefZoom(zoom: number): number {
+    return Math.min(Math.max(Math.round(zoom), 0), DEM_MAX_ZOOM);
+}
+
+/** The height in metres of pixel (column, row) of a 512 px Terrarium RGBA tile: R × 256 + G + B ÷ 256 − 32768. */
+export function pixelHeight(rgba: ArrayLike<number>, column: number, row: number): number {
+    const p = 4 * (row * DEM_TILE + column);
+    return rgba[p] * 256 + rgba[p + 1] + rgba[p + 2] / 256 - 32768;
+}
+
+/** Heights in metres of the 256 × 256 nearest pixels of the part of a 512 px Terrarium RGBA tile that a map tile covers. */
 export function cropHeights(rgba: ArrayLike<number>, { scale, left, top }: { scale: number; left: number; top: number }): Float32Array {
     const step = DEM_TILE / scale / TILE;
     const out = new Float32Array(TILE * TILE);
     for (let py = 0; py < TILE; py++) {
-        const row = (top + Math.floor(py * step)) * DEM_TILE + left;
-        for (let px = 0; px < TILE; px++) {
-            const p = 4 * (row + Math.floor(px * step));
-            out[py * TILE + px] = rgba[p] * 256 + rgba[p + 1] + rgba[p + 2] / 256 - 32768;
-        }
+        const row = top + Math.floor(py * step);
+        for (let px = 0; px < TILE; px++) out[py * TILE + px] = pixelHeight(rgba, left + Math.floor(px * step), row);
     }
     return out;
 }
 
 /**
- * Heights in metres of the 256 × 256 pixels of map tile z/x/y, row by row from the north-west pixel;
- * undefined where the terrain service has no tile. `template` is the map's Terrarium URL, so the
- * browser cache serves tiles that the map has loaded.
+ * The RGBA pixels of DEM tile z/x/y; undefined where the terrain service has no tile. `template` is
+ * the map's Terrarium URL, so the browser cache serves tiles that the map has loaded.
  */
-export async function tileHeights(template: string, z: number, x: number, y: number, signal?: AbortSignal): Promise<Float32Array | undefined> {
-    const dem = demTile(z, x, y);
-    const response = await fetch(template.replace('{z}', String(dem.z)).replace('{x}', String(dem.x)).replace('{y}', String(dem.y)), { signal });
+export async function demPixels(template: string, z: number, x: number, y: number, signal?: AbortSignal): Promise<Uint8ClampedArray | undefined> {
+    const response = await fetch(template.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y)), { signal });
     if (!response.ok || response.status === 204) return undefined;
     // Without these options the browser may convert colours or premultiply, which changes the heights.
     const image = await createImageBitmap(await response.blob(), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
     const context = new OffscreenCanvas(DEM_TILE, DEM_TILE).getContext('2d', { willReadFrequently: true })!;
     context.drawImage(image, 0, 0, DEM_TILE, DEM_TILE);
     image.close();
-    return cropHeights(context.getImageData(0, 0, DEM_TILE, DEM_TILE).data, dem);
+    return context.getImageData(0, 0, DEM_TILE, DEM_TILE).data;
 }

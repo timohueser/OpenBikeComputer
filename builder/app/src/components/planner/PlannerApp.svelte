@@ -20,7 +20,7 @@
     import LayerInspect from './LayerInspect.svelte';
     import LayerStrip from './LayerStrip.svelte';
     import { dataLayers } from '../../lib/planner/layers/registry';
-    import type { DataLayer } from '../../lib/planner/layers/data-layer';
+    import { addDays, type DataLayer } from '../../lib/planner/layers/data-layer';
     import type { OverlayOptions } from '../../lib/planner/route-overlays';
     import NearbyLandmark from './NearbyLandmark.svelte';
     import { presetName } from '../../lib/planner/riding-profiles';
@@ -39,7 +39,7 @@
     import { coordinateName, visitName } from '../../lib/planner/point-names';
     import { SEARCH_URL, HOSTED_SEARCH, SEARCH_REGIONS, REGION_NAME } from '../../lib/planner/search/config';
     import { dayColor } from '../../lib/planner/day-colors';
-    import { profileAscent, profileDescent } from '../../lib/planner/profile-data';
+    import { profileAscent, profileDescent, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import { searchPlaces, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
     import { asPlace } from '../../lib/planner/search/presentation';
     import { buildQueryRoute } from '../../lib/planner/search/route-client';
@@ -354,6 +354,14 @@
     });
     const routeSamples = $derived(dataLayer && visualRoute && lineSamples?.layer === dataLayer && lineSamples.line === visualRoute ? lineSamples.samples : null);
     const layerYear = $derived(dataLayer?.year(routeSamples, { date: shownDate, theme }));
+    // The night after day n falls n − 1 calendar days after the layer date.
+    const layerNotes = $derived.by(() => {
+        if (!multi || !dataLayer?.nights || !routeSamples || !visualRoute) return [];
+        const points = profileSamples(visualRoute);
+        const ends = days.slice(0, -1);
+        const stops = ends.map(day => ({ index: Math.min(points.length - 1, sampleIndex(points, day.to)), date: addDays(shownDate, (dayLabels[day.number] ?? day.number) - 1) }));
+        return dataLayer.nights(routeSamples, stops).flatMap((text, i) => text ? [{ coordinate: coordinateAt(coordinates, ends[i].to), text }] : []);
+    });
     // A map click with a layer shown adds the years at that spot to the callout.
     let pinSamples = $state.raw<{ layer: DataLayer; at: Coordinate; samples: unknown } | null>(null);
     $effect(() => {
@@ -965,7 +973,7 @@
             <div class="map-area" bind:clientHeight={mapHeight} style:--map-height={`${mapHeight}px`}>
                 <PlannerMap
                     bind:this={map} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
-                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
+                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces} {landmarks}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={previewPoint} onDayEndDrag={moveDayEnd}

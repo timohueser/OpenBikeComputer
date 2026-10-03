@@ -46,7 +46,13 @@ function arrowImage(icon: string, theme: Theme): ImageData {
 }
 
 /** The overview cell of each coordinate, the travel bearings and the headwind row of a route; a map point has neither. */
-interface Samples { climate: ClimateSource; coordinates: Line['coordinates']; overview: (CellRef | undefined)[]; bearings: Float32Array | null; row: Float32Array | null }
+interface Samples {
+    overview: (CellRef | undefined)[];
+    /** The detail cell of a sample, loaded on the first read (`detailCell`). */
+    detail: (i: number) => CellRef | null | undefined;
+    bearings: Float32Array | null;
+    row: Float32Array | null;
+}
 
 class WindLayer implements DataLayer<Samples> {
     id = 'wind';
@@ -164,9 +170,10 @@ class WindLayer implements DataLayer<Samples> {
         const climate = await this.open();
         const overview = await sampleLine(coordinates, climate.tile);
         signal.throwIfAborted();
-        if (coordinates.length < 2) return { climate, coordinates, overview, bearings: null, row: null };
+        const detail = (i: number) => detailCell(climate, coordinates[i]);
+        if (coordinates.length < 2) return { overview, detail, bearings: null, row: null };
         const km = cumulative(coordinates), bearings = lineBearings(coordinates, km, STRETCH_KM);
-        return { climate, coordinates, overview, bearings, row: windRow(overview, km, bearings) };
+        return { overview, detail, bearings, row: windRow(overview, km, bearings) };
     }
 
     strip = {
@@ -176,9 +183,8 @@ class WindLayer implements DataLayer<Samples> {
     };
 
     /** The weekly grid appears when the detail tile of the point arrives; the headline and the rose read the overview. */
-    chart({ climate, coordinates, overview, bearings }: Samples, i: number, { date, theme }: View) {
-        const detail = detailCell(climate, coordinates[i]) ?? undefined;
-        const { chart, rose } = windChart({ overview: overview[i], detail, bearing: bearings?.[i] }, climate.meta.firstYear, date, theme);
+    chart({ overview, detail, bearings }: Samples, i: number, { date, theme }: View) {
+        const { chart, rose } = windChart({ overview: overview[i], detail: detail(i) ?? undefined, bearing: bearings?.[i] }, this.meta?.firstYear ?? 0, date, theme);
         return rose ? { ...chart, extra: { component: WindRose, props: { ...rose, theme } } } : chart;
     }
 

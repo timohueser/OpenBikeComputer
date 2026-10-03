@@ -52,7 +52,7 @@
 
 <div class="strip">
     <div class="label">
-        <span><strong>{layer.label}</strong><span class="hint">{layer.error || (samples ? `${dateLabel(date)} · hover for past years` : 'Loading…')}</span></span>
+        <span><strong>{strip.label ?? layer.label}</strong><span class="hint">{layer.error || (samples ? `${dateLabel(date)} · hover for past years` : 'Loading…')}</span></span>
         <span class="key"><LayerLegend legend={strip.legend(theme)} label={`${layer.label} colours`} /></span>
     </div>
     <div class="bar" bind:this={bar} role="slider" tabindex={samples ? 0 : -1} aria-label={`${layer.label} along the route on ${dateLabel(date)}`}

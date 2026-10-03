@@ -43,6 +43,7 @@
         mountain: 'm2 20 7-13 4 7 3-5 6 11H2Zm4-7 3 1 2-3',
         wind: 'M3 8h10a3 3 0 1 0-3-3M3 12h15a3 3 0 1 1-3 3M3 16h7',
         snow: 'M12 2v20M3.3 7l17.4 10M3.3 17 20.7 7M9.5 3.5 12 6l2.5-2.5M9.5 20.5 12 18l2.5 2.5M18.1 5.6 17.2 9l3.4.9M20.6 14.1 17.2 15l.9 3.4M3.4 14.1 6.8 15l-.9 3.4M5.9 5.6 6.8 9l-3.4.9',
+        weather: 'M7 19h10a4 4 0 0 0 .7-7.9A5.5 5.5 0 0 0 7.2 10 4.5 4.5 0 0 0 7 19Z',
     };
 </script>
 <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{#if bike}

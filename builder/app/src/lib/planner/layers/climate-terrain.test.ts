@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 // map-style reads the page URL when it loads.
 vi.stubGlobal('window', { location: { href: 'https://planner.example/plan/' } });
-const { cropHeights, demTile } = await import('./climate-terrain');
+const { cropHeights, demTile, reliefZoom } = await import('./climate-terrain');
 
 /** A 512 px Terrarium tile whose height at (column, row) is 10 × row + column − 100. */
 function terrarium(): Uint8ClampedArray {
@@ -23,6 +23,10 @@ describe('climate terrain', () => {
         expect(demTile(0, 0, 0)).toEqual({ z: 0, x: 0, y: 0, scale: 1, left: 0, top: 0 });
         // Above the DEM zoom the deepest DEM tile is cut.
         expect(demTile(15, 8 * 100 + 3, 8 * 50 + 7)).toEqual({ z: 12, x: 100, y: 50, scale: 8, left: 192, top: 448 });
+    });
+
+    it('reads a map point from the DEM zoom that the relief loads', () => {
+        expect([reliefZoom(9.4), reliefZoom(9.6), reliefZoom(15), reliefZoom(-1)]).toEqual([9, 10, 12, 0]);
     });
 
     it('decodes Terrarium heights of the covered part, one DEM pixel per map pixel at the view zoom', () => {
