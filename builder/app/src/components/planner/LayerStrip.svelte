@@ -3,8 +3,9 @@
     import { dateLabel, valueRuns, type DataLayer, type Theme } from '../../lib/planner/layers/data-layer';
     import { profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import type { RoutingLine } from '../../lib/planner/routing';
+    import type { Coordinate } from '../../lib/planner/map-types';
 
-    let { layer, line, samples, total, date, theme, from, to, onHover }: {
+    let { layer, line, samples, total, date, theme, from, to, onHover, underTrees }: {
         layer: DataLayer;
         line: RoutingLine;
         /** The layer data at each coordinate of `line`, or null while it loads. */
@@ -15,6 +16,7 @@
         from: number;
         to: number;
         onHover: (progress: number | null) => void;
+        underTrees: (coordinate: Coordinate) => boolean;
     } = $props();
 
     const points = $derived(profileSamples(line));
@@ -67,7 +69,7 @@
 </div>
 {#if at && inspection}
     <div class="popover" role="tooltip" style:left={`clamp(8px, ${at.x - 184}px, calc(100vw - 376px))`} style:bottom={`${at.bottom}px`}>
-        <LayerInspect title={`${layer.label} at km ${(at.progress * total).toFixed(1)}`} detail={height === null ? '' : `${Math.round(height).toLocaleString('en-GB')} m`} {inspection} source={layer.source} />
+        <LayerInspect title={`${layer.label} at km ${(at.progress * total).toFixed(1)}`} detail={height === null ? '' : `${Math.round(height).toLocaleString('en-GB')} m`} {inspection} source={layer.source} note={underTrees(line.coordinates[index]) ? layer.treeNote : ''} />
     </div>
 {/if}
 

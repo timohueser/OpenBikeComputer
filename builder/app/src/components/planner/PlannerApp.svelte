@@ -331,6 +331,7 @@
     });
     const pinInspection = $derived(calloutKind === 'snow' && pinSamples?.at === spot?.coordinate ? snow.inspect(pinSamples!.samples, 0, shownDate, theme) : null);
     $effect(() => { if (!snowOn && untrack(() => selectedId) === 'snow') clearSelection(); });
+    const underTrees = (coordinate: Coordinate) => map?.underTrees(coordinate) ?? false;
 
     $effect(() => {
         if (!highlights.length || coordinates.length < 2) return;
@@ -938,7 +939,7 @@
                 >
                     {#snippet popup()}
                         {#if calloutKind === 'snow'}
-                            <LayerInspect title={`${snow.label} here`} inspection={pinInspection} source={snow.source}>
+                            <LayerInspect title={`${snow.label} here`} inspection={pinInspection} source={snow.source} note={spot && underTrees(spot.coordinate) ? snow.treeNote : ''}>
                                 <button type="button" class="planner-action pin-add" onclick={() => selectedId = 'add'}>Add a point here</button>
                             </LayerInspect>
                         {:else if calloutKind}
@@ -997,7 +998,7 @@
                 onNight={(riding) => showDay(riding)} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
             >
                 {#snippet strip(from, to, onHover)}
-                    {#if snowOn}<LayerStrip layer={snow} line={visualRoute} samples={routeSamples} {total} date={shownDate} {theme} {from} {to} {onHover} />{/if}
+                    {#if snowOn}<LayerStrip layer={snow} line={visualRoute} samples={routeSamples} {total} date={shownDate} {theme} {from} {to} {onHover} {underTrees} />{/if}
                 {/snippet}
             </Profile>
             {/if}

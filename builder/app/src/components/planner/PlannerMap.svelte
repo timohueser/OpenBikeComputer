@@ -120,6 +120,13 @@
         overlaySelection = selected;
     }
 
+    /** Whether the basemap draws forest at a coordinate on screen; false off screen. */
+    export function underTrees(coordinate: Coordinate): boolean {
+        if (!map || !map.getBounds().contains(coordinate)) return false;
+        const layers = ["landcover", "land-ground"].filter((id) => map!.getLayer(id));
+        return map.queryRenderedFeatures(map.project(coordinate), { layers }).some((feature) => ["forest", "wood"].includes(feature.properties.kind));
+    }
+
     export function fitRoute() {
         if (!map || !coordinates.length) return;
         fitBounds(coordinates, 14, 0);

@@ -27,6 +27,10 @@ export interface DataLayer<Samples = unknown> {
     id: string;
     label: string;
     description: string;
+    /** A limit of the data, beside the attribution. */
+    caveat: string;
+    /** Shown at a point under trees. */
+    treeNote: string;
     /** Attribution and resolution, once the data has loaded. */
     readonly source: string;
     readonly error: string;

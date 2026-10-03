@@ -3,7 +3,7 @@
     import SeasonGrid from './SeasonGrid.svelte';
     import type { Inspection } from '../../lib/planner/layers/data-layer';
 
-    let { title, detail = '', inspection, source, children }: { title: string; detail?: string; inspection: Inspection | null; source: string; children?: Snippet } = $props();
+    let { title, detail = '', inspection, source, note = '', children }: { title: string; detail?: string; inspection: Inspection | null; source: string; note?: string; children?: Snippet } = $props();
 </script>
 
 <div class="inspect">
@@ -18,6 +18,7 @@
     {:else}
         <p class="headline">Loading the years at this point…</p>
     {/if}
+    {#if note}<p class="note">{note}</p>{/if}
     {#if source}<p class="source">{source}</p>{/if}
     {@render children?.()}
 </div>
@@ -34,5 +35,6 @@
     .swatch { width: 14px; height: 8px; border-radius: 2px; background: var(--swatch); }
     .swatch.hatch { background: repeating-linear-gradient(135deg, transparent 0 2px, var(--swatch) 2px 3.5px); box-shadow: inset 0 0 0 1px var(--swatch); }
     .line { width: 2px; height: 12px; background: var(--ink); }
-    .source { margin-top: 8px; }
+    .source, .note { margin-top: 8px; }
+    .note { font-size: 12px; }
 </style>

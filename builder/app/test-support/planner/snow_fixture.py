@@ -1,7 +1,6 @@
 """Write a synthetic snow archive in the tile contract of specs/planner-snow-tiles.md.
 
-Snow lasts longer with height, read from a terrain archive; smooth blobs stand in for forest
-without data. The values are fake: the archive is for front-end checks until the bake lands.
+Snow lasts longer with height, read from a terrain archive; smooth blobs have no data. The values are fake: the archive is for front-end checks until the bake lands.
 
     uv run --with pmtiles --with pillow --with numpy builder/app/test-support/planner/snow_fixture.py \\
         ~/.cache/obc/planner/baden-wuerttemberg/maps/terrain.pmtiles snow.pmtiles --bbox 7.85,47.78,8.15,47.95
@@ -54,7 +53,7 @@ def tile(terrain, z, x, y):
     if h is None:
         return None
     lon, lat = lonlat(z, x, y)
-    forest = np.sin(lon * 140) * np.sin(lat * 190) + 0.6 * np.sin(lon * 61 + lat * 83) > 1.05
+    missing = np.sin(lon * 140) * np.sin(lat * 190) + 0.6 * np.sin(lon * 61 + lat * 83) > 1.05
     rng = np.random.default_rng(1000 * z + x + y)
     planes = []
     for season in range(SEASONS):
@@ -64,7 +63,7 @@ def tile(terrain, z, x, y):
         none = (h < line) | (melt <= onset)
         onset = np.where(none, 253, np.clip(onset, 0, 182))
         melt = np.where(none, 253, np.clip(melt, 0, 182))
-        planes += [np.where(forest, 255, onset), np.where(forest, 255, melt)]
+        planes += [np.where(missing, 255, onset), np.where(missing, 255, melt)]
     return gzip.compress(np.stack(planes).astype(np.uint8).tobytes())
 
 

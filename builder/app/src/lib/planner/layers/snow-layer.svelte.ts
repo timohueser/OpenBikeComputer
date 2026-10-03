@@ -37,6 +37,8 @@ class SnowLayer implements DataLayer<Planar> {
     id = 'snow';
     label = 'Snow';
     description = 'How often past years had snow on your date.';
+    caveat = 'Satellites see less snow under trees.';
+    treeNote = 'Under trees: snow often stays a little longer than shown.';
     meta = $state<SnowMeta | null>(null);
     error = $state('');
     private archive?: Promise<Archive>;

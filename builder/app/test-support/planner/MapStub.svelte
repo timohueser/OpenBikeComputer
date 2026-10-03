@@ -10,6 +10,7 @@
     export function showPlace() {}
     export function zoomBy() {}
     export function centerOn() {}
+    export function underTrees() { return false; }
 </script>
 
 <button type="button" data-access-mode={accessMode} onclick={() => onBounds?.([7.9, 48, 8, 48.1], false)}>Pan map</button>

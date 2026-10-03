@@ -83,7 +83,7 @@
                     <ul class="legend" aria-label={`${dataLayer.label} classes`}>
                         {#each dataLayer.swatches(theme).filter(swatch => !swatch.lineOnly) as swatch (swatch.label)}<li><span class="swatch" class:hatch={swatch.hatch} style:--swatch={swatch.color}></span>{swatch.label}</li>{/each}
                     </ul>
-                    <p>{dataLayer.error || dataLayer.source || 'Loading…'}</p>
+                    <p>{dataLayer.error || (dataLayer.source ? `${dataLayer.source}. ${dataLayer.caveat}` : 'Loading…')}</p>
                 {:else}
                     <p>{dataLayer.description}</p>
                 {/if}
