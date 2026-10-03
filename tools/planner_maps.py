@@ -209,7 +209,8 @@ def preview(args):
         "VITE_PLANNER_PMTILES_URL": base + "/basemap.pmtiles",
         "VITE_PLANNER_PLACES_URL": base + "/places.pmtiles",
         "VITE_PLANNER_OVERLAYS_URL": base + "/overlays.pmtiles",
-        "VITE_PLANNER_SNOW_URL": base + "/snow.pmtiles",
+        # Without a snow archive, the planner offers no snow layer.
+        "VITE_PLANNER_SNOW_URL": base + "/snow.pmtiles" if "snow.pmtiles" in manifest["files"] else "",
         "VITE_PLANNER_DEM_URL": "/tiles/terrain/{z}/{x}/{y}.webp",
         "VITE_PLANNER_GLYPHS_URL": base + "/assets/fonts/{fontstack}/{range}.pbf",
         "VITE_PLANNER_SPRITES_URL": base + "/assets/sprites/v4",

@@ -110,10 +110,12 @@ class ReleaseTests(unittest.TestCase):
                 runtime.release(root)
 
     def test_site_configuration_uses_one_release_and_rejects_line_injection(self):
-        active = release.endpoints("a" * 64, {"region": "test", "bounds": [1, 2, 3, 4],
-                                   "attribution": "OSM", "terrain_attribution": "Terrain"}, "https://maps.example", "https://tiles.example", "https://api.example")
+        document = {"region": "test", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain", "files": {}}
+        active = release.endpoints("a" * 64, document, "https://maps.example", "https://tiles.example", "https://api.example")
+        self.assertEqual(release.vite_environment(active)["VITE_PLANNER_SNOW_URL"], "")
+        active = release.endpoints("a" * 64, {**document, "files": {"maps/snow.json": {}}}, "https://maps.example", "https://tiles.example", "https://api.example")
         env = release.vite_environment(active)
-        for key in ["VITE_PLANNER_TILEJSON_URL", "VITE_PLANNER_PLACES_URL", "VITE_PLANNER_SEARCH_URL", "VITE_CATALOG_URL"]:
+        for key in ["VITE_PLANNER_TILEJSON_URL", "VITE_PLANNER_PLACES_URL", "VITE_PLANNER_SEARCH_URL", "VITE_PLANNER_SNOW_URL", "VITE_CATALOG_URL"]:
             self.assertIn("a" * 64, env[key])
         active["terrain_attribution"] = "Terrain\nOTHER=value"
         with self.assertRaisesRegex(ValueError, "configuration"): release.vite_environment(active)
@@ -145,7 +147,7 @@ class ReleaseTests(unittest.TestCase):
         args = argparse.Namespace(host="root@vps.example", data_dir=Path("/release"), apply=True,
                                   site_origin="https://site.example", public_url="https://maps.example",
                                   tiles_url="https://tiles.example", api_url="https://releases.openbikecomputer.com")
-        document = {"region": "test", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain"}
+        document = {"region": "test", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain", "files": {}}
         with patch.object(release, "release", return_value=("a" * 64, document)), \
              patch.object(release, "read_url", side_effect=[document, {"active": None, "previous": None}]), \
              patch.object(planner_deploy, "ssh") as ssh, patch.object(planner_deploy.maps, "run"), \
@@ -163,7 +165,7 @@ class ReleaseTests(unittest.TestCase):
         args = argparse.Namespace(host="root@vps.example", data_dir=Path("/release"), apply=True,
                                   site_origin="https://site.example", public_url="https://maps.example",
                                   tiles_url="https://tiles.example", api_url="https://releases.openbikecomputer.com")
-        document = {"region": "test", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain"}
+        document = {"region": "test", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain", "files": {}}
         current = {"active": {"id": "b" * 64}, "previous": None}
         with patch.object(release, "release", return_value=("a" * 64, document)), \
              patch.object(release, "read_url", side_effect=[document, current]), \

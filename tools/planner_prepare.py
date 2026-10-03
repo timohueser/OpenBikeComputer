@@ -42,6 +42,12 @@ def link(source, destination):
         shutil.copyfile(source, destination)
 
 
+def add_map(folder, name):
+    manifest = json.loads((folder / "manifest.json").read_bytes())
+    manifest["files"][name] = {"bytes": (folder / name).stat().st_size, "sha256": sources.digest(folder / name)}
+    (folder / "manifest.json").write_bytes(releases.encoded(manifest))
+
+
 def runtime_routing(routing):
     """Keep compiled routing and overlays; omit their source OSM tables."""
     manifest = json.loads((routing / "manifest.json").read_bytes())
@@ -142,7 +148,8 @@ def prepare(args):
         raise ValueError("Routing profiles differ from the recipe; choose a fresh package")
     maps.run(maps.ROOT / "target/release/route-server", routing, "--build-overlays")
     runtime_routing(routing)
-    if not (data / "maps").exists():
+    # The map manifest is written last, so it marks a complete maps folder.
+    if not (data / "maps/manifest.json").exists():
         with tempfile.TemporaryDirectory(prefix=".maps-", dir=data) as directory:
             stage = Path(directory)
             link(source / "basemap.pmtiles", stage / "basemap.pmtiles")
@@ -168,14 +175,20 @@ def prepare(args):
                         "files": {p.relative_to(stage).as_posix():
                         {"bytes": p.stat().st_size, "sha256": sources.digest(p)} for p in sorted(stage.rglob("*")) if p.is_file()}}
             (stage / "manifest.json").write_bytes(releases.encoded(manifest))
-            stage.rename(data / "maps")
+            (data / "maps").mkdir(exist_ok=True)
+            for path in sorted(stage.iterdir(), key=lambda path: path.name == "manifest.json"):
+                path.replace(data / "maps" / path.name)
     elif not (data / "maps/overlays.pmtiles").exists():
         # A routing selection reuses the maps; only the overlay tiles follow the new routing package.
-        overlays = data / "maps/overlays.pmtiles"
-        maps.overlays_archive(routing / "overlays.sqlite", overlays)
-        manifest = json.loads((data / "maps/manifest.json").read_bytes())
-        manifest["files"]["overlays.pmtiles"] = {"bytes": overlays.stat().st_size, "sha256": sources.digest(overlays)}
-        (data / "maps/manifest.json").write_bytes(releases.encoded(manifest))
+        maps.overlays_archive(routing / "overlays.sqlite", data / "maps/overlays.pmtiles")
+        add_map(data / "maps", "overlays.pmtiles")
+    if "snow" in config and "snow.pmtiles" not in json.loads((data / "maps/manifest.json").read_bytes())["files"]:
+        snow = data / "maps/snow.pmtiles"
+        # A bake of the same source survives an interrupted run.
+        if not snow.exists() or releases.archive_metadata(snow).get("source") != config["snow"]["source"]:
+            maps.run("uv", "run", "--with-requirements", maps.ROOT / "tools/requirements-planner-snow.txt", "python", "-m", "tools.planner_snow",
+                     config["region"], "--bounds", ",".join(map(str, bounds)), "--source", config["snow"]["source"], "--output", snow, cwd=maps.ROOT)
+        add_map(data / "maps", "snow.pmtiles")
     if not database.exists():
         with tempfile.TemporaryDirectory(prefix=".search-", dir=data) as directory:
             maps.run(maps.ROOT / "apps/planner-search/.venv/bin/python", maps.ROOT / "apps/planner-search/build.py",

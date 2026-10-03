@@ -83,8 +83,10 @@ def seal(data, region, device_catalog, provenance):
         return value
     (data / "device").mkdir(exist_ok=True)
     (data / "device/catalog.json").write_bytes(encoded(absolute(device)))
-    files = {}
-    for part in ["maps", "routing", "search/model", "device"]:
+    # The release carries the verified map bundle, which includes snow when the recipe asks for it.
+    files = {f"maps/{name}": item for name, item in map_manifest["files"].items()}
+    files["maps/manifest.json"] = {"bytes": (data / "maps/manifest.json").stat().st_size, "sha256": sources.digest(data / "maps/manifest.json")}
+    for part in ["routing", "search/model", "device"]:
         for path in sorted((data / part).rglob("*")):
             if path.is_file():
                 files[path.relative_to(data).as_posix()] = {"bytes": path.stat().st_size, "sha256": sources.digest(path)}
@@ -112,6 +114,7 @@ def endpoints(identity, document, public, tiles, api):
             "overlays": tile_prefix + "/overlays.json",
             "attribution": document["attribution"],
             "terrain": tile_prefix + "/terrain/{z}/{x}/{y}.webp",
+            **({"snow": tile_prefix + "/snow.json"} if "maps/snow.json" in document["files"] else {}),
             "glyphs": assets + "/maps/assets/fonts/{fontstack}/{range}.pbf",
             "sprites": assets + "/maps/assets/sprites/v4", "bounds": document["bounds"],
             "terrain_attribution": document["terrain_attribution"]}
@@ -168,7 +171,7 @@ def publish(args):
 def vite_environment(active):
     values = {"VITE_PLANNER_TILEJSON_URL": active["basemap"], "VITE_PLANNER_PLACES_URL": active["places"],
               "VITE_PLANNER_OVERLAYS_URL": active["overlays"],
-              "VITE_PLANNER_DEM_URL": active["terrain"],
+              "VITE_PLANNER_DEM_URL": active["terrain"], "VITE_PLANNER_SNOW_URL": active.get("snow", ""),
               "VITE_PLANNER_ROUTING_URL": active["routing"], "VITE_PLANNER_SEARCH_URL": active["search"],
               "VITE_PLANNER_GLYPHS_URL": active["glyphs"], "VITE_PLANNER_SPRITES_URL": active["sprites"],
               "VITE_PLANNER_MAP_BOUNDS": ",".join(map(str, active["bounds"])),

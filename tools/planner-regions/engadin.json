@@ -1,6 +1,7 @@
 {
   "format": 1,
   "region": "engadin",
+  "name": "Upper Engadin",
   "access": "DE",
   "countries": [
     "CH",
@@ -68,6 +69,9 @@
       "Copernicus_DSM_COG_10_N47_00_E009_00_DEM.tif": "ca0b7567f5e12b8c814500bcf434855fb2a1084248bb80d3c80a91169887817c",
       "Copernicus_DSM_COG_10_N47_00_E010_00_DEM.tif": "81da8ebbaa01e294ebf5dac218c66db6ba9c6b6ebe6a45c19f112e339dddaa16"
     }
+  },
+  "snow": {
+    "source": "copernicus-hr-wsi"
   },
   "probe": {
     "points": [

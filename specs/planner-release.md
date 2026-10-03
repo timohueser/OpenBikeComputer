@@ -35,7 +35,10 @@ under `planner/sources/`, without the local `sources/` path prefix. A source nam
 starts with its SHA-256. Source mirrors can be shared by releases.
 
 `maps/` contains `basemap.pmtiles`, `places.pmtiles`, `overlays.pmtiles`,
-`terrain.pmtiles`, map assets, and their manifest. `routing/` contains the three files in the
+`terrain.pmtiles`, map assets, and their manifest. When the region recipe names a
+snow source, it also contains `snow.pmtiles` from the
+[snow tile contract](planner-snow-tiles.md). The release `files` hold exactly the
+files of the map manifest and the manifest itself. `routing/` contains the three files in the
 [route package contract](route-package.md), plus `overlays.sqlite`. The overlay
 index stores the routing manifest identity and has the same OSM source.
 `search/` contains `REGION.sqlite`
@@ -86,8 +89,10 @@ tile holds each route that its lines name. A tile with no features is absent.
 The tile API serves `/releases/ID/basemap.json`, vector tiles at
 `/releases/ID/basemap/Z/X/Y.mvt`, `/releases/ID/places.json`, places tiles at
 `/releases/ID/places/Z/X/Y.mvt`, `/releases/ID/overlays.json`, overlay tiles at
-`/releases/ID/overlays/Z/X/Y.mvt`, and Terrarium tiles at
-`/releases/ID/terrain/Z/X/Y.webp`. An absent tile returns 204. The raw archives
+`/releases/ID/overlays/Z/X/Y.mvt`, Terrarium tiles at
+`/releases/ID/terrain/Z/X/Y.webp`, and, for a release with snow,
+`/releases/ID/snow.json` and snow tiles at `/releases/ID/snow/Z/X/Y`. Each
+TileJSON holds its archive metadata. Snow tiles keep their gzip encoding. An absent tile returns 204. The raw archives
 remain downloadable from R2.
 
 Routing and search APIs have the prefix `/planner-api/releases/ID/`. The final
@@ -120,7 +125,7 @@ cell selection and download manifests.
 `planner/catalog.json` has `format: 1`, `active`, and `previous`.
 `active` contains the release `id`, manifest URL, region, bounds, attribution,
 device catalogue URL, map asset URLs, tile URLs, and routing and search API
-prefixes. Its `slot` is `0` or `1`. `previous` has the same shape or is `null`.
+prefixes. `snow` is the snow TileJSON URL, only for a release with snow. Its `slot` is `0` or `1`. `previous` has the same shape or is `null`.
 
 The publisher uploads and verifies all release files before the manifest.
 The deployer verifies public services before changing the catalogue. The

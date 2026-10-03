@@ -139,6 +139,7 @@ def serve(args):
         "OBC_SEARCH_REGIONS": args.region,
         "VITE_PLANNER_SEARCH_REGIONS": args.region,
         "VITE_PLANNER_DATA_URL": "",
+        "VITE_PLANNER_REGION_NAME": args.name,
         "OBC_QUERY_ROUTER": args.routing,
     })
     commands = [([str(ROOT / "target/release/route-server"), str(args.data_dir / "routing")], ROOT),
@@ -199,7 +200,8 @@ def main():
     routing = args.data_dir / "routing/manifest.json"
     if routing.exists() and json.loads(routing.read_text())["region"] != args.region:
         parser.error(f"{args.data_dir} holds another region. Choose a data directory for {args.region}.")
-    args.bounds = planner_prepare.recipe(RECIPES / f"{args.region}.json")["bounds"]
+    recipe = planner_prepare.recipe(RECIPES / f"{args.region}.json")
+    args.bounds, args.name = recipe["bounds"], recipe.get("name", "")
     maps.DATA = args.data_dir / "maps"
     args.data_dir.mkdir(parents=True, exist_ok=True)
     def stop(_signum, _frame):

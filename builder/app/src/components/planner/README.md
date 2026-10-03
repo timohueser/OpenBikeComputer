@@ -9,7 +9,7 @@ Run from the checkout. Install Rust, Node 24+, Python 3.12+, `uv`, `gh`, `rclone
 and the [PMTiles CLI](https://docs.protomaps.com/pmtiles/cli).
 Authenticate `gh` for the query model release. Set the R2 credential in
 `tools/obc.local`. The [region recipe](../../../../../tools/planner-regions/baden-wuerttemberg.json)
-pins the OSM extract, map inputs, elevation inputs, and routing profiles.
+pins the OSM extract, map, elevation, and snow inputs, and routing profiles.
 
 Map and search builders need Linux, Java 21, Maven, PostgreSQL 17,
 PostGIS 3, osm2pgsql 2, zstd, and `nominatim-db==5.3.2`.
@@ -123,7 +123,7 @@ obc planner verify
 
 Open `http://127.0.0.1:4175/planner.html`. Setup downloads regional PMTiles,
 prepared Photon records, and the query model. It builds BW routing with all
-profiles. Normal launch has no downloads. Ctrl-C stops the local services.
+profiles. Normal launch has no downloads.
 `verify` checks map hashes, SQLite integrity, and routing object closure.
 
 A test-region setup runs `prepare`. First copy its inputs:
@@ -159,7 +159,7 @@ release. Use them for a hosted build with the configured API origin.
 | `VITE_PLANNER_PMTILES_URL` | Local basemap archive, when TileJSON is absent |
 | `VITE_PLANNER_PLACES_URL` | Rider places TileJSON or PMTiles archive |
 | `VITE_PLANNER_OVERLAYS_URL` | Overlay TileJSON or PMTiles archive |
-| `VITE_PLANNER_SNOW_URL` | Snow history PMTiles archive |
+| `VITE_PLANNER_SNOW_URL` | Snow TileJSON or PMTiles archive, if any |
 | `VITE_PLANNER_ROUTING_URL` | Routing API prefix |
 | `VITE_PLANNER_SEARCH_URL` | Search API prefix |
 | `VITE_PLANNER_SEARCH_REGIONS` | Comma-separated region IDs |
