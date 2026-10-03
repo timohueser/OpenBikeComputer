@@ -55,7 +55,7 @@ fn access(tags: &Tags, defaults: u8, direction: &str) -> u8 {
 }
 
 fn conditional_modes(tags: &Tags) -> u8 {
-    source::conditional_modes(tags.iter().map(|(key, value)| (key.as_str(), value.as_str())))
+    source::conditional_modes(tags.iter().map(|(key, value)| (key.as_str(), value.as_str())), true)
 }
 
 fn attributes(tags: &Tags, counts: &mut Counts) -> Option<Attributes> {
