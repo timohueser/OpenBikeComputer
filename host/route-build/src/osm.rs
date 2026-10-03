@@ -781,6 +781,25 @@ mod tests {
     }
 
     #[test]
+    fn seasonal_closures_keep_the_road_open() {
+        for condition in
+            ["no @ (Nov-May)", "no @ (nov-may)", "no @ Oct 15th - May 31st", "no @ winter", "no @ (Dec 1-Mar 31)"]
+        {
+            let attrs =
+                attributes(&tags(&[("highway", "secondary"), ("access:conditional", condition)]), &mut Counts::new())
+                    .unwrap();
+            assert_eq!(attrs.access, [BIKE | FOOT | PUSH; 2], "{condition}");
+        }
+        for condition in ["no @ (2025 Mar 10-2025 Oct 1)", "no @ (Mo-Fr)", "no @ (Nov-May); no @ (wet)"] {
+            assert!(
+                attributes(&tags(&[("highway", "secondary"), ("access:conditional", condition)]), &mut Counts::new())
+                    .is_none(),
+                "{condition}"
+            );
+        }
+    }
+
+    #[test]
     fn topology_uses_ids_and_never_joins_across_missing_nodes() {
         let graph = fixture(
             vec![way(10, &[1, 2, 3, 4, 5, 6, 7], &[("highway", "path")]), way(20, &[2, 8], &[("highway", "path")])],

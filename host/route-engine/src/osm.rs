@@ -123,12 +123,7 @@ pub fn access<'a>(get: impl Fn(&str) -> Option<&'a str>, defaults: u8, direction
 pub fn conditional_modes<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> u8 {
     let mut modes = 0;
     for (key, value) in tags.filter(|(key, _)| key.ends_with(":conditional")) {
-        // These conditions concern a hazardous load, not an ordinary rider or walker.
-        if value.split(';').all(|clause| {
-            clause.split_once('@').is_some_and(|(_, condition)| {
-                matches!(condition.trim().trim_matches(['(', ')']).trim(), "hazmat" | "hazmat:water")
-            })
-        }) {
+        if value.split(';').all(|clause| clause.split_once('@').is_some_and(|(_, condition)| ignored(condition))) {
             continue;
         }
         modes |= match key.strip_suffix(":conditional").unwrap_or("") {
@@ -141,6 +136,31 @@ pub fn conditional_modes<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> 
         };
     }
     modes
+}
+
+/// A hazardous-load condition never concerns a rider or walker. A seasonal closure such as
+/// `Nov-May` moves with the snow each year, so the route stays open and the snow layer tells
+/// the rider when it is usually clear. A dated closure with a year is not seasonal.
+fn ignored(condition: &str) -> bool {
+    const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    const SEASONS: [&str; 4] = ["winter", "spring", "summer", "autumn"];
+    let condition = condition.trim().trim_matches(['(', ')']).trim().to_ascii_lowercase();
+    if matches!(condition.as_str(), "hazmat" | "hazmat:water") {
+        return true;
+    }
+    let mut named = false;
+    let seasonal = condition.split([' ', '-', ',']).filter(|token| !token.is_empty()).all(|token| {
+        let day = token.trim_end_matches(char::is_alphabetic);
+        if !day.is_empty() {
+            let suffix = &token[day.len()..];
+            return matches!(suffix, "" | "st" | "nd" | "rd" | "th")
+                && day.parse::<u8>().is_ok_and(|d| (1..=31).contains(&d));
+        }
+        let name = SEASONS.contains(&token) || MONTHS.iter().any(|m| token.starts_with(m));
+        named |= name;
+        name
+    });
+    seasonal && named
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
