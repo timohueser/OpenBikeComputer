@@ -1,5 +1,5 @@
 import type { Coordinate } from './editor';
-import { requestRoute, type EngineRoute, type RouteLeg, type RouteTotals, type Surface } from './routing';
+import { requestRoute, type EngineRoute, type RouteClosure, type RouteLeg, type RouteTotals, type Surface } from './routing';
 
 /** One leg cut from a route answer. Its `elapsed` starts at zero. */
 interface Leg extends Pick<RouteLeg, 'start' | 'end' | 'totals'> {
@@ -10,7 +10,7 @@ interface Leg extends Pick<RouteLeg, 'start' | 'end' | 'totals'> {
     elapsed: number[];
     surfaces: Surface[];
     pushing: boolean[];
-    closures: (string | null)[];
+    closures: (RouteClosure[] | null)[];
 }
 
 function cut(route: EngineRoute, { from_index: from, to_index: to, start, end, totals }: RouteLeg): Leg {

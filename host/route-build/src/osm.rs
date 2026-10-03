@@ -1,5 +1,6 @@
 //! Streaming regional OSM import.
 use osmpbfreader::{OsmId, OsmObj, OsmPbfReader, Relation, Tags, Way};
+use route_engine::closures::{Closure, Kind};
 use route_engine::model::{Graph, Point, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH};
 use route_engine::osm as source;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -50,12 +51,9 @@ struct Restriction {
     walking: bool,
 }
 
+/// Conditional restrictions do not count: the router keeps them open, and the route reports them.
 fn access(tags: &Tags, defaults: u8, direction: &str) -> u8 {
-    source::access(|key| tag(tags, key), defaults, direction)
-}
-
-fn conditional_modes(tags: &Tags) -> u8 {
-    source::conditional_modes(tags.iter().map(|(key, value)| (key.as_str(), value.as_str())), true)
+    source::access(|key| tag(tags, key), defaults, direction, true)
 }
 
 fn attributes(tags: &Tags, counts: &mut Counts) -> Option<Attributes> {
@@ -85,16 +83,6 @@ fn attributes(tags: &Tags, counts: &mut Counts) -> Option<Attributes> {
                 count(counts, "excluded unsupported oneway modes");
             }
         }
-    }
-    let conditional = conditional_modes(tags);
-    if conditional != 0 {
-        for mode in &mut modes {
-            *mode &= !conditional;
-        }
-        count(counts, "ways with excluded conditional modes");
-    }
-    if tags.values().any(|v| matches!(v.as_str(), "destination" | "customers" | "delivery")) {
-        count(counts, "ways with excluded destination or customer modes");
     }
     if modes == [0, 0] {
         return None;
@@ -135,26 +123,40 @@ fn attributes(tags: &Tags, counts: &mut Counts) -> Option<Attributes> {
     })
 }
 
+/// The modes that pass a barrier, or `None` for a barrier the router does not know.
+fn barrier(value: Option<&str>) -> Option<u8> {
+    match value {
+        None
+        | Some(
+            "no" | "entrance" | "bollard" | "gate" | "lift_gate" | "swing_gate" | "cycle_barrier" | "toll_booth"
+            | "border_control" | "cattle_grid" | "kerb" | "block" | "chain" | "height_restrictor",
+        ) => Some(BIKE | FOOT | PUSH),
+        Some("stile" | "kissing_gate" | "turnstile") => Some(FOOT),
+        Some(_) => None,
+    }
+}
+
+/// The possible closures of a node: its access tags, and an unknown barrier that a rider may
+/// have to push through.
+pub fn node_closures<'a>(tags: impl Iterator<Item = (&'a str, &'a str)> + Clone) -> Vec<(u8, Closure)> {
+    let mut closures = source::closures(tags.clone());
+    if let Some((_, value)) = tags.into_iter().find(|&(key, value)| key == "barrier" && barrier(Some(value)).is_none())
+    {
+        closures.push((FOOT | PUSH, Closure { kind: Kind::Unclear, condition: format!("barrier={value}") }));
+    }
+    closures
+}
+
 fn crossing(tags: &Tags, counts: &mut Counts) -> u8 {
-    let defaults = match tag(tags, "barrier") {
-        None | Some("no" | "entrance" | "bollard" | "gate" | "lift_gate" | "swing_gate" | "cycle_barrier") => {
-            BIKE | FOOT | PUSH
-        }
-        Some("stile" | "kissing_gate" | "turnstile") => FOOT,
-        Some(_) => {
-            count(counts, "conservatively blocked barrier nodes");
-            0
-        }
-    };
+    let defaults = barrier(tag(tags, "barrier")).unwrap_or_else(|| {
+        count(counts, "unknown barrier nodes passed on foot");
+        FOOT | PUSH
+    });
     let modes = access(tags, defaults, "forward") & access(tags, defaults, "backward");
     if modes & BIKE == 0 && modes & PUSH != 0 {
         count(counts, "dismount-only crossing nodes");
     }
-    let conditional = conditional_modes(tags);
-    if conditional != 0 {
-        count(counts, "nodes with excluded conditional modes");
-    }
-    modes & !conditional
+    modes
 }
 
 fn relation_rules(
@@ -178,10 +180,8 @@ fn relation_rules(
     }) {
         mode_rules.push((true, rule));
     }
-    let conditional_bike = tag(&relation.tags, "restriction:bicycle:conditional").is_some()
-        || !except_bike && tag(&relation.tags, "restriction:conditional").is_some();
-    let conditional_foot = tag(&relation.tags, "restriction:foot:conditional").is_some();
-    if mode_rules.is_empty() && !conditional_bike && !conditional_foot {
+    // A conditional restriction restricts a turn only sometimes, so the router ignores it.
+    if mode_rules.is_empty() {
         return;
     }
     let members: Vec<_> = relation.refs.iter().filter_map(|r| r.member.way().map(|id| id.0)).collect();
@@ -195,7 +195,7 @@ fn relation_rules(
     let via: Vec<_> = relation.refs.iter().filter(|r| r.role == "via").map(|r| r.member).collect();
     let via_node = if let [OsmId::Node(id)] = via.as_slice() { Some(id.0) } else { None };
     let supported_shape = from.len() == 1 && to.len() == 1 && via_node.is_some();
-    let mut excluded = if conditional_bike { BIKE | PUSH } else { 0 } | if conditional_foot { FOOT | PUSH } else { 0 };
+    let mut excluded = 0;
     for (walking, value) in mode_rules {
         let supported_rule = matches!(
             value,
@@ -422,6 +422,15 @@ fn build_graph(
     );
     junctions.extend(rules.iter().map(|r| r.via));
     junctions.extend(nodes.iter().filter(|(_, n)| n.crossing != (BIKE | FOOT | PUSH)).map(|(id, _)| *id));
+    // A node with a possible closure ends its roads, so the road that arrives there reports it.
+    junctions.extend(
+        nodes
+            .iter()
+            .filter(|(_, n)| {
+                !n.tags.is_empty() && !node_closures(n.tags.iter().map(|(k, v)| (k.as_str(), v.as_str()))).is_empty()
+            })
+            .map(|(id, _)| *id),
+    );
     let mut point_ids = HashMap::new();
     let mut ordered: Vec<_> = ways.into_values().collect();
     ordered.sort_unstable_by_key(|w| w.id);
@@ -665,12 +674,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(attrs.access, [FOOT; 2]);
-        let attrs = attributes(
-            &tags(&[("highway", "path"), ("bicycle:pushing:conditional", "no @ (wet)")]),
-            &mut Counts::new(),
-        )
-        .unwrap();
-        assert_eq!(attrs.access, [BIKE | FOOT; 2]);
         let attrs = attributes(&tags(&[("highway", "footway"), ("bicycle", "dismount")]), &mut Counts::new()).unwrap();
         assert_eq!(attrs.access, [FOOT | PUSH; 2]);
         assert!(attributes(&tags(&[("highway", "path"), ("bicycle", "dismount"), ("foot", "no")]), &mut Counts::new())
@@ -734,69 +737,24 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_conditions_close_only_affected_modes() {
-        let mut counts = Counts::new();
-        let attrs =
-            attributes(&tags(&[("highway", "path"), ("bicycle:conditional", "no @ (wet)")]), &mut counts).unwrap();
-        assert_eq!(attrs.access, [FOOT | PUSH; 2]);
-        assert_eq!(counts["ways with excluded conditional modes"], 1);
-        let attrs =
-            attributes(&tags(&[("highway", "residential"), ("oneway:foot:conditional", "yes @ (Mo-Fr)")]), &mut counts)
-                .unwrap();
-        assert_eq!(attrs.access, [BIKE; 2]);
-        let attrs = attributes(&tags(&[("highway", "path"), ("bicycle", "destination")]), &mut counts).unwrap();
-        assert_eq!(attrs.access, [FOOT | PUSH; 2]);
-    }
-
-    #[test]
-    fn freight_conditions_do_not_close_a_cycling_ascent() {
-        for condition in ["agricultural @ hazmat:water", "no @ (hazmat)"] {
-            let graph = fixture(
-                vec![way(
-                    10,
-                    &[1, 2, 3],
-                    &[("highway", "tertiary"), ("ref", "L 186"), ("access:conditional", condition)],
-                )],
-                &[1, 2, 3],
-                vec![],
-            );
-            assert_eq!(graph.roads.len(), 2);
-            assert!(graph.roads.iter().all(|r| r.access == BIKE | FOOT | PUSH));
+    fn only_a_certain_restriction_closes_a_way() {
+        let open = |pairs: &[(&str, &str)]| {
+            let pairs = [&[("highway", "secondary")], pairs].concat();
+            attributes(&tags(&pairs), &mut Counts::new()).map(|attrs| attrs.access)
+        };
+        for condition in ["no @ (Nov-May)", "no @ (2025 Mar 10-2025 Oct 1)", "no @ (Mo-Fr)", "no @ (wet)", "no"] {
+            assert_eq!(open(&[("access:conditional", condition)]), Some([BIKE | FOOT | PUSH; 2]), "{condition}");
         }
-        let attrs = attributes(
-            &tags(&[("highway", "tertiary"), ("motor_vehicle:conditional", "no @ (Mo-Fr)")]),
-            &mut Counts::new(),
-        )
-        .unwrap();
-        assert_eq!(attrs.access, [BIKE | FOOT | PUSH; 2]);
-        for condition in ["no @ (wet)", "agricultural @ hazmat:water; no @ (Mo-Fr)", "no @ (!hazmat:water)"] {
-            assert!(attributes(
-                &tags(&[("highway", "tertiary"), ("access:conditional", condition)]),
-                &mut Counts::new()
-            )
-            .is_none());
+        for value in ["permit", "destination", "customers", "unknown"] {
+            assert_eq!(open(&[("access", value)]), Some([BIKE | FOOT | PUSH; 2]), "{value}");
         }
-        assert!(attributes(&tags(&[("highway", "construction"), ("construction", "tertiary")]), &mut Counts::new())
-            .is_none());
-    }
-
-    #[test]
-    fn seasonal_closures_keep_the_road_open() {
-        for condition in
-            ["no @ (Nov-May)", "no @ (nov-may)", "no @ Oct 15th - May 31st", "no @ winter", "no @ (Dec 1-Mar 31)"]
-        {
-            let attrs =
-                attributes(&tags(&[("highway", "secondary"), ("access:conditional", condition)]), &mut Counts::new())
-                    .unwrap();
-            assert_eq!(attrs.access, [BIKE | FOOT | PUSH; 2], "{condition}");
+        assert_eq!(open(&[("access", "permit"), ("bicycle", "no")]), Some([FOOT | PUSH; 2]));
+        for value in ["no", "private", "agricultural;forestry"] {
+            assert_eq!(open(&[("access", value)]), None, "{value}");
         }
-        for condition in ["no @ (2025 Mar 10-2025 Oct 1)", "no @ (Mo-Fr)", "no @ (Nov-May); no @ (wet)"] {
-            assert!(
-                attributes(&tags(&[("highway", "secondary"), ("access:conditional", condition)]), &mut Counts::new())
-                    .is_none(),
-                "{condition}"
-            );
-        }
+        assert!(attributes(&tags(&[("highway", "construction")]), &mut Counts::new()).is_none());
+        assert_eq!(crossing(&tags(&[("barrier", "toll_booth")]), &mut Counts::new()), BIKE | FOOT | PUSH);
+        assert_eq!(crossing(&tags(&[("barrier", "gate"), ("access", "private")]), &mut Counts::new()), 0);
     }
 
     #[test]
@@ -871,6 +829,69 @@ mod tests {
         assert!(rules.is_empty());
         assert!(ways.values().all(|w| w.attributes.access == [FOOT; 2]));
         assert_eq!(counts["conservatively excluded unsupported restriction relations"], 1);
+    }
+
+    #[test]
+    fn a_node_closure_stays_routable_and_the_arriving_road_reports_it() {
+        let node = |id: i64, pairs: &[(&str, &str)]| {
+            let tags = tags(pairs);
+            let point = Point { lat: 47_000_000, lon: 10_000_000 + id as i32 * 100, elevation: NO_ELEVATION };
+            (id, RawNode { point, crossing: crossing(&tags, &mut Counts::new()), tags })
+        };
+        let nodes = [
+            node(1, &[]),
+            node(2, &[("barrier", "gate"), ("access:conditional", "no @ (Nov-Apr)")]),
+            node(3, &[("barrier", "yes")]),
+            node(4, &[]),
+        ]
+        .into_iter()
+        .collect();
+        let ways = [(10, way(10, &[1, 2, 3, 4], &[("highway", "residential")]))].into_iter().collect();
+        let usage = (1..=4).map(|id| (id, 1)).collect();
+        let graph = build_graph(ways, nodes, usage, vec![], Counts::new()).unwrap();
+        let point = |id: i64| graph.node_ids.iter().position(|&node| node == id).unwrap();
+        // Riding through an unknown barrier stays closed; walking and pushing pass.
+        assert_eq!((graph.node_access[point(2)], graph.node_access[point(3)]), (BIKE | FOOT | PUSH, FOOT | PUSH));
+        let profile = Profile::presets().into_iter().find(|p| p.name == "road").unwrap();
+        let mut objects = HashMap::new();
+        let manifest = crate::prepare(&graph, "nodes".into(), [9.0, 46.0, 11.0, 48.0], &[profile], vec![], |bytes| {
+            let key = route_engine::package::digest(bytes);
+            objects.insert(key.clone(), bytes.to_vec());
+            Ok(key)
+        })
+        .unwrap();
+        let table: route_engine::closures::Closures =
+            route_engine::storage::decode(&objects[&manifest.closures.unwrap()]).unwrap();
+        let arriving =
+            |id: i64| graph.roads.iter().position(|r| !r.reversed && r.to as usize == point(id)).unwrap() as u32;
+        let closure = |kind, condition: &str| Some(vec![Closure { kind, condition: condition.into() }]);
+        assert_eq!(table.closing(arriving(2), BIKE), closure(Kind::Seasonal, "Nov-Apr"));
+        assert_eq!(table.closing(arriving(3), PUSH), closure(Kind::Unclear, "barrier=yes"));
+        assert_eq!((table.closing(arriving(3), BIKE), table.closing(arriving(4), BIKE)), (None, None));
+    }
+
+    #[test]
+    fn a_conditional_turn_restriction_closes_neither_turn_nor_way() {
+        let mut ways: HashMap<_, _> =
+            [way(10, &[1, 2], &[("highway", "path")]), way(20, &[2, 3], &[("highway", "path")])]
+                .into_iter()
+                .map(|w| (w.id, w))
+                .collect();
+        for key in ["restriction:conditional", "restriction:bicycle:conditional", "restriction:foot:conditional"] {
+            let relation = Relation {
+                id: RelationId(1),
+                tags: tags(&[("type", "restriction"), (key, "no_right_turn @ (Mo-Fr 07:00-09:00)")]),
+                refs: vec![
+                    Ref { member: OsmId::Way(WayId(10)), role: "from".into() },
+                    Ref { member: OsmId::Node(NodeId(2)), role: "via".into() },
+                    Ref { member: OsmId::Way(WayId(20)), role: "to".into() },
+                ],
+            };
+            let mut rules = Vec::new();
+            relation_rules(&relation, &mut ways, &mut rules, &mut Counts::new());
+            assert!(rules.is_empty(), "{key}");
+            assert!(ways.values().all(|w| w.attributes.access == [BIKE | FOOT | PUSH; 2]), "{key}");
+        }
     }
 
     #[test]

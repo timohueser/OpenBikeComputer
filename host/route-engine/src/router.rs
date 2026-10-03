@@ -66,8 +66,8 @@ pub struct Route {
     pub surfaces: Vec<Surface>,
     /// Whether the bicycle must be pushed along each geometry edge.
     pub pushing: Vec<bool>,
-    /// The seasonal closure condition of each geometry edge, for the mode used on it.
-    pub closures: Vec<Option<String>>,
+    /// The possible closures of each geometry edge, for the mode used on it.
+    pub closures: Vec<Option<Vec<crate::closures::Closure>>>,
     /// Cumulative moving seconds at each geometry vertex.
     pub elapsed: Vec<f64>,
     pub legs: Vec<Leg>,

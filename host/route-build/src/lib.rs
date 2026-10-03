@@ -75,20 +75,23 @@ pub fn prepare(
     }
     manifest.costs = Table::write(&dictionary.into_values(), &mut write)?;
     manifest.landmarks = Some(landmarks);
+    // A road reports the closures of its way and of the node where it arrives.
     let closures = Closures::build(graph.roads.iter().enumerate().map(|(id, road)| {
-        let tags = graph.osm.ways.get(&road.way).map(|way| &way.tags);
-        (
-            id as u32,
-            tags.map_or_else(Vec::new, |tags| {
-                route_engine::osm::seasonal_closures(tags.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-            }),
-        )
+        fn pairs(tags: &route_engine::osm::Tags) -> impl Iterator<Item = (&str, &str)> + Clone {
+            tags.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+        }
+        let mut closures =
+            graph.osm.ways.get(&road.way).map_or_else(Vec::new, |way| route_engine::osm::closures(pairs(&way.tags)));
+        if let Some(node) = graph.node_ids.get(road.to as usize).and_then(|id| graph.osm.nodes.get(id)) {
+            closures.extend(osm::node_closures(pairs(&node.tags)));
+        }
+        (id as u32, closures)
     }))?;
     manifest.closures = write_closures(&closures, &mut write)?;
     Ok(manifest)
 }
 
-/// Writes the table only when a road has a seasonal closure.
+/// Writes the table only when a road has a possible closure.
 fn write_closures(
     closures: &Closures,
     write: &mut impl FnMut(&[u8]) -> Result<String, String>,

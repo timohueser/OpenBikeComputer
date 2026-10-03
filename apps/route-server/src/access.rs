@@ -13,12 +13,12 @@ pub fn feature(way: &Way) -> Option<Value> {
     }
     let construction = get("highway") == Some("construction");
     let defaults = if construction { 0 } else { osm::highway_access(get("highway")?)?.1 };
-    let conditional = osm::conditional_modes(way.tags.iter().map(|(k, v)| (k.as_str(), v.as_str())), false);
+    let conditional = osm::conditional_modes(way.tags.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     let modes = ["forward", "backward"].map(|direction| {
         if construction {
             0
         } else {
-            osm::access(get, defaults, direction) & !conditional
+            osm::access(get, defaults, direction, false) & !conditional
         }
     });
     let status = |walking| {
@@ -104,6 +104,7 @@ mod tests {
             (vec![("access", "no")], "closed"),
             (vec![("access", "private")], "private"),
             (vec![("access", "destination")], "limited"),
+            (vec![("access", "permit")], "closed"),
             (vec![("highway", "construction")], "construction"),
             (vec![("bicycle:forward", "no")], "directional"),
             (vec![("bicycle:conditional", "no @ (wet)")], "conditional"),
