@@ -891,7 +891,7 @@
                     <div class="trip-summary"><RouteStats distance={total} ascent={visualRoute?.elevation.every(h => h !== null) ? profileAscent(0, 1, visualRoute) : null} descent={visualRoute?.elevation.every(h => h !== null) ? profileDescent(0, 1, visualRoute) : null} walking={visualTrip.bike === 'hiking'} hours={visualRoute ? visualRoute.seconds / 3600 : null} /></div>
                 {/if}
                 {#if !focusedDay && closures.length}
-                    <p class="closure-note"><Icon name="calendar" size={15} />{closureNote(closures)} · <button type="button" class="planner-action quiet" onclick={showClosure}>{closureIndex < 0 ? 'Show' : closureIndex + 1 < closures.length ? 'Next' : 'Hide'}</button></p>
+                    <p class="closure-note"><Icon name="calendar" size={15} /><span>{closureNote(closures)}</span><button type="button" class="planner-action quiet" onclick={showClosure}>{closureIndex < 0 ? 'Show' : closureIndex + 1 < closures.length ? 'Next' : 'Hide'}</button></p>
                 {/if}
                 {#if !focusedDay && visualRoute && snowOn}
                     <div class="layer-summary">
@@ -1198,8 +1198,9 @@
         background: var(--panel);
     }
     .trip-summary { padding: 0 16px; }
-    .closure-note { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 0 16px 12px; font-size: 13px; color: var(--ink-soft); }
-    .closure-note :global(svg) { margin-right: 2px; }
+    .closure-note { display: flex; align-items: center; gap: 8px; margin: 0 16px 12px; font-size: 13px; color: var(--ink-soft); }
+    .closure-note :global(svg) { flex: none; }
+    .closure-note span { flex: 1; }
     .layer-summary { display: flex; gap: 10px; margin: 0 16px 12px; padding-top: 12px; border-top: 1px solid var(--line); }
     .layer-summary :global(svg) { flex: none; margin-top: 1px; color: var(--water); }
     .layer-summary p { display: flex; flex-direction: column; gap: 2px; margin: 0; }
