@@ -2,7 +2,6 @@
 import type { Coordinate } from '../map-types';
 import { MONTHS, SECTORS, WEEKS, headPart, temperatureAt, wetDaysOf7, windRose } from './climate';
 import type { CellRef } from './climate-source';
-import { reach } from './data-layer';
 
 /** The travel direction at each point, in degrees clockwise from north, from its previous to its next point. */
 export function lineBearings(line: Coordinate[]): Float32Array {
@@ -11,6 +10,11 @@ export function lineBearings(line: Coordinate[]): Float32Array {
         const east = (lon1 - lon0) * Math.cos((lat0 + lat1) * Math.PI / 360), north = lat1 - lat0;
         return (Math.atan2(east, north) * 180 / Math.PI + 360) % 360;
     });
+}
+
+/** Each sample covers the line halfway to its neighbours. */
+function reach(km: ArrayLike<number>, i: number): number {
+    return (km[Math.min(i + 1, km.length - 1)] - km[Math.max(i - 1, 0)]) / 2;
 }
 
 interface Run<T> { cell: CellRef; weight: number; sum: T }

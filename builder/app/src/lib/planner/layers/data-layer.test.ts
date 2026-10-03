@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addMonths, availableLayers, columnDate, dateColumn, monthColumns, type DataLayer } from './data-layer';
+import { addMonths, availableLayers, columnDate, dateColumn, monthColumns, weekOf, type DataLayer } from './data-layer';
 
 describe('month steps', () => {
     it('keeps the day, or ends on the last day of a shorter month', () => {
@@ -16,9 +16,19 @@ describe('calendar columns', () => {
     it('steps two days in 183 columns and a week in 52, with the rest of the year in the last', () => {
         expect([dateColumn('2026-01-02', 183), dateColumn('2026-01-03', 183), dateColumn('2026-12-31', 183)]).toEqual([0, 1, 182]);
         expect([dateColumn('2026-01-07', 52), dateColumn('2026-01-08', 52), dateColumn('2026-12-24', 52), dateColumn('2026-12-31', 52)]).toEqual([0, 1, 51, 51]);
-        expect(dateColumn('2028-02-29', 52)).toBe(dateColumn('2028-02-28', 52));
+        expect(dateColumn('2028-02-29', 183)).toBe(dateColumn('2028-02-28', 183));
         expect(columnDate(51, 2026, 52)).toBe('2026-12-24');
         expect(monthColumns(52).slice(0, 3)).toEqual([0, 5, 9]);
+    });
+});
+
+describe('climate weeks', () => {
+    it('counts days of the date\'s own year, so the week column is the week of the climate data', () => {
+        // After a leap day the week starts a calendar day earlier: 4 March 2024 is day 63.
+        expect(['2026-01-01', '2026-01-08', '2024-03-04', '2026-03-04', '2026-12-31', '2024-12-31'].map(weekOf)).toEqual([0, 1, 9, 8, 51, 51]);
+        expect(['2024-03-04', '2024-12-31'].map(date => dateColumn(date, 52))).toEqual([9, 51]);
+        expect(columnDate(9, 2024, 52)).toBe('2024-03-04');
+        expect(weekOf(columnDate(9, 2026, 52))).toBe(9);
     });
 });
 

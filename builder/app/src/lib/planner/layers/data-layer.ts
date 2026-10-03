@@ -100,13 +100,24 @@ export function dateLabel(date: Date | string): string {
     return new Date(date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 }
 
-/** A leap day shares the column of 28 February. */
+/**
+ * The week of a date as specs/planner-climate-tiles.md counts it: days 7w to 7w + 6 of its own year
+ * from 1 January, and week 51 also holds the last one or two days.
+ */
+export function weekOf(date: string): number {
+    const [year, month, day] = date.split('-').map(Number);
+    return Math.min(51, Math.floor((Date.UTC(year, month - 1, day) - Date.UTC(year, 0, 1)) / DAY_MS / 7));
+}
+
+/** 52 columns are the weeks of `weekOf`; in other steps a leap day shares the column of 28 February. */
 export function dateColumn(date: string, columns: number): number {
+    if (columns === 52) return weekOf(date);
     const [, month, day] = date.split('-').map(Number);
     return Math.min(columns - 1, Math.floor((Date.UTC(2001, month - 1, month === 2 ? Math.min(day, 28) : day) - JANUARY) / DAY_MS / step(columns)));
 }
 
 export function columnDate(column: number, year: number, columns: number): string {
+    if (columns === 52) return new Date(Date.UTC(year, 0, 1 + 7 * column)).toISOString().slice(0, 10);
     const day = columnDay(column, columns);
     return new Date(Date.UTC(year, day.getUTCMonth(), day.getUTCDate())).toISOString().slice(0, 10);
 }

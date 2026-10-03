@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Coordinate } from '../map-types';
 import {
     DETAIL, OVERVIEW, RAIN_DRIER, RAIN_TYPICAL, RAIN_UNKNOWN, RAIN_WETTER, SECTORS, WETTER_RATIO, cellAt, cellHistory, climateMeta,
-    climateTile, locate, rainClass, rainRatios, read, temperatureAt, weekMonth, weekOf, weekValues, wetDaysOf7, windChance, windMode, windRose,
+    climateTile, locate, rainClass, rainRatios, read, temperatureAt, weekMonth, weekValues, wetDaysOf7, windChance, windMode, windRose,
     type Level,
 } from './climate';
 import { lineBearings, weatherRows, windRow } from './climate-route';
@@ -91,8 +91,7 @@ describe('climate tiles', () => {
         expect(cellAt([-180, 0]).col).toBe(0);
     });
 
-    it('counts weeks from 1 January, with the last days in week 51', () => {
-        expect(['2026-01-01', '2026-01-07', '2026-01-08', '2026-12-30', '2024-12-31'].map(weekOf)).toEqual([0, 0, 1, 51, 51]);
+    it('takes the month of a week from its middle day', () => {
         expect([weekMonth(0), weekMonth(4), weekMonth(51)]).toEqual([0, 1, 11]);
     });
 });

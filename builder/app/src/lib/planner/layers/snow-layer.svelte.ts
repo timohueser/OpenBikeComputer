@@ -1,8 +1,8 @@
 import { addProtocol, type Map, type RequestParameters } from 'maplibre-gl';
-import { PMTiles } from 'pmtiles';
 import { reliefPaint } from '../map-style';
 import type { Coordinate } from '../map-types';
 import type { DataLayer, Line, Theme, View } from './data-layer';
+import { openTileArchive, type TileArchive } from './tile-archive';
 import { colors, paintTile, seasonDay, snowChart, snowClass, snowClasses, snowMeta, snowYear, type Planar, type SnowMeta } from './snow';
 
 const PROTOCOL = 'obc-snow';
@@ -13,35 +13,7 @@ const CACHE_BYTES = 128 * 2 ** 20;
 // Beyond the archive's zoom, tiles blend their ancestor's pixels, so class borders stay smooth and the no-data hatch stays fine.
 const MAX_ZOOM = 14;
 
-interface Archive {
-    meta: SnowMeta; minZoom: number; maxZoom: number; bounds: [number, number, number, number];
-    get(z: number, x: number, y: number, signal?: AbortSignal): Promise<ArrayBuffer | undefined>;
-}
-
-/** A hosted region serves TileJSON and tiles from the tile service; a local one reads the PMTiles archive. */
-async function openArchive(url: string): Promise<Archive> {
-    if (new URL(url).pathname.endsWith('.json')) {
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(`Snow TileJSON answered ${response.status}.`);
-        const json = await response.json();
-        const template: string = json.tiles[0];
-        return {
-            meta: snowMeta(json), minZoom: json.minzoom, maxZoom: json.maxzoom, bounds: json.bounds,
-            async get(z, x, y, signal) {
-                const tile = await fetch(template.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y)), { signal });
-                if (tile.status === 204) return undefined;
-                if (!tile.ok) throw new Error(`Snow tile ${z}/${x}/${y} answered ${tile.status}.`);
-                return tile.arrayBuffer();
-            },
-        };
-    }
-    const tiles = new PMTiles(url);
-    const [header, metadata] = await Promise.all([tiles.getHeader(), tiles.getMetadata() as Promise<Record<string, unknown>>]);
-    return {
-        meta: snowMeta(metadata), minZoom: header.minZoom, maxZoom: header.maxZoom, bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat],
-        get: async (z, x, y, signal) => (await tiles.getZxy(z, x, y, signal))?.data,
-    };
-}
+type Archive = TileArchive & { meta: SnowMeta };
 
 /** ABGR words for an ImageData view; index 4 is the no-data hatch. */
 function palette(theme: Theme): Uint32Array {
@@ -94,7 +66,8 @@ class SnowLayer implements DataLayer<Samples> {
     }
 
     private open(): Promise<Archive> {
-        this.archive ??= openArchive(this.url).then(archive => {
+        this.archive ??= openTileArchive(this.url, 'Snow').then(opened => {
+            const archive = { ...opened, meta: snowMeta(opened.metadata) };
             this.meta = archive.meta;
             this.error = '';
             return archive;

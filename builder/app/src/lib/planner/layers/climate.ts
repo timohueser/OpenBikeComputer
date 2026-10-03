@@ -88,14 +88,6 @@ export function locate(level: Level, { col, row }: Cell): { x: number; y: number
     return { x: Math.floor(col / cols), y: Math.floor(row / rows), index: (row % rows) * cols + (col % cols) };
 }
 
-const DAY_MS = 86_400_000;
-
-/** Week 51 also holds the last one or two days of the year. */
-export function weekOf(date: string): number {
-    const [year, month, day] = date.split('-').map(Number);
-    return Math.min(WEEKS - 1, Math.floor((Date.UTC(year, month - 1, day) - Date.UTC(year, 0, 1)) / DAY_MS / 7));
-}
-
 /** The month (0 = January) of the middle day of a week. */
 export function weekMonth(week: number): number {
     return new Date(Date.UTC(2001, 0, 1 + 7 * week + 3)).getUTCMonth();
