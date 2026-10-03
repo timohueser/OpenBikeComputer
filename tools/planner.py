@@ -172,22 +172,33 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["setup", "serve", "verify"], nargs="?", default="serve")
     parser.add_argument("--region", default=REGION, choices=sorted(p.stem for p in RECIPES.glob("*.json")))
-    parser.add_argument("--data-dir", type=Path, default=os.environ.get("OBC_PLANNER_DATA"),
-                        help="Default: ~/.cache/obc/planner/REGION")
-    parser.add_argument("--pmtiles", default=os.environ.get("PMTILES", "pmtiles"))
+    parser.add_argument("--data-dir", type=Path, help="Default: OBC_PLANNER_DATA/REGION")
+    parser.add_argument("--pmtiles")
     parser.add_argument("--basemap", help="Override the available Protomaps v4 build for a new map bundle")
     parser.add_argument("--osm", type=Path, help="Use an existing BW OSM PBF for routing")
-    parser.add_argument("--dem-dir", type=Path, default=CACHE / "dem")
-    reference = os.environ.get("OBC_REFERENCE_ARCHIVE")
-    if not reference and (Path.home() / "obc-reference/index.json").is_file():
-        reference = str(Path.home() / "obc-reference")
-    parser.add_argument("--reference", type=Path, default=reference)
+    parser.add_argument("--dem-dir", type=Path)
+    parser.add_argument("--reference", type=Path)
     parser.add_argument("--port", type=int, default=4175)
     parser.add_argument("--tile-port", type=int, default=8789)
     parser.add_argument("--route-port", type=int, default=8787)
     parser.add_argument("--search-port", type=int, default=8786)
     args = parser.parse_args()
-    args.data_dir = (args.data_dir or Path.home() / ".cache/obc/planner" / args.region).expanduser().resolve()
+    if args.command == "setup" and args.region != REGION:
+        named = [f"--{name.replace('_', '-')}" for name in ["pmtiles", "basemap", "osm", "dem_dir", "reference"]
+                 if getattr(args, name) is not None]
+        if named:
+            parser.error(f"{', '.join(named)} only apply to {REGION}. Setup bakes {args.region} from its recipe.")
+    args.pmtiles = args.pmtiles or os.environ.get("PMTILES", "pmtiles")
+    args.dem_dir = args.dem_dir or CACHE / "dem"
+    reference = args.reference or os.environ.get("OBC_REFERENCE_ARCHIVE")
+    if not reference and (Path.home() / "obc-reference/index.json").is_file():
+        reference = Path.home() / "obc-reference"
+    args.reference = Path(reference) if reference else None
+    base = Path(os.environ.get("OBC_PLANNER_DATA", Path.home() / ".cache/obc/planner"))
+    args.data_dir = (args.data_dir or base / args.region).expanduser().resolve()
+    routing = args.data_dir / "routing/manifest.json"
+    if routing.exists() and json.loads(routing.read_text())["region"] != args.region:
+        parser.error(f"{args.data_dir} holds another region. Choose a data directory for {args.region}.")
     args.bounds = planner_prepare.recipe(RECIPES / f"{args.region}.json")["bounds"]
     maps.DATA = args.data_dir / "maps"
     args.data_dir.mkdir(parents=True, exist_ok=True)

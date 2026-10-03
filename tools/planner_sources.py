@@ -46,7 +46,9 @@ def basemap(osm, output, bounds, cache, auxiliary=None):
     directory = source / "tiles/data/sources"
     for name, item in (auxiliary or {}).items():
         if Path(name).name != name: raise ValueError("Invalid auxiliary source name")
-        download(item["url"], directory / name, item["sha256"])
+        cached = download(item["url"], cache / "auxiliary" / name, item["sha256"])
+        (directory / name).unlink(missing_ok=True)
+        os.link(cached, directory / name)
     jar = source / "tiles/target/protomaps-basemap-HEAD-with-deps.jar"
     if not jar.exists():
         maps.run("mvn", "-q", "package", "-DskipTests", cwd=source / "tiles")

@@ -82,8 +82,7 @@ release, without `maps/overlays.pmtiles`. Set the recipe's `profiles` to the
 same IDs. Run the three commands above with the new directory. Preparation
 checks the profile selection and builds a matching overlay index and tiles.
 
-Routing currently supports German access defaults. Preparation refuses other
-`access` values. Add and verify their rules before extending coverage.
+Preparation accepts only `DE` access defaults. Add and verify other rules first.
 
 Each kind of change goes out in one way:
 
@@ -124,13 +123,22 @@ obc planner verify
 
 Open `http://127.0.0.1:4175/planner.html`. Setup downloads regional PMTiles,
 prepared Photon records, and the query model. It builds BW routing with all
-profiles. Normal launch has no downloads. For a test region, setup runs `prepare`.
+profiles. Normal launch has no downloads. Ctrl-C stops the local services.
 `verify` checks map hashes, SQLite integrity, and routing object closure.
+
+A test-region setup runs `prepare`. First copy its inputs:
+
+```sh
+# The source mirror does not hold them yet. SHA256 and NAME come from the recipe.
+# prepare reads its source cache, ~/.cache/obc/planner/sources.
+cp EXTRACT.osm.pbf ~/.cache/obc/planner/sources/SHA256.osm.pbf
+cp AUXILIARY_FILE ~/.cache/obc/planner/sources/auxiliary/NAME
+```
 
 | Setting | Default |
 | --- | --- |
 | `--region` | `baden-wuerttemberg`; test regions `engadin`, `colorado-front-range` |
-| `OBC_PLANNER_DATA` or `--data-dir` | `~/.cache/obc/planner/REGION` |
+| `--data-dir` | `OBC_PLANNER_DATA/REGION`; `OBC_PLANNER_DATA` is `~/.cache/obc/planner` |
 | `OBC_PLANNER_RELEASE` | `~/.cache/obc/planner/bw-online` |
 | `--port` | Planner `4175` |
 | `--tile-port` | Terrain `8789` |
@@ -138,6 +146,7 @@ profiles. Normal launch has no downloads. For a test region, setup runs `prepare
 | `--search-port` | Search `8786` |
 | `--reference` or `OBC_REFERENCE_ARCHIVE` | `~/obc-reference` if present |
 | `--dem-dir` | `~/.cache/obcm/dem` |
+| `--pmtiles`, `--basemap`, `--osm`, `--dem-dir`, `--reference` | BW setup only; a test-region setup refuses them |
 
 ## Client configuration
 

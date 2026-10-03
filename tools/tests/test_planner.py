@@ -49,6 +49,18 @@ class PlannerTests(unittest.TestCase):
                     planner.verify(argparse.Namespace(data_dir=root, region=planner.REGION,
                                                       bounds=maps.bounds(maps.BW_BOUNDS)))
 
+    def test_test_region_setup_refuses_another_region_folder_and_bw_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "routing").mkdir()
+            (root / "routing/manifest.json").write_text(json.dumps({"region": planner.REGION}))
+            for extra in [["--data-dir", str(root)], ["--data-dir", str(root / "engadin"), "--osm", "bw.osm.pbf"]]:
+                with self.subTest(extra=extra), patch.object(sys, "argv", ["planner", "setup", "--region", "engadin", *extra]), \
+                     patch.object(planner, "setup") as setup, patch("sys.stderr"):
+                    with self.assertRaises(SystemExit):
+                        planner.main()
+                    setup.assert_not_called()
+
     def test_a_failed_start_stops_services_already_started(self):
         children = []
         real_popen = subprocess.Popen
