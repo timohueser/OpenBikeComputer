@@ -4,7 +4,7 @@
 
 The default source is NASA MODIS daily snow cover from the anonymous Microsoft Planetary Computer
 copy. It ends in June 2025. The bake reads only the region window of each daily file and writes no
-raw files. Later seasons need a NASA Earthdata login in `~/.netrc` (machine urs.earthdata.nasa.gov).
+raw files. Seasons after June 2025 are not supported yet.
 
 `--source copernicus-hr-wsi` reads the HR-WSI Snow Phenology S2 yearly rasters (20 m) instead. It
 reads the region window of each file from the Copernicus Data Space S3 endpoint
@@ -44,7 +44,8 @@ SOURCES = {
     "nasa-modis": {"resolution_m": 500, "max_zoom": 9, "canopy": True, "smooth": False,
                    "attribution": "NASA MODIS snow cover MOD10A1/MYD10A1 (NSIDC); tree canopy: Hansen/UMD/Google/USGS/NASA"},
     "copernicus-hr-wsi": {"resolution_m": 20, "max_zoom": 13, "canopy": False, "smooth": True,
-                          "attribution": "Copernicus Land Monitoring Service, HR-WSI Snow Phenology"},
+                          "attribution": f"© European Union, Copernicus Land Monitoring Service {dt.date.today().year}, "
+                                         "European Environment Agency (EEA): HR-WSI Snow Phenology"},
 }
 CANOPY = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-v1.11/Hansen_GFC-2023-v1.11_treecover2000_{}.tif"
 # The owner chose 75 % canopy cover as "dense": below it, MODIS still sees the snow between the trees.

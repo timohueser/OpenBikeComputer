@@ -111,5 +111,4 @@ inputs instead of the mean. A neighbour outside the tile repeats the edge pixel.
 `nasa-modis`: at the max zoom, a pixel is 255 in all seasons when its mean tree
 canopy cover is more than 75 % in Hansen Global Forest Change `treecover2000`.
 
-`copernicus-hr-wsi` has no forest mask. Its snow cover input estimates the snow on
-the ground under trees from the Copernicus Tree Cover Density, so forest has data.
+`copernicus-hr-wsi` has no forest mask.
