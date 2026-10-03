@@ -3,7 +3,7 @@ import { PMTiles } from 'pmtiles';
 import { SNOW_URL } from '../map-data';
 import type { Coordinate } from '../map-types';
 import type { DataLayer, Theme } from './data-layer';
-import { colors, seasonDay, snowClass, snowClasses, snowGrid, snowMeta, snowStats, UNKNOWN, type Planar, type SnowMeta } from './snow';
+import { colors, paintTile, seasonDay, snowClass, snowClasses, snowGrid, snowMeta, snowStats, type Planar, type SnowMeta } from './snow';
 
 const PROTOCOL = 'obc-snow';
 const TILE = 256;
@@ -45,6 +45,9 @@ class SnowLayer implements DataLayer<Planar> {
     private cache = new globalThis.Map<string, Promise<Uint8Array | undefined>>();
     private map?: Map;
     private date = '';
+    private shown = false;
+    /** The date and theme of the drawn tiles. */
+    private drawn = '';
     private colors = palettes.light;
     private frame = 0;
 
@@ -91,40 +94,29 @@ class SnowLayer implements DataLayer<Planar> {
         return entry;
     }
 
-    /** Colours one map tile for the layer date. */
+    /** Colours one map tile for the layer date. The source bounds keep MapLibre from asking for tiles outside the archive. */
     private render = async (params: RequestParameters) => {
         const [z, x, y] = params.url.slice(PROTOCOL.length + 3).split('/').map(Number);
         const { maxZoom, meta } = await this.open();
         const up = Math.max(0, z - maxZoom), scale = 2 ** up;
         const data = await this.tile(z - up, Math.floor(x / scale), Math.floor(y / scale));
-        if (!data) return { data: new ArrayBuffer(0) };
-        const p = { data, size: PIXELS, seasons: meta.seasons }, { index } = seasonDay(this.date), colors = this.colors;
         const image = new ImageData(TILE, TILE);
-        const words = new Uint32Array(image.data.buffer);
-        const span = TILE / scale, left = (x % scale) * span, top = (y % scale) * span;
-        for (let sy = 0; sy < span; sy++) {
-            for (let sx = 0; sx < span; sx++) {
-                const value = snowClass(p, (top + sy) * TILE + left + sx, index);
-                if (!value) continue;
-                for (let py = sy * scale; py < (sy + 1) * scale; py++) {
-                    for (let px = sx * scale; px < (sx + 1) * scale; px++) {
-                        // Diagonal lines every 8 px line up across tile edges.
-                        if (value !== UNKNOWN || ((px + py) & 7) < 2) words[py * TILE + px] = colors[value];
-                    }
-                }
-            }
-        }
+        // The bake omits tiles without data, so a missing tile is drawn as no data.
+        paintTile(new Uint32Array(image.data.buffer), data && { data, size: PIXELS, seasons: meta.seasons }, seasonDay(this.date).index, scale, x % scale, y % scale, this.colors);
         return { data: await createImageBitmap(image) };
     };
 
     sync(map: Map, { shown, date, theme }: { shown: boolean; date: string; theme: Theme }) {
-        const changed = date !== this.date || this.colors !== palettes[theme];
         this.colors = palettes[theme];
         this.date = date;
         this.map = map;
+        this.shown = shown;
         if (map.getLayer(this.id)) {
             map.setLayoutProperty(this.id, 'visibility', shown ? 'visible' : 'none');
-            if (shown && changed) {
+            // A hidden layer keeps its old tiles, so a date or theme change while hidden refreshes on show.
+            const look = `${date} ${theme}`;
+            if (shown && look !== this.drawn) {
+                this.drawn = look;
                 // One refresh per frame while the date is dragged; refreshed tiles stay drawn until they are replaced.
                 cancelAnimationFrame(this.frame);
                 this.frame = requestAnimationFrame(() => map.getSource(this.id) && map.refreshTiles(this.id));
@@ -137,9 +129,10 @@ class SnowLayer implements DataLayer<Planar> {
         void this.open().then(({ minZoom, maxZoom, bounds }) => {
             // A theme change during the request installs into the new style instead.
             if (this.map !== map || this.colors !== colors || map.getSource(this.id)) return;
+            this.drawn = `${this.date} ${theme}`;
             map.addSource(this.id, { type: 'raster', tiles: [`${PROTOCOL}://{z}/{x}/{y}`], tileSize: TILE, minzoom: minZoom, maxzoom: Math.max(maxZoom, MAX_ZOOM), bounds, attribution: this.source });
-            // Under the relief, so the hillshade shades the snow.
-            map.addLayer({ id: this.id, type: 'raster', source: this.id, paint: { 'raster-resampling': 'nearest', 'raster-fade-duration': 0 } }, map.getLayer('relief') ? 'relief' : undefined);
+            // Under the relief, so the hillshade shades the snow. The layer may be hidden again while the header loads.
+            map.addLayer({ id: this.id, type: 'raster', source: this.id, layout: { visibility: this.shown ? 'visible' : 'none' }, paint: { 'raster-resampling': 'nearest', 'raster-fade-duration': 0 } }, map.getLayer('relief') ? 'relief' : undefined);
         }, () => {});
     }
 

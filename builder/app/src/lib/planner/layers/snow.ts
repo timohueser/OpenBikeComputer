@@ -27,9 +27,9 @@ export function seasonDay(date: string): { season: number; index: number } {
     return { season: month >= 9 ? year : year - 1, index: Math.min(DAYS - 1, Math.floor(days / 2)) };
 }
 
-/** "15 Jun" for the first day of a day index, or its last day with `end`. */
+/** "15 Jun" for the first day of a day index, or its last day with `end`. The last index ends on 31 August. */
 export function indexLabel(index: number, end = false): string {
-    return dateLabel(new Date(SEPTEMBER + (2 * index + (end ? 1 : 0)) * DAY_MS));
+    return dateLabel(new Date(SEPTEMBER + Math.min(2 * index + (end ? 1 : 0), 364) * DAY_MS));
 }
 
 // Calendar columns in season terms: Jan–Aug belong to the season before, here 2000.
@@ -56,6 +56,26 @@ function snowSeasons(p: Planar, i: number, index: number): [number, number] {
 /** The class of item `i` on day `index`: the share of seasons with data that had snow on that day. */
 export function snowClass(p: Planar, i: number, index: number): number {
     return shareClass(...snowSeasons(p, i, index));
+}
+
+/**
+ * Writes the classes of a 256 px tile for day `index` as `palette` words; a missing tile is no data.
+ * Above the archive zoom, the tile is the (`x`, `y`) part of `scale` × `scale` parts of `p`.
+ */
+export function paintTile(words: Uint32Array, p: Planar | undefined, index: number, scale: number, x: number, y: number, palette: Uint32Array) {
+    const span = 256 / scale, left = x * span, top = y * span;
+    for (let sy = 0; sy < span; sy++) {
+        for (let sx = 0; sx < span; sx++) {
+            const value = p ? snowClass(p, (top + sy) * 256 + left + sx, index) : UNKNOWN;
+            if (!value) continue;
+            for (let py = sy * scale; py < (sy + 1) * scale; py++) {
+                for (let px = sx * scale; px < (sx + 1) * scale; px++) {
+                    // Diagonal lines every 8 px line up across tile edges.
+                    if (value !== UNKNOWN || ((px + py) & 7) < 2) words[py * 256 + px] = palette[value];
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -100,8 +120,11 @@ export function snowStats(p: Planar, km: ArrayLike<number>, date: string, theme:
     if (!snowy.length) return { headline, detail: `Snow-free in all ${years(seasons.length)}`, year };
     // The next change after the date: the melt-out inside the typical snow period, else the next onset.
     const autumn = !(median(snowy.map(s => s.onset)) <= index && index <= median(snowy.map(s => s.melt)));
+    if (!autumn && 2 * clearOn(index) > seasons.length) return { headline, detail: 'Usually clear on this date', year };
+    if (autumn && 2 * snowy.length < seasons.length) return { headline, detail: `Snow in only ${snowy.length} of ${years(seasons.length)}`, year };
+    // Seasons without snow have no change, so only snowy seasons give dates.
     // The first clear day after melt-out, or the last clear day before the onset; DAYS or -1 when the route never clears.
-    const days = seasons.map(({ melt, onset }) => autumn ? onset - 1 : melt + 1);
+    const days = snowy.map(({ melt, onset }) => autumn ? onset - 1 : melt + 1);
     const never = days.filter(day => day < 0 || day >= DAYS).length;
     const middle = median(days);
     const label = (day: number) => indexLabel(day, autumn);
@@ -110,18 +133,22 @@ export function snowStats(p: Planar, km: ArrayLike<number>, date: string, theme:
     return { headline, detail: `${autumn ? 'Clear until' : 'Clear from'} ${label(middle)} · ${range}`, year };
 }
 
+// Rows are calendar years, so a season spans two rows: row r shows Jan–Aug of season r − 1 and
+// Sep–Dec of season r. Seasons as rows (Sep–Aug) would change only these two functions.
+const gridRows = (firstSeason: number, seasons: number) => Array.from({ length: seasons + 1 }, (_, row) => ({ row, label: String(firstSeason + row) }));
+const gridSeason = (row: number, column: { season: number }) => row - 1 + column.season - columns[0].season;
+
 /** Calendar years (rows, newest last) × days at item `i`: 0 clear, 1 snow, 2 no data, 255 outside the record. */
 export function snowGrid(p: Planar, i: number, firstSeason: number, date: string, theme: Theme): { headline: string; grid: SeasonGrid } {
     const [snow, known] = snowSeasons(p, i, seasonDay(date).index);
-    const rows = Array.from({ length: p.seasons }, (_, row) => {
-        const year = firstSeason + 1 + row;
-        const cells = Uint8Array.from(columns, ({ season, index: day }) => {
-            const s = season - 2001 + year - firstSeason;
+    const rows = gridRows(firstSeason, p.seasons).map(({ row, label }) => {
+        const cells = Uint8Array.from(columns, column => {
+            const s = gridSeason(row, column), day = column.index;
             if (s < 0 || s >= p.seasons) return 255;
             const onset = p.data[2 * s * p.size + i], melt = p.data[(2 * s + 1) * p.size + i];
             return onset === NO_DATA || melt === NO_DATA ? 2 : onset === WHOLE_SEASON || (onset <= day && day <= melt) ? 1 : 0;
         });
-        return { label: String(year), cells };
+        return { label, cells };
     });
     const palette = colors[theme];
     return {
