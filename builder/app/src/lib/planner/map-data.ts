@@ -14,6 +14,8 @@ export const BASEMAP_URL = import.meta.env.VITE_PLANNER_TILEJSON_URL
 export const PLACES_URL = absoluteUrl(import.meta.env.VITE_PLANNER_PLACES_URL || "./data/planner/places.pmtiles");
 /** Route networks and access: a TileJSON URL ending in `.json`, or a PMTiles archive. */
 export const OVERLAYS_URL = absoluteUrl(import.meta.env.VITE_PLANNER_OVERLAYS_URL || "./data/planner/overlays.pmtiles");
+/** Snow history: a PMTiles archive per specs/planner-snow-tiles.md. */
+export const SNOW_URL = absoluteUrl(import.meta.env.VITE_PLANNER_SNOW_URL || "./data/planner/snow.pmtiles");
 export const TERRAIN_URL = absoluteUrl(import.meta.env.VITE_PLANNER_DEM_URL || "./tiles/terrain/{z}/{x}/{y}.webp");
 export const GLYPHS_URL = absoluteUrl(import.meta.env.VITE_PLANNER_GLYPHS_URL || "./data/planner/assets/fonts/{fontstack}/{range}.pbf");
 export const SPRITES_URL = absoluteUrl(import.meta.env.VITE_PLANNER_SPRITES_URL || "./data/planner/assets/sprites/v4");

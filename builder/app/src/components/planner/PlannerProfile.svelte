@@ -1,4 +1,5 @@
 <script lang="ts">
+    import type { Snippet } from 'svelte';
     import Surface from './PlannerSurface.svelte';
     import Segmented from './Segmented.svelte';
     import { formatGrade, gradeBand, gradeBands, profileGrades } from '../../lib/planner/grade-data';
@@ -9,7 +10,7 @@
 
     let {
         lineData, total, days, dayLabels, walking = false, singleRoute = true, theme = 'light', activeNight, band, focus = null, window: view = { from: 0, to: 1 }, height = 260,
-        onNight, onDayEndDrag, onHover,
+        onNight, onDayEndDrag, onHover, strip,
     }: {
         /** Route length in km. */
         lineData?: RoutingLine;
@@ -30,6 +31,8 @@
         onNight: (night: number) => void;
         onDayEndDrag: (night: number, progress: number) => void;
         onHover: (progress: number | null) => void;
+        /** A data layer strip for the shown stretch, as route progress, and the hover callback. */
+        strip?: Snippet<[number, number, (progress: number | null) => void]>;
     } = $props();
 
     const samples = $derived(profileSamples(lineData));
@@ -208,6 +211,7 @@
         {#each ticks as km, i (i)}<span>{km.toFixed(span < .25 ? 1 : 0)} km</span>{/each}
     </div>
     <Surface {walking} line={lineData} from={shown.from} to={shown.to} onHover={inspect} />
+    {@render strip?.(shown.from, shown.to, inspect)}
 </section>
 
 <style>

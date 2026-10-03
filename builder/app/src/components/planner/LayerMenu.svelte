@@ -3,9 +3,12 @@
     import Segmented from './Segmented.svelte';
     import { placeCategories, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import { networkLevels, type OverlayOptions } from '../../lib/planner/route-overlays';
+    import type { DataLayer } from '../../lib/planner/layers/data-layer';
 
-    let { autoCenter = $bindable(false), hillshade = $bindable(), contours = $bindable(), hidden = $bindable(), highlighted = $bindable(), mapOverlays = $bindable(), theme = 'light', walking = false }: {
+    let { autoCenter = $bindable(false), hillshade = $bindable(), contours = $bindable(), hidden = $bindable(), highlighted = $bindable(), mapOverlays = $bindable(), dataLayer, dataLayerOn = $bindable(false), theme = 'light', walking = false }: {
         autoCenter?: boolean;
+        dataLayer: DataLayer;
+        dataLayerOn?: boolean;
         walking?: boolean;
         hillshade: boolean;
         contours: boolean;
@@ -72,6 +75,18 @@
                 </ul>
             {/if}
                 <p>Right-click or long-press a route for details.</p>
+            </section>
+            <section class="access-section" aria-label="Data layers">
+                <h3>Data layers</h3>
+                <label><input type="checkbox" bind:checked={dataLayerOn} />{dataLayer.label}</label>
+                {#if dataLayerOn}
+                    <ul class="legend" aria-label={`${dataLayer.label} classes`}>
+                        {#each dataLayer.swatches(theme).filter(swatch => !swatch.lineOnly) as swatch (swatch.label)}<li><span class="swatch" class:hatch={swatch.hatch} style:--swatch={swatch.color}></span>{swatch.label}</li>{/each}
+                    </ul>
+                    <p>{dataLayer.error || (dataLayer.source ? `${dataLayer.source}. ${dataLayer.caveat}` : 'Loading…')}</p>
+                {:else}
+                    <p>{dataLayer.description}</p>
+                {/if}
             </section>
             <section class="access-section" aria-label="Access markings">
                 <label><input type="checkbox" bind:checked={mapOverlays.access} />Closures & access<span class="access-symbol" aria-hidden="true"><Icon path="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM7 12h10" size={17} /></span></label>
@@ -167,6 +182,9 @@
     .sample { display: inline-block; flex: 0 0 14px; width: 14px; border-top: 3px solid currentColor; }
     .legend { display: grid; grid-template-columns: 1fr 1fr; column-gap: 8px; margin: 8px 0 0; font-size: 12px; color: var(--ink-soft); }
     .legend li { justify-content: flex-start; min-height: 22px; }
+    .swatch { flex: 0 0 14px; height: 10px; border-radius: 2px; background: var(--swatch); box-shadow: inset 0 0 0 1px var(--line-strong); }
+    .swatch.hatch { background: repeating-linear-gradient(135deg, transparent 0 2px, var(--swatch) 2px 3.5px); }
+    .access-section h3 { margin: 4px 0 0; }
     p { margin: 2px 0 8px; font-size: 12px; line-height: 1.45; color: var(--ink-soft); }
     ul {
         margin: 0;
