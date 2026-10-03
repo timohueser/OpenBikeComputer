@@ -4,6 +4,9 @@ import { BASEMAP_URL, GLYPHS_URL, MAP_BOUNDS, SPRITES_URL, TERRAIN_ATTRIBUTION }
 import { categoryIds, placeCategories, poiKinds, type PlaceCategory } from "./poi-kinds";
 import type { BasemapConfig } from "../map/basemap-config";
 
+/** The Terrarium terrain tiles: their pixel size and deepest zoom. */
+export const DEM_TILE = 512, DEM_MAX_ZOOM = 12;
+
 const BASEMAP_SOURCE = {
     type: "vector",
     url: BASEMAP_URL,
@@ -234,7 +237,7 @@ export function mapStyle(theme: "light" | "dark", demUrl: string, contourUrl: st
         sprite: `${SPRITES_URL}/${theme}`,
         sources: {
             basemap: BASEMAP_SOURCE,
-            terrain: { type: "raster-dem", tiles: [demUrl], ...(MAP_BOUNDS ? { bounds: MAP_BOUNDS } : {}), tileSize: 512, encoding: "terrarium", maxzoom: 12, attribution: TERRAIN_ATTRIBUTION },
+            terrain: { type: "raster-dem", tiles: [demUrl], ...(MAP_BOUNDS ? { bounds: MAP_BOUNDS } : {}), tileSize: DEM_TILE, encoding: "terrarium", maxzoom: DEM_MAX_ZOOM, attribution: TERRAIN_ATTRIBUTION },
             contours: { type: "vector", tiles: [contourUrl], ...(MAP_BOUNDS ? { bounds: MAP_BOUNDS } : {}), maxzoom: 15, attribution: TERRAIN_ATTRIBUTION },
         },
         layers: base,
