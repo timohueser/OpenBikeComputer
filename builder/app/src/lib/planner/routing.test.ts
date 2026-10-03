@@ -10,7 +10,7 @@ import { initialTrip, cumulative, planOf, removeRoutePoint, storedPlan, setEndpo
 const totals = (metres: number, unknown = 0, pushing = 0): RouteTotals =>
     ({ distance_m: metres, ascent_m: 0, seconds: metres, surface_m: [unknown, metres - unknown, 0, 0, 0, 0], unknown_elevation_m: metres, pushing_m: pushing });
 const answer: AnswerRoute = {
-    id: 'test-route', surfaces: [['Paved', 1], ['Gravel', 1]], pushing: [[false, 1], [true, 1]], reason: 'primary', elapsed_s: [0, 3000, 1000], package: 'test', profile: 'touring',
+    id: 'test-route', surfaces: [['Paved', 1], ['Gravel', 1]], pushing: [[false, 1], [true, 1]], closures: [[null, 2]], reason: 'primary', elapsed_s: [0, 3000, 1000], package: 'test', profile: 'touring',
     coordinates_udeg: [7_800_000, 48_000_000, 100_000, 0, 100_000, 0], elevation_dm: [2000, null, 2000],
     totals: { ...totals(15000, 1000, 100), seconds: 4000 },
     legs: [{ from_index: 0, to_index: 1, start: 'a', end: 'b', totals: { ...totals(7500, 1000), seconds: 3000 } },

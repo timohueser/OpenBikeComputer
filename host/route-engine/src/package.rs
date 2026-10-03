@@ -60,6 +60,9 @@ pub struct Manifest {
     pub costs: Table,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub landmarks: Option<crate::landmarks::Index>,
+    /// The `closures::Closures` object; absent when no road has a seasonal closure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closures: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -171,6 +174,7 @@ impl<S: Source> Package<S> {
             || manifest.osm.tables().any(|t| !t.valid())
             || manifest.metrics.values().any(|m| !m.allowed.valid() || !m.costs.valid())
             || manifest.spatial.values().any(|key| !table::valid_digest(key))
+            || manifest.closures.as_ref().is_some_and(|key| !table::valid_digest(key))
             || manifest.landmarks.as_ref().is_some_and(|index| {
                 !index.valid(manifest.roads) || index.profiles.keys().any(|name| !manifest.metrics.contains_key(name))
             })
@@ -245,6 +249,10 @@ impl<S: Source> Package<S> {
             }
         }
         keys.extend(self.manifest.costs.blocks.iter().cloned());
+        if let Some(key) = &self.manifest.closures {
+            keys.insert(key.clone());
+            self.closures()?;
+        }
         for block in self.manifest.costs.positions() {
             let costs = self.bases.borrow_mut().block(self, &self.manifest.costs, block)?;
             if costs.iter().any(|cost| !cost.valid()) {
@@ -354,6 +362,16 @@ impl<S: Source> Package<S> {
 
     pub fn read<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<T> {
         storage::decode(&self.bytes(key)?).map_err(Error::InvalidData)
+    }
+
+    /// Read per query, not kept: the table is small and only the final route needs it.
+    pub fn closures(&self) -> Result<crate::closures::Closures> {
+        let Some(key) = &self.manifest.closures else { return Ok(Default::default()) };
+        let closures: crate::closures::Closures = self.read(key)?;
+        if !closures.valid(self.manifest.roads) {
+            return Err(Error::InvalidData("Invalid seasonal closures".into()));
+        }
+        Ok(closures)
     }
 
     pub fn metric(&self, name: &str) -> Result<&Metric> {

@@ -62,6 +62,7 @@ function route(points, profile, id) {
     elapsed_s: deltas(distance.map(d => Math.round(d / 5))),
     surfaces: [['Paved', edges]],
     pushing: [[false, edges]],
+    closures: [[null, edges]],
     totals: totals(distance[edges]),
     legs,
     snap_truncated: false,

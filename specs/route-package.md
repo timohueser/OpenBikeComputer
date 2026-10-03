@@ -51,10 +51,14 @@ always refers to the actual stored bytes.
 | `osm.ways` | `Vec<osm::Way>` | OSM ID, 128 ways per page |
 | `osm.relations` | `Vec<osm::Relation>` | OSM ID, 128 relations per page |
 | `geometry` | `geometry::Columns` | Directed road ID, 128 roads per page |
+| `closures` | `closures::Closures` | `(road, entry)` pairs by directed road ID |
 | `spatial` directory | `BTreeMap<String, String>` | Fine cell key to road-list digest |
 | Spatial road list | `Vec<u32>` | Sorted road IDs |
 | Manifest `graph` | `base::Topology` direct tables | Directed road ID and ordered turns |
 | Metric `weights` | `base::Weights` direct columns | Directed road ID and ordered turns |
+
+The optional manifest `closures` is the digest of one object. It is absent when
+no road has a seasonal closure.
 
 Cells span 10,000 microdegrees on each axis. Cell indices use floor division,
 including for negative coordinates. A road appears in all cells crossed by

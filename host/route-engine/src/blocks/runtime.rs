@@ -1,6 +1,7 @@
 use super::{ids::Ids, Union};
 use crate::{
     base,
+    closures::Closures,
     data::RoutingData,
     landmarks,
     model::{Point, Profile, Road},
@@ -152,6 +153,7 @@ impl<S: Source> Package<S> {
             keys.insert(self.input.key(&data.geometry, page)?);
         }
         keys.extend(self.manifest.snap.values().cloned());
+        keys.extend(data.closures.iter().cloned());
         for key in keys {
             self.input.bytes(&key)?;
         }
@@ -238,6 +240,13 @@ impl<S: Source> RoutingData for Package<S> {
     }
     fn road(&mut self, road: u32) -> Result<Road> {
         self.input.road(self.ids.source(road)?)
+    }
+    fn closures(&self) -> Result<Closures> {
+        let source = self.input.closures()?;
+        let mut roads: Vec<_> =
+            source.roads.iter().filter_map(|&(road, entry)| Some((self.ids.local(road)?, entry))).collect();
+        roads.sort_unstable();
+        Ok(Closures { roads, entries: source.entries })
     }
     fn endpoint(&mut self, metric: &str, road: u32) -> Result<Endpoint> {
         let source = self.ids.source(road)?;

@@ -3,6 +3,7 @@ mod alternatives;
 pub mod answer;
 pub mod base;
 pub mod blocks;
+pub mod closures;
 pub mod cost;
 pub mod data;
 #[cfg(not(target_arch = "wasm32"))]
