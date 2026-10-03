@@ -31,13 +31,18 @@ npm run deploy --prefix apps/planner-tiles
 | Path | Result |
 | --- | --- |
 | `/releases/ID/basemap.json` | Vector TileJSON |
-| `/releases/ID/basemap/Z/X/Y.mvt` | Vector tile, zoom 0–14 |
+| `/releases/ID/basemap/Z/X/Y.mvt` | Vector tile |
 | `/releases/ID/places.json` | Rider places TileJSON |
-| `/releases/ID/places/Z/X/Y.mvt` | Rider places tile, zoom 11 |
+| `/releases/ID/places/Z/X/Y.mvt` | Rider places tile |
 | `/releases/ID/overlays.json` | Route network and access TileJSON |
-| `/releases/ID/overlays/Z/X/Y.mvt` | Route network and access tile, zoom 6–14 |
+| `/releases/ID/overlays/Z/X/Y.mvt` | Route network and access tile |
 | `/releases/ID/terrain.json` | Terrain TileJSON |
-| `/releases/ID/terrain/Z/X/Y.webp` | Terrarium tile, zoom 0–12 |
+| `/releases/ID/terrain/Z/X/Y.webp` | Terrarium tile |
+| `/releases/ID/snow.json` | Snow TileJSON with the archive metadata, when the release has snow |
+| `/releases/ID/snow/Z/X/Y` | Snow tile: gzip-encoded bytes, `application/octet-stream` |
+
+The archive header gives the zoom levels and the tile type. A tile extension is
+optional and must match the tile type. TileJSON tile URLs have no extension.
 
 `ID` is the SHA-256 of `release.json`. Grid archives use the canonical object pool and its small public pointers.
 The [release contract](../../specs/planner-release.md#canonical-grid-storage)

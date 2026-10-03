@@ -1,16 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { gzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import worker, { tileRoute } from '../src/worker.mjs';
 const release = 'a'.repeat(64), base = `/releases/${release}`;
-test('tile routes bound archive selection, coordinates and types', () => {
+test('tile routes bound archive selection and coordinates', () => {
   assert.deepEqual(tileRoute(`${base}/basemap/14/16383/16383.mvt`).tile, [14, 16383, 16383]);
-  assert.deepEqual(tileRoute(`${base}/places/11/2047/2047.mvt`).tile, [11, 2047, 2047]);
-  assert.deepEqual(tileRoute(`${base}/overlays/14/8547/5739.mvt`).tile, [14, 8547, 5739]);
+  assert.deepEqual(tileRoute(`${base}/snow/13/4290/2911`).tile, [13, 4290, 2911]);
   assert.equal(tileRoute(`${base}/terrain.json`).name, 'terrain');
-  for (const path of [`${base}/basemap/15/0/0.mvt`, `${base}/places/12/0/0.mvt`, `${base}/places/0/0/0.webp`, `${base}/overlays/15/0/0.mvt`,
-    `${base}/terrain/12/4096/0.webp`, `${base}/terrain/0/0/0.mvt`, `${base}/other.json`, '/cell-catalog/catalog.json',
-    `${base}/basemap/01/0/0.mvt`]) {
+  for (const path of [`${base}/terrain/12/4096/0.webp`, `${base}/basemap/27/0/0.mvt`, `${base}/places/0/0/0.png`,
+    `${base}/other.json`, '/cell-catalog/catalog.json', `${base}/basemap/01/0/0.mvt`]) {
     assert.equal(tileRoute(path), null, path);
   }
 });
@@ -24,17 +22,17 @@ test('invalid requests perform no bucket access', async () => {
 });
 
 // One tile in a synthetic PMTiles v3 archive tests the reader and R2 range seam.
-function archive() {
+function archive(tileType = 1, meta = { attribution: 'Test data' }) {
   const tile = gzipSync(new Uint8Array([26, 0]));
   const directory = gzipSync(new Uint8Array([1, 0, 1, tile.length, 1]));
-  const metadata = gzipSync(Buffer.from(JSON.stringify({ attribution: 'Test data' })));
+  const metadata = gzipSync(Buffer.from(JSON.stringify(meta)));
   const header = Buffer.alloc(127);
   header.write('PMTiles'); header[7] = 3;
   const values = [127, directory.length, 127 + directory.length, metadata.length,
     127 + directory.length + metadata.length, 0, 127 + directory.length + metadata.length,
     tile.length, 1, 1, 1];
   values.forEach((v, i) => header.writeBigUInt64LE(BigInt(v), 8 + i * 8));
-  header.set([1, 2, 2, 1, 0, 0], 96);
+  header.set([1, 2, 2, tileType, 0, 0], 96);
   header.writeInt32LE(-1800000000, 102); header.writeInt32LE(-850000000, 106);
   header.writeInt32LE(1800000000, 110); header.writeInt32LE(850000000, 114);
   return Buffer.concat([header, directory, metadata, tile]);
@@ -64,7 +62,9 @@ test('range reads deliver decoded tiles, cache tiles and empty coverage, and do 
   assert.equal(get.headers.get('Access-Control-Allow-Origin'), '*');
   assert.equal(reads, before);
   const info = await worker.fetch(new Request(`https://tiles.example${base}/basemap.json`), env, ctx);
-  assert.equal((await info.json()).tiles[0], `https://tiles.example${base}/basemap/{z}/{x}/{y}.mvt`);
+  assert.equal((await info.json()).tiles[0], `https://tiles.example${base}/basemap/{z}/{x}/{y}`);
+  assert.equal((await worker.fetch(new Request(`https://tiles.example${base}/basemap/0/0/0.webp`), env, ctx)).status, 404);
+  // Zoom 1 is above the archive's maximum zoom.
   const emptyUrl = `https://tiles.example${base}/basemap/1/0/0.mvt`;
   const empty = await worker.fetch(new Request(emptyUrl), env, ctx);
   assert.equal(empty.status, 204);
@@ -82,7 +82,7 @@ test('range reads deliver decoded tiles, cache tiles and empty coverage, and do 
   delete globalThis.caches;
 });
 
- test('grid archives share download objects and assets stream from their pointers', async () => {
+test('grid archives share download objects and assets stream from their pointers', async () => {
   const id = 'c'.repeat(64), prefix = `planner/releases/${id}`, bytes = archive();
   const digest = 'd'.repeat(64), asset = new TextEncoder().encode('{"hello":"map"}');
   const glyphs = new Uint8Array([10, 2, 8, 0]), packed = gzipSync(glyphs);
@@ -118,6 +118,24 @@ test('range reads deliver decoded tiles, cache tiles and empty coverage, and do 
   const font=await worker.fetch(new Request(`https://tiles.example/releases/${id}/maps/assets/fonts/Noto%20Sans%20Regular/0-255.pbf`),env,ctx);
   assert.equal(font.headers.get('Content-Type'),'application/x-protobuf');assert.deepEqual(new Uint8Array(await font.arrayBuffer()),glyphs);
   await Promise.all(pending); delete globalThis.caches;
+});
+
+test('tiles of an unknown type keep their gzip encoding, and TileJSON carries the archive metadata', async () => {
+  const bytes = archive(0, { attribution: 'Snow data', first_season: 2016, seasons: 9 });
+  globalThis.caches = { default: { async match() { return undefined; }, async put() {} } };
+  const env = { BUCKET: { async get(path, options) {
+    if (!path.endsWith('/maps/snow.pmtiles')) return null;
+    const slice = bytes.subarray(options.range.offset, options.range.offset + options.range.length);
+    return { body: true, etag: 'test', async arrayBuffer() { return slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength); } };
+  } } };
+  const ctx = { waitUntil() {} };
+  const tile = await worker.fetch(new Request(`https://tiles.example${base}/snow/0/0/0`), env, ctx);
+  assert.equal(tile.headers.get('Content-Type'), 'application/octet-stream');
+  assert.equal(tile.headers.get('Content-Encoding'), 'gzip');
+  assert.deepEqual(gunzipSync(new Uint8Array(await tile.arrayBuffer())), Buffer.from([26, 0]));
+  const info = await (await worker.fetch(new Request(`https://tiles.example${base}/snow.json`), env, ctx)).json();
+  assert.deepEqual([info.first_season, info.seasons, info.maxzoom, info.tiles[0]], [2016, 9, 0, `https://tiles.example${base}/snow/{z}/{x}/{y}`]);
+  delete globalThis.caches;
 });
 
 test('a client over its limit is refused on a cache miss only', async () => {
