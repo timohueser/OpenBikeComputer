@@ -121,9 +121,13 @@ class ReleaseTests(unittest.TestCase):
     def test_region_recipe_refuses_unsupported_country_defaults(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "region.json"
-            path.write_text(json.dumps({"format": 1, "region": "test", "country": "FR"}))
+            path.write_text(json.dumps({"format": 1, "region": "test", "access": "FR"}))
             with self.assertRaisesRegex(ValueError, "German access defaults"):
                 planner_prepare.recipe(path)
+
+    def test_each_region_recipe_is_valid_and_named_by_its_file(self):
+        for path in (release.maps.ROOT / "tools/planner-regions").glob("*.json"):
+            self.assertEqual(planner_prepare.recipe(path)["region"], path.stem)
 
     def test_recipe_names_explicit_profiles_and_rejects_invalid_selection(self):
         config = json.loads((release.maps.ROOT / "tools/planner-regions/baden-wuerttemberg.json").read_bytes())
