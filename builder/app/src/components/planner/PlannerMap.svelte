@@ -727,6 +727,9 @@
     .map-frame :global(.maplibregl-ctrl-attrib a) { color: var(--link, var(--ink-soft, #5c5a2e)); }
     .map-frame :global(.maplibregl-ctrl-attrib.maplibregl-compact-show .maplibregl-ctrl-attrib-button) { background-color: var(--parchment-2, #e7ecdf); }
     .map-frame[data-map-theme="dark"] :global(.maplibregl-ctrl-attrib-button) { background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' fill-rule='evenodd' viewBox='0 0 20 20'%3E%3Cpath d='M4 10a6 6 0 1 0 12 0 6 6 0 1 0-12 0m5-3a1 1 0 1 0 2 0 1 1 0 1 0-2 0m0 3a1 1 0 1 1 2 0v3a1 1 0 1 1-2 0' fill='%23f2efe3'/%3E%3C/svg%3E"); }
-    .map-frame :global(.maplibregl-popup-anchor-bottom .maplibregl-popup-tip) { border-top-color: var(--panel, white); }
-    .map-frame :global(.maplibregl-popup-anchor-top .maplibregl-popup-tip) { border-bottom-color: var(--panel, white); }
+    /* The tip takes the panel colour on whichever side MapLibre draws it for each anchor. */
+    .map-frame :global(:is(.maplibregl-popup-anchor-bottom, .maplibregl-popup-anchor-bottom-left, .maplibregl-popup-anchor-bottom-right) .maplibregl-popup-tip) { border-top-color: var(--panel, white); }
+    .map-frame :global(:is(.maplibregl-popup-anchor-top, .maplibregl-popup-anchor-top-left, .maplibregl-popup-anchor-top-right) .maplibregl-popup-tip) { border-bottom-color: var(--panel, white); }
+    .map-frame :global(.maplibregl-popup-anchor-left .maplibregl-popup-tip) { border-right-color: var(--panel, white); }
+    .map-frame :global(.maplibregl-popup-anchor-right .maplibregl-popup-tip) { border-left-color: var(--panel, white); }
 </style>

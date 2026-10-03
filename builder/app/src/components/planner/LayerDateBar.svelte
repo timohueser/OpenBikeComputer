@@ -2,7 +2,7 @@
     import Icon from './PlannerIcon.svelte';
     import SeasonGrid from './SeasonGrid.svelte';
     import DateCalendar from './DateCalendar.svelte';
-    import { COLUMNS, columnDate, dateColumn, dateLabel, type LineStats } from '../../lib/planner/layers/data-layer';
+    import { COLUMNS, addMonths, columnDate, dateColumn, dateLabel, type LineStats } from '../../lib/planner/layers/data-layer';
 
     let { date, year, onDate }: { date: string; year: LineStats['year'] | null; onDate: (date: string) => void } = $props();
 
@@ -13,14 +13,19 @@
     // Without a route, the strip is the bare year track.
     const strip = $derived(year?.grid ?? { rows: [{ label: '', cells: new Uint8Array(COLUMNS).fill(255) }], marker: dateColumn(date), swatches: [] });
 
-    function shift(days: number, months = 0) {
+    /** A step from the stepper or the keyboard; the calendar closes, so it never shows a stale month. */
+    function step(next: string) {
+        open = false;
+        onDate(next);
+    }
+    function shift(days: number) {
         const [y, m, d] = date.split('-').map(Number);
-        onDate(new Date(Date.UTC(y, m - 1 + months, d + days)).toISOString().slice(0, 10));
+        step(new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10));
     }
     function key(event: KeyboardEvent) {
         const year = date.slice(0, 4);
-        if (event.key === 'Home' || event.key === 'End') onDate(`${year}-${event.key === 'Home' ? '01-01' : '12-31'}`);
-        else if (event.key === 'PageUp' || event.key === 'PageDown') shift(0, event.key === 'PageUp' ? 1 : -1);
+        if (event.key === 'Home' || event.key === 'End') step(`${year}-${event.key === 'Home' ? '01-01' : '12-31'}`);
+        else if (event.key === 'PageUp' || event.key === 'PageDown') step(addMonths(date, event.key === 'PageUp' ? 1 : -1));
         else {
             const days = { ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1 }[event.key];
             if (!days) return;
@@ -49,7 +54,7 @@
     <div class="year">
         <p>{year?.label ?? 'Plan a route to see when the whole route is snow-free.'}</p>
         <SeasonGrid grid={strip} rowHeight={14} label="Layer date in the year" slider={{ valueText: year ? `${longDate}. ${year.label}` : longDate, onKey: key }}
-            onPick={(column) => onDate(columnDate(column, Number(date.slice(0, 4))))} />
+            onPick={(column) => step(columnDate(column, Number(date.slice(0, 4))))} />
     </div>
 </div>
 

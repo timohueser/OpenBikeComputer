@@ -74,6 +74,13 @@ export function dateColumn(date: string): number {
     return Math.min(COLUMNS - 1, Math.floor((Date.UTC(2001, month - 1, month === 2 ? Math.min(day, 28) : day) - JANUARY) / DAY_MS / 2));
 }
 
+/** The same day `months` later, or the last day of a shorter month. */
+export function addMonths(date: string, months: number): string {
+    const [year, month, day] = date.split('-').map(Number);
+    const last = new Date(Date.UTC(year, month + months, 0)).getUTCDate();
+    return new Date(Date.UTC(year, month - 1 + months, Math.min(day, last))).toISOString().slice(0, 10);
+}
+
 export function columnDate(column: number, year: number): string {
     const day = columnDays[column];
     return new Date(Date.UTC(year, day.getUTCMonth(), day.getUTCDate())).toISOString().slice(0, 10);

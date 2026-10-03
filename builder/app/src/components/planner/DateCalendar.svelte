@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount, tick } from 'svelte';
     import Icon from './PlannerIcon.svelte';
+    import { addMonths } from '../../lib/planner/layers/data-layer';
 
     /** A month grid that picks one day. The opener closes it on a click outside. */
     let { date, onPick, onClose }: { date: string; onPick: (date: string) => void; onClose: () => void } = $props();
@@ -23,12 +24,6 @@
     });
     const title = $derived(new Date(first).toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' }));
     const dayName = (day: string) => new Date(day).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
-
-    /** The same day in another month, or its last day when the month is shorter. */
-    function addMonths(value: string, months: number) {
-        const [y, m, d] = parts(value);
-        return iso(Date.UTC(y, m - 1 + months, Math.min(d, new Date(Date.UTC(y, m + months, 0)).getUTCDate())));
-    }
 
     async function move(day: string, focus = true) {
         focused = day;
