@@ -6,9 +6,16 @@
     let { legend, label, columns = false, children }: { legend: Legend; label: string; columns?: boolean; children?: Snippet } = $props();
 </script>
 
+{#snippet marks()}
+    {#each legend.marks ?? [] as mark (mark.label)}
+        <li><svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path d={mark.path} stroke-width={mark.width} /></svg>{mark.label}</li>
+    {/each}
+{/snippet}
+
 {#if 'swatches' in legend}
     <ul class="legend" class:columns aria-label={label}>
         {#each legend.swatches as swatch (swatch.label)}<li><span class="swatch" class:hatch={swatch.hatch} style:--swatch={swatch.color}></span>{swatch.label}</li>{/each}
+        {@render marks()}
         {@render children?.()}
     </ul>
 {:else}
@@ -17,7 +24,7 @@
             <span class="bar" style:background={`linear-gradient(to right, ${legend.scale.map(stop => stop.color).join(', ')})`}></span>
             <ol aria-hidden="true">{#each legend.scale as stop, i (i)}<li>{stop.label}</li>{/each}</ol>
         </div>
-        {#if children}<ul>{@render children()}</ul>{/if}
+        {#if children || legend.marks}<ul>{@render marks()}{@render children?.()}</ul>{/if}
     </div>
 {/if}
 
@@ -30,6 +37,7 @@
     .swatch { flex: 0 0 14px; height: 8px; border-radius: 2px; background: var(--swatch); box-shadow: inset 0 0 0 1px var(--line-strong); }
     .columns .swatch { height: 10px; }
     .hatch { background: repeating-linear-gradient(135deg, transparent 0 2px, var(--swatch) 2px 3.5px); }
+    .mark { flex: none; width: 20px; height: 20px; margin: -6px -3px; fill: none; stroke: var(--ink); stroke-linecap: round; stroke-linejoin: round; }
     .scale { align-items: flex-start; }
     .ramp { flex: 0 1 180px; min-width: 120px; }
     .bar { display: block; height: 8px; border-radius: 2px; box-shadow: inset 0 0 0 1px var(--line-strong); }

@@ -3,10 +3,18 @@ import type { Coordinate } from '../map-types';
 import { MONTHS, SECTORS, WEEKS, headPart, temperatureAt, wetDaysOf7, windRose } from './climate';
 import type { CellRef } from './climate-source';
 
-/** The travel direction at each point, in degrees clockwise from north, from its previous to its next point. */
-export function lineBearings(line: Coordinate[]): Float32Array {
+/**
+ * The travel direction at each point, in degrees clockwise from north: from its previous to its next
+ * point, or with `km` across the `stretch` km before and after it.
+ */
+export function lineBearings(line: Coordinate[], km?: ArrayLike<number>, stretch = 0): Float32Array {
+    const at = (i: number) => km?.[i] ?? 0;
+    let back = 0, ahead = 0;
     return Float32Array.from(line, (_, i) => {
-        const [lon0, lat0] = line[Math.max(0, i - 1)], [lon1, lat1] = line[Math.min(line.length - 1, i + 1)];
+        // The nearest points at least `stretch` away, and never nearer than the neighbours.
+        while (back < i - 1 && at(i) - at(back + 1) >= stretch) back++;
+        while (ahead < line.length - 1 && (ahead <= i || at(ahead) - at(i) < stretch)) ahead++;
+        const [lon0, lat0] = line[back], [lon1, lat1] = line[ahead];
         const east = (lon1 - lon0) * Math.cos((lat0 + lat1) * Math.PI / 360), north = lat1 - lat0;
         return (Math.atan2(east, north) * 180 / Math.PI + 360) % 360;
     });

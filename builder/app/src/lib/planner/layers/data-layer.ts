@@ -13,8 +13,11 @@ export interface Swatch {
     hatch?: boolean;
 }
 
-/** Discrete classes, or a continuous scale through evenly spaced stops. */
-export type Legend = { swatches: Swatch[] } | { scale: { color: string; label: string }[] };
+/** A map symbol in the legend: a stroke path in a 24 px box. */
+export interface Mark { label: string; path: string; width: number }
+
+/** Discrete classes, or a continuous scale through evenly spaced stops; `marks` explain map symbols. */
+export type Legend = ({ swatches: Swatch[] } | { scale: { color: string; label: string }[] }) & { marks?: Mark[] };
 
 /** Rows of cells over the calendar year in `columns` steps: 183 steps of two days, or 52 weeks. */
 export interface Grid {

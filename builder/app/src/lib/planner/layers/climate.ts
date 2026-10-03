@@ -88,6 +88,12 @@ export function locate(level: Level, { col, row }: Cell): { x: number; y: number
     return { x: Math.floor(col / cols), y: Math.floor(row / rows), index: (row % rows) * cols + (col % cols) };
 }
 
+/** The global cell of a tile cell; the inverse of `locate`. */
+export function cellOf({ level, x, y }: ClimateTile, index: number): Cell {
+    const { cols, rows } = LAYOUTS[level];
+    return { col: x * cols + (index % cols), row: y * rows + Math.floor(index / cols) };
+}
+
 /** The month (0 = January) of the middle day of a week. */
 export function weekMonth(week: number): number {
     return new Date(Date.UTC(2001, 0, 1 + 7 * week + 3)).getUTCMonth();
