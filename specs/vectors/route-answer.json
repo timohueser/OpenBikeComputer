@@ -16,7 +16,7 @@
     "elapsed": [0, 2.6, 13.4, 21.1, 43.8, 60.2],
     "surfaces": ["Paved", "Paved", "Gravel", "Gravel", "Gravel"],
     "pushing": [false, false, false, true, false],
-    "closures": [null, null, "Nov-May", "Nov-May", null],
+    "closures": [null, null, [{ "kind": "seasonal", "condition": "Nov-May" }], [{ "kind": "seasonal", "condition": "Nov-May" }], null],
     "legs": [
       {
         "from_index": 0,
@@ -75,7 +75,7 @@
         "elapsed_s": [0, 3, 10, 8, 23, 16],
         "surfaces": [["Paved", 2], ["Gravel", 3]],
         "pushing": [[false, 3], [true, 1], [false, 1]],
-        "closures": [[null, 2], ["Nov-May", 2], [null, 1]],
+        "closures": [[null, 2], [[{ "kind": "seasonal", "condition": "Nov-May" }], 2], [null, 1]],
         "legs": [
           {
             "from_index": 0,

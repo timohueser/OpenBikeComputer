@@ -9,7 +9,7 @@
 
 <section class="spot" aria-label="Past years here">
     <p class="headline"><Icon name="snow" size={15} />{inspection?.headline ?? (error || 'Loading past years…')}</p>
-    {#if inspection}<SeasonGrid grid={inspection.grid} rowHeight={4} label={`${inspection.headline}. One row per winter season, newest at the bottom.`} />{/if}
+    {#if inspection}<SeasonGrid grid={inspection.grid} rowHeight={4} label={`${inspection.headline}. One row per year, newest at the bottom.`} />{/if}
     {#if note}<p class="note">{note}</p>{/if}
 </section>
 

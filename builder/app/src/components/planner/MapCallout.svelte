@@ -195,12 +195,12 @@
 </div>
 
 <style>
-    /* Never taller than the map it sits on; the content scrolls as a last resort. */
+    /* The map sets the free room; the content scrolls as a last resort. */
     .callout {
         position: relative;
         width: 340px;
-        max-width: calc(100vw - 48px);
-        max-height: calc(var(--map-height, 100vh) - 96px);
+        max-width: var(--callout-width);
+        max-height: var(--callout-room);
         overflow-y: auto;
         padding: 16px;
         color: var(--ink);

@@ -3,6 +3,7 @@
     import PlannerMap from './PlannerMap.svelte';
     import Icon from './PlannerIcon.svelte';
     import Profile from './PlannerProfile.svelte';
+    import DrawerTitle from './DrawerTitle.svelte';
     import Query from './PlannerQuery.svelte';
     import Resize from './PanelResize.svelte';
     import TripBar from './TripBar.svelte';
@@ -51,7 +52,9 @@
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
     import { calculateLine, requestAlternatives, selectRoute, type EngineRoute, type RoutingLine } from '../../lib/planner/routing';
     import { LegCache } from '../../lib/planner/route-legs';
+    import { DRAWER_CLOSED, DRAWER_MIN, resizeDrawer } from '../../lib/planner/drawer';
     import { closureNote, closureStretches, type ClosureStretch } from '../../lib/planner/route-closures';
+    import { gapNote, routeGaps } from '../../lib/planner/route-gaps';
     const defaultLabels: Record<EditableKind, string> = {
         via: 'Shaping point',
         pass: 'Pass here',
@@ -76,6 +79,7 @@
     }, error => { previewStatus = error instanceof Error ? error.message : 'Preview unavailable.'; });
     let routingStatus = $state('Choose a start and finish');
     let routeAttempt = $state(0);
+    let routeFailed = $state(false);
     const routingInput = $derived(routingKey(trip));
     // Undo returns a plan without its route, often with an unchanged routing key.
     const routed = $derived(trip.routing?.key === routingInput);
@@ -87,10 +91,15 @@
         const plan = untrack(() => trip);
         const abort = new AbortController();
         routingStatus = 'Calculating route…';
+        routeFailed = false;
         calculateLine(plan, abort.signal, legs).then(line => {
                 if (abort.signal.aborted || key !== routingInput) return;
                 trip = { ...trip, routing: line };
-            }).catch(error => { if (!abort.signal.aborted) routingStatus = error instanceof Error ? error.message : 'Routing is unavailable.'; });
+            }).catch(error => {
+                if (abort.signal.aborted) return;
+                routingStatus = error instanceof Error ? error.message : 'Routing is unavailable.';
+                routeFailed = true;
+            });
         return () => abort.abort();
     });
     function pickRoute(route: EngineRoute) {
@@ -104,9 +113,10 @@
         if (!hasEndpoints) previousRouteTrip = null;
         else if (currentRoute) previousRouteTrip = shownTrip;
     });
-    // Keep the measured route visible while its replacement is calculated.
-    const visualTrip = $derived(currentRoute || !hasEndpoints ? shownTrip : previousRouteTrip ?? shownTrip);
-    const visualRoute = $derived(currentRoute ?? (hasEndpoints ? previousRouteTrip?.routing : undefined));
+    // Keep the measured route visible while its replacement is calculated. A failed edit shows no route, as a failed new route does.
+    const keepPrevious = $derived(hasEndpoints && !currentRoute && !routeFailed);
+    const visualTrip = $derived(keepPrevious ? previousRouteTrip ?? shownTrip : shownTrip);
+    const visualRoute = $derived(currentRoute ?? (keepPrevious ? previousRouteTrip?.routing : undefined));
     const routingMessage = $derived(draggingPoint ? previewStatus : currentRoute
         ? `${currentRoute.unknownSurfaceKm.toFixed(1)} km unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${currentRoute.pushingKm.toFixed(1)} km pushing` : ''}${currentRoute.unroutedKm ? ` · ${currentRoute.unroutedKm.toFixed(1)} km manual / access unverified` : ''}${currentRoute.elevation.some(h => h === null) ? ' · elevation incomplete' : ''}`
         : routingStatus);
@@ -185,6 +195,7 @@
     let hoverProgress = $state<number | null>(null);
     let sideWidth = $state(360);
     let profileHeight = $state(260);
+    let profileOpen = $state(true);
     let viewportHeight = $state(900);
     let viewportWidth = $state(1200);
     let mapHeight = $state(600);
@@ -192,8 +203,14 @@
     const history = new TripHistory();
     let revision = $state(0);
 
-    const maxProfile = $derived(Math.max(210, Math.min(340, viewportHeight - 400)));
+    const maxProfile = $derived(Math.max(DRAWER_MIN, Math.min(340, viewportHeight - 400)));
+    const drawerHeight = $derived(profileOpen ? Math.min(profileHeight, maxProfile) : DRAWER_CLOSED);
     const maxSide = $derived(Math.max(320, Math.min(460, viewportWidth - 540)));
+    function resizeProfile(value: number, byKey: boolean) {
+        const next = resizeDrawer(drawerHeight, value, byKey);
+        profileOpen = next > DRAWER_CLOSED;
+        if (profileOpen) profileHeight = next;
+    }
     const canUndo = $derived.by(() => { void revision; return history.canUndo; });
     const canRedo = $derived.by(() => { void revision; return history.canRedo; });
     const coordinates = $derived(routeCoordinates(visualTrip));
@@ -217,6 +234,7 @@
         multi && !!currentRoute && expandedDay !== null && !searching && list === 'plan' && night < days.length && (!activeDay?.pinned || changingOvernight),
     );
     const closures = $derived(closureStretches(visualRoute));
+    const gaps = $derived(visualRoute ? routeGaps(visualStops, coordinates) : []);
     // A new route makes the shown stretch stale, so the map no longer marks it.
     let shownClosure = $state.raw<ClosureStretch | null>(null);
     const closureIndex = $derived(shownClosure ? closures.indexOf(shownClosure) : -1);
@@ -889,6 +907,9 @@
                 {#if !focusedDay && visualRoute}
                     <div class="trip-summary"><RouteStats distance={total} ascent={visualRoute?.elevation.every(h => h !== null) ? profileAscent(0, 1, visualRoute) : null} descent={visualRoute?.elevation.every(h => h !== null) ? profileDescent(0, 1, visualRoute) : null} walking={visualTrip.bike === 'hiking'} hours={visualRoute ? visualRoute.seconds / 3600 : null} /></div>
                 {/if}
+                {#if !focusedDay && gaps.length}
+                    <p class="closure-note"><Icon name="pin" size={15} /><span>{gapNote(gaps)}</span></p>
+                {/if}
                 {#if !focusedDay && closures.length}
                     <p class="closure-note"><Icon name="calendar" size={15} /><span>{closureNote(closures)}</span><button type="button" class="planner-action quiet" onclick={showClosure}>{closureIndex < 0 ? 'Show' : closureIndex + 1 < closures.length ? 'Next' : 'Hide'}</button></p>
                 {/if}
@@ -940,7 +961,7 @@
         <section class="geography" aria-label="Map and elevation" aria-busy={hasEndpoints && !currentRoute}>
             <div class="map-area" bind:clientHeight={mapHeight} style:--map-height={`${mapHeight}px`}>
                 <PlannerMap
-                    bind:this={map} {segments} {coordinates} points={mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
+                    bind:this={map} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
                     {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layer: snow, shown: snowOn, date: shownDate }} bottomInset={snowOn ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces} {landmarks}
@@ -995,15 +1016,15 @@
                     </div>
                 {/if}
             </div>
-            <Resize value={Math.min(profileHeight, maxProfile)} min={210} max={maxProfile} axis="y" label="Elevation height" onResize={(value) => profileHeight = value} />
+            <Resize value={drawerHeight} min={DRAWER_CLOSED} max={maxProfile} axis="y" label="Elevation height" onResize={resizeProfile} />
             {#if !visualRoute}
-                <section class="empty-profile" aria-label="Elevation profile" style:height={`${Math.min(profileHeight, maxProfile)}px`}>
-                    <h2>Elevation &amp; surface</h2>
-                    <div><Icon name="route" size={24} /><p>{hasEndpoints ? 'The profile appears when your route is ready.' : 'See the climbs and surfaces along your route.'}</p><small>{hasEndpoints ? routingStatus : stops.length ? `Choose a ${nextEndpoint} to see the profile.` : 'Choose a start and finish to get started.'}</small></div>
+                <section class="empty-profile" aria-label="Elevation profile" style:height={`${drawerHeight}px`}>
+                    <DrawerTitle title="Elevation & surface" open={profileOpen} onToggle={() => profileOpen = !profileOpen} />
+                    {#if profileOpen}<div><Icon name="route" size={24} /><p>{hasEndpoints ? 'The profile appears when your route is ready.' : 'See the climbs and surfaces along your route.'}</p><small>{hasEndpoints ? routingStatus : stops.length ? `Choose a ${nextEndpoint} to see the profile.` : 'Choose a start and finish to get started.'}</small></div>{/if}
                 </section>
             {:else}
             <Profile
-                lineData={visualRoute} walking={visualTrip.bike === 'hiking'} singleRoute={!multi} height={Math.min(profileHeight, maxProfile)} {total} {days} {dayLabels} {theme}
+                lineData={visualRoute} walking={visualTrip.bike === 'hiking'} singleRoute={!multi} height={drawerHeight} open={profileOpen} onToggle={() => profileOpen = !profileOpen} {total} {days} {dayLabels} {theme}
                 activeNight={focusedDay?.ridingNumber ?? 0} band={overnightContext ? area : null} window={profileWindow}
                 focus={focusedDay ? { from: focusedDay.from, to: focusedDay.to, label: `Day ${focusedDay.number}` } : null}
                 onNight={(riding) => showDay(riding)} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
@@ -1036,9 +1057,8 @@
     .chosen-endpoint small, .chosen-endpoint strong { display: block; }
     .chosen-endpoint small { margin-bottom: 4px; color: var(--ink-soft); }
     .route-status { padding: 8px 16px; color: var(--ink-soft); }
-    .empty-profile { flex: none; display: flex; flex-direction: column; padding: 16px 24px; background: var(--panel); }
-    .empty-profile h2 { margin: 0; font: 600 14px var(--sans); }
-    .empty-profile div { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+    .empty-profile { flex: none; display: flex; flex-direction: column; align-items: flex-start; padding: 8px 24px; overflow: hidden; background: var(--panel); }
+    .empty-profile div { flex: 1; align-self: stretch; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
     .empty-profile p { margin: 12px 0 4px; }
     .empty-profile small { color: var(--ink-soft); }
 
@@ -1205,7 +1225,8 @@
     .layer-summary p { display: flex; flex-direction: column; gap: 2px; margin: 0; }
     .layer-summary strong { font-weight: 600; }
     .layer-summary span { font-size: 13px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
-    .layer-date { position: absolute; left: 16px; right: 16px; bottom: 34px; z-index: 2; }
+    /* Clear of the map controls column, which reaches the bottom on a short map. */
+    .layer-date { position: absolute; left: 16px; right: 68px; bottom: 34px; z-index: 2; }
     .list-switch {
         display: flex;
         padding: 12px 16px 8px;

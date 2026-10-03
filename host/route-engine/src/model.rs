@@ -154,7 +154,8 @@ impl Profile {
                 },
                 pushing: true,
                 ferries: true,
-                max_difficulty: 2,
+                // Up to `alpine_hiking` (T4), the route of marked alpine summits. T5 and T6 need climbing.
+                max_difficulty: 4,
             },
         ];
         let mut mtb = profiles[1].clone();

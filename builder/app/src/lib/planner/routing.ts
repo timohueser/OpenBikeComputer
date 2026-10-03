@@ -21,6 +21,11 @@ export interface RouteLeg {
     end: string;
     totals: RouteTotals;
 }
+/** Why the rider may have no access to an edge that the route uses; `specs/route-api.md` lists the kinds. */
+export interface RouteClosure {
+    kind: 'permit' | 'limited' | 'seasonal' | 'conditional' | 'unclear';
+    condition: string;
+}
 export interface EngineRoute {
     id: string;
     reason: string;
@@ -31,8 +36,8 @@ export interface EngineRoute {
     elapsed: number[];
     surfaces: Surface[];
     pushing: boolean[];
-    /** The condition of a seasonal closure on each edge, such as `Nov-May`. */
-    closures: (string | null)[];
+    /** The possible closures of each edge. */
+    closures: (RouteClosure[] | null)[];
     totals: RouteTotals;
     legs: RouteLeg[];
     snap_truncated: boolean;
@@ -46,7 +51,7 @@ export interface RoutingLine {
     surfaces: Surface[];
     /** Null on manual sections, whose access is not verified. */
     pushing: (boolean | null)[];
-    closures: (string | null)[];
+    closures: (RouteClosure[] | null)[];
     stops: { id: string; distance: number }[];
     seconds: number;
     alternatives: EngineRoute[];
@@ -108,7 +113,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
     const result: RoutingLine = { choiceId: '', key: routingKey(trip), coordinates: [], elevation: [], elapsed: [], surfaces: [], pushing: [], closures: [], stops: [], seconds: 0,
         alternatives: [], alternativesReady: true, profile: profileId(trip), unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0 };
     let distance = 0;
-    function append(line: Coordinate[], elevation: (number | null)[], elapsed: number[], surfaces: Surface[], pushing: boolean[], closures: (string | null)[]) {
+    function append(line: Coordinate[], elevation: (number | null)[], elapsed: number[], surfaces: Surface[], pushing: boolean[], closures: (RouteClosure[] | null)[]) {
         const last = result.coordinates.at(-1);
         const gap = last ? cumulative([last, line[0]])[1] : 0;
         // A join to a manually drawn leg is itself an explicit, unverified connector.

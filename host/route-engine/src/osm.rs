@@ -1,4 +1,5 @@
 //! Source OSM data is kept outside the pages used by route searches.
+use crate::closures::{Closure, Kind};
 use crate::model::Point;
 use crate::model::{BIKE, FOOT, PUSH};
 use serde::{Deserialize, Serialize};
@@ -6,8 +7,33 @@ use std::collections::BTreeMap;
 
 pub type Tags = BTreeMap<String, String>;
 
+/// What an access value tells the router. It blocks a mode only where the rider surely has no
+/// access; an uncertain value stays routable, and the route reports it as a closure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Access {
+    Open,
+    Uncertain(Kind),
+    Closed,
+}
+
+/// A list such as `agricultural;forestry` takes its most open value.
+pub fn classify(value: &str) -> Access {
+    let one = |value: &str| match value.trim() {
+        // `mtb` designates a way for mountain bikes, as in Switzerland.
+        "yes" | "designated" | "official" | "permissive" | "discouraged" | "mtb" | "optional_sidepath" => Access::Open,
+        // `dismount` closes riding only; pushing follows foot access. A motor group such as `psv`
+        // is the only group allowed.
+        "no" | "private" | "military" | "use_sidepath" | "dismount" | "agricultural" | "forestry" | "psv" | "bus"
+        | "emergency" | "hgv" | "taxi" | "motor_vehicle" | "motorcar" => Access::Closed,
+        "permit" => Access::Uncertain(Kind::Permit),
+        "destination" | "customers" | "delivery" | "residents" => Access::Uncertain(Kind::Limited),
+        _ => Access::Uncertain(Kind::Unclear),
+    };
+    value.split(';').map(one).min().unwrap_or(Access::Closed)
+}
+
 pub fn granted(value: &str) -> bool {
-    matches!(value, "yes" | "designated" | "official" | "permissive" | "discouraged")
+    classify(value) == Access::Open
 }
 
 /// German road classes and default access, before explicit tags and one-way rules.
@@ -81,13 +107,19 @@ pub fn cycleway<'a>(get: impl Fn(&str) -> Option<&'a str>, reversed: bool) -> bo
 }
 
 /// Pushing follows pedestrian access in the supported German region, unless explicitly restricted.
-pub fn access<'a>(get: impl Fn(&str) -> Option<&'a str>, defaults: u8, direction: &str) -> u8 {
+/// With `routing`, an uncertain value opens its mode, and the route reports it as a closure.
+pub fn access<'a>(get: impl Fn(&str) -> Option<&'a str>, defaults: u8, direction: &str, routing: bool) -> u8 {
+    let opens = |value: &str| match classify(value) {
+        Access::Open => true,
+        Access::Uncertain(_) => routing,
+        Access::Closed => false,
+    };
     let restricted_road =
         get("motorroad") == Some("yes") || matches!(get("highway"), Some("motorway" | "motorway_link"));
     let mut result = if restricted_road { 0 } else { defaults };
     for (mode, bits) in [("foot", FOOT | PUSH), ("bicycle", BIKE)] {
         if let Some(value) = inherited(&get, mode, direction) {
-            if granted(value) {
+            if opens(value) {
                 result |= bits;
             } else {
                 result &= !bits;
@@ -107,7 +139,7 @@ pub fn access<'a>(get: impl Fn(&str) -> Option<&'a str>, defaults: u8, direction
         result |= BIKE;
     }
     if let Some(value) = get(&format!("bicycle:pushing:{direction}")).or(get("bicycle:pushing")) {
-        if granted(value) {
+        if opens(value) {
             result |= PUSH;
         } else {
             result &= !PUSH;
@@ -119,38 +151,50 @@ pub fn access<'a>(get: impl Fn(&str) -> Option<&'a str>, defaults: u8, direction
     result
 }
 
-/// Modes whose conditional access cannot be resolved by the regional importer. With
-/// `routing`, seasonal closures do not count: the router keeps them open, the map still shows them.
-pub fn conditional_modes<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, routing: bool) -> u8 {
-    conditions(tags).filter(|(_, _, seasons)| !routing || seasons.is_none()).fold(0, |modes, (_, m, _)| modes | m)
+/// Modes with a conditional restriction. The router keeps them open; the map shows them.
+pub fn conditional_modes<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> u8 {
+    conditions(tags).filter(|(_, _, clauses)| !clauses.is_empty()).fold(0, |modes, (_, m, _)| modes | m)
 }
 
-/// The seasonal closures that `conditional_modes` ignores for routing, so that a route can report
-/// them. Only a restricting value closes: `yes @ (May-Oct)` names the open season. A seasonal
-/// one-way closes one direction only, so it is no closure of the road.
-pub fn seasonal_closures<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Vec<(u8, String)> {
-    let mut closures: Vec<(u8, String)> = Vec::new();
-    for (key, modes, seasons) in conditions(tags) {
+/// What may close a road that the router keeps open: an uncertain access value, or a conditional
+/// restriction. Only a restricting clause counts: `yes @ (May-Oct)` names the open season. A
+/// conditional one-way closes one direction only, so it is no closure of the road.
+pub fn closures<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Vec<(u8, Closure)> {
+    let tags: BTreeMap<&str, &str> = tags.collect();
+    let get = |key: &str| tags.get(key).copied();
+    let mut found = Vec::new();
+    for (mode, bits) in [("foot", FOOT | PUSH), ("bicycle", BIKE)] {
+        for direction in ["forward", "backward"] {
+            if let Some(value) = inherited(&get, mode, direction) {
+                if let Access::Uncertain(kind) = classify(value) {
+                    found.push((bits, kind, value));
+                }
+            }
+        }
+    }
+    for (key, modes, clauses) in conditions(tags.iter().map(|(key, value)| (*key, *value))) {
         if modes == 0 || key.starts_with("oneway") {
             continue;
         }
-        for (_, condition) in seasons.into_iter().flatten().filter(|(value, _)| !granted(value)) {
-            match closures.iter_mut().find(|(_, known)| known == condition) {
-                Some((closed, _)) => *closed |= modes,
-                None => closures.push((modes, condition.to_owned())),
-            }
+        for (_, condition) in clauses.into_iter().filter(|(value, _)| !granted(value)) {
+            found.push((modes, if seasonal(condition) { Kind::Seasonal } else { Kind::Conditional }, condition));
+        }
+    }
+    let mut closures: Vec<(u8, Closure)> = Vec::new();
+    for (modes, kind, condition) in found {
+        match closures.iter_mut().find(|(_, known)| known.kind == kind && known.condition == condition) {
+            Some((known, _)) => *known |= modes,
+            None => closures.push((modes, Closure { kind, condition: condition.to_owned() })),
         }
     }
     closures
 }
 
-type Seasons<'a> = Option<Vec<(&'a str, &'a str)>>;
-
-/// The key, modes and, when every clause is seasonal, the value and condition of each clause of
-/// each conditional tag. A tag whose clauses all concern hazardous loads closes nothing.
+/// The key, modes and `(value, condition)` clauses of each conditional tag. A hazardous-load
+/// clause never concerns a rider or walker, so it is left out.
 fn conditions<'a, I: Iterator<Item = (&'a str, &'a str)>>(
     tags: I,
-) -> impl Iterator<Item = (&'a str, u8, Seasons<'a>)> + use<'a, I> {
+) -> impl Iterator<Item = (&'a str, u8, Vec<(&'a str, &'a str)>)> + use<'a, I> {
     tags.filter_map(|(key, value)| {
         let key = key.strip_suffix(":conditional")?;
         let modes = match key {
@@ -161,17 +205,15 @@ fn conditions<'a, I: Iterator<Item = (&'a str, &'a str)>>(
             "foot" | "foot:forward" | "foot:backward" | "oneway:foot" => FOOT | PUSH,
             _ => 0,
         };
-        let mut seasons = Vec::new();
-        for clause in value.split(';') {
-            let Some((value, condition)) = clause.split_once('@') else { return Some((key, modes, None)) };
-            let condition = condition.trim().trim_matches(['(', ')']).trim();
-            if seasonal(condition) {
-                seasons.push((value.trim(), condition));
-            } else if !hazmat(condition) {
-                return Some((key, modes, None));
-            }
-        }
-        (!seasons.is_empty()).then_some((key, modes, Some(seasons)))
+        let clauses = value
+            .split(';')
+            .map(|clause| {
+                let (value, condition) = clause.split_once('@').unwrap_or((clause, ""));
+                (value.trim(), condition.trim().trim_matches(['(', ')']).trim())
+            })
+            .filter(|(_, condition)| !hazmat(condition))
+            .collect();
+        Some((key, modes, clauses))
     })
 }
 
@@ -241,22 +283,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn seasonal_closures_name_only_restricting_conditions_with_their_modes() {
-        let closures = |tags: &[(&'static str, &'static str)]| seasonal_closures(tags.iter().copied());
+    fn only_a_certain_value_closes_and_every_doubt_becomes_a_closure() {
+        use Access::{Closed, Open, Uncertain};
+        for (value, expected) in [
+            ("yes;designated", Open),
+            ("private", Closed),
+            ("agricultural;forestry", Closed),
+            ("permit", Uncertain(Kind::Permit)),
+            ("customers", Uncertain(Kind::Limited)),
+            ("agricultural;delivery", Uncertain(Kind::Limited)),
+            ("mtb", Open),
+            ("optional_sidepath", Open),
+            ("psv", Closed),
+            ("motor_vehicle;emergency", Closed),
+            ("service", Uncertain(Kind::Unclear)),
+        ] {
+            assert_eq!(classify(value), expected, "{value}");
+        }
+        let permit = |key: &str| (key == "access").then_some("permit");
+        assert_eq!(access(permit, BIKE | FOOT | PUSH, "forward", true), BIKE | FOOT | PUSH);
+        assert_eq!(access(permit, BIKE | FOOT | PUSH, "forward", false), 0);
+
+        let closures = |tags: &[(&'static str, &'static str)]| closures(tags.iter().copied());
+        let closure = |kind, condition: &str| Closure { kind, condition: condition.into() };
+        let all = BIKE | FOOT | PUSH;
         assert_eq!(
-            closures(&[("bicycle:conditional", "no @ (Nov-May)"), ("foot:conditional", "no @ (Mar 1-Jul 31)")]),
-            vec![(BIKE, "Nov-May".into()), (FOOT | PUSH, "Mar 1-Jul 31".into())]
+            closures(&[
+                ("access", "permit"),
+                ("vehicle", "permit"),
+                ("access:conditional", "no @ Oct 14th - May 31st")
+            ]),
+            vec![(all, closure(Kind::Permit, "permit")), (all, closure(Kind::Seasonal, "Oct 14th - May 31st"))]
         );
         assert_eq!(
-            closures(&[("access:conditional", "no @ (Nov-May)"), ("vehicle:conditional", "no @ (Nov-May)")]),
-            vec![(BIKE | FOOT | PUSH, "Nov-May".into())]
+            closures(&[("access", "destination"), ("bicycle", "yes"), ("bicycle:conditional", "no @ (wet)")]),
+            vec![(FOOT | PUSH, closure(Kind::Limited, "destination")), (BIKE, closure(Kind::Conditional, "wet"))]
         );
-        // An open season, a one-way, a motor-vehicle rule and a weather rule close nothing seasonally.
+        assert_eq!(
+            closures(&[
+                ("access:conditional", "no @ (Nov-May)"),
+                ("foot:conditional", "no @ (2026 Mar 1-2026 Jul 31)")
+            ]),
+            vec![
+                (all, closure(Kind::Seasonal, "Nov-May")),
+                (FOOT | PUSH, closure(Kind::Conditional, "2026 Mar 1-2026 Jul 31"))
+            ]
+        );
+        // An open season, a one-way, a motor-vehicle rule and a freight rule close nothing.
         for tag in [
             ("access:conditional", "yes @ (May-Oct)"),
-            ("oneway:conditional", "yes @ (Nov-May)"),
-            ("motor_vehicle:conditional", "no @ (Nov-May)"),
-            ("access:conditional", "no @ (Nov-May); no @ (wet)"),
+            ("oneway:conditional", "yes @ (Mo-Fr 07:00-09:00)"),
+            ("motor_vehicle:conditional", "no @ (wet)"),
+            ("access:conditional", "agricultural @ hazmat:water"),
         ] {
             assert_eq!(closures(&[tag]), vec![], "{tag:?}");
         }

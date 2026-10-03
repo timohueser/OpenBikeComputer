@@ -6,6 +6,11 @@ use crate::{
 use serde::Serialize;
 use std::collections::BTreeSet;
 
+/// The snap radius for a point with no road within `Policy::radius_m`, and for a point whose
+/// nearest road no route reaches. The client shows the gap. Farther away, the nearest road is often
+/// on another ridge or across a valley.
+pub const REACH_M: f64 = 1_000.0;
+
 impl Default for Policy {
     fn default() -> Self {
         Self { radius_m: 250.0, ambiguity_m: 3.0, max_candidates: 8 }
@@ -44,7 +49,7 @@ pub(crate) fn candidates(
     mut road: impl FnMut(u32) -> Result<Option<Road>>,
 ) -> Result<Candidates> {
     if !policy.ambiguity_m.is_finite()
-        || !(0.0..=50.0).contains(&policy.ambiguity_m)
+        || !(0.0..=REACH_M).contains(&policy.ambiguity_m)
         || policy.max_candidates == 0
         || policy.max_candidates > 16
     {

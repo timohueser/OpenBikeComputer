@@ -83,12 +83,18 @@ describe('route stats', () => {
         [[40, 130], [255, 255], [35, 110]],
     ]);
 
-    it('gives snowed-in km and the median first clear day in spring', () => {
+    it('gives the km under snow and the median first clear day in spring', () => {
         const stats = snowStats(route, [0, 1, 3], '2026-05-01', 'light');
-        expect(stats.headline).toBe('1.5 km snowed in on 1 May');
+        expect(stats.headline).toBe('1.5 km under snow in all 2 years on 1 May');
         expect(stats.detail).toBe('Clear from 10 Jun · 21 May – 10 Jun');
         expect(stats.year.label).toBe('Whole route snow-free on 1 May: 0 of 2 years');
         expect(stats.year.grid.rows[0].cells[dateColumn('2026-07-01')]).toBe(FREE);
+    });
+
+    it('names the share of years of the Snow class', () => {
+        const snowy: [number, number][] = [[30, 120], [30, 120]], clear: [number, number][] = [[253, 253], [253, 253]];
+        const six = planar([snowy, snowy, snowy, snowy, snowy, clear]);
+        expect(snowStats(six, [0, 2], '2026-03-01', 'light').headline).toBe('2.0 km under snow in most years (5–6 of 6) on 1 Mar');
     });
 
     it('gives the next change after the date', () => {
@@ -96,6 +102,14 @@ describe('route stats', () => {
         expect(detail('2026-01-21')).toBe('Clear from 10 Jun · 21 May – 10 Jun');
         expect(detail('2026-07-15')).toBe('Clear until 9 Nov · 20 Oct – 9 Nov');
         expect(detail('2025-10-20')).toBe('Clear until 9 Nov · 20 Oct – 9 Nov');
+    });
+
+    it('counts the seasons with snow on the route when no part is in the Snow class', () => {
+        // Snow from 30 Oct to 20 Mar in one of three seasons: never the "Snow" class.
+        const sometimes = planar([[[30, 100]], [[253, 253]], [[253, 253]]]);
+        const headline = (date: string) => snowStats(sometimes, [0], date, 'light').headline;
+        expect(headline('2026-01-10')).toBe('Snow on parts of the route in 1 of 3 years on 10 Jan');
+        expect(headline('2026-05-01')).toBe('Whole route snow-free in all 3 years on 1 May');
     });
 
     it('gives no dates for seasons without snow', () => {
@@ -110,15 +124,16 @@ describe('route stats', () => {
 });
 
 describe('season grid', () => {
-    it('shows one row per season from September to August, newest last', () => {
-        const { headline, grid } = snowGrid(planar([[[30, 120]], [[255, 255]]]), 0, 2020, '2021-03-01', 'light');
+    it('shows one row per calendar year, newest last', () => {
+        // Seasons 2020/21 (snow 21 Oct – 1 Mar) and 2021/22 (no data).
+        const { headline, grid } = snowGrid(planar([[[25, 90]], [[255, 255]]]), 0, 2020, '2021-03-01', 'light');
         expect(headline).toBe('Snow on 1 Mar in 1 of 1 year');
-        expect(grid.seasonal).toBe(true);
-        expect(grid.rows.map(row => row.label)).toEqual(['2020/21', '2021/22']);
-        const column = (date: string) => seasonDay(date).index;
-        expect(grid.marker).toBe(column('2021-03-01'));
-        const [first, last] = grid.rows.map(row => row.cells);
-        expect([first[0], first[column('2020-10-20')], first[column('2020-11-10')], first[column('2021-01-01')], first[column('2021-07-01')]]).toEqual([0, 0, 1, 1, 0]);
-        expect([last[0], last[182]]).toEqual([2, 2]);
+        expect(grid.rows.map(row => row.label)).toEqual(['2020', '2021', '2022']);
+        expect(grid.marker).toBe(dateColumn('2021-03-01'));
+        const at = (row: number, date: string) => grid.rows[row].cells[dateColumn(date)];
+        // 2020 starts with the archive in September; its winter runs on into the 2021 row.
+        expect([at(0, '2020-01-15'), at(0, '2020-09-15'), at(0, '2020-12-15')]).toEqual([2, 0, 1]);
+        expect([at(1, '2021-01-15'), at(1, '2021-04-15'), at(1, '2021-10-15')]).toEqual([1, 0, 2]);
+        expect([at(2, '2022-01-15'), at(2, '2022-12-15')]).toEqual([2, 2]);
     });
 });

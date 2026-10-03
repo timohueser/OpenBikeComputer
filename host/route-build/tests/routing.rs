@@ -1,7 +1,7 @@
 use route_engine::{
     model::{Graph, Pace, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH},
     package::{digest, Package, Source},
-    snap::{Candidate, Policy},
+    snap::{Candidate, Policy, REACH_M},
     Control, Error, Request, Route, Router,
 };
 use std::{
@@ -554,6 +554,44 @@ fn via_direction_pace_and_failure_states_are_explicit() {
 }
 
 #[test]
+fn a_point_without_a_road_nearby_attaches_to_the_nearest_road_within_reach() {
+    // A short road that no other road joins, 333 m from the far point.
+    let mut graph = fixture();
+    let first = graph.points.len() as u32;
+    graph.points.extend([14_000, 16_000].map(|lon| Point { lat: -3_000, lon, elevation: NO_ELEVATION }));
+    for (from, to) in [(first, first + 1), (first + 1, first)] {
+        let shape = vec![graph.points[from as usize], graph.points[to as usize]];
+        let road = Road {
+            from,
+            to,
+            reversed: from > to,
+            length_m: shape[0].distance(shape[1]).round() as u32,
+            shape,
+            ..graph.roads[0].clone()
+        };
+        graph.roads.push(road);
+    }
+    let (source, manifest) = package(&graph);
+    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let mut request = Request {
+        points: vec![[0.001, 0.0], [0.015, -0.006]],
+        profile: "touring".into(),
+        pace: Pace::default(),
+        alternatives: false,
+        alternatives_only: false,
+        turnarounds: vec![],
+        start_position: None,
+        end_position: None,
+    };
+    let route = router.route(&request, &Control::default()).unwrap();
+    let end = route.attachments.last().unwrap();
+    assert!((Policy::default().radius_m..=REACH_M).contains(&end.snap_distance_m));
+    assert_eq!((end.projected.lat, end.projected.lon), (0, 15_000));
+    request.points[1] = [0.015, -0.012];
+    assert!(matches!(router.route(&request, &Control::default()), Err(Error::NoSnap(1))));
+}
+
+#[test]
 fn a_shape_keeps_direction_and_only_an_explicit_visit_can_reverse() {
     let mut graph = fixture();
     graph.roads.retain(|r| (r.from == 0 && r.to == 1) || (r.from == 1 && r.to == 0));
@@ -962,6 +1000,7 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
                         },
                         FOOT | PUSH,
                         "forward",
+                        true,
                     )
                 } else {
                     BIKE | FOOT | PUSH
@@ -995,7 +1034,7 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
 }
 
 #[test]
-fn a_route_reports_a_seasonal_closure_only_for_the_mode_it_uses() {
+fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
     let points: Vec<_> = (0..4).map(|i| Point { lon: i * 1000, lat: 0, elevation: 0.0 }).collect();
     let roads = (0..3u32)
         .flat_map(|i| [(i, i + 1), (i + 1, i)])
@@ -1020,7 +1059,8 @@ fn a_route_reports_a_seasonal_closure_only_for_the_mode_it_uses() {
     let node_ids = (0..4).collect();
     let mut graph = Graph { points, roads, node_ids, node_access: vec![BIKE | FOOT | PUSH; 4], ..Graph::default() };
     for way in 0..3 {
-        let closures = [("bicycle:conditional", "no @ (Nov-May)"), ("foot:conditional", "no @ (Mar 1-Jul 31)")];
+        let closures =
+            [("access", "permit"), ("bicycle:conditional", "no @ (Nov-May)"), ("foot:conditional", "no @ (wet)")];
         let tags = std::iter::once(("highway", "secondary")).chain(if way == 1 { closures.to_vec() } else { vec![] });
         let tags = tags.map(|(key, value)| (key.to_owned(), value.to_owned())).collect();
         graph.osm.ways.insert(way, route_engine::osm::Way { id: way, nodes: vec![way, way + 1], tags });
@@ -1037,11 +1077,15 @@ fn a_route_reports_a_seasonal_closure_only_for_the_mode_it_uses() {
         start_position: None,
         end_position: None,
     };
+    use route_engine::closures::{Closure, Kind};
+    let closure = |kind, condition: &str| Closure { kind, condition: condition.into() };
+    let permit = closure(Kind::Permit, "permit");
     let route = router.route(&request, &Control::default()).unwrap();
-    assert_eq!(route.closures, vec![None, Some("Nov-May".into()), None]);
+    assert_eq!(route.closures, vec![None, Some(vec![permit.clone(), closure(Kind::Seasonal, "Nov-May")]), None]);
     request.profile = "hiking".into();
     let route = router.route(&request, &Control::default()).unwrap();
-    assert_eq!(route.closures, vec![None, Some("Mar 1-Jul 31".into()), None]);
+    let walking = Some(vec![permit, closure(Kind::Conditional, "wet")]);
+    assert_eq!(route.closures, vec![None, walking.clone(), None]);
     // An extraction renumbers its roads and keeps their closures.
     let (source, bytes) = package(&graph);
     let mut objects = HashMap::new();
@@ -1061,7 +1105,7 @@ fn a_route_reports_a_seasonal_closure_only_for_the_mode_it_uses() {
     let mut router = Router::new(package, 768 * 1024 * 1024);
     request.points = vec![[0.0016, 0.0], [0.0024, 0.0]];
     let route = router.route(&request, &Control::default()).unwrap();
-    assert_eq!(route.closures, vec![Some("Mar 1-Jul 31".into()), None]);
+    assert_eq!(route.closures, vec![walking, None]);
 }
 
 #[test]
