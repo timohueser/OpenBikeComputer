@@ -71,7 +71,12 @@ public actor LocalFirstPlanner: PlannerDataSource {
         for map in try await installed() where coversSearch(map, query) {
             do {
                 let source = try await source(map), local = try await source.release()
-                return try await source.search(query, release: local)
+                var bounded = query
+                if query.source != nil, let view = query.view {
+                    bounded.view = [max(view[0], map.bounds[0]), max(view[1], map.bounds[1]),
+                                    min(view[2], map.bounds[2]), min(view[3], map.bounds[3])]
+                }
+                return try await source.search(bounded, release: local)
             } catch { try cancellation(error) }
         }
         do { return try await online.search(query, release: remoteRelease(release)) }
@@ -107,6 +112,12 @@ public actor LocalFirstPlanner: PlannerDataSource {
     private func area(_ box: [Double]) -> Double { (box[2] - box[0]) * (box[3] - box[1]) }
     private func coversSearch(_ map: OfflineMap, _ query: PlannerSearchQuery) -> Bool {
         let view = query.view ?? map.bounds
+        if query.source != nil {
+            guard OfflineMap.valid(view) else { return false }
+            // Exact-source requests use the viewport centre as the selected POI's anchor.
+            return covers(map.bounds, Coordinate(latitude: (view[1] + view[3]) / 2,
+                                                 longitude: (view[0] + view[2]) / 2))
+        }
         guard map.contains(view), query.route.allSatisfy({ covers(map.bounds, $0) }) else { return false }
         guard !query.kinds.isEmpty else { return true }
         let box: [Double], radius: Double
