@@ -49,6 +49,9 @@ final class PlannerRouteFinder {
     private var records: [Int: CatalogRecord] = [:]
     @ObservationIgnored private var lines: [Int: [Coordinate]] = [:]
     private var serial = 0
+    @ObservationIgnored private let makeCatalog: (PlannerRelease) -> RouteCatalog?
+
+    init(catalog: @escaping (PlannerRelease) -> RouteCatalog? = { RouteCatalog(release: $0) }) { makeCatalog = catalog }
 
     /// Whether the release has a route catalog.
     var available: Bool { catalog != nil }
@@ -58,7 +61,7 @@ final class PlannerRouteFinder {
     func use(_ release: PlannerRelease?) {
         guard let release else { catalog = nil; return }
         guard catalog?.release != release.id else { return }
-        catalog = RouteCatalog(release: release).map { (release.id, $0) }
+        catalog = makeCatalog(release).map { (release.id, $0) }
         cells = [:]; records = [:]; lines = [:]; matches = []; detail = nil; status = .idle
     }
 
@@ -131,7 +134,10 @@ final class PlannerRouteFinder {
 
     var plan: PlanState {
         guard let detail else { return .invalid }
-        guard detail.route.stages != nil else { return detail.route.plan.map(PlanState.ready) ?? .invalid }
+        guard detail.route.stages != nil else {
+            guard let plan = detail.route.plan, plan.requestPoints(loop: detail.route.loop).count <= RoutePlan.maxPoints else { return .invalid }
+            return .ready(plan)
+        }
         if detail.failed { return .failed }
         guard let stages = detail.stages else { return .loading }
         let plans = stages.compactMap(\.plan)
@@ -142,8 +148,7 @@ final class PlannerRouteFinder {
     /// Routes the plan of the detail once, with the request that "Plan this route" makes.
     func routePreview(service: any PlannerDataSource, release: PlannerRelease, activity: RouteActivity) async {
         guard case .ready(let plan) = plan, let route = detail?.route, preview?.plan != plan else { return }
-        var points = plan.points
-        if route.loop && points.last != points.first { points.append(points[0]) }
+        let points = plan.requestPoints(loop: route.loop)
         let turnarounds = plan.turnarounds.filter { $0 > 0 && $0 < points.count - 1 }
         guard let path = try? await service.route(points: points, turnarounds: turnarounds, activity: activity, preference: .balanced,
                                                   release: release), self.plan == .ready(plan) else { return }

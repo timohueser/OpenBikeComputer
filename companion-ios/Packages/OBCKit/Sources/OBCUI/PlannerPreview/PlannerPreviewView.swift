@@ -74,7 +74,7 @@ public struct PlannerPreviewView: View {
 
     public var body: some View {
         GeometryReader { geometry in
-            PlannerPreviewMap(coordinates: model.geometry, pins: routesOpen ? routePins : pins,
+            PlannerPreviewMap(coordinates: model.geometry, pins: routesOpen ? finder.pins : pins,
                               selectedID: panel == .place ? editingPointID ?? selectedPlace?.id
                                 : panel == .route ? finder.detail.map { "route-\($0.route.id)" } : nil,
                               cursor: cursor, bottomInset: sheetHeight + geometry.safeAreaInsets.bottom,
@@ -85,7 +85,8 @@ public struct PlannerPreviewView: View {
                               release: model.release, source: model.service,
                               hiddenCategories: hiddenCategories, highlightedCategories: highlightedCategories,
                               onPlace: selectResult, onNetworkStatus: { networkStatus = $0 },
-                              strokes: routesOpen ? routeStrokes : nil, focus: routesOpen ? routesFocus : nil, namer: namer)
+                              strokes: routesOpen ? finder.strokes(plan: model.geometry) : nil, focus: routesOpen ? finder.focus : nil,
+                              namer: namer, onIdle: nameRouteEnds)
                 .ignoresSafeArea(edges: .bottom)
                 .overlay(alignment: .topTrailing) { if !layersShown { mapTools.padding(12) } }
                 .overlay(alignment: .topLeading) {
@@ -147,7 +148,7 @@ public struct PlannerPreviewView: View {
                                                  onRequestChange: { queryRequest = $0 },
                                                  isInMapView: isInMapView)
                                 .withViewBounds(searchBounds)
-                                .withRoutes(finder.available ? (routesSubtitle, { searchRoutesPlace = $0; searchShown = false }) : nil)
+                                .withRoutes(finder.available ? (finder.subtitle(activity: model.activity), { searchRoutesPlace = $0; searchShown = false }) : nil)
                         }
                         .fullScreenCover(isPresented: $filtersShown) {
                             PlannerRouteFiltersPage(finder: finder, activity: model.activity) { filtersShown = false }
@@ -214,11 +215,7 @@ public struct PlannerPreviewView: View {
             guard panel == .route, let release = model.release else { return }
             routeEnds = (nil, nil)
             await finder.routePreview(service: model.service, release: release, activity: model.activity)
-            // The places near the route load once the map has moved to it.
-            guard (try? await Task.sleep(for: .seconds(1.5))) != nil else { return }
-            if case .ready(let plan) = finder.plan, let first = plan.points.first, let last = plan.points.last {
-                routeEnds = (namer.name(near: first), namer.name(near: last))
-            }
+            nameRouteEnds()
         }
         .onChange(of: routesFit) { if routesOpen { fraction = nil; fitRevision += 1 } }
         .task(id: network) {
@@ -307,7 +304,7 @@ public struct PlannerPreviewView: View {
                     }
                     if let replaced, replaced.depth == model.undoDepth {
                         HStack {
-                            Text("“\(replaced.title)” is replaced.").font(.subheadline).foregroundStyle(OBCTheme.secondary).lineLimit(2)
+                            Text("Replaced “\(replaced.title)”.").font(.subheadline).foregroundStyle(OBCTheme.secondary).lineLimit(2)
                             Spacer(minLength: 8)
                             Button("Undo") { model.undo(); self.replaced = nil }.fontWeight(.semibold).frame(minHeight: 44)
                                 .accessibilityIdentifier("planner.routes.undo")
@@ -782,16 +779,18 @@ public struct PlannerPreviewView: View {
     private var routesFit: String {
         "\(String(describing: finder.start?.coordinate)) \(finder.filters.radiusKm) \(finder.detail?.route.id ?? 0) \(routesOpen)"
     }
-    private var routesSubtitle: String {
-        let shape = switch finder.filters.shape { case .loop: "loops"; case .oneWay: "routes"; case .any: "loops and routes" }
-        return "\(model.activity.name) · \(shape) within \(Int(finder.filters.radiusKm)) km"
-    }
 
     private func openRoutes(at coordinate: Coordinate, name: String?) {
         finder.use(model.release)
         moveRoutesStart(coordinate, name: name)
         selectedPlace = nil; editingPointID = nil; results = nil; intent = .general
         drawerPosition = .open; fitRevision += 1
+    }
+
+    /// The start and finish of the detail, named once the map has settled on the route and loaded its places.
+    private func nameRouteEnds() {
+        guard panel == .route, case .ready(let plan) = finder.plan, let first = plan.points.first, let last = plan.points.last else { return }
+        routeEnds = (namer.name(near: first), namer.name(near: last))
     }
 
     /// A map tap moves the start; the nearest place names a map point.
@@ -802,54 +801,13 @@ public struct PlannerPreviewView: View {
 
     /// Replaces the plan with the route from its own start. Undo brings the old plan back.
     private func planSignedRoute(_ route: CatalogRecord, _ plan: RoutePlan) {
-        let old = model.hasRoute ? model.routeTitle : nil
+        let old = model.hasRoute ? model.routeTitle : nil, depth = model.undoDepth
         model.planSignedRoute(plan, loop: route.loop, name: route.title,
                               startName: routeEnds.start ?? plan.points.first.flatMap(namer.name(near:)),
                               finishName: routeEnds.finish ?? plan.points.last.flatMap(namer.name(near:)))
-        replaced = old.map { ($0, model.undoDepth) }
+        // The same route planned again is no new undo step.
+        if model.undoDepth > depth { replaced = old.map { ($0, model.undoDepth) } }
         returnToPlanning(); fitRevision += 1
-    }
-
-    private static let mutedPlan = OBCTheme.amber.opacity(0.55), circleInk = OBCTheme.ink.opacity(0.7)
-
-    /// The muted plan, the search circle, the listed routes in their network colours, and the selected route in magenta.
-    private var routeStrokes: [MapStroke] {
-        var strokes = [MapStroke(coordinates: model.geometry, color: Self.mutedPlan, width: 3, cased: false)]
-        if let start = finder.start {
-            strokes.append(MapStroke(coordinates: Self.circle(start.coordinate, km: finder.filters.radiusKm),
-                                     color: Self.circleInk, width: 1, cased: false))
-        }
-        for match in finder.matches.prefix(finder.shown) {
-            let color = PlannerPreviewNetworkStyle.lines[min(3, max(0, match.route.rank))]
-            strokes.append(MapStroke(coordinates: finder.line(match.route), color: color, width: 3, casingColor: OBCTheme.surface))
-        }
-        if let detail = finder.detail {
-            strokes.append(MapStroke(coordinates: finder.line(detail.route), color: OBCTheme.route, width: 4.5, casingColor: OBCTheme.surface))
-        }
-        return strokes
-    }
-
-    private var routesFocus: [Coordinate] {
-        if let detail = finder.detail, case let line = finder.line(detail.route), !line.isEmpty { return line }
-        return finder.start.map { Self.circle($0.coordinate, km: finder.filters.radiusKm) } ?? []
-    }
-
-    /// Numbered starts for the listed routes and dots for the other matches.
-    private var routePins: [PlannerPreviewMapPin] {
-        finder.matches.enumerated().compactMap { index, match in
-            match.route.start.map {
-                PlannerPreviewMapPin(id: "route-\(match.route.id)", title: match.route.title, coordinate: $0,
-                                     kind: .route(number: index < finder.shown ? index + 1 : nil, rank: match.route.rank))
-            }
-        }
-    }
-
-    private static func circle(_ center: Coordinate, km: Double) -> [Coordinate] {
-        let dLat = km / 111.32, dLon = dLat / cos(center.latitude * .pi / 180)
-        return (0...96).map { i in
-            Coordinate(latitude: center.latitude + dLat * sin(Double(i) / 48 * .pi),
-                       longitude: center.longitude + dLon * cos(Double(i) / 48 * .pi))
-        }
     }
 
     private var pins: [PlannerPreviewMapPin] {
