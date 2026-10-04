@@ -653,7 +653,7 @@
         await libraryAction(async () => {
             const planned = roads ? await planOnRoads(lines, line => requestShape(line, profileId(trip))) : { lines, failed: [] };
             const next = importedTrip(trip, planned.lines);
-            next.points = next.points.map(p => p.kind === 'via' ? p : { ...p, label: map?.placeName(p.coordinate) ?? p.label });
+            next.points = next.points.map(p => p.kind === 'via' || p.kind === 'marker' ? p : { ...p, label: map?.placeName(p.coordinate) ?? p.label });
             await lastSave;
             const saved = await library.save(makePlan(next, lines[0].name));
             await library.activate(saved.id);
