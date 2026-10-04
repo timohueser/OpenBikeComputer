@@ -66,11 +66,15 @@ test('exact names and typed chip edits bypass the model, sentences invoke it',as
   assert.equal(text,'reverse the route');assert.equal(parsed.request.type,'reverse');
   assert.equal(parsed.type,'unresolved');assert.match(parsed.note,/route first/);
 });
-test('out-of-domain and unavailable-model results stay visible and cannot edit the plan',async()=>{
+test('out-of-domain and unavailable-model results stay visible and cannot edit the plan',async t=>{
   const out=await answerQuery(db,{...input,q:'write me a poem'}, {async parse(){return {request:{type:'none',ignored:['poem']},elapsed:1};}});
   assert.equal(out.type,'places');assert.match(out.notice,/not understood/);assert.deepEqual(out.request.ignored,['poem']);
   const offline=await answerQuery(db,{...input,q:'show water after day two'}, {async parse(){throw new Error('Runtime stopped.');}});
   assert.match(offline.notice,/Runtime stopped/);assert.equal(offline.canRetry,true);assert.equal(offline.type,'places');
+  const log=t.mock.method(console,'error',()=>{});
+  const drifted=await answerQuery(db,{...input,q:'show water after day two'}, {async parse(){return {request:{type:'places',what:['moon_base']},elapsed:1};}});
+  assert.match(drifted.notice,/unsupported request/);assert.equal(drifted.canRetry,false);assert.equal(drifted.type,'places');
+  assert.equal(log.mock.callCount(),1);
 });
 test('the API accepts every archived decoder request in all four evaluation languages',()=>{
   for(const language of ['en','de','fr','it']) {

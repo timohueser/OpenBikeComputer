@@ -33,3 +33,25 @@ test('a stopped runtime fails its request and reports one failure', async (t) =>
   await assert.rejects(parser.parse('hotels'), /stopped/);
   assert.deepEqual(failures, ['The query runtime stopped.']);
 });
+
+test('closing fails pending and later requests without a failure report', async (t) => {
+  const {parser, failures} = await start(t, 'process.stdin.resume();');
+  const waiting = parser.parse('hotels');
+  parser.close();
+  await assert.rejects(waiting, /stopped/);
+  await assert.rejects(parser.parse('hotels'), /stopped/);
+  assert.equal(parser.status().ready, false);
+  assert.deepEqual(failures, []);
+});
+
+test('a reply that waits while the thread is busy beats the deadline', async (t) => {
+  const {parser, failures} = await start(t,
+    'require("readline").createInterface({input:process.stdin}).on("line",l=>console.log(JSON.stringify({id:JSON.parse(l).id,result:"ok"})));');
+  t.mock.timers.enable({apis:['setTimeout']});
+  const reply = parser.parse('hotels');
+  // Block the thread until the reply waits in the pipe, then pass the deadline.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
+  t.mock.timers.tick(10_000);
+  assert.equal(await reply, 'ok');
+  assert.deepEqual(failures, []);
+});

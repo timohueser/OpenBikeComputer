@@ -153,47 +153,46 @@ function candidates(db, queries) {
   return [...new Map(rows.map(p=>[p.id,p])).values()];
 }
 
-function textCandidates(db, q, view, onlyPlaces=false) {
+function textCandidates(db, q, view) {
   let exp=expression(q);
   if(!exp) return [];
   if(!norm(q).includes(' '))exp='name : '+exp;
   if(streetNorm(q)!==norm(q))exp=`(${exp}) OR (${expression(streetNorm(q))})`;
-  const restriction=onlyPlaces?" AND p.kind IN ('city','town','village','hamlet','locality','district','state','suburb')":'';
-  const from=`FROM terms JOIN places p ON p.id=terms.rowid WHERE terms MATCH ?${restriction}`;
+  const from='FROM terms JOIN places p ON p.id=terms.rowid WHERE terms MATCH ?';
   const keys=[...new Set([...spans(q),...spans(streetNorm(q))].map(p=>p.term))];
   return candidates(db,[
-    {sql:`SELECT p.* FROM names n JOIN places p ON p.id=n.place_id WHERE n.term=?${restriction}
+    {sql:`SELECT p.* FROM names n JOIN places p ON p.id=n.place_id WHERE n.term=?
       ORDER BY ${candidateOrder(view)} LIMIT 400`,params:[norm(q)]},
-    {sql:`SELECT DISTINCT p.* FROM names n JOIN places p ON p.id=n.place_id WHERE n.term>=? AND n.term<?${restriction}
+    {sql:`SELECT DISTINCT p.* FROM names n JOIN places p ON p.id=n.place_id WHERE n.term>=? AND n.term<?
       ORDER BY ${candidateOrder(view)} LIMIT 100`,params:[norm(q),norm(q)+'\uffff']},
     // Both branches precede ranking: a local candidate survives a common global name.
     {sql:`SELECT p.* ${from} ORDER BY rank, ${candidateOrder(view)} LIMIT 400`,params:[exp]},
     {sql:`SELECT p.* ${from} AND ${pointBoundsSQL} ORDER BY ${candidateOrder(view)} LIMIT 800`,params:[exp,...view],options:{bounds:view}},
-    ...compactQueries(keys,compact(q),view,restriction),
+    ...compactQueries(keys,compact(q),view),
   ]);
 }
 
-function compactQueries(keys,prefix,view,restriction='') {
-  const joined=`FROM compact_names n JOIN places p ON p.id=n.place_id WHERE n.term IN (${keys.map(()=>'?').join(',')})${restriction}`;
+function compactQueries(keys,prefix,view) {
+  const joined=`FROM compact_names n JOIN places p ON p.id=n.place_id WHERE n.term IN (${keys.map(()=>'?').join(',')})`;
   // A common query fragment must not exhaust the budget for the complete name.
   return [
     ...keys.map(key=>({sql:`SELECT p.* FROM compact_names n JOIN places p ON p.id=n.place_id
-      WHERE n.term=?${restriction} ORDER BY ${candidateOrder(view)} LIMIT 400`,params:[key]})),
+      WHERE n.term=? ORDER BY ${candidateOrder(view)} LIMIT 400`,params:[key]})),
     {sql:`SELECT DISTINCT p.* ${joined} AND ${pointBoundsSQL} ORDER BY ${candidateOrder(view)} LIMIT 800`,params:[...keys,...view],options:{bounds:view}},
     {sql:`SELECT DISTINCT p.* FROM compact_names n JOIN places p ON p.id=n.place_id
-      WHERE n.term>=? AND n.term<?${restriction} ORDER BY ${candidateOrder(view)} LIMIT 100`,params:[prefix,prefix+'\uffff']},
+      WHERE n.term>=? AND n.term<? ORDER BY ${candidateOrder(view)} LIMIT 100`,params:[prefix,prefix+'\uffff']},
   ];
 }
 
-function compactCandidates(db,keys,prefix,view,restriction='') {
-  return candidates(db,compactQueries(keys,prefix,view,restriction));
+function compactCandidates(db,keys,prefix,view) {
+  return candidates(db,compactQueries(keys,prefix,view));
 }
 
-export function named(db,q,view,onlyPlaces=false) {
-  const results=textCandidates(db,q,view,onlyPlaces).map(p=>score(p,q,center(view)));
+export function named(db,q,view) {
+  const results=textCandidates(db,q,view).map(p=>score(p,q,center(view)));
   if(/[aou]e/i.test(q)) {
     const alt=norm(q).replace(/ae/g,'a').replace(/oe/g,'o').replace(/ue/g,'u');
-    results.push(...textCandidates(db,alt,view,onlyPlaces).map(p=>score(p,alt,center(view))));
+    results.push(...textCandidates(db,alt,view).map(p=>score(p,alt,center(view))));
   }
   if(!results.some(p=>p.why.match>=96)) {
     const parts=spans(q).filter(p=>editBudget(p.term));
@@ -216,8 +215,7 @@ export function named(db,q,view,onlyPlaces=false) {
       for(const c of corrections.sort((a,b)=>a.edits-b.edits).filter(c=>{
         if(seen.has(c.text))return false;seen.add(c.text);return true;
       }).slice(0,8)) {
-        const restriction=onlyPlaces?" AND p.kind IN ('city','town','village','hamlet','locality','district','state','suburb')":'';
-        results.push(...compactCandidates(db,[c.term],c.term,view,restriction).map(p=>score(p,c.text,center(view),c.edits)));
+        results.push(...compactCandidates(db,[c.term],c.term,view).map(p=>score(p,c.text,center(view),c.edits)));
       }
     }
   }
