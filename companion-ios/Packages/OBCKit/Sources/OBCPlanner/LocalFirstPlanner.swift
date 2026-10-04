@@ -67,6 +67,15 @@ public actor LocalFirstPlanner: PlannerDataSource {
         } catch { throw try fallbackError(error) }
     }
 
+    public func shape(line: [Coordinate], profile: String) async throws -> PlannedShape {
+        for map in try await installed() where line.allSatisfy({ covers(map.bounds, $0) }) {
+            do { return try await source(map).shape(line: line, profile: profile) }
+            catch { try cancellation(error) }
+        }
+        do { return try await online.shape(line: line, profile: profile) }
+        catch { throw try fallbackError(error) }
+    }
+
     public func search(_ query: PlannerSearchQuery, release: PlannerRelease) async throws -> [PlannerPlace] {
         for map in try await installed() where coversSearch(map, query) {
             do {

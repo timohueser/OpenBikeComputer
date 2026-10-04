@@ -93,6 +93,10 @@ public struct PlannerPlace: Decodable, Identifiable, Sendable {
 
 public enum PlannerFailure: Error, Equatable, Sendable, LocalizedError {
     case unavailable, invalidData, outsideRegion, noRoad, busy, offlineUnavailable
+    /// Shape only: the line has too many points or is too long.
+    case lineTooLong
+    /// Shape only: no plan of at most 64 points follows the line.
+    case lineNotReproducible
     public var errorDescription: String? {
         switch self {
         case .unavailable: "The route service is unavailable. Check your connection and try again."
@@ -101,6 +105,8 @@ public enum PlannerFailure: Error, Equatable, Sendable, LocalizedError {
         case .noRoad: "No route connects these points. Move a point to a nearby road and try again."
         case .busy: "The route service is busy. Try again in a moment."
         case .offlineUnavailable: "No usable offline map covers this request, and the online service is unavailable. Check your connection or download this area."
+        case .lineTooLong: "The line is too long to plan."
+        case .lineNotReproducible: "No route on roads follows the line."
         }
     }
 }
@@ -110,6 +116,14 @@ public protocol RoutePlanning: Sendable {
     /// `turnarounds` are interior point indices where the route turns back on purpose.
     func route(points: [Coordinate], turnarounds: [Int], activity: RouteActivity, preference: RoutePreference,
                release: PlannerRelease) async throws -> PlannedPath
+}
+
+/// The plan points of a route that follows a line: a route request through `points` with `turnarounds`
+/// follows it. The first and last points are the line ends.
+public struct PlannedShape: Equatable, Sendable {
+    public let points: [Coordinate]
+    public let turnarounds: [Int]
+    public init(points: [Coordinate], turnarounds: [Int]) { self.points = points; self.turnarounds = turnarounds }
 }
 
 public struct PlannerSearchQuery: Sendable {
@@ -135,11 +149,14 @@ public protocol PlannerDataSource: RoutePlanning {
     func overlays(bounds: [Double], zoom: Double, network: String, release: PlannerRelease) async throws -> Data
     /// The routing profiles of the release, or nil when the source does not know them.
     func profiles(release: PlannerRelease) async throws -> [String]?
+    /// The plan points of a route with `profile` that follows `line`.
+    func shape(line: [Coordinate], profile: String) async throws -> PlannedShape
 }
 
 extension PlannerDataSource {
     public var supportsOffline: Bool { false }
     public func profiles(release: PlannerRelease) async throws -> [String]? { nil }
+    public func shape(line: [Coordinate], profile: String) async throws -> PlannedShape { throw PlannerFailure.unavailable }
     public func mapRelease(bounds: [Double]?, allowNetwork: Bool = true) async throws -> PlannerRelease {
         guard allowNetwork else { throw PlannerFailure.offlineUnavailable }
         return try await release()
@@ -316,6 +333,36 @@ public actor PlannerService: PlannerDataSource {
         }
     }
 
+    /// The service's caps on a shape line, after the simplification.
+    static let shapeMaxPoints = 2_000, shapeMaxMeters = 200_000.0
+
+    /// One request. The line is simplified within 10 m and sent with 6 decimals, so a 200 km line fits the body limit.
+    /// A line over the service's caps fails without a request.
+    public func shape(line: [Coordinate], profile: String) async throws -> PlannedShape {
+        let simplified = RideMapLine(id: RideID("planner-shape"), pieces: [line]).simplified(toleranceMeters: 10).pieces.first ?? []
+        guard simplified.count > 1 else { throw PlannerFailure.invalidData }
+        guard simplified.count <= Self.shapeMaxPoints,
+              zip(simplified, simplified.dropFirst()).reduce(0, { $0 + $1.0.distance(to: $1.1) }) <= Self.shapeMaxMeters
+        else { throw PlannerFailure.lineTooLong }
+        let release = try await release()
+        struct Query: Encodable { let line: [[Double]]; let profile: String }
+        func rounded(_ value: Double) -> Double { (value * 1e6).rounded() / 1e6 }
+        var request = URLRequest(url: release.routing.appending(path: "v1/shape"))
+        request.httpMethod = "POST"
+        // The service stops a shape after 30 s.
+        request.timeoutInterval = 40
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(Query(line: simplified.map { [rounded($0.longitude), rounded($0.latitude)] }, profile: profile))
+        struct Answer: Decodable { let points: [[Double]]; let turnarounds: [Int] }
+        let answer = try Self.decode(Answer.self, data: await Self.send(request, transport: transport))
+        guard (2...64).contains(answer.points.count),
+              answer.points.allSatisfy({ $0.count == 2 && (-180...180).contains($0[0]) && (-90...90).contains($0[1]) }),
+              answer.turnarounds.allSatisfy({ (1..<answer.points.count - 1).contains($0) })
+        else { throw PlannerFailure.invalidData }
+        try Task.checkCancellation()
+        return PlannedShape(points: answer.points.map { Coordinate(latitude: $0[1], longitude: $0[0]) }, turnarounds: answer.turnarounds)
+    }
+
     public func search(_ query: PlannerSearchQuery, release: PlannerRelease) async throws -> [PlannerPlace] {
         if query.kinds.count > 3 {
             var results: [PlannerPlace] = [], ids: Set<String> = []
@@ -434,6 +481,8 @@ public actor PlannerService: PlannerDataSource {
                 case "no_snap", "no_path": throw PlannerFailure.noRoad
                 case "missing_region": throw PlannerFailure.outsideRegion
                 case "busy", "limit", "cancelled": throw PlannerFailure.busy
+                case "line_too_long": throw PlannerFailure.lineTooLong
+                case "line_not_reproducible": throw PlannerFailure.lineNotReproducible
                 default: throw PlannerFailure.unavailable
                 }
             }

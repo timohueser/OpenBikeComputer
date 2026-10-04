@@ -28,10 +28,10 @@ import OBCTransport
         lastBikeType.value = .gravel
         let flow = ImportFlowModel(
             decode: { [route] _, _ in route }, library: InMemoryLibraryStore(),
-            isBonded: { true }, lastBikeType: lastBikeType)
+            lastBikeType: lastBikeType)
 
-        flow.open(data: Data("<gpx/>".utf8), fileName: "col.gpx")
-        let pending = try #require(flow.pendingImport)
+        flow.open(files: [(Data("<gpx/>".utf8), "col.gpx")])
+        let pending = try #require(flow.pendingChoice?.first)
         let landing = RouteDetailModel(
             transport: MockTransport(control: MockControl(scenario: .happyPath)),
             dressing: .imported(pending.route, fileName: pending.fileName), bikeType: pending.bikeType)

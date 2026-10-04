@@ -1071,21 +1071,22 @@ public final class MainScreenModel {
 
     /// The one join path: route files in ride order become one trip, one day per file, with
     /// the day ends on the file boundaries. A file shorter than a day adds nothing. Nil when no
-    /// file is a day.
+    /// file is a day. `plan` is the plan of the files that are days.
     @discardableResult
     public func createTrip(
         name: String, files: [[RoutePoint]], dayNames: [String?] = [], waypoints: [[Waypoint]] = [],
-        bikeType: BikeType? = nil
+        bikeType: BikeType? = nil, plan: PlannerPlan? = nil
     ) -> TripID? {
         let days = files.indices.filter { Trip.isDay(files[$0]) }
         guard !days.isEmpty else { return nil }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trip = Trip.joining(
+        var trip = Trip.joining(
             days.map { files[$0] }, names: days.map { $0 < dayNames.count ? dayNames[$0] : nil },
             waypoints: days.map { $0 < waypoints.count ? waypoints[$0] : [] },
             id: TripID(UUID().uuidString.lowercased()),
             name: trimmed.isEmpty ? "New trip" : trimmed,
             bikeType: bikeType ?? lastBikeType.value, now: now())
+        trip.plan = plan
         library.saveTrip(trip)
         reloadTrips()
         nameDayEnds(trip.id)

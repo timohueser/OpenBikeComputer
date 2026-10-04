@@ -26,13 +26,17 @@ actor RouteProvider {
         handle = RouterHandle(opened)
     }
 
-    func route(_ request: Data) throws -> (status: Int, body: Data) {
+    func route(_ request: Data) throws -> (status: Int, body: Data) { try send(request, to: routerRequest) }
+
+    func shape(_ request: Data) throws -> (status: Int, body: Data) { try send(request, to: routerShape) }
+
+    private func send(_ request: Data, to call: (OpaquePointer, UnsafePointer<UInt8>, Int, UnsafeMutablePointer<UInt16>) -> UnsafeMutablePointer<CChar>?) throws -> (status: Int, body: Data) {
         try Task.checkCancellation()
         var status: UInt16 = 500
         let payload = request.isEmpty ? Data([0]) : request
         let response = payload.withUnsafeBytes { bytes in
             guard let base = bytes.bindMemory(to: UInt8.self).baseAddress else { return nil as UnsafeMutablePointer<CChar>? }
-            return routerRequest(handle.pointer, base, request.count, &status)
+            return call(handle.pointer, base, request.count, &status)
         }
         return try consume(response, status: status)
     }

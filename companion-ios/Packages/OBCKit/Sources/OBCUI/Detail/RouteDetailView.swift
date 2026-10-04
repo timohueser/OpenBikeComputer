@@ -15,10 +15,6 @@ public struct RouteDetailView: View {
     /// sheet above the rebuild, because a rebuild closes a sheet presented from inside it.
     private let onRenameTap: (() -> Void)?
     private let onBikeTypeChange: ((BikeType) -> Void)?
-    private let noDevicePaired: Bool
-    private let onPair: (() -> Void)?
-    /// The imported dressing's save choices, directly under the title.
-    private let importAccessory: AnyView?
     /// A tracked ride's photos.
     private let photos: RidePhotosModel?
     /// A tracked ride's day note.
@@ -46,9 +42,6 @@ public struct RouteDetailView: View {
         onRename: ((String) -> Void)? = nil,
         onRenameTap: (() -> Void)? = nil,
         onBikeTypeChange: ((BikeType) -> Void)? = nil,
-        noDevicePaired: Bool = false,
-        onPair: (() -> Void)? = nil,
-        importAccessory: AnyView? = nil,
         photos: RidePhotosModel? = nil,
         dayNote: DayNoteModel? = nil,
         quietRows: AnyView? = nil
@@ -59,9 +52,6 @@ public struct RouteDetailView: View {
         self.onRename = onRename
         self.onRenameTap = onRenameTap
         self.onBikeTypeChange = onBikeTypeChange
-        self.noDevicePaired = noDevicePaired
-        self.onPair = onPair
-        self.importAccessory = importAccessory
         self.photos = photos
         self.dayNote = dayNote
         self.quietRows = quietRows
@@ -88,10 +78,7 @@ public struct RouteDetailView: View {
                         onSend: onUpload
                     )
                     .padding(.top, 14)
-                case .imported:
-                    importAccessory
-                        .padding(.top, 14)
-                case .tripDay, .tracked:
+                case .imported, .tripDay, .tracked:
                     EmptyView()
                 }
 
@@ -151,7 +138,7 @@ public struct RouteDetailView: View {
                 if !model.waypoints.isEmpty {
                     OBCDisclosureRow(
                         systemImage: "mappin.and.ellipse",
-                        label: waypointsLabel,
+                        label: "Waypoints",
                         value: "\(model.waypoints.count)",
                         isExpanded: $waypointsExpanded,
                         headerAccessibilityID: "detail.waypoints"
@@ -165,7 +152,6 @@ public struct RouteDetailView: View {
                 if case .tracked = model.dressing {
                     bikeTypeRow
                 }
-                actions
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 24)
@@ -339,81 +325,9 @@ public struct RouteDetailView: View {
         .padding(.top, 12)
     }
 
-    @ViewBuilder
-    private var actions: some View {
-        if case .imported = model.dressing, noDevicePaired {
-            VStack(spacing: 10) {
-                OBCInlineBanner(
-                    systemImage: "antenna.radiowaves.left.and.right.slash",
-                    title: "No device paired yet.",
-                    message: "Save it now and send it after you pair."
-                )
-                .padding(.bottom, 4)
-                Button("Pair a device") { onPair?() }
-                    .buttonStyle(.obcGhost)
-                    .accessibilityIdentifier("detail.pairDevice")
-            }
-            .padding(.top, 20)
-        }
-    }
-
-    private var waypointsLabel: String {
-        if case .imported = model.dressing { return "Waypoints from file" }
-        return "Waypoints"
-    }
-
     private var renameTitle: String {
         if case .tracked = model.dressing { return "Rename ride" }
         return "Rename route"
-    }
-}
-
-/// The import landing: the detail body under Cancel and "Imported route", with the choice rows.
-/// Shown full-screen when a route file decodes.
-public struct ImportLandingView: View {
-    private let model: RouteDetailModel
-    private let deviceName: String
-    private let onCancel: () -> Void
-    private let noDevicePaired: Bool
-    private let onPair: () -> Void
-    private let importAccessory: AnyView?
-
-    public init(
-        model: RouteDetailModel,
-        deviceName: String,
-        onCancel: @escaping () -> Void = {},
-        noDevicePaired: Bool = false,
-        onPair: @escaping () -> Void = {},
-        importAccessory: AnyView? = nil
-    ) {
-        self.model = model
-        self.deviceName = deviceName
-        self.onCancel = onCancel
-        self.noDevicePaired = noDevicePaired
-        self.onPair = onPair
-        self.importAccessory = importAccessory
-    }
-
-    public var body: some View {
-        NavigationStack {
-            RouteDetailView(
-                model: model,
-                deviceName: deviceName,
-                noDevicePaired: noDevicePaired,
-                onPair: onPair,
-                importAccessory: importAccessory
-            )
-            .navigationTitle(model.landingTitle)
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: onCancel)
-                }
-            }
-        }
-        .tint(OBCTheme.tint)
     }
 }
 

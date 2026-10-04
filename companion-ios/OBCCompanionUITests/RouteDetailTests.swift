@@ -200,74 +200,38 @@ final class RouteDetailTests: XCTestCase {
         XCTAssertFalse(card.exists, "deleted ride still listed")
     }
 
-    // MARK: Import landing
+    // MARK: Import
 
-    /// The landing end to end off the real GPX decoder: source banner, unsaved tag, the points
-    /// stat, waypoints from the file, and Save landing the route in the list.
+    /// A file import off the real GPX decoder: the keep-or-plan choice, then the saved route's
+    /// detail at once, with the source line, the file's waypoints and the profile.
     @MainActor
-    func testImportSampleLandsOnE1AndSavesToPlanned() {
+    func testImportSampleKeepsTheLineAndOpensTheSavedRoute() {
         let app = launch(importSample: true)
 
-        XCTAssertTrue(app.staticTexts["Imported from Komoot"].waitForExistence(timeout: 10), "E1 source line missing")
-        XCTAssertTrue(app.staticTexts["Schwarzwald Tour · Tag 2"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.otherElements["ledger.Climb"].waitForExistence(timeout: 5), "climb row missing")
-        XCTAssertTrue(app.otherElements["ledger.Max grade"].exists, "max grade row missing")
+        let keep = app.buttons["confirm.action.0"]
+        XCTAssertTrue(keep.waitForExistence(timeout: 10), "the keep-or-plan choice is missing")
+        XCTAssertTrue(app.buttons["confirm.action.1"].exists, "Plan it on roads is missing")
+        snap(app, "import-choice")
+        keep.tap()
 
-        let waypointsRow = app.buttons["detail.waypoints"]
-        XCTAssertTrue(waypointsRow.exists, "waypoints-from-file row missing")
-        XCTAssertTrue(app.buttons["import.newRoute"].exists)
-        XCTAssertTrue(app.buttons["Cancel"].exists, "E1 must keep the Cancel escape")
-        snap(app, "E1-import-landing")
-
-        app.buttons["import.newRoute"].tap()
-        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5), "save should dismiss E1")
-        let savedRow = app.staticTexts["Schwarzwald Tour · Tag 2"]
-        XCTAssertTrue(savedRow.waitForExistence(timeout: 5), "saved route must land in the Planned list")
-        snap(app, "C1-after-import-save")
-
-        // Reopening the saved route must keep the parsed waypoints and profile: they live
-        // app-side, because the device never had this route.
-        savedRow.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["detail.screen"].firstMatch.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["detail.waypoints"].waitForExistence(timeout: 5),
-                      "saved import lost its waypoints")
-        XCTAssertTrue(app.staticTexts["ELEVATION"].exists, "saved import lost its profile")
+        XCTAssertTrue(app.staticTexts["Imported from Komoot"].waitForExistence(timeout: 10), "the source line is missing")
+        XCTAssertTrue(app.staticTexts["Schwarzwald Tour · Tag 2"].exists)
+        XCTAssertTrue(app.buttons["detail.waypoints"].exists, "the saved import lost its waypoints")
+        XCTAssertTrue(app.staticTexts["ELEVATION"].exists, "the saved import lost its profile")
+        XCTAssertTrue(app.buttons["detail.edit"].exists, "the saved route opens in the planner")
         snap(app, "E2-saved-import")
-    }
 
-    /// The pencil works on the landing itself, so the route saves under the new name with no
-    /// save-then-reopen round trip.
-    @MainActor
-    func testImportRenamesOnTheLandingAndSavesUnderTheNewName() {
-        let app = launch(importSample: true)
-
-        let rename = app.buttons["detail.rename"]
-        XCTAssertTrue(rename.waitForExistence(timeout: 10), "E1 must offer the rename pencil")
-        rename.tap()
-        let field = app.textFields["rename.field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5), "H12 rename sheet missing on E1")
-
-        // Tap past the text's right end: a centre tap lands the caret mid-name, and clearing only
-        // deletes backwards.
-        field.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)).tap()
-        field.clearText()
-        field.typeText("Schwarzwald Gravel")
-        app.buttons["rename.save"].tap()
-
-        XCTAssertTrue(app.staticTexts["Schwarzwald Gravel"].waitForExistence(timeout: 5), "E1 title kept the old name")
-        snap(app, "E1-renamed")
-
-        app.buttons["import.newRoute"].tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Schwarzwald Gravel"].waitForExistence(timeout: 5),
-                      "the renamed import must land in Planned under the new name")
+        XCTAssertTrue(app.staticTexts["Schwarzwald Tour · Tag 2"].waitForExistence(timeout: 5),
+                      "the saved route must be in the Planned list")
     }
 
-    /// Cancel discards: nothing lands in the library.
+    /// Cancel on the choice discards: nothing lands in the library.
     @MainActor
     func testImportCancelDiscards() {
         let app = launch(importSample: true)
-        let cancel = app.buttons["Cancel"]
+        let cancel = app.buttons["confirm.cancel"]
         XCTAssertTrue(cancel.waitForExistence(timeout: 10))
         cancel.tap()
 

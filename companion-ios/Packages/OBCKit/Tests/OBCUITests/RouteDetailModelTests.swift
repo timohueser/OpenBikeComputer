@@ -211,25 +211,6 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(model.distanceMeters, 9 * 1112.0, accuracy: 20)
     }
 
-    /// A file import names its source; a ride saved as a route is a new route from that ride, with
-    /// no file the rider ever picked.
-    func testTheLandingCopyFollowsTheSource() {
-        let file = RouteDetailModel(
-            transport: MockTransport(control: makeControl()),
-            dressing: .imported(importedRoute, fileName: "schwarzwald.gpx")
-        )
-        XCTAssertEqual(file.landingTitle, "Imported route")
-        XCTAssertEqual(file.subtitle, "Imported from Komoot")
-
-        let rideDate = Date(timeIntervalSince1970: 1_757_577_600)
-        let ride = RouteDetailModel(
-            transport: MockTransport(control: makeControl()),
-            dressing: .imported(importedRoute, fileName: "Schwarzwald.gpx", source: .ride(rideDate))
-        )
-        XCTAssertEqual(ride.landingTitle, "New route")
-        XCTAssertEqual(ride.subtitle, "From your ride · \(OBCFormat.rideDay(rideDate))")
-    }
-
     func testImportedMapCoordinatesAreFullResolutionNotThePreviewCap() {
         let points = (0..<1_000).map {
             RoutePoint(coordinate: Coordinate(latitude: 47.0 + 0.0001 * Double($0), longitude: 11.0))
