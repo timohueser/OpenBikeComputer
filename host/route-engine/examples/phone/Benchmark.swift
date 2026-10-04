@@ -100,7 +100,7 @@ private func run() -> String {
         code = root.appendingPathComponent(package).path.withCString { directory in
             root.appendingPathComponent("requests.json").path.withCString { requests in
                 root.appendingPathComponent("result.json").path.withCString { output in
-                    plannerBenchmark(directory, requests, output, (arguments.contains("--retained") ? 1 : 0) | (arguments.contains("--index-memory") ? 2 : 0))
+                    plannerBenchmark(directory, requests, output, arguments.contains("--retained") ? 1 : 0)
                 }
             }
         }

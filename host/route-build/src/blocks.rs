@@ -28,7 +28,7 @@ pub fn ranges(ids: impl IntoIterator<Item = u32>) -> Vec<[u32; 2]> {
 }
 
 /// Select whole roads which intersect the coverage, including crossing segments with no vertex inside it.
-pub fn roads(input: &mut Package<impl Source>, bounds: [f64; 4]) -> Result<Vec<u32>> {
+pub fn roads(input: &Package<impl Source>, bounds: [f64; 4]) -> Result<Vec<u32>> {
     let mut candidates = BTreeSet::new();
     let cell = |v: f64| ((v * 1e6).floor() as i32).div_euclid(route_engine::package::CELL);
     for lat in cell(bounds[1])..=cell(bounds[3]) {
@@ -104,7 +104,7 @@ pub fn prepare(input: &Package<impl Source>, bounds: [f64; 4], roads: &[u32]) ->
     }
     if let Some(index) = &mut data.landmarks {
         let junctions: Vec<u32> =
-            route_engine::landmarks::read_selected(input, &index.mapping, roads.iter().copied(), index.junctions - 1)?;
+            route_engine::landmarks::read(input, &index.mapping, roads.iter().copied(), index.junctions - 1)?;
         let junction_pages = pages(junctions.into_iter());
         retain(&mut index.mapping, &road_pages, &mut objects)?;
         for column in index.profiles.values_mut().flatten() {

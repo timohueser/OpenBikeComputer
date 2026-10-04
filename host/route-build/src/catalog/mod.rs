@@ -3,10 +3,10 @@
 mod assemble;
 
 use route_engine::{
-    data::RoutingData,
+    data::{RoutingData, Selection},
     directory::Directory,
     osm::{Id, Node, Relation, Tags, Way},
-    package::{Package, Source},
+    package::Source,
     shape::{self, distance, Failure, Limits, P},
     Control, Router,
 };
@@ -24,6 +24,8 @@ const ROUNDTRIP_M: f64 = 200.0;
 const DESCRIPTION_CHARS: usize = 200;
 /// The memory of all routers together; it limits the number of workers.
 const ROUTERS_MEMORY: usize = 6 << 30;
+/// The profiles a route is checked with.
+const PROFILES: [&str; 5] = ["touring", "road", "gravel", "mtb", "hiking"];
 /// The line keeps every point of the plan route within this distance.
 const LINE_TOLERANCE_M: f64 = 50.0;
 /// Router calls for the search of one route, for each profile that it checks. A search that needs
@@ -262,20 +264,17 @@ pub fn build(directory: &Path, countries: &[String]) -> Result<Option<Report>, S
     if package.manifest().osm.tables().all(|table| table.len == 0) {
         return Err("The routing package has no source OSM tables".into());
     }
-    for profile in ["touring", "road", "gravel", "mtb", "hiking"] {
+    for profile in PROFILES {
         package.metric(profile).map_err(|_| format!("The routing package lacks the {profile} profile"))?;
     }
     let relations = read!(package, relations, Relation, |_| true);
-    // A router keeps the costs of up to three profiles, so a bicycle route does not decode costs
-    // at each leg, and a search space of `SEARCH_BYTES`.
-    let costs = 3 * ["touring", "road", "gravel", "mtb", "hiking"]
-        .iter()
-        .map(|p| package.metric(p).map_or(0, |metric| metric.weights.decoded_bytes()))
-        .max()
-        .unwrap_or(0);
+    // The routers share one graph, one junction mapping and the five prepared profiles; each
+    // adds its own label blocks and a search space of `SEARCH_BYTES`.
+    let routing = Selection::whole(package);
+    let shared = routing.shared_bytes(PROFILES).map_err(|e| e.to_string())?;
     let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let workers = cpus.min(ROUTERS_MEMORY / (costs + SEARCH_BYTES)).max(1);
-    let (records, report) = catalog(&package, relations, france, workers)?;
+    let workers = cpus.min(ROUTERS_MEMORY.saturating_sub(shared) / (routing.router_bytes() + SEARCH_BYTES)).max(1);
+    let (records, report) = catalog(&routing, relations, france, workers)?;
     let partial = directory.join(format!(".{FILE}.partial"));
     let bytes = serde_json::to_vec(&json!({"format": 1, "routes": records})).map_err(|e| e.to_string())?;
     std::fs::write(&partial, bytes).map_err(|e| e.to_string())?;
@@ -284,14 +283,12 @@ pub fn build(directory: &Path, countries: &[String]) -> Result<Option<Report>, S
 }
 
 fn catalog<S: Source + Clone + Send>(
-    package: &Package<S>,
+    selection: &Selection<S>,
     relations: BTreeMap<i64, Relation>,
     france: bool,
     workers: usize,
-) -> Result<(Vec<Value>, Report), String>
-where
-    Package<S>: RoutingData + Send,
-{
+) -> Result<(Vec<Value>, Report), String> {
+    let package = selection.package();
     let mut report = Report::default();
     let mut drops = BTreeMap::<i64, Reason>::new();
     let is_route = |id: &i64| relations.get(id).is_some_and(|r| matches!(tag(&r.tags, "type"), "route" | "superroute"));
@@ -354,7 +351,7 @@ where
     let queue = Mutex::new(jobs);
     let started = std::time::Instant::now();
     let results = Mutex::new(Vec::new());
-    let mut forks: Vec<_> = (0..workers.max(1)).map(|_| package.fork()).collect();
+    let mut forks: Vec<_> = (0..workers.max(1)).map(|_| selection.fork()).collect();
     std::thread::scope(|scope| {
         for routing in forks.drain(..) {
             let (queue, results, points) = (&queue, &results, &points);

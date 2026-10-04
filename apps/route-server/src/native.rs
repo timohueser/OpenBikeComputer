@@ -3,7 +3,7 @@ pub use crate::native_overlays::{
     planner_overlays_close, planner_overlays_open, planner_overlays_open_package, planner_overlays_query,
 };
 use crate::{error_body, invalid, metadata, Engine as NativeRouter, BODY_LIMIT, ROUTE_DEADLINE, SHAPE_DEADLINE};
-use route_engine::{directory::Directory, shape::LineRequest, Control, Error, Request, Router};
+use route_engine::{data::RoutingData, shape::LineRequest, Control, Error, Request, Router};
 use serde_json::Value;
 use std::{
     ffi::{c_char, CStr, CString},
@@ -45,7 +45,7 @@ pub unsafe extern "C" fn planner_response_free(response: *mut c_char) {
 
 /// # Safety
 /// `root` is a NUL-terminated UTF-8 string. `error` points to writable pointer storage.
-/// A zero budget uses the host default, including the optional index cache.
+/// A zero budget uses the engine's default budget for the package.
 /// The returned handle must be closed once, after all of its calls finish.
 #[no_mangle]
 pub unsafe extern "C" fn planner_router_open(
@@ -66,14 +66,8 @@ pub unsafe extern "C" fn planner_router_open(
         let root = unsafe { CStr::from_ptr(root) }
             .to_str()
             .map_err(|_| Error::InvalidRequest("Routing directory must be UTF-8".into()))?;
-        let root = Path::new(root);
-        let package: Box<dyn route_engine::data::RoutingData + Send> = if root.join("blocks.json").exists() {
-            Box::new(route_engine::blocks::Files::open(root)?)
-        } else {
-            Box::new(Directory::open(root)?)
-        };
-        let budget =
-            if memory_budget_bytes == 0 { crate::default_memory_budget(package.as_ref()) } else { memory_budget_bytes };
+        let package = route_engine::open(Path::new(root))?;
+        let budget = if memory_budget_bytes == 0 { package.default_budget() } else { memory_budget_bytes };
         Ok(Router::new(package, budget))
     };
     match catch_unwind(run).unwrap_or(Err(Error::Limit)) {

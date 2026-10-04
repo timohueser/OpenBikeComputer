@@ -8,7 +8,12 @@ use axum::{
     routing::{get, post},
     Json,
 };
-use route_engine::{data::RoutingData, directory::Directory, shape::LineRequest, Control, Error, Request, Router};
+use route_engine::{
+    data::{RoutingData, Selection},
+    directory::Files,
+    shape::LineRequest,
+    Control, Error, Request, Router,
+};
 use serde_json::{json, Value};
 use std::{
     path::Path,
@@ -30,7 +35,7 @@ pub fn prepare_overlays(directory: &Path) -> Result<(), Error> {
     overlays::Overlays::build(directory)
 }
 
-type Engine = Router<Box<dyn route_engine::data::RoutingData + Send>>;
+type Engine = Router<Selection<Files>>;
 
 /// The request body limit of the service and of the native provider.
 const BODY_LIMIT: usize = 64 * 1024;
@@ -48,28 +53,13 @@ struct Workers {
     metadata: Value,
 }
 
-/// Room above the costliest profile's routing bytes for search labels and queues and for the
-/// cached costs of other profiles, which a router drops first when it needs the room.
-const SEARCH_HEAP: usize = 256 * 1024 * 1024;
-
-fn default_memory_budget(data: &dyn RoutingData) -> usize {
-    let costliest = data.profiles().into_iter().filter_map(|profile| data.routing_bytes(profile).ok()).max();
-    (768 * 1024 * 1024usize).max(costliest.unwrap_or(0).saturating_add(SEARCH_HEAP))
-}
-
 pub fn app(directory: &Path, workers: usize) -> Result<axum::Router, Error> {
     if !(1..=8).contains(&workers) {
         return Err(Error::InvalidRequest("Use 1 to 8 workers".into()));
     }
-    let packages: Vec<Box<dyn RoutingData + Send>> = if directory.join("blocks.json").exists() {
-        let source = route_engine::blocks::Files::open(directory)?;
-        (0..workers).map(|_| Box::new(source.fork()) as Box<dyn RoutingData + Send>).collect()
-    } else {
-        let source = Directory::open(directory)?;
-        (0..workers).map(|_| Box::new(source.fork()) as Box<dyn RoutingData + Send>).collect()
-    };
-    let budget = default_memory_budget(packages[0].as_ref());
-    let routers: Vec<Engine> = packages.into_iter().map(|package| Router::new(package, budget)).collect();
+    let source = route_engine::open(directory)?;
+    let budget = source.default_budget();
+    let routers: Vec<Engine> = (0..workers).map(|_| Router::new(source.fork(), budget)).collect();
     let metadata = metadata(&routers[0]);
     let state =
         Arc::new(Workers { routers: Mutex::new(routers), permits: Arc::new(Semaphore::new(workers)), metadata });
@@ -189,7 +179,7 @@ fn failure(error: Error) -> Response {
     (StatusCode::from_u16(status).unwrap(), Json(body)).into_response()
 }
 
-pub(crate) fn metadata<P: route_engine::data::RoutingData>(router: &Router<P>) -> Value {
+pub(crate) fn metadata<P: RoutingData>(router: &Router<P>) -> Value {
     let package = router.package();
     json!({ "package": package.identity(), "region": package.region(), "bounds": package.bounds(),
         "profiles": package.profiles(), "attribution": package.attribution(), "warnings": package.warnings() })

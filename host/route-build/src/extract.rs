@@ -1,16 +1,17 @@
 //! Extract an exact whole-road subgraph from immutable prepared arrival states.
 use crate::{base, prepare_base};
 use route_engine::{
+    data::Selection,
     endpoints::Dictionary,
     model::{Graph, Road},
-    package::{Manifest, Package, Source, CELL},
+    package::{Manifest, Source, CELL},
 };
 use std::collections::BTreeSet;
 
 /// Bounds limit query endpoints. Roads that intersect them are retained in full.
 /// Optional source OSM pages stay complete, including tags on excluded roads.
 pub fn prepare<S: Source>(
-    input: &mut Package<S>,
+    input: &Selection<S>,
     region: String,
     bounds: [f64; 4],
     include_sources: bool,
@@ -18,7 +19,8 @@ pub fn prepare<S: Source>(
 ) -> Result<Manifest, String> {
     let started = std::time::Instant::now();
     eprintln!("Selecting roads");
-    let source = input.manifest().clone();
+    let package = input.package();
+    let source = package.manifest().clone();
     if bounds.iter().any(|v| !v.is_finite())
         || bounds[0] >= bounds[2]
         || bounds[1] >= bounds[3]
@@ -36,13 +38,13 @@ pub fn prepare<S: Source>(
     let mut candidates = BTreeSet::new();
     for lat in cell(bounds[1])..=cell(bounds[3]) {
         for lon in cell(bounds[0])..=cell(bounds[2]) {
-            candidates.extend(input.spatial_roads((lat, lon)).map_err(|e| e.to_string())?);
+            candidates.extend(package.spatial_roads((lat, lon)).map_err(|e| e.to_string())?);
         }
     }
     let mut ids = Vec::new();
     let mut graph = Graph { warnings: source.warnings.clone(), ..Graph::default() };
     for id in candidates {
-        let road = input.road(id).map_err(|e| e.to_string())?;
+        let road = package.road(id).map_err(|e| e.to_string())?;
         if intersects(&road, bounds) {
             ids.push(id);
             graph.roads.push(road);
@@ -57,14 +59,14 @@ pub fn prepare<S: Source>(
     if include_sources {
         manifest.osm = source.osm;
         for table in manifest.osm.tables() {
-            for key in table.blocks.iter().cloned().chain(input.keys(table).map_err(|e| e.to_string())?) {
-                write(&input.bytes(&key).map_err(|e| e.to_string())?)?;
+            for key in table.blocks.iter().cloned().chain(package.keys(table).map_err(|e| e.to_string())?) {
+                write(&package.bytes(&key).map_err(|e| e.to_string())?)?;
             }
         }
     }
     eprintln!("Prepared road graph in {:.1}s", started.elapsed().as_secs_f64());
     let mut dictionary = Dictionary::default();
-    let inherited = route_engine::landmarks::project(input, &ids, &mut write)?;
+    let inherited = route_engine::landmarks::project(package, &ids, &mut write)?;
     let junctions = if inherited.is_none() {
         Some(crate::landmarks::Junctions::new(graph.roads.iter().map(|r| (r.from, r.to)))?)
     } else {
@@ -112,7 +114,7 @@ pub fn prepare<S: Source>(
     }
     manifest.costs = route_engine::table::Table::write(&dictionary.into_values(), &mut write)?;
     manifest.landmarks = Some(landmarks);
-    let closures = input.closures().map_err(|e| e.to_string())?.select(ids.iter().copied());
+    let closures = package.closures().map_err(|e| e.to_string())?.select(ids.iter().copied());
     manifest.closures = crate::write_closures(&closures, &mut write)?;
     Ok(manifest)
 }

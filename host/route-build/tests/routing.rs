@@ -1,4 +1,5 @@
 use route_engine::{
+    data::{RoutingData, Selection},
     model::{Graph, Pace, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH},
     package::{digest, Package, Source},
     snap::{Candidate, Policy, REACH_M},
@@ -21,6 +22,9 @@ impl Source for Memory {
 fn package(graph: &Graph) -> (Memory, Vec<u8>) {
     let profiles = Profile::presets();
     package_with_profiles(graph, &profiles[..5])
+}
+fn routing(source: Memory, manifest: &[u8]) -> Selection<Memory> {
+    Selection::whole(Package::open(source, manifest).unwrap())
 }
 fn package_with_profiles(graph: &Graph, profiles: &[Profile]) -> (Memory, Vec<u8>) {
     let graph = with_sources(graph.clone());
@@ -75,14 +79,15 @@ fn profile_selection_keeps_closed_routes_and_removes_unused_objects() {
     assert!(!command("unknown").status.success());
     assert!(!output.exists());
     assert!(command("touring,touring/less-climbing").status.success());
-    let selected = Directory::open(&output).unwrap();
+    let selected = Selection::whole(Directory::open(&output).unwrap());
     selected.verify().unwrap();
-    assert_eq!(selected.manifest().metrics.len(), 2);
-    assert!(selected.manifest().osm.tables().all(|table| table.len == 0 && table.blocks.is_empty()));
+    let kept = selected.package().manifest();
+    assert_eq!(kept.metrics.len(), 2);
+    assert!(kept.osm.tables().all(|table| table.len == 0 && table.blocks.is_empty()));
     let original = Package::open(source.clone(), &manifest).unwrap();
-    assert_eq!(selected.manifest().source_sha256, original.manifest().source_sha256);
-    assert_eq!(selected.manifest().geometry.blocks, original.manifest().geometry.blocks);
-    assert_eq!(selected.manifest().geometry.len, original.manifest().geometry.len);
+    assert_eq!(kept.source_sha256, original.manifest().source_sha256);
+    assert_eq!(kept.geometry.blocks, original.manifest().geometry.blocks);
+    assert_eq!(kept.geometry.len, original.manifest().geometry.len);
     assert_eq!(std::fs::read(input.join("manifest.json")).unwrap(), manifest);
     let index = std::fs::read(output.join("pages.idx")).unwrap();
     assert_eq!(u64::from_le_bytes(index[8..16].try_into().unwrap()) as usize, selected.objects().unwrap().len());
@@ -90,8 +95,8 @@ fn profile_selection_keeps_closed_routes_and_removes_unused_objects() {
         std::fs::metadata(output.join("pages.bin")).unwrap().len()
             < std::fs::metadata(input.join("pages.bin")).unwrap().len()
     );
-    assert!(selected.metric("road").is_err());
-    let mut before = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    assert!(kept.metric("road").is_err());
+    let mut before = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let mut after = Router::new(selected, 768 * 1024 * 1024);
     for profile in ["touring", "touring/less-climbing"] {
         let request = Request {
@@ -243,7 +248,7 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     }
     let profiles = Profile::presets();
     let (source, manifest) = package_with_profiles(&graph, &profiles);
-    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let coords: Vec<_> = graph.roads.iter().step_by(3).flat_map(|r| [coordinate(r, 0.2), coordinate(r, 0.8)]).collect();
     for profile in &profiles {
         for &from in &coords {
@@ -303,12 +308,13 @@ fn bounding_box_repreparation_preserves_whole_roads_and_matches_independent_sear
     let graph = with_sources(fixture());
     let profiles = Profile::presets();
     let (source, manifest) = package_with_profiles(&graph, &profiles);
-    let mut input = Package::open(source, &manifest).unwrap();
-    assert!(route_build::extract::prepare(&mut input, "invalid".into(), [-2., -1., 0., 0.], true, |_| unreachable!())
-        .is_err());
+    let input = routing(source, &manifest);
+    assert!(
+        route_build::extract::prepare(&input, "invalid".into(), [-2., -1., 0., 0.], true, |_| unreachable!()).is_err()
+    );
     let mut objects = HashMap::new();
     let bounds = [0.005, -0.001, 0.025, 0.021];
-    let manifest = route_build::extract::prepare(&mut input, "box".into(), bounds, true, |bytes| {
+    let manifest = route_build::extract::prepare(&input, "box".into(), bounds, true, |bytes| {
         let key = digest(bytes);
         objects.insert(key.clone(), bytes.to_vec());
         Ok(key)
@@ -316,13 +322,16 @@ fn bounding_box_repreparation_preserves_whole_roads_and_matches_independent_sear
     .unwrap();
     assert_eq!(manifest.metrics.len(), profiles.len());
     assert_eq!(manifest.bounds, bounds);
-    assert_eq!(serde_json::to_value(&manifest.osm).unwrap(), serde_json::to_value(&input.manifest().osm).unwrap());
+    assert_eq!(
+        serde_json::to_value(&manifest.osm).unwrap(),
+        serde_json::to_value(&input.package().manifest().osm).unwrap()
+    );
     let retained: Vec<_> =
         graph.roads.iter().enumerate().filter(|(_, r)| r.from % 4 != 0 || r.to % 4 != 0).map(|(id, _)| id).collect();
     assert!(retained.len() < graph.roads.len());
     assert_eq!(manifest.roads as usize, retained.len());
-    let mut package = Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&manifest).unwrap()).unwrap();
-    package.verify().unwrap();
+    let package = Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&manifest).unwrap()).unwrap();
+    Selection::whole(package.fork()).verify().unwrap();
     let roads: Vec<_> = (0..manifest.roads).map(|id| package.road(id).unwrap()).collect();
     let remap: HashMap<_, _> = roads
         .iter()
@@ -350,14 +359,14 @@ fn bounding_box_repreparation_preserves_whole_roads_and_matches_independent_sear
             })
             .collect()
     };
-    let original = input.manifest().landmarks.as_ref().unwrap();
+    let original = input.package().manifest().landmarks.as_ref().unwrap();
     let projected = manifest.landmarks.as_ref().unwrap();
-    let before = values(&input, &original.mapping);
+    let before = values(input.package(), &original.mapping);
     let after = values(&package, &projected.mapping);
     assert_eq!(projected.scale, original.scale);
     for (profile, columns) in &original.profiles {
         for (i, column) in columns.iter().enumerate() {
-            let original_values = values(&input, column);
+            let original_values = values(input.package(), column);
             let projected_values = values(&package, &projected.profiles[profile][i]);
             for (&old, &new) in &remap {
                 assert_eq!(
@@ -379,7 +388,7 @@ fn bounding_box_repreparation_preserves_whole_roads_and_matches_independent_sear
         ..graph.clone()
     };
     assert!(selected.roads.iter().flat_map(|r| &r.shape).any(|p| p.lon == 0));
-    let mut router = Router::new(package, 768 * 1024 * 1024);
+    let mut router = Router::new(Selection::whole(package), 768 * 1024 * 1024);
     let coordinates = [[0.0075, 0.0], [0.015, 0.01], [0.0225, 0.02]];
     for profile in &profiles {
         for &from in &coordinates {
@@ -431,10 +440,10 @@ fn bounding_box_repreparation_preserves_whole_roads_and_matches_independent_sear
         foot_only.roads[id].access = FOOT;
     }
     let (source, bytes) = package_with_profiles(&foot_only, &profiles);
-    let mut input = Package::open(source, &bytes).unwrap();
+    let input = routing(source, &bytes);
     let mut objects = HashMap::new();
     let manifest =
-        route_build::extract::prepare(&mut input, "foot".into(), [0.014, -0.0001, 0.016, 0.0001], false, |bytes| {
+        route_build::extract::prepare(&input, "foot".into(), [0.014, -0.0001, 0.016, 0.0001], false, |bytes| {
             let key = digest(bytes);
             objects.insert(key.clone(), bytes.to_vec());
             Ok(key)
@@ -465,7 +474,7 @@ fn lazy_endpoint_costs_preserve_every_profile_and_partial_offset() {
     let graph = with_sources(graph);
     let profiles = Profile::presets();
     let (source, manifest) = package_with_profiles(&graph, &profiles);
-    let mut package = Package::open(source, &manifest).unwrap();
+    let package = routing(source, &manifest);
     for profile in &profiles {
         let none = route_build::cost::Doubts::default();
         let costing = route_build::cost::Costing::new(&graph, profile, &none).unwrap();
@@ -488,13 +497,13 @@ fn lazy_endpoint_costs_preserve_every_profile_and_partial_offset() {
 fn query_does_not_read_source_tag_pages_but_installation_verifies_them() {
     let graph = fixture();
     let (source, manifest) = package(&graph);
-    let package = Package::open(source.clone(), &manifest).unwrap();
+    let package = routing(source.clone(), &manifest);
     package.verify().unwrap();
     let mut objects = (*source.0).clone();
-    for key in package.manifest().osm.tables().flat_map(|t| &t.blocks) {
+    for key in package.package().manifest().osm.tables().flat_map(|t| &t.blocks) {
         objects.remove(key);
     }
-    let incomplete = Package::open(Memory(Arc::new(objects)), &manifest).unwrap();
+    let incomplete = routing(Memory(Arc::new(objects)), &manifest);
     assert!(matches!(incomplete.verify(), Err(Error::MissingRegion(_))));
     let mut router = Router::new(incomplete, 768 * 1024 * 1024);
     let request = Request {
@@ -514,7 +523,7 @@ fn query_does_not_read_source_tag_pages_but_installation_verifies_them() {
 fn via_direction_pace_and_failure_states_are_explicit() {
     let graph = fixture();
     let (source, manifest) = package(&graph);
-    let mut router = Router::new(Package::open(source.clone(), &manifest).unwrap(), 768 * 1024 * 1024);
+    let mut router = Router::new(routing(source.clone(), &manifest), 768 * 1024 * 1024);
     let mut request = Request {
         points: vec![
             coordinate(&graph.roads[0], 0.2),
@@ -556,9 +565,10 @@ fn via_direction_pace_and_failure_states_are_explicit() {
     request.points[0] = [10.0, 10.0];
     assert!(matches!(router.route(&request, &Control::default()), Err(Error::MissingRegion(_))));
     let mut broken = (*source.0).clone();
-    let key = router.package().key(&router.package().manifest().geometry, 0).unwrap();
+    let reader = router.package().package();
+    let key = reader.key(&reader.manifest().geometry, 0).unwrap();
     broken.get_mut(&key).unwrap()[0] ^= 1;
-    let mut package = Package::open(Memory(Arc::new(broken)), &manifest).unwrap();
+    let package = Package::open(Memory(Arc::new(broken)), &manifest).unwrap();
     assert!(matches!(package.road(0), Err(Error::InvalidData(_))));
 }
 
@@ -581,7 +591,7 @@ fn a_point_without_a_road_nearby_attaches_to_the_nearest_road_within_reach() {
         graph.roads.push(road);
     }
     let (source, manifest) = package(&graph);
-    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let mut request = Request {
         points: vec![[0.001, 0.0], [0.015, -0.006]],
         profile: "touring".into(),
@@ -607,7 +617,7 @@ fn a_shape_keeps_direction_and_only_an_explicit_visit_can_reverse() {
     graph.forbidden.clear();
     graph.forbidden_foot.clear();
     let (source, manifest) = package(&graph);
-    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let mut request = Request {
         points: vec![
             coordinate(&graph.roads[0], 0.2),
@@ -636,7 +646,7 @@ fn a_shape_keeps_direction_and_only_an_explicit_visit_can_reverse() {
 fn a_window_pinned_to_its_neighbour_legs_repeats_the_whole_trip() {
     let graph = fixture();
     let (source, manifest) = package(&graph);
-    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let whole = Request {
         points: [(0, 0.3), (7, 0.5), (15, 0.5), (20, 0.6), (3, 0.7), (11, 0.4)]
             .map(|(road, fraction)| coordinate(&graph.roads[road], fraction))
@@ -743,8 +753,8 @@ fn closed_packages_route_across_multiple_checked_blocks() {
     let graph =
         Graph { points, roads, forbidden: vec![], forbidden_foot: vec![], warnings: vec![], ..Graph::default() };
     let (source, manifest) = package(&graph);
-    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
-    assert!(router.package().manifest().graph.first.blocks.len() > 1);
+    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    assert!(router.package().package().manifest().graph.first.blocks.len() > 1);
     let request = Request {
         points: vec![[0.00002, 0.0], [0.21988, 0.0]],
         profile: "touring".into(),
@@ -788,7 +798,7 @@ fn alternatives_find_a_separate_corridor_without_an_out_and_back_probe() {
     let graph =
         Graph { points, roads, forbidden: vec![], forbidden_foot: vec![], warnings: vec![], ..Graph::default() };
     let (source, manifest) = package(&graph);
-    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let request = Request {
         points: vec![[0.0, 0.0], [0.06, 0.0]],
         profile: "touring".into(),
@@ -837,7 +847,7 @@ fn an_out_and_back_trip_gets_alternatives_within_one_query_budget() {
         Graph { points, roads, forbidden: vec![], forbidden_foot: vec![], warnings: vec![], ..Graph::default() };
     let profiles: Vec<_> = Profile::presets().into_iter().filter(|p| p.name.starts_with("touring")).collect();
     let (source, manifest) = package_with_profiles(&graph, &profiles);
-    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let request = Request {
         points: vec![[-0.0015, 0.0], [0.0465, 0.0], [-0.0015, 0.0]],
         profile: "touring".into(),
@@ -922,7 +932,7 @@ fn geometry_cache_retains_a_snap_working_set_across_many_small_pages() {
         metric.costs = route_engine::table::Table::write(&vec![1u32; manifest.roads as usize], &mut write).unwrap();
     }
     let reads = Cell::new(0);
-    let mut package =
+    let package =
         Package::open(Counted(Memory(Arc::new(objects)), &reads), &serde_json::to_vec(&manifest).unwrap()).unwrap();
     for _ in 0..2 {
         for page in 0..20 {
@@ -956,7 +966,7 @@ fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profi
     graph.forbidden.clear();
     graph.forbidden_foot.clear();
     let (source, manifest) = package(&graph);
-    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let mut request = Request {
         points: vec![[0.0, 0.0], [0.005, 0.0002], [0.01, 0.0]],
         profile: "road".into(),
@@ -1013,7 +1023,7 @@ fn route_goals_preserve_the_bikes_surface_suitability() {
         .filter(|p| ["road", "road/shorter", "road/smoother", "gravel/shorter"].contains(&p.name.as_str()))
         .collect();
     let (source, manifest) = package_with_profiles(&graph, &profiles);
-    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let mut request = Request {
         points: vec![[0.0, 0.0], [0.01, 0.0]],
         profile: "road".into(),
@@ -1086,7 +1096,7 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
         end_position: None,
     };
     let (source, manifest) = package(&graph);
-    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let route = router.route(&request, &Control::default()).unwrap();
     assert_eq!(route.totals.pushing_m, 111);
     assert_eq!(edges(&route, "pushing"), json!([false, true, false]));
@@ -1094,7 +1104,7 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
         road.access &= !PUSH;
     }
     let (source, manifest) = package(&graph);
-    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     assert!(router.route(&request, &Control::default()).is_err());
 }
 
@@ -1131,7 +1141,7 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
         graph.osm.ways.insert(way, route_engine::osm::Way { id: way, nodes: vec![way, way + 1], tags });
     }
     let (source, manifest) = package(&graph);
-    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let mut request = Request {
         points: vec![[0.0001, 0.0], [0.0029, 0.0]],
         profile: "road".into(),
@@ -1158,7 +1168,7 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
     let (source, bytes) = package(&graph);
     let mut objects = HashMap::new();
     let extracted = route_build::extract::prepare(
-        &mut Package::open(source, &bytes).unwrap(),
+        &routing(source, &bytes),
         "box".into(),
         [0.0015, -0.001, 0.0025, 0.001],
         false,
@@ -1169,8 +1179,8 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
         },
     )
     .unwrap();
-    let package = Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&extracted).unwrap()).unwrap();
-    let mut router = Router::new(package, 768 * 1024 * 1024);
+    let mut router =
+        Router::new(routing(Memory(Arc::new(objects)), &serde_json::to_vec(&extracted).unwrap()), 768 << 20);
     request.points = vec![[0.0016, 0.0], [0.0024, 0.0]];
     let route = router.route(&request, &Control::default()).unwrap();
     assert_eq!(edges(&route, "closures"), json!([walking, null]));
@@ -1220,7 +1230,7 @@ fn a_route_avoids_a_private_road_unless_a_shaping_point_is_on_it() {
             .insert(way as i64, route_engine::osm::Way { id: way as i64, nodes: vec![a as i64, b as i64], tags });
     }
     let (source, manifest) = package(&graph);
-    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let mut request = Request {
         points: vec![[-0.0005, 0.0], [0.0025, 0.0]],
         profile: "touring".into(),
@@ -1242,22 +1252,16 @@ fn a_route_avoids_a_private_road_unless_a_shaping_point_is_on_it() {
 
 #[test]
 fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
-    use route_engine::{
-        data::RoutingData,
-        search::{Query, Seed, Workspace},
-    };
+    use route_engine::search::{Query, Seed, Workspace};
     let (source, bytes) = package_with_profiles(&fixture(), &Profile::presets());
-    let mut original = Package::open(source.clone(), &bytes).unwrap();
-    let n = original.manifest().roads;
-    let bounds = original.manifest().bounds;
+    let original = routing(source.clone(), &bytes);
+    let n = original.package().manifest().roads;
+    let bounds = original.package().manifest().bounds;
     let make = |ids: &[u32]| {
-        let selection = route_build::blocks::prepare(&original, bounds, ids).unwrap();
+        let selection = route_build::blocks::prepare(original.package(), bounds, ids).unwrap();
         let objects = selection.objects.iter().map(|key| (key.clone(), source.read(key).unwrap())).collect();
-        let selected = route_engine::blocks::Package::open(
-            Memory(Arc::new(objects)),
-            &serde_json::to_vec(&selection.manifest).unwrap(),
-        )
-        .unwrap();
+        let selected =
+            Selection::open(Memory(Arc::new(objects)), &serde_json::to_vec(&selection.manifest).unwrap()).unwrap();
         (selection, selected)
     };
     let (full, full_package) = make(&(0..n).collect::<Vec<_>>());
@@ -1265,7 +1269,7 @@ fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
     let (_, mut partial) = make(&selected);
     let mut full_router = Router::new(full_package, 768 * 1024 * 1024);
     let mut original_router = Router::new(original.fork(), 768 * 1024 * 1024);
-    let names: Vec<_> = original.manifest().metrics.keys().cloned().collect();
+    let names: Vec<_> = original.package().manifest().metrics.keys().cloned().collect();
     let mut saw_forbidden = false;
     for name in names {
         for points in [vec![[0.001, 0.0], [0.029, 0.02]], vec![[0.029, 0.02], [0.001, 0.0]]] {
@@ -1285,8 +1289,10 @@ fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
             assert_eq!(after.geometry, before.geometry);
             assert_eq!(after.elapsed, before.elapsed);
         }
-        let (graph, costs) = original.base(&name).unwrap();
-        let (joined, joined_costs) = partial.base(&name).unwrap();
+        let whole = original.prepared(&name).unwrap();
+        let (graph, costs) = (&whole.graph, &whole.costs);
+        let part = partial.prepared(&name).unwrap();
+        let (joined, joined_costs) = (&part.graph, &part.costs);
         let mut masked_roads: Vec<u64> = (0..n).map(|i| costs.roads.get(i as usize)).collect();
         for id in 0..n {
             if partial.local_id(id).is_none() {
@@ -1308,11 +1314,11 @@ fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
             );
             let expected: Vec<_> = (graph.first[global as usize]..graph.first[global as usize + 1])
                 .filter_map(|arc| {
-                    partial.local_id(graph.head[arc as usize]).map(|to| (to, costs.arc(&graph, arc as usize)))
+                    partial.local_id(graph.head[arc as usize]).map(|to| (to, costs.arc(graph, arc as usize)))
                 })
                 .collect();
             let actual: Vec<_> = (joined.first[from as usize]..joined.first[from as usize + 1])
-                .map(|arc| (joined.head[arc as usize], joined_costs.arc(&joined, arc as usize)))
+                .map(|arc| (joined.head[arc as usize], joined_costs.arc(joined, arc as usize)))
                 .collect();
             saw_forbidden |= actual.iter().any(|(_, c)| *c == u64::MAX);
             assert_eq!(actual, expected);
@@ -1325,23 +1331,19 @@ fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
                     starts: &starts,
                     ends: &ends,
                     ceiling: u64::MAX,
-                    max_labels: usize::MAX,
                     max_roads: usize::MAX,
                     heap_bytes: 1_000_000,
                     cancelled: &|| false,
                 };
                 let expected = expected_work
-                    .run(&graph, &masked, Query { starts: &source_starts, ends: &source_ends, ..query })
+                    .run(graph, &masked, Query { starts: &source_starts, ends: &source_ends, ..query })
                     .unwrap();
-                let guidance = partial.landmarks(&name, &starts, &ends).unwrap().unwrap();
-                let source_guidance =
-                    RoutingData::landmarks(&original, &name, &source_starts, &source_ends).unwrap().unwrap();
+                let guidance = part.guide.as_ref().unwrap().potential(&starts, &ends).unwrap();
+                let source_guidance = whole.guide.as_ref().unwrap().potential(&source_starts, &source_ends).unwrap();
                 for local in 0..joined.nodes() as u32 {
                     assert_eq!(guidance.get(local), source_guidance.get(partial.source_id(local).unwrap()));
                 }
-                let mut potential = |road| Ok(guidance.get(road));
-                let actual =
-                    actual_work.run_with_potential(&joined, &joined_costs, query, Some(&mut potential)).unwrap();
+                let actual = actual_work.run_with_potential(joined, joined_costs, query, Some(&guidance)).unwrap();
                 assert_eq!(actual.as_ref().map(|r| r.cost), expected.as_ref().map(|r| r.cost));
             }
         }
@@ -1349,18 +1351,16 @@ fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
     assert!(saw_forbidden);
     let mut incomplete = full.manifest.clone();
     incomplete.data.graph.head.retain(&Default::default()).unwrap();
-    let mut missing =
-        route_engine::blocks::Package::open(source.clone(), &serde_json::to_vec(&incomplete).unwrap()).unwrap();
-    assert!(matches!(missing.base("touring"), Err(Error::MissingRegion(_))));
+    let missing = Selection::open(source.clone(), &serde_json::to_vec(&incomplete).unwrap()).unwrap();
+    assert!(matches!(missing.prepared("touring"), Err(Error::MissingRegion(_))));
     incomplete = full.manifest.clone();
     incomplete.roads.push(incomplete.roads[0]);
-    assert!(route_engine::blocks::Package::open(source, &serde_json::to_vec(&incomplete).unwrap()).is_err());
-    let (_, cached) = partial.base("touring").unwrap();
+    assert!(Selection::open(source, &serde_json::to_vec(&incomplete).unwrap()).is_err());
+    let cached = partial.prepared("touring").unwrap();
     partial.set_memory_budget(partial.routing_bytes("touring").unwrap());
-    let (_, again) = partial.base("touring").unwrap();
-    assert!(Arc::ptr_eq(&cached, &again));
+    assert!(Arc::ptr_eq(&cached, &partial.prepared("touring").unwrap()));
     partial.set_memory_budget(1);
-    assert!(matches!(partial.base("touring"), Err(Error::Limit)));
+    assert!(matches!(partial.prepared("hiking"), Err(Error::Limit)));
 }
 
 #[test]

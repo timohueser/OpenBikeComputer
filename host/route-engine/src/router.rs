@@ -76,7 +76,6 @@ pub struct Route {
 #[derive(Clone, Copy)]
 pub struct Control<'a> {
     pub cancelled: &'a dyn Fn() -> bool,
-    pub max_labels: usize,
     pub max_queries: usize,
     pub max_geometry: usize,
     /// Caps the search queues below what the memory budget leaves, so that the space of a search
@@ -85,13 +84,7 @@ pub struct Control<'a> {
 }
 impl Default for Control<'_> {
     fn default() -> Self {
-        Self {
-            cancelled: &|| false,
-            max_labels: usize::MAX,
-            max_queries: 8192,
-            max_geometry: 250_000,
-            max_heap_bytes: usize::MAX,
-        }
+        Self { cancelled: &|| false, max_queries: 8192, max_geometry: 250_000, max_heap_bytes: usize::MAX }
     }
 }
 
@@ -523,39 +516,22 @@ impl<P: RoutingData> Router<P> {
                 }
             }
         }
-        let (graph, weights) = self.package.base(&self.metric)?;
+        let prepared = self.package.prepared(&self.metric)?;
         let heap_bytes = (self.package.memory_budget().saturating_sub(self.package.routing_bytes(&self.metric)?))
             .min(control.max_heap_bytes);
-        let ceiling = best.as_ref().map_or(u64::MAX, |b| b.cost);
         let query = Query {
             starts: &starts,
             ends: &ends,
-            ceiling,
-            max_labels: control.max_labels,
+            ceiling: best.as_ref().map_or(u64::MAX, |b| b.cost),
             max_roads: control.max_geometry,
             heap_bytes,
             cancelled: control.cancelled,
         };
-        let found = if self.package.has_landmarks(&self.metric) {
-            // Complete small searches before loading global distance columns.
-            let probe = query.max_labels.min(262_144);
-            match self.workspace.run(&graph, &weights, Query { max_labels: probe, ..query }) {
-                Err(Error::Limit) if probe < query.max_labels => {
-                    match self.package.landmarks(&self.metric, &starts, &ends)? {
-                        Some(prepared) => self.workspace.run_with_potential(
-                            &graph,
-                            &weights,
-                            query,
-                            Some(&mut |node| Ok(prepared.get(node))),
-                        )?,
-                        None => self.workspace.run(&graph, &weights, query)?,
-                    }
-                }
-                result => result?,
-            }
-        } else {
-            self.workspace.run(&graph, &weights, query)?
+        let potential = match &prepared.guide {
+            Some(guide) => Some(guide.potential(&starts, &ends)?),
+            None => None,
         };
+        let found = self.workspace.run_with_potential(&prepared.graph, &prepared.costs, query, potential.as_ref())?;
         if let Some(found) = found {
             let &(source, from, _) = &sources[found.source];
             let &(target, to) = &targets[end_targets[found.target]];

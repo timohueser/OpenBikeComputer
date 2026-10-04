@@ -1,6 +1,6 @@
 use crate::{
     model::{Point, Road, NO_ELEVATION},
-    package::{Package, Source, CELL},
+    package::CELL,
     Error, Result,
 };
 use serde::Serialize;
@@ -14,31 +14,6 @@ pub const REACH_M: f64 = 1_000.0;
 impl Default for Policy {
     fn default() -> Self {
         Self { radius_m: 250.0, ambiguity_m: 3.0, max_candidates: 8 }
-    }
-}
-
-impl<S: Source> Package<S> {
-    pub fn snap(&mut self, point: Point, metric: &str, policy: Policy) -> Result<Candidates> {
-        self.metric(metric)?;
-        let mut roads = BTreeSet::<u32>::new();
-        for cell in cells(point, policy.radius_m).map_err(Error::InvalidRequest)? {
-            roads.extend(self.spatial_roads(cell)?);
-            if roads.len() > 100_000 {
-                return Err(Error::Limit);
-            }
-        }
-        candidates(
-            roads,
-            point,
-            policy,
-            |id| {
-                if self.allowed(metric, id)? {
-                    self.road(id).map(Some)
-                } else {
-                    Ok(None)
-                }
-            },
-        )
     }
 }
 

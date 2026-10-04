@@ -1,6 +1,8 @@
 //! Native packed storage. The query library itself only requires `Source`.
 use crate::{
-    package::{Package, Source, MAX_MANIFEST_BYTES},
+    blocks,
+    data::Selection,
+    package::{digest, Package, Source, MAX_MANIFEST_BYTES},
     storage::MAX_PAGE_BYTES,
     table::valid_digest,
     Error, Result,
@@ -18,27 +20,19 @@ const MAGIC: &[u8; 8] = b"OBCRIDX3";
 const HEADER: u64 = 16;
 const RECORD: u64 = 48;
 
-struct Files {
+struct Pack {
     index: memmap2::Mmap,
-    data: File,
+    data: memmap2::Mmap,
     count: u64,
-    bytes: u64,
 }
 
+/// One pack: its digest index and its pages, both mapped, so no pack holds a file handle.
 #[derive(Clone)]
-pub struct Directory(Arc<Files>);
+pub struct Directory(Arc<Pack>);
 
 impl Directory {
     pub fn open(path: &Path) -> Result<Package<Self>> {
-        let mut manifest = Vec::new();
-        file(&path.join("manifest.json"))?
-            .take(MAX_MANIFEST_BYTES as u64 + 1)
-            .read_to_end(&mut manifest)
-            .map_err(invalid)?;
-        if manifest.len() > MAX_MANIFEST_BYTES {
-            return Err(Error::Limit);
-        }
-        Package::open(Self::source(path)?, &manifest)
+        Package::open(Self::source(path)?, &manifest(&path.join("manifest.json"))?)
     }
 
     pub fn source(path: &Path) -> Result<Self> {
@@ -54,55 +48,18 @@ impl Directory {
         {
             return Err(Error::InvalidData("Incomplete routing index".into()));
         }
-        // SAFETY: Published packages are immutable. Replacement uses another directory.
-        let index = unsafe { memmap2::Mmap::map(&index) }.map_err(invalid)?;
         let data = file(&path.join("pages.bin"))?;
-        let bytes = data.metadata().map_err(invalid)?.len();
-        Ok(Self(Arc::new(Files { index, data, count, bytes })))
-    }
-}
-
-impl Source for Directory {
-    fn read(&self, digest: &str) -> Result<Vec<u8>> {
-        let (offset, len) = self.location(digest)?;
-        let mut bytes = vec![0; len as usize];
-        read_at(&self.0.data, &mut bytes, offset).map_err(invalid)?;
-        Ok(bytes)
-    }
-
-    fn order_for_verify(&self, digests: &mut [String]) -> Result<()> {
-        let mut locations = digests
-            .iter_mut()
-            .map(|digest| self.location(digest).map(|(offset, _)| (offset, std::mem::take(digest))))
-            .collect::<Result<Vec<_>>>()?;
-        locations.sort_unstable_by_key(|(offset, _)| *offset);
-        for (digest, (_, ordered)) in digests.iter_mut().zip(locations) {
-            *digest = ordered;
+        if data.metadata().map_err(invalid)?.len() == 0 {
+            return Err(Error::InvalidData("Empty routing pack".into()));
         }
-        Ok(())
+        // SAFETY: Published packages are immutable. Replacement uses another directory. A pack
+        // truncated in place, or a failing disk read, raises SIGBUS, which nothing catches,
+        // instead of `InvalidData`; the immutability contract makes that acceptable.
+        let (index, data) =
+            unsafe { (memmap2::Mmap::map(&index).map_err(invalid)?, memmap2::Mmap::map(&data).map_err(invalid)?) };
+        Ok(Self(Arc::new(Pack { index, data, count })))
     }
-}
 
-fn read_at(file: &File, mut bytes: &mut [u8], mut offset: u64) -> std::io::Result<()> {
-    while !bytes.is_empty() {
-        #[cfg(unix)]
-        let result = std::os::unix::fs::FileExt::read_at(file, bytes, offset);
-        #[cfg(windows)]
-        let result = std::os::windows::fs::FileExt::seek_read(file, bytes, offset);
-        match result {
-            Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
-            Ok(read) => {
-                offset += read as u64;
-                bytes = &mut bytes[read..];
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(())
-}
-
-impl Directory {
     /// Enumerate a pack index without loading its page payloads.
     pub fn digests(&self) -> Result<Vec<[u8; 32]>> {
         let mut keys = Vec::new();
@@ -113,7 +70,7 @@ impl Directory {
             let len = u64::from_le_bytes(record[40..48].try_into().unwrap());
             if keys.last().is_some_and(|previous| previous >= &key)
                 || len > MAX_PAGE_BYTES as u64
-                || offset.checked_add(len).is_none_or(|end| end > self.0.bytes)
+                || offset.checked_add(len).is_none_or(|end| end > self.0.data.len() as u64)
             {
                 return Err(Error::InvalidData("Invalid routing pack index".into()));
             }
@@ -135,7 +92,9 @@ impl Directory {
                 std::cmp::Ordering::Equal => {
                     let offset = u64::from_le_bytes(record[32..40].try_into().unwrap());
                     let len = u64::from_le_bytes(record[40..48].try_into().unwrap());
-                    if len > MAX_PAGE_BYTES as u64 || offset.checked_add(len).is_none_or(|end| end > self.0.bytes) {
+                    if len > MAX_PAGE_BYTES as u64
+                        || offset.checked_add(len).is_none_or(|end| end > self.0.data.len() as u64)
+                    {
                         return Err(Error::InvalidData("Routing page outside archive".into()));
                     }
                     return Ok((offset, len));
@@ -144,6 +103,109 @@ impl Directory {
         }
         Err(Error::MissingRegion(digest.into()))
     }
+}
+
+impl Source for Directory {
+    fn read(&self, digest: &str) -> Result<Vec<u8>> {
+        let (offset, len) = self.location(digest)?;
+        Ok(self.0.data[offset as usize..(offset + len) as usize].to_vec())
+    }
+
+    fn order_for_verify(&self, digests: &mut [String]) -> Result<()> {
+        Files::order(digests, |digest| self.location(digest).map(|(offset, _)| (0, offset)))
+    }
+}
+
+/// The packs of a grid selection. Every page is in exactly one pack.
+#[derive(Clone)]
+pub struct Files {
+    packs: Arc<Vec<Directory>>,
+    /// Digest to pack; empty while there is one pack.
+    objects: Arc<Vec<([u8; 32], u32)>>,
+}
+
+impl Files {
+    pub fn open(packs: Vec<Directory>) -> Result<Self> {
+        let mut objects = Vec::new();
+        if packs.len() > 1 {
+            for (index, pack) in packs.iter().enumerate() {
+                let keys = pack.digests()?;
+                objects.try_reserve(keys.len()).map_err(|_| Error::Limit)?;
+                objects.extend(keys.into_iter().map(|key| (key, index as u32)));
+            }
+            objects.sort_unstable();
+            if objects.windows(2).any(|p| p[0].0 == p[1].0) {
+                return Err(Error::InvalidData("Routing page occurs in more than one pack".into()));
+            }
+        }
+        Ok(Self { packs: Arc::new(packs), objects: Arc::new(objects) })
+    }
+
+    fn pack(&self, digest: &str) -> Result<(u32, &Directory)> {
+        let pack = match self.packs.len() {
+            0 => return Err(Error::MissingRegion(digest.to_owned())),
+            1 => 0,
+            _ => {
+                let wanted = key(digest)?;
+                let at = self
+                    .objects
+                    .binary_search_by_key(&wanted, |entry| entry.0)
+                    .map_err(|_| Error::MissingRegion(digest.to_owned()))?;
+                self.objects[at].1
+            }
+        };
+        Ok((pack, &self.packs[pack as usize]))
+    }
+
+    /// Sorts digests by a physical position so a verification reads each pack front to back.
+    fn order(digests: &mut [String], mut position: impl FnMut(&str) -> Result<(u32, u64)>) -> Result<()> {
+        let mut locations = digests
+            .iter_mut()
+            .map(|digest| position(digest).map(|at| (at, std::mem::take(digest))))
+            .collect::<Result<Vec<_>>>()?;
+        locations.sort_unstable_by_key(|(at, _)| *at);
+        for (digest, (_, ordered)) in digests.iter_mut().zip(locations) {
+            *digest = ordered;
+        }
+        Ok(())
+    }
+}
+
+impl Source for Files {
+    fn read(&self, digest: &str) -> Result<Vec<u8>> {
+        self.pack(digest)?.1.read(digest)
+    }
+
+    fn order_for_verify(&self, digests: &mut [String]) -> Result<()> {
+        Self::order(digests, |digest| {
+            let (index, pack) = self.pack(digest)?;
+            pack.location(digest).map(|(offset, _)| (index, offset))
+        })
+    }
+}
+
+/// Opens a routing directory: a complete package, or a grid selection with its packs.
+pub fn open(path: &Path) -> Result<Selection<Files>> {
+    let blocks = path.join("blocks.json");
+    if !blocks.exists() {
+        let package =
+            Package::open(Files::open(vec![Directory::source(path)?])?, &manifest(&path.join("manifest.json"))?)?;
+        return Ok(Selection::whole(package));
+    }
+    let bytes = manifest(&blocks)?;
+    let manifest: blocks::Manifest = serde_json::from_slice(&bytes).map_err(invalid)?;
+    Selection::new(manifest, digest(&bytes), |archives| {
+        Files::open(archives.iter().map(|id| Directory::source(&path.join("packs").join(id))).collect::<Result<_>>()?)
+    })
+}
+
+fn manifest(path: &Path) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    file(path)?.take(MAX_MANIFEST_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(invalid)?;
+    if bytes.len() > MAX_MANIFEST_BYTES {
+        return Err(Error::Limit);
+    }
+    Ok(bytes)
 }
 
 /// Writes pages once, then publishes their sorted lookup index.
@@ -233,16 +295,7 @@ mod tests {
         assert_eq!(writer.write(b"first page").unwrap(), a);
         writer.finish().unwrap();
         assert_eq!(file(&path.join("pages.idx")).unwrap().metadata().unwrap().len(), HEADER + 2 * RECORD);
-        let open = || {
-            Directory(Arc::new(Files {
-                // SAFETY: The test drops the source before it changes the index.
-                index: unsafe { memmap2::Mmap::map(&file(&path.join("pages.idx")).unwrap()) }.unwrap(),
-                data: file(&path.join("pages.bin")).unwrap(),
-                count: 2,
-                bytes: 21,
-            }))
-        };
-        let source = open();
+        let source = Directory::source(&path).unwrap();
         assert_eq!(source.read(&a).unwrap(), b"first page");
         assert_eq!(source.read(&b).unwrap(), b"second page");
         let mut keys = [b.clone(), a.clone()];
@@ -251,12 +304,16 @@ mod tests {
         assert!(matches!(source.order_for_verify(&mut ["0".repeat(64)]), Err(Error::MissingRegion(_))));
         assert!(matches!(source.read(&"0".repeat(64)), Err(Error::MissingRegion(_))));
         assert!(matches!(source.read("../pages.bin"), Err(Error::InvalidData(_))));
-        drop(source);
+        let files = Files::open(vec![source.clone(), source.clone()]);
+        assert!(matches!(files, Err(Error::InvalidData(_))));
+        let files = Files::open(vec![source.clone()]).unwrap();
+        assert_eq!(files.read(&b).unwrap(), b"second page");
+        drop((source, files));
         let mut index = OpenOptions::new().write(true).open(path.join("pages.idx")).unwrap();
         index.seek(SeekFrom::Start(HEADER + 32)).unwrap();
         index.write_all(&u64::MAX.to_le_bytes()).unwrap();
         let first = if key(&a).unwrap() < key(&b).unwrap() { a } else { b };
-        let source = open();
+        let source = Directory::source(&path).unwrap();
         assert!(matches!(source.read(&first), Err(Error::InvalidData(_))));
         assert!(matches!(source.order_for_verify(&mut [first]), Err(Error::InvalidData(_))));
         drop(source);
