@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import type { Coordinate } from './editor';
+import type { Coordinate } from './geo';
 import type { BikeType } from './riding-profiles';
 import { routePlan, searchRoutes, type Bounds, type CatalogRecord, type RouteQuery, type RouteRecord, type RouteShape, type RouteSort } from './signed-routes';
 

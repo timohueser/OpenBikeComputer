@@ -1,4 +1,4 @@
-import type { Coordinate } from './editor';
+import type { Coordinate } from './geo';
 import { appendEdges, requestRoute, type Edges, type EngineRoute, type RouteLeg, type RouteTotals } from './routing';
 
 /** One leg cut from a route answer. Its `elapsed` starts at zero. */

@@ -4,7 +4,6 @@ import { ridingProfiles } from './riding-profiles';
 import { cumulative, nearestOnLine, nearestProgress, routeSlice, type Coordinate } from './geo';
 import type { PlaceCategory } from './poi-kinds';
 
-export type { Coordinate } from './geo';
 /** A vertex of a drawn leg; a third number is its elevation in metres. */
 export type DrawnCoordinate = Coordinate | [number, number, number];
 export const maxRidingDays = 14;
@@ -232,7 +231,7 @@ export function reorderPoint(trip: Trip, id: string, offset: number): Trip {
             changed.has(point.id) && (point.leg || point.drawn) ? { ...point, leg: undefined, drawn: undefined } : point) };
 }
 
-export type Stop = { point: RoutePoint; distance: number };
+type Stop = { point: RoutePoint; distance: number };
 
 /** What the panel, the map and the profile show of a plan. */
 export interface PlanView {
@@ -252,7 +251,7 @@ export interface PlanView {
 type Layout = Pick<PlanView, 'line' | 'coordinates' | 'stops' | 'total'>;
 
 // A trip is never changed after it is built, so each trip's view and routing key are computed once.
-// Development and test builds freeze a viewed trip and its view, so an in-place edit throws.
+// Development and test builds freeze a viewed trip, its points and its view, so an in-place edit throws.
 const views = new WeakMap<Trip, PlanView>();
 const keys = new WeakMap<Trip, string>();
 function freeze(...values: object[]): void {
@@ -262,7 +261,7 @@ function freeze(...values: object[]): void {
 export function planView(trip: Trip): PlanView {
     const known = views.get(trip);
     if (known) return known;
-    freeze(trip);
+    freeze(trip, trip.points, ...trip.points);
     const points = orderedRoutePoints(trip);
     const line = trip.routing?.key === routingKey(trip) ? trip.routing : undefined;
     const { coordinates, stops } = routeLayout(trip, points, line);
@@ -313,7 +312,7 @@ function legCoordinates(base: Coordinate[], before: RoutePoint, point: RoutePoin
 export function routingKey(trip: Trip): string {
     let key = keys.get(trip);
     if (key === undefined) {
-        freeze(trip);
+        freeze(trip, trip.points, ...trip.points);
         key = JSON.stringify([trip.bike ?? 'touring', trip.preset ?? 'Balanced', orderedRoutePoints(trip).map(p => [p.id, p.coordinate, p.leg ?? 'routed', p.drawn ?? [], p.kind === 'detour', p.anchor, p.turnaround])]);
         keys.set(trip, key);
     }
@@ -607,7 +606,8 @@ export function routeLegsAround(trip: Trip, id: string): Trip {
 function nearestLegEnd(trip: Trip, coordinate: Coordinate): string {
     const { coordinates, stops } = planView(trip);
     const distance = nearestProgress(coordinates, coordinate) * stops.at(-1)!.distance;
-    return (stops.find(stop => stop.distance >= distance) ?? stops.at(-1)!).point.id;
+    // The start ends no leg, so a point at or before it joins the first leg.
+    return (stops.slice(1).find(stop => stop.distance >= distance) ?? stops.at(-1)!).point.id;
 }
 
 // The route order of the middle points with `id` placed just before `legEndId`; before the finish means last.

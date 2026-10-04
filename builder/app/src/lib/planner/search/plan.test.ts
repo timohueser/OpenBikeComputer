@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Coordinate } from '../editor';
+import type { Coordinate } from '../geo';
 import { searchLine } from './plan';
 
 describe('search line', () => {

@@ -56,6 +56,8 @@ const tiles = new Map<string, Promise<Place[]>>();
 export async function corridorPlaces(url: string, coordinates: Coordinate[], bufferKm = 5): Promise<Place[]> {
     source ??= openTileArchive(url, 'Place').catch(error => { source = undefined; throw error; });
     const archive = await source;
+    // The maximum zoom sets how many tiles a corridor loads; place archives go to zoom 14 at most.
+    if (!Number.isInteger(archive.maxZoom) || archive.maxZoom < 0 || archive.maxZoom > 14) throw new Error('Invalid place tile source.');
     const loaded = await Promise.all(corridorTiles(coordinates, bufferKm, archive.maxZoom).map(key => {
         // A tile that fails loads again on the next call.
         if (!tiles.has(key)) tiles.set(key, loadTile(archive, key).catch(error => { tiles.delete(key); throw error; }));

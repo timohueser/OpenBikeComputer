@@ -1,4 +1,5 @@
-import { maxRidingDays, orderedRoutePoints, routingKey, type Coordinate, type RoutePoint, type Trip } from './editor';
+import { maxRidingDays, orderedRoutePoints, routingKey, type RoutePoint, type Trip } from './editor';
+import type { Coordinate } from './geo';
 import { ridingProfiles } from './riding-profiles';
 
 function record(value: unknown): value is Record<string, unknown> {

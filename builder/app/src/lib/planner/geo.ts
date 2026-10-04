@@ -77,7 +77,7 @@ function project(ax: number, ay: number, dx: number, dy: number): { t: number; s
 /**
  * The position on `line` nearest `point`: the segment by its first vertex, the fraction along it, and the coordinate.
  * Distances are flat kilometres around the point, which is exact enough at route scale. Of positions equally near, such
- * as on a stretch that the route rides out and back, the first wins; the margin of a few centimetres absorbs rounding.
+ * as on a stretch that the route rides out and back, the first wins; the margin on squared kilometres absorbs float rounding.
  */
 export function nearestOnLine(line: readonly Point[], point: Point): { index: number; t: number; at: Coordinate } {
     const kx = kmPerDegree * Math.cos(point[1] * RAD);

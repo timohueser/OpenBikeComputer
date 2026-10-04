@@ -1,4 +1,4 @@
-import type { Coordinate } from '../editor';
+import type { Coordinate } from '../geo';
 import { SEARCH_URL } from './config';
 import { searchLine } from './plan';
 

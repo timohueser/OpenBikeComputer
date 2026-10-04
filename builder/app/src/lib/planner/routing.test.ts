@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calculateLine, profileId, requestAlternatives, selectRoute, movingSecondsAt, type EngineRoute, type RouteTotals } from './routing';
+import { calculateLine, profileId, requestAlternatives, requestRoute, selectRoute, movingSecondsAt, type EngineRoute, type RouteTotals } from './routing';
 import { LegCache } from './route-legs';
 import { routeService } from '../../../test-support/planner/route-service';
 import { decodeRoutes, type AnswerRoute } from './route-answer';
@@ -110,6 +110,19 @@ describe('routing integration', () => {
         await expect(calculateLine(move(7.94), signal, cache)).rejects.toThrow('Busy.');
         expect(fetch).toHaveBeenCalledTimes(8);
     });
+    it('tells the rider why routing failed and passes a caller abort through', async () => {
+        const fetch = vi.fn(async (_url: string, init: RequestInit): Promise<unknown> => { init.signal!.throwIfAborted(); throw new TypeError('Failed to fetch'); });
+        vi.stubGlobal('fetch', fetch);
+        const route = (signal = new AbortController().signal) => requestRoute([[7.8, 48], [8, 48]], 'touring', signal);
+        await expect(route()).rejects.toThrow('The routing service is unreachable. Check your connection and retry.');
+        fetch.mockResolvedValueOnce({ ok: false, status: 502, json: async () => JSON.parse('<html>') });
+        await expect(route()).rejects.toThrow('Routing is unavailable. Retry shortly.');
+        vi.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(AbortSignal.abort(new DOMException('Timed out', 'TimeoutError')));
+        await expect(route()).rejects.toThrow('The routing service did not answer in time. Retry shortly.');
+        const abort = new AbortController();
+        abort.abort();
+        await expect(route(abort.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    });
     it('keeps a picked corridor with its plan', () => {
         const plan = trip();
         const corridor: EngineRoute = { ...route, id: 'corridor', reason: 'corridor', geometry: [[7.8, 48], [7.9, 48.05], [8, 48]] };
@@ -138,17 +151,14 @@ describe('routing integration', () => {
         expect(body.points).toEqual([[7.8, 48], [7.85, 48], [7.9, 48], [7.85, 48], [8, 48]]);
         expect(body.turnarounds).toEqual([2]);
         expect(body.alternatives).toBe(false);
-        const manual = trip();
-        manual.points[1].leg = 'straight';
-        manual.points[2].leg = 'straight';
-        const line = await calculateLine(manual, new AbortController().signal, new LegCache());
+        const legs = (modes: RoutePoint['leg'][]): Trip => ({ ...trip(), points: trip().points.map((p, i) => ({ ...p, leg: modes[i] })) });
+        const line = await calculateLine(legs([undefined, 'straight', 'straight']), new AbortController().signal, new LegCache());
         expect(line.unroutedKm).toBeCloseTo(line.unknownSurfaceKm);
         expect(line.elapsed.at(-1)).toBe(line.seconds);
         expect(line.elevation.every(h => h === null)).toBe(true);
         expect(line.edges).toEqual({});
         expect(surfaceRuns(line).shares.get('Unknown')).toBe(1);
-        manual.points[2].leg = 'routed';
-        const mixed = await calculateLine(manual, new AbortController().signal, new LegCache());
+        const mixed = await calculateLine(legs([undefined, 'straight', 'routed']), new AbortController().signal, new LegCache());
         expect(mixed.edges).toEqual({ surfaces: [null, null, 'Paved', 'Gravel'], pushing: [null, null, false, true] });
     });
     it('aligns surface sections by distance and clips the view without changing route shares', () => {

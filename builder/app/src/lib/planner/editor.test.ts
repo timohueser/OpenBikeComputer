@@ -394,6 +394,15 @@ describe('legs', () => {
         expect(orderedRoutePoints(pinned).map(p => p.id)).toEqual(['start', 'night-1', 'visit', 'early', 'finish']);
     });
 
+    it('adds a point behind the start to the first leg', async () => {
+        const points = (['start', 'visit', 'finish'] as const).map((id, i): RoutePoint => ({ id, label: id, kind: id === 'visit' ? 'waypoint' : id,
+            coordinate: [8 + i * .1, 48], progress: i / 2, leg: i ? 'straight' : undefined }));
+        const plan: Trip = { ...emptyTrip(), points, routeOrder: ['visit'] };
+        const trip = { ...plan, routing: await calculateLine(plan, new AbortController().signal, new LegCache()) };
+        const cafe: RoutePoint = { id: 'cafe', kind: 'waypoint', label: 'Café', coordinate: [7.95, 48], progress: 0 };
+        expect(orderedRoutePoints(addPointNear(trip, cafe)).map(p => p.id)).toEqual(['start', 'cafe', 'visit', 'finish']);
+    });
+
     it('keeps a visit added before a pinned night inside that night\'s day', () => {
         const initial = initialTrip();
         // A leg mode fixes the route order, which is where a clicked point used to land after the night.

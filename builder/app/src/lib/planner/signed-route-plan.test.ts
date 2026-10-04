@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { emptyTrip, orderedRoutePoints, startLoopHere, type Coordinate } from './editor';
+import { emptyTrip, orderedRoutePoints, startLoopHere } from './editor';
+import type { Coordinate } from './geo';
 import { LegCache } from './route-legs';
 import { decodeCoordinates } from './route-answer';
 import { calculateLine } from './routing';

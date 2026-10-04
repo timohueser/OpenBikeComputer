@@ -1,4 +1,4 @@
-import type { Coordinate } from '../../src/lib/planner/editor';
+import type { Coordinate } from '../../src/lib/planner/geo';
 import type { AnswerRoute } from '../../src/lib/planner/route-answer';
 import type { RouteTotals } from '../../src/lib/planner/routing';
 
