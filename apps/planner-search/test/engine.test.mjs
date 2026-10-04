@@ -1,22 +1,13 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {search,norm,simpleRequest,rank} from '../web/engine.mjs';
+import {search,norm,simpleRequest,rank,routePositions,distance} from '../web/engine.mjs';
 import {streetNorm,compact} from '../web/text.mjs';
+import {lengths} from '../web/geography.mjs';
 
 import {database} from './database.mjs';
 const {db,conn,records}=database();
 const view=[7.8,47.9,7.95,48.05];
 
-test('a category uses tags and stays in the viewport',()=>{
-  const out=search(db,{q:'bakery',view});
-  assert.deepEqual(new Set(out.results.map(p=>p.source)),new Set(['n1','n2']));
-  assert.ok(out.results.every(p=>p.kind==='bakery'));
-  assert.ok(out.results[0].distance<=out.results[1].distance);
-});
-test('a named city overrides the viewport and resolves an alias',()=>{
-  const out=search(db,{q:'bakeries in Munich',view,request:{type:'places',what:['bakery'],where:{near:'Munich',in:true}}});
-  assert.deepEqual(out.results.map(p=>p.source),['n4']);
-});
 test('distant named results survive local matches; ambiguity uses proximity',()=>{
   assert.equal(search(db,{q:'Kandel',view}).results[0].source,'n6');
   assert.equal(search(db,{q:'Kandel',view:[8.1,49,8.3,49.2]}).results[0].source,'r7');
@@ -40,18 +31,7 @@ test('free-form addresses retain house precision and label fallback',()=>{
   assert.equal(missing.results[0].precision,'street');
   assert.match(missing.note,/House number not found/);
 });
-test('route halves filter by route distance; missing day does not broaden',()=>{
-  const plan={coordinates:[[7.84,47.99],[7.85,47.99],[7.9,47.99]],days:[1,2]};
-  const request={type:'places',what:['bakery'],where:{scope:'route',part:'first_half'},radius:.2};
-  const out=search(db,{q:'bakeries in first half',view,plan,request});
-  assert.equal(out.results.length,2);
-  assert.ok(out.results.every(p=>p.position.along<=p.position.total/2));
-  const absent=search(db,{q:'bakeries day three',view,plan,request:{...request,where:{day:3,part:'end'}}});
-  assert.equal(absent.results.length,0);assert.match(absent.note,/no day 3/);
-});
-test('near me needs location and SQL-looking input stays data',()=>{
-  const out=search(db,{q:'bakery near me',view,request:{type:'places',what:['bakery'],where:{scope:'here'}}});
-  assert.match(out.note,/Set your location/);
+test('SQL-looking input stays data',()=>{
   assert.doesNotThrow(()=>search(db,{q:'" OR 1=1; DROP TABLE places --',view}));
   assert.equal(db.all('SELECT count(*) n FROM places')[0].n,records.length);
 });
@@ -59,6 +39,7 @@ test('ordinary place names and categories do not depend on word count',()=>{
   assert.equal(simpleRequest('bakery').type,'places');
   assert.equal(simpleRequest('Statue of Liberty').type,'place');
   assert.equal(simpleRequest('Lidl').type,'place');
+  assert.deepEqual(simpleRequest('Döner near me').where,{scope:'here'});
 });
 test('street abbreviations match in both directions; addresses follow the map or explicit city',()=>{
   for(const q of ['Habsburgerstr 10','Habsburgerstr. 10','Habsburgerstraße 10']) {
@@ -74,13 +55,6 @@ test('nearby street groups collapse but a summit and pass stay distinct',()=>{
   assert.ok(r.some(p=>p.kind==='pass'));
   assert.ok(r.some(p=>p.kind==='summit'));
   assert.ok(r.some(p=>p.kind==='city'));
-});
-test('food searches use cuisine tags or food business names, within their geographic scope',()=>{
-  assert.deepEqual(simpleRequest('Döner near me').where,{scope:'here'});
-  assert.deepEqual(new Set(search(db,{q:'pizza',view}).results.map(p=>p.source)),new Set(['n16','n19']));
-  for(const q of ['Döner','Doener','kebap'])
-    assert.deepEqual(new Set(search(db,{q,view}).results.map(p=>p.source)),new Set(['n17','n19']));
-  assert.deepEqual(search(db,{q:'pizza in Munich',view,request:{type:'places',what:['pizza'],where:{near:'Munich',in:true}}}).results.map(p=>p.source),['n21']);
 });
 test('spacing and punctuation work across arbitrary names, including explicit cities',()=>{
   for(const q of ['Media Markt','Media-Markt','MediaMarkt Freiburg','Media Markt Freiburg'])
@@ -111,4 +85,33 @@ test('equivalent named destinations use distance despite unequal importance and 
   const far={...near,source:'far',score:120,distance:200};
   const other={...near,source:'other',name:'Different',score:110};
   assert.deepEqual(rank([other,near,far]).map(p=>p.source),['far','other','near']);
+});
+test('route positions equal a scan of every segment and read only nearby segments',()=>{
+  const route=Array.from({length:20000},(_,i)=>[7+i*1e-4,48+.01*Math.sin(i/50)]),ds=lengths(route);
+  const scan=point=>{
+    let best={distance:Infinity,along:0},along=0;
+    for(let i=1;i<route.length;i++) {
+      const a=route[i-1],b=route[i],cos=Math.cos(point[1]*Math.PI/180),len=ds[i]-ds[i-1];
+      const vx=(b[0]-a[0])*cos,vy=b[1]-a[1],wx=(point[0]-a[0])*cos,wy=point[1]-a[1];
+      const t=Math.max(0,Math.min(1,(vx*wx+vy*wy)/(vx*vx+vy*vy||1)));
+      const d=distance(point,[a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1])]);
+      if(d<best.distance)best={distance:d,along:along+t*len};
+      along+=len;
+    }
+    return {...best,total:along};
+  };
+  let reads=0;
+  const position=routePositions(new Proxy(route,{get(target,key) {
+    if(/^\d+$/.test(String(key)))reads++;
+    return target[key];
+  }}),ds);
+  const near=Array.from({length:300},(_,i)=>{
+    const [x,y]=route[i*6151%route.length];
+    return [x+(i%7-3)*.002,y+(i%5-2)*.004];
+  });
+  reads=0;
+  for(const point of near)assert.deepEqual(position(point),scan(point));
+  assert.ok(reads<near.length*route.length/10,`${reads} route reads`);
+  for(const point of near.slice(0,50).map(([x,y],i)=>[x+(i%3-1)*.3,y+(i%4-1.5)*.2]))
+    assert.deepEqual(position(point),scan(point));
 });

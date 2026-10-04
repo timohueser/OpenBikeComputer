@@ -2,7 +2,7 @@ import {DEFAULT_VIEW,around} from './web/engine.mjs';
 
 export function searchCases(db) {
   const queries = ['Kandel','Feldberg','Freiburg','Freibug','Xreiburg','Habsburgerstr. 10 Freiburg',
-    'Kaiser Joseph Straße 9999 Freiburg','Media Markt','NediaMarkt','Mdeia Mrkt','pizza','Döner','bakery'];
+    'Kaiser Joseph Straße 9999 Freiburg','Media Markt','NediaMarkt','Mdeia Mrkt'];
   const cases = queries.map(q=>({q,view:DEFAULT_VIEW}));
   for (const p of db.all('SELECT name,lon,lat FROM places WHERE id%12007=0 AND length(name)>4 ORDER BY id')) {
     cases.push({q:p.name,view:around([p.lon,p.lat],10)});

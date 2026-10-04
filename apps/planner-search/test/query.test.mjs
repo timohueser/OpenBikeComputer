@@ -87,6 +87,8 @@ test('plain categories inherit pointing and cuisine filters stay visible and rem
   const request={...pizza.request};delete request.cuisine;
   const anyFood=await answerQuery(db,{...input,q:'pizza',request},never);
   assert.ok(anyFood.results.some(p=>p.name==='Asia Wok'));assert.equal(anyFood.request.cuisine,undefined);
+  const doner=await answerQuery(db,{...input,q:'Döner'},never);
+  assert.deepEqual(new Set(doner.results.map(p=>p.source)),new Set(['n17','n19']));
 });
 
 test('literal names and bilingual categories keep an explicit locality without the model', async () => {

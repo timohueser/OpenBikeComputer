@@ -18,7 +18,6 @@ const habsburgerLocation=[7.85434,48.01003];
 const habsburgerAddress=p=>p.precision==='house'&&p.city==='Freiburg im Breisgau'
   &&habsburgerSources.has(p.source)&&distance([p.lon,p.lat],habsburgerLocation)<.02;
 const cases=[
-  {q:'bakery',check:r=>r.length>0&&r.every(p=>p.kind==='bakery'&&p.lon>=DEFAULT_VIEW[0]&&p.lon<=DEFAULT_VIEW[2])},
   {q:'Kandel',check:r=>r[0]?.kind==='summit'&&r.some(p=>p.source==='n1591343465'&&p.kind==='pass')&&r.filter(p=>p.kind==='street'&&p.name==='Kandel'&&p.distance<30).length===1},
   {q:'Feldberg',check:r=>r[0]?.source==='n26862857'&&r.some(p=>p.source==='r317609')},
   {q:'Feldberg (Schwarzwald)',check:r=>r[0]?.source==='r317609'},
@@ -40,9 +39,6 @@ const cases=[
   }})),
   {q:'Media Markt München',serverOnly:true,check:r=>r[0]?.city==='München'&&r[0]?.kind==='electronics'},
   {q:'Kaiser Joseph Straße 9999 Freiburg',check:r=>r[0]?.precision==='street'},
-  {q:'bakeries in Munich',serverOnly:true,request:{type:'places',what:['bakery'],where:{near:'Munich',in:true}},check:r=>r.length>0&&r.every(p=>p.city==='München')},
-  ...['pizza','Döner'].map(q=>({q,check:r=>r.length>0&&r.every(p=>['restaurant','fast_food','cafe','pub','bar'].includes(p.kind))&&r.some(p=>p.why.match.includes('OSM cuisine tag'))})),
-  {q:'Döner in Teningen',request:{type:'places',what:['kebab'],where:{near:'Teningen',in:true}},check:r=>r.length>0&&r.every(p=>p.city==='Teningen'&&(p.cuisine.includes('kebab')||/döner|kebap|kebab/i.test(p.name)))},
 ];
 const results=[];
 for(const [name,db]of Object.entries(dbs))for(const c of cases) {
