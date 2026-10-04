@@ -520,6 +520,9 @@ pub fn answer<D: RoutingData>(router: &mut Router<D>, request: &LineRequest, con
         line.push([(lon * 1e6).round() as i32, (lat * 1e6).round() as i32]);
     }
     line.dedup();
+    if line.len() < 2 {
+        return Err(Error::InvalidRequest("The line has no length".into()));
+    }
     if request.closed && line[0] != line[line.len() - 1] {
         line.push(line[0]);
     }
@@ -529,7 +532,7 @@ pub fn answer<D: RoutingData>(router: &mut Router<D>, request: &LineRequest, con
     }
     let (line, _) = simplify(&line, &[0, line.len() - 1], INPUT_TOLERANCE_M);
     // A loop search starts with two shaping points, so its line needs a vertex between its ends.
-    if line.len() < 2 + request.closed as usize {
+    if request.closed && line.len() < 3 {
         return Err(Error::InvalidRequest("The line has no length".into()));
     }
     let tips = reversals(&line);

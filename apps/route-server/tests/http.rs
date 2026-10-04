@@ -269,6 +269,7 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
             StatusCode::UNPROCESSABLE_ENTITY,
             Some("line_not_reproducible"),
         ),
+        (r#"{"line":[[0.005,0],[0.005,0]],"profile":"touring"}"#, StatusCode::BAD_REQUEST, Some("invalid_request")),
     ] {
         // SAFETY: The test retains the handle and request bytes and serializes queries.
         let native_response = native_body(unsafe {
