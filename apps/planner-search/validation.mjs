@@ -1,5 +1,7 @@
+/** Input that a client must correct. Every other error is internal. */
+export class RequestError extends Error {}
 const fail = () => {
-  throw new Error('Invalid planner search request.');
+  throw new RequestError('Invalid planner search request.');
 };
 const coord = (p) =>
   Array.isArray(p) &&

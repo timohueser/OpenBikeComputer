@@ -1,9 +1,10 @@
 import {around, distance} from './engine.mjs';
+import {RequestError} from '../validation.mjs';
 
 export function reverseAddress(db, coordinate) {
   if (!Array.isArray(coordinate) || coordinate.length !== 2 || !coordinate.every(Number.isFinite)
       || Math.abs(coordinate[0]) > 180 || Math.abs(coordinate[1]) > 90)
-    throw new Error('Provide a longitude and latitude.');
+    throw new RequestError('Provide a longitude and latitude.');
   // A distant address must not name an isolated point.
   const radius = .1;
   const [west, south, east, north] = around(coordinate, radius);

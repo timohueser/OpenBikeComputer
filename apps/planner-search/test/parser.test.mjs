@@ -6,17 +6,30 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parserProcess } from '../parser.mjs';
 
-test('timed-out requests keep their worker slots until completion', async (t) => {
+async function start(t, script) {
   const directory = mkdtempSync(join(tmpdir(), 'planner-worker-'));
   const executable = join(directory, 'worker');
-  writeFileSync(executable, `#!${process.execPath}\nconsole.log(JSON.stringify({ready:true})); process.stdin.resume();\n`, {mode:0o755});
-  const parser = parserProcess(executable, directory);
+  writeFileSync(executable, `#!${process.execPath}\nconsole.log(JSON.stringify({ready:true}));\n${script}\n`, {mode:0o755});
+  const failures = [];
+  const parser = parserProcess(executable, directory, (message) => failures.push(message));
   t.after(() => { parser.close(); rmSync(directory, {recursive:true,force:true}); });
   for (let i = 0; i < 100 && !parser.status().ready; i++) await delay(20);
   assert.equal(parser.status().ready, true);
+  return {parser, failures};
+}
+
+test('a hung runtime fails every pending request and reports one failure', async (t) => {
+  const {parser, failures} = await start(t, 'process.stdin.resume();');
   t.mock.timers.enable({apis:['setTimeout']});
-  const requests = Array.from({length:8}, () => assert.rejects(parser.parse('hotels'), /timed out/));
+  const requests = Array.from({length:3}, () => assert.rejects(parser.parse('hotels'), /timed out/));
   t.mock.timers.tick(10_000);
   await Promise.all(requests);
-  await assert.rejects(parser.parse('hotels'), /busy/);
+  assert.deepEqual(failures, ['The query model timed out. Try again.']);
+  await assert.rejects(parser.parse('hotels'), /timed out/);
+});
+
+test('a stopped runtime fails its request and reports one failure', async (t) => {
+  const {parser, failures} = await start(t, 'process.stdin.once("data", () => process.exit(3));');
+  await assert.rejects(parser.parse('hotels'), /stopped/);
+  assert.deepEqual(failures, ['The query runtime stopped.']);
 });

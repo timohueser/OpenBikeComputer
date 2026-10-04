@@ -6,7 +6,7 @@ import { searchRuntime } from './runtime.mjs';
 import {openRegion} from './installation.mjs';
 import { openingHours } from './hours.mjs';
 import { routeQuery } from './routing.mjs';
-import { validateInput } from './validation.mjs';
+import { RequestError } from './validation.mjs';
 import { allowedOrigin } from './origins.mjs';
 
 const root = import.meta.dirname,
@@ -16,6 +16,13 @@ const hours = openingHours({countryCode:'de',timeZone:'Europe/Berlin'});
 const parser = parserProcess(
   process.env.OBC_SEARCH_PYTHON || path.join(root, '.venv/bin/python'),
   path.join(data, 'model'),
+  (message) => {
+    // The supervisor restarts the service, and with it the model.
+    console.error(message);
+    process.exitCode = 1;
+    stop();
+    setTimeout(() => process.exit(1), 1000).unref();
+  },
 );
 const databases = new Map();
 for (const region of (process.env.OBC_SEARCH_REGIONS || 'germany,baden-wuerttemberg').split(',')) {
@@ -100,13 +107,21 @@ const server = http.createServer(async (req, res) => {
         return;
       }
     }
-    const input = JSON.parse(body);
+    let input;
+    try {
+      input = JSON.parse(body);
+    } catch {
+      throw new RequestError('The request body is not JSON.');
+    }
     if (url.pathname === '/api/planner-search/route') {
-      json(200, await routeQuery(input));
+      try {
+        json(200, await routeQuery(input));
+      } catch (error) {
+        json(400, { error: error.message });
+      }
       return;
     }
-    if (url.pathname !== '/api/planner-search/reverse') validateInput(input);
-    const region = input.region || 'baden-wuerttemberg',
+    const region = input?.region || 'baden-wuerttemberg',
       database = databases.get(region);
     if (!database) {
       json(503, {
@@ -115,12 +130,16 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (url.pathname === '/api/planner-search/reverse') {
-      json(200, database.runtime.reverse(input.coordinate));
+      json(200, database.runtime.reverse(input?.coordinate));
       return;
     }
     json(200, await database.runtime.query(input));
   } catch (error) {
-    json(400, { error: error.message });
+    if (error instanceof RequestError) json(400, { error: error.message });
+    else {
+      console.error(error);
+      json(500, { error: 'Search failed. Try again.' });
+    }
   } finally {
     if (admitted) active--;
   }
