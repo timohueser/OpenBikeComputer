@@ -40,7 +40,7 @@ Pass `--data-dir DIRECTORY --region baden-wuerttemberg` to setup to build only B
 in another directory. Set `OBC_SEARCH_DATA` to that directory when starting the
 search service. A regional build becomes visible only after it completes.
 
-Extract from a complete schema 3 package:
+Extract from a complete schema 4 package:
 
 ```sh
 python3 apps/planner-search/extract.py SOURCE.sqlite OUTPUT.sqlite --bounds=7.77,47.965,7.96,48.06
@@ -102,7 +102,7 @@ house numbers. A missing number returns a clearly labelled street location.
 
 `POST /api/planner-search/reverse` accepts `region` and `[longitude, latitude]` in
 `coordinate`. It returns `label` for the nearest mapped house within 100 metres,
-or `null`. Search packages use schema 3. Rebuild with `build.py` after a schema change.
+or `null`. Search packages use schema 4. Rebuild with `build.py` after a schema change.
 
 ## Checks
 

@@ -48,6 +48,16 @@ and `model/`. `routes/` contains `REGION.json` from the
 [route catalog contract](route-catalog.md). `device/catalog.json` is a snapshot. Its file references are absolute
 URLs to the original immutable cell objects.
 
+Search packages use schema `4`. Each place stores `website`, `phone`, and
+`description` as UTF-8 text. Empty values are empty strings. The producer uses
+`website` before `contact:website`, and `phone` before `contact:phone`, skipping
+empty values. A description uses `description`, then `description:en`, then
+`description:de`, then the first nonempty `description:*` key in sorted order.
+The producer trims outer whitespace and keeps the description's internal text.
+The search query accepts an optional `source` with an OSM identity such as
+`n123`, `w123`, or `r123`. It returns that place without name matching or model
+inference. An absent identity returns an empty result.
+
 The overlay database has SQLite `user_version=2`. `features` stores stable IDs,
 layer kinds, cycling and walking minimum zooms, geometry IDs, and attribute IDs.
 `attributes` stores distinct JSON properties without the way ID or layer kind.
