@@ -520,8 +520,10 @@ struct RootView: View {
             if let plan = mainModel.plannedPlan(for: id) {
                 PlannerPreviewView(
                     editing: plan,
-                    onSave: { route, plan, bikeType, inPlace in
-                        savePlannerPreview(route, plan: plan, bikeType: bikeType, replacing: inPlace ? id : nil)
+                    // The route keeps the bike type set in its detail unless the planner changed the activity.
+                    onSave: { route, saved, bikeType, inPlace in
+                        savePlannerPreview(route, plan: saved, bikeType: saved.bike == plan.bike ? nil : bikeType,
+                                           replacing: inPlace ? id : nil, keeping: id)
                     },
                     onClose: { path.removeLast() },
                     source: plannerSource
@@ -567,7 +569,7 @@ struct RootView: View {
                     }
                 )
                 // Saved changes build the screen again: its model holds the line it was built with.
-                .id([route.distanceMeters, route.elevationGainMeters, Double(route.pointCount)])
+                .id(mainModel.routeEditCount)
             }
         case .ride(let id):
             if let ride = mainModel.rides.first(where: { $0.id == id }) {
@@ -735,11 +737,12 @@ struct RootView: View {
         { path.append(.planner(sample: false)) }
     }
 
-    /// A hiking plan takes the last bike type, as an import does, or keeps the type of the route it
-    /// edits. `replacing` saves the changes to that route; else the plan lands as a new route.
-    private func savePlannerPreview(_ route: ImportedRoute, plan: PlannerPlan, bikeType: BikeType?, replacing id: RouteID? = nil) {
+    /// A nil bike type takes the type of the route the plan came from, else the last bike type, as
+    /// an import does. `replacing` saves the changes to that route; else the plan lands as a new route.
+    private func savePlannerPreview(_ route: ImportedRoute, plan: PlannerPlan, bikeType: BikeType?,
+                                    replacing id: RouteID? = nil, keeping source: RouteID? = nil) {
         guard let end = route.points.last, route.points.count > 1, let name = route.name else { return }
-        let bikeType = bikeType ?? id.map(mainModel.plannedBikeType(for:)) ?? lastBikeType.value
+        let bikeType = bikeType ?? source.map(mainModel.plannedBikeType(for:)) ?? lastBikeType.value
         let fileName = GPXFile.fileName(for: name)
         let line = MeasuredLine(routePoints: route.points)
         let trip = Trip(

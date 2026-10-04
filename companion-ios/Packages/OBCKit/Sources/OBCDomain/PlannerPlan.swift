@@ -127,14 +127,19 @@ extension PlannerPlan {
     /// A drawn leg follows its line within this distance: close enough to look exact on the map.
     public static let keptLineToleranceMeters = 3.0
 
-    /// A line kept as it is: a start, a finish and one drawn leg between them.
-    public static func keptLine(_ line: [RoutePoint], startName: String = "Start", finishName: String = "Finish") -> PlannerPlan? {
+    /// A line kept as it is: a start, a finish and one drawn leg between them. The waypoints are
+    /// markers, so a waypoint off the line adds no detour.
+    public static func keptLine(_ line: [RoutePoint], waypoints: [Waypoint] = [], startName: String = "Start",
+                                finishName: String = "Finish") -> PlannerPlan? {
         guard let first = line.first?.coordinate, let last = line.last?.coordinate, line.count > 1 else { return nil }
         return PlannerPlan(points: [
             PlanPoint(id: "start", label: startName, coordinate: first, progress: 0, kind: .start),
             PlanPoint(id: "finish", label: finishName, coordinate: last, progress: 1, kind: .finish,
                       leg: .drawn, drawn: drawnLeg(from: first, along: line)),
-        ], mode: .route)
+        ] + waypoints.enumerated().map { index, waypoint in
+            PlanPoint(id: "waypoint-\(index + 1)", label: waypoint.name, coordinate: waypoint.coordinate, progress: 0,
+                      kind: .marker, placeKind: waypoint.category?.placeKind)
+        }, mode: .route)
     }
 
     /// A trip kept as it is: one drawn leg per day, a night at each day end, and a transfer leg
@@ -161,7 +166,13 @@ extension PlannerPlan {
             here = end
         }
         for index in points.indices { points[index].progress = distance > 0 ? points[index].progress / distance : 0 }
-        return PlannerPlan(points: points, mode: .trip, routeOrder: points.dropFirst().dropLast().map(\.id))
+        let order = points.dropFirst().dropLast().map(\.id)
+        points += trip.waypoints.enumerated().map { index, stop in
+            PlanPoint(id: "waypoint-\(index + 1)", label: stop.name, coordinate: stop.coordinate, progress: 0, kind: .marker,
+                      placeKind: stop.kind == .campsite ? WaypointCategory.campsite.placeKind
+                        : stop.kind == .hotel ? WaypointCategory.accommodation.placeKind : nil)
+        }
+        return PlannerPlan(points: points, mode: .trip, routeOrder: order)
     }
 
     /// The inner line of a drawn leg from `start` along `line` to its last point. Only the
@@ -173,5 +184,24 @@ extension PlannerPlan {
         if kept.last?.elevationMeters == nil { kept.removeLast() }
         if kept.first?.coordinate == start, kept.first?.elevationMeters == nil { kept.removeFirst() }
         return kept
+    }
+}
+
+extension WaypointCategory {
+    /// The planner place kind of the category, as a plan point's `placeKind` keeps it.
+    public var placeKind: String {
+        switch self {
+        case .water: "water"
+        case .campsite: "camping"
+        case .accommodation: "hotel"
+        case .resupply: "shop"
+        case .pharmacy: "pharmacy"
+        case .bikeShop: "bike"
+        }
+    }
+
+    public init?(placeKind: String) {
+        guard let category = Self.allCases.first(where: { $0.placeKind == placeKind }) else { return nil }
+        self = category
     }
 }

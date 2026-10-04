@@ -321,16 +321,12 @@ public final class PlannerPreviewModel {
 
     public func exportRoute(name: String) -> ImportedRoute {
         let distances = pointDistances
+        // Stops and markers are the route's waypoints, in the order they come along the line.
         let located = points.filter { !isEndpoint($0.id) && $0.kind == .visit }.map { ($0.place, distances[$0.id] ?? 0) }
-        let waypoints = located.enumerated().map { index, entry in
-            let category: WaypointCategory? = switch entry.0.kind {
-            case .water: .water
-            case .camping: .campsite
-            case .shop: .resupply
-            default: nil
-            }
-            return Waypoint(index: index, name: entry.0.name, note: entry.0.note,
-                            distanceAlongMeters: entry.1, coordinate: entry.0.coordinate, category: category)
+            + markers.map { ($0.place, positionedPlace($0.place).alongRouteMeters) }
+        let waypoints = located.sorted { $0.1 < $1.1 }.enumerated().map { index, entry in
+            Waypoint(index: index, name: entry.0.name, note: entry.0.note, distanceAlongMeters: entry.1,
+                     coordinate: entry.0.coordinate, category: WaypointCategory(placeKind: entry.0.kind.rawValue))
         }
         let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
         return ImportedRoute(name: title.isEmpty ? routeTitle : title,

@@ -28,6 +28,8 @@ public struct PlannerPreviewView: View {
     @State private var searchShown = false
     @State private var saveShown = false
     @State private var saveChoiceShown = false
+    /// The copy's name prompt opens once the save choice has gone.
+    @State private var copyAfterChoice = false
     @State private var closeShown = false
     private struct OfflineAreaRequest: Identifiable {
         let id = UUID()
@@ -186,10 +188,12 @@ public struct PlannerPreviewView: View {
                         }
                         .obcChoiceSheet("Save", isPresented: $saveChoiceShown, actions: [
                             OBCSheetAction("Save changes", role: .primary) { save(name: model.routeTitle, inPlace: true) },
-                            OBCSheetAction("Save as copy…") { saveShown = true },
-                        ])
-                        .obcDestructiveConfirm("Discard this route?", isPresented: $closeShown,
-                                               message: "Your points and settings go with it.", actionTitle: "Discard") {
+                            OBCSheetAction("Save as copy…") { copyAfterChoice = true },
+                        ], onDismiss: {
+                            if copyAfterChoice { copyAfterChoice = false; saveShown = true }
+                        })
+                        .obcDestructiveConfirm(isEditing ? "Discard changes?" : "Discard this route?", isPresented: $closeShown,
+                                               message: isEditing ? nil : "Your points and settings go with it.", actionTitle: "Discard") {
                             leave(onClose)
                         }
                 }
