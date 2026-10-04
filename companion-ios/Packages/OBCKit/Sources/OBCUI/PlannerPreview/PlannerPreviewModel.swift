@@ -203,6 +203,12 @@ public final class PlannerPreviewModel {
     /// The start, and the finish of a plan that is not a loop. Only the other points have a kind.
     public func isEndpoint(_ id: String) -> Bool { id == points.first?.id || (!isLoop && id == points.last?.id) }
     public var activity: RouteActivity { state.activity }
+    /// The activities whose Balanced profile the release lists. All of them while the release is unknown.
+    public private(set) var activities = RouteActivity.allCases
+    public func loadActivities() async {
+        guard let release, let profiles = try? await service.profiles(release: release) else { return }
+        activities = RouteActivity.allCases.filter { profiles.contains(RoutePreference.balanced.profile(for: $0)) }
+    }
     public var preset: PlannerPreviewPreset { state.preset }
     public var overnightPointID: String? { state.overnightPointID }
     public var overnight: PlannerPreviewPlace? { points.first { $0.id == overnightPointID }?.place }

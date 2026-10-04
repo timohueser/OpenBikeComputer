@@ -206,7 +206,7 @@ public struct PlannerPreviewView: View {
         .onChange(of: drawerPosition) { _, position in
             if position != .collapsed { layersShown = false; infoShown = false }
         }
-        .task(id: model.release?.id) { finder.use(model.release) }
+        .task(id: model.release?.id) { finder.use(model.release); await model.loadActivities() }
         .task(id: routesSearch) {
             guard routesSearch != nil else { return }
             await finder.search(activity: model.activity)
@@ -518,7 +518,7 @@ public struct PlannerPreviewView: View {
     private var preferences: some View {
         VStack(alignment: .leading, spacing: 14) {
             Picker("Activity", selection: Binding(get: { model.activity }, set: { model.setActivity($0) })) {
-                ForEach(RouteActivity.allCases, id: \.self) { Text($0.name).tag($0) }
+                ForEach(model.activities, id: \.self) { Text($0.name).tag($0) }
             }.pickerStyle(.segmented)
             VStack(spacing: 0) {
                 ForEach(Array(PlannerPreviewPreset.allCases.enumerated()), id: \.element) { index, preset in

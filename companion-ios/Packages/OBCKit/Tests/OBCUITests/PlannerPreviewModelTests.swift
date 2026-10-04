@@ -254,6 +254,14 @@ struct PlannerPreviewModelTests {
         #expect(model.points.map(\.id) == ["titisee", "freiburg", "cafe"] && model.planName == nil)
     }
 
+    @Test func onlyTheActivitiesOfTheReleaseAreOffered() async {
+        let model = PlannerPreviewModel(sample: true, service: PlannerTestSource())
+        #expect(model.activities == RouteActivity.allCases)
+        await model.calculateRoute()
+        await model.loadActivities()
+        #expect(model.activities == [.road, .gravel, .mtb, .touring])
+    }
+
     @Test func theHardestPartReadsInTheGradesOfTheActivity() {
         #expect(PlannerRoutesText.reading(0...2, mtb: false).0 == "Up to T3.")
         #expect(PlannerRoutesText.reading(0...1, mtb: false).1 == "Routes whose hardest part is T1 or T2. A path without a grade counts as T1.")
@@ -268,6 +276,7 @@ private actor PlannerTestSource: PlannerDataSource {
     /// The turnarounds of each route request.
     var turnarounds: [[Int]] = []
     func release() async throws -> PlannerRelease { testRelease }
+    func profiles(release: PlannerRelease) -> [String]? { ["gravel", "gravel/shorter", "mtb", "road", "touring"] }
     func route(points: [Coordinate], turnarounds: [Int], activity: RouteActivity, preference: RoutePreference, release: PlannerRelease) async throws -> PlannedPath {
         self.turnarounds.append(turnarounds)
         let samples = points.map { RoutePoint(coordinate: $0, elevationMeters: 300) }

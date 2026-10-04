@@ -129,10 +129,13 @@ public protocol PlannerDataSource: RoutePlanning {
     func mapRelease(bounds: [Double]?, allowNetwork: Bool) async throws -> PlannerRelease
     func search(_ query: PlannerSearchQuery, release: PlannerRelease) async throws -> [PlannerPlace]
     func overlays(bounds: [Double], zoom: Double, network: String, release: PlannerRelease) async throws -> Data
+    /// The routing profiles of the release, or nil when the source does not know them.
+    func profiles(release: PlannerRelease) async throws -> [String]?
 }
 
 extension PlannerDataSource {
     public var supportsOffline: Bool { false }
+    public func profiles(release: PlannerRelease) async throws -> [String]? { nil }
     public func mapRelease(bounds: [Double]?, allowNetwork: Bool = true) async throws -> PlannerRelease {
         guard allowNetwork else { throw PlannerFailure.offlineUnavailable }
         return try await release()
@@ -199,6 +202,8 @@ public actor PlannerService: PlannerDataSource {
         cached = (release, Date())
         return release
     }
+
+    public func profiles(release: PlannerRelease) async throws -> [String]? { try await manifest(release).profiles }
 
     public func route(points: [Coordinate], turnarounds: [Int] = [], activity: RouteActivity, preference: RoutePreference = .balanced,
                       release: PlannerRelease) async throws -> PlannedPath {

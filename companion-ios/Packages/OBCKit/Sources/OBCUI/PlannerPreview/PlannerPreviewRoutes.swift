@@ -6,6 +6,7 @@ import SwiftUI
 #endif
 
 /// The words of the Routes view. Hiking grades are T1–T4, mountain bike grades S0–S3.
+/// Strings only, no SwiftUI types: the macOS package tests build it.
 @MainActor enum PlannerRoutesText {
     static let levels = ["", "Local", "Regional", "National", "International"]
     static func grade(_ index: Int, mtb: Bool) -> String { mtb ? "S\(index)" : "T\(index + 1)" }

@@ -89,6 +89,14 @@ public actor LocalFirstPlanner: PlannerDataSource {
         throw PlannerFailure.offlineUnavailable
     }
 
+    public func profiles(release: PlannerRelease) async throws -> [String]? {
+        if release.isLocal, let map = try await installed().first(where: { $0.id == release.id }) {
+            let source = try await source(map)
+            return try await source.profiles(release: source.release())
+        }
+        return try await online.profiles(release: remoteRelease(release))
+    }
+
     private func remoteRelease(_ release: PlannerRelease) async throws -> PlannerRelease {
         if !release.isLocal { return release }
         return try await online.release()
