@@ -124,8 +124,11 @@ export function setEndpoint(trip: Trip, kind: 'start' | 'finish', coordinate: Co
         points: previous ? trip.points.map(p => p.id === previous.id ? point : p) : [...trip.points, point] };
 }
 
-/** Removing an endpoint promotes its neighbour in route order; a shaping point takes the endpoint name. Markers never become endpoints. */
-export function removeRoutePoint(trip: Trip, id: string): Trip {
+/**
+ * Removing an endpoint promotes its neighbour in route order. A promoted shaping point takes the name of the nearest
+ * place from `placeName`, else the endpoint name. Markers never become endpoints.
+ */
+export function removeRoutePoint(trip: Trip, id: string, placeName?: (coordinate: Coordinate) => string | undefined): Trip {
     const removed = trip.points.find(p => p.id === id);
     if (!removed) return trip;
     if (removed.kind === 'marker') return { ...trip, points: trip.points.filter(p => p.id !== id), routeOrder: trip.routeOrder?.filter(pointId => pointId !== id) };
@@ -134,7 +137,7 @@ export function removeRoutePoint(trip: Trip, id: string): Trip {
     const promoted = neighbour && neighbour.kind !== 'start' && neighbour.kind !== 'finish' ? neighbour : undefined;
     const points = trip.points.filter(p => p.id !== id).map(p => p !== promoted ? p : {
         ...p, id: p.kind === 'night' ? crypto.randomUUID() : p.id, kind: removed.kind,
-        label: p.kind === 'via' ? removed.kind === 'start' ? startLabel : 'Finish' : p.label,
+        label: p.kind === 'via' ? placeName?.(p.coordinate) ?? (removed.kind === 'start' ? startLabel : 'Finish') : p.label,
         progress: removed.kind === 'start' ? 0 : 1, night: undefined, anchor: undefined,
         leg: removed.kind === 'start' ? undefined : p.leg, drawn: removed.kind === 'start' ? undefined : p.drawn,
     });

@@ -820,10 +820,7 @@
 
     function removePoint() {
         if (!selectedPoint) return;
-        const next = removeRoutePoint(trip, selectedPoint.id);
-        // A shaping point that becomes the start or finish takes the name of the nearest place.
-        const promoted = (p: RoutePoint) => (p.kind === 'start' || p.kind === 'finish') && trip.points.find(old => old.id === p.id)?.kind === 'via';
-        commit({ ...next, points: next.points.map(p => promoted(p) ? { ...p, label: map?.placeName(p.coordinate) ?? p.label } : p) }, 'Point removed');
+        commit(removeRoutePoint(trip, selectedPoint.id, coordinate => map?.placeName(coordinate)), 'Point removed');
         pointing = undefined;
         clearSelection();
     }
