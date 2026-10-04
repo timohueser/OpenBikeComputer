@@ -30,25 +30,17 @@ test('native JSON capabilities preserve complete replies, metadata and reverse l
   fixture.conn.prepare('INSERT INTO metadata VALUES (?,?)').run('schema','4');
   fixture.conn.prepare('INSERT INTO metadata VALUES (?,?)').run('attribution',JSON.stringify(['OSM contributors']));
   const hours={assertEnvironment(){},openingState(){return 'unknown';},currentOpening(){return undefined;}};
-  let calls=0;
   const native=nativeSearch({region:'test',hours,
-    all:(sql,bind)=>JSON.stringify({rows:fixture.db.all(sql,JSON.parse(bind))}),
-    parse:()=>{calls++;return JSON.stringify({request:{type:'reverse'},elapsed:1});}});
+    all:(sql,bind)=>JSON.stringify({rows:fixture.db.all(sql,JSON.parse(bind))})});
   const answer=await native.request('query',{...input,q:'reverse this route',now:'2026-09-28T10:00:00Z'});
-  assert.equal(calls,1);assert.equal(answer.request.type,'reverse');
-  assert.equal((await native.request('status',{})).parser.ready,true);
-  const points=[[7.854,48.01],[7.86,48.02]];
-  assert.deepEqual(await native.request('route-request',{points,bike:'touring',goal:'shortest'}),
-    {points,profile:'touring/shorter',alternatives:false});
-  for (const goal of ['least_unpaved','most_climbing'])
-    await assert.rejects(native.request('route-request',{points,bike:'touring',goal}), /routing package has no/);
+  assert.match(answer.notice,/structured request/);assert.equal(answer.canRetry,true);
   assert.equal(answer.region,'test');assert.deepEqual(answer.attribution,['OSM contributors']);
   fixture.conn.exec("UPDATE place_records SET website='https://bakery.example',phone='+49 123',description='Bread and coffee.' WHERE source='n1'");
   const details=await native.request('query',{...input,q:'',source:'n1'});
+  assert.equal(details.notice,undefined);
   assert.equal(details.results[0].website,'https://bakery.example');
   assert.equal(details.results[0].phone,'+49 123');
   assert.equal(details.results[0].description,'Bread and coffee.');
-  assert.equal(calls,1);
   for(const source of ['n1 OR 1=1','poi-1',4,'w0'])assert.throws(()=>validateInput({...input,source}));
   assert.deepEqual(await native.request('reverse',{coordinate:[7.854,48.01]}),{label:'Habsburgerstraße 10, Freiburg'});
   await assert.rejects(native.request('query',{...input,region:'missing'}),/does not cover/);

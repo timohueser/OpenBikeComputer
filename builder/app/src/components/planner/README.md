@@ -193,20 +193,6 @@ Omit `--terrain` for a basemap. The command uses `uv` with pinned dependencies.
 A map cutout does not change routing or search coverage.
 Use `--no-recompress` to crop compressed terrain without encoding it again.
 
-Build and install a local runtime bundle:
-
-```sh
-cargo build --release -p route-build --bin route-extract -p route-server --bin route-server
-python3 tools/planner_cutout.py /srv/planner/bw /srv/planner/freiburg \
-  --bbox=7.77,47.965,7.96,48.06 --region freiburg
-python3 tools/planner_offline.py pack /srv/planner/freiburg /srv/planner/bundle
-python3 tools/planner_offline.py verify /srv/planner/bundle
-python3 tools/planner_offline.py install /srv/planner/bundle /srv/planner/offline
-```
-
-Installation accepts an HTTP(S) bundle URL. Rerun to resume.
-See the [bundle contract](../../../../../specs/planner-offline.md).
-
 ## Checks
 
 From `builder/app`:

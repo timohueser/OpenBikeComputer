@@ -766,31 +766,12 @@ triggers = ["companion-ios/OBCCompanionUITests/**"]
 
 
 [[suite]]
-id = "planner.native-http"
+id = "planner.native-tiles"
 route = "ordinary"
-command = "bash apps/planner-native/test-http.sh"
+command = "bash apps/planner-native/test-tiles.sh"
 jobs = ["ios-unit"]
 platforms = ["macos"]
-triggers = ["apps/planner-native/PlannerHTTPServer.swift", "apps/planner-native/tests/**", "apps/planner-native/test-http.sh"]
-
-[[suite]]
-id = "planner.native-host"
-route = "ordinary"
-command = "bash apps/planner-native/test-host.sh"
-jobs = ["ios-unit"]
-platforms = ["macos"]
-triggers = [
-  "apps/planner-native/*.swift",
-  "apps/planner-native/build.mjs",
-  "apps/planner-native/test-host.sh",
-  "apps/planner-search/native/*.swift",
-  "apps/planner-search/native-build.mjs",
-  "host/route-engine/examples/phone/prepare-parser.py",
-  "host/route-engine/examples/phone/parser_notices.py",
-  "host/route-engine/examples/phone/parser-notices.json",
-  "host/route-engine/examples/phone/PlannerHostBenchmark.swift",
-  "host/route-engine/examples/phone/planner-host-benchmark.js",
-]
+triggers = ["apps/planner-native/PMTilesArchive.swift", "apps/planner-native/tests/**", "apps/planner-native/test-tiles.sh"]
 
 [[suite]]
 id = "planner.search"

@@ -1,4 +1,4 @@
-"""Portable planner release identity and file verification."""
+"""Planner release identity and file verification."""
 
 import hashlib
 import json

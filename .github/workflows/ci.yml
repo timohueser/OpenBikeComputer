@@ -948,27 +948,16 @@ jobs:
           key: ios
       - name: OBCRouting package tests (Swift Testing, host)
         run: tools/build-companion-core.sh aarch64-apple-darwin && cd companion-ios/Packages/OBCRouting && swift test
-      - name: Planner local HTTP transport
-        id: planner-http
+      - name: Planner PMTiles reader
+        id: planner-tiles
         shell: bash
-        run: bash apps/planner-native/test-http.sh 2>&1 | tee "$RUNNER_TEMP/planner-http.log"
-      - name: Upload planner HTTP results
-        if: ${{ !cancelled() && (steps.planner-http.outcome == 'success' || steps.planner-http.outcome == 'failure') }}
+        run: bash apps/planner-native/test-tiles.sh 2>&1 | tee "$RUNNER_TEMP/planner-tiles.log"
+      - name: Upload planner PMTiles results
+        if: ${{ !cancelled() && (steps.planner-tiles.outcome == 'success' || steps.planner-tiles.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
         with:
-          name: planner-http-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/planner-http.log
-          if-no-files-found: error
-      - name: Planner native host compilation
-        id: planner-host
-        shell: bash
-        run: bash apps/planner-native/test-host.sh 2>&1 | tee "$RUNNER_TEMP/planner-host.log"
-      - name: Upload planner host results
-        if: ${{ !cancelled() && (steps.planner-host.outcome == 'success' || steps.planner-host.outcome == 'failure') }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: planner-host-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/planner-host.log
+          name: planner-tiles-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/planner-tiles.log
           if-no-files-found: error
 
   # iOS app builds and companion screenshots.

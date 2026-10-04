@@ -1,4 +1,3 @@
-import { clientConfig } from "./client-config";
 import type { Archive } from "./layers/data-layer";
 import type { Coordinate } from "./map-types";
 import type { CatalogRecord } from "./signed-routes";
@@ -38,7 +37,7 @@ function mapBounds(value: string | undefined): [number, number, number, number] 
     return coordinates as [number, number, number, number];
 }
 
-export const MAP_BOUNDS = mapBounds(clientConfig.bounds?.join(",") ?? import.meta.env.VITE_PLANNER_MAP_BOUNDS);
+export const MAP_BOUNDS = mapBounds(import.meta.env.VITE_PLANNER_MAP_BOUNDS);
 export const MAP_VIEWS: { name: string; center: Coordinate; zoom: number }[] = [
     { name: "Freiburg · street detail", center: [7.849, 47.997], zoom: 14 },
     { name: "Feldberg · mountain detail", center: [8.005, 47.873], zoom: 13 },
@@ -55,7 +54,7 @@ export function coversCell(bounds: [number, number, number, number], id: string)
     const n = 512, x = Number(match?.[1]), y = Number(match?.[2]);
     if (!match || x >= n || y >= n) throw new Error(`Invalid route catalog cell ${id}`);
     const latitude = (row: number) => Math.atan(Math.sinh(Math.PI * (1 - 2 * row / n))) * 180 / Math.PI;
-    // Offline bounds are the edges of their cells. The margin keeps a neighbour that only touches
+    // Cell-aligned bounds are the edges of their cells. The margin keeps a neighbour that only touches
     // such an edge outside, also when its edge latitude differs from the release builder's in the last bit.
     const margin = 1e-9;
     return Math.min(bounds[2], (x + 1) / n * 360 - 180) - Math.max(bounds[0], x / n * 360 - 180) > margin
@@ -74,8 +73,7 @@ let regionRoutes: Promise<CatalogRecord[]> | undefined;
 
 /**
  * The catalog records of the zoom 9 cell `9-X-Y`. A covered cell with no routes gives an empty list.
- * A cell outside the release bounds gives null and is not fetched. Online the bounds cover the grid.
- * Offline they cover exactly the downloaded cells, because planner_downloads sets them to the union of those cells.
+ * A cell outside the release bounds gives null and is not fetched.
  */
 export async function loadRouteCell(id: string): Promise<CatalogRecord[] | null> {
     if (!ROUTES_URL || !MAP_BOUNDS || !coversCell(MAP_BOUNDS, id)) return null;

@@ -79,9 +79,8 @@ actor OfflinePlanner {
                         bounds[directory.appending(path: name)] = cell.bounds
                     }
                 }
-                search = try PlannerSearchRuntime(databases: databases, bounds: bounds, coverage: map.bounds,
-                    scripts: scripts, region: map.region, countryCode: "de", timeZone: "Europe/Berlin",
-                    parse: { _ in "{\"error\":\"Native search requires a structured request.\"}" })
+                search = try PlannerSearchRuntime(databases: databases, bounds: bounds,
+                    scripts: scripts, region: map.region, countryCode: "de", timeZone: "Europe/Berlin")
             }
             response = (200, try search!.request("query", body: request.httpBody ?? Data()))
         default: throw PlannerFailure.invalidData
