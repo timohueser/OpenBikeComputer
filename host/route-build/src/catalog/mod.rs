@@ -98,14 +98,14 @@ fn header(relation: &Relation, kind: &str, france: bool) -> Map<String, Value> {
     record.insert("id".into(), json!(relation.id));
     record.insert("kind".into(), json!(kind));
     record.insert("rank".into(), json!(rank(tag(tags, "network"))));
-    let website = Some(tag(tags, "website")).filter(|w| !w.is_empty()).unwrap_or(tag(tags, "contact:website"));
+    let website = ["website", "contact:website", "url"].into_iter().map(|key| tag(tags, key)).find(|w| !w.is_empty());
     let symbol = if france { "" } else { tag(tags, "osmc:symbol") };
     for (field, value) in [
         ("name", tag(tags, "name")),
         ("ref", tag(tags, "ref")),
         ("operator", tag(tags, "operator")),
         ("description", description(tag(tags, "description"))),
-        ("website", website),
+        ("website", website.unwrap_or("")),
         ("symbol", symbol),
     ] {
         if !value.is_empty() {

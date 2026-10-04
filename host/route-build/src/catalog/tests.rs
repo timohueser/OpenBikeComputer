@@ -99,7 +99,8 @@ fn path(nodes: &[i64]) -> Vec<i64> {
 
 #[test]
 fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), String> {
-    let trail = [("route", "hiking"), ("name", "Trail"), ("network", "rwn"), ("osmc:symbol", "red")];
+    let trail =
+        [("route", "hiking"), ("name", "Trail"), ("network", "rwn"), ("osmc:symbol", "red"), ("url", "https://t.example")];
     let long = |id, children: &[i64]| Relation {
         id,
         tags: tags(&[("type", "superroute"), ("route", "hiking"), ("name", "Long"), ("network", "rwn")]),
@@ -135,7 +136,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     assert_eq!((&trail["loop"], &trail["length_m"]), (&json!(false), &json!(8 * 445)));
     assert_eq!((&trail["grades_m"][2], &trail["hardest"]), (&json!(445), &json!(2)));
     assert_eq!((&trail["parent"], &trail["stage"]), (&json!(5), &json!(1)));
-    assert_eq!(trail["symbol"], "red");
+    assert_eq!((&trail["symbol"], &trail["website"]), (&json!("red"), &json!("https://t.example")));
     assert_eq!(trail["cells"], json!(["9-256-255"]));
     let via = trail["via"].as_array().unwrap().len();
     assert!(via > 0);

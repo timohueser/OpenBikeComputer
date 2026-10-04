@@ -41,7 +41,7 @@ heights are integer metres.
 | `kind` | The OSM `route` value: `hiking`, `foot`, `bicycle` or `mtb` |
 | `name`, `ref`, `operator` | The OSM tag text |
 | `description` | The OSM tag text, at most 200 characters |
-| `website` | The OSM `website` text, else `contact:website` |
+| `website` | The OSM `website` text, else `contact:website`, else `url` |
 | `symbol` | The OSM `osmc:symbol` text |
 | `rank` | Network level from `network`: `4` for `iwn` and `icn`, `3` for `nwn` and `ncn`, `2` for `rwn` and `rcn`, `1` for `lwn` and `lcn`, else `0` |
 | `loop` | `true` for a loop, `false` for a one-way route |
