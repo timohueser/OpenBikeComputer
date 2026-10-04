@@ -1,7 +1,8 @@
 //! Map access uses the importer's mode rules, without treating every one-way road as closed.
 use route_engine::{
+    closures::Kind,
     model::{BIKE, FOOT, PUSH},
-    osm::{self, Way},
+    osm::{self, Access, Way},
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -14,13 +15,10 @@ pub fn feature(way: &Way) -> Option<Value> {
     let construction = get("highway") == Some("construction");
     let defaults = if construction { 0 } else { osm::highway_access(get("highway")?)?.1 };
     let conditional = osm::conditional_modes(way.tags.iter().map(|(k, v)| (k.as_str(), v.as_str())));
-    let modes = ["forward", "backward"].map(|direction| {
-        if construction {
-            0
-        } else {
-            osm::access(get, defaults, direction, false) & !conditional
-        }
-    });
+    let directions = ["forward", "backward"];
+    // The router's modes; the strict modes also close every mode that an access value doubts.
+    let access = |routing| directions.map(|d| if construction { 0 } else { osm::access(get, defaults, d, routing) });
+    let (modes, strict) = (access(true).map(|m| m & !conditional), access(false));
     let status = |walking| {
         if construction {
             return "construction";
@@ -30,7 +28,14 @@ pub fn feature(way: &Way) -> Option<Value> {
             return "conditional";
         }
         if modes.iter().all(|m| m & primary != 0) {
-            return "";
+            if strict.iter().all(|m| m & primary != 0) {
+                return "";
+            }
+            let private = directions.iter().any(|&d| {
+                osm::inherited(&get, if walking { "foot" } else { "bicycle" }, d)
+                    .is_some_and(|value| osm::classify(value) == Access::Uncertain(Kind::Private))
+            });
+            return if private { "private" } else { "limited" };
         }
         if modes.iter().any(|m| m & primary != 0) {
             return "directional";
@@ -46,15 +51,7 @@ pub fn feature(way: &Way) -> Option<Value> {
                 return "no_bikes";
             }
         }
-        let restrictions = ["forward", "backward"]
-            .map(|direction| osm::inherited(&get, if walking { "foot" } else { "bicycle" }, direction).unwrap_or(""));
-        if restrictions.contains(&"private") {
-            "private"
-        } else if restrictions.iter().any(|v| matches!(*v, "destination" | "customers" | "delivery")) {
-            "limited"
-        } else {
-            "closed"
-        }
+        "closed"
     };
     let (cycling, walking) = (status(false), status(true));
     if cycling.is_empty() && walking.is_empty() {
@@ -104,7 +101,11 @@ mod tests {
             (vec![("access", "no")], "closed"),
             (vec![("access", "private")], "private"),
             (vec![("access", "destination")], "limited"),
-            (vec![("access", "permit")], "closed"),
+            (vec![("access", "permit")], "limited"),
+            (vec![("access", "agricultural")], "limited"),
+            (vec![("bicycle", "discouraged")], "limited"),
+            (vec![("bicycle", "use_sidepath")], "limited"),
+            (vec![("access", "no"), ("bicycle", "private")], "private"),
             (vec![("highway", "construction")], "construction"),
             (vec![("bicycle:forward", "no")], "directional"),
             (vec![("bicycle:conditional", "no @ (wet)")], "conditional"),
