@@ -70,8 +70,6 @@ and allows small floating-point differences between JavaScript engines.
 For opening hours, bundle `phone-hours.mjs` into `/tmp/hours-benchmark.js` with
 the same esbuild options. Pass `/tmp/hours-reference.json --hours` to the reference
 command, copy both files to `Documents/search`, and launch with `--hours`.
-Also build `node apps/planner-search/calendar-bundle.mjs /tmp/calendar.js` and copy
-that file to `Documents/search`. The shared evaluator checks holidays, school
-holidays, solar times, and daylight saving transitions. It evaluates Berlin hours
-in an isolated JavaScript realm with a New York host calendar. Device settings
-stay unchanged. The Temporal adapter and the evaluator use separate Date bindings.
+The shared evaluator checks holidays, school holidays, solar times, and daylight
+saving transitions. It evaluates Berlin hours in the regional calendar, whatever
+the device time zone. Device settings stay unchanged.

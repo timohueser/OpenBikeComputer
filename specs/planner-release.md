@@ -11,6 +11,7 @@ its files are immutable.
 | `format` | `1` |
 | `region` | Lowercase region ID, with letters, digits, and hyphens |
 | `bounds` | `[west,south,east,north]` in degrees |
+| `time_zone` | IANA time zone of the region recipe; equal to the search metadata `time_zone` |
 | `osm_sha256` | Hash of the common OSM PBF |
 | `routing_package` | Hash of `routing/manifest.json` or `routing/blocks.json` |
 | `profiles` | Sorted routing profile IDs |
@@ -48,8 +49,11 @@ and `model/`. Local combined packages use `REGION.sqlite`. `routes/` contains `R
 [route catalog contract](route-catalog.md). `device/catalog.json` is a snapshot. Its file references are absolute
 URLs to the original immutable cell objects.
 
-Search packages use schema `4`. Each place stores `website`, `phone`, and
-`description` as UTF-8 text. Empty values are empty strings. The producer uses
+Search packages use schema `5`. Each place stores `website`, `phone`, and
+`description` as UTF-8 text. Empty values are empty strings. Each place stores
+`country`, the lowercase ISO 3166-1 code of its source record, and `region`, its
+state. Opening hours select public holidays by `country` and `region`, and
+evaluate times in the metadata `time_zone`. The producer uses
 `website` before `contact:website`, and `phone` before `contact:phone`, skipping
 empty values. A description uses `description`, then `description:en`, then
 `description:de`, then the first nonempty `description:*` key in sorted order.
@@ -176,7 +180,9 @@ Each file entry has `bytes` and `sha256`. Cost fields are `elapsed_seconds`,
 includes a component that builds at the same time.
 `sources.grid_components` records the partition and transport receipts.
 
-Search schema 4 metadata `component` is `pois`, `addresses`, or `all`.
+Search schema 5 metadata `component` is `pois`, `addresses`, or `all`. Metadata
+`time_zone` is the IANA time zone of the region recipe. All components and cells
+of a release have the same `time_zone`.
 Addresses own street records and house records. POIs own the other searchable
 places, including locality records. Independent POI IDs are positive integers
 below 2^52; independent address street IDs are above 2^52 and below 2^53.
