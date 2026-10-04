@@ -18,7 +18,7 @@ use route_engine::{
     storage,
     table::Table,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Writes a closed regional package with all legal transitions and complete road geometry.
 /// The caller publishes the manifest only after all objects have been written.
@@ -47,6 +47,38 @@ pub fn prepare(
         }
     }
     let (mut manifest, edges) = prepare_base(graph, region, bounds, source_sha256, &mut write)?;
+    fn pairs(tags: &route_engine::osm::Tags) -> impl Iterator<Item = (&str, &str)> + Clone {
+        tags.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+    let ways: Vec<_> = graph
+        .roads
+        .iter()
+        .map(|road| {
+            let direction = if road.reversed { "backward" } else { "forward" };
+            graph
+                .osm
+                .ways
+                .get(&road.way)
+                .map_or_else(Vec::new, |way| route_engine::osm::closures(pairs(&way.tags), &[direction]))
+        })
+        .collect();
+    let nodes: HashMap<u32, _> = (0..graph.points.len() as u32)
+        .filter_map(|point| {
+            let node = graph.osm.nodes.get(graph.node_ids.get(point as usize)?)?;
+            let closures = osm::node_closures(pairs(&node.tags));
+            (!closures.is_empty()).then_some((point, closures))
+        })
+        .collect();
+    let doubts = cost::Doubts {
+        roads: ways.iter().map(|closures| cost::Doubts::modes(closures)).collect(),
+        nodes: nodes.iter().map(|(&point, closures)| (point, cost::Doubts::modes(closures))).collect(),
+    };
+    // A road reports the closures of its way and of the node where it arrives.
+    let closures =
+        Closures::build(ways.into_iter().zip(&graph.roads).enumerate().map(|(id, (mut closures, road))| {
+            closures.extend(nodes.get(&road.to).into_iter().flatten().cloned());
+            (id as u32, closures)
+        }))?;
     let mut dictionary = Dictionary::default();
     let junctions = landmarks::Junctions::new(graph.roads.iter().map(|r| (r.from, r.to)))?;
     let mut landmarks = junctions.index(&mut write)?;
@@ -55,7 +87,7 @@ pub fn prepare(
         if manifest.metrics.contains_key(&profile.name) {
             return Err("Duplicate metric identity".into());
         }
-        let costing = cost::Costing::new(graph, profile)?;
+        let costing = cost::Costing::new(graph, profile, &doubts)?;
         let road_costs: Vec<_> =
             costing.roads.iter().map(|cost| cost.as_ref().map_or(u64::MAX, |cost| cost.total())).collect();
         landmarks.profiles.insert(profile.name.clone(), junctions.prepare(&road_costs, &mut write)?);
@@ -75,18 +107,6 @@ pub fn prepare(
     }
     manifest.costs = Table::write(&dictionary.into_values(), &mut write)?;
     manifest.landmarks = Some(landmarks);
-    // A road reports the closures of its way and of the node where it arrives.
-    let closures = Closures::build(graph.roads.iter().enumerate().map(|(id, road)| {
-        fn pairs(tags: &route_engine::osm::Tags) -> impl Iterator<Item = (&str, &str)> + Clone {
-            tags.iter().map(|(k, v)| (k.as_str(), v.as_str()))
-        }
-        let mut closures =
-            graph.osm.ways.get(&road.way).map_or_else(Vec::new, |way| route_engine::osm::closures(pairs(&way.tags)));
-        if let Some(node) = graph.node_ids.get(road.to as usize).and_then(|id| graph.osm.nodes.get(id)) {
-            closures.extend(osm::node_closures(pairs(&node.tags)));
-        }
-        (id as u32, closures)
-    }))?;
     manifest.closures = write_closures(&closures, &mut write)?;
     Ok(manifest)
 }

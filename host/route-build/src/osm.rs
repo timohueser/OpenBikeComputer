@@ -142,7 +142,7 @@ fn barrier(value: Option<&str>) -> Option<u8> {
 /// The possible closures of a node: its access tags, and an unknown barrier that a rider may
 /// have to push through.
 pub fn node_closures<'a>(tags: impl Iterator<Item = (&'a str, &'a str)> + Clone) -> Vec<(u8, Closure)> {
-    let mut closures = source::closures(tags.clone());
+    let mut closures = source::closures(tags.clone(), &["forward", "backward"]);
     if let Some((_, value)) = tags.into_iter().find(|&(key, value)| key == "barrier" && barrier(Some(value)).is_none())
     {
         closures.push((FOOT | PUSH, Closure { kind: Kind::Unclear, condition: format!("barrier={value}") }));
@@ -740,7 +740,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_certain_restriction_closes_a_way() {
+    fn only_no_closes_a_way() {
         let open = |pairs: &[(&str, &str)]| {
             let pairs = [&[("highway", "secondary")], pairs].concat();
             attributes(&tags(&pairs), &mut Counts::new()).map(|attrs| attrs.access)
@@ -748,16 +748,21 @@ mod tests {
         for condition in ["no @ (Nov-May)", "no @ (2025 Mar 10-2025 Oct 1)", "no @ (Mo-Fr)", "no @ (wet)", "no"] {
             assert_eq!(open(&[("access:conditional", condition)]), Some([BIKE | FOOT | PUSH; 2]), "{condition}");
         }
-        for value in ["permit", "destination", "customers", "unknown"] {
+        for value in ["permit", "private", "agricultural;forestry", "destination", "military", "discouraged", "unknown"]
+        {
             assert_eq!(open(&[("access", value)]), Some([BIKE | FOOT | PUSH; 2]), "{value}");
         }
         assert_eq!(open(&[("access", "permit"), ("bicycle", "no")]), Some([FOOT | PUSH; 2]));
-        for value in ["no", "private", "agricultural;forestry"] {
-            assert_eq!(open(&[("access", value)]), None, "{value}");
-        }
+        assert_eq!(open(&[("bicycle", "use_sidepath")]), Some([BIKE | FOOT | PUSH; 2]));
+        assert_eq!(open(&[("access", "no"), ("foot", "private")]), Some([FOOT | PUSH; 2]));
+        assert_eq!(open(&[("access", "no")]), None);
         assert!(attributes(&tags(&[("highway", "construction")]), &mut Counts::new()).is_none());
         assert_eq!(crossing(&tags(&[("barrier", "toll_booth")]), &mut Counts::new()), BIKE | FOOT | PUSH);
-        assert_eq!(crossing(&tags(&[("barrier", "gate"), ("access", "private")]), &mut Counts::new()), 0);
+        assert_eq!(
+            crossing(&tags(&[("barrier", "gate"), ("access", "private")]), &mut Counts::new()),
+            BIKE | FOOT | PUSH
+        );
+        assert_eq!(crossing(&tags(&[("barrier", "gate"), ("access", "no")]), &mut Counts::new()), 0);
     }
 
     #[test]
@@ -959,8 +964,14 @@ mod tests {
             .position(|r| graph.node_ids[r.from as usize] == 2 && graph.node_ids[r.to as usize] == 3)
             .unwrap() as u32;
         let mut profile = Profile::presets().into_iter().find(|p| p.name == "road").unwrap();
-        assert_eq!(crate::cost::Costing::new(&graph, &profile).unwrap().transition(before, after), Some(300));
+        assert_eq!(
+            crate::cost::Costing::new(&graph, &profile, &Default::default()).unwrap().transition(before, after),
+            Some(300)
+        );
         profile.pushing = false;
-        assert_eq!(crate::cost::Costing::new(&graph, &profile).unwrap().transition(before, after), None);
+        assert_eq!(
+            crate::cost::Costing::new(&graph, &profile, &Default::default()).unwrap().transition(before, after),
+            None
+        );
     }
 }

@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 
 pub type Tags = BTreeMap<String, String>;
 
-/// What an access value tells the router. It blocks a mode only where the rider surely has no
-/// access; an uncertain value stays routable, and the route reports it as a closure.
+/// What an access value tells the router. Only `no` blocks a mode; every other restriction stays
+/// routable, and the route reports it as a closure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Access {
     Open,
@@ -20,13 +20,16 @@ pub enum Access {
 pub fn classify(value: &str) -> Access {
     let one = |value: &str| match value.trim() {
         // `mtb` designates a way for mountain bikes, as in Switzerland.
-        "yes" | "designated" | "official" | "permissive" | "discouraged" | "mtb" | "optional_sidepath" => Access::Open,
-        // `dismount` closes riding only; pushing follows foot access. A motor group such as `psv`
-        // is the only group allowed.
-        "no" | "private" | "military" | "use_sidepath" | "dismount" | "agricultural" | "forestry" | "psv" | "bus"
-        | "emergency" | "hgv" | "taxi" | "motor_vehicle" | "motorcar" => Access::Closed,
+        "yes" | "designated" | "official" | "permissive" | "mtb" | "optional_sidepath" => Access::Open,
+        // `dismount` closes riding only; pushing follows foot access.
+        "no" | "dismount" => Access::Closed,
         "permit" => Access::Uncertain(Kind::Permit),
-        "destination" | "customers" | "delivery" | "residents" => Access::Uncertain(Kind::Limited),
+        "private" => Access::Uncertain(Kind::Private),
+        "agricultural" | "forestry" => Access::Uncertain(Kind::Farm),
+        "use_sidepath" => Access::Uncertain(Kind::Sidepath),
+        "discouraged" => Access::Uncertain(Kind::Discouraged),
+        "destination" | "customers" | "delivery" | "residents" | "military" | "psv" | "bus" | "emergency" | "hgv"
+        | "taxi" | "motor_vehicle" | "motorcar" => Access::Uncertain(Kind::Limited),
         _ => Access::Uncertain(Kind::Unclear),
     };
     value.split(';').map(one).min().unwrap_or(Access::Closed)
@@ -158,13 +161,14 @@ pub fn conditional_modes<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> 
 
 /// What may close a road that the router keeps open: an uncertain access value, or a conditional
 /// restriction. Only a restricting clause counts: `yes @ (May-Oct)` names the open season. A
-/// conditional one-way closes one direction only, so it is no closure of the road.
-pub fn closures<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Vec<(u8, Closure)> {
+/// conditional one-way closes one direction only, so it is no closure of the road. Only the tags
+/// of the given `directions` of travel count.
+pub fn closures<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, directions: &[&str]) -> Vec<(u8, Closure)> {
     let tags: BTreeMap<&str, &str> = tags.collect();
     let get = |key: &str| tags.get(key).copied();
     let mut found = Vec::new();
     for (mode, bits) in [("foot", FOOT | PUSH), ("bicycle", BIKE)] {
-        for direction in ["forward", "backward"] {
+        for &direction in directions {
             if let Some(value) = inherited(&get, mode, direction) {
                 if let Access::Uncertain(kind) = classify(value) {
                     found.push((bits, kind, value));
@@ -173,7 +177,8 @@ pub fn closures<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Vec<(u8, 
         }
     }
     for (key, modes, clauses) in conditions(tags.iter().map(|(key, value)| (*key, *value))) {
-        if modes == 0 || key.starts_with("oneway") {
+        let other = ["forward", "backward"].into_iter().find(|d| key.ends_with(d) && !directions.contains(d));
+        if modes == 0 || key.starts_with("oneway") || other.is_some() {
             continue;
         }
         for (_, condition) in clauses.into_iter().filter(|(value, _)| !granted(value)) {
@@ -283,19 +288,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_certain_value_closes_and_every_doubt_becomes_a_closure() {
+    fn only_no_closes_and_every_other_restriction_becomes_a_closure() {
         use Access::{Closed, Open, Uncertain};
         for (value, expected) in [
             ("yes;designated", Open),
-            ("private", Closed),
-            ("agricultural;forestry", Closed),
-            ("permit", Uncertain(Kind::Permit)),
-            ("customers", Uncertain(Kind::Limited)),
-            ("agricultural;delivery", Uncertain(Kind::Limited)),
             ("mtb", Open),
             ("optional_sidepath", Open),
-            ("psv", Closed),
-            ("motor_vehicle;emergency", Closed),
+            ("no", Closed),
+            ("dismount", Closed),
+            ("permit", Uncertain(Kind::Permit)),
+            ("private", Uncertain(Kind::Private)),
+            ("agricultural;forestry", Uncertain(Kind::Farm)),
+            ("use_sidepath", Uncertain(Kind::Sidepath)),
+            ("discouraged", Uncertain(Kind::Discouraged)),
+            ("customers", Uncertain(Kind::Limited)),
+            ("motor_vehicle;emergency", Uncertain(Kind::Limited)),
+            ("military", Uncertain(Kind::Limited)),
+            ("no;private", Uncertain(Kind::Private)),
             ("service", Uncertain(Kind::Unclear)),
         ] {
             assert_eq!(classify(value), expected, "{value}");
@@ -304,7 +313,7 @@ mod tests {
         assert_eq!(access(permit, BIKE | FOOT | PUSH, "forward", true), BIKE | FOOT | PUSH);
         assert_eq!(access(permit, BIKE | FOOT | PUSH, "forward", false), 0);
 
-        let closures = |tags: &[(&'static str, &'static str)]| closures(tags.iter().copied());
+        let closures = |tags: &[(&'static str, &'static str)]| closures(tags.iter().copied(), &["forward", "backward"]);
         let closure = |kind, condition: &str| Closure { kind, condition: condition.into() };
         let all = BIKE | FOOT | PUSH;
         assert_eq!(
@@ -319,6 +328,13 @@ mod tests {
             closures(&[("access", "destination"), ("bicycle", "yes"), ("bicycle:conditional", "no @ (wet)")]),
             vec![(FOOT | PUSH, closure(Kind::Limited, "destination")), (BIKE, closure(Kind::Conditional, "wet"))]
         );
+        assert_eq!(
+            closures(&[("access", "private"), ("bicycle", "use_sidepath")]),
+            vec![(FOOT | PUSH, closure(Kind::Private, "private")), (BIKE, closure(Kind::Sidepath, "use_sidepath"))]
+        );
+        let one_way = [("bicycle:backward", "use_sidepath"), ("bicycle:backward:conditional", "no @ (wet)")];
+        assert_eq!(super::closures(one_way.into_iter(), &["forward"]), vec![]);
+        assert_eq!(super::closures(one_way.into_iter(), &["backward"]).len(), 2);
         assert_eq!(
             closures(&[
                 ("access:conditional", "no @ (Nov-May)"),
