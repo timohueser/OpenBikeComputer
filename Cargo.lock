@@ -4759,6 +4759,7 @@ dependencies = [
  "route-build",
  "route-engine",
  "rusqlite",
+ "serde",
  "serde_json",
  "tokio",
  "tower",

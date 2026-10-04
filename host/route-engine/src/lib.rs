@@ -17,6 +17,7 @@ pub mod package;
 mod queue;
 pub mod router;
 pub mod search;
+pub mod shape;
 pub mod snap;
 pub mod storage;
 pub mod table;
@@ -38,6 +39,10 @@ pub enum Error {
     Cancelled,
     #[error("Routing resource limit reached")]
     Limit,
+    #[error("The line exceeds the shaping limits")]
+    LineTooLong,
+    #[error("No plan follows the line on roads")]
+    NotReproducible,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

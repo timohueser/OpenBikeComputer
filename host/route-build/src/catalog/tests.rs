@@ -158,7 +158,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         .map(|k| [vertices[k][0] as i32, vertices[k][1] as i32])
         .collect();
     let mut router = Router::new(package.fork(), 768 << 20);
-    let routed = router.route(&shape::request("hiking", &plan, vec![]), &shape::control()).unwrap().totals;
+    let routed = router.route(&shape::request("hiking", &plan, vec![]), &control()).unwrap().totals;
     assert!(routed.ascent_m > 0);
     assert_eq!(
         [&trail["length_m"], &trail["ascent_m"], &trail["descent_m"]],
