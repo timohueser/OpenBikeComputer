@@ -168,6 +168,7 @@ release. Use them for a hosted build with the configured API origin.
 | `VITE_PLANNER_OVERLAYS_URL` | Overlay TileJSON or PMTiles archive |
 | `VITE_PLANNER_SNOW_URL` | Snow TileJSON or PMTiles archive, if any |
 | `VITE_PLANNER_CLIMATE_URL` | Climate TileJSON or PMTiles archive, if any |
+| `VITE_PLANNER_SUN_URL` | Sunlight TileJSON or PMTiles |
 | `VITE_PLANNER_ROUTING_URL` | Routing API prefix |
 | `VITE_PLANNER_SEARCH_URL` | Search API prefix |
 | `VITE_PLANNER_ROUTES_URL` | Route catalog: a cell template with `{cell}`, or the region file, if any |
@@ -216,6 +217,13 @@ npm run check
 ```
 
 The full type check needs the generated WASM packages.
+Sunlight benchmark:
+
+```sh
+node tools/planner_sun_bench.mjs http://127.0.0.1:4175
+```
+
+[Sunlight index](../../../../../specs/planner-sun-tiles.md).
 See the [search README](../../../../../apps/planner-search/README.md) for its
 code and real-data suites. iOS rendering and offline downloads have separate
 validation.
