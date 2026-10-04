@@ -78,10 +78,19 @@ pub struct Control<'a> {
     pub max_labels: usize,
     pub max_queries: usize,
     pub max_geometry: usize,
+    /// Caps the search queues below what the memory budget leaves, so that the space of a search
+    /// does not depend on the cost tables in the cache.
+    pub max_heap_bytes: usize,
 }
 impl Default for Control<'_> {
     fn default() -> Self {
-        Self { cancelled: &|| false, max_labels: usize::MAX, max_queries: 8192, max_geometry: 250_000 }
+        Self {
+            cancelled: &|| false,
+            max_labels: usize::MAX,
+            max_queries: 8192,
+            max_geometry: 250_000,
+            max_heap_bytes: usize::MAX,
+        }
     }
 }
 
@@ -498,7 +507,8 @@ impl<P: RoutingData> Router<P> {
             }
         }
         let (graph, weights) = self.package.base(&self.metric)?;
-        let heap_bytes = self.package.memory_budget().saturating_sub(self.package.routing_bytes(&self.metric)?);
+        let heap_bytes = (self.package.memory_budget().saturating_sub(self.package.routing_bytes(&self.metric)?))
+            .min(control.max_heap_bytes);
         let ceiling = best.as_ref().map_or(u64::MAX, |b| b.cost);
         let query = Query {
             starts: &starts,

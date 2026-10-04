@@ -22,10 +22,20 @@ pub const LINE_TOLERANCE_M: f64 = 50.0;
 const STEP_M: f64 = 10.0;
 /// Rounds of the whole-plan check before a route leaves the catalog.
 const ROUNDS: usize = 6;
-/// Router calls for the search of one route. A search that needs more does not converge, and the
-/// route leaves the catalog; the bound keeps the bake of a large region within minutes.
+/// Router calls for the search of one route, for each profile that it checks. A search that needs
+/// more does not converge, and the route leaves the catalog; the bound keeps the bake of a large
+/// region within minutes.
 pub const SEARCH_CALLS: usize = 400;
-/// Shaping points in a row that do not cut the deviation over the budget by 2 %: the search stops.
+/// The search queues of one route request.
+pub const SEARCH_BYTES: usize = 768 << 20;
+
+/// The router control of the catalog: a fixed search space, so that a router limit does not
+/// depend on the order of the routes.
+pub fn control() -> Control<'static> {
+    Control { max_heap_bytes: SEARCH_BYTES, ..Control::default() }
+}
+/// Shaping points in a row, for each profile that the search checks, that do not cut the deviation
+/// over the budget by 2 %: the search stops.
 const STALE_POINTS: usize = 8;
 
 pub fn distance(a: P, b: P) -> f64 {
@@ -170,6 +180,8 @@ pub enum Failure {
     Limit,
     /// The search used all its router calls.
     Budget,
+    /// Shaping points stopped cutting the deviation.
+    Stall,
 }
 
 /// The search for one line. A plan is a list of ascending line vertex indices.
@@ -189,6 +201,7 @@ struct Search<'a, D> {
     limited: bool,
     /// Router calls so far, for the caller.
     calls: &'a mut usize,
+    max_calls: usize,
 }
 
 impl<D: RoutingData> Search<'_, D> {
@@ -264,7 +277,7 @@ impl<D: RoutingData> Search<'_, D> {
 
     /// Why the search found no plan.
     fn failure(&self) -> Failure {
-        if *self.calls >= SEARCH_CALLS {
+        if *self.calls >= self.max_calls {
             Failure::Budget
         } else if self.limited {
             Failure::Limit
@@ -282,11 +295,11 @@ impl<D: RoutingData> Search<'_, D> {
     }
 
     fn route(&mut self, profile: &str, points: &[P], turnarounds: &[usize]) -> Result<Route, Failure> {
-        if *self.calls >= SEARCH_CALLS {
+        if *self.calls >= self.max_calls {
             return Err(Failure::Budget);
         }
         *self.calls += 1;
-        self.router.route(&request(profile, points, turnarounds.to_vec()), &Control::default()).map_err(|error| {
+        self.router.route(&request(profile, points, turnarounds.to_vec()), &control()).map_err(|error| {
             if matches!(error, Error::Limit) {
                 Failure::Limit
             } else {
@@ -361,6 +374,7 @@ pub fn shape<D: RoutingData>(
         tried: plan.iter().copied().collect(),
         limited: false,
         calls,
+        max_calls: SEARCH_CALLS * profiles.len(),
     };
     let mut pruned_full = false;
     for _ in 0..ROUNDS {
@@ -368,7 +382,7 @@ pub fn shape<D: RoutingData>(
         let mut best = (f64::MAX, 0);
         loop {
             let mut totals = search.totals(&plan);
-            if *search.calls >= SEARCH_CALLS {
+            if *search.calls >= search.max_calls {
                 return Err(Failure::Budget);
             }
             if totals.iter().all(|&total| total <= search.budget) {
@@ -377,8 +391,8 @@ pub fn shape<D: RoutingData>(
             }
             let excess: f64 = totals.iter().map(|&total| (total - search.budget).max(0.0)).sum();
             best = if excess < 0.98 * best.0 { (excess, 0) } else { (best.0, best.1 + 1) };
-            if best.1 >= STALE_POINTS {
-                return Err(search.failure());
+            if best.1 >= STALE_POINTS * search.profiles.len() {
+                return Err(Failure::Stall);
             }
             // One prune makes room; a search that fills the plan again does not converge.
             if plan.len() >= MAX_VIA + 2 {

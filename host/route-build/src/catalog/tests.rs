@@ -131,7 +131,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         long(6, &[5]),
     ]);
     let relations = read!(package, relations, Relation, |_| true);
-    let (records, report) = catalog(&package, relations, false, 2, 768 << 20)?;
+    let (records, report) = catalog(&package, relations, false, 2)?;
     let by_id: HashMap<i64, &Value> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r)).collect();
     let dropped: Vec<_> = report.dropped.iter().map(|(reason, ids)| (reason.as_str(), ids.clone())).collect();
     assert_eq!(dropped, [("ExtractEdge", vec![7]), ("Gap", vec![3]), ("NestedLongRoute", vec![6])]);
@@ -158,7 +158,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         .map(|k| [vertices[k][0] as i32, vertices[k][1] as i32])
         .collect();
     let mut router = Router::new(package.fork(), 768 << 20);
-    let routed = router.route(&shape::request("hiking", &plan, vec![]), &Control::default()).unwrap().totals;
+    let routed = router.route(&shape::request("hiking", &plan, vec![]), &shape::control()).unwrap().totals;
     assert!(routed.ascent_m > 0);
     assert_eq!(
         [&trail["length_m"], &trail["ascent_m"], &trail["descent_m"]],

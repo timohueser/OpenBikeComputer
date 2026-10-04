@@ -8,7 +8,7 @@ use route_engine::{
     directory::Directory,
     osm::{Id, Node, Relation, Tags, Way},
     package::{Package, Source},
-    Control, Router,
+    Router,
 };
 use serde_json::{json, Map, Value};
 use shape::{distance, Failure, P};
@@ -23,8 +23,6 @@ const MIN_LENGTH_M: f64 = 2_000.0;
 const MAX_GAP_M: f64 = 500.0;
 const ROUNDTRIP_M: f64 = 200.0;
 const DESCRIPTION_CHARS: usize = 200;
-/// The search scratch of one router, besides the costs it holds.
-const ROUTER_SCRATCH: usize = 768 << 20;
 /// The memory of all routers together; it limits the number of workers.
 const ROUTERS_MEMORY: usize = 6 << 30;
 
@@ -37,6 +35,7 @@ pub enum Reason {
     UnroutableGap,
     TooManyPoints,
     ShapingCheck,
+    ShapingStall,
     RouterLimit,
     SearchBudget,
     NestedLongRoute,
@@ -254,19 +253,16 @@ pub fn build(directory: &Path, countries: &[String]) -> Result<Option<Report>, S
         package.metric(profile).map_err(|_| format!("The routing package lacks the {profile} profile"))?;
     }
     let relations = read!(package, relations, Relation, |_| true);
-    // A router keeps the costs of the three bicycle profiles. With fewer, it decodes costs at
-    // each change of profile, and that decoding dominates the bake. The budget follows from the
-    // package alone, so the catalog is the same on each machine.
+    // A router keeps the costs of up to three profiles, so a bicycle route does not decode costs
+    // at each leg, and a search space of `shape::SEARCH_BYTES`.
     let costs = 3 * ["touring", "road", "gravel", "mtb", "hiking"]
         .iter()
         .map(|p| package.metric(p).map_or(0, |metric| metric.weights.decoded_bytes()))
         .max()
         .unwrap_or(0);
-    let shared = package.manifest().graph.decoded_bytes()
-        + package.manifest().landmarks.as_ref().map_or(0, |index| index.decoded_bytes());
-    let own = costs + ROUTER_SCRATCH;
     let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let (records, report) = catalog(&package, relations, france, cpus.min(ROUTERS_MEMORY / own).max(1), shared + own)?;
+    let workers = cpus.min(ROUTERS_MEMORY / (costs + shape::SEARCH_BYTES)).max(1);
+    let (records, report) = catalog(&package, relations, france, workers)?;
     let partial = directory.join(format!(".{FILE}.partial"));
     let bytes = serde_json::to_vec(&json!({"format": 1, "routes": records})).map_err(|e| e.to_string())?;
     std::fs::write(&partial, bytes).map_err(|e| e.to_string())?;
@@ -279,7 +275,6 @@ fn catalog<S: Source + Clone + Send>(
     relations: BTreeMap<i64, Relation>,
     france: bool,
     workers: usize,
-    budget: usize,
 ) -> Result<(Vec<Value>, Report), String>
 where
     Package<S>: RoutingData + Send,
@@ -351,7 +346,9 @@ where
         for routing in forks.drain(..) {
             let (queue, results, points) = (&queue, &results, &points);
             scope.spawn(move || {
-                let mut router = Router::new(routing, budget);
+                // The search space is capped by `shape::control`, not by the budget, so that it
+                // does not depend on the cost tables in the cache.
+                let mut router = Router::new(routing, usize::MAX);
                 loop {
                     // The guard must drop before the work, so the job is taken in its own statement.
                     let job = queue.lock().unwrap().pop();
@@ -489,7 +486,7 @@ fn route<D: RoutingData>(
             return Err(Reason::Gap);
         }
         let route =
-            router.route(&shape::request(profiles[0], &[from, to], vec![]), &Control::default()).map_err(|error| {
+            router.route(&shape::request(profiles[0], &[from, to], vec![]), &shape::control()).map_err(|error| {
                 match error {
                     route_engine::Error::Limit => Reason::RouterLimit,
                     _ => Reason::UnroutableGap,
@@ -514,6 +511,7 @@ fn route<D: RoutingData>(
         Failure::Check => Reason::ShapingCheck,
         Failure::Limit => Reason::RouterLimit,
         Failure::Budget => Reason::SearchBudget,
+        Failure::Stall => Reason::ShapingStall,
     })?;
     let geometry = shape::vertices(&plan.route);
     let keep: Vec<usize> = plan.route.legs.iter().map(|leg| leg.from_index).chain([geometry.len() - 1]).collect();
