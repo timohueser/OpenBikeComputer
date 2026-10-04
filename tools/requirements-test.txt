@@ -4,3 +4,5 @@ unittest-xml-reporting==4.0.0
 PyYAML==6.0.2
 -r requirements-coverage.txt
 -r requirements-planner-snow.txt
+
+-r requirements-planner-sun.txt

@@ -79,6 +79,9 @@ def seal(data, region, device_catalog, provenance):
         raise ValueError("Planner package bounds differ")
     if not set(routing["source_sha256"][1:]) <= set(map_manifest["terrain_sources"]):
         raise ValueError("Maps and routing must use the same terrain inputs")
+    if "sun.pmtiles" in map_manifest["files"]:
+        if archive_metadata(data / "maps/sun.pmtiles").get("terrain_sha256") != map_manifest["files"]["terrain.pmtiles"]["sha256"]:
+            raise ValueError("Sunlight index uses another terrain archive")
     maps.run(maps.ROOT / "target/release/route-server", data / "routing", "--verify")
     device = json.loads((data / "device/catalog.json").read_bytes()) if (data / "device/catalog.json").exists() else read_url(device_catalog)
     # Catalogue file references remain at their original content-addressed URLs.

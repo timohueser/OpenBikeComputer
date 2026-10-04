@@ -19,6 +19,7 @@ export const OVERLAYS_URL = absoluteUrl(import.meta.env.VITE_PLANNER_OVERLAYS_UR
 const dataUrl = (value: string | undefined) => value ? absoluteUrl(value) : "";
 /** Data layer archives, such as the snow history of specs/planner-snow-tiles.md: a TileJSON URL ending in `.json`, a PMTiles archive, or empty when the region has none. */
 export const DATA_URLS: Record<Archive, string> = {
+    sun: dataUrl(import.meta.env.VITE_PLANNER_SUN_URL),
     snow: dataUrl(import.meta.env.VITE_PLANNER_SNOW_URL),
     climate: dataUrl(import.meta.env.VITE_PLANNER_CLIMATE_URL),
 };

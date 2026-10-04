@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 
 # Optional data layers. Each is one archive `maps/NAME.pmtiles`, baked by `tools/planner_NAME.py` when
 # the region recipe has the field NAME. The value is a metadata key that every complete archive has.
-DATA_LAYERS = {"snow": "seasons", "climate": "years"}
+DATA_LAYERS = {"snow": "seasons", "climate": "years", "sun": "sun_format"}
 
 
 def encoded(value):

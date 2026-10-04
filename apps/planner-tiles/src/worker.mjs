@@ -21,7 +21,7 @@ const notFound = () => new Response('Tile not found', { status: 404, headers: { 
 
 // Zooms and tile format come from each archive's header; PMTiles tile IDs end at zoom 26.
 export function tileRoute(path) {
-  const match = /^\/releases\/([a-f0-9]{64})\/(basemap|places|overlays|terrain|snow|climate)(?:\.json|\/(0|[1-9]\d?)\/(0|[1-9]\d*)\/(0|[1-9]\d*)(\.mvt|\.webp)?)$/.exec(path);
+  const match = /^\/releases\/([a-f0-9]{64})\/(basemap|places|overlays|terrain|snow|climate|sun)(?:\.json|\/(0|[1-9]\d?)\/(0|[1-9]\d*)\/(0|[1-9]\d*)(\.mvt|\.webp)?)$/.exec(path);
   if (!match) return null;
   const [, release, name, z, x, y, ext] = match;
   if (z !== undefined && (Number(z) > 26 || Number(x) >= 2 ** Number(z) || Number(y) >= 2 ** Number(z))) return null;
@@ -81,8 +81,10 @@ export default {
             const archive = new PMTiles(source, directories, decompress);
             const header = await archive.getHeader();
             if (!route.tile) {
-              data = { ...await archive.getMetadata(), tilejson: '3.0.0', scheme: 'xyz', minzoom: header.minZoom, maxzoom: header.maxZoom,
-                bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat], center: [header.centerLon, header.centerLat, header.centerZoom] };
+              const metadata = await archive.getMetadata();
+              data = { ...metadata, tilejson: '3.0.0', scheme: 'xyz', minzoom: header.minZoom, maxzoom: header.maxZoom,
+                bounds: route.name === 'sun' && Array.isArray(metadata.bounds) ? metadata.bounds : [header.minLon, header.minLat, header.maxLon, header.maxLat],
+                center: [header.centerLon, header.centerLat, header.centerZoom] };
             } else if (route.ext !== undefined && route.ext !== tileTypeExt(header.tileType)) {
               return notFound();
             } else if (route.tile[0] >= header.minZoom && route.tile[0] <= header.maxZoom) {

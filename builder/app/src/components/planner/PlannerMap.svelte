@@ -460,6 +460,7 @@
             map.once("load", reportView);
             const terrainError = terrainRetry(map);
             map.on("error", (event) => {
+                if ('name' in event.error && event.error.name === "AbortError") return;
                 if (terrainError(event)) {
                     console.warn("Planner terrain:", event.error);
                     return;
@@ -565,7 +566,7 @@
         for (const layer of layers) if (layer !== shown) layer.sync(map, { shown: false, date, theme });
         shown?.sync(map, { shown: true, date, theme });
     }
-    $effect(() => { void [dataLayer?.shown, dataLayer?.date, dataLayer?.shown?.variable?.value]; if (ready) untrack(syncDataLayer); });
+    $effect(() => { void [dataLayer?.shown, dataLayer?.date, dataLayer?.shown?.variable?.value, dataLayer?.shown?.time?.value]; if (ready) untrack(syncDataLayer); });
     const notes: maplibregl.Marker[] = [];
     $effect(() => {
         const list = showRoute ? dataLayer?.notes ?? [] : [];
@@ -708,7 +709,10 @@
     });
     $effect(() => {
         void bottomClear;
-        untrack(() => fitCallout(true));
+        untrack(() => {
+            if (wholeRoute) fitRoute();
+            fitCallout(true);
+        });
     });
     $effect(() => {
         if (!map || !popupContent) return;
