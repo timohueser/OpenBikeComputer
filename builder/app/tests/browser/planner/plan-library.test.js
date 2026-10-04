@@ -23,7 +23,7 @@ async function start(page) {
 }
 
 async function importFile(page, file) {
-  await page.getByLabel('Import plan file').setInputFiles({ name: 'tour.obcplan', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(file)) });
+  await page.getByLabel('Import plan or GPX files').setInputFiles({ name: 'tour.obcplan', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(file)) });
 }
 
 const library = page => page.getByRole('region', { name: 'My plans', exact: true });
@@ -85,6 +85,23 @@ test('plans survive new, switch and reload; checkpoints and files stay with thei
   await page.getByRole('button', { name: 'Saved versions' }).click();
   await expect(page.locator('.versions li')).toContainText('Valley option');
   expect(errors).toEqual([]);
+});
+
+test('GPX files open as a new trip with a transfer and leave the open plan in the library', async ({ page }) => {
+  const gpx = (name, line) => ({ name, mimeType: 'application/gpx+xml', buffer: Buffer.from(`<gpx><trk><name>${name.replace('.gpx', '')} ride</name><trkseg>${
+    line.map(([lon, lat]) => `<trkpt lat="${lat}" lon="${lon}"/>`).join('')}</trkseg></trk></gpx>`) });
+  await start(page);
+  await page.getByRole('button', { name: 'My plans', exact: true }).click();
+  await importFile(page, planFile('Keep me'));
+  await page.getByLabel('Import plan or GPX files').setInputFiles([
+    gpx('north.gpx', [[7.8, 48], [7.82, 48.01], [7.85, 48]]), gpx('south.gpx', [[7.9, 47.95], [7.92, 47.96]])]);
+  await expect(library(page).getByRole('region', { name: 'Import GPX' })).toContainText('New trip · 2 days');
+  await page.getByRole('button', { name: "Keep the file's line", exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'north ride', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'My plans', exact: true }).click();
+  await expect(library(page).locator('li')).toHaveCount(2);
+  await expect(row(page, 'north ride')).toContainText('2 days · 1 night pinned');
+  await expect(row(page, 'Keep me')).toBeVisible();
 });
 
 test('invalid imports and failed writes preserve the open plan and offer a download', async ({ page }) => {

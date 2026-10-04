@@ -73,6 +73,7 @@ pub struct Route {
     pub totals: Totals,
 }
 
+#[derive(Clone, Copy)]
 pub struct Control<'a> {
     pub cancelled: &'a dyn Fn() -> bool,
     pub max_labels: usize,

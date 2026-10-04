@@ -184,7 +184,7 @@ describe('profile access', () => {
         const line: RoutingLine = {
             key: 'test', choiceId: 'test', profile: 'road', coordinates: [[8,48], [8.001,48], [8.002,48]],
             elevation: [100, 90, 110], elapsed: [0, 20, 80], edges: { surfaces: ['Paved', 'Paved'], pushing: [false, true] },
-            stops: [], seconds: 80, alternatives: [], alternativesReady: true, unknownSurfaceKm: 0, pushingKm: .075, unroutedKm: 0,
+            stops: [], seconds: 80, alternatives: [], alternativesReady: true, unknownSurfaceKm: 0, pushingKm: .075, unroutedKm: 0, unknownElevationKm: 0,
         };
         const onHover = vi.fn();
         mounted.push(mount(Profile, { target: document.body, props: {

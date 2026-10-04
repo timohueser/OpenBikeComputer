@@ -1,14 +1,16 @@
-//! Shaping points: few points on a relation line that make the router follow that line.
+//! Shaping points: few points on a line that make the router follow that line.
 //!
-//! The deviation of a routed line from a relation line is the length of the routed line that is
-//! farther than `NEAR_M` from the relation line, plus the length of the relation line that is
-//! farther than `NEAR_M` from the routed line. A plan reproduces a relation when the deviation of
-//! its route is at most `SHARE` of the relation length, for every profile.
-use route_engine::{
+//! The deviation of a routed line from a line is the length of the routed line that is farther than
+//! `NEAR_M` from the line, plus the length of the line that is farther than `NEAR_M` from the routed
+//! line. A plan reproduces a line when the deviation of its route is at most `SHARE` of the line
+//! length, for every profile.
+use crate::{
     data::RoutingData,
     model::{Pace, Point},
     Control, Error, Request, Route, Router,
 };
+use serde::Deserialize;
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
 /// Longitude and latitude in microdegrees.
@@ -17,26 +19,31 @@ pub type P = [i32; 2];
 pub const NEAR_M: f64 = 30.0;
 pub const SHARE: f64 = 0.02;
 pub const MAX_VIA: usize = 62;
-/// The line keeps every point of the plan route within this distance.
-pub const LINE_TOLERANCE_M: f64 = 50.0;
 const STEP_M: f64 = 10.0;
-/// Rounds of the whole-plan check before a route leaves the catalog.
+/// Rounds of the whole-plan check before the search gives up.
 const ROUNDS: usize = 6;
-/// Router calls for the search of one route, for each profile that it checks. A search that needs
-/// more does not converge, and the route leaves the catalog; the bound keeps the bake of a large
-/// region within minutes.
-pub const SEARCH_CALLS: usize = 400;
-/// The search queues of one route request.
-pub const SEARCH_BYTES: usize = 768 << 20;
-
-/// The router control of the catalog: a fixed search space, so that a router limit does not
-/// depend on the order of the routes.
-pub fn control() -> Control<'static> {
-    Control { max_heap_bytes: SEARCH_BYTES, ..Control::default() }
-}
 /// Shaping points in a row, for each profile that the search checks, that do not cut the deviation
 /// over the budget by 2 %: the search stops.
 const STALE_POINTS: usize = 8;
+
+/// The input points of one client line.
+pub const MAX_LINE_POINTS: usize = 2_000;
+/// The length of one client line.
+pub const MAX_LINE_M: f64 = 200_000.0;
+/// Router calls of one client search. Each shaping point costs about three calls.
+pub const MAX_CALLS: usize = 200;
+/// A client line is simplified within this distance before the search. It is small against
+/// `NEAR_M`, so the deviation does not change.
+const INPUT_TOLERANCE_M: f64 = 10.0;
+
+/// The resources of one search.
+pub struct Limits<'a> {
+    /// The control of each router call.
+    pub control: Control<'a>,
+    pub max_calls: usize,
+    /// Router calls so far.
+    pub calls: usize,
+}
 
 pub fn distance(a: P, b: P) -> f64 {
     let point = |p: P| Point { lon: p[0], lat: p[1], elevation: 0.0 };
@@ -151,7 +158,7 @@ fn off(a: &[P], b: &Near) -> (f64, Option<f64>) {
     (total, longest.1)
 }
 
-/// The deviation of a routed line from a relation line, in metres.
+/// The deviation of a routed line from a line, in metres.
 pub fn deviation(routed: &[P], line: &[P]) -> f64 {
     off(routed, &Near::new(line)).0 + off(line, &Near::new(routed)).0
 }
@@ -182,6 +189,7 @@ pub enum Failure {
     Budget,
     /// Shaping points stopped cutting the deviation.
     Stall,
+    Cancelled,
 }
 
 /// The search for one line. A plan is a list of ascending line vertex indices.
@@ -199,7 +207,8 @@ struct Search<'a, D> {
     tried: HashSet<usize>,
     /// A leg reached the router limit, so a failed search is the limit's fault.
     limited: bool,
-    /// Router calls so far, for the caller.
+    cancelled: bool,
+    control: &'a Control<'a>,
     calls: &'a mut usize,
     max_calls: usize,
 }
@@ -275,9 +284,15 @@ impl<D: RoutingData> Search<'_, D> {
         }
     }
 
+    fn stopped(&self) -> bool {
+        self.cancelled || *self.calls >= self.max_calls
+    }
+
     /// Why the search found no plan.
     fn failure(&self) -> Failure {
-        if *self.calls >= self.max_calls {
+        if self.cancelled {
+            Failure::Cancelled
+        } else if *self.calls >= self.max_calls {
             Failure::Budget
         } else if self.limited {
             Failure::Limit
@@ -295,16 +310,18 @@ impl<D: RoutingData> Search<'_, D> {
     }
 
     fn route(&mut self, profile: &str, points: &[P], turnarounds: &[usize]) -> Result<Route, Failure> {
-        if *self.calls >= self.max_calls {
-            return Err(Failure::Budget);
+        if self.stopped() {
+            return Err(self.failure());
         }
         *self.calls += 1;
-        self.router.route(&request(profile, points, turnarounds.to_vec()), &control()).map_err(|error| {
-            if matches!(error, Error::Limit) {
-                Failure::Limit
-            } else {
-                Failure::Check
+        let result = self.router.route(&request(profile, points, turnarounds.to_vec()), self.control);
+        result.map_err(|error| match error {
+            Error::Limit => Failure::Limit,
+            Error::Cancelled => {
+                self.cancelled = true;
+                Failure::Cancelled
             }
+            _ => Failure::Check,
         })
     }
 }
@@ -332,7 +349,8 @@ fn point_at(line: &[P], at: f64) -> P {
 }
 
 /// Finds a plan whose route follows `line` with each profile. The first profile gives the plan
-/// route. The budget is `SHARE` of `length`, the length of the main line without its patches.
+/// route. The budget is `SHARE` of `length`. The vertices `tips` (ascending) are turnarounds that
+/// stay in the plan.
 ///
 /// Each leg is first routed alone. Of the profiles over the budget, the worst leg with an untried
 /// shaping point gets that point, in the middle of its longest stretch away from the line, until
@@ -343,9 +361,10 @@ pub fn shape<D: RoutingData>(
     router: &mut Router<D>,
     profiles: &[&str],
     line: &[P],
+    tips: &[usize],
     length: f64,
     closed: bool,
-    calls: &mut usize,
+    limits: &mut Limits,
 ) -> Result<Plan, Failure> {
     let n = line.len();
     let mut along = vec![0.0];
@@ -353,8 +372,6 @@ pub fn shape<D: RoutingData>(
         along.push(along[along.len() - 1] + distance(w[0], w[1]));
     }
     let total = along[n - 1];
-    // An out-and-back spur retraces its nodes; its tip is a turnaround.
-    let tips: Vec<usize> = (1..n.saturating_sub(1)).filter(|&k| line[k - 1] == line[k + 1]).collect();
     let mut plan: Vec<usize> = [0, n - 1].into_iter().chain(tips.iter().copied()).collect();
     if closed {
         for share in [1.0 / 3.0, 2.0 / 3.0] {
@@ -373,8 +390,10 @@ pub fn shape<D: RoutingData>(
         fixed: tips.iter().copied().collect(),
         tried: plan.iter().copied().collect(),
         limited: false,
-        calls,
-        max_calls: SEARCH_CALLS * profiles.len(),
+        cancelled: false,
+        control: &limits.control,
+        calls: &mut limits.calls,
+        max_calls: limits.max_calls,
     };
     let mut pruned_full = false;
     for _ in 0..ROUNDS {
@@ -382,8 +401,8 @@ pub fn shape<D: RoutingData>(
         let mut best = (f64::MAX, 0);
         loop {
             let mut totals = search.totals(&plan);
-            if *search.calls >= search.max_calls {
-                return Err(Failure::Budget);
+            if search.stopped() {
+                return Err(search.failure());
             }
             if totals.iter().all(|&total| total <= search.budget) {
                 search.prune(&mut plan, &mut totals);
@@ -442,9 +461,9 @@ pub fn shape<D: RoutingData>(
     Err(search.failure())
 }
 
-/// Simplifies a line, keeping the vertices at `keep` (ascending indices). Returns the line and the
-/// position of each kept vertex in it.
-pub fn simplify(line: &[P], keep: &[usize]) -> (Vec<P>, Vec<usize>) {
+/// Simplifies a line within `tolerance_m`, keeping the vertices at `keep` (ascending indices).
+/// Returns the line and the position of each kept vertex in it.
+pub fn simplify(line: &[P], keep: &[usize], tolerance_m: f64) -> (Vec<P>, Vec<usize>) {
     let mut out = vec![line[keep[0]]];
     let mut positions = vec![0];
     for w in keep.windows(2) {
@@ -454,7 +473,7 @@ pub fn simplify(line: &[P], keep: &[usize]) -> (Vec<P>, Vec<usize>) {
             let farthest = (a + 1..b)
                 .map(|k| (to_segment(line[k], line[a], line[b]), k))
                 .max_by(|x, y| x.0.total_cmp(&y.0))
-                .filter(|(d, _)| *d > LINE_TOLERANCE_M);
+                .filter(|(d, _)| *d > tolerance_m);
             if let Some((_, k)) = farthest {
                 selected[k - w[0]] = true;
                 pending.extend([(a, k), (k, b)]);
@@ -465,6 +484,106 @@ pub fn simplify(line: &[P], keep: &[usize]) -> (Vec<P>, Vec<usize>) {
         positions.push(out.len() - 1);
     }
     (out, positions)
+}
+
+/// A line from a client, such as a GPX track: `POST /v1/shape`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LineRequest {
+    /// Longitude, latitude.
+    pub line: Vec<[f64; 2]>,
+    pub profile: String,
+    /// The line returns to its start.
+    #[serde(default, rename = "loop")]
+    pub closed: bool,
+}
+
+/// The answer of `POST /v1/shape`: the plan points of one client line, with one profile and at
+/// most `MAX_CALLS` router calls, each with `control`.
+pub fn answer<D: RoutingData>(router: &mut Router<D>, request: &LineRequest, control: Control) -> Result<Value, Error> {
+    if request.line.len() < 2 {
+        return Err(Error::InvalidRequest("Use 2 or more line points".into()));
+    }
+    if request.line.len() > MAX_LINE_POINTS {
+        return Err(Error::LineTooLong);
+    }
+    router.package().profile(&request.profile)?;
+    let bounds = router.package().bounds();
+    let mut line = Vec::with_capacity(request.line.len() + 1);
+    for &[lon, lat] in &request.line {
+        if !lon.is_finite() || !lat.is_finite() || !(-180.0..=180.0).contains(&lon) || !(-85.0..=85.0).contains(&lat) {
+            return Err(Error::InvalidRequest("Invalid longitude or latitude".into()));
+        }
+        if lon < bounds[0] || lon > bounds[2] || lat < bounds[1] || lat > bounds[3] {
+            return Err(Error::MissingRegion(format!("The line leaves {}", router.package().region())));
+        }
+        line.push([(lon * 1e6).round() as i32, (lat * 1e6).round() as i32]);
+    }
+    line.dedup();
+    if line.len() < 2 {
+        return Err(Error::InvalidRequest("The line has no length".into()));
+    }
+    if request.closed && line[0] != line[line.len() - 1] {
+        line.push(line[0]);
+    }
+    let length = length(&line);
+    if length > MAX_LINE_M {
+        return Err(Error::LineTooLong);
+    }
+    let (line, _) = simplify(&line, &[0, line.len() - 1], INPUT_TOLERANCE_M);
+    // A loop search starts with two shaping points, so its line needs a vertex between its ends.
+    if request.closed && line.len() < 3 {
+        return Err(Error::InvalidRequest("The line has no length".into()));
+    }
+    let tips = reversals(&line);
+    let mut limits = Limits { control, max_calls: MAX_CALLS, calls: 0 };
+    let profiles = [request.profile.as_str()];
+    let plan =
+        shape(router, &profiles, &line, &tips, length, request.closed, &mut limits).map_err(
+            |failure| match failure {
+                Failure::Cancelled => Error::Cancelled,
+                Failure::Limit => Error::Limit,
+                Failure::TooManyPoints | Failure::Check | Failure::Budget | Failure::Stall => Error::NotReproducible,
+            },
+        )?;
+    let mut points = plan.points;
+    if request.closed {
+        points.pop();
+    }
+    let points: Vec<[f64; 2]> = points.iter().map(|p| [p[0] as f64 / 1e6, p[1] as f64 / 1e6]).collect();
+    Ok(json!({ "points": points, "turnarounds": plan.turnarounds }))
+}
+
+/// Vertices where the line turns back on itself: up to `REVERSAL_M` from the vertex, each point
+/// before it is within `NEAR_M` of the point as far after it. A hairpin bend parts sooner. Of
+/// adjacent such vertices, the one where the line is nearest itself is the tip.
+fn reversals(line: &[P]) -> Vec<usize> {
+    const REVERSAL_M: f64 = 5.0 * NEAR_M;
+    let mut along = vec![0.0];
+    for w in line.windows(2) {
+        along.push(along[along.len() - 1] + distance(w[0], w[1]));
+    }
+    let at = |d: f64| {
+        let i = along.partition_point(|&a| a < d).clamp(1, line.len() - 1);
+        let t = ((d - along[i - 1]) / (along[i] - along[i - 1]).max(f64::MIN_POSITIVE)).clamp(0.0, 1.0);
+        let (a, b) = (line[i - 1], line[i]);
+        [a[0] + ((b[0] - a[0]) as f64 * t).round() as i32, a[1] + ((b[1] - a[1]) as f64 * t).round() as i32]
+    };
+    let total = along[along.len() - 1];
+    let mut tips = Vec::new();
+    let mut run: Option<(usize, f64)> = None;
+    for (k, &s) in along.iter().enumerate().take(line.len() - 1).skip(1) {
+        let gap = (s >= REVERSAL_M && s + REVERSAL_M <= total)
+            .then(|| (1..=5).map(|i| i as f64 * NEAR_M).map(|d| distance(at(s - d), at(s + d))).fold(0.0, f64::max))
+            .filter(|&gap| gap <= NEAR_M);
+        match gap {
+            Some(gap) if run.is_none_or(|(_, best)| gap < best) => run = Some((k, gap)),
+            Some(_) => {}
+            None => tips.extend(run.take().map(|(k, _)| k)),
+        }
+    }
+    tips.extend(run.map(|(k, _)| k));
+    tips
 }
 
 #[cfg(test)]
@@ -480,8 +599,23 @@ mod tests {
         let off = deviation(&routed, &line);
         assert!((680.0..720.0).contains(&off), "{off}");
         assert_eq!(deviation(&line, &line), 0.0);
-        let (simple, positions) = simplify(&routed, &[0, 6, 11]);
+        let (simple, positions) = simplify(&routed, &[0, 6, 11], 50.0);
         assert_eq!(simple, [line[0], line[4], routed[5], routed[6], routed[7], line[10]]);
         assert_eq!(positions, [0, 3, 5]);
+    }
+
+    #[test]
+    fn a_line_that_comes_back_turns_at_its_tip_only() {
+        // 780 m east, back 8 m to the north, then 300 m north.
+        let out: Vec<P> = (0..=50).map(|i| [i * 140, 0]).collect();
+        let back: Vec<P> = (0..50).rev().map(|i| [i * 140, 72]).collect();
+        let north: Vec<P> = (1..=10).map(|i| [0, 72 + i * 270]).collect();
+        let line = [out, back, north].concat();
+        assert_eq!(reversals(&line), [50]);
+        // 310 m east, 20 m north, 110 m west beside it, then north: a hairpin bend.
+        let out: Vec<P> = (0..=20).map(|i| [i * 140, 0]).collect();
+        let back: Vec<P> = (13..=20).rev().map(|i| [i * 140, 180]).collect();
+        let north: Vec<P> = (1..=5).map(|i| [1_820, 180 + i * 270]).collect();
+        assert!(reversals(&[out, back, north].concat()).is_empty());
     }
 }

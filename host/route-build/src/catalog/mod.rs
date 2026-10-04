@@ -1,17 +1,16 @@
 //! The route catalog: the signed routes of a region, each with the plan that reproduces it.
 //! `specs/route-catalog.md` is the contract.
 mod assemble;
-mod shape;
 
 use route_engine::{
     data::RoutingData,
     directory::Directory,
     osm::{Id, Node, Relation, Tags, Way},
     package::{Package, Source},
-    Router,
+    shape::{self, distance, Failure, Limits, P},
+    Control, Router,
 };
 use serde_json::{json, Map, Value};
-use shape::{distance, Failure, P};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::Path,
@@ -25,6 +24,20 @@ const ROUNDTRIP_M: f64 = 200.0;
 const DESCRIPTION_CHARS: usize = 200;
 /// The memory of all routers together; it limits the number of workers.
 const ROUTERS_MEMORY: usize = 6 << 30;
+/// The line keeps every point of the plan route within this distance.
+const LINE_TOLERANCE_M: f64 = 50.0;
+/// Router calls for the search of one route, for each profile that it checks. A search that needs
+/// more does not converge, and the route leaves the catalog; the bound keeps the bake of a large
+/// region within minutes.
+const SEARCH_CALLS: usize = 400;
+/// The search queues of one route request.
+const SEARCH_BYTES: usize = 768 << 20;
+
+/// The router control of the catalog: a fixed search space, so that a router limit does not
+/// depend on the order of the routes.
+fn control() -> Control<'static> {
+    Control { max_heap_bytes: SEARCH_BYTES, ..Control::default() }
+}
 
 /// Why a selected relation is not in the catalog.
 #[derive(Clone, Copy, Debug)]
@@ -254,14 +267,14 @@ pub fn build(directory: &Path, countries: &[String]) -> Result<Option<Report>, S
     }
     let relations = read!(package, relations, Relation, |_| true);
     // A router keeps the costs of up to three profiles, so a bicycle route does not decode costs
-    // at each leg, and a search space of `shape::SEARCH_BYTES`.
+    // at each leg, and a search space of `SEARCH_BYTES`.
     let costs = 3 * ["touring", "road", "gravel", "mtb", "hiking"]
         .iter()
         .map(|p| package.metric(p).map_or(0, |metric| metric.weights.decoded_bytes()))
         .max()
         .unwrap_or(0);
     let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let workers = cpus.min(ROUTERS_MEMORY / (costs + shape::SEARCH_BYTES)).max(1);
+    let workers = cpus.min(ROUTERS_MEMORY / (costs + SEARCH_BYTES)).max(1);
     let (records, report) = catalog(&package, relations, france, workers)?;
     let partial = directory.join(format!(".{FILE}.partial"));
     let bytes = serde_json::to_vec(&json!({"format": 1, "routes": records})).map_err(|e| e.to_string())?;
@@ -346,7 +359,7 @@ where
         for routing in forks.drain(..) {
             let (queue, results, points) = (&queue, &results, &points);
             scope.spawn(move || {
-                // The search space is capped by `shape::control`, not by the budget, so that it
+                // The search space is capped by `control`, not by the budget, so that it
                 // does not depend on the cost tables in the cache.
                 let mut router = Router::new(routing, usize::MAX);
                 loop {
@@ -486,12 +499,12 @@ fn route<D: RoutingData>(
             return Err(Reason::Gap);
         }
         let route =
-            router.route(&shape::request(profiles[0], &[from, to], vec![]), &shape::control()).map_err(|error| {
-                match error {
+            router.route(&shape::request(profiles[0], &[from, to], vec![]), &control()).map_err(
+                |error| match error {
                     route_engine::Error::Limit => Reason::RouterLimit,
                     _ => Reason::UnroutableGap,
-                }
-            })?;
+                },
+            )?;
         line.extend(shape::vertices(&route).into_iter().chain([to]));
         line.dedup();
         Ok(())
@@ -506,16 +519,22 @@ fn route<D: RoutingData>(
         || tag(&job.relation.tags, "roundtrip") == "yes" && distance(start, end) <= ROUNDTRIP_M && {
             patch(&mut line, start).is_ok()
         };
-    let plan = shape::shape(router, profiles, &line, length, closed, calls).map_err(|failure| match failure {
+    // An out-and-back spur retraces its nodes; its tip is a turnaround.
+    let tips: Vec<usize> = (1..line.len().saturating_sub(1)).filter(|&k| line[k - 1] == line[k + 1]).collect();
+    let mut limits = Limits { control: control(), max_calls: SEARCH_CALLS * profiles.len(), calls: 0 };
+    let plan = shape::shape(router, profiles, &line, &tips, length, closed, &mut limits);
+    *calls = limits.calls;
+    let plan = plan.map_err(|failure| match failure {
         Failure::TooManyPoints => Reason::TooManyPoints,
         Failure::Check => Reason::ShapingCheck,
-        Failure::Limit => Reason::RouterLimit,
+        // The catalog control never cancels.
+        Failure::Limit | Failure::Cancelled => Reason::RouterLimit,
         Failure::Budget => Reason::SearchBudget,
         Failure::Stall => Reason::ShapingStall,
     })?;
     let geometry = shape::vertices(&plan.route);
     let keep: Vec<usize> = plan.route.legs.iter().map(|leg| leg.from_index).chain([geometry.len() - 1]).collect();
-    let (mut simple, positions) = shape::simplify(&geometry, &keep);
+    let (mut simple, positions) = shape::simplify(&geometry, &keep, LINE_TOLERANCE_M);
     if closed {
         let first = simple[0];
         *simple.last_mut().unwrap() = first;
