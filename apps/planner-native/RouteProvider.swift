@@ -3,7 +3,6 @@ import Foundation
 @_silgen_name("planner_router_open") private func routerOpen(_ root: UnsafePointer<CChar>, _ memoryBudgetBytes: Int, _ error: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> OpaquePointer?
 @_silgen_name("planner_router_request") private func routerRequest(_ handle: OpaquePointer, _ body: UnsafePointer<UInt8>, _ length: Int, _ status: UnsafeMutablePointer<UInt16>) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("planner_router_shape") private func routerShape(_ handle: OpaquePointer, _ body: UnsafePointer<UInt8>, _ length: Int, _ status: UnsafeMutablePointer<UInt16>) -> UnsafeMutablePointer<CChar>?
-@_silgen_name("planner_router_region") private func routerRegion(_ handle: OpaquePointer, _ status: UnsafeMutablePointer<UInt16>) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("planner_router_close") private func routerClose(_ handle: OpaquePointer)
 @_silgen_name("planner_response_free") private func responseFree(_ response: UnsafeMutablePointer<CChar>)
 
@@ -17,9 +16,10 @@ private final class RouterHandle: @unchecked Sendable {
 actor RouteProvider {
     private let handle: RouterHandle
 
-    init(directory: URL, memoryBudgetBytes: Int = 0) throws {
+    init(directory: URL) throws {
         var error: UnsafeMutablePointer<CChar>?
-        guard let opened = directory.path.withCString({ routerOpen($0, memoryBudgetBytes, &error) }) else {
+        // A zero budget selects the route server's default.
+        guard let opened = directory.path.withCString({ routerOpen($0, 0, &error) }) else {
             defer { if let error { responseFree(error) } }
             throw NSError(domain: "PlannerRouter", code: 1, userInfo: [NSLocalizedDescriptionKey: error.map { String(cString: $0) } ?? "Cannot open routing package"])
         }
@@ -38,13 +38,6 @@ actor RouteProvider {
             guard let base = bytes.bindMemory(to: UInt8.self).baseAddress else { return nil as UnsafeMutablePointer<CChar>? }
             return call(handle.pointer, base, request.count, &status)
         }
-        return try consume(response, status: status)
-    }
-
-    func region() throws -> (status: Int, body: Data) {
-        try Task.checkCancellation()
-        var status: UInt16 = 500
-        let response = routerRegion(handle.pointer, &status)
         return try consume(response, status: status)
     }
 
