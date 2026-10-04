@@ -26,9 +26,9 @@
     import { presetName } from '../../lib/planner/riding-profiles';
     import { storedTrip } from '../../lib/planner/trip-validation';
     import {
-        addClickedPoint, addPointNear, addRestDay, applyBudget, coordinateAt, cumulative, emptyTrip,
+        addClickedPoint, addPointNear, addRestDay, applyBudget, closeLoop, coordinateAt, cumulative, emptyTrip, hasEndpoints as endpointsChosen,
         insertPoint, itineraryDays, kilometres, nearestProgress, nightOrderConflicts, overnightCandidates,
-        overnightWindow, pinNight, removeRestDay, reorderPoint, routeCoordinates, routeSlice, routeStops,
+        orderedRoutePoints, overnightWindow, pinNight, removeRestDay, reorderPoint, routeCoordinates, startLoopHere, routeSlice, routeStops,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint, TripHistory, tripDays, routingKey, planOf, storedPlan,
         type Coordinate, type Day, type LegMode, type Place, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
@@ -69,7 +69,7 @@
     let trip = $state.raw<Trip>(emptyTrip());
     const legs = new LegCache();
     let mounted = false;
-    const hasEndpoints = $derived(trip.points.some(p => p.kind === 'start') && trip.points.some(p => p.kind === 'finish'));
+    const hasEndpoints = $derived(endpointsChosen(trip));
     const nextEndpoint = $derived(trip.points.some(p => p.kind === 'start') ? 'finish' : 'start');
     let previewTrip = $state.raw<Trip | null>(null);
     let draggingPoint = $state(false);
@@ -549,7 +549,7 @@
 
     function showDayEnd(day: Day) {
         if (day.pinned) inspectPoint(day.pinned);
-        else if (day.number === days.length) inspectPoint(trip.points.find(p => p.kind === 'finish')!);
+        else if (day.number === days.length) inspectPoint(orderedRoutePoints(trip).at(-1)!);
         else map?.fitCoordinates(routeSlice(coordinates, Math.max(0, (area?.from ?? day.to) - .05), Math.min(1, (area?.to ?? day.to) + .05)));
     }
 
@@ -629,6 +629,11 @@
             return;
         }
         commit(setLegMode(trip, legEndId, mode), mode === 'straight' ? 'Leg set to a straight line' : 'Leg set to routed');
+    }
+
+    function closeToStart() {
+        clearSelection();
+        commit(closeLoop(trip), 'Loop closed · the route returns to the start');
     }
 
     function insert(legEndId: string, coordinate: Coordinate) {
@@ -959,7 +964,7 @@
                             onNameRest={nameRest}
                         />
                     {:else}
-                        <RouteList {stops} {hoveredId} onHover={(id) => hoveredId = id} measured={!!currentRoute} onInspect={inspectPoint}
+                        <RouteList {stops} loop={!!trip.loop} onLoop={multi ? undefined : closeToStart} {hoveredId} onHover={(id) => hoveredId = id} measured={!!currentRoute} onInspect={inspectPoint}
                             onReorder={(id, offset) => commit(reorderPoint(trip, id, offset), 'Stops reordered · changed legs follow roads')} />
                     {/if}
                     {#if nearbyLandmark && !focusedDay}
@@ -990,6 +995,8 @@
                                     onAddHere={addHere}
                                     onLegMode={setLeg}
                                     onInsert={() => insert(spot!.legEndId!, spot!.coordinate)}
+                                    onLoop={closeToStart}
+                                    onLoopStart={() => { const { legEndId, coordinate } = spot!; clearSelection(); commit(startLoopHere(trip, legEndId!, coordinate), 'Loop start moved'); }}
                                     onPick={pickOnMap}
                                     onSelectPlace={selectPlace}
                                     onStay={stayHere}

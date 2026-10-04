@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, routeStops, addRestDay, anchorProgress, addClickedPoint, addPointNear, dayStops, applyBudget, coordinateAt, cumulative, initialTrip, insertPoint, itineraryDays, kilometres, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, removeRestDay, routeCoordinates, routeSlice, routingKey, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Place, type Coordinate, type RoutePoint, type Trip } from './editor';
+import { closeLoop, loopTrip, startLoopHere, storedPlan, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, routeStops, addRestDay, anchorProgress, addClickedPoint, addPointNear, dayStops, applyBudget, coordinateAt, cumulative, initialTrip, insertPoint, itineraryDays, kilometres, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, removeRestDay, routeCoordinates, routeSlice, routingKey, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Place, type Coordinate, type RoutePoint, type Trip } from './editor';
+import { isTrip } from './trip-validation';
+import { calculateLine } from './routing';
+import { LegCache } from './route-legs';
 
 // Fictional places keep their geographic positions when the mock route changes.
 const places: Place[] = [
@@ -500,5 +503,80 @@ describe('route endpoints', () => {
         const replaced = pinNight(pinned, 1, [8.088, 48.279], 'Fuxxbau');
         expect(replaced.points.find(p => p.night === 1)).toMatchObject({ label: 'Fuxxbau', coordinate: [8.088, 48.279] });
         expect(replaced.points.find(p => p.night === 1)?.autoLabel).toBeUndefined();
+    });
+});
+
+describe('loops', () => {
+    // Start, two visits, a shaping point and a finish, joined by straight legs.
+    function plan(): Trip {
+        const points = ['start', 'a', 'b', 'shape', 'finish'].map((id, i): RoutePoint => ({ id, label: id === 'start' ? 'Home' : id,
+            coordinate: [7.8 + i * .01, 48 + (i % 2) * .01], progress: i / 4, leg: i ? 'straight' : undefined,
+            kind: id === 'start' ? 'start' : id === 'finish' ? 'finish' : id === 'shape' ? 'via' : 'waypoint' }));
+        return { ...emptyTrip(), points, routeOrder: ['a', 'b', 'shape'] };
+    }
+    const ids = (trip: Trip) => orderedRoutePoints(trip).map(p => p.id);
+    // Straight legs need no routing service.
+    const total = async (trip: Trip) => routeStops({ ...trip, routing: await calculateLine(trip, new AbortController().signal, new LegCache()) }).at(-1)!.distance;
+    const at = (trip: Trip, id: string) => trip.points.find(p => p.id === id)!.coordinate;
+
+    it('closes into a loop whose figures include the leg back to the start, and undo restores the open plan', async () => {
+        const open = plan();
+        const history = new TripHistory();
+        const loop = history.commit(open, setLegMode(closeLoop(open), 'start', 'straight'));
+        expect(ids(loop)).toEqual(['start', 'a', 'b', 'shape', 'finish', 'start']);
+        expect(loop.points.filter(p => p.kind === 'start' || p.kind === 'finish').map(p => p.id)).toEqual(['start']);
+        expect(await total(loop)).toBeCloseTo(await total(open) + kilometres(at(open, 'finish'), at(open, 'start')));
+        expect(isTrip(storedPlan(loop))).toBe(true);
+        expect(history.undo(loop)).toEqual(open);
+    });
+
+    it('stays a loop through adding, inserting and reordering points', () => {
+        const loop = closeLoop(plan());
+        const visit: RoutePoint = { id: 'c', kind: 'waypoint', label: 'c', coordinate: [7.9, 48.02], progress: 0 };
+        const added = addClickedPoint(loop, visit);
+        expect(ids(added)).toEqual(['start', 'a', 'b', 'shape', 'finish', 'c', 'start']);
+        const shaped = insertPoint(loop, 'start', [7.85, 48.03]);
+        const back = ids(shaped).at(-2)!;
+        expect(ids(shaped)).toEqual(['start', 'a', 'b', 'shape', 'finish', back, 'start']);
+        // The shape of the leg back to the start stays on that leg.
+        const reordered = reorderPoint(shaped, 'a', 1);
+        expect(ids(reordered)).toEqual(['start', 'b', 'a', 'finish', back, 'start']);
+        expect(ids(reorderPoint(shaped, 'finish', -2))).toEqual(['start', 'finish', 'a', 'b', 'start']);
+        const removed = removeRoutePoint(reordered, 'a');
+        expect(ids(removed)).toEqual(['start', 'b', 'finish', back, 'start']);
+        expect([reordered, removed].map(trip => isTrip(storedPlan(trip)))).toEqual([true, true]);
+    });
+
+    it('moves the start and keeps the order around the loop and every leg', async () => {
+        const loop = setLegMode(closeLoop(plan()), 'start', 'straight');
+        const moved = startLoopHere(loop, 'b', [7.815, 48.005]);
+        const start = moved.points.find(p => p.kind === 'start')!;
+        expect(ids(moved)).toEqual([start.id, 'b', 'shape', 'finish', 'start', 'a', start.id]);
+        // A named start becomes a visit, and its leg is still the one that ends there.
+        expect(moved.points.find(p => p.id === 'start')).toMatchObject({ kind: 'waypoint', label: 'Home', leg: 'straight' });
+        expect(start.leg).toBe('straight');
+        expect(await total(moved)).toBeCloseTo(await total(loop) + kilometres(at(loop, 'a'), start.coordinate)
+            + kilometres(start.coordinate, at(loop, 'b')) - kilometres(at(loop, 'a'), at(loop, 'b')));
+        // An unnamed start stays on the line as a shaping point.
+        const again = startLoopHere(moved, 'finish', [7.83, 48.02]);
+        const next = again.points.find(p => p.kind === 'start')!.id;
+        expect(ids(again)).toEqual([next, 'finish', 'start', 'a', start.id, 'b', 'shape', next]);
+        expect(again.points.find(p => p.id === start.id)?.kind).toBe('via');
+        expect(startLoopHere(plan(), 'a', [7.81, 48])).toEqual(plan());
+        // Day ends follow the route order, so a pinned night keeps the start.
+        const nights = pinNight({ ...loop, mode: 'trip' }, 1, at(loop, 'b'), 'Camp', 'b');
+        expect(startLoopHere(nights, 'shape', [7.835, 48.01])).toBe(nights);
+    });
+
+    it('opens with a new finish, and when its last point goes', () => {
+        const open = setEndpoint(setLegMode(closeLoop(plan()), 'start', 'straight'), 'finish', [8, 48], 'Away');
+        expect(open.loop).toBeUndefined();
+        expect(orderedRoutePoints(open).map(p => p.kind)).toEqual(['start', 'waypoint', 'waypoint', 'via', 'waypoint', 'finish']);
+        expect(open.points.find(p => p.id === 'start')?.leg).toBeUndefined();
+        const made = loopTrip(emptyTrip(), [[7.8, 48], [7.9, 48]]);
+        expect(orderedRoutePoints(made).map(p => p.kind)).toEqual(['start', 'via', 'start']);
+        const shaped = setLegMode(made, made.points[0].id, 'straight');
+        expect(removeRoutePoint(shaped, made.points[1].id)).toMatchObject({ loop: undefined, points: [{ kind: 'start', leg: undefined }] });
+        expect(loopTrip(emptyTrip(), [[7.8, 48]])).toEqual(emptyTrip());
     });
 });

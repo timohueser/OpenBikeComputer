@@ -14,11 +14,11 @@
     import Segmented from './Segmented.svelte';
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import { profileAscent } from '../../lib/planner/profile-data';
-    import { dayOverTarget, maxRidingDays, nearestProgress, routeCoordinates, tripDays, type Coordinate, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import { canMoveLoopStart, dayOverTarget, hasEndpoints as endpointsChosen, maxRidingDays, nearestProgress, routeCoordinates, tripDays, type Coordinate, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
 
     let {
         kind, trip, days, overnightNote = '', dayLabels, night, point, place, coordinate, candidates, legMode,
-        onClose, onEndpoint, onAddHere, onLegMode, onInsert, onPick, onSelectPlace, onStay, onAddVisit, onRename, onKind, onRemove, children,
+        onClose, onEndpoint, onAddHere, onLegMode, onInsert, onLoop, onLoopStart, onPick, onSelectPlace, onStay, onAddVisit, onRename, onKind, onRemove, children,
     }: {
         overnightNote?: string;
         kind: CalloutKind;
@@ -39,6 +39,10 @@
         onAddHere: (kind: EditableKind) => void;
         onLegMode: (mode: LegMode) => void;
         onInsert: () => void;
+        /** "Back to start" on the finish. */
+        onLoop?: () => void;
+        /** "Start the loop here" on the line of a loop. */
+        onLoopStart?: () => void;
         onPick: () => void;
         onSelectPlace: (place: Place) => void;
         onStay: (ridingDay: number) => void;
@@ -50,7 +54,7 @@
         children?: Snippet;
     } = $props();
 
-    const hasEndpoints = $derived(trip.points.some(p => p.kind === 'start') && trip.points.some(p => p.kind === 'finish'));
+    const hasEndpoints = $derived(endpointsChosen(trip));
     const multi = $derived(trip.mode !== 'route');
     const types = $derived(([
         { value: 'via', label: 'Shape', icon: 'route' },
@@ -134,6 +138,10 @@
         <Segmented label="Leg mode" options={legModes} value={legMode} onChange={onLegMode} />
         <p class="hint">Straight lines join shaping points without following roads.</p>
         <button type="button" class="secondary" onclick={onInsert}>Insert point here</button>
+        {#if canMoveLoopStart(trip)}
+            <button type="button" class="secondary" onclick={onLoopStart}>Start the loop here</button>
+            <p class="hint">The start moves to this point. The stops keep their order.</p>
+        {/if}
     {:else if kind === 'dayend'}
         <h2>Day {dayLabels[night]} ends here for now</h2>
         {#if overnightNote}<p class="hint" role="status">{overnightNote}</p>{/if}
@@ -188,6 +196,10 @@
         {/if}
         {#if hasEndpoints && point.kind !== 'start' && point.kind !== 'finish'}
             <Segmented label="Point type" options={types} columns={types.length > 3 ? 2 : 0} value={point.kind === 'detour' ? 'waypoint' : point.kind as EditableKind} onChange={onKind} />
+        {/if}
+        {#if point.kind === 'finish' && hasEndpoints}
+            <button type="button" class="secondary" onclick={onLoop}>Back to start</button>
+            <p class="hint">The route returns to the start, and this point becomes the last stop.</p>
         {/if}
         <button type="button" class="quiet" onclick={onRemove}><Icon name="trash" size={15} />Remove point</button>
     {/if}
