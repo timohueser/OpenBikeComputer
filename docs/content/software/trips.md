@@ -40,9 +40,9 @@ line, the phone projects each day end onto the new line again, near its old dist
 distance keeps a day end on its own leg of an out-and-back line or a loop. A day end that is now
 far from the line is removed.
 
-A save from the planner keeps the trip's key, dates, device links, notes and photos. A day keeps
-its own name by its number. Day notes and rides belong to a day number, so they stay with that
-number when the day count changes.
+A save from the planner keeps the trip's key, dates, device links, notes and photos. A day end
+that stays at its place keeps its day's name, its place name and its transfer label. Day notes and
+rides belong to a day number, so they stay with that number when the day count changes.
 
 ## Planning a trip
 
@@ -53,15 +53,19 @@ trip. When the rider shares several files at once, the phone asks to make one tr
 proposes an order that chains the file ends. The rider can drag the rows into a different order.
 Between two rows, the sheet says "joins" or shows the gap. A trip made from files gets one day per
 file, with the day ends on the file boundaries. Its plan keeps each file's line as a drawn leg,
-with a night at each day end.
+with a night at each day end. A trip has at most 14 days, the limit of the plan format: the phone
+does not add a 15th file and says so in one line.
 
 ### Days in the planner
 
 "Edit" on the trip page opens the planner on the trip's plan. A night is a route point that ends a
 day: "End day here" on any route point, place or map point adds one, in ride order. Night pins on
 the map show the number of the day they end. The day chip opens the Days panel, which lists each
-day from its start to its end with its distance, climb and time. A plan holds at most 14 days, the
-limit of the plan format. A trip of more than 14 days has no Edit.
+day from its start to its end with its distance, climb and time. A plan holds at most 14 days. A
+trip of more than 14 days has no Edit, and its page says why.
+
+A plan with nights is a trip. A new plan with nights saves as a trip. A route that gets a night
+becomes a trip of the same name when the rider saves the changes.
 
 A press and hold on a route point or a night pin picks it up, and a drag moves it. Only the two
 legs next to the moved point plan again. A drawn leg there becomes a routed leg; the other legs
@@ -77,10 +81,11 @@ a bus or a ferry. The phone and the device derive this from the two day routes. 
 has no field for it. 200 m is also the distance at which the device's START RIDE asks how to get
 to the start, so that prompt covers the way to the next start.
 
-In the plan, a transfer is a leg mode: "Transfer (not ridden)" in the leg menu. The planner draws
-it as a muted dashed straight line and does not count it in distance, time, climb or the day
-figures. A trip saved from the plan has a gap in its line at each transfer, so the day routes do
-not contain it. Two files whose ends are more than 200 m apart get a transfer leg between them.
+In the plan, a transfer is a leg mode: "Transfer (not ridden)" in the leg menu of a leg that starts
+at a night. Inside a day there is no transfer. The planner draws it as a muted dashed straight line
+and does not count it in distance, time, climb or the day figures; the profile has a gap there. A
+trip saved from the plan has a gap in its line at each transfer, so the day routes and the trip
+totals do not contain it. Two files whose ends are more than 200 m apart get a transfer leg between them.
 
 In the journal, the rider can label a transfer as Train, Bus, Ferry or Car. The label never goes
 to the device.
