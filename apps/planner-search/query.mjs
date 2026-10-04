@@ -1,5 +1,5 @@
 import { simpleRequest, search, cuisineOf } from './web/engine.mjs';
-import { resolve } from './resolver.mjs';
+import { baseKind, resolve } from './resolver.mjs';
 import { validateRequest, RequestError } from './validation.mjs';
 import { localQuery } from './local-query.mjs';
 
@@ -49,20 +49,15 @@ export async function answerQuery(db, input, parser, hours) {
   } else if (!input.request && input.submitted && input.q.length > 80)
     notice =
       'Smart requests use at most 80 characters. Showing ordinary place search.';
+  // A cuisine shows as its own filter, which the rider can remove.
   if (request.type === 'places') {
     const cuisine =
       request.cuisine ||
-      request.what.find((k) => cuisineOf(k)) ||
+      request.what.find((k) => baseKind(k) !== k) ||
       (!input.request &&
         cuisineOf(input.q.split(/\s+(?:in|near|bei|dans|à)\s+/i)[0]));
     if (cuisine)
-      request = {
-        ...request,
-        what: [
-          ...new Set(request.what.map((k) => (cuisineOf(k) ? 'food' : k))),
-        ],
-        cuisine,
-      };
+      request = { ...request, what: [...new Set(request.what.map(baseKind))], cuisine };
   }
   if (request.type === 'none') {
     notice = 'The sentence was not understood. Showing ordinary place search.';

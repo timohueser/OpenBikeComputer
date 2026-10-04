@@ -271,8 +271,6 @@ stretches:
     verb: [pousser le vélo, pousser, porter le vélo, marcher à côté du vélo]
   closure:
     pl: [routes fermées/f, fermetures/f, travaux/m, déviations/f]
-  main_road:
-    pl: [routes principales/f, nationales/f, grandes routes/f, routes passantes/f, routes à fort trafic/f]
 
 banks:
   WHAT:
@@ -506,22 +504,14 @@ banks:
     adj:
       - ["(le plus court|le plus direct|le plus rapide)", shortest]
       - ["(le plus plat|le plus facile)", least_climbing]
-      - ["<tout goudronné>", least_unpaved]
-      - ["(le plus vallonné|le plus montagneux|le plus dur)", most_climbing]
       - ["(équilibré|normal|standard)", balanced]
     post:
       - ["en <évitant les (côtes|montées|bosses)>", least_climbing]
       - ["avec <(peu de|le moins de) dénivelé>", least_climbing]
       - ["<le plus plat possible>", least_climbing]
       - ["<sans (grosses |)(côtes|montées)>", least_climbing]
-      - ["<que du goudron>", least_unpaved]
-      - ["<sans (chemins|pistes|gravier)>", least_unpaved]
-      - ["en <évitant (le gravier|les chemins|les pistes)>", least_unpaved]
-      - ["sur <route goudronnée>", least_unpaved]
       - ["par le <(plus court|plus direct) chemin>", shortest]
       - ["<au plus court>", shortest]
-      - ["avec <(un max de|beaucoup de|le plus de) dénivelé>", most_climbing]
-      - ["<le plus vallonné possible>", most_climbing]
       - ["<équilibré>", balanced]
 
   DAYS:

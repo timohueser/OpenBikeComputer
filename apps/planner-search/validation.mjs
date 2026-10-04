@@ -1,3 +1,5 @@
+import contract from './query/contract.json' with { type: 'json' };
+
 /** Input that a client must correct. Every other error is internal. */
 export class RequestError extends Error {}
 const fail = () => {
@@ -122,73 +124,10 @@ export function validateInput(input) {
   if (input.request) validateRequest(input.request);
   if (input.pointing) validateWhere(input.pointing);
 }
-const kinds = new Set([
-  'water',
-  'drinking_water',
-  'fountain',
-  'spring',
-  'water_tap',
-  'sleep',
-  'campsite',
-  'shelter',
-  'lodging',
-  'hotel',
-  'hostel',
-  'guest_house',
-  'motel',
-  'hut',
-  'resupply',
-  'supermarket',
-  'convenience',
-  'bakery',
-  'butcher',
-  'marketplace',
-  'fuel',
-  'food',
-  'cafe',
-  'restaurant',
-  'fast_food',
-  'bar',
-  'ice_cream',
-  'pharmacy',
-  'medical',
-  'hospital',
-  'doctor',
-  'bike',
-  'bike_shop',
-  'repair_station',
-  'charging',
-  'toilets',
-  'shower',
-  'laundry',
-  'atm',
-  'transport',
-  'train_station',
-  'bus_stop',
-  'ferry',
-  'swimming',
-  'lake',
-  'beach',
-  'swimming_pool',
-  'sight',
-  'viewpoint',
-  'castle',
-  'church',
-  'monastery',
-  'museum',
-  'ruins',
-  'waterfall',
-  'pass',
-  'summit',
-  'tower',
-  'bridge',
-  'town',
-  'pizza',
-  'kebab',
-]);
+const kinds = new Set([...Object.keys(contract.kinds), ...Object.keys(contract.cuisines)]);
 const day = (d) =>
   ['today', 'tomorrow', 'every'].includes(d) || (Number.isInteger(d) && d > 0);
-function quantity(q, units = ['km', 'h', 'm', '%']) {
+function quantity(q, units) {
   if (
     !q ||
     !Number.isFinite(q.value) ||
@@ -201,11 +140,11 @@ function quantity(q, units = ['km', 'h', 'm', '%']) {
 function along(a) {
   if (
     !a ||
-    !['km', 'start', 'end', 'here'].includes(a.ref) ||
+    !contract.refs.includes(a.ref) ||
     !['at', 'from', 'to'].some((k) => a[k])
   )
     fail();
-  for (const k of ['at', 'from', 'to']) if (a[k]) quantity(a[k], ['km', 'h']);
+  for (const k of ['at', 'from', 'to']) if (a[k]) quantity(a[k], contract.units.along);
 }
 function point(p) {
   if (!p || typeof p !== 'object' || Array.isArray(p)) fail();
@@ -218,7 +157,7 @@ function point(p) {
       if (
         !day(p.day) ||
         p.day === 'every' ||
-        (p.part && !['start', 'middle', 'end'].includes(p.part))
+        (p.part && !contract.parts.includes(p.part))
       )
         fail();
     } else if (p.along) along(p.along);
@@ -228,9 +167,9 @@ function point(p) {
 function validateWhere(w) {
   if (!w || typeof w !== 'object' || Array.isArray(w)) fail();
   if (w.anchor && !coord(w.anchor)) fail();
-  if (w.scope && !['route', 'view', 'here'].includes(w.scope)) fail();
+  if (w.scope && !contract.scopes.includes(w.scope)) fail();
   if (w.day && !day(w.day)) fail();
-  if (w.part && !['start', 'middle', 'end'].includes(w.part)) fail();
+  if (w.part && !contract.parts.includes(w.part)) fail();
   if (w.near) {
     if (!Array.isArray(w.near) || w.near.length < 1 || w.near.length > 2)
       fail();
@@ -240,22 +179,7 @@ function validateWhere(w) {
   for (const k of ['before', 'after']) if (w[k]) point(w[k]);
 }
 export function validateRequest(r) {
-  if (
-    ![
-      'places',
-      'place',
-      'route',
-      'stretches',
-      'end_day',
-      'add_point',
-      'remove_point',
-      'split',
-      'join',
-      'reverse',
-      'none',
-    ].includes(r.type)
-  )
-    fail();
+  if (!contract.types.includes(r.type)) fail();
   if (
     r.type === 'places' &&
     (!Array.isArray(r.what) ||
@@ -279,16 +203,7 @@ export function validateRequest(r) {
   if (
     r.type === 'stretches' &&
     (typeof r.what !== 'string' ||
-      (![
-        'climb',
-        'descent',
-        'steep',
-        'unpaved',
-        'unknown_surface',
-        'pushing',
-        'closure',
-        'main_road',
-      ].includes(r.what) &&
+      (!contract.stretches.includes(r.what) &&
         !(r.what.startsWith('gap:') && kinds.has(r.what.slice(4)))))
   )
     fail();
@@ -299,13 +214,9 @@ export function validateRequest(r) {
     r.via.forEach(point);
   }
   for (const k of ['radius', 'every', 'per_day', 'min'])
-    if (r[k])
-      quantity(
-        r[k],
-        k === 'radius' ? ['km'] : k === 'min' ? undefined : ['km', 'h'],
-      );
-  if (r.cuisine && !['pizza', 'kebab'].includes(r.cuisine)) fail();
-  if (r.kind && !['visit', 'stop', 'pass'].includes(r.kind)) fail();
+    if (r[k]) quantity(r[k], contract.units[k]);
+  if (r.cuisine && !Object.hasOwn(contract.cuisines, r.cuisine)) fail();
+  if (r.kind && !contract.point_kinds.includes(r.kind)) fail();
   if (
     r.ignored &&
     (!Array.isArray(r.ignored) ||
@@ -319,25 +230,13 @@ export function validateRequest(r) {
   )
     fail();
   if (r.type === 'split' && !!r.days === !!r.per_day) fail();
-  if (r.bike && !['road', 'gravel', 'mtb', 'touring'].includes(r.bike)) fail();
-  if (
-    r.goal &&
-    ![
-      'balanced',
-      'shortest',
-      'least_climbing',
-      'least_unpaved',
-      'most_climbing',
-    ].includes(r.goal)
-  )
-    fail();
+  if (r.bike && !contract.bikes.includes(r.bike)) fail();
+  if (r.goal && !contract.goals.includes(r.goal)) fail();
   if (
     r.open &&
     !(
       r.open.now === true ||
-      ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].includes(
-        r.open.weekday,
-      ) ||
+      contract.weekdays.includes(r.open.weekday) ||
       day(r.open.day)
     )
   )

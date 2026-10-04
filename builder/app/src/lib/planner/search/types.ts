@@ -1,15 +1,18 @@
 import type { Coordinate } from '../geo';
+import type { RoutingLine } from '../routing';
 import { SEARCH_URL } from './config';
 import { searchLine } from './plan';
+import { routeSegments } from './segments';
 
-export type Quantity = { value: number; unit: 'km' | 'h' | 'm' | '%' };
+// Values of the query language are strings: the search contract (`apps/planner-search/query/contract.json`) lists them.
+export type Quantity = { value: number; unit: string };
 export type QueryDay = number | 'today' | 'tomorrow' | 'every';
-export type Along = { ref: 'km' | 'start' | 'end' | 'here'; at?: Quantity; from?: Quantity; to?: Quantity };
-export type QueryPoint = { name: string } | { kind: string } | { here: true } | { plan: 'start' | 'end' } | { day: QueryDay; part?: 'start' | 'middle' | 'end' } | { along: Along };
-export type Where = { anchor?: Coordinate; scope?: 'route' | 'view' | 'here'; day?: QueryDay; part?: 'start' | 'middle' | 'end'; near?: QueryPoint[]; along?: Along; before?: QueryPoint; after?: QueryPoint };
+export type Along = { ref: string; at?: Quantity; from?: Quantity; to?: Quantity };
+export type QueryPoint = { name: string } | { kind: string } | { here: true } | { plan: 'start' | 'end' } | { day: QueryDay; part?: string } | { along: Along };
+export type Where = { anchor?: Coordinate; scope?: string; day?: QueryDay; part?: string; near?: QueryPoint[]; along?: Along; before?: QueryPoint; after?: QueryPoint };
 export interface QueryRequest {
-    type: 'places' | 'place' | 'route' | 'stretches' | 'end_day' | 'add_point' | 'remove_point' | 'split' | 'join' | 'reverse' | 'none';
-    what?: string[] | string; cuisine?: 'pizza' | 'kebab'; name?: string; where?: Where; near?: QueryPoint;
+    type: string;
+    what?: string[] | string; cuisine?: string; name?: string; where?: Where; near?: QueryPoint;
     from?: QueryPoint; to?: QueryPoint; via?: QueryPoint[]; point?: QueryPoint; at?: QueryPoint;
     day?: QueryDay; days?: number; kind?: string; bike?: string; goal?: string;
     open?: { weekday?: string; day?: QueryDay; now?: true };
@@ -18,8 +21,8 @@ export interface QueryRequest {
 }
 export interface SearchContext {
     view: [number, number, number, number]; here?: Coordinate; startDate?: string; pointing?: Where;
-    /** The full route: `km` and `seconds` hold one value per coordinate. */
-    plan: { coordinates: Coordinate[]; km: readonly number[]; seconds?: number[]; days: { number: number; from: number; to: number; rest: boolean }[];
+    /** The full route: `km` and `seconds` hold one value per coordinate. `line` is the routed line of these coordinates. */
+    plan: { coordinates: Coordinate[]; km: readonly number[]; seconds?: number[]; line?: RoutingLine; days: { number: number; from: number; to: number; rest: boolean }[];
         points: { id: string; label: string; coordinate: Coordinate; kind: string; placeKind?: string }[] };
 }
 /** The status at search time; `closesAt` is the local clock time of a closure within the next hour. */
@@ -51,11 +54,13 @@ export async function placeDetails(source: string, coordinate: Coordinate, regio
     if (!response.ok) throw new Error(result.error || 'Place details are unavailable.');
     return result.results?.find((place: SearchPlace) => place.source === source);
 }
-/** The route is simplified here, at most once per route (see `searchLine`), and never on a route change alone. */
+/** The route is simplified and its segments are found here, at most once per route (see `searchLine` and `routeSegments`),
+ * and never on a route change alone. */
 export async function searchPlaces(q: string, context: SearchContext, region: string, limit: number, signal: AbortSignal, request?: QueryRequest): Promise<SearchAnswer> {
-    const { coordinates, km, seconds, ...plan } = context.plan;
+    const { coordinates, km, seconds, line, ...plan } = context.plan;
+    const segments = line && routeSegments(line);
     const response = await fetch(`${SEARCH_URL}/query`, { method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...context, plan: { ...plan, ...searchLine(coordinates, km, seconds) }, q, region, limit, submitted: true, request }) });
+        body: JSON.stringify({ ...context, plan: { ...plan, ...searchLine(coordinates, km, seconds), segments }, q, region, limit, submitted: true, request }) });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Search failed. Try again.');
     return result;

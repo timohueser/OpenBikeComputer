@@ -283,9 +283,6 @@ stretches:
   closure:
     pl: [Sperrungen, Straßensperrungen, gesperrte Straßen, Baustellen, Vollsperrungen, gesperrte Wege]
     sg: [Sperrung/f, Baustelle/f]
-  main_road:
-    pl: [Hauptstraßen, Bundesstraßen, stark befahrene Straßen, viel befahrene Straßen, Schnellstraßen, Straßen mit viel Verkehr]
-    sg: [Hauptstraße/f, Bundesstraße/f]
 
 banks:
   WHAT:
@@ -543,27 +540,17 @@ banks:
     adj_e:
       - ["(kürzeste|direkteste|schnellste)", shortest]
       - ["(flachste|einfachste|leichteste)", least_climbing]
-      - ["(asphaltierte|befestigte)", least_unpaved]
-      - ["(bergigste|anspruchsvollste|hügeligste)", most_climbing]
       - ["(ausgewogene|normale)", balanced]
     adj_en:
       - ["(kürzesten|direktesten|schnellsten)", shortest]
       - ["(flachsten|einfachsten|leichtesten)", least_climbing]
-      - ["(bergigsten|anspruchsvollsten)", most_climbing]
     post:
       - ["<möglichst flach>", least_climbing]
       - ["mit <(wenig|möglichst wenig|den wenigsten) Höhenmetern>", least_climbing]
       - ["<ohne (große |)(Anstiege|Berge)>", least_climbing]
       - ["<(Anstiege|Berge|Steigungen) vermeiden>", least_climbing]
-      - ["<nur (auf |)Asphalt>", least_unpaved]
-      - ["<ohne (Schotter|Feldwege)>", least_unpaved]
-      - ["<(Schotter|Feldwege) vermeiden>", least_unpaved]
-      - ["<möglichst asphaltiert>", least_unpaved]
-      - ["mit <wenig Schotter>", least_unpaved]
       - ["auf dem <kürzesten Weg>", shortest]
       - ["<(möglichst kurz|so kurz wie möglich|am kürzesten)>", shortest]
-      - ["mit <(möglichst |)vielen Höhenmetern>", most_climbing]
-      - ["<(möglichst bergig|so bergig wie möglich)>", most_climbing]
       - ["<ausgewogen>", balanced]
 
   DAYS:

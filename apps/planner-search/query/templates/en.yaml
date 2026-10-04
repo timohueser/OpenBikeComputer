@@ -283,9 +283,6 @@ stretches:
   closure:
     pl: [closures, road closures, closed roads, closed sections, roadworks]
     sg: [closure, road closure, closed road]
-  main_road:
-    pl: [main roads, busy roads, major roads, highways, roads with traffic, heavy traffic]
-    sg: [main road, busy road, major road, highway]
 
 banks:
   WHAT:
@@ -528,22 +525,14 @@ banks:
     default:
       - ["(shortest|most direct|quickest)", shortest]
       - ["(flattest|easiest|flat)", least_climbing]
-      - ["(paved|fully paved|asphalt)", least_unpaved]
-      - ["(hilliest|hardest|hilly)", most_climbing]
       - ["(balanced|normal|standard)", balanced]
     post:
       - ["(avoiding|avoid) (climbs|hills)", least_climbing]
       - ["with <(the least|less|minimal) climbing>", least_climbing]
       - ["<as flat as possible>", least_climbing]
       - ["with <(fewer|no big) climbs>", least_climbing]
-      - ["(avoiding|avoid) (gravel|unpaved roads|dirt)", least_unpaved]
-      - ["on <paved roads> (only|)", least_unpaved]
-      - ["(paved only|asphalt only|without gravel|no gravel)", least_unpaved]
-      - ["with <less gravel>", least_unpaved]
       - ["the (shortest|most direct) way", shortest]
       - ["<as short as possible>", shortest]
-      - ["with <(the most|max|lots of) climbing>", most_climbing]
-      - ["<as hilly as possible>", most_climbing]
       - ["<balanced>", balanced]
 
   DAYS:

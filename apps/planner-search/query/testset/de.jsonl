@@ -52,7 +52,7 @@
 {"id": "de-052", "lang": "de", "text": "möglichst flach nach Luzern", "scope": "in", "request": {"type": "route", "to": {"name": "Luzern"}, "goal": "least_climbing"}}
 {"id": "de-053", "lang": "de", "text": "kürzester Weg von hier nach Chur", "scope": "in", "request": {"type": "route", "to": {"name": "Chur"}, "from": {"here": true}, "goal": "shortest"}}
 {"id": "de-054", "lang": "de", "text": "Reiserad München–Venedig über Innsbruck in 8 Tagen", "scope": "in", "request": {"type": "route", "to": {"name": "Venedig"}, "from": {"name": "München"}, "via": [{"name": "Innsbruck"}], "bike": "touring", "days": 8}}
-{"id": "de-055", "lang": "de", "text": "MTB-Tour zum Feldberg mit möglichst vielen Höhenmetern", "scope": "in", "request": {"type": "route", "to": {"name": "Feldberg"}, "bike": "mtb", "goal": "most_climbing"}}
+{"id": "de-055", "lang": "de", "text": "MTB-Tour zum Feldberg mit möglichst vielen Höhenmetern", "scope": "out", "request": {"type": "none"}, "note": "this route goal is not in the language"}
 {"id": "de-056", "lang": "de", "text": "vom Ziel zum Bahnhof Basel SBB", "scope": "in", "request": {"type": "route", "to": {"name": "Bahnhof Basel SBB"}, "from": {"plan": "end"}}, "note": "a station name, not a kind"}
 {"id": "de-057", "lang": "de", "text": "von hier zurück zum Start", "scope": "in", "request": {"type": "route", "to": {"plan": "start"}, "from": {"here": true}}}
 {"id": "de-058", "lang": "de", "text": "Rundtour 60 km ab hier", "scope": "out", "request": {"type": "none"}, "note": "loops are Later in #2236"}
@@ -66,7 +66,7 @@
 {"id": "de-066", "lang": "de", "text": "Abfahrten morgen", "scope": "in", "request": {"type": "stretches", "what": "descent", "where": {"day": "tomorrow"}}}
 {"id": "de-067", "lang": "de", "text": "wo muss ich schieben", "scope": "in", "request": {"type": "stretches", "what": "pushing"}}
 {"id": "de-068", "lang": "de", "text": "Sperrungen auf der Route", "scope": "in", "request": {"type": "stretches", "what": "closure", "where": {"scope": "route"}}}
-{"id": "de-069", "lang": "de", "text": "Hauptstrasen an Tag 1", "scope": "in", "request": {"type": "stretches", "what": "main_road", "where": {"day": 1}}, "note": "typo"}
+{"id": "de-069", "lang": "de", "text": "Hauptstrasen an Tag 1", "scope": "out", "request": {"type": "none"}, "note": "main roads are not in the language"}
 {"id": "de-070", "lang": "de", "text": "unbekannter Belag km 100 bis 150", "scope": "in", "request": {"type": "stretches", "what": "unknown_surface", "where": {"along": {"ref": "km", "from": {"value": 100, "unit": "km"}, "to": {"value": 150, "unit": "km"}}}}}
 {"id": "de-071", "lang": "de", "text": "Tag 4 in Saint-Michel beenden", "scope": "in", "request": {"type": "end_day", "day": 4, "at": {"name": "Saint-Michel"}}}
 {"id": "de-072", "lang": "de", "text": "Tag 1 bei km 95 beenden", "scope": "in", "request": {"type": "end_day", "day": 1, "at": {"along": {"ref": "km", "at": {"value": 95, "unit": "km"}}}}}

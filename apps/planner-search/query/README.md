@@ -59,6 +59,8 @@ To try the export locally, keep the existing SQLite files in `data/`. Copy
 into the parent `data/model/`, then restart the local server. Setup restores the pinned
 model, so do not run setup after this replacement. Do not commit generated model files.
 
-`schema.py` owns the finite model language. `decode.py` converts word tags to requests.
+`schema.py` owns the finite model language. After a change, run `python3 schema.py` to
+write `contract.json`; `test_artifacts.py` fails while the file is stale. `decode.py`
+converts word tags to requests.
 `runtime.py` runs CPU inference through ONNX Runtime. The local service also supports
 UI-only map anchors and cuisine filters; the model does not emit these fields.

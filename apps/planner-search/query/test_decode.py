@@ -193,6 +193,11 @@ def test_along_after_is_a_mark():
     assert parse_along(Span("after 100 km")) == {"ref": "start", "at": km(100)}
 
 
+def test_a_mark_after_a_point_decodes_as_the_mark():
+    text, labels = tag("[water|WHAT] [after km 80|AFTER]")
+    assert decode(text, "places", labels)["where"] == {"along": {"ref": "km", "at": km(80)}}
+
+
 @pytest.mark.parametrize("text,gold", [
     ("campsites end of day 4",
      {"type": "places", "what": ["campsite"], "where": {"day": 4, "part": "end"}}),
@@ -255,8 +260,6 @@ FILLER = [
      {"type": "places", "what": ["water"], "where": {"scope": "route"}}),
     ("places", "[cafes|WHAT] [halfway through day 3|DAY]",
      {"type": "places", "what": ["cafe"], "where": {"day": 3, "part": "middle"}}),
-    ("route", "route to [Bern|TO] on [paved roads|GOAL]",
-     {"type": "route", "to": {"name": "Bern"}, "goal": "least_unpaved"}),
     ("places", "[toilets|WHAT] [on my screen|SCOPE]",
      {"type": "places", "what": ["toilets"], "where": {"scope": "view"}}),
     ("split", "split [the whole trip|SCOPE] into [80 km daily|PER_DAY]",

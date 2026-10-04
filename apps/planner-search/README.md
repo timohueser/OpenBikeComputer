@@ -69,6 +69,8 @@ The combined development command passes `OBC_SEARCH_PORT` to the Vite proxy.
 
 - `query/runtime.py` runs the pinned int8 mmBERT model. `query/decode.py` validates its
   word labels. The model receives only the sentence and never creates place results.
+- `query/schema.py` writes `query/contract.json`, the query language that validation, the
+  resolver, the web planner and the iOS app read.
 - `web/engine.mjs` retrieves names and addresses with SQLite name, FTS5, and trigram
   indexes. Business matches use text and proximity. Geographic prominence is bounded.
 - `resolver.mjs` applies the decoded request to the current view, route, days, and places.
@@ -82,10 +84,11 @@ The combined development command passes `OBC_SEARCH_PORT` to the Vite proxy.
   them and routes the changed plan with its own routing service. Search never calls it.
 
 The request context accepts cumulative `plan.km` and `plan.hours` arrays aligned with
-coordinates, and `plan.segments` with kilometre bounds and verified route attributes.
+coordinates, and `plan.segments`: runs of one stretch `kind` from `from` to `to` km, with
+`ascent` (m) and `gradient` (%) for height runs.
 Without `plan.km`, search measures the line. The UI supplies riding time only when every
-leg is routed.
-Surface, gradient, access, and closure queries report missing segment data.
+leg is routed, and segments from its routed line. Without segments, stretch queries
+report missing data.
 Split and join keep the line. They require unpinned nights and no rest days.
 
 Opening filters use mapped `opening_hours`, each place's country holidays, and the

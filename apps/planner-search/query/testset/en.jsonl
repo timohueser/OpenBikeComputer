@@ -52,8 +52,8 @@
 {"id": "en-052", "lang": "en", "text": "flatest way to Lucerne", "scope": "in", "request": {"type": "route", "to": {"name": "Lucerne"}, "goal": "least_climbing"}, "note": "typo"}
 {"id": "en-053", "lang": "en", "text": "route from the end of day 3 to the nearest train station", "scope": "in", "request": {"type": "route", "to": {"kind": "train_station"}, "from": {"day": 3, "part": "end"}}}
 {"id": "en-054", "lang": "en", "text": "touring trip Munich to Venice via Innsbruck, 8 days", "scope": "in", "request": {"type": "route", "to": {"name": "Venice"}, "from": {"name": "Munich"}, "via": [{"name": "Innsbruck"}], "bike": "touring", "days": 8}}
-{"id": "en-055", "lang": "en", "text": "mtb route to the Feldberg with max climbing", "scope": "in", "request": {"type": "route", "to": {"name": "Feldberg"}, "bike": "mtb", "goal": "most_climbing"}}
-{"id": "en-056", "lang": "en", "text": "paved route to Zurich pls", "scope": "in", "request": {"type": "route", "to": {"name": "Zurich"}, "goal": "least_unpaved"}}
+{"id": "en-055", "lang": "en", "text": "mtb route to the Feldberg with max climbing", "scope": "out", "request": {"type": "none"}, "note": "this route goal is not in the language"}
+{"id": "en-056", "lang": "en", "text": "paved route to Zurich pls", "scope": "out", "request": {"type": "none"}, "note": "this route goal is not in the language"}
 {"id": "en-057", "lang": "en", "text": "route from km 120 to the closest station", "scope": "in", "request": {"type": "route", "to": {"kind": "train_station"}, "from": {"along": {"ref": "km", "at": {"value": 120, "unit": "km"}}}}}
 {"id": "en-058", "lang": "en", "text": "route from the finish to Geneva airport", "scope": "in", "request": {"type": "route", "to": {"name": "Geneva airport"}, "from": {"plan": "end"}}}
 {"id": "en-059", "lang": "en", "text": "60 km loop from here", "scope": "out", "request": {"type": "none"}, "note": "loops are Later in #2236"}
@@ -65,7 +65,7 @@
 {"id": "en-065", "lang": "en", "text": "climbs ovr 500 m", "scope": "in", "request": {"type": "stretches", "what": "climb", "min": {"value": 500, "unit": "m"}}, "note": "typo"}
 {"id": "en-066", "lang": "en", "text": "descents tomorow", "scope": "in", "request": {"type": "stretches", "what": "descent", "where": {"day": "tomorrow"}}, "note": "typo"}
 {"id": "en-067", "lang": "en", "text": "road closures along the route", "scope": "in", "request": {"type": "stretches", "what": "closure", "where": {"scope": "route"}}}
-{"id": "en-068", "lang": "en", "text": "main roads on day 1", "scope": "in", "request": {"type": "stretches", "what": "main_road", "where": {"day": 1}}}
+{"id": "en-068", "lang": "en", "text": "main roads on day 1", "scope": "out", "request": {"type": "none"}, "note": "main roads are not in the language"}
 {"id": "en-069", "lang": "en", "text": "unknown surface km 100 to 150", "scope": "in", "request": {"type": "stretches", "what": "unknown_surface", "where": {"along": {"ref": "km", "from": {"value": 100, "unit": "km"}, "to": {"value": 150, "unit": "km"}}}}}
 {"id": "en-070", "lang": "en", "text": "where do I have to push on day 4", "scope": "in", "request": {"type": "stretches", "what": "pushing", "where": {"day": 4}}}
 {"id": "en-071", "lang": "en", "text": "end day 4 at saint-michel", "scope": "in", "request": {"type": "end_day", "day": 4, "at": {"name": "saint-michel"}}}

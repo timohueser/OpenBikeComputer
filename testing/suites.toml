@@ -179,6 +179,7 @@ triggers = [
   "builder/app/vite.config.ts",
   "specs/vectors/**",
   "host/obc-flat-device/**",
+  "apps/planner-search/query/contract.json",
 ]
 
 # The whole app is the subject, the bridge fixture is the input, and the shared catalog
@@ -217,6 +218,7 @@ triggers = [
   "builder/app/tests/browser/package.json",
   "builder/app/package.json",
   "builder/app/vite.config.ts",
+  "apps/planner-search/query/contract.json",
 ]
 
 # The job table is not derived from the builders it describes, so the unit tests that pin
@@ -303,6 +305,8 @@ triggers = [
   "companion-ios/Packages/OBCKit/Package.swift",
   "companion-ios/Packages/OBCKit/Sources/**",
   "companion-ios/Packages/OBCKit/Tests/**",
+  "companion-ios/ReplayAssets/prepare.mjs",
+  "apps/planner-search/query/contract.json",
   "specs/vectors/**",
 ]
 sleep_exception = { reason = "Condition polling has a 30-second default deadline; negative observation windows and mock/model timing assertions use bounded real time.", issue = "#1788" }
