@@ -8,19 +8,13 @@ license = "GPL-3.0-only"
 [lib]
 crate-type = ["rlib", "staticlib"]
 
-[[example]]
-name = "phone_overlay_benchmark"
-crate-type = ["staticlib"]
-
 [dependencies]
 route-engine = { path = "../../host/route-engine" }
 serde = "1"
 serde_json = "1"
-postcard = { version = "1", features = ["alloc"] }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "sync", "time"] }
 tower-http = { version = "0.6", features = ["compression-br", "compression-gzip", "cors"] }
-rusqlite = { version = "0.38", features = ["bundled"] }
 
 [dev-dependencies]
 route-build = { path = "../../host/route-build" }

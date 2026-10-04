@@ -40,7 +40,7 @@ struct PlannerServiceTests {
         let host = URL(string: "https://planner.test")!
         let release = PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: [7, 47, 9, 49], basemap: host,
                                      glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host,
-                                     manifest: host.appending(path: "manifest.json"))
+                                     manifest: host.appending(path: "manifest.json"), overlays: host)
         let service = PlannerService(release: release) { request in
             let ok = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             guard request.url!.lastPathComponent == "route" else {
@@ -131,15 +131,6 @@ struct PlannerServiceTests {
         query.source = "n456"
         await #expect(throws: PlannerFailure.invalidData) { try await service.search(query, release: release) }
     }
-    @Test func overlaysKeepOnlyNativeStyleDataAndCheckReleaseIdentity() async throws {
-        let service = client(), release = try await service.release()
-        let data = try await service.overlays(bounds: [7.9,47.9,8.2,48.2], zoom: 13.7, network: "hiking", release: release)
-        let collection = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        let feature = try #require((collection["features"] as? [[String: Any]])?.first)
-        let properties = try #require(feature["properties"] as? [String: Any])
-        #expect(properties["kind"] as? String == "hiking" && properties["rank"] as? Int == 2)
-        #expect(properties["tags"] == nil && collection["routes"] == nil)
-    }
     @Test func longRoutesFitTheSearchContractAndKeepTheirEnds() async throws {
         let service = client(), release = try await service.release()
         var query = PlannerSearchQuery(text: "long route")
@@ -161,7 +152,7 @@ struct PlannerServiceTests {
     func shapesALineInOneRequest(_ status: Int, _ failure: PlannerFailure?) async throws {
         let host = URL(string: "https://planner.test")!
         let release = PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: [7, 47, 9, 49], basemap: host,
-                                     glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host, manifest: host)
+                                     glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host, manifest: host, overlays: host)
         let sent = Bodies()
         let service = PlannerService(release: release) { request in
             #expect(request.url?.path == "/v1/shape" && request.timeoutInterval == 40)
@@ -184,7 +175,7 @@ struct PlannerServiceTests {
     @Test func aTooLongLineFailsWithoutARequest() async throws {
         let host = URL(string: "https://planner.test")!
         let release = PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: [7, 47, 9, 49], basemap: host,
-                                     glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host, manifest: host)
+                                     glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host, manifest: host, overlays: host)
         let sent = Bodies()
         let service = PlannerService(release: release) { request in
             await sent.append(request.httpBody ?? Data())
@@ -222,7 +213,7 @@ private final class StubHTTP: URLProtocol, @unchecked Sendable {
             let kind = components.queryItems!.first!.value!
             let suffix = "?route=" + kind.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
             let release: [String: Any] = ["id": String(repeating: "a", count: 64), "region": "test", "bounds": [7, 47, 9, 49],
-                "basemap": host + "/basemap.json", "glyphs": host + "/fonts/{fontstack}/{range}.pbf", "sprites": host + "/sprites", "terrain": host + "/{z}/{x}/{y}.webp", "terrain_attribution": "Terrain", "search": host + "/search", "routing": host + "/" + kind, "manifest": host + "/manifest.json" + suffix]
+                "basemap": host + "/basemap.json", "glyphs": host + "/fonts/{fontstack}/{range}.pbf", "sprites": host + "/sprites", "terrain": host + "/{z}/{x}/{y}.webp", "terrain_attribution": "Terrain", "search": host + "/search", "routing": host + "/" + kind, "manifest": host + "/manifest.json" + suffix, "overlays": host + "/overlays.json"]
             data = try! JSONSerialization.data(withJSONObject: ["format": 1, "active": release])
         } else if url.lastPathComponent == "manifest.json" {
             data = try! JSONSerialization.data(withJSONObject: ["routing_package": packageID, "profiles": ["gravel", "gravel/shorter"]])
@@ -247,13 +238,6 @@ private final class StubHTTP: URLProtocol, @unchecked Sendable {
             data = try! JSONSerialization.data(withJSONObject: ["results": [["source": "n123", "name": "Camp", "kind": "campsite",
                 "city": "Freiburg", "lon": 8, "lat": 48, "opening_hours": "24/7", "website": "camp.example",
                 "phone": "+49 123", "description": "Small tents only.", "position": ["along": 0.4, "distance": 0.02]]]])
-        } else if url.lastPathComponent == "overlays" {
-            let params = Dictionary(uniqueKeysWithValues: components.queryItems!.map { ($0.name, $0.value!) })
-            precondition(request.httpMethod == "GET" && params["layers"] == "hiking" && params["zoom"] == "13.0" && params["mode"] == "walking")
-            data = try! JSONSerialization.data(withJSONObject: ["type": "FeatureCollection", "package": packageID,
-                "routes": ["123": ["name": "Trail"]], "features": [["type": "Feature",
-                "geometry": ["type": "LineString", "coordinates": [[8,48],[8.1,48.1]]],
-                "properties": ["kind": "hiking", "rank": 2, "ref": "Trail", "tags": ["name": "Trail"]]]]])
         } else {
             code = Int(url.path.split(separator: "/")[0])!
             let kind = String(url.path.split(separator: "/")[1])

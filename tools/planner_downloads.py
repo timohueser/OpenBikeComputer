@@ -50,7 +50,7 @@ class Downloads:
         if not cells: raise ValueError("This area has no published map data.")
         actual = [min(c["bounds"][0] for c in cells), min(c["bounds"][1] for c in cells),
                   max(c["bounds"][2] for c in cells), max(c["bounds"][3] for c in cells)]
-        identity = hashlib.sha256(planner_runtime.encoded({"format": 3, "source": self.identity, "bounds": actual})).hexdigest()
+        identity = hashlib.sha256(planner_runtime.encoded({"format": 4, "source": self.identity, "bounds": actual})).hexdigest()
         with self.lock:
             destination = self.cache / identity
             if not (destination / "bundle.json").exists():
@@ -91,17 +91,15 @@ class Downloads:
             files[name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "transport": transport}
             return files[name]["sha256"]
         package = metadata("routing/blocks.json", graph)
-        metadata("routing/layers.json", [c["id"] for c in cells])
-        for kind in ("basemap", "terrain"):
+        for kind, minzoom, maxzoom in (("basemap", 0, 14), ("overlays", 6, 14), ("terrain", 0, 12)):
             metadata(f"maps/{kind}.json", {"tilejson": "3.0.0", "tiles": [
                 f"https://offline.openbikecomputer.invalid/{identity}/{kind}/{{z}}/{{x}}/{{y}}"],
-                "minzoom": 0, "maxzoom": 14 if kind == "basemap" else 12,
-                "bounds": geometry if kind == "basemap" else terrain})
+                "minzoom": minzoom, "maxzoom": maxzoom, "bounds": terrain if kind == "terrain" else geometry})
         release = {**self.manifest, "format": 1, "region": graph["data"]["region"], "bounds": actual,
                    "routing_package": package, "source_files": {}, "terrain_bounds": terrain,
                    "offline": {"format": 2, "id": identity, "zoom": publication["zoom"], "map_zoom": publication["map_zoom"],
                                "source_routing": publication["routing_source"],
-                               "cells": [{"id": c["id"], "bounds": c["bounds"]} for c in cells]},
+                               "cells": [{"id": c["id"], "bounds": c["bounds"], "files": c["files"]} for c in cells]},
                    "files": {name: {k: item[k] for k in ("bytes", "sha256")} for name, item in files.items()}}
         encoded = planner_runtime.encoded(release)
         bundle = planner_runtime.encoded({"format": 1, "release": {"bytes": len(encoded),

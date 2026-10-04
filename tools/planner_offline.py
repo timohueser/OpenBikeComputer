@@ -71,13 +71,13 @@ def pack_file(source, objects):
     return {**original, "transport": transport}
 
 
-def materialize(source, destination, prefixes, skip=()):
+def materialize(source, destination, prefixes):
     """Install only the server's runtime files from the canonical object pool."""
     _, document = runtime.release(source, include_sources=False)
     if not document.get("grid"):
         raise ValueError("Expected a grid publication")
     for name, entry in document["files"].items():
-        if not name.startswith(prefixes) or name.startswith(skip): continue
+        if not name.startswith(prefixes): continue
         path = destination / name
         if path.exists():
             verify(path, entry)

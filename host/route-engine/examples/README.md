@@ -33,7 +33,7 @@ XcodeGen and the Rust iOS target. Set `TEAM` and `DEVICE` to the signing team an
 paired device. The benchmark app uses its own data container.
 
 ```sh
-IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build --release -p route-engine -p route-server --example phone_benchmark --example phone_overlay_benchmark --target aarch64-apple-ios
+IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build --release -p route-engine --example phone_benchmark --target aarch64-apple-ios
 xcodegen generate --spec host/route-engine/examples/phone/project.yml
 xcodebuild -quiet -project host/route-engine/examples/phone/PlannerBenchmark.xcodeproj -scheme PlannerBenchmark -configuration Release -destination 'generic/platform=iOS' -derivedDataPath target/planner-phone/build DEVELOPMENT_TEAM="$TEAM" -allowProvisioningUpdates build
 xcrun devicectl device install app --device "$DEVICE" target/planner-phone/build/Build/Products/Release-iphoneos/PlannerBenchmark.app

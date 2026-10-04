@@ -69,13 +69,7 @@ Route memberships are ordered relation IDs. `routes` stores each relation's JSON
 properties once. `geometries` stores the way ID, a point count, and a Postcard `Vec<[i32;2]>`.
 Each coordinate pair is longitude and latitude in microdegrees. The first pair
 is absolute; each later pair is a difference from the previous pair. Decoding
-uses checked addition. Shared geometry retains every source point. `bounds` is
-an R-tree over feature IDs with longitude, latitude, and facet axes. The facet
-is `32 * layer + minimum_zoom`. Cycling, hiking, access, and MTB have layer values
-0, 1, 2, and 3. The minimum is the lower non-null mode minimum, or 23 for an
-invisible feature. The facet has equal lower and upper bounds. The query also
-checks each mode's minimum zoom. A grid overlay cell retains every referenced
-geometry, attribute, and route.
+uses checked addition. Shared geometry retains every source point.
 
 `places.pmtiles` holds the rider places of the basemap. It has gzip MVT tiles
 at zoom 11 only, with extent 4096 and one `pois` layer. Each feature is one

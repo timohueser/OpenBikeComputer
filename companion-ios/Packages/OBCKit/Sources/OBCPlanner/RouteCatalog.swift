@@ -1,13 +1,12 @@
 import Foundation
 
-/// The route catalog of one release: a file for each covered zoom 9 cell, or one region file.
+/// The route catalog of one release: a file for each covered zoom 9 cell.
 /// Online the release bounds give the grid cells; an offline grid selection lists its cells.
 public actor RouteCatalog {
     public typealias Transport = @Sendable (URLRequest) async throws -> (Data, URLResponse)
     private let source: String
     private let bounds: [Double]
     private let transport: Transport
-    private var region: Task<[CatalogRecord], any Error>?
     /// The cells of an offline grid selection: only routes that lie wholly inside them match. Else nil.
     public nonisolated let covered: Set<String>?
 
@@ -22,10 +21,7 @@ public actor RouteCatalog {
     /// A covered cell without a file is an error, not a cell with no routes.
     public func loadCell(_ id: String) async throws -> [CatalogRecord]? {
         guard covered?.contains(id) ?? Self.covers(bounds, id) else { return nil }
-        if source.contains("{cell}") { return try await file(source.replacingOccurrences(of: "{cell}", with: id)) }
-        let task = region ?? Task { [source] in try await self.file(source) }
-        region = task
-        do { return try await task.value.filter { $0.cells.contains(id) } } catch { region = nil; throw error }
+        return try await file(source.replacingOccurrences(of: "{cell}", with: id))
     }
 
     private func file(_ address: String) async throws -> [CatalogRecord] {

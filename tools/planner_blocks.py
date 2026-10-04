@@ -218,40 +218,6 @@ def search_shard(source, lookup, output, bounds, metadata):
         db.close(); raise
 
 
-def overlay_shard(source, output, bounds, package):
-    """Keep complete intersecting features, including every route membership."""
-    with closing(sqlite3.connect(output, uri=True)) as db:
-        db.execute("ATTACH DATABASE ? AS original", (source.resolve().as_uri() + "?mode=ro",))
-        db.execute(f"PRAGMA user_version={db.execute('PRAGMA original.user_version').fetchone()[0]}")
-        for name in ("metadata", "geometries", "attributes", "routes", "features", "bounds"):
-            schema = db.execute("SELECT sql FROM original.sqlite_schema WHERE type='table' AND name=?", (name,)).fetchone()
-            if not schema:
-                raise ValueError(f"Missing overlay table: {name}")
-            db.execute(schema[0])
-        db.execute("CREATE TEMP TABLE selected(id INTEGER PRIMARY KEY)")
-        west, south, east, north = bounds
-        db.execute("INSERT INTO selected SELECT id FROM original.bounds WHERE west<=? AND east>=? AND south<=? AND north>=?",
-                   (east, west, north, south))
-        for name in ("features", "bounds"):
-            db.execute(f"INSERT INTO {name} SELECT * FROM original.{name} WHERE id IN selected")
-            if db.execute(f"SELECT * FROM {name} EXCEPT SELECT * FROM original.{name} WHERE id IN selected").fetchone():
-                raise ValueError("Overlay extraction changed a feature")
-        for name, query in (("geometries", "SELECT DISTINCT geometry FROM features"),
-                            ("attributes", "SELECT DISTINCT attributes FROM features"),
-                            ("routes", "SELECT DISTINCT value FROM attributes,json_each(properties,'$.routes')")):
-            db.execute(f"INSERT INTO {name} SELECT * FROM original.{name} WHERE id IN ({query})")
-            if db.execute(f"SELECT * FROM {name} EXCEPT SELECT * FROM original.{name} WHERE id IN ({query})").fetchone():
-                raise ValueError("Overlay extraction changed a dependency")
-            if db.execute(f"SELECT count(*) FROM ({query})").fetchone()[0] != db.execute(f"SELECT count(*) FROM {name}").fetchone()[0]:
-                raise ValueError("Overlay extraction is missing a dependency")
-        if db.execute("SELECT count(*) FROM features").fetchone()[0] != db.execute("SELECT count(*) FROM selected").fetchone()[0]:
-            raise ValueError("Overlay extraction is incomplete")
-        db.execute("INSERT INTO metadata VALUES (?,?)", (package, json.dumps(bounds)))
-        db.commit()
-        if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
-            raise ValueError("Overlay extraction failed verification")
-
-
 def publish(source, routing, output, cache=None):
     from tools.planner_grid_components import publish as compose
     return compose(source, routing, output, cache)

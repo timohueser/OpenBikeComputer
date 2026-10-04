@@ -26,7 +26,7 @@ class PlannerDownloads(unittest.TestCase):
         for name, data in {"routing/packs/" + "c" * 64 + "/pages.bin": b"abcdef",
                            "routing/packs/" + "c" * 64 + "/pages.idx": b"index", "search/left.sqlite": b"left places",
                            "search/right.sqlite": b"right places", "maps/tiles/basemap/0-0-0.pmtiles": b"tiles",
-                           "offline/fonts/Sans.pbf": b"glyphs"}.items():
+                           "maps/tiles/overlays/6-33-22.pmtiles": b"networks", "offline/fonts/Sans.pbf": b"glyphs"}.items():
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
@@ -47,7 +47,9 @@ class PlannerDownloads(unittest.TestCase):
             "routing_source": "b" * 64, "files": files,
             "shared": {f"maps/assets/fonts/Sans/{name}.pbf": "offline/fonts/Sans.pbf" for name in ("0-255", "256-511")},
             "map_blocks": [{"kind": "basemap", "tile": [0,0,0], "bounds": [-180,-85,180,85],
-                            "files": ["maps/tiles/basemap/0-0-0.pmtiles"]}], "cells": cells}
+                            "files": ["maps/tiles/basemap/0-0-0.pmtiles"]},
+                           {"kind": "overlays", "tile": [6,33,22], "bounds": [5.625,45.09,11.25,48.92],
+                            "files": ["maps/tiles/overlays/6-33-22.pmtiles"]}], "cells": cells}
         (self.source / "catalog.json").write_bytes(runtime.encoded(publication))
         self.service = downloads.Downloads(self.source, self.root / "cache", 1000000)
 
@@ -64,11 +66,17 @@ class PlannerDownloads(unittest.TestCase):
         manifest = json.loads((directory / "release.json").read_bytes())
         bundle = json.loads((directory / "bundle.json").read_bytes())
         self.assertEqual(manifest["bounds"], [7, 47, 8, 49])
+        self.assertEqual(manifest["offline"]["cells"], [{"id": "left", "bounds": [7,47,8,49], "files": ["search/left.sqlite"]}])
         self.assertIn("search/left.sqlite", bundle["files"])
         self.assertNotIn("search/right.sqlite", bundle["files"])
         fonts = [bundle["files"][f"maps/assets/fonts/Sans/{name}.pbf"] for name in ("0-255", "256-511")]
         self.assertEqual(fonts, [self.service.publication["files"]["offline/fonts/Sans.pbf"]] * 2)
         self.assertEqual(manifest["files"]["maps/assets/fonts/Sans/0-255.pbf"]["bytes"], len(b"glyphs"))
+        self.assertIn("maps/tiles/overlays/6-33-22.pmtiles", bundle["files"])
+        overlays = bundle["files"]["maps/overlays.json"]["transport"]["sha256"]
+        tilejson = json.loads(gzip.decompress((directory / "objects" / overlays).read_bytes()))
+        self.assertEqual((tilejson["tiles"], tilejson["minzoom"]),
+                         ([f"https://offline.openbikecomputer.invalid/{first['id']}/overlays/{{z}}/{{x}}/{{y}}"], 6))
         static = bundle["files"]["routing/packs/" + "c" * 64 + "/pages.bin"]["transport"]["sha256"]
         self.assertFalse((directory / "objects" / static).exists())
         self.assertEqual(before, {p.name: p.read_bytes() for p in (self.source / "objects").iterdir()})

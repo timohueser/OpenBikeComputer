@@ -7,9 +7,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(2).as_deref() == Some("--verify") {
         let path = Path::new(&directory);
         route_engine::open(path)?.verify()?;
-        if path.join("overlays.sqlite").exists() || path.join("layers").exists() {
-            route_server::OverlaySource::open(path)?;
-        }
         eprintln!("Package object closure verified");
         return Ok(());
     }

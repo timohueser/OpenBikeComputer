@@ -32,17 +32,17 @@ use Web Mercator XYZ coordinates at zoom 9. Cell IDs are `9-X-Y`. A requested
 rectangle selects every intersecting cell, clipped to the release bounds.
 The returned coverage contains the complete requested rectangle.
 
-The publisher creates routing page packs, search databases, overlay databases,
-and PMTiles packs once. Map packs group each tile under its ancestor at
-`min(tile_zoom, 11)`. Original compressed tile payloads remain unchanged.
+The publisher creates routing page packs, search databases, and PMTiles packs
+once. Map packs group each tile under its ancestor at `min(tile_zoom, 11)`.
+Original compressed tile payloads remain unchanged.
 A routing pack contains pages with the same cell consumers, up to 16 MiB.
-Search and overlays retain whole intersecting records and their dependencies.
+Search retains whole intersecting records and their dependencies.
 Each cell also has its [route catalog](route-catalog.md) file.
 
 `offline/catalog.json` has `format: 3`. It lists cell bounds, logical file
 names, map packs, and routing cell descriptors. Its map packs omit the online
-places and overlays archives. Each routing descriptor has a manifest path and
-SHA-256, source adjacency ranges, and retained geometry bounds. `shared` maps
+places archive. Each routing descriptor has a manifest path and SHA-256, source
+adjacency ranges, and retained geometry bounds. `shared` maps
 each map asset path of a selection to its publication file. Files carry the
 decoded and transport hashes above.
 The service selects these objects and writes only the small selection manifests.
@@ -60,11 +60,14 @@ reads only the glyphs of the requested range from the file. A missing range
 file stops the labels of each tile that requests it.
 
 The selected release has `offline.format: 2`, `id`, `zoom`, `map_zoom`,
-`source_routing`, and `cells`. Each cell has `id` and `bounds`.
-`routing/layers.json` lists every required overlay cell ID. A missing listed
-cell is an error. `routing/blocks.json` follows the
-[routing selection contract](route-package.md#grid-selections).
-Map selection covers retained road geometry; terrain includes tile neighbours.
+`source_routing`, and `cells`. Each cell has `id`, `bounds`, and `files`: the
+cell's search databases and route catalog file.
+`routing/blocks.json` follows the [routing selection contract](route-package.md#grid-selections).
+Map selection takes basemap, overlay and terrain packs. It covers retained road
+geometry; terrain includes tile neighbours. `maps/basemap.json`,
+`maps/overlays.json` and `maps/terrain.json` are TileJSON for these packs. Their
+tile URLs use the host `offline.openbikecomputer.invalid`, which the app serves
+from the installed packs.
 
 ## Download service
 
@@ -112,7 +115,7 @@ The library is excluded from device backups. Deletion retains shared objects
 that another map or the pending download needs.
 
 Each download prohibits cellular, expensive and constrained networks unless
-the user allows them. Maps, routes, search and overlays first use a complete
-installed release that covers the request. Routing graphs are not combined.
+the user allows them. Maps, routes and search first use a complete installed
+release that covers the request. Routing graphs are not combined.
 A failed local request falls back to the online service. A valid empty local
 search result does not need a network request.

@@ -146,13 +146,8 @@ struct OfflineMapsTests {
         let planner = LocalFirstPlanner(store: store, online: online) { map, _ in map.id == first.map.id ? a : b }
         for (bounds, id) in [([7.2,47.2,7.8,47.8], "first"), ([9.2,49.2,9.8,49.8], "second"),
                              ([10.2,50.2,10.8,50.8], "online")] {
-            let selected = try await planner.mapRelease(bounds: bounds)
-            #expect(selected.id == id)
-            _ = try? await planner.overlays(bounds: bounds, zoom: 10, network: "cycling", release: selected)
+            #expect(try await planner.mapRelease(bounds: bounds).id == id)
         }
-        #expect(await a.calls.contains("overlays"))
-        #expect(await b.calls.contains("overlays"))
-        #expect(await !online.calls.contains("overlays"))
     }
 
     @Test func exactSourceDetailsStayOfflineAtCoverageEdges() async throws {
@@ -241,9 +236,9 @@ private actor RecordingSource: PlannerDataSource {
     func release() throws -> PlannerRelease {
         calls.append("release")
         let url = URL(string: "https://planner.test/")!
-        return PlannerRelease(id: id, region: "test", bounds: bounds,
-            basemap: local ? URL(string: "pmtiles://file:///map.pmtiles")! : url,
-            glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: url, routing: url, manifest: url)
+        return PlannerRelease(id: id, region: "test", bounds: bounds, basemap: url,
+            glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: url, routing: url,
+            manifest: local ? URL(fileURLWithPath: "/release.json") : url, overlays: url)
     }
     func route(points: [Coordinate], turnarounds: [Int], activity: RouteActivity, preference: RoutePreference, release: PlannerRelease) throws -> PlannedPath {
         calls.append("route")
@@ -255,8 +250,5 @@ private actor RecordingSource: PlannerDataSource {
         calls.append("search")
         if let view = query.view { searchViews.append(view) }
         return []
-    }
-    func overlays(bounds: [Double], zoom: Double, network: String, release: PlannerRelease) -> Data {
-        calls.append("overlays"); return Data()
     }
 }

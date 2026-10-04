@@ -48,7 +48,6 @@ targets:
     sources:
       - path: OBCCompanion
       - path: ../apps/planner-native/RouteProvider.swift
-      - path: ../apps/planner-native/OverlayProvider.swift
       - path: ../apps/planner-native/PMTilesArchive.swift
       - path: ../apps/planner-search/native/PlannerSearchConnection.swift
       - path: ../apps/planner-search/native/PlannerSearchDatabase.swift
@@ -165,10 +164,6 @@ targets:
         OTHER_LDFLAGS: ["$(inherited)", "-lroute_server", "-lresolv", "-liconv"]
         # The native planner build provides the Apple Silicon simulator slice.
         EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
-      configs:
-        # The Debug-only planner preview reads this fixture; Release must not carry it.
-        Release:
-          EXCLUDED_SOURCE_FILE_NAMES: PlannerPreviewNetworks.json
 
   # ─────────────────────────────────────────────── device shell (the Rust host on a phone)
   #

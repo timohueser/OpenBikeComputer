@@ -47,8 +47,7 @@ def sample_release(root, changed=False):
     with closing(sqlite3.connect(root / "routing/overlays.sqlite")) as db:
         db.executescript("CREATE TABLE metadata(package TEXT,bounds TEXT); CREATE TABLE attributes(id INTEGER PRIMARY KEY,properties TEXT);"
             "CREATE TABLE routes(id INTEGER PRIMARY KEY,properties TEXT); CREATE TABLE geometries(id INTEGER PRIMARY KEY);"
-            "CREATE TABLE features(id INTEGER PRIMARY KEY,geometry INTEGER,attributes INTEGER);"
-            "CREATE TABLE bounds(id INTEGER PRIMARY KEY,west REAL,east REAL,south REAL,north REAL);")
+            "CREATE TABLE features(id INTEGER PRIMARY KEY,geometry INTEGER,attributes INTEGER);")
         db.commit()
     for component in ["pois", "addresses"]:
         path = root / f"search/{component}/test.sqlite"

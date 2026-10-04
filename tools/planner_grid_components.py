@@ -20,13 +20,6 @@ def partition_search(stage, source, lookup, name, bounds, metadata):
     return {name: database}
 
 
-def partition_overlays(stage, source, name, bounds, package):
-    database = stage / name
-    database.parent.mkdir(parents=True, exist_ok=True)
-    blocks.overlay_shard(source, database, bounds, package)
-    return {name: database}
-
-
 def partition_routing(stage, source, selection):
     selected = stage / "cells.json"
     selected.write_bytes(runtime.encoded(selection))
@@ -78,7 +71,7 @@ def publish(source, routing, output, cache=None):
             paths = [*paths, maps.ROOT / "tools/requirements-planner-maps.txt"]
         dependency_functions = {partition_maps: [blocks.map_tiles], partition_search: [blocks.search_lookup, blocks.search_shard],
                                 joined_fonts: [blocks.offline_fonts, blocks.glyph_ranges, blocks.label_texts],
-                                partition_routes: [blocks.route_tiles], partition_routing: [], partition_overlays: [blocks.overlay_shard]}
+                                partition_routes: [blocks.route_tiles], partition_routing: []}
         spec = components.specification(name, components.implementation([producer, offline.pack_file, offline.item, offline.verify, *dependency_functions.get(producer, [])], paths), inputs,
                                         {"zoom": blocks.ZOOM, "map_zoom": blocks.MAP_ZOOM, "compressed": sorted(offline.COMPRESSED), "chunk": offline.CHUNK}, bounds)
         def produce(stage):
@@ -130,7 +123,7 @@ def publish(source, routing, output, cache=None):
     for kind in blocks.map_kinds(source / "maps"):
         _, entries = package(f"grid-map-{kind}", {"source": release["files"][f"maps/{kind}.pmtiles"]}, partition_maps,
                              lambda stage, kind=kind: partition_maps(stage, source, kind))
-        if kind in ("basemap", "terrain"):
+        if kind in ("basemap", "overlays", "terrain"):
             for name in entries:
                 z, x, y = map(int, Path(name).stem.split("-"))
                 map_blocks.append({"kind": kind, "tile": [z,x,y], "bounds": blocks.box(z,x,y), "files": [name]})
@@ -174,14 +167,10 @@ def publish(source, routing, output, cache=None):
                 lambda stage, database=database, filename=filename, component=component: partition_search(stage, database, lookups[component], filename, bounds, meta[component]),
                 bounds, paths=[maps.ROOT / "apps/planner-search" / path for path in ("storage.py", "index.py", "schema.sql", "indexes.sql", "web/address-terms.json")])
             cell_files.append(filename)
-        overlay = f"routing/layers/{name}.sqlite"
-        package(f"grid-overlays-{name}", {"source": release["files"]["routing/overlays.sqlite"], "routing": release["routing_package"]}, partition_overlays,
-                lambda stage: partition_overlays(stage, source / "routing/overlays.sqlite", overlay, bounds, release["routing_package"]), bounds)
-        geographic.append({**cell, "routing": routing_cells.get(name), "files": [*cell_files, overlay, f"routes/tiles/{name}.json"]})
+        geographic.append({**cell, "routing": routing_cells.get(name), "files": [*cell_files, f"routes/tiles/{name}.json"]})
         grid_cells.append({**cell, "files": [filename.removeprefix("search/") for filename in cell_files]})
     metadata(f"search/{release['region']}.grid.json", {"format": 3 if split else 2, "metadata": search_meta,
              "cells": grid_cells if split else selection})
-    metadata("routing/layers.json", [cell["id"] for cell in selection])
     remaining = {name: entry for name, entry in release["files"].items() if name.startswith(("search/model/", "device/"))}
     package("grid-model-device", remaining, copy_files, lambda stage: copy_files(stage, remaining))
     catalog = {"format": 3, "source": identity, "release": {key: value for key, value in release.items() if key not in {"files", "source_files"}},

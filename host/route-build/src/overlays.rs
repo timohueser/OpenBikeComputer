@@ -53,15 +53,6 @@ fn access_zoom(status: &str) -> Option<f64> {
     })
 }
 
-fn layer_id(kind: &str) -> i64 {
-    match kind {
-        "cycling" => 0,
-        "hiking" => 1,
-        "mtb" => 3,
-        _ => 2,
-    }
-}
-
 type Memberships = BTreeMap<i64, Vec<i64>>;
 
 fn memberships(relations: &BTreeMap<i64, Relation>) -> (Memberships, BTreeMap<i64, Value>) {
@@ -120,9 +111,7 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
         CREATE TABLE attributes(id INTEGER PRIMARY KEY, properties TEXT NOT NULL);
         CREATE TABLE features(id INTEGER PRIMARY KEY, kind TEXT NOT NULL,
             cycling_minzoom REAL, walking_minzoom REAL,
-            geometry INTEGER NOT NULL, attributes INTEGER NOT NULL);
-        CREATE VIRTUAL TABLE bounds USING rtree(id, west, east, south, north,
-            facet_min, facet_max);",
+            geometry INTEGER NOT NULL, attributes INTEGER NOT NULL);",
         )
         .map_err(text)?;
     transaction
@@ -174,9 +163,8 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
                     )
                     .map_err(text)?;
                 let geometry = transaction.last_insert_rowid();
-                let coordinates: Vec<_> = run.iter().map(|p| p.map(|v| v as f64 * 1e-6)).collect();
                 for (activity, properties) in &properties {
-                    insert(&transaction, &mut attributes, geometry, &coordinates, activity, properties)?;
+                    insert(&transaction, &mut attributes, geometry, activity, properties)?;
                 }
             }
             run.clear();
@@ -206,13 +194,9 @@ fn insert(
     database: &Transaction<'_>,
     attributes: &mut HashMap<String, i64>,
     geometry: i64,
-    coordinates: &[[f64; 2]],
     kind: &str,
     properties: &Value,
 ) -> Result<(), String> {
-    let bounds = coordinates.iter().fold([180.0f64, 90.0f64, -180.0f64, -90.0f64], |b, p| {
-        [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
-    });
     let (cycling_minzoom, walking_minzoom) = if kind == "access" {
         (
             access_zoom(properties["cycling_status"].as_str().unwrap_or("")),
@@ -244,14 +228,6 @@ fn insert(
             params![kind, cycling_minzoom, walking_minzoom, geometry, attribute],
         )
         .map_err(text)?;
-    let facet = layer_id(kind) as f64 * 32.0
-        + cycling_minzoom.into_iter().chain(walking_minzoom).reduce(f64::min).unwrap_or(23.0);
-    database
-        .execute(
-            "INSERT INTO bounds VALUES (?,?,?,?,?,?,?)",
-            params![database.last_insert_rowid(), bounds[0], bounds[2], bounds[1], bounds[3], facet, facet],
-        )
-        .map_err(text)?;
     Ok(())
 }
 
@@ -269,6 +245,53 @@ mod tests {
         let deltas: Vec<[i32; 2]> = postcard::from_bytes(&encode_coordinates(&points).unwrap()).unwrap();
         assert_eq!(deltas, [[180_000_000, 90_000_000], [-360_000_000, -180_000_000], [187_812_349, 138_004_567]]);
         assert!(encode_coordinates(&[[i32::MIN, 0], [i32::MAX, 0]]).is_err());
+    }
+
+    #[test]
+    fn index_holds_route_and_access_lines_and_cuts_ways_at_missing_nodes() {
+        use crate::source::{Node, Way};
+        use route_engine::model::{Point, NO_ELEVATION};
+        let way = |id, nodes: Vec<i64>, pairs: &[(&str, &str)]| (id, Way { id, nodes, tags: tags(pairs) });
+        let route = |id, kind, network| {
+            let tags = tags(&[("type", "route"), ("route", kind), ("network", network)]);
+            (id, Relation { id, tags, members: vec![(Id::Way(1), String::new())] })
+        };
+        let osm = Data {
+            nodes: (0..2)
+                .map(|id| {
+                    (
+                        id,
+                        Node {
+                            id,
+                            point: Point { lon: id as i32 * 10_000, lat: 0, elevation: NO_ELEVATION },
+                            tags: Tags::new(),
+                        },
+                    )
+                })
+                .collect(),
+            ways: [
+                way(1, vec![0, 1], &[("highway", "tertiary")]),
+                way(2, vec![0, 1, 999, 0], &[("highway", "construction")]),
+                way(3, vec![0, 1], &[("highway", "footway"), ("bicycle", "no")]),
+            ]
+            .into(),
+            relations: [route(1, "bicycle", "rcn"), route(2, "hiking", "rwn"), route(3, "mtb", "")].into(),
+        };
+        let path = std::env::temp_dir().join(format!("route-build-overlays-{}.sqlite", std::process::id()));
+        write(&path, "package", [-1.0, -1.0, 1.0, 1.0], &osm).unwrap();
+        let database = Connection::open(&path).unwrap();
+        let counts: (i64, i64, i64, i64) = database
+            .query_row(
+                "SELECT (SELECT count(*) FROM features), (SELECT count(*) FROM geometries), (SELECT count(*) FROM routes),
+                    (SELECT points FROM geometries WHERE way=2)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        drop(database);
+        std::fs::remove_file(&path).unwrap();
+        // Way 1 carries three routes. Way 2 keeps only the run before its missing node; way 3 is one access line.
+        assert_eq!(counts, (5, 3, 3, 2));
     }
 
     #[test]
