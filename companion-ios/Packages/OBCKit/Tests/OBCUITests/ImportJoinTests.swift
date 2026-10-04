@@ -4,8 +4,8 @@ import OBCDomain
 import OBCTransport
 @testable import OBCUI
 
-/// Several files at once: a share arrives one URL at a time and opens as one "Make a trip" sheet;
-/// one file still opens the landing.
+/// Several files at once: a share arrives one URL at a time and opens one keep-or-plan choice for
+/// all of them.
 @MainActor
 struct ImportJoinTests {
     private func model(window: Duration = .milliseconds(50)) -> ImportFlowModel {
@@ -17,7 +17,7 @@ struct ImportJoinTests {
                     RoutePoint(coordinate: Coordinate(latitude: 46.5, longitude: 8.1)),
                 ])
             },
-            library: InMemoryLibraryStore(), isBonded: { true }, batchWindow: window)
+            library: InMemoryLibraryStore(), batchWindow: window)
     }
 
     private func files(_ contents: [String]) throws -> [URL] {
@@ -31,20 +31,11 @@ struct ImportJoinTests {
     }
 
     @Test
-    func aShareOfSeveralFilesOpensOneJoinSheet() async throws {
+    func aShareOfSeveralFilesOpensOneChoice() async throws {
         let model = model()
         for url in try files(["a", "b", "c", "d"]) { model.receive(url) }
-        for _ in 0..<200 where model.pendingJoin == nil { try await Task.sleep(for: .milliseconds(10)) }
-        #expect(model.pendingJoin?.files.map(\.fileName) == ["Stage 1.gpx", "Stage 2.gpx", "Stage 3.gpx", "Stage 4.gpx"])
-        #expect(model.pendingImport == nil)
-    }
-
-    @Test
-    func oneFileStillOpensTheLanding() async throws {
-        let model = model()
-        await model.openFiles(at: try files(["a"]))
-        #expect(model.pendingImport?.fileName == "Stage 1.gpx")
-        #expect(model.pendingJoin == nil)
+        for _ in 0..<200 where model.pendingChoice == nil { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(model.pendingChoice?.map(\.fileName) == ["Stage 1.gpx", "Stage 2.gpx", "Stage 3.gpx", "Stage 4.gpx"])
     }
 
     @Test

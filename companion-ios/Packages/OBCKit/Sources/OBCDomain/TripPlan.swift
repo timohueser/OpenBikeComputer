@@ -1,9 +1,6 @@
 import Foundation
 
 extension PlannerPlan {
-    /// The most days a plan holds, as `specs/planner-plan.md` limits `days`.
-    public static let maxDays = 14
-
     /// A label the planner or a kept line gives a point that has no place name of its own.
     public static func isPlaceholder(_ label: String) -> Bool {
         ["Start", "Finish", "Map point", "Shaping point"].contains(label)

@@ -142,10 +142,15 @@ extension PlannerPlan {
             PlanPoint(id: "start", label: startName, coordinate: first, progress: 0, kind: .start),
             PlanPoint(id: "finish", label: finishName, coordinate: last, progress: 1, kind: .finish,
                       leg: .drawn, drawn: drawnLeg(from: first, along: line)),
-        ] + waypoints.enumerated().map { index, waypoint in
+        ] + markers(waypoints), mode: .route)
+    }
+
+    /// Route waypoints as markers.
+    static func markers(_ waypoints: [Waypoint]) -> [PlanPoint] {
+        waypoints.enumerated().map { index, waypoint in
             PlanPoint(id: "waypoint-\(index + 1)", label: waypoint.name, coordinate: waypoint.coordinate, progress: 0,
                       kind: .marker, placeKind: waypoint.category?.placeKind, note: waypoint.note)
-        }, mode: .route)
+        }
     }
 
     /// A trip kept as it is: one drawn leg per day, a night at each day end, and a transfer leg
@@ -208,5 +213,64 @@ extension WaypointCategory {
     public init?(placeKind: String) {
         guard let category = Self.allCases.first(where: { $0.placeKind == placeKind }) else { return nil }
         self = category
+    }
+}
+
+// MARK: Imports
+
+extension PlannerPlan {
+    /// A line planned on roads: its start, a shaping point for each inner point, its finish, and the
+    /// waypoints as markers. `progress` has one entry per point: where the routed line passes it, from 0 to 1.
+    public static func shaped(_ points: [Coordinate], turnarounds: [Int], progress: [Double],
+                              waypoints: [Waypoint] = []) -> PlannerPlan? {
+        guard points.count > 1, progress.count == points.count else { return nil }
+        let last = points.count - 1
+        return PlannerPlan(points: points.indices.map { index in
+            PlanPoint(id: index == 0 ? "start" : index == last ? "finish" : UUID().uuidString,
+                      label: index == 0 ? "Start" : index == last ? "Finish" : "Shaping point",
+                      coordinate: points[index], progress: progress[index],
+                      kind: index == 0 ? .start : index == last ? .finish : .via, turnaround: turnarounds.contains(index))
+        } + markers(waypoints), mode: .route)
+    }
+
+    /// The most days a plan has, as `specs/planner-plan.md` caps `days`.
+    public static let maxDays = 14
+
+    /// Route plans as the days of one trip, in ride order. Nil for more than ``maxDays`` days. Each finish but the last is a night. A day that
+    /// starts farther than ``Trip/transferMinMeters`` from the night before starts with a transfer leg; a
+    /// nearer day continues from that night.
+    public static func trip(days: [PlannerPlan]) -> PlannerPlan? {
+        guard (1...maxDays).contains(days.count) else { return nil }
+        var points: [PlanPoint] = [], markers: [PlanPoint] = []
+        for (day, plan) in days.enumerated() {
+            var route = plan.routePoints.map { point in
+                var point = point
+                point.progress = (Double(day) + point.progress) / Double(days.count)
+                return point
+            }
+            guard route.count > 1 else { return nil }
+            if let night = points.last {
+                if route[0].coordinate.distance(to: night.coordinate) > Trip.transferMinMeters {
+                    route[0].id = "day-\(day + 1)"; route[0].label = "Start of day \(day + 1)"
+                    // A plain route point, not a stop: the day starts there.
+                    route[0].kind = .via; route[0].leg = .transfer; route[0].drawn = nil
+                } else {
+                    route.removeFirst()
+                }
+            }
+            if day < days.count - 1 {
+                let end = route.count - 1
+                route[end].id = "night-\(day + 1)"; route[end].label = "End of day \(day + 1)"
+                route[end].kind = .night; route[end].night = day + 1
+            }
+            points += route
+            markers += plan.markers.map { marker in
+                var marker = marker
+                marker.id = "d\(day + 1)-\(marker.id)"
+                return marker
+            }
+        }
+        return PlannerPlan(points: points + markers, mode: .trip, bike: days[0].bike,
+                           routeOrder: points.dropFirst().dropLast().map(\.id))
     }
 }

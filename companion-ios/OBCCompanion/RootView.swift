@@ -14,9 +14,10 @@ struct RootView: View {
     @State private var onboarding: OnboardingProgress
     @State private var onboardingFirmware: FirmwareUpdateModel
     @State private var onboardingUpload: UploadRequest?
-    @State private var pendingSetupRoute: RouteID?
     @State private var setupRouteError: String?
     @State private var importModel: ImportFlowModel
+    /// The line the "Make a trip" sheet leaves; it shows once the sheet has gone.
+    @State private var joinNotice: String?
     /// The foreground-only link policy: a real background transition suspends the link, after
     /// draining any in-flight transfer; foreground re-raises it over the bonded reconnect path.
     @State private var lifecycleModel: LinkLifecycleModel
@@ -114,13 +115,11 @@ struct RootView: View {
             placeName: placeName
         ))
         _importModel = State(initialValue: ImportFlowModel(
-            // The decode stays app-side, because OBCUI does not import OBCFormats; the flow model
-            // gets a closure over it, and a narrow bond check for the framing.
+            // The decode stays app-side, because OBCUI does not import OBCFormats.
             decode: { data, fileName in
                 try importer.importRoute(from: data, fileExtension: (fileName as NSString).pathExtension)
             },
             library: library,
-            isBonded: { bondStore.load() != nil },
             lastBikeType: lastBikeType
         ))
         _reachability = State(initialValue: ReachabilityStore(reachability))
@@ -181,16 +180,26 @@ struct RootView: View {
             }
         }
         // Everything below hangs outside the launch gate: a share can arrive before pairing, so
-        // the import cover and its alert must present over the pairing flow too.
-        .fullScreenCover(item: $importModel.pendingImport, onDismiss: {
-            if let id = pendingSetupRoute {
-                pendingSetupRoute = nil
-                sendSetupRoute(id)
-            }
-        }) { pending in
-            importLanding(for: pending)
+        // the import sheets and alerts must present over the pairing flow too.
+        .obcChoiceSheet(
+            choiceTitle,
+            isPresented: choiceShown,
+            actions: [
+                OBCSheetAction("Keep the file's line") { importModel.choose(.keepLine) },
+                OBCSheetAction("Plan it on roads") { importModel.choose(.planOnRoads) },
+            ],
+            onDismiss: { importModel.proceed(using: plannerSource) }
+        )
+        .overlay { if let planning = importModel.planning { planningCover(planning) } }
+        .onChange(of: importModel.landed?.id) {
+            guard let file = importModel.landed else { return }
+            importModel.landed = nil
+            land(file)
         }
-        .fullScreenCover(item: $importModel.pendingJoin) { join in
+        .fullScreenCover(item: $importModel.pendingJoin, onDismiss: {
+            importModel.notice = joinNotice
+            joinNotice = nil
+        }) { join in
             joinSheet(for: join)
         }
         // The share sheet can hand over anything; say what we accept.
@@ -198,6 +207,11 @@ struct RootView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text("OBC imports GPX and TCX route files. That one looked like something else.")
+        }
+        .alert(importModel.notice ?? "", isPresented: Binding(
+            get: { importModel.notice != nil }, set: { if !$0 { importModel.notice = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
         }
         // A trip change that did not go as asked says so, in one line, where the rider made it.
         .alert(
@@ -406,41 +420,43 @@ struct RootView: View {
     // presentation modifiers form one expression, and each addition pushed inference time up
     // until the compiler gave up. Keep new presentation logic in helpers like these, not inline.
 
-    /// The import cover's content: save, upload and pair-detour actions around one pending import.
-    private func importLanding(for pending: PendingImport) -> some View {
-        ImportLandingHost(
-            transport: transport,
-            route: pending.route,
-            fileName: pending.fileName,
-            source: pending.source,
-            bikeType: pending.bikeType,
-            deviceName: mainModel.deviceName,
-            noDevicePaired: pending.noDevicePaired,
-            // A trip is app-local, so the trip rows work with no device paired just the same.
-            trips: mainModel.tripPickerItems,
-            isOnboarding: launchModel.phase == .setup && onboarding.stage == .route,
-            replacing: pending.replacing,
-            onSave: { detail, tripSelection in
-                mainModel.addImportedRoute(pending.record(for: detail))
-                if launchModel.phase == .setup, onboarding.stage == .route {
-                    pendingSetupRoute = detail.summary.id
-                    importModel.closeImport()
-                    return
-                }
-                // A trip choice moves the route into the trip and opens the trip page.
-                if let tripID = mainModel.fileRoute(detail.summary.id, into: tripSelection) {
-                    path = [.trip(id: tripID)]
-                }
-                importModel.closeImport()
-            },
-            // Save first, so a pairing detour does not cost the import, then start the scan.
-            onPair: { detail in
-                mainModel.addImportedRoute(pending.record(for: detail))
-                importModel.closeImport()
-                launchModel.startPairing()
-            },
-            onCancel: { importModel.closeImport() }
+    /// The keep-or-plan sheet's title: the file's name, or the number of files.
+    private var choiceTitle: String {
+        guard let files = importModel.pendingChoice else { return "" }
+        return files.count == 1 ? files[0].fileName : "\(files.count) files"
+    }
+
+    /// Presentation binding for the keep-or-plan sheet; dismissal cancels.
+    private var choiceShown: Binding<Bool> {
+        Binding(
+            get: { importModel.pendingChoice != nil },
+            set: { if !$0 { importModel.cancelChoice() } }
         )
+    }
+
+    private func planningCover(_ planning: (file: Int, of: Int)) -> some View {
+        ZStack {
+            OBCTheme.page.ignoresSafeArea()
+            VStack(spacing: 20) {
+                ProgressView(planning.of == 1 ? "Planning on roads…" : "Planning file \(planning.file) of \(planning.of)…")
+                Button("Cancel") { importModel.cancelPlanning() }
+                    .buttonStyle(.obcGhost)
+                    .accessibilityIdentifier("import.cancelPlanning")
+            }
+            .padding(.horizontal, 32)
+        }
+        .accessibilityIdentifier("import.planning")
+    }
+
+    /// One imported file: saved at once, then its detail opens. During setup it goes to the device instead.
+    private func land(_ file: PendingImport) {
+        let id = save(file)
+        importModel.notice = ImportFlowModel.notice(for: [file])
+        if launchModel.phase == .setup, onboarding.stage == .route {
+            sendSetupRoute(id)
+        } else if launchModel.phase == .main {
+            path = [.route(id: id)]
+        }
     }
 
     /// Several files at once: one trip with a day per file, or each file as a route.
@@ -450,31 +466,39 @@ struct RootView: View {
                 TripJoinSheet.File(id: index, fileName: file.fileName, points: file.route.points)
             },
             onMakeTrip: { ordered in
+                let files = ordered.map { join.files[$0.id] }
+                // The sheet offers Make trip only for at most `PlannerPlan.maxDays` files.
+                let days = files.filter { Trip.isDay($0.route.points) }
                 // A file too short to be a day stays a route, and the rider is told.
-                let short = ordered.filter { !Trip.isDay($0.points) }
-                for file in short { saveAsRoute(join.files[file.id]) }
+                let short = files.filter { !Trip.isDay($0.route.points) }
+                short.forEach { save($0) }
                 mainModel.noteTooShort(short.map(\.fileName))
                 let tripID = mainModel.createTrip(
-                    name: "New trip", files: ordered.map(\.points),
-                    dayNames: ordered.map { ($0.fileName as NSString).deletingPathExtension },
-                    waypoints: ordered.map { join.files[$0.id].route.waypoints })
+                    name: "New trip", files: days.map(\.route.points),
+                    dayNames: days.map { ($0.fileName as NSString).deletingPathExtension },
+                    waypoints: days.map(\.route.waypoints),
+                    plan: PlannerPlan.trip(days: days.compactMap(\.plan)))
+                joinNotice = ImportFlowModel.notice(for: join.files)
                 importModel.closeJoin()
                 if let tripID { path = [.trip(id: tripID)] }
             },
             onNotNow: {
-                join.files.forEach(saveAsRoute)
+                join.files.forEach { save($0) }
+                joinNotice = ImportFlowModel.notice(for: join.files)
                 importModel.closeJoin()
             }
         )
     }
 
-    /// Save one file of a join as a route, with the summary the import landing would make.
-    private func saveAsRoute(_ file: PendingImport) {
+    /// Save one imported file as a route, with its plan.
+    @discardableResult
+    private func save(_ file: PendingImport) -> RouteID {
         let detail = RouteDetailModel(
             transport: transport, dressing: .imported(file.route, fileName: file.fileName),
-            bikeType: file.bikeType
+            bikeType: file.bikeType, importedRouteID: file.replacing?.id
         ).makeDetail()
         mainModel.addImportedRoute(file.record(for: detail))
+        return detail.summary.id
     }
 
     /// The collision sheet's title: the imported route's name, or the file name, quoted.
@@ -697,7 +721,7 @@ struct RootView: View {
 
     }
 
-    /// Edit or save a ride. Saving uses the import landing and its name-collision rule.
+    /// Edit or save a ride. Saving keeps the ride's line, with the import's name-collision rule.
     private func rideEditMenu(for ride: Ride) -> RideEditMenu {
         let id = ride.id
         let fileName = GPXFile.fileName(for: ride.summary.name)
@@ -713,8 +737,7 @@ struct RootView: View {
             },
             onRevert: { mainModel.revertRide(id) },
             onSaveAsRoute: ride.plannedRoute().map { route in
-                { importModel.open(route: route, fileName: fileName, fileData: Data(),
-                                   source: .ride(ride.summary.date), bikeType: ride.summary.bikeType) }
+                { importModel.open(route: route, fileName: fileName, fileData: Data(), bikeType: ride.summary.bikeType) }
             }
         )
     }
@@ -824,7 +847,7 @@ import OBCMock
     RootView(transport: MockTransport(control: control), bondStore: MockBondStore(control: control))
 }
 
-#Preview("Import landing (E1)") {
+#Preview("Import choice") {
     let control = MockControl(scenario: .happyPath)
     RootView(
         transport: MockTransport(control: control),

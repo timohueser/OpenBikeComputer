@@ -97,37 +97,16 @@ final class TripFlowTests: XCTestCase {
                        "a route added to a trip must leave the list")
     }
 
-    // MARK: Import row → New trip
-
-    /// The import landing's Start a trip row makes the import the first day of a new trip and
-    /// opens the trip page.
-    @MainActor
-    func testImportStartsATrip() {
-        let app = launch(fixtures: "trips", importSample: "gpx")
-
-        let row = app.buttons["import.startTrip"]
-        XCTAssertTrue(row.waitForExistence(timeout: 10), "import Start a trip row missing")
-        XCTAssertTrue(app.buttons["import.addToTrip"].exists, "the one fixture trip must be offered")
-        snap(app, "TR7-import-rows")
-        row.tap()
-
-        XCTAssertTrue(
-            app.descendants(matching: .any)["trip.day.0"].firstMatch.waitForExistence(timeout: 10),
-            "Start a trip must open the new trip's page")
-        app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'main.card.'"))
-            .matching(NSPredicate(format: "label CONTAINS 'Schwarzwald'")).firstMatch.exists,
-            "the imported route must not also be a route card")
-    }
-
-    /// Two files that arrive together become one trip through Make trip. A trip is a Planned row
+    /// Two files that arrive together get one choice, then become one trip through Make trip. A trip is a Planned row
     /// of its own: with no loose route left, the list still shows the trip card, not the empty
     /// state.
     @MainActor
     func testATripFromSeveralFilesStaysListed() {
         let app = launch(fixtures: "empty", importSample: "trip")
 
+        let keep = app.buttons["confirm.action.0"]
+        XCTAssertTrue(keep.waitForExistence(timeout: 10), "the keep-or-plan choice is missing")
+        keep.tap()
         let makeTrip = app.buttons["join.makeTrip"]
         XCTAssertTrue(makeTrip.waitForExistence(timeout: 10), "the Make a trip sheet is missing")
         makeTrip.tap()

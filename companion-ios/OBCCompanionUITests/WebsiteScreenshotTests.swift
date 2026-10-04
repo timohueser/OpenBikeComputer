@@ -113,7 +113,7 @@ final class WebsiteScreenshotTests: XCTestCase {
         add(attachment)
     }
 
-    /// A real import, followed through the mock transport to the stable completion sheet.
+    /// A real import, saved as a route, followed through the mock transport to the stable completion sheet.
     @MainActor
     func testWebsiteBookends() {
         let app = launch(extraArguments: [
@@ -121,27 +121,26 @@ final class WebsiteScreenshotTests: XCTestCase {
             "-OBCImportSample", "grimsel",
         ])
 
+        // Keep the file's line: the import saves at once and opens the route page.
+        let keep = app.buttons["confirm.action.0"]
+        XCTAssertTrue(keep.waitForExistence(timeout: 10), "the keep-or-plan choice did not appear")
+        keep.tap()
         XCTAssertTrue(
             app.staticTexts["Grimsel Pass"].waitForExistence(timeout: 10),
-            "the imported route landing did not appear"
+            "the imported route page did not appear"
         )
-        XCTAssertTrue(app.buttons["import.newRoute"].exists, "the import rows are missing")
         XCTAssertTrue(
             app.descendants(matching: .any)["trackPreview.grid"].firstMatch.exists,
             "the imported route's hero did not draw"
         )
-        // The imported profile is synchronous; assert that the settled landing contains it.
+        // The imported profile is synchronous; assert that the settled page contains it.
         XCTAssertTrue(
             app.descendants(matching: .any)["detail.elevationProfile"].firstMatch.exists,
             "the imported route's elevation profile did not draw"
         )
         capture(app, name: "route-imported")
 
-        // Land it as a route, then upload it from its route page.
-        app.buttons["import.newRoute"].tap()
-        let savedRoute = app.staticTexts["Grimsel Pass"].firstMatch
-        XCTAssertTrue(savedRoute.waitForExistence(timeout: 10), "the imported route did not land in the list")
-        savedRoute.tap()
+        // Upload it from its route page.
         let upload = app.buttons["detail.upload"]
         XCTAssertTrue(upload.waitForExistence(timeout: 10), "the route upload action is missing")
         // The call to action names the device, off the same unwaited name the top bar uses.

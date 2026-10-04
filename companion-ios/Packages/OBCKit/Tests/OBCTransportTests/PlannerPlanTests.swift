@@ -79,4 +79,30 @@ struct PlannerPlanTests {
         #expect(route[3].coordinate == at(8.10) && route[2].coordinate == at(8.04))
         #expect(route.map(\.progress) == route.map(\.progress).sorted() && route.last?.progress == 1)
     }
+
+    /// Imported files as days: a day that starts at the night before continues from it, a day that starts
+    /// far away gets a transfer leg, and shaping points and markers stay.
+    @Test func importedDaysJoinAtTheirNightsWithATransferAcrossAGap() throws {
+        let line = { (from: Double, to: Double) in stride(from: from, through: to, by: 0.005).map { RoutePoint(coordinate: self.at($0)) } }
+        let spring = Waypoint(index: 0, name: "Spring", distanceAlongMeters: 0, coordinate: at(8.03, 46.51), category: .water)
+        let shaped = try #require(PlannerPlan.shaped([at(8.02), at(8.03), at(8.04)], turnarounds: [1], progress: [0, 0.5, 1],
+                                                     waypoints: [spring]))
+        let days = [try #require(PlannerPlan.keptLine(line(8.0, 8.02))), shaped, try #require(PlannerPlan.keptLine(line(8.10, 8.12)))]
+
+        let plan = try #require(PlannerPlan.trip(days: days))
+        let route = plan.routePoints
+        #expect(route.map(\.kind) == [.start, .night, .via, .night, .via, .finish] && plan.days == 3 && plan.mode == .trip)
+        #expect(route.map(\.id) == ["start", "night-1", route[2].id, "night-2", "day-3", "finish"] && route[2].turnaround == true)
+        #expect(route.map(\.leg) == [nil, .drawn, nil, nil, .transfer, .drawn])
+        #expect(route.map(\.progress) == route.map(\.progress).sorted() && route.last?.progress == 1)
+        #expect(plan.markers.map(\.label) == ["Spring"] && plan.markers.map(\.placeKind) == ["water"])
+    }
+
+    /// One remaining day is still a trip; more days than a plan holds are no trip.
+    @Test func aTripHasOneToFourteenDays() throws {
+        let day = try #require(PlannerPlan.keptLine([RoutePoint(coordinate: at(8.0)), RoutePoint(coordinate: at(8.01))]))
+        #expect(PlannerPlan.trip(days: [day])?.mode == .trip)
+        #expect(PlannerPlan.trip(days: Array(repeating: day, count: 14)) != nil)
+        #expect(PlannerPlan.trip(days: Array(repeating: day, count: 15)) == nil)
+    }
 }
