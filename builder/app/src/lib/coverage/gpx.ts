@@ -22,8 +22,8 @@ import { M_PER_DEG } from "../catalog/corridor";
 /** One GPX point; `ele` is the `<ele>` height in metres, when the file has one. */
 export type GpxPoint = LatLon & { ele?: number };
 
-/** One `<wpt>` with its `<name>`, when it has one. */
-export type GpxWaypoint = LatLon & { name?: string };
+/** One `<wpt>` with its `<name>` and its `<desc>` (else `<cmt>`), when it has them. */
+export type GpxWaypoint = LatLon & { name?: string; note?: string };
 
 /** One route as the corridor panel lists it. */
 export interface GpxRoute {
@@ -61,12 +61,12 @@ function pointOf(tag: string): LatLon | null {
 
 const WPT = /<wpt\b([^>]*?)(?:\/>|>([\s\S]*?)<\/wpt\s*>)/g;
 
-/** The first non-empty `<name>` in `text`. GPX is XML, so the five predefined entities
- *  are all that can appear un-escaped in a name. */
-function firstName(text: string): string | null {
-    const name = /<name>\s*([\s\S]*?)\s*<\/name>/.exec(text)?.[1].trim();
-    if (!name) return null;
-    return name
+/** The first non-empty `<tag>` text in `text`. GPX is XML, so the five predefined entities
+ *  are all that can appear un-escaped in it. */
+function firstText(text: string, tag = "name"): string | null {
+    const value = new RegExp(`<${tag}>\\s*([\\s\\S]*?)\\s*<\\/${tag}>`).exec(text)?.[1].trim();
+    if (!value) return null;
+    return value
         .replace(/&lt;/g, "<")
         .replace(/&gt;/g, ">")
         .replace(/&quot;/g, '"')
@@ -80,7 +80,7 @@ function nameOf(text: string): string | null {
     const scoped = /<(?:trk|rte)\b[^>]*>([\s\S]*?)<\/(?:trk|rte)>/.exec(text)?.[1];
     const file = text.replace(WPT, "");
     for (const within of scoped === undefined ? [file] : [scoped, file]) {
-        const name = firstName(within);
+        const name = firstText(within);
         if (name) return name;
     }
     return null;
@@ -149,7 +149,8 @@ export function readGpx(text: string, fallbackName: string): { name: string; poi
     // A waypoint with malformed coordinates is skipped; it never refuses the route.
     const waypoints = [...text.matchAll(WPT)].flatMap(([, attributes, body]): GpxWaypoint[] => {
         const p = pointOf(attributes);
-        return p ? [{ ...p, name: firstName(body ?? "") ?? undefined }] : [];
+        const note = firstText(body ?? "", "desc") ?? firstText(body ?? "", "cmt");
+        return p ? [{ ...p, name: firstText(body ?? "") ?? undefined, ...(note ? { note } : {}) }] : [];
     });
     return { name: nameOf(text) ?? fallbackName, points, waypoints };
 }
