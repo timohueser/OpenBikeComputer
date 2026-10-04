@@ -6,8 +6,12 @@
     import { planTitle, type Trip } from '../../lib/planner/editor';
     import type { Version } from '../../lib/planner/versions';
 
-    let { trip, canUndo, canRedo, draftSavedAt, draftError, onChange, onUndo, onRedo, onRestore, onSaved, onNew }: {
+    let { trip, name, versions, canUndo, canRedo, draftSavedAt, draftError, onChange, onUndo, onRedo, onRestore, onVersions, onNew, onLibrary, ready }: {
         trip: Trip;
+        name: string;
+        versions: Version[];
+        ready: boolean;
+        onLibrary: () => void;
         canUndo: boolean;
         canRedo: boolean;
         draftSavedAt: number | null;
@@ -17,14 +21,14 @@
         onUndo: () => void;
         onRedo: () => void;
         onRestore: (trip: Trip, name: string) => void;
-        onSaved: (version: Version) => void;
+        onVersions: (versions: Version[]) => Promise<void>;
     } = $props();
 
     const bike = $derived(trip.bike ?? 'touring');
-    const title = $derived(planTitle(trip));
+    const title = $derived(name || planTitle(trip));
 </script>
 
-<div class="trip-bar">
+<div class="trip-bar" inert={!ready}>
     <div class="trip-name">
         <h1>{title}</h1>
         <Select label="Plan type" value={trip.mode ?? 'trip'} options={[{ value: 'trip', label: 'Multi-day trip' }, { value: 'route', label: 'Route' }]}
@@ -43,10 +47,11 @@
         </div>
     </div>
     <div class="actions">
-        <button type="button" class="planner-action quiet" disabled={!trip.points.length} onclick={onNew}>New {trip.mode === 'route' ? 'route' : 'trip'}</button>
+        <button type="button" class="planner-action quiet" disabled={!ready || !trip.points.length} onclick={onNew}>New {trip.mode === 'route' ? 'route' : 'trip'}</button>
         <button type="button" class="icon" disabled={!canUndo} onclick={onUndo} aria-label="Undo" title="Undo"><Icon name="undo" /></button>
         <button type="button" class="icon" disabled={!canRedo} onclick={onRedo} aria-label="Redo" title="Redo"><Icon name="redo" /></button>
-        <VersionsMenu {trip} {draftSavedAt} {draftError} {onRestore} {onSaved} />
+        <button type="button" class="planner-action" disabled={!ready} onclick={onLibrary}>My plans</button>
+        <VersionsMenu {trip} {versions} {draftSavedAt} {draftError} {onRestore} onChange={onVersions} />
     </div>
 </div>
 
@@ -90,8 +95,10 @@
     .actions {
         display: flex;
         align-items: center;
+        flex-wrap: wrap;
         gap: 4px;
     }
+    .actions :global(button) { white-space: nowrap; }
     .icon {
         display: grid;
         place-items: center;

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount, untrack } from 'svelte';
+    import { onMount, tick, untrack } from 'svelte';
     import PlannerMap from './PlannerMap.svelte';
     import Icon from './PlannerIcon.svelte';
     import Profile from './PlannerProfile.svelte';
@@ -29,6 +29,9 @@
     import { planTrip, routeBase, type RoutePlan } from '../../lib/planner/signed-route-plan';
     import type { CatalogRecord } from '../../lib/planner/signed-routes';
     import { storedTrip } from '../../lib/planner/trip-validation';
+    import LibraryPanel from './PlanLibrary.svelte';
+    import { PlanLibrary, newPlan as makePlan, downloadPlan, importPlan, type Plan } from '../../lib/planner/library';
+    import { versionSummary } from '../../lib/planner/versions';
     import {
         addClickedPoint, addPointNear, addRestDay, applyBudget, closeLoop, coordinateAt, cumulative, emptyTrip, hasEndpoints as endpointsChosen,
         insertPoint, itineraryDays, kilometres, planTitle, nearestProgress, nightOrderConflicts, overnightCandidates,
@@ -49,11 +52,10 @@
     import { buildQueryRoute } from '../../lib/planner/search/route-client';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
-    import { keepVersion, type Version } from '../../lib/planner/versions';
+    import type { Version } from '../../lib/planner/versions';
 
     import { routePreview } from '../../lib/planner/route-preview';
 
-    const storageKey = 'obc-planner-routing-v2';
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
     import { calculateLine, requestAlternatives, selectRoute, type EngineRoute, type RoutingLine } from '../../lib/planner/routing';
     import { LegCache } from '../../lib/planner/route-legs';
@@ -73,6 +75,17 @@
     let trip = $state.raw<Trip>(emptyTrip());
     const legs = new LegCache();
     let mounted = false;
+    let ready = $state(false);
+    let library: PlanLibrary;
+    let activePlan = $state.raw<Plan>(makePlan(emptyTrip()));
+    const activePlanId = $derived(activePlan.id);
+    let fitPlan = $state(false);
+    let libraryOpen = $state(false);
+    let libraryBusy = $state(false);
+    let versionsSaving = $state(false);
+    let libraryError = $state('');
+    let plans = $state.raw<Plan[]>([]);
+    let lastSave: Promise<void> = Promise.resolve();
     const hasEndpoints = $derived(endpointsChosen(trip));
     const nextEndpoint = $derived(trip.points.some(p => p.kind === 'start') ? 'finish' : 'start');
     let previewTrip = $state.raw<Trip | null>(null);
@@ -91,6 +104,7 @@
     const routed = $derived(trip.routing?.key === routingInput);
     $effect(() => {
         const key = routingInput;
+        const planId = activePlanId;
         void routeAttempt;
         if (!hasEndpoints) { routingStatus = 'Choose a start and finish'; return; }
         if (routed) return;
@@ -99,8 +113,9 @@
         routingStatus = 'Calculating route…';
         routeFailed = false;
         calculateLine(plan, abort.signal, legs).then(line => {
-                if (abort.signal.aborted || key !== routingInput) return;
+                if (abort.signal.aborted || key !== routingInput || planId !== activePlan.id) return;
                 trip = { ...trip, routing: line };
+                if (!versionsSaving && !libraryBusy) void save().catch(() => {});
             }).catch(error => {
                 if (abort.signal.aborted) return;
                 routingStatus = error instanceof Error ? error.message : 'Routing is unavailable.';
@@ -114,6 +129,13 @@
         commit(next, 'Route preference changed');
     }
     const currentRoute = $derived(hasEndpoints && shownTrip.routing?.key === routingKey(shownTrip) ? shownTrip.routing : undefined);
+    $effect(() => {
+        if (fitPlan && currentRoute && map) {
+            const id = activePlanId;
+            fitPlan = false;
+            void tick().then(() => { if (activePlan.id === id) map?.fitRoute(); });
+        }
+    });
     let previousRouteTrip = $state.raw<Trip | null>(null);
     $effect(() => {
         if (!hasEndpoints) previousRouteTrip = null;
@@ -208,7 +230,7 @@
     let viewportWidth = $state(1200);
     let mapHeight = $state(600);
     let map: PlannerMap | undefined;
-    const history = new TripHistory();
+    let history = new TripHistory();
     let revision = $state(0);
     // The Routes view replaces the panel; the finder keeps its filters and list while the view is closed.
     const finder = new RouteFinder();
@@ -446,17 +468,17 @@
 
     onMount(() => {
         mounted = true;
-        try {
-            const raw = localStorage.getItem(storageKey);
-            const saved = storedTrip(raw ? JSON.parse(raw) : null);
-            if (saved) trip = planOf(saved);
-            else if (raw) draftError = 'Saved draft is invalid · new plan opened';
-        } catch (error) {
-            draftError = error instanceof SyntaxError ? 'Saved draft is invalid · new plan opened' : 'Draft · browser storage unavailable';
-        }
+        void (async () => {
+            try {
+                library = new PlanLibrary();
+                const plan = await library.active();
+                if (!mounted) return;
+                if (plan) installPlan(plan);
+            } catch (error) { draftError = storageError(error); }
+            finally { if (mounted) ready = true; }
+        })();
         try { autoCenter = localStorage.getItem('obc-planner-auto-center') === 'true'; } catch { /* Optional browser preference. */ }
-        trip.points.filter(point => point.autoLabel).forEach(point => void nameVisit(point));
-        return () => { mounted = false; preview.cancel(); };
+        return () => { mounted = false; preview.cancel(); void library?.close(); };
     });
 
     $effect(() => {
@@ -467,13 +489,154 @@
         try { localStorage.setItem('obc-planner-auto-center', String(autoCenter)); } catch { /* Optional browser preference. */ }
     });
 
-    function save() {
-        try {
-            localStorage.setItem(storageKey, JSON.stringify(storedPlan(trip)));
-            draftSavedAt = Date.now();
+    function storageError(error: unknown): string {
+        if (error instanceof Error && error.name === 'QuotaExceededError') return 'Browser storage is full. Download your plan, remove unused plans, and retry saving.';
+        return error instanceof Error ? error.message : 'Could not save in this browser. Download your plan and try again.';
+    }
+
+    function snapshot(): Plan {
+        return { ...activePlan, trip: storedPlan(trip), summary: versionSummary(trip), updatedAt: Date.now() };
+    }
+
+    function save(): Promise<void> {
+        if (!ready) return Promise.resolve();
+        activePlan = snapshot();
+        if (!trip.points.length && !activePlan.revision) return Promise.resolve();
+        const plan = activePlan;
+        lastSave = library ? library.save(plan).then(async saved => {
+            await library.activate(saved.id);
+            if (!mounted || activePlan.id !== saved.id) return;
+            activePlan = { ...activePlan, revision: saved.revision };
+            draftSavedAt = saved.updatedAt;
             draftError = '';
-        } catch {
-            draftError = 'Draft · could not save locally';
+            if (libraryOpen) plans = plans.map(p => p.id === saved.id ? saved : p);
+            if (saved.revision === 1) void navigator.storage?.persist?.().catch(() => {});
+        }).catch(error => {
+            if (mounted && activePlan.id === plan.id) draftError = storageError(error);
+            throw error;
+        }) : Promise.reject(new Error('Browser storage is unavailable. Download your plan to keep it.'));
+        void lastSave.catch(error => { if (mounted) draftError = storageError(error); });
+        return lastSave;
+    }
+
+    function installPlan(plan: Plan) {
+        preview.cancel();
+        previewTrip = null;
+        draggingPoint = false;
+        activePlan = plan;
+        trip = planOf(storedTrip(plan.trip) ?? emptyTrip());
+        history = new TripHistory();
+        routesOpen = false;
+        fromRoutes = false;
+        finder.hovered = null;
+        revision++;
+        draftSavedAt = plan.revision ? plan.updatedAt : null;
+        draftError = '';
+        undoable = false;
+        clearSelection();
+        exitSearch();
+        drawing = null;
+        pointing = undefined;
+        showRoute = true;
+        night = 1;
+        expandedDay = null;
+        previousRouteTrip = null;
+        visibleRange = null;
+        hoverProgress = null;
+        fitPlan = true;
+        list = 'plan';
+        trip.points.filter(point => point.autoLabel).forEach(point => void nameVisit(point));
+    }
+
+    async function libraryAction(action: () => Promise<void>) {
+        const beforeTrip = trip;
+        libraryBusy = true;
+        libraryError = '';
+        try { await action(); }
+        catch (error) { libraryError = storageError(error); }
+        finally {
+            libraryBusy = false;
+            if (trip !== beforeTrip && trip.routing) void save().catch(() => {});
+        }
+    }
+
+    async function openLibrary() {
+        libraryOpen = true;
+        await libraryAction(async () => {
+            await lastSave.catch(() => {});
+            if (!library) throw new Error('Browser storage is unavailable. Download your plan to keep it.');
+            plans = await library.list();
+        });
+    }
+
+    async function openPlan(plan: Plan) {
+        await libraryAction(async () => {
+            try { await lastSave; }
+            catch {
+                if (!window.confirm('Some edits are not saved. Download a backup before reopening a plan. Discard the unsaved edits?')) return;
+            }
+            const latest = await library.get(plan.id);
+            if (!latest) throw new Error('This plan was deleted. Reopen My plans.');
+            await library.activate(latest.id);
+            installPlan(latest);
+            libraryOpen = false;
+            message = 'Plan opened';
+        });
+    }
+
+    async function renamePlan(plan: Plan, name: string) {
+        await libraryAction(async () => {
+            await lastSave;
+            const next = { ...(plan.id === activePlan.id ? snapshot() : plan), name, updatedAt: Date.now() };
+            const saved = await library.save(next);
+            if (plan.id === activePlan.id) activePlan = { ...activePlan, name, revision: saved.revision };
+            plans = await library.list();
+        });
+    }
+
+    async function duplicatePlan(plan: Plan) {
+        await libraryAction(async () => {
+            await lastSave;
+            const source = plan.id === activePlan.id ? snapshot() : plan;
+            const copy = await library.save(makePlan(source.trip, `${source.name || planTitle(source.trip)} (copy)`, source.versions));
+            await library.activate(copy.id);
+            installPlan(copy);
+            plans = await library.list();
+        });
+    }
+
+    async function deletePlan(plan: Plan) {
+        if (!window.confirm(`Delete “${plan.name || planTitle(plan.trip)}” and its saved versions? Download it first if you need a backup.`)) return;
+        await libraryAction(async () => {
+            await lastSave.catch(() => {});
+            const current = plan.id === activePlan.id;
+            await library.remove(current ? activePlan : plan);
+            if (current) installPlan(makePlan(emptyTrip(trip.mode)));
+            plans = await library.list();
+        });
+    }
+
+    async function importFile(file: File) {
+        await libraryAction(async () => {
+            const imported = importPlan(await file.text());
+            await lastSave;
+            const saved = await library.save(imported);
+            await library.activate(saved.id);
+            installPlan(saved);
+            plans = await library.list();
+        });
+    }
+
+    async function changeVersions(versions: Version[]) {
+        const before = activePlan.versions;
+        const beforeTrip = trip;
+        versionsSaving = true;
+        activePlan = { ...activePlan, versions };
+        try { await save(); message = 'Versions saved'; }
+        catch (error) { activePlan = { ...activePlan, versions: before }; throw error; }
+        finally {
+            versionsSaving = false;
+            if (trip !== beforeTrip) void save().catch(() => {});
         }
     }
 
@@ -486,7 +649,7 @@
         revision++;
         message = description;
         undoable = false;
-        save();
+        void save().catch(() => {});
     }
 
     function edit(change: Partial<Trip>, description: string) {
@@ -510,7 +673,7 @@
         clearSelection();
         night = Math.max(1, Math.min(night, tripDays(trip).length));
         if (expandedDay !== null) expandedDay = night;
-        save();
+        void save().catch(() => {});
         message = description;
         undoable = false;
         trip.points.filter(point => point.autoLabel).forEach(point => void nameVisit(point));
@@ -694,26 +857,19 @@
         void finder.select(null);
     }
 
-    function planSignedRoute(route: CatalogRecord, plan: RoutePlan) {
-        const planned = planTrip(routeBase(route, trip), plan, route.loop);
-        // The start and finish take the name of the nearest place.
-        const next = { ...planned, points: planned.points.map(p => p.kind === 'start' || p.kind === 'finish' ? { ...p, label: map?.placeName(p.coordinate) ?? p.label } : p) };
-        // The plan that this replaces stays in Versions, so no confirmation is needed.
-        let kept = '';
-        if (trip.points.length) {
-            try { keepVersion(trip); kept = `${planTitle(trip)} saved in Versions`; } catch { kept = 'The plan before could not be saved'; }
-        }
-        commit(next, [`${route.name ?? route.ref} planned`, kept].filter(Boolean).join(' · '));
-        undoable = !!kept;
-        routesOpen = false;
-        fromRoutes = true;
-        finder.hovered = null;
-        clearSelection();
-        exitSearch();
-        list = 'plan';
-        showRoute = true;
-        pointing = undefined;
-        map?.fitCoordinates(plan.points);
+    async function planSignedRoute(route: CatalogRecord, plan: RoutePlan) {
+        await libraryAction(async () => {
+            await lastSave;
+            const planned = planTrip(routeBase(route, trip), plan, route.loop);
+            const next = { ...planned, points: planned.points.map(p => p.kind === 'start' || p.kind === 'finish' ? { ...p, label: map?.placeName(p.coordinate) ?? p.label } : p) };
+            const saved = await library.save(makePlan(next));
+            await library.activate(saved.id);
+            installPlan(saved);
+            fromRoutes = true;
+            message = `${route.name ?? route.ref} planned`;
+            map?.fitCoordinates(plan.points);
+        });
+        if (libraryError) draftError = libraryError;
     }
 
     async function planNetworkRoute(id: number, at: Coordinate) {
@@ -797,7 +953,7 @@
         if (!mounted || !current?.autoLabel || current.coordinate[0] !== coordinate[0] || current.coordinate[1] !== coordinate[1]) return;
         // Generated names are metadata, so a lookup does not add an Undo step.
         trip = { ...trip, points: trip.points.map(p => p.id === point.id ? { ...p, label } : p) };
-        save();
+        void save().catch(() => {});
     }
 
     const added: Partial<Record<PointKind, string>> = { via: 'Shaping point added', waypoint: 'Visit added', night: 'Overnight pinned', marker: 'Marker added', pass: 'Pass added' };
@@ -871,15 +1027,15 @@
         return !route ? 'missing' : await finder.dataPlan(route).catch(() => null) ? 'plan' : 'too-long';
     }
 
-    function newPlan() {
-        if (trip.points.length && !window.confirm(`Start a new ${trip.mode === 'route' ? 'route' : 'trip'}? This clears your current plan. You can use Undo to restore it.`)) return;
-        fromRoutes = false;
-        commit({ ...emptyTrip(trip.mode), bike: trip.bike, preset: trip.preset }, 'New plan · Undo to restore');
-        clearSelection();
-        exitSearch();
-        drawing = null;
-        pointing = undefined;
-        showRoute = true;
+    async function newPlan() {
+        await libraryAction(async () => {
+            await lastSave;
+            await library.activate(null);
+            installPlan(makePlan({ ...emptyTrip(trip.mode), bike: trip.bike, preset: trip.preset }));
+            message = 'New plan';
+            libraryOpen = false;
+        });
+        if (libraryError) draftError = libraryError;
     }
 
     function rename(label: string) {
@@ -1014,13 +1170,20 @@
             <Icon name={theme === 'light' ? 'moon' : 'sun'} />
         </button>
     </header>
+    {#key activePlanId}
     <TripBar
-        {trip} {canUndo} {canRedo} {draftSavedAt} {draftError}
+        {trip} name={activePlan.name} versions={activePlan.versions} ready={ready && !libraryBusy && !versionsSaving} {canUndo} {canRedo} {draftSavedAt} {draftError}
         onNew={newPlan} onChange={changeTrip} onUndo={undo} onRedo={redo} onRestore={restoreVersion}
-        onSaved={(version: Version) => message = `Version saved · ${version.summary}`}
+        onVersions={changeVersions} onLibrary={openLibrary}
     />
-    <main>
-        <aside class="planner-pane" aria-label="Trip planning">
+    {/key}
+    <main aria-busy={!ready}>
+        {#if libraryOpen}
+            <LibraryPanel {plans} activeId={activePlan.id} busy={libraryBusy} error={libraryError}
+                onClose={() => libraryOpen = false} onOpen={openPlan} onRename={renamePlan} onDuplicate={duplicatePlan}
+                onDelete={deletePlan} onImport={importFile} onDownload={plan => downloadPlan(plan.id === activePlan.id ? snapshot() : plan)} />
+        {/if}
+        <aside class="planner-pane" aria-label="Trip planning" inert={!ready || libraryBusy || versionsSaving}>
             <div class="query-slot" style:display={routesOpen ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:region={searchRegion} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { clearSelection(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} /></div>
             {#if fromRoutes && hasEndpoints && finder.start && !routesOpen && !searching}
                 <button type="button" class="back-to-routes" onclick={() => openRoutes()}><Icon name="back" size={15} />Find another route</button>
@@ -1108,7 +1271,7 @@
             {/if}
         </aside>
         <Resize value={Math.min(sideWidth, maxSide)} min={320} max={maxSide} axis="x" label="Sidebar width" onResize={(value) => sideWidth = value} />
-        <section class="geography" aria-label="Map and elevation" aria-busy={hasEndpoints && !currentRoute}>
+        <section inert={!ready || libraryBusy || versionsSaving} class="geography" aria-label="Map and elevation" aria-busy={hasEndpoints && !currentRoute}>
             <div class="map-area" bind:clientHeight={mapHeight} style:--map-height={`${mapHeight}px`}>
                 <PlannerMap
                     bind:this={map} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={routesOpen ? [] : mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
@@ -1197,6 +1360,7 @@
             {/if}
             <div class="status-line" role="status">
                 <span class:save-error={!!draftError}>{draftError || `${message} · ${routingMessage}`}</span>
+                {#if draftError}<button type="button" class="planner-action" onclick={() => downloadPlan(snapshot())}>Download plan</button><button type="button" class="planner-action" onclick={() => { void save().catch(() => {}); }}>Retry save</button>{/if}
                 {#if undoable}<span>·</span><button type="button" class="planner-action" onclick={undo}>Undo</button>{/if}
                 {#if placeNote}<span>· {placeNote}</span>{/if}
                 <span class="lab-note">Regional map, search and routing{#if import.meta.env.VITE_PLANNER_DATA_URL} · <a href={import.meta.env.VITE_PLANNER_DATA_URL}>Routing data · ODbL</a>{/if}</span>
@@ -1366,6 +1530,7 @@
         background: color-mix(in srgb, var(--rust) 80%, var(--on-amber));
     }
     main {
+        position: relative;
         display: grid;
         grid-template-columns: var(--side-width) 8px minmax(0, 1fr);
         flex: 1;
