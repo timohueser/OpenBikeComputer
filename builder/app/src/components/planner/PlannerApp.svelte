@@ -310,7 +310,7 @@
     const selectedPoint = $derived(trip.points.find(p => p.id === selectedId));
     const previewCoordinate = $derived(selectedId === 'pending' ? pending : selectedPlace?.coordinate ?? null);
     const mapPoints = $derived.by(() => {
-        const pins: MapPoint[] = trip.points.filter(p => !p.hidden).map(p => ({
+        const pins: MapPoint[] = trip.points.map(p => ({
             ...p,
             kind: !multi && p.kind === 'night' ? 'waypoint' : p.kind,
             color: multi && p.kind === 'night' ? dayColor(p.night!, theme) : undefined,
@@ -820,7 +820,10 @@
 
     function removePoint() {
         if (!selectedPoint) return;
-        commit(removeRoutePoint(trip, selectedPoint.id), 'Point removed');
+        const next = removeRoutePoint(trip, selectedPoint.id);
+        // A shaping point that becomes the start or finish takes the name of the nearest place.
+        const promoted = (p: RoutePoint) => (p.kind === 'start' || p.kind === 'finish') && trip.points.find(old => old.id === p.id)?.kind === 'via';
+        commit({ ...next, points: next.points.map(p => promoted(p) ? { ...p, label: map?.placeName(p.coordinate) ?? p.label } : p) }, 'Point removed');
         pointing = undefined;
         clearSelection();
     }
@@ -1087,7 +1090,8 @@
                                 <MapCallout
                                     kind={calloutKind} {trip} {days} {overnightNote} {dayLabels} {night} {candidates} {legMode}
                                     onEndpoint={chooseEndpoint} point={selectedPoint} place={selectedPlace} coordinate={previewCoordinate}
-                                    onRoutes={ROUTES_URL && selectedPlace ? () => openRoutes({ coordinate: [...selectedPlace.coordinate], name: selectedPlace.label }) : undefined}
+                                    onRoutes={ROUTES_URL ? () => openRoutes(selectedPlace ? { coordinate: [...selectedPlace.coordinate], name: selectedPlace.label }
+                                        : { coordinate: [...spot!.coordinate], near: map?.placeName(spot!.coordinate) }) : undefined}
                                     onClose={clearSelection}
                                     onAddHere={addHere}
                                     onLegMode={setLeg}

@@ -113,10 +113,3 @@ export function routePlan(route: RouteRecord): { points: Coordinate[]; turnaroun
         turnarounds: (route.turnarounds ?? []).map(index => index === 0 ? 0 : via.indexOf(index) + 1),
     };
 }
-
-/** Index of the line vertex nearest to `place`, the first on a tie: where a loop plan starts. */
-export function nearestVertex(line: Coordinate[], place: Coordinate): number {
-    const kx = Math.cos(place[1] * Math.PI / 180);
-    const squared = ([lon, lat]: Coordinate) => ((lon - place[0]) * kx) ** 2 + (lat - place[1]) ** 2;
-    return line.reduce((best, vertex, index) => squared(vertex) < squared(line[best]) ? index : best, 0);
-}

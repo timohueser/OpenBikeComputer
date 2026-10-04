@@ -24,7 +24,7 @@ function point(value: unknown): value is RoutePoint {
         && (value.leg === undefined || (typeof value.leg === 'string' && ['routed', 'straight', 'drawn'].includes(value.leg)))
         && (value.drawn === undefined || (Array.isArray(value.drawn) && value.drawn.every(coordinate)))
         && (value.autoLabel === undefined || typeof value.autoLabel === 'boolean')
-        && (value.hidden === undefined || value.hidden === true) && (value.turnaround === undefined || value.turnaround === true);
+        && (value.turnaround === undefined || value.turnaround === true);
 }
 
 /** Storage crosses a trust boundary: both drafts and versions must satisfy the route model. */

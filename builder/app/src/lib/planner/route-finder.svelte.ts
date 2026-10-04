@@ -5,9 +5,9 @@ import { corridorTiles } from './place-index';
 import type { BikeType } from './riding-profiles';
 import { decodeCoordinates } from './route-answer';
 import type { RoutingLine } from './routing';
-import { joinedPlan, loopStart, recordPlan, type RoutePlan } from './signed-route-plan';
+import { joinedPlan, type RoutePlan } from './signed-route-plan';
 import type { SignedRoutesView } from './signed-routes-map';
-import { searchRoutes, type Bounds, type CatalogRecord, type RouteMatch, type RouteRecord, type RouteShape, type RouteSort } from './signed-routes';
+import { routePlan, searchRoutes, type Bounds, type CatalogRecord, type RouteMatch, type RouteRecord, type RouteShape, type RouteSort } from './signed-routes';
 
 export const RADII = [5, 10, 25, 50];
 
@@ -46,7 +46,6 @@ export class RouteFinder {
     shown = $state(20);
     detail = $state.raw<RouteDetail | null>(null);
     hovered = $state<number | null>(null);
-    loopStart = $state<'near' | 'data'>('near');
     /** A routed plan of the detail, for its profile, figures and time. */
     routed = $state.raw<{ plan: RoutePlan; line: RoutingLine } | null>(null);
     private readonly covered = downloadedCells();
@@ -54,19 +53,13 @@ export class RouteFinder {
     private readonly records = new Map<number, CatalogRecord>();
     private serial = 0;
 
-    /** The loop vertex nearest to the start place, when it is not the loop's own start. */
-    readonly nearStart = $derived.by(() => {
-        const route = this.detail?.route;
-        return route?.loop && route.line_udeg && this.start ? loopStart(route as RouteRecord, this.start.coordinate) : 0;
-    });
-
-    /** The plan of the detail: a loop from the chosen start, or a long route joined from its stages. Null when a long route is too long for one plan; undefined while its stages load. */
+    /** The plan of the detail, from the route's own start; a long route joins its stages. Null when a long route is too long for one plan; undefined while its stages load. */
     readonly plan = $derived.by((): RoutePlan | null | undefined => {
         const detail = this.detail;
         if (!detail) return undefined;
         const { route, stages } = detail;
-        if (route.stages) return stages?.length === route.stages.length ? joinedPlan(stages.map(stage => recordPlan(stage as RouteRecord))) : undefined;
-        return recordPlan(route as RouteRecord, this.loopStart === 'near' ? this.nearStart : 0);
+        if (route.stages) return stages?.length === route.stages.length ? joinedPlan(stages.map(stage => routePlan(stage as RouteRecord))) : undefined;
+        return routePlan(route as RouteRecord);
     });
 
     /** The routed line of the current plan only, so figures and time never mix two plans. */
@@ -142,7 +135,6 @@ export class RouteFinder {
 
     /** Shows a record, and loads the stages of its long route. */
     async select(id: number | null) {
-        this.loopStart = 'near';
         this.routed = null;
         const route = id === null ? undefined : this.records.get(id);
         if (!route) { this.detail = null; return; }
@@ -169,6 +161,6 @@ export class RouteFinder {
 
     /** The plan of a record in data order, or null when a long route is too long for one plan. */
     async dataPlan(route: CatalogRecord): Promise<RoutePlan | null> {
-        return route.stages ? joinedPlan((await this.stagesOf(route)).map(stage => recordPlan(stage as RouteRecord))) : recordPlan(route as RouteRecord);
+        return route.stages ? joinedPlan((await this.stagesOf(route)).map(stage => routePlan(stage as RouteRecord))) : routePlan(route as RouteRecord);
     }
 }

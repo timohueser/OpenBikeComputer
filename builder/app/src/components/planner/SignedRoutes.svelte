@@ -149,10 +149,8 @@
                 </div>
             {/if}
             {#if route.description}<p class="description">{route.description}</p>{/if}
-            {#if route.operator || website}
-                <p class="sub">Operator</p>
-                <p class="operator">{route.operator ?? ''}{route.operator && website ? ' · ' : ''}{#if website}<a href={website} target="_blank" rel="noreferrer">{new URL(website).hostname.replace(/^www\./, '')}</a>{/if}</p>
-            {/if}
+            {#if route.operator}<p class="sub">Operator</p><p class="operator">{route.operator}</p>{/if}
+            {#if website}<p class="sub">Website</p><p class="operator"><a href={website} target="_blank" rel="noreferrer">{new URL(website).hostname.replace(/^www\./, '')}</a></p>{/if}
         </div>
         <footer class="plan-foot">
             {#if plan === null}
@@ -160,14 +158,7 @@
             {:else if !plan && detail.failed}
                 <p class="note" role="alert">This route could not load. Choose a stage to plan it.</p>
             {:else}
-                {#if finder.nearStart > 0}
-                    <div class="loop-start" role="radiogroup" aria-label="Loop start">
-                        <label><input type="radio" name="loop-start" value="near" bind:group={finder.loopStart} />Start nearest to {place}</label>
-                        <label><input type="radio" name="loop-start" value="data" bind:group={finder.loopStart} />Start at the route's own start</label>
-                    </div>
-                {/if}
                 <button type="button" class="primary" disabled={!plan} onclick={() => plan && onPlan(route, plan)}>{plan ? 'Plan this route' : 'Loading the stages…'}<Icon name="arrow" size={15} /></button>
-                <p class="note">Opens as the normal plan{route.loop ? '' : ', in the order of the route data'}. Change stops after planning.</p>
             {/if}
         </footer>
     {:else}
@@ -348,9 +339,6 @@
     .operator { margin: 4px 0 0; font-size: 13px; overflow-wrap: anywhere; }
     .plan-foot { flex: none; padding: 12px 16px 14px; border-top: 1px solid var(--line); background: var(--panel); }
     .plan-foot .note { margin: 8px 0 0; }
-    .loop-start { display: flex; flex-direction: column; margin-bottom: 4px; font-size: 13px; }
-    .loop-start label { display: flex; align-items: center; gap: 10px; min-height: 32px; cursor: pointer; }
-    .loop-start input { width: 16px; height: 16px; margin: 0; accent-color: var(--ink); }
-    .primary { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; height: 36px; margin-top: 8px; border-radius: 6px; background: var(--amber); color: var(--on-amber); font-weight: 600; }
+    .primary { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; height: 36px; border-radius: 6px; background: var(--amber); color: var(--on-amber); font-weight: 600; }
     .primary:hover:not(:disabled) { filter: brightness(.95); }
 </style>

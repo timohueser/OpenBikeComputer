@@ -35,7 +35,7 @@
         candidates: OvernightCandidate[];
         legMode: LegMode;
         onEndpoint?: (kind: 'start' | 'finish') => void;
-        /** "Signed routes from here" on a place. */
+        /** "Signed routes from here" on a place or a map point. */
         onRoutes?: () => void;
         onClose: () => void;
         onAddHere: (kind: EditableKind) => void;
@@ -118,6 +118,9 @@
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div class="callout" bind:this={root} tabindex="-1" role="dialog" aria-label="Map details" onkeydown={key}>
     <button type="button" class="close" onclick={close} aria-label="Close"><Icon name="close" size={15} /></button>
+    {#snippet routes()}
+        {#if onRoutes}<button type="button" class="secondary" onclick={onRoutes}><Icon name="diamond" size={15} />Signed routes from here</button>{/if}
+    {/snippet}
     {#snippet endpoints()}
         {#if onEndpoint}<div class="add-types endpoints">
             <button type="button" onclick={() => onEndpoint?.('start')}><Icon name="pin" size={15} />Start here</button>
@@ -127,6 +130,7 @@
     {#if kind === 'add'}
         <h2>{hasEndpoints ? 'Add point here' : 'Plan from here'}</h2>
         {@render endpoints()}
+        {@render routes()}
         {#if hasEndpoints}
         <div class="add-types">
             {#each types.filter(type => type.value !== 'marker') as type (type.value)}
@@ -163,7 +167,7 @@
         {#if place?.description && place.description !== placeCategories[place.category].label}<p class="place-note">{place.description}</p>{/if}
         {#if place && (place.openingHours || ['shop','food','pharmacy','hotel','bike'].includes(place.category))}<OpeningHours value={place.openingHours} />{/if}
         {#if place}{@render endpoints()}{/if}
-        {#if place && onRoutes}<button type="button" class="secondary" onclick={onRoutes}><Icon name="diamond" size={15} />Signed routes from here</button>{/if}
+        {#if place}{@render routes()}{/if}
         {#if sleeps}
             <label class="field">End of day
                 <select bind:value={sleepDay}>

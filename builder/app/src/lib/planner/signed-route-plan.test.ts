@@ -4,7 +4,7 @@ import { emptyTrip, orderedRoutePoints, startLoopHere, type Coordinate } from '.
 import { LegCache } from './route-legs';
 import { decodeCoordinates } from './route-answer';
 import { calculateLine } from './routing';
-import { joinedPlan, planTrip, recordPlan } from './signed-route-plan';
+import { joinedPlan, planTrip } from './signed-route-plan';
 import { routePlan, type RouteRecord } from './signed-routes';
 import { isTrip } from './trip-validation';
 
@@ -16,32 +16,15 @@ const base = () => ({ ...emptyTrip(), bike: 'hiking' as const, preset: 'Balanced
 afterEach(() => vi.unstubAllGlobals());
 
 describe('signed route plans', () => {
-    it('starts a loop at a chosen vertex and keeps the shaping points in loop order', () => {
-        const loop = line(103);
-        // Vertex 3 is a shaping point, so the plan keeps its point count.
-        expect(recordPlan(record(103), 3).points).toEqual([3, 6, 9, 0, 3].map(i => loop[i]));
-        expect(recordPlan(record(103), 4).points).toEqual([4, 6, 9, 0, 3, 4].map(i => loop[i]));
-        expect(recordPlan(record(103), 0)).toEqual(routePlan(record(103)));
-        // A one-way route always runs in data order.
-        expect(recordPlan(record(102), 2)).toEqual(routePlan(record(102)));
-    });
-
-    it('moves the turnarounds of a rotated loop with their points', () => {
-        const loop = { ...record(103), turnarounds: [9] };
-        expect(recordPlan(loop, 4).turnarounds).toEqual([2]);
-        // A start at a turnaround keeps the mark for a later move of the start.
-        expect(recordPlan(loop, 9).turnarounds).toEqual([0]);
-    });
-
-    it('keeps a lollipop loop turning back at its own start after the start moves', () => {
+    it('keeps a lollipop loop turning back at its own start after "Start the loop here"', () => {
         const lollipop = { ...record(103), turnarounds: [0] };
         expect(routePlan(lollipop).turnarounds).toEqual([0]);
-        expect(recordPlan(lollipop, 4).turnarounds).toEqual([3]);
-        const trip = planTrip(base(), recordPlan(lollipop), true);
+        const trip = planTrip(base(), routePlan(lollipop), true);
         const start = trip.points.find(point => point.kind === 'start')!;
         expect(start.turnaround).toBe(true);
         const moved = startLoopHere(trip, orderedRoutePoints(trip)[2].id, line(103)[4]);
-        expect(moved.points.find(point => point.id === start.id)).toMatchObject({ kind: 'via', hidden: true, turnaround: true });
+        const order = orderedRoutePoints(moved);
+        expect(order.slice(1, -1).find(point => point.id === start.id)).toMatchObject({ kind: 'via', turnaround: true });
     });
 
     it('joins the stages of a long route at their shared ends', () => {
@@ -57,12 +40,12 @@ describe('signed route plans', () => {
         expect(joinedPlan([stage(0), stage(21), stage(42), stage(63)])).toBeNull();
     });
 
-    it('builds a loop plan with one start and hidden shaping points', () => {
-        const plan = recordPlan(record(103), 4);
+    it('builds a loop plan from the own start of the route with its shaping points', () => {
+        const plan = routePlan(record(103));
         const trip = planTrip(base(), plan, true);
         expect(trip.loop).toBe(true);
-        expect(orderedRoutePoints(trip).map(point => point.coordinate)).toEqual(plan.points);
-        expect(trip.points.filter(point => point.kind === 'via').every(point => point.hidden)).toBe(true);
+        expect(orderedRoutePoints(trip).map(point => [point.kind, point.coordinate])).toEqual(
+            plan.points.map((coordinate, i) => [i === 0 || i === plan.points.length - 1 ? 'start' : 'via', coordinate]));
         expect(isTrip(trip)).toBe(true);
     });
 

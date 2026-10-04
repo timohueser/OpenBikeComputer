@@ -467,6 +467,15 @@ describe('route endpoints', () => {
         expect(routeStops(cleared)).toEqual([]);
     });
 
+    it('promotes a shaping point to a named endpoint when the start or finish goes', () => {
+        const point = (id: string, kind: RoutePoint['kind'], lon: number): RoutePoint => ({ id, kind, label: kind === 'via' ? 'Shaping point' : id, coordinate: [lon, 48], progress: lon - 8 });
+        const trip: Trip = { ...emptyTrip(), routeOrder: ['v1', 'v2'], points: [point('start', 'start', 8), point('v1', 'via', 8.2), point('v2', 'via', 8.4), point('finish', 'finish', 9)] };
+        const noStart = removeRoutePoint(trip, 'start');
+        expect(orderedRoutePoints(noStart)[0]).toMatchObject({ id: 'v1', kind: 'start', label: 'Start' });
+        const noFinish = removeRoutePoint(trip, 'finish');
+        expect(orderedRoutePoints(noFinish).at(-1)).toMatchObject({ id: 'v2', kind: 'finish', label: 'Finish' });
+    });
+
     it('clears overnight and detour semantics when promoting endpoints, and replaces an endpoint in place', () => {
         const trip = pinNight(initialTrip(), 1, [7.3, 47.6], 'Camp');
         const next = removeRoutePoint(trip, 'start');

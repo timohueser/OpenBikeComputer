@@ -22,8 +22,6 @@ export interface RoutePoint {
     drawn?: Coordinate[];
     /** A visit-and-return rejoins this exact position on the planned line. */
     anchor?: Coordinate;
-    /** A shaping point of a signed route: the map draws no pin for it. */
-    hidden?: true;
     /** The route turns back at this shaping point. */
     turnaround?: true;
 }
@@ -126,7 +124,7 @@ export function setEndpoint(trip: Trip, kind: 'start' | 'finish', coordinate: Co
         points: previous ? trip.points.map(p => p.id === previous.id ? point : p) : [...trip.points, point] };
 }
 
-/** Removing an endpoint promotes its neighbour in route order. Markers never become endpoints. */
+/** Removing an endpoint promotes its neighbour in route order; a shaping point takes the endpoint name. Markers never become endpoints. */
 export function removeRoutePoint(trip: Trip, id: string): Trip {
     const removed = trip.points.find(p => p.id === id);
     if (!removed) return trip;
@@ -136,6 +134,7 @@ export function removeRoutePoint(trip: Trip, id: string): Trip {
     const promoted = neighbour && neighbour.kind !== 'start' && neighbour.kind !== 'finish' ? neighbour : undefined;
     const points = trip.points.filter(p => p.id !== id).map(p => p !== promoted ? p : {
         ...p, id: p.kind === 'night' ? crypto.randomUUID() : p.id, kind: removed.kind,
+        label: p.kind === 'via' ? removed.kind === 'start' ? startLabel : 'Finish' : p.label,
         progress: removed.kind === 'start' ? 0 : 1, night: undefined, anchor: undefined,
         leg: removed.kind === 'start' ? undefined : p.leg, drawn: removed.kind === 'start' ? undefined : p.drawn,
     });
@@ -622,17 +621,15 @@ export function canMoveLoopStart(trip: Trip): boolean {
 
 // Makes the route point `id` the start. The points keep their order around the loop, and no leg changes.
 // The old start becomes a visit when it has a name of its own, and a shaping point otherwise.
-// The old start of a signed loop stays one of its hidden shaping points, with its turnaround.
 function startLoopAt(trip: Trip, id: string): Trip {
     const route = orderedRoutePoints(trip).slice(0, -1);
     const index = route.findIndex(p => p.id === id);
     if (!canMoveLoopStart(trip) || index < 1) return trip;
     const old = route[0];
-    const signed = trip.points.some(p => p.hidden);
-    const unnamed = signed || old.label === startLabel || old.label === shapeLabel;
+    const unnamed = old.label === startLabel || old.label === shapeLabel;
     return { ...trip, splits: undefined, routeOrder: [...route.slice(index + 1), old, ...route.slice(1, index)].map(p => p.id),
         points: trip.points.map(p => p.id === id ? { ...p, kind: 'start' as const, progress: 0, anchor: undefined }
-            : p.id === old.id ? { ...p, kind: unnamed ? 'via' as const : 'waypoint' as const, ...signed ? { hidden: true as const } : {} } : p) };
+            : p.id === old.id ? { ...p, kind: unnamed ? 'via' as const : 'waypoint' as const } : p) };
 }
 
 /** "Start the loop here": a new start at `coordinate` on the leg that ends at `legEndId`. */
