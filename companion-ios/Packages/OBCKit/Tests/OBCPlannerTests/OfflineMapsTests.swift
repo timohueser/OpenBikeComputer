@@ -245,7 +245,7 @@ private actor RecordingSource: PlannerDataSource {
             basemap: local ? URL(string: "pmtiles://file:///map.pmtiles")! : url,
             glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: url, routing: url, manifest: url)
     }
-    func route(points: [Coordinate], bike: BikeType, preference: RoutePreference, release: PlannerRelease) throws -> PlannedPath {
+    func route(points: [Coordinate], turnarounds: [Int], bike: BikeType, preference: RoutePreference, release: PlannerRelease) throws -> PlannedPath {
         calls.append("route")
         if cancelled { throw CancellationError() }
         if let failure { throw failure }

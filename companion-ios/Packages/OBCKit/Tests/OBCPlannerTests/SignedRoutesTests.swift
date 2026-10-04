@@ -87,6 +87,30 @@ struct SignedRoutesTests {
         }
     }
 
+    @Test func joinsStagePlansAtSharedEndsUpToTheRequestLimit() {
+        let p = (0..<8).map { Coordinate(latitude: 48, longitude: 8 + Double($0) / 100) }
+        let joined = RoutePlan.joined([.init(points: [p[0], p[1], p[2]], turnarounds: [1]), .init(points: [p[2], p[3], p[4]], turnarounds: [1]),
+                                       .init(points: [p[5], p[6]], turnarounds: [])])
+        #expect(joined == RoutePlan(points: [p[0], p[1], p[2], p[3], p[4], p[5], p[6]], turnarounds: [1, 3]))
+        let half = (0..<32).map { Coordinate(latitude: 47, longitude: 8 + Double($0) / 100) }
+        #expect(RoutePlan.joined([.init(points: half, turnarounds: []), .init(points: half.reversed(), turnarounds: [])])?.points.count == 63)
+        #expect(RoutePlan.joined([.init(points: half, turnarounds: []), .init(points: half + p, turnarounds: [])]) == nil)
+    }
+
+    @Test func anEmptySearchNamesTheFilterOrTheNextRadius() async throws {
+        let vector = Self.vector
+        let loader: RouteCellLoader = { cell in vector.grid.contains(cell) ? vector.routes.filter { $0.cells.contains(cell) } : nil }
+        let start = Coordinate(latitude: 47.87, longitude: 8.15)
+        let mtb = RouteQuery(start: start, radiusKm: 25, activity: .mtb, shape: .any, hardest: 0...1)
+        #expect(try await SignedRoutes.hint(mtb, loadCell: loader) == .filter(.hardest))
+        // Without its climb bounds, nothing is near either: the next radius with a match is 25 km.
+        let touring = RouteQuery(start: start, radiusKm: 10, activity: .touring, shape: .any, climbM: .init(from: 500, to: 800))
+        #expect(try await SignedRoutes.hint(touring, loadCell: loader) == .wider(radiusKm: 25, count: 1))
+        var far = touring
+        far.radiusKm = 50; far.shape = .oneWay
+        #expect(try await SignedRoutes.hint(far, loadCell: loader) == nil)
+    }
+
     @Test func readsCoveredCellsFromAnOfflineGridAndARegionFile() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

@@ -99,9 +99,13 @@ public final class PlannerPreviewModel {
         var overnightPointID: String?
         /// The finish is the start: the route returns to the first point, and there is no finish point.
         var loop = false
+        /// The title of a plan from a signed route.
+        var name: String?
         /// Where a new stop goes: before the finish, or at the end of a loop.
         var stopEnd: Int { loop || points.count < 2 ? points.count : points.count - 1 }
         var coordinates: [Coordinate] { (points + (loop ? points.prefix(1) : [])).map(\.place.coordinate) }
+        /// Only an interior point turns back, so a loop start sends its turnaround once the start moves.
+        var turnarounds: [Int] { points.indices.filter { points[$0].turnaround && $0 > 0 && $0 < coordinates.count - 1 } }
     }
     private var state = State()
     private var past: [State] = []
@@ -125,10 +129,13 @@ public final class PlannerPreviewModel {
 
     private struct RoutingKey: Equatable {
         let coordinates: [Coordinate]
+        let turnarounds: [Int]
         let bike: BikeType
         let preset: PlannerPreviewPreset
     }
-    private var routingKey: RoutingKey { .init(coordinates: state.coordinates, bike: bike, preset: preset) }
+    private var routingKey: RoutingKey {
+        .init(coordinates: state.coordinates, turnarounds: state.turnarounds, bike: bike, preset: preset)
+    }
     public var canSave: Bool { path != nil && !isRouting && routeError == nil }
     public func retryRoute() { routingRevision += 1 }
 
@@ -146,7 +153,8 @@ public final class PlannerPreviewModel {
             guard let preference = RoutePreference(rawValue: preset == .lessClimbing ? "less-climbing" : preset.rawValue) else {
                 throw PlannerFailure.invalidData
             }
-            let result = try await service.route(points: key.coordinates, bike: key.bike, preference: preference, release: selected)
+            let result = try await service.route(points: key.coordinates, turnarounds: key.turnarounds, bike: key.bike,
+                                                 preference: preference, release: selected)
             try Task.checkCancellation()
             guard revision == routingRevision else { return }
             path = result
@@ -208,10 +216,14 @@ public final class PlannerPreviewModel {
     public var overnight: PlannerPreviewPlace? { points.first { $0.id == overnightPointID }?.place }
     public var hasRoute: Bool { points.count > 1 }
     public var canUndo: Bool { !past.isEmpty }
+    /// The number of edits that undo can take back. It changes with every edit, undo and redo.
+    public var undoDepth: Int { past.count }
+    public var planName: String? { state.name }
     public var canRedo: Bool { !future.isEmpty }
     public var dayCount: Int { overnight == nil ? 1 : 2 }
     public var routeTitle: String {
         guard let start, let finish else { return "New route" }
+        if let name = state.name { return name }
         return isLoop ? "Loop from \(start.name)" : "\(start.name) → \(finish.name)"
     }
     public var routePoints: [RoutePoint] { path?.points ?? [] }
@@ -337,21 +349,23 @@ public final class PlannerPreviewModel {
         edit { $0.loop = true; $0.points[$0.points.count - 1].kind = .visit }
     }
 
-    /// A signed loop as a plan: the route's own start and its shaping points in their order. The turnarounds stay on
-    /// their points.
-    public func makeLoop(_ route: CatalogRecord, name: String = "Start") {
-        let line = route.line
-        guard route.plan != nil, let via = route.via else { return }
-        let vertices = [0] + via + (line.last == line.first ? [] : [line.count - 1])
-        let turnarounds = Set(route.turnarounds ?? [])
+    /// A signed route as a plan from its own start, named after the route: the shaping points in their order, each with
+    /// its turnaround, and the Balanced preset that the catalog plan reproduces. A loop drops its closing point.
+    public func planSignedRoute(_ plan: RoutePlan, loop: Bool, name: String, startName: String?, finishName: String?) {
+        let closed = loop && plan.points.count > 2 && plan.points.last == plan.points.first
+        let coordinates = closed ? Array(plan.points.dropLast()) : plan.points
+        guard coordinates.count > 1, plan.requestPoints(loop: loop).count <= RoutePlan.maxPoints else { return }
+        let turnarounds = Set(plan.turnarounds)
         edit { next in
-            next.points = vertices.enumerated().map { index, vertex in
-                var point = PlannerPreviewPoint(place: .init(id: UUID().uuidString, name: index == 0 ? name : Self.shapeName,
-                                                             coordinate: line[vertex]), kind: index == 0 ? .visit : .shape)
-                point.turnaround = turnarounds.contains(vertex)
+            next.points = coordinates.enumerated().map { index, coordinate in
+                let endpoint = index == 0 || (!loop && index == coordinates.count - 1)
+                let label = index == 0 ? startName ?? Self.startName : endpoint ? finishName ?? "Finish" : Self.shapeName
+                var point = PlannerPreviewPoint(place: .init(id: UUID().uuidString, name: label, coordinate: coordinate),
+                                                kind: endpoint ? .visit : .shape)
+                point.turnaround = turnarounds.contains(index)
                 return point
             }
-            next.markers = []; next.overnightPointID = nil; next.loop = true
+            next.markers = []; next.overnightPointID = nil; next.loop = loop; next.name = name; next.preset = .balanced
         }
     }
 
@@ -436,7 +450,8 @@ public final class PlannerPreviewModel {
     private func edit(_ change: (inout State) -> Void) {
         var next = state; change(&next)
         // A loop needs a point to ride to before it returns.
-        if next.points.count < 2 { next.loop = false }
+        // A plan with fewer than two points is no longer the signed route it was named after.
+        if next.points.count < 2 { next.loop = false; next.name = nil }
         let stops = next.points.dropFirst().prefix(max(0, next.stopEnd - 1))
         if !stops.contains(where: { $0.id == next.overnightPointID && $0.kind == .visit }) {
             next.overnightPointID = nil

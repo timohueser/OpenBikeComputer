@@ -95,7 +95,9 @@ public enum PlannerFailure: Error, Equatable, Sendable, LocalizedError {
 
 public protocol RoutePlanning: Sendable {
     func release() async throws -> PlannerRelease
-    func route(points: [Coordinate], bike: BikeType, preference: RoutePreference, release: PlannerRelease) async throws -> PlannedPath
+    /// `turnarounds` are interior point indices where the route turns back on purpose.
+    func route(points: [Coordinate], turnarounds: [Int], bike: BikeType, preference: RoutePreference,
+               release: PlannerRelease) async throws -> PlannedPath
 }
 
 public struct PlannerSearchQuery: Sendable {
@@ -190,40 +192,51 @@ public actor PlannerService: PlannerDataSource {
         return release
     }
 
-    public func route(points: [Coordinate], bike: BikeType, preference: RoutePreference = .balanced,
+    public func route(points: [Coordinate], turnarounds: [Int] = [], bike: BikeType, preference: RoutePreference = .balanced,
                       release: PlannerRelease) async throws -> PlannedPath {
         guard (2...64).contains(points.count), points.allSatisfy(release.contains) else {
             throw PlannerFailure.outsideRegion
         }
+        guard turnarounds.allSatisfy({ (1..<points.count - 1).contains($0) }) else { throw PlannerFailure.invalidData }
         let manifest = try await manifest(release)
         let profile = preference.profile(for: bike)
         guard manifest.profiles.contains(profile) else { throw PlannerFailure.invalidData }
-        return try await route(points, profile: profile, release: release, package: manifest.routing_package, whole: false)
+        return try await route(points, turnarounds: Set(turnarounds), profile: profile, release: release,
+                               package: manifest.routing_package, whole: false)
     }
 
     /// One request at most: for the legs from the first to the last leg that is not cached, pinned to the cached legs
     /// before and after it. When it finds no route, one request for the whole route follows: the whole route can pass a
     /// neighbour point the other way.
-    private func route(_ points: [Coordinate], profile: String, release: PlannerRelease, package: String,
+    private func route(_ points: [Coordinate], turnarounds: Set<Int>, profile: String, release: PlannerRelease, package: String,
                        whole: Bool) async throws -> PlannedPath {
-        let keys = zip(points, points.dropFirst()).map { LegKey(package: package, profile: profile, from: $0, to: $1) }
-        var found = keys.map { whole ? nil : legs[$0] }
+        let turn = turnarounds.contains
+        let keys = zip(points, points.dropFirst()).enumerated().map { k, leg in
+            LegKey(package: package, profile: profile, from: leg.0, to: leg.1, turns: [turn(k), turn(k + 1)])
+        }
         // A leg from another request joins only at the same road position, so a shaping point keeps its direction.
-        for k in found.indices.dropFirst() where found[k - 1].map({ $0.end != found[k]?.start }) ?? false { found[k] = nil }
-        if let first = found.firstIndex(where: { $0 == nil }), let last = found.lastIndex(where: { $0 == nil }) {
+        // A turnaround joins legs in either direction.
+        func joins(_ a: Leg?, _ b: Leg?, at point: Int) -> Bool { a == nil || b == nil || turn(point) || a!.end == b!.start }
+        var found = keys.map { whole ? nil : legs[$0] }
+        for k in found.indices.dropFirst() where !joins(found[k - 1], found[k], at: k) { found[k] = nil }
+        if var first = found.firstIndex(where: { $0 == nil }), var last = found.lastIndex(where: { $0 == nil }) {
+            // A turnaround stays inside the request: only an interior turnaround may depart on the other road.
+            if turn(first) { first -= 1 }
+            if turn(last + 1) { last += 1 }
             let before = first > 0 ? found[first - 1] : nil, after = last + 1 < found.count ? found[last + 1] : nil
             let fresh: [Leg]
             do {
-                fresh = try await request(Array(points[first...last + 1]), profile: profile, pins: (before?.end, after?.start),
-                                          release: release, package: package)
+                let inner = turnarounds.filter { $0 > first && $0 <= last }.map { $0 - first }.sorted()
+                fresh = try await request(Array(points[first...last + 1]), turnarounds: inner, profile: profile,
+                                          pins: (before?.end, after?.start), release: release, package: package)
             } catch PlannerFailure.noRoad where before != nil || after != nil {
                 // Only a missing path can change with the whole route; a busy service must not get a larger request.
-                return try await route(points, profile: profile, release: release, package: package, whole: true)
+                return try await route(points, turnarounds: turnarounds, profile: profile, release: release, package: package, whole: true)
             }
             // The service ignores a pin that is not a road candidate of its point.
-            if before.map({ $0.end != fresh[0].start }) ?? false || after.map({ $0.start != fresh[fresh.count - 1].end }) ?? false {
+            if !joins(before, fresh[0], at: first) || !joins(fresh[fresh.count - 1], after, at: last + 1) {
                 legs.removeAll()
-                return try await route(points, profile: profile, release: release, package: package, whole: true)
+                return try await route(points, turnarounds: turnarounds, profile: profile, release: release, package: package, whole: true)
             }
             found.replaceSubrange(first...last, with: fresh as [Leg?])
         }
@@ -244,14 +257,15 @@ public actor PlannerService: PlannerDataSource {
                            pointIndices: indices, elapsed: elapsed)
     }
 
-    private struct LegKey: Hashable { let package: String; let profile: String; let from: Coordinate; let to: Coordinate }
+    /// `turns`: whether the route turns back at the start and at the end of the leg.
+    private struct LegKey: Hashable { let package: String; let profile: String; let from: Coordinate; let to: Coordinate; let turns: [Bool] }
     /// One leg cut from a route answer. Its `elapsed` starts at zero.
     private struct Leg { let points: [RoutePoint]; let elapsed: [Double]; let totals: RouteAnswer.Totals; let start: String; let end: String }
 
-    private func request(_ points: [Coordinate], profile: String, pins: (start: String?, end: String?),
+    private func request(_ points: [Coordinate], turnarounds: [Int], profile: String, pins: (start: String?, end: String?),
                          release: PlannerRelease, package: String) async throws -> [Leg] {
         struct Query: Encodable {
-            let points: [[Double]]; let profile: String; let alternatives = false
+            let points: [[Double]]; let profile: String; let alternatives = false; let turnarounds: [Int]?
             let start_position: String?; let end_position: String?
         }
         var request = URLRequest(url: release.routing.appending(path: "v1/route"))
@@ -259,6 +273,7 @@ public actor PlannerService: PlannerDataSource {
         request.timeoutInterval = 25
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(Query(points: points.map { [$0.longitude, $0.latitude] }, profile: profile,
+                                                          turnarounds: turnarounds.isEmpty ? nil : turnarounds,
                                                           start_position: pins.start, end_position: pins.end))
         let data = try await Self.send(request, transport: transport)
         struct Response: Decodable { let routes: [RouteAnswer] }
@@ -420,7 +435,7 @@ public struct OnlineLegRouter: LegRouter {
                       onDownload: @escaping @Sendable () -> Void) async throws -> [RoutePoint] {
         do {
             let release = try await service.release()
-            return try await service.route(points: [from, to], bike: bikeType, preference: .balanced, release: release).points
+            return try await service.route(points: [from, to], turnarounds: [], bike: bikeType, preference: .balanced, release: release).points
         } catch is CancellationError { throw CancellationError() }
         catch PlannerFailure.noRoad { throw LegRouteFailure.noRoad }
         catch PlannerFailure.outsideRegion { throw LegRouteFailure.noMap }

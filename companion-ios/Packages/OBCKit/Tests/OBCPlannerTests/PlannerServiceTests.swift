@@ -30,12 +30,12 @@ struct PlannerServiceTests {
         let service = client(route: code, status: status), release = try await service.release()
         await #expect(throws: failure) { try await service.route(points: [a, b], bike: .gravel, release: release) }
     }
-    @Test func anEditRequestsOnlyItsLegsPinnedToTheCachedLegs() async throws {
-        let sent = Bodies(), host = URL(string: "https://planner.test")!
+    /// The route is the straight line through the request points. A leg position names its point.
+    private func lineService(_ sent: Bodies) -> (PlannerService, PlannerRelease) {
+        let host = URL(string: "https://planner.test")!
         let release = PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: [7, 47, 9, 49], basemap: host,
                                      glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host,
                                      manifest: host.appending(path: "manifest.json"))
-        // The route is the straight line through the request points. A leg position names its point.
         let service = PlannerService(release: release) { request in
             let ok = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             guard request.url!.lastPathComponent == "route" else {
@@ -55,6 +55,10 @@ struct PlannerServiceTests {
                 "totals": ["distance_m": 1000 * legs.count, "ascent_m": 10 * legs.count, "seconds": 200 * legs.count]]
             return (try JSONSerialization.data(withJSONObject: ["routes": [route]]), ok)
         }
+        return (service, release)
+    }
+    @Test func anEditRequestsOnlyItsLegsPinnedToTheCachedLegs() async throws {
+        let sent = Bodies(), (service, release) = lineService(sent)
         let points = (0...4).map { Coordinate(latitude: 48, longitude: 8 + Double($0) / 10) }
         var moved = points
         moved[2] = Coordinate(latitude: 48.05, longitude: 8.2)
@@ -74,6 +78,25 @@ struct PlannerServiceTests {
         let retried = try await sent.values.suffix(2).map { try JSONSerialization.jsonObject(with: $0) as! [String: Any] }
         #expect(retried[0]["start_position"] as? String == "[8100000, 48000000]")
         #expect(retried[1]["points"] as? [[Double]] == moved.map { [$0.longitude, $0.latitude] } && retried[1]["start_position"] == nil)
+    }
+    @Test func aTurnaroundIsSentAndStaysInsideTheRequest() async throws {
+        let sent = Bodies(), (service, release) = lineService(sent)
+        let points = (0...4).map { Coordinate(latitude: 48, longitude: 8 + Double($0) / 10) }
+        var moved = points
+        moved[3] = Coordinate(latitude: 48.05, longitude: 8.3)
+        _ = try await service.route(points: points, turnarounds: [2], bike: .gravel, release: release)
+        _ = try await service.route(points: moved, turnarounds: [2], bike: .gravel, release: release)
+        // The same points without the turnaround are other legs.
+        _ = try await service.route(points: moved, bike: .gravel, release: release)
+        let bodies = try await sent.values.map { try JSONSerialization.jsonObject(with: $0) as! [String: Any] }
+        #expect(bodies.count == 3 && bodies[0]["turnarounds"] as? [Int] == [2])
+        // The edited legs start at the turnaround, so the request starts one point before it.
+        #expect(bodies[1]["points"] as? [[Double]] == moved[1...].map { [$0.longitude, $0.latitude] })
+        #expect(bodies[1]["turnarounds"] as? [Int] == [1] && bodies[1]["start_position"] as? String == "[8100000, 48000000]")
+        #expect(bodies[2]["turnarounds"] == nil)
+        await #expect(throws: PlannerFailure.invalidData) {
+            try await service.route(points: points, turnarounds: [0], bike: .gravel, release: release)
+        }
     }
     @Test func searchUsesCanonicalFiltersAndRouteDistances() async throws {
         let service = client(), release = try await service.release()
