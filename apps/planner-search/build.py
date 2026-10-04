@@ -6,9 +6,6 @@ import time
 import re
 from pathlib import Path
 
-import orjson
-import zstandard
-from shapely.geometry import mapping, shape
 from index import norm
 from storage import create, finish
 
@@ -26,6 +23,15 @@ def values(d, keys):
 def names(d):
     return values(d, ['name', 'name:de', 'name:en', 'name:fr', 'name:it', 'name:es',
                       'name:nl', 'alt_name', 'loc_name', 'short_name', 'official_name', 'int_name'])
+
+
+def details(tags):
+    def first(keys):
+        return next((tags[k].strip() for k in keys if isinstance(tags.get(k), str) and tags[k].strip()), '')
+
+    descriptions = ['description', 'description:en', 'description:de']
+    descriptions += sorted(k for k in tags if k.startswith('description:') and k not in descriptions)
+    return (first(['website', 'contact:website']), first(['phone', 'contact:phone']), first(descriptions))
 
 
 def category(p):
@@ -55,7 +61,7 @@ class Writer:
         self.contexts = {}
         self.next_id = 0
 
-    def place(self, source, name, aliases, kind, lon, lat, city, postcode, importance, bbox, region, context, cuisine='', opening_hours=''):
+    def place(self, source, name, aliases, kind, lon, lat, city, postcode, importance, bbox, region, context, cuisine='', opening_hours='', website='', phone='', description=''):
         self.next_id += 1
         key = (city, postcode, region, context)
         context_id = self.contexts.get(key)
@@ -63,9 +69,9 @@ class Writer:
             context_id = len(self.contexts) + 1
             self.contexts[key] = context_id
             self.db.execute('INSERT INTO place_contexts VALUES (?,?,?,?,?)', (context_id, *key))
-        self.db.execute('INSERT INTO place_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        self.db.execute('INSERT INTO place_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                         (self.next_id, source, name, None if aliases == name else aliases,
-                         kind, lon, lat, context_id, importance, *bbox, cuisine, opening_hours))
+                         kind, lon, lat, context_id, importance, *bbox, cuisine, opening_hours, website, phone, description))
         return self.next_id
 
     def add(self, p):
@@ -117,13 +123,18 @@ class Writer:
             return
         self.place(source, ns[0] if ns else kind.replace('_', ' '), ';'.join(ns), kind,
                    lon, lat, city, postcode, p.get('importance', 0) or 0, bbox, region, context,
-                   p.get('extra', {}).get('cuisine', ''), p.get('extra', {}).get('opening_hours', ''))
+                   p.get('extra', {}).get('cuisine', ''), p.get('extra', {}).get('opening_hours', ''),
+                   *details(p.get('extra', {})))
 
     def finish(self, meta):
         finish(self.db, self.path, meta)
 
 
 def main():
+    import orjson
+    import zstandard
+    from shapely.geometry import mapping, shape
+
     ap = argparse.ArgumentParser()
     ap.add_argument('dump', type=Path)
     ap.add_argument('--limit', type=int, default=0)
@@ -149,7 +160,7 @@ def main():
     start = time.monotonic()
     n = 0
     outlines = []
-    meta = {'schema': 3, 'source': args.dump.name, 'attribution': '© OpenStreetMap contributors, ODbL 1.0; prepared by Nominatim / Photon'}
+    meta = {'schema': 4, 'source': args.dump.name, 'attribution': '© OpenStreetMap contributors, ODbL 1.0; prepared by Nominatim / Photon'}
     if bounds:
         meta.update(bounds=bounds, countries=countries)
     if args.osm_sha256:

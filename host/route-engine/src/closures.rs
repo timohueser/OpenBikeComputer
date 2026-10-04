@@ -7,7 +7,15 @@ use serde::{Deserialize, Serialize};
 pub enum Kind {
     /// `access=permit`.
     Permit,
-    /// Access for a group, such as `destination` or `customers`.
+    /// `access=private`.
+    Private,
+    /// `agricultural` or `forestry`.
+    Farm,
+    /// `use_sidepath`: the mode should use a parallel path.
+    Sidepath,
+    /// `discouraged`.
+    Discouraged,
+    /// Access for another group, such as `destination`, `customers` or `psv`.
     Limited,
     /// A conditional restriction that names only months, days or seasons.
     Seasonal,
@@ -17,10 +25,18 @@ pub enum Kind {
     Unclear,
 }
 
+impl Kind {
+    /// An access value, not a condition: the router avoids such roads where it can. A condition
+    /// depends on the date or the weather of the ride, so it costs nothing.
+    pub fn avoided(self) -> bool {
+        !matches!(self, Kind::Seasonal | Kind::Conditional)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Closure {
     pub kind: Kind,
-    /// The OSM condition, or the OSM access value for `permit`, `limited` and `unclear`.
+    /// The OSM condition, or the OSM access value for the other kinds.
     pub condition: String,
 }
 

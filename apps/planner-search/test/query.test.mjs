@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {database} from './database.mjs';
 import {answerQuery} from '../query.mjs';
-import {validateRequest} from '../validation.mjs';
+import {validateRequest,validateInput} from '../validation.mjs';
 import {searchRuntime} from '../runtime.mjs';
 import {nativeSearch} from '../native.mjs';
 const {db}=database();
@@ -27,7 +27,7 @@ test('shared runtime supplies one clock and explicit calendar capability for fil
 
 test('native JSON capabilities preserve complete replies, metadata and reverse labels', async()=>{
   const fixture=database();
-  fixture.conn.prepare('INSERT INTO metadata VALUES (?,?)').run('schema','3');
+  fixture.conn.prepare('INSERT INTO metadata VALUES (?,?)').run('schema','4');
   fixture.conn.prepare('INSERT INTO metadata VALUES (?,?)').run('attribution',JSON.stringify(['OSM contributors']));
   const hours={assertEnvironment(){},openingState(){return 'unknown';},currentOpening(){return undefined;}};
   let calls=0;
@@ -43,6 +43,13 @@ test('native JSON capabilities preserve complete replies, metadata and reverse l
   for (const goal of ['least_unpaved','most_climbing'])
     await assert.rejects(native.request('route-request',{points,bike:'touring',goal}), /routing package has no/);
   assert.equal(answer.region,'test');assert.deepEqual(answer.attribution,['OSM contributors']);
+  fixture.conn.exec("UPDATE place_records SET website='https://bakery.example',phone='+49 123',description='Bread and coffee.' WHERE source='n1'");
+  const details=await native.request('query',{...input,q:'',source:'n1'});
+  assert.equal(details.results[0].website,'https://bakery.example');
+  assert.equal(details.results[0].phone,'+49 123');
+  assert.equal(details.results[0].description,'Bread and coffee.');
+  assert.equal(calls,1);
+  for(const source of ['n1 OR 1=1','poi-1',4,'w0'])assert.throws(()=>validateInput({...input,source}));
   assert.deepEqual(await native.request('reverse',{coordinate:[7.854,48.01]}),{label:'Habsburgerstraße 10, Freiburg'});
   await assert.rejects(native.request('query',{...input,region:'missing'}),/does not cover/);
   await assert.rejects(native.request('reverse',{region:'missing',coordinate:[7.854,48.01]}),/does not cover/);

@@ -1,9 +1,21 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { corridorTiles, routeDistance } from './place-index';
+import { corridorTiles, routeDistance, osmSource, poiPlace } from './place-index';
 import type { Coordinate } from './editor';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
 
+describe('OSM place identities', () => {
+    it('keeps node, way and relation identities distinct for detail lookup', () => {
+        for (const [type, letter] of [[1,'n'],[2,'w'],[3,'r']] as const) {
+            const id = type * 2 ** 44 + 123;
+            expect(osmSource(id)).toBe(`${letter}123`);
+            expect(poiPlace(id, 'camp_site', 'Camp', [8,48])?.id).toBe(`${letter}123`);
+        }
+        expect(osmSource('n123')).toBe('n123');
+        expect(osmSource(123)).toBeUndefined();
+        expect(osmSource(undefined)).toBeUndefined();
+    });
+});
 describe('hosted corridor places', () => {
     it('reads TileJSON and XYZ tiles without downloading an archive', async () => {
         const fetch = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ maxzoom: 11, tiles: ['https://tiles.example/places/{z}/{x}/{y}.mvt'] })))

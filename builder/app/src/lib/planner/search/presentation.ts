@@ -17,7 +17,8 @@ export function category(kind: string): PlaceCategory {
 }
 export function asPlace(p: SearchPlace): Place {
     return { id: p.source, placeKind: p.kind, label: p.name, kind: 'place', category: category(p.kind), coordinate: [p.lon, p.lat], progress: 0,
-        locality: p.city, openingHours: p.opening_hours, hoursStatus: p.hoursStatus, description: p.precision === 'street' ? 'Street location only' : '' };
+        locality: p.city, openingHours: p.opening_hours, hoursStatus: p.hoursStatus, website: p.website, phone: p.phone, detailsLoaded: true,
+        description: p.precision === 'street' ? 'Street location only' : p.description ?? '' };
 }
 export function pointLabel(p: QueryPoint): string {
     if ('name' in p) return p.name;

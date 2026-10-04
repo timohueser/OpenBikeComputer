@@ -30,6 +30,9 @@ export type Place = RoutePoint & {
     description: string;
     locality?: string;
     openingHours?: string;
+    website?: string;
+    phone?: string;
+    detailsLoaded?: boolean;
     hoursStatus?: import('./search/types').HoursStatus;
 };
 export interface Trip {

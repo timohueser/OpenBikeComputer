@@ -7,6 +7,23 @@ import OBCPlanner
 
 @MainActor
 struct PlannerPreviewModelTests {
+    @Test func projectionsAndMapFeaturesRetainPlaceDetails() async throws {
+        let model = PlannerPreviewModel(sample: true, service: PlannerTestSource())
+        await model.calculateRoute()
+        let data = Data(#"{"source":"n123","name":"Camp","city":"","kind":"campsite","lon":8,"lat":48,"website":"camp.example","phone":"+49 123","description":"Small tents only."}"#.utf8)
+        let record = try JSONDecoder().decode(PlannerPlace.self, from: data)
+        let place = PlannerPreviewPlace(id: record.source, name: record.name, coordinate: record.coordinate, kind: .camping,
+            website: record.website, phone: record.phone, description: record.description)
+        let positioned = model.positionedPlace(place)
+        #expect(positioned.website == place.website && positioned.phone == place.phone && positioned.description == place.description)
+        let features = try #require(JSONSerialization.jsonObject(with: NativePlaceKind.geoJSON([record])) as? [String: Any])
+        let properties = try #require((features["features"] as? [[String: Any]])?.first?["properties"] as? [String: Any])
+        #expect(properties["website"] as? String == place.website && properties["description"] as? String == place.description)
+        for (type, letter) in [(1,"n"),(2,"w"),(3,"r")] {
+            #expect(NativePlaceKind.source(for: NSNumber(value: (Int64(type) << 44) | 123)) == "\(letter)123")
+        }
+        #expect(NativePlaceKind.source(for: "n123") == "n123")
+    }
     @Test func previewAndApplyAreSeparateAndNewRouteIsOneUndoStep() async throws {
         let model = PlannerPreviewModel(service: PlannerTestSource())
         let query = model.lookup("Freiburg to Titisee")
@@ -166,6 +183,70 @@ struct PlannerPreviewModelTests {
         #expect(!model.canSave && model.geometry.isEmpty && model.routeError != nil)
     }
 
+    @Test func backToStartRoutesTheWholeRoundAndUndoOpensThePlan() async {
+        let model = PlannerPreviewModel(sample: true, service: PlannerTestSource())
+        model.addPoint(PlannerPreviewModel.sampleMapPlaces[2])
+        await model.calculateRoute()
+        let open = model.stats.distanceMeters, points = model.points
+        model.closeLoop()
+        await model.calculateRoute()
+        #expect(model.isLoop && model.points == points && model.finish == model.start)
+        #expect(model.routeTitle == "Loop from Freiburg" && model.stats.distanceMeters > open)
+        #expect(model.routePoints.last?.coordinate == model.start?.coordinate && model.pointDistances.count == 3)
+        #expect(model.exportRoute(name: "").waypoints.map(\.name) == ["Valley café", "Titisee"])
+        model.undo()
+        #expect(!model.isLoop && model.finish?.id == "titisee")
+    }
+
+    @Test func aLoopKeepsItsStartThroughEdits() {
+        let model = PlannerPreviewModel(sample: true, service: PlannerTestSource())
+        let cafe = PlannerPreviewModel.sampleMapPlaces[2], water = PlannerPreviewModel.sampleMapPlaces[3]
+        model.closeLoop()
+        model.addPoint(cafe)
+        #expect(model.points.map(\.id) == ["freiburg", "titisee", "cafe"])
+        model.movePoint(fromOffsets: IndexSet(integer: 0), toOffset: 2)
+        model.movePoint(fromOffsets: IndexSet(integer: 2), toOffset: 0)
+        model.movePoint(fromOffsets: IndexSet(integer: 2), toOffset: 1)
+        #expect(model.points.map(\.id) == ["freiburg", "cafe", "titisee"])
+        model.apply(.reverse)
+        #expect(model.isLoop && model.points.map(\.id) == ["freiburg", "titisee", "cafe"])
+        model.setFinish(water)
+        #expect(!model.isLoop && model.finish == water && model.points.count == 4)
+        model.undo()
+        model.removePoint(id: "titisee")
+        #expect(model.isLoop && model.hasRoute)
+        model.removePoint(id: "cafe")
+        #expect(!model.isLoop && !model.hasRoute)
+    }
+
+    @Test func movingTheStartKeepsTheOrderAroundTheLoop() async {
+        let model = PlannerPreviewModel(sample: true, service: PlannerTestSource())
+        model.addPoint(PlannerPreviewModel.sampleMapPlaces[2])
+        model.closeLoop()
+        model.startLoop(at: "titisee")
+        #expect(model.points.map(\.id) == ["titisee", "freiburg", "cafe"] && model.points[1].kind == .visit)
+        model.setOvernightPoint(id: "cafe")
+        #expect(!model.canMoveLoopStart)
+        model.startLoop(at: "cafe")
+        #expect(model.start?.id == "titisee")
+        model.setOvernightPoint(id: nil)
+
+        // A closed square with one shaping point. The route turns back at its start.
+        let route = try! JSONDecoder().decode(CatalogRecord.self, from: Data("""
+        {"id":1,"kind":"hiking","name":"Square","rank":1,"loop":true,"length_m":4000,"ascent_m":0,"descent_m":0,"cells":[],
+         "line_udeg":[8000000,47900000,10000,0,0,10000,-10000,0,0,-10000],"via":[2],"turnarounds":[0]}
+        """.utf8))
+        let line = route.line
+        model.makeLoop(route)
+        await model.calculateRoute()
+        #expect(model.isLoop && model.routeTitle == "Loop from Start" && model.points.map(\.kind) == [.visit, .shape])
+        #expect(model.routePoints.map(\.coordinate) == [line[0], line[2], line[0]])
+        #expect(model.points.map(\.turnaround) == [true, false] && model.exportRoute(name: "").waypoints.isEmpty)
+        model.startLoop(at: model.points[1].id)
+        #expect(model.points.map(\.place.coordinate) == [line[2], line[0]] && model.points.map(\.turnaround) == [false, true])
+        model.undo(); model.undo()
+        #expect(model.points.map(\.id) == ["titisee", "freiburg", "cafe"])
+    }
 }
 
 private actor PlannerTestSource: PlannerDataSource {

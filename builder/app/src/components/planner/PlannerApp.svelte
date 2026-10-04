@@ -44,7 +44,7 @@
     import { SEARCH_URL, HOSTED_SEARCH, SEARCH_REGIONS, REGION_NAME } from '../../lib/planner/search/config';
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileAscent, profileDescent, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
-    import { searchPlaces, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
+    import { searchPlaces, placeDetails, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
     import { asPlace, routesPlaces } from '../../lib/planner/search/presentation';
     import { buildQueryRoute } from '../../lib/planner/search/route-client';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
@@ -309,7 +309,21 @@
             .filter(landmark => Number.isFinite(distance(landmark.coordinate)) && !trip.points.some(p => kilometres(p.coordinate, landmark.coordinate) < .3))
             .sort((a, b) => nearestProgress(coordinates, a.coordinate) - nearestProgress(coordinates, b.coordinate))[0];
     });
-    const selectedPlace = $derived(visiblePlaces.find(p => p.id === selectedId) ?? corridor.find(p => p.id === selectedId) ?? (mapPlace?.id === selectedId ? mapPlace : undefined));
+    const selectedPlace = $derived((mapPlace?.id === selectedId ? mapPlace : undefined) ?? visiblePlaces.find(p => p.id === selectedId) ?? corridor.find(p => p.id === selectedId));
+    let detailsError = $state('');
+    $effect(() => {
+        const id = selectedId, region = searchRegion, place = mapPlace;
+        detailsError = '';
+        if (!id || !/^[nwr][1-9]\d*$/.test(id) || place?.id !== id || place.detailsLoaded) return;
+        const abort = new AbortController();
+        placeDetails(id, place.coordinate, region, abort.signal).then(details => {
+            if (abort.signal.aborted) return;
+            mapPlace = { ...place, detailsLoaded: true, ...(details ? { website: details.website, phone: details.phone,
+                description: details.description || place.description, openingHours: details.opening_hours,
+                hoursStatus: details.hoursStatus, locality: details.city } : {}) };
+        }).catch(() => { if (!abort.signal.aborted) detailsError = 'Place details are unavailable. Try selecting the place again.'; });
+        return () => abort.abort();
+    });
     const selectedPoint = $derived(trip.points.find(p => p.id === selectedId));
     const previewCoordinate = $derived(selectedId === 'pending' ? pending : selectedPlace?.coordinate ?? null);
     const mapPoints = $derived.by(() => {
@@ -320,7 +334,7 @@
             markerLabel: multi && p.kind === 'night' ? String(dayLabels[p.night!]) : undefined,
             fixed: p.kind === 'night',
         }));
-        const shown = selectedPlace && !visiblePlaces.includes(selectedPlace) ? [...visiblePlaces, selectedPlace] : visiblePlaces;
+        const shown = [...new Map([...visiblePlaces, ...(selectedPlace ? [selectedPlace] : [])].map(place => [place.id, place])).values()];
         for (const p of shown) {
             if (p.id === selectedId || !pins.some(pin => pin.coordinate[0] === p.coordinate[0] && pin.coordinate[1] === p.coordinate[1])) pins.push({ ...p });
         }
@@ -577,7 +591,7 @@
     /** Opens a mapped place without changing the search area. */
     function choosePlace(place: Place) {
         clearSelection();
-        mapPlace = place;
+        mapPlace = { ...place };
         selectedId = place.id;
     }
 
@@ -1112,7 +1126,7 @@
                             {#key selectedId}
                                 <MapCallout
                                     kind={calloutKind} {trip} {days} {overnightNote} {dayLabels} {night} {candidates} {legMode}
-                                    onEndpoint={chooseEndpoint} point={selectedPoint} place={selectedPlace} coordinate={previewCoordinate}
+                                    onEndpoint={chooseEndpoint} point={selectedPoint} place={selectedPlace} coordinate={previewCoordinate} {detailsError}
                                     onRoutes={ROUTES_URL ? () => openRoutes(selectedPlace ? { coordinate: [...selectedPlace.coordinate], name: selectedPlace.label }
                                         : { coordinate: [...spot!.coordinate], near: map?.placeName(spot!.coordinate) }) : undefined}
                                     onClose={clearSelection}

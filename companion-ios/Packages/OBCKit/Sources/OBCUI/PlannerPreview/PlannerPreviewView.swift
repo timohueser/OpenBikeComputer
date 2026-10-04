@@ -43,6 +43,8 @@ public struct PlannerPreviewView: View {
     @State private var networkStatus: String?
     @State private var results: PlannerPreviewQueryResult?
     @State private var selectedPlace: PlannerPreviewPlace?
+    @State private var detailsError: String?
+    @State private var selectionRevision = 0
     @State private var editingPointID: String?
     @State private var visibleRouteRange: ClosedRange<Double>? = 0...1
     @State private var network = PlannerPreviewNetwork.none
@@ -181,6 +183,25 @@ public struct PlannerPreviewView: View {
         }
         .tint(OBCTheme.tint)
         .task { drawerShown = true }
+        .task(id: "\(selectedPlace?.id ?? "")-\(selectionRevision)") {
+            detailsError = nil
+            guard let place = selectedPlace, !place.detailsLoaded,
+                  place.id.range(of: #"^[nwr][1-9][0-9]*$"#, options: .regularExpression) != nil else { return }
+            let coordinate = place.coordinate
+            var query = PlannerSearchQuery(text: "Place", view: [coordinate.longitude - 0.01, coordinate.latitude - 0.01,
+                                                                  coordinate.longitude + 0.01, coordinate.latitude + 0.01])
+            query.source = place.id
+            do {
+                let details = try await model.searchPlaces(query).first
+                try Task.checkCancellation()
+                guard selectedPlace?.id == place.id, let details else { return }
+                selectedPlace = .init(id: place.id, name: place.name, coordinate: coordinate, kind: place.kind,
+                    alongRouteMeters: place.alongRouteMeters, offRouteMeters: place.offRouteMeters,
+                    hours: details.hours, note: details.note, website: details.website, phone: details.phone, description: details.description, detailsLoaded: true)
+            } catch {
+                if !Task.isCancelled { detailsError = "Place details are unavailable. Try selecting the place again." }
+            }
+        }
         .task(id: model.routingRevision) {
             do {
                 if model.hasRoute { try await Task.sleep(for: .milliseconds(250)) }
@@ -347,6 +368,26 @@ public struct PlannerPreviewView: View {
                         .font(.system(.subheadline).monospacedDigit()).foregroundStyle(OBCTheme.secondary)
                 }
             }
+            if let description = place.description, !description.isEmpty {
+                Text(verbatim: description).font(.subheadline).fixedSize(horizontal: false, vertical: true)
+            }
+            if place.website?.isEmpty == false || place.phone?.isEmpty == false {
+                VStack(alignment: .leading, spacing: 0) {
+                    if let website = PlaceContact.website(place.website) {
+                        Link("Website", destination: website).frame(minHeight: 44)
+                    } else if let website = place.website, !website.isEmpty {
+                        Text(verbatim: website)
+                    }
+                    ForEach(PlaceContact.numbers(place.phone), id: \.self) { phone in
+                        if let url = PlaceContact.phone(phone) {
+                            Link(destination: url) { Text(verbatim: phone) }.frame(minHeight: 44)
+                        } else { Text(verbatim: phone) }
+                    }
+                }.font(.subheadline)
+            }
+            if let detailsError {
+                Text(detailsError).font(.subheadline).foregroundStyle(OBCTheme.secondary)
+            }
             if place.hours != nil || place.note != nil {
                 OBCGroupedSection {
                     if let hours = place.hours {
@@ -403,18 +444,28 @@ public struct PlannerPreviewView: View {
     @ViewBuilder private var pointEditor: some View {
         if let point = (model.points + model.markers).first(where: { $0.id == editingPointID }) {
             // The start and finish are always visits; only the points between them have a kind.
-            if point.id != model.points.first?.id, point.id != model.points.last?.id {
+            if !model.isEndpoint(point.id) {
                 Picker("Point type", selection: Binding(get: { point.kind }, set: { model.setPointKind(id: point.id, kind: $0) })) {
                     ForEach(PlannerPreviewPointKind.allCases, id: \.self) { Text($0.title).tag($0) }
                 }.pickerStyle(.segmented)
             }
+            if model.canMoveLoopStart, !model.isEndpoint(point.id), point.kind != .marker {
+                Button("Make this the start", systemImage: "play") { model.startLoop(at: point.id); resetPanel() }
+                    .frame(minHeight: 44).accessibilityIdentifier("planner.makeStart")
+                Text("The loop starts and finishes at \(point.place.name). The stops keep their order.")
+                    .font(.footnote).foregroundStyle(OBCTheme.secondary)
+            }
             Button("Replace place", systemImage: "magnifyingglass") {
                 intent = .replace(point.id); searchQuery = ""; openSearchFromDetail()
             }.frame(minHeight: 44)
-            if model.points.count > 2, point.id != model.points.first?.id, point.id != model.points.last?.id, point.kind != .marker {
+            if !model.isEndpoint(point.id), point.kind != .marker {
                 Button(model.overnightPointID == point.id ? "Remove overnight break" : "End day 1 here", systemImage: "moon") {
                     model.setOvernightPoint(id: model.overnightPointID == point.id ? nil : point.id)
                 }.frame(minHeight: 44)
+            }
+            if model.hasRoute, !model.isLoop, point.id == model.points.last?.id {
+                Button("Back to start", systemImage: "arrow.triangle.2.circlepath") { model.closeLoop(); resetPanel() }
+                    .frame(minHeight: 44)
             }
             Button("Remove point", systemImage: "trash", role: .destructive) {
                 model.removePoint(id: point.id); resetPanel()
@@ -514,6 +565,9 @@ public struct PlannerPreviewView: View {
                 }
                 if place.kind == .camping {
                     Button("End day 1 here", systemImage: "moon") { model.setOvernight(place); resetPanel() }
+                }
+                if model.isLoop {
+                    Button("Finish here", systemImage: "flag.checkered") { model.setFinish(place); resetPanel(); fitRevision += 1 }
                 }
             } label: {
                 Text("More").font(.subheadline.weight(.semibold)).foregroundStyle(OBCTheme.tint)
@@ -618,6 +672,7 @@ public struct PlannerPreviewView: View {
 
     private func selectResult(_ place: PlannerPreviewPlace) {
         selectedPlace = model.positionedPlace(place); editingPointID = nil
+        selectionRevision += 1
         panel = .place; drawerPosition = .open
     }
 
@@ -633,7 +688,7 @@ public struct PlannerPreviewView: View {
 
     private func selectMapPoint(_ coordinate: Coordinate, at location: CGPoint) {
         editingPointID = nil; layersShown = false; infoShown = false
-        selectedPlace = model.positionedPlace(.init(id: UUID().uuidString, name: "Map point", coordinate: coordinate))
+        selectedPlace = model.positionedPlace(.init(id: UUID().uuidString, name: PlannerPreviewModel.mapPointName, coordinate: coordinate))
         panel = .place; drawerPosition = .open
     }
 
@@ -658,7 +713,7 @@ public struct PlannerPreviewView: View {
         var pins = model.points.enumerated().map { index, point in
             PlannerPreviewMapPin(id: point.id, title: point.place.name, coordinate: point.place.coordinate,
                 symbol: point.id == model.overnightPointID ? "moon.fill" : point.place.kind.symbol,
-                kind: index == 0 ? .start : index == model.points.count - 1 ? .finish : point.kind == .shape ? .shape : .stop)
+                kind: index == 0 ? .start : model.isEndpoint(point.id) ? .finish : point.kind == .shape ? .shape : .stop)
         }
         pins += model.markers.map { .init(id: $0.id, title: $0.place.name, coordinate: $0.place.coordinate, symbol: "mappin", kind: .marker) }
         var places = results?.places ?? []

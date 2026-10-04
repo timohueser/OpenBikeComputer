@@ -219,13 +219,18 @@ describe('planner recovery', () => {
             target: document.body,
             props: {
                 kind: 'place', trip, days: tripDays(trip), dayLabels: { 1: 1, 2: 2, 3: 3 }, night: 1,
-                place: places[0], coordinate: places[0].coordinate, candidates: [], legMode: 'routed',
+                place: { ...places[0], website: 'camp.example', phone: '+49 (123) 45-67', description: 'Small tents only.\n<script>Ask at reception.</script>' },
+                coordinate: places[0].coordinate, candidates: [], legMode: 'routed',
                 onClose, onAddHere: vi.fn(), onLegMode: vi.fn(), onInsert: vi.fn(), onPick: vi.fn(),
                 onSelectPlace: vi.fn(), onStay: vi.fn(), onAddVisit: vi.fn(), onRename: vi.fn(), onKind: vi.fn(), onRemove: vi.fn(),
             },
         }));
         await tick();
         await new Promise(requestAnimationFrame);
+        expect(document.querySelector('.place-note')?.textContent).toBe('Small tents only.\n<script>Ask at reception.</script>');
+        expect(document.querySelector('.place-note script')).toBeNull();
+        expect(document.querySelector('a[href="https://camp.example/"]')?.textContent).toBe('Website');
+        expect(document.querySelector('a[href="tel:+491234567"]')?.textContent).toBe('+49 (123) 45-67');
         expect(document.activeElement?.getAttribute('role')).toBe('dialog');
         button('Close').click();
         expect(onClose).toHaveBeenCalledOnce();

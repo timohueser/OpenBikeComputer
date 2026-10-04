@@ -15,8 +15,8 @@ def extract(source, destination, bounds):
     uri = source.resolve().as_uri() + '?mode=ro'
     with sqlite3.connect(uri, uri=True) as original:
         meta = {k: json.loads(v) for k, v in original.execute('SELECT * FROM metadata')}
-    if meta.get('schema') != 3:
-        raise ValueError('Rebuild the source package with schema 3.')
+    if meta.get('schema') != 4:
+        raise ValueError('Rebuild the source package with schema 4.')
     coverage = meta.get('bounds')
     if not isinstance(coverage, list) or len(coverage) != 4 or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in coverage):
         raise ValueError('The source has no valid coverage bounds. Rebuild it with --bounds.')

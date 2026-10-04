@@ -4,12 +4,19 @@ import { PbfReader } from 'pbf';
 import { anchorProgress, type Coordinate, type Place } from './editor';
 import { poiKinds } from './poi-kinds';
 
+/** Protomaps feature IDs put the OSM element type in the high bits above its 44-bit ID. */
+export function osmSource(id: string | number | undefined): string | undefined {
+    if (typeof id === 'string' && /^[nwr][1-9]\d*$/.test(id)) return id;
+    const value = Number(id), unit = 2 ** 44, type = Math.floor(value / unit), identity = value % unit;
+    return Number.isSafeInteger(value) && type >= 1 && type <= 3 && identity > 0 ? `${'nwr'[type - 1]}${identity}` : undefined;
+}
+
 /** A basemap place as a planner place, or null when the planner does not show its kind. */
 export function poiPlace(id: string | number | undefined, kind: string, name: unknown, coordinate: Coordinate): Place | null {
     const known = poiKinds[kind];
     if (!known) return null;
     return {
-        id: `poi-${id}`, kind: 'place', label: String(name ?? known.label), coordinate,
+        id: osmSource(id) ?? `poi-${id}`, kind: 'place', placeKind: kind, label: String(name ?? known.label), coordinate,
         progress: anchorProgress(coordinate), category: known.category, description: known.label,
     };
 }

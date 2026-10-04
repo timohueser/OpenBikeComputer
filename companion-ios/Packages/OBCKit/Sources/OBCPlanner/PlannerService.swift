@@ -15,14 +15,18 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
     public let manifest: URL
     /// Route network tiles of an online release. Offline releases read networks from their routing cells.
     public let overlays: URL?
+    /// The route catalog: a cell file URL with `{cell}`, or the one region file. Nil when the release has none.
+    public let routes: String?
+    /// The cell IDs of an offline grid selection. Only routes wholly inside them are listed.
+    public let offlineCells: [String]?
 
     public init(id: String, region: String, bounds: [Double], basemap: URL, glyphs: String,
                 sprites: String, terrain: String, terrain_attribution: String, search: URL, routing: URL, manifest: URL,
-                overlays: URL? = nil) {
+                overlays: URL? = nil, routes: String? = nil, offlineCells: [String]? = nil) {
         self.id = id; self.region = region; self.bounds = bounds; self.basemap = basemap
         self.glyphs = glyphs; self.sprites = sprites; self.terrain = terrain
         self.terrain_attribution = terrain_attribution; self.search = search; self.routing = routing; self.manifest = manifest
-        self.overlays = overlays
+        self.overlays = overlays; self.routes = routes; self.offlineCells = offlineCells
     }
 
     public var isLocal: Bool { manifest.isFileURL || (basemap.scheme == "pmtiles" && basemap.absoluteString.hasPrefix("pmtiles://file:")) }
@@ -65,6 +69,9 @@ public struct PlannerPlace: Decodable, Identifiable, Sendable {
     public let city: String
     public let kind: String
     public let opening_hours: String?
+    public let website: String?
+    public let phone: String?
+    public let description: String?
     public struct Position: Decodable, Sendable { public let along: Double; public let distance: Double }
     public let position: Position?
     public let lon: Double
@@ -93,6 +100,7 @@ public protocol RoutePlanning: Sendable {
 
 public struct PlannerSearchQuery: Sendable {
     public var text: String
+    public var source: String?
     public var view: [Double]?
     public var kinds: [String] = []
     public var route: [Coordinate] = []
@@ -170,6 +178,7 @@ public actor PlannerService: PlannerDataSource {
                   r.bounds[0] >= -180, r.bounds[2] <= 180, r.bounds[1] >= -90, r.bounds[3] <= 90,
                   r.basemap.scheme == "https", r.routing.scheme == "https", r.manifest.scheme == "https", r.search.scheme == "https",
                   r.overlays.map({ $0.scheme == "https" }) ?? true,
+                  r.routes.map({ $0.hasPrefix("https://") && $0.contains("{cell}") }) ?? true,
                   [r.glyphs, r.sprites, r.terrain].allSatisfy({ $0.hasPrefix("https://") })
             else { throw PlannerFailure.invalidData }
             return r
@@ -305,15 +314,17 @@ public actor PlannerService: PlannerDataSource {
         } else { queryRequest["where"] = ["scope": "view"] }
         if kinds.isEmpty { queryRequest.removeValue(forKey: "where") }
         if let radiusMeters, !kinds.isEmpty { queryRequest["radius"] = ["value": radiusMeters / 1000, "unit": "km"] }
-        let body: [String: Any] = ["q": text, "region": release.region, "view": view ?? release.bounds,
+        var body: [String: Any] = ["q": text, "region": release.region, "view": view ?? release.bounds,
                                   "plan": context, "limit": 100, "submitted": true, "request": queryRequest]
+        if let source = query.source { body["source"] = source }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         struct Response: Decodable { let results: [PlannerPlace] }
         let data = try await Self.send(request, transport: transport)
         let result = try Self.decode(Response.self, data: data)
         guard result.results.count <= 100, Set(result.results.map(\.id)).count == result.results.count,
               result.results.allSatisfy({ place in
-                  place.lat.isFinite && place.lon.isFinite && (-90...90).contains(place.lat) && (-180...180).contains(place.lon)
+                  (query.source.map { $0 == place.source } ?? true)
+                    && place.lat.isFinite && place.lon.isFinite && (-90...90).contains(place.lat) && (-180...180).contains(place.lon)
                     && (place.position.map { $0.along.isFinite && $0.distance.isFinite && $0.along >= 0 && $0.distance >= 0 } ?? true)
               }) else { throw PlannerFailure.invalidData }
         try Task.checkCancellation()

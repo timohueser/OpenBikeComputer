@@ -15,7 +15,7 @@ test('bbox extraction retains external street and administrative dependencies wi
     const source = join(dir,'source.sqlite'), destination = join(dir,'selected.sqlite');
     const {conn} = database([['r27','Locality','city',7.9,48.2,'Locality',.5,'Locality alias']],source);
     conn.exec(`UPDATE place_records SET west=7.8,south=48,east=8,north=48.3 WHERE source='r27';
-      INSERT INTO metadata VALUES ('schema','3'),('bounds','[7,47,12,50]');`);
+      INSERT INTO metadata VALUES ('schema','4'),('bounds','[7,47,12,50]');`);
     conn.close();
     const before = createHash('sha256').update(readFileSync(source)).digest('hex');
     const command = new URL('../extract.py',import.meta.url).pathname;

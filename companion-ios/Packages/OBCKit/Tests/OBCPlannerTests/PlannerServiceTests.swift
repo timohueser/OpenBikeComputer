@@ -83,7 +83,25 @@ struct PlannerServiceTests {
         let places = try await service.search(query, release: release)
         #expect(places.count == 1 && places[0].id == "n123")
         #expect(places[0].kind == "campsite" && places[0].opening_hours == "24/7")
+        #expect(places[0].website == "camp.example" && places[0].phone == "+49 123")
+        #expect(places[0].description == "Small tents only.")
         #expect(places[0].position?.along == 0.4 && places[0].position?.distance == 0.02)
+    }
+    @Test func placeDetailsUseAnExactSourceAndSafeContactLinks() async throws {
+        let service = client(), release = try await service.release()
+        var query = PlannerSearchQuery(text: "Camp")
+        query.source = "n123"
+        let places = try await service.search(query, release: release)
+        #expect(places.first?.source == "n123")
+        #expect(PlaceContact.website(places.first?.website)?.absoluteString == "https://camp.example")
+        #expect(PlaceContact.phone("+49 (123) 45-67")?.absoluteString == "tel:+491234567")
+        #expect(PlaceContact.numbers("+49 123; +33 456") == ["+49 123", "+33 456"])
+        for value in ["javascript:alert(1)", "data:text/html,test", "file:///tmp/place", "https://"] {
+            #expect(PlaceContact.website(value) == nil)
+        }
+        #expect(PlaceContact.phone("call reception") == nil)
+        query.source = "n456"
+        await #expect(throws: PlannerFailure.invalidData) { try await service.search(query, release: release) }
     }
     @Test func overlaysKeepOnlyNativeStyleDataAndCheckReleaseIdentity() async throws {
         let service = client(), release = try await service.release()
@@ -144,7 +162,9 @@ private final class StubHTTP: URLProtocol, @unchecked Sendable {
         } else if url.lastPathComponent == "query" {
             let query = body()
             let criteria = query["request"] as! [String: Any]
-            if query["q"] as? String == "long route" {
+            if let source = query["source"] as? String {
+                precondition(["n123", "n456"].contains(source) && criteria["type"] as? String == "place")
+            } else if query["q"] as? String == "long route" {
                 let coordinates = (query["plan"] as! [String: Any])["coordinates"] as! [[Double]]
                 precondition(coordinates.count <= 20_000 && coordinates.first == [8,48] && coordinates.last == [8.1,48.1])
                 precondition(criteria["type"] as? String == "place" && criteria["where"] == nil)
@@ -158,7 +178,8 @@ private final class StubHTTP: URLProtocol, @unchecked Sendable {
             precondition((criteria["radius"] as? [String: Any])?["value"] as? Double == 0.5 && (criteria["radius"] as? [String: Any])?["unit"] as? String == "km")
             }
             data = try! JSONSerialization.data(withJSONObject: ["results": [["source": "n123", "name": "Camp", "kind": "campsite",
-                "city": "Freiburg", "lon": 8, "lat": 48, "opening_hours": "24/7", "position": ["along": 0.4, "distance": 0.02]]]])
+                "city": "Freiburg", "lon": 8, "lat": 48, "opening_hours": "24/7", "website": "camp.example",
+                "phone": "+49 123", "description": "Small tents only.", "position": ["along": 0.4, "distance": 0.02]]]])
         } else if url.lastPathComponent == "overlays" {
             let params = Dictionary(uniqueKeysWithValues: components.queryItems!.map { ($0.name, $0.value!) })
             precondition(request.httpMethod == "GET" && params["layers"] == "hiking" && params["zoom"] == "13.0" && params["mode"] == "walking")
