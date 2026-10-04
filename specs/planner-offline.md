@@ -10,6 +10,8 @@ It omits source OSM tables after routing and overlays are compiled.
 Map and overlay selection covers both these bounds and the complete retained road
 geometry. Terrain adds its tile neighbours. Search includes its address and context
 dependencies. Intersecting overlay features keep complete geometry and properties.
+The [route catalog](route-catalog.md) keeps each route record whose line is inside the
+bounds, and a long route only with all of its stages.
 The source release identity and geometry envelope are recorded in `sources.extraction`.
 Old and new graphs do not combine into a regional union.
 

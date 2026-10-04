@@ -67,5 +67,23 @@ class OfflineFonts(unittest.TestCase):
             self.assertEqual(blocks.glyph_ranges(source), {0, 1, 3, 6, 251, 252, 253, 254})
 
 
+class RouteTiles(unittest.TestCase):
+    def test_each_grid_cell_lists_the_records_that_touch_it_in_id_order(self):
+        stage = lambda id, cells: {"id": id, "kind": "hiking", "name": f"Stage {id}", "cells": cells,
+                                   "line_udeg": [8000000, 47900000, 1000, 0], "via": [], "parent": 10, "stage": id - 20}
+        long_route = {"id": 10, "kind": "hiking", "name": "Long", "cells": ["9-1-1", "9-1-2", "9-9-9"],
+                      "stages": [21, 22], "start_udeg": [8000000, 47900000]}
+        catalog = {"format": 1, "routes": [long_route, stage(21, ["9-1-1"]), stage(22, ["9-1-2", "9-9-9"]),
+                                           {**stage(5, ["9-1-2"]), "loop": True}]}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "region.json"
+            path.write_text(json.dumps(catalog))
+            tiles = blocks.route_tiles(path, ["9-1-1", "9-1-2", "9-2-1"])
+        ids = {name: [record["id"] for record in tile["routes"]] for name, tile in tiles.items()}
+        self.assertEqual(ids, {"9-1-1": [10, 21], "9-1-2": [5, 10, 22], "9-2-1": []})
+        self.assertEqual(tiles["9-1-2"]["routes"][1], long_route)
+        self.assertEqual({tile["format"] for tile in tiles.values()}, {1})
+
+
 if __name__ == "__main__":
     unittest.main()

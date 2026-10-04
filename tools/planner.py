@@ -112,7 +112,7 @@ def verify(args, full=False):
             raise ValueError(f"Route package lacks {name}.")
     search = args.data_dir / "search"
     releases.search_metadata(search / (args.region + ".sqlite"), full)
-    for path in [search / "model" / name for name in
+    for path in [route / "route-catalog.json"] + [search / "model" / name for name in
                  ["model.int8.onnx", "tokenizer.json", "tokenizer_config.json", "labels.json"]] + [
                      SEARCH / ".venv/bin/python", SEARCH / "node_modules/opening_hours/package.json",
                      maps.APP / "node_modules/vite/package.json", ROOT / "target/release/route-server"]:
@@ -140,6 +140,9 @@ def serve(args):
         "VITE_PLANNER_SEARCH_REGIONS": args.region,
         "VITE_PLANNER_DATA_URL": "",
         "VITE_PLANNER_REGION_NAME": args.name,
+        # The routing step bakes the route catalog of the region, which the planner reads as one file.
+        "OBC_PLANNER_ROUTES_FILE": str(args.data_dir / "routing/route-catalog.json"),
+        "VITE_PLANNER_ROUTES_URL": "/@fs" + str(args.data_dir / "routing/route-catalog.json"),
         "OBC_QUERY_ROUTER": args.routing,
     })
     commands = [([str(ROOT / "target/release/route-server"), str(args.data_dir / "routing")], ROOT),

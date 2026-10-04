@@ -5,6 +5,7 @@ from contextlib import closing
 import argparse
 import os
 from pathlib import Path
+import shutil
 import signal
 import sqlite3
 import tempfile
@@ -86,9 +87,15 @@ def seal(data, region, device_catalog, provenance):
     # The release carries the verified map bundle, which includes each data layer that the recipe asks for.
     files = {f"maps/{name}": item for name, item in map_manifest["files"].items()}
     files["maps/manifest.json"] = {"bytes": (data / "maps/manifest.json").stat().st_size, "sha256": sources.digest(data / "maps/manifest.json")}
-    for part in ["routing", "search/model", "device"]:
+    # The routing step bakes the route catalog beside the route package; the release ships it in `routes/`.
+    catalog = data / "routes" / f"{region}.json"
+    catalog.parent.mkdir(exist_ok=True)
+    baked = data / "routing/route-catalog.json"
+    if not baked.is_file(): raise ValueError("Missing route catalog; run obc planner prepare")
+    shutil.copyfile(baked, catalog)
+    for part in ["routing", "routes", "search/model", "device"]:
         for path in sorted((data / part).rglob("*")):
-            if path.is_file():
+            if path.is_file() and path != baked:
                 files[path.relative_to(data).as_posix()] = {"bytes": path.stat().st_size, "sha256": sources.digest(path)}
     files[database.relative_to(data).as_posix()] = {"bytes": database.stat().st_size, "sha256": sources.digest(database)}
     document = {"format": 1, "region": region, "bounds": routing["bounds"], "osm_sha256": osm,
@@ -118,7 +125,8 @@ def endpoints(identity, document, public, tiles, api):
                if {f"maps/{layer}.json", f"maps/{layer}.pmtiles"} & document["files"].keys()},
             "glyphs": assets + "/maps/assets/fonts/{fontstack}/{range}.pbf",
             "sprites": assets + "/maps/assets/sprites/v4", "bounds": document["bounds"],
-            "terrain_attribution": document["terrain_attribution"]}
+            "terrain_attribution": document["terrain_attribution"],
+            **({"routes": tile_prefix + "/routes/tiles/{cell}.json"} if document.get("grid") else {})}
 
 
 def publish(args):
@@ -175,6 +183,7 @@ def vite_environment(active):
               "VITE_PLANNER_DEM_URL": active["terrain"],
               **{f"VITE_PLANNER_{layer.upper()}_URL": active.get(layer, "") for layer in DATA_LAYERS},
               "VITE_PLANNER_ROUTING_URL": active["routing"], "VITE_PLANNER_SEARCH_URL": active["search"],
+              "VITE_PLANNER_ROUTES_URL": active.get("routes", ""),
               "VITE_PLANNER_GLYPHS_URL": active["glyphs"], "VITE_PLANNER_SPRITES_URL": active["sprites"],
               "VITE_PLANNER_MAP_BOUNDS": ",".join(map(str, active["bounds"])),
               "VITE_PLANNER_TERRAIN_ATTRIBUTION": active["terrain_attribution"],
