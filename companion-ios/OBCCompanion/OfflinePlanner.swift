@@ -32,6 +32,10 @@ actor OfflinePlanner {
             OfflineTilesProtocol.register(id: blocks.id, directory: directory, zoom: blocks.map_zoom)
         }
         let assets = directory.appending(path: "maps/assets").absoluteString
+        // A download without the route files has no catalog, so the Routes view stays hidden for it.
+        let routesFile = directory.appending(path: blocks == nil ? "routes/\(map.region).json" : "routes/tiles")
+        let routes = FileManager.default.fileExists(atPath: routesFile.path)
+            ? routesFile.absoluteString + (blocks == nil ? "" : "/{cell}.json") : nil
         let release = PlannerRelease(id: map.id, region: map.region, bounds: map.bounds,
             basemap: blocks == nil ? URL(string: "pmtiles://" + directory.appending(path: "maps/basemap.pmtiles").absoluteString)!
                 : directory.appending(path: "maps/basemap.json"),
@@ -41,8 +45,7 @@ actor OfflinePlanner {
             terrain_attribution: manifest?["terrain_attribution"] as? String ?? "",
             search: directory.appending(path: "search"), routing: directory.appending(path: "routing"),
             manifest: directory.appending(path: "release.json"),
-            routes: blocks == nil ? directory.appending(path: "routes/\(map.region).json").absoluteString
-                : directory.appending(path: "routes/tiles").absoluteString + "/{cell}.json",
+            routes: routes,
             offlineCells: blocks?.cells.map(\.id))
         let runtime = OfflinePlanner(map: map, directory: directory, scripts: scripts, blocks: blocks, routingPackage: routingPackage)
         return PlannerService(release: release) { try await runtime.respond($0) }

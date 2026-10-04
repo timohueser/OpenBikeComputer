@@ -346,7 +346,7 @@ public final class PlannerPreviewModel {
     public func planSignedRoute(_ plan: RoutePlan, loop: Bool, name: String, startName: String?, finishName: String?) {
         let closed = loop && plan.points.count > 2 && plan.points.last == plan.points.first
         let coordinates = closed ? Array(plan.points.dropLast()) : plan.points
-        guard coordinates.count > 1 else { return }
+        guard coordinates.count > 1, plan.requestPoints(loop: loop).count <= RoutePlan.maxPoints else { return }
         let turnarounds = Set(plan.turnarounds)
         edit { next in
             next.points = coordinates.enumerated().map { index, coordinate in
@@ -442,7 +442,8 @@ public final class PlannerPreviewModel {
     private func edit(_ change: (inout State) -> Void) {
         var next = state; change(&next)
         // A loop needs a point to ride to before it returns.
-        if next.points.count < 2 { next.loop = false }
+        // A plan with fewer than two points is no longer the signed route it was named after.
+        if next.points.count < 2 { next.loop = false; next.name = nil }
         let stops = next.points.dropFirst().prefix(max(0, next.stopEnd - 1))
         if !stops.contains(where: { $0.id == next.overnightPointID && $0.kind == .visit }) {
             next.overnightPointID = nil

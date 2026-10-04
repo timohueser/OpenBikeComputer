@@ -44,6 +44,8 @@ struct PlannerPreviewMap: UIViewRepresentable {
     /// What a fit shows in place of the route and its pins.
     var focus: [Coordinate]?
     var namer: PlannerPlaceNamer?
+    /// The map has settled and drawn its tiles.
+    var onIdle: () -> Void = {}
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.obcIsOnline) private var online
     @Environment(\.obcOfflineMaps) private var offlineMaps
@@ -72,11 +74,14 @@ struct PlannerPreviewMap: UIViewRepresentable {
         map.load(release: release, dark: colorScheme == .dark, online: online, source: source, revision: offlineMaps?.revision ?? 0)
         map.attributionButtonMargins = CGPoint(x: 8, y: bottomInset + 8)
         coordinator.updatePOIs(map)
-        if coordinator.coordinates != coordinates {
-            coordinator.coordinates = coordinates
-            coordinator.routeIndex = SegmentedLineOverlay(line: MeasuredLine(routePoints: coordinates.map { RoutePoint(coordinate: $0) }))
+        if coordinator.coordinates != coordinates || coordinator.strokes != strokes {
+            if coordinator.coordinates != coordinates {
+                coordinator.coordinates = coordinates
+                coordinator.routeIndex = SegmentedLineOverlay(line: MeasuredLine(routePoints: coordinates.map { RoutePoint(coordinate: $0) }))
+            }
+            coordinator.strokes = strokes
+            coordinator.drawRoute(map)
         }
-        coordinator.drawRoute(map)
         coordinator.updateNetworks(map)
         let pinsChanged = coordinator.pins != pins
         if pinsChanged {
@@ -128,6 +133,7 @@ struct PlannerPreviewMap: UIViewRepresentable {
     final class Coordinator: NSObject, @preconcurrency MLNMapViewDelegate, UIGestureRecognizerDelegate {
         var parent: PlannerPreviewMap
         var coordinates: [Coordinate] = []
+        var strokes: [MapStroke]?
         var routeIndex: SegmentedLineOverlay?
         var pins: [PlannerPreviewMapPin] = []
         var fitRevision: Int?
@@ -167,11 +173,12 @@ struct PlannerPreviewMap: UIViewRepresentable {
         }
 
         func drawRoute(_ map: OBCNativeMapView, force: Bool = false) {
-            map.draw(parent.strokes ?? [MapStroke(coordinates: coordinates, color: OBCTheme.route, width: 3.5)], force: force)
+            map.draw(strokes ?? [MapStroke(coordinates: coordinates, color: OBCTheme.route, width: 3.5)], force: force)
         }
         func mapViewDidFinishLoadingMap(_ mapView: MLNMapView) {
             (mapView as? OBCNativeMapView)?.didFinishLoadingMap()
         }
+        func mapViewDidBecomeIdle(_ mapView: MLNMapView) { parent.onIdle() }
         func mapViewDidFailLoadingMap(_ mapView: MLNMapView, withError error: Error) {
             (mapView as? OBCNativeMapView)?.didFailLoadingMap()
         }

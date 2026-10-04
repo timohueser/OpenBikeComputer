@@ -57,6 +57,11 @@ public struct RoutePlan: Equatable, Sendable {
     /// The route API takes at most this many points.
     public static let maxPoints = 64
 
+    /// The points of the route request: a loop ends at its start.
+    public func requestPoints(loop: Bool) -> [Coordinate] {
+        loop && points.last != points.first ? points + points.prefix(1) : points
+    }
+
     /// The stage plans of a long route in one plan, each stage finish joined to the next stage start.
     /// Nil when it needs more points than a request takes.
     public static func joined(_ stages: [RoutePlan]) -> RoutePlan? {
