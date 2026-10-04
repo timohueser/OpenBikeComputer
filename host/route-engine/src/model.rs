@@ -62,34 +62,6 @@ impl Road {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Graph {
-    pub points: Vec<Point>,
-    pub node_ids: Vec<i64>,
-    pub node_access: Vec<u8>,
-    pub osm: crate::osm::Data,
-    pub roads: Vec<Road>,
-    /// Forbidden transitions between directed roads. Sorted for binary search.
-    pub forbidden: Vec<(u32, u32)>,
-    pub forbidden_foot: Vec<(u32, u32)>,
-    pub warnings: Vec<String>,
-}
-
-impl Graph {
-    pub fn departures(&self) -> Vec<Vec<u32>> {
-        let mut result = vec![Vec::new(); self.points.len()];
-        for (id, road) in self.roads.iter().enumerate() {
-            result[road.from as usize].push(id as u32);
-        }
-        result
-    }
-
-    pub fn permits_turn(&self, from: u32, to: u32, walking: bool) -> bool {
-        let forbidden = if walking { &self.forbidden_foot } else { &self.forbidden };
-        forbidden.binary_search(&(from, to)).is_err()
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Profile {
     pub name: String,

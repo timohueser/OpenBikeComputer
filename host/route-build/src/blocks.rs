@@ -1,6 +1,7 @@
 //! Publication selects original pages. It does not change cost or geometry encodings.
 use route_engine::{
     blocks::Manifest,
+    model::Road,
     package::{Package, Source},
     table::{self, Table},
     Error,
@@ -38,11 +39,33 @@ pub fn roads(input: &Package<impl Source>, bounds: [f64; 4]) -> Result<Vec<u32>>
     }
     let mut selected = Vec::new();
     for id in candidates {
-        if crate::extract::intersects(&input.road(id)?, bounds) {
+        if intersects(&input.road(id)?, bounds) {
             selected.push(id);
         }
     }
     Ok(selected)
+}
+
+fn intersects(road: &Road, bounds: [f64; 4]) -> bool {
+    road.shape.windows(2).any(|pair| {
+        let a = [pair[0].lon as f64 * 1e-6, pair[0].lat as f64 * 1e-6];
+        let b = [pair[1].lon as f64 * 1e-6, pair[1].lat as f64 * 1e-6];
+        let (mut start, mut end) = (0.0f64, 1.0f64);
+        for axis in 0..2 {
+            let delta = b[axis] - a[axis];
+            if delta == 0.0 {
+                if a[axis] < bounds[axis] || a[axis] > bounds[axis + 2] {
+                    return false;
+                }
+            } else {
+                let low = (bounds[axis] - a[axis]) / delta;
+                let high = (bounds[axis + 2] - a[axis]) / delta;
+                start = start.max(low.min(high));
+                end = end.min(low.max(high));
+            }
+        }
+        start <= end
+    })
 }
 
 pub fn prepare(input: &Package<impl Source>, bounds: [f64; 4], roads: &[u32]) -> Result<Selection> {
@@ -111,7 +134,6 @@ pub fn prepare(input: &Package<impl Source>, bounds: [f64; 4], roads: &[u32]) ->
             retain(column, &junction_pages, &mut objects)?;
         }
     }
-    data.osm = Default::default();
     data.spatial.clear();
     let snap = snap(input, bounds)?;
     objects.extend(snap.values().cloned());

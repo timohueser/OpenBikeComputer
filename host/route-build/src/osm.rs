@@ -1,8 +1,8 @@
 //! Streaming regional OSM import.
+use crate::{source, Graph};
 use osmpbfreader::{OsmId, OsmObj, OsmPbfReader, Relation, Tags, Way};
 use route_engine::closures::{Closure, Kind};
-use route_engine::model::{Graph, Point, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH};
-use route_engine::osm as source;
+use route_engine::model::{Point, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::path::PathBuf;
@@ -635,21 +635,6 @@ mod tests {
         assert_eq!(graph.osm.ways[&10].nodes, [1, 2]);
         assert_eq!(graph.osm.relations[&20].members, [(source::Id::Way(10), "forward".into())]);
         assert_eq!(graph.osm.relations[&21].members, [(source::Id::Relation(20), "section".into())]);
-        let profile = Profile::presets().into_iter().find(|p| p.name == "road/quieter").unwrap();
-        let mut objects = HashMap::new();
-        let manifest =
-            crate::prepare(&graph, "source-test".into(), [9.0, 46.0, 11.0, 48.0], &[profile], vec![], |bytes| {
-                let key = route_engine::package::digest(bytes);
-                objects.insert(key.clone(), bytes.to_vec());
-                Ok(key)
-            })
-            .unwrap();
-        let pages: Vec<String> = route_engine::storage::decode(&objects[&manifest.osm.ways.blocks[0]]).unwrap();
-        let retained: Vec<source::Way> = route_engine::storage::decode(&objects[&pages[0]]).unwrap();
-        assert_eq!(retained[0].tags, expected);
-        let pages: Vec<String> = route_engine::storage::decode(&objects[&manifest.osm.relations.blocks[0]]).unwrap();
-        let relations: Vec<source::Relation> = route_engine::storage::decode(&objects[&pages[0]]).unwrap();
-        assert_eq!(relations.len(), 2);
     }
 
     #[test]

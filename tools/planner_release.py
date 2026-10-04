@@ -51,9 +51,10 @@ def archive_metadata(path):
 
 
 def seal(data, region, device_catalog, provenance):
+    # route-server --verify below checks the package format.
     routing = json.loads((data / "routing/manifest.json").read_bytes())
-    if routing["format"] != 7 or routing["region"] != region:
-        raise ValueError("Build a packed routing package for this region")
+    if routing["region"] != region:
+        raise ValueError("Build the routing package for this region")
     with sqlite3.connect(f"{(data / 'routing/overlays.sqlite').as_uri()}?mode=ro", uri=True) as db:
         if db.execute("SELECT package FROM metadata").fetchone() != (sources.digest(data / "routing/manifest.json"),):
             raise ValueError("Overlay index uses another routing package")
@@ -82,6 +83,8 @@ def seal(data, region, device_catalog, provenance):
     if "sun.pmtiles" in map_manifest["files"]:
         if archive_metadata(data / "maps/sun.pmtiles").get("terrain_sha256") != map_manifest["files"]["terrain.pmtiles"]["sha256"]:
             raise ValueError("Sunlight index uses another terrain archive")
+    # A reused routing component does not build route-server, so the seal builds the verifier it runs.
+    maps.run("cargo", "build", "--locked", "--release", "-p", "route-server", cwd=maps.ROOT)
     maps.run(maps.ROOT / "target/release/route-server", data / "routing", "--verify")
     device = json.loads((data / "device/catalog.json").read_bytes()) if (data / "device/catalog.json").exists() else read_url(device_catalog)
     # Catalogue file references remain at their original content-addressed URLs.

@@ -2,10 +2,14 @@ use axum::{
     body::{to_bytes, Body},
     http::{Request, StatusCode},
 };
+use route_build::{
+    overlays,
+    source::{Data, Id, Node, Relation, Way},
+    Graph,
+};
 use route_engine::{
     directory::Writer,
-    model::{Graph, Pace, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION},
-    osm::{Data, Id, Node, Relation, Way},
+    model::{Pace, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION},
 };
 use route_server::native;
 use std::ffi::{c_char, CStr, CString};
@@ -128,13 +132,10 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
     )
     .unwrap();
     writer.finish().unwrap();
-    std::fs::write(path.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
-    std::fs::write(path.join(".overlays.sqlite.partial"), b"interrupted build").unwrap();
-    rusqlite::Connection::open(path.join("overlays.sqlite"))
-        .unwrap()
-        .execute_batch("CREATE TABLE features(minzoom REAL NOT NULL)")
-        .unwrap();
-    route_server::prepare_overlays(&path).unwrap();
+    let manifest = serde_json::to_vec(&manifest).unwrap();
+    std::fs::write(path.join("manifest.json"), &manifest).unwrap();
+    let package = route_engine::package::digest(&manifest);
+    overlays::write(&path.join(overlays::FILE), &package, [-1.0, -1.0, 1.0, 1.0], &graph.osm).unwrap();
     let database =
         rusqlite::Connection::open_with_flags(path.join("overlays.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .unwrap();
@@ -309,10 +310,4 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         native::planner_overlays_close(native_overlays);
         native::planner_router_close(native_router);
     }
-    let overlays = std::fs::read(path.join("overlays.sqlite")).unwrap();
-    let mut runtime = manifest;
-    runtime.osm = Default::default();
-    std::fs::write(path.join("manifest.json"), serde_json::to_vec(&runtime).unwrap()).unwrap();
-    assert!(route_server::prepare_overlays(&path).unwrap_err().to_string().contains("Source OSM tables are absent"));
-    assert_eq!(std::fs::read(path.join("overlays.sqlite")).unwrap(), overlays);
 }

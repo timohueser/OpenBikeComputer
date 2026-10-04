@@ -1,9 +1,11 @@
 """Incomplete releases cannot become public planner data."""
 
 import argparse
+from contextlib import closing
 import hashlib
 import json
 from pathlib import Path
+import re
 import tempfile
 import sqlite3
 import unittest
@@ -49,6 +51,23 @@ class ReleaseTests(unittest.TestCase):
                 release.release(root)
             (root / "page.bin").unlink()
             with self.assertRaises(FileNotFoundError): release.release(root)
+
+    def test_seal_accepts_the_routing_format_that_the_engine_writes(self):
+        source = (release.maps.ROOT / "host/route-engine/src/package.rs").read_text()
+        engine_format = int(re.search(r"pub const FORMAT: u32 = (\d+);", source)[1])
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory)
+            (data / "routing").mkdir()
+            (data / "routing/manifest.json").write_text(json.dumps({"format": engine_format, "region": "test"}))
+            with closing(sqlite3.connect(data / "routing/overlays.sqlite")) as db:
+                db.execute("CREATE TABLE metadata(package TEXT, coverage TEXT)")
+                db.execute("INSERT INTO metadata VALUES ('another', '[]')")
+                db.commit()
+            with self.assertRaisesRegex(ValueError, "for this region"):
+                release.seal(data, "other", None, {})
+            # The next check after the manifest fails, so the format passed.
+            with self.assertRaisesRegex(ValueError, "Overlay index uses another routing package"):
+                release.seal(data, "test", None, {})
 
     def test_incomplete_upload_does_not_publish_the_manifest(self):
         with tempfile.TemporaryDirectory() as directory:

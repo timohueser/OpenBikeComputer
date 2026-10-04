@@ -3,7 +3,6 @@
 ```sh
 cargo build --release -p route-server
 target/release/route-server /data/routes/freiburg --verify
-target/release/route-server /data/routes/freiburg --build-overlays
 target/release/route-server /data/routes/freiburg
 ```
 
@@ -47,9 +46,8 @@ curl http://127.0.0.1:8788/v1/route \
 
 ## Overlay index
 
-`--build-overlays` writes `overlays.sqlite` from the package's OSM snapshot. A
-runtime-only package must receive its compiled overlay index from the preparation
-host. Its package identity must match the routing manifest. The planner bake
+[route-build](../../host/route-build/README.md) writes `overlays.sqlite` with the
+package. Its package identity must match the routing manifest. The planner bake
 derives the overlay tiles from it. The phone reads its offline overlay cells
 through `planner_overlays_query`.
 

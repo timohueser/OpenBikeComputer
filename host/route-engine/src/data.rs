@@ -3,7 +3,6 @@ use crate::{
     base::{Column, Costs, Graph, Width},
     blocks::{self, Ids, Union},
     closures::Closures,
-    cost::CostBasis,
     landmarks::{self, Guide, Junctions},
     model::{Point, Profile, Road},
     package::{cell_key, digest, Departure, Endpoint, Manifest, Package, Source, MAX_MANIFEST_BYTES, ROADS_PER_PAGE},
@@ -205,7 +204,7 @@ impl<S: Source> Selection<S> {
 
     /// Every object the selection refers to, in the source's verification order. Decodes the
     /// cost dictionary, the per-road cost ids, the access words and the closures on the way.
-    pub fn objects(&self) -> Result<Vec<String>> {
+    fn objects(&self) -> Result<Vec<String>> {
         let package = &self.package;
         let manifest = package.manifest();
         let mut keys: BTreeSet<String> = manifest.tables().flat_map(|table| table.blocks.iter().cloned()).collect();
@@ -225,9 +224,6 @@ impl<S: Source> Selection<S> {
         if let Some(key) = &manifest.closures {
             keys.insert(key.clone());
             self.closures()?;
-        }
-        for table in manifest.osm.tables() {
-            keys.extend(package.keys(table)?);
         }
         let mut page = None;
         for id in self.ids.iter() {
@@ -256,26 +252,6 @@ impl<S: Source> Selection<S> {
             self.package.bytes(&key)?;
         }
         Ok(())
-    }
-
-    /// Bulk extraction reads a metric's costs once and keeps the exact cost factors. It fills no
-    /// cache and loads no landmark columns.
-    pub fn prepared_endpoints(&self, metric: &str, roads: &[u32]) -> Result<Vec<Endpoint<CostBasis>>> {
-        let _loading = lock(&self.shared.loading);
-        let union = self.union()?;
-        let costs = union.costs(&self.package, &self.ids, metric, None)?;
-        roads
-            .iter()
-            .map(|&road| {
-                let Some(basis) = self.package.prepared_cost(metric, self.ids.source(road)?)? else {
-                    return Ok(Endpoint { cost: None, arrival: road, departures: Vec::new() });
-                };
-                if costs.roads.get(road as usize) == u64::MAX {
-                    return Err(Error::InvalidData("Missing accessible road cost".into()));
-                }
-                Ok(Endpoint { cost: Some(basis), arrival: road, departures: departures(&union.graph, &costs, road) })
-            })
-            .collect()
     }
 
     /// Bytes every router needs for itself: its label blocks and the decode margin.
@@ -577,7 +553,7 @@ mod tests {
     use crate::{
         base::{write_topology, write_weights, Topology, Weights},
         model::Profile,
-        package::{Manifest, Metric, OsmPages, FORMAT},
+        package::{Manifest, Metric, FORMAT},
         table::{self, Table},
     };
     use std::sync::{
@@ -639,7 +615,6 @@ mod tests {
                 roads,
                 graph,
                 geometry: placeholder(roads.div_ceil(ROADS_PER_PAGE)),
-                osm: OsmPages::default(),
                 spatial: BTreeMap::new(),
                 metrics: BTreeMap::from([(profile.name, metric)]),
                 costs: Table::default(),

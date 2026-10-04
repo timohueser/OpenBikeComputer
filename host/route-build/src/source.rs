@@ -1,8 +1,7 @@
-//! Source OSM data is kept outside the pages used by route searches.
-use crate::closures::{Closure, Kind};
-use crate::model::Point;
-use crate::model::{BIKE, FOOT, PUSH};
-use serde::{Deserialize, Serialize};
+//! The source OSM model and the tag rules that the import, the overlay index and the route
+//! catalog share. No source object enters the routing package.
+use route_engine::closures::{Closure, Kind};
+use route_engine::model::{Point, BIKE, FOOT, PUSH};
 use std::collections::BTreeMap;
 
 pub type Tags = BTreeMap<String, String>;
@@ -248,35 +247,35 @@ fn seasonal(condition: &str) -> bool {
     dates && named
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct Node {
     pub id: i64,
     pub point: Point,
     pub tags: Tags,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct Way {
     pub id: i64,
     pub nodes: Vec<i64>,
     pub tags: Tags,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Id {
     Node(i64),
     Way(i64),
     Relation(i64),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct Relation {
     pub id: i64,
     pub tags: Tags,
     pub members: Vec<(Id, String)>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default)]
 pub struct Data {
     pub nodes: BTreeMap<i64, Node>,
     pub ways: BTreeMap<i64, Way>,

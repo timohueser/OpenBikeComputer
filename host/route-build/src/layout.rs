@@ -1,4 +1,4 @@
-use route_engine::model::Graph;
+use crate::Graph;
 
 /// Keep nearby arrival states in the same graph, cost and geometry pages.
 /// The returned permutation maps each new road ID to its original ID.

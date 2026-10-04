@@ -2,10 +2,11 @@
 //! `specs/route-catalog.md` is the contract.
 mod assemble;
 
+use crate::source::{Data, Id, Relation, Tags};
 use route_engine::{
     data::{RoutingData, Selection},
     directory::Directory,
-    osm::{Id, Node, Relation, Tags, Way},
+    model::Profile,
     package::Source,
     shape::{self, distance, Failure, Limits, P},
     Control, Router,
@@ -230,65 +231,45 @@ impl Report {
     }
 }
 
-/// Reads the items of a source OSM table that `keep` accepts, by ID.
-macro_rules! read {
-    ($package:expr, $table:ident, $type:ty, $keep:expr) => {{
-        let mut items = BTreeMap::<i64, $type>::new();
-        for key in $package.keys(&$package.manifest().osm.$table).map_err(|e| e.to_string())? {
-            for item in $package.read::<Vec<$type>>(&key).map_err(|e| e.to_string())? {
-                if $keep(item.id) {
-                    items.insert(item.id, item);
-                }
-            }
+/// Checks the catalog options before the import. The answer says whether the records leave out
+/// route marks: when France is the only country.
+pub fn check(countries: &[String], profiles: &[Profile]) -> Result<bool, String> {
+    if let Some(profile) = PROFILES.iter().find(|&&name| !profiles.iter().any(|p| p.name == name)) {
+        return Err(format!("The route catalog needs the {profile} profile"));
+    }
+    match countries {
+        [only] => Ok(only == "FR"),
+        _ if countries.iter().any(|c| c == "FR") => {
+            Err("A region with France and another country needs a country lookup for route marks".into())
         }
-        items
-    }};
+        _ => Ok(false),
+    }
 }
 
-/// Writes `route-catalog.json` into a routing package with source OSM tables. A present file is
-/// current: the package is immutable, and the file only moves on with it.
-pub fn build(directory: &Path, countries: &[String]) -> Result<Option<Report>, String> {
-    let output = directory.join(FILE);
-    if output.exists() {
-        return Ok(None);
-    }
-    let france = match countries {
-        [only] => only == "FR",
-        _ if countries.iter().any(|c| c == "FR") => {
-            return Err("A region with France and another country needs a country lookup for route marks".into())
-        }
-        _ => false,
-    };
+/// Writes `route-catalog.json` into the routing package in `directory`, from the source OSM
+/// objects of its import. `france` comes from `check`.
+pub fn write(directory: &Path, osm: Data, france: bool) -> Result<Report, String> {
     let started = std::time::Instant::now();
     let package = Directory::open(directory).map_err(|e| e.to_string())?;
-    if package.manifest().osm.tables().all(|table| table.len == 0) {
-        return Err("The routing package has no source OSM tables".into());
-    }
-    for profile in PROFILES {
-        package.metric(profile).map_err(|_| format!("The routing package lacks the {profile} profile"))?;
-    }
-    let relations = read!(package, relations, Relation, |_| true);
     // The routers share one graph, one junction mapping and the five prepared profiles; each
     // adds its own label blocks and a search space of `SEARCH_BYTES`.
     let routing = Selection::whole(package);
     let shared = routing.shared_bytes(PROFILES).map_err(|e| e.to_string())?;
     let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
     let workers = cpus.min(ROUTERS_MEMORY.saturating_sub(shared) / (routing.router_bytes() + SEARCH_BYTES)).max(1);
-    let (records, report) = catalog(&routing, relations, france, workers)?;
-    let partial = directory.join(format!(".{FILE}.partial"));
+    let (records, report) = catalog(&routing, osm, france, workers)?;
     let bytes = serde_json::to_vec(&json!({"format": 1, "routes": records})).map_err(|e| e.to_string())?;
-    std::fs::write(&partial, bytes).map_err(|e| e.to_string())?;
-    std::fs::rename(&partial, &output).map_err(|e| e.to_string())?;
-    Ok(Some(Report { seconds: started.elapsed().as_secs_f64(), ..report }))
+    std::fs::write(directory.join(FILE), bytes).map_err(|e| e.to_string())?;
+    Ok(Report { seconds: started.elapsed().as_secs_f64(), ..report })
 }
 
 fn catalog<S: Source + Clone + Send>(
     selection: &Selection<S>,
-    relations: BTreeMap<i64, Relation>,
+    osm: Data,
     france: bool,
     workers: usize,
 ) -> Result<(Vec<Value>, Report), String> {
-    let package = selection.package();
+    let Data { nodes, mut ways, relations } = osm;
     let mut report = Report::default();
     let mut drops = BTreeMap::<i64, Reason>::new();
     let is_route = |id: &i64| relations.get(id).is_some_and(|r| matches!(tag(&r.tags, "type"), "route" | "superroute"));
@@ -320,11 +301,10 @@ fn catalog<S: Source + Clone + Send>(
         .filter(|(_, role)| assemble::is_main(role))
         .filter_map(|(id, _)| if let Id::Way(id) = id { Some(*id) } else { None })
         .collect();
-    let ways = read!(package, ways, Way, |id| needed.contains(&id));
+    ways.retain(|id, _| needed.contains(id));
     let needed: HashSet<i64> = ways.values().flat_map(|w| w.nodes.iter().copied()).collect();
-    let nodes = read!(package, nodes, Node, |id| needed.contains(&id));
-    let points: HashMap<i64, P> = nodes.values().map(|n| (n.id, [n.point.lon, n.point.lat])).collect();
-    drop(nodes);
+    let points: HashMap<i64, P> =
+        nodes.into_values().filter(|n| needed.contains(&n.id)).map(|n| (n.id, [n.point.lon, n.point.lat])).collect();
     jobs.retain_mut(|job| {
         for (id, role) in &job.relation.members {
             let Id::Way(id) = id else { continue };

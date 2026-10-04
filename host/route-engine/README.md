@@ -44,7 +44,6 @@ cargo run --release -p route-engine --example query -- /data/freiburg < request.
 | `blocks` | Grid selections: compact road ids and the union graph |
 | `snap` | Nearest accessible directed road attachments |
 | `cost` | Prepared road costs and partial-road prefixes |
-| `osm` | Source tags and relation membership, outside query caches |
 | `base` | Shared road-state topology and exact profile cost columns |
 | `search` | Exact bidirectional search with optional feasible potentials |
 | `landmarks` | Compressed junction bounds and the potential of each request |
