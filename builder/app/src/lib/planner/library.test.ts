@@ -64,7 +64,7 @@ describe('local plan library', () => {
         const picked = { ...drawn, routing: { key: routingKey(drawn), choiceId: 'corridor', profile: 'touring', picked: true,
             coordinates, elevation: coordinates.map(() => 10), elapsed: coordinates.map((_, i) => i * 10), edges: {},
             stops: points.map((p, i) => ({ id: p.id, distance: i })), seconds: 20,
-            unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, alternatives: [], alternativesReady: false } };
+            unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0, alternatives: [], alternativesReady: false } };
         const plan = newPlan(picked, 'Autumn tour', [newVersion(drawn, 'Before the detour')]);
         const imported = importPlan(exportPlan(plan));
         expect(imported.id).not.toBe(plan.id);
@@ -78,7 +78,7 @@ describe('local plan library', () => {
         const stops = points.map((p, i) => ({ id: p.id, distance: i }));
         const routing = { key: routingKey(loop), choiceId: 'loop', profile: 'touring', picked: true,
             coordinates, elevation: points.map(() => null), elapsed: points.map((_, i) => i * 10), edges: {},
-            stops, seconds: 20, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0,
+            stops, seconds: 20, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0,
             alternatives: [], alternativesReady: false };
         const file = JSON.parse(exportPlan(newPlan({ ...loop, routing }, 'Loop')));
         expect(importPlan(JSON.stringify(file)).trip.routing?.stops).toEqual(stops);

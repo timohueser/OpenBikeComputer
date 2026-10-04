@@ -268,7 +268,8 @@
         map.addLayer({ id: "trip-casing", type: "line", source: "trip", filter: ["==", ["get", "leg"], "routed"], layout: round, paint: { "line-color": casing, "line-width": 8 } });
         map.addLayer({ id: "trip-casing-drawn", type: "line", source: "trip", filter: ["==", ["get", "leg"], "drawn"], layout: { "line-join": "round" }, paint: { "line-color": dark ? "#bdb47e" : "#5c5a2e", "line-width": 8, "line-dasharray": [1, 0.8] } });
         map.addLayer({ id: "trip-gap", type: "line", source: "trip", filter: ["==", ["get", "leg"], "gap"], paint: { "line-color": dark ? "#bdb47e" : "#5c5a2e", "line-width": 3, "line-dasharray": [1, 0.8] } });
-        map.addLayer({ id: "trip-line", type: "line", source: "trip", filter: ["!=", ["get", "leg"], "gap"], layout: round, paint: { "line-color": ["get", "color"], "line-width": 4 } });
+        map.addLayer({ id: "trip-line", type: "line", source: "trip", filter: ["!", ["in", ["get", "leg"], ["literal", ["gap", "transfer"]]]], layout: round, paint: { "line-color": ["get", "color"], "line-width": 4 } });
+        map.addLayer({ id: "trip-transfer", type: "line", source: "trip", filter: ["==", ["get", "leg"], "transfer"], paint: { "line-color": dark ? "#8f8a6e" : "#9a9681", "line-width": 3, "line-dasharray": [2, 2] } });
         map.addSource("planner-sketch", { type: "geojson", data: lineData([]) });
         map.addLayer({ id: "planner-sketch", type: "line", source: "planner-sketch", layout: round, paint: { "line-color": dark ? "#f175c5" : "#cc2a93", "line-width": 3, "line-dasharray": [1.5, 1.5] } });
         const panel = dark ? "#201f17" : "#ffffff";
@@ -292,7 +293,7 @@
 
     function syncRouteVisibility() {
         if (!map?.getLayer("trip-line")) return;
-        for (const id of ["trip-line", "trip-casing", "trip-casing-drawn", "trip-gap", "trip-highlight"]) {
+        for (const id of ["trip-line", "trip-casing", "trip-casing-drawn", "trip-gap", "trip-transfer", "trip-highlight"]) {
             map.setLayoutProperty(id, "visibility", showRoute && (!planMuted || id === "trip-line") ? "visible" : "none");
         }
         // Magenta stays for the selected signed route, so the muted plan takes the amber token.

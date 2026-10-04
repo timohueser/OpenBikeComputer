@@ -72,6 +72,7 @@
         { value: 'routed', label: 'Follow roads' },
         { value: 'straight', label: 'Straight lines' },
         { value: 'drawn', label: 'Freehand' },
+        { value: 'transfer', label: 'Transfer (not ridden)' },
     ];
 
     let root: HTMLDivElement;
@@ -145,7 +146,7 @@
         {/if}
     {:else if kind === 'leg'}
         <h2>This leg</h2>
-        <Segmented label="Leg mode" options={legModes} value={legMode} onChange={onLegMode} />
+        <Segmented label="Leg mode" columns={2} options={legModes} value={legMode} onChange={onLegMode} />
         <p class="hint">Straight lines join shaping points without following roads.</p>
         <button type="button" class="secondary" onclick={onInsert}>Insert point here</button>
         {#if canMoveLoopStart(trip)}
