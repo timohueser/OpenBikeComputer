@@ -72,15 +72,22 @@ every edge. A client accepts a channel that it does not know.
 | `sac_scale` | The OSM `sac_scale` as an integer from `0` (`strolling`) through `1` (`hiking`, T1) to `6` (`difficult_alpine_hiking`, T6), or `null` when the way has none |
 | `mtb_scale` | The OSM `mtb:scale` as an integer from `0` (S0) to `6` (S6), or `null` when the way has no grade from 0 to 6; `2+` and `1-` count as their digit |
 
-The router blocks a mode only where the rider surely
-has no access. It uses an edge that is possibly closed for the mode that the
-route uses on it, and reports it. A closure on a node, such as a gate, belongs to
-the edges of the road that arrives at the node:
+The router blocks a mode only for the access value `no`; `dismount` blocks
+riding only. It uses an edge that is possibly closed for the mode that the route
+uses on it, and reports it. A closure on a node, such as a gate, belongs to the
+edges of the road that arrives at the node. A closure from an access value
+makes the road cost three times its length. Thus a route uses the road only
+where the alternative is much longer, or where a shaping point is on it. A
+`seasonal` or `conditional` closure adds no cost:
 
 | `kind` | Source | `condition` |
 | --- | --- | --- |
 | `permit` | Access value `permit` | `permit` |
-| `limited` | Access value `destination`, `customers`, `delivery` or `residents` | The value |
+| `private` | Access value `private` | `private` |
+| `farm` | Access value `agricultural` or `forestry` | The value |
+| `sidepath` | Access value `use_sidepath` | `use_sidepath` |
+| `discouraged` | Access value `discouraged` | `discouraged` |
+| `limited` | Access value for another group: `destination`, `customers`, `delivery`, `residents`, `military`, or a motor group such as `psv` | The value |
 | `seasonal` | A conditional restriction that names only months, days or seasons | The OSM condition, such as `Nov-May` |
 | `conditional` | Any other conditional restriction | The OSM condition, such as `wet` |
 | `unclear` | An access value or a barrier that the router does not know | The value, or `barrier=VALUE` |

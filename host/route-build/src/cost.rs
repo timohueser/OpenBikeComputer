@@ -1,11 +1,17 @@
 //! Compile source attributes and terrain into additive routing costs.
 use crate::road_bike::{self, WayCost};
 use route_engine::{
+    closures::Closures,
     cost::{turn, CostBasis, CostParameters, RoadCost},
     model::{Graph, Profile, Weighting, BIKE, FOOT, PUSH},
     osm::Id,
 };
 use std::collections::HashMap;
+
+/// A road that the rider may have no access to costs three times its length. An ordinary route
+/// takes it only where every other way is more than twice as long as the road; a shaping point
+/// on the road still takes the route through it.
+const UNCERTAIN_ACCESS: f64 = 3.0;
 
 pub struct Costing<'a> {
     graph: &'a Graph,
@@ -15,7 +21,7 @@ pub struct Costing<'a> {
 }
 
 impl<'a> Costing<'a> {
-    pub fn new(graph: &'a Graph, profile: &'a Profile) -> Result<Self, String> {
+    pub fn new(graph: &'a Graph, profile: &'a Profile, closures: &Closures) -> Result<Self, String> {
         profile.validate()?;
         if graph.node_access.len() != graph.points.len() || graph.node_ids.len() != graph.points.len() {
             return Err("Graph nodes lack source identities or access".into());
@@ -23,7 +29,7 @@ impl<'a> Costing<'a> {
         let cycle_routes = cycle_routes(graph);
         let mut ways = Vec::with_capacity(graph.roads.len());
         let mut roads = Vec::with_capacity(graph.roads.len());
-        for road in &graph.roads {
+        for (id, road) in graph.roads.iter().enumerate() {
             if road.shape.len() < 2 {
                 return Err("Road has no geometry".into());
             }
@@ -46,6 +52,16 @@ impl<'a> Costing<'a> {
                 }
             };
             let way = way.map(|mut cost| {
+                let mode = if profile.walking {
+                    FOOT
+                } else if road.access & BIKE != 0 {
+                    BIKE
+                } else {
+                    PUSH
+                };
+                if closures.closing(id as u32, mode).is_some_and(|found| found.iter().any(|c| c.kind.avoided())) {
+                    cost.factor *= UNCERTAIN_ACCESS;
+                }
                 if !profile.walking && !cost.pushing && !cost.ferry && !profile.name.ends_with("/shorter") {
                     if let Some(&rank) = cycle_routes.get(&road.way) {
                         let touring = profile.name.split('/').next() == Some("touring");
@@ -206,10 +222,8 @@ mod tests {
         );
         let profiles = Profile::presets();
         let cost = |graph: &Graph, name: &str| {
-            Costing::new(graph, profiles.iter().find(|p| p.name == name).unwrap()).unwrap().roads[0]
-                .as_ref()
-                .unwrap()
-                .total()
+            let profile = profiles.iter().find(|p| p.name == name).unwrap();
+            Costing::new(graph, profile, &Closures::default()).unwrap().roads[0].as_ref().unwrap().total()
         };
         let ordinary = cost(&graph, "touring");
         let walking = cost(&graph, "hiking");
@@ -296,14 +310,14 @@ mod tests {
             },
         );
         for profile in Profile::presets().into_iter().filter(|p| ["road", "touring"].contains(&p.name.as_str())) {
-            assert!(Costing::new(&graph, &profile).unwrap().transition(0, 1).is_some());
+            assert!(Costing::new(&graph, &profile, &Closures::default()).unwrap().transition(0, 1).is_some());
             for edge in 0..2 {
                 graph.roads[edge].access = FOOT | PUSH;
-                assert!(Costing::new(&graph, &profile).unwrap().transition(0, 1).is_none());
+                assert!(Costing::new(&graph, &profile, &Closures::default()).unwrap().transition(0, 1).is_none());
                 graph.roads[edge].access = BIKE;
             }
             graph.node_access[1] = FOOT | PUSH;
-            assert!(Costing::new(&graph, &profile).unwrap().transition(0, 1).is_none());
+            assert!(Costing::new(&graph, &profile, &Closures::default()).unwrap().transition(0, 1).is_none());
             graph.node_access[1] = BIKE | FOOT | PUSH;
         }
     }

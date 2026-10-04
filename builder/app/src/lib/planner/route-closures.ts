@@ -44,7 +44,11 @@ const dates = (condition: string) => condition.replace(/\s*-\s*/g, '–').replac
 const listed = (conditions: string[]) => conditions.length ? ` (${[...new Set(conditions)].join(', ')})` : '';
 const phrases: Record<RouteClosure['kind'], (conditions: string[]) => string> = {
     permit: () => 'Permit needed',
-    limited: groups => `Access for ${groups.join(' or ')} only`,
+    private: () => 'Private road',
+    farm: () => 'Farm or forest traffic only',
+    sidepath: () => 'Use the side path',
+    discouraged: () => 'Access discouraged',
+    limited: groups => `Access for ${[...new Set(groups.flatMap(group => group.split(';')))].join(' or ').replace(/_/g, ' ')} only`,
     seasonal: conditions => `May be closed seasonally${listed(conditions.map(dates))}`,
     conditional: conditions => `May be closed${listed(conditions.map(condition => condition.replace(/\s*-\s*/g, '–')))}`,
     unclear: values => `Access unclear${listed(values)}`,

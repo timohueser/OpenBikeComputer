@@ -184,7 +184,7 @@ fn with_sources(mut graph: Graph) -> Graph {
 // Independent arrival-road Dijkstra. The target is a partial transition, not a compact state.
 fn oracle(graph: &Graph, profile: &Profile, from: &Candidate, to: &Candidate) -> Option<u64> {
     let graph = with_sources(graph.clone());
-    let costing = route_build::cost::Costing::new(&graph, profile).unwrap();
+    let costing = route_build::cost::Costing::new(&graph, profile, &Default::default()).unwrap();
     let (a, b) = (from.position, to.position);
     let prefix = costing.roads[a.road as usize].as_ref().unwrap().prefix(a.fraction).unwrap();
     let suffix = costing.roads[b.road as usize].as_ref().unwrap().prefix(b.fraction).unwrap();
@@ -466,7 +466,7 @@ fn lazy_endpoint_costs_preserve_every_profile_and_partial_offset() {
     let (source, manifest) = package_with_profiles(&graph, &profiles);
     let mut package = Package::open(source, &manifest).unwrap();
     for profile in &profiles {
-        let costing = route_build::cost::Costing::new(&graph, profile).unwrap();
+        let costing = route_build::cost::Costing::new(&graph, profile, &Default::default()).unwrap();
         for (id, expected) in costing.roads.iter().enumerate() {
             let actual = package.endpoint(&profile.name, id as u32).unwrap().cost;
             assert_eq!(actual, *expected, "{} road {id}", profile.name);
@@ -823,7 +823,7 @@ fn partial_cost_localizes_climbing_and_telescopes_across_shape_points() {
     let mut graph = fixture();
     graph.roads = vec![road];
     let graph = with_sources(graph);
-    let costing = route_build::cost::Costing::new(&graph, &profile).unwrap();
+    let costing = route_build::cost::Costing::new(&graph, &profile, &Default::default()).unwrap();
     let curve = costing.roads[0].as_ref().unwrap();
     let full = curve.total();
     assert!(curve.prefix(0.5).unwrap() > full / 2);
@@ -1116,6 +1116,70 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
     request.points = vec![[0.0016, 0.0], [0.0024, 0.0]];
     let route = router.route(&request, &Control::default()).unwrap();
     assert_eq!(edges(&route, "closures"), json!([walking, null]));
+}
+
+#[test]
+fn a_route_avoids_a_private_road_unless_a_shaping_point_is_on_it() {
+    // A private road from A to B, 222 m, and an open way round it through C, 259 m.
+    let at = |lon, lat| Point { lon, lat, elevation: 0.0 };
+    let points = vec![at(-1000, 0), at(0, 0), at(2000, 0), at(3000, 0), at(1000, 600)];
+    let ways = [(0usize, 1usize), (1, 2), (1, 4), (4, 2), (2, 3)];
+    let roads = ways
+        .iter()
+        .enumerate()
+        .flat_map(|(way, &(a, b))| [(way, a, b, false), (way, b, a, true)])
+        .map(|(way, from, to, reversed)| Road {
+            from: from as u32,
+            to: to as u32,
+            way: way as i64,
+            reversed,
+            length_m: points[from].distance(points[to]).round() as u32,
+            ascent_m: 0,
+            descent_m: 0,
+            surface: Surface::Paved,
+            class: 1,
+            access: BIKE | FOOT | PUSH,
+            difficulty: 255,
+            hiking_difficulty: None,
+            uncertain_access: false,
+            structure: false,
+            shape: vec![points[from], points[to]],
+        })
+        .collect();
+    let mut graph = Graph {
+        points,
+        roads,
+        node_ids: (0..5).collect(),
+        node_access: vec![BIKE | FOOT | PUSH; 5],
+        ..Graph::default()
+    };
+    for (way, &(a, b)) in ways.iter().enumerate() {
+        let access = if way == 1 { "private" } else { "yes" };
+        let tags = [("highway".into(), "service".into()), ("access".into(), access.into())].into_iter().collect();
+        graph
+            .osm
+            .ways
+            .insert(way as i64, route_engine::osm::Way { id: way as i64, nodes: vec![a as i64, b as i64], tags });
+    }
+    let (source, manifest) = package(&graph);
+    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let mut request = Request {
+        points: vec![[-0.0005, 0.0], [0.0025, 0.0]],
+        profile: "touring".into(),
+        pace: Pace::default(),
+        alternatives: false,
+        alternatives_only: false,
+        turnarounds: vec![],
+        start_position: None,
+        end_position: None,
+    };
+    let private = json!([{ "kind": "private", "condition": "private" }]);
+    let open = router.route(&request, &Control::default()).unwrap();
+    assert!(!edges(&open, "closures").as_array().unwrap().contains(&private));
+    request.points.insert(1, [0.001, 0.0]);
+    let shaped = router.route(&request, &Control::default()).unwrap();
+    assert!(edges(&shaped, "closures").as_array().unwrap().contains(&private));
+    assert!(shaped.totals.distance_m < open.totals.distance_m);
 }
 
 #[test]

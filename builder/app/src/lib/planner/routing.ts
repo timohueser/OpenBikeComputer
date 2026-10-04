@@ -23,7 +23,7 @@ export interface RouteLeg {
 }
 /** Why the rider may have no access to an edge that the route uses; `specs/route-api.md` lists the kinds. */
 export interface RouteClosure {
-    kind: 'permit' | 'limited' | 'seasonal' | 'conditional' | 'unclear';
+    kind: 'permit' | 'private' | 'farm' | 'sidepath' | 'discouraged' | 'limited' | 'seasonal' | 'conditional' | 'unclear';
     condition: string;
 }
 /** The facts of each edge, one channel for each fact (`specs/route-api.md`). A missing channel is null on every edge, and
