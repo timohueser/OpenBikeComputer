@@ -24,7 +24,7 @@ public struct PlannerPlan: Codable, Equatable, Sendable {
     public var routeOrder: [String]
 
     public init(points: [PlanPoint], mode: Mode? = nil, name: String? = nil, bike: String? = nil, preset: String? = nil,
-                loop: Bool = false, routeOrder: [String] = []) {
+                loop: Bool = false, routeOrder: [String]) {
         self.points = points
         days = points.filter { $0.kind == .night }.count + 1
         target = Double(days)
@@ -133,7 +133,7 @@ extension PlannerPlan {
             PlanPoint(id: "start", label: startName, coordinate: first, kind: .start),
             PlanPoint(id: "finish", label: finishName, coordinate: last, kind: .finish,
                       leg: .drawn, drawn: drawnLeg(from: first, along: line)),
-        ] + markers(waypoints), mode: .route)
+        ] + markers(waypoints), mode: .route, routeOrder: [])
     }
 
     /// Route waypoints as markers.

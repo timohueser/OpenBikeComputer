@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { closeLoop, loopTrip, startLoopHere, storedPlan, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addRestDay, addClickedPoint, addPointNear, dayStops, applyBudget, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, planView, removeRestDay, routeLegsAround, dragPointOut, routingKey, setDrawnLeg, setLegMode, setSplit, TripHistory, type Place, type RoutePoint, type Trip } from './editor';
+import { closeLoop, loopTrip, startLoopHere, storedPlan, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addRestDay, addClickedPoint, addPointNear, dayStops, applyBudget, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, planView, removeRestDay, replacePoint, routeLegsAround, dragPointOut, routingKey, setDrawnLeg, setLegMode, setSplit, TripHistory, type Place, type RoutePoint, type Trip } from './editor';
 import { coordinateAt, kilometres, type Coordinate } from './geo';
 import { isTrip } from './trip-validation';
 import { routed, testTrip } from '../../../test-support/planner/trip';
@@ -330,6 +330,18 @@ describe('legs', () => {
         expect(orderedRoutePoints(moved).map(point => point.leg)).toEqual([undefined, 'drawn', undefined, undefined]);
         expect(moved.points.find(point => point.id === added.id)!.drawn).toEqual([sketch[0]]);
         expect(orderedRoutePoints(dragPointOut(drawn, 'finish', [7.2, 47.65])).map(point => point.leg)).toEqual([undefined, undefined, undefined]);
+    });
+
+    it('puts a marker that becomes a route point in its nearest leg, and takes a route point that becomes a marker out of the route', () => {
+        // A kept line: one drawn leg holds the whole line.
+        const sketch: Coordinate[] = [[7.7, 47.4], [7.5, 47.1]];
+        const marker: RoutePoint = { id: 'spring', kind: 'marker', label: 'Spring', coordinate: [7.6, 47.25] };
+        const kept = setDrawnLeg(testTrip(), 'finish', sketch);
+        const visit = replacePoint(routed({ ...kept, points: [...kept.points, marker] }), 'spring', { ...marker, kind: 'waypoint' });
+        expect(orderedRoutePoints(visit).map(p => [p.id, p.drawn])).toEqual([['start', undefined], ['spring', [sketch[0]]], ['finish', [sketch[1]]]]);
+        expect(planView(routed(visit)).total).toBeCloseTo(planView(routed(kept)).total, 1);
+        const back = replacePoint(visit, 'spring', { ...marker, drawn: undefined });
+        expect([back.routeOrder, orderedRoutePoints(back).map(p => p.id)]).toEqual([[], ['start', 'finish']]);
     });
 
     it('gives a point added on a drawn line with elevations the elevation of the line there', () => {

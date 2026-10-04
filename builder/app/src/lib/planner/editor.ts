@@ -461,6 +461,15 @@ export function addPointNear(trip: Trip, point: RoutePoint): Trip {
     return intoLeg(trip, point, nearestLegEnd(trip, point.coordinate));
 }
 
+/** Replaces point `id` with `point`, which can have another kind and ID. A marker that becomes a route point joins its
+ * nearest leg; a route point that becomes a marker leaves the route. */
+export function replacePoint(trip: Trip, id: string, point: RoutePoint): Trip {
+    const old = trip.points.find(p => p.id === id);
+    if (old?.kind === 'marker' && point.kind !== 'marker') return addPointNear({ ...trip, points: trip.points.filter(p => p !== old) }, point);
+    const order = trip.routeOrder.map(other => other === id ? point.id : other);
+    return { ...trip, points: trip.points.map(p => p.id === id ? point : p), routeOrder: point.kind === 'marker' ? order.filter(other => other !== point.id) : order };
+}
+
 /** Inserts a shaping point into the leg that ends at `legEndId`. */
 export function insertPoint(trip: Trip, legEndId: string, coordinate: Coordinate): Trip {
     const end = trip.points.find(p => p.id === legEndId);

@@ -34,7 +34,7 @@
     import {
         addClickedPoint, addPointNear, addRestDay, applyBudget, closeLoop, emptyTrip, hasEndpoints as endpointsChosen,
         insertPoint, planTitle, nightOrderConflicts, overnightCandidates, routeLegsAround, dragPointOut,
-        orderedRoutePoints, overnightWindow, pinNight, planView, removeRestDay, reorderPoint, startLoopHere,
+        orderedRoutePoints, overnightWindow, pinNight, planView, removeRestDay, reorderPoint, replacePoint, startLoopHere,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint, TripHistory, routingKey, planOf, storedPlan,
         type Day, type LegMode, type Place, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
@@ -1099,12 +1099,8 @@
         const id = point.kind === 'night' ? crypto.randomUUID() : point.id;
         const autoLabel = ['waypoint', 'detour'].includes(kind) && (point.kind === 'via' || point.autoLabel);
         const label = autoLabel ? coordinateName(point.coordinate) : point.label;
-        const next = { ...trip };
-        next.points = next.points.map(p => p.id === point.id ? { ...p, id, kind, night: undefined, label, autoLabel: autoLabel || undefined,
-            anchor: kind === 'detour' ? nearestOnLine(coordinates, point.coordinate).at : undefined } : p);
-        // A marker is not in the route order; one that becomes a route point joins the route before the finish.
-        const order = trip.routeOrder.map(old => old === point.id ? id : old);
-        next.routeOrder = kind === 'marker' ? order.filter(other => other !== id) : order.includes(id) ? order : [...order, id];
+        const next = replacePoint(trip, point.id, { ...point, id, kind, night: undefined, label, autoLabel: autoLabel || undefined,
+            anchor: kind === 'detour' ? nearestOnLine(coordinates, point.coordinate).at : undefined });
         commit(next, 'Point type updated');
         selectedId = id;
         void nameVisit(next.points.find(p => p.id === id)!);
@@ -1170,8 +1166,13 @@
     }
 
     function restoreVersion(saved: Trip, name: string) {
+        const restored = storedTrip(saved);
+        if (!restored) {
+            message = `‘${name}’ is in an older plan format and cannot be restored`;
+            return;
+        }
         fromRoutes = false;
-        commit(planOf(saved), `Restored ‘${name}’`);
+        commit(planOf(restored), `Restored ‘${name}’`);
         undoable = true;
         clearSelection();
         night = Math.max(1, Math.min(night, planView(trip).days.length));
