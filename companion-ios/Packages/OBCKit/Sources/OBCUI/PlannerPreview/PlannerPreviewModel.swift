@@ -53,6 +53,8 @@ public struct PlannerPreviewPoint: Identifiable, Equatable, Sendable {
     public let id: String
     public var place: PlannerPreviewPlace
     public var kind: PlannerPreviewPointKind
+    /// The route turns back here on purpose, as a signed route's plan says.
+    public var turnaround = false
 
     public init(place: PlannerPreviewPlace, kind: PlannerPreviewPointKind = .visit, id: String? = nil) {
         self.id = id ?? place.id; self.place = place; self.kind = kind
@@ -88,6 +90,11 @@ public final class PlannerPreviewModel {
         var bike: BikeType = .gravel
         var preset: PlannerPreviewPreset = .balanced
         var overnightPointID: String?
+        /// The finish is the start: the route returns to the first point, and there is no finish point.
+        var loop = false
+        /// Where a new stop goes: before the finish, or at the end of a loop.
+        var stopEnd: Int { loop || points.count < 2 ? points.count : points.count - 1 }
+        var coordinates: [Coordinate] { (points + (loop ? points.prefix(1) : [])).map(\.place.coordinate) }
     }
     private var state = State()
     private var past: [State] = []
@@ -114,7 +121,7 @@ public final class PlannerPreviewModel {
         let bike: BikeType
         let preset: PlannerPreviewPreset
     }
-    private var routingKey: RoutingKey { .init(coordinates: points.map { $0.place.coordinate }, bike: bike, preset: preset) }
+    private var routingKey: RoutingKey { .init(coordinates: state.coordinates, bike: bike, preset: preset) }
     public var canSave: Bool { path != nil && !isRouting && routeError == nil }
     public func retryRoute() { routingRevision += 1 }
 
@@ -182,7 +189,11 @@ public final class PlannerPreviewModel {
     public var points: [PlannerPreviewPoint] { state.points }
     public var markers: [PlannerPreviewPoint] { state.markers }
     public var start: PlannerPreviewPlace? { points.first?.place }
-    public var finish: PlannerPreviewPlace? { points.count > 1 ? points.last?.place : nil }
+    /// A loop's finish is its start.
+    public var finish: PlannerPreviewPlace? { isLoop ? start : points.count > 1 ? points.last?.place : nil }
+    public var isLoop: Bool { state.loop }
+    /// The start, and the finish of a plan that is not a loop. Only the other points have a kind.
+    public func isEndpoint(_ id: String) -> Bool { id == points.first?.id || (!isLoop && id == points.last?.id) }
     public var bike: BikeType { state.bike }
     public var preset: PlannerPreviewPreset { state.preset }
     public var overnightPointID: String? { state.overnightPointID }
@@ -193,7 +204,7 @@ public final class PlannerPreviewModel {
     public var dayCount: Int { overnight == nil ? 1 : 2 }
     public var routeTitle: String {
         guard let start, let finish else { return "New route" }
-        return "\(start.name) → \(finish.name)"
+        return isLoop ? "Loop from \(start.name)" : "\(start.name) → \(finish.name)"
     }
     public var routePoints: [RoutePoint] { path?.points ?? [] }
     public var pointDistances: [String: Double] {
@@ -216,7 +227,7 @@ public final class PlannerPreviewModel {
 
     public func exportRoute(name: String) -> ImportedRoute {
         let distances = pointDistances
-        let located = points.dropFirst().dropLast().filter { $0.kind == .visit }.map { ($0.place, distances[$0.id] ?? 0) }
+        let located = points.filter { !isEndpoint($0.id) && $0.kind == .visit }.map { ($0.place, distances[$0.id] ?? 0) }
         let waypoints = located.enumerated().map { index, entry in
             let category: WaypointCategory? = switch entry.0.kind {
             case .water: .water
@@ -237,9 +248,11 @@ public final class PlannerPreviewModel {
     public func setStart(_ place: PlannerPreviewPlace) {
         edit { if $0.points.isEmpty { $0.points.append(Self.newPoint(place, in: $0)) } else { $0.points[0].place = place } }
     }
+    /// In a loop, a new finish opens the loop: the route ends there instead of at the start.
     public func setFinish(_ place: PlannerPreviewPlace) {
         edit {
-            if $0.points.count < 2 {
+            if $0.points.count < 2 || $0.loop {
+                $0.loop = false
                 $0.points.append(Self.newPoint(place, in: $0))
             }
             else { $0.points[$0.points.count - 1].place = place }
@@ -258,7 +271,7 @@ public final class PlannerPreviewModel {
                 let marker = next.markers.first { $0.place.id == place.id }
                 let point = marker.map { PlannerPreviewPoint(place: place, id: $0.id) } ?? Self.newPoint(place, in: next)
                 next.markers.removeAll { $0.id == point.id }
-                next.points.insert(point, at: next.points.count - 1)
+                next.points.insert(point, at: next.stopEnd)
                 next.overnightPointID = point.id
             }
         }
@@ -274,7 +287,7 @@ public final class PlannerPreviewModel {
         edit {
             let point = Self.newPoint(place, kind: kind, in: $0)
             if kind == .marker { $0.markers.append(point) }
-            else { $0.points.insert(point, at: $0.points.count > 1 ? $0.points.count - 1 : $0.points.count) }
+            else { $0.points.insert(point, at: $0.stopEnd) }
         }
     }
     public func removePoint(id: String) {
@@ -296,18 +309,59 @@ public final class PlannerPreviewModel {
                 else { next.points[index] = point }
             } else {
                 next.markers.removeAll { $0.id == id }
-                next.points.insert(point, at: next.points.count > 1 ? next.points.count - 1 : next.points.count)
+                next.points.insert(point, at: next.stopEnd)
             }
         }
     }
+    /// The start of a loop stays first.
     public func movePoint(fromOffsets offsets: IndexSet, toOffset destination: Int) {
-        guard !offsets.isEmpty, offsets.allSatisfy({ points.indices.contains($0) }), (0...points.count).contains(destination) else { return }
+        let first = isLoop ? 1 : 0
+        guard !offsets.isEmpty, offsets.allSatisfy({ (first..<points.count).contains($0) }), (first...points.count).contains(destination) else { return }
         edit { next in
             let moved = offsets.map { next.points[$0] }
             next.points = next.points.enumerated().filter { !offsets.contains($0.offset) }.map(\.element)
             next.points.insert(contentsOf: moved, at: destination - offsets.filter { $0 < destination }.count)
         }
     }
+    /// "Back to start": the finish becomes the last stop, and the route returns to the start.
+    public func closeLoop() {
+        guard hasRoute, !isLoop else { return }
+        edit { $0.loop = true; $0.points[$0.points.count - 1].kind = .visit }
+    }
+
+    /// A signed loop as a plan: the route's own start and its shaping points in their order. The turnarounds stay on
+    /// their points.
+    public func makeLoop(_ route: CatalogRecord, name: String = "Start") {
+        let line = route.line
+        guard route.plan != nil, let via = route.via else { return }
+        let vertices = [0] + via + (line.last == line.first ? [] : [line.count - 1])
+        let turnarounds = Set(route.turnarounds ?? [])
+        edit { next in
+            next.points = vertices.enumerated().map { index, vertex in
+                var point = PlannerPreviewPoint(place: .init(id: UUID().uuidString, name: index == 0 ? name : Self.shapeName,
+                                                             coordinate: line[vertex]), kind: index == 0 ? .visit : .shape)
+                point.turnaround = turnarounds.contains(vertex)
+                return point
+            }
+            next.markers = []; next.overnightPointID = nil; next.loop = true
+        }
+    }
+
+    /// Day ends follow the point order, so a loop with an overnight stop keeps its start.
+    public var canMoveLoopStart: Bool { isLoop && overnightPointID == nil }
+
+    /// Makes the point `id` the start of the loop. The points keep their order around the loop.
+    public func startLoop(at id: String) { edit { Self.startLoop(&$0, at: id) } }
+
+    // The old start becomes a stop when it has a name of its own, and a shaping point otherwise.
+    private static func startLoop(_ state: inout State, at id: String) {
+        guard state.loop, state.overnightPointID == nil,
+              let index = state.points.firstIndex(where: { $0.id == id }), index > 0 else { return }
+        var old = state.points[0]
+        old.kind = [startName, shapeName, mapPointName].contains(old.place.name) ? .shape : .visit
+        state.points = Array(state.points[index...]) + [old] + state.points[1..<index]
+    }
+
     public func undo() {
         guard let previous = past.popLast() else { return }
         let key = routingKey
@@ -325,7 +379,7 @@ public final class PlannerPreviewModel {
         case .createSample: loadSample()
         case .reverse:
             guard hasRoute else { return }
-            edit { $0.points.reverse() }
+            edit { $0.points = $0.loop ? Array($0.points.prefix(1) + $0.points.dropFirst().reversed()) : $0.points.reversed() }
         case .splitDays:
             guard hasRoute else { return }
             setOvernight(mapPlaces.first { $0.kind == .camping })
@@ -334,7 +388,8 @@ public final class PlannerPreviewModel {
     public func actionSummary(_ action: PlannerPreviewAction) -> String {
         switch action {
         case .createSample: "Freiburg to Titisee with online gravel routing."
-        case .reverse: "Start at \(finish?.name ?? "the finish") and ride to \(start?.name ?? "the start"). Your stops reverse too."
+        case .reverse: isLoop ? "Ride the loop the other way. Your stops reverse too."
+            : "Start at \(finish?.name ?? "the finish") and ride to \(start?.name ?? "the start"). Your stops reverse too."
         case .splitDays: "End day 1 at a campsite in the search results. Continue to \(finish?.name ?? "the finish") on day 2."
         }
     }
@@ -372,7 +427,10 @@ public final class PlannerPreviewModel {
 
     private func edit(_ change: (inout State) -> Void) {
         var next = state; change(&next)
-        if !next.points.dropFirst().dropLast().contains(where: { $0.id == next.overnightPointID && $0.kind == .visit }) {
+        // A loop needs a point to ride to before it returns.
+        if next.points.count < 2 { next.loop = false }
+        let stops = next.points.dropFirst().prefix(max(0, next.stopEnd - 1))
+        if !stops.contains(where: { $0.id == next.overnightPointID && $0.kind == .visit }) {
             next.overnightPointID = nil
         }
         guard next != state else { return }
@@ -380,6 +438,7 @@ public final class PlannerPreviewModel {
         past.append(state); state = next; future.removeAll()
         invalidateRoute(from: key)
     }
+    static let startName = "Start", shapeName = "Shaping point", mapPointName = "Map point"
     private static func newPoint(_ place: PlannerPreviewPlace, kind: PlannerPreviewPointKind = .visit, in state: State) -> PlannerPreviewPoint {
         let id = (state.points + state.markers).contains { $0.id == place.id } ? UUID().uuidString : place.id
         return .init(place: place, kind: kind, id: id)

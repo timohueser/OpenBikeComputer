@@ -14,12 +14,19 @@ struct PlannerPreviewPoints: View {
             Section {
                 ForEach(Array(model.points.enumerated()), id: \.element.id) { index, point in
                     Button { onEdit(point) } label: {
-                        row(point, role: role(at: index), symbol: index == 0 ? "play.fill" : index == model.points.count - 1 ? "flag.checkered" : point.kind.symbol)
+                        row(point, role: role(at: index), symbol: index == 0 ? "play.fill" : model.isEndpoint(point.id) ? "flag.checkered" : point.kind.symbol)
                     }
                     .buttonStyle(.plain)
+                    .moveDisabled(model.isLoop && index == 0)
                     .accessibilityIdentifier("planner.point.\(point.id)")
                 }
                 .onMove { model.movePoint(fromOffsets: $0, toOffset: $1) }
+                if model.hasRoute && !model.isLoop {
+                    Button { model.closeLoop() } label: {
+                        Label("Back to start", systemImage: "arrow.triangle.2.circlepath").foregroundStyle(OBCTheme.secondary)
+                    }
+                    .frame(minHeight: 44).accessibilityIdentifier("planner.backToStart")
+                }
             }
             .listRowBackground(OBCTheme.surface)
 
@@ -52,9 +59,9 @@ struct PlannerPreviewPoints: View {
     }
 
     private func role(at index: Int) -> String {
-        if index == 0 { return "Start" }
-        if index == model.points.count - 1 { return "Finish" }
         let point = model.points[index]
+        if index == 0 { return model.isLoop ? "Start and finish" : "Start" }
+        if model.isEndpoint(point.id) { return "Finish" }
         return point.id == model.overnightPointID ? "End of day 1" : point.kind.title
     }
 
