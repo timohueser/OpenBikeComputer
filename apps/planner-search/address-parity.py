@@ -23,6 +23,7 @@ def main():
     ap.add_argument('--output', type=Path, required=True)
     ap.add_argument('--countries', required=True)
     ap.add_argument('--sample-size', type=int, default=500)
+    ap.add_argument('--require-equivalent', action='store_true')
     args = ap.parse_args()
     manifest = json.loads(args.reference_inputs.read_text())
     if digest(args.reference) != manifest['files']['search.jsonl.zst']:
@@ -41,7 +42,8 @@ def main():
                         '--countries=' + args.countries, '--osm-sha256=' + manifest['osm_sha256']], check=True)
     subprocess.run(['node', str(root / 'address-parity.mjs'),
                     str(args.output / 'candidate/comparison.sqlite'),
-                    str(args.output / 'reference/comparison.sqlite'), str(args.sample_size)], check=True)
+                    str(args.output / 'reference/comparison.sqlite'), str(args.sample_size),
+                    *(['--require-equivalent'] if args.require_equivalent else [])], check=True)
 
 
 if __name__ == '__main__':

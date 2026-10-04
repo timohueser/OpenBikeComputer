@@ -1,15 +1,16 @@
 use super::{
-    geometry::{center, distance2, envelope, Entry},
+    geometry::{center, envelope, Entry},
     input::Input,
 };
-use geo::{CoordsIter, Geometry, Intersects, Point};
+use geo::{CoordsIter, Distance, Euclidean, Geometry, Intersects, Point};
+use osmpbfreader::OsmId;
 use rstar::{Envelope, RTree, AABB};
 use std::collections::{BTreeMap, BTreeSet};
 
 struct Postcode {
     country: String,
     code: String,
-    geometry: Option<Geometry>,
+    geometry: Option<super::areas::Area>,
     center: Point,
     envelope: AABB<[f64; 2]>,
 }
@@ -19,33 +20,27 @@ pub struct Postcodes {
     tree: RTree<Entry>,
 }
 
-pub fn normalized(code: &str, country: &str) -> Option<String> {
-    let code = code.trim();
-    let code = if country == "us" && code.len() == 10 && code.as_bytes()[5] == b'-' { &code[..5] } else { code };
-    let length = if country == "ch" { 4 } else { 5 };
-    (code.len() == length && code.bytes().all(|c| c.is_ascii_digit())).then(|| code.to_string())
-}
-
 impl Postcodes {
-    pub fn new(input: &Input, countries: &[&str]) -> Self {
+    pub fn new(input: &Input, countries: &[&str], policy: &super::policy::Policy) -> Self {
         let mut entries = Vec::new();
         let mut covered = BTreeSet::new();
         for (i, f) in input.features.iter().enumerate() {
             let country = countries[i];
             if f.tag("boundary") != "postal_code"
+                || !matches!(f.source, OsmId::Relation(_))
                 || !matches!(f.geometry, Geometry::Polygon(_) | Geometry::MultiPolygon(_))
             {
                 continue;
             }
             let code = if f.tag("postal_code").is_empty() { f.tag("addr:postcode") } else { f.tag("postal_code") };
-            if let Some(code) = normalized(code, country) {
+            if let Some(code) = policy.postcode(code, country) {
                 covered.insert((country.to_string(), code.clone()));
                 entries.push(Postcode {
                     country: country.to_string(),
                     code,
                     center: center(&f.geometry),
                     envelope: envelope(&f.geometry),
-                    geometry: Some(f.geometry.clone()),
+                    geometry: Some(super::areas::Area::new(&f.geometry)),
                 });
             }
         }
@@ -56,8 +51,11 @@ impl Postcodes {
         );
         for (i, f) in input.features.iter().enumerate() {
             let country = countries[i];
-            let code = if f.tag("place") == "postcode" { f.tag("postal_code") } else { f.tag("addr:postcode") };
-            let Some(code) = normalized(code, country) else {
+            let code = f.tag("addr:postcode");
+            if code.contains([',', ';']) || f.tags.contains_key("_interpolation_range") {
+                continue;
+            }
+            let Some(code) = policy.postcode(code, country) else {
                 continue;
             };
             if covered.contains(&(country.to_string(), code.clone())) {
@@ -66,7 +64,7 @@ impl Postcodes {
             let p = center(&f.geometry);
             if areas
                 .locate_in_envelope_intersecting(&super::geometry::expanded(p, 0.))
-                .any(|e| entries[e.index].geometry.as_ref().is_some_and(|g| g.intersects(&p)))
+                .any(|e| entries[e.index].geometry.as_ref().is_some_and(|g| g.contains(p)))
             {
                 continue;
             }
@@ -80,7 +78,7 @@ impl Postcodes {
             sum.2 += 1;
         }
         for ((country, code), (x, y, n)) in sums {
-            let metres = if country == "ch" { 3000. } else { 5000. };
+            let metres = policy.postcode_extent(&country);
             let p = Point::new(x / n as f64, y / n as f64);
             let dy = metres / 111320.;
             let dx = dy / p.y().to_radians().cos().abs().max(0.01);
@@ -100,7 +98,6 @@ impl Postcodes {
 
     pub fn lookup(&self, geometry: &Geometry, country: &str) -> Option<&str> {
         let bbox = envelope(geometry);
-        let p = center(geometry);
         if matches!(geometry, Geometry::Polygon(_) | Geometry::MultiPolygon(_)) {
             let entries: Vec<_> = self
                 .tree
@@ -116,13 +113,13 @@ impl Postcodes {
             .filter(|pc| pc.country == country)
             .filter(|pc| {
                 pc.envelope.contains_envelope(&bbox)
-                    && pc.geometry.as_ref().is_none_or(|g| geometry.coords_iter().all(|c| g.intersects(&Point(c))))
+                    && pc.geometry.as_ref().is_none_or(|g| geometry.coords_iter().all(|c| g.contains(Point(c))))
             })
             .min_by(|a, b| {
                 a.geometry
                     .is_none()
                     .cmp(&b.geometry.is_none())
-                    .then(distance2(a.center, p).total_cmp(&distance2(b.center, p)))
+                    .then(Euclidean.distance(&a.center, geometry).total_cmp(&Euclidean.distance(&b.center, geometry)))
                     .then(a.code.cmp(&b.code))
             })
             .map(|pc| pc.code.as_str())

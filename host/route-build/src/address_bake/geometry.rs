@@ -2,7 +2,7 @@ use geo::{
     BoundingRect, Centroid, Coord, CoordsIter, Geometry, InteriorPoint, Intersects, LineString, MultiPolygon, Point,
     Polygon,
 };
-use rstar::{RTreeObject, AABB};
+use rstar::{PointDistance, RTreeObject, AABB};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone)]
@@ -15,6 +15,12 @@ impl RTreeObject for Entry {
     type Envelope = AABB<[f64; 2]>;
     fn envelope(&self) -> Self::Envelope {
         self.envelope
+    }
+}
+
+impl PointDistance for Entry {
+    fn distance_2(&self, point: &[f64; 2]) -> f64 {
+        self.envelope.distance_2(point)
     }
 }
 
@@ -84,29 +90,24 @@ fn widest(a: (Point, f64), b: (Point, f64)) -> (Point, f64) {
     }
 }
 
+pub fn bounds_geometry(g: &Geometry) -> Geometry {
+    let b = envelope(g);
+    let (a, z) = (b.lower(), b.upper());
+    if a == z {
+        Point::new(a[0], a[1]).into()
+    } else if a[0] == z[0] || a[1] == z[1] {
+        coordinates([a, z]).into()
+    } else {
+        geo::Rect::new(Coord { x: a[0], y: a[1] }, Coord { x: z[0], y: z[1] }).to_polygon().into()
+    }
+}
+
 pub fn expanded(p: Point, radius: f64) -> AABB<[f64; 2]> {
     AABB::from_corners([p.x() - radius, p.y() - radius], [p.x() + radius, p.y() + radius])
 }
 
 pub fn distance2(a: Point, b: Point) -> f64 {
     (a.x() - b.x()).powi(2) + (a.y() - b.y()).powi(2)
-}
-
-pub fn line_distance2(p: Point, line: &LineString) -> f64 {
-    line.lines()
-        .map(|segment| {
-            let dx = segment.end.x - segment.start.x;
-            let dy = segment.end.y - segment.start.y;
-            let length = dx * dx + dy * dy;
-            let t = if length == 0. {
-                0.
-            } else {
-                ((p.x() - segment.start.x) * dx + (p.y() - segment.start.y) * dy) / length
-            }
-            .clamp(0., 1.);
-            distance2(p, Point::new(segment.start.x + t * dx, segment.start.y + t * dy))
-        })
-        .fold(f64::INFINITY, f64::min)
 }
 
 // Join by node identity. Missing members and unclosed rings invalidate the area.

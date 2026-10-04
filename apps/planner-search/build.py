@@ -52,6 +52,9 @@ def main():
             if obj['type'] == 'NominatimDumpFile':
                 meta['timestamp'] = obj['content']['data_timestamp']
                 generator = obj['content'].get('generator', 'photon')
+                source_hash = obj['content'].get('osm_sha256')
+                if source_hash and args.osm_sha256 and source_hash != args.osm_sha256:
+                    ap.error('Source and requested OSM snapshot differ')
                 if obj['content'].get('scope') == 'addresses' and args.component != 'addresses':
                     ap.error('This source contains addresses only; use --component addresses')
                 if generator != 'photon':

@@ -23,7 +23,47 @@ impl Feature {
         self.tag("name")
     }
     pub fn road(&self) -> bool {
-        matches!(self.source, OsmId::Way(_)) && !self.tag("highway").is_empty() && !self.name().is_empty()
+        matches!(self.source, OsmId::Way(_))
+            && (!self.name().is_empty()
+                || matches!(
+                    self.tag("highway"),
+                    "motorway"
+                        | "trunk"
+                        | "primary"
+                        | "secondary"
+                        | "tertiary"
+                        | "unclassified"
+                        | "residential"
+                        | "road"
+                        | "living_street"
+                        | "pedestrian"
+                ))
+            && matches!(
+                self.tag("highway"),
+                "service"
+                    | "cycleway"
+                    | "path"
+                    | "footway"
+                    | "steps"
+                    | "bridleway"
+                    | "motorway_link"
+                    | "primary_link"
+                    | "trunk_link"
+                    | "secondary_link"
+                    | "tertiary_link"
+                    | "residential"
+                    | "track"
+                    | "unclassified"
+                    | "tertiary"
+                    | "secondary"
+                    | "primary"
+                    | "living_street"
+                    | "trunk"
+                    | "motorway"
+                    | "pedestrian"
+                    | "road"
+                    | "construction"
+            )
     }
     pub fn address_tags(&self) -> bool {
         self.tags.keys().any(|k| k.starts_with("addr:"))
@@ -32,6 +72,7 @@ impl Feature {
 
 fn wanted(tags: &Tags) -> bool {
     tags.keys().any(|k| k.starts_with("addr:"))
+        || ["postal_code", "postcode", "tiger:zip_left", "tiger:zip_right"].iter().any(|k| tags.contains_key(*k))
         || [
             "amenity",
             "shop",
@@ -53,10 +94,17 @@ fn wanted(tags: &Tags) -> bool {
             matches!(v.as_str(), "pier" | "tower" | "bridge" | "water_tower" | "lighthouse" | "watermill" | "tunnel")
         })
         || tags.contains_key("name")
+        || tags.contains_key("highway")
         || tags.get("boundary").is_some_and(|v| v == "postal_code")
 }
 
-fn address_tags(tags: Tags) -> Tags {
+fn address_tags(mut tags: Tags) -> Tags {
+    if let Some(code) = ["postal_code", "postcode", "addr:postcode", "tiger:zip_left", "tiger:zip_right"]
+        .into_iter()
+        .find_map(|key| tags.get(key).filter(|value| !value.is_empty()).cloned())
+    {
+        tags.insert("addr:postcode".into(), code);
+    }
     tags.into_inner()
         .into_iter()
         .filter(|(k, _)| {
@@ -78,6 +126,8 @@ fn address_tags(tags: Tags) -> Tags {
                         | "building"
                         | "wikidata"
                         | "postal_code"
+                        | "landuse"
+                        | "capital"
                 )
         })
         .collect()
@@ -90,7 +140,7 @@ fn line(ids: &[i64], nodes: &[(i64, i32, i32)]) -> Option<geo::LineString> {
             nodes
                 .binary_search_by_key(id, |n| n.0)
                 .ok()
-                .map(|i| [f64::from(nodes[i].1) * 1e-7, f64::from(nodes[i].2) * 1e-7])
+                .map(|i| [f64::from(nodes[i].1) / 1e7, f64::from(nodes[i].2) / 1e7])
         })
         .collect();
     Some(coordinates(points?))
@@ -143,7 +193,7 @@ pub fn read(path: &Path) -> Result<Input, Box<dyn std::error::Error>> {
                 if wanted(&n.tags) {
                     input.features.push(Feature {
                         source: OsmId::Node(n.id),
-                        geometry: Point::new(n.lon(), n.lat()).into(),
+                        geometry: Point::new(f64::from(n.decimicro_lon) / 1e7, f64::from(n.decimicro_lat) / 1e7).into(),
                         tags: address_tags(n.tags),
                     });
                 }
@@ -186,6 +236,15 @@ pub fn read(path: &Path) -> Result<Input, Box<dyn std::error::Error>> {
             }
         }
     }
+    let endpoints: BTreeMap<_, _> = input
+        .features
+        .iter()
+        .filter_map(|f| match f.source {
+            OsmId::Node(id) if !f.tag("addr:housenumber").is_empty() => Some((id.0, &f.tags)),
+            _ => None,
+        })
+        .collect();
+    let mut interpolated = Vec::new();
     for w in ways {
         let ids: Vec<_> = w.nodes.iter().map(|n| n.0).collect();
         let geometry = line(&ids, &nodes).filter(|l| l.0.len() >= 2).map(|l| {
@@ -199,11 +258,19 @@ pub fn read(path: &Path) -> Result<Input, Box<dyn std::error::Error>> {
             }
         });
         if let Some(geometry) = geometry {
-            input.features.push(Feature { source: OsmId::Way(w.id), tags: w.tags, geometry });
+            if let Geometry::LineString(line) = &geometry {
+                if w.tags.contains_key("addr:interpolation") {
+                    let numbered: Vec<_> =
+                        ids.iter().enumerate().filter_map(|(i, id)| endpoints.get(id).map(|tags| (i, *tags))).collect();
+                    interpolated.extend(super::interpolation::ranges(OsmId::Way(w.id), line, &w.tags, &numbered));
+                }
+            }
+            interpolated.push(Feature { source: OsmId::Way(w.id), tags: w.tags, geometry });
         } else {
             input.incomplete_geometries += 1;
         }
     }
+    input.features.extend(interpolated);
     for r in relations {
         if let Some(geometry) = relation_geometry(&r, &members, &nodes) {
             input.features.push(Feature { source: OsmId::Relation(r.id), tags: r.tags, geometry });
@@ -217,11 +284,7 @@ pub fn read(path: &Path) -> Result<Input, Box<dyn std::error::Error>> {
             .features
             .iter()
             .enumerate()
-            .filter(|(_, f)| {
-                f.address_tags()
-                    && !f.tag("building").is_empty()
-                    && matches!(f.geometry, Geometry::Polygon(_) | Geometry::MultiPolygon(_))
-            })
+            .filter(|(_, f)| f.address_tags() && matches!(f.geometry, Geometry::Polygon(_) | Geometry::MultiPolygon(_)))
             .map(|(index, f)| super::geometry::Entry { index, envelope: super::geometry::envelope(&f.geometry) })
             .collect(),
     );
@@ -233,6 +296,7 @@ pub fn read(path: &Path) -> Result<Input, Box<dyn std::error::Error>> {
                 || f.road()
                 || !f.tag("place").is_empty()
                 || !f.tag("boundary").is_empty()
+                || (!f.tag("landuse").is_empty() && !f.name().is_empty())
                 || (matches!(f.source, OsmId::Node(_))
                     && buildings
                         .locate_in_envelope_intersecting(&super::geometry::envelope(&f.geometry))

@@ -9,7 +9,7 @@ license = "GPL-3.0-only"
 [features]
 obc-terrain = ["dep:obc-dem"]
 planner-dem = ["obc-terrain", "dep:image", "dep:rusqlite"]
-address-bake = ["dep:geo", "dep:rstar", "dep:zstd", "dep:unicode-normalization", "dep:flate2"]
+address-bake = ["dep:geo", "dep:rstar", "dep:zstd", "dep:unicode-normalization", "dep:flate2", "dep:regex"]
 
 [[bin]]
 name = "address-bake"
@@ -35,3 +35,4 @@ rstar = { version = "0.12", optional = true }
 zstd = { version = "0.13", optional = true }
 unicode-normalization = { version = "0.1", optional = true }
 flate2 = { version = "1", optional = true }
+regex = { version = "1", optional = true }

@@ -3,9 +3,11 @@ mod countries;
 mod enrich;
 mod geometry;
 mod input;
+mod interpolation;
+mod policy;
 mod postcodes;
 
-use enrich::{house_numbers, Index};
+use enrich::{house_addresses, Index};
 use osmpbfreader::OsmId;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -35,11 +37,17 @@ pub fn bake(
     output: &Path,
     country: &str,
     country_grid: Option<&Path>,
+    policy_path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     if output.exists() {
         return Err("The output file must not exist".into());
     }
+    let policy = policy::Policy::read(policy_path)?;
+    if !policy.has_country(country) {
+        return Err("Default country is absent from the policy".into());
+    }
+    let policy_hash = hash(policy_path)?;
     let osm_hash = hash(osm)?;
     let grid_hash = country_grid.map(hash).transpose()?;
     let input = input::read(osm)?;
@@ -53,7 +61,7 @@ pub fn bake(
     let countries: Vec<_> =
         input.features.iter().map(|f| grid.at(geometry::center(&f.geometry)).unwrap_or(country)).collect();
     eprintln!("Resolved country polygons; build address indexes");
-    let index = Index::new(&input, &countries);
+    let index = Index::new(&input, &countries, &policy);
     eprintln!("Write address records");
     let raw = OpenOptions::new().write(true).create_new(true).open(output)?;
     let result = (|| -> Result<usize, Box<dyn std::error::Error>> {
@@ -62,7 +70,7 @@ pub fn bake(
             &mut stream,
             &json!({"type":"NominatimDumpFile","content":{
                 "generator":"obc-address-bake","experimental":true,"scope":"addresses","osm_sha256":osm_hash,"data_timestamp":null,
-                "default_country":country,"country_grid_sha256":grid_hash
+                "default_country":country,"country_grid_sha256":grid_hash,"policy_sha256":policy_hash
             }}),
         )?;
         writeln!(stream)?;
@@ -71,11 +79,11 @@ pub fn bake(
             .features
             .iter()
             .enumerate()
-            .filter(|(_, f)| f.road())
+            .filter(|(_, f)| f.road() && !f.name().is_empty())
             .chain(input.features.iter().enumerate().filter(|(_, f)| !f.road()))
         {
             let tags = index.tags(i);
-            let houses = house_numbers(tags);
+            let houses = house_addresses(tags);
             if !f.road() && houses.is_empty() {
                 continue;
             }
@@ -109,8 +117,22 @@ pub fn bake(
                 writeln!(stream)?;
                 count += 1;
             } else {
-                for house in houses {
+                for (house, street) in houses {
                     record["housenumber"] = json!(house);
+                    if let (geo::Geometry::LineString(line), Some(range)) =
+                        (&f.geometry, f.tags.get("_interpolation_range"))
+                    {
+                        if let Some((first, last)) = range.split_once(':') {
+                            let (first, last, number) =
+                                (first.parse::<f64>()?, last.parse::<f64>()?, house.parse::<f64>()?);
+                            let p = interpolation::point(line, (number - first) / (last - first));
+                            record["centroid"] = json!([p.x(), p.y()]);
+                        }
+                    }
+                    record["address"] = json!(&a);
+                    if let Some(street) = street {
+                        record["address"]["street"] = json!(street);
+                    }
                     serde_json::to_writer(&mut stream, &json!({"type":"Place","content":[&record]}))?;
                     writeln!(stream)?;
                     count += 1;

@@ -1,5 +1,5 @@
 use super::geometry::{envelope, expanded, Entry};
-use geo::{BoundingRect, CoordsIter, Geometry, Intersects, Line, LinesIter, Point, Polygon};
+use geo::{BoundingRect, CoordsIter, Distance, Euclidean, Geometry, Intersects, Line, LinesIter, Point, Polygon};
 use rstar::{Envelope, RTree, AABB};
 
 struct Part {
@@ -91,6 +91,25 @@ impl Area {
 
     pub fn intersects(&self, g: &Geometry) -> bool {
         self.tree.locate_in_envelope_intersecting(&envelope(g)).any(|e| self.parts[e.index].intersects(g))
+    }
+
+    pub fn distance(&self, p: Point) -> f64 {
+        if self.contains(p) {
+            return 0.;
+        }
+        let mut best = f64::INFINITY;
+        for part in &self.parts {
+            if part.bounds.distance_2(&[p.x(), p.y()]) > best * best {
+                continue;
+            }
+            for e in part.tree.nearest_neighbor_iter(&[p.x(), p.y()]) {
+                if e.envelope.distance_2(&[p.x(), p.y()]) > best * best {
+                    break;
+                }
+                best = best.min(Euclidean.distance(&p, &part.edges[e.index]));
+            }
+        }
+        best
     }
 }
 

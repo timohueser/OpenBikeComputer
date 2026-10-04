@@ -4834,6 +4834,7 @@ dependencies = [
  "image",
  "obc-dem",
  "osmpbfreader",
+ "regex",
  "route-engine",
  "rstar",
  "rusqlite",

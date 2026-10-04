@@ -1,15 +1,17 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {database} from './database.mjs';
-import {compareAddresses} from '../address-parity.mjs';
+import {compareAddresses,equivalent} from '../address-parity.mjs';
 
 test('parity measures missing houses and lookup regressions from the reference population',()=>{
   const candidate=database(),reference=database();
   try {
     assert.equal(compareAddresses(candidate.db,reference.db).fields.percent.all,100);
+    assert.ok(equivalent(compareAddresses(candidate.db,reference.db)));
     candidate.conn.exec("DELETE FROM addresses WHERE source='w123'");
     const result=compareAddresses(candidate.db,reference.db);
     assert.equal(result.identity.missing,1);
+    assert.ok(!equivalent(result));
     assert.equal(result.identity.recallPercent,75);
     assert.ok(result.forward.housePreservedPercent<100);
     assert.ok(result.reverse.agreementPercent<100);
