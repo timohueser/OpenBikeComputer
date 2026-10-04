@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { specTile } from '../../../../test-support/planner/climate-tiles';
 import { DETAIL, OVERVIEW, SECTORS } from './climate';
 import { lineBearings } from './climate-route';
-import { HEADWIND_EDGES, NO_WIND, arrowStride, headClass, headClasses, viewTiles, windChart, windMap, windYear } from './wind';
+import { HEADWIND_EDGES, NO_WIND, arrowAxis, arrowStride, headClass, headClasses, viewTiles, windChart, windMap, windYear } from './wind';
 
 // Overview tile 78/26 holds Freiburg at cell 4 × 24 + 7, column 1879 and row 420.
 const FREIBURG = 4 * 24 + 7, EAST = FREIBURG + 1, SOUTH = FREIBURG + 24;
@@ -34,6 +34,15 @@ describe('wind map', () => {
         expect(arrows.features.map(f => f.properties)).toEqual([{ icon: 'wind-arrow-2', rotate: 0 }, { icon: 'wind-double-1', rotate: 270 }]);
         const [lon, lat] = arrows.features[0].geometry.coordinates;
         expect([lon, lat].map(v => v.toFixed(6))).toEqual(['7.900000', '48.000000']);
+    });
+
+    it('turns a double arrow to the mean axis of its two directions', () => {
+        expect(arrowAxis({ towards: 4 })).toBe(90);
+        expect(arrowAxis({ towards: 0, opposite: 8 })).toBe(0);
+        // Towards north and south-south-west: the axis leans 11.25° east of north.
+        expect(arrowAxis({ towards: 0, opposite: 9 })).toBe(11.25);
+        expect(arrowAxis({ towards: 0, opposite: 7 })).toBe(348.75);
+        expect(arrowAxis({ towards: 15, opposite: 5 })).toBe(315);
     });
 
     it('keeps the arrows of every second cell when the cells are narrow on screen', () => {
