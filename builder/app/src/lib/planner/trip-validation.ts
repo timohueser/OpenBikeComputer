@@ -1,4 +1,4 @@
-import { maxRidingDays, routingKey, type Coordinate, type RoutePoint, type Trip } from './editor';
+import { maxRidingDays, orderedRoutePoints, routingKey, type Coordinate, type RoutePoint, type Trip } from './editor';
 import { ridingProfiles } from './riding-profiles';
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -70,18 +70,23 @@ export function isTrip(value: unknown): value is Trip {
 }
 
 function routing(value: unknown, trip: Trip): boolean {
+    const points = orderedRoutePoints(trip);
     if (!record(value) || value.key !== routingKey(trip) || typeof value.choiceId !== 'string' || typeof value.profile !== 'string'
         || !Array.isArray(value.coordinates) || value.coordinates.length < 2 || !value.coordinates.every(coordinate)
         || !Array.isArray(value.elevation) || value.elevation.length !== value.coordinates.length || !value.elevation.every(h => h === null || finite(h))
         || !Array.isArray(value.elapsed) || value.elapsed.length !== value.coordinates.length
         || !value.elapsed.every((t, i, times) => finite(t) && t >= 0 && (!i || t >= times[i - 1]))
-        || !Array.isArray(value.stops) || !value.stops.every(stop => record(stop) && typeof stop.id === 'string'
-            && trip.points.some(p => p.id === stop.id) && finite(stop.distance) && stop.distance >= 0)
+        || points.length < 2 || !Array.isArray(value.stops) || value.stops.length !== points.length
+        || !value.stops.every((stop, i, stops) => record(stop) && stop.id === points[i].id
+            && finite(stop.distance) && stop.distance >= 0 && (i ? stop.distance >= stops[i - 1].distance : stop.distance === 0))
         || !['seconds', 'unknownSurfaceKm', 'pushingKm', 'unroutedKm'].every(key => finite(value[key]) && value[key] >= 0)
         || (value.picked !== undefined && typeof value.picked !== 'boolean') || !record(value.edges)) return false;
+    const coordinates = value.coordinates as Coordinate[];
+    if (value.stops.at(-1)!.distance === 0 && coordinates.some(p =>
+        p[0] !== coordinates[0][0] || p[1] !== coordinates[0][1])) return false;
     const edges = value.edges;
     const closures = ['permit', 'private', 'farm', 'sidepath', 'discouraged', 'limited', 'seasonal', 'conditional', 'unclear'];
-    return Object.entries(edges).every(([channel, values]) => Array.isArray(values) && values.length === (value.coordinates as Coordinate[]).length - 1
+    return Object.entries(edges).every(([channel, values]) => Array.isArray(values) && values.length === coordinates.length - 1
         && values.every(v => v === null || (channel === 'surfaces' ? ['Unknown', 'Paved', 'Compacted', 'Gravel', 'Dirt', 'Rough'].includes(v)
             : channel === 'pushing' ? typeof v === 'boolean'
             : channel === 'sac_scale' || channel === 'mtb_scale' ? integer(v, 0, 6)

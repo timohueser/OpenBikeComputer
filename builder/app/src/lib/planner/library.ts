@@ -88,7 +88,7 @@ export class PlanLibrary {
                 let conflict = false;
                 let failure: unknown;
                 request.onsuccess = () => {
-                    const expected = this.revisions.get(snapshot.id) ?? snapshot.revision;
+                    const expected = Math.max(this.revisions.get(snapshot.id) ?? 0, snapshot.revision);
                     if ((request.result?.revision ?? 0) !== expected) { conflict = true; tx.abort(); return; }
                     next = { ...snapshot, revision: expected + 1 };
                     try { store.put(next); }
