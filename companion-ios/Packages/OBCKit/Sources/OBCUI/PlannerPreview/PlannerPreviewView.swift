@@ -6,7 +6,7 @@ import SwiftUI
 
 /// The map-first planner uses the same points, search, and drawer interactions in every build.
 public struct PlannerPreviewView: View {
-    private enum Panel { case planning, stops, preferences, days, results, place, routes, route }
+    private enum Panel { case planning, stops, preferences, days, results, place, routes, route, leg }
     private enum SearchIntent: Equatable { case general, overnight, replace(String) }
     @State private var searchAfterDismissal = false
     @State private var searchQuery = ""
@@ -27,6 +27,9 @@ public struct PlannerPreviewView: View {
     @State private var attributionShown = false
     @State private var searchShown = false
     @State private var saveShown = false
+    @State private var saveChoiceShown = false
+    /// The copy's name prompt opens once the save choice has gone.
+    @State private var copyAfterChoice = false
     @State private var closeShown = false
     private struct OfflineAreaRequest: Identifiable {
         let id = UUID()
@@ -46,6 +49,7 @@ public struct PlannerPreviewView: View {
     @State private var detailsError: String?
     @State private var selectionRevision = 0
     @State private var editingPointID: String?
+    @State private var legHit: PlannerPreviewLegHit?
     @State private var visibleRouteRange: ClosedRange<Double>? = 0...1
     @State private var network = PlannerPreviewNetwork.none
     @State private var hiddenCategories: Set<PlannerPreviewPlaceCategory> = []
@@ -63,24 +67,37 @@ public struct PlannerPreviewView: View {
     @State private var routeEnds: (start: String?, finish: String?) = (nil, nil)
     /// The plan that "Plan this route" replaced, while undo brings it back in one step.
     @State private var replaced: (title: String, depth: Int)?
-    /// The device type is nil for a hiking plan.
-    private let onSave: (ImportedRoute, BikeType?) -> Void
+    /// The device type is nil for a hiking plan. `inPlace` saves the changes to the route that was opened.
+    private let onSave: (_ route: ImportedRoute, _ plan: PlannerPlan, _ bikeType: BikeType?, _ inPlace: Bool) -> Void
     private let onClose: () -> Void
+    /// The planner edits a saved route.
+    private let isEditing: Bool
 
-    public init(onSave: @escaping (ImportedRoute, BikeType?) -> Void,
+    public init(onSave: @escaping (_ route: ImportedRoute, _ plan: PlannerPlan, _ bikeType: BikeType?, _ inPlace: Bool) -> Void,
                 onClose: @escaping () -> Void, sample: Bool = false, source: any PlannerDataSource = PlannerService.shared) {
         _model = State(initialValue: PlannerPreviewModel(sample: sample, service: source))
         self.onSave = onSave
         self.onClose = onClose
+        isEditing = false
+    }
+
+    /// Edits a saved route from its plan.
+    public init(editing plan: PlannerPlan,
+                onSave: @escaping (_ route: ImportedRoute, _ plan: PlannerPlan, _ bikeType: BikeType?, _ inPlace: Bool) -> Void,
+                onClose: @escaping () -> Void, source: any PlannerDataSource = PlannerService.shared) {
+        _model = State(initialValue: PlannerPreviewModel(plan: plan, service: source))
+        self.onSave = onSave
+        self.onClose = onClose
+        isEditing = true
     }
 
     public var body: some View {
         GeometryReader { geometry in
             PlannerPreviewMap(coordinates: model.geometry, pins: routesOpen ? finder.pins : pins,
-                              selectedID: panel == .place ? editingPointID ?? selectedPlace?.id
+                              selectedID: panel == .leg ? Self.legPinID : panel == .place ? editingPointID ?? selectedPlace?.id
                                 : panel == .route ? finder.detail.map { "route-\($0.route.id)" } : nil,
                               cursor: cursor, bottomInset: sheetHeight + geometry.safeAreaInsets.bottom,
-                              fitRevision: fitRevision, onSelect: selectPin, onMapPoint: selectMapPoint,
+                              fitRevision: fitRevision, onSelect: selectPin, onMapPoint: selectMapPoint, onLine: selectLine,
                               showCycling: network == .cycling, showHiking: network == .hiking,
                               onVisibleMapRect: { visibleMapRect = $0 },
                               onVisibleRouteRange: { visibleRouteRange = $0 },
@@ -164,18 +181,24 @@ public struct PlannerPreviewView: View {
                                 }
                             }
                         }
-                        .obcRenameSheet("Save route", isPresented: $saveShown, name: model.routeTitle, placeholder: "Route name",
+                        .obcRenameSheet(isEditing ? "Save as copy" : "Save route", isPresented: $saveShown, name: model.routeTitle,
+                                        placeholder: "Route name",
                                         canSave: { model.canSave && !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) { name in
-                            let route = model.exportRoute(name: name), bike = model.activity.bikeType
-                            leave { onSave(route, bike) }
+                            save(name: name, inPlace: false)
                         }
-                        .obcDestructiveConfirm("Discard this route?", isPresented: $closeShown,
-                                               message: "Your points and settings go with it.", actionTitle: "Discard") {
+                        .obcChoiceSheet("Save", isPresented: $saveChoiceShown, actions: [
+                            OBCSheetAction("Save changes", role: .primary) { save(name: model.routeTitle, inPlace: true) },
+                            OBCSheetAction("Save as copy…") { copyAfterChoice = true },
+                        ], onDismiss: {
+                            if copyAfterChoice { copyAfterChoice = false; saveShown = true }
+                        })
+                        .obcDestructiveConfirm(isEditing ? "Discard changes?" : "Discard this route?", isPresented: $closeShown,
+                                               message: isEditing ? nil : "Your points and settings go with it.", actionTitle: "Discard") {
                             leave(onClose)
                         }
                 }
         }
-        .navigationTitle("Plan a route")
+        .navigationTitle(isEditing ? "Edit route" : "Plan a route")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden()
         .toolbar(.visible, for: .navigationBar)
@@ -285,7 +308,7 @@ public struct PlannerPreviewView: View {
                             .frame(minHeight: 44).contentShape(Rectangle())
                     }.buttonStyle(.plain).foregroundStyle(OBCTheme.tint).accessibilityIdentifier("planner.backToResults")
                 } else {
-                    Text(panel == .results ? results?.title ?? "Places" : panel == .place
+                    Text(panel == .results ? results?.title ?? "Places" : panel == .leg ? "Point on the line" : panel == .place
                          ? (editingPointID != nil ? "Route point" : "Place") : "Route points")
                         .font(.headline).lineLimit(1)
                 }
@@ -366,6 +389,12 @@ public struct PlannerPreviewView: View {
                 }.padding(.horizontal, 16).padding(.bottom, 16)
                 .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { resultsContentHeight = $0 }
             }
+        case .leg:
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) { legPanel }
+                    .padding(.horizontal, 16).padding(.bottom, 16)
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { placeContentHeight = $0 }
+            }.scrollBounceBehavior(.basedOnSize)
         case .place:
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) { placePanel }
@@ -407,7 +436,7 @@ public struct PlannerPreviewView: View {
         let content = switch panel {
         case .planning: planningContentHeight
         case .results: resultsContentHeight
-        case .place: placeContentHeight
+        case .place, .leg: placeContentHeight
         // The detail sheet leaves the route in view; its figures scroll above the action.
         case .route: min(routeContentHeight + 76, 440)
         default: listContentHeight
@@ -581,11 +610,12 @@ public struct PlannerPreviewView: View {
         VStack(alignment: .leading, spacing: 16) {
             if !model.hasRoute {
                 Text("Choose your start and finish first.").foregroundStyle(OBCTheme.secondary)
-            } else if let overnight = model.overnight {
+            } else if !model.nights.isEmpty {
+                let ends = [model.start!] + model.nights.map(\.place) + [model.finish!]
                 ForEach(Array(model.dayStats.enumerated()), id: \.offset) { index, stats in
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Day \(index + 1)").font(.headline)
-                        Text(index == 0 ? "\(model.start!.name) → \(overnight.name)" : "\(overnight.name) → \(model.finish!.name)")
+                        Text("\(ends[index].name) → \(ends[index + 1].name)")
                             .font(.subheadline)
                         statsRow(stats)
                     }.padding(.vertical, 4)
@@ -719,7 +749,12 @@ public struct PlannerPreviewView: View {
 
     private func beginSave() {
         guard model.canSave else { return }
-        saveShown = true
+        if isEditing { saveChoiceShown = true } else { saveShown = true }
+    }
+
+    private func save(name: String, inPlace: Bool) {
+        let route = model.exportRoute(name: name), plan = model.exportPlan(), bike = model.activity.bikeType
+        leave { onSave(route, plan, bike, inPlace) }
     }
 
     private func show(_ panel: Panel) {
@@ -730,7 +765,7 @@ public struct PlannerPreviewView: View {
 
     private func returnToPlanning() {
         panel = .planning; drawerPosition = .open; results = nil; fraction = nil; intent = .general
-        selectedPlace = nil; editingPointID = nil
+        selectedPlace = nil; editingPointID = nil; legHit = nil
     }
 
     private func showResults() {
@@ -776,6 +811,38 @@ public struct PlannerPreviewView: View {
             editPoint(point)
         } else if let place = ((results?.places ?? []) + model.mapPlaces).first(where: { $0.id == id }) {
             selectResult(place)
+        }
+    }
+
+    /// A tap on a leg with a drawn line opens its panel; any other tap is a map point.
+    private func selectLine(_ coordinate: Coordinate, tolerance: Double) -> Bool {
+        guard !routesOpen, let hit = model.leg(near: coordinate, within: tolerance) else { return false }
+        layersShown = false; infoShown = false
+        selectedPlace = nil; editingPointID = nil; legHit = hit
+        panel = .leg; drawerPosition = .open
+        return true
+    }
+
+    @ViewBuilder private var legPanel: some View {
+        if let hit = legHit {
+            let leg = model.leg(hit)
+            Button("Add point here") { model.addPoint(on: hit); returnToPlanning() }
+                .buttonStyle(.obcPrimary).accessibilityIdentifier("planner.leg.addPoint")
+            OBCGroupedSection {
+                Menu {
+                    Picker("This leg", selection: Binding(get: { leg.mode }, set: { model.setLegMode(hit, to: $0) })) {
+                        Text("Routed").tag(PlanPoint.Leg.routed)
+                        if leg.drawn != nil { Text("As imported").tag(PlanPoint.Leg.drawn) }
+                    }
+                } label: {
+                    HStack {
+                        Text("This leg").foregroundStyle(OBCTheme.ink)
+                        Spacer(minLength: 8)
+                        Text(leg.mode == .drawn ? "As imported" : "Routed").foregroundStyle(OBCTheme.secondary)
+                        Image(systemName: "chevron.up.chevron.down").font(.caption).foregroundStyle(OBCTheme.secondary)
+                    }.padding(.horizontal, 16).frame(minHeight: 44).contentShape(Rectangle())
+                }.accessibilityIdentifier("planner.leg.mode")
+            }
         }
     }
 
@@ -865,6 +932,9 @@ public struct PlannerPreviewView: View {
             return results == nil && !hiddenCategories.contains(category)
         }
         if panel == .place, let selectedPlace, editingPointID == nil { places.insert(selectedPlace, at: 0) }
+        if panel == .leg, let legHit {
+            pins.append(.init(id: Self.legPinID, title: "Point on the line", coordinate: legHit.coordinate, kind: .shape))
+        }
         var seen = Set((model.points + model.markers).map { $0.place.id })
         pins += places.filter { seen.insert($0.id).inserted }.map { place in
             .init(id: place.id, title: place.name, coordinate: place.coordinate, symbol: place.kind.symbol,
@@ -874,6 +944,7 @@ public struct PlannerPreviewView: View {
         }
         return pins
     }
+    private static let legPinID = "planner-leg-point"
     private var cursor: Coordinate? {
         guard let fraction, model.geometry.count > 1 else { return nil }
         let line = model.routeLine

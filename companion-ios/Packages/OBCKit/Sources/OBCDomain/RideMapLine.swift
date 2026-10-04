@@ -49,7 +49,12 @@ public struct RideMapLine: Equatable, Sendable {
     /// Douglas-Peucker: keeps the fewest vertices whose line stays within `toleranceMeters` of
     /// every dropped vertex. Always keeps both ends.
     static func simplify(_ coordinates: [Coordinate], toleranceMeters: Double) -> [Coordinate] {
-        guard coordinates.count > 2 else { return coordinates }
+        simplifiedIndices(coordinates, toleranceMeters: toleranceMeters).map { coordinates[$0] }
+    }
+
+    /// The indices of the vertices that ``simplify(_:toleranceMeters:)`` keeps, ascending.
+    static func simplifiedIndices(_ coordinates: [Coordinate], toleranceMeters: Double) -> [Int] {
+        guard coordinates.count > 2 else { return Array(coordinates.indices) }
         let plane = Plane(origin: coordinates[0])
         let points = coordinates.map(plane.point)
         let limit = toleranceMeters * toleranceMeters
@@ -74,7 +79,7 @@ public struct RideMapLine: Equatable, Sendable {
             spans.append((first, farthest))
             spans.append((farthest, last))
         }
-        return coordinates.indices.filter { keep[$0] }.map { coordinates[$0] }
+        return coordinates.indices.filter { keep[$0] }
     }
 }
 

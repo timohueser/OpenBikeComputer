@@ -28,6 +28,8 @@ struct PlannerPreviewMap: UIViewRepresentable {
     let fitRevision: Int
     let onSelect: (String, CGPoint) -> Void
     let onMapPoint: (Coordinate, CGPoint) -> Void
+    /// A tap near the route line, with the tap tolerance in metres. True when the line takes the tap.
+    var onLine: (Coordinate, _ tolerance: Double) -> Bool = { _, _ in false }
     var showCycling = false
     var showHiking = false
     var onVisibleMapRect: (MKMapRect) -> Void = { _ in }
@@ -426,7 +428,9 @@ struct PlannerPreviewMap: UIViewRepresentable {
                                               detailsLoaded: feature.attributes["description"] != nil))
                     return
                 }
-                self.parent.onMapPoint(Coordinate(latitude: point.latitude, longitude: point.longitude), location)
+                let coordinate = Coordinate(latitude: point.latitude, longitude: point.longitude)
+                if self.parent.onLine(coordinate, 22 * map.metersPerPoint(atLatitude: point.latitude)) { return }
+                self.parent.onMapPoint(coordinate, location)
             }
         }
 

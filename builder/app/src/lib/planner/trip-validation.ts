@@ -21,12 +21,14 @@ function point(value: unknown): value is RoutePoint {
     return record(value) && typeof value.id === 'string' && value.id.length > 0 && typeof value.label === 'string'
         && coordinate(value.coordinate) && finite(value.progress) && value.progress >= 0 && value.progress <= 1
         && typeof value.kind === 'string' && ['start', 'finish', 'pass', 'via', 'waypoint', 'detour', 'night', 'marker'].includes(value.kind)
-        && (value.leg === undefined || (typeof value.leg === 'string' && ['routed', 'straight', 'drawn'].includes(value.leg)))
-        && (value.drawn === undefined || (Array.isArray(value.drawn) && value.drawn.every(coordinate)))
+        && (value.leg === undefined || (typeof value.leg === 'string' && ['routed', 'straight', 'drawn', 'transfer'].includes(value.leg)))
+        && (value.drawn === undefined || (Array.isArray(value.drawn) && value.drawn.every(c =>
+            Array.isArray(c) && (coordinate(c) || (c.length === 3 && coordinate(c.slice(0, 2)) && finite(c[2]))))))
         && (value.anchor === undefined || coordinate(value.anchor))
         && (value.placeKind === undefined || typeof value.placeKind === 'string')
         && (value.autoLabel === undefined || typeof value.autoLabel === 'boolean')
-        && (value.turnaround === undefined || value.turnaround === true);
+        && (value.turnaround === undefined || value.turnaround === true)
+        && (value.note === undefined || typeof value.note === 'string');
 }
 
 /** Browser records and imported files must satisfy the route model. */
@@ -79,7 +81,7 @@ function routing(value: unknown, trip: Trip): boolean {
         || points.length < 2 || !Array.isArray(value.stops) || value.stops.length !== points.length
         || !value.stops.every((stop, i, stops) => record(stop) && stop.id === points[i].id
             && finite(stop.distance) && stop.distance >= 0 && (i ? stop.distance >= stops[i - 1].distance : stop.distance === 0))
-        || !['seconds', 'unknownSurfaceKm', 'pushingKm', 'unroutedKm'].every(key => finite(value[key]) && value[key] >= 0)
+        || !['seconds', 'unknownSurfaceKm', 'pushingKm', 'unroutedKm', 'unknownElevationKm'].every(key => finite(value[key]) && value[key] >= 0)
         || (value.picked !== undefined && typeof value.picked !== 'boolean') || !record(value.edges)) return false;
     const coordinates = value.coordinates as Coordinate[];
     if (value.stops.at(-1)!.distance === 0 && coordinates.some(p =>

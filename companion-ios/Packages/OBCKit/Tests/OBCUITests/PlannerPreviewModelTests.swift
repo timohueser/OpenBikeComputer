@@ -271,6 +271,85 @@ struct PlannerPreviewModelTests {
         #expect(model.points.map(\.id) == ["titisee", "freiburg", "cafe"] && model.planName == nil)
     }
 
+    @Test func aDrawnLegSplitsWithoutChangeAndAReplacedPointRoutesOnlyItsTwoLegs() async throws {
+        let points = [(47.99, 7.85), (47.98, 7.90), (47.95, 7.95), (47.93, 8.00), (47.92, 8.05)].enumerated()
+            .map { RoutePoint(coordinate: Coordinate(latitude: $1.0, longitude: $1.1), elevationMeters: 300 + 50 * Double($0)) }
+        let line = points.map(\.coordinate)
+        let source = PlannerTestSource()
+        let model = PlannerPreviewModel(plan: try #require(PlannerPlan.keptLine(points)), service: source)
+        await model.calculateRoute()
+        #expect(Array(model.geometry.dropFirst().dropLast()) == line && !model.canUndo && model.canSave)
+        #expect(model.stats.ascentMeters == 200 && model.routePoints.allSatisfy { $0.elevationMeters != nil })
+        func split(_ from: Coordinate, _ to: Coordinate) async throws {
+            let middle = Coordinate(latitude: (from.latitude + to.latitude) / 2, longitude: (from.longitude + to.longitude) / 2)
+            let hit = try #require(model.leg(near: middle, within: 50))
+            #expect(model.leg(hit).mode == .drawn)
+            model.addPoint(on: hit)
+            await model.calculateRoute()
+        }
+        try await split(line[0], line[1])
+        try await split(line[2], line[3])
+        #expect(model.points.map(\.kind) == [.visit, .shape, .shape, .visit])
+        #expect(Array(Set(model.geometry)).count == line.count + 2 && model.stats.ascentMeters == 200)
+        #expect(await source.requests.isEmpty)
+
+        let moved = Coordinate(latitude: 47.94, longitude: 7.99)
+        model.replacePoint(id: model.points[2].id, with: .init(id: "moved", name: "Moved", coordinate: moved))
+        await model.calculateRoute()
+        #expect(await source.requests == [[model.points[1].place.coordinate, moved, line[4]]])
+        #expect(model.exportPlan().routePoints.map(\.leg) == [nil, .drawn, nil, nil])
+    }
+
+    @Test func theWaypointsOfAKeptLineAreMarkersAndExportAgain() async throws {
+        let line = [(47.99, 7.85), (47.97, 7.95), (47.93, 8.00)].map { RoutePoint(coordinate: Coordinate(latitude: $0.0, longitude: $0.1)) }
+        let spring = Waypoint(index: 0, name: "Spring", note: "Cold all year", distanceAlongMeters: 0,
+                              coordinate: Coordinate(latitude: 47.975, longitude: 7.93), category: .water)
+        let hut = Waypoint(index: 1, name: "Hut", distanceAlongMeters: 0, coordinate: Coordinate(latitude: 47.94, longitude: 7.99),
+                           category: .accommodation)
+        let model = PlannerPreviewModel(plan: try #require(PlannerPlan.keptLine(line, waypoints: [hut, spring])), service: PlannerTestSource())
+        await model.calculateRoute()
+        #expect(model.points.count == 2 && model.markers.map(\.place.name) == ["Hut", "Spring"])
+        let waypoints = model.exportRoute(name: "Ride").waypoints
+        #expect(waypoints.map(\.name) == ["Spring", "Hut"] && waypoints.map(\.category) == [.water, .accommodation])
+        #expect(waypoints.map(\.index) == [0, 1] && waypoints[0].distanceAlongMeters < waypoints[1].distanceAlongMeters)
+        // Off the line, as the import placed it: a signed offset and the note stay.
+        #expect(waypoints[0].note == "Cold all year" && (-200 ... -50).contains(waypoints[0].lateralOffsetMeters))
+        #expect(model.exportPlan().markers.first { $0.label == "Spring" }?.note == "Cold all year")
+    }
+
+    @Test func aLegWithADrawnLineCanRouteAndGoBack() async throws {
+        let line = [(47.99, 7.85), (47.97, 7.95), (47.93, 8.00)].map { Coordinate(latitude: $0.0, longitude: $0.1) }
+        let source = PlannerTestSource()
+        let model = PlannerPreviewModel(plan: try #require(PlannerPlan.keptLine(line.map { RoutePoint(coordinate: $0) })), service: source)
+        await model.calculateRoute()
+        let hit = try #require(model.leg(near: line[1], within: 10))
+        model.setLegMode(hit, to: .routed)
+        await model.calculateRoute()
+        #expect(model.geometry == [line[0], line[2]])
+        #expect(await source.requests.count == 1)
+        #expect(model.leg(near: line[1], within: 10) == nil && model.leg(hit).drawn == [RoutePoint(coordinate: line[1])])
+        model.setLegMode(hit, to: .drawn)
+        await model.calculateRoute()
+        #expect(model.geometry == line)
+    }
+
+    @Test func aPlanWithNightsRoundTripsThroughThePlanner() throws {
+        let at = { (lon: Double) in Coordinate(latitude: 47.9, longitude: lon) }
+        let plan = PlannerPlan(points: [
+            PlanPoint(id: "start", label: "Freiburg", coordinate: at(7.8), progress: 0, kind: .start),
+            PlanPoint(id: "night-1", label: "Camp", coordinate: at(7.9), progress: 0, kind: .night, night: 1, placeKind: "camping",
+                      leg: .drawn, drawn: [RoutePoint(coordinate: at(7.85), elevationMeters: 420)]),
+            PlanPoint(id: "v", label: "Shaping point", coordinate: at(7.95), progress: 0, kind: .via, turnaround: true),
+            PlanPoint(id: "w", label: "Fountain", coordinate: at(8.0), progress: 0, kind: .waypoint, placeKind: "water"),
+            PlanPoint(id: "night-2", label: "Hut", coordinate: at(8.05), progress: 0, kind: .night, night: 2),
+            PlanPoint(id: "finish", label: "Titisee", coordinate: at(8.15), progress: 0, kind: .finish),
+            PlanPoint(id: "m", label: "View", coordinate: at(8.1), progress: 0, kind: .marker),
+        ], mode: .route, bike: "road", preset: "Shorter", routeOrder: ["night-1", "v", "w", "night-2"])
+        let model = PlannerPreviewModel(plan: plan, service: PlannerTestSource())
+        #expect(model.dayCount == 3 && model.activity == .road && model.preset == .shorter)
+        #expect(model.exportPlan() == plan)
+    }
+
     @Test func onlyTheActivitiesOfTheReleaseAreOffered() async {
         let model = PlannerPreviewModel(sample: true, service: PlannerTestSource())
         #expect(model.activities == RouteActivity.allCases)
@@ -290,11 +369,13 @@ struct PlannerPreviewModelTests {
 }
 
 private actor PlannerTestSource: PlannerDataSource {
-    /// The turnarounds of each route request.
+    /// The points and turnarounds of each route request.
+    var requests: [[Coordinate]] = []
     var turnarounds: [[Int]] = []
     func release() async throws -> PlannerRelease { testRelease }
     func profiles(release: PlannerRelease) -> [String]? { ["gravel", "gravel/shorter", "mtb", "road", "touring"] }
     func route(points: [Coordinate], turnarounds: [Int], activity: RouteActivity, preference: RoutePreference, release: PlannerRelease) async throws -> PlannedPath {
+        requests.append(points)
         self.turnarounds.append(turnarounds)
         let samples = points.map { RoutePoint(coordinate: $0, elevationMeters: 300) }
         let length = MeasuredLine(routePoints: samples).length

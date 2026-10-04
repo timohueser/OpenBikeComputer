@@ -7,6 +7,7 @@ test('tile routes bound archive selection and coordinates', () => {
   assert.deepEqual(tileRoute(`${base}/basemap/14/16383/16383.mvt`).tile, [14, 16383, 16383]);
   assert.deepEqual(tileRoute(`${base}/snow/13/4290/2911`).tile, [13, 4290, 2911]);
   assert.deepEqual(tileRoute(`${base}/climate/9/218/37`).tile, [9, 218, 37]);
+  assert.deepEqual(tileRoute(`${base}/sun/10/535/356.webp`).tile, [10, 535, 356]);
   assert.equal(tileRoute(`${base}/terrain.json`).name, 'terrain');
   for (const path of [`${base}/terrain/12/4096/0.webp`, `${base}/basemap/27/0/0.mvt`, `${base}/places/0/0/0.png`,
     `${base}/other.json`, '/cell-catalog/catalog.json', `${base}/basemap/01/0/0.mvt`]) {
@@ -38,6 +39,25 @@ function archive(tileType = 1, meta = { attribution: 'Test data' }) {
   header.writeInt32LE(1800000000, 110); header.writeInt32LE(850000000, 114);
   return Buffer.concat([header, directory, metadata, tile]);
 }
+test('hosted sunlight retains visible bounds inside the terrain context', async () => {
+  const visible = [7.45, 47.5, 10.5, 49.85];
+  const bytes = archive(4, { sun_format: 3, bounds: visible, coverage: [-180, -85, 180, 85] });
+  globalThis.caches = { default: { async match() {}, async put() {} } };
+  const env = { BUCKET: { async get(path, options) {
+    if (!path.endsWith('/maps/sun.pmtiles')) return null;
+    const slice = bytes.subarray(options.range.offset, options.range.offset + options.range.length);
+    return { body: true, etag: 'sun-bounds', async arrayBuffer() {
+      return slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength);
+    } };
+  } } };
+  try {
+    const response = await worker.fetch(new Request(`https://tiles.example${base}/sun.json`), env, { waitUntil() {} });
+    assert.equal(response.status, 200);
+    const metadata = await response.json();
+    assert.deepEqual(metadata.bounds, visible);
+    assert.deepEqual(metadata.coverage, [-180, -85, 180, 85]);
+  } finally { delete globalThis.caches; }
+});
 test('range reads deliver decoded tiles, cache tiles and empty coverage, and do not cache missing archives', async () => {
   const bytes = archive(), cached = new Map(), pending = [];
   globalThis.caches = { default: {

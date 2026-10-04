@@ -2,6 +2,7 @@
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import json
+import math
 from pathlib import Path
 import shutil
 import sqlite3
@@ -76,8 +77,19 @@ def build_assets(stage):
         (stage / "assets/sprites/LICENSE.txt").write_bytes(response.read())
 
 
-def terrain_inputs(args, config):
-    bounds = maps.terrain_bounds(config["bounds"])
+def terrain_coverage(config):
+    bounds = config["bounds"]
+    coverage = maps.terrain_bounds(bounds)
+    if "sun" in config:
+        latitude = config["sun"].get("distance_m", 30000) / 110000
+        longitude = latitude / math.cos(math.radians(max(abs(bounds[1]), abs(bounds[3]))))
+        coverage = [min(coverage[0], bounds[0] - longitude), min(coverage[1], bounds[1] - latitude),
+                    max(coverage[2], bounds[2] + longitude), max(coverage[3], bounds[3] + latitude)]
+    return coverage
+
+
+def terrain_inputs(args, config, bounds=None):
+    bounds = bounds or maps.terrain_bounds(config["bounds"])
     with DEM_FETCH:
         maps.run(maps.ROOT / "target/release/obc-dem", "fetch", "--bbox",
                  ",".join(map(str, [bounds[1], bounds[0], bounds[3], bounds[2]])), "--out", args.dem_dir)
@@ -95,12 +107,12 @@ def build_terrain(stage, args, config):
     maps.run("cargo", "build", "--locked", "--release", "-p", "obc-dem", cwd=maps.ROOT)
     maps.run("cargo", "build", "--locked", "--release", "-p", "route-build",
              "--bin", "planner-dem", "--features", "route-build/planner-dem", cwd=maps.ROOT)
-    reference = terrain_inputs(args, config)
-    bounds = maps.terrain_bounds(config["bounds"])
+    bounds = terrain_coverage(config)
+    reference = terrain_inputs(args, config, bounds)
     maps.run(maps.ROOT / "target/release/planner-dem", "--dem", args.dem_dir, *reference,
              "--bounds", ",".join(map(str, bounds)), "--output", stage / "terrain.mbtiles")
     maps.run(args.pmtiles, "convert", stage / "terrain.mbtiles", stage / "terrain.pmtiles")
-    maps.compact_archive(stage / "terrain.pmtiles", stage / "compact.pmtiles", config["bounds"], terrain=True)
+    maps.compact_archive(stage / "terrain.pmtiles", stage / "compact.pmtiles", bounds if "sun" in config else config["bounds"], terrain=True)
     (stage / "compact.pmtiles").replace(stage / "terrain.pmtiles")
     with sqlite3.connect(stage / "terrain.mbtiles") as db:
         info = {"terrain_attribution": db.execute("SELECT value FROM metadata WHERE name='attribution'").fetchone()[0],
@@ -129,11 +141,11 @@ def build_overlays(stage, routing):
     maps.overlays_archive(routing / "overlays.sqlite", stage / "overlays.pmtiles")
 
 
-def build_layer(stage, config, name):
+def build_layer(stage, config, name, terrain=None):
     options = [item for key, value in config[name].items() for item in (f"--{key.replace('_', '-')}", str(value))]
     maps.run("uv", "run", "--with-requirements", maps.ROOT / f"tools/requirements-planner-{name}.txt",
              "python", "-m", f"tools.planner_{name}", config["region"], "--bounds", ",".join(map(str, config["bounds"])),
-             *options, "--output", stage / f"{name}.pmtiles", cwd=maps.ROOT)
+             *options, *(["--terrain", terrain / "terrain.pmtiles"] if name == "sun" else []), "--output", stage / f"{name}.pmtiles", cwd=maps.ROOT)
     if not releases.archive_metadata(stage / f"{name}.pmtiles").get(releases.DATA_LAYERS[name]):
         raise ValueError(f"Incomplete data layer: {name}")
 
@@ -174,8 +186,8 @@ def specifications(config, prepared=None):
     elevation = {"sources": config["terrain"], "producer": components.implementation(paths=elevation_paths)}
     terrain_paths = [*rust_manifests, *elevation_paths, map_requirements, maps.ROOT / "tools/planner_map_archive.py",
                      *[maps.ROOT / path for path in ["host/route-build/src/obc_terrain.rs", "host/route-build/src/bin/planner-dem.rs", "host/route-engine/src/model.rs"]]]
-    add("terrain", build_terrain, {"elevation": elevation}, {"terrain_bounds": maps.terrain_bounds(bounds)}, paths=terrain_paths,
-        functions=[terrain_inputs, maps.compact_archive, maps.verify_archive])
+    add("terrain", build_terrain, {"elevation": elevation}, {"terrain_bounds": terrain_coverage(config)}, paths=terrain_paths,
+        functions=[terrain_inputs, terrain_coverage, maps.compact_archive, maps.verify_archive])
     routing_paths = components.rust_sources("host/route-build", "apps/route-server")
     add("routing", build_routing, {"osm": osm, "elevation": elevation}, {"region": config["region"], "access": config["access"], "countries": config["countries"], "profiles": config["profiles"]}, paths=routing_paths,
         functions=[terrain_inputs, preparation.runtime_routing])
@@ -185,7 +197,9 @@ def specifications(config, prepared=None):
     add("model", build_model, {}, paths=[SEARCH / "setup.py", SEARCH / "query/artifacts.py", SEARCH / "query/schema.py"])
     for name in releases.DATA_LAYERS:
         if name in config:
-            add(name, build_layer, {}, config[name], paths=[maps.ROOT / f"tools/planner_{name}.py", maps.ROOT / f"tools/requirements-planner-{name}.txt"])
+            paths = [maps.ROOT / f"tools/planner_{name}.py", maps.ROOT / f"tools/requirements-planner-{name}.txt"]
+            if name == "sun": paths.extend(maps.ROOT / path for path in ("tools/planner_sun_horizons.py", "tools/planner_map_archive.py"))
+            add(name, build_layer, {}, config[name], dependencies=["terrain"] if name == "sun" else [], paths=paths)
     return result
 
 
@@ -208,7 +222,7 @@ def execute(args, config, cache, specs, active):
         "routing": lambda stage: build_routing(stage, osm, args, config),
         "overlays": lambda stage: build_overlays(stage, built["routing"][0]),
         "assets": build_assets, "model": build_model,
-        **{name: (lambda stage, name=name: build_layer(stage, config, name)) for name in releases.DATA_LAYERS if name in config}}
+        **{name: (lambda stage, name=name: build_layer(stage, config, name, built["terrain"][0] if name == "sun" else None)) for name in releases.DATA_LAYERS if name in config}}
     def produce(name):
         if name in active and args.inputs and name in ("source-basemap", "source-search"):
             supplied = json.loads((args.inputs / "inputs.json").read_bytes())
@@ -254,7 +268,7 @@ def compose(args, config, built, previous=None):
         for name in ["pois", "addresses"]:
             install(*built[name], f"search/{name}")
         terrain = json.loads((built["terrain"][0] / "provenance.json").read_bytes())
-        map_manifest = {"bounds": config["bounds"], "terrain_bounds": maps.terrain_bounds(config["bounds"]),
+        map_manifest = {"bounds": config["bounds"], "terrain_bounds": terrain_coverage(config),
             "osm_sha256": config["osm"]["sha256"], **terrain,
             "files": {path.relative_to(stage / "maps").as_posix(): entry for name, (_, receipt) in built.items()
                       if name in {"assets", "basemap", "places", "terrain", "overlays", *releases.DATA_LAYERS}

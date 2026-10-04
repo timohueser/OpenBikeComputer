@@ -3,8 +3,11 @@ import { profileAscent } from './profile-data';
 import type { PlaceCategory } from './poi-kinds';
 
 export type Coordinate = [number, number];
+/** A vertex of a drawn leg; a third number is its elevation in metres. */
+export type DrawnCoordinate = Coordinate | [number, number, number];
 export const maxRidingDays = 14;
-export type LegMode = 'routed' | 'straight' | 'drawn';
+/** A transfer is a straight leg that the rider does not ride, such as a train; it adds no ridden distance or time. */
+export type LegMode = 'routed' | 'straight' | 'drawn' | 'transfer';
 export type PointKind = 'start' | 'finish' | 'pass' | 'via' | 'waypoint' | 'detour' | 'night' | 'marker' | 'place';
 export interface RoutePoint {
     placeKind?: string;
@@ -18,12 +21,15 @@ export interface RoutePoint {
     night?: number;
     /** Mode of the leg that ends at this point; absent means routed. In a loop the start also ends the closing leg. */
     leg?: LegMode;
-    /** Inner path of a drawn leg. The leg always joins its two points, so moving a point keeps the drawing. */
-    drawn?: Coordinate[];
+    /** Inner path of a drawn leg. The leg always joins its two points; moving a point routes its drawn legs again (`routeLegsAround`).
+     * An imported line also repeats both points with their elevations, so the leg has a height at each end. */
+    drawn?: DrawnCoordinate[];
     /** A visit-and-return rejoins this exact position on the planned line. */
     anchor?: Coordinate;
     /** The route turns back at this shaping point. */
     turnaround?: true;
+    /** A line about the place, such as a route file's waypoint description. */
+    note?: string;
 }
 export type Place = RoutePoint & {
     category: PlaceCategory;
@@ -256,8 +262,8 @@ function routeLayout(trip: Trip): { coordinates: Coordinate[]; stops: Stop[] } {
 }
 
 function legCoordinates(base: Coordinate[], before: RoutePoint, point: RoutePoint): Coordinate[] {
-    if (point.leg === 'straight' || point.leg === 'drawn') {
-        return [[...before.coordinate], ...(point.leg === 'drawn' ? point.drawn ?? [] : []).map(c => [...c] as Coordinate), [...point.coordinate]];
+    if (point.leg && point.leg !== 'routed') {
+        return [[...before.coordinate], ...(point.leg === 'drawn' ? point.drawn ?? [] : []).map((c): Coordinate => [c[0], c[1]]), [...point.coordinate]];
     }
     const from = before.kind === 'start' ? 0 : nearestProgress(base, before.coordinate);
     const to = point.kind === 'finish' ? 1 : nearestProgress(base, point.coordinate);
@@ -407,8 +413,10 @@ export function tripDays(trip: Trip, provisionalEnd?: { night: number; progress:
     const hours = (from: number, to: number, distance: number) => line ? (movingSecondsAt(line, to) - movingSecondsAt(line, from)) / 3600 : distance / 15;
     const { coordinates, stops } = routeLayout(trip);
     const total = cumulative(coordinates).at(-1)!;
+    const ridden = (from: number, to: number) => Math.max(0, to - from) * total - transferKm(stops, from * total, to * total);
     if (trip.mode === 'route') {
-        return [{ number: 1, from: 0, to: 1, distance: total, hours: hours(0, 1, total), pinned: undefined }];
+        const distance = ridden(0, 1);
+        return [{ number: 1, from: 0, to: 1, distance, hours: hours(0, 1, distance), pinned: undefined }];
     }
     const pinned = trip.points.filter(p => p.kind === 'night');
     const count = nightCount(trip);
@@ -427,11 +435,24 @@ export function tripDays(trip: Trip, provisionalEnd?: { night: number; progress:
     }
     boundaries.push(1);
     return boundaries.slice(1).map((to, i) => {
-        const distance = Math.max(0, to - boundaries[i]) * total;
+        const distance = ridden(boundaries[i], to);
         const pin = pinned.find(p => p.night === i + 1);
         const split = !pin && fixed.has(i + 1);
         return { number: i + 1, from: boundaries[i], to, distance, hours: hours(boundaries[i], to, distance), pinned: pin, split };
     });
+}
+
+// Kilometres of transfer legs between two distances along the route.
+function transferKm(stops: Stop[], from: number, to: number): number {
+    return stops.slice(1).reduce((km, stop, i) => stop.point.leg !== 'transfer' ? km
+        : km + Math.max(0, Math.min(to, stop.distance) - Math.max(from, stops[i].distance)), 0);
+}
+
+/** The route length without its transfers. */
+export function riddenKm(trip: Trip): number {
+    const { coordinates, stops } = routeLayout(trip);
+    const total = cumulative(coordinates).at(-1) ?? 0;
+    return total - transferKm(stops, 0, total);
 }
 
 /** Stops inside a day in route order, with kilometres from the day start. */
@@ -569,12 +590,20 @@ export function insertPoint(trip: Trip, legEndId: string, coordinate: Coordinate
     return intoLeg(trip, { id: crypto.randomUUID(), kind: 'via', label: shapeLabel, coordinate: [...coordinate], progress: trip.live ? nearestProgress(routeCoordinates(trip), coordinate) : anchorProgress(coordinate) }, legEndId);
 }
 
+/** A point dragged out of a leg: both legs beside it follow roads. */
+export function dragPointOut(trip: Trip, legEndId: string, coordinate: Coordinate): Trip {
+    const next = insertPoint(trip, legEndId, coordinate);
+    const ids = new Set(trip.points.map(p => p.id));
+    const added = next.points.find(p => !ids.has(p.id));
+    return added ? routeLegsAround(next, added.id) : next;
+}
+
 export function setLegMode(trip: Trip, id: string, mode: LegMode): Trip {
     return withLeg(trip, id, { leg: mode === 'routed' ? undefined : mode });
 }
 
-export function setDrawnLeg(trip: Trip, id: string, coordinates: Coordinate[]): Trip {
-    return withLeg(trip, id, { leg: 'drawn', drawn: coordinates.map(c => [...c] as Coordinate) });
+export function setDrawnLeg(trip: Trip, id: string, coordinates: DrawnCoordinate[]): Trip {
+    return withLeg(trip, id, { leg: 'drawn', drawn: coordinates.map(c => [...c] as DrawnCoordinate) });
 }
 
 // A shaped leg fixes the route order, so a later point joins the leg it is placed in, not the one its corridor progress suggests.
@@ -583,18 +612,44 @@ function withLeg(trip: Trip, id: string, change: Partial<RoutePoint>): Trip {
     return { ...trip, routeOrder, points: trip.points.map(p => p.id === id ? { ...p, ...change } : p) };
 }
 
-// Places `point` in the leg that ends at `legEndId`. Both halves keep that leg's mode; a drawing splits at its vertex nearest the point.
+// Places `point` in the leg that ends at `legEndId`. Both halves keep that leg's mode. A drawing splits on its segment
+// nearest the point and keeps every vertex, so a point on the drawn line leaves the line unchanged. When both ends of that
+// segment have an elevation, both halves get a vertex at the point with the interpolated elevation.
 function intoLeg(trip: Trip, point: RoutePoint, legEndId: string): Trip {
     const end = trip.points.find(p => p.id === legEndId)!;
     const placed: RoutePoint = { ...point, leg: end.leg };
     let points = trip.points;
     if (end.leg === 'drawn') {
-        const drawn = end.drawn ?? [];
-        const cut = drawn.reduce((best, c, i) => kilometres(c, point.coordinate) < kilometres(drawn[best], point.coordinate) ? i : best, 0);
-        placed.drawn = drawn.slice(0, cut);
-        points = points.map(p => p.id === end.id ? { ...p, drawn: drawn.slice(cut + 1) } : p);
+        const route = orderedRoutePoints(trip);
+        const line: DrawnCoordinate[] = [route[route.map(p => p.id).lastIndexOf(legEndId) - 1].coordinate, ...end.drawn ?? [], end.coordinate];
+        const { index: cut, t } = nearestSegment(line, point.coordinate);
+        const [a, b] = [line[cut][2], line[cut + 1][2]];
+        const at: DrawnCoordinate[] = a === undefined || b === undefined ? [] : [[...point.coordinate, a + (b - a) * t]];
+        placed.drawn = [...line.slice(1, cut + 1), ...at];
+        points = points.map(p => p.id === end.id ? { ...p, drawn: [...at, ...line.slice(cut + 1, -1)] } : p);
     }
     return { ...trip, points: [...points, placed], routeOrder: orderBefore(trip, point.id, legEndId) };
+}
+
+// The segment of `line` nearest `point`, by its first vertex, and the fraction along it, in a local plane.
+function nearestSegment(line: DrawnCoordinate[], point: Coordinate): { index: number; t: number } {
+    const scale = Math.cos(point[1] * Math.PI / 180);
+    let best = { index: 0, t: 0 }, nearest = Infinity;
+    for (let i = 1; i < line.length; i++) {
+        const [ax, ay] = [(line[i - 1][0] - point[0]) * scale, line[i - 1][1] - point[1]];
+        const [dx, dy] = [(line[i][0] - line[i - 1][0]) * scale, line[i][1] - line[i - 1][1]];
+        const t = Math.max(0, Math.min(1, -(ax * dx + ay * dy) / (dx * dx + dy * dy || 1)));
+        const distance = (ax + dx * t) ** 2 + (ay + dy * t) ** 2;
+        if (distance < nearest) { nearest = distance; best = { index: i - 1, t }; }
+    }
+    return best;
+}
+
+/** Dragging a point plans its drawn neighbouring legs on roads again; the other legs stay as they are. */
+export function routeLegsAround(trip: Trip, id: string): Trip {
+    const route = orderedRoutePoints(trip);
+    const ends = new Set(route.flatMap((p, i) => p.id === id ? [p.id, route[i + 1]?.id] : []));
+    return { ...trip, points: trip.points.map(p => ends.has(p.id) && p.leg === 'drawn' ? { ...p, leg: undefined, drawn: undefined } : p) };
 }
 
 function nearestLegEnd(trip: Trip, coordinate: Coordinate): string {

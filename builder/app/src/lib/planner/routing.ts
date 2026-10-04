@@ -1,5 +1,5 @@
 import { presetSuffix } from './riding-profiles';
-import { cumulative, firstIndex, orderedRoutePoints, routingKey, type Coordinate, type Trip } from './editor';
+import { cumulative, firstIndex, orderedRoutePoints, routingKey, type Coordinate, type DrawnCoordinate, type Trip } from './editor';
 import { decodeRoutes } from './route-answer';
 import type { LegCache } from './route-legs';
 
@@ -78,6 +78,8 @@ export interface RoutingLine {
     unknownSurfaceKm: number;
     pushingKm: number;
     unroutedKm: number;
+    /** Ridden kilometres whose ascent is unknown; a transfer is not ridden, so it never counts. */
+    unknownElevationKm: number;
     /** Routing package of the routed legs. */
     package?: string;
     /** A picked alternative with the profile of its primary route, such as another corridor. No request for its plan returns it. */
@@ -86,18 +88,39 @@ export interface RoutingLine {
 
 const endpoint = import.meta.env.VITE_PLANNER_ROUTING_URL ?? '/routing';
 
+async function post(path: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
+    const response = await fetch(`${endpoint}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal, body: JSON.stringify(body) });
+    const data = await response.json().catch(() => { throw new Error('The routing service returned an invalid response.'); });
+    if (!response.ok) throw Object.assign(new Error(data.message ?? 'Routing is unavailable.'), { code: data.code as string | undefined });
+    return data;
+}
+
 /** With `'only'`, the answer leaves out the primary route and can be empty. */
 export async function requestRoute(points: Coordinate[], profile: string, signal: AbortSignal, alternatives: boolean | 'only' = false, turnarounds: number[] = [],
     pins: { start_position?: string; end_position?: string } = {}): Promise<EngineRoute[]> {
-    const response = await fetch(`${endpoint}/v1/route`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
-        body: JSON.stringify({ points, profile, ...(alternatives === 'only' ? { alternatives_only: true } : { alternatives }), turnarounds, ...pins }),
-    });
-    const data = await response.json().catch(() => { throw new Error('The routing service returned an invalid response.'); });
-    if (!response.ok) throw Object.assign(new Error(data.message ?? 'Routing is unavailable.'), { code: data.code as string | undefined });
-    const routes = decodeRoutes(data);
+    const body = { points, profile, ...(alternatives === 'only' ? { alternatives_only: true } : { alternatives }), turnarounds, ...pins };
+    const routes = decodeRoutes(await post('/v1/route', body, signal) as Parameters<typeof decodeRoutes>[0]);
     if (!routes.length && alternatives !== 'only') throw new Error('The routing service returned no route.');
     return routes;
+}
+
+/** Points that `/v1/route` routes along `line` (`specs/route-api.md`); a turnaround is an index into `points`. */
+export interface Shape {
+    points: Coordinate[];
+    turnarounds: number[];
+}
+
+/** Longer than the 30 s shape deadline of the route service, so its own error arrives first. A hung call frees the import,
+ * and the file keeps its line. */
+const shapeTimeoutMs = 40_000;
+
+export async function requestShape(line: Coordinate[], profile: string, signal = AbortSignal.timeout(shapeTimeoutMs)): Promise<Shape> {
+    const data = await post('/v1/shape', { line, profile }, signal) as Partial<Shape>;
+    const points = data.points, turnarounds = data.turnarounds ?? [];
+    if (!Array.isArray(points) || points.length < 2 || !points.every(p => Array.isArray(p) && p.length === 2 && p.every(Number.isFinite))
+        || !Array.isArray(turnarounds) || !turnarounds.every(i => Number.isInteger(i) && i > 0 && i < points.length - 1))
+        throw new Error('The routing service returned an invalid response.');
+    return { points, turnarounds };
 }
 
 /** The primary route and the alternatives of a line whose alternatives are not ready. Such a line is one routed request
@@ -119,6 +142,7 @@ export function selectRoute(trip: Trip, route: EngineRoute, alternatives: Engine
     return {
         choiceId: route.id, key: routingKey(trip), coordinates: route.geometry, elevation: route.elevation, elapsed: route.elapsed, edges: route.edges, seconds: route.totals.seconds,
         profile: route.profile, package: route.package, alternatives, alternativesReady: true, unknownSurfaceKm: route.totals.surface_m[0] / 1000, pushingKm: route.totals.pushing_m / 1000, unroutedKm: 0,
+        unknownElevationKm: route.totals.unknown_elevation_m / 1000,
         stops: [{ id: points[0].id, distance: 0 }, ...route.legs.map((leg, i) => ({ id: points[i + 1].id, distance: distance[leg.to_index] }))],
         picked: route.id !== primary.id && route.profile === primary.profile,
     };
@@ -129,15 +153,22 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
     const points = orderedRoutePoints(trip);
     if (points.length < 2) throw new Error('Choose a start and finish to calculate a route.');
     const result: RoutingLine = { choiceId: '', key: routingKey(trip), coordinates: [], elevation: [], elapsed: [], edges: {}, stops: [], seconds: 0,
-        alternatives: [], alternativesReady: true, profile: profileId(trip), unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0 };
+        alternatives: [], alternativesReady: true, profile: profileId(trip), unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
     let distance = 0;
-    function append(line: Coordinate[], elevation: (number | null)[], elapsed: number[], edges: Edges) {
+    let afterTransfer = false;
+    function append(line: Coordinate[], elevation: (number | null)[], elapsed: number[], edges: Edges, transfer = false) {
         const last = result.coordinates.at(-1);
         const gap = last ? cumulative([last, line[0]])[1] : 0;
-        // A join to a manually drawn leg is itself an explicit, unverified connector.
-        if (gap > 0) { result.unroutedKm += gap; result.unknownSurfaceKm += gap; result.seconds += gap / 15 * 3600; distance += gap; }
-        const offset = last && gap === 0 ? 1 : 0;
-        const connector = gap > 0 ? 1 : 0;
+        // A join to a manually drawn leg is itself an explicit, unverified connector. A join to a transfer is not ridden.
+        if (gap > 0 && !transfer && !afterTransfer) {
+            result.unroutedKm += gap; result.unknownSurfaceKm += gap; result.seconds += gap / 15 * 3600;
+            if (result.elevation.at(-1) === null || elevation[0] === null) result.unknownElevationKm += gap;
+        }
+        distance += gap;
+        // After a transfer the next leg repeats its first vertex, so no segment joins the heights at the two ends of the transfer.
+        const offset = last && gap === 0 && !afterTransfer ? 1 : 0;
+        const connector = last && !offset ? 1 : 0;
+        afterTransfer = transfer;
         const length = Math.max(result.coordinates.length - 1, 0);
         appendEdges(result.edges, length, undefined, 0, connector);
         appendEdges(result.edges, length + connector, edges, 0, line.length - 1);
@@ -156,13 +187,21 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         const end = points[i];
         const before = points[i - 1];
         const origin = before.kind === 'detour' ? before.anchor ?? before.coordinate : before.coordinate;
-        if (end.leg === 'straight' || end.leg === 'drawn') {
-            const line = [origin, ...(end.leg === 'drawn' ? end.drawn ?? [] : []), end.coordinate];
+        if (end.leg && end.leg !== 'routed') {
+            const drawn: DrawnCoordinate[] = [origin, ...(end.leg === 'drawn' ? end.drawn ?? [] : []), end.coordinate];
+            const line = drawn.map((c): Coordinate => [c[0], c[1]]);
+            const heights = drawn.map(c => c[2] ?? null);
+            // A drawn leg repeats its points with their heights; the points themselves have none.
+            const same = (a: number, b: number) => line[a][0] === line[b][0] && line[a][1] === line[b][1];
+            if (line.length > 2 && same(0, 1)) heights[0] ??= heights[1];
+            if (line.length > 2 && same(line.length - 1, line.length - 2)) heights[line.length - 1] ??= heights[line.length - 2];
             const lengths = cumulative(line);
-            append(line, line.map(() => null), lengths.map(km => km / 15 * 3600), {});
-            const km = lengths.at(-1)!;
+            const ridden = end.leg !== 'transfer';
+            append(line, heights, lengths.map(km => ridden ? km / 15 * 3600 : 0), {}, !ridden);
+            const km = ridden ? lengths.at(-1)! : 0;
             result.unknownSurfaceKm += km;
             result.unroutedKm += km;
+            if (ridden) heights.forEach((h, k) => { if (k && (h === null || heights[k - 1] === null)) result.unknownElevationKm += lengths[k] - lengths[k - 1]; });
             result.stops.push({ id: end.id, distance });
             i++;
             continue;
@@ -193,6 +232,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         const lengths = cumulative(route.geometry);
         result.unknownSurfaceKm += route.totals.surface_m[0] / 1000;
         result.pushingKm += route.totals.pushing_m / 1000;
+        result.unknownElevationKm += route.totals.unknown_elevation_m / 1000;
         for (let leg = 0; leg < route.legs.length; leg++) {
             const id = ends.get(leg);
             if (id) result.stops.push({ id, distance: start + lengths[route.legs[leg].to_index] });

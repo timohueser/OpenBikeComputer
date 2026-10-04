@@ -34,7 +34,7 @@
     import { versionSummary } from '../../lib/planner/versions';
     import {
         addClickedPoint, addPointNear, addRestDay, applyBudget, closeLoop, coordinateAt, cumulative, emptyTrip, hasEndpoints as endpointsChosen,
-        insertPoint, itineraryDays, kilometres, planTitle, nearestProgress, nightOrderConflicts, overnightCandidates,
+        insertPoint, itineraryDays, kilometres, planTitle, nearestProgress, nightOrderConflicts, overnightCandidates, riddenKm, routeLegsAround, dragPointOut,
         orderedRoutePoints, overnightWindow, pinNight, removeRestDay, reorderPoint, routeCoordinates, startLoopHere, routeSlice, routeStops,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint, TripHistory, tripDays, routingKey, planOf, storedPlan,
         type Coordinate, type Day, type LegMode, type Place, type PointKind, type RoutePoint, type Trip,
@@ -57,7 +57,8 @@
     import { routePreview } from '../../lib/planner/route-preview';
 
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
-    import { calculateLine, requestAlternatives, selectRoute, type EngineRoute, type RoutingLine } from '../../lib/planner/routing';
+    import { calculateLine, profileId, requestAlternatives, requestShape, selectRoute, type EngineRoute, type RoutingLine } from '../../lib/planner/routing';
+    import { importedTrip, planOnRoads, readTracks, type ImportedLine } from '../../lib/planner/gpx-import';
     import { LegCache } from '../../lib/planner/route-legs';
     import { DRAWER_CLOSED, DRAWER_MIN, resizeDrawer } from '../../lib/planner/drawer';
     import { closureNote, closureStretches, type Stretch } from '../../lib/planner/route-closures';
@@ -85,6 +86,9 @@
     let versionsSaving = $state(false);
     let libraryError = $state('');
     let plans = $state.raw<Plan[]>([]);
+    // GPX files read and waiting for the rider to keep their lines or plan them on roads.
+    let gpxLines = $state.raw<ImportedLine[] | null>(null);
+    let dropping = $state(false);
     let lastSave: Promise<void> = Promise.resolve();
     const hasEndpoints = $derived(endpointsChosen(trip));
     const nextEndpoint = $derived(trip.points.some(p => p.kind === 'start') ? 'finish' : 'start');
@@ -146,7 +150,7 @@
     const visualTrip = $derived(keepPrevious ? previousRouteTrip ?? shownTrip : shownTrip);
     const visualRoute = $derived(currentRoute ?? (keepPrevious ? previousRouteTrip?.routing : undefined));
     const routingMessage = $derived(draggingPoint ? previewStatus : currentRoute
-        ? `${currentRoute.unknownSurfaceKm.toFixed(1)} km unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${currentRoute.pushingKm.toFixed(1)} km pushing` : ''}${currentRoute.unroutedKm ? ` · ${currentRoute.unroutedKm.toFixed(1)} km manual / access unverified` : ''}${currentRoute.elevation.some(h => h === null) ? ' · elevation incomplete' : ''}`
+        ? `${currentRoute.unknownSurfaceKm.toFixed(1)} km unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${currentRoute.pushingKm.toFixed(1)} km pushing` : ''}${currentRoute.unroutedKm ? ` · ${currentRoute.unroutedKm.toFixed(1)} km manual / access unverified` : ''}${currentRoute.unknownElevationKm ? ' · elevation incomplete' : ''}`
         : routingStatus);
     let list = $state<'plan' | 'ways'>('plan');
     let waysStatus = $state('');
@@ -245,8 +249,9 @@
     const placeName = $derived.by(() => { void mapIdle; return (coordinate: Coordinate) => map?.placeName(coordinate); });
     const previewKm = $derived(finder.preview ? cumulative(finder.preview.coordinates).at(-1)! : 0);
 
-    const maxProfile = $derived(Math.max(DRAWER_MIN, Math.min(340, viewportHeight - 400)));
-    const drawerHeight = $derived(profileOpen ? Math.min(profileHeight, maxProfile) : DRAWER_CLOSED);
+    const minProfile = $derived(viewportWidth <= 760 && dataLayer?.strip ? 320 : DRAWER_MIN);
+    const maxProfile = $derived(Math.max(minProfile, Math.min(340, viewportHeight - 400)));
+    const drawerHeight = $derived(profileOpen ? Math.min(Math.max(profileHeight, minProfile), maxProfile) : DRAWER_CLOSED);
     const maxSide = $derived(Math.max(320, Math.min(460, viewportWidth - 540)));
     function resizeProfile(value: number, byKey: boolean) {
         const next = resizeDrawer(drawerHeight, value, byKey);
@@ -396,16 +401,16 @@
         return to > from ? { from, to } : { from: 0, to: 1 };
     });
 
-    let lineSamples = $state.raw<{ layer: DataLayer; line: RoutingLine; samples: unknown } | null>(null);
+    let lineSamples = $state.raw<{ layer: DataLayer; line: RoutingLine; key: string; samples: unknown } | null>(null);
     $effect(() => {
-        const layer = dataLayer, line = visualRoute;
-        if (!layer || !line || untrack(() => lineSamples?.layer === layer && lineSamples.line === line)) return;
+        const layer = dataLayer, line = visualRoute, key = layer?.sampleKey?.(shownDate) ?? '';
+        if (!layer || !line || untrack(() => lineSamples?.layer === layer && lineSamples.line === line && lineSamples.key === key)) return;
         const abort = new AbortController();
-        layer.sample(line, abort.signal).then(samples => { if (!abort.signal.aborted) lineSamples = { layer, line, samples }; }, () => {});
+        layer.sample(line, abort.signal, { date: shownDate, theme }).then(samples => { if (!abort.signal.aborted) lineSamples = { layer, line, key, samples }; }, () => {});
         return () => abort.abort();
     });
-    const routeSamples = $derived(dataLayer && visualRoute && lineSamples?.layer === dataLayer && lineSamples.line === visualRoute ? lineSamples.samples : null);
-    const layerYear = $derived(dataLayer?.year(routeSamples, { date: shownDate, theme }));
+    const routeSamples = $derived(dataLayer && visualRoute && lineSamples?.layer === dataLayer && lineSamples.line === visualRoute && lineSamples.key === (dataLayer.sampleKey?.(shownDate) ?? '') ? lineSamples.samples : null);
+    const layerYear = $derived(dataLayer?.year?.(routeSamples, { date: shownDate, theme }));
     // The night after day n falls n − 1 calendar days after the layer date.
     const layerNotes = $derived.by(() => {
         if (!multi || !dataLayer?.nights || !routeSamples || !visualRoute) return [];
@@ -415,15 +420,15 @@
         return dataLayer.nights(routeSamples, stops).flatMap((text, i) => text ? [{ coordinate: coordinateAt(coordinates, ends[i].to), text }] : []);
     });
     // A map click with a layer shown adds the years at that spot to the callout.
-    let pinSamples = $state.raw<{ layer: DataLayer; at: Coordinate; samples: unknown } | null>(null);
+    let pinSamples = $state.raw<{ layer: DataLayer; at: Coordinate; key: string; samples: unknown } | null>(null);
     $effect(() => {
-        const layer = dataLayer, at = calloutKind === 'add' ? spot?.coordinate : undefined;
+        const layer = dataLayer, at = calloutKind === 'add' ? spot?.coordinate : undefined, key = layer?.sampleKey?.(shownDate) ?? '';
         if (!layer || !at) return;
         const abort = new AbortController();
-        layer.sample({ coordinates: [at], elevation: [null] }, abort.signal).then(samples => { if (!abort.signal.aborted) pinSamples = { layer, at, samples }; }, () => {});
+        layer.sample({ coordinates: [at], elevation: [null] }, abort.signal, { date: shownDate, theme }).then(samples => { if (!abort.signal.aborted) pinSamples = { layer, at, key, samples }; }, () => {});
         return () => abort.abort();
     });
-    const pinChart = $derived(dataLayer && calloutKind === 'add' && pinSamples?.layer === dataLayer && pinSamples.at === spot?.coordinate ? dataLayer.chart(pinSamples.samples, 0, { date: shownDate, theme }) : null);
+    const pinChart = $derived(dataLayer && calloutKind === 'add' && pinSamples?.layer === dataLayer && pinSamples.at === spot?.coordinate && pinSamples.key === (dataLayer.sampleKey?.(shownDate) ?? '') ? dataLayer.chart(pinSamples.samples, 0, { date: shownDate, theme }) : null);
 
     $effect(() => {
         if (!highlights.length || coordinates.length < 2) return;
@@ -627,6 +632,54 @@
         });
     }
 
+    /** Plan files open one by one; GPX files wait for one choice for all of them. */
+    async function importFiles(files: File[]) {
+        if (!libraryOpen) await openLibrary();
+        gpxLines = null;
+        const gpx = files.filter(file => /\.gpx$/i.test(file.name));
+        if (!gpx.length) {
+            for (const file of files) await importFile(file);
+            return;
+        }
+        await libraryAction(async () => {
+            if (gpx.length < files.length) throw new Error('Import GPX files and plan files separately.');
+            gpxLines = readTracks(await Promise.all(gpx.map(async file => ({ name: file.name, text: await file.text() }))));
+        });
+    }
+
+    async function importGpx(roads: boolean) {
+        const lines = gpxLines!;
+        gpxLines = null;
+        if (roads) message = 'Planning on roads…';
+        await libraryAction(async () => {
+            const planned = roads ? await planOnRoads(lines, line => requestShape(line, profileId(trip))) : { lines, failed: [] };
+            const next = importedTrip(trip, planned.lines);
+            next.points = next.points.map(p => p.kind === 'via' || p.kind === 'marker' ? p : { ...p, label: map?.placeName(p.coordinate) ?? p.label });
+            await lastSave;
+            const saved = await library.save(makePlan(next, lines[0].name));
+            await library.activate(saved.id);
+            installPlan(saved);
+            libraryOpen = false;
+            const failed = planned.failed;
+            message = failed.length === 1 ? `${failed[0]} could not be planned on roads, so it keeps the file's line`
+                : failed.length ? `${failed.length} files could not be planned on roads, so they keep the file's line`
+                : lines.length > 1 ? `Trip imported · ${lines.length} days` : 'Route imported';
+        });
+    }
+
+    function dragOver(event: DragEvent) {
+        if (!event.dataTransfer?.types.includes('Files')) return;
+        event.preventDefault();
+        dropping = true;
+    }
+
+    function drop(event: DragEvent) {
+        event.preventDefault();
+        dropping = false;
+        const files = [...event.dataTransfer?.files ?? []];
+        if (files.length) void importFiles(files);
+    }
+
     async function changeVersions(versions: Version[]) {
         const before = activePlan.versions;
         const beforeTrip = trip;
@@ -823,7 +876,7 @@
             drawing = legEndId;
             return;
         }
-        commit(setLegMode(trip, legEndId, mode), mode === 'straight' ? 'Leg set to a straight line' : 'Leg set to routed');
+        commit(setLegMode(trip, legEndId, mode), mode === 'straight' ? 'Leg set to a straight line' : mode === 'transfer' ? 'Leg set to a transfer' : 'Leg set to routed');
     }
 
     /** Fits the search circle and the listed routes. */
@@ -908,9 +961,9 @@
         commit(closeLoop(trip), 'Loop closed · the route returns to the start');
     }
 
-    function insert(legEndId: string, coordinate: Coordinate) {
+    function insert(legEndId: string, coordinate: Coordinate, dragged = false) {
         clearSelection();
-        commit(insertPoint(trip, legEndId, coordinate), 'Shaping point inserted');
+        commit((dragged ? dragPointOut : insertPoint)(trip, legEndId, coordinate), 'Shaping point inserted');
         if (autoCenter) map?.centerOn(coordinate);
     }
 
@@ -980,12 +1033,12 @@
     function movedPoint(id: string, coordinate: Coordinate): Trip {
         const next = { ...trip };
         const point = next.points.find(p => p.id === id);
-        if (point?.kind === 'night') return pinNight(next, point.night!, coordinate, point.label);
+        if (point?.kind === 'night') return routeLegsAround(pinNight(next, point.night!, coordinate, point.label), id);
         next.points = next.points.map(p => p.id === id
             ? { ...p, coordinate, label: p.autoLabel ? coordinateName(coordinate) : p.label,
                 progress: p.kind === 'start' || p.kind === 'finish' ? p.progress : nearestProgress(coordinates, coordinate) }
             : p);
-        return next;
+        return routeLegsAround(next, id);
     }
 
     function previewPoint(id: string, coordinate: Coordinate) {
@@ -1181,7 +1234,8 @@
         {#if libraryOpen}
             <LibraryPanel {plans} activeId={activePlan.id} busy={libraryBusy} error={libraryError}
                 onClose={() => libraryOpen = false} onOpen={openPlan} onRename={renamePlan} onDuplicate={duplicatePlan}
-                onDelete={deletePlan} onImport={importFile} onDownload={plan => downloadPlan(plan.id === activePlan.id ? snapshot() : plan)} />
+                onDelete={deletePlan} onImport={importFiles} gpxNames={gpxLines?.map(line => line.name) ?? null}
+                onGpx={roads => roads === null ? gpxLines = null : importGpx(roads)} onDownload={plan => downloadPlan(plan.id === activePlan.id ? snapshot() : plan)} />
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!ready || libraryBusy || versionsSaving}>
             <div class="query-slot" style:display={routesOpen ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:region={searchRegion} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { clearSelection(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} /></div>
@@ -1190,7 +1244,7 @@
             {/if}
             {#if routesOpen}
                 <SignedRoutes {finder} activity={bike} {theme} onClose={closeRoutes} onPlan={planSignedRoute} {placeName}
-                    current={hasEndpoints && total > 0 ? { title: planTitle(trip), km: total } : null}
+                    current={hasEndpoints && total > 0 ? { title: planTitle(trip), km: riddenKm(visualTrip) } : null}
                     findPlaces={(text, signal) => searchPlaces(text, searchContext, searchRegion, 6, signal).then(answer => routesPlaces(answer.results ?? [], text))} />
             {:else if searching}
                 <div class="pane-scroll">
@@ -1221,7 +1275,7 @@
                     </div>
                 {/if}
                 {#if !focusedDay && visualRoute}
-                    <div class="trip-summary"><RouteStats distance={total} ascent={visualRoute?.elevation.every(h => h !== null) ? profileAscent(0, 1, visualRoute) : null} descent={visualRoute?.elevation.every(h => h !== null) ? profileDescent(0, 1, visualRoute) : null} walking={visualTrip.bike === 'hiking'} hours={visualRoute ? visualRoute.seconds / 3600 : null} /></div>
+                    <div class="trip-summary"><RouteStats distance={riddenKm(visualTrip)} ascent={visualRoute?.unknownElevationKm === 0 ? profileAscent(0, 1, visualRoute) : null} descent={visualRoute?.unknownElevationKm === 0 ? profileDescent(0, 1, visualRoute) : null} walking={visualTrip.bike === 'hiking'} hours={visualRoute ? visualRoute.seconds / 3600 : null} /></div>
                 {/if}
                 {#if !focusedDay && gaps.length}
                     <p class="closure-note"><Icon name="pin" size={15} /><span>{gapNote(gaps)}</span></p>
@@ -1271,15 +1325,17 @@
             {/if}
         </aside>
         <Resize value={Math.min(sideWidth, maxSide)} min={320} max={maxSide} axis="x" label="Sidebar width" onResize={(value) => sideWidth = value} />
-        <section inert={!ready || libraryBusy || versionsSaving} class="geography" aria-label="Map and elevation" aria-busy={hasEndpoints && !currentRoute}>
-            <div class="map-area" bind:clientHeight={mapHeight} style:--map-height={`${mapHeight}px`}>
+        <section inert={!ready || libraryBusy || versionsSaving} class="geography" class:sunlight={dataLayer?.id === 'sun'} style:--layer-panel-height={`${dateBarHeight}px`} aria-label="Map and elevation" aria-busy={hasEndpoints && !currentRoute}>
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div class="map-area" bind:clientHeight={mapHeight} style:--map-height={`${mapHeight}px`} ondragover={dragOver} ondrop={drop}
+                ondragleave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) dropping = false; }}>
                 <PlannerMap
                     bind:this={map} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={routesOpen ? [] : mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
                     {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} planMuted={routesOpen} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces} {landmarks}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={previewPoint} onDayEndDrag={moveDayEnd}
-                    onLegClick={legClick} onInsert={insert} onDrawn={drawn} onPlaceClick={place => routesOpen ? moveRoutesStart({ coordinate: place.coordinate, name: place.label }) : choosePlace(place)}
+                    onLegClick={legClick} onInsert={(legEndId, coordinate) => insert(legEndId, coordinate, true)} onDrawn={drawn} onPlaceClick={place => routesOpen ? moveRoutesStart({ coordinate: place.coordinate, name: place.label }) : choosePlace(place)}
                     signedRoutes={routesOpen ? finder.mapView : null} signedHovered={finder.hovered} onSignedRoute={id => void finder.select(id)} onSignedHover={id => finder.hovered = id}
                     canPlanRoute={ROUTES_URL ? routeStatus : undefined} onPlanRoute={planNetworkRoute} onIdle={() => mapIdle++}
                     onVisibleRange={(range) => visibleRange = range}
@@ -1325,8 +1381,11 @@
                     </div>
                     <LayerMenu {theme} {dataLayers} bind:shownLayer={shownLayerId} walking={trip.bike === 'hiking'} bind:autoCenter bind:mapOverlays bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
                 </div>
-                {#if dataLayer && layerYear}
-                    <div class="layer-date" bind:clientHeight={dateBarHeight}><LayerDateBar date={shownDate} year={layerYear} variable={dataLayer.variable} onDate={(date) => layerDate = date} /></div>
+                {#if dataLayer && (layerYear || dataLayer.time)}
+                    <div class="layer-date" bind:clientHeight={dateBarHeight}><LayerDateBar date={shownDate} year={layerYear} time={dataLayer.time} legend={dataLayer.time ? dataLayer.legend(theme) : undefined} variable={dataLayer.variable} onDate={(date) => layerDate = date} /></div>
+                {/if}
+                {#if dropping}
+                    <div class="drop-frame"><strong>Drop to open as a plan</strong><span>One file is a route. Several files are a trip.</span></div>
                 {/if}
                 {#if picking || drawing}
                     <div class="mode-chip" role="status">
@@ -1571,6 +1630,22 @@
         flex: 1;
         min-height: 170px;
     }
+    .drop-frame {
+        position: absolute;
+        inset: 16px;
+        z-index: 5;
+        display: grid;
+        place-content: center;
+        gap: 4px;
+        border: 3px dashed var(--rust);
+        border-radius: 14px;
+        background: color-mix(in srgb, var(--panel) 85%, transparent);
+        color: var(--ink);
+        text-align: center;
+        pointer-events: none;
+    }
+    .drop-frame strong { font-size: 18px; }
+    .drop-frame span { color: var(--ink-soft); }
     .map-controls {
         position: absolute;
         top: 16px;
@@ -1651,6 +1726,8 @@
         main > :global([aria-label="Sidebar width"]) { display: none; }
         .planner-pane { max-height: 50dvh; }
         .geography { height: 75dvh; }
+        .geography.sunlight { height: auto; min-height: 75dvh; }
+        .sunlight .map-area { min-height: calc(240px + var(--layer-panel-height)); }
         .status-line { height: auto; min-height: 38px; flex-wrap: wrap; padding-block: 8px; }
         .lab-note { display: none; }
         .legal { margin-left: auto; }

@@ -256,6 +256,42 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
             assert_eq!(value["routes"][0]["edges"]["pushing"], serde_json::json!([[false, 1]]));
         }
     }
+    // The road runs east along the equator from 0 to 0.01 degrees.
+    for (body, status, code) in [
+        (r#"{"line":[[0.001,0],[0.005,0.00002],[0.009,0]],"profile":"touring"}"#, StatusCode::OK, None),
+        (
+            r#"{"line":[[-0.95,0],[0.95,0]],"profile":"touring"}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Some("line_too_long"),
+        ),
+        (
+            r#"{"line":[[0.001,0],[0.005,0.005],[0.009,0]],"profile":"touring"}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Some("line_not_reproducible"),
+        ),
+        (r#"{"line":[[0.005,0],[0.005,0]],"profile":"touring"}"#, StatusCode::BAD_REQUEST, Some("invalid_request")),
+    ] {
+        // SAFETY: The test retains the handle and request bytes and serializes queries.
+        let native_response = native_body(unsafe {
+            native::planner_router_shape(native_router, body.as_ptr(), body.len(), &mut native_status)
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/shape").header("content-type", "application/json").body(Body::from(body)).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+        assert_eq!(status.as_u16(), native_status);
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        assert_eq!(bytes.as_ref(), native_response);
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        match code {
+            Some(code) => assert_eq!(value["code"], code),
+            None => assert_eq!(value, serde_json::json!({"points": [[0.001, 0.0], [0.009, 0.0]], "turnarounds": []})),
+        }
+    }
     let response = app
         .clone()
         .oneshot(

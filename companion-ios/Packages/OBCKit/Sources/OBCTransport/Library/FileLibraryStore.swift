@@ -521,6 +521,8 @@ private struct PlannedRouteFile: Codable {
     /// next upload.
     var uploadedCRC32: UInt32?
     var addedAt: Date
+    /// The planner plan, in the `specs/planner-plan.md` shape.
+    var plan: PlannerPlan?
 
     init(_ record: PlannedRouteRecord) {
         version = 1
@@ -533,6 +535,7 @@ private struct PlannedRouteFile: Codable {
         deviceStoreID = record.deviceLink?.storeID
         uploadedCRC32 = record.uploadedCRC32
         addedAt = record.addedAt
+        plan = record.plan
     }
 
     func record(sourceFileData: Data) -> PlannedRouteRecord {
@@ -552,7 +555,8 @@ private struct PlannedRouteFile: Codable {
             sourceFileData: sourceFileData,
             deviceLink: link,
             uploadedCRC32: uploadedCRC32,
-            addedAt: addedAt
+            addedAt: addedAt,
+            plan: plan
         )
     }
 }
@@ -577,6 +581,7 @@ private struct TripFile: Codable {
     var uploadedKey: UInt64?
     var addedAt: Date
     var editedAt: Date
+    var plan: PlannerPlan?
 
     init(_ trip: Trip) {
         version = FileLibraryStore.tripSchemaVersion
@@ -595,6 +600,7 @@ private struct TripFile: Codable {
         device = trip.deviceLink.map { DeviceCopyDTO(link: $0, crc32: trip.uploadedCRC32) }
         addedAt = trip.addedAt
         editedAt = trip.editedAt
+        plan = trip.plan
     }
 
     var trip: Trip {
@@ -614,7 +620,8 @@ private struct TripFile: Codable {
             uploadedCRC32: device?.crc32,
             uploadedKey: uploadedKey,
             addedAt: addedAt,
-            editedAt: editedAt
+            editedAt: editedAt,
+            plan: plan
         )
     }
 }

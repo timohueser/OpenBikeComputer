@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import OBCDomain
+import OBCPlanner
 import OBCTransport
 
 @MainActor @Observable
@@ -1388,40 +1389,40 @@ public final class MainScreenModel {
         tab = .planned
     }
 
-    /// Land an end-to-end flipped copy at the top of Planned and leave the original alone, so
-    /// the rider keeps both directions. The copy is a fresh library route: new id, no device
-    /// link, uploads like any other. Returns nil when the source route has gone.
-    @discardableResult
-    public func reverseRoute(_ id: RouteID) -> RouteID? {
-        guard let original = plannedRecords[id] else { return nil }
-        let reversedRoute = original.route.reversed()
-        // The header figures, as an import saves them.
-        let totals = RouteObjectCodec.totals(points: reversedRoute.points)
-        let distance = Double(totals?.distanceMeters ?? 0)
-        let climb = Double(totals?.ascentMeters ?? 0)
-        let name = RouteReversal.reversedName(original.summary.name)
-        let newID = RouteID("reversed-\(UUID().uuidString.lowercased())")
-        let summary = RouteSummary(
-            id: newID,
-            name: name,
-            distanceMeters: distance,
-            elevationGainMeters: climb,
-            estimatedDuration: original.bikeType.estimatedDuration(distanceMeters: distance, ascentMeters: climb),
-            pointCount: reversedRoute.points.count,
-            source: original.summary.source,
-            trackPreview: TrackPreview.normalizing(reversedRoute.points.map(\.coordinate))
-        )
-        // The source file is provenance only; nothing re-parses it to rebuild the geometry.
-        let record = PlannedRouteRecord(
-            summary: summary,
-            route: reversedRoute,
-            bikeType: original.bikeType,
-            sourceFileName: original.sourceFileName,
-            sourceFileData: original.sourceFileData,
-            addedAt: now()
-        )
-        addImportedRoute(record)
-        return newID
+    /// Replace a route's line and plan in place. The id, name, source file and device link stay, so
+    /// a copy on the device reads out of date until the next upload.
+    public func saveRouteChanges(_ id: RouteID, to edited: PlannedRouteRecord) {
+        guard let old = plannedRecords[id] else { return }
+        var record = edited
+        record.summary = RouteSummary(
+            id: id, name: old.summary.name, distanceMeters: edited.summary.distanceMeters,
+            elevationGainMeters: edited.summary.elevationGainMeters, estimatedDuration: edited.summary.estimatedDuration,
+            pointCount: edited.summary.pointCount, source: edited.summary.source, trackPreview: edited.summary.trackPreview)
+        record.sourceFileName = old.sourceFileName
+        record.sourceFileData = old.sourceFileData
+        record.deviceLink = old.deviceLink
+        record.uploadedCRC32 = old.uploadedCRC32
+        record.addedAt = old.addedAt
+        plannedRecords[id] = record
+        library.savePlannedRoute(record)
+        if let index = routes.firstIndex(where: { $0.id == id }) { routes[index] = record.summary }
+        routeEditCount += 1
+        refreshOnDeviceStates()
+        rebuildPlannedItems()
+    }
+
+    /// Counts the saved route changes, so a route page builds again on its new line.
+    public private(set) var routeEditCount = 0
+
+    /// The plan a saved route opens with in the planner, under the route's name and bike type. A
+    /// route saved without a plan opens as its kept line.
+    public func plannedPlan(for id: RouteID) -> PlannerPlan? {
+        guard let record = plannedRecords[id],
+            var plan = record.plan ?? PlannerPlan.keptLine(record.route.points, waypoints: record.route.waypoints)
+        else { return nil }
+        plan.name = record.summary.name
+        if record.plan == nil { plan.bike = RouteActivity(record.bikeType).rawValue }
+        return plan
     }
 
     /// A saved planned route whose name matches case-insensitively, so the import edge can

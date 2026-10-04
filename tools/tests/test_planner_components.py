@@ -82,9 +82,10 @@ class ComponentTests(unittest.TestCase):
             "tools/planner_places.py": {"places"},
             "builder/app/src/lib/planner/poi-kinds.json": {"places"},
             "tools/planner_overlays.py": {"overlays"},
-            "tools/planner_map_archive.py": {"terrain"},
-            "firmware/obc-elevation/src/grid.rs": {"terrain", "routing", "overlays"},
-            "firmware/obc-formats/Cargo.toml": {"terrain", "routing", "overlays"},
+            "tools/planner_map_archive.py": {"terrain", "sun"},
+            "firmware/obc-elevation/src/grid.rs": {"terrain", "routing", "overlays", "sun"},
+            "firmware/obc-formats/Cargo.toml": {"terrain", "routing", "overlays", "sun"},
+            "tools/planner_sun_horizons.py": {"sun"},
         }
         for filename, expected in cases.items():
             with self.subTest(filename=filename):
@@ -138,15 +139,32 @@ class ComponentTests(unittest.TestCase):
         changed = bake.specifications(changed_config)
         for selected in ("terrain", "routing"):
             _, active = components.plan(changed, [selected], previous)
-            self.assertEqual(active, {"terrain", "routing", "overlays"})
+            self.assertEqual(active, {"terrain", "routing", "overlays", "sun"})
         digest = components.digest
-        for filename, expected in [("firmware/obc-elevation/src/grid.rs", {"terrain", "routing", "overlays"}),
-                                   ("tools/planner_map_archive.py", {"terrain"})]:
+        for filename, expected in [("firmware/obc-elevation/src/grid.rs", {"terrain", "routing", "overlays", "sun"}),
+                                   ("tools/planner_map_archive.py", {"terrain", "sun"})]:
             with self.subTest(filename=filename):
                 with patch.object(components, "digest", side_effect=lambda path: "changed" if path == bake.maps.ROOT / filename else digest(path)):
                     changed = bake.specifications(config)
                 _, active = components.plan(changed, ["terrain"], previous)
                 self.assertEqual(active, expected)
+
+    def test_sunlight_receives_its_terrain_dependency_and_extends_context(self):
+        config = preparation.recipe(bake.maps.ROOT / "tools/planner-regions/baden-wuerttemberg-switzerland.json")
+        specs = bake.specifications(config)
+        self.assertEqual(specs["sun"]["dependencies"], ["terrain"])
+        context = bake.terrain_coverage(config)
+        for edge in (0, 1): self.assertLess(context[edge], config["bounds"][edge])
+        for edge in (2, 3): self.assertGreater(context[edge], config["bounds"][edge])
+        without_sun = {key: value for key, value in config.items() if key != "sun"}
+        self.assertNotEqual(specs["terrain"], bake.specifications(without_sun)["terrain"])
+        with tempfile.TemporaryDirectory() as temporary:
+            terrain = Path(temporary) / "terrain"
+            stage = Path(temporary) / "sun"
+            with patch.object(bake.maps, "run") as run, patch.object(bake.releases, "archive_metadata", return_value={"sun_format": 3}):
+                bake.build_layer(stage, config, "sun", terrain)
+            command = run.call_args.args
+            self.assertEqual(command[command.index("--terrain") + 1], terrain / "terrain.pmtiles")
 
     def test_receipts_are_verified_atomic_and_reused(self):
         with tempfile.TemporaryDirectory() as temporary:
