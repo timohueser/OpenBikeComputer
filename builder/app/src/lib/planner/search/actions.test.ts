@@ -42,6 +42,16 @@ describe('query edits', () => {
         expect(next.points.find(p=>p.label==='Inn')?.night).toBe(2);
         expect(next.splits?.[1]).toBeCloseTo(.3);
     });
+    it('reverses a loop and keeps its start', async () => {
+        const point = (id: string, kind: 'start' | 'waypoint', coordinate: [number, number]) => ({ id, kind, label: id, coordinate, progress: 0, leg: 'straight' as const });
+        const trip: Trip = { ...emptyTrip(), loop: true, routeOrder: ['a', 'b'], points: [point('home', 'start', [8, 48]), point('a', 'waypoint', [8.1, 48]), point('b', 'waypoint', [8.1, 48.1])] };
+        const refresh = (next: Trip) => calculateLine(next, new AbortController().signal, new LegCache());
+        trip.routing = await refresh(trip);
+        const next = await applyQueryChanges(trip, [{op:'reverse'}], undefined, refresh);
+        expect(next.loop).toBe(true);
+        expect(next.points.find(p => p.kind === 'start')?.id).toBe('home');
+        expect(routeCoordinates(next)).toEqual([...routeCoordinates(trip)].reverse());
+    });
     it('preserves point identities and day commitments on reroute', async () => {
         const base = initialTrip();
         const trip = addRestDay(pinNight(base,1,coordinateAt(routeCoordinates(base),.3),'Inn'),1);

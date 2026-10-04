@@ -79,6 +79,8 @@
         delete (next as unknown as Record<string, unknown>)[key];
         removed = { ...removed, [key]: value }; request = next; edited = true; run(20, next);
     }
+    let field: HTMLInputElement | undefined;
+    export function focus() { field?.focus(); }
     export function more() { run(Math.min(100, Math.max(20, limit + 20)), request, { context: requestContext }); }
     export function retry() { run(Math.max(20, limit), request, { reparse: !edited, context: requestContext }); }
     $effect(() => {
@@ -92,7 +94,7 @@
     <form onsubmit={event => { event.preventDefault(); run(20, request, { reparse: !edited }); }}>
         <div class="query-input" class:edited>
             <PlannerIcon name="search" size={17} />
-            <input aria-label="Find a place or ask about the route" value={text} oninput={e => input(e.currentTarget.value)} placeholder="Find a place, or ask along your route…" maxlength="240" onkeydown={e => { if (e.key === 'Escape') clear(); }} />
+            <input bind:this={field} aria-label="Find a place or ask about the route" value={text} oninput={e => input(e.currentTarget.value)} placeholder="Find a place, or ask along your route…" maxlength="240" onkeydown={e => { if (e.key === 'Escape') clear(); }} />
             {#if text}<button type="button" aria-label="Clear search" class="clear" onclick={clear}><PlannerIcon name="close" size={16} /></button>{/if}
         </div>
     </form>

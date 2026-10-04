@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { addRestDay, coordinateAt, cumulative, initialTrip, pinNight, routeCoordinates } from './editor';
-import { deleteVersion, listVersions, readVersion, saveVersion, versionSummary } from './versions';
+import { deleteVersion, keepVersion, listVersions, readVersion, saveVersion, versionSummary } from './versions';
 
 function memoryStore() {
     const items = new Map<string, string>();
@@ -18,6 +18,15 @@ describe('saved versions', () => {
         expect(readVersion(named.id, store)).toEqual(initialTrip());
         deleteVersion(named.id, store);
         expect(listVersions(store)).toHaveLength(10);
+    });
+
+    it('keeps a plan once when the newest version holds it already', () => {
+        const store = memoryStore();
+        keepVersion(initialTrip(), store);
+        keepVersion(initialTrip(), store);
+        expect(listVersions(store)).toHaveLength(1);
+        keepVersion({ ...initialTrip(), mode: 'route' }, store);
+        expect(listVersions(store)).toHaveLength(2);
     });
 
     it('summarises calendar days, pinned nights and distance', () => {

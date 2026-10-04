@@ -23,11 +23,15 @@
     import { addDays, type DataLayer } from '../../lib/planner/layers/data-layer';
     import type { OverlayOptions } from '../../lib/planner/route-overlays';
     import NearbyLandmark from './NearbyLandmark.svelte';
-    import { presetName } from '../../lib/planner/riding-profiles';
+    import SignedRoutes from './SignedRoutes.svelte';
+    import { presetName, ridingProfiles, type BikeType } from '../../lib/planner/riding-profiles';
+    import { RouteFinder, recordLine, type RouteStart } from '../../lib/planner/route-finder.svelte';
+    import { planTrip, routeBase, type RoutePlan } from '../../lib/planner/signed-route-plan';
+    import type { CatalogRecord } from '../../lib/planner/signed-routes';
     import { storedTrip } from '../../lib/planner/trip-validation';
     import {
         addClickedPoint, addPointNear, addRestDay, applyBudget, closeLoop, coordinateAt, cumulative, emptyTrip, hasEndpoints as endpointsChosen,
-        insertPoint, itineraryDays, kilometres, nearestProgress, nightOrderConflicts, overnightCandidates,
+        insertPoint, itineraryDays, kilometres, planTitle, nearestProgress, nightOrderConflicts, overnightCandidates,
         orderedRoutePoints, overnightWindow, pinNight, removeRestDay, reorderPoint, routeCoordinates, startLoopHere, routeSlice, routeStops,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint, TripHistory, tripDays, routingKey, planOf, storedPlan,
         type Coordinate, type Day, type LegMode, type Place, type PointKind, type RoutePoint, type Trip,
@@ -35,17 +39,17 @@
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import { corridorPlaces, routeDistance } from '../../lib/planner/place-index';
     import { landmarks } from '../../lib/planner/landmarks';
-    import { MAP_BOUNDS, PLACES_URL } from '../../lib/planner/map-data';
+    import { MAP_BOUNDS, PLACES_URL, ROUTES_URL } from '../../lib/planner/map-data';
     import { coordinateName, visitName } from '../../lib/planner/point-names';
     import { SEARCH_URL, HOSTED_SEARCH, SEARCH_REGIONS, REGION_NAME } from '../../lib/planner/search/config';
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileAscent, profileDescent, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import { searchPlaces, placeDetails, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
-    import { asPlace } from '../../lib/planner/search/presentation';
+    import { asPlace, routesPlaces } from '../../lib/planner/search/presentation';
     import { buildQueryRoute } from '../../lib/planner/search/route-client';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
-    import type { Version } from '../../lib/planner/versions';
+    import { keepVersion, type Version } from '../../lib/planner/versions';
 
     import { routePreview } from '../../lib/planner/route-preview';
 
@@ -206,6 +210,18 @@
     let map: PlannerMap | undefined;
     const history = new TripHistory();
     let revision = $state(0);
+    // The Routes view replaces the panel; the finder keeps its filters and list while the view is closed.
+    const finder = new RouteFinder();
+    let routesOpen = $state(false);
+    // The plan came from the Routes view, so "Back to routes" shows under the search box.
+    let fromRoutes = $state(false);
+    const bike = $derived<BikeType>(trip.bike ?? 'touring');
+    const nouns = { any: ['loop or route', 'loops and routes'], loop: ['loop', 'loops'], 'one-way': ['one-way route', 'one-way routes'] } as const;
+    const routesNoun = (count = 0) => nouns[finder.filters.shape][count === 1 ? 0 : 1];
+    // The names of map places change as map tiles load, so naming reads `mapIdle`.
+    let mapIdle = $state(0);
+    const placeName = $derived.by(() => { void mapIdle; return (coordinate: Coordinate) => map?.placeName(coordinate); });
+    const previewKm = $derived(finder.preview ? cumulative(finder.preview.coordinates).at(-1)! : 0);
 
     const maxProfile = $derived(Math.max(DRAWER_MIN, Math.min(340, viewportHeight - 400)));
     const drawerHeight = $derived(profileOpen ? Math.min(profileHeight, maxProfile) : DRAWER_CLOSED);
@@ -262,7 +278,7 @@
         }));
     });
     const results = $derived((searchState.answer?.results ?? []).map(result => ({ place: asPlace(result) })));
-    const visiblePlaces = $derived(searching ? results.map(result => result.place) : overnightContext ? candidates.map(candidate => candidate.place) : []);
+    const visiblePlaces = $derived(routesOpen ? [] : searching ? results.map(result => result.place) : overnightContext ? candidates.map(candidate => candidate.place) : []);
     const highlights = $derived(highlightedCategories);
     const highlightLimit = 300;
     // Basemap places within 5 km of the route, nearest first.
@@ -606,7 +622,9 @@
     }
 
     function emptyClick(coordinate: Coordinate) {
-        if (picking) {
+        if (routesOpen) {
+            moveRoutesStart({ coordinate });
+        } else if (picking) {
             picking = false;
             pending = coordinate;
             selectedId = 'pending';
@@ -644,6 +662,90 @@
         }
         commit(setLegMode(trip, legEndId, mode), mode === 'straight' ? 'Leg set to a straight line' : 'Leg set to routed');
     }
+
+    /** Fits the search circle and the listed routes. */
+    function showRoutesArea() {
+        const start = finder.start;
+        if (!start) return;
+        const [lon, lat] = start.coordinate, dLat = finder.filters.radiusKm / 111.32, dLon = dLat / Math.cos(lat * Math.PI / 180);
+        map?.fitCoordinates([[lon - dLon, lat - dLat], [lon + dLon, lat + dLat], ...finder.mapView?.lines.flatMap(route => route.line) ?? []]);
+    }
+
+    /** Opens the Routes view, from a new start or with the list it had. */
+    function openRoutes(start?: RouteStart) {
+        if (start) finder.start = start;
+        void finder.select(null);
+        clearSelection();
+        routesOpen = true;
+        // The route networks follow the activity, so the map shows the kind of route the view lists.
+        if (mapOverlays.network !== 'none') mapOverlays = { ...mapOverlays, network: bike === 'hiking' ? 'hiking' : bike === 'mtb' ? 'mtb' : 'cycling' };
+        showRoutesArea();
+    }
+
+    function closeRoutes() {
+        routesOpen = false;
+        finder.hovered = null;
+        if (hasEndpoints) map?.fitRoute();
+    }
+
+    /** A map click moves the start; the nearest place names it. */
+    function moveRoutesStart(start: RouteStart) {
+        finder.start = start.name ? start : { ...start, near: map?.placeName(start.coordinate) };
+        void finder.select(null);
+    }
+
+    function planSignedRoute(route: CatalogRecord, plan: RoutePlan) {
+        const planned = planTrip(routeBase(route, trip), plan, route.loop);
+        // The start and finish take the name of the nearest place.
+        const next = { ...planned, points: planned.points.map(p => p.kind === 'start' || p.kind === 'finish' ? { ...p, label: map?.placeName(p.coordinate) ?? p.label } : p) };
+        // The plan that this replaces stays in Versions, so no confirmation is needed.
+        let kept = '';
+        if (trip.points.length) {
+            try { keepVersion(trip); kept = `${planTitle(trip)} saved in Versions`; } catch { kept = 'The plan before could not be saved'; }
+        }
+        commit(next, [`${route.name ?? route.ref} planned`, kept].filter(Boolean).join(' · '));
+        undoable = !!kept;
+        routesOpen = false;
+        fromRoutes = true;
+        finder.hovered = null;
+        clearSelection();
+        exitSearch();
+        list = 'plan';
+        showRoute = true;
+        pointing = undefined;
+        map?.fitCoordinates(plan.points);
+    }
+
+    async function planNetworkRoute(id: number, at: Coordinate) {
+        try {
+            const route = await finder.find(id, at);
+            const plan = route && await finder.dataPlan(route);
+            if (!route) message = 'This route is not in the route catalog.';
+            else if (plan) planSignedRoute(route, plan);
+            else message = 'This route is too long for one plan. Plan one of its stages from the Routes view.';
+        } catch {
+            message = 'The route could not load. Check your connection and retry.';
+        }
+    }
+
+    // The map shows the selected route whole; back at the list, it shows the list again.
+    let showedDetail = false;
+    $effect(() => {
+        const detail = routesOpen ? finder.detail : null;
+        if (detail) untrack(() => map?.fitCoordinates(recordLine(detail.route, detail.stages)));
+        else if (showedDetail && routesOpen) untrack(showRoutesArea);
+        showedDetail = !!detail;
+    });
+
+    // The detail plan is routed once, for its profile and time. The leg cache keeps the legs for "Plan this route".
+    $effect(() => {
+        const detail = finder.detail, plan = routesOpen ? finder.plan : undefined;
+        if (!detail || !plan) return;
+        const draft = { ...untrack(() => planTrip(routeBase(detail.route, trip), plan, detail.route.loop)), live: true };
+        const abort = new AbortController();
+        calculateLine(draft, abort.signal, legs).then(line => { if (!abort.signal.aborted) finder.routed = { plan, line }; }, () => {});
+        return () => abort.abort();
+    });
 
     function closeToStart() {
         clearSelection();
@@ -747,7 +849,7 @@
 
     function removePoint() {
         if (!selectedPoint) return;
-        commit(removeRoutePoint(trip, selectedPoint.id), 'Point removed');
+        commit(removeRoutePoint(trip, selectedPoint.id, coordinate => map?.placeName(coordinate)), 'Point removed');
         pointing = undefined;
         clearSelection();
     }
@@ -763,8 +865,15 @@
         if (autoCenter) map?.centerOn(coordinate);
     }
 
+    /** Whether the route-network details can plan a relation, and why not. */
+    async function routeStatus(id: number, at: Coordinate): Promise<'plan' | 'too-long' | 'missing'> {
+        const route = await finder.find(id, at);
+        return !route ? 'missing' : await finder.dataPlan(route).catch(() => null) ? 'plan' : 'too-long';
+    }
+
     function newPlan() {
         if (trip.points.length && !window.confirm(`Start a new ${trip.mode === 'route' ? 'route' : 'trip'}? This clears your current plan. You can use Undo to restore it.`)) return;
+        fromRoutes = false;
         commit({ ...emptyTrip(trip.mode), bike: trip.bike, preset: trip.preset }, 'New plan · Undo to restore');
         clearSelection();
         exitSearch();
@@ -829,6 +938,7 @@
 
     async function loadSearchSample() {
         try {
+            fromRoutes = false;
             const response = await fetch(`${SEARCH_URL}/sample`);
             if (!response.ok) throw new Error('The example route is unavailable. Retry shortly.');
             const { coordinates: line } = await response.json() as { coordinates: Coordinate[] };
@@ -850,6 +960,7 @@
             let routingNote = '';
             const next = await applyQueryChanges(before, answer.changes, (points,bike,goal) => buildQueryRoute(points,bike,goal,note => routingNote = note), next => calculateLine(next, new AbortController().signal, legs));
             if (JSON.stringify(answer.changes) !== JSON.stringify(searchState.answer?.changes) || before !== trip) throw new Error('The plan changed. Review the search again.');
+            if (answer.changes.some(change => change.op === 'route')) fromRoutes = false;
             commit(next, [answer.description ?? 'Query applied', routingNote].filter(Boolean).join(' · '));
             exitSearch(); clearSelection();
         } catch (error) { queryApplyError = (error as Error).message; }
@@ -862,6 +973,7 @@
     }
 
     function restoreVersion(saved: Trip, name: string) {
+        fromRoutes = false;
         commit(planOf(saved), `Restored ‘${name}’`);
         undoable = true;
         clearSelection();
@@ -909,10 +1021,18 @@
     />
     <main>
         <aside class="planner-pane" aria-label="Trip planning">
-            <Query bind:this={searchBox} bind:text={query} bind:region={searchRegion} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { clearSelection(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} />
-            {#if searching}
+            <div class="query-slot" style:display={routesOpen ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:region={searchRegion} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { clearSelection(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} /></div>
+            {#if fromRoutes && hasEndpoints && finder.start && !routesOpen && !searching}
+                <button type="button" class="back-to-routes" onclick={() => openRoutes()}><Icon name="back" size={15} />Find another route</button>
+            {/if}
+            {#if routesOpen}
+                <SignedRoutes {finder} activity={bike} {theme} onClose={closeRoutes} onPlan={planSignedRoute} {placeName}
+                    current={hasEndpoints && total > 0 ? { title: planTitle(trip), km: total } : null}
+                    findPlaces={(text, signal) => searchPlaces(text, searchContext, searchRegion, 6, signal).then(answer => routesPlaces(answer.results ?? [], text))} />
+            {:else if searching}
                 <div class="pane-scroll">
-                    <QueryResults state={searchState} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
+                    <QueryResults routes={ROUTES_URL ? `${ridingProfiles[bike].label} · ${routesNoun()} within ${finder.filters.radiusKm} km` : undefined}
+                        onRoutes={place => openRoutes({ coordinate: [place.lon, place.lat], name: place.name })} state={searchState} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
                 </div>
             {:else if !hasEndpoints}
                 <div class="start-plan pane-scroll">
@@ -991,12 +1111,14 @@
         <section class="geography" aria-label="Map and elevation" aria-busy={hasEndpoints && !currentRoute}>
             <div class="map-area" bind:clientHeight={mapHeight} style:--map-height={`${mapHeight}px`}>
                 <PlannerMap
-                    bind:this={map} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
-                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
+                    bind:this={map} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={routesOpen ? [] : mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
+                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} planMuted={routesOpen} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces} {landmarks}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={previewPoint} onDayEndDrag={moveDayEnd}
-                    onLegClick={legClick} onInsert={insert} onDrawn={drawn} onPlaceClick={choosePlace}
+                    onLegClick={legClick} onInsert={insert} onDrawn={drawn} onPlaceClick={place => routesOpen ? moveRoutesStart({ coordinate: place.coordinate, name: place.label }) : choosePlace(place)}
+                    signedRoutes={routesOpen ? finder.mapView : null} signedHovered={finder.hovered} onSignedRoute={id => void finder.select(id)} onSignedHover={id => finder.hovered = id}
+                    canPlanRoute={ROUTES_URL ? routeStatus : undefined} onPlanRoute={planNetworkRoute} onIdle={() => mapIdle++}
                     onVisibleRange={(range) => visibleRange = range}
                 >
                     {#snippet popup()}
@@ -1005,12 +1127,14 @@
                                 <MapCallout
                                     kind={calloutKind} {trip} {days} {overnightNote} {dayLabels} {night} {candidates} {legMode}
                                     onEndpoint={chooseEndpoint} point={selectedPoint} place={selectedPlace} coordinate={previewCoordinate} {detailsError}
+                                    onRoutes={ROUTES_URL ? () => openRoutes(selectedPlace ? { coordinate: [...selectedPlace.coordinate], name: selectedPlace.label }
+                                        : { coordinate: [...spot!.coordinate], near: map?.placeName(spot!.coordinate) }) : undefined}
                                     onClose={clearSelection}
                                     onAddHere={addHere}
                                     onLegMode={setLeg}
                                     onInsert={() => insert(spot!.legEndId!, spot!.coordinate)}
                                     onLoop={closeToStart}
-                                    onLoopStart={() => { const { legEndId, coordinate } = spot!; clearSelection(); commit(startLoopHere(trip, legEndId!, coordinate), 'Loop start moved'); }}
+                                    onLoopStart={() => { const { legEndId, coordinate } = spot!; clearSelection(); commit(startLoopHere(trip, legEndId!, coordinate, map?.placeName(coordinate)), 'Loop start moved'); }}
                                     onPick={pickOnMap}
                                     onSelectPlace={selectPlace}
                                     onStay={stayHere}
@@ -1049,10 +1173,15 @@
                 {/if}
             </div>
             <Resize value={drawerHeight} min={DRAWER_CLOSED} max={maxProfile} axis="y" label="Elevation height" onResize={resizeProfile} />
-            {#if !visualRoute}
+            {#if routesOpen && finder.preview}
+                <Profile lineData={finder.preview} walking={bike === 'hiking'} height={drawerHeight} open={profileOpen} onToggle={() => profileOpen = !profileOpen} total={previewKm} {theme}
+                    days={[{ number: 1, from: 0, to: 1, distance: previewKm, hours: finder.preview.seconds / 3600, pinned: undefined }]} dayLabels={{ 1: 1 }}
+                    activeNight={0} band={null} onNight={() => {}} onDayEndDrag={() => {}} onHover={() => {}} />
+            {:else if routesOpen || !visualRoute}
                 <section class="empty-profile" aria-label="Elevation profile" style:height={`${drawerHeight}px`}>
                     <DrawerTitle title="Elevation & surface" open={profileOpen} onToggle={() => profileOpen = !profileOpen} />
-                    {#if profileOpen}<div><Icon name="route" size={24} /><p>{hasEndpoints ? 'The profile appears when your route is ready.' : 'See the climbs and surfaces along your route.'}</p><small>{hasEndpoints ? routingStatus : stops.length ? `Choose a ${nextEndpoint} to see the profile.` : 'Choose a start and finish to get started.'}</small></div>{/if}
+                    {#if profileOpen && routesOpen}<div><Icon name="route" size={24} /><p>The profile appears when you pick a route.</p><small>Hover a result to see it on the map.</small></div>
+                    {:else if profileOpen}<div><Icon name="route" size={24} /><p>{hasEndpoints ? 'The profile appears when your route is ready.' : 'See the climbs and surfaces along your route.'}</p><small>{hasEndpoints ? routingStatus : stops.length ? `Choose a ${nextEndpoint} to see the profile.` : 'Choose a start and finish to get started.'}</small></div>{/if}
                 </section>
             {:else}
             <Profile
@@ -1249,6 +1378,8 @@
         background: var(--panel);
     }
     .trip-summary { padding: 0 16px; }
+    .back-to-routes { display: flex; align-items: center; gap: 6px; min-height: 32px; margin: -4px 12px 8px; padding: 0 6px; border-radius: 6px; color: var(--ink-soft); font-size: 13px; text-align: left; }
+    .back-to-routes:hover { background: var(--parchment-2); color: var(--ink); }
     .closure-note { display: flex; align-items: center; gap: 8px; margin: 0 16px 12px; font-size: 13px; color: var(--ink-soft); }
     .closure-note :global(svg) { flex: none; }
     .closure-note span { flex: 1; }

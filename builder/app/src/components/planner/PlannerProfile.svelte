@@ -229,7 +229,8 @@
         {/each}
     </div>
     <div class="axis">
-        {#each ticks as km, i (i)}<span>{km.toFixed(span < .25 ? 1 : 0)} km</span>{/each}
+        <!-- Ticks less than 1 km apart need a decimal, or the labels repeat. -->
+        {#each ticks as km, i (i)}<span>{km.toFixed(span * total / 4 < 1 ? 1 : 0)} km</span>{/each}
     </div>
     <Surface {walking} line={lineData} from={shown.from} to={shown.to} onHover={inspect} />
     {@render strip?.(shown.from, shown.to, inspect)}

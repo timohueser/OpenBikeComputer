@@ -109,13 +109,8 @@ export function routePlan(route: RouteRecord): { points: Coordinate[]; turnaroun
     const via = route.via;
     return {
         points: [line[0], ...via.map(index => line[index]), line[line.length - 1]],
-        turnarounds: (route.turnarounds ?? []).map(index => via.indexOf(index) + 1),
+        // Vertex 0 is plan index 0 of a loop that turns back at its own start; a one-way route cannot turn back at its start.
+        // The route request sends interior indices only.
+        turnarounds: (route.turnarounds ?? []).filter(index => index > 0 || route.loop).map(index => index === 0 ? 0 : via.indexOf(index) + 1),
     };
-}
-
-/** Index of the line vertex nearest to `place`, the first on a tie: where a loop plan starts. */
-export function nearestVertex(line: Coordinate[], place: Coordinate): number {
-    const kx = Math.cos(place[1] * Math.PI / 180);
-    const squared = ([lon, lat]: Coordinate) => ((lon - place[0]) * kx) ** 2 + (lat - place[1]) ** 2;
-    return line.reduce((best, vertex, index) => squared(vertex) < squared(line[best]) ? index : best, 0);
 }

@@ -23,7 +23,8 @@ function point(value: unknown): value is RoutePoint {
         && typeof value.kind === 'string' && ['start', 'finish', 'pass', 'via', 'waypoint', 'detour', 'night', 'marker'].includes(value.kind)
         && (value.leg === undefined || (typeof value.leg === 'string' && ['routed', 'straight', 'drawn'].includes(value.leg)))
         && (value.drawn === undefined || (Array.isArray(value.drawn) && value.drawn.every(coordinate)))
-        && (value.autoLabel === undefined || typeof value.autoLabel === 'boolean');
+        && (value.autoLabel === undefined || typeof value.autoLabel === 'boolean')
+        && (value.turnaround === undefined || value.turnaround === true);
 }
 
 /** Storage crosses a trust boundary: both drafts and versions must satisfy the route model. */
@@ -35,6 +36,7 @@ export function isTrip(value: unknown): value is Trip {
         || !finite(value.target) || value.target < 1 || !finite(value.limit) || value.limit < 0
         || (value.climbTarget !== undefined && (!finite(value.climbTarget) || value.climbTarget < 0))
         || (value.mode !== undefined && value.mode !== 'route' && value.mode !== 'trip')
+        || (value.name !== undefined && typeof value.name !== 'string')
         || (value.loop !== undefined && value.loop !== true)) return false;
 
     const { points, days } = value;
