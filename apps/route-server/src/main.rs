@@ -3,13 +3,7 @@ use tower_http::cors::CorsLayer;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let directory =
-        std::env::args().nth(1).ok_or("Usage: route-server PACKAGE_DIRECTORY [--verify|--build-overlays]")?;
-    if std::env::args().nth(2).as_deref() == Some("--build-overlays") {
-        route_server::prepare_overlays(Path::new(&directory))?;
-        eprintln!("Overlay index prepared");
-        return Ok(());
-    }
+    let directory = std::env::args().nth(1).ok_or("Usage: route-server PACKAGE_DIRECTORY [--verify]")?;
     if std::env::args().nth(2).as_deref() == Some("--verify") {
         let path = Path::new(&directory);
         route_engine::open(path)?.verify()?;

@@ -1,8 +1,8 @@
 //! Map access uses the importer's mode rules, without treating every one-way road as closed.
+use crate::source::{self, Access, Way};
 use route_engine::{
     closures::Kind,
     model::{BIKE, FOOT, PUSH},
-    osm::{self, Access, Way},
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -13,11 +13,11 @@ pub fn feature(way: &Way) -> Option<Value> {
         return None;
     }
     let construction = get("highway") == Some("construction");
-    let defaults = if construction { 0 } else { osm::highway_access(get("highway")?)?.1 };
-    let conditional = osm::conditional_modes(way.tags.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    let defaults = if construction { 0 } else { source::highway_access(get("highway")?)?.1 };
+    let conditional = source::conditional_modes(way.tags.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     let directions = ["forward", "backward"];
     // The router's modes; the strict modes also close every mode that an access value doubts.
-    let access = |routing| directions.map(|d| if construction { 0 } else { osm::access(get, defaults, d, routing) });
+    let access = |routing| directions.map(|d| if construction { 0 } else { source::access(get, defaults, d, routing) });
     let (modes, strict) = (access(true).map(|m| m & !conditional), access(false));
     let status = |walking| {
         if construction {
@@ -32,8 +32,8 @@ pub fn feature(way: &Way) -> Option<Value> {
                 return "";
             }
             let private = directions.iter().any(|&d| {
-                osm::inherited(&get, if walking { "foot" } else { "bicycle" }, d)
-                    .is_some_and(|value| osm::classify(value) == Access::Uncertain(Kind::Private))
+                source::inherited(&get, if walking { "foot" } else { "bicycle" }, d)
+                    .is_some_and(|value| source::classify(value) == Access::Uncertain(Kind::Private))
             });
             return if private { "private" } else { "limited" };
         }
@@ -77,7 +77,7 @@ pub fn feature(way: &Way) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use route_engine::osm::Tags;
+    use crate::source::Tags;
     fn way(pairs: &[(&str, &str)]) -> Way {
         let mut tags: Tags = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         tags.entry("highway".into()).or_insert("path".into());

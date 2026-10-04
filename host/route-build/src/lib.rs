@@ -2,24 +2,55 @@ mod base;
 pub mod blocks;
 pub mod catalog;
 pub mod cost;
-pub mod extract;
 pub mod landmarks;
 pub mod layout;
 #[cfg(feature = "obc-terrain")]
 pub mod obc_terrain;
 pub mod osm;
+pub mod overlays;
 mod road_bike;
+pub mod source;
 pub mod terrain;
 
+use base::Dictionary;
 use route_engine::{
     closures::Closures,
-    endpoints::Dictionary,
-    model::{Graph, Profile},
+    model::{Point, Profile, Road},
     package::{self, Manifest, CELL, ROADS_PER_PAGE},
     storage,
     table::Table,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+/// The imported region: directed roads, their junctions and turn rules, and the source OSM
+/// objects that costs, closures, the overlay index and the route catalog read.
+#[derive(Clone, Debug, Default)]
+pub struct Graph {
+    pub points: Vec<Point>,
+    pub node_ids: Vec<i64>,
+    pub node_access: Vec<u8>,
+    pub osm: source::Data,
+    pub roads: Vec<Road>,
+    /// Forbidden transitions between directed roads. Sorted for binary search.
+    pub forbidden: Vec<(u32, u32)>,
+    pub forbidden_foot: Vec<(u32, u32)>,
+    pub warnings: Vec<String>,
+}
+
+impl Graph {
+    pub fn departures(&self) -> Vec<Vec<u32>> {
+        let mut result = vec![Vec::new(); self.points.len()];
+        for (id, road) in self.roads.iter().enumerate() {
+            result[road.from as usize].push(id as u32);
+        }
+        result
+    }
+
+    pub fn permits_turn(&self, from: u32, to: u32, walking: bool) -> bool {
+        let forbidden = if walking { &self.forbidden_foot } else { &self.forbidden };
+        forbidden.binary_search(&(from, to)).is_err()
+    }
+}
 
 /// Writes a closed regional package with all legal transitions and complete road geometry.
 /// The caller publishes the manifest only after all objects have been written.
@@ -47,8 +78,59 @@ pub fn prepare(
             }
         }
     }
-    let (mut manifest, edges) = prepare_base(graph, region, bounds, source_sha256, &mut write)?;
-    fn pairs(tags: &route_engine::osm::Tags) -> impl Iterator<Item = (&str, &str)> + Clone {
+    let edges = base::edges(&graph.roads)?;
+    let roads = u32::try_from(graph.roads.len()).map_err(|_| "Too many roads")?;
+    let mut manifest = Manifest {
+        landmarks: None,
+        closures: None,
+        format: package::FORMAT,
+        region,
+        bounds,
+        source_sha256,
+        attribution: "© OpenStreetMap contributors; ODbL 1.0".into(),
+        warnings: graph.warnings.clone(),
+        roads,
+        graph: route_engine::base::write_topology(roads, &edges, &mut write)?,
+        geometry: Table::default(),
+        spatial: BTreeMap::new(),
+        metrics: BTreeMap::new(),
+        costs: Table::default(),
+    };
+    let mut cells = BTreeMap::<(i32, i32), BTreeSet<u32>>::new();
+    for (id, road) in graph.roads.iter().enumerate() {
+        if road.shape.len() < 2 || road.class > 6 {
+            return Err("Road lacks valid geometry or class".into());
+        }
+        for pair in road.shape.windows(2) {
+            let (a, b) = (package::cell(pair[0]), package::cell(pair[1]));
+            if (a.0.abs_diff(b.0) as u64 + 1) * (a.1.abs_diff(b.1) as u64 + 1) > 4096 {
+                return Err(format!("Road segment spans more than 4096 spatial cells of {} microdegrees", CELL));
+            }
+            for lat in a.0.min(b.0)..=a.0.max(b.0) {
+                for lon in a.1.min(b.1)..=a.1.max(b.1) {
+                    cells.entry((lat, lon)).or_default().insert(id as u32);
+                }
+            }
+        }
+    }
+    let geometry = graph
+        .roads
+        .chunks(ROADS_PER_PAGE as usize)
+        .map(|roads| write(&route_engine::geometry::encode(roads)?))
+        .collect::<Result<Vec<_>, String>>()?;
+    manifest.geometry = Table::write(&geometry, &mut write)?;
+    let mut groups = BTreeMap::<String, BTreeMap<String, String>>::new();
+    for (cell, roads) in cells {
+        let group = package::cell_key((cell.0.div_euclid(100), cell.1.div_euclid(100)));
+        groups
+            .entry(group)
+            .or_default()
+            .insert(package::cell_key(cell), write(&storage::encode(&roads.into_iter().collect::<Vec<_>>())?)?);
+    }
+    for (group, cells) in groups {
+        manifest.spatial.insert(group, write(&storage::encode(&cells)?)?);
+    }
+    fn pairs(tags: &source::Tags) -> impl Iterator<Item = (&str, &str)> + Clone {
         tags.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
     let ways: Vec<_> = graph
@@ -56,11 +138,7 @@ pub fn prepare(
         .iter()
         .map(|road| {
             let direction = if road.reversed { "backward" } else { "forward" };
-            graph
-                .osm
-                .ways
-                .get(&road.way)
-                .map_or_else(Vec::new, |way| route_engine::osm::closures(pairs(&way.tags), &[direction]))
+            graph.osm.ways.get(&road.way).map_or_else(Vec::new, |way| source::closures(pairs(&way.tags), &[direction]))
         })
         .collect();
     let nodes: HashMap<u32, _> = (0..graph.points.len() as u32)
@@ -108,96 +186,6 @@ pub fn prepare(
     }
     manifest.costs = Table::write(&dictionary.into_values(), &mut write)?;
     manifest.landmarks = Some(landmarks);
-    manifest.closures = write_closures(&closures, &mut write)?;
+    manifest.closures = if closures.roads.is_empty() { None } else { Some(write(&storage::encode(&closures)?)?) };
     Ok(manifest)
-}
-
-/// Writes the table only when a road has a possible closure.
-fn write_closures(
-    closures: &Closures,
-    write: &mut impl FnMut(&[u8]) -> Result<String, String>,
-) -> Result<Option<String>, String> {
-    if closures.roads.is_empty() {
-        return Ok(None);
-    }
-    write(&storage::encode(closures)?).map(Some)
-}
-
-fn prepare_base(
-    graph: &Graph,
-    region: String,
-    bounds: [f64; 4],
-    source_sha256: Vec<String>,
-    mut write: impl FnMut(&[u8]) -> Result<String, String>,
-) -> Result<(Manifest, Vec<(u32, u32)>), String> {
-    let edges = base::edges(&graph.roads)?;
-    let roads = u32::try_from(graph.roads.len()).map_err(|_| "Too many roads")?;
-    let mut manifest = Manifest {
-        landmarks: None,
-        closures: None,
-        format: package::FORMAT,
-        region,
-        bounds,
-        source_sha256,
-        attribution: "© OpenStreetMap contributors; ODbL 1.0".into(),
-        warnings: graph.warnings.clone(),
-        roads,
-        graph: route_engine::base::write_topology(roads, &edges, &mut write)?,
-        geometry: Table::default(),
-        osm: package::OsmPages::default(),
-        spatial: BTreeMap::new(),
-        metrics: BTreeMap::new(),
-        costs: Table::default(),
-    };
-    macro_rules! source_pages {
-        ($field:ident) => {
-            let keys = graph
-                .osm
-                .$field
-                .values()
-                .collect::<Vec<_>>()
-                .chunks(128)
-                .map(|page| write(&storage::encode(&page)?))
-                .collect::<Result<Vec<_>, String>>()?;
-            manifest.osm.$field = Table::write(&keys, &mut write)?;
-        };
-    }
-    source_pages!(nodes);
-    source_pages!(ways);
-    source_pages!(relations);
-    let mut cells = BTreeMap::<(i32, i32), BTreeSet<u32>>::new();
-    for (id, road) in graph.roads.iter().enumerate() {
-        if road.shape.len() < 2 || road.class > 6 {
-            return Err("Road lacks valid geometry or class".into());
-        }
-        for pair in road.shape.windows(2) {
-            let (a, b) = (package::cell(pair[0]), package::cell(pair[1]));
-            if (a.0.abs_diff(b.0) as u64 + 1) * (a.1.abs_diff(b.1) as u64 + 1) > 4096 {
-                return Err(format!("Road segment spans more than 4096 spatial cells of {} microdegrees", CELL));
-            }
-            for lat in a.0.min(b.0)..=a.0.max(b.0) {
-                for lon in a.1.min(b.1)..=a.1.max(b.1) {
-                    cells.entry((lat, lon)).or_default().insert(id as u32);
-                }
-            }
-        }
-    }
-    let geometry = graph
-        .roads
-        .chunks(ROADS_PER_PAGE as usize)
-        .map(|roads| write(&route_engine::geometry::encode(roads)?))
-        .collect::<Result<Vec<_>, String>>()?;
-    manifest.geometry = Table::write(&geometry, &mut write)?;
-    let mut groups = BTreeMap::<String, BTreeMap<String, String>>::new();
-    for (cell, roads) in cells {
-        let group = package::cell_key((cell.0.div_euclid(100), cell.1.div_euclid(100)));
-        groups
-            .entry(group)
-            .or_default()
-            .insert(package::cell_key(cell), write(&storage::encode(&roads.into_iter().collect::<Vec<_>>())?)?);
-    }
-    for (group, cells) in groups {
-        manifest.spatial.insert(group, write(&storage::encode(&cells)?)?);
-    }
-    Ok((manifest, edges))
 }

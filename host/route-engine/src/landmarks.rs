@@ -103,44 +103,6 @@ pub fn write(
     Ok(Table { len, blocks, pages: None })
 }
 
-/// Deleting roads preserves feasible potentials when costs and surviving turns stay unchanged.
-pub fn project(
-    package: &Package<impl Source>,
-    roads: &[u32],
-    write: &mut impl FnMut(&[u8]) -> std::result::Result<String, String>,
-) -> std::result::Result<Option<Index>, String> {
-    let Some(index) = &package.manifest().landmarks else { return Ok(None) };
-    let mapping: Vec<u32> =
-        read(package, &index.mapping, 0..index.mapping.len, index.junctions - 1).map_err(|e| e.to_string())?;
-    let mut junctions = BTreeMap::new();
-    let mut selected = Vec::new();
-    let mut remapped = Vec::with_capacity(roads.len());
-    for &road in roads {
-        let old = *mapping.get(road as usize).ok_or("Invalid projected road")?;
-        let next = junctions.len() as u32;
-        let new = *junctions.entry(old).or_insert_with(|| {
-            selected.push(old);
-            next
-        });
-        remapped.push(new);
-    }
-    let mut projected = Index {
-        scale: index.scale,
-        junctions: selected.len() as u32,
-        mapping: self::write(remapped, write)?,
-        profiles: BTreeMap::new(),
-    };
-    for (name, tables) in &index.profiles {
-        let mut columns = Vec::new();
-        for table in tables {
-            let values: Vec<u16> = read(package, table, 0..table.len, u16::MAX as u32).map_err(|e| e.to_string())?;
-            columns.push(self::write(selected.iter().map(|&node| values[node as usize] as u32), write)?);
-        }
-        projected.profiles.insert(name.clone(), columns);
-    }
-    Ok(Some(projected))
-}
-
 /// The junction of each selected road, numbered densely over the junctions the selection uses.
 pub struct Junctions {
     pub mapping: Arc<Vec<u32>>,

@@ -1,6 +1,10 @@
 use super::*;
+use crate::{
+    source::{Node, Way},
+    Graph,
+};
 use route_engine::{
-    model::{Graph, Point, Profile, Road, Surface, BIKE, FOOT, PUSH},
+    model::{Point, Profile, Road, Surface, BIKE, FOOT, PUSH},
     package::{digest, Package},
 };
 use std::sync::Arc;
@@ -25,9 +29,9 @@ fn way(a: i64, b: i64) -> i64 {
 /// Inside one zoom 9 cell.
 const ORIGIN: i32 = 100_000;
 
-/// A 7 by 7 grid of streets 445 m apart on rolling ground, with node `10 * row + column`. The way
-/// from node 0 to node 1 is T3.
-fn grid(relations: Vec<Relation>) -> Package<Memory> {
+/// A 7 by 7 grid of streets 445 m apart on rolling ground, with node `10 * row + column`, and its
+/// source objects. The way from node 0 to node 1 is T3.
+fn grid(relations: Vec<Relation>) -> (Package<Memory>, Data) {
     let mut graph = Graph::default();
     let mut index = HashMap::new();
     for row in 0..7 {
@@ -85,7 +89,7 @@ fn grid(relations: Vec<Relation>) -> Package<Memory> {
         Ok(digest(bytes))
     })
     .unwrap();
-    Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&manifest).unwrap()).unwrap()
+    (Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&manifest).unwrap()).unwrap(), graph.osm)
 }
 
 fn route(id: i64, pairs: &[(&str, &str)], ways: impl IntoIterator<Item = i64>) -> Relation {
@@ -113,7 +117,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     };
     let mut corner = path(&[0, 1, 2, 3, 4, 14, 24, 34, 44]);
     corner.remove(5);
-    let package = grid(vec![
+    let (package, osm) = grid(vec![
         // East, then north: the router needs a shaping point near the corner. The way from node
         // 14 to node 24 is missing, a gap of 445 m.
         route(1, &trail, corner),
@@ -130,9 +134,8 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         long(5, &[1, 2]),
         long(6, &[5]),
     ]);
-    let relations = read!(package, relations, Relation, |_| true);
     let selection = Selection::whole(package.fork());
-    let (records, report) = catalog(&selection, relations, false, 2)?;
+    let (records, report) = catalog(&selection, osm, false, 2)?;
     let by_id: HashMap<i64, &Value> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r)).collect();
     let dropped: Vec<_> = report.dropped.iter().map(|(reason, ids)| (reason.as_str(), ids.clone())).collect();
     assert_eq!(dropped, [("ExtractEdge", vec![7]), ("Gap", vec![3]), ("NestedLongRoute", vec![6])]);

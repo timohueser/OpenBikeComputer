@@ -1,6 +1,7 @@
+use route_build::Graph;
 use route_engine::{
     data::{RoutingData, Selection},
-    model::{Graph, Pace, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH},
+    model::{Pace, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH},
     package::{digest, Package, Source},
     snap::{Candidate, Policy, REACH_M},
     Control, Error, Request, Route, Router,
@@ -43,79 +44,6 @@ fn edges(route: &Route, channel: &str) -> Value {
     runs.as_array().unwrap().iter().flat_map(|run| vec![run[0].clone(); run[1].as_u64().unwrap() as usize]).collect()
 }
 
-#[test]
-fn profile_selection_keeps_closed_routes_and_removes_unused_objects() {
-    use route_engine::directory::{Directory, Writer};
-    let root = std::env::temp_dir().join(format!("route-select-test-{}", std::process::id()));
-    std::fs::create_dir(&root).unwrap();
-    struct Cleanup(std::path::PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let _cleanup = Cleanup(root.clone());
-    let input = root.join("input");
-    std::fs::create_dir(&input).unwrap();
-    let (source, manifest) = package_with_profiles(&fixture(), &Profile::presets());
-    let mut writer = Writer::create(&input).unwrap();
-    for bytes in source.0.values() {
-        writer.write(bytes).unwrap();
-    }
-    writer.finish().unwrap();
-    std::fs::write(input.join("manifest.json"), &manifest).unwrap();
-    let output = root.join("selected");
-    let command = |profiles: &str| {
-        std::process::Command::new(env!("CARGO_BIN_EXE_route-select"))
-            .arg(&input)
-            .arg("--output")
-            .arg(&output)
-            .arg("--profiles")
-            .arg(profiles)
-            .arg("--runtime")
-            .output()
-            .unwrap()
-    };
-    assert!(!command("unknown").status.success());
-    assert!(!output.exists());
-    assert!(command("touring,touring/less-climbing").status.success());
-    let selected = Selection::whole(Directory::open(&output).unwrap());
-    selected.verify().unwrap();
-    let kept = selected.package().manifest();
-    assert_eq!(kept.metrics.len(), 2);
-    assert!(kept.osm.tables().all(|table| table.len == 0 && table.blocks.is_empty()));
-    let original = Package::open(source.clone(), &manifest).unwrap();
-    assert_eq!(kept.source_sha256, original.manifest().source_sha256);
-    assert_eq!(kept.geometry.blocks, original.manifest().geometry.blocks);
-    assert_eq!(kept.geometry.len, original.manifest().geometry.len);
-    assert_eq!(std::fs::read(input.join("manifest.json")).unwrap(), manifest);
-    let index = std::fs::read(output.join("pages.idx")).unwrap();
-    assert_eq!(u64::from_le_bytes(index[8..16].try_into().unwrap()) as usize, selected.objects().unwrap().len());
-    assert!(
-        std::fs::metadata(output.join("pages.bin")).unwrap().len()
-            < std::fs::metadata(input.join("pages.bin")).unwrap().len()
-    );
-    assert!(kept.metric("road").is_err());
-    let mut before = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
-    let mut after = Router::new(selected, 768 * 1024 * 1024);
-    for profile in ["touring", "touring/less-climbing"] {
-        let request = Request {
-            points: vec![[0.001, 0.0], [0.029, 0.02]],
-            profile: profile.into(),
-            pace: Pace::default(),
-            alternatives: false,
-            alternatives_only: false,
-            turnarounds: vec![],
-            start_position: None,
-            end_position: None,
-        };
-        let expected = before.route(&request, &Control::default()).unwrap();
-        let actual = after.route(&request, &Control::default()).unwrap();
-        assert_eq!(actual.cost, expected.cost);
-        assert_eq!(actual.geometry, expected.geometry);
-    }
-    assert!(!command("touring").status.success());
-}
 fn fixture() -> Graph {
     let points: Vec<_> =
         (0..12).map(|i| Point { lat: i / 4 * 10_000, lon: i % 4 * 10_000, elevation: NO_ELEVATION }).collect();
@@ -177,7 +105,7 @@ fn with_sources(mut graph: Graph) -> Graph {
         let surface = ["", "asphalt", "compacted", "gravel", "dirt", "sand"][road.surface as usize];
         graph.osm.ways.insert(
             road.way,
-            route_engine::osm::Way {
+            route_build::source::Way {
                 id: road.way,
                 nodes: vec![road.from as i64, road.to as i64],
                 tags: [("highway".into(), highway.into()), ("surface".into(), surface.into())].into_iter().collect(),
@@ -304,160 +232,6 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
 }
 
 #[test]
-fn bounding_box_repreparation_preserves_whole_roads_and_matches_independent_search() {
-    let graph = with_sources(fixture());
-    let profiles = Profile::presets();
-    let (source, manifest) = package_with_profiles(&graph, &profiles);
-    let input = routing(source, &manifest);
-    assert!(
-        route_build::extract::prepare(&input, "invalid".into(), [-2., -1., 0., 0.], true, |_| unreachable!()).is_err()
-    );
-    let mut objects = HashMap::new();
-    let bounds = [0.005, -0.001, 0.025, 0.021];
-    let manifest = route_build::extract::prepare(&input, "box".into(), bounds, true, |bytes| {
-        let key = digest(bytes);
-        objects.insert(key.clone(), bytes.to_vec());
-        Ok(key)
-    })
-    .unwrap();
-    assert_eq!(manifest.metrics.len(), profiles.len());
-    assert_eq!(manifest.bounds, bounds);
-    assert_eq!(
-        serde_json::to_value(&manifest.osm).unwrap(),
-        serde_json::to_value(&input.package().manifest().osm).unwrap()
-    );
-    let retained: Vec<_> =
-        graph.roads.iter().enumerate().filter(|(_, r)| r.from % 4 != 0 || r.to % 4 != 0).map(|(id, _)| id).collect();
-    assert!(retained.len() < graph.roads.len());
-    assert_eq!(manifest.roads as usize, retained.len());
-    let package = Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&manifest).unwrap()).unwrap();
-    Selection::whole(package.fork()).verify().unwrap();
-    let roads: Vec<_> = (0..manifest.roads).map(|id| package.road(id).unwrap()).collect();
-    let remap: HashMap<_, _> = roads
-        .iter()
-        .enumerate()
-        .map(|(new, road)| {
-            let old = retained
-                .iter()
-                .copied()
-                .find(|&old| (graph.roads[old].from, graph.roads[old].to) == (road.from, road.to))
-                .unwrap();
-            (old as u32, new as u32)
-        })
-        .collect();
-    let values = |package: &Package<Memory>, table: &route_engine::table::Table| -> Vec<u32> {
-        table
-            .blocks
-            .iter()
-            .flat_map(|key| {
-                let deltas: Vec<i64> = package.read(key).unwrap();
-                let mut value = 0;
-                deltas.into_iter().map(move |delta| {
-                    value += delta;
-                    value as u32
-                })
-            })
-            .collect()
-    };
-    let original = input.package().manifest().landmarks.as_ref().unwrap();
-    let projected = manifest.landmarks.as_ref().unwrap();
-    let before = values(input.package(), &original.mapping);
-    let after = values(&package, &projected.mapping);
-    assert_eq!(projected.scale, original.scale);
-    for (profile, columns) in &original.profiles {
-        for (i, column) in columns.iter().enumerate() {
-            let original_values = values(input.package(), column);
-            let projected_values = values(&package, &projected.profiles[profile][i]);
-            for (&old, &new) in &remap {
-                assert_eq!(
-                    original_values[before[old as usize] as usize],
-                    projected_values[after[new as usize] as usize]
-                );
-            }
-        }
-    }
-    let remap_turns = |turns: &[(u32, u32)]| {
-        let mut mapped: Vec<_> = turns.iter().filter_map(|(a, b)| Some((*remap.get(a)?, *remap.get(b)?))).collect();
-        mapped.sort_unstable();
-        mapped
-    };
-    let selected = Graph {
-        roads,
-        forbidden: remap_turns(&graph.forbidden),
-        forbidden_foot: remap_turns(&graph.forbidden_foot),
-        ..graph.clone()
-    };
-    assert!(selected.roads.iter().flat_map(|r| &r.shape).any(|p| p.lon == 0));
-    let mut router = Router::new(Selection::whole(package), 768 * 1024 * 1024);
-    let coordinates = [[0.0075, 0.0], [0.015, 0.01], [0.0225, 0.02]];
-    for profile in &profiles {
-        for &from in &coordinates {
-            for &to in &coordinates {
-                let snaps: Vec<_> = [from, to]
-                    .iter()
-                    .map(|&[lon, lat]| {
-                        router
-                            .snap(
-                                Point {
-                                    lon: (lon * 1e6_f64).round() as i32,
-                                    lat: (lat * 1e6_f64).round() as i32,
-                                    elevation: NO_ELEVATION,
-                                },
-                                &profile.name,
-                                Policy::default(),
-                            )
-                            .unwrap()
-                    })
-                    .collect();
-                let expected = snaps[0]
-                    .retained
-                    .iter()
-                    .flat_map(|a| snaps[1].retained.iter().filter_map(|b| oracle(&selected, profile, a, b)))
-                    .min();
-                let actual = router.route(
-                    &Request {
-                        points: vec![from, to],
-                        profile: profile.name.clone(),
-                        pace: Pace::default(),
-                        alternatives: false,
-                        alternatives_only: false,
-                        turnarounds: vec![],
-                        start_position: None,
-                        end_position: None,
-                    },
-                    &Control::default(),
-                );
-                match (expected, actual) {
-                    (Some(cost), Ok(route)) => assert_eq!(cost, route.cost, "{} {from:?} -> {to:?}", profile.name),
-                    (None, Err(Error::NoPath)) => {}
-                    (expected, actual) => panic!("expected {expected:?}, got {actual:?}"),
-                }
-            }
-        }
-    }
-    let mut foot_only = graph.clone();
-    for &id in &retained {
-        foot_only.roads[id].access = FOOT;
-    }
-    let (source, bytes) = package_with_profiles(&foot_only, &profiles);
-    let input = routing(source, &bytes);
-    let mut objects = HashMap::new();
-    let manifest =
-        route_build::extract::prepare(&input, "foot".into(), [0.014, -0.0001, 0.016, 0.0001], false, |bytes| {
-            let key = digest(bytes);
-            objects.insert(key.clone(), bytes.to_vec());
-            Ok(key)
-        })
-        .unwrap();
-    assert_eq!(manifest.metrics.len(), profiles.len());
-    let package = Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&manifest).unwrap()).unwrap();
-    for id in 0..manifest.roads {
-        assert!(!package.allowed("road", id).unwrap());
-        assert!(package.allowed("hiking", id).unwrap());
-    }
-}
-
-#[test]
 fn lazy_endpoint_costs_preserve_every_profile_and_partial_offset() {
     let mut graph = fixture();
     for (id, road) in graph.roads.iter_mut().enumerate() {
@@ -491,32 +265,6 @@ fn lazy_endpoint_costs_preserve_every_profile_and_partial_offset() {
             }
         }
     }
-}
-
-#[test]
-fn query_does_not_read_source_tag_pages_but_installation_verifies_them() {
-    let graph = fixture();
-    let (source, manifest) = package(&graph);
-    let package = routing(source.clone(), &manifest);
-    package.verify().unwrap();
-    let mut objects = (*source.0).clone();
-    for key in package.package().manifest().osm.tables().flat_map(|t| &t.blocks) {
-        objects.remove(key);
-    }
-    let incomplete = routing(Memory(Arc::new(objects)), &manifest);
-    assert!(matches!(incomplete.verify(), Err(Error::MissingRegion(_))));
-    let mut router = Router::new(incomplete, 768 * 1024 * 1024);
-    let request = Request {
-        points: vec![coordinate(&graph.roads[0], 0.2), coordinate(&graph.roads[0], 0.8)],
-        profile: "road".into(),
-        pace: Pace::default(),
-        alternatives: false,
-        alternatives_only: false,
-        turnarounds: vec![],
-        start_position: None,
-        end_position: None,
-    };
-    assert!(router.route(&request, &Control::default()).is_ok());
 }
 
 #[test]
@@ -1067,7 +815,7 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
                 uncertain_access: false,
                 structure: false,
                 access: if i == 1 {
-                    route_engine::osm::access(
+                    route_build::source::access(
                         |key| match key {
                             "highway" => Some("footway"),
                             "bicycle" => Some("no"),
@@ -1138,7 +886,7 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
             [("access", "permit"), ("bicycle:conditional", "no @ (Nov-May)"), ("foot:conditional", "no @ (wet)")];
         let tags = std::iter::once(("highway", "secondary")).chain(if way == 1 { closures.to_vec() } else { vec![] });
         let tags = tags.map(|(key, value)| (key.to_owned(), value.to_owned())).collect();
-        graph.osm.ways.insert(way, route_engine::osm::Way { id: way, nodes: vec![way, way + 1], tags });
+        graph.osm.ways.insert(way, route_build::source::Way { id: way, nodes: vec![way, way + 1], tags });
     }
     let (source, manifest) = package(&graph);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
@@ -1164,26 +912,6 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
     // The SAC and MTB grades travel with the road geometry, like the surface.
     assert_eq!(edges(&route, "sac_scale"), json!([null, 2, null]));
     assert_eq!(edges(&route, "mtb_scale"), json!([null, 0, null]));
-    // An extraction renumbers its roads and keeps their closures.
-    let (source, bytes) = package(&graph);
-    let mut objects = HashMap::new();
-    let extracted = route_build::extract::prepare(
-        &routing(source, &bytes),
-        "box".into(),
-        [0.0015, -0.001, 0.0025, 0.001],
-        false,
-        |bytes| {
-            let key = digest(bytes);
-            objects.insert(key.clone(), bytes.to_vec());
-            Ok(key)
-        },
-    )
-    .unwrap();
-    let mut router =
-        Router::new(routing(Memory(Arc::new(objects)), &serde_json::to_vec(&extracted).unwrap()), 768 << 20);
-    request.points = vec![[0.0016, 0.0], [0.0024, 0.0]];
-    let route = router.route(&request, &Control::default()).unwrap();
-    assert_eq!(edges(&route, "closures"), json!([walking, null]));
 }
 
 #[test]
@@ -1227,7 +955,7 @@ fn a_route_avoids_a_private_road_unless_a_shaping_point_is_on_it() {
         graph
             .osm
             .ways
-            .insert(way as i64, route_engine::osm::Way { id: way as i64, nodes: vec![a as i64, b as i64], tags });
+            .insert(way as i64, route_build::source::Way { id: way as i64, nodes: vec![a as i64, b as i64], tags });
     }
     let (source, manifest) = package(&graph);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);

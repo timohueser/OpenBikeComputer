@@ -1,10 +1,13 @@
 //! Compile source attributes and terrain into additive routing costs.
-use crate::road_bike::{self, WayCost};
+use crate::{
+    road_bike::{self, WayCost},
+    source::Id,
+    Graph,
+};
 use route_engine::{
     closures::Closure,
     cost::{turn, CostBasis, CostParameters, RoadCost},
-    model::{Graph, Profile, Weighting, BIKE, FOOT, PUSH},
-    osm::Id,
+    model::{Profile, Weighting, BIKE, FOOT, PUSH},
 };
 use std::collections::HashMap;
 
@@ -233,7 +236,7 @@ mod tests {
 
     #[test]
     fn cycling_networks_favour_touring_by_level_without_discounting_walks_or_pushing() {
-        use route_engine::osm::{Relation, Way};
+        use crate::source::{Relation, Way};
         let shape = vec![point(0, 0.0), point(1000, 0.0)];
         let mut graph = Graph {
             points: shape.clone(),
@@ -329,7 +332,7 @@ mod tests {
         };
         graph.osm.ways.insert(
             1,
-            route_engine::osm::Way {
+            crate::source::Way {
                 id: 1,
                 nodes: vec![0, 1, 2],
                 tags: [("highway".into(), "residential".into())].into_iter().collect(),
@@ -360,7 +363,7 @@ mod tests {
             ..Graph::default()
         };
         let tags = [("highway".into(), "residential".into())].into_iter().collect();
-        graph.osm.ways.insert(1, route_engine::osm::Way { id: 1, nodes: vec![0, 1, 2], tags });
+        graph.osm.ways.insert(1, crate::source::Way { id: 1, nodes: vec![0, 1, 2], tags });
         let closure = |kind| (BIKE, Closure { kind, condition: String::new() });
         assert_eq!(Doubts::modes(&[closure(Kind::Seasonal), closure(Kind::Conditional)]), 0);
         assert_eq!(Doubts::modes(&[closure(Kind::Discouraged)]), BIKE);

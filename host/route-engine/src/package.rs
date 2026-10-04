@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 
-pub const FORMAT: u32 = 7;
+pub const FORMAT: u32 = 8;
 pub const MAX_MANIFEST_BYTES: usize = 128 * 1024 * 1024;
 pub const ROADS_PER_PAGE: u32 = 128;
 pub const CELL: i32 = 10_000;
@@ -50,7 +50,6 @@ pub struct Manifest {
     pub roads: u32,
     pub graph: base::Topology,
     pub geometry: Table,
-    pub osm: OsmPages,
     /// One-degree directories contain the fine snap cells.
     pub spatial: BTreeMap<String, String>,
     pub metrics: BTreeMap<String, Metric>,
@@ -69,7 +68,6 @@ impl Manifest {
             .tables()
             .into_iter()
             .chain([&self.geometry, &self.costs])
-            .chain(self.osm.tables())
             .chain(self.landmarks.iter().flat_map(|index| index.tables()))
             .chain(self.metrics.values().flat_map(|m| m.weights.tables().into_iter().chain([&m.allowed, &m.costs])))
     }
@@ -110,8 +108,8 @@ impl Manifest {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Endpoint<C = RoadCost> {
-    pub cost: Option<C>,
+pub struct Endpoint {
+    pub cost: Option<RoadCost>,
     pub arrival: u32,
     /// States from which this road can legally be entered.
     pub departures: Vec<Departure>,
@@ -121,19 +119,6 @@ pub struct Endpoint<C = RoadCost> {
 pub struct Departure {
     pub state: u32,
     pub penalty: u64,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct OsmPages {
-    pub nodes: Table,
-    pub ways: Table,
-    pub relations: Table,
-}
-
-impl OsmPages {
-    pub fn tables(&self) -> impl Iterator<Item = &Table> {
-        [&self.nodes, &self.ways, &self.relations].into_iter()
-    }
 }
 
 pub fn digest(bytes: &[u8]) -> String {

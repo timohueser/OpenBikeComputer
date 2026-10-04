@@ -7,18 +7,13 @@ A digest is lowercase SHA-256 as 64 hexadecimal characters. Each object name
 is the digest of its complete stored bytes. The package ID is the digest of the
 exact UTF-8 manifest bytes. Reformatting a manifest changes its ID.
 
-The manifest format is `7`. Its JSON fields are defined by `Manifest` and
+The manifest format is `8`. Its JSON fields are defined by `Manifest` and
 `Metric` in `host/route-engine/src/package.rs`. Bounds are
 `[west, south, east, north]` in degrees. Metric IDs equal their profile names.
 Source digests identify the input data. Attribution and warnings travel with
 the package.
 
-Bounds define query endpoint coverage. A bounding box extraction retains each
-intersecting directed road in full. Its route geometry can extend outside these
-bounds. The extraction command reports the complete geometry envelope as
-`geometry_bounds`; this report field is not part of the package manifest.
-Route optimality applies to the retained graph. Connections through omitted
-roads are absent, even when a complete parent region contains such a route.
+Bounds define query endpoint coverage.
 
 Every referenced object must be present in a complete download. Missing objects
 are errors, not empty graph cells. Objects are immutable. A consumer must not
@@ -47,9 +42,6 @@ always refers to the actual stored bytes.
 
 | Manifest reference | Decoded type | Ordering |
 | --- | --- | --- |
-| `osm.nodes` | `Vec<osm::Node>` | OSM ID, 128 nodes per page |
-| `osm.ways` | `Vec<osm::Way>` | OSM ID, 128 ways per page |
-| `osm.relations` | `Vec<osm::Relation>` | OSM ID, 128 relations per page |
 | `geometry` | `geometry::Columns` | Directed road ID, 128 roads per page |
 | `closures` | `closures::Closures` | `(road, entry)` pairs by directed road ID |
 | `spatial` directory | `BTreeMap<String, String>` | Fine cell key to road-list digest |
@@ -80,19 +72,8 @@ Elevation stores each `f32` bit pattern XOR the previous bit pattern, with zero
 as the first predecessor. Column lengths must equal the sum of shape lengths.
 Reconstruction preserves every coordinate and elevation bit.
 
-Source pages preserve all tags on retained highway and ferry ways, their
-referenced nodes within bounds, and relations that contain these elements or
-other retained relations. Members retain IDs, types, order and roles. References
-outside the clipped source set remain IDs; their objects need not be present.
-Source node heights remain unknown; an `ele` tag remains source text. Terrain
-samples belong to the directed road geometry. An extraction from a prepared
-package can retain its complete source OSM object closure, including objects
-outside the requested bounds.
-
-A runtime-only package can have empty OSM tables after all routing attributes
-and overlay features are compiled. Source hashes and attribution stay present.
-Build inputs stay on the preparation host. Removing source tables does not
-remove road geometry, access rules, turn rules, costs, or overlay information.
+The package holds no source OSM objects. Source hashes and attribution identify
+the input. Terrain samples belong to the directed road geometry.
 
 Metric `allowed` holds one bit per directed road: road `i` uses bit `i % 64`
 of word `i / 64`. Its table length is `ceil(roads / 64)`. It agrees with endpoint
@@ -160,13 +141,10 @@ junction distances with each legal road cost divided by `scale` and rounded
 down. It omits turn penalties from these lower bounds. Distances saturate at
 65535. The exact search still uses all prepared road and turn costs.
 
-A bounding box extraction prepares new bounds for its retained graph. It does
-not reuse distance columns whose junction IDs refer to the parent package.
-
 ## Grid selections
 
 `routing/blocks.json` has `format: 2`. `source` is the source manifest SHA-256.
-`data` uses the format 7 manifest structure with selected bounds and region.
+`data` uses the format 8 manifest structure with selected bounds and region.
 Each sparse table adds `pages`, an ascending list of source page numbers,
 parallel to `blocks`. `len` remains the source column length. An absent page
 is unavailable, not an empty page.

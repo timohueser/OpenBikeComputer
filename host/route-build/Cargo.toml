@@ -8,7 +8,7 @@ license = "GPL-3.0-only"
 
 [features]
 obc-terrain = ["dep:obc-dem"]
-planner-dem = ["obc-terrain", "dep:image", "dep:rusqlite"]
+planner-dem = ["obc-terrain", "dep:image"]
 
 [[bin]]
 name = "planner-dem"
@@ -19,8 +19,9 @@ required-features = ["planner-dem"]
 route-engine = { path = "../route-engine" }
 osmpbfreader = "0.19"
 serde_json = "1"
+postcard = { version = "1", features = ["alloc"] }
+rusqlite = { version = "0.38", features = ["bundled"] }
 sha2 = "0.10"
 clap = { version = "4", features = ["derive"] }
 obc-dem = { path = "../obc-dem", default-features = false, features = ["geotiff"], optional = true }
 image = { version = "0.25", default-features = false, features = ["webp"], optional = true }
-rusqlite = { version = "0.38", features = ["bundled"], optional = true }

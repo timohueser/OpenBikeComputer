@@ -90,21 +90,6 @@ impl Closures {
             .collect();
         (!closures.is_empty()).then_some(closures)
     }
-
-    /// The table for new road IDs, where `ids[new]` is the old road ID.
-    pub fn select(&self, ids: impl IntoIterator<Item = u32>) -> Self {
-        let mut roads: Vec<(u32, u16)> = ids
-            .into_iter()
-            .enumerate()
-            .flat_map(|(new, old)| {
-                let new = new as u32;
-                let start = self.roads.partition_point(|&(id, _)| id < old);
-                self.roads[start..].iter().take_while(move |&&(id, _)| id == old).map(move |&(_, entry)| (new, entry))
-            })
-            .collect();
-        roads.sort_unstable();
-        Self { roads, entries: self.entries.clone() }
-    }
 }
 
 #[cfg(test)]
@@ -136,9 +121,6 @@ mod tests {
         assert_eq!(table.closing(3, PUSH), Some(vec![permit.clone(), wet]));
         assert_eq!(table.closing(7, FOOT), None);
         assert_eq!(table.closing(5, BIKE), None);
-        let selected = table.select([7, 5, 3]);
-        assert_eq!(selected.closing(0, BIKE), Some(vec![season]));
-        assert_eq!(selected.closing(2, FOOT), table.closing(3, FOOT));
         assert!(Closures::build([(7, vec![(BIKE, permit.clone())]), (3, vec![(BIKE, permit)])]).is_err());
     }
 }

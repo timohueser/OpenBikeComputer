@@ -2,11 +2,8 @@
 
 import json
 import os
-from pathlib import Path
 import re
 import shutil
-import sqlite3
-import tempfile
 
 try:
     from . import planner_maps as maps, planner_sources as sources, planner_release as releases
@@ -45,28 +42,6 @@ def add_map(folder, name):
     manifest = json.loads((folder / "manifest.json").read_bytes())
     manifest["files"][name] = {"bytes": (folder / name).stat().st_size, "sha256": sources.digest(folder / name)}
     (folder / "manifest.json").write_bytes(releases.encoded(manifest))
-
-
-def runtime_routing(routing):
-    """Keep compiled routing, overlays and the route catalog; omit their source OSM tables."""
-    manifest = json.loads((routing / "manifest.json").read_bytes())
-    if not any(table["len"] for table in manifest["osm"].values()):
-        return
-    with tempfile.TemporaryDirectory(prefix=".runtime-", dir=routing.parent) as directory:
-        stage = Path(directory) / "routing"
-        maps.run(maps.ROOT / "target/release/route-select", routing, "--output", stage, "--runtime")
-        shutil.copyfile(routing / "overlays.sqlite", stage / "overlays.sqlite")
-        shutil.copyfile(routing / "route-catalog.json", stage / "route-catalog.json")
-        with sqlite3.connect(stage / "overlays.sqlite") as db:
-            db.execute("UPDATE metadata SET package=?", (sources.digest(stage / "manifest.json"),))
-        maps.run(maps.ROOT / "target/release/route-server", stage, "--verify")
-        backup = Path(directory) / "source"
-        routing.rename(backup)
-        try:
-            stage.rename(routing)
-        except BaseException:
-            backup.rename(routing)
-            raise
 
 
 def prepare(args):

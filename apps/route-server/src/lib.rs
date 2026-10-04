@@ -1,4 +1,3 @@
-mod access;
 pub mod native;
 mod native_overlays;
 use axum::{
@@ -30,10 +29,6 @@ mod overlay_source;
 mod overlays;
 pub use overlay_source::OverlaySource;
 pub use overlays::Overlays;
-
-pub fn prepare_overlays(directory: &Path) -> Result<(), Error> {
-    overlays::Overlays::build(directory)
-}
 
 type Engine = Router<Selection<Files>>;
 
