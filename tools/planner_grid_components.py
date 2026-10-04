@@ -46,6 +46,17 @@ def partition_routing(stage, source, selection):
     return files
 
 
+def partition_routes(stage, catalog, names):
+    files = {}
+    for name, document in blocks.route_tiles(catalog, names).items():
+        filename = f"routes/tiles/{name}.json"
+        path = stage / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(runtime.encoded(document))
+        files[filename] = path
+    return files
+
+
 def joined_fonts(stage, source, release):
     files = blocks.offline_fonts(source, release, stage)
     aliases = {name: f"offline/fonts/{path.name}" for path, names in files.items() for name in names}
@@ -66,7 +77,8 @@ def publish(source, routing, output, cache=None):
         if producer in (partition_maps, joined_fonts):
             paths = [*paths, maps.ROOT / "tools/requirements-planner-maps.txt"]
         dependency_functions = {partition_maps: [blocks.map_tiles], partition_search: [blocks.search_lookup, blocks.search_shard],
-                                joined_fonts: [blocks.offline_fonts, blocks.glyph_ranges, blocks.label_texts], partition_routing: [], partition_overlays: []}
+                                joined_fonts: [blocks.offline_fonts, blocks.glyph_ranges, blocks.label_texts],
+                                partition_routes: [blocks.route_tiles], partition_routing: [], partition_overlays: []}
         spec = components.specification(name, components.implementation([producer, offline.pack_file, offline.item, offline.verify, *dependency_functions.get(producer, [])], paths), inputs,
                                         {"zoom": blocks.ZOOM, "map_zoom": blocks.MAP_ZOOM, "compressed": sorted(offline.COMPRESSED), "chunk": offline.CHUNK}, bounds)
         def produce(stage):
@@ -91,6 +103,9 @@ def publish(source, routing, output, cache=None):
         return name
 
     selection = [{"id": name, "bounds": bounds} for name, bounds in blocks.cells(coverage)]
+    route_catalog = f"routes/{release['region']}.json"
+    package("grid-route-catalog", {"source": release["files"][route_catalog]}, partition_routes,
+            lambda stage: partition_routes(stage, source / route_catalog, [cell["id"] for cell in selection]))
     paths = components.rust_sources("host/route-build")
     root, _ = package("grid-routing", {"routing": release["routing_package"]}, partition_routing,
                       lambda stage: partition_routing(stage, source, selection), paths=paths)
@@ -163,7 +178,7 @@ def publish(source, routing, output, cache=None):
         package(f"grid-overlays-{name}", {"source": release["files"]["routing/overlays.sqlite"], "routing": release["routing_package"]}, partition_overlays,
                 lambda stage: partition_overlays(stage, source / "routing/overlays.sqlite", overlay, bounds, release["routing_package"]), bounds,
                 paths=[maps.ROOT / "tools/planner_cutout.py"])
-        geographic.append({**cell, "routing": routing_cells.get(name), "files": [*cell_files, overlay]})
+        geographic.append({**cell, "routing": routing_cells.get(name), "files": [*cell_files, overlay, f"routes/tiles/{name}.json"]})
         grid_cells.append({**cell, "files": [filename.removeprefix("search/") for filename in cell_files]})
     metadata(f"search/{release['region']}.grid.json", {"format": 3 if split else 2, "metadata": search_meta,
              "cells": grid_cells if split else selection})

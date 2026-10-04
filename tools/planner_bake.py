@@ -111,6 +111,7 @@ def build_routing(stage, osm, args, config):
              "--country", config["access"], "--bounds", ",".join(map(str, config["bounds"])),
              "--profiles", ",".join(config["profiles"]), "--dem", args.dem_dir, *reference)
     maps.run(maps.ROOT / "target/release/route-server", routing, "--build-overlays")
+    maps.run(maps.ROOT / "target/release/route-catalog", routing, "--countries", ",".join(config["countries"]))
     preparation.runtime_routing(routing)
     for path in routing.iterdir(): path.rename(stage / path.name)
     routing.rmdir()
@@ -168,7 +169,7 @@ def specifications(config, prepared=None):
     add("terrain", build_terrain, {"elevation": elevation}, {"terrain_bounds": maps.terrain_bounds(bounds)}, paths=terrain_paths,
         functions=[terrain_inputs, maps.compact_archive, maps.verify_archive])
     routing_paths = components.rust_sources("host/route-build", "apps/route-server")
-    add("routing", build_routing, {"osm": osm, "elevation": elevation}, {"region": config["region"], "access": config["access"], "profiles": config["profiles"]}, paths=routing_paths,
+    add("routing", build_routing, {"osm": osm, "elevation": elevation}, {"region": config["region"], "access": config["access"], "countries": config["countries"], "profiles": config["profiles"]}, paths=routing_paths,
         functions=[terrain_inputs, preparation.runtime_routing])
     add("overlays", build_overlays, {}, dependencies=["routing"], paths=[maps.ROOT / path for path in
         ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_overlays.py", "tools/requirements-planner-maps.txt")])

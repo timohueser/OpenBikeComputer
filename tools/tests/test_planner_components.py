@@ -59,6 +59,11 @@ def sample_release(root, changed=False):
     model = root / "search/model/labels.json"
     model.parent.mkdir()
     model.write_bytes(b"{}")
+    routes = root / "routes/test.json"
+    routes.parent.mkdir()
+    cell = next(iter(blocks.cells(BOUNDS)))[0]
+    routes.write_bytes(runtime.encoded({"format": 1, "routes": [{"id": 123, "kind": "hiking", "name": "Tiny trail",
+        "cells": [cell], "line_udeg": [7755000, 48005000, 100, 0], "via": []}]}))
     document = {"format": 1, "region": "test", "bounds": BOUNDS, "terrain_bounds": BOUNDS, "osm_sha256": "a" * 64,
         "routing_package": package, "profiles": ["touring"], "sources": {},
         "files": {path.relative_to(root).as_posix(): {"bytes": path.stat().st_size, "sha256": runtime.digest(path)}
@@ -69,7 +74,7 @@ def sample_release(root, changed=False):
 
 class ComponentTests(unittest.TestCase):
     def test_component_keys_include_invoked_producers_and_local_rust_dependencies(self):
-        config = preparation.recipe(bake.maps.ROOT / "tools/planner-regions/baden-wuerttemberg.json")
+        config = preparation.recipe(bake.maps.ROOT / "tools/planner-regions/baden-wuerttemberg-switzerland.json")
         original = bake.specifications(config)
         digest = components.digest
         cases = {
@@ -110,7 +115,7 @@ class ComponentTests(unittest.TestCase):
                 built[name] = (folder, {"files": {filename: {"bytes": (folder / filename).stat().st_size,
                     "sha256": runtime.digest(folder / filename)} for filename in filenames}})
             args = argparse.Namespace(data_dir=root / "updated", source_cache=root / "cache", osm=None,
-                recipe=bake.maps.ROOT / "tools/planner-regions/baden-wuerttemberg.json", device_catalog="https://maps.test/catalog.json")
+                recipe=bake.maps.ROOT / "tools/planner-regions/baden-wuerttemberg-switzerland.json", device_catalog="https://maps.test/catalog.json")
             config = {"region": "test", "bounds": BOUNDS, "osm": {"sha256": document["osm_sha256"]}, "probe": {}}
             def seal(stage, *_args):
                 copied = stage / "device/catalog.json"
@@ -123,7 +128,7 @@ class ComponentTests(unittest.TestCase):
             self.assertEqual((args.data_dir / "device/catalog.json").read_bytes(), b'{"url":"normalized"}\n')
 
     def test_shared_elevation_changes_select_routing_but_visual_terrain_edits_do_not(self):
-        config = preparation.recipe(bake.maps.ROOT / "tools/planner-regions/baden-wuerttemberg.json")
+        config = preparation.recipe(bake.maps.ROOT / "tools/planner-regions/baden-wuerttemberg-switzerland.json")
         original = bake.specifications(config)
         previous = {name: {"spec": spec} for name, spec in original.items()}
         changed_config = json.loads(json.dumps(config))
@@ -161,7 +166,7 @@ class ComponentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "checksum"): cache.build(spec, lambda _: None)
 
     def test_producer_keys_and_selection_keep_address_work_out_of_a_poi_update(self):
-        config = preparation.recipe(bake.maps.ROOT / "tools/planner-regions/baden-wuerttemberg.json")
+        config = preparation.recipe(bake.maps.ROOT / "tools/planner-regions/baden-wuerttemberg-switzerland.json")
         original = bake.specifications(config)
         digest = components.implementation
         def poi_change(functions=(), paths=()):
@@ -210,7 +215,8 @@ class ComponentTests(unittest.TestCase):
                     catalog.append({**cell, "manifest": manifest})
                 (output / "catalog.json").write_bytes(runtime.encoded({"cells": catalog}))
             with patch.object(grid.maps, "run", side_effect=route_blocks):
-                grid.publish(source, None, root / "grid-first", cache)
+                catalogue = grid.publish(source, None, root / "grid-first", cache)
+            self.assertTrue(all(f"routes/tiles/{cell['id']}.json" in cell["files"] for cell in catalogue["cells"]))
             before = list(cache.inventory())
             updated = root / "updated"
             sample_release(updated, changed=True)

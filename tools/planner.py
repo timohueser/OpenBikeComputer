@@ -59,7 +59,9 @@ def verify(args, full=False):
         if name not in routing["metrics"]:
             raise ValueError(f"Route package lacks {name}.")
     search = args.data_dir / "search"
-    releases.search_metadata(search / (args.region + ".sqlite"), full)
+    databases = [search / component / (args.region + ".sqlite") for component in ("pois", "addresses")]
+    if not any(path.exists() for path in databases): databases = [search / (args.region + ".sqlite")]
+    for database in databases: releases.search_metadata(database, full)
     for path in [route / "route-catalog.json"] + [search / "model" / name for name in
                  ["model.int8.onnx", "tokenizer.json", "tokenizer_config.json", "labels.json"]] + [
                      SEARCH / ".venv/bin/python", SEARCH / "node_modules/opening_hours/package.json",
