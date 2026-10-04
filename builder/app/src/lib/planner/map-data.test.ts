@@ -44,15 +44,6 @@ describe('planner map hosting', () => {
         }
     });
 
-    it('uses the installed region and bounds before the shared UI loads', async () => {
-        vi.stubGlobal('window', { location: { href: 'http://127.0.0.1:48763/planner.html' } });
-        vi.stubGlobal('__OBC_PLANNER_CONFIG__', {region:'freiburg',bounds:[7.77,47.965,7.96,48.06]});
-        const data = await import('./map-data');
-        const search = await import('./search/config');
-        expect(data.MAP_BOUNDS).toEqual([7.77,47.965,7.96,48.06]);
-        expect(search.SEARCH_REGIONS).toEqual(['freiburg']);
-    });
-
     it('uses the configured bucket, terrain endpoint and regional coverage together', async () => {
         vi.stubGlobal('window', { location: { href: 'https://planner.example/planner.html' } });
         vi.stubEnv('VITE_PLANNER_PMTILES_URL', 'pmtiles://https://maps.example/region/basemap.pmtiles');

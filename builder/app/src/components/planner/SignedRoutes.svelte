@@ -273,7 +273,6 @@
                             <Icon name="down" size={12} />
                         </label>
                     </div>
-                    {#if finder.offline}<p class="note">Only routes inside your download are shown.</p>{/if}
                     {#each listed as { route, distanceM }, i (route.id)}
                         <button type="button" class="row" class:hovered={finder.hovered === route.id} data-route={route.id}
                             onmouseenter={() => finder.hovered = route.id} onmouseleave={() => finder.hovered = null}

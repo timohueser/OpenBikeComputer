@@ -1,6 +1,5 @@
-import { clientConfig } from './client-config';
-import { kmPerDegree, type Coordinate } from './geo';
-import { coversCell, loadRouteCell, MAP_BOUNDS } from './map-data';
+import type { Coordinate } from './geo';
+import { loadRouteCell } from './map-data';
 import { corridorTiles } from './place-index';
 import type { BikeType } from './riding-profiles';
 import { decodeCoordinates } from './route-answer';
@@ -21,15 +20,6 @@ export interface RouteFilters { radiusKm: number; shape: RouteShape; distanceKm:
 export interface RouteDetail { route: CatalogRecord; distanceM?: number; family?: CatalogRecord; stages?: CatalogRecord[]; failed?: boolean }
 
 const cellsAround = (at: Coordinate, km: number) => corridorTiles([at], km, 9).map(key => key.replaceAll('/', '-'));
-
-/** Offline, the bounds are the union of the downloaded cells. */
-function downloadedCells(): Set<string> | undefined {
-    if (!clientConfig.bounds || !MAP_BOUNDS) return undefined;
-    const [west, south, east, north] = MAP_BOUNDS;
-    const center: Coordinate = [(west + east) / 2, (south + north) / 2];
-    const km = Math.hypot((east - west) * kmPerDegree * Math.cos(center[1] * Math.PI / 180), (north - south) * kmPerDegree) / 2;
-    return new Set(cellsAround(center, km).filter(id => coversCell(MAP_BOUNDS!, id)));
-}
 
 /** The line of a record: its own, or the lines of the stages of a long route in order. */
 export function recordLine(route: CatalogRecord, stages: CatalogRecord[] = []): Coordinate[] {
@@ -53,9 +43,6 @@ export class RouteFinder {
     hovered = $state<number | null>(null);
     /** A routed plan of the detail, for its profile, figures and time. */
     routed = $state.raw<{ plan: RoutePlan; line: RoutingLine } | null>(null);
-    private readonly covered = downloadedCells();
-    /** Offline, only routes wholly inside the download match. */
-    readonly offline = !!this.covered;
     private readonly cells = new Map<string, Promise<CatalogRecord[] | null>>();
     private readonly records = new Map<number, CatalogRecord>();
     private serial = 0;
@@ -115,7 +102,7 @@ export class RouteFinder {
         const start = this.start;
         if (!start) return;
         const id = ++this.serial;
-        const query = { ...$state.snapshot(this.filters), start: start.coordinate, activity, covered: this.covered };
+        const query = { ...$state.snapshot(this.filters), start: start.coordinate, activity };
         this.status = 'loading';
         this.progress = { loaded: 0, total: 0 };
         const counted = (cell: string) => {
