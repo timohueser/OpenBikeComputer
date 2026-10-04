@@ -93,7 +93,6 @@ def serve(args):
         # The routing step bakes the route catalog of the region, which the planner reads as one file.
         "OBC_PLANNER_ROUTES_FILE": str(args.data_dir / "routing/route-catalog.json"),
         "VITE_PLANNER_ROUTES_URL": "/@fs" + str(args.data_dir / "routing/route-catalog.json"),
-        "OBC_QUERY_ROUTER": args.routing,
     })
     commands = [([str(ROOT / "target/release/route-server"), str(args.data_dir / "routing")], ROOT),
                 (["node", "server.mjs"], SEARCH)] + commands

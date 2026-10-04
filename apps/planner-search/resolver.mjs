@@ -584,15 +584,6 @@ export function resolve(db, request, context) {
     lineOf(context);
     changes.push({ op: 'reverse' });
     description = 'Reverse the route';
-  } else if (request.type === 'reroute') {
-    const sc = scope(db, request, context);
-    changes.push({
-      op: 'reroute',
-      range: sc.range || planRange(context),
-      bike: request.bike,
-      goal: request.goal,
-    });
-    description = `Re-route ${sc.area.toLowerCase()}`;
   } else if (request.type === 'stretches') {
     const sc = scope(db, request, context),
       range = sc.range || planRange(context);

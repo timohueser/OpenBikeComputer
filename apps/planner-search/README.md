@@ -60,10 +60,8 @@ those sources are unavailable.
 | `OBC_SEARCH_PYTHON` | This folder's `.venv/bin/python` |
 | `OBC_SEARCH_PORT` | `8780` |
 | `OBC_PLANNER_PORT` | `4184` |
-| `OBC_QUERY_ROUTER` | `http://127.0.0.1:8788` |
 | `OBC_SEARCH_REGIONS` | `germany,baden-wuerttemberg` |
 | `OBC_SEARCH_ORIGINS` | Loopback origins only when unset |
-| `OBC_SEARCH_SAMPLE` | Repository Black Forest GPX |
 
 The combined development command passes `OBC_SEARCH_PORT` to the Vite proxy.
 
@@ -80,15 +78,15 @@ The combined development command passes `OBC_SEARCH_PORT` to the Vite proxy.
   Edited requests bypass inference. The client discards stale responses.
 - `server.mjs` exits with status 1 when the query runtime stops or hangs. Its supervisor,
   such as systemd, restarts it.
-- `routing.mjs` sends the `/v1/route` answer on unchanged. Routing commands fail visibly
-  if the routing engine is absent. No route is committed after a failed request.
+- Plan edits, such as a new route or a reversed route, return changes. The planner applies
+  them and routes the changed plan with its own routing service. Search never calls it.
 
 The request context accepts cumulative `plan.km` and `plan.hours` arrays aligned with
 coordinates, and `plan.segments` with kilometre bounds and verified route attributes.
 Without `plan.km`, search measures the line. The UI supplies riding time only when every
 leg is routed.
 Surface, gradient, access, and closure queries report missing segment data.
-The sample line preserves imported coordinates and has no terrain data. Split and join keep the line. They require unpinned nights and no rest days.
+Split and join keep the line. They require unpinned nights and no rest days.
 
 Opening filters use mapped `opening_hours`. Unknown hours are excluded and counted.
 `calendar-bundle.mjs` builds regional calendar adapters without changing the host zone.

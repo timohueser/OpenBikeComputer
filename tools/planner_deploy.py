@@ -95,7 +95,6 @@ def deploy(args):
     maps.run("rsync", "-az", "--from0", "--files-from=-", str(maps.ROOT / "apps/planner-search") + "/",
              f"{args.host}:{base}/search/", input=search_files)
     maps.run("rsync", "-az", str(maps.ROOT / "apps/planner-search/node_modules") + "/", f"{args.host}:{base}/search/node_modules/")
-    maps.run("rsync", "-az", str(maps.ROOT / "fixtures/sources/route-import/komoot-schwarzwald.gpx"), f"{args.host}:{base}/search/sample.gpx")
     ssh(args.host, f"""cd /opt/obc-planner/source
 /root/.cargo/bin/cargo build --locked --release -p route-server -j 2
 mkdir -p {base}/bin
@@ -112,8 +111,7 @@ chmod -R a+rX {base}
         "search": service(f"/usr/local/bin/node {base}/search/server.mjs",
                           {"OBC_SEARCH_PORT": str(search_port), "OBC_SEARCH_DATA": base + "/search/data",
                            "OBC_SEARCH_PYTHON": base + "/search/.venv/bin/python", "OBC_SEARCH_REGIONS": document["region"],
-                           "OBC_SEARCH_SAMPLE": base + "/search/sample.gpx",
-                           "OBC_SEARCH_ORIGINS": args.site_origin, "OBC_QUERY_ROUTER": f"http://127.0.0.1:{route_port}"}, "768M"),
+                           "OBC_SEARCH_ORIGINS": args.site_origin}, "768M"),
     }
     for name, contents in units.items():
         ssh(args.host, f"cat > /etc/systemd/system/obc-planner-{name}-{slot}.service <<'UNIT'\n{contents}UNIT\n")
@@ -195,9 +193,6 @@ def verify_services(active, document, origin):
     if "routes" in active:
         with sources.open_url(active["routes"].replace("{cell}", f"9-{x >> 3}-{y >> 3}")) as response:
             if response.status != 200 or json.load(response).get("format") != 1: raise ValueError("Route catalog cell is absent")
-    with sources.open_url(active["search"] + "/sample") as response:
-        points = json.load(response)["coordinates"]
-        if len(points) < 2: raise ValueError("Example route is absent")
     def post(url, body):
         with sources.open_url(Request(url, data=releases.encoded(body), headers={"Origin": origin, "Content-Type": "application/json"})) as response:
             if response.headers.get("Access-Control-Allow-Origin") not in {origin, "*"}:

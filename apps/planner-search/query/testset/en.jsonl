@@ -98,12 +98,12 @@
 {"id": "en-098", "lang": "en", "text": "join day three with the next day", "scope": "in", "request": {"type": "join", "day": 3}}
 {"id": "en-099", "lang": "en", "text": "reverse the route", "scope": "in", "request": {"type": "reverse"}}
 {"id": "en-100", "lang": "en", "text": "ride it the other way round", "scope": "in", "request": {"type": "reverse"}}
-{"id": "en-101", "lang": "en", "text": "flatter route for day 3", "scope": "in", "request": {"type": "reroute", "where": {"day": 3}, "goal": "least_climbing"}}
-{"id": "en-102", "lang": "en", "text": "avoid gravel on day 2", "scope": "in", "request": {"type": "reroute", "where": {"day": 2}, "goal": "least_unpaved"}}
-{"id": "en-103", "lang": "en", "text": "less climbing tomorrow", "scope": "in", "request": {"type": "reroute", "where": {"day": "tomorrow"}, "goal": "least_climbing"}}
-{"id": "en-104", "lang": "en", "text": "reroute km 40 to 60 for a road bike", "scope": "in", "request": {"type": "reroute", "where": {"along": {"ref": "km", "from": {"value": 40, "unit": "km"}, "to": {"value": 60, "unit": "km"}}}, "bike": "road"}}
-{"id": "en-105", "lang": "en", "text": "shortest way between Chur and Thusis", "scope": "in", "request": {"type": "reroute", "where": {"near": [{"name": "Chur"}, {"name": "Thusis"}]}, "goal": "shortest"}, "note": "'between' two places on the plan: reroute, not a new route"}
-{"id": "en-106", "lang": "en", "text": "last 20 km of day 2 on the mtb", "scope": "in", "request": {"type": "reroute", "where": {"day": 2, "along": {"ref": "end", "to": {"value": 20, "unit": "km"}}}, "bike": "mtb"}}
+{"id": "en-101", "lang": "en", "text": "flatter route for day 3", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
+{"id": "en-102", "lang": "en", "text": "avoid gravel on day 2", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
+{"id": "en-103", "lang": "en", "text": "less climbing tomorrow", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
+{"id": "en-104", "lang": "en", "text": "reroute km 40 to 60 for a road bike", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
+{"id": "en-105", "lang": "en", "text": "shortest way between Chur and Thusis", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
+{"id": "en-106", "lang": "en", "text": "last 20 km of day 2 on the mtb", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
 {"id": "en-107", "lang": "en", "text": "is the galibier worth it", "scope": "out", "request": {"type": "none"}}
 {"id": "en-108", "lang": "en", "text": "campsites near a supermarket at the end of day 4", "scope": "out", "request": {"type": "places", "what": ["campsite"], "where": {"day": 4, "part": "end"}, "ignored": ["near a supermarket"]}}
 {"id": "en-109", "lang": "en", "text": "pharmacy near a hotel within 20 km of Chur", "scope": "out", "request": {"type": "none"}}

@@ -252,7 +252,6 @@ export function validateRequest(r) {
       'split',
       'join',
       'reverse',
-      'reroute',
       'none',
     ].includes(r.type)
   )

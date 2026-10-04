@@ -43,12 +43,11 @@
     import { corridorPlaces } from '../../lib/planner/place-index';
     import { MAP_BOUNDS, PLACES_URL, ROUTES_URL } from '../../lib/planner/map-data';
     import { coordinateName, visitName } from '../../lib/planner/point-names';
-    import { SEARCH_URL, HOSTED_SEARCH, SEARCH_REGIONS, REGION_NAME } from '../../lib/planner/search/config';
+    import { HOSTED_SEARCH, SEARCH_REGIONS, REGION_NAME } from '../../lib/planner/search/config';
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import { searchPlaces, placeDetails, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
     import { asPlace, routesPlaces } from '../../lib/planner/search/presentation';
-    import { buildQueryRoute } from '../../lib/planner/search/route-client';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
     import type { Version } from '../../lib/planner/versions';
@@ -1137,18 +1136,17 @@
         }, () => { message = 'Location unavailable. Allow location access or use a named place.'; }, { timeout: 10000 });
     }
 
+    // The build copies the file, so the sample needs no search service.
+    const sampleRoute = new URL('../../../../../fixtures/sources/route-import/komoot-schwarzwald.gpx', import.meta.url);
     async function loadSearchSample() {
         try {
             fromRoutes = false;
-            const response = await fetch(`${SEARCH_URL}/sample`);
+            const response = await fetch(sampleRoute);
             if (!response.ok) throw new Error('The example route is unavailable. Retry shortly.');
-            const { coordinates: line } = await response.json() as { coordinates: Coordinate[] };
-            if (line.length < 2) throw new Error('The sample route could not load.');
-            commit({ ...emptyTrip('trip'), routeOrder: [], points: [
-                { id: 'start', label: 'Black Forest start', kind: 'start', coordinate: line[0], progress: 0 },
-                { id: 'finish', label: 'Black Forest finish', kind: 'finish', coordinate: line.at(-1)!, progress: 1, leg: 'drawn', drawn: line.slice(1,-1) },
-            ] }, 'Black Forest test route loaded · three provisional days');
-            exitSearch(); clearSelection(); pointing = undefined; map?.fitCoordinates(line);
+            const sample = importedTrip(trip, readTracks([{ name: 'Black Forest', text: await response.text() }]));
+            const points = sample.points.map(p => p.kind === 'start' || p.kind === 'finish' ? { ...p, label: `Black Forest ${p.kind}` } : p);
+            commit({ ...sample, points, mode: 'trip' }, 'Black Forest test route loaded · three provisional days');
+            exitSearch(); clearSelection(); pointing = undefined; fitPlan = true;
         } catch (error) { message = (error as Error).message; }
     }
 
@@ -1158,11 +1156,10 @@
         const before = trip;
         applyingQuery = true; queryApplyError = '';
         try {
-            let routingNote = '';
-            const next = await applyQueryChanges(before, answer.changes, (points,bike,goal) => buildQueryRoute(points,bike,goal,note => routingNote = note), next => calculateLine(next, new AbortController().signal, legs));
+            const next = await applyQueryChanges(before, answer.changes, next => calculateLine(next, new AbortController().signal, legs));
             if (JSON.stringify(answer.changes) !== JSON.stringify(searchState.answer?.changes) || before !== trip) throw new Error('The plan changed. Review the search again.');
             if (answer.changes.some(change => change.op === 'route')) fromRoutes = false;
-            commit(next, [answer.description ?? 'Query applied', routingNote].filter(Boolean).join(' · '));
+            commit(next, answer.description ?? 'Query applied');
             exitSearch(); clearSelection();
         } catch (error) { queryApplyError = (error as Error).message; }
         finally { applyingQuery = false; }

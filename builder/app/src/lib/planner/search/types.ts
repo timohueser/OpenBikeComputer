@@ -8,7 +8,7 @@ export type Along = { ref: 'km' | 'start' | 'end' | 'here'; at?: Quantity; from?
 export type QueryPoint = { name: string } | { kind: string } | { here: true } | { plan: 'start' | 'end' } | { day: QueryDay; part?: 'start' | 'middle' | 'end' } | { along: Along };
 export type Where = { anchor?: Coordinate; scope?: 'route' | 'view' | 'here'; day?: QueryDay; part?: 'start' | 'middle' | 'end'; near?: QueryPoint[]; along?: Along; before?: QueryPoint; after?: QueryPoint };
 export interface QueryRequest {
-    type: 'places' | 'place' | 'route' | 'stretches' | 'end_day' | 'add_point' | 'remove_point' | 'split' | 'join' | 'reverse' | 'reroute' | 'none';
+    type: 'places' | 'place' | 'route' | 'stretches' | 'end_day' | 'add_point' | 'remove_point' | 'split' | 'join' | 'reverse' | 'none';
     what?: string[] | string; cuisine?: 'pizza' | 'kebab'; name?: string; where?: Where; near?: QueryPoint;
     from?: QueryPoint; to?: QueryPoint; via?: QueryPoint[]; point?: QueryPoint; at?: QueryPoint;
     day?: QueryDay; days?: number; kind?: string; bike?: string; goal?: string;
@@ -32,7 +32,7 @@ export interface SearchPlace {
 }
 export interface ResolvedPoint { coordinate: Coordinate; label: string; source?: string; kind?: string; detail?: string; along?: number; alternatives?: ResolvedPoint[] }
 export interface QueryChange {
-    op: 'route' | 'end_day' | 'add_point' | 'remove_point' | 'split' | 'join' | 'reverse' | 'reroute';
+    op: 'route' | 'end_day' | 'add_point' | 'remove_point' | 'split' | 'join' | 'reverse';
     point?: ResolvedPoint; points?: ResolvedPoint[]; day?: number; id?: string; kind?: string;
     range?: [number, number]; count?: number; boundaries?: number[]; bike?: string; goal?: string; days?: number; perDay?: Quantity;
 }

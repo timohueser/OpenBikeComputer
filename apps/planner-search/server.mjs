@@ -1,11 +1,9 @@
 import http from 'node:http';
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { parserProcess } from './parser.mjs';
 import { searchRuntime } from './runtime.mjs';
 import {openRegion} from './installation.mjs';
 import { openingHours } from './hours.mjs';
-import { routeQuery } from './routing.mjs';
 import { RequestError } from './validation.mjs';
 import { allowedOrigin } from './origins.mjs';
 
@@ -73,24 +71,8 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
-    if (url.pathname === '/api/planner-search/sample' && req.method === 'GET') {
-      const xml = readFileSync(
-        process.env.OBC_SEARCH_SAMPLE || path.resolve(
-          root,
-          '../../fixtures/sources/route-import/komoot-schwarzwald.gpx',
-        ),
-        'utf8',
-      );
-      const coordinates = [
-        ...xml.matchAll(/<trkpt lat="([^"]+)" lon="([^"]+)"/g),
-      ].map((m) => [Number(m[2]), Number(m[1])]);
-      json(200, { coordinates });
-      return;
-    }
     if (
-      !['/api/planner-search/query', '/api/planner-search/route', '/api/planner-search/reverse'].includes(
-        url.pathname,
-      ) ||
+      !['/api/planner-search/query', '/api/planner-search/reverse'].includes(url.pathname) ||
       req.method !== 'POST'
     ) {
       json(404, { error: 'Not found.' });
@@ -112,14 +94,6 @@ const server = http.createServer(async (req, res) => {
       input = JSON.parse(body);
     } catch {
       throw new RequestError('The request body is not JSON.');
-    }
-    if (url.pathname === '/api/planner-search/route') {
-      try {
-        json(200, await routeQuery(input));
-      } catch (error) {
-        json(400, { error: error.message });
-      }
-      return;
     }
     const region = input?.region || 'baden-wuerttemberg',
       database = databases.get(region);
