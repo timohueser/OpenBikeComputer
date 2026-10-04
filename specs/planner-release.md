@@ -43,8 +43,8 @@ it also contains `climate.pmtiles` from the
 files of the map manifest and the manifest itself. `routing/` contains the three files in the
 [route package contract](route-package.md), plus `overlays.sqlite`. The overlay
 index stores the routing manifest identity and has the same OSM source.
-`search/` contains `REGION.sqlite`
-and `model/`. `routes/` contains `REGION.json` from the
+`search/` contains `pois/REGION.sqlite`, `addresses/REGION.sqlite`,
+and `model/`. Local combined packages use `REGION.sqlite`. `routes/` contains `REGION.json` from the
 [route catalog contract](route-catalog.md). `device/catalog.json` is a snapshot. Its file references are absolute
 URLs to the original immutable cell objects.
 
@@ -158,3 +158,29 @@ inactive planner releases and source mirrors that `active` does not name.
 It then sets `previous` to `null`. Device cell objects and terrain reference
 objects remain outside planner cleanup. A completed rollout retains one
 regional planner dataset in R2.
+
+## Component receipts
+
+`sources.components` maps component names to immutable receipts. Each has
+`format: 1`, `key`, `spec`, `files`, and `cost`. The key is SHA-256 of the
+canonical JSON `spec`, including its trailing newline. The spec contains
+`format`, `name`, `producer`, `inputs`, `options`, `coverage`, and `dependencies`.
+Producer identities include effective source code and dependency contracts.
+Inputs identify source snapshots and upstream component keys. Coverage uses
+`[west,south,east,north]`. A receipt contains only completed, verified files.
+Each file entry has `bytes` and `sha256`. Cost fields are `elapsed_seconds`,
+`cpu_seconds`, `output_bytes`, and `peak_ram_bytes`; unavailable RAM is null.
+`sources.grid_components` records the partition and transport receipts.
+
+Search schema 4 metadata `component` is `pois`, `addresses`, or `all`.
+Addresses own street records and house records. POIs own the other searchable
+places, including locality records. Independent POI IDs are positive integers
+below 2^52; independent address street IDs are above 2^52 and below 2^53.
+Components share the declared OSM snapshot and regional bounds. Each search
+cell retains that snapshot and declares its clipped cell bounds.
+
+Split search grids use `format: 3`. Their `metadata` describes the complete
+region. Each cell has `id`, `bounds`, and `files`. File names are relative to
+`search/`: `tiles/pois/CELL.sqlite` and `tiles/addresses/CELL.sqlite`.
+Both components are present. Offline catalogue cell files use release-relative
+paths. Consumers validate component ownership, source identity, and coverage.

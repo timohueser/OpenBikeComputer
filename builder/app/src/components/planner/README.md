@@ -1,7 +1,7 @@
 # Route planner
 
 The public planner at `/plan/` uses one active release for maps, routing, and
-search. The map builder uses its device catalogue.
+search.
 
 ## Prepare and publish a region
 
@@ -13,9 +13,8 @@ pins the OSM extract, map, elevation, and data-layer inputs, and routing profile
 
 Map and search builders need Linux, Java 21, Maven, PostgreSQL 17,
 PostGIS 3, osm2pgsql 2, zstd, and `nominatim-db==5.3.2`.
-Add PostgreSQL's binary directory to `PATH`. Run preparation as a normal user.
-Allow space for the temporary Nominatim database and Planetiler files.
-Builders use two threads. Allow several hours.
+Add PostgreSQL's binaries to `PATH`. Run as a normal user.
+Allow temporary database space; builders use two threads.
 
 ```sh
 obc planner prepare --data-dir /srv/planner/bw-source --reference /srv/obc-reference
@@ -30,8 +29,7 @@ package, model readiness, CORS, tiles, search, and a real route. It updates
 `planner/catalog.json` only after these pass. The
 [release contract](../../../../../specs/planner-release.md) defines the files.
 
-Online releases are grid releases: `grid` publishes into a new directory. It
-builds reusable cells from the regional bake. Run one publication or deployment
+`grid` builds reusable cells in a fresh directory. Publish and deploy one release
 at a time.
 
 `prepare` accepts `--osm PATH` for a local copy of the pinned extract. On macOS,
@@ -40,9 +38,9 @@ use `--inputs DIRECTORY` to supply verified Linux builder outputs:
 OSM hash, bounds, tool versions, and output hashes. Map preparation and routing
 still use the local elevation readers.
 
-The VPS needs Caddy, Python, Rust at `/root/.cargo/bin/cargo`, and Node 24+
-at `/usr/local/bin/node`. Its existing API virtual host is
-`releases.openbikecomputer.com`. Deployment installs routing, search, and offline selection services on loopback.
+The VPS needs Caddy, Python, `/root/.cargo/bin/cargo`, and Node 24+
+at `/usr/local/bin/node`. Services bind to loopback under
+`releases.openbikecomputer.com`.
 
 Deploy the [tile Worker](../../../../../apps/planner-tiles/README.md) first.
 
@@ -69,18 +67,28 @@ inputs. Build into a fresh data directory with `--recipe PATH`. Pass
 `--device-catalog URL` for that region's published device catalogue. Use the
 same three commands, then run **Deploy site** again.
 
-To reduce an existing package without preparing its metrics again:
+For a component update, keep the recipe's pinned OSM snapshot and bounds:
 
 ```sh
-cargo run --release -p route-build --bin route-select -- \
-  /srv/planner/old/routing --output /srv/planner/new/routing \
-  --profiles touring,touring/shorter,touring/less-climbing,road,road/shorter,road/less-climbing,gravel,gravel/shorter,gravel/less-climbing,mtb,mtb/shorter,mtb/less-climbing,hiking,hiking/shorter,hiking/less-climbing
+obc planner plan --input-release /srv/planner/bw-source --component pois
+obc planner prepare --input-release /srv/planner/bw-source --component pois --data-dir /srv/planner/bw-source-next
+obc planner grid --input-release /srv/planner/bw-source-next --data-dir /srv/planner/bw-next
 ```
 
-Copy the unchanged `maps`, `search`, and `sources` directories into the new
-release, without `maps/overlays.pmtiles`. Set the recipe's `profiles` to the
-same IDs. Run the three commands above with the new directory. Preparation
-checks the profile selection and builds a matching overlay index and tiles.
+Publish and deploy `bw-next`. Repeat `--component` for more producers:
+`pois`, `addresses`, `basemap`, `places`, `terrain`, `routing`, `overlays`,
+`assets`, `model`, or a recipe data layer. Routing updates include overlays;
+basemap updates include places. Small pinned recipes use the same producers.
+
+`plan` and `prepare --dry-run` read no large artifacts and download nothing.
+Updates need a modular regional release and its cache. Source refreshes keep
+one OSM snapshot. Use one `--source-cache` for preparation and grid publication;
+its default is `~/.cache/obc/planner/sources`. `obc planner inventory` reports
+component sizes and measured costs. Completed components and cells resume.
+
+POI changes reuse addresses and unrelated grid objects. Nominatim and routing
+construction remain regional. Remote releases can upload identical objects
+under distinct prefixes.
 
 Preparation accepts only `DE` access defaults. Add and verify other rules first.
 
@@ -169,9 +177,8 @@ release. Use them for a hosted build with the configured API origin.
 | `VITE_PLANNER_SPRITES_URL` | Sprite directory |
 | `VITE_PLANNER_MAP_BOUNDS` | `west,south,east,north` |
 
-Basemap zooms are 0–14. Terrain zooms are 0–12, with neighbouring tiles for
-contours. The browser creates contours from terrain tiles. Highlighted places
-read the zoom 11 places archive.
+Basemap zooms are 0–14; terrain zooms are 0–12. Browser contours use terrain
+neighbours. Highlighted places use zoom 11.
 
 Extract a smaller map archive with bounds inside its source coverage:
 
@@ -195,9 +202,8 @@ python3 tools/planner_offline.py verify /srv/planner/bundle
 python3 tools/planner_offline.py install /srv/planner/bundle /srv/planner/offline
 ```
 
-Installation also accepts an HTTP(S) bundle directory URL. Rerun to resume.
-The [bundle contract](../../../../../specs/planner-offline.md) defines activation,
-retained releases, deduplication, and size fields.
+Installation accepts an HTTP(S) bundle URL. Rerun to resume.
+See the [bundle contract](../../../../../specs/planner-offline.md).
 
 ## Checks
 
