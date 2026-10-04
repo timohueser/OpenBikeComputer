@@ -62,7 +62,7 @@ another release while an inactive dataset remains.
 
 ## Replace or restore a release
 
-For a larger region, add a recipe with a new region ID, bounds, and pinned
+For a larger region, add a recipe with its ID, bounds, time zone, and pinned
 inputs. Build into a fresh data directory with `--recipe PATH`. Pass
 `--device-catalog URL` for that region's published device catalogue. Use the
 same three commands, then run **Deploy site** again.

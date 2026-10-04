@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+from zoneinfo import ZoneInfo
 
 try:
     from . import planner_maps as maps, planner_sources as sources, planner_release as releases
@@ -19,6 +20,10 @@ def recipe(path):
         raise ValueError("Routing has German access defaults. Add and verify each country's access policy before extending coverage.")
     if not document["countries"] or any(not re.fullmatch(r"[A-Z]{2}", code) for code in document["countries"]):
         raise ValueError("Name the region's countries as ISO codes")
+    try:
+        ZoneInfo(document["time_zone"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("Name the region's IANA time zone in the recipe") from error
     maps.bounds(",".join(map(str, document["bounds"])))
     if not re.fullmatch(r"[a-f0-9]{64}", document["osm"]["sha256"]):
         raise ValueError("Pin the OSM SHA-256 in the recipe")

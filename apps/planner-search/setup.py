@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parent
 MODEL_SHA = 'a8e1a42794fc101aace3982b991ce9f1f8852fcc5da1c056ddd1fe2699e8e48a'
 DUMP_SHA = 'cfda04edd2de41f6aaae7469b9054eca13375b42ac2a448940b1bdcc6f052dac'
 DUMP_URL = 'https://download1.graphhopper.com/public/europe/germany/photon-dump-germany-release-260920.jsonl.zst'
+DUMP_TIME_ZONE = 'Europe/Berlin'
 
 
 def run(*args):
@@ -85,12 +86,13 @@ def main():
             package = data / f'{region}.sqlite'
             if not package.exists():
                 with tempfile.TemporaryDirectory(prefix='.search-', dir=data) as stage:
-                    run('.venv/bin/python', 'build.py', str(source), '--output', stage, '--region', region)
+                    run('.venv/bin/python', 'build.py', str(source), '--output', stage, '--region', region,
+                        '--time-zone', DUMP_TIME_ZONE)
                     Path(stage, package.name).rename(package)
             try:
                 with sqlite3.connect(f'{package.as_uri()}?mode=ro', uri=True) as db:
                     schema = db.execute("SELECT value FROM metadata WHERE key='schema'").fetchone()
-                    if schema != ('4',) or db.execute('PRAGMA quick_check').fetchone() != ('ok',):
+                    if schema != ('5',) or db.execute('PRAGMA quick_check').fetchone() != ('ok',):
                         raise ValueError('Incomplete data')
                     db.execute('SELECT rowid FROM addresses INDEXED BY address_cells LIMIT 0')
             except (sqlite3.Error, ValueError):

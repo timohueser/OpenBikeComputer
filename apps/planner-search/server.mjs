@@ -9,8 +9,6 @@ import { allowedOrigin } from './origins.mjs';
 
 const root = import.meta.dirname,
   data = path.resolve(process.env.OBC_SEARCH_DATA || path.join(root, 'data'));
-process.env.TZ = 'Europe/Berlin';
-const hours = openingHours({countryCode:'de',timeZone:'Europe/Berlin'});
 const parser = parserProcess(
   process.env.OBC_SEARCH_PYTHON || path.join(root, '.venv/bin/python'),
   path.join(data, 'model'),
@@ -28,7 +26,8 @@ for (const region of (process.env.OBC_SEARCH_REGIONS || 'germany,baden-wuerttemb
   const installed = openRegion(data,region);
   if (!installed) continue;
   databases.set(region, {...installed,
-    runtime: searchRuntime({db:installed.db,parser,hours,region,attribution:installed.metadata.attribution}),
+    runtime: searchRuntime({db:installed.db,parser,hours:openingHours(installed.metadata.time_zone),region,
+      attribution:installed.metadata.attribution}),
   });
 }
 const origins = new Set((process.env.OBC_SEARCH_ORIGINS || '').split(',').filter(Boolean));

@@ -23,23 +23,14 @@ func runSearchBenchmark(root: URL, hoursOnly: Bool = false) -> [String: Any] {
         context.setObject(digest, forKeyedSubscript: "plannerDigest" as NSString)
         context.setObject(clock, forKeyedSubscript: "plannerNow" as NSString)
         context.evaluateScript("globalThis.performance = {now: plannerNow};")
-        if hoursOnly {
-            let calendar = try String(contentsOf: root.appendingPathComponent("calendar.js"), encoding: .utf8)
-            context.evaluateScript(calendar)
-            // Exercise a traveler calendar inside this realm without changing device settings.
-            context.evaluateScript("globalThis.Date = PlannerCalendar.calendarDate('America/New_York');")
-            context.evaluateScript(calendar)
-        }
         context.evaluateScript(try String(contentsOf: root.appendingPathComponent("\(prefix)-benchmark.js"), encoding: .utf8))
         let started = ProcessInfo.processInfo.systemUptime
-        let adapter = hoursOnly ? ", PlannerCalendar.openingHours({countryCode:'de',timeZone:'Europe/Berlin'})" : ""
-        let value = context.evaluateScript("JSON.stringify(PlannerSearchBenchmark.run(plannerSQL, plannerDigest\(adapter)))")
+        let value = context.evaluateScript("JSON.stringify(PlannerSearchBenchmark.run(plannerSQL, plannerDigest))")
         if let exception { return ["error": exception] }
         guard let text = value?.toString(), var report = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
               let samples = report["samples"] as? [[String: Any]] else { throw NSError(domain: "SearchBenchmark", code: 4) }
         report["total_ms"] = (ProcessInfo.processInfo.systemUptime - started) * 1000
         report["sqlite_version"] = String(cString: sqlite3_libversion())
-        if hoursOnly { report["host_calendar_override"] = "America/New_York in an isolated JavaScript realm; device settings unchanged" }
         guard let expected = reference?["samples"] as? [[String: Any]], samples.count == expected.count else {
             throw NSError(domain: "SearchBenchmark", code: 5, userInfo: [NSLocalizedDescriptionKey: "Reference corpus differs"])
         }

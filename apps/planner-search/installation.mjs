@@ -21,7 +21,7 @@ export function openRegion(data,region) {
   let files,metadata;
   if(existsSync(gridFile)) {
     const grid=JSON.parse(readFileSync(gridFile,'utf8'));
-    if(![2,3].includes(grid.format)||grid.metadata?.schema!==4||!Array.isArray(grid.cells)||
+    if(![2,3].includes(grid.format)||grid.metadata?.schema!==5||!Array.isArray(grid.cells)||
       !grid.cells.length||new Set(grid.cells.map(c=>c.id)).size!==grid.cells.length||
       grid.cells.some(c=>!/^9-[0-9]+-[0-9]+$/.test(c.id)||!validBounds(c.bounds)))throw new Error('Invalid search grid.');
     files=grid.cells.flatMap(c=>{
@@ -49,7 +49,7 @@ export function openRegion(data,region) {
     !/^[a-f0-9]{64}$/.test(metadata.osm_sha256||'')))throw new Error('Search components need source identity and coverage.');
   for(const file of files) {
     const m=readMetadata(file.file);
-    if(m.schema!==4||m.osm_sha256!==metadata.osm_sha256||!boundsEqual(m.bounds,file.bounds)||
+    if(m.schema!==5||m.osm_sha256!==metadata.osm_sha256||!boundsEqual(m.bounds,file.bounds)||
       (file.component!=='all'&&m.component!==file.component))throw new Error('Search components have incompatible provenance or coverage.');
     for(const [kind,count] of Object.entries(m.counts||{}))counts[kind]=(counts[kind]||0)+count;
   }

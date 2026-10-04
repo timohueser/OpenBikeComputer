@@ -27,7 +27,7 @@ test('cell queries preserve global limits, spelling, addresses and duplicate own
       part.conn.prepare('DELETE FROM place_records WHERE id%12!=? AND id%5!=0').run(i);
       part.conn.close();files.push({file});
     }
-    cells=openCells(files,{schema:4});
+    cells=openCells(files,{schema:5});
     const view=[7.8,47.9,7.95,48.05];
     for(const q of ['Hotel Summit','Kandel','Kandell','Kaiser Joseph Str 12 Freiburg','bakery','Habsburgerstraße 10']) {
       assert.deepEqual(normalize(search(cells,{q,view})),normalize(search(reference.db,{q,view})),q);

@@ -35,7 +35,7 @@ Build independent components from one verified enriched dump:
 
 ```sh
 uv run --with-requirements apps/planner-search/requirements-build.txt python apps/planner-search/split.py SOURCE.jsonl.zst /tmp/search-records
-uv run --with-requirements apps/planner-search/requirements-build.txt python apps/planner-search/build.py /tmp/search-records/pois.jsonl.zst --component pois --output DATA/pois --region REGION --bounds=WEST,SOUTH,EAST,NORTH --countries=de,ch --osm-sha256=SHA256
+uv run --with-requirements apps/planner-search/requirements-build.txt python apps/planner-search/build.py /tmp/search-records/pois.jsonl.zst --component pois --output DATA/pois --region REGION --bounds=WEST,SOUTH,EAST,NORTH --countries=de,ch --osm-sha256=SHA256 --time-zone=Europe/Berlin
 ```
 
 Use `addresses.jsonl.zst`, `--component addresses`, and `DATA/addresses` for
@@ -88,8 +88,8 @@ leg is routed.
 Surface, gradient, access, and closure queries report missing segment data.
 Split and join keep the line. They require unpinned nights and no rest days.
 
-Opening filters use mapped `opening_hours`. Unknown hours are excluded and counted.
-`calendar-bundle.mjs` builds regional calendar adapters without changing the host zone.
+Opening filters use mapped `opening_hours`, each place's country holidays, and the
+region time zone. Unknown hours are excluded and counted.
 Trip-day filters need a start date. Weekday filters need no date; date-dependent rules
 remain unknown. No filter predicts arrival time. Distances from the route are geometric,
 not routed detours. Place gaps depend on map completeness. Search does not interpolate
@@ -97,7 +97,7 @@ house numbers. A missing number returns a clearly labelled street location.
 
 `POST /api/planner-search/reverse` accepts `region` and `[longitude, latitude]` in
 `coordinate`. It returns `label` for the nearest mapped house within 100 metres,
-or `null`. Search packages use schema 4. Rebuild with `build.py` after a schema change.
+or `null`. Search packages use schema 5. Rebuild with `build.py` after a schema change.
 
 ## Checks
 

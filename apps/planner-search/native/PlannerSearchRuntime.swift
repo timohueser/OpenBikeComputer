@@ -6,7 +6,7 @@ final class PlannerSearchRuntime {
     private let context: JSContext
     private let database: PlannerSearchDatabase
 
-    init(databases: [URL], bounds: [URL: [Double]] = [:], scripts: URL, region: String, countryCode: String, timeZone: String) throws {
+    init(databases: [URL], bounds: [URL: [Double]] = [:], scripts: URL, region: String) throws {
         self.database = try PlannerSearchDatabase(files: databases, bounds: bounds)
         guard let context = JSContext() else { throw plannerSearchError("JavaScript runtime failed") }
         self.context = context
@@ -16,15 +16,13 @@ final class PlannerSearchRuntime {
         context.setObject(all, forKeyedSubscript: "plannerSQL" as NSString)
         context.setObject(batch, forKeyedSubscript: "plannerSQLBatch" as NSString)
         context.setObject(clock, forKeyedSubscript: "plannerNow" as NSString)
-        context.setObject(["region": region, "countryCode": countryCode, "timeZone": timeZone], forKeyedSubscript: "plannerConfig" as NSString)
+        context.setObject(["region": region], forKeyedSubscript: "plannerConfig" as NSString)
         context.evaluateScript("globalThis.performance = {now:plannerNow};")
-        for file in ["calendar.js", "native.js"] {
-            context.evaluateScript(try String(contentsOf: scripts.appendingPathComponent(file), encoding: .utf8))
-            if let error = context.exception { throw plannerSearchError(error.toString()) }
-        }
+        context.evaluateScript(try String(contentsOf: scripts.appendingPathComponent("native.js"), encoding: .utf8))
+        if let error = context.exception { throw plannerSearchError(error.toString()) }
         context.evaluateScript("""
         globalThis.plannerRuntime = PlannerNative.nativeSearch({
-          all:plannerSQL,batch:plannerSQLBatch,region:plannerConfig.region,hours:PlannerCalendar.openingHours(plannerConfig)});
+          all:plannerSQL,batch:plannerSQLBatch,region:plannerConfig.region});
         globalThis.plannerDispatch = async (method,body) => {
           return JSON.stringify(await plannerRuntime.request(method,JSON.parse(body)));
         };

@@ -9,6 +9,20 @@ import {answerQuery} from '../query.mjs';
 import {openRegion} from '../installation.mjs';
 import {search} from '../web/engine.mjs';
 import {reverseAddress} from '../web/reverse.mjs';
+import {openingHours} from '../hours.mjs';
+
+const hours=openingHours('Europe/Berlin');
+// Builds Photon place records into DIRECTORY/test.sqlite and opens it read-only.
+function writePlaces(directory,records) {
+  execFileSync('python3',['-c',`import json,sys
+sys.path.insert(0,sys.argv[1])
+from pathlib import Path
+from writer import Writer
+writer=Writer('test',Path(sys.argv[2]))
+for place in json.load(sys.stdin): writer.add(place)
+writer.finish({'bounds':[7,47,9,49]})`,new URL('..',import.meta.url).pathname,directory],{input:JSON.stringify(records)});
+  return new DatabaseSync(join(directory,'test.sqlite'),{readOnly:true});
+}
 
 test('the POI builder retains contact aliases and descriptions for named and unnamed places',async()=>{
   const directory=mkdtempSync(join(tmpdir(),'obc-poi-details-'));
@@ -22,16 +36,9 @@ test('the POI builder retains contact aliases and descriptions for named and unn
   ].map(p=>({object_type:'N',centroid:[8,48],...p}));
   let connection;
   try {
-    execFileSync('python3',['-c',`import json,sys
-sys.path.insert(0,sys.argv[1])
-from pathlib import Path
-from build import Writer
-writer=Writer('test',Path(sys.argv[2]))
-for place in json.load(sys.stdin): writer.add(place)
-writer.finish({'bounds':[7,47,9,49]})`,new URL('..',import.meta.url).pathname,directory],{input:JSON.stringify(records)});
-    connection=new DatabaseSync(join(directory,'test.sqlite'),{readOnly:true});
+    connection=writePlaces(directory,records);
     const db={all:(sql,params=[])=>connection.prepare(sql).all(...params)};
-    assert.equal(JSON.parse(db.all("SELECT value FROM metadata WHERE key='schema'")[0].value),4);
+    assert.equal(JSON.parse(db.all("SELECT value FROM metadata WHERE key='schema'")[0].value),5);
     const rows=db.all('SELECT website,phone,description FROM places ORDER BY id').map(row=>({...row}));
     assert.deepEqual(rows,[
       {website:'https://hotel.example',phone:'+49 123',description:'Tents welcome.'},
@@ -40,11 +47,28 @@ writer.finish({'bounds':[7,47,9,49]})`,new URL('..',import.meta.url).pathname,di
       {website:'',phone:'',description:''},
     ]);
     const result=await answerQuery(db,{source:'n2',q:'',view:[7,47,9,49]},
-      {parse(){throw new Error('An ID lookup must not run the model');}});
+      {parse(){throw new Error('An ID lookup must not run the model');}},hours);
     assert.equal(result.results.length,1);
     assert.equal(result.results[0].description,rows[1].description);
     assert.equal(result.results[0].source,'n2');
-    assert.equal((await answerQuery(db,{source:'n99',q:''},{})).results.length,0);
+    assert.equal((await answerQuery(db,{source:'n99',q:''},{},hours)).results.length,0);
+  } finally {connection?.close();rmSync(directory,{recursive:true,force:true});}
+});
+
+test('Swiss places keep the German canton name that selects cantonal holidays',()=>{
+  const directory=mkdtempSync(join(tmpdir(),'obc-cantons-'));
+  const records=[
+    {object_id:1,address:{state:'Graubünden/Grischun/Grigioni','state:de':'Graubünden','state:it':'Grigioni'}},
+    {object_id:2,address:{state:'St. Gallen','state:de':'St. Gallen'}},
+  ].map(p=>({object_type:'N',osm_key:'shop',osm_value:'bakery',name:{name:`Bakery ${p.object_id}`},centroid:[9.53,46.85],
+    country_code:'ch',extra:{opening_hours:'Mo-Su 08:00-18:00; PH off'},...p}));
+  let connection;
+  try {
+    connection=writePlaces(directory,records);
+    const places=connection.prepare('SELECT * FROM places ORDER BY id').all();
+    assert.deepEqual(places.map(p=>p.region),['Graubünden','Sankt Gallen']);
+    const goodFriday={openDate:'2026-04-03'};
+    for(const place of places)assert.equal(openingHours('Europe/Zurich').openingState(place,{},goodFriday),'closed');
   } finally {connection?.close();rmSync(directory,{recursive:true,force:true});}
 });
 
@@ -80,6 +104,7 @@ for component,output in outputs.items():
     assert.equal(places.filter(p=>p.kind==='city').length,1);
     assert.equal(places.filter(p=>p.kind==='street').length,1);
     assert.equal(new Set(places.map(p=>p.id)).size,4);
+    assert.ok(places.every(p=>p.country==='de'));
     for(const p of places)assert.ok(Number.isSafeInteger(p.id)&&p.id>0);
     assert.ok(places.find(p=>p.kind==='street').id>2**52);
     assert.ok(places.find(p=>p.kind==='hotel').id<2**52);

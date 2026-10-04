@@ -23,7 +23,7 @@ class ReleaseTests(unittest.TestCase):
             with sqlite3.connect(database) as db:
                 db.execute('CREATE TABLE metadata(key TEXT,value TEXT)')
                 db.execute("INSERT INTO metadata VALUES('schema','1')")
-            for schema in [1, 2, 3, 4]:
+            for schema in [1, 2, 3, 4, 5]:
                 with sqlite3.connect(database) as db:
                     db.execute("UPDATE metadata SET value=? WHERE key='schema'", (str(schema),))
                 with self.assertRaisesRegex(ValueError, 'Rebuild search package'):
@@ -35,7 +35,7 @@ class ReleaseTests(unittest.TestCase):
             with sqlite3.connect(database) as db:
                 db.execute('CREATE TABLE addresses(lat REAL,lon REAL)')
                 db.execute('CREATE INDEX address_cells ON addresses(CAST((lat+90)*200 AS INTEGER)*72001+CAST((lon+180)*200 AS INTEGER))')
-            self.assertEqual(release.search_metadata(database, full=True)['schema'], 4)
+            self.assertEqual(release.search_metadata(database, full=True)['schema'], 5)
 
     def test_changed_or_missing_bytes_fail_release_verification(self):
         with tempfile.TemporaryDirectory() as directory:

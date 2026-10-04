@@ -33,7 +33,7 @@ export function dayNumber(value, context) {
   if (!context.startDate)
     throw new Error('Set the trip start date to use today or tomorrow.');
   const today = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Europe/Berlin',
+    timeZone: context.timeZone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',

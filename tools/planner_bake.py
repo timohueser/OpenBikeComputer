@@ -57,7 +57,8 @@ def build_search(stage, records, config, component):
     maps.run("uv", "run", "--with-requirements", SEARCH / "requirements-build.txt", "python", SEARCH / "build.py",
              records / f"{component}.jsonl.zst", "--component", component, "--output", stage,
              "--region", config["region"], "--bounds", ",".join(map(str, config["bounds"])),
-             "--countries", ",".join(config["countries"]), "--osm-sha256", config["osm"]["sha256"], cwd=maps.ROOT)
+             "--countries", ",".join(config["countries"]), "--osm-sha256", config["osm"]["sha256"],
+             "--time-zone", config["time_zone"], cwd=maps.ROOT)
     releases.search_metadata(stage / f"{config['region']}.sqlite", full=True)
     (stage / "regions.geojson").unlink(missing_ok=True)
 
@@ -139,8 +140,13 @@ def build_overlays(stage, routing):
     maps.overlays_archive(routing / "overlays.sqlite", stage / "overlays.pmtiles")
 
 
+def layer_options(config, name):
+    """The sunlight index evaluates local clock times in the region's time zone."""
+    return {**config[name], "time_zone": config["time_zone"]} if name == "sun" else config[name]
+
+
 def build_layer(stage, config, name, terrain=None):
-    options = [item for key, value in config[name].items() for item in (f"--{key.replace('_', '-')}", str(value))]
+    options = [item for key, value in layer_options(config, name).items() for item in (f"--{key.replace('_', '-')}", str(value))]
     maps.run("uv", "run", "--with-requirements", maps.ROOT / f"tools/requirements-planner-{name}.txt",
              "python", "-m", f"tools.planner_{name}", config["region"], "--bounds", ",".join(map(str, config["bounds"])),
              *options, *(["--terrain", terrain / "terrain.pmtiles"] if name == "sun" else []), "--output", stage / f"{name}.pmtiles", cwd=maps.ROOT)
@@ -173,7 +179,8 @@ def specifications(config, prepared=None):
         paths=[SEARCH / "split.py", SEARCH / "records.py", SEARCH / "requirements-build.txt"])
     common = [SEARCH / path for path in ["build.py", "writer.py", "records.py", "storage.py", "index.py", "schema.sql", "indexes.sql", "web/address-terms.json", "requirements-build.txt"]]
     for component in ["pois", "addresses"]:
-        add(component, build_search, {"osm": osm}, {"region": config["region"], "countries": config["countries"], "component": component, "schema": 4},
+        add(component, build_search, {"osm": osm}, {"region": config["region"], "countries": config["countries"],
+            "time_zone": config["time_zone"], "component": component, "schema": 5},
             ["source-records"], [*common, SEARCH / f"{component}.py"])
     add("basemap", build_basemap, {}, dependencies=["source-basemap"])
     map_requirements = maps.ROOT / "tools/requirements-planner-maps.txt"
@@ -197,7 +204,7 @@ def specifications(config, prepared=None):
         if name in config:
             paths = [maps.ROOT / f"tools/planner_{name}.py", maps.ROOT / f"tools/requirements-planner-{name}.txt"]
             if name == "sun": paths.extend(maps.ROOT / path for path in ("tools/planner_sun_horizons.py", "tools/planner_map_archive.py"))
-            add(name, build_layer, {}, config[name], dependencies=["terrain"] if name == "sun" else [], paths=paths)
+            add(name, build_layer, {}, layer_options(config, name), dependencies=["terrain"] if name == "sun" else [], paths=paths)
     return result
 
 
