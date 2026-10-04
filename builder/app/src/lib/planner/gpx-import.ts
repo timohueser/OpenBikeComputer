@@ -1,11 +1,11 @@
 import { readGpx } from '../coverage/gpx';
-import { emptyTrip, kilometres, maxRidingDays, type Coordinate, type RoutePoint, type Trip } from './editor';
+import { emptyTrip, kilometres, maxRidingDays, type Coordinate, type DrawnCoordinate, type RoutePoint, type Trip } from './editor';
 import type { Shape } from './routing';
 
-/** One imported file: its name, its simplified line and, when planned on roads, its shape. */
+/** One imported file: its name, its simplified line with the file's elevations and, when planned on roads, its shape. */
 export interface ImportedLine {
     name: string;
-    line: Coordinate[];
+    line: DrawnCoordinate[];
     shape?: Shape;
 }
 
@@ -15,10 +15,10 @@ const toleranceM = 3;
 const transferMinKm = 0.2;
 
 /** Douglas–Peucker in a local plane: every dropped point is within `tolerance` metres of the kept line. */
-export function simplifyLine(line: Coordinate[], tolerance = toleranceM): Coordinate[] {
+export function simplifyLine<T extends DrawnCoordinate>(line: T[], tolerance = toleranceM): T[] {
     if (line.length < 3) return line;
     const scale = Math.cos(line[0][1] * Math.PI / 180);
-    const offset = (p: Coordinate, a: Coordinate, b: Coordinate) => {
+    const offset = (p: T, a: T, b: T) => {
         const [ax, ay] = [(p[0] - a[0]) * scale, p[1] - a[1]];
         const [dx, dy] = [(b[0] - a[0]) * scale, b[1] - a[1]];
         const t = Math.max(0, Math.min(1, (ax * dx + ay * dy) / (dx * dx + dy * dy || 1)));
@@ -47,7 +47,7 @@ export function readTracks(files: { name: string; text: string }[]): ImportedLin
     return files.map(file => {
         try {
             const { name, points } = readGpx(file.text, file.name.replace(/\.gpx$/i, ''));
-            return { name, line: simplifyLine(points.map(p => [p.lon / 1e6, p.lat / 1e6])) };
+            return { name, line: simplifyLine(points.map((p): DrawnCoordinate => p.ele === undefined ? [p.lon / 1e6, p.lat / 1e6] : [p.lon / 1e6, p.lat / 1e6, p.ele])) };
         } catch (error) {
             throw new Error(`${file.name}: ${(error as Error).message}`);
         }
@@ -56,7 +56,7 @@ export function readTracks(files: { name: string; text: string }[]): ImportedLin
 
 /** Shapes every line; a line that cannot be shaped keeps its file's line and is named in `failed`. */
 export async function planOnRoads(lines: ImportedLine[], shape: (line: Coordinate[]) => Promise<Shape>): Promise<{ lines: ImportedLine[]; failed: string[] }> {
-    const shapes = await Promise.allSettled(lines.map(line => shape(line.line)));
+    const shapes = await Promise.allSettled(lines.map(line => shape(line.line.map(c => [c[0], c[1]]))));
     return {
         lines: lines.map((line, i) => { const answer = shapes[i]; return answer.status === 'fulfilled' ? { ...line, shape: answer.value } : line; }),
         failed: lines.filter((_, i) => shapes[i].status === 'rejected').map(line => line.name),
@@ -65,7 +65,8 @@ export async function planOnRoads(lines: ImportedLine[], shape: (line: Coordinat
 
 /**
  * One file is a route; several are a trip with one day per file and a night at each day end. A kept line is one drawn
- * leg; a shaped line is routed through its shape points. A day that starts more than 200 m from the previous day end
+ * leg that repeats its ends, so their elevations stay; a day that continues from the previous day end also repeats that
+ * end. A shaped line is routed through its shape points. A day that starts more than 200 m from the previous day end
  * starts with a transfer; a nearer day continues from that day end.
  */
 export function importedTrip(base: Pick<Trip, 'bike' | 'preset'>, lines: ImportedLine[]): Trip {
@@ -75,17 +76,19 @@ export function importedTrip(base: Pick<Trip, 'bike' | 'preset'>, lines: Importe
             coordinate, progress: 0, ...extra });
     lines.forEach(({ line, shape }, day) => {
         const before = points.at(-1);
-        const joined = !!before && kilometres(before.coordinate, line[0]) <= transferMinKm;
-        if (!before) add('start', line[0]);
-        else if (!joined) add('via', line[0], { leg: 'transfer' });
-        const stops = shape?.points ?? [line[0], line.at(-1)!];
+        const previous = lines[day - 1]?.line.at(-1);
+        const [first, final] = [line[0], line.at(-1)!].map((c): Coordinate => [c[0], c[1]]);
+        const joined = !!before && kilometres(before.coordinate, first) <= transferMinKm;
+        if (!before) add('start', first);
+        else if (!joined) add('via', first, { leg: 'transfer' });
+        const stops = shape?.points ?? [first, final];
         for (let i = 1; i < stops.length; i++) {
             const last = i === stops.length - 1;
             const kind = !last ? 'via' : day === lines.length - 1 ? 'finish' : 'night';
             add(kind, stops[i], {
                 ...kind === 'night' ? { id: `night-${day + 1}`, night: day + 1 } : {},
                 ...shape?.turnarounds.includes(i) ? { turnaround: true as const } : {},
-                ...shape ? {} : { leg: 'drawn' as const, drawn: line.slice(joined ? 0 : 1, -1) },
+                ...shape ? {} : { leg: 'drawn' as const, drawn: joined && !lines[day - 1].shape ? [previous!, ...line] : line },
             });
         }
     });

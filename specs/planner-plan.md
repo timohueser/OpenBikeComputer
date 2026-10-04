@@ -50,7 +50,8 @@ Longitude is from -180 to 180. Latitude is from -90 to 90.
 The point `kind` is `start`, `finish`, `pass`, `via`, `waypoint`, `detour`, `night`,
 or `marker`. Optional fields are boolean `autoLabel`, string `placeKind`, a
 coordinate `anchor`, and `leg` (`routed`, `straight`, `drawn`, or `transfer`). A drawn leg can
-have a `drawn` array of coordinates between its endpoints. A transfer leg is a straight
+have a `drawn` array of coordinates between its endpoints. A drawn coordinate can have a
+third finite number, the elevation in metres. A transfer leg is a straight
 line that the rider does not ride, such as a train. It adds no ridden distance or time. Optional `turnaround`
 is `true` when the point turns the route back.
 
@@ -65,7 +66,8 @@ has at least two route points, one start, and no finish.
 Export includes a routing line only when it is a picked alternative and its key
 matches the plan. Other routes are calculated again. The line contains
 `choiceId`, `key`, `profile`, `picked`, `coordinates`, `elevation`, `elapsed`,
-`edges`, `stops`, `seconds`, `unknownSurfaceKm`, `pushingKm`, and `unroutedKm`.
+`edges`, `stops`, `seconds`, `unknownSurfaceKm`, `pushingKm`, `unroutedKm`, and
+`unknownElevationKm`.
 Elevation and elapsed arrays have one entry per coordinate. Elevation can be
 null. Elapsed seconds are finite, non-negative, and do not decrease. Each stop
 has a point `id` and finite non-negative distance in kilometres. Stops match all

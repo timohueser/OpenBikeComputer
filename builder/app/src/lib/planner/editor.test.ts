@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { closeLoop, loopTrip, startLoopHere, storedPlan, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, routeStops, addRestDay, anchorProgress, addClickedPoint, addPointNear, dayStops, applyBudget, coordinateAt, cumulative, initialTrip, insertPoint, itineraryDays, kilometres, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, removeRestDay, routeCoordinates, routeLegsAround, routeSlice, routingKey, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Place, type Coordinate, type RoutePoint, type Trip } from './editor';
+import { closeLoop, loopTrip, startLoopHere, storedPlan, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, routeStops, addRestDay, anchorProgress, addClickedPoint, addPointNear, dayStops, applyBudget, coordinateAt, cumulative, initialTrip, insertPoint, itineraryDays, kilometres, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, removeRestDay, routeCoordinates, routeLegsAround, dragPointOut, routeSlice, routingKey, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Place, type Coordinate, type RoutePoint, type Trip } from './editor';
 import { isTrip } from './trip-validation';
 import { calculateLine } from './routing';
 import { LegCache } from './route-legs';
@@ -451,6 +451,16 @@ describe('legs', () => {
         const moved = routeLegsAround(again, middle.id);
         expect(orderedRoutePoints(moved).map(point => point.leg)).toEqual([undefined, 'drawn', undefined, undefined]);
         expect(moved.points.find(point => point.id === added.id)!.drawn).toEqual([sketch[0]]);
+        expect(orderedRoutePoints(dragPointOut(drawn, 'finish', [7.2, 47.65])).map(point => point.leg)).toEqual([undefined, undefined, undefined]);
+    });
+
+    it('gives a point added on a drawn line with elevations the elevation of the line there', () => {
+        const initial = initialTrip();
+        const drawn = setDrawnLeg(initial, 'finish', [[7.4, 47.6, 300], [7.0, 47.6, 500]]);
+        const split = insertPoint(drawn, 'finish', [7.3, 47.6]);
+        const [, added, finish] = orderedRoutePoints(split);
+        expect(added.drawn).toEqual([[7.4, 47.6, 300], [7.3, 47.6, expect.closeTo(350, 0)]]);
+        expect(finish.drawn).toEqual([[7.3, 47.6, expect.closeTo(350, 0)], [7.0, 47.6, 500]]);
     });
 });
 

@@ -1,5 +1,5 @@
 import { presetSuffix } from './riding-profiles';
-import { cumulative, firstIndex, orderedRoutePoints, routingKey, type Coordinate, type Trip } from './editor';
+import { cumulative, firstIndex, orderedRoutePoints, routingKey, type Coordinate, type DrawnCoordinate, type Trip } from './editor';
 import { decodeRoutes } from './route-answer';
 import type { LegCache } from './route-legs';
 
@@ -78,6 +78,8 @@ export interface RoutingLine {
     unknownSurfaceKm: number;
     pushingKm: number;
     unroutedKm: number;
+    /** Ridden kilometres whose ascent is unknown; a transfer is not ridden, so it never counts. */
+    unknownElevationKm: number;
     /** Routing package of the routed legs. */
     package?: string;
     /** A picked alternative with the profile of its primary route, such as another corridor. No request for its plan returns it. */
@@ -108,7 +110,10 @@ export interface Shape {
     turnarounds: number[];
 }
 
-export async function requestShape(line: Coordinate[], profile: string, signal?: AbortSignal): Promise<Shape> {
+/** Chosen: a shape call that takes longer must not hold the import; the file keeps its line instead. */
+const shapeTimeoutMs = 30_000;
+
+export async function requestShape(line: Coordinate[], profile: string, signal = AbortSignal.timeout(shapeTimeoutMs)): Promise<Shape> {
     const data = await post('/v1/shape', { line, profile }, signal) as Partial<Shape>;
     const points = data.points, turnarounds = data.turnarounds ?? [];
     if (!Array.isArray(points) || points.length < 2 || !points.every(p => Array.isArray(p) && p.length === 2 && p.every(Number.isFinite))
@@ -136,6 +141,7 @@ export function selectRoute(trip: Trip, route: EngineRoute, alternatives: Engine
     return {
         choiceId: route.id, key: routingKey(trip), coordinates: route.geometry, elevation: route.elevation, elapsed: route.elapsed, edges: route.edges, seconds: route.totals.seconds,
         profile: route.profile, package: route.package, alternatives, alternativesReady: true, unknownSurfaceKm: route.totals.surface_m[0] / 1000, pushingKm: route.totals.pushing_m / 1000, unroutedKm: 0,
+        unknownElevationKm: route.totals.unknown_elevation_m / 1000,
         stops: [{ id: points[0].id, distance: 0 }, ...route.legs.map((leg, i) => ({ id: points[i + 1].id, distance: distance[leg.to_index] }))],
         picked: route.id !== primary.id && route.profile === primary.profile,
     };
@@ -146,15 +152,18 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
     const points = orderedRoutePoints(trip);
     if (points.length < 2) throw new Error('Choose a start and finish to calculate a route.');
     const result: RoutingLine = { choiceId: '', key: routingKey(trip), coordinates: [], elevation: [], elapsed: [], edges: {}, stops: [], seconds: 0,
-        alternatives: [], alternativesReady: true, profile: profileId(trip), unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0 };
+        alternatives: [], alternativesReady: true, profile: profileId(trip), unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
     let distance = 0;
-    function append(line: Coordinate[], elevation: (number | null)[], elapsed: number[], edges: Edges) {
+    let afterTransfer = false;
+    function append(line: Coordinate[], elevation: (number | null)[], elapsed: number[], edges: Edges, transfer = false) {
         const last = result.coordinates.at(-1);
         const gap = last ? cumulative([last, line[0]])[1] : 0;
         // A join to a manually drawn leg is itself an explicit, unverified connector.
-        if (gap > 0) { result.unroutedKm += gap; result.unknownSurfaceKm += gap; result.seconds += gap / 15 * 3600; distance += gap; }
-        const offset = last && gap === 0 ? 1 : 0;
-        const connector = gap > 0 ? 1 : 0;
+        if (gap > 0) { result.unroutedKm += gap; result.unknownSurfaceKm += gap; result.unknownElevationKm += gap; result.seconds += gap / 15 * 3600; distance += gap; }
+        // After a transfer the next leg repeats its first vertex, so no segment joins the heights at the two ends of the transfer.
+        const offset = last && gap === 0 && !afterTransfer ? 1 : 0;
+        const connector = last && !offset ? 1 : 0;
+        afterTransfer = transfer;
         const length = Math.max(result.coordinates.length - 1, 0);
         appendEdges(result.edges, length, undefined, 0, connector);
         appendEdges(result.edges, length + connector, edges, 0, line.length - 1);
@@ -174,13 +183,16 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         const before = points[i - 1];
         const origin = before.kind === 'detour' ? before.anchor ?? before.coordinate : before.coordinate;
         if (end.leg && end.leg !== 'routed') {
-            const line = [origin, ...(end.leg === 'drawn' ? end.drawn ?? [] : []), end.coordinate];
+            const drawn: DrawnCoordinate[] = [origin, ...(end.leg === 'drawn' ? end.drawn ?? [] : []), end.coordinate];
+            const line = drawn.map((c): Coordinate => [c[0], c[1]]);
+            const heights = drawn.map(c => c[2] ?? null);
             const lengths = cumulative(line);
             const ridden = end.leg !== 'transfer';
-            append(line, line.map(() => null), lengths.map(km => ridden ? km / 15 * 3600 : 0), {});
+            append(line, heights, lengths.map(km => ridden ? km / 15 * 3600 : 0), {}, !ridden);
             const km = ridden ? lengths.at(-1)! : 0;
             result.unknownSurfaceKm += km;
             result.unroutedKm += km;
+            if (ridden) heights.forEach((h, k) => { if (k && (h === null || heights[k - 1] === null)) result.unknownElevationKm += lengths[k] - lengths[k - 1]; });
             result.stops.push({ id: end.id, distance });
             i++;
             continue;
@@ -211,6 +223,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         const lengths = cumulative(route.geometry);
         result.unknownSurfaceKm += route.totals.surface_m[0] / 1000;
         result.pushingKm += route.totals.pushing_m / 1000;
+        result.unknownElevationKm += route.totals.unknown_elevation_m / 1000;
         for (let leg = 0; leg < route.legs.length; leg++) {
             const id = ends.get(leg);
             if (id) result.stops.push({ id, distance: start + lengths[route.legs[leg].to_index] });

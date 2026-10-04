@@ -34,7 +34,7 @@
     import { versionSummary } from '../../lib/planner/versions';
     import {
         addClickedPoint, addPointNear, addRestDay, applyBudget, closeLoop, coordinateAt, cumulative, emptyTrip, hasEndpoints as endpointsChosen,
-        insertPoint, itineraryDays, kilometres, planTitle, nearestProgress, nightOrderConflicts, overnightCandidates, riddenKm, routeLegsAround,
+        insertPoint, itineraryDays, kilometres, planTitle, nearestProgress, nightOrderConflicts, overnightCandidates, riddenKm, routeLegsAround, dragPointOut,
         orderedRoutePoints, overnightWindow, pinNight, removeRestDay, reorderPoint, routeCoordinates, startLoopHere, routeSlice, routeStops,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint, TripHistory, tripDays, routingKey, planOf, storedPlan,
         type Coordinate, type Day, type LegMode, type Place, type PointKind, type RoutePoint, type Trip,
@@ -150,7 +150,7 @@
     const visualTrip = $derived(keepPrevious ? previousRouteTrip ?? shownTrip : shownTrip);
     const visualRoute = $derived(currentRoute ?? (keepPrevious ? previousRouteTrip?.routing : undefined));
     const routingMessage = $derived(draggingPoint ? previewStatus : currentRoute
-        ? `${currentRoute.unknownSurfaceKm.toFixed(1)} km unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${currentRoute.pushingKm.toFixed(1)} km pushing` : ''}${currentRoute.unroutedKm ? ` · ${currentRoute.unroutedKm.toFixed(1)} km manual / access unverified` : ''}${currentRoute.elevation.some(h => h === null) ? ' · elevation incomplete' : ''}`
+        ? `${currentRoute.unknownSurfaceKm.toFixed(1)} km unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${currentRoute.pushingKm.toFixed(1)} km pushing` : ''}${currentRoute.unroutedKm ? ` · ${currentRoute.unroutedKm.toFixed(1)} km manual / access unverified` : ''}${currentRoute.unknownElevationKm ? ' · elevation incomplete' : ''}`
         : routingStatus);
     let list = $state<'plan' | 'ways'>('plan');
     let waysStatus = $state('');
@@ -960,9 +960,9 @@
         commit(closeLoop(trip), 'Loop closed · the route returns to the start');
     }
 
-    function insert(legEndId: string, coordinate: Coordinate) {
+    function insert(legEndId: string, coordinate: Coordinate, dragged = false) {
         clearSelection();
-        commit(insertPoint(trip, legEndId, coordinate), 'Shaping point inserted');
+        commit((dragged ? dragPointOut : insertPoint)(trip, legEndId, coordinate), 'Shaping point inserted');
         if (autoCenter) map?.centerOn(coordinate);
     }
 
@@ -1243,7 +1243,7 @@
             {/if}
             {#if routesOpen}
                 <SignedRoutes {finder} activity={bike} {theme} onClose={closeRoutes} onPlan={planSignedRoute} {placeName}
-                    current={hasEndpoints && total > 0 ? { title: planTitle(trip), km: total } : null}
+                    current={hasEndpoints && total > 0 ? { title: planTitle(trip), km: riddenKm(visualTrip) } : null}
                     findPlaces={(text, signal) => searchPlaces(text, searchContext, searchRegion, 6, signal).then(answer => routesPlaces(answer.results ?? [], text))} />
             {:else if searching}
                 <div class="pane-scroll">
@@ -1274,7 +1274,7 @@
                     </div>
                 {/if}
                 {#if !focusedDay && visualRoute}
-                    <div class="trip-summary"><RouteStats distance={riddenKm(visualTrip)} ascent={visualRoute?.elevation.every(h => h !== null) ? profileAscent(0, 1, visualRoute) : null} descent={visualRoute?.elevation.every(h => h !== null) ? profileDescent(0, 1, visualRoute) : null} walking={visualTrip.bike === 'hiking'} hours={visualRoute ? visualRoute.seconds / 3600 : null} /></div>
+                    <div class="trip-summary"><RouteStats distance={riddenKm(visualTrip)} ascent={visualRoute?.unknownElevationKm === 0 ? profileAscent(0, 1, visualRoute) : null} descent={visualRoute?.unknownElevationKm === 0 ? profileDescent(0, 1, visualRoute) : null} walking={visualTrip.bike === 'hiking'} hours={visualRoute ? visualRoute.seconds / 3600 : null} /></div>
                 {/if}
                 {#if !focusedDay && gaps.length}
                     <p class="closure-note"><Icon name="pin" size={15} /><span>{gapNote(gaps)}</span></p>
@@ -1334,7 +1334,7 @@
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces} {landmarks}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={previewPoint} onDayEndDrag={moveDayEnd}
-                    onLegClick={legClick} onInsert={insert} onDrawn={drawn} onPlaceClick={place => routesOpen ? moveRoutesStart({ coordinate: place.coordinate, name: place.label }) : choosePlace(place)}
+                    onLegClick={legClick} onInsert={(legEndId, coordinate) => insert(legEndId, coordinate, true)} onDrawn={drawn} onPlaceClick={place => routesOpen ? moveRoutesStart({ coordinate: place.coordinate, name: place.label }) : choosePlace(place)}
                     signedRoutes={routesOpen ? finder.mapView : null} signedHovered={finder.hovered} onSignedRoute={id => void finder.select(id)} onSignedHover={id => finder.hovered = id}
                     canPlanRoute={ROUTES_URL ? routeStatus : undefined} onPlanRoute={planNetworkRoute} onIdle={() => mapIdle++}
                     onVisibleRange={(range) => visibleRange = range}

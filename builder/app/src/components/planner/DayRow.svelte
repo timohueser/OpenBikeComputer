@@ -51,7 +51,7 @@
     const line = $derived(trip.routing?.key === routingKey(trip) ? trip.routing : undefined);
     const ascent = $derived(profileAscent(day.from, day.to, line));
     const descent = $derived(profileDescent(day.from, day.to, line));
-    const ascentKnown = $derived(line?.elevation.every(h => h !== null));
+    const ascentKnown = $derived(line?.unknownElevationKm === 0);
     const over = $derived(dayOverTarget(trip, day, ascent));
     // Both ends chosen: the figures are what the rider will ride. Otherwise they are a suggestion, shown with ≈.
     const confirmed = $derived((riding === 1 || !!previous?.pinned) && (last || !!day.pinned));

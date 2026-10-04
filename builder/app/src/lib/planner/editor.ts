@@ -3,6 +3,8 @@ import { profileAscent } from './profile-data';
 import type { PlaceCategory } from './poi-kinds';
 
 export type Coordinate = [number, number];
+/** A vertex of a drawn leg; a third number is its elevation in metres. */
+export type DrawnCoordinate = Coordinate | [number, number, number];
 export const maxRidingDays = 14;
 /** A transfer is a straight leg that the rider does not ride, such as a train; it adds no ridden distance or time. */
 export type LegMode = 'routed' | 'straight' | 'drawn' | 'transfer';
@@ -19,8 +21,9 @@ export interface RoutePoint {
     night?: number;
     /** Mode of the leg that ends at this point; absent means routed. In a loop the start also ends the closing leg. */
     leg?: LegMode;
-    /** Inner path of a drawn leg. The leg always joins its two points; moving a point routes its drawn legs again (`routeLegsAround`). */
-    drawn?: Coordinate[];
+    /** Inner path of a drawn leg. The leg always joins its two points; moving a point routes its drawn legs again (`routeLegsAround`).
+     * An imported line also repeats both points with their elevations, so the leg has a height at each end. */
+    drawn?: DrawnCoordinate[];
     /** A visit-and-return rejoins this exact position on the planned line. */
     anchor?: Coordinate;
     /** The route turns back at this shaping point. */
@@ -258,7 +261,7 @@ function routeLayout(trip: Trip): { coordinates: Coordinate[]; stops: Stop[] } {
 
 function legCoordinates(base: Coordinate[], before: RoutePoint, point: RoutePoint): Coordinate[] {
     if (point.leg && point.leg !== 'routed') {
-        return [[...before.coordinate], ...(point.leg === 'drawn' ? point.drawn ?? [] : []).map(c => [...c] as Coordinate), [...point.coordinate]];
+        return [[...before.coordinate], ...(point.leg === 'drawn' ? point.drawn ?? [] : []).map((c): Coordinate => [c[0], c[1]]), [...point.coordinate]];
     }
     const from = before.kind === 'start' ? 0 : nearestProgress(base, before.coordinate);
     const to = point.kind === 'finish' ? 1 : nearestProgress(base, point.coordinate);
@@ -585,12 +588,20 @@ export function insertPoint(trip: Trip, legEndId: string, coordinate: Coordinate
     return intoLeg(trip, { id: crypto.randomUUID(), kind: 'via', label: shapeLabel, coordinate: [...coordinate], progress: trip.live ? nearestProgress(routeCoordinates(trip), coordinate) : anchorProgress(coordinate) }, legEndId);
 }
 
+/** A point dragged out of a leg: both legs beside it follow roads. */
+export function dragPointOut(trip: Trip, legEndId: string, coordinate: Coordinate): Trip {
+    const next = insertPoint(trip, legEndId, coordinate);
+    const ids = new Set(trip.points.map(p => p.id));
+    const added = next.points.find(p => !ids.has(p.id));
+    return added ? routeLegsAround(next, added.id) : next;
+}
+
 export function setLegMode(trip: Trip, id: string, mode: LegMode): Trip {
     return withLeg(trip, id, { leg: mode === 'routed' ? undefined : mode });
 }
 
-export function setDrawnLeg(trip: Trip, id: string, coordinates: Coordinate[]): Trip {
-    return withLeg(trip, id, { leg: 'drawn', drawn: coordinates.map(c => [...c] as Coordinate) });
+export function setDrawnLeg(trip: Trip, id: string, coordinates: DrawnCoordinate[]): Trip {
+    return withLeg(trip, id, { leg: 'drawn', drawn: coordinates.map(c => [...c] as DrawnCoordinate) });
 }
 
 // A shaped leg fixes the route order, so a later point joins the leg it is placed in, not the one its corridor progress suggests.
@@ -600,31 +611,34 @@ function withLeg(trip: Trip, id: string, change: Partial<RoutePoint>): Trip {
 }
 
 // Places `point` in the leg that ends at `legEndId`. Both halves keep that leg's mode. A drawing splits on its segment
-// nearest the point and keeps every vertex, so a point on the drawn line leaves the line unchanged.
+// nearest the point and keeps every vertex, so a point on the drawn line leaves the line unchanged. When both ends of that
+// segment have an elevation, both halves get a vertex at the point with the interpolated elevation.
 function intoLeg(trip: Trip, point: RoutePoint, legEndId: string): Trip {
     const end = trip.points.find(p => p.id === legEndId)!;
     const placed: RoutePoint = { ...point, leg: end.leg };
     let points = trip.points;
     if (end.leg === 'drawn') {
         const route = orderedRoutePoints(trip);
-        const line = [route[route.map(p => p.id).lastIndexOf(legEndId) - 1].coordinate, ...end.drawn ?? [], end.coordinate];
-        const cut = nearestSegment(line, point.coordinate);
-        placed.drawn = line.slice(1, cut + 1);
-        points = points.map(p => p.id === end.id ? { ...p, drawn: line.slice(cut + 1, -1) } : p);
+        const line: DrawnCoordinate[] = [route[route.map(p => p.id).lastIndexOf(legEndId) - 1].coordinate, ...end.drawn ?? [], end.coordinate];
+        const { index: cut, t } = nearestSegment(line, point.coordinate);
+        const [a, b] = [line[cut][2], line[cut + 1][2]];
+        const at: DrawnCoordinate[] = a === undefined || b === undefined ? [] : [[...point.coordinate, a + (b - a) * t]];
+        placed.drawn = [...line.slice(1, cut + 1), ...at];
+        points = points.map(p => p.id === end.id ? { ...p, drawn: [...at, ...line.slice(cut + 1, -1)] } : p);
     }
     return { ...trip, points: [...points, placed], routeOrder: orderBefore(trip, point.id, legEndId) };
 }
 
-// The index of the first vertex of the segment of `line` nearest `point`, in a local plane.
-function nearestSegment(line: Coordinate[], point: Coordinate): number {
+// The segment of `line` nearest `point`, by its first vertex, and the fraction along it, in a local plane.
+function nearestSegment(line: DrawnCoordinate[], point: Coordinate): { index: number; t: number } {
     const scale = Math.cos(point[1] * Math.PI / 180);
-    let best = 0, nearest = Infinity;
+    let best = { index: 0, t: 0 }, nearest = Infinity;
     for (let i = 1; i < line.length; i++) {
         const [ax, ay] = [(line[i - 1][0] - point[0]) * scale, line[i - 1][1] - point[1]];
         const [dx, dy] = [(line[i][0] - line[i - 1][0]) * scale, line[i][1] - line[i - 1][1]];
         const t = Math.max(0, Math.min(1, -(ax * dx + ay * dy) / (dx * dx + dy * dy || 1)));
         const distance = (ax + dx * t) ** 2 + (ay + dy * t) ** 2;
-        if (distance < nearest) { nearest = distance; best = i - 1; }
+        if (distance < nearest) { nearest = distance; best = { index: i - 1, t }; }
     }
     return best;
 }

@@ -19,6 +19,9 @@
 import type { LatLon } from "../catalog/corridor";
 import { M_PER_DEG } from "../catalog/corridor";
 
+/** One GPX point; `ele` is the `<ele>` height in metres, when the file has one. */
+export type GpxPoint = LatLon & { ele?: number };
+
 /** One route as the corridor panel lists it. */
 export interface GpxRoute {
     name: string;
@@ -108,26 +111,28 @@ function decimate(points: LatLon[], max: number): LatLon[] {
  * @param fallbackName used when the file names nothing — the filename, usually.
  * @throws {GpxError} when no usable points survive.
  */
-export function readGpx(text: string, fallbackName: string): { name: string; points: LatLon[] } {
-    const tags = text.match(/<(?:trkpt|rtept)\b[^>]*>/g) ?? [];
-    const trk: LatLon[] = [];
-    const rte: LatLon[] = [];
+export function readGpx(text: string, fallbackName: string): { name: string; points: GpxPoint[] } {
+    const elements = [...text.matchAll(/<(trkpt|rtept)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/\1\s*>)/g)];
+    const trk: GpxPoint[] = [];
+    const rte: GpxPoint[] = [];
     let malformed = 0;
-    for (const tag of tags) {
-        const p = pointOf(tag);
+    for (const [, kind, attributes, body] of elements) {
+        const p: GpxPoint | null = pointOf(attributes);
         if (!p) {
             malformed++;
             continue;
         }
-        (tag.startsWith("<trkpt") ? trk : rte).push(p);
+        const ele = Number(/<ele>\s*([^<\s][^<]*?)\s*<\/ele>/.exec(body ?? "")?.[1] ?? NaN);
+        if (Number.isFinite(ele)) p.ele = ele;
+        (kind === "trkpt" ? trk : rte).push(p);
     }
     const points = trk.length ? trk : rte;
     if (points.length < 2) {
         throw new GpxError(
-            tags.length === 0
+            elements.length === 0
                 ? "no track or route points found — is this a GPX file?"
                 : malformed > 0
-                  ? `no usable points — ${malformed} of ${tags.length} carried malformed coordinates`
+                  ? `no usable points — ${malformed} of ${elements.length} carried malformed coordinates`
                   : "the file has fewer than two points, which is not a route",
         );
     }
@@ -137,6 +142,6 @@ export function readGpx(text: string, fallbackName: string): { name: string; poi
 /** One GPX body → one corridor route, decimated to {@link MAX_ROUTE_POINTS}. */
 export function parseGpx(text: string, fallbackName: string): GpxRoute {
     const { name, points } = readGpx(text, fallbackName);
-    const decimated = decimate(points, MAX_ROUTE_POINTS);
+    const decimated = decimate(points.map(({ lat, lon }) => ({ lat, lon })), MAX_ROUTE_POINTS);
     return { name, points: decimated, distanceKm: lengthKm(decimated) };
 }
