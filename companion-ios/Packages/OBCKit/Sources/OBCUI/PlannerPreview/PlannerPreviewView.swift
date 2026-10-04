@@ -613,9 +613,8 @@ public struct PlannerPreviewView: View {
                             Spacer()
                             if model.preset == preset { Image(systemName: "checkmark").fontWeight(.semibold) }
                         }.frame(minHeight: 44).contentShape(Rectangle())
-                    }.buttonStyle(.plain).disabled(preset == .smoother)
+                    }.buttonStyle(.plain)
                 }
-                Text("Smoother is not available from the route service.").font(.footnote).foregroundStyle(OBCTheme.secondary)
             }
         }
     }

@@ -11,27 +11,34 @@ use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Index {
-    pub scale: u32,
     pub junctions: u32,
     pub mapping: Table,
-    pub profiles: BTreeMap<String, Vec<Table>>,
+    pub profiles: BTreeMap<String, Columns>,
+}
+
+/// One profile's distance columns. The builder chooses the scale so that the distances of its
+/// region stay below the `u16` cap.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Columns {
+    pub scale: u32,
+    pub tables: Vec<Table>,
 }
 
 impl Index {
     pub fn valid(&self, roads: u32) -> bool {
-        self.scale != 0
-            && self.junctions != 0
+        self.junctions != 0
             && self.mapping.len == roads
             && self.mapping.valid()
             && !self.profiles.is_empty()
             && self.profiles.values().all(|columns| {
-                !columns.is_empty()
-                    && columns.len() <= 32
-                    && columns.iter().all(|c| c.len == self.junctions && c.valid())
+                columns.scale != 0
+                    && !columns.tables.is_empty()
+                    && columns.tables.len() <= 32
+                    && columns.tables.iter().all(|c| c.len == self.junctions && c.valid())
             })
     }
     pub fn tables(&self) -> impl Iterator<Item = &Table> {
-        std::iter::once(&self.mapping).chain(self.profiles.values().flatten())
+        std::iter::once(&self.mapping).chain(self.profiles.values().flat_map(|columns| &columns.tables))
     }
 }
 

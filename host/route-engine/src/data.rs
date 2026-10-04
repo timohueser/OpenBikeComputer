@@ -1,6 +1,6 @@
 //! Query access is independent of whether data is one region or a union of published blocks.
 use crate::{
-    base::{Column, Costs, Graph, Width},
+    base::{Column, Costs, Graph},
     blocks::{self, Ids, Union},
     closures::Closures,
     landmarks::{self, Guide, Junctions},
@@ -221,8 +221,8 @@ impl<S: Source> Selection<S> {
                 package.words.borrow_mut().block(package, &metric.allowed, block)?;
             }
         }
-        if let Some(key) = &manifest.closures {
-            keys.insert(key.clone());
+        if let Some(index) = &manifest.closures {
+            keys.insert(index.sets.clone());
             self.closures()?;
         }
         let mut page = None;
@@ -260,24 +260,21 @@ impl<S: Source> Selection<S> {
     }
 
     /// Bytes the forks hold together with these metrics prepared: the graph, the junction
-    /// mapping, and each metric's cost columns (turn columns once per identical table) and
-    /// landmark columns.
+    /// mapping, the closures, and each metric's cost columns (turn columns once per identical
+    /// table) and landmark columns.
     pub fn shared_bytes<'a>(&self, metrics: impl IntoIterator<Item = &'a str>) -> Result<usize> {
         let manifest = self.package.manifest();
         let roads = self.ids.count as usize;
         let arcs = self.arcs as usize;
-        let width = |column: &Column| match column.width {
-            Width::U8 => 1usize,
-            Width::U16 => 2,
-            Width::U32 => 4,
-            Width::U64 => 8,
-        };
         let mut bytes = roads
             .saturating_add(1)
             .saturating_mul(8)
-            .saturating_add(arcs.saturating_mul(8 + width(&manifest.graph.reverse_offsets)))
+            .saturating_add(arcs.saturating_mul(8 + manifest.graph.offsets.bytes()))
             .saturating_add(arcs.div_ceil(64).saturating_mul(8))
-            .saturating_add(self.ids.ranges().saturating_mul(16));
+            .saturating_add(self.ids.ranges().saturating_mul(16))
+            .saturating_add(
+                manifest.closures.as_ref().map_or(0, |index| roads.saturating_mul(index.roads.width.bytes())),
+            );
         if self.shared.union.get().is_none() {
             // Linking scratch: the reverse cursor and the fast id lookup.
             bytes = bytes.saturating_add(roads.saturating_add(1).saturating_mul(4));
@@ -294,13 +291,13 @@ impl<S: Source> Selection<S> {
         let mut turns: Vec<usize> = Vec::new();
         for name in metrics {
             let weights = &manifest.metric(name)?.weights;
-            bytes = bytes.saturating_add(roads.saturating_mul(width(&weights.road_costs)));
+            bytes = bytes.saturating_add(roads.saturating_mul(weights.road_costs.width.bytes()));
             if !turns.contains(&self.turn_groups[name]) {
-                bytes = bytes.saturating_add(arcs.saturating_mul(width(&weights.turns)));
+                bytes = bytes.saturating_add(arcs.saturating_mul(weights.turns.width.bytes()));
                 turns.push(self.turn_groups[name]);
             }
-            if let Some(tables) = manifest.landmarks.as_ref().and_then(|index| index.profiles.get(name)) {
-                bytes = bytes.saturating_add(tables.len().saturating_mul(nodes).saturating_mul(2));
+            if let Some(columns) = manifest.landmarks.as_ref().and_then(|index| index.profiles.get(name)) {
+                bytes = bytes.saturating_add(columns.tables.len().saturating_mul(nodes).saturating_mul(2));
             }
         }
         Ok(bytes)
@@ -391,13 +388,14 @@ impl<S: Source> Selection<S> {
             package.manifest().landmarks.as_ref().and_then(|index| Some((index, index.profiles.get(metric)?)));
         let guide = match columns {
             None => None,
-            Some((index, tables)) => {
+            Some((index, columns)) => {
                 let junctions = self.junctions(index)?;
-                let columns = tables
+                let tables = columns
+                    .tables
                     .iter()
                     .map(|table| landmarks::read(package, table, junctions.selected.iter(), u16::MAX as u32))
                     .collect::<Result<_>>()?;
-                Some(Guide { mapping: Arc::clone(&junctions.mapping), scale: index.scale, columns })
+                Some(Guide { mapping: Arc::clone(&junctions.mapping), scale: columns.scale, columns: tables })
             }
         };
         Ok(Prepared { graph: Arc::clone(&union.graph), costs, guide })
@@ -480,29 +478,33 @@ impl<S: Source> RoutingData for Selection<S> {
         self.package.road(self.ids.source(road)?)
     }
 
+    /// The closures of the selected roads, decoded once from their pages and shared by forks.
     fn closures(&self) -> Result<Arc<Closures>> {
         if let Some(closures) = self.shared.closures.get() {
             return Ok(Arc::clone(closures));
         }
-        let source = self.package.closures()?;
-        let mut roads: Vec<_> =
-            source.roads.iter().filter_map(|&(road, entry)| Some((self.ids.local(road)?, entry))).collect();
-        roads.sort_unstable();
-        let closures = Arc::new(Closures { roads, entries: source.entries });
-        Ok(Arc::clone(self.shared.closures.get_or_init(|| closures)))
+        let package = &self.package;
+        let closures = match &package.manifest().closures {
+            None => Closures::default(),
+            Some(index) => Closures {
+                sets: package.read(&index.sets)?,
+                roads: blocks::numbers(package, &index.roads, self.ids.iter(), self.ids.count as usize)?,
+            },
+        };
+        if !closures.valid() {
+            return Err(Error::InvalidData("Invalid closures".into()));
+        }
+        Ok(Arc::clone(self.shared.closures.get_or_init(|| Arc::new(closures))))
     }
 
     fn endpoint(&self, metric: &str, road: u32) -> Result<Endpoint> {
         let source = self.ids.source(road)?;
         let Some(basis) = self.package.prepared_cost(metric, source)? else {
-            return Ok(Endpoint { cost: None, arrival: road, departures: Vec::new() });
+            return Ok(Endpoint { cost: None, departures: Vec::new() });
         };
         let cost = basis.compile(&self.package.road(source)?, self.profile(metric)?).map_err(Error::InvalidData)?;
         let prepared = self.prepared(metric)?;
-        if cost.total() != prepared.costs.roads.get(road as usize) {
-            return Err(Error::InvalidData("Road cost differs from its basis".into()));
-        }
-        Ok(Endpoint { cost: Some(cost), arrival: road, departures: departures(&prepared.graph, &prepared.costs, road) })
+        Ok(Endpoint { cost: Some(cost), departures: departures(&prepared.graph, &prepared.costs, road) })
     }
 
     fn prepared(&self, metric: &str) -> Result<Arc<Prepared>> {

@@ -25,14 +25,37 @@ pub struct Column {
 pub struct Topology {
     pub first: Table,
     pub head: Table,
-    pub reverse_first: Table,
-    pub reverse_tail: Table,
-    pub reverse_offsets: Column,
+    /// The narrowest width that holds every position within an outgoing range. The runtime
+    /// builds the reverse arcs from `first` and `head` and stores their offsets at this width.
+    pub offsets: Width,
 }
 
 impl Topology {
-    pub fn tables(&self) -> [&Table; 5] {
-        [&self.first, &self.head, &self.reverse_first, &self.reverse_tail, &self.reverse_offsets.values]
+    pub fn tables(&self) -> [&Table; 2] {
+        [&self.first, &self.head]
+    }
+}
+
+impl Width {
+    pub fn bytes(self) -> usize {
+        match self {
+            Width::U8 => 1,
+            Width::U16 => 2,
+            Width::U32 => 4,
+            Width::U64 => 8,
+        }
+    }
+    /// The narrowest width whose all-ones sentinel no finite value up to `max` collides with.
+    pub fn holding(max: u64) -> Self {
+        if max < u8::MAX as u64 {
+            Width::U8
+        } else if max < u16::MAX as u64 {
+            Width::U16
+        } else if max < u32::MAX as u64 {
+            Width::U32
+        } else {
+            Width::U64
+        }
     }
 }
 
@@ -49,17 +72,8 @@ impl Weights {
 }
 
 /// All-ones values represent absent costs. A finite value never shares that encoding.
-fn write_column(values: &[u64], write: &mut impl FnMut(&[u8]) -> Result<String>) -> Result<Column> {
-    let max = values.iter().copied().filter(|&v| v != u64::MAX).max().unwrap_or(0);
-    let width = if max < u8::MAX as u64 {
-        Width::U8
-    } else if max < u16::MAX as u64 {
-        Width::U16
-    } else if max < u32::MAX as u64 {
-        Width::U32
-    } else {
-        Width::U64
-    };
+pub fn write_column(values: &[u64], write: &mut impl FnMut(&[u8]) -> Result<String>) -> Result<Column> {
+    let width = Width::holding(values.iter().copied().filter(|&v| v != u64::MAX).max().unwrap_or(0));
     let mut blocks = Vec::new();
     for page in values.chunks(table::ENTRIES) {
         let bytes = match width {
@@ -105,28 +119,11 @@ pub fn write_topology(
     for i in 0..roads as usize {
         first[i + 1] += first[i];
     }
-    let mut reverse_first = vec![0u32; first.len()];
-    for &to in &head {
-        reverse_first[to as usize + 1] += 1;
-    }
-    for i in 0..roads as usize {
-        reverse_first[i + 1] += reverse_first[i];
-    }
-    let mut cursor = reverse_first.clone();
-    let mut reverse_tail = vec![0u32; edges.len()];
-    let mut reverse_offsets = vec![0u64; edges.len()];
-    for (arc, &(from, to)) in edges.iter().enumerate() {
-        let at = cursor[to as usize] as usize;
-        reverse_tail[at] = from;
-        reverse_offsets[at] = arc as u64 - first[from as usize] as u64;
-        cursor[to as usize] += 1;
-    }
+    let widest = first.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
     Ok(Topology {
         first: Table::write(&first, &mut write)?,
         head: Table::write(&head, &mut write)?,
-        reverse_first: Table::write(&reverse_first, &mut write)?,
-        reverse_tail: Table::write(&reverse_tail, &mut write)?,
-        reverse_offsets: write_column(&reverse_offsets, &mut write)?,
+        offsets: Width::holding(widest.saturating_sub(1) as u64),
     })
 }
 
@@ -137,6 +134,17 @@ pub enum Numbers {
     U64(Vec<u64>),
 }
 impl Numbers {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::U8(v) => v.len(),
+            Self::U16(v) => v.len(),
+            Self::U32(v) => v.len(),
+            Self::U64(v) => v.len(),
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     pub fn get(&self, index: usize) -> u64 {
         match self {
             Self::U8(v) => {
@@ -166,10 +174,7 @@ impl Numbers {
 }
 impl Topology {
     pub fn valid(&self, roads: u32) -> bool {
-        roads.checked_add(1).is_some_and(|n| self.first.len == n && self.reverse_first.len == n)
-            && self.head.len == self.reverse_tail.len
-            && self.head.len == self.reverse_offsets.values.len
-            && self.tables().iter().all(|t| t.valid())
+        roads.checked_add(1).is_some_and(|n| self.first.len == n) && self.tables().iter().all(|t| t.valid())
     }
 }
 impl Weights {

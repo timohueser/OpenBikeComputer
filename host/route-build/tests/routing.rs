@@ -43,6 +43,15 @@ fn edges(route: &Route, channel: &str) -> Value {
     let runs = json!(route.edges)[channel].clone();
     runs.as_array().unwrap().iter().flat_map(|run| vec![run[0].clone(); run[1].as_u64().unwrap() as usize]).collect()
 }
+/// The candidates a route request attaches a point to: within 250 m, or else within reach.
+fn snaps(router: &mut Router<Selection<Memory>>, [lon, lat]: [f64; 2], profile: &str) -> Vec<Candidate> {
+    let point = Point { lon: (lon * 1e6).round() as i32, lat: (lat * 1e6).round() as i32, elevation: NO_ELEVATION };
+    let found = router.snap(point, profile, Policy::default()).unwrap();
+    if found.retained.is_empty() {
+        return router.snap(point, profile, Policy { radius_m: REACH_M, ..Policy::default() }).unwrap().retained;
+    }
+    found.retained
+}
 
 fn fixture() -> Graph {
     let points: Vec<_> =
@@ -66,7 +75,6 @@ fn fixture() -> Graph {
                     access: BIKE | FOOT,
                     difficulty: 0,
                     hiking_difficulty: None,
-                    uncertain_access: false,
                     structure: false,
                     shape: vec![points[from as usize], points[to as usize]],
                 });
@@ -181,27 +189,9 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     for profile in &profiles {
         for &from in &coords {
             for &to in &coords {
-                let mut snaps = Vec::new();
-                for [lon, lat] in [from, to] {
-                    snaps.push(
-                        router
-                            .snap(
-                                Point {
-                                    lon: (lon * 1e6).round() as i32,
-                                    lat: (lat * 1e6).round() as i32,
-                                    elevation: NO_ELEVATION,
-                                },
-                                &profile.name,
-                                Policy::default(),
-                            )
-                            .unwrap(),
-                    );
-                }
-                let expected = snaps[0]
-                    .retained
-                    .iter()
-                    .flat_map(|a| snaps[1].retained.iter().filter_map(|b| oracle(&graph, profile, a, b)))
-                    .min();
+                let (starts, ends) = (snaps(&mut router, from, &profile.name), snaps(&mut router, to, &profile.name));
+                let expected =
+                    starts.iter().flat_map(|a| ends.iter().filter_map(|b| oracle(&graph, profile, a, b))).min();
                 let actual = router.route(
                     &Request {
                         points: vec![from, to],
@@ -692,12 +682,13 @@ fn geometry_cache_retains_a_snap_working_set_across_many_small_pages() {
 
 #[test]
 fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profile() {
+    // A road in two segments, and a driveway that only a grade 1 path joins to it.
     let mut graph = fixture();
-    graph.points = [(0, 0), (0, 10_000), (100, 4_000), (100, 6_000)]
+    graph.points = [(0, 0), (0, 5_000), (0, 10_000), (100, 4_000), (100, 6_000)]
         .map(|(lat, lon)| Point { lat, lon, elevation: NO_ELEVATION })
         .to_vec();
     let template = graph.roads[0].clone();
-    graph.roads = [(0, 1, 0), (1, 0, 0), (2, 3, 0), (3, 2, 0), (0, 2, 1), (2, 0, 1)]
+    graph.roads = [(0, 1, 0), (1, 0, 0), (1, 2, 0), (2, 1, 0), (3, 4, 0), (4, 3, 0), (0, 3, 1), (3, 0, 1)]
         .map(|(from, to, difficulty)| {
             let shape = vec![graph.points[from as usize], graph.points[to as usize]];
             Road {
@@ -730,19 +721,22 @@ fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profi
     assert!(route.attachments[1].snap_distance_m < 25.0);
     assert_eq!(route.attachments[0].snap_distance_m, 0.0);
     assert_eq!(route.attachments[2].snap_distance_m, 0.0);
-    // The first attempt finds no path from the driveway. A retry that reaches the limit keeps that answer.
-    let first = (1..)
-        .map(|queries| router.route(&request, &Control { max_queries: queries, ..Control::default() }))
-        .find(|result| !matches!(result, Err(Error::Limit)))
-        .unwrap();
-    assert!(matches!(first, Err(Error::NoPath)));
     request.profile = "mtb".into();
     let mtb = router.route(&request, &Control::default()).unwrap();
     assert_eq!(mtb.attachments[1].projected.lat, 100);
+    // The driveway is a fragment of the road profile's graph, so a point on it is not a candidate
+    // there: the first search already attaches it to the connected road.
     request.profile = "road".into();
-    // An explicit point on the disconnected driveway must not jump to a different road.
     request.points[1][1] = 0.0001;
-    assert!(matches!(router.route(&request, &Control::default()), Err(Error::NoPath)));
+    let snapped = router.snap(
+        Point { lon: 5_000, lat: 100, elevation: NO_ELEVATION },
+        "road",
+        Policy { radius_m: REACH_M, ..Policy::default() },
+    );
+    assert!(snapped.unwrap().retained.iter().all(|c| c.projected.lat == 0));
+    let route = router.route(&request, &Control::default()).unwrap();
+    assert_eq!(route.attachments[1].projected.lat, 0);
+    assert!((10.0..12.0).contains(&route.attachments[1].snap_distance_m));
 }
 
 #[test]
@@ -768,7 +762,7 @@ fn route_goals_preserve_the_bikes_surface_suitability() {
     graph.forbidden_foot.clear();
     let profiles: Vec<_> = Profile::presets()
         .into_iter()
-        .filter(|p| ["road", "road/shorter", "road/smoother", "gravel/shorter"].contains(&p.name.as_str()))
+        .filter(|p| ["road", "road/shorter", "gravel/shorter"].contains(&p.name.as_str()))
         .collect();
     let (source, manifest) = package_with_profiles(&graph, &profiles);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
@@ -782,7 +776,7 @@ fn route_goals_preserve_the_bikes_surface_suitability() {
         start_position: None,
         end_position: None,
     };
-    for profile in ["road", "road/shorter", "road/smoother"] {
+    for profile in ["road", "road/shorter"] {
         request.profile = profile.into();
         let route = router.route(&request, &Control::default()).unwrap();
         assert_eq!(route.totals.surface_m[Surface::Gravel as usize], 0, "{profile}");
@@ -812,7 +806,6 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
                 class: 1,
                 difficulty: 0,
                 hiking_difficulty: None,
-                uncertain_access: false,
                 structure: false,
                 access: if i == 1 {
                     route_build::source::access(
@@ -874,7 +867,6 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
             access: BIKE | FOOT | PUSH,
             difficulty: if from.min(to) == 1 { 0 } else { 255 },
             hiking_difficulty: (from.min(to) == 1).then_some(2),
-            uncertain_access: false,
             structure: false,
             shape: vec![points[from as usize], points[to as usize]],
         })
@@ -937,7 +929,6 @@ fn a_route_avoids_a_private_road_unless_a_shaping_point_is_on_it() {
             access: BIKE | FOOT | PUSH,
             difficulty: 255,
             hiking_difficulty: None,
-            uncertain_access: false,
             structure: false,
             shape: vec![points[from], points[to]],
         })
@@ -979,6 +970,66 @@ fn a_route_avoids_a_private_road_unless_a_shaping_point_is_on_it() {
 }
 
 #[test]
+fn a_spur_that_ends_at_a_closed_gate_stays_snappable_through_its_u_turn() {
+    // A junction with a road west, a road north and a 222 m spur east that ends at a gate.
+    let at = |lon, lat| Point { lon, lat, elevation: 0.0 };
+    let points = vec![at(-2000, 0), at(0, 0), at(2000, 0), at(0, 2000)];
+    let ways = [(0usize, 1usize), (1, 2), (1, 3)];
+    let roads = ways
+        .iter()
+        .enumerate()
+        .flat_map(|(way, &(a, b))| [(way, a, b, false), (way, b, a, true)])
+        .map(|(way, from, to, reversed)| Road {
+            from: from as u32,
+            to: to as u32,
+            way: way as i64,
+            reversed,
+            length_m: points[from].distance(points[to]).round() as u32,
+            ascent_m: 0,
+            descent_m: 0,
+            surface: Surface::Paved,
+            class: 1,
+            access: BIKE | FOOT | PUSH,
+            difficulty: 255,
+            hiking_difficulty: None,
+            structure: false,
+            shape: vec![points[from], points[to]],
+        })
+        .collect();
+    let open = BIKE | FOOT | PUSH;
+    let mut graph =
+        Graph { points, roads, node_ids: (0..4).collect(), node_access: vec![open, open, 0, open], ..Graph::default() };
+    for (way, &(a, b)) in ways.iter().enumerate() {
+        let tags = [("highway".into(), "service".into())].into_iter().collect();
+        graph
+            .osm
+            .ways
+            .insert(way as i64, route_build::source::Way { id: way as i64, nodes: vec![a as i64, b as i64], tags });
+    }
+    let (source, manifest) = package(&graph);
+    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    for id in 0..6 {
+        assert!(router.package().package().allowed("touring", id).unwrap(), "road {id}");
+    }
+    // A point 55 m before the gate ends the route there instead of at the junction.
+    let request = Request {
+        points: vec![[-0.0015, 0.0], [0.0015, 0.0]],
+        profile: "touring".into(),
+        pace: Pace::default(),
+        alternatives: false,
+        alternatives_only: false,
+        turnarounds: vec![],
+        start_position: None,
+        end_position: None,
+    };
+    let route = router.route(&request, &Control::default()).unwrap();
+    assert_eq!(route.attachments[1].snap_distance_m, 0.0);
+    assert!((330..=338).contains(&route.totals.distance_m), "{}", route.totals.distance_m);
+    let back = Request { points: vec![[0.0015, 0.0], [-0.0015, 0.0]], ..request };
+    assert_eq!(router.route(&back, &Control::default()).unwrap().attachments[0].snap_distance_m, 0.0);
+}
+
+#[test]
 fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
     use route_engine::search::{Query, Seed, Workspace};
     let (source, bytes) = package_with_profiles(&fixture(), &Profile::presets());
@@ -1000,7 +1051,7 @@ fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
     let names: Vec<_> = original.package().manifest().metrics.keys().cloned().collect();
     let mut saw_forbidden = false;
     for name in names {
-        for points in [vec![[0.001, 0.0], [0.029, 0.02]], vec![[0.029, 0.02], [0.001, 0.0]]] {
+        for points in [vec![[0.001, 0.0], [0.02, 0.011]], vec![[0.02, 0.011], [0.001, 0.0]]] {
             let request = Request {
                 points,
                 profile: name.clone(),
@@ -1051,8 +1102,8 @@ fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
             saw_forbidden |= actual.iter().any(|(_, c)| *c == u64::MAX);
             assert_eq!(actual, expected);
             for to in 0..joined.nodes() as u32 {
-                let starts = [Seed { node: from, cost: 7, road: from, choice: 0 }];
-                let ends = [Seed { node: to, cost: 11, road: to, choice: 0 }];
+                let starts = [Seed { node: from, cost: 7, choice: 0 }];
+                let ends = [Seed { node: to, cost: 11, choice: 0 }];
                 let source_starts = [Seed { node: global, ..starts[0] }];
                 let source_ends = [Seed { node: partial.source_id(to).unwrap(), ..ends[0] }];
                 let query = Query {

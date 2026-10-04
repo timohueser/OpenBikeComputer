@@ -261,6 +261,9 @@ impl Union {
         let mut cursor = reverse_first.clone();
         let mut reverse_tail = vec![0u32; head.len()];
         let widest = first.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
+        if Width::holding(widest.saturating_sub(1) as u64).bytes() > topology.offsets.bytes() {
+            return Err(Error::InvalidData("Outgoing range exceeds the offset width".into()));
+        }
         macro_rules! scatter {
             ($variant:ident, $ty:ty) => {{
                 let mut offsets = vec![0 as $ty; head.len()];
@@ -275,12 +278,11 @@ impl Union {
                 Numbers::$variant(offsets)
             }};
         }
-        let reverse_offsets = if widest < u8::MAX as u32 {
-            scatter!(U8, u8)
-        } else if widest < u16::MAX as u32 {
-            scatter!(U16, u16)
-        } else {
-            scatter!(U32, u32)
+        let reverse_offsets = match topology.offsets {
+            Width::U8 => scatter!(U8, u8),
+            Width::U16 => scatter!(U16, u16),
+            Width::U32 => scatter!(U32, u32),
+            Width::U64 => scatter!(U64, u64),
         };
         Ok(Self {
             graph: Arc::new(Graph { first, head, reverse_first, reverse_tail, reverse_offsets }),

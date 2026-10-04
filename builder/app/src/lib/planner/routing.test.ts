@@ -36,7 +36,7 @@ describe('routing integration', () => {
                 expect(presetName(id)).toBe(preset);
             }
         }
-        expect(profileId({ ...trip(), bike: 'road', preset: 'Quieter' })).toBe('road/quieter');
+        expect(profileId({ ...trip(), bike: 'road', preset: 'Quieter' })).toBe('road');
     });
     it('keeps directed shaping context in one request and preserves unknown elevation', async () => {
         const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [answer] }) });

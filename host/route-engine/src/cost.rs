@@ -43,14 +43,6 @@ impl RoadCost {
     }
 }
 
-/// Prepared source preferences; terrain and bends are reconstructed from shared geometry.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct CostParameters {
-    pub distance: f64,
-    pub turn: f64,
-    pub ferry: bool,
-}
-
 /// Exact source factors shared by roads and profiles. Multiplication precedes curve compilation.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CostBasis {
@@ -68,27 +60,12 @@ impl CostBasis {
             && self.turn < u32::MAX as f64
     }
 
-    pub fn parameters(self, road: &Road) -> CostParameters {
-        CostParameters { distance: road.length_m as f64 * self.factor, turn: self.turn, ferry: self.ferry }
-    }
-
+    /// The one compilation of a road's cost curve: preparation stores its total, queries recompute
+    /// the curve from the same geometry, so the two always agree. Terrain and bends come from the
+    /// shared geometry.
     pub fn compile(self, road: &Road, profile: &Profile) -> Result<RoadCost, String> {
-        self.parameters(road).compile(road, profile)
-    }
-}
-
-impl CostParameters {
-    pub fn valid(&self) -> bool {
-        self.distance.is_finite()
-            && self.distance > 0.0
-            && self.distance < u32::MAX as f64
-            && self.turn.is_finite()
-            && self.turn >= 0.0
-            && self.turn < u32::MAX as f64
-    }
-
-    pub fn compile(self, road: &Road, profile: &Profile) -> Result<RoadCost, String> {
-        if !self.valid() || road.shape.len() < 2 {
+        let distance = road.length_m as f64 * self.factor;
+        if !(self.valid() && distance > 0.0 && distance < u32::MAX as f64) || road.shape.len() < 2 {
             return Err("Invalid road cost inputs".into());
         }
         let lengths: Vec<_> = road.shape.windows(2).map(|p| p[0].distance(p[1])).collect();
@@ -102,7 +79,7 @@ impl CostParameters {
             Weighting::RoadBike(_) => (0.0, 60.0, 0.015),
             Weighting::Weighted { climb, .. } => (climb, 0.0, 0.0),
         };
-        let mut result = RoadCost { distance: self.distance, penalties: Vec::new() };
+        let mut result = RoadCost { distance, penalties: Vec::new() };
         let mut distance = 0.0;
         let mut penalty = 0.0;
         for (i, (&length, pair)) in lengths.iter().zip(road.shape.windows(2)).enumerate() {

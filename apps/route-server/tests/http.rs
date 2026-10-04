@@ -52,7 +52,6 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         access: BIKE | FOOT,
         difficulty: 0,
         hiking_difficulty: None,
-        uncertain_access: false,
         structure: false,
         shape: points.clone(),
     };
