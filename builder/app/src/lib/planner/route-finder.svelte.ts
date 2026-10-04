@@ -36,7 +36,7 @@ export function recordLine(route: CatalogRecord, stages: CatalogRecord[] = []): 
 /** The Routes view state. It outlives the view, so "Back to routes" finds the filters and the list again. */
 export class RouteFinder {
     start = $state<RouteStart | null>(null);
-    filters = $state<RouteFilters>({ radiusKm: 25, shape: 'loop', distanceKm: {}, climbM: {}, hardest: [0, 2], sort: 'nearest' });
+    filters = $state<RouteFilters>({ radiusKm: 10, shape: 'loop', distanceKm: {}, climbM: {}, hardest: [0, 2], sort: 'nearest' });
     matches = $state.raw<RouteMatch[]>([]);
     status = $state<'loading' | 'ready' | 'failed'>('ready');
     progress = $state({ loaded: 0, total: 0 });

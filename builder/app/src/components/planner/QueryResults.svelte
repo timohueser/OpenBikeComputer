@@ -6,7 +6,7 @@
     import type { Coordinate, Place } from '../../lib/planner/editor';
     let { state, selectedId, hoveredId = null, onHover, applying = false, applyError = '', routes, onRoutes, onSelect, onApply, onMore, onRetry, onStretch }: {
         state: SearchState; selectedId: string | null; hoveredId?: string | null; onHover?: (id: string | null) => void; applying?: boolean; applyError?: string;
-        /** What a search for signed routes near the found place lists, such as "Hiking · loops within 25 km". Absent without a route catalog. */
+        /** What a search for signed routes near the found place lists, such as "Hiking · loops within 10 km". Absent without a route catalog. */
         routes?: string; onRoutes?: (place: SearchPlace) => void;
         onSelect: (place: Place) => void; onApply: () => void; onMore: () => void; onRetry: () => void; onStretch: (line: Coordinate[]) => void;
     } = $props();

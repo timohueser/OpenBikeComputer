@@ -646,11 +646,12 @@
         commit(setLegMode(trip, legEndId, mode), mode === 'straight' ? 'Leg set to a straight line' : 'Leg set to routed');
     }
 
+    /** Fits the search circle and the listed routes. */
     function showRoutesArea() {
         const start = finder.start;
         if (!start) return;
         const [lon, lat] = start.coordinate, dLat = finder.filters.radiusKm / 111.32, dLon = dLat / Math.cos(lat * Math.PI / 180);
-        map?.fitCoordinates([[lon - dLon, lat - dLat], [lon + dLon, lat + dLat]]);
+        map?.fitCoordinates([[lon - dLon, lat - dLat], [lon + dLon, lat + dLat], ...finder.mapView?.lines.flatMap(route => route.line) ?? []]);
     }
 
     /** Opens the Routes view, from a new start or with the list it had. */
@@ -702,10 +703,13 @@
         }
     }
 
-    // The map shows the selected route whole.
+    // The map shows the selected route whole; back at the list, it shows the list again.
+    let showedDetail = false;
     $effect(() => {
         const detail = routesOpen ? finder.detail : null;
         if (detail) untrack(() => map?.fitCoordinates(recordLine(detail.route, detail.stages)));
+        else if (showedDetail && routesOpen) untrack(showRoutesArea);
+        showedDetail = !!detail;
     });
 
     // The detail plan is routed once, for its profile and time. The leg cache keeps the legs for "Plan this route".
