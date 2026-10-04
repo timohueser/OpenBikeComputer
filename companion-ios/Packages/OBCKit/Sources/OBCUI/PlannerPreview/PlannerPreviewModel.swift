@@ -348,18 +348,12 @@ public final class PlannerPreviewModel {
     }
 
     public func exportRoute(name: String) -> ImportedRoute {
-        let distances = pointDistances
-        let located = points.filter { !isEndpoint($0.id) && $0.kind == .visit }.map { ($0.place, distances[$0.id] ?? 0) }
-        let waypoints = located.enumerated().map { index, entry in
-            let category: WaypointCategory? = switch entry.0.kind {
-            case .water: .water
-            case .camping: .campsite
-            case .shop: .resupply
-            default: nil
-            }
-            return Waypoint(index: index, name: entry.0.name, note: entry.0.note,
-                            distanceAlongMeters: entry.1, coordinate: entry.0.coordinate, category: category)
-        }
+        // Stops and markers are the route's waypoints, placed along the line as an import places them.
+        let places = (points.filter { !isEndpoint($0.id) && $0.kind == .visit } + markers).map(\.place)
+        let waypoints = Waypoint.placed(places.map {
+            Waypoint(index: 0, name: $0.name, note: $0.note, distanceAlongMeters: 0, coordinate: $0.coordinate,
+                     category: WaypointCategory(placeKind: $0.kind.rawValue))
+        }, along: routePoints)
         let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
         return ImportedRoute(name: title.isEmpty ? routeTitle : title,
                              creator: "OpenBikeComputer", points: routePoints, waypoints: waypoints)
@@ -384,9 +378,10 @@ public final class PlannerPreviewModel {
                              progress: length > 0 ? min(1, (distances[point.id] ?? 0) / length) : 0, kind: kind,
                              night: nightIDs.firstIndex(of: point.id).map { $0 + 1 },
                              placeKind: point.place.kind == .town ? nil : point.place.kind.rawValue,
-                             leg: leg.flatMap { $0.mode == .routed ? nil : $0.mode }, drawn: leg?.drawn, turnaround: point.turnaround)
+                             leg: leg.flatMap { $0.mode == .routed ? nil : $0.mode }, drawn: leg?.drawn, turnaround: point.turnaround,
+                             note: point.place.note)
         } + markers.map { PlanPoint(id: ids[$0.id]!, label: $0.place.name, coordinate: $0.place.coordinate, progress: 0, kind: .marker,
-                                    placeKind: $0.place.kind == .town ? nil : $0.place.kind.rawValue) }
+                                    placeKind: $0.place.kind == .town ? nil : $0.place.kind.rawValue, note: $0.place.note) }
         return PlannerPlan(points: planned, mode: isTrip || !nightIDs.isEmpty ? .trip : .route, name: state.name, bike: activity.rawValue, preset: preset.title,
                            loop: isLoop, routeOrder: route.dropFirst().dropLast().map { ids[$0.id]! })
     }
@@ -585,14 +580,15 @@ public final class PlannerPreviewModel {
         var state = State()
         state.points = route.map { planned in
             let kind = PlannerPreviewPlace.Kind(rawValue: planned.placeKind ?? "") ?? planned.placeKind.map(NativePlaceKind.kind(for:)) ?? .town
-            var point = PlannerPreviewPoint(place: .init(id: planned.id, name: planned.label, coordinate: planned.coordinate, kind: kind),
+            var point = PlannerPreviewPoint(place: .init(id: planned.id, name: planned.label, coordinate: planned.coordinate, kind: kind,
+                                                         note: planned.note),
                                             kind: [.via, .pass].contains(planned.kind) ? .shape : .visit)
             point.turnaround = planned.turnaround == true
             return point
         }
         state.markers = plan.markers.map {
             .init(place: .init(id: $0.id, name: $0.label, coordinate: $0.coordinate,
-                               kind: PlannerPreviewPlace.Kind(rawValue: $0.placeKind ?? "") ?? .town), kind: .marker)
+                               kind: PlannerPreviewPlace.Kind(rawValue: $0.placeKind ?? "") ?? .town, note: $0.note), kind: .marker)
         }
         state.nights = Set(route.filter { $0.kind == .night }.map(\.id))
         state.loop = plan.isLoop && route.count > 1

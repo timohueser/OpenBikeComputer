@@ -5,7 +5,7 @@ import { routeService } from '../../../test-support/planner/route-service';
 import { decodeRoutes, type AnswerRoute } from './route-answer';
 import { ridingProfiles, presetName, type BikeType } from './riding-profiles';
 import { surfaceRuns, surfaceWindow } from './surface-data';
-import { initialTrip, cumulative, planOf, removeRoutePoint, storedPlan, setEndpoint, routingKey, routeCoordinates, TripHistory, type Coordinate, type Trip } from './editor';
+import { initialTrip, cumulative, planOf, removeRoutePoint, storedPlan, setEndpoint, routingKey, routeCoordinates, TripHistory, type Coordinate, type RoutePoint, type Trip } from './editor';
 
 const totals = (metres: number, unknown = 0, pushing = 0): RouteTotals =>
     ({ distance_m: metres, ascent_m: 0, seconds: metres, surface_m: [unknown, metres - unknown, 0, 0, 0, 0], unknown_elevation_m: metres, pushing_m: pushing });
@@ -174,3 +174,32 @@ describe('routing integration', () => {
         expect(routeCoordinates(plan)).toEqual([plan.points[0].coordinate]);
     });
 });
+
+describe('joins beside manual legs', () => {
+    // Snaps every point about 5 m north and knows every height, as `/v1/route` does on a road beside the point.
+    const snapping = async (_url: string, init: RequestInit) => {
+        const { points } = JSON.parse(init.body as string) as { points: Coordinate[] };
+        const snapped = points.map(([lon, lat]): Coordinate => [lon, lat + .000045]);
+        const legTotals = { ...totals(1000), unknown_elevation_m: 0 };
+        const routes: AnswerRoute[] = [{ id: 'snapped', reason: 'primary', package: 'p', profile: 'touring', snap_truncated: false,
+            coordinates_udeg: snapped.flat().map((value, i, flat) => Math.round(value * 1e6) - (i > 1 ? Math.round(flat[i - 2] * 1e6) : 0)),
+            elevation_dm: snapped.map(() => 2000), elapsed_s: snapped.map((_, i) => i && 1000), totals: { ...totals(1000 * (points.length - 1)), unknown_elevation_m: 0 },
+            legs: snapped.slice(1).map((_, k) => ({ from_index: k, to_index: k + 1, start: `${k}`, end: `${k + 1}`, totals: legTotals })) }];
+        return { ok: true, json: async () => ({ routes }) };
+    };
+    const point = (id: string, kind: RoutePoint['kind'], lon: number, extra: Partial<RoutePoint> = {}): RoutePoint =>
+        ({ id, kind, label: id, coordinate: [lon, 48], progress: 0, ...extra });
+
+    it('knows the heights of a routed day beside a transfer or a drawn line with heights', async () => {
+        vi.stubGlobal('fetch', vi.fn(snapping));
+        const signal = new AbortController().signal;
+        const roads: Trip = { ...trip(), mode: 'trip', days: 2, routeOrder: ['night-1', 'via'], points: [point('start', 'start', 7.8),
+            point('night-1', 'night', 7.85, { night: 1 }), point('via', 'via', 7.95, { leg: 'transfer' }), point('finish', 'finish', 8)] };
+        const transferred = await calculateLine(roads, signal, new LegCache());
+        expect(transferred).toMatchObject({ unknownElevationKm: 0, unroutedKm: 0 });
+        const kept: Trip = { ...trip(), mode: 'trip', days: 2, routeOrder: ['night-1'], points: [point('start', 'start', 7.8),
+            point('night-1', 'night', 7.85, { night: 1 }), point('finish', 'finish', 7.9, { leg: 'drawn', drawn: [[7.85, 48, 200], [7.88, 48, 210], [7.9, 48, 220]] })] };
+        expect((await calculateLine(kept, signal, new LegCache())).unknownElevationKm).toBe(0);
+    });
+});
+

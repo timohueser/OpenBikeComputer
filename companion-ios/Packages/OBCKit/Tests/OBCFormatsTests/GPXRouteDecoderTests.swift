@@ -39,9 +39,9 @@ final class GPXRouteDecoderTests: XCTestCase {
         XCTAssertEqual(route.waypoints.map(\.name), ["Trailhead", "Bakery stop"],
                        "file order was reversed — ride order must win")
         XCTAssertEqual(route.waypoints.map(\.index), [0, 1])
-        XCTAssertEqual(route.waypoints[0].distanceAlongMeters, 0)
-        // The bakery sits nearest the middle track point, ~556 m along.
-        XCTAssertEqual(route.waypoints[1].distanceAlongMeters, 556, accuracy: 10)
+        // Each projects onto the track: 0.0001° and 0.0051° north of the first track point.
+        XCTAssertEqual(route.waypoints[0].distanceAlongMeters, 11, accuracy: 1)
+        XCTAssertEqual(route.waypoints[1].distanceAlongMeters, 568, accuracy: 1)
         XCTAssertEqual(route.waypoints[1].note, "Coffee")
         XCTAssertNil(route.waypoints[0].note, "no <desc> → no note")
     }

@@ -2,11 +2,9 @@
 pub use crate::native_overlays::{
     planner_overlays_close, planner_overlays_open, planner_overlays_open_package, planner_overlays_query,
 };
-use crate::{error_body, metadata};
-use route_engine::{directory::Directory, Control, Error, Request, Router};
+use crate::{error_body, invalid, metadata, Engine as NativeRouter, BODY_LIMIT, ROUTE_DEADLINE, SHAPE_DEADLINE};
+use route_engine::{directory::Directory, shape::LineRequest, Control, Error, Request, Router};
 use serde_json::Value;
-
-type NativeRouter = Router<Box<dyn route_engine::data::RoutingData + Send>>;
 use std::{
     ffi::{c_char, CStr, CString},
     panic::{catch_unwind, AssertUnwindSafe},
@@ -105,22 +103,58 @@ pub unsafe extern "C" fn planner_router_request(
     length: usize,
     status: *mut u16,
 ) -> *mut c_char {
+    // SAFETY: The caller upholds the contract of this function.
+    unsafe {
+        call(router, body, length, status, "route", ROUTE_DEADLINE, |router, request: Request, control| {
+            router.routes(&request, &control).map(|response| route_engine::answer::answer(&response))
+        })
+    }
+}
+
+/// The plan points of one line: the answer of `POST /v1/shape`.
+///
+/// # Safety
+/// As for `planner_router_request`.
+#[no_mangle]
+pub unsafe extern "C" fn planner_router_shape(
+    router: *mut NativeRouter,
+    body: *const u8,
+    length: usize,
+    status: *mut u16,
+) -> *mut c_char {
+    // SAFETY: The caller upholds the contract of this function.
+    unsafe {
+        call(router, body, length, status, "shape", SHAPE_DEADLINE, |router, request: LineRequest, control| {
+            route_engine::shape::answer(router, &request, control)
+        })
+    }
+}
+
+/// # Safety
+/// As for `planner_router_request`.
+unsafe fn call<T: serde::de::DeserializeOwned>(
+    router: *mut NativeRouter,
+    body: *const u8,
+    length: usize,
+    status: *mut u16,
+    kind: &str,
+    deadline: Duration,
+    work: impl FnOnce(&mut NativeRouter, T, Control) -> Result<Value, Error>,
+) -> *mut c_char {
     if status.is_null() {
         return ptr::null_mut();
     }
     let run = || {
-        if router.is_null() || body.is_null() || length > 64 * 1024 {
-            return Err(Error::InvalidRequest("Expected a route request with valid JSON fields".into()));
+        if router.is_null() || body.is_null() || length > BODY_LIMIT {
+            return Err(invalid(kind));
         }
         // SAFETY: The host retains the input buffer and grants exclusive access to the handle.
         let (router, body) = unsafe { (&mut *router, std::slice::from_raw_parts(body, length)) };
-        let request: Request = serde_json::from_slice(body)
-            .map_err(|_| Error::InvalidRequest("Expected a route request with valid JSON fields".into()))?;
+        let request: T = serde_json::from_slice(body).map_err(|_| invalid(kind))?;
         let started = Instant::now();
-        let cancelled = || started.elapsed() > Duration::from_secs(15);
-        let response = router.routes(&request, &Control { cancelled: &cancelled, ..Control::default() })?;
-        serde_json::to_vec(&route_engine::answer::answer(&response))
-            .map_err(|error| Error::InvalidData(error.to_string()))
+        let cancelled = || started.elapsed() > deadline;
+        let answer = work(router, request, Control { cancelled: &cancelled, ..Control::default() })?;
+        serde_json::to_vec(&answer).map_err(|error| Error::InvalidData(error.to_string()))
     };
     match catch_unwind(AssertUnwindSafe(run)).unwrap_or(Err(Error::Limit)) {
         Ok(bytes) => {

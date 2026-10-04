@@ -506,7 +506,7 @@ struct RootView: View {
         switch destination {
         case .planner(let sample):
             PlannerPreviewView(
-                onSave: { savePlannerPreview($0) },
+                onSave: { savePlannerPreview($0, bikeType: $0.bikeType) },
                 onClose: { path.removeAll() },
                 sample: sample, source: plannerSource
             )
@@ -514,7 +514,11 @@ struct RootView: View {
             if let plan = mainModel.plannedPlan(for: id) {
                 PlannerPreviewView(
                     editing: plan,
-                    onSave: { savePlannerPreview($0, replacing: $0.inPlace ? id : nil) },
+                    // The route keeps the bike type set in its detail unless the planner changed the activity.
+                    onSave: { saved in
+                        savePlannerPreview(saved, bikeType: saved.plan.bike == plan.bike ? nil : saved.bikeType,
+                                           replacing: saved.inPlace ? id : nil, keeping: id)
+                    },
                     onClose: { path.removeLast() },
                     source: plannerSource
                 )
@@ -523,7 +527,8 @@ struct RootView: View {
             if let plan = mainModel.tripPlan(for: id) {
                 PlannerPreviewView(
                     editing: plan,
-                    onSave: { saveTripPlan($0, editing: id) },
+                    // As for a route: the trip keeps its bike type unless the planner changed the activity.
+                    onSave: { saved in saveTripPlan(saved, bikeType: saved.plan.bike == plan.bike ? nil : saved.bikeType, editing: id) },
                     onClose: { path.removeLast() },
                     source: plannerSource
                 )
@@ -568,7 +573,7 @@ struct RootView: View {
                     }
                 )
                 // Saved changes build the screen again: its model holds the line it was built with.
-                .id([route.distanceMeters, route.elevationGainMeters, Double(route.pointCount)])
+                .id(mainModel.routeEditCount)
             }
         case .ride(let id):
             if let ride = mainModel.rides.first(where: { $0.id == id }) {
@@ -729,12 +734,13 @@ struct RootView: View {
         { path.append(.planner(sample: false)) }
     }
 
-    /// A hiking plan takes the last bike type, as an import does, or keeps the type of the route it
-    /// edits. `replacing` saves the changes to that route; else the plan lands as a new route.
-    private func savePlannerPreview(_ saved: PlannerPreviewSave, replacing id: RouteID? = nil) {
+    /// A nil bike type takes the type of the route the plan came from, else the last bike type, as
+    /// an import does. `replacing` saves the changes to that route; else the plan lands as a new route.
+    private func savePlannerPreview(_ saved: PlannerPreviewSave, bikeType: BikeType?,
+                                    replacing id: RouteID? = nil, keeping source: RouteID? = nil) {
         let route = saved.route, plan = saved.plan
         guard let end = route.points.last, route.points.count > 1, let name = route.name else { return }
-        let bikeType = saved.bikeType ?? id.map(mainModel.plannedBikeType(for:)) ?? lastBikeType.value
+        let bikeType = bikeType ?? source.map(mainModel.plannedBikeType(for:)) ?? lastBikeType.value
         let fileName = GPXFile.fileName(for: name)
         let line = MeasuredLine(routePoints: route.points)
         let trip = Trip(
@@ -761,15 +767,16 @@ struct RootView: View {
     }
 
     /// "Save changes" writes the plan into the trip it edits; "Save as copy" makes a new trip and
-    /// opens it. A hiking plan keeps the trip's bike type.
-    private func saveTripPlan(_ saved: PlannerPreviewSave, editing id: TripID) {
+    /// opens it. A nil bike type keeps the trip's.
+    private func saveTripPlan(_ saved: PlannerPreviewSave, bikeType: BikeType?, editing id: TripID) {
         let line = saved.route.points
         if saved.inPlace {
             mainModel.saveTripChanges(id, plan: saved.plan, line: line, pointIndices: saved.pointIndices)
+            if let bikeType { mainModel.setTripBikeType(id, to: bikeType) }
             path.removeLast()
             return
         }
-        let bikeType = saved.bikeType ?? mainModel.trip(id)?.bikeType ?? lastBikeType.value
+        let bikeType = bikeType ?? mainModel.trip(id)?.bikeType ?? lastBikeType.value
         guard let copy = mainModel.createTrip(name: saved.route.name ?? "New trip", plan: saved.plan, line: line,
                                               pointIndices: saved.pointIndices, bikeType: bikeType) else { return }
         path = [.trip(id: copy)]

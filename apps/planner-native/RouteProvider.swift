@@ -2,6 +2,7 @@ import Foundation
 
 @_silgen_name("planner_router_open") private func routerOpen(_ root: UnsafePointer<CChar>, _ memoryBudgetBytes: Int, _ error: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> OpaquePointer?
 @_silgen_name("planner_router_request") private func routerRequest(_ handle: OpaquePointer, _ body: UnsafePointer<UInt8>, _ length: Int, _ status: UnsafeMutablePointer<UInt16>) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("planner_router_shape") private func routerShape(_ handle: OpaquePointer, _ body: UnsafePointer<UInt8>, _ length: Int, _ status: UnsafeMutablePointer<UInt16>) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("planner_router_region") private func routerRegion(_ handle: OpaquePointer, _ status: UnsafeMutablePointer<UInt16>) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("planner_router_close") private func routerClose(_ handle: OpaquePointer)
 @_silgen_name("planner_response_free") private func responseFree(_ response: UnsafeMutablePointer<CChar>)

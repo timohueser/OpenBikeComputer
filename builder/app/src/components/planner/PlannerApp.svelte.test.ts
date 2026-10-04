@@ -48,7 +48,7 @@ beforeEach(() => {
         elevation: coordinates.map(() => 200), elapsed: distance.map(km => km * 240),
         edges: { pushing: coordinates.slice(1).map(() => false) }, seconds: distance.at(-1)! * 240,
         stops: [{ id: 'start', distance: 0 }, { id: 'finish', distance: distance.at(-1)! }],
-        alternatives: [], alternativesReady: true, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0,
+        alternatives: [], alternativesReady: true, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0,
     };
     stored.set('trip', JSON.stringify(trip));
     vi.spyOn(routing, 'calculateLine').mockImplementation(async plan => ({ ...line, key: routingKey(plan) }));

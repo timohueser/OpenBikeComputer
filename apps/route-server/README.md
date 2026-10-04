@@ -16,8 +16,9 @@ target/release/route-server /data/routes/freiburg
 The service does not queue requests. Extra requests receive `503 busy`.
 Each worker has its own router with a 768 MiB routing budget plus its landmark
 cache. Workers share one immutable graph and road-to-junction mapping. Each
-retains up to three profile cost sets within its budget. A request has a 15-second
-cooperative deadline. Disconnects cancel its work. The body limit is 64 KiB.
+retains up to three profile cost sets within its budget. A route request has a
+15-second cooperative deadline, a shape request 30 seconds. Disconnects cancel
+its work. The body limit is 64 KiB.
 Put a public service behind TLS and an OS memory and CPU limit. Keep the package
 read-only. Replace it by starting a new service instance on the new directory.
 
@@ -31,6 +32,8 @@ uses a dynamic user, a 2048 MiB memory limit and two CPU cores at most.
 - `GET /v1/region` reports package identity, coverage, profiles and attribution.
 - `POST /v1/route` calculates a route. The [route API](../../specs/route-api.md)
   specifies the request, the answer and the errors.
+- `POST /v1/shape` finds the plan points of a route that follows a line. The
+  route API specifies it too.
 
 ```sh
 curl http://127.0.0.1:8788/v1/route \

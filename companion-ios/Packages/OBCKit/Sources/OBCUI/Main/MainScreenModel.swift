@@ -1378,15 +1378,19 @@ public final class MainScreenModel {
         plannedRecords[id] = record
         library.savePlannedRoute(record)
         if let index = routes.firstIndex(where: { $0.id == id }) { routes[index] = record.summary }
+        routeEditCount += 1
         refreshOnDeviceStates()
         rebuildPlannedItems()
     }
+
+    /// Counts the saved route changes, so a route page builds again on its new line.
+    public private(set) var routeEditCount = 0
 
     /// The plan a saved route opens with in the planner, under the route's name and bike type. A
     /// route saved without a plan opens as its kept line.
     public func plannedPlan(for id: RouteID) -> PlannerPlan? {
         guard let record = plannedRecords[id],
-            var plan = record.plan ?? PlannerPlan.keptLine(record.route.points)
+            var plan = record.plan ?? PlannerPlan.keptLine(record.route.points, waypoints: record.route.waypoints)
         else { return nil }
         plan.name = record.summary.name
         if record.plan == nil { plan.bike = RouteActivity(record.bikeType).rawValue }

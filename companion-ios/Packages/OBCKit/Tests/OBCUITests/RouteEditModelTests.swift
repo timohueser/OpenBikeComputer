@@ -20,12 +20,15 @@ import OBCTransport
         }
         model.addImportedRoute(PlannedRouteRecord(
             summary: RouteSummary(id: id, name: "Kettle Loop", distanceMeters: 2_000, elevationGainMeters: 0),
-            route: ImportedRoute(name: "Kettle Loop", points: points), bikeType: .touring,
+            route: ImportedRoute(name: "Kettle Loop", points: points, waypoints: [
+                Waypoint(index: 0, name: "Spring", distanceAlongMeters: 1_000, coordinate: points[1].coordinate, category: .water),
+            ]), bikeType: .touring,
             sourceFileName: "loop.gpx", sourceFileData: Data("<gpx/>".utf8), deviceLink: link, uploadedCRC32: 7))
 
         let plan = try #require(model.plannedPlan(for: id))
         #expect(plan.name == "Kettle Loop" && plan.bike == "touring")
         #expect(plan.routePoints.map(\.kind) == [.start, .finish] && plan.routePoints[1].leg == .drawn)
+        #expect(plan.markers.map(\.label) == ["Spring"] && plan.markers.map(\.placeKind) == ["water"])
 
         let edited = ImportedRoute(name: "Kettle Loop", points: Array(points.prefix(2)))
         let record = PlannedRouteRecord(

@@ -4,11 +4,15 @@
     import type { Plan } from '../../lib/planner/library';
     import Icon from './PlannerIcon.svelte';
 
-    let { plans, activeId, busy, error, onClose, onOpen, onRename, onDuplicate, onDelete, onDownload, onImport }: {
+    let { plans, activeId, busy, error, gpxNames, onClose, onOpen, onRename, onDuplicate, onDelete, onDownload, onImport, onGpx }: {
         plans: Plan[]; activeId: string; busy: boolean; error: string;
+        /** The GPX files that wait for a choice, in day order. */
+        gpxNames: string[] | null;
         onClose: () => void; onOpen: (plan: Plan) => void; onRename: (plan: Plan, name: string) => Promise<void>;
         onDuplicate: (plan: Plan) => void; onDelete: (plan: Plan) => void; onDownload: (plan: Plan) => void;
-        onImport: (file: File) => void;
+        onImport: (files: File[]) => void;
+        /** `true` plans the files on roads, `false` keeps their lines, `null` cancels. */
+        onGpx: (roads: boolean | null) => void;
     } = $props();
 
     let renaming = $state<string | null>(null);
@@ -16,6 +20,9 @@
     let panel: HTMLElement;
     let picker: HTMLInputElement;
     let closer: HTMLButtonElement;
+    let keep = $state<HTMLButtonElement>();
+
+    $effect(() => { if (gpxNames) keep?.focus(); });
 
     onMount(() => {
         const opener = document.activeElement as HTMLElement | null;
@@ -26,7 +33,8 @@
     function key(event: KeyboardEvent) {
         if (event.key === 'Escape') {
             event.stopPropagation();
-            if (renaming) renaming = null;
+            if (gpxNames) onGpx(null);
+            else if (renaming) renaming = null;
             else onClose();
         }
     }
@@ -47,13 +55,26 @@
         <button type="button" class="icon" aria-label="Close My plans" bind:this={closer} onclick={onClose}><Icon name="close" /></button>
     </header>
     <p class="storage">Saved in this browser. Download a plan to keep a backup or move it to another device.</p>
-    <input class="file" type="file" accept=".obcplan,application/json" aria-label="Import plan file" bind:this={picker} onchange={() => {
-        const file = picker.files?.[0];
-        if (file) onImport(file);
+    <input class="file" type="file" multiple accept=".obcplan,.gpx,application/json,application/gpx+xml" aria-label="Import plan or GPX files" bind:this={picker} onchange={() => {
+        const files = [...picker.files ?? []];
+        if (files.length) onImport(files);
         picker.value = '';
     }} />
-    <button type="button" class="planner-action" disabled={busy} onclick={() => picker.click()}>Import plan</button>
+    <button type="button" class="planner-action" disabled={busy} onclick={() => picker.click()}>Import plan or GPX</button>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
+    {#if gpxNames}
+        <section class="gpx" aria-label="Import GPX">
+            {#if gpxNames.length > 1}
+                <h3>New trip · {gpxNames.length} days</h3>
+                <ol>{#each gpxNames as name, i (i)}<li>{name}</li>{/each}</ol>
+            {:else}
+                <h3>{gpxNames[0]}</h3>
+            {/if}
+            <button type="button" class="planner-action" disabled={busy} bind:this={keep} onclick={() => onGpx(false)}>Keep the file's line</button>
+            <button type="button" class="planner-action" disabled={busy} onclick={() => onGpx(true)}>Plan it on roads</button>
+            <button type="button" class="planner-action quiet" disabled={busy} onclick={() => onGpx(null)}>Cancel</button>
+        </section>
+    {/if}
     {#if !plans.length}
         <p class="empty">Your plans appear here when you choose a point on the map.</p>
     {:else}
@@ -92,8 +113,11 @@
     .storage, .empty { color: var(--ink-soft); line-height: 1.5; }
     .file { display: none; }
     .error { color: var(--coral); line-height: 1.5; }
+    .gpx { display: grid; gap: 8px; margin-top: 16px; padding: 16px; border-radius: 8px; background: var(--parchment-2); }
+    h3 { margin: 0; overflow-wrap: anywhere; font: 700 16px var(--sans); }
+    ol { margin: 0; padding-left: 20px; color: var(--ink-soft); line-height: 1.5; overflow-wrap: anywhere; }
     ul { margin: 24px 0 0; padding: 0; list-style: none; }
-    li { padding: 16px 0; border-top: 1px solid var(--line); }
+    ul > li { padding: 16px 0; border-top: 1px solid var(--line); }
     .open { display: grid; gap: 6px; width: 100%; padding: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
     .open:hover, .open[aria-current="true"] { background: var(--parchment-2); }
     strong { overflow-wrap: anywhere; font-size: 16px; }

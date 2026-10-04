@@ -20,16 +20,18 @@ public struct OBCSheetAction {
 
 public extension View {
     /// The app's bottom sheet for a question with a few answers: a title, one line, the choices,
-    /// and Cancel. One plain choice is the amber action; several are grouped rows; a destructive
-    /// choice is red text. A sheet, not a confirmation dialog: the dialog pops up as a bubble
-    /// beside its control.
+    /// and Cancel. A `primary` choice is the amber action, and the plain choices beside it are
+    /// grouped rows; one plain choice alone is the amber action; a destructive choice is red text.
+    /// A sheet, not a confirmation dialog: the dialog pops up as a bubble beside its control.
+    /// `onDismiss` runs once the sheet has gone, so a choice can open the next sheet there.
     func obcChoiceSheet(
         _ title: String,
         isPresented: Binding<Bool>,
         message: String? = nil,
-        actions: [OBCSheetAction]
+        actions: [OBCSheetAction],
+        onDismiss: (() -> Void)? = nil
     ) -> some View {
-        sheet(isPresented: isPresented) {
+        sheet(isPresented: isPresented, onDismiss: onDismiss) {
             OBCChoiceSheet(title: title, message: message, actions: actions)
         }
     }
@@ -39,7 +41,7 @@ public extension View {
     func obcDestructiveConfirm(
         _ title: String,
         isPresented: Binding<Bool>,
-        message: String,
+        message: String?,
         actionTitle: String,
         onConfirm: @escaping () -> Void
     ) -> some View {

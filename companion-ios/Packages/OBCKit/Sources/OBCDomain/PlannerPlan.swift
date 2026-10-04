@@ -69,16 +69,20 @@ public struct PlanPoint: Codable, Equatable, Sendable {
     public var drawn: [RoutePoint]?
     /// Only `true` is written.
     public var turnaround: Bool?
+    /// A line about the place, such as a route file's waypoint description.
+    public var note: String?
 
     public init(id: String, label: String, coordinate: Coordinate, progress: Double, kind: Kind, night: Int? = nil,
-                placeKind: String? = nil, leg: Leg? = nil, drawn: [RoutePoint]? = nil, turnaround: Bool = false) {
+                placeKind: String? = nil, leg: Leg? = nil, drawn: [RoutePoint]? = nil, turnaround: Bool = false,
+                note: String? = nil) {
         self.id = id; self.label = label; self.coordinate = coordinate; self.progress = progress; self.kind = kind
         self.night = night; self.placeKind = placeKind; self.leg = leg; self.drawn = drawn
         self.turnaround = turnaround ? true : nil
+        self.note = note
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, label, coordinate, progress, kind, night, placeKind, leg, drawn, turnaround
+        case id, label, coordinate, progress, kind, night, placeKind, leg, drawn, turnaround, note
     }
 
     // Coordinates are `[longitude, latitude]`; a drawn vertex can add its elevation in metres.
@@ -103,6 +107,7 @@ public struct PlanPoint: Codable, Equatable, Sendable {
             return RoutePoint(coordinate: Coordinate(latitude: vertex[1], longitude: vertex[0]), elevationMeters: vertex.count == 3 ? vertex[2] : nil)
         }
         turnaround = try c.decodeIfPresent(Bool.self, forKey: .turnaround) == true ? true : nil
+        note = try c.decodeIfPresent(String.self, forKey: .note)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -118,6 +123,7 @@ public struct PlanPoint: Codable, Equatable, Sendable {
         try c.encodeIfPresent(drawn?.map { [$0.coordinate.longitude, $0.coordinate.latitude] + ($0.elevationMeters.map { [$0] } ?? []) },
                               forKey: .drawn)
         try c.encodeIfPresent(turnaround, forKey: .turnaround)
+        try c.encodeIfPresent(note, forKey: .note)
     }
 }
 
@@ -127,14 +133,19 @@ extension PlannerPlan {
     /// A drawn leg follows its line within this distance: close enough to look exact on the map.
     public static let keptLineToleranceMeters = 3.0
 
-    /// A line kept as it is: a start, a finish and one drawn leg between them.
-    public static func keptLine(_ line: [RoutePoint], startName: String = "Start", finishName: String = "Finish") -> PlannerPlan? {
+    /// A line kept as it is: a start, a finish and one drawn leg between them. The waypoints are
+    /// markers, so a waypoint off the line adds no detour.
+    public static func keptLine(_ line: [RoutePoint], waypoints: [Waypoint] = [], startName: String = "Start",
+                                finishName: String = "Finish") -> PlannerPlan? {
         guard let first = line.first?.coordinate, let last = line.last?.coordinate, line.count > 1 else { return nil }
         return PlannerPlan(points: [
             PlanPoint(id: "start", label: startName, coordinate: first, progress: 0, kind: .start),
             PlanPoint(id: "finish", label: finishName, coordinate: last, progress: 1, kind: .finish,
                       leg: .drawn, drawn: drawnLeg(from: first, along: line)),
-        ], mode: .route)
+        ] + waypoints.enumerated().map { index, waypoint in
+            PlanPoint(id: "waypoint-\(index + 1)", label: waypoint.name, coordinate: waypoint.coordinate, progress: 0,
+                      kind: .marker, placeKind: waypoint.category?.placeKind, note: waypoint.note)
+        }, mode: .route)
     }
 
     /// A trip kept as it is: one drawn leg per day, a night at each day end, and a transfer leg
@@ -162,7 +173,13 @@ extension PlannerPlan {
             here = end
         }
         for index in points.indices { points[index].progress = distance > 0 ? points[index].progress / distance : 0 }
-        return PlannerPlan(points: points, mode: .trip, routeOrder: points.dropFirst().dropLast().map(\.id))
+        let order = points.dropFirst().dropLast().map(\.id)
+        points += trip.waypoints.enumerated().map { index, stop in
+            PlanPoint(id: "waypoint-\(index + 1)", label: stop.name, coordinate: stop.coordinate, progress: 0, kind: .marker,
+                      placeKind: stop.kind == .campsite ? WaypointCategory.campsite.placeKind
+                        : stop.kind == .hotel ? WaypointCategory.accommodation.placeKind : nil)
+        }
+        return PlannerPlan(points: points, mode: .trip, routeOrder: order)
     }
 
     /// The inner line of a drawn leg from `start` along `line` to its last point. Only the
@@ -174,5 +191,24 @@ extension PlannerPlan {
         if kept.last?.elevationMeters == nil { kept.removeLast() }
         if kept.first?.coordinate == start, kept.first?.elevationMeters == nil { kept.removeFirst() }
         return kept
+    }
+}
+
+extension WaypointCategory {
+    /// The planner place kind of the category, as a plan point's `placeKind` keeps it.
+    public var placeKind: String {
+        switch self {
+        case .water: "water"
+        case .campsite: "camping"
+        case .accommodation: "hotel"
+        case .resupply: "shop"
+        case .pharmacy: "pharmacy"
+        case .bikeShop: "bike"
+        }
+    }
+
+    public init?(placeKind: String) {
+        guard let category = Self.allCases.first(where: { $0.placeKind == placeKind }) else { return nil }
+        self = category
     }
 }
