@@ -446,9 +446,7 @@ def parse_what(sp: Span) -> list[str]:
     return list(dict.fromkeys(sp.kinds() + _compounds(sp, "kind", "stop")))
 
 
-_STRETCH_GOAL = {"climb": "least_climbing", "steep": "least_climbing",
-                 "unpaved": "least_unpaved", "unknown_surface": "least_unpaved",
-                 "pushing": "least_unpaved"}
+_STRETCH_GOAL = {"climb": "least_climbing", "steep": "least_climbing"}
 
 
 def parse_stretch(sp: Span) -> str | None:
@@ -585,7 +583,7 @@ def decode(text: str, intent: str, labels: list[str]) -> dict:
         schema.validate(req)
     except schema.Invalid:
         return {"type": "none", "ignored": []}
-    return req
+    return schema.normal(req)
 
 
 def _places(r: _Req):

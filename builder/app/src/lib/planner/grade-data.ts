@@ -43,7 +43,7 @@ export const gradeBands = [
     { label: 'Unknown', color: '#77746a', dark: '#b8b5ac' },
 ];
 
-const gradeThresholds = [3, 6, 10, 15, 20];
+export const gradeThresholds = [3, 6, 10, 15, 20];
 
 export function gradeBand(grade: number | null): number {
     if (grade === null || !Number.isFinite(grade)) return 11;

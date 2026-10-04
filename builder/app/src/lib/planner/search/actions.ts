@@ -171,10 +171,6 @@ export async function applyQueryChanges(
         throw new Error(
           'Use kilometres per day until riding-time data is connected.',
         );
-      if (change.goal && !presets[change.goal])
-        throw new Error(
-          `This routing package has no “${change.goal.replaceAll('_', ' ')}” profile. Choose balanced, shorter, or less climbing.`,
-        );
       const resolved = change.points!;
       const points = resolved.map((p, i) =>
         makePoint(

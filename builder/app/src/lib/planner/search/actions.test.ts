@@ -26,7 +26,6 @@ describe('query edits', () => {
         expect(JSON.parse(fetch.mock.calls[0][1].body as string)).toMatchObject({ points: points.map(p => p.coordinate), profile: 'gravel/less-climbing' });
         expect(next.routing?.key).toBe(routingKey(next));
         expect(next.routing?.unroutedKm).toBe(0);
-        await expect(applyQueryChanges(empty, [{op:'route',points,goal:'least_unpaved'}], refresh)).rejects.toThrow('no “least unpaved” profile');
         expect(empty.points).toEqual([]);
     });
     it('keeps the rider preset without a goal and drops the name of the replaced route', async () => {

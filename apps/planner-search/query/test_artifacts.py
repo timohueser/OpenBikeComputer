@@ -1,6 +1,11 @@
 import json
 import pytest
+import schema
 from artifacts import check_labels, fingerprints, label_contract
+
+
+def test_contract_json_is_generated_from_the_schema():
+    assert schema.CONTRACT.read_text() == schema.contract_json(), 'Run python3 query/schema.py'
 
 
 def test_label_order_is_part_of_the_model_contract(tmp_path):

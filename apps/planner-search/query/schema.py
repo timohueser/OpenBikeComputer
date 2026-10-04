@@ -1,8 +1,12 @@
-"""Validate and canonicalize the finite planner query language and model labels."""
+"""Validate and canonicalize the finite planner query language and model labels.
+
+`python3 schema.py` writes contract.json, the language as data for the JS, TS and Swift clients."""
 
 from __future__ import annotations
 
+import json
 import unicodedata
+from pathlib import Path
 from typing import Any
 
 # The model's intent head in output order; a change needs a retrained model. `reroute` has no
@@ -61,17 +65,37 @@ KINDS: dict[str, str | None] = {
     "town": None,
 }
 
-STRETCH_KINDS = ["climb", "descent", "steep", "unpaved", "unknown_surface", "pushing",
-                 "closure", "main_road"]
+# The map category (builder/app/src/lib/planner/poi-kinds.json) whose icon and layer show a
+# kind. A kind without an entry takes its parent's; a kind that gets none shows on no layer.
+CATEGORIES = {
+    "water": "water", "sleep": "hotel", "campsite": "camp", "shelter": "shelter",
+    "resupply": "shop", "food": "food", "pharmacy": "pharmacy", "medical": "pharmacy",
+    "bike": "bike", "toilets": "toilets", "shower": "toilets", "laundry": "toilets",
+    "transport": "station", "viewpoint": "viewpoint", "summit": "peak", "pass": "peak",
+}
+
+# Search-data kinds (records.category) of a kind other than its own id. A parent kind finds the
+# data kinds of its children.
+DATA_KINDS = {
+    "drinking_water": ["drinking_water", "water_point"], "doctor": ["doctor", "clinic"],
+    "bar": ["bar", "pub"], "town": ["city", "town", "village", "hamlet"],
+}
+
+# Kinds that only a client sends: places of the named kind that serve this cuisine.
+CUISINES = {"pizza": "food", "kebab": "food"}
+
+STRETCH_KINDS = ["climb", "descent", "steep", "unpaved", "unknown_surface", "pushing", "closure"]
 
 BIKES = ["road", "gravel", "mtb", "touring"]
-GOALS = ["balanced", "shortest", "least_climbing", "least_unpaved", "most_climbing"]
+GOALS = ["balanced", "shortest", "least_climbing"]
 PARTS = ["start", "middle", "end"]
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 POINT_KINDS = ["visit", "stop", "pass"]
 SCOPES = ["route", "view", "here"]
 REFS = ["km", "start", "end", "here"]
-UNITS = ["km", "h", "m", "%"]
+# The units of each quantity field.
+UNITS = {"along": ["km", "h"], "radius": ["km"], "every": ["km", "h"], "per_day": ["km", "h"],
+         "min": ["km", "m", "%"]}
 
 # Words stripped from the front of a name before two names are compared.
 ARTICLES = {
@@ -106,7 +130,7 @@ def _need(ok: bool, msg: str) -> None:
         raise Invalid(msg)
 
 
-def _quantity(q: Any, units: set[str]) -> None:
+def _quantity(q: Any, units: list[str]) -> None:
     _need(isinstance(q, dict) and set(q) == {"value", "unit"}, f"quantity {q!r}")
     _need(isinstance(q["value"], (int, float)) and q["value"] >= 0, f"quantity value {q!r}")
     _need(q["unit"] in units, f"unit {q['unit']!r} not in {sorted(units)}")
@@ -123,7 +147,7 @@ def _along(a: Any) -> None:
     units = {a[k]["unit"] for k in ("from", "to", "at") if k in a}
     for k in ("from", "to", "at"):
         if k in a:
-            _quantity(a[k], {"km", "h"})
+            _quantity(a[k], UNITS["along"])
     _need(len(units) == 1, f"along mixes units {a!r}")
 
 
@@ -213,7 +237,7 @@ def validate(r: Any) -> None:
         else:
             _need(o == {"now": True}, f"open {o!r}")
     if "radius" in r:
-        _quantity(r["radius"], {"km"})
+        _quantity(r["radius"], UNITS["radius"])
     if "bike" in r:
         _need(r["bike"] in BIKES, f"bike {r['bike']!r}")
     if "goal" in r:
@@ -228,11 +252,11 @@ def validate(r: Any) -> None:
     if "kind" in r:
         _need(r["kind"] in POINT_KINDS, f"point kind {r['kind']!r}")
     if "every" in r:
-        _quantity(r["every"], {"km", "h"})
+        _quantity(r["every"], UNITS["every"])
     if "per_day" in r:
-        _quantity(r["per_day"], {"km", "h"})
+        _quantity(r["per_day"], UNITS["per_day"])
     if "min" in r:
-        _quantity(r["min"], {"km", "m", "%"})
+        _quantity(r["min"], UNITS["min"])
     if t == "split":
         _need(("days" in r) != ("per_day" in r), "split needs exactly one of days, per_day")
 
@@ -273,7 +297,7 @@ def _canon_along(a: dict) -> dict:
     return out
 
 
-def _canon_where(w: dict) -> dict:
+def _normal_where(w: dict) -> dict:
     w = dict(w)
     if w.get("near") == [{"here": True}] and "scope" not in w:
         del w["near"]
@@ -287,6 +311,17 @@ def _canon_where(w: dict) -> dict:
     # A day, a stretch or a point on the plan already says "on the route".
     if w.get("scope") == "route" and set(w) & {"day", "along", "before", "after"}:
         del w["scope"]
+    return w
+
+
+def normal(r: dict) -> dict:
+    """One form for places on the plan that two spellings name. The decoder returns this form, so
+    the resolver never sees the other spelling."""
+    return {**r, "where": _normal_where(r["where"])} if "where" in r else r
+
+
+def _canon_where(w: dict) -> dict:
+    w = _normal_where(w)
     if "near" in w:
         w["near"] = [_canon_point(p) for p in w["near"]]
     for k in ("before", "after"):
@@ -339,3 +374,42 @@ def canonical(r: dict) -> dict:
 
 def same(pred: dict, gold: dict) -> bool:
     return canonical(pred) == canonical(gold)
+
+
+def _category(kind: str | None) -> str | None:
+    return CATEGORIES[kind] if kind in CATEGORIES else kind and _category(KINDS[kind])
+
+
+def contract() -> dict:
+    """The language for clients. `kinds[k].data` holds the search-data kinds of k and its
+    children, `data` names the most specific kind of each data kind, and `categories` lists the
+    largest kinds whose places all show in one map category."""
+    children = {k: [c for c, parent in KINDS.items() if parent == k] for k in KINDS}
+
+    def tree(k: str) -> list[str]:
+        return [k, *(d for c in children[k] for d in tree(c))]
+
+    own = {k: DATA_KINDS.get(k, [] if children[k] else [k]) for k in KINDS}
+    kinds = {k: {"parent": parent, "category": _category(k),
+                 "data": [d for c in tree(k) for d in own[c]]} for k, parent in KINDS.items()}
+    within = lambda k, category: k is not None and all(_category(c) == category for c in tree(k))
+    categories: dict[str, list[str]] = {}
+    for k, parent in KINDS.items():
+        category = _category(k)
+        if category and within(k, category) and not within(parent, category):
+            categories.setdefault(category, []).append(k)
+    return {"types": list(FIELDS), "kinds": kinds, "data": {d: k for k in KINDS for d in own[k]},
+            "categories": categories, "cuisines": CUISINES, "stretches": STRETCH_KINDS,
+            "bikes": BIKES, "goals": GOALS, "parts": PARTS, "weekdays": WEEKDAYS,
+            "point_kinds": POINT_KINDS, "scopes": SCOPES, "refs": REFS, "units": UNITS}
+
+
+CONTRACT = Path(__file__).with_name("contract.json")
+
+
+def contract_json() -> str:
+    return json.dumps(contract(), indent=1) + "\n"
+
+
+if __name__ == "__main__":
+    CONTRACT.write_text(contract_json())

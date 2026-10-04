@@ -269,8 +269,6 @@ stretches:
     verb: [spingere la bici, spingere, portare la bici, andare a piedi]
   closure:
     pl: [strade chiuse/f, chiusure/f, lavori in corso/m, cantieri/m]
-  main_road:
-    pl: [strade principali/f, statali/f, strade trafficate/f, strade con traffico/f]
 
 banks:
   WHAT:
@@ -503,22 +501,14 @@ banks:
     adj:
       - ["(più breve|più corto|più diretto|più veloce)", shortest]
       - ["(più piatto|più facile)", least_climbing]
-      - ["<tutto asfaltato>", least_unpaved]
-      - ["(più impegnativo|più duro)", most_climbing]
       - ["(equilibrato|normale|standard)", balanced]
     post:
       - ["<evitando le salite>", least_climbing]
       - ["con <(poco|meno) dislivello>", least_climbing]
       - ["<il più piatto possibile>", least_climbing]
       - ["<senza (grandi |)salite>", least_climbing]
-      - ["<solo asfalto>", least_unpaved]
-      - ["<senza sterrato>", least_unpaved]
-      - ["<evitando (lo sterrato|la ghiaia|le strade bianche)>", least_unpaved]
-      - ["su <strade asfaltate>", least_unpaved]
       - ["per la <strada più breve>", shortest]
       - ["<il più breve possibile>", shortest]
-      - ["con <(tanto dislivello|più dislivello|il massimo di dislivello)>", most_climbing]
-      - ["con <tante salite>", most_climbing]
       - ["<equilibrato>", balanced]
 
   DAYS:

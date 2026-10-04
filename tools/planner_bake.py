@@ -175,7 +175,9 @@ def specifications(config, prepared=None):
         config.get("auxiliary", {}), functions=[sources.basemap, sources.download])
     add("source-search", source_search, {"osm": osm, "nominatim": "5.3.2", "photon": sources.PHOTON_SHA},
         functions=[sources.search_dump, sources.download])
-    add("source-records", source_records, {}, dependencies=["source-search"],
+    # Of the query contract, records.py reads only the data kinds.
+    data_kinds = sorted(json.loads((SEARCH / "query/contract.json").read_bytes())["data"])
+    add("source-records", source_records, {"data_kinds": data_kinds}, dependencies=["source-search"],
         paths=[SEARCH / "split.py", SEARCH / "records.py", SEARCH / "requirements-build.txt"])
     common = [SEARCH / path for path in ["build.py", "writer.py", "records.py", "storage.py", "index.py", "schema.sql", "indexes.sql", "web/address-terms.json", "requirements-build.txt"]]
     for component in ["pois", "addresses"]:

@@ -4,7 +4,7 @@
     import QueryAreaPicker from './QueryAreaPicker.svelte';
     import { tick } from 'svelte';
     import QueryPointPicker from './QueryPointPicker.svelte';
-    import { allKinds, fieldLabel, kindLabel } from '../../lib/planner/search/presentation';
+    import { allKinds, contract, fieldLabel, kindLabel } from '../../lib/planner/search/presentation';
     import type { QueryRequest, Where, Quantity, QueryPoint } from '../../lib/planner/search/types';
     let { field, value: currentValue, active = $bindable(null), removed = false, removable = true, days, selection, onChange, onToggle }: {
         field: string; value: unknown; active?: string | null; removed?: boolean; removable?: boolean; days: number[]; selection?: Where;
@@ -21,6 +21,8 @@
     const quantity = $derived(value as Quantity);
     const opening = $derived(value as QueryRequest['open']);
     const requiredPoint = $derived(['from','to','point','at','near'].includes(field));
+    const units: Record<string, string[]> = contract.units;
+    const unitLabels: Record<string, string> = { km: 'km', h: 'riding hours', m: 'm climb', '%': '% gradient' };
     function change(next: unknown) { value = next; }
     function apply() {
         if (panel?.querySelector<HTMLInputElement>(':invalid')?.reportValidity() === false) return;
@@ -45,20 +47,20 @@
                 <QueryKinds value={value} onChange={change} />
             {:else if field === 'where'}
                 <QueryAreaPicker value={value as Where} {days} {selection} onChange={change} />
-            {:else if field === 'cuisine'}<label>Food<select value={String(value)} onchange={e=>change(e.currentTarget.value)}><option value="pizza">Pizza</option><option value="kebab">Kebab</option></select></label>
+            {:else if field === 'cuisine'}<label>Food<select value={String(value)} onchange={e=>change(e.currentTarget.value)}>{#each Object.keys(contract.cuisines) as cuisine}<option value={cuisine}>{kindLabel(cuisine)}</option>{/each}</select></label>
             {:else if field === 'open'}
                 <label>Opening filter<select value={opening?.now ? 'now' : opening?.weekday ?? `day:${opening?.day}`} onchange={e => change(e.currentTarget.value === 'now' ? { now: true } : e.currentTarget.value.startsWith('day:') ? { day: /^\d+$/.test(e.currentTarget.value.slice(4)) ? Number(e.currentTarget.value.slice(4)) : e.currentTarget.value.slice(4) } : { weekday: e.currentTarget.value })}>
-                    <option value="now">Open now</option>{#each ['mon','tue','wed','thu','fri','sat','sun'] as day}<option value={day}>Open {day}</option>{/each}
+                    <option value="now">Open now</option>{#each contract.weekdays as day}<option value={day}>Open {day}</option>{/each}
                     {#each days as day}<option value={`day:${day}`}>On Day {day}</option>{/each}<option value="day:today">Today’s trip day</option><option value="day:tomorrow">Tomorrow’s trip day</option>
                 </select></label>
             {:else if ['radius','every','per_day','min'].includes(field)}
                 <label>{kindLabel(field)}<input type="number" min="0.1" max="10000" step="0.1" value={quantity.value} onchange={e => { const n = e.currentTarget.valueAsNumber; if (Number.isFinite(n) && n > 0) change({ ...quantity, value: n }); }} /></label>
-                {#if field !== 'radius'}<label>Unit<select value={quantity.unit} onchange={e => change({ ...quantity, unit: e.currentTarget.value })}>
-                    <option value="km">km</option>{#if field !== 'min'}<option value="h">riding hours</option>{:else}<option value="m">m climb</option><option value="%">% gradient</option>{/if}
+                {#if units[field].length > 1}<label>Unit<select value={quantity.unit} onchange={e => change({ ...quantity, unit: e.currentTarget.value })}>
+                    {#each units[field] as unit}<option value={unit}>{unitLabels[unit]}</option>{/each}
                 </select></label>{/if}
             {:else if field === 'bike' || field === 'goal' || field === 'kind'}
                 <label>{kindLabel(field)}<select value={String(value)} onchange={e => change(e.currentTarget.value)}>
-                    {#each field === 'bike' ? ['road','gravel','mtb','touring'] : field === 'goal' ? ['balanced','shortest','least_climbing','least_unpaved','most_climbing'] : ['visit','stop','pass'] as choice}<option value={choice}>{kindLabel(choice)}</option>{/each}
+                    {#each field === 'bike' ? contract.bikes : field === 'goal' ? contract.goals : contract.point_kinds as choice}<option value={choice}>{kindLabel(choice)}</option>{/each}
                 </select></label>
             {:else if field === 'days'}
                 <label>Number of days<input type="number" min="1" max="14" value={Number(value)} onchange={e => { if (e.currentTarget.validity.valid) change(e.currentTarget.valueAsNumber); }} /></label>
@@ -72,7 +74,7 @@
                 {#each (value as QueryPoint[]) as p,i}<QueryPointPicker value={p} {days} onChange={p => change((value as QueryPoint[]).map((old,n)=>n===i?p:old))} />{/each}
             {:else if field === 'what'}
                 <label>Route data<select value={String(value)} onchange={e => change(e.currentTarget.value)}>
-                    {#each ['climb','descent','steep','unpaved','unknown_surface','pushing','closure','main_road', ...allKinds.map(k => `gap:${k}`)] as choice}<option value={choice}>{kindLabel(choice)}</option>{/each}
+                    {#each [...contract.stretches, ...allKinds.map(k => `gap:${k}`)] as choice}<option value={choice}>{kindLabel(choice)}</option>{/each}
                 </select></label>
             {/if}
             </div>

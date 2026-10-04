@@ -3,36 +3,9 @@ import vocabulary from '../query/lexicon/kinds.json' with {type:'json'};
 export {norm,editDistance} from './text.mjs';
 
 export const DEFAULT_VIEW = [7.77, 47.965, 7.96, 48.06];
-export const GROUPS = {
-  water: ['drinking_water', 'water_point', 'spring', 'fountain'],
-  sleep: ['campsite', 'hotel', 'hostel', 'guest_house', 'hut', 'shelter'],
-  lodging: ['hotel', 'hostel', 'guest_house', 'motel', 'hut'],
-  resupply: ['supermarket', 'convenience', 'bakery', 'butcher', 'marketplace'],
-  food: ['restaurant', 'cafe', 'fast_food', 'bar', 'ice_cream'],
-  bike: ['bike_shop', 'repair_station'],
-  sight: ['museum', 'castle', 'viewpoint', 'summit', 'pass', 'waterfall', 'ruins'],
-  pizza: ['restaurant', 'fast_food', 'cafe', 'pub', 'bar'],
-  kebab: ['restaurant', 'fast_food', 'cafe', 'pub', 'bar'],
-};
 const CUISINES = {
   pizza: ['pizza', 'pizzas', 'pizzen', 'pizzeria', 'pizzerias', 'pizzerien'],
   kebab: ['kebab', 'kebap', 'doner', 'doner kebab', 'doner kebap', 'doener'],
-};
-const CATEGORY_WORDS = {
-  bakery: 'bakery bakeries backerei backereien backer boulangerie boulangeries panetteria',
-  supermarket: 'supermarket supermarkets supermarkt supermarkte supermarche',
-  campsite: 'campsite campsites camping campground campingplatz campingplatze zelten',
-  hotel: 'hotel hotels', hostel: 'hostel hostels', hut: 'hut huts hutte hutten refuge',
-  pharmacy: 'pharmacy pharmacies apotheke apotheken pharmacie',
-  restaurant: 'restaurant restaurants', cafe: 'cafe cafes coffee',
-  water: 'water wasser eau', drinking_water: 'drinking water trinkwasser',
-  bike_shop: 'fahrradladen',
-  toilets: 'toilet toilets toilette toiletten wc', museum: 'museum museums museen',
-  summit: 'peak peaks summit summits gipfel berg berge', pass: 'pass passes passe col',
-  castle: 'castle castles burg burgen schloss schlosser',
-  train_station: 'station stations bahnhof bahnhofe train station',
-  sleep: 'accommodation unterkunft unterkunfte lodging',
-  resupply: 'shop shops einkaufen laden lebensmittel', shelter: 'shelter shelters schutzhutte',
 };
 
 // Owner policy: geographic prominence may break close matches; business prominence is zero.
@@ -53,14 +26,7 @@ export function cuisineOf(text) {
   return Object.keys(CUISINES).find(k=>CUISINES[k].includes(norm(text)))||null;
 }
 export function kindOf(text) {
-  const q = norm(text);
-  if(cuisineOf(q))return cuisineOf(q);
-  for (const [kind, words] of Object.entries(CATEGORY_WORDS)) {
-    if (q === norm(kind.replaceAll('_', ' ')) || words.split(' ').includes(q)) return kind;
-  }
-  if (['bike shop', 'bike shops', 'fahrrad geschaft'].includes(q)) return 'bike_shop';
-  if (['drinking water', 'eau potable'].includes(q)) return 'drinking_water';
-  return categoryTerms.get(q)||null;
+  return cuisineOf(text)||categoryTerms.get(norm(text))||null;
 }
 
 export function distance(a, b) {

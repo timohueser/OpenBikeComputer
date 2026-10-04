@@ -19,6 +19,8 @@ struct PlannerPreviewModelTests {
         let features = try #require(JSONSerialization.jsonObject(with: NativePlaceKind.geoJSON([record])) as? [String: Any])
         let properties = try #require((features["features"] as? [[String: Any]])?.first?["properties"] as? [String: Any])
         #expect(properties["website"] as? String == place.website && properties["description"] as? String == place.description)
+        #expect(properties["category"] as? String == "camp")
+        #expect(NativePlaceKind.searchKinds(in: ["hotel", "station"]) == ["lodging", "transport"])
         for (type, letter) in [(1,"n"),(2,"w"),(3,"r")] {
             #expect(NativePlaceKind.source(for: NSNumber(value: (Int64(type) << 44) | 123)) == "\(letter)123")
         }
