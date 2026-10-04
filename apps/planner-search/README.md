@@ -19,15 +19,6 @@ python3 apps/planner-search/setup.py --build-data
 npm run dev --prefix apps/planner-search
 ```
 
-Open <http://127.0.0.1:4184/planner.html>. Expand **Baden-Württemberg · local data** and
-select **Load Black Forest test route**. This replaces the current draft; Undo restores it.
-Select Germany for searches beyond Baden-Württemberg. Both packages stay local.
-
-Try `Kandel`, `Habsburgerstr. 10 Freiburg`, `pizza`, `hotels end of day 1`,
-`Bäckereien entlang der Route`, `split into 4 days`, and `reverse the route`.
-Edit a chip to correct the interpretation. Changes wait for **Apply change**.
-The normal Undo button restores the previous plan.
-
 Setup verifies the source and model hashes before use. It builds both SQLite packages
 from the prepared [Photon Germany dump](https://download1.graphhopper.com/public/europe/germany/).
 This preview does not install Photon or OpenSearch. The common-source release pipeline
@@ -39,6 +30,19 @@ metadata. Build into a fresh directory with `build.py SOURCE --output DIRECTORY`
 Pass `--data-dir DIRECTORY --region baden-wuerttemberg` to setup to build only BW
 in another directory. Set `OBC_SEARCH_DATA` to that directory when starting the
 search service. A regional build becomes visible only after it completes.
+
+Build independent components from one verified enriched dump:
+
+```sh
+uv run --with-requirements apps/planner-search/requirements-build.txt python apps/planner-search/split.py SOURCE.jsonl.zst /tmp/search-records
+uv run --with-requirements apps/planner-search/requirements-build.txt python apps/planner-search/build.py /tmp/search-records/pois.jsonl.zst --component pois --output DATA/pois --region REGION --bounds=WEST,SOUTH,EAST,NORTH --countries=de,ch --osm-sha256=SHA256
+```
+
+Use `addresses.jsonl.zst`, `--component addresses`, and `DATA/addresses` for
+addresses. The service opens both directories from `OBC_SEARCH_DATA=DATA`.
+The split runs once per source identity. A POI transform update reads only
+its filtered records. Addresses own streets and houses; POIs own places and
+localities. Both retain their indexes and source context.
 
 Extract from a complete schema 4 package:
 

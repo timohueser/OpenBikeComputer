@@ -7,6 +7,11 @@ struct PlannerInstallation: Sendable {
         let region: String
         let bounds: [Double]
         let files: [String: File]
+        let offline: Offline?
+        struct Offline: Decodable, Sendable {
+            struct Cell: Decodable, Sendable { let bounds: [Double]; let files: [String] }
+            let cells: [Cell]
+        }
     }
     private struct Active: Decodable { let release: String; let region: String }
     let directory: URL
@@ -28,14 +33,28 @@ struct PlannerInstallation: Sendable {
     }
 
     func search(scripts: URL, pythonBundle: URL) throws -> PlannerSearchSession {
-        let database = "search/\(manifest.region).sqlite"
-        guard let file = manifest.files[database] else { throw plannerSearchError("Release has no search database") }
+        let cells = manifest.offline?.cells ?? []
+        let names = Set(cells.isEmpty ? Array(manifest.files.keys) : cells.flatMap(\.files))
+            .filter { $0.hasPrefix("search/") && $0.hasSuffix(".sqlite") }.sorted()
+        guard !names.isEmpty, names.allSatisfy({ name in
+            !name.contains("\\") && name.split(separator: "/", omittingEmptySubsequences: false)
+                .allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+        }) else { throw plannerSearchError("Release has no valid search databases") }
+        let databases = names.map { directory.appendingPathComponent($0) }
+        var hashes: [URL: String] = [:], bounds: [URL: [Double]] = [:]
+        for name in names {
+            guard let file = manifest.files[name] else { throw plannerSearchError("Search database is absent from release files") }
+            hashes[directory.appendingPathComponent(name)] = file.sha256
+        }
+        for cell in cells {
+            for name in cell.files where names.contains(name) { bounds[directory.appendingPathComponent(name)] = cell.bounds }
+        }
         var model: [String: String] = [:]
         for name in ["model.int8.onnx", "tokenizer.json", "tokenizer_config.json", "labels.json"] {
             guard let file = manifest.files["search/model/\(name)"] else { throw plannerSearchError("Release has no parser model: \(name)") }
             model[name] = file.sha256
         }
-        return try PlannerSearchSession(database: directory.appendingPathComponent(database), databaseHash: file.sha256,
+        return try PlannerSearchSession(databases: databases, databaseHashes: hashes, bounds: bounds, coverage: manifest.bounds,
             model: directory.appendingPathComponent("search/model"), modelHashes: model, scripts: scripts,
             region: manifest.region, countryCode: "de", timeZone: "Europe/Berlin", pythonBundle: pythonBundle)
     }

@@ -7,14 +7,15 @@ actor OfflinePlanner {
     private let map: OfflineMap
     private let scripts: URL
     private let blocks: OfflineBlocks?
+    private let searchFiles: [String]
     private let routingPackage: String
     private var router: RouteProvider?
     private var overlays: OverlayProvider?
     private var search: PlannerSearchRuntime?
 
-    private init(map: OfflineMap, directory: URL, scripts: URL, blocks: OfflineBlocks?, routingPackage: String) {
+    private init(map: OfflineMap, directory: URL, scripts: URL, blocks: OfflineBlocks?, searchFiles: [String], routingPackage: String) {
         self.map = map; self.directory = directory; self.scripts = scripts
-        self.blocks = blocks; self.routingPackage = routingPackage
+        self.blocks = blocks; self.searchFiles = searchFiles; self.routingPackage = routingPackage
     }
 
     static func open(map: OfflineMap, directory: URL,
@@ -47,7 +48,9 @@ actor OfflinePlanner {
             manifest: directory.appending(path: "release.json"),
             routes: routes,
             offlineCells: blocks?.cells.map(\.id))
-        let runtime = OfflinePlanner(map: map, directory: directory, scripts: scripts, blocks: blocks, routingPackage: routingPackage)
+        let searchFiles = (manifest?["files"] as? [String: Any] ?? [:]).keys
+            .filter { $0.hasPrefix("search/") && $0.hasSuffix(".sqlite") }.sorted()
+        let runtime = OfflinePlanner(map: map, directory: directory, scripts: scripts, blocks: blocks, searchFiles: searchFiles, routingPackage: routingPackage)
         return PlannerService(release: release) { try await runtime.respond($0) }
     }
 
@@ -66,11 +69,15 @@ actor OfflinePlanner {
             response = try await overlays!.request(query)
         case "query":
             if search == nil {
-                let databases = blocks?.cells.map { directory.appending(path: "search/tiles/\($0.id).sqlite") }
-                    ?? [directory.appending(path: "search/\(map.region).sqlite")]
-                let bounds = Dictionary(uniqueKeysWithValues: (blocks?.cells ?? []).map {
-                    (directory.appending(path: "search/tiles/\($0.id).sqlite"), $0.bounds)
-                })
+                let names = blocks?.cells.flatMap { $0.files.filter { $0.hasPrefix("search/") && $0.hasSuffix(".sqlite") } } ?? searchFiles
+                guard !names.isEmpty, names.allSatisfy({ safeFile($0) }) else { throw PlannerFailure.invalidData }
+                let databases = Array(Set(names)).sorted().map { directory.appending(path: $0) }
+                var bounds: [URL: [Double]] = [:]
+                for cell in blocks?.cells ?? [] {
+                    for name in cell.files where name.hasPrefix("search/") && name.hasSuffix(".sqlite") {
+                        bounds[directory.appending(path: name)] = cell.bounds
+                    }
+                }
                 search = try PlannerSearchRuntime(databases: databases, bounds: bounds, coverage: map.bounds,
                     scripts: scripts, region: map.region, countryCode: "de", timeZone: "Europe/Berlin",
                     parse: { _ in "{\"error\":\"Native search requires a structured request.\"}" })
@@ -92,6 +99,7 @@ private struct OfflineBlocks: Decodable {
     struct Cell: Decodable {
         let id: String
         let bounds: [Double]
+        let files: [String]
         func intersects(_ box: [Double]) -> Bool {
             bounds[0] <= box[2] && bounds[2] >= box[0] && bounds[1] <= box[3] && bounds[3] >= box[1]
         }
@@ -108,6 +116,12 @@ private struct OfflineBlocks: Decodable {
               !cells.isEmpty, Set(cells.map(\.id)).count == cells.count,
               cells.allSatisfy({ $0.id.range(of: "^9-[0-9]+-[0-9]+$", options: .regularExpression) != nil
                   && $0.bounds.count == 4 && $0.bounds.allSatisfy(\.isFinite)
-                  && $0.bounds[0] < $0.bounds[2] && $0.bounds[1] < $0.bounds[3] }) else { throw PlannerFailure.invalidData }
+                  && $0.bounds[0] < $0.bounds[2] && $0.bounds[1] < $0.bounds[3]
+                  && !$0.files.isEmpty && $0.files.allSatisfy(safeFile) }) else { throw PlannerFailure.invalidData }
     }
+}
+
+private func safeFile(_ name: String) -> Bool {
+    !name.hasPrefix("/") && !name.contains("\\") && name.split(separator: "/", omittingEmptySubsequences: false)
+        .allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
 }

@@ -14,7 +14,8 @@
     {"id":402,"kind":"hiking","name":"Westweg, Etappe 1","loop":false,"length_m":15000,"ascent_m":400,"descent_m":200,"rank":1,"cells":["9-267-178","9-268-178"],"line_udeg":[8552192,47887986,-80438,8994,-80439,8993,-40219,0],"via":[1,2],"grades_m":[11250,3750,0,0,0,0],"hardest":1,"parent":401,"stage":1},
     {"id":403,"kind":"hiking","name":"Westweg, Etappe 2","loop":false,"length_m":19000,"ascent_m":380,"descent_m":190,"rank":1,"cells":["9-267-178"],"line_udeg":[8351096,47905973,-80438,0,-67032,-17987,-93845,-35972],"via":[1,2],"grades_m":[19000,0,0,0,0,0],"parent":401,"stage":2},
     {"id":501,"kind":"hiking","name":"Grenzweg","loop":false,"length_m":6000,"ascent_m":150,"descent_m":75,"rank":1,"cells":["9-267-178","9-268-178"],"line_udeg":[8397281,47878993,26813,4497,26812,4496,26813,4497],"via":[1,2],"grades_m":[6000,0,0,0,0,0]},
-    {"id":601,"kind":"hiking","name":"Talrunde","loop":true,"length_m":9000,"ascent_m":250,"descent_m":250,"rank":1,"cells":["9-266-178","9-267-178"],"line_udeg":[7767918,47870000,-2695,6745,-7360,4938,-10055,1807,-10055,-1807,-7360,-4938,-2695,-6745,2695,-6745,7360,-4938,10055,-1807,10055,1807,7360,4938,2695,6745],"via":[4,8],"grades_m":[9000,0,0,0,0,0]}
+    {"id":601,"kind":"hiking","name":"Talrunde","loop":true,"length_m":9000,"ascent_m":250,"descent_m":250,"rank":1,"cells":["9-266-178","9-267-178"],"line_udeg":[7767918,47870000,-2695,6745,-7360,4938,-10055,1807,-10055,-1807,-7360,-4938,-2695,-6745,2695,-6745,7360,-4938,10055,-1807,10055,1807,7360,4938,2695,6745],"via":[4,8],"grades_m":[9000,0,0,0,0,0]},
+    {"id":701,"kind":"hiking","name":"Stielrunde","loop":true,"length_m":5200,"ascent_m":90,"descent_m":90,"rank":1,"cells":["9-270-178"],"line_udeg":[10000000,47870000,10000,0,10000,5000,10000,-5000,-10000,-5000,-10000,5000,-10000,0],"via":[2,4],"turnarounds":[0,4],"grades_m":[5200,0,0,0,0,0]}
   ],
   "queries": [
     {"name":"Hiking loops within 25 km up to T3, nearest first","query":{"start":[8.15,47.87],"radius_km":25,"activity":"hiking","shape":"loop","hardest":[0,2],"sort":"nearest"},"expect":[{"id":101,"distance_m":800},{"id":104,"distance_m":2600},{"id":103,"distance_m":7800}],"cells":["9-267-177","9-267-178","9-268-177","9-268-178"]},
@@ -28,8 +29,9 @@
     {"name":"Hiking within 50 km, least climb first: the counts for smaller radii come from distance_m","query":{"start":[8.15,47.87],"radius_km":50,"activity":"hiking","shape":"any","sort":"least-climb"},"expect":[{"id":101,"distance_m":800},{"id":501,"distance_m":18472},{"id":601,"distance_m":28500},{"id":104,"distance_m":2600},{"id":106,"distance_m":7071},{"id":403,"distance_m":248},{"id":402,"distance_m":15524},{"id":102,"distance_m":5000},{"id":103,"distance_m":7800},{"id":401,"distance_m":30067},{"id":105,"distance_m":12000}],"cells":["9-266-177","9-266-178","9-266-179","9-267-177","9-267-178","9-267-179","9-268-177","9-268-178","9-268-179"]}
   ],
   "plans": [
-    {"id":106,"points_udeg":[[8217032,47825034],[8243845,47807047],[8230438,47814242],[8223735,47820537]],"turnarounds":[2],"place":[8.15,47.87],"nearest_vertex":0},
-    {"id":103,"points_udeg":[[8166088,47789061],[8150000,47799853],[8133912,47789061],[8150000,47778269],[8166088,47789061]],"turnarounds":[],"place":[8.15,47.87],"nearest_vertex":3},
-    {"id":101,"points_udeg":[[8182175,47870000],[8166088,47876231],[8166088,47863769],[8182175,47870000]],"turnarounds":[],"place":[8.190219,47.87],"nearest_vertex":0}
+    {"id":106,"points_udeg":[[8217032,47825034],[8243845,47807047],[8230438,47814242],[8223735,47820537]],"turnarounds":[2]},
+    {"id":103,"points_udeg":[[8166088,47789061],[8150000,47799853],[8133912,47789061],[8150000,47778269],[8166088,47789061]],"turnarounds":[]},
+    {"id":101,"points_udeg":[[8182175,47870000],[8166088,47876231],[8166088,47863769],[8182175,47870000]],"turnarounds":[]},
+    {"id":701,"points_udeg":[[10000000,47870000],[10020000,47875000],[10020000,47865000],[10000000,47870000]],"turnarounds":[0,2]}
   ]
 }

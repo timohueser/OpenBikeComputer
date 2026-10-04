@@ -3,8 +3,7 @@
     import Select from './PlannerSelect.svelte';
     import VersionsMenu from './VersionsMenu.svelte';
     import { ridingProfiles, type BikeType } from '../../lib/planner/riding-profiles';
-    import type { Trip } from '../../lib/planner/editor';
-    import { planTitle } from '../../lib/planner/versions';
+    import { planTitle, type Trip } from '../../lib/planner/editor';
     import type { Version } from '../../lib/planner/versions';
 
     let { trip, name, versions, canUndo, canRedo, draftSavedAt, draftError, onChange, onUndo, onRedo, onRestore, onVersions, onNew, onLibrary, ready }: {

@@ -80,6 +80,8 @@ export function routeWebsite(value?: string | null): string | null {
     } catch { return null; }
 }
 
+const networkOpacity: ExpressionSpecification = ['case', ['boolean', ['feature-state', 'hover'], false], 1, 0.8];
+
 const accessStatus = (mode: AccessMode): ExpressionSpecification => ['get', `${mode}_status`];
 
 /** Route networks and access restrictions from the overlay tiles; route edits never wait for this layer. */
@@ -93,6 +95,7 @@ export class RouteOverlays {
     private routingPackage?: string;
     private installable = false;
     private hovered?: { sourceLayer: string; id: string | number };
+    private faded = false;
 
     constructor(private map: Map, private url: string, private status: (message: string, retry?: boolean) => void) {
         map.on('moveend', this.report);
@@ -125,7 +128,7 @@ export class RouteOverlays {
             this.map.addLayer({
                 id: `network-${activity}`, type: 'line', source, 'source-layer': activity,
                 layout: { 'line-join': 'round', 'line-sort-key': ['get', 'rank'] },
-                paint: { 'line-color': color, 'line-opacity': hovered(1, 0.8),
+                paint: { 'line-color': color, 'line-opacity': networkOpacity,
                     'line-width': ['interpolate', ['linear'], ['zoom'], 6, hovered(2.4, 1.2), 10, hovered(3, 1.8), 13, hovered(4.4, 3.2), 17, hovered(6.2, 5)] },
             }, before);
             this.map.addLayer({
@@ -159,6 +162,12 @@ export class RouteOverlays {
         if (this.installable) void this.install(this.theme);
     }
 
+    /** Fades the networks, so the routes of the Routes view stand out over them. */
+    fade(faded: boolean) {
+        this.faded = faded;
+        this.sync();
+    }
+
     /** The routing package of the latest route. The router excludes what the overlay shows as closed, so both must match. */
     verify(routingPackage?: string) {
         this.routingPackage = routingPackage;
@@ -174,6 +183,9 @@ export class RouteOverlays {
         for (const [kind, ids] of Object.entries(layers)) {
             const shown = !this.mismatch && (kind === 'access' ? this.options.access : this.options.network === kind);
             for (const id of ids) if (this.map.getLayer(id)) this.map.setLayoutProperty(id, 'visibility', shown ? 'visible' : 'none');
+        }
+        for (const activity of ['cycling', 'hiking', 'mtb']) {
+            if (this.map.getLayer(`network-${activity}`)) this.map.setPaintProperty(`network-${activity}`, 'line-opacity', this.faded ? 0.3 : networkOpacity);
         }
         if (this.map.getLayer('access-lines')) {
             const status = accessStatus(this.accessMode);

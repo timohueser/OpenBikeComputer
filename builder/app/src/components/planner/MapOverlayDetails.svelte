@@ -3,7 +3,21 @@
     import TrailMarker from './TrailMarker.svelte';
     import { trailMarker } from '../../lib/planner/trail-markers';
     import { networkName, routeKindTitles, routeWebsite, type OverlaySelection } from '../../lib/planner/route-overlays';
-    let { selection, onclose, onuse }: { selection: OverlaySelection; onclose: () => void; onuse: () => void } = $props();
+    import type { Coordinate } from '../../lib/planner/map-types';
+    let { selection, onclose, onuse, canPlan, onplan }: {
+        selection: OverlaySelection; onclose: () => void; onuse: () => void;
+        /** Whether a route is in the route catalog, so "Plan this route" can plan it. */
+        canPlan?: (id: number, at: Coordinate) => Promise<'plan' | 'too-long' | 'missing'>;
+        onplan?: (id: number) => void;
+    } = $props();
+    let plannable = $state<Record<number, 'plan' | 'too-long' | 'missing'>>({});
+    $effect(() => {
+        const { routes = [], coordinate } = selection;
+        let current = true;
+        plannable = {};
+        for (const { id } of canPlan ? routes : []) canPlan!(id, coordinate).then(status => { if (current) plannable = { ...plannable, [id]: status }; }, () => {});
+        return () => { current = false; };
+    });
     const access: Record<string, { title: string; detail: string }> = {
         construction: { title: 'Under construction', detail: 'OSM maps this section as construction. The router excludes it.' },
         closed: { title: 'No access', detail: 'The mapped rules exclude this travel mode. This is not just a requirement to dismount.' },
@@ -42,6 +56,9 @@
                     {:else}<b class="route-name">{route.name || route.ref || 'Unnamed route'}{route.name && route.ref ? ` · ${route.ref}` : ''}</b>{/if}
                     <span>{networkName(route)}</span>
                     {#if route.kind === 'hiking' && route.symbol_text}<span>{route.symbol_text}</span>{/if}
+                    {#if plannable[route.id] === 'plan'}<button class="plan" onclick={() => onplan?.(route.id)}>Plan this route</button>
+                    {:else if plannable[route.id] === 'too-long'}<span>Too long for one plan · Plan a stage in the Routes view</span>
+                    {:else if plannable[route.id] === 'missing'}<span>Not in the route catalog</span>{/if}
                 </div>
             </li>
         {/each}</ul>
@@ -61,6 +78,7 @@
     button:hover { background: var(--parchment-2); }
     .close { display: grid; place-items: center; padding: 6px; border: 0; }
     .use { width: 100%; margin-top: 4px; }
+    .plan { margin-top: 6px; min-height: 30px; font-weight: 600; font-size: 12.5px; }
     a { color: var(--link); text-underline-offset: 3px; overflow-wrap: anywhere; }
     details { margin: 10px 0; }
     summary { cursor: pointer; }

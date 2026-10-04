@@ -25,9 +25,4 @@ export function newVersion(trip: Trip, name?: string): Version {
         ...(name?.trim() ? { name: name.trim() } : {}), trip: storedPlan(trip) };
 }
 
-export function planTitle(trip: Trip): string {
-    const start = trip.points.find(p => p.kind === 'start');
-    const finish = trip.points.find(p => p.kind === 'finish');
-    return start && trip.loop ? `Loop from ${start.label}` : start && finish ? `${start.label} → ${finish.label}`
-        : start ? `From ${start.label}` : finish ? `To ${finish.label}` : 'New plan';
-}
+export { planTitle } from './editor';

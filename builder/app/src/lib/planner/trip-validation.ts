@@ -25,7 +25,8 @@ function point(value: unknown): value is RoutePoint {
         && (value.drawn === undefined || (Array.isArray(value.drawn) && value.drawn.every(coordinate)))
         && (value.anchor === undefined || coordinate(value.anchor))
         && (value.placeKind === undefined || typeof value.placeKind === 'string')
-        && (value.autoLabel === undefined || typeof value.autoLabel === 'boolean');
+        && (value.autoLabel === undefined || typeof value.autoLabel === 'boolean')
+        && (value.turnaround === undefined || value.turnaround === true);
 }
 
 /** Browser records and imported files must satisfy the route model. */
@@ -38,6 +39,7 @@ export function isTrip(value: unknown): value is Trip {
         || (value.climbTarget !== undefined && (!finite(value.climbTarget) || value.climbTarget < 0))
         || (value.mode !== undefined && value.mode !== 'route' && value.mode !== 'trip')
         || (value.live !== undefined && typeof value.live !== 'boolean')
+        || (value.name !== undefined && typeof value.name !== 'string')
         || (value.startDate !== undefined && (typeof value.startDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.startDate)
             || !Number.isFinite(Date.parse(value.startDate)) || new Date(value.startDate).toISOString().slice(0, 10) !== value.startDate))
         || (value.loop !== undefined && value.loop !== true)) return false;

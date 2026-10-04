@@ -7,7 +7,7 @@
     <div><dt>Distance</dt><dd>{distance.toFixed(1)}<small>km</small></dd></div>
     <div><dt>Ascent</dt><dd>{ascent ?? '—'}<small>m</small></dd></div>
     <div><dt>Descent</dt><dd>{descent ?? '—'}<small>m</small></dd></div>
-    <div><dt>{walking ? 'Walking time' : 'Riding time'}</dt><dd>{minutes === null ? '—' : `${Math.floor(minutes / 60)}h ${minutes % 60}m`}</dd></div>
+    <div><dt>{walking ? 'Walking time' : 'Riding time'}</dt><dd>{minutes === null ? '—' : minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`}</dd></div>
 </dl>
 
 <style>

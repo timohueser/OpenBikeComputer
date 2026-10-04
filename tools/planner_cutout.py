@@ -118,11 +118,15 @@ def prepare(source, destination, bounds, region, progress=lambda step, message: 
                                  envelope, terrain=name == "terrain", recompress=False)
         for name in ("maps/assets", "search/model", "device"):
             shutil.copytree(source / name, stage / name, copy_function=lambda a, b: preparation.link(Path(a), Path(b)))
-        database = stage / "search" / f"{region}.sqlite"
         progress(3, "Preparing places and addresses")
-        maps.run(sys.executable, maps.ROOT / "apps/planner-search/extract.py",
-                 source / "search" / f"{original['region']}.sqlite", database,
-                 "--bounds", ",".join(map(str, bounds)))
+        components = ["pois", "addresses"] if (source / "search/pois").exists() else [""]
+        databases = []
+        for component in components:
+            database = stage / "search" / component / f"{region}.sqlite"
+            maps.run(sys.executable, maps.ROOT / "apps/planner-search/extract.py",
+                     source / "search" / component / f"{original['region']}.sqlite", database,
+                     "--bounds", ",".join(map(str, bounds)))
+            databases.append(database)
         route_catalog(source / "routes" / f"{original['region']}.json", stage / "routes" / f"{region}.json", bounds)
         package = sources.digest(stage / "routing/manifest.json")
         progress(4, "Preparing cycling and hiking layers")
@@ -135,15 +139,17 @@ def prepare(source, destination, bounds, region, progress=lambda step, message: 
             for path in sorted((stage / "maps").rglob("*")) if path.is_file()}
         (stage / "maps/manifest.json").write_bytes(releases.encoded(map_manifest))
         graph = json.loads((stage / "routing/manifest.json").read_bytes())
-        search = releases.search_metadata(database, full=True)
-        if graph["bounds"] != bounds or search["bounds"] != bounds or sorted(graph["metrics"]) != original["profiles"]:
+        searches = [releases.search_metadata(database, full=True) for database in databases]
+        if graph["bounds"] != bounds or any(search["bounds"] != bounds for search in searches) or sorted(graph["metrics"]) != original["profiles"]:
             raise ValueError("Extracted planner coverage or profiles differ")
-        if graph["source_sha256"][0] != search["osm_sha256"] or search["osm_sha256"] != map_manifest["osm_sha256"]:
+        if any(graph["source_sha256"][0] != search["osm_sha256"] or search["osm_sha256"] != map_manifest["osm_sha256"] for search in searches):
             raise ValueError("Extracted planner sources differ")
         document = {**original, "region": region, "bounds": bounds, "routing_package": package, "source_files": {},
                     "terrain_bounds": map_manifest["terrain_bounds"],
                     "sources": {**original["sources"], "extraction": {"source_release": source_id, "geometry_bounds": envelope}}}
         document.pop("probe", None)
+        document["sources"].pop("components", None)
+        document["sources"].pop("grid_components", None)
         document["files"] = {path.relative_to(stage).as_posix(): {"bytes": path.stat().st_size, "sha256": sources.digest(path)}
                              for path in sorted(stage.rglob("*")) if path.is_file()}
         (stage / "release.json").write_bytes(releases.encoded(document))

@@ -22,6 +22,8 @@ export interface RoutePoint {
     drawn?: Coordinate[];
     /** A visit-and-return rejoins this exact position on the planned line. */
     anchor?: Coordinate;
+    /** The route turns back at this shaping point. */
+    turnaround?: true;
 }
 export type Place = RoutePoint & {
     category: PlaceCategory;
@@ -34,6 +36,8 @@ export type Place = RoutePoint & {
     hoursStatus?: import('./search/types').HoursStatus;
 };
 export interface Trip {
+    /** The name of a planned signed route; the title shows it. */
+    name?: string;
     startDate?: string;
     live?: boolean;
     routing?: import('./routing').RoutingLine;
@@ -98,6 +102,13 @@ export function emptyTrip(mode: Trip['mode'] = 'route'): Trip {
 const startLabel = 'Start';
 const shapeLabel = 'Shaping point';
 
+/** The title of a plan: the name of its signed route, else its start and finish. */
+export function planTitle(trip: Trip): string {
+    const start = trip.points.find(p => p.kind === 'start'), finish = trip.points.find(p => p.kind === 'finish');
+    return trip.name ? trip.name : start && trip.loop ? `Loop from ${start.label}` : start && finish ? `${start.label} → ${finish.label}`
+        : start ? `From ${start.label}` : finish ? `To ${finish.label}` : 'New plan';
+}
+
 /** A start, and a finish or a loop: enough points for a route. */
 export function hasEndpoints(trip: Trip): boolean {
     return trip.points.some(p => p.kind === 'start') && (!!trip.loop || trip.points.some(p => p.kind === 'finish'));
@@ -123,8 +134,11 @@ export function setEndpoint(trip: Trip, kind: 'start' | 'finish', coordinate: Co
         points: previous ? trip.points.map(p => p.id === previous.id ? point : p) : [...trip.points, point] };
 }
 
-/** Removing an endpoint promotes its neighbour in route order. Markers never become endpoints. */
-export function removeRoutePoint(trip: Trip, id: string): Trip {
+/**
+ * Removing an endpoint promotes its neighbour in route order. A promoted shaping point takes the name of the nearest
+ * place from `placeName`, else the endpoint name. Markers never become endpoints.
+ */
+export function removeRoutePoint(trip: Trip, id: string, placeName?: (coordinate: Coordinate) => string | undefined): Trip {
     const removed = trip.points.find(p => p.id === id);
     if (!removed) return trip;
     if (removed.kind === 'marker') return { ...trip, points: trip.points.filter(p => p.id !== id), routeOrder: trip.routeOrder?.filter(pointId => pointId !== id) };
@@ -133,6 +147,7 @@ export function removeRoutePoint(trip: Trip, id: string): Trip {
     const promoted = neighbour && neighbour.kind !== 'start' && neighbour.kind !== 'finish' ? neighbour : undefined;
     const points = trip.points.filter(p => p.id !== id).map(p => p !== promoted ? p : {
         ...p, id: p.kind === 'night' ? crypto.randomUUID() : p.id, kind: removed.kind,
+        label: p.kind === 'via' ? placeName?.(p.coordinate) ?? (removed.kind === 'start' ? startLabel : 'Finish') : p.label,
         progress: removed.kind === 'start' ? 0 : 1, night: undefined, anchor: undefined,
         leg: removed.kind === 'start' ? undefined : p.leg, drawn: removed.kind === 'start' ? undefined : p.drawn,
     });
@@ -254,7 +269,7 @@ export function routeStops(trip: Trip): Stop[] { return routeLayout(trip).stops;
 
 /** Itinerary edits and labels never invalidate a selected route. */
 export function routingKey(trip: Trip): string {
-    return JSON.stringify([trip.bike ?? 'touring', trip.preset ?? 'Balanced', orderedRoutePoints(trip).map(p => [p.id, p.coordinate, p.leg ?? 'routed', p.drawn ?? [], p.kind === 'detour', p.anchor])]);
+    return JSON.stringify([trip.bike ?? 'touring', trip.preset ?? 'Balanced', orderedRoutePoints(trip).map(p => [p.id, p.coordinate, p.leg ?? 'routed', p.drawn ?? [], p.kind === 'detour', p.anchor, p.turnaround])]);
 }
 
 // Stored anchors use one corridor frame; current-route fractions change with every detour.
@@ -631,8 +646,8 @@ function startLoopAt(trip: Trip, id: string): Trip {
 }
 
 /** "Start the loop here": a new start at `coordinate` on the leg that ends at `legEndId`. */
-export function startLoopHere(trip: Trip, legEndId: string, coordinate: Coordinate): Trip {
-    const point: RoutePoint = { id: crypto.randomUUID(), kind: 'via', label: startLabel, coordinate: [...coordinate], progress: 0 };
+export function startLoopHere(trip: Trip, legEndId: string, coordinate: Coordinate, label = startLabel): Trip {
+    const point: RoutePoint = { id: crypto.randomUUID(), kind: 'via', label, coordinate: [...coordinate], progress: 0 };
     return canMoveLoopStart(trip) && trip.points.some(p => p.id === legEndId) ? startLoopAt(intoLeg(trip, point, legEndId), point.id) : trip;
 }
 

@@ -53,8 +53,7 @@ export async function applyQueryChanges(
   for (const change of changes) {
     if (change.op !== 'route' && !hasEndpoints(trip))
       throw new Error('Choose a start and finish before editing the route.');
-    // Both rebuild the points from the stops, and a loop lists its start twice.
-    if (trip.loop && change.op === 'reverse') throw new Error('Reverse does not work on a loop yet.');
+    // Reroute rebuilds the points from the stops, and a loop lists its start twice.
     if (trip.loop && change.op === 'reroute') throw new Error('Reroute does not work on a loop yet.');
     const line = routeCoordinates(trip),
       total = cumulative(line).at(-1)!;
@@ -142,20 +141,18 @@ export async function applyQueryChanges(
         throw new Error(
           'Move the rest day at the finish before reversing this trip.',
         );
+      // A loop keeps its start, which lists last again and holds the closing leg.
       const stops = routeStops(trip).reverse();
-      const points = stops.map(({ point: p }, i, all) => ({
+      const kept = trip.loop ? stops.slice(0, -1) : stops;
+      const drawn = (i: number) =>
+        routeSlice(line, stops[i - 1].distance / total, stops[i].distance / total).slice(1, -1);
+      const points = kept.map(({ point: p }, i, all) => ({
         ...p,
-        kind: i === 0 ? 'start' : i === all.length - 1 ? 'finish' : p.kind,
-        progress: 1 - p.progress,
+        kind: i === 0 ? 'start' : !trip.loop && i === all.length - 1 ? 'finish' : p.kind,
+        progress: i === 0 ? 0 : 1 - p.progress,
         night: p.night ? trip.days - p.night : undefined,
-        leg: i ? 'drawn' : undefined,
-        drawn: i
-          ? routeSlice(
-              line,
-              stops[i - 1].distance / total,
-              stops[i].distance / total,
-            ).slice(1, -1)
-          : undefined,
+        leg: i || trip.loop ? 'drawn' : undefined,
+        drawn: i ? drawn(i) : trip.loop ? drawn(stops.length - 1) : undefined,
       })) as RoutePoint[];
       trip = {
         ...trip,
@@ -165,7 +162,7 @@ export async function applyQueryChanges(
             .filter((p) => p.kind === 'marker')
             .map((p) => ({ ...p, progress: 1 - p.progress })),
         ],
-        routeOrder: points.slice(1, -1).map((p) => p.id),
+        routeOrder: points.slice(1, trip.loop ? undefined : -1).map((p) => p.id),
         splits: Object.fromEntries(
           Object.entries(trip.splits ?? {}).map(([n, p]) => [
             trip.days - Number(n),
