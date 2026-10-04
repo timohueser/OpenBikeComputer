@@ -79,12 +79,12 @@ Publish and deploy `bw-next`. Repeat `--component` for:
 `pois`, `addresses`, `basemap`, `places`, `terrain`, `routing`, `overlays`,
 `assets`, `model`, or data layers. Routing updates include overlays;
 basemap updates include places. Elevation changes select terrain,
-routing, and overlays together. Tile encoding changes reuse routing.
+routing, and overlays. Tile encoding changes reuse routing.
 
 `plan` and `prepare --dry-run` read no large artifacts and download nothing.
 Updates need a modular regional release and its cache. Source refreshes keep
-one OSM snapshot. Use one `--source-cache` for preparation and grid publication;
-its default is `~/.cache/obc/planner/sources`. `obc planner inventory` reports
+one OSM snapshot. Preparation and grid publication share `--source-cache`
+(default `~/.cache/obc/planner/sources`). `obc planner inventory` reports
 component sizes and measured costs. Completed components and cells resume.
 
 POI changes reuse addresses and unrelated grid objects. Nominatim and routing
@@ -135,13 +135,13 @@ region recipe and `~/obc-reference`; run `prepare` directly for other inputs.
 Normal launch has no downloads. `verify` checks map hashes, SQLite integrity,
 and routing object closure.
 
-Before publication, seed the source cache. The OSM extract merges two
-Geofabrik extracts of one date:
+Seed the cache from Geofabrik extracts of one date:
 
 ```sh
 osmium merge baden-wuerttemberg-latest.osm.pbf switzerland-latest.osm.pbf -o merged.osm.pbf
-osmium extract -b 5.95,45.8,10.5,49.85 merged.osm.pbf -o ~/.cache/obc/planner/sources/SHA256.osm.pbf
-cp AUXILIARY_FILE ~/.cache/obc/planner/sources/auxiliary/NAME
+mkdir -p ~/.cache/obc/planner/sources/downloads/auxiliary
+osmium extract -b 5.95,45.8,10.5,49.85 merged.osm.pbf -o ~/.cache/obc/planner/sources/downloads/SHA256.osm.pbf
+cp AUXILIARY_FILE ~/.cache/obc/planner/sources/downloads/auxiliary/NAME
 ```
 
 | Setting | Default |
