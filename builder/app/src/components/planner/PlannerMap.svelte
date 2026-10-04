@@ -24,14 +24,24 @@
     import type { DataLayer } from "../../lib/planner/layers/data-layer";
     import { placeCallout } from "../../lib/planner/callout-placement";
     import MapOverlayDetails from './MapOverlayDetails.svelte';
+    import { SignedRoutesLayer, type SignedRoutesView } from "../../lib/planner/signed-routes-map";
 
     let {
         segments = [], gaps = [], coordinates = [], highlightedCoordinates = [], points = [], selectedId = null, hoveredId = null, callout = null,
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         shownCategories = categoryIds, highlightedPlaces = [], landmarks = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
+        signedRoutes = null, signedHovered = null, onSignedRoute, onSignedHover, canPlanRoute, onPlanRoute,
         onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
+        /** The Routes view: while it is open, a click on one of its routes selects that route. */
+        signedRoutes?: SignedRoutesView | null;
+        signedHovered?: number | null;
+        onSignedRoute?: (id: number) => void;
+        onSignedHover?: (id: number | null) => void;
+        /** Whether the route-network details offer "Plan this route" for a relation at a map point. */
+        canPlanRoute?: (id: number, at: Coordinate) => Promise<boolean>;
+        onPlanRoute?: (id: number, at: Coordinate) => void;
         segments?: MapSegment[];
         /** Dashed connectors from the route to points that it does not reach. */
         gaps?: Coordinate[][];
@@ -115,6 +125,9 @@
     let overlayStatus = $state('');
     let overlayRetry = $state(false);
     let overlaySelection = $state<OverlaySelection | null>(null);
+    let signedLayer: SignedRoutesLayer | undefined;
+    let signedHover: number | null = null;
+    let overSigned = $state(false);
 
     export function centerOn(coordinate: Coordinate) {
         wholeRoute = false;
@@ -358,6 +371,9 @@
             setSketch([from, coordinate, to]);
         } else {
             const onMap = event.originalEvent.target === map.getCanvas();
+            const signed = onMap && !dragging && signedRoutes ? signedLayer?.hit(event) ?? null : null;
+            overSigned = signed !== null;
+            if (signed !== signedHover) onSignedHover?.(signedHover = signed);
             overPoi = onMap && !!placeAt(event.point);
             hover = onMap && !overPoi && !dragging && !draggingPin && !drawing && !pickMode ? lineHit(event.point) : null;
             overOverlay = overlayLayer?.hover(onMap && !overPoi && !hover && !dragging && !draggingPin && !drawing && !pickMode ? event : undefined) ?? false;
@@ -406,13 +422,14 @@
         hoverDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-hover-dot" }) });
         try {
             map = new maplibregl.Map({ container, center, zoom, maxBounds: MAP_BOUNDS, style: mapStyle(theme, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false });
+            signedLayer = new SignedRoutesLayer(map);
             overlayLayer = new RouteOverlays(map, OVERLAYS_URL, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; });
             fitInitialRoute();
             map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 90, unit: "metric" }), "bottom-left");
             map.dragRotate.disable();
             map.touchZoomRotate.disableRotation();
-            map.on("style.load", () => { ready = true; installRoute(); syncTerrainAndOverlays(); syncDataLayer(); });
+            map.on("style.load", () => { ready = true; installRoute(); signedLayer?.install(theme); signedLayer?.set(signedRoutes); signedLayer?.hover(signedHovered); syncTerrainAndOverlays(); syncDataLayer(); });
             map.once("load", () => { basemapComplete = true; syncTerrainAndOverlays(); });
             map.setMissingStyleImageResolver((id) => {
                 const icon = mapIcon(id);
@@ -435,6 +452,8 @@
             map.on("click", (event) => {
                 const target = event.originalEvent.target;
                 if (consumedPress || drawing || (target instanceof Node && popupContent?.contains(target))) return;
+                const signed = signedRoutes ? signedLayer?.hit(event) : null;
+                if (signed !== null && signed !== undefined) { onSignedRoute?.(signed); return; }
                 const place = placeAt(event.point);
                 const hit = place || pickMode ? null : lineHit(event.point);
                 const overlay = place || pickMode ? null : overlayLayer?.hit(event);
@@ -453,7 +472,11 @@
             map.on("mousedown", pressMap);
             map.on("mousemove", trackPointer);
             map.on("mouseup", releaseMap);
-            map.on("mouseout", () => { if (!press) hover = null; overPoi = false; overOverlay = false; overlayLayer?.hover(); });
+            map.on("mouseout", () => {
+                if (!press) hover = null; overPoi = false; overOverlay = false; overlayLayer?.hover();
+                overSigned = false;
+                if (signedHover !== null) onSignedHover?.(signedHover = null);
+            });
             map.on("movestart", (event) => { if (event.originalEvent) wholeRoute = false; overOverlay = false; overlayLayer?.hover(); });
             map.on("moveend", reportView);
             map.on("move", () => fitCallout(false));
@@ -485,6 +508,7 @@
             hoverDot.remove();
             calloutPopup?.remove();
             overlayLayer?.destroy();
+            signedLayer?.destroy();
             map?.remove();
             terrainLease.release();
         };
@@ -507,6 +531,10 @@
     $effect(() => { hillshade; contours; if (ready) syncTerrain(); });
     $effect(() => { const options = { ...mapOverlays }; const mode = accessMode; if (ready) { overlaySelection = null; overOverlay = false; overlayLayer?.set(options, mode); } });
     $effect(() => { showRoute; if (ready) syncRouteVisibility(); });
+    $effect(() => { const view = signedRoutes; if (ready) signedLayer?.set(view); });
+    $effect(() => { const id = signedHovered; if (ready) signedLayer?.hover(id); });
+    const routesShown = $derived(!!signedRoutes);
+    $effect(() => { const faded = routesShown; if (ready) overlayLayer?.fade(faded); });
     function syncDataLayer() {
         if (!map || !dataLayer) return;
         const { layers, shown, date } = dataLayer;
@@ -570,7 +598,7 @@
         setSketch([]);
     });
     $effect(() => {
-        if (map) map.getCanvas().style.cursor = dragging || draggingPin ? "grabbing" : drawing || pickMode ? "crosshair" : hover || overPoi || overOverlay ? "pointer" : "grab";
+        if (map) map.getCanvas().style.cursor = dragging || draggingPin ? "grabbing" : drawing || pickMode ? "crosshair" : hover || overPoi || overOverlay || overSigned ? "pointer" : "grab";
     });
 
     function markerIcon(path: string) {
@@ -686,7 +714,8 @@
     <div class="map-canvas" bind:this={container} aria-label="Route map"></div>
     <div class="popup-storage"><div bind:this={popupContent}>{#if popup}{@render popup()}{/if}</div></div>
     {#if overlaySelection}
-        <MapOverlayDetails selection={overlaySelection} onclose={() => overlaySelection = null}
+        <MapOverlayDetails selection={overlaySelection} onclose={() => overlaySelection = null} canPlan={canPlanRoute}
+            onplan={id => { const at = overlaySelection!.coordinate; overlaySelection = null; onPlanRoute?.(id, at); }}
             onuse={() => { const coordinate = overlaySelection!.coordinate; overlaySelection = null; onEmptyClick?.(coordinate); }} />
     {/if}
     {#if overlayStatus && !failure && !overlaySelection}

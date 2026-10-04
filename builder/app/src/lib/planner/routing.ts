@@ -182,6 +182,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
             } else {
                 expanded.push(point.coordinate);
                 ends.set(expanded.length - 2, point.id);
+                if (point.turnaround && p < until) turnarounds.push(expanded.length - 1);
             }
         }
         const canOfferAlternatives = i === 1 && until === points.length - 1 && !turnarounds.length;

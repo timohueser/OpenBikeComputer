@@ -22,6 +22,10 @@ export interface RoutePoint {
     drawn?: Coordinate[];
     /** A visit-and-return rejoins this exact position on the planned line. */
     anchor?: Coordinate;
+    /** A shaping point of a signed route: the map draws no pin for it. */
+    hidden?: true;
+    /** The route turns back at this shaping point. */
+    turnaround?: true;
 }
 export type Place = RoutePoint & {
     category: PlaceCategory;
@@ -251,7 +255,7 @@ export function routeStops(trip: Trip): Stop[] { return routeLayout(trip).stops;
 
 /** Itinerary edits and labels never invalidate a selected route. */
 export function routingKey(trip: Trip): string {
-    return JSON.stringify([trip.bike ?? 'touring', trip.preset ?? 'Balanced', orderedRoutePoints(trip).map(p => [p.id, p.coordinate, p.leg ?? 'routed', p.drawn ?? [], p.kind === 'detour', p.anchor])]);
+    return JSON.stringify([trip.bike ?? 'touring', trip.preset ?? 'Balanced', orderedRoutePoints(trip).map(p => [p.id, p.coordinate, p.leg ?? 'routed', p.drawn ?? [], p.kind === 'detour', p.anchor, p.turnaround])]);
 }
 
 // Stored anchors use one corridor frame; current-route fractions change with every detour.

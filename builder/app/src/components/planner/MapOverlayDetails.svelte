@@ -3,7 +3,21 @@
     import TrailMarker from './TrailMarker.svelte';
     import { trailMarker } from '../../lib/planner/trail-markers';
     import { networkName, routeKindTitles, routeWebsite, type OverlaySelection } from '../../lib/planner/route-overlays';
-    let { selection, onclose, onuse }: { selection: OverlaySelection; onclose: () => void; onuse: () => void } = $props();
+    import type { Coordinate } from '../../lib/planner/map-types';
+    let { selection, onclose, onuse, canPlan, onplan }: {
+        selection: OverlaySelection; onclose: () => void; onuse: () => void;
+        /** Whether a route is in the route catalog, so "Plan this route" can plan it. */
+        canPlan?: (id: number, at: Coordinate) => Promise<boolean>;
+        onplan?: (id: number) => void;
+    } = $props();
+    let plannable = $state<number[]>([]);
+    $effect(() => {
+        const { routes = [], coordinate } = selection;
+        let current = true;
+        plannable = [];
+        for (const { id } of canPlan ? routes : []) canPlan!(id, coordinate).then(found => { if (found && current) plannable = [...plannable, id]; }, () => {});
+        return () => { current = false; };
+    });
     const access: Record<string, { title: string; detail: string }> = {
         construction: { title: 'Under construction', detail: 'OSM maps this section as construction. The router excludes it.' },
         closed: { title: 'No access', detail: 'The mapped rules exclude this travel mode. This is not just a requirement to dismount.' },
@@ -42,6 +56,7 @@
                     {:else}<b class="route-name">{route.name || route.ref || 'Unnamed route'}{route.name && route.ref ? ` · ${route.ref}` : ''}</b>{/if}
                     <span>{networkName(route)}</span>
                     {#if route.kind === 'hiking' && route.symbol_text}<span>{route.symbol_text}</span>{/if}
+                    {#if plannable.includes(route.id)}<button class="plan" onclick={() => onplan?.(route.id)}>Plan this route</button>{/if}
                 </div>
             </li>
         {/each}</ul>
@@ -61,6 +76,8 @@
     button:hover { background: var(--parchment-2); }
     .close { display: grid; place-items: center; padding: 6px; border: 0; }
     .use { width: 100%; margin-top: 4px; }
+    .plan { margin-top: 6px; min-height: 30px; border: 0; background: var(--amber); color: var(--on-amber); font-weight: 600; font-size: 12.5px; }
+    .plan:hover { background: var(--amber); filter: brightness(.95); }
     a { color: var(--link); text-underline-offset: 3px; overflow-wrap: anywhere; }
     details { margin: 10px 0; }
     summary { cursor: pointer; }

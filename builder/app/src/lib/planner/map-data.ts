@@ -75,7 +75,7 @@ export interface RouteRecord {
 }
 
 /** Whether the zoom 9 cell `9-X-Y` overlaps the bounds with a positive area. */
-function coversCell(bounds: [number, number, number, number], id: string): boolean {
+export function coversCell(bounds: [number, number, number, number], id: string): boolean {
     const match = /^9-(\d+)-(\d+)$/.exec(id);
     const n = 512, x = Number(match?.[1]), y = Number(match?.[2]);
     if (!match || x >= n || y >= n) throw new Error(`Invalid route catalog cell ${id}`);

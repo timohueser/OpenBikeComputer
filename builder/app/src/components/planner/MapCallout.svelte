@@ -18,7 +18,7 @@
 
     let {
         kind, trip, days, overnightNote = '', dayLabels, night, point, place, coordinate, candidates, legMode,
-        onClose, onEndpoint, onAddHere, onLegMode, onInsert, onLoop, onLoopStart, onPick, onSelectPlace, onStay, onAddVisit, onRename, onKind, onRemove, children,
+        onClose, onEndpoint, onRoutes, onAddHere, onLegMode, onInsert, onLoop, onLoopStart, onPick, onSelectPlace, onStay, onAddVisit, onRename, onKind, onRemove, children,
     }: {
         overnightNote?: string;
         kind: CalloutKind;
@@ -35,6 +35,8 @@
         candidates: OvernightCandidate[];
         legMode: LegMode;
         onEndpoint?: (kind: 'start' | 'finish') => void;
+        /** "Signed routes from here" on a place. */
+        onRoutes?: () => void;
         onClose: () => void;
         onAddHere: (kind: EditableKind) => void;
         onLegMode: (mode: LegMode) => void;
@@ -161,6 +163,7 @@
         {#if place?.description && place.description !== placeCategories[place.category].label}<p class="place-note">{place.description}</p>{/if}
         {#if place && (place.openingHours || ['shop','food','pharmacy','hotel','bike'].includes(place.category))}<OpeningHours value={place.openingHours} />{/if}
         {#if place}{@render endpoints()}{/if}
+        {#if place && onRoutes}<button type="button" class="secondary" onclick={onRoutes}><Icon name="diamond" size={15} />Signed routes from here</button>{/if}
         {#if sleeps}
             <label class="field">End of day
                 <select bind:value={sleepDay}>
