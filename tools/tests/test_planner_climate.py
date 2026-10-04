@@ -59,16 +59,32 @@ class AggregateTest(unittest.TestCase):
         weekly, monthly, rose = climate.aggregate(source, np.array([0.0, 30.0]), FIRST)
         for cell in range(2):
             self.assertEqual(weekly["wet_days"][0, 0, cell], 2)
-            self.assertAlmostEqual(weekly["rain"][0, 0, cell], 3 * climate.WET_MM + 0.09)
+            self.assertAlmostEqual(weekly["rain"][0, 0, cell], (3 * climate.WET_MM + 0.09) * climate.RAIN_FACTORS[0])
             self.assertAlmostEqual(weekly["tmax"][0, 0, cell], (5 * 10 + 30 + 40) / 7)
             self.assertAlmostEqual(weekly["tmin"][0, 0, cell], 10)
-            self.assertAlmostEqual(weekly["wind"][0, 0, cell], (6 * 1 + 4) / 7)
-            self.assertAlmostEqual(weekly["wind"][0, 1, cell], 1)
+            self.assertAlmostEqual(weekly["wind"][0, 0, cell], (6 * 1 + 4) / 7 * climate.WIND_FACTOR)
+            self.assertAlmostEqual(weekly["wind"][0, 1, cell], climate.WIND_FACTOR)
             # January has 3,100 daytime samples in ten years: ten from the west on day 5, the rest from the north.
             self.assertAlmostEqual(rose[0, 12, cell], 100 * 10 / 3100)
             self.assertAlmostEqual(rose[0, 0, cell], 100 * 3090 / 3100)
             self.assertAlmostEqual(monthly["tmax"][6, cell], 10)
             self.assertAlmostEqual(monthly["tmin"][0, cell], 10)
+
+    def test_weekly_rain_takes_the_factor_of_the_month_of_its_fourth_day(self):
+        source = hourly(1)
+        source["tp"][:] = 0.0001  # 2.4 mm a day: every day is wet
+        weekly, _, _ = climate.aggregate(source, np.array([0.0]), FIRST)
+        factor = lambda month: climate.RAIN_FACTORS[month - 1]
+        rain = weekly["rain"][:, :, 0] / 2.4
+        # Week 4 holds 29 January to 4 February: February. Week 8 is March also in the leap year 2016, as in the client.
+        for week, month in [(0, 1), (4, 2), (8, 3), (29, 7)]:
+            self.assertTrue(np.allclose(rain[:, week], 7 * factor(month)), week)
+        self.assertTrue(np.allclose(rain[:2, 51], [9 * factor(12), 8 * factor(12)]))
+        self.assertTrue((weekly["wet_days"][:2, 51, 0] == [9, 8]).all())
+
+    def test_weekly_daytime_wind_takes_one_factor_in_every_month(self):
+        weekly, _, _ = climate.aggregate(hourly(1, u10=3.0, v10=-4.0), np.array([0.0]), FIRST)
+        self.assertTrue(np.allclose(weekly["wind"], 5 * climate.WIND_FACTOR))
 
     def test_a_missing_hour_makes_its_week_missing(self):
         source = hourly(1)
@@ -214,6 +230,7 @@ class BakeTest(unittest.TestCase):
                 header, metadata = reader.header(), reader.metadata()
         self.assertEqual((header["min_zoom"], header["max_zoom"], metadata["first_year"], metadata["years"]), (8, 9, FIRST, 10))
         self.assertEqual((sorted(metadata["inputs"]["chunks"]), metadata["wet_day_mm"]), (sorted(climate.SOURCE), climate.WET_MM))
+        self.assertEqual((metadata["rain_factors"], metadata["wind_factor"]), (list(climate.RAIN_FACTORS), climate.WIND_FACTOR))
 
 
 if __name__ == "__main__":

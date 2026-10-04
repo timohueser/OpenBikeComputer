@@ -98,6 +98,9 @@ Week w of a year holds the days 7w to 7w + 6 of the year, from day 0 on
 1 January. Week 51 also holds days 364 and 365, so it has 8 days, or 9 days in a
 leap year.
 
+The month of week w is the month of day 7w + 3 of a year that is not a leap
+year, in all years.
+
 ## Values
 
 Daily values:
@@ -114,10 +117,10 @@ Detail planes, for each year and week:
 | Plane | Value |
 | --- | --- |
 | `wet_days` | Days with rain ≥ `wet_day_mm` |
-| `rain` | Sum of daily rain |
+| `rain` | Sum of daily rain × the `rain_factors` value of the month of the week |
 | `tmax` | Mean of the daily maximum temperatures |
 | `tmin` | Mean of the daily minimum temperatures |
-| `wind` | Mean of the daily daytime wind |
+| `wind` | Mean of the daily daytime wind × `wind_factor` |
 
 A week with a missing hour is missing.
 
@@ -162,6 +165,8 @@ The archive metadata is a JSON object:
 | `years` | `10` |
 | `source` | `era5-land` |
 | `wet_day_mm` | Daily rain in mm from which a day counts as wet |
+| `rain_factors` | Array of 12 numbers, January first: the calibration factor of the weekly rain of each month |
+| `wind_factor` | Number: the calibration factor of the weekly daytime wind |
 | `attribution` | Text to show with the layer |
 | `inputs` | Object: `doi`, `orography_sha256`, `chunks` |
 

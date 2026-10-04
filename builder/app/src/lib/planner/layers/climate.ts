@@ -180,7 +180,7 @@ export function windRose(tile: ClimateTile, cell: number, month: number): Float3
 }
 
 /** Shares of the three sectors centred on each sector. */
-function windows(rose: ArrayLike<number>): number[] {
+export function windows(rose: ArrayLike<number>): number[] {
     return Array.from({ length: SECTORS }, (_, s) => rose[(s + SECTORS - 1) % SECTORS] + rose[s] + rose[(s + 1) % SECTORS]);
 }
 
