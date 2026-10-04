@@ -21,8 +21,10 @@ table in [OBCR](src:specs/OBCR_Spec.md), and the device's trip progress record i
 
 ## One line on the phone, day routes on the device
 
-On the phone, a trip is one line with day ends on it. It is not a folder of separate routes. When
-the rider moves a day end, two days change and the line does not.
+On the phone, a trip is one line with day ends on it. It is not a folder of separate routes. The
+line and the day ends come from the trip's plan: the same plan object the web planner uses
+([planner plan](src:specs/planner-plan.md)). The rider edits the plan in the planner, and a save
+makes the line and the day ends from it again.
 
 The device does not know this line. At upload, the phone cuts the line at the day ends into one
 route per day. Each day route has the trip's bike type and a name such as "Day 2 Ulrichen". Then
@@ -33,13 +35,14 @@ interrupted upload so never leaves a trip that points at nothing.
 
 ### Day ends are places
 
-The phone stores a day end as a coordinate with a name, not as a distance. After each change to
-the line (a join or a reverse) it projects each day end onto the new line again, near its old
-distance. The old distance keeps a day end on its own leg of an out-and-back line or a loop. A
-day end that is now far from the line is removed.
+The phone stores a day end as a coordinate with a name, not as a distance. When a file joins the
+line, the phone projects each day end onto the new line again, near its old distance. The old
+distance keeps a day end on its own leg of an out-and-back line or a loop. A day end that is now
+far from the line is removed.
 
-Reverse turns the direction and the order of the days. Each day end keeps its place and its name.
-A reversed trip is a new trip with its own key, so its progress starts empty.
+A save from the planner keeps the trip's key, dates, device links, notes and photos. A day keeps
+its own name by its number. Day notes and rides belong to a day number, so they stay with that
+number when the day count changes.
 
 ## Planning a trip
 
@@ -49,65 +52,23 @@ An imported file offers three choices: a new route, add it to a trip as the next
 trip. When the rider shares several files at once, the phone asks to make one trip from them. It
 proposes an order that chains the file ends. The rider can drag the rows into a different order.
 Between two rows, the sheet says "joins" or shows the gap. A trip made from files gets one day per
-file, with the day ends on the file boundaries.
+file, with the day ends on the file boundaries. Its plan keeps each file's line as a drawn leg,
+with a night at each day end.
 
-At a gap between two files, the next day starts where its file starts, and the device's "Ride to
-start" covers the way there.
+### Days in the planner
 
-One long file becomes a trip in the day editor with a day-count stepper (− N +). The phone splits
-the line into days of equal riding time for the trip's bike type. It moves each end to a campsite,
-a hotel or a waypoint when one is near the ideal place. The map shows the result while the rider
-changes the count. After this first split, the day count changes only with Split and Join.
+"Edit" on the trip page opens the planner on the trip's plan. A night is a route point that ends a
+day: "End day here" on any route point, place or map point adds one, in ride order. Night pins on
+the map show the number of the day they end. The day chip opens the Days panel, which lists each
+day from its start to its end with its distance, climb and time. A plan holds at most 14 days, the
+limit of the plan format. A trip of more than 14 days has no Edit.
 
-### The day editor
+A press and hold on a route point or a night pin picks it up, and a drag moves it. Only the two
+legs next to the moved point plan again. A drawn leg there becomes a routed leg; the other legs
+stay as they are.
 
-The editor has one rule: each action has exactly one way to do it.
-
-- **Map and profile are one view.** The profile shows the stretch of the line that is visible on
-  the map. To see a different stretch, the rider moves or zooms the map. The profile itself does
-  not zoom or scroll. When a loop or an out-and-back shows both legs, the profile shows only the leg
-  nearest the map centre.
-- **A day end moves only on the profile.** The rider drags its pin. The pin stays inside the
-  visible stretch and between its neighbours, and the map stands still. To move it farther, the
-  rider zooms the map out. The figures of the two changed days update during the drag.
-- **A drag on the map pans the map.** Map pins do not move. This keeps the two gestures apart.
-- **Each day has one menu** (the ··· button, or a long press): End at a stop, Rename, Split this
-  day (at the middle of its riding time), and Join with the next day.
-- **Undo** takes back each step.
-
-### Stops
-
-A day can end at a stop: a campsite or a hotel from Apple Maps, a place the rider searches for, or
-a waypoint from the imported files. The stops sheet lists the stops near the day end in ride order,
-with the current day end between them. On the map, stops show when the rider zooms in. A tap on a
-stop opens a callout with "End Day N here", which moves the nearest day end that can move. The day
-end then takes the name of the stop. The Apple Maps search needs a connection; offline, the sheet
-lists the waypoints only.
-
-### Stops off the line
-
-A stop more than 150 m from the line offers two ways to reach it. The rider picks one per stop:
-
-- **Out and back** adds a spur from the nearest line point to the stop. The next day rides it
-  back, so the line does not change. The trip object records where each day route leaves and joins
-  the line, so the device skips the spur when it joins the rest of a day to the next day.
-- **Via the stop** leaves the line up to 2 km before the stop and rejoins it up to 2 km after. The
-  old section shows dashed. The day routes pass through the stop, so the device sees an ordinary
-  line.
-
-The phone shows what each way adds before the rider picks. When no road is found, the day ends on
-the line point nearest the stop.
-
-A gap inside a day (200 m or less, after a Join) is ridden straight. "Bridge the gap" in the day's
-menu routes it. The day after a transfer offers "Bridge the transfer": that day then rides the
-bridge, and the transfer is gone.
-
-### The router on the phone
-
-Stops off the line and gap bridges use the device's own router, built into the app, with the
-device's search limit. So the phone finds the roads the device would find. The phone downloads the
-map cells around each request from the published catalog and caches them. Only the first request
-in an area needs a connection.
+Save offers "Save changes", which writes the plan into the trip, and "Save as copy…", which makes
+a new trip.
 
 ### Transfers
 
@@ -116,9 +77,13 @@ a bus or a ferry. The phone and the device derive this from the two day routes. 
 has no field for it. 200 m is also the distance at which the device's START RIDE asks how to get
 to the start, so that prompt covers the way to the next start.
 
-On the phone, the rider can label a transfer as Train, Bus, Ferry or Car. The label is for the
-journal only and never goes to the device. A transfer is fixed: a stop cannot move it, and Join
-does not cross it.
+In the plan, a transfer is a leg mode: "Transfer (not ridden)" in the leg menu. The planner draws
+it as a muted dashed straight line and does not count it in distance, time, climb or the day
+figures. A trip saved from the plan has a gap in its line at each transfer, so the day routes do
+not contain it. Two files whose ends are more than 200 m apart get a transfer leg between them.
+
+In the journal, the rider can label a transfer as Train, Bus, Ferry or Car. The label never goes
+to the device.
 
 ### Dates, bike type and estimates
 
@@ -262,10 +227,6 @@ When a trip has rides, its page becomes the journal. The map shows the ridden pa
 line dashed, each transfer with its symbol, and the photo pins. The totals count the rides, not the
 plan. Each ridden day shows its note and photos and opens its ride. The days still to ride stay as
 rows.
-
-After a day that ended far from its planned end, the review offers to even out the remaining days
-up to the next transfer. The phone moves those day ends to equal riding time and near stops, as the
-first split does. The offer closes for good when the rider uses or dismisses it.
 
 ### Library, sharing and editing
 
