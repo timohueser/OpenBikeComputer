@@ -120,7 +120,7 @@ Detail planes, for each year and week:
 | `rain` | Sum of daily rain × the `rain_factors` value of the month of the week |
 | `tmax` | Mean of the daily maximum temperatures |
 | `tmin` | Mean of the daily minimum temperatures |
-| `wind` | Mean of the daily daytime wind |
+| `wind` | Mean of the daily daytime wind × `wind_factor` |
 
 A week with a missing hour is missing.
 
@@ -166,6 +166,7 @@ The archive metadata is a JSON object:
 | `source` | `era5-land` |
 | `wet_day_mm` | Daily rain in mm from which a day counts as wet |
 | `rain_factors` | Array of 12 numbers, January first: the calibration factor of the weekly rain of each month |
+| `wind_factor` | Number: the calibration factor of the weekly daytime wind |
 | `attribution` | Text to show with the layer |
 | `inputs` | Object: `doi`, `orography_sha256`, `chunks` |
 

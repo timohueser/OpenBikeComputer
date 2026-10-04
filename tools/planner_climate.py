@@ -39,6 +39,10 @@ WET_MM = 2.3
 # week's month, January first: the sum of the station weekly totals ÷ the sum of the ERA5-Land weekly totals
 # of their cells, at the same 58 DWD stations over the ten years.
 RAIN_FACTORS = (0.791, 0.766, 0.759, 0.755, 0.883, 0.865, 0.942, 0.882, 0.869, 0.875, 0.866, 0.744)
+# ERA5-Land daytime wind is too low. The bake multiplies the weekly daytime wind by this factor: the sum of the station
+# weekly daytime means ÷ the sum of the ERA5-Land weekly means of their cells, over the ten years at the 27 DWD stations in
+# Baden-Württemberg with hourly wind that stand within 150 m of the height of their cell (DWD Climate Data Center, hourly wind).
+WIND_FACTOR = 1.315
 SECTORS = 16
 # Final ERA5-Land replaces the preliminary ERA5-Land-T data about two months after each month (ECMWF,
 # "ERA5-Land: data documentation"); DKRZ reports up to three months. The ARCO stores have no `expver`
@@ -158,7 +162,7 @@ def local_days(values, offset, stamps, days):
 
 
 def aggregate(source, lon, first_year):
-    """Weekly fields {name: (years, weeks, cells)} with calibrated rain, the monthly means {tmax, tmin: (12, cells)} and the
+    """Weekly fields {name: (years, weeks, cells)} with calibrated rain and wind, the monthly means {tmax, tmin: (12, cells)} and the
     daytime wind rose (12, sectors, cells) in percent, from hourly source values {variable: (hours, cells)}."""
     month, week = calendar(first_year)
     hourly = {name: rule(source) for name, rule in HOURLY.items()}
@@ -179,6 +183,7 @@ def aggregate(source, lon, first_year):
         weeks = [np.where(np.isnan(values[a:b]).any(0), np.nan, reducer(values[a:b])) for a, b in zip(edges[:-1], edges[1:])]
         weekly[name] = np.stack(weeks).reshape(YEARS, WEEKS, cells)
     weekly["rain"] *= np.array([RAIN_FACTORS[week_month(w) - 1] for w in range(WEEKS)])[None, :, None]
+    weekly["wind"] *= WIND_FACTOR
     monthly = {name: np.stack([daily[name][month == m].mean(0) for m in range(1, 13)]) for name in ("tmax", "tmin")}
     # The direction the wind comes from, clockwise from north; sector 0 is centred on north.
     sector = np.floor(np.degrees(np.arctan2(-u, -v)) % 360 / (360 / SECTORS) + 0.5).astype(int) % SECTORS
@@ -486,7 +491,8 @@ def bake(bounds, first_year, source, output, key=None):
                 "first_year": first_year, "years": YEARS, "source": "era5-land",
                 "attribution": f"Contains modified Copernicus Climate Change Service information {first_year + YEARS}: "
                                f"ERA5-Land (doi:{DOI})",
-                "wet_day_mm": WET_MM, "rain_factors": list(RAIN_FACTORS), "inputs": {"doi": DOI, "orography_sha256": OROGRAPHY[1], "chunks": source.fingerprint()},
+                "wet_day_mm": WET_MM, "rain_factors": list(RAIN_FACTORS), "wind_factor": WIND_FACTOR,
+                "inputs": {"doi": DOI, "orography_sha256": OROGRAPHY[1], "chunks": source.fingerprint()},
             })
             stream.flush()
             os.replace(stream.name, output)
