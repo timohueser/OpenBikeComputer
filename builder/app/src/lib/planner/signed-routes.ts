@@ -109,8 +109,8 @@ export function routePlan(route: RouteRecord): { points: Coordinate[]; turnaroun
     const via = route.via;
     return {
         points: [line[0], ...via.map(index => line[index]), line[line.length - 1]],
-        // A loop can turn back at its own start, which is no interior point of this plan.
-        turnarounds: (route.turnarounds ?? []).filter(index => via.includes(index)).map(index => via.indexOf(index) + 1),
+        // Vertex 0 is plan index 0: a loop that turns back at its own start. The route request sends interior indices only.
+        turnarounds: (route.turnarounds ?? []).map(index => index === 0 ? 0 : via.indexOf(index) + 1),
     };
 }
 

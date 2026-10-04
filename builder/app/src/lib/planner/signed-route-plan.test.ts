@@ -35,7 +35,7 @@ describe('signed route plans', () => {
 
     it('keeps a lollipop loop turning back at its own start after the start moves', () => {
         const lollipop = { ...record(103), turnarounds: [0] };
-        expect(routePlan(lollipop).turnarounds).toEqual([]);
+        expect(routePlan(lollipop).turnarounds).toEqual([0]);
         expect(recordPlan(lollipop, 4).turnarounds).toEqual([3]);
         const trip = planTrip(base(), recordPlan(lollipop), true);
         const start = trip.points.find(point => point.kind === 'start')!;

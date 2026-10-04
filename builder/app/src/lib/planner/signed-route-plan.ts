@@ -6,7 +6,7 @@ import { nearestVertex, routePlan, type CatalogRecord, type RouteRecord } from '
 /** The route API takes at most this many points. */
 const MAX_POINTS = 64;
 
-/** Index 0 in `turnarounds` marks a loop start where the route turns back; it is a turnaround once the start moves. */
+/** Index 0 in `turnarounds` marks a loop start where the route turns back. The route request sends only interior indices, so it counts once the start moves. */
 export interface RoutePlan { points: Coordinate[]; turnarounds: number[] }
 
 /** The line vertex where a loop starts nearest to `place`, or 0 (its own start) when that start needs more points than a request takes. */
@@ -17,10 +17,10 @@ export function loopStart(route: RouteRecord, place: Coordinate): number {
 
 /** The plan of a route record. A loop that starts at line vertex `start` runs from there around the loop, through its own start, back to `start`. */
 export function recordPlan(route: RouteRecord, start = 0): RoutePlan {
-    if (!route.loop) return routePlan(route);
+    if (!route.loop || start <= 0) return routePlan(route);
     const line = decodeCoordinates(route.line_udeg);
     const ends = [0, ...route.via];
-    const order = start > 0 ? [start, ...ends.filter(i => i > start), ...ends.filter(i => i < start), start] : [...ends, line.length - 1];
+    const order = [start, ...ends.filter(i => i > start), ...ends.filter(i => i < start), start];
     const turns = new Set(route.turnarounds ?? []);
     return { points: order.map(i => line[i]), turnarounds: order.flatMap((i, k) => k < order.length - 1 && turns.has(i) ? [k] : []) };
 }
