@@ -83,9 +83,10 @@ fn to_segment(p: P, a: P, b: P) -> f64 {
 
 /// Answers whether a point lies within `NEAR_M` of a line.
 ///
-/// A cell is `2 * NEAR_M` wide, and each segment is in the cells of samples at most half a cell
-/// apart. A point within `NEAR_M` of a segment is then less than one cell from a sample, so the
-/// 3 x 3 cells around the point hold the segment. The index grows with the line length only.
+/// A cell is at least `2 * NEAR_M` wide along the whole line, and each segment is in the cells of
+/// samples at most half a cell apart. A point within `NEAR_M` of a segment is then less than one
+/// cell from a sample, so the 3 x 3 cells around the point hold the segment. The index grows with
+/// the line length only.
 struct Near<'a> {
     line: &'a [P],
     cell: [f64; 2],
@@ -94,7 +95,8 @@ struct Near<'a> {
 
 impl<'a> Near<'a> {
     fn new(line: &'a [P]) -> Self {
-        let lat = line.first().map_or(0.0, |p| p[1] as f64 * 1e-6);
+        // A degree of longitude is shortest at the latitude farthest from the equator.
+        let lat = line.iter().map(|p| (p[1] as f64 * 1e-6).abs()).fold(0.0, f64::max);
         let cell_lat = 2.0 * NEAR_M / 0.111195;
         let cell = [cell_lat / lat.to_radians().cos().max(0.01), cell_lat];
         let mut cells = HashMap::<_, Vec<u32>>::new();
@@ -600,15 +602,20 @@ mod tests {
 
     #[test]
     fn a_long_segment_indexes_only_the_cells_along_it() {
-        // One 124 km segment to the north-east.
-        let line: Vec<P> = vec![[8_000_000, 48_000_000], [9_000_000, 48_900_000]];
-        let near = Near::new(&line);
-        assert!(near.cells.len() < 5_000, "{}", near.cells.len());
-        // Points up to 60 m north and south of the segment, 9 microdegrees (1 m) apart.
-        for t in 0..=100 {
-            for north in -60..=60 {
-                let p = [8_000_000 + 10_000 * t, 48_000_000 + 9_000 * t + 9 * north];
-                assert_eq!(near.near(p), to_segment(p, line[0], line[1]) <= NEAR_M, "{p:?}");
+        // One 124 km segment to the north-east, and one from 40 to 80 degrees north.
+        let diagonal: [P; 2] = [[8_000_000, 48_000_000], [9_000_000, 48_900_000]];
+        assert!(Near::new(&diagonal).cells.len() < 5_000);
+        for line in [diagonal, [[8_000_000, 40_000_000], [8_400_000, 80_000_000]]] {
+            let ([a, b], near) = (line, Near::new(&line));
+            for t in 0..=100 {
+                let q = [a[0] + (b[0] - a[0]) / 100 * t, a[1] + (b[1] - a[1]) / 100 * t];
+                // Microdegrees of one metre to the east; 9 is one metre to the north.
+                let east = 9.0 / (q[1] as f64 * 1e-6).to_radians().cos();
+                for m in -60..=60 {
+                    for p in [[q[0] + (east * m as f64) as i32, q[1]], [q[0], q[1] + 9 * m]] {
+                        assert_eq!(near.near(p), to_segment(p, a, b) <= NEAR_M, "{p:?}");
+                    }
+                }
             }
         }
     }

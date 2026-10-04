@@ -972,6 +972,12 @@ fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profi
     assert!(route.attachments[1].snap_distance_m < 25.0);
     assert_eq!(route.attachments[0].snap_distance_m, 0.0);
     assert_eq!(route.attachments[2].snap_distance_m, 0.0);
+    // The first attempt finds no path from the driveway. A retry that reaches the limit keeps that answer.
+    let first = (1..)
+        .map(|queries| router.route(&request, &Control { max_queries: queries, ..Control::default() }))
+        .find(|result| !matches!(result, Err(Error::Limit)))
+        .unwrap();
+    assert!(matches!(first, Err(Error::NoPath)));
     request.profile = "mtb".into();
     let mtb = router.route(&request, &Control::default()).unwrap();
     assert_eq!(mtb.attachments[1].projected.lat, 100);
