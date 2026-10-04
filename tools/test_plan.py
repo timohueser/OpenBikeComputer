@@ -137,6 +137,14 @@ TEST_POLICY_PATTERNS = (
     "tools/obc",
     "tools/obc-dev.sh",
 )
+# These workflows publish data or sites; they do not select or execute product tests.
+# Their workflow checks still run through python.repository-tools. Unknown workflows
+# stay on the full policy route.
+PUBLICATION_WORKFLOWS = {
+    ".github/workflows/bake.yml",
+    ".github/workflows/deploy-site.yml",
+    ".github/workflows/deploy-verification.yml",
+}
 CODE_OR_POLICY_SUFFIXES = {
     ".c", ".h", ".js", ".json", ".py", ".rs", ".sh", ".swift", ".toml", ".ts", ".tsx", ".yaml", ".yml",
 }
@@ -414,7 +422,9 @@ def working_tree_paths(root: Path) -> list[str]:
     return sorted({value.strip() for value in lines if value.strip()})
 
 def is_policy_path(path: str) -> bool:
-    return any(glob_matches(path, pattern) for pattern in TEST_POLICY_PATTERNS)
+    return path not in PUBLICATION_WORKFLOWS and any(
+        glob_matches(path, pattern) for pattern in TEST_POLICY_PATTERNS
+    )
 
 def looks_like_production(path: str) -> bool:
     if path.startswith(("docs/", "artifacts/", ".claude/", ".repowise/")):
