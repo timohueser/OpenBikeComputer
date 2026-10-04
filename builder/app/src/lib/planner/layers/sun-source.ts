@@ -43,9 +43,9 @@ export class SunSurface implements Surface {
 
     static async open(url: string, dem: string) {
         const counts: SunStats = { cpuMs: 0, requests: 0, bytes: 0, decodedBytes: 0, rays: 0, nodes: 0, leaves: 0, cacheHits: 0 };
-        const counted = (get: TileGetter): TileGetter => async (z, x, y) => {
+        const counted = (get: TileGetter): TileGetter => async (z, x, y, signal) => {
             counts.requests++;
-            const body = await get(z, x, y);
+            const body = await get(z, x, y, signal);
             counts.bytes += body?.byteLength ?? 0;
             return body;
         };
@@ -54,7 +54,7 @@ export class SunSurface implements Surface {
             meta: sunMeta, decode: (body, meta, z) => decodeSun(body, meta, z),
             bytes: tile => (tile.bounds?.byteLength ?? 0) + (tile.horizons?.byteLength ?? 0), budgetBytes: 32 * 2 ** 20,
         });
-        return new SunSurface(archive, terrainHeights(counted((z, x, y) => fetchTile(dem, z, x, y))), counts);
+        return new SunSurface(archive, terrainHeights(counted((z, x, y, signal) => fetchTile(dem, z, x, y, signal))), counts);
     }
 
     /** Level 0 is the terrain, level 2 to 12 the height bounds of zoom 12 − level, and level 13 + zoom the horizons of a zoom. */

@@ -25,7 +25,7 @@ const PEAK_SYMBOLS = 13;
 const FAILED = 'Weather data could not load for this region.';
 
 /** The map's terrain tiles; the relief has loaded most of them, so the browser cache serves them. */
-const terrain = terrainHeights((z, x, y) => fetchTile(TERRAIN_URL, z, x, y));
+const terrain = terrainHeights((z, x, y, signal) => fetchTile(TERRAIN_URL, z, x, y, signal));
 
 const palettes = Object.fromEntries((['temperature', 'rain'] as const).map(variable =>
     [variable, { light: rampWords(variable, 'light'), dark: rampWords(variable, 'dark') }])) as Record<Variable, Record<Theme, Uint32Array>>;
@@ -70,7 +70,7 @@ class WeatherLayer implements DataLayer<Samples> {
     icon = 'weather';
     description = 'Daytime highs, night lows and rain from ten past years.';
     caveat = 'Valleys can be colder on clear nights.';
-    meta = $state<ClimateMeta | null>(null);
+    meta = $state.raw<ClimateMeta | null>(null);
     error = $state('');
     variable = $state({ label: 'Map shows', options: [{ value: 'temperature', label: 'Temperature' }, { value: 'rain', label: 'Rain' }], value: 'temperature' });
     private climate?: ClimateSource;
@@ -102,7 +102,7 @@ class WeatherLayer implements DataLayer<Samples> {
 
     private open() {
         return openClimate(this.url).then(source => {
-            this.meta = source.meta;
+            if (this.meta !== source.meta) this.meta = source.meta;
             this.climate = source;
             return source;
         }, error => {

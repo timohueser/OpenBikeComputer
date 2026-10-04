@@ -2,11 +2,17 @@ import { PMTiles } from 'pmtiles';
 
 export type Bounds = [number, number, number, number];
 /** The body of tile z/x/y, or undefined for an absent tile. */
-export type TileGetter = (z: number, x: number, y: number) => Promise<ArrayBuffer | undefined>;
+export type TileGetter = (z: number, x: number, y: number, signal: AbortSignal) => Promise<ArrayBuffer | undefined>;
+
+/**
+ * A request that takes longer fails, so its load leaves the cache and runs again on the next read
+ * instead of waiting forever. The same limit as the map's terrain tiles.
+ */
+const TIMEOUT_MS = 20_000;
 
 /** Tile z/x/y of a `{z}/{x}/{y}` URL template. A tile service answers 204 for an absent tile. */
-export async function fetchTile(template: string, z: number, x: number, y: number): Promise<ArrayBuffer | undefined> {
-    const response = await fetch(template.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y)));
+export async function fetchTile(template: string, z: number, x: number, y: number, signal: AbortSignal): Promise<ArrayBuffer | undefined> {
+    const response = await fetch(template.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y)), { signal });
     if (response.status === 204) return undefined;
     if (!response.ok) throw new Error(`Tile ${z}/${x}/${y} answered ${response.status}.`);
     return response.arrayBuffer();
@@ -62,7 +68,8 @@ export function decodedTiles<T>(get: TileGetter, decode: (body: Uint8Array<Array
             let entry = entries.get(key);
             if (entry) touch(key, entry);
             else {
-                const created: Entry = entry = { load: get(z, x, y).then(body => body ? decode(new Uint8Array(body), z, x, y) : null), bytes: 0 };
+                const signal = AbortSignal.timeout(TIMEOUT_MS);
+                const created: Entry = entry = { load: waiting(get(z, x, y, signal), signal).then(body => body ? decode(new Uint8Array(body), z, x, y) : null), bytes: 0 };
                 entries.set(key, created);
                 created.load.then(tile => arrive(key, created, tile), () => { if (entries.get(key) === created) entries.delete(key); });
             }
@@ -87,18 +94,20 @@ export interface Source { metadata: Record<string, unknown>; minZoom: number; ma
  * tile service; a local region reads the PMTiles archive.
  */
 export async function openSource(url: string): Promise<Source> {
+    const signal = AbortSignal.timeout(TIMEOUT_MS);
     if (new URL(url).pathname.endsWith('.json')) {
-        const response = await fetch(url);
+        const response = await fetch(url, { signal });
         if (!response.ok) throw new Error(`TileJSON answered ${response.status}.`);
         const json = await response.json();
         const template: string = json.tiles[0];
-        return { metadata: json, minZoom: json.minzoom, maxZoom: json.maxzoom, bounds: json.bounds, get: (z, x, y) => fetchTile(template, z, x, y) };
+        return { metadata: json, minZoom: json.minzoom, maxZoom: json.maxzoom, bounds: json.bounds, get: (z, x, y, signal) => fetchTile(template, z, x, y, signal) };
     }
     const tiles = new PMTiles(url);
-    const [header, metadata] = await Promise.all([tiles.getHeader(), tiles.getMetadata() as Promise<Record<string, unknown>>]);
+    // PMTiles reads its header without a signal.
+    const [header, metadata] = await waiting(Promise.all([tiles.getHeader(), tiles.getMetadata() as Promise<Record<string, unknown>>]), signal);
     return {
         metadata, minZoom: header.minZoom, maxZoom: header.maxZoom, bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat],
-        get: async (z, x, y) => (await tiles.getZxy(z, x, y))?.data,
+        get: async (z, x, y, signal) => (await tiles.getZxy(z, x, y, signal))?.data,
     };
 }
 

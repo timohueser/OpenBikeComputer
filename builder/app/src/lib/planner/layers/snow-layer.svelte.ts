@@ -22,7 +22,7 @@ const SNOW: Decoding<SnowMeta, Uint8Array> = {
         return body;
     },
     bytes: tile => tile.byteLength,
-    budgetBytes: 64 * 2 ** 20,
+    budgetBytes: 128 * 2 ** 20,
 };
 
 /** ImageData words by class value; index 4 is the no-data hatch. */
@@ -41,7 +41,7 @@ class SnowLayer implements DataLayer<Samples> {
     icon = 'snow';
     description = 'How often past years had snow on your date.';
     caveat = 'Satellites see less snow under trees.';
-    meta = $state<SnowMeta | null>(null);
+    meta = $state.raw<SnowMeta | null>(null);
     error = $state('');
     private map?: Map;
     private raster = new Raster({
@@ -65,7 +65,7 @@ class SnowLayer implements DataLayer<Samples> {
 
     private open() {
         return openArchive(this.url, SNOW).then(archive => {
-            this.meta = archive.meta;
+            if (this.meta !== archive.meta) this.meta = archive.meta;
             return archive;
         }, error => {
             this.error = FAILED;

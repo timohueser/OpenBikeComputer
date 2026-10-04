@@ -65,20 +65,25 @@ export class Raster {
         }, () => {});
     }
 
+    /**
+     * A tile of an older look draws the current look: an error would hide it until its reload ends,
+     * and the tiles blink while the date moves. A newer look cancels the work for the older one.
+     */
     private tile = async ({ url }: RequestParameters, abort: AbortController) => {
-        const parts = url.slice(this.protocol.length + 3).split('/');
-        const [z, x, y] = parts.splice(-3).map(Number), look = parts.join('/');
-        const superseded = () => new DOMException('Superseded tile', 'AbortError');
-        if (look !== this.look) throw superseded();
-        const signal = AbortSignal.any([abort.signal, this.generation.signal]);
-        try {
-            const image = await this.options.draw(look, z, x, y, signal);
-            signal.throwIfAborted();
-            return image ? { data: await createImageBitmap(image) } : empty();
-        } catch (error) {
-            if (signal.aborted) throw superseded();
-            this.options.report(error);
-            return empty();
+        const [z, x, y] = url.split('/').slice(-3).map(Number);
+        while (this.look) {
+            const look = this.look, generation = this.generation.signal, signal = AbortSignal.any([abort.signal, generation]);
+            try {
+                const image = await this.options.draw(look, z, x, y, signal);
+                signal.throwIfAborted();
+                return image ? { data: await createImageBitmap(image) } : empty();
+            } catch (error) {
+                if (abort.signal.aborted) throw error;
+                if (generation.aborted) continue;
+                this.options.report(error);
+                return empty();
+            }
         }
+        throw new DOMException('Hidden layer', 'AbortError');
     };
 }
