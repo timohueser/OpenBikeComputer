@@ -35,6 +35,10 @@ WEEKS = 52
 # ERA5-Land rain: the threshold whose wet-day frequency matches the days with at least 1 mm at the
 # 58 DWD stations in Baden-Württemberg that cover the ten years (DWD Climate Data Center, daily KL).
 WET_MM = 2.3
+# ERA5-Land weekly rain totals are too high, most in winter. The bake multiplies them by the factor of the
+# week's month, January first: the sum of the station weekly totals ÷ the sum of the ERA5-Land weekly totals
+# of their cells, at the same 58 DWD stations, 2016–2025.
+RAIN_FACTORS = (0.791, 0.766, 0.759, 0.755, 0.883, 0.865, 0.942, 0.882, 0.869, 0.875, 0.866, 0.744)
 SECTORS = 16
 # Final ERA5-Land replaces the preliminary ERA5-Land-T data about two months after each month (ECMWF,
 # "ERA5-Land: data documentation"); DKRZ reports up to three months. The ARCO stores have no `expver`
@@ -142,6 +146,11 @@ def calendar(first_year):
     return month, week
 
 
+def week_month(week):
+    """Month (1–12) of week slot `week`: the month of its day 7 week + 3 in a year that is not a leap year."""
+    return (dt.date(2001, 1, 1) + dt.timedelta(7 * week + 3)).month
+
+
 def local_days(values, offset, stamps, days):
     """Samples (days, stamps, cells) of local solar days; `values` (hours, cells) start MARGIN_HOURS before day 0 in UTC."""
     index = MARGIN_HOURS + 24 * np.arange(days)[:, None] + np.asarray(stamps)[None, :] - offset
@@ -149,7 +158,7 @@ def local_days(values, offset, stamps, days):
 
 
 def aggregate(source, lon, first_year):
-    """Weekly fields {name: (years, weeks, cells)}, the monthly means {tmax, tmin: (12, cells)} and the
+    """Weekly fields {name: (years, weeks, cells)} with calibrated rain, the monthly means {tmax, tmin: (12, cells)} and the
     daytime wind rose (12, sectors, cells) in percent, from hourly source values {variable: (hours, cells)}."""
     month, week = calendar(first_year)
     hourly = {name: rule(source) for name, rule in HOURLY.items()}
@@ -169,6 +178,7 @@ def aggregate(source, lon, first_year):
         values = daily[value]
         weeks = [np.where(np.isnan(values[a:b]).any(0), np.nan, reducer(values[a:b])) for a, b in zip(edges[:-1], edges[1:])]
         weekly[name] = np.stack(weeks).reshape(YEARS, WEEKS, cells)
+    weekly["rain"] *= np.array([RAIN_FACTORS[week_month(w) - 1] for w in range(WEEKS)])[None, :, None]
     monthly = {name: np.stack([daily[name][month == m].mean(0) for m in range(1, 13)]) for name in ("tmax", "tmin")}
     # The direction the wind comes from, clockwise from north; sector 0 is centred on north.
     sector = np.floor(np.degrees(np.arctan2(-u, -v)) % 360 / (360 / SECTORS) + 0.5).astype(int) % SECTORS
@@ -476,7 +486,7 @@ def bake(bounds, first_year, source, output, key=None):
                 "first_year": first_year, "years": YEARS, "source": "era5-land",
                 "attribution": f"Contains modified Copernicus Climate Change Service information {first_year + YEARS}: "
                                f"ERA5-Land (doi:{DOI})",
-                "wet_day_mm": WET_MM, "inputs": {"doi": DOI, "orography_sha256": OROGRAPHY[1], "chunks": source.fingerprint()},
+                "wet_day_mm": WET_MM, "rain_factors": list(RAIN_FACTORS), "inputs": {"doi": DOI, "orography_sha256": OROGRAPHY[1], "chunks": source.fingerprint()},
             })
             stream.flush()
             os.replace(stream.name, output)
