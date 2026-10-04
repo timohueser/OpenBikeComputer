@@ -149,6 +149,9 @@ class CopernicusTest(unittest.TestCase):
             lon, lat = transform("EPSG:3035", "EPSG:4326", [x + 40], [y - 10])
             bounds = [lon[0] - 0.01, lat[0] - 0.01, lon[0] + 0.01, lat[0] + 0.01]
             planes, grid = snow.copernicus_planes({2021: files, 2023: files}, bounds, range(2021, 2024))
+            # A catalogue footprint can touch a chunk that the raster itself does not reach.
+            outside, _ = snow.copernicus_planes({2021: files}, [b + 0.1 for b in bounds], range(2021, 2022))
+        self.assertTrue((outside == snow.NO_DATA).all())
         self.assertEqual(planes.shape[0], 3)
         col, row = ~grid.transform @ (x + 10, y - 10)
         values = planes[0, :, int(row), int(col):int(col) + 4]

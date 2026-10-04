@@ -488,7 +488,7 @@ def copernicus_planes(files, bounds, seasons):
     import rasterio
     from affine import Affine
     from rasterio.warp import Resampling, reproject, transform_bounds
-    from rasterio.windows import Window, from_bounds
+    from rasterio.windows import Window, from_bounds, intersect
 
     left, bottom, right, top = transform_bounds("EPSG:4326", "EPSG:3035", *bounds, densify_pts=100)
     left, top = math.floor(left / 20) * 20 - 20, math.ceil(top / 20) * 20 + 20
@@ -504,7 +504,11 @@ def copernicus_planes(files, bounds, seasons):
             for path in files.get(season, {}).get(name, []):
                 with rasterio.open(path) as src:
                     window = from_bounds(*transform_bounds(grid.crs, src.crs, *extent, densify_pts=100), src.transform)
-                    window = window.round_offsets().round_lengths().intersection(Window(0, 0, src.width, src.height))
+                    window, raster = window.round_offsets().round_lengths(), Window(0, 0, src.width, src.height)
+                    # The catalogue footprint of a product can reach past its raster.
+                    if not intersect(window, raster):
+                        continue
+                    window = window.intersection(raster)
                     reproject(src.read(1, window=window), layer, src_transform=src.window_transform(window), src_crs=src.crs,
                               dst_transform=grid.transform, dst_crs=grid.crs, resampling=Resampling.nearest,
                               src_nodata=65535, dst_nodata=65535, init_dest_nodata=False)
