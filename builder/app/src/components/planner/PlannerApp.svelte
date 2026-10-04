@@ -1144,7 +1144,8 @@
             const response = await fetch(sampleRoute);
             if (!response.ok) throw new Error('The example route is unavailable. Retry shortly.');
             const sample = importedTrip(trip, readTracks([{ name: 'Black Forest', text: await response.text() }]));
-            commit({ ...sample, mode: 'trip' }, 'Black Forest test route loaded · three provisional days');
+            const points = sample.points.map(p => p.kind === 'start' || p.kind === 'finish' ? { ...p, label: `Black Forest ${p.kind}` } : p);
+            commit({ ...sample, points, mode: 'trip' }, 'Black Forest test route loaded · three provisional days');
             exitSearch(); clearSelection(); pointing = undefined; fitPlan = true;
         } catch (error) { message = (error as Error).message; }
     }

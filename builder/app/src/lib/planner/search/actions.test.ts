@@ -5,6 +5,7 @@ import { calculateLine } from '../routing';
 import { LegCache } from '../route-legs';
 import { routeService } from '../../../../test-support/planner/route-service';
 import { applyQueryChanges } from './actions';
+import type { QueryChange } from './types';
 
 const length = (trip: Trip) => planView(trip).total;
 const refresh = (trip: Trip) => calculateLine(trip, new AbortController().signal, new LegCache());
@@ -27,6 +28,19 @@ describe('query edits', () => {
         expect(next.routing?.unroutedKm).toBe(0);
         await expect(applyQueryChanges(empty, [{op:'route',points,goal:'least_unpaved'}], refresh)).rejects.toThrow('no “least unpaved” profile');
         expect(empty.points).toEqual([]);
+    });
+    it('keeps the rider preset without a goal and drops the name of the replaced route', async () => {
+        vi.stubGlobal('fetch', vi.fn(routeService()));
+        const signed: Trip = { ...emptyTrip(), name: 'Westweg', bike: 'mtb', preset: 'Less climbing' };
+        const here = {coordinate:[8,48] as Coordinate,label:'Here'};
+        const next = await applyQueryChanges(signed, [{op:'route',points:[here,{coordinate:[8.1,48],label:'Titisee'}]}], refresh);
+        expect([next.name, next.bike, next.preset]).toEqual([undefined, 'mtb', 'Less climbing']);
+        const same = await applyQueryChanges(signed, [{op:'route',points:[here,here],perDay:{value:80,unit:'km'}}], refresh);
+        expect([same.days, same.target]).toEqual([1, 1]);
+    });
+    it('rejects an edit it does not know instead of committing an unchanged plan', async () => {
+        const reroute = { op: 'reroute', range: [0, 10] } as unknown as QueryChange;
+        await expect(applyQueryChanges(initialTrip(), [reroute])).rejects.toThrow('not available');
     });
     it('commits a sentence atomically and supports the existing undo history', async () => {
         const before = initialTrip(), saved = structuredClone(before);

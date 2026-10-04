@@ -171,10 +171,9 @@ export async function applyQueryChanges(
         throw new Error(
           'Use kilometres per day until riding-time data is connected.',
         );
-      const goal = change.goal ?? 'balanced';
-      if (!presets[goal])
+      if (change.goal && !presets[change.goal])
         throw new Error(
-          `This routing package has no “${goal.replaceAll('_', ' ')}” profile. Choose balanced, shorter, or less climbing.`,
+          `This routing package has no “${change.goal.replaceAll('_', ' ')}” profile. Choose balanced, shorter, or less climbing.`,
         );
       const resolved = change.points!;
       const points = resolved.map((p, i) =>
@@ -186,6 +185,7 @@ export async function applyQueryChanges(
       );
       trip = await refresh({
         ...trip,
+        name: undefined,
         live: true,
         loop: undefined,
         points,
@@ -194,11 +194,10 @@ export async function applyQueryChanges(
         restAfter: [],
         restNames: [],
         bike: (change.bike ?? trip.bike) as Trip['bike'],
-        preset: presets[goal],
+        preset: change.goal ? presets[change.goal] : trip.preset,
       });
-      const days =
-        change.days ??
-        (change.perDay ? Math.ceil(planView(trip).total / change.perDay.value) : 1);
+      const days = Math.max(1, change.days ??
+        (change.perDay ? Math.ceil(planView(trip).total / change.perDay.value) : 1));
       if (days > 14)
         throw new Error(
           'This request needs more than 14 riding days. Increase the daily distance.',
@@ -207,10 +206,10 @@ export async function applyQueryChanges(
         ...trip,
         target: days,
         budget: 'days',
-        days: Math.min(14, Math.max(1, days)),
+        days,
         mode: days > 1 ? 'trip' : 'route',
       };
-    }
+    } else throw new Error('This edit is not available. Search again.');
     trip = await refresh(trip);
   }
   return trip;
