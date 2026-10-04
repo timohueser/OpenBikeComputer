@@ -172,6 +172,8 @@ Selection includes consumers of changed shared inputs. Terrain and routing
 share an elevation identity for source rasters and local elevation code.
 Each file entry has `bytes` and `sha256`. Cost fields are `elapsed_seconds`,
 `cpu_seconds`, `output_bytes`, and `peak_ram_bytes`; unavailable RAM is null.
+`cpu_seconds` counts the whole bake process while the component builds, so it
+includes a component that builds at the same time.
 `sources.grid_components` records the partition and transport receipts.
 
 Search schema 4 metadata `component` is `pois`, `addresses`, or `all`.
