@@ -329,22 +329,15 @@ public final class PlannerPreviewModel {
         edit { $0.loop = true; $0.points[$0.points.count - 1].kind = .visit }
     }
 
-    /// A signed loop as a plan that starts at its line vertex `vertex`: the route's start and shaping points in their
-    /// order, and a new point at `vertex` when it is not one of them. The turnarounds stay on their points.
-    public func makeLoop(_ route: CatalogRecord, startingAt vertex: Int = 0, name: String = "Start") {
+    /// A signed loop as a plan: the route's own start and its shaping points in their order. The turnarounds stay on
+    /// their points.
+    public func makeLoop(_ route: CatalogRecord, name: String = "Start") {
         let line = route.line
         guard route.plan != nil, let via = route.via else { return }
-        var vertices = [0] + via
-        if line.last != line.first { vertices.append(line.count - 1) }
-        var start = 0
-        if vertex > 0 && vertex < line.count - 1 {
-            start = vertices.firstIndex { $0 >= vertex } ?? vertices.count
-            if start == vertices.count || vertices[start] != vertex { vertices.insert(vertex, at: start) }
-        }
+        let vertices = [0] + via + (line.last == line.first ? [] : [line.count - 1])
         let turnarounds = Set(route.turnarounds ?? [])
-        let rotated = vertices[start...] + vertices[..<start]
         edit { next in
-            next.points = rotated.enumerated().map { index, vertex in
+            next.points = vertices.enumerated().map { index, vertex in
                 var point = PlannerPreviewPoint(place: .init(id: UUID().uuidString, name: index == 0 ? name : Self.shapeName,
                                                              coordinate: line[vertex]), kind: index == 0 ? .visit : .shape)
                 point.turnaround = turnarounds.contains(vertex)

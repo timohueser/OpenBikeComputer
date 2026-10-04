@@ -214,22 +214,20 @@ struct PlannerPreviewModelTests {
         #expect(model.start?.id == "titisee")
         model.setOvernightPoint(id: nil)
 
-        // A closed square with one shaping point. The route turns back there and at its start.
+        // A closed square with one shaping point. The route turns back at its start.
         let route = try! JSONDecoder().decode(CatalogRecord.self, from: Data("""
         {"id":1,"kind":"hiking","name":"Square","rank":1,"loop":true,"length_m":4000,"ascent_m":0,"descent_m":0,"cells":[],
-         "line_udeg":[8000000,47900000,10000,0,0,10000,-10000,0,0,-10000],"via":[2],"turnarounds":[0,2]}
+         "line_udeg":[8000000,47900000,10000,0,0,10000,-10000,0,0,-10000],"via":[2],"turnarounds":[0]}
         """.utf8))
         let line = route.line
-        model.makeLoop(route, startingAt: 1)
+        model.makeLoop(route)
         await model.calculateRoute()
-        #expect(model.isLoop && model.routeTitle == "Loop from Start" && model.points.map(\.kind) == [.visit, .shape, .shape])
-        #expect(model.routePoints.map(\.coordinate) == [line[1], line[2], line[0], line[1]])
-        #expect(model.points.map(\.turnaround) == [false, true, true] && model.exportRoute(name: "").waypoints.isEmpty)
-        model.makeLoop(route, startingAt: 2)
-        #expect(model.points.map(\.place.coordinate) == [line[2], line[0]])
-        model.makeLoop(route, startingAt: 4)
-        #expect(model.points.map(\.place.coordinate) == [line[0], line[2]])
-        model.undo(); model.undo(); model.undo()
+        #expect(model.isLoop && model.routeTitle == "Loop from Start" && model.points.map(\.kind) == [.visit, .shape])
+        #expect(model.routePoints.map(\.coordinate) == [line[0], line[2], line[0]])
+        #expect(model.points.map(\.turnaround) == [true, false] && model.exportRoute(name: "").waypoints.isEmpty)
+        model.startLoop(at: model.points[1].id)
+        #expect(model.points.map(\.place.coordinate) == [line[2], line[0]] && model.points.map(\.turnaround) == [false, true])
+        model.undo(); model.undo()
         #expect(model.points.map(\.id) == ["titisee", "freiburg", "cafe"])
     }
 }

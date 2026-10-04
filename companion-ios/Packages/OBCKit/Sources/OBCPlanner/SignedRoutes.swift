@@ -121,17 +121,6 @@ public enum SignedRoutes {
         return matches.sorted { (key($0), $0.route.id) < (key($1), $1.route.id) }
     }
 
-    /// Index of the line vertex nearest to `place`, the first on a tie: where a loop plan starts. Nil for an empty line.
-    public static func nearestVertex(_ line: [Coordinate], to place: Coordinate) -> Int? {
-        guard !line.isEmpty else { return nil }
-        let kx = cos(place.latitude * .pi / 180)
-        func squared(_ vertex: Coordinate) -> Double {
-            let dx = (vertex.longitude - place.longitude) * kx, dy = vertex.latitude - place.latitude
-            return dx * dx + dy * dy
-        }
-        return line.indices.reduce(0) { best, index in squared(line[index]) < squared(line[best]) ? index : best }
-    }
-
     /// The zoom 9 cells `9-X-Y` whose tiles meet the box of the start ± the radius.
     static func cells(around start: Coordinate, radiusKm: Double) -> [String] {
         let n = 512.0

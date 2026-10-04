@@ -20,7 +20,7 @@ struct SignedRoutesTests {
         }
         struct Expected: Decodable, Equatable { let id: Int; let distance_m: Double }
         struct Case: Decodable { let name: String; let query: Query; let expect: [Expected]; let cells: [String] }
-        struct Plan: Decodable { let id: Int; let points_udeg: [[Int]]; let turnarounds: [Int]; let place: [Double]; let nearest_vertex: Int }
+        struct Plan: Decodable { let id: Int; let points_udeg: [[Int]]; let turnarounds: [Int] }
         let grid: [String]
         let routes: [CatalogRecord]
         let queries: [Case]
@@ -76,7 +76,6 @@ struct SignedRoutesTests {
         // Only a loop turns back at its start.
         #expect(try record(#""line_udeg":[0,0,1,1,-1,-1],"via":[1],"turnarounds":[0,1]"#, loop: true).plan?.turnarounds == [0, 1])
         #expect(try record(#""line_udeg":[0,0,1,1,1,1],"via":[1],"turnarounds":[0]"#).plan == nil)
-        #expect(SignedRoutes.nearestVertex([], to: Coordinate(latitude: 0, longitude: 0)) == nil)
     }
 
     @Test func plansTheSharedVector() throws {
@@ -85,8 +84,6 @@ struct SignedRoutesTests {
             let expected = plan.points_udeg.map { Coordinate(latitude: Double($0[1]) / 1e6, longitude: Double($0[0]) / 1e6) }
             let actual = try #require(route.plan)
             #expect(actual.points == expected && actual.turnarounds == plan.turnarounds)
-            let place = Coordinate(latitude: plan.place[1], longitude: plan.place[0])
-            #expect(SignedRoutes.nearestVertex(route.line, to: place) == plan.nearest_vertex)
         }
     }
 
