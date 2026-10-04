@@ -30,17 +30,44 @@ public struct CatalogRecord: Decodable, Equatable, Sendable {
 
     /// The decoded line of a route record; empty for a long route or a line with an unpaired value.
     public var line: [Coordinate] { decodeCoordinates(line_udeg ?? []) ?? [] }
+    /// The start of the route: vertex 0 of the line, or `start_udeg` of a long route.
+    public var start: Coordinate? { start_udeg.flatMap { decodeCoordinates($0)?.first } ?? line.first }
+    /// The name, else the `ref`.
+    public var title: String { name ?? ref ?? "" }
 
-    /// The start, the shaping points and the finish, and the plan indices where the route turns back on purpose.
     /// Nil for a long route, and for a record whose shaping points or turnarounds do not fit its line.
-    public var plan: (points: [Coordinate], turnarounds: [Int])? {
+    public var plan: RoutePlan? {
         let line = line, turnarounds = turnarounds ?? []
         guard let via, line.count > 1, via.allSatisfy({ (1..<line.count - 1).contains($0) }),
               let first = line.first, let last = line.last else { return nil }
         // A loop can turn back at its start, vertex 0, which is plan index 0.
         let indices = turnarounds.compactMap { $0 == 0 && loop ? 0 : via.firstIndex(of: $0).map { $0 + 1 } }
         guard indices.count == turnarounds.count else { return nil }
-        return ([first] + via.map { line[$0] } + [last], indices)
+        return RoutePlan(points: [first] + via.map { line[$0] } + [last], turnarounds: indices)
+    }
+}
+
+/// The start, the shaping points and the finish, and the plan indices where the route turns back on purpose.
+/// Index 0 marks a loop start where the route turns back; a route request sends only interior indices.
+public struct RoutePlan: Equatable, Sendable {
+    public var points: [Coordinate]
+    public var turnarounds: [Int]
+    public init(points: [Coordinate], turnarounds: [Int]) { self.points = points; self.turnarounds = turnarounds }
+
+    /// The route API takes at most this many points.
+    public static let maxPoints = 64
+
+    /// The stage plans of a long route in one plan, each stage finish joined to the next stage start.
+    /// Nil when it needs more points than a request takes.
+    public static func joined(_ stages: [RoutePlan]) -> RoutePlan? {
+        var joined = RoutePlan(points: [], turnarounds: [])
+        for stage in stages {
+            let skip = joined.points.last == stage.points.first ? 1 : 0
+            let offset = joined.points.count - skip
+            joined.turnarounds += stage.turnarounds.map { $0 + offset }
+            joined.points += stage.points.dropFirst(skip)
+        }
+        return joined.points.count <= maxPoints ? joined : nil
     }
 }
 
@@ -85,6 +112,15 @@ public struct RouteQuery: Equatable, Sendable {
     }
 }
 
+/// A filter that can remove every match near the start.
+public enum RouteFilter: Sendable { case distance, climb, hardest }
+
+/// Why a search has no match: one filter removes the routes within the radius, or a wider radius has matches.
+public enum RouteHint: Equatable, Sendable {
+    case filter(RouteFilter)
+    case wider(radiusKm: Double, count: Int)
+}
+
 public struct RouteMatch: Equatable, Sendable {
     public let route: CatalogRecord
     public let distanceM: Double
@@ -119,6 +155,28 @@ public enum SignedRoutes {
         case .leastClimb: { $0.route.ascent_m }
         }
         return matches.sorted { (key($0), $0.route.id) < (key($1), $1.route.id) }
+    }
+
+    /// The search radii of the Routes view, in km.
+    public static let radii: [Double] = [5, 10, 25, 50]
+
+    /// For a query with no match: the first filter without which some routes within the radius match, else the next
+    /// radius with matches. Nil when neither helps.
+    public static func hint(_ query: RouteQuery, loadCell: @escaping RouteCellLoader) async throws -> RouteHint? {
+        let graded = query.activity == .hiking || query.activity == .mtb
+        var cleared: [(RouteFilter, RouteQuery)] = []
+        if query.distanceKm != RouteBounds() { var open = query; open.distanceKm = .init(); cleared.append((.distance, open)) }
+        if query.climbM != RouteBounds() { var open = query; open.climbM = .init(); cleared.append((.climb, open)) }
+        if graded, let hardest = query.hardest, hardest != 0...3 { var open = query; open.hardest = nil; cleared.append((.hardest, open)) }
+        for (filter, open) in cleared {
+            if try await !search(open, loadCell: loadCell).isEmpty { return .filter(filter) }
+        }
+        guard let widest = radii.last, query.radiusKm < widest else { return nil }
+        var wide = query
+        wide.radiusKm = widest
+        let distances = try await search(wide, loadCell: loadCell).map(\.distanceM)
+        guard let radius = radii.first(where: { km in km > query.radiusKm && distances.contains { $0 <= km * 1000 } }) else { return nil }
+        return .wider(radiusKm: radius, count: distances.filter { $0 <= radius * 1000 }.count)
     }
 
     /// The zoom 9 cells `9-X-Y` whose tiles meet the box of the start ± the radius.

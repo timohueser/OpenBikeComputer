@@ -8,7 +8,8 @@ import SwiftUI
 struct PlannerPreviewMapPin: Identifiable, Equatable {
     /// A `stop` sits on the route line, so it draws as a disc like the start; a `place` is a
     /// candidate off the line and hangs from a stem.
-    enum Kind: Equatable { case start, finish, stop, shape, marker, place }
+    /// `route` is the start of a signed route: numbered when it is listed, a dot otherwise.
+    enum Kind: Equatable { case start, finish, stop, shape, marker, place, route(number: Int?, rank: Int) }
     let id: String
     let title: String
     let coordinate: Coordinate
@@ -38,6 +39,11 @@ struct PlannerPreviewMap: UIViewRepresentable {
     var highlightedCategories: Set<PlannerPreviewPlaceCategory> = []
     var onPlace: (PlannerPreviewPlace) -> Void = { _ in }
     var onNetworkStatus: (String?) -> Void = { _ in }
+    /// Lines in place of the route line, such as the signed routes over the muted plan.
+    var strokes: [MapStroke]?
+    /// What a fit shows in place of the route and its pins.
+    var focus: [Coordinate]?
+    var namer: PlannerPlaceNamer?
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.obcIsOnline) private var online
     @Environment(\.obcOfflineMaps) private var offlineMaps
@@ -46,6 +52,7 @@ struct PlannerPreviewMap: UIViewRepresentable {
 
     func makeUIView(context: Context) -> OBCNativeMapView {
         let map = OBCNativeMapView()
+        namer?.map = map
         map.delegate = context.coordinator
         map.accessibilityIdentifier = "planner.map"
         map.onFirstLayout = { [weak map, weak coordinator = context.coordinator] in
@@ -68,8 +75,8 @@ struct PlannerPreviewMap: UIViewRepresentable {
         if coordinator.coordinates != coordinates {
             coordinator.coordinates = coordinates
             coordinator.routeIndex = SegmentedLineOverlay(line: MeasuredLine(routePoints: coordinates.map { RoutePoint(coordinate: $0) }))
-            coordinator.drawRoute(map)
         }
+        coordinator.drawRoute(map)
         coordinator.updateNetworks(map)
         let pinsChanged = coordinator.pins != pins
         if pinsChanged {
@@ -155,12 +162,12 @@ struct PlannerPreviewMap: UIViewRepresentable {
         }
 
         func fit(_ map: OBCNativeMapView, animated: Bool) {
-            let points = parent.coordinates + parent.pins.filter { !$0.isAmbient || $0.highlighted }.map(\.coordinate)
+            let points = parent.focus ?? (parent.coordinates + parent.pins.filter { !$0.isAmbient || $0.highlighted }.map(\.coordinate))
             map.fit(points, bottom: parent.bottomInset, animated: animated && !UIAccessibility.isReduceMotionEnabled)
         }
 
         func drawRoute(_ map: OBCNativeMapView, force: Bool = false) {
-            map.draw([MapStroke(coordinates: coordinates, color: OBCTheme.route, width: 3.5)], force: force)
+            map.draw(parent.strokes ?? [MapStroke(coordinates: coordinates, color: OBCTheme.route, width: 3.5)], force: force)
         }
         func mapViewDidFinishLoadingMap(_ mapView: MLNMapView) {
             (mapView as? OBCNativeMapView)?.didFinishLoadingMap()
@@ -266,6 +273,11 @@ struct PlannerPreviewMap: UIViewRepresentable {
         func style(_ view: PlannerPinView, pin: PinAnnotation, traits: UITraitCollection) {
             let selected = pin.pin.id == parent.selectedID
             let kind = pin.pin.kind
+            if case .route(let number, let rank) = kind {
+                view.centerOffset = .zero
+                view.image = Self.routeImage(number: number, rank: rank, selected: selected, traits: traits)
+                return
+            }
             let stemmed = kind == .marker || (kind == .place && !pin.pin.isAmbient)
             view.centerOffset = CGVector(dx: 0, dy: stemmed ? -12 : 0)
             view.image = UIGraphicsImageRenderer(size: CGSize(width: 44, height: 44)).image { _ in
@@ -304,6 +316,25 @@ struct PlannerPreviewMap: UIViewRepresentable {
                 if let image {
                     image.draw(at: CGPoint(x: center.x - image.size.width / 2, y: center.y - image.size.height / 2))
                 }
+            }
+        }
+
+        /// A numbered disc in the network colour, or a small dot; magenta when selected.
+        static func routeImage(number: Int?, rank: Int, selected: Bool, traits: UITraitCollection) -> UIImage {
+            let color = selected ? UIColor(OBCTheme.route).resolvedColor(with: traits)
+                : PlannerPreviewNetworkStyle.color(rank: rank, traits: traits).withAlphaComponent(1)
+            let surface = UIColor(OBCTheme.surface).resolvedColor(with: traits)
+            let size: CGFloat = number == nil ? 14 : 28
+            return UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { _ in
+                let disc = UIBezierPath(ovalIn: CGRect(x: 1, y: 1, width: size - 2, height: size - 2))
+                (number == nil || selected ? color : surface).setFill(); disc.fill()
+                (number == nil ? surface : color).setStroke(); disc.lineWidth = number == nil ? 1.5 : 2; disc.stroke()
+                guard let number else { return }
+                let text = NSAttributedString(string: "\(number)", attributes: [
+                    .font: UIFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
+                    .foregroundColor: selected ? surface : UIColor(OBCTheme.ink).resolvedColor(with: traits)])
+                let bounds = text.size()
+                text.draw(at: CGPoint(x: (size - bounds.width) / 2, y: (size - bounds.height) / 2))
             }
         }
 
@@ -402,6 +433,27 @@ struct PlannerPreviewMap: UIViewRepresentable {
             guard let tap = otherGestureRecognizer as? UITapGestureRecognizer else { return false }
             return tap.numberOfTapsRequired > 1
         }
+    }
+}
+
+/// Names a point by the basemap place nearest to it, from the loaded tiles.
+@MainActor final class PlannerPlaceNamer {
+    weak var map: MLNMapView?
+
+    /// The nearest village, town or city within 5 km, from the loaded tiles and the shown labels.
+    func name(near coordinate: Coordinate) -> String? {
+        guard let map else { return nil }
+        let loaded = (map.style?.source(withIdentifier: "basemap") as? MLNVectorTileSource)?
+            .features(sourceLayerIdentifiers: ["places"], predicate: nil) ?? []
+        let kx = cos(coordinate.latitude * .pi / 180)
+        var best: (name: String, km: Double)?
+        for case let feature as MLNPointFeature in loaded + map.visibleFeatures(in: map.bounds, styleLayerIdentifiers: ["places_locality"]) {
+            guard feature.attributes["kind"] as? String == "locality", let name = feature.attributes["name"] as? String else { continue }
+            let dx = (feature.coordinate.longitude - coordinate.longitude) * kx, dy = feature.coordinate.latitude - coordinate.latitude
+            let km = (dx * dx + dy * dy).squareRoot() * 111.2
+            if km < 5, km < best?.km ?? .infinity { best = (name, km) }
+        }
+        return best?.name
     }
 }
 

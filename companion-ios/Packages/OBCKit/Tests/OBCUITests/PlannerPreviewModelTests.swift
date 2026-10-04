@@ -202,8 +202,26 @@ struct PlannerPreviewModelTests {
         #expect(!model.isLoop && !model.hasRoute)
     }
 
+    @Test func aSignedRoutePlanReplacesThePlanInOneUndoStep() async throws {
+        let source = PlannerTestSource()
+        let model = PlannerPreviewModel(sample: true, service: source)
+        model.setPreset(.shorter)
+        let before = model.points
+        let points = (0...3).map { Coordinate(latitude: 47.9, longitude: 8 + Double($0) / 100) }
+        model.planSignedRoute(RoutePlan(points: points, turnarounds: [2]), loop: false, name: "Westweg · Stage 9",
+                              startName: "Titisee", finishName: nil)
+        await model.calculateRoute()
+        #expect(model.routeTitle == "Westweg · Stage 9" && model.start?.name == "Titisee" && model.finish?.name == "Finish")
+        #expect(model.points.map(\.kind) == [.visit, .shape, .shape, .visit] && model.preset == .balanced)
+        let requested = await source.turnarounds
+        #expect(model.routePoints.map(\.coordinate) == points && requested == [[2]])
+        model.undo()
+        #expect(model.points == before && model.preset == .shorter && model.routeTitle == "Freiburg → Titisee")
+    }
+
     @Test func movingTheStartKeepsTheOrderAroundTheLoop() async {
-        let model = PlannerPreviewModel(sample: true, service: PlannerTestSource())
+        let source = PlannerTestSource()
+        let model = PlannerPreviewModel(sample: true, service: source)
         model.addPoint(PlannerPreviewModel.sampleMapPlaces[2])
         model.closeLoop()
         model.startLoop(at: "titisee")
@@ -220,21 +238,29 @@ struct PlannerPreviewModelTests {
          "line_udeg":[8000000,47900000,10000,0,0,10000,-10000,0,0,-10000],"via":[2],"turnarounds":[0]}
         """.utf8))
         let line = route.line
-        model.makeLoop(route)
+        model.planSignedRoute(try! #require(route.plan), loop: true, name: "Square", startName: "Rieslehof", finishName: nil)
         await model.calculateRoute()
-        #expect(model.isLoop && model.routeTitle == "Loop from Start" && model.points.map(\.kind) == [.visit, .shape])
+        #expect(model.isLoop && model.routeTitle == "Square" && model.start?.name == "Rieslehof")
+        #expect(model.points.map(\.kind) == [.visit, .shape] && model.preset == .balanced)
         #expect(model.routePoints.map(\.coordinate) == [line[0], line[2], line[0]])
         #expect(model.points.map(\.turnaround) == [true, false] && model.exportRoute(name: "").waypoints.isEmpty)
+        // The start turns back only once it is an interior point.
         model.startLoop(at: model.points[1].id)
+        await model.calculateRoute()
         #expect(model.points.map(\.place.coordinate) == [line[2], line[0]] && model.points.map(\.turnaround) == [false, true])
+        let requested = await source.turnarounds
+        #expect(requested == [[], [1]])
         model.undo(); model.undo()
-        #expect(model.points.map(\.id) == ["titisee", "freiburg", "cafe"])
+        #expect(model.points.map(\.id) == ["titisee", "freiburg", "cafe"] && model.planName == nil)
     }
 }
 
 private actor PlannerTestSource: PlannerDataSource {
+    /// The turnarounds of each route request.
+    var turnarounds: [[Int]] = []
     func release() async throws -> PlannerRelease { testRelease }
-    func route(points: [Coordinate], bike: BikeType, preference: RoutePreference, release: PlannerRelease) async throws -> PlannedPath {
+    func route(points: [Coordinate], turnarounds: [Int], bike: BikeType, preference: RoutePreference, release: PlannerRelease) async throws -> PlannedPath {
+        self.turnarounds.append(turnarounds)
         let samples = points.map { RoutePoint(coordinate: $0, elevationMeters: 300) }
         let length = MeasuredLine(routePoints: samples).length
         let elapsed = MeasuredLine(routePoints: samples).vertices.map { $0.distance / 4 }
@@ -250,7 +276,7 @@ private actor ControlledPlannerSource: PlannerDataSource {
     private var replies: [Int: CheckedContinuation<PlannedPath, any Error>] = [:]
     private var waiters: [(Int, CheckedContinuation<Void, Never>)] = []
     func release() async throws -> PlannerRelease { testRelease }
-    func route(points: [Coordinate], bike: BikeType, preference: RoutePreference, release: PlannerRelease) async throws -> PlannedPath {
+    func route(points: [Coordinate], turnarounds: [Int], bike: BikeType, preference: RoutePreference, release: PlannerRelease) async throws -> PlannedPath {
         try await withCheckedThrowingContinuation { continuation in
             let index = requests.count
             requests.append(points); replies[index] = continuation

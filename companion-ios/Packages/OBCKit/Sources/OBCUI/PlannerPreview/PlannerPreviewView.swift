@@ -6,7 +6,7 @@ import SwiftUI
 
 /// The map-first planner uses the same points, search, and drawer interactions in every build.
 public struct PlannerPreviewView: View {
-    private enum Panel { case planning, stops, preferences, days, results, place }
+    private enum Panel { case planning, stops, preferences, days, results, place, routes, route }
     private enum SearchIntent: Equatable { case general, overnight, replace(String) }
     @State private var searchAfterDismissal = false
     @State private var searchQuery = ""
@@ -53,6 +53,14 @@ public struct PlannerPreviewView: View {
     @State private var queryEditor: PlannerPreviewQueryField?
     @State private var searchSnapshot: (String, PlannerPreviewPlaceQuery?, SearchIntent)?
     @State private var searchSelectedPlace: PlannerPreviewPlace?
+    @State private var searchRoutesPlace: PlannerPreviewPlace?
+    @State private var finder = PlannerRouteFinder()
+    @State private var namer = PlannerPlaceNamer()
+    @State private var filtersShown = false
+    @State private var routeContentHeight: CGFloat = 320
+    @State private var routeEnds: (start: String?, finish: String?) = (nil, nil)
+    /// The plan that "Plan this route" replaced, while undo brings it back in one step.
+    @State private var replaced: (title: String, depth: Int)?
     private let onSave: (ImportedRoute, BikeType) -> Void
     private let onClose: () -> Void
 
@@ -65,8 +73,9 @@ public struct PlannerPreviewView: View {
 
     public var body: some View {
         GeometryReader { geometry in
-            PlannerPreviewMap(coordinates: model.geometry, pins: pins,
-                              selectedID: panel == .place ? editingPointID ?? selectedPlace?.id : nil,
+            PlannerPreviewMap(coordinates: model.geometry, pins: routesOpen ? routePins : pins,
+                              selectedID: panel == .place ? editingPointID ?? selectedPlace?.id
+                                : panel == .route ? finder.detail.map { "route-\($0.route.id)" } : nil,
                               cursor: cursor, bottomInset: sheetHeight + geometry.safeAreaInsets.bottom,
                               fitRevision: fitRevision, onSelect: selectPin, onMapPoint: selectMapPoint,
                               showCycling: network == .cycling, showHiking: network == .hiking,
@@ -74,7 +83,8 @@ public struct PlannerPreviewView: View {
                               onVisibleRouteRange: { visibleRouteRange = $0 },
                               release: model.release, source: model.service,
                               hiddenCategories: hiddenCategories, highlightedCategories: highlightedCategories,
-                              onPlace: selectResult, onNetworkStatus: { networkStatus = $0 })
+                              onPlace: selectResult, onNetworkStatus: { networkStatus = $0 },
+                              strokes: routesOpen ? routeStrokes : nil, focus: routesOpen ? routesFocus : nil, namer: namer)
                 .ignoresSafeArea(edges: .bottom)
                 .overlay(alignment: .topTrailing) { if !layersShown { mapTools.padding(12) } }
                 .overlay(alignment: .topLeading) {
@@ -136,6 +146,10 @@ public struct PlannerPreviewView: View {
                                                  onRequestChange: { queryRequest = $0 },
                                                  isInMapView: isInMapView)
                                 .withViewBounds(searchBounds)
+                                .withRoutes(finder.available ? (routesSubtitle, { searchRoutesPlace = $0; searchShown = false }) : nil)
+                        }
+                        .fullScreenCover(isPresented: $filtersShown) {
+                            PlannerRouteFiltersPage(finder: finder, bike: model.bike) { filtersShown = false }
                         }
                         .sheet(isPresented: $editorShown, onDismiss: finishOpeningSearch) { focusedEditor }
                         .fullScreenCover(item: $offlineAreaRequest) { request in
@@ -190,6 +204,22 @@ public struct PlannerPreviewView: View {
         .onChange(of: drawerPosition) { _, position in
             if position != .collapsed { layersShown = false; infoShown = false }
         }
+        .task(id: model.release?.id) { finder.use(model.release) }
+        .task(id: routesSearch) {
+            guard routesSearch != nil else { return }
+            await finder.search(bike: model.bike)
+        }
+        .task(id: panel == .route ? finder.plan : nil) {
+            guard panel == .route, let release = model.release else { return }
+            routeEnds = (nil, nil)
+            await finder.routePreview(service: model.service, release: release, bike: model.bike)
+            // The places near the route load once the map has moved to it.
+            guard (try? await Task.sleep(for: .seconds(1.5))) != nil else { return }
+            if case .ready(let plan) = finder.plan, let first = plan.points.first, let last = plan.points.last {
+                routeEnds = (namer.name(near: first), namer.name(near: last))
+            }
+        }
+        .onChange(of: routesFit) { if routesOpen { fraction = nil; fitRevision += 1 } }
         .task(id: network) {
             attributionShown = network != .none
             guard attributionShown else { return }
@@ -217,7 +247,18 @@ public struct PlannerPreviewView: View {
 
     private var routeHeader: some View {
         HStack(spacing: 8) {
-            if drawerPosition != .collapsed && panel != .planning {
+            if drawerPosition != .collapsed && panel == .route {
+                Button { finder.deselect(); panel = .routes } label: {
+                    Label(PlannerRoutesText.noun(finder.filters.shape, count: finder.matches.count), systemImage: "chevron.left")
+                        .font(.headline).lineLimit(1).frame(minHeight: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain).foregroundStyle(OBCTheme.tint).accessibilityIdentifier("planner.routes.back")
+                Spacer(minLength: 4)
+                doneButton(action: returnToPlanning)
+            } else if drawerPosition != .collapsed && panel == .routes {
+                Text("Signed routes near \(finder.start?.name ?? "the start")").font(.headline).lineLimit(1)
+                Spacer(minLength: 4)
+                doneButton(action: returnToPlanning)
+            } else if drawerPosition != .collapsed && panel != .planning {
                 if panel == .place, let results, results.action == nil {
                     // The way back to the list this place came from.
                     Button { showResults() } label: {
@@ -263,6 +304,20 @@ public struct PlannerPreviewView: View {
                             Button("Try again") { model.retryRoute() }.frame(minHeight: 44)
                         }
                     }
+                    if let replaced, replaced.depth == model.undoDepth {
+                        HStack {
+                            Text("“\(replaced.title)” is replaced.").font(.subheadline).foregroundStyle(OBCTheme.secondary).lineLimit(2)
+                            Spacer(minLength: 8)
+                            Button("Undo") { model.undo(); self.replaced = nil }.fontWeight(.semibold).frame(minHeight: 44)
+                                .accessibilityIdentifier("planner.routes.undo")
+                        }
+                    }
+                    if model.planName != nil, finder.start != nil {
+                        Button { finder.deselect(); panel = .routes; drawerPosition = .open; fitRevision += 1 } label: {
+                            Label("Find another route", systemImage: "chevron.left").font(.subheadline)
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
+                        }.buttonStyle(.plain).foregroundStyle(OBCTheme.tint).accessibilityIdentifier("planner.routes.findAnother")
+                    }
                     if model.canSave { elevation(height: 56 + (drawerPosition == .expanded ? max(0, sheetHeight - openHeight) : 0)) }
                     searchButton
                     OBCGroupedSection {
@@ -297,6 +352,28 @@ public struct PlannerPreviewView: View {
                     .padding(.horizontal, 16).padding(.bottom, 16)
                     .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { placeContentHeight = $0 }
             }.scrollBounceBehavior(.basedOnSize)
+        case .routes:
+            ScrollView {
+                PlannerRoutesList(finder: finder, bike: model.bike,
+                                  plan: model.hasRoute ? (model.routeTitle, model.stats.distanceMeters) : nil,
+                                  onShowPlan: { returnToPlanning(); fitRevision += 1 },
+                                  onFilters: { filtersShown = true },
+                                  onSelect: { route in panel = .route; Task { await finder.select(route) } },
+                                  onRetry: { Task { await finder.search(bike: model.bike) } })
+                    .padding(.horizontal, 16).padding(.bottom, 16)
+            }
+        case .route:
+            VStack(spacing: 0) {
+                ScrollView {
+                    if let detail = finder.detail {
+                        PlannerRouteDetail(finder: finder, detail: detail, bike: model.bike, ends: routeEnds, fraction: $fraction,
+                                           onSelect: { route in Task { await finder.select(route) } })
+                            .padding(.horizontal, 16).padding(.bottom, 12)
+                            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { routeContentHeight = $0 }
+                    }
+                }.scrollBounceBehavior(.basedOnSize)
+                PlannerRoutePlanFoot(finder: finder, onPlan: planSignedRoute).padding(.horizontal, 16).padding(.vertical, 8)
+            }
         case .stops:
             PlannerPreviewPoints(model: model, onEdit: editPoint, onAdd: startSearch,
                 onReverse: { queryRequest = nil; results = model.lookup("reverse"); panel = .results },
@@ -311,6 +388,8 @@ public struct PlannerPreviewView: View {
         case .planning: planningContentHeight
         case .results: resultsContentHeight
         case .place: placeContentHeight
+        // The detail sheet leaves the route in view; its figures scroll above the action.
+        case .route: min(routeContentHeight + 76, 440)
         default: listContentHeight
         }
         return collapsedHeight + content
@@ -359,6 +438,11 @@ public struct PlannerPreviewView: View {
             }
             VStack(alignment: .leading, spacing: 4) {
                 if editingPointID != nil { pointEditor } else { placeActions(place) }
+                if editingPointID == nil, intent == .general, finder.available {
+                    Button("Signed routes from here", systemImage: "signpost.right") {
+                        openRoutes(at: place.coordinate, name: place.name == PlannerPreviewModel.mapPointName ? nil : place.name)
+                    }.frame(minHeight: 44).accessibilityIdentifier("planner.routesFromHere")
+                }
             }
         }
     }
@@ -586,7 +670,9 @@ public struct PlannerPreviewView: View {
 
     private func finishSearch() {
         queryEditor = nil; searchSnapshot = nil
-        if let place = searchSelectedPlace {
+        if let place = searchRoutesPlace {
+            searchRoutesPlace = nil; openRoutes(at: place.coordinate, name: place.name)
+        } else if let place = searchSelectedPlace {
             searchSelectedPlace = nil; selectResult(place)
         }
     }
@@ -630,6 +716,7 @@ public struct PlannerPreviewView: View {
     }
 
     private func selectResult(_ place: PlannerPreviewPlace) {
+        if routesOpen { moveRoutesStart(place.coordinate, name: place.name); return }
         selectedPlace = model.positionedPlace(place); editingPointID = nil
         panel = .place; drawerPosition = .open
     }
@@ -637,6 +724,13 @@ public struct PlannerPreviewView: View {
     // A tap on the map always selects what was tapped; the place panel just shows the next one.
     private func selectPin(_ id: String, at location: CGPoint) {
         layersShown = false; infoShown = false
+        if routesOpen {
+            if let match = finder.matches.first(where: { "route-\($0.route.id)" == id }) {
+                panel = .route; drawerPosition = .open
+                Task { await finder.select(match.route) }
+            }
+            return
+        }
         if let point = (model.points + model.markers).first(where: { $0.id == id }) {
             editPoint(point)
         } else if let place = ((results?.places ?? []) + model.mapPlaces).first(where: { $0.id == id }) {
@@ -645,6 +739,7 @@ public struct PlannerPreviewView: View {
     }
 
     private func selectMapPoint(_ coordinate: Coordinate, at location: CGPoint) {
+        if routesOpen { moveRoutesStart(coordinate, name: nil); return }
         editingPointID = nil; layersShown = false; infoShown = false
         selectedPlace = model.positionedPlace(.init(id: UUID().uuidString, name: PlannerPreviewModel.mapPointName, coordinate: coordinate))
         panel = .place; drawerPosition = .open
@@ -665,6 +760,94 @@ public struct PlannerPreviewView: View {
         let nw = MKMapPoint(x: visibleMapRect.minX, y: visibleMapRect.minY).coordinate
         let se = MKMapPoint(x: visibleMapRect.maxX, y: visibleMapRect.maxY).coordinate
         return [nw.longitude, se.latitude, se.longitude, nw.latitude]
+    }
+
+    // MARK: Signed routes
+
+    private var routesOpen: Bool { panel == .routes || panel == .route }
+
+    private struct RoutesSearch: Equatable {
+        let start: PlannerRouteStart?
+        let filters: PlannerRouteFilters
+        let bike: BikeType
+        let release: String?
+    }
+    /// What the list depends on while the Routes view is open.
+    private var routesSearch: RoutesSearch? {
+        routesOpen ? RoutesSearch(start: finder.start, filters: finder.filters, bike: model.bike, release: model.release?.id) : nil
+    }
+    /// The map fits the circle for the list, and the route for a detail.
+    private var routesFit: String {
+        "\(String(describing: finder.start?.coordinate)) \(finder.filters.radiusKm) \(finder.detail?.route.id ?? 0) \(routesOpen)"
+    }
+    private var routesSubtitle: String {
+        let shape = switch finder.filters.shape { case .loop: "loops"; case .oneWay: "routes"; case .any: "loops and routes" }
+        return "\(model.bike.name) · \(shape) within \(Int(finder.filters.radiusKm)) km"
+    }
+
+    private func openRoutes(at coordinate: Coordinate, name: String?) {
+        finder.use(model.release)
+        moveRoutesStart(coordinate, name: name)
+        selectedPlace = nil; editingPointID = nil; results = nil; intent = .general
+        drawerPosition = .open; fitRevision += 1
+    }
+
+    /// A map tap moves the start; the nearest place names a map point.
+    private func moveRoutesStart(_ coordinate: Coordinate, name: String?) {
+        finder.start = PlannerRouteStart(coordinate: coordinate, name: name ?? namer.name(near: coordinate) ?? "the map point")
+        finder.deselect(); panel = .routes
+    }
+
+    /// Replaces the plan with the route from its own start. Undo brings the old plan back.
+    private func planSignedRoute(_ route: CatalogRecord, _ plan: RoutePlan) {
+        let old = model.hasRoute ? model.routeTitle : nil
+        model.planSignedRoute(plan, loop: route.loop, name: route.title,
+                              startName: routeEnds.start ?? plan.points.first.flatMap(namer.name(near:)),
+                              finishName: routeEnds.finish ?? plan.points.last.flatMap(namer.name(near:)))
+        replaced = old.map { ($0, model.undoDepth) }
+        returnToPlanning(); fitRevision += 1
+    }
+
+    private static let mutedPlan = OBCTheme.amber.opacity(0.55), circleInk = OBCTheme.ink.opacity(0.7)
+
+    /// The muted plan, the search circle, the listed routes in their network colours, and the selected route in magenta.
+    private var routeStrokes: [MapStroke] {
+        var strokes = [MapStroke(coordinates: model.geometry, color: Self.mutedPlan, width: 3, cased: false)]
+        if let start = finder.start {
+            strokes.append(MapStroke(coordinates: Self.circle(start.coordinate, km: finder.filters.radiusKm),
+                                     color: Self.circleInk, width: 1, cased: false))
+        }
+        for match in finder.matches.prefix(finder.shown) {
+            let color = PlannerPreviewNetworkStyle.lines[min(3, max(0, match.route.rank))]
+            strokes.append(MapStroke(coordinates: finder.line(match.route), color: color, width: 3, casingColor: OBCTheme.surface))
+        }
+        if let detail = finder.detail {
+            strokes.append(MapStroke(coordinates: finder.line(detail.route), color: OBCTheme.route, width: 4.5, casingColor: OBCTheme.surface))
+        }
+        return strokes
+    }
+
+    private var routesFocus: [Coordinate] {
+        if let detail = finder.detail, case let line = finder.line(detail.route), !line.isEmpty { return line }
+        return finder.start.map { Self.circle($0.coordinate, km: finder.filters.radiusKm) } ?? []
+    }
+
+    /// Numbered starts for the listed routes and dots for the other matches.
+    private var routePins: [PlannerPreviewMapPin] {
+        finder.matches.enumerated().compactMap { index, match in
+            match.route.start.map {
+                PlannerPreviewMapPin(id: "route-\(match.route.id)", title: match.route.title, coordinate: $0,
+                                     kind: .route(number: index < finder.shown ? index + 1 : nil, rank: match.route.rank))
+            }
+        }
+    }
+
+    private static func circle(_ center: Coordinate, km: Double) -> [Coordinate] {
+        let dLat = km / 111.32, dLon = dLat / cos(center.latitude * .pi / 180)
+        return (0...96).map { i in
+            Coordinate(latitude: center.latitude + dLat * sin(Double(i) / 48 * .pi),
+                       longitude: center.longitude + dLon * cos(Double(i) / 48 * .pi))
+        }
     }
 
     private var pins: [PlannerPreviewMapPin] {
