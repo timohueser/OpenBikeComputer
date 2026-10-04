@@ -1,8 +1,9 @@
 # Route API
 
 `POST /v1/route` on the [route service](../apps/route-server/README.md) calculates
-routes. The native provider (`planner_router_request`) returns the same bytes for
-the same request. Request and answer bodies are UTF-8 JSON.
+routes. `POST /v1/shape` finds the plan points of a route that follows a line. The
+native provider (`planner_router_request`, `planner_router_shape`) returns the same
+bytes for the same request. Request and answer bodies are UTF-8 JSON.
 
 ## Request
 
@@ -129,6 +130,43 @@ encoding. The encoder test and each decoder test read it.
 The service compresses with brotli or gzip, as `Accept-Encoding` permits. It
 prefers brotli.
 
+## Shape
+
+`POST /v1/shape` finds plan points for a line, for example a GPX track. A route
+request with these points and the same profile follows the line.
+
+| Field | Value |
+| --- | --- |
+| `line` | 2 to 2,000 `[longitude, latitude]` pairs in degrees, at most 200 km long |
+| `profile` | A profile ID from `GET /v1/region` |
+| `loop` | Optional, default `false`. `true` when the line ends at its start |
+
+The service rejects unknown fields. The body limit is 64 KiB for both requests.
+Simplify a track within 10 m and send 6 decimals before the request: then a
+200 km track fits. The service also simplifies the line within 10 m. It closes a
+loop with a straight segment from the last line point to the first.
+
+The answer is `{"points": [...], "turnarounds": [...]}`:
+
+| Field | Value |
+| --- | --- |
+| `points` | 2 to 64 `[longitude, latitude]` pairs in degrees, in route order |
+| `turnarounds` | Ascending indices in `points` where the line turns back |
+
+Each point is on a road, where the route attaches it. The first point is the
+start of the line. For an open line, the last point is the end of the line. For
+a loop, the start is in `points` once: send it again as the last route point.
+Send `turnarounds` unchanged as the `turnarounds` of the route request.
+
+The route follows the line when its deviation is at most 2 % of the line length.
+The deviation is the length of the route farther than 30 m from the line, plus
+the length of the line farther than 30 m from the route. The line turns back at
+a point when, for 150 m before and after the point, it stays within 30 m of
+itself. A hairpin bend is not a turnaround.
+
+One shape request uses one profile and at most 200 route calculations. Each has
+the limits of a route request. The deadline is 30 s.
+
 ## Errors
 
 An error answer is `{"code", "message"}`. It never contains a substitute route.
@@ -138,10 +176,15 @@ within 250 m. When none is that near, it uses the nearest one within 1 km. When
 no route reaches the nearest road of a point that is not on a road, it uses the
 next nearest road within 1 km. `no_snap` means that no such road is within 1 km.
 
+`line_too_long` means that a shape line has more than 2,000 points or is longer
+than 200 km. `line_not_reproducible` means that the search found no plan of at
+most 64 points that follows the line, within its 200 route calculations.
+
 | Code | Status |
 | --- | --- |
 | `invalid_request` | 400 |
 | `no_snap`, `no_path`, `missing_region` | 422 |
+| `line_too_long`, `line_not_reproducible` | 422 |
 | `cancelled` | 408 |
 | `busy`, `limit` | 503 |
 | `invalid_data` | 500 |
