@@ -60,7 +60,7 @@ describe('GPX import', () => {
     it('routes a shaped file through its points and keeps the line of a file that cannot be shaped', async () => {
         const fetch = vi.fn()
             .mockResolvedValueOnce({ ok: true, json: async () => ({ points: [[7.6, 47.5], [7.62, 47.51], [7.65, 47.5]], turnarounds: [1] }) })
-            .mockResolvedValueOnce({ ok: false, json: async () => ({ code: 'line_not_reproducible', message: 'The line cannot be reproduced.' }) });
+            .mockResolvedValueOnce({ ok: false, status: 503, json: async () => ({ code: 'busy', message: 'The routing service is busy.' }) });
         vi.stubGlobal('fetch', fetch);
         const lines = readTracks([{ name: 'a.gpx', text: gpx(track([7.6, 47.5], 50)) }, { name: 'b.gpx', text: gpx(track([7.65, 47.5], 50)) }]);
         const planned = await planOnRoads(lines, line => requestShape(line, 'touring'));

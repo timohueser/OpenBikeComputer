@@ -54,13 +54,15 @@ export function readTracks(files: { name: string; text: string }[]): ImportedLin
     });
 }
 
-/** Shapes every line; a line that cannot be shaped keeps its file's line and is named in `failed`. */
+/** Shapes the lines one at a time, so an import never sends parallel requests. Any failure, such as a busy service, keeps
+ * the file's line and names the file in `failed`. */
 export async function planOnRoads(lines: ImportedLine[], shape: (line: Coordinate[]) => Promise<Shape>): Promise<{ lines: ImportedLine[]; failed: string[] }> {
-    const shapes = await Promise.allSettled(lines.map(line => shape(line.line.map(c => [c[0], c[1]]))));
-    return {
-        lines: lines.map((line, i) => { const answer = shapes[i]; return answer.status === 'fulfilled' ? { ...line, shape: answer.value } : line; }),
-        failed: lines.filter((_, i) => shapes[i].status === 'rejected').map(line => line.name),
-    };
+    const shaped: ImportedLine[] = [], failed: string[] = [];
+    for (const line of lines) {
+        try { shaped.push({ ...line, shape: await shape(line.line.map(c => [c[0], c[1]])) }); }
+        catch { shaped.push(line); failed.push(line.name); }
+    }
+    return { lines: shaped, failed };
 }
 
 /**

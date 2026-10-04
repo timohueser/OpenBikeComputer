@@ -110,8 +110,9 @@ export interface Shape {
     turnarounds: number[];
 }
 
-/** Chosen: a shape call that takes longer must not hold the import; the file keeps its line instead. */
-const shapeTimeoutMs = 30_000;
+/** Longer than the 30 s shape deadline of the route service, so its own error arrives first. A hung call frees the import,
+ * and the file keeps its line. */
+const shapeTimeoutMs = 40_000;
 
 export async function requestShape(line: Coordinate[], profile: string, signal = AbortSignal.timeout(shapeTimeoutMs)): Promise<Shape> {
     const data = await post('/v1/shape', { line, profile }, signal) as Partial<Shape>;
@@ -158,8 +159,12 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
     function append(line: Coordinate[], elevation: (number | null)[], elapsed: number[], edges: Edges, transfer = false) {
         const last = result.coordinates.at(-1);
         const gap = last ? cumulative([last, line[0]])[1] : 0;
-        // A join to a manually drawn leg is itself an explicit, unverified connector.
-        if (gap > 0) { result.unroutedKm += gap; result.unknownSurfaceKm += gap; result.unknownElevationKm += gap; result.seconds += gap / 15 * 3600; distance += gap; }
+        // A join to a manually drawn leg is itself an explicit, unverified connector. A join to a transfer is not ridden.
+        if (gap > 0 && !transfer && !afterTransfer) {
+            result.unroutedKm += gap; result.unknownSurfaceKm += gap; result.seconds += gap / 15 * 3600;
+            if (result.elevation.at(-1) === null || elevation[0] === null) result.unknownElevationKm += gap;
+        }
+        distance += gap;
         // After a transfer the next leg repeats its first vertex, so no segment joins the heights at the two ends of the transfer.
         const offset = last && gap === 0 && !afterTransfer ? 1 : 0;
         const connector = last && !offset ? 1 : 0;
@@ -186,6 +191,10 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
             const drawn: DrawnCoordinate[] = [origin, ...(end.leg === 'drawn' ? end.drawn ?? [] : []), end.coordinate];
             const line = drawn.map((c): Coordinate => [c[0], c[1]]);
             const heights = drawn.map(c => c[2] ?? null);
+            // A drawn leg repeats its points with their heights; the points themselves have none.
+            const same = (a: number, b: number) => line[a][0] === line[b][0] && line[a][1] === line[b][1];
+            if (line.length > 2 && same(0, 1)) heights[0] ??= heights[1];
+            if (line.length > 2 && same(line.length - 1, line.length - 2)) heights[line.length - 1] ??= heights[line.length - 2];
             const lengths = cumulative(line);
             const ridden = end.leg !== 'transfer';
             append(line, heights, lengths.map(km => ridden ? km / 15 * 3600 : 0), {}, !ridden);
