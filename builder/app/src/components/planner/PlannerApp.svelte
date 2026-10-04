@@ -49,7 +49,7 @@
     import { buildQueryRoute } from '../../lib/planner/search/route-client';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
-    import { saveVersion, type Version } from '../../lib/planner/versions';
+    import { keepVersion, type Version } from '../../lib/planner/versions';
 
     import { routePreview } from '../../lib/planner/route-preview';
 
@@ -687,7 +687,7 @@
         // The plan that this replaces stays in Versions, so no confirmation is needed.
         let kept = '';
         if (trip.points.length) {
-            try { saveVersion(trip); kept = `${planTitle(trip)} saved in Versions`; } catch { kept = 'The plan before could not be saved'; }
+            try { keepVersion(trip); kept = `${planTitle(trip)} saved in Versions`; } catch { kept = 'The plan before could not be saved'; }
         }
         commit(next, [`${route.name ?? route.ref} planned`, kept].filter(Boolean).join(' · '));
         undoable = !!kept;

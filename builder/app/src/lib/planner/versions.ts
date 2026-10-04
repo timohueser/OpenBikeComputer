@@ -60,6 +60,11 @@ export function saveVersion(trip: Trip, name?: string, store: VersionStore = loc
     return version;
 }
 
+/** Keeps the plan as an unnamed version, unless the newest version holds it already; so repeated saves do not push out older versions. */
+export function keepVersion(trip: Trip, store: VersionStore = localStorage): void {
+    if (JSON.stringify(listVersions(store)[0]?.trip) !== JSON.stringify(storedPlan(trip))) saveVersion(trip, undefined, store);
+}
+
 /** Names the newest version; an empty name leaves it unnamed. */
 export function renameLatest(name: string, store: VersionStore = localStorage): void {
     const [latest, ...rest] = listVersions(store);
