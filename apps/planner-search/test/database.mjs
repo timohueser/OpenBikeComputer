@@ -42,7 +42,7 @@ const records=[
 ];
 records.forEach(([source,name,kind,lon,lat,city,importance,aliases='',cuisine=''],i)=>{
   const bounds=kind==='city'?[lon-.1,lat-.1,lon+.1,lat+.1]:[lon,lat,lon,lat];
-  conn.prepare('INSERT INTO place_contexts VALUES (?,?,?,?,?)').run(i+1,city,'','',city);
+  conn.prepare('INSERT INTO place_contexts VALUES (?,?,?,?,?,?)').run(i+1,city,'','',city,'de');
   conn.prepare('INSERT INTO place_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(i+1,source,name,aliases===name?null:aliases,kind,lon,lat,i+1,importance,...bounds,cuisine,'','','','');
   const forms=new Set([name,...aliases.split(';')].filter(Boolean).flatMap(n=>kind==='street'?[norm(n),streetNorm(n)]:[norm(n)]));
   conn.prepare('INSERT INTO terms(rowid,name,context) VALUES (?,?,?)').run(i+1,[...forms].join(' '),norm(city));

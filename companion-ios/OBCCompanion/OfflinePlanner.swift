@@ -80,7 +80,7 @@ actor OfflinePlanner {
                     }
                 }
                 search = try PlannerSearchRuntime(databases: databases, bounds: bounds,
-                    scripts: scripts, region: map.region, countryCode: "de", timeZone: "Europe/Berlin")
+                    scripts: scripts, region: map.region)
             }
             response = (200, try search!.request("query", body: request.httpBody ?? Data()))
         default: throw PlannerFailure.invalidData

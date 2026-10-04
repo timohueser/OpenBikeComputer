@@ -1,5 +1,8 @@
 import {Temporal} from '@js-temporal/polyfill';
 
+// Hours evaluation replaces the global Date with a regional one; this module keeps the host type.
+const Host = Date;
+
 /** Local Date methods for the hours evaluator; UTC methods stay native. */
 export function calendarDate(timeZone) {
   const zone = new Intl.DateTimeFormat('en', {timeZone}).resolvedOptions().timeZone;
@@ -20,20 +23,20 @@ export function calendarDate(timeZone) {
     return remember(instants, +local, value);
   };
   const local = date => {
-    if (Number.isNaN(+date)) return new Date(NaN);
-    if (locals.has(+date)) return new Date(locals.get(+date));
+    if (Number.isNaN(+date)) return new Host(NaN);
+    if (locals.has(+date)) return new Host(locals.get(+date));
     const zoned = Temporal.Instant.fromEpochMilliseconds(+date).toZonedDateTimeISO(zone);
-    const value = new Date(0);
+    const value = new Host(0);
     value.setUTCFullYear(zoned.year, zoned.month - 1, zoned.day);
     value.setUTCHours(zoned.hour, zoned.minute, zoned.second, zoned.millisecond);
-    return new Date(remember(locals, +date, +value));
+    return new Host(remember(locals, +date, +value));
   };
-  class CalendarDate extends Date {
+  class CalendarDate extends Host {
     static timeZone = zone;
     constructor(...args) {
-      if (args.length > 1) super(instant(new Date(Date.UTC(...args))));
+      if (args.length > 1) super(instant(new Host(Host.UTC(...args))));
       else if (typeof args[0] === 'string' && /^\d{4}-\d\d-\d\d[T ]\d\d:\d\d(?::\d\d(?:\.\d+)?)?$/.test(args[0]))
-        super(instant(new Date(`${args[0]}Z`)));
+        super(instant(new Host(`${args[0]}Z`)));
       else super(...args);
     }
     getTimezoneOffset() {
@@ -52,7 +55,7 @@ export function calendarDate(timeZone) {
   }
   for (const name of ['toLocaleString', 'toLocaleDateString', 'toLocaleTimeString']) {
     CalendarDate.prototype[name] = function (locale, options) {
-      return Date.prototype[name].call(this, locale, {timeZone: zone, ...options});
+      return Host.prototype[name].call(this, locale, {timeZone: zone, ...options});
     };
   }
   return CalendarDate;

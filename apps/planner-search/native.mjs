@@ -1,4 +1,5 @@
 import {searchRuntime} from './runtime.mjs';
+import {openingHours} from './hours.mjs';
 
 const response = text => {
   const value = JSON.parse(text);
@@ -8,13 +9,13 @@ const response = text => {
 
 /** Native capabilities exchange JSON; all query algorithms stay in the shared runtime.
  * The phone has no language model, so a sentence that needs inference fails visibly. */
-export function nativeSearch({all,batch,hours,region}) {
+export function nativeSearch({all,batch,region}) {
   const db = {all:(sql,params=[],options={})=>response(all(sql,JSON.stringify(params),JSON.stringify(options))).rows};
   if(batch)db.candidates=queries=>response(batch(JSON.stringify(queries))).rows;
   const metadata = Object.fromEntries(db.all('SELECT * FROM metadata').map(row=>[row.key,JSON.parse(row.value)]));
-  if (metadata.schema !== 4) throw new Error('Rebuild incompatible search data.');
+  if (metadata.schema !== 5) throw new Error('Rebuild incompatible search data.');
   const parser = {parse() { throw new Error('Native search requires a structured request.'); }};
-  const runtime = searchRuntime({db,parser,hours,region,attribution:metadata.attribution});
+  const runtime = searchRuntime({db,parser,hours:openingHours(metadata.time_zone),region,attribution:metadata.attribution});
   return {
     async request(method,input) {
       if (input?.region && input.region !== region) throw new Error('Search does not cover this region.');

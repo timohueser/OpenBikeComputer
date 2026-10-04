@@ -1,13 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { currentOpening, openingHours } from '../hours.mjs';
-import vm from 'node:vm';
+import { currentOpening, openingHours, openingState } from '../hours.mjs';
 import { calendarDate } from '../calendar-date.mjs';
-import { calendarBundle } from '../calendar-bundle.mjs';
 import { run as hoursCases } from '../phone-hours.mjs';
+// Native Date in Berlin is the reference for the regional calendar.
 process.env.TZ = 'Europe/Berlin';
-const place = { lat:48.13, lon:7.81, region:'Baden-Württemberg', opening_hours:'Mo-Fr 08:30-13:00,15:00-18:30; PH off' };
-const status = (date, tag = place.opening_hours) => currentOpening({...place,opening_hours:tag}, Date.parse(date));
+const berlin = openingHours('Europe/Berlin');
+const place = { lat:48.13, lon:7.81, region:'Baden-Württemberg', country:'de', opening_hours:'Mo-Fr 08:30-13:00,15:00-18:30; PH off' };
+const status = (date, tag = place.opening_hours) => berlin.currentOpening({...place,opening_hours:tag}, Date.parse(date));
 
 test('current status respects local time, split shifts, and the next closure', () => {
   const morning=status('2026-09-28T10:33:00Z');
@@ -23,7 +23,7 @@ test('holidays and overnight hours are evaluated without guessing unknown schedu
   assert.equal(status('2026-09-28T23:33:00Z','Mo 22:00-02:00').closesAt,'02:00');
   assert.equal(status('2026-09-28T10:00:00Z','"by appointment"').state,'unknown');
   assert.equal(status('2026-09-28T10:00:00Z','not hours').state,'unknown');
-  assert.equal(currentOpening({}),undefined);
+  assert.equal(berlin.currentOpening({}),undefined);
 });
 test('a 24/7 place has no closing time', () => {
   assert.deepEqual(status('2026-09-28T10:00:00Z','24/7'),{state:'open'});
@@ -35,28 +35,22 @@ test('open-ended hours do not imply a known closing time or an open badge', () =
   assert.equal(current.closesAt, undefined);
 });
 
-test('opening-hours adapters require an explicit matching calendar zone', () => {
-  assert.throws(()=>openingHours({countryCode:'de'}),/time zone/);
-  const hours = openingHours({countryCode:'de',timeZone:'Europe/Berlin'});
-  assert.doesNotThrow(()=>hours.assertEnvironment());
-  const utc = openingHours({countryCode:'de',timeZone:'UTC'});
-  assert.throws(()=>utc.assertEnvironment(),/calendar runtime/);
+test('each place uses its own country holidays in the region time zone', () => {
+  const day = {openDate:'2026-08-01'}, tag = 'Mo-Su 08:00-18:00; PH off';
+  const graubuenden = {lat:46.85, lon:9.53, region:'Graubünden', country:'ch', opening_hours:tag};
+  assert.equal(openingHours('Europe/Zurich').openingState(graubuenden, {}, day), 'closed');
+  assert.equal(berlin.openingState({...place, opening_hours:tag}, {}, day), 'open');
+  assert.throws(()=>openingHours(), /time zone/);
 });
 
-test('portable hours preserve all calendar results outside the region time zone', async () => {
-  const expected = hoursCases(null, ()=>'').samples.map(row=>row.result);
-  const bundle = await calendarBundle();
+test('regional hours match native Berlin results on hosts in other time zones', () => {
+  const host = Date;
+  const expected = hoursCases(null, ()=>'', {timeZone:'Europe/Berlin', openingState, currentOpening}).samples.map(row=>row.result);
   try {
     for (const zone of ['UTC', 'America/New_York', 'Asia/Tokyo', 'Pacific/Auckland']) {
       process.env.TZ = zone;
-      const context = vm.createContext({});
-      vm.runInContext('globalThis.originalDate = Date', context);
-      vm.runInContext(bundle, context);
-      const hours = vm.runInContext("PlannerCalendar.openingHours({countryCode:'de',timeZone:'Europe/Berlin'})", context);
-      const actual = hoursCases(null, () => '', hours).samples.map(row=>row.result);
-      assert.deepEqual(JSON.parse(JSON.stringify(actual)), expected, zone);
-      assert.equal(vm.runInContext('Date === originalDate', context), true);
-      assert.equal(new Intl.DateTimeFormat('en').resolvedOptions().timeZone, zone);
+      assert.deepEqual(hoursCases(null, ()=>'').samples.map(row=>row.result), expected, zone);
+      assert.equal(globalThis.Date, host);
     }
   } finally { process.env.TZ = 'Europe/Berlin'; }
 });

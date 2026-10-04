@@ -31,7 +31,7 @@ for place in json.load(sys.stdin): writer.add(place)
 writer.finish({'bounds':[7,47,9,49]})`,new URL('..',import.meta.url).pathname,directory],{input:JSON.stringify(records)});
     connection=new DatabaseSync(join(directory,'test.sqlite'),{readOnly:true});
     const db={all:(sql,params=[])=>connection.prepare(sql).all(...params)};
-    assert.equal(JSON.parse(db.all("SELECT value FROM metadata WHERE key='schema'")[0].value),4);
+    assert.equal(JSON.parse(db.all("SELECT value FROM metadata WHERE key='schema'")[0].value),5);
     const rows=db.all('SELECT website,phone,description FROM places ORDER BY id').map(row=>({...row}));
     assert.deepEqual(rows,[
       {website:'https://hotel.example',phone:'+49 123',description:'Tents welcome.'},
@@ -80,6 +80,7 @@ for component,output in outputs.items():
     assert.equal(places.filter(p=>p.kind==='city').length,1);
     assert.equal(places.filter(p=>p.kind==='street').length,1);
     assert.equal(new Set(places.map(p=>p.id)).size,4);
+    assert.ok(places.every(p=>p.country==='de'));
     for(const p of places)assert.ok(Number.isSafeInteger(p.id)&&p.id>0);
     assert.ok(places.find(p=>p.kind==='street').id>2**52);
     assert.ok(places.find(p=>p.kind==='hotel').id<2**52);

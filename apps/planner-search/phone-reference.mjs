@@ -5,7 +5,6 @@ import {run} from './phone-benchmark.mjs';
 import {run as runHours} from './phone-hours.mjs';
 
 const [file,output,mode] = process.argv.slice(2);
-if (mode==='--hours') process.env.TZ = 'Europe/Berlin';
 if (!file || !output) throw new Error('Usage: node phone-reference.mjs PACKAGE.sqlite OUTPUT.json');
 const db = new DatabaseSync(file,{readOnly:true});
 db.exec('PRAGMA cache_size=-32768; PRAGMA mmap_size=0');

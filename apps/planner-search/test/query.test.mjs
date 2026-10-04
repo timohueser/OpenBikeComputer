@@ -12,7 +12,7 @@ const never={parse(){throw new Error('Model must not run');}};
 
 test('shared runtime supplies one clock and explicit calendar capability for filtering and status', async()=>{
   const times=[], now=Date.parse('2026-09-28T10:00:00Z');
-  const hours={assertEnvironment(){},
+  const hours={
     openingState(_place,_filter,context){times.push(Date.parse(context.now));return 'open';},
     currentOpening(_place,time){times.push(time);return {state:'open'};}};
   assert.throws(()=>searchRuntime({db,parser:never}),/opening-hours adapters/);
@@ -21,16 +21,14 @@ test('shared runtime supplies one clock and explicit calendar capability for fil
   assert.ok(result.results.length);assert.ok(times.length>result.results.length);
   assert.ok(times.every(time=>time===now));
   assert.deepEqual(result.results[0].hoursStatus,{state:'open'});
-  hours.assertEnvironment=()=>{throw new Error('Wrong calendar zone');};
-  await assert.rejects(runtime.query(input),/Wrong calendar zone/);
 });
 
 test('native JSON capabilities preserve complete replies, metadata and reverse labels', async()=>{
   const fixture=database();
-  fixture.conn.prepare('INSERT INTO metadata VALUES (?,?)').run('schema','4');
+  fixture.conn.prepare('INSERT INTO metadata VALUES (?,?)').run('schema','5');
+  fixture.conn.prepare('INSERT INTO metadata VALUES (?,?)').run('time_zone','"Europe/Berlin"');
   fixture.conn.prepare('INSERT INTO metadata VALUES (?,?)').run('attribution',JSON.stringify(['OSM contributors']));
-  const hours={assertEnvironment(){},openingState(){return 'unknown';},currentOpening(){return undefined;}};
-  const native=nativeSearch({region:'test',hours,
+  const native=nativeSearch({region:'test',
     all:(sql,bind)=>JSON.stringify({rows:fixture.db.all(sql,JSON.parse(bind))})});
   const answer=await native.request('query',{...input,q:'reverse this route',now:'2026-09-28T10:00:00Z'});
   assert.match(answer.notice,/structured request/);assert.equal(answer.canRetry,true);

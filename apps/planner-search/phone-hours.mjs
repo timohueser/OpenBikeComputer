@@ -12,11 +12,10 @@ const dates = [
   '2026-10-25T00:59:00Z','2026-10-25T01:00:00Z','2026-06-21T03:00:00Z','2026-07-30T10:00:00Z',
 ];
 
-export function run(_all,digest,hours=openingHours({countryCode:'de',timeZone:'Europe/Berlin'})) {
-  hours.assertEnvironment();
+export function run(_all,digest,hours=openingHours('Europe/Berlin')) {
   const samples = [];
   for (const schedule of schedules) {
-    const place = {lat:48.13,lon:7.81,region:'Baden-Württemberg',opening_hours:schedule};
+    const place = {lat:48.13,lon:7.81,region:'Baden-Württemberg',country:'de',opening_hours:schedule};
     for (const now of dates) {
       const started = performance.now();
       const result = {current:hours.currentOpening(place,Date.parse(now)),filtered:hours.openingState(place,{now:true},{now})};
@@ -32,6 +31,5 @@ export function run(_all,digest,hours=openingHours({countryCode:'de',timeZone:'E
     }
   }
   return {scope:'Shared opening_hours evaluator',calendarZone:hours.timeZone,
-    hostTimeZone:new Intl.DateTimeFormat('en').resolvedOptions().timeZone,
-    hostDateZone:Date.timeZone ?? new Intl.DateTimeFormat('en').resolvedOptions().timeZone,samples};
+    hostTimeZone:new Intl.DateTimeFormat('en').resolvedOptions().timeZone,samples};
 }

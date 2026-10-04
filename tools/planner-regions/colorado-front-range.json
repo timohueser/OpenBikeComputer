@@ -6,6 +6,7 @@
   "countries": [
     "US"
   ],
+  "time_zone": "America/Denver",
   "profiles": [
     "gravel",
     "gravel/less-climbing",

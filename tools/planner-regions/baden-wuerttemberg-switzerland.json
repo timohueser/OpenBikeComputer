@@ -8,6 +8,7 @@
     "CH",
     "LI"
   ],
+  "time_zone": "Europe/Berlin",
   "profiles": [
     "gravel",
     "gravel/less-climbing",

@@ -57,7 +57,8 @@ def build_search(stage, records, config, component):
     maps.run("uv", "run", "--with-requirements", SEARCH / "requirements-build.txt", "python", SEARCH / "build.py",
              records / f"{component}.jsonl.zst", "--component", component, "--output", stage,
              "--region", config["region"], "--bounds", ",".join(map(str, config["bounds"])),
-             "--countries", ",".join(config["countries"]), "--osm-sha256", config["osm"]["sha256"], cwd=maps.ROOT)
+             "--countries", ",".join(config["countries"]), "--osm-sha256", config["osm"]["sha256"],
+             "--time-zone", config["time_zone"], cwd=maps.ROOT)
     releases.search_metadata(stage / f"{config['region']}.sqlite", full=True)
     (stage / "regions.geojson").unlink(missing_ok=True)
 
@@ -173,7 +174,8 @@ def specifications(config, prepared=None):
         paths=[SEARCH / "split.py", SEARCH / "records.py", SEARCH / "requirements-build.txt"])
     common = [SEARCH / path for path in ["build.py", "writer.py", "records.py", "storage.py", "index.py", "schema.sql", "indexes.sql", "web/address-terms.json", "requirements-build.txt"]]
     for component in ["pois", "addresses"]:
-        add(component, build_search, {"osm": osm}, {"region": config["region"], "countries": config["countries"], "component": component, "schema": 4},
+        add(component, build_search, {"osm": osm}, {"region": config["region"], "countries": config["countries"],
+            "time_zone": config["time_zone"], "component": component, "schema": 5},
             ["source-records"], [*common, SEARCH / f"{component}.py"])
     add("basemap", build_basemap, {}, dependencies=["source-basemap"])
     map_requirements = maps.ROOT / "tools/requirements-planner-maps.txt"

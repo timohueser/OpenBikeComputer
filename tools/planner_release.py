@@ -27,7 +27,7 @@ def read_url(url):
 def search_metadata(database, full=False):
     with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as db:
         metadata = {k: json.loads(v) for k, v in db.execute("SELECT key,value FROM metadata")}
-        if metadata.get("schema") != 4:
+        if metadata.get("schema") != 5:
             raise ValueError(f"Rebuild search package {database}: incompatible schema.")
         try:
             db.execute('SELECT rowid FROM addresses INDEXED BY address_cells LIMIT 0')
@@ -71,6 +71,8 @@ def seal(data, region, device_catalog, provenance):
     metadata = search[0]
     if any(item.get("osm_sha256") != metadata.get("osm_sha256") or item.get("bounds") != metadata.get("bounds") for item in search):
         raise ValueError("Search components must use one OSM snapshot and coverage")
+    if not metadata.get("time_zone") or any(item.get("time_zone") != metadata["time_zone"] for item in search):
+        raise ValueError("Search components must name one region time zone")
     if len(databases) == 2 and [item.get("component") for item in search] != ["pois", "addresses"]:
         raise ValueError("Search component ownership differs")
     osm = map_manifest["osm_sha256"]
@@ -112,7 +114,7 @@ def seal(data, region, device_catalog, provenance):
                 files[path.relative_to(data).as_posix()] = {"bytes": path.stat().st_size, "sha256": sources.digest(path)}
     for database in databases:
         files[database.relative_to(data).as_posix()] = {"bytes": database.stat().st_size, "sha256": sources.digest(database)}
-    document = {"format": 1, "region": region, "bounds": routing["bounds"], "osm_sha256": osm,
+    document = {"format": 1, "region": region, "bounds": routing["bounds"], "time_zone": metadata["time_zone"], "osm_sha256": osm,
                 "routing_package": sources.digest(data / "routing/manifest.json"), "profiles": sorted(routing["metrics"]),
                 "attribution": routing["attribution"], "terrain_attribution": map_manifest["terrain_attribution"],
                 "terrain_bounds": map_manifest["terrain_bounds"], "sources": provenance,
