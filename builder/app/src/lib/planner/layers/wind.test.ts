@@ -31,7 +31,7 @@ describe('wind map', () => {
         const [north, south] = windMap([overview()], 0, APRIL, 1).cells.features.map(f => f.geometry.coordinates[0]);
         expect(north[0][1]).toBe(south[2][1]);
         expect(north[0]).toEqual([-180 + 0.1 * 1878.5, 90 - 0.1 * 420.5]);
-        expect(arrows.features.map(f => f.properties)).toEqual([{ icon: 'wind-arrow-2', rotate: 0, label: '5–10' }, { icon: 'wind-double-1', rotate: 270, label: '5–10' }]);
+        expect(arrows.features.map(f => f.properties)).toEqual([{ icon: 'wind-arrow-2', rotate: 0, label: '5-10' }, { icon: 'wind-double-1', rotate: 270, label: '5-10' }]);
         const [lon, lat] = arrows.features[0].geometry.coordinates;
         expect([lon, lat].map(v => v.toFixed(6))).toEqual(['7.900000', '48.000000']);
     });
@@ -85,7 +85,7 @@ describe('wind along a route', () => {
         const speeds = speedRow(cells(), [0, 1, 2]);
         expect(speeds[WEEK]).toBe(2.5);
         const year = windYear({ row, speeds }, '2026-04-16', 'light');
-        expect(year.label).toBe('Chance of headwind on the route in April: 25 % · typically 5–10 km/h');
+        expect(year.label).toBe('Chance of headwind on the route in April: 25 % · wind typically 5–10 km/h');
         expect(year.rows[0].cells[0]).toBe(0);
         expect(year.rows[0].cells[WEEK]).toBe(1);
         expect(year.rows[0].cells[51]).toBe(3);
@@ -98,13 +98,14 @@ describe('wind along a route', () => {
 describe('wind speed', () => {
     it('gives a speed as its 5 km/h range, never a single value', () => {
         // The archive steps of 0.5 m/s are 1.8 km/h.
-        expect([0, 1, 2.5, 2.5 + 1 / 3.6, 3, 4.5, 12.5].map(kmhRange)).toEqual(['0–5', '0–5', '5–10', '10–15', '10–15', '15–20', '45–50']);
+        expect([0, 1, 2.5, 2.5 + 1 / 3.6, 3, 4.5, 12.5].map(speed => kmhRange(speed))).toEqual(['0–5', '0–5', '5–10', '10–15', '10–15', '15–20', '45–50']);
+        expect(kmhRange(3, '-')).toBe('10-15');
     });
 
     it('labels the map legend in km/h', () => {
         const legend = mapLegend('light');
-        expect('scale' in legend && legend.scale.map(stop => stop.label)).toEqual(['10', '', '15', '', '20+ km/h']);
-        expect(legend.marks?.[0].label).toBe('No colour: under 9 km/h');
+        // The legend stops are the paint stops: from 2.5 m/s to the ramp end at 5 m/s.
+        expect('scale' in legend && legend.scale.map(stop => stop.label)).toEqual(['9', '', '', '', '', '18+ km/h']);
     });
 });
 
@@ -116,13 +117,16 @@ describe('wind at a point', () => {
         expect(chart.headline).toBe('Daytime wind in April');
         expect(chart.grids).toEqual([]);
         // 85 % from the south plus an even rest of 1 % per sector: 87 % in the window round N.
-        expect(rose?.facts).toEqual(['Blows towards NNW–NNE on 87 % of April daytime hours', 'Typically 5–10 km/h around 16 Apr']);
+        expect(rose?.facts).toEqual(['Blows towards NNW–NNE on 87 % of April daytime hours', 'Wind typically 5–10 km/h around 16 Apr (daytime, all directions)']);
         expect(rose?.shares[0]).toBeCloseTo(0.85);
     });
 
-    it('puts the headwind chance and the all-direction speed first on a route', () => {
+    it('gives the headwind and tailwind chances on a route, and the all-direction speed on its own line', () => {
         const { rose } = at(180);
-        expect(rose?.facts.slice(0, 2)).toEqual(['Headwind on 88 % of hours · typically 5–10 km/h', 'Tailwind on 4 % of hours for your direction']);
+        expect(rose?.facts).toEqual([
+            'Headwind on 88 % of hours for your direction', 'Tailwind on 4 % of hours for your direction',
+            'Wind typically 5–10 km/h around 16 Apr (daytime, all directions)',
+        ]);
         expect(rose?.bearing).toBe(180);
         expect(windChart({}, '2026-04-16')).toEqual({ chart: { headline: 'No wind data here', grids: [], note: '~9 km grid, daytime wind (09–18 h)' } });
     });
@@ -130,7 +134,7 @@ describe('wind at a point', () => {
     it('names both windows of two opposite winds, and leaves out a missing speed', () => {
         const rose = Float32Array.from({ length: SECTORS }, (_, s) => [4, 12].includes(s) ? 0.4 : 0.2 / 14);
         expect(windFacts(rose, NaN, '2026-04-16')).toEqual(['Blows towards ENE–ESE on 43 % and WSW–WNW on 43 % of April daytime hours']);
-        expect(windFacts(rose, NaN, '2026-04-16', 90)[0]).toBe('Headwind on 44 % of hours');
+        expect(windFacts(rose, NaN, '2026-04-16', 90)).toEqual(['Headwind on 44 % of hours for your direction', 'Tailwind on 44 % of hours for your direction']);
         expect(windFacts(Float32Array.from({ length: SECTORS }, () => NaN), 3, '2026-04-16')).toEqual([]);
     });
 });

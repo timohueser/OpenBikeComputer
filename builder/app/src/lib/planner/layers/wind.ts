@@ -2,7 +2,7 @@
 // chance along a route and the rose at a point. Everywhere, a direction is where the wind blows towards.
 import type { ExpressionSpecification } from 'maplibre-gl';
 import type { FeatureCollection, Point, Polygon } from 'geojson';
-import { OVERVIEW, SECTORS, WEEKS, cellAt, cellCentre, cellOf, locate, read, tileCells, weekMonth, windChance, windMode, windRose, type ClimateTile } from './climate';
+import { OVERVIEW, SECTORS, WEEKS, cellAt, cellCentre, cellOf, locate, read, tileCells, weekMonth, windChance, windMode, windRose, windows, type ClimateTile } from './climate';
 import type { CellRef } from './climate-source';
 import { dateLabel, weekOf, type Chart, type Grid, type Legend, type Swatch, type Theme } from './data-layer';
 
@@ -38,25 +38,23 @@ export const PAINT_FROM = 2.5;
 const KMH = 3.6;
 
 /**
- * A speed in m/s as its 5 km/h range, "10–15". ERA5-Land daytime wind reads 0.6–1.0 m/s below
- * stations, so the UI never shows a single precise speed.
+ * A speed in m/s as its 5 km/h range, "10–15": the value is the mean of a ~9 km cell, so the UI
+ * never shows a single precise speed. Map labels pass a hyphen, which the first glyph range holds.
  */
-export function kmhRange(speed: number): string {
+export function kmhRange(speed: number, dash = '–'): string {
     const low = 5 * Math.floor(speed * KMH / 5 + 1e-9);
-    return `${low}–${low + 5}`;
+    return `${low}${dash}${low + 5}`;
 }
 
-/** Legend stops in km/h; the colours stop changing at the fastest ramp speed. */
-const LEGEND_KMH = [10, 12.5, 15, 17.5, 20];
-
-/** The map legend: the painted part of the scale in km/h, the unpainted calm cells and the arrow key. */
+/** The map legend: the paint scale from `PAINT_FROM` to the fastest ramp speed in 0.5 m/s steps, labelled at both ends in km/h, and the arrow key. */
 export function mapLegend(theme: Theme): Legend {
+    const top = SPEEDS.at(-1)!, steps = 2 * (top - PAINT_FROM);
     return {
-        scale: LEGEND_KMH.map((kmh, i) => ({
-            color: speedColor(kmh / KMH, theme),
-            label: i === LEGEND_KMH.length - 1 ? `${kmh}+ km/h` : Number.isInteger(kmh / 5) ? String(kmh) : '',
-        })),
-        marks: [{ label: `No colour: under ${Math.round(PAINT_FROM * KMH)} km/h`, path: 'M5 8h14v8H5Z', width: 1 }, ...ARROW_MARKS],
+        scale: Array.from({ length: steps + 1 }, (_, i) => {
+            const speed = PAINT_FROM + i / 2, kmh = Math.round(speed * KMH);
+            return { color: speedColor(speed, theme), label: i === steps ? `${kmh}+ km/h` : i ? '' : String(kmh) };
+        }),
+        marks: [{ label: 'Light wind: no colour', path: 'M5 8h14v8H5Z', width: 1 }, ...ARROW_MARKS],
     };
 }
 
@@ -129,7 +127,7 @@ export function windMap(tiles: ClimateTile[], week: number, month: number, strid
             if (speed >= PAINT_FROM) cells.push({ type: 'Feature', properties: { speed }, geometry: { type: 'Polygon', coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]] } });
             if (cell.col % stride || cell.row % stride) continue;
             const mode = windMode(windRose(tile, index, month));
-            if (mode) arrows.push({ type: 'Feature', properties: { icon: arrowIcon(mode), rotate: arrowAxis(mode), label: kmhRange(speed) }, geometry: { type: 'Point', coordinates: cellCentre(cell) } });
+            if (mode) arrows.push({ type: 'Feature', properties: { icon: arrowIcon(mode), rotate: arrowAxis(mode), label: kmhRange(speed, '-') }, geometry: { type: 'Point', coordinates: cellCentre(cell) } });
         }
     }
     return { cells: { type: 'FeatureCollection', features: cells }, arrows: { type: 'FeatureCollection', features: arrows } };
@@ -181,8 +179,8 @@ const monthName = (month: number) => new Date(Date.UTC(2001, month, 15)).toLocal
 const percent = (share: number) => `${Math.round(100 * share)} %`;
 const COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
 
-/** " · typically 10–15 km/h", or nothing without a speed. */
-const typically = (speed: number) => Number.isNaN(speed) ? '' : ` · typically ${kmhRange(speed)} km/h`;
+/** " · wind typically 10–15 km/h", or nothing without a speed. */
+const typically = (speed: number) => Number.isNaN(speed) ? '' : ` · wind typically ${kmhRange(speed)} km/h`;
 
 /** The year slider: the headwind chance of each month along the route from `windRow`, and the typical speed of the week from `speedRow`. */
 export function windYear(route: { row: ArrayLike<number>; speeds: ArrayLike<number> } | null, date: string, theme: Theme): Grid {
@@ -201,22 +199,22 @@ export interface RoseView { shares: number[]; bearing?: number; month: string; f
 
 /** The three sectors of a `windMode` window, named by its outer sectors: "W–NW" for the window centred on WNW. */
 const span = (sector: number) => `${COMPASS[(sector + SECTORS - 1) % SECTORS]}–${COMPASS[(sector + 1) % SECTORS]}`;
-const windowShare = (rose: ArrayLike<number>, sector: number) => rose[(sector + SECTORS - 1) % SECTORS] + rose[sector] + rose[(sector + 1) % SECTORS];
 
 /**
- * The plain facts of a point: on a route the headwind and tailwind chances for the travel bearing,
- * the main directions of the month of `date` and the typical speed of its week. Shares are whole
- * percent; the speed is the mean over all directions, never a headwind speed.
+ * The plain facts of a point: the main directions of the month of `date`, or on a route the headwind
+ * and tailwind chances for the travel bearing, and the typical speed of the week. Shares are whole
+ * percent; the speed is the mean over all directions, so it has its own line.
  */
 export function windFacts(rose: ArrayLike<number>, speed: number, date: string, bearing?: number): string[] {
     const mode = windMode(rose);
     if (!mode) return [];
     const name = monthName(weekMonth(weekOf(date)));
-    const second = mode.opposite === undefined ? '' : ` and ${span(mode.opposite)} on ${percent(windowShare(rose, mode.opposite))}`;
+    const second = mode.opposite === undefined ? '' : ` and ${span(mode.opposite)} on ${percent(windows(rose)[mode.opposite])}`;
     const direction = `Blows towards ${span(mode.towards)} on ${percent(mode.steadiness)}${second} of ${name} daytime hours`;
-    if (bearing === undefined) return Number.isNaN(speed) ? [direction] : [direction, `Typically ${kmhRange(speed)} km/h around ${dateLabel(date)}`];
+    const strength = Number.isNaN(speed) ? [] : [`Wind typically ${kmhRange(speed)} km/h around ${dateLabel(date)} (daytime, all directions)`];
+    if (bearing === undefined) return [direction, ...strength];
     const { head, tail } = windChance(rose, bearing);
-    return [`Headwind on ${percent(head)} of hours${typically(speed)}`, `Tailwind on ${percent(tail)} of hours for your direction`, direction];
+    return [`Headwind on ${percent(head)} of hours for your direction`, `Tailwind on ${percent(tail)} of hours for your direction`, ...strength];
 }
 
 /** The point chart: the daytime rose of the month with its facts, from the overview cell. */
@@ -226,5 +224,5 @@ export function windChart({ overview, bearing }: { overview?: CellRef; bearing?:
     const shares = windRose(overview.tile, overview.index, month), facts = windFacts(shares, read(overview.tile, 'wind', week, overview.index), date, bearing);
     if (!facts.length) return none;
     const name = monthName(month);
-    return { chart: { headline: `Daytime wind in ${name}`, grids: [], note: `${WIND_NOTE}; the typical speed is for all directions` }, rose: { shares: Array.from(shares), bearing, month: name, facts } };
+    return { chart: { headline: `Daytime wind in ${name}`, grids: [], note: WIND_NOTE }, rose: { shares: Array.from(shares), bearing, month: name, facts } };
 }
