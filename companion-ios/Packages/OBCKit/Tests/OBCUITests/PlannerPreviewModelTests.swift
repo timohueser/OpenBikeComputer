@@ -302,8 +302,8 @@ struct PlannerPreviewModelTests {
 
     @Test func theWaypointsOfAKeptLineAreMarkersAndExportAgain() async throws {
         let line = [(47.99, 7.85), (47.97, 7.95), (47.93, 8.00)].map { RoutePoint(coordinate: Coordinate(latitude: $0.0, longitude: $0.1)) }
-        let spring = Waypoint(index: 0, name: "Spring", distanceAlongMeters: 0, coordinate: Coordinate(latitude: 47.975, longitude: 7.93),
-                              category: .water)
+        let spring = Waypoint(index: 0, name: "Spring", note: "Cold all year", distanceAlongMeters: 0,
+                              coordinate: Coordinate(latitude: 47.975, longitude: 7.93), category: .water)
         let hut = Waypoint(index: 1, name: "Hut", distanceAlongMeters: 0, coordinate: Coordinate(latitude: 47.94, longitude: 7.99),
                            category: .accommodation)
         let model = PlannerPreviewModel(plan: try #require(PlannerPlan.keptLine(line, waypoints: [hut, spring])), service: PlannerTestSource())
@@ -312,6 +312,9 @@ struct PlannerPreviewModelTests {
         let waypoints = model.exportRoute(name: "Ride").waypoints
         #expect(waypoints.map(\.name) == ["Spring", "Hut"] && waypoints.map(\.category) == [.water, .accommodation])
         #expect(waypoints.map(\.index) == [0, 1] && waypoints[0].distanceAlongMeters < waypoints[1].distanceAlongMeters)
+        // Off the line, as the import placed it: a signed offset and the note stay.
+        #expect(waypoints[0].note == "Cold all year" && waypoints[0].lateralOffsetMeters < -500)
+        #expect(model.exportPlan().markers.first { $0.label == "Spring" }?.note == "Cold all year")
     }
 
     @Test func aLegWithADrawnLineCanRouteAndGoBack() async throws {

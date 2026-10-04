@@ -69,16 +69,20 @@ public struct PlanPoint: Codable, Equatable, Sendable {
     public var drawn: [RoutePoint]?
     /// Only `true` is written.
     public var turnaround: Bool?
+    /// A line about the place, such as a route file's waypoint description.
+    public var note: String?
 
     public init(id: String, label: String, coordinate: Coordinate, progress: Double, kind: Kind, night: Int? = nil,
-                placeKind: String? = nil, leg: Leg? = nil, drawn: [RoutePoint]? = nil, turnaround: Bool = false) {
+                placeKind: String? = nil, leg: Leg? = nil, drawn: [RoutePoint]? = nil, turnaround: Bool = false,
+                note: String? = nil) {
         self.id = id; self.label = label; self.coordinate = coordinate; self.progress = progress; self.kind = kind
         self.night = night; self.placeKind = placeKind; self.leg = leg; self.drawn = drawn
         self.turnaround = turnaround ? true : nil
+        self.note = note
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, label, coordinate, progress, kind, night, placeKind, leg, drawn, turnaround
+        case id, label, coordinate, progress, kind, night, placeKind, leg, drawn, turnaround, note
     }
 
     // Coordinates are `[longitude, latitude]`; a drawn vertex can add its elevation in metres.
@@ -103,6 +107,7 @@ public struct PlanPoint: Codable, Equatable, Sendable {
             return RoutePoint(coordinate: Coordinate(latitude: vertex[1], longitude: vertex[0]), elevationMeters: vertex.count == 3 ? vertex[2] : nil)
         }
         turnaround = try c.decodeIfPresent(Bool.self, forKey: .turnaround) == true ? true : nil
+        note = try c.decodeIfPresent(String.self, forKey: .note)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -118,6 +123,7 @@ public struct PlanPoint: Codable, Equatable, Sendable {
         try c.encodeIfPresent(drawn?.map { [$0.coordinate.longitude, $0.coordinate.latitude] + ($0.elevationMeters.map { [$0] } ?? []) },
                               forKey: .drawn)
         try c.encodeIfPresent(turnaround, forKey: .turnaround)
+        try c.encodeIfPresent(note, forKey: .note)
     }
 }
 
@@ -138,7 +144,7 @@ extension PlannerPlan {
                       leg: .drawn, drawn: drawnLeg(from: first, along: line)),
         ] + waypoints.enumerated().map { index, waypoint in
             PlanPoint(id: "waypoint-\(index + 1)", label: waypoint.name, coordinate: waypoint.coordinate, progress: 0,
-                      kind: .marker, placeKind: waypoint.category?.placeKind)
+                      kind: .marker, placeKind: waypoint.category?.placeKind, note: waypoint.note)
         }, mode: .route)
     }
 

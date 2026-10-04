@@ -14,7 +14,7 @@ struct PlannerPlanTests {
                       placeKind: "camping", leg: .drawn, drawn: [RoutePoint(coordinate: at(8.05, 46.51), elevationMeters: 612), RoutePoint(coordinate: at(8.07, 46.52))]),
             PlanPoint(id: "v", label: "Shaping point", coordinate: at(8.2), progress: 0.6, kind: .via, turnaround: true),
             PlanPoint(id: "finish", label: "Sion", coordinate: at(8.3), progress: 1, kind: .finish, leg: .transfer),
-            PlanPoint(id: "m", label: "View", coordinate: at(8.15, 46.6), progress: 0, kind: .marker),
+            PlanPoint(id: "m", label: "View", coordinate: at(8.15, 46.6), progress: 0, kind: .marker, note: "Best at dusk"),
         ], mode: .route, bike: "gravel", preset: "Balanced", routeOrder: ["night-1", "v"])
 
         let json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(plan)) as? [String: Any])
@@ -27,7 +27,7 @@ struct PlannerPlanTests {
         #expect(points[1]["kind"] as? String == "night" && points[1]["night"] as? Int == 1 && points[1]["leg"] as? String == "drawn")
         #expect(points[1]["drawn"] as? [[Double]] == [[8.05, 46.51, 612], [8.07, 46.52]] && points[1]["placeKind"] as? String == "camping")
         #expect(points[2]["kind"] as? String == "via" && points[2]["turnaround"] as? Bool == true)
-        #expect(points[3]["leg"] as? String == "transfer")
+        #expect(points[3]["leg"] as? String == "transfer" && points[4]["note"] as? String == "Best at dusk" && points[0]["note"] == nil)
 
         let decoded = try JSONDecoder().decode(PlannerPlan.self, from: JSONEncoder().encode(plan))
         #expect(decoded == plan)
