@@ -26,7 +26,9 @@ The answer is `{"routes": [...]}`. The first route is the primary route. With
 `alternatives_only`, the answer holds only the alternative routes, and it can be
 empty. `alternatives_only` overrides `alternatives` when both are `true`. When the
 primary route fails, an `alternatives_only` request fails with that error, not
-with an empty answer. Each route has these fields:
+with an empty answer. When the deadline or a limit stops the search for
+alternatives after the primary route, the answer holds the routes found before
+it. Each route has these fields:
 
 | Field | Value |
 | --- | --- |
@@ -139,12 +141,10 @@ request with these points and the same profile follows the line.
 | --- | --- |
 | `line` | 2 to 2,000 `[longitude, latitude]` pairs in degrees, at most 200 km long |
 | `profile` | A profile ID from `GET /v1/region` |
-| `loop` | Optional, default `false`. `true` when the line ends at its start |
 
 The service rejects unknown fields. The body limit is 64 KiB for both requests.
 Simplify a track within 10 m and send 6 decimals before the request: then a
-200 km track fits. The service also simplifies the line within 10 m. It closes a
-loop with a straight segment from the last line point to the first.
+200 km track fits. The service also simplifies the line within 10 m.
 
 The answer is `{"points": [...], "turnarounds": [...]}`:
 
@@ -154,9 +154,8 @@ The answer is `{"points": [...], "turnarounds": [...]}`:
 | `turnarounds` | Ascending indices in `points` where the line turns back |
 
 Each point is on a road, where the route attaches it. The first point is the
-start of the line. For an open line, the last point is the end of the line. For
-a loop, the start is in `points` once: send it again as the last route point.
-Send `turnarounds` unchanged as the `turnarounds` of the route request.
+start of the line, and the last point is the end of the line. Send
+`turnarounds` unchanged as the `turnarounds` of the route request.
 
 The route follows the line when its deviation is at most 2 % of the line length.
 The deviation is the length of the route farther than 30 m from the line, plus
@@ -174,7 +173,8 @@ An error answer is `{"code", "message"}`. It never contains a substitute route.
 The service attaches each point to the nearest road that the profile can use,
 within 250 m. When none is that near, it uses the nearest one within 1 km. When
 no route reaches the nearest road of a point that is not on a road, it uses the
-next nearest road within 1 km. `no_snap` means that no such road is within 1 km.
+next nearest road within 1 km. When that retry reaches a limit, the error stays
+`no_path`. `no_snap` means that no such road is within 1 km.
 
 `line_too_long` means that a shape line has more than 2,000 points or is longer
 than 200 km. `line_not_reproducible` means that the search found no plan of at
