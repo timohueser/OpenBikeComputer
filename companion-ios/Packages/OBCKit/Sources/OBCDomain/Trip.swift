@@ -89,9 +89,6 @@ public struct Trip: Identifiable, Equatable, Sendable {
     public var deviceLink: DeviceRouteLink?
     /// The CRC-32 of the trip object the device last committed. Nil reads as outdated.
     public var uploadedCRC32: UInt32?
-    /// The trip key of the trip object the device last committed. When it differs from ``key``,
-    /// the device holds progress for the old direction under that object.
-    public var uploadedKey: UInt64?
     /// When the trip entered the library, which is the newest-first list order.
     public var addedAt: Date
     /// When the rider last changed the trip. Import offers to add a file to the most recently
@@ -114,7 +111,6 @@ public struct Trip: Identifiable, Equatable, Sendable {
         dayCopies: [TripDayCopy?] = [],
         deviceLink: DeviceRouteLink? = nil,
         uploadedCRC32: UInt32? = nil,
-        uploadedKey: UInt64? = nil,
         addedAt: Date,
         editedAt: Date? = nil,
         plan: PlannerPlan? = nil
@@ -132,7 +128,6 @@ public struct Trip: Identifiable, Equatable, Sendable {
         self.dayCopies = dayCopies
         self.deviceLink = deviceLink
         self.uploadedCRC32 = uploadedCRC32
-        self.uploadedKey = uploadedKey
         self.addedAt = addedAt
         self.editedAt = editedAt ?? addedAt
         self.plan = plan

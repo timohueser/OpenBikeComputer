@@ -192,9 +192,12 @@ public final class PlannerPreviewModel {
             try Task.checkCancellation()
             guard revision == routingRevision else { return }
             path = result
-            routeLine = MeasuredLine(routePoints: result.points)
+            // A transfer is no ride: the line has a gap where it ends, so it adds no distance.
+            let gaps = key.legs.indices.filter { key.legs[$0]?.mode == .transfer }.map { result.pointIndices[$0 + 1] }
+            routeLine = MeasuredLine(coordinates: result.points.map(\.coordinate), elevations: result.points.map(\.elevationMeters),
+                                     pieceStarts: gaps)
             geometry = result.points.map(\.coordinate)
-            profile = PlannerPreviewGrade(routePoints: result.points)
+            profile = PlannerPreviewGrade(routePoints: result.points, line: routeLine)
         } catch is CancellationError {} catch {
             guard revision == routingRevision else { return }
             path = nil; routeLine = MeasuredLine(routePoints: []); geometry = []; profile = PlannerPreviewGrade(routePoints: [])
@@ -313,24 +316,35 @@ public final class PlannerPreviewModel {
         }
     }
 
-    /// Each day's ridden figures: a day ends at a night, the last at the finish. A transfer adds none.
+    /// Each day's ridden figures: a day ends at a night, the last at the finish. A transfer is a gap
+    /// in ``routeLine``, so it adds none.
     public var dayStats: [PlannerPreviewStats] {
         let legs = legRanges
         guard let path, !state.nights.isEmpty, !legs.isEmpty else { return [stats] }
         let vertices = routeLine.vertices
-        let ridden = legs.filter { $0.mode != .transfer }.reduce(0.0) { $0 + vertices[$1.to].distance - vertices[$1.from].distance }
-        let scale = ridden > 0 ? path.distance / ridden : 0
         var days: [PlannerPreviewStats] = [], day = (distance: 0.0, ascent: 0.0, seconds: 0.0)
         for (index, leg) in legs.enumerated() {
-            if leg.mode != .transfer {
-                let a = vertices[leg.from].distance, b = vertices[leg.to].distance
-                day.distance += (b - a) * scale; day.ascent += routeLine.climb(from: a, to: b)
-            }
+            let a = vertices[leg.from].distance, b = vertices[leg.to].distance
+            day.distance += b - a; day.ascent += routeLine.climb(from: a, to: b)
             day.seconds += path.elapsed[leg.to] - path.elapsed[leg.from]
             if index == legs.count - 1 || state.nights.contains(state.route[index + 1].id) {
                 days.append(.init(distanceMeters: day.distance, ascentMeters: day.ascent, seconds: max(0, day.seconds)))
                 day = (0, 0, 0)
             }
+        }
+        return days
+    }
+
+    /// Where each day starts and ends. A day that starts with a transfer starts where the
+    /// transfer reaches.
+    public var dayPlaces: [(from: PlannerPreviewPlace, to: PlannerPreviewPlace)] {
+        let route = state.route, legs = state.legIDs
+        guard route.count > 1 else { return [] }
+        var days: [(from: PlannerPreviewPlace, to: PlannerPreviewPlace)] = [], from = 0
+        for index in 1..<route.count where index == route.count - 1 || state.nights.contains(route[index].id) {
+            let start = state.legs[legs[from]]?.mode == .transfer && from + 1 < index ? from + 1 : from
+            days.append((route[start].place, route[index].place))
+            from = index
         }
         return days
     }
@@ -453,7 +467,8 @@ public final class PlannerPreviewModel {
         let label = point.kind == .shape ? Self.shapeName : name ?? Self.mapPointName
         edit { next in
             guard let index = next.points.firstIndex(where: { $0.id == id }) else { return }
-            next.points[index].place = .init(id: UUID().uuidString, name: label, coordinate: coordinate)
+            next.points[index].place = .init(id: UUID().uuidString, name: label, coordinate: coordinate,
+                                             kind: point.place.kind, note: point.place.note)
         }
     }
 
@@ -524,6 +539,14 @@ public final class PlannerPreviewModel {
         state.legs[LegID(from: hit.from, to: hit.to)] ?? .init(mode: .routed)
     }
 
+    /// The modes a leg can take: "As imported" only with a drawn line, a transfer only between days.
+    public func legModes(_ hit: PlannerPreviewLegHit) -> [PlanPoint.Leg] {
+        let leg = leg(hit)
+        return [.routed, .straight, .drawn, .transfer].filter { mode in
+            mode == leg.mode || (mode != .drawn || leg.drawn != nil) && (mode != .transfer || state.nights.contains(hit.from))
+        }
+    }
+
     /// A leg with a drawn line can follow the router and go back to the line.
     public func setLegMode(_ hit: PlannerPreviewLegHit, to mode: PlanPoint.Leg) {
         setLegMode(LegID(from: hit.from, to: hit.to), to: mode)
@@ -538,7 +561,8 @@ public final class PlannerPreviewModel {
 
     private func setLegMode(_ id: LegID, to mode: PlanPoint.Leg) {
         let leg = state.legs[id] ?? .init(mode: .routed)
-        guard state.legIDs.contains(id), mode != leg.mode, mode != .drawn || leg.drawn != nil else { return }
+        guard state.legIDs.contains(id), mode != leg.mode, mode != .drawn || leg.drawn != nil,
+              mode != .transfer || state.nights.contains(id.from) else { return }
         edit { $0.legs[id] = mode == .routed && leg.drawn == nil ? nil : .init(mode: mode, drawn: leg.drawn) }
     }
 
@@ -599,6 +623,7 @@ public final class PlannerPreviewModel {
         for (from, to) in zip(ends, ends.dropFirst()) where (to.leg ?? .routed) != .routed || to.drawn != nil {
             state.legs[LegID(from: from.id, to: to.id)] = .init(mode: to.leg ?? .routed, drawn: to.drawn)
         }
+        dropTransfersInsideDays(&state)
         return state
     }
 
@@ -723,10 +748,17 @@ public final class PlannerPreviewModel {
             guard moved.contains(entry.key.from) || moved.contains(entry.key.to) else { legs[entry.key] = entry.value; return }
             if entry.value.mode == .straight || entry.value.mode == .transfer { legs[entry.key] = .init(mode: entry.value.mode) }
         }
+        Self.dropTransfersInsideDays(&next)
         guard next != state else { return }
         let key = routingKey
         past.append(state); state = next; future.removeAll()
         invalidateRoute(from: key)
+    }
+    /// A transfer runs only between days, from a night: inside a day it is routed.
+    private static func dropTransfersInsideDays(_ state: inout State) {
+        for (id, leg) in state.legs where leg.mode == .transfer && !state.nights.contains(id.from) {
+            state.legs[id] = leg.drawn.map { .init(mode: .routed, drawn: $0) }
+        }
     }
     static let startName = "Start", shapeName = "Shaping point", mapPointName = "Map point"
     private static func newPoint(_ place: PlannerPreviewPlace, kind: PlannerPreviewPointKind = .visit, in state: State) -> PlannerPreviewPoint {

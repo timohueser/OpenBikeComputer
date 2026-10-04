@@ -11,8 +11,7 @@ public enum LineMarkerEvent: Equatable, Sendable {
 
 /// The state and the drag math behind `LineMarkerEditor`, shared by the profile and the map so
 /// a move on one shows on the other in the same frame. Views only translate gestures into
-/// `move` calls; every rule about where a marker may go lives here. The owner of the model
-/// replaces the markers or the line with one call; the views follow.
+/// `move` calls; every rule about where a marker may go lives here.
 @MainActor
 @Observable
 public final class LineMarkerEditorModel {
@@ -29,15 +28,13 @@ public final class LineMarkerEditorModel {
     /// of an out-and-back or a switchback is out of reach however far the map is zoomed out.
     public static let mapWindowBounds = 50.0...2_000.0
 
-    public private(set) var line: MeasuredLine
-    /// Counts line replacements, so the map knows when to rebuild its overlay.
-    public private(set) var lineVersion = 0
+    public let line: MeasuredLine
     /// Sorted by distance; `move` keeps the order.
     public private(set) var markers: [LineMarker]
     /// One colour per segment: `markers.count + 1`, in line order.
-    public private(set) var segmentColors: [Color]
+    public let segmentColors: [Color]
     /// Segments drawn dashed: the cut parts of a trim.
-    public private(set) var dashedSegments: Set<Int>
+    public let dashedSegments: Set<Int>
     /// Whether the solid segments sit on the amber casing: a planned line does, a ride does not.
     public let cased: Bool
     /// The marker under a finger, or under VoiceOver's adjustment. One at a time.
@@ -45,25 +42,11 @@ public final class LineMarkerEditorModel {
     /// The markers as they stood before the drag in flight: what the static profile layer and
     /// the map's colour runs draw until the finger lets go.
     public private(set) var restingMarkers: [LineMarker]
-    /// The part of the line the profile shows, and the range a drag may take: the whole line,
-    /// or the stretch a map linked to the profile shows.
+    /// The part of the line the profile shows, and the range a drag may take.
     public private(set) var window: ClosedRange<Double>
-    /// A window the map asked for during a drag.
-    private var pendingWindow: ClosedRange<Double>?
-    /// Known stops near the line: small pins on the map.
-    public var stops: [PlacedStop] = []
-    /// Lines off the main line: the map draws them over it.
-    public private(set) var branches: [LineBranch] = []
-    /// Stretches of the line nobody rides any more, drawn dashed in a faint colour.
-    public private(set) var oldSections: [ClosedRange<Double>] = []
     @ObservationIgnored public var onEvent: (LineMarkerEvent) -> Void
     /// A finger that touched a handle and lifted without moving it.
     @ObservationIgnored public var onTap: (LineMarker.ID) -> Void = { _ in }
-    /// The map settled close enough for stop pins, over this stretch of the line.
-    @ObservationIgnored public var onCloseUp: (ClosedRange<Double>) -> Void = { _ in }
-    /// The title of the one action a stop's map callout offers, or nil for no action.
-    @ObservationIgnored public var stopActionTitle: (PlacedStop) -> String? = { _ in nil }
-    @ObservationIgnored public var onStopAction: (PlacedStop) -> Void = { _ in }
 
     /// The window resampled by distance: a 50,000-point line draws as a few hundred samples,
     /// and a 1 km window of a 600 km line keeps its shape.
@@ -92,71 +75,10 @@ public final class LineMarkerEditorModel {
         self.dashedSegments = dashedSegments
         self.cased = cased
         self.onEvent = onEvent
-        resample()
-    }
-
-    // MARK: Replacement from outside
-
-    /// Add, remove, re-balance or undo: the whole set at once. A drag in flight ends first.
-    public func setMarkers(_ markers: [LineMarker], segmentColors: [Color], dashedSegments: Set<Int> = []) {
-        precondition(segmentColors.count == markers.count + 1, "one colour per segment")
-        end()
-        self.markers = Self.ordered(markers, on: line)
-        restingMarkers = self.markers
-        self.segmentColors = segmentColors
-        self.dashedSegments = dashedSegments
-    }
-
-    /// Replace the branches and the old sections.
-    public func setBranches(_ branches: [LineBranch], oldSections: [ClosedRange<Double>]) {
-        if branches != self.branches { self.branches = branches }
-        if oldSections != self.oldSections { self.oldSections = oldSections }
-    }
-
-    /// The colour runs the map and the profile draw for markers at `splits`: one per segment,
-    /// with each old section cut out and dashed in a faint colour.
-    func runs(splits: [Double]) -> (splits: [Double], colors: [Color], dashed: Set<Int>) {
-        guard !oldSections.isEmpty else { return (splits, segmentColors, dashedSegments) }
-        let cuts = (splits + oldSections.flatMap { [$0.lowerBound, $0.upperBound] }).sorted()
-        let bounds = [0] + cuts + [line.length]
-        var colors: [Color] = []
-        var dashed = Set<Int>()
-        for run in 0..<(bounds.count - 1) {
-            let middle = (bounds[run] + bounds[run + 1]) / 2
-            if oldSections.contains(where: { $0.contains(middle) }) {
-                colors.append(OBCTheme.secondary)
-                dashed.insert(run)
-            } else {
-                let segment = min(splits.filter { $0 <= middle }.count, segmentColors.count - 1)
-                colors.append(segmentColors[segment])
-                if dashedSegments.contains(segment) { dashed.insert(run) }
-            }
-        }
-        return (cuts, colors, dashed)
+        setWindow(0...line.length)
     }
 
     // MARK: The profile window
-
-    /// Show on the profile the stretch the map shows. `pieces` are the parts of the line in
-    /// view, in line order; `centre` is the distance of the line point in view nearest the map
-    /// centre. A drag keeps its window: a map moved under it applies when the finger lifts.
-    public func showVisible(_ pieces: [ClosedRange<Double>], centre: Double) {
-        guard let range = Self.window(visible: pieces, centre: centre) else { return }
-        if activeID == nil { setWindow(range) } else { pendingWindow = range }
-    }
-
-    /// From the first metre in view to the last. When the hidden part between the pieces is
-    /// longer than the pieces together, as on a loop or an out-and-back with both ends in view,
-    /// only the piece nearest `centre`.
-    static func window(visible pieces: [ClosedRange<Double>], centre: Double) -> ClosedRange<Double>? {
-        guard let first = pieces.first, let last = pieces.last else { return nil }
-        let shown = pieces.reduce(0) { $0 + $1.upperBound - $1.lowerBound }
-        guard last.upperBound - first.lowerBound - shown > shown else { return first.lowerBound...last.upperBound }
-        func gap(_ piece: ClosedRange<Double>) -> Double {
-            piece.contains(centre) ? 0 : min(abs(piece.lowerBound - centre), abs(piece.upperBound - centre))
-        }
-        return pieces.min { gap($0) < gap($1) }
-    }
 
     /// The window held inside the line, sampled afresh; the elevation scale follows it.
     func setWindow(_ range: ClosedRange<Double>) {
@@ -173,19 +95,6 @@ public final class LineMarkerEditorModel {
         elevationRange = lo...max(hi, lo + 1)
     }
 
-    /// A new line (a join, a reverse, a reroute) with its markers. Ignored for a line with
-    /// fewer than two vertices.
-    public func setLine(
-        _ line: MeasuredLine, markers: [LineMarker], segmentColors: [Color], dashedSegments: Set<Int> = []
-    ) {
-        guard line.vertices.count > 1 else { return }
-        end()
-        self.line = line
-        lineVersion += 1
-        resample()
-        setMarkers(markers, segmentColors: segmentColors, dashedSegments: dashedSegments)
-    }
-
     private static func ordered(_ markers: [LineMarker], on line: MeasuredLine) -> [LineMarker] {
         markers
             .map { marker in
@@ -194,11 +103,6 @@ public final class LineMarkerEditorModel {
                 return held
             }
             .sorted { $0.distance < $1.distance }
-    }
-
-    private func resample() {
-        pendingWindow = nil
-        setWindow(0...line.length)
     }
 
     // MARK: Lookups
@@ -287,10 +191,6 @@ public final class LineMarkerEditorModel {
         activeID = nil
         restingMarkers = markers
         onEvent(.ended(id, distance: marker.distance))
-        if let pendingWindow {
-            self.pendingWindow = nil
-            setWindow(pendingWindow)
-        }
     }
 
     /// A touch on the handle that never became a drag.
@@ -308,18 +208,5 @@ public final class LineMarkerEditorModel {
 
     private func index(of id: LineMarker.ID) -> Int? {
         markers.firstIndex { $0.id == id }
-    }
-}
-
-/// A line drawn beside the main line: a spur to a stop, a via's new section or a straight gap.
-public struct LineBranch: Equatable, Sendable {
-    public var coordinates: [Coordinate]
-    public var color: Color
-    public var isDashed: Bool
-
-    public init(coordinates: [Coordinate], color: Color, isDashed: Bool = false) {
-        self.coordinates = coordinates
-        self.color = color
-        self.isDashed = isDashed
     }
 }

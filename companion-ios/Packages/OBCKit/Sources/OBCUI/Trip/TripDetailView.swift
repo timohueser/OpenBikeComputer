@@ -70,6 +70,8 @@ public struct TripDetailView: View {
     }
 
     private var trip: Trip? { model.trip(tripID) }
+    /// The planner holds at most ``PlannerPlan/maxDays`` days.
+    private var canEdit: Bool { trip.map { $0.plan != nil || $0.dayCount <= PlannerPlan.maxDays } ?? false }
     private var days: [RouteSummary] { model.tripDays(tripID).map { $0.summary(tripID: tripID) } }
 
     /// What the journal is built from: a change to either builds it again.
@@ -104,6 +106,13 @@ public struct TripDetailView: View {
                         .padding(.top, 24)
                         .padding(.bottom, 6)
                     dayRows(Array(days.indices))
+                    if onEdit != nil, !canEdit {
+                        Text("This trip has more than \(PlannerPlan.maxDays) days, so it does not open in the planner.")
+                            .font(.footnote)
+                            .foregroundStyle(OBCTheme.secondary)
+                            .padding(.top, 8)
+                            .accessibilityIdentifier("trip.tooManyDays")
+                    }
                 }
                 OBCGroupedSection {
                     OBCListRow(
@@ -132,7 +141,7 @@ public struct TripDetailView: View {
                 ToolbarItem(placement: .primaryAction) { shareMenu }
             }
             #endif
-            if let onEdit {
+            if let onEdit, canEdit {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Edit", action: onEdit).accessibilityIdentifier("trip.edit")
                 }

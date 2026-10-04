@@ -35,12 +35,10 @@ public struct LineMarkerEditor: View {
         if mode == .map {
             LineMarkerMapView(
                 model: model,
-                lineVersion: model.lineVersion,
                 markers: model.markers,
                 activeID: model.activeID,
                 segmentColors: model.segmentColors,
-                dashedSegments: model.dashedSegments,
-                stops: model.stops
+                dashedSegments: model.dashedSegments
             )
         } else {
             grid

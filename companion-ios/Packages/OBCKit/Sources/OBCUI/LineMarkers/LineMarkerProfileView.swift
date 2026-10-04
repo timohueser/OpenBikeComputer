@@ -24,10 +24,10 @@ struct LineMarkerProfileView: View {
                     height: geometry.size.height - inset.top - inset.bottom
                 )
                 ZStack(alignment: .topLeading) {
-                    let runs = model.runs(splits: model.restingMarkers.map(\.distance))
                     ProfileStaticLayer(
                         samples: model.profile, window: model.window, elevationRange: model.elevationRange,
-                        splits: runs.splits, colors: runs.colors, dashed: runs.dashed, plot: plot,
+                        splits: model.restingMarkers.map(\.distance), colors: model.segmentColors,
+                        dashed: model.dashedSegments, plot: plot,
                         trailing: inset.trailing
                     )
                     .equatable()

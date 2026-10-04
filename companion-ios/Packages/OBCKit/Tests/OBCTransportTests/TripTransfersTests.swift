@@ -30,7 +30,6 @@ struct TripTransfersTests {
             [file(0, 10_000), file(10_000, 20_000), file(20_000, 30_000)], waypoints: [[spring], [], [hut, hutAgain]],
             id: TripID("t"), name: "T", bikeType: .road, now: Date(timeIntervalSince1970: 0))
         #expect(trip.waypoints.map(\.name) == ["Spring", "Hut"], "a waypoint two files share is one stop")
-        #expect(trip.waypoints.allSatisfy { $0.kind == .waypoint })
     }
 
     @Test

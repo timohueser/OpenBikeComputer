@@ -402,9 +402,36 @@ struct PlannerPreviewModelTests {
         await model.calculateRoute()
         let ridden = 2 * MeasuredLine(routePoints: file(7.80, 7.84)).length
         #expect(abs(model.stats.distanceMeters - ridden) < 1 && model.stats.ascentMeters == 0)
+        #expect(abs(model.routeLine.length - ridden) < 1 && model.profile.distance == model.routeLine.length,
+                "the profile has a gap for the transfer")
         #expect(model.dayStats.count == 2 && abs(model.dayStats.reduce(0) { $0 + $1.distanceMeters } - ridden) < 1)
         #expect(abs(model.dayStats[1].seconds - model.dayStats[0].seconds) < 1, "the transfer adds no time")
         #expect(model.lineRuns.map(\.isTransfer) == [false, true, false])
+        // Day 2 starts where the transfer reaches, not at the night.
+        #expect(model.dayPlaces.map(\.from.coordinate) == [7.80, 7.90].map { at($0).coordinate })
+    }
+
+    @Test func aTransferRunsOnlyFromANight() throws {
+        let at = { (lon: Double) in Coordinate(latitude: 47.9, longitude: lon) }
+        let plan = PlannerPlan(points: [
+            PlanPoint(id: "start", label: "A", coordinate: at(7.80), progress: 0, kind: .start),
+            PlanPoint(id: "b", label: "B", coordinate: at(7.82), progress: 0, kind: .waypoint, leg: .transfer),
+            PlanPoint(id: "c", label: "C", coordinate: at(7.84), progress: 0, kind: .waypoint),
+            PlanPoint(id: "finish", label: "D", coordinate: at(7.90), progress: 1, kind: .finish),
+        ], routeOrder: ["b", "c"])
+        let model = PlannerPreviewModel(plan: plan, service: PlannerTestSource())
+        #expect(model.exportPlan().routePoints.map(\.leg) == [nil, nil, nil, nil], "inside a day a transfer is routed")
+        let leg = try #require(model.leg(into: "c"))
+        #expect(!model.legModes(leg).contains(.transfer))
+        model.setLegMode(leg, to: .transfer)
+        #expect(model.leg(leg).mode == .routed)
+
+        model.setNight(id: "b", true)
+        #expect(model.legModes(leg).contains(.transfer))
+        model.setLegMode(leg, to: .transfer)
+        #expect(model.leg(leg).mode == .transfer)
+        model.setNight(id: "b", false)
+        #expect(model.leg(leg).mode == .routed, "the night goes, and its transfer with it")
     }
 
     @Test func aDraggedPointPlansOnlyItsTwoLegsAndATransferStaysOne() async throws {
@@ -413,9 +440,10 @@ struct PlannerPreviewModelTests {
             PlanPoint(id: "start", label: "A", coordinate: at(7.80), progress: 0, kind: .start),
             PlanPoint(id: "b", label: "B", coordinate: at(7.82), progress: 0, kind: .waypoint, leg: .drawn, drawn: [RoutePoint(coordinate: at(7.81))]),
             PlanPoint(id: "c", label: "C", coordinate: at(7.84), progress: 0, kind: .waypoint, leg: .drawn, drawn: [RoutePoint(coordinate: at(7.83))]),
-            PlanPoint(id: "d", label: "D", coordinate: at(7.86), progress: 0, kind: .waypoint, leg: .drawn, drawn: [RoutePoint(coordinate: at(7.85))]),
+            PlanPoint(id: "night-1", label: "D", coordinate: at(7.86), progress: 0, kind: .night, night: 1, leg: .drawn,
+                      drawn: [RoutePoint(coordinate: at(7.85))]),
             PlanPoint(id: "finish", label: "E", coordinate: at(7.90), progress: 1, kind: .finish, leg: .transfer),
-        ], routeOrder: ["b", "c", "d"])
+        ], routeOrder: ["b", "c", "night-1"])
         let source = PlannerTestSource()
         let model = PlannerPreviewModel(plan: plan, service: source)
         await model.calculateRoute()
@@ -426,9 +454,9 @@ struct PlannerPreviewModelTests {
         await model.calculateRoute()
         #expect(await source.requests == [[at(7.82), moved, at(7.86)]])
         #expect(model.exportPlan().routePoints.map(\.leg) == [nil, .drawn, nil, nil, .transfer])
-        #expect(model.points[2].place.name == PlannerPreviewModel.mapPointName)
+        #expect(model.points[2].place.name == PlannerPreviewModel.mapPointName && model.points[2].place.kind == .town)
 
-        model.movePoint(id: "d", to: Coordinate(latitude: 47.91, longitude: 7.87))
+        model.movePoint(id: "night-1", to: Coordinate(latitude: 47.91, longitude: 7.87))
         #expect(model.exportPlan().routePoints.map(\.leg) == [nil, .drawn, nil, nil, .transfer], "a moved transfer stays one")
         model.undo(); model.undo()
         #expect(model.points.map(\.place.coordinate) == [7.80, 7.82, 7.84, 7.86, 7.90].map(at))

@@ -38,7 +38,6 @@ struct TripLibraryStoreTests {
         var t = trip("t1")
         t.namePlace(1, to: "Brig")
         t.renameDay(0, to: "Andermatt")
-        t.uploadedKey = 42
         t.dayEnds[0].transfer = .ferry
         t.startDay = CivilDay(daysSince1970: 20_725)
         let link = DeviceRouteLink(serial: "OBC-001", storeID: "000000000000000000000000a1b2c3d4", objectID: DeviceObjectID(5))

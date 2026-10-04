@@ -2,9 +2,6 @@ import Foundation
 
 /// The transfers of a trip: a day end where the next day starts elsewhere.
 extension Trip {
-    /// A stop at most this far from the line is on the line.
-    public static let onLineMeters = 150.0
-
     /// A day end where the next day starts farther away than this is a transfer.
     public static let transferMinMeters = TripJoin.joinMeters
 

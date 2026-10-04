@@ -18,6 +18,8 @@ extension Trip {
     /// this much longer than the step between them, which allows for a bend. A bigger jump is
     /// another leg of the line.
     public static let coverJoinMeters = 500.0
+    /// A track sample at most this far from the line is on the line.
+    public static let onLineMeters = 150.0
     /// A sample closer than this to the last one adds nothing. It bounds the work on a dense track.
     static let coverSampleMeters = 50.0
 

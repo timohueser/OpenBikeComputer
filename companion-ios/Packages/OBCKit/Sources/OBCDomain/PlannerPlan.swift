@@ -175,9 +175,7 @@ extension PlannerPlan {
         for index in points.indices { points[index].progress = distance > 0 ? points[index].progress / distance : 0 }
         let order = points.dropFirst().dropLast().map(\.id)
         points += trip.waypoints.enumerated().map { index, stop in
-            PlanPoint(id: "waypoint-\(index + 1)", label: stop.name, coordinate: stop.coordinate, progress: 0, kind: .marker,
-                      placeKind: stop.kind == .campsite ? WaypointCategory.campsite.placeKind
-                        : stop.kind == .hotel ? WaypointCategory.accommodation.placeKind : nil)
+            PlanPoint(id: "waypoint-\(index + 1)", label: stop.name, coordinate: stop.coordinate, progress: 0, kind: .marker)
         }
         return PlannerPlan(points: points, mode: .trip, routeOrder: order)
     }

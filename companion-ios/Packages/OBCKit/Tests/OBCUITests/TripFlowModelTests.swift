@@ -63,6 +63,35 @@ struct TripFlowModelTests {
     }
 
     @Test
+    func aTripHasAtMostFourteenDays() throws {
+        let (model, _) = makeModel()
+        let day = try #require(model.tripDays(tripID).first?.points)
+        #expect(model.createTrip(name: "Long", files: Array(repeating: day, count: 15)) == nil)
+        #expect(model.tripNotice == "A trip has at most 14 days.")
+        let id = try #require(model.createTrip(name: "Full", files: Array(repeating: day, count: 14)))
+        model.tripNotice = nil
+        #expect(!model.appendToTrip(id, file: day) && model.trip(id)?.dayCount == 14)
+        #expect(model.tripNotice == "A trip has at most 14 days.")
+    }
+
+    /// A route whose plan gains a night becomes a trip of the same name, with the route's device
+    /// copy as the copy of day 1.
+    @Test
+    func aRouteWithNightsBecomesATrip() throws {
+        let (model, library) = makeModel()
+        let record = try #require(library.plannedRoutes().first { $0.id == kettle })
+        let line = record.route.points
+        var plan = try #require(PlannerPlan.keptLine(line))
+        plan = try #require(plan.appendingDay(line.reversed(), name: nil))
+        let id = try #require(model.replaceRouteWithTrip(
+            kettle, plan: plan, line: line + line.reversed(), pointIndices: [0, line.count - 1, 2 * line.count - 1], bikeType: .road))
+        let trip = try #require(model.trip(id))
+        #expect(trip.name == record.summary.name && trip.dayCount == 2 && trip.plan == plan)
+        #expect(!library.plannedRoutes().contains { $0.id == kettle })
+        #expect(trip.dayCopies.first??.link == record.deviceLink)
+    }
+
+    @Test
     func groupWithNoResolvableRoutesCreatesNothing() {
         let (model, _) = makeModel()
         #expect(model.groupIntoTrip([], name: "Nope") == nil)

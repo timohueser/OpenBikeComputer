@@ -48,11 +48,14 @@ extension PlannerPlan {
 }
 
 extension Trip {
+    /// A new day end this close to an old one is the same place.
+    public static let sameDayEndMeters = 50.0
+
     /// Makes the trip what `plan` says. `routed` is the line planned from it, and `pointIndices`
     /// gives the index in `routed` of each of the plan's route points in ride order, a loop's
     /// start again last. A transfer leg is no line: the leg after it starts a new piece. Each
-    /// night ends a day; a night too close to the day end before it ends none. A day keeps its
-    /// own name by its number, and a day end keeps its place name while it stays in its place.
+    /// night ends a day; a night too close to the day end before it ends none. A day end that stays
+    /// at the place of an old one keeps that day's name, place name and transfer label.
     public mutating func replacePlan(_ plan: PlannerPlan, line routed: [RoutePoint], pointIndices: [Int]) {
         let route = plan.routePoints + (plan.isLoop ? Array(plan.routePoints.prefix(1)) : [])
         guard route.count > 1, route.count == pointIndices.count, pointIndices.allSatisfy(routed.indices.contains) else { return }
@@ -94,19 +97,23 @@ extension Trip {
                                resumeName: night.resume.flatMap(Self.placeName)))
         }
         ends.append(DayEnd(coordinate: line[line.count - 1].coordinate, name: Self.placeName(route[route.count - 1].label), distance: length))
-        for day in ends.indices where day < old.dayEnds.count {
-            ends[day].title = old.dayEnds[day].title
-            if ends[day].coordinate == old.dayEnds[day].coordinate { ends[day].name = old.dayEnds[day].name ?? ends[day].name }
+        // A day end at the place of an old one keeps its day's name, its place name and its transfer label.
+        let kept = ends.map { end in
+            old.dayEnds.min { $0.coordinate.distance(to: end.coordinate) < $1.coordinate.distance(to: end.coordinate) }
+                .flatMap { $0.coordinate.distance(to: end.coordinate) <= Self.sameDayEndMeters ? $0 : nil }
         }
         self.line = line
         pieceStarts = starts
         dayEnds = ends
-        for day in ends.indices where day < old.dayEnds.count && endsAtTransfer(day) {
-            dayEnds[day].transfer = old.dayEnds[day].transfer
+        for (day, old) in kept.enumerated() {
+            guard let old else { continue }
+            dayEnds[day].title = old.title
+            dayEnds[day].name = old.name ?? dayEnds[day].name
+            if endsAtTransfer(day) { dayEnds[day].transfer = old.transfer }
         }
         startName = (line[0].coordinate == old.line.first?.coordinate ? old.startName : nil) ?? Self.placeName(startLabel)
         waypoints = plan.points.filter { $0.kind == .marker || $0.kind == .waypoint }
-            .map { Stop(name: $0.label, coordinate: $0.coordinate, kind: .waypoint) }
+            .map { Stop(name: $0.label, coordinate: $0.coordinate) }
         self.plan = plan
     }
 

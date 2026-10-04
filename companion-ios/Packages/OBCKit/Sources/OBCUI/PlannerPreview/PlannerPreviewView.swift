@@ -104,7 +104,7 @@ public struct PlannerPreviewView: View {
 
     public var body: some View {
         GeometryReader { geometry in
-            PlannerPreviewMap(coordinates: model.geometry, pins: routesOpen ? finder.pins : pins,
+            PlannerPreviewMap(coordinates: model.geometry, routeLine: model.routeLine, pins: routesOpen ? finder.pins : pins,
                               selectedID: panel == .leg ? Self.legPinID : panel == .place ? editingPointID ?? selectedPlace?.id
                                 : panel == .route ? finder.detail.map { "route-\($0.route.id)" } : nil,
                               cursor: cursor, bottomInset: sheetHeight + geometry.safeAreaInsets.bottom,
@@ -626,13 +626,13 @@ public struct PlannerPreviewView: View {
             if !model.hasRoute {
                 Text("Choose your start and finish first.").foregroundStyle(OBCTheme.secondary)
             } else {
-                if !model.nights.isEmpty, let start = model.start, let finish = model.finish {
-                    let ends = [start] + model.nights.map(\.place) + [finish]
+                if !model.nights.isEmpty {
+                    let places = model.dayPlaces
                     ForEach(Array(model.dayStats.enumerated()), id: \.offset) { index, stats in
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Day \(index + 1)").font(.headline)
-                            if index + 1 < ends.count {
-                                Text("\(ends[index].name) → \(ends[index + 1].name)").font(.subheadline)
+                            if index < places.count {
+                                Text("\(places[index].from.name) → \(places[index].to.name)").font(.subheadline)
                             }
                             statsRow(stats)
                         }.padding(.vertical, 4).accessibilityElement(children: .combine)
@@ -865,7 +865,7 @@ public struct PlannerPreviewView: View {
         let leg = model.leg(hit)
         return Menu {
             Picker(title, selection: Binding(get: { leg.mode }, set: { model.setLegMode(hit, to: $0) })) {
-                ForEach([PlanPoint.Leg.routed, .straight, .drawn, .transfer].filter { $0 != .drawn || leg.drawn != nil }, id: \.self) {
+                ForEach(model.legModes(hit), id: \.self) {
                     Text(Self.title($0)).tag($0)
                 }
             }

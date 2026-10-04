@@ -578,7 +578,6 @@ private struct TripFile: Codable {
     var startName: String?
     var dayCopies: [DeviceCopyDTO?]
     var device: DeviceCopyDTO?
-    var uploadedKey: UInt64?
     var addedAt: Date
     var editedAt: Date
     var plan: PlannerPlan?
@@ -595,7 +594,6 @@ private struct TripFile: Codable {
         dayEnds = trip.dayEnds.map(DayEndDTO.init)
         waypoints = trip.waypoints.map(StopDTO.init)
         startName = trip.startName
-        uploadedKey = trip.uploadedKey
         dayCopies = trip.dayCopies.map { $0.map { DeviceCopyDTO(link: $0.link, crc32: $0.uploadedCRC32) } }
         device = trip.deviceLink.map { DeviceCopyDTO(link: $0, crc32: trip.uploadedCRC32) }
         addedAt = trip.addedAt
@@ -618,7 +616,6 @@ private struct TripFile: Codable {
             dayCopies: dayCopies.map { $0.map { TripDayCopy(link: $0.link, uploadedCRC32: $0.crc32) } },
             deviceLink: device?.link,
             uploadedCRC32: device?.crc32,
-            uploadedKey: uploadedKey,
             addedAt: addedAt,
             editedAt: editedAt,
             plan: plan
@@ -656,21 +653,15 @@ private struct StopDTO: Codable {
     var name: String
     var lat: Double
     var lon: Double
-    var kind: String
-    var mapItemID: String?
 
     init(_ stop: Stop) {
         name = stop.name
         lat = stop.coordinate.latitude
         lon = stop.coordinate.longitude
-        kind = stop.kind.rawValue
-        mapItemID = stop.mapItemID
     }
 
     var domain: Stop {
-        Stop(
-            name: name, coordinate: Coordinate(latitude: lat, longitude: lon),
-            kind: Stop.Kind(rawValue: kind) ?? .place, mapItemID: mapItemID)
+        Stop(name: name, coordinate: Coordinate(latitude: lat, longitude: lon))
     }
 }
 

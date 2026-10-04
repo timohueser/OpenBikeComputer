@@ -633,7 +633,7 @@ struct RootView: View {
                     }
                 },
                 onOpenRide: { path.append(.ride(id: $0)) },
-                onEdit: mainModel.tripPlan(for: id) == nil ? nil : { path.append(.editTrip(id: id)) },
+                onEdit: { path.append(.editTrip(id: id)) },
                 onOpenDay: { path.append(.tripDay(id: id, day: $0)) },
                 encodeGPX: { GPXTripEncoder.encode($0) },
                 uploadTiming: TripUploadModel.Timing(
@@ -736,11 +736,22 @@ struct RootView: View {
 
     /// A nil bike type takes the type of the route the plan came from, else the last bike type, as
     /// an import does. `replacing` saves the changes to that route; else the plan lands as a new route.
+    /// A plan with nights is a trip: it saves as one, or replaces the route it edits with one, and
+    /// the trip page opens.
     private func savePlannerPreview(_ saved: PlannerPreviewSave, bikeType: BikeType?,
                                     replacing id: RouteID? = nil, keeping source: RouteID? = nil) {
         let route = saved.route, plan = saved.plan
         guard let end = route.points.last, route.points.count > 1, let name = route.name else { return }
         let bikeType = bikeType ?? source.map(mainModel.plannedBikeType(for:)) ?? lastBikeType.value
+        if plan.days > 1 {
+            let tripID = if let id {
+                mainModel.replaceRouteWithTrip(id, plan: plan, line: route.points, pointIndices: saved.pointIndices, bikeType: bikeType)
+            } else {
+                mainModel.createTrip(name: name, plan: plan, line: route.points, pointIndices: saved.pointIndices, bikeType: bikeType)
+            }
+            if let tripID { path = [.trip(id: tripID)] }
+            return
+        }
         let fileName = GPXFile.fileName(for: name)
         let line = MeasuredLine(routePoints: route.points)
         let trip = Trip(

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OBCDomain
+import OBCTransport
 
 /// A trip made from its plan: the days, the transfers and the names a save in place derives.
 struct TripPlanTests {
@@ -45,8 +46,9 @@ struct TripPlanTests {
         #expect(trip.dayCount == 3 && trip.pieceStarts == [101] && trip.line.count == 282 && trip.line[100] == night)
         #expect(trip.dayEnds.map { ($0.distance / 10).rounded() * 10 } == [10_000, 18_000, 28_000], "a transfer is no distance")
         #expect(trip.endsAtTransfer(0) && !trip.endsAtTransfer(1))
-        #expect(trip.dayEnds.map(\.title) == ["Furka", "Grimsel", nil], "a day keeps its own name by its number")
+        #expect(trip.dayEnds.map(\.title) == ["Furka", nil, "Grimsel"], "a day name stays with its day end's place")
         #expect(trip.dayEnds.map(\.name) == ["Göschenen", "Camp", "Brig"])
+        #expect(abs(TripStats(days: trip.dayRoutes()).distanceMeters - 28_000) < 100, "the day routes do not carry the transfer")
         #expect(trip.dayEnds[0].transfer == .train && trip.dayEnds[0].resumeName == "Andermatt")
         #expect(trip.dayStart(1)?.coordinate == coordinate(12_000))
         #expect(trip.startName == "Realp" && trip.waypoints.map(\.name) == ["Spring", "View"])

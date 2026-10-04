@@ -661,7 +661,6 @@ public final class MainScreenModel {
             guard !present || crcMismatch else { continue }
             trip.deviceLink = nil
             trip.uploadedCRC32 = nil
-            trip.uploadedKey = nil
             library.saveTrip(trip)
         }
         adoptTripsByContent(scope: scope, catalog: catalog)
@@ -698,8 +697,6 @@ public final class MainScreenModel {
             // The entry's CRC is what the device holds, so the trip reads as out of date and
             // the next send replaces by id.
             trip.uploadedCRC32 = entry.crc32
-            // Both fingerprints the entry can match encode the trip's own key.
-            trip.uploadedKey = trip.key
             library.saveTrip(trip)
             claimed.insert(entry.id)
         }
@@ -767,21 +764,6 @@ public final class MainScreenModel {
         let scope = connectedScope
         let days = dayRoutes(of: trip)
         var steps: [TripUploadModel.QueueStep] = []
-        // A reversed trip has a new key. The device must not keep the old trip object, with the
-        // old key's progress, over day routes that already hold the new days, so it goes first.
-        if let link = trip.deviceLink, let scope = connectedScope, link.matches(scope),
-            let uploadedKey = trip.uploadedKey, uploadedKey != trip.key {
-            steps.append(.command(title: "Old trip details") { [weak self] in
-                guard let self else { return }
-                try await transport.deleteTrip(link.objectID)
-                guard var trip = self.trip(id) else { return }
-                trip.deviceLink = nil
-                trip.uploadedCRC32 = nil
-                trip.uploadedKey = nil
-                library.saveTrip(trip)
-                reloadTrips()
-            })
-        }
         for dayPlan in plan.days {
             let day = dayPlan.day
             let title = days[day].name
@@ -908,13 +890,11 @@ public final class MainScreenModel {
         if let scope = connectedScope, let objectID {
             trip.deviceLink = DeviceRouteLink(scope: scope, objectID: objectID)
             trip.uploadedCRC32 = crc32
-            trip.uploadedKey = trip.key
             // The transfer verified this CRC, so the badge proves before the next `listTrips()`.
             deviceTripCRCs[objectID] = crc32
         } else {
             trip.deviceLink = nil
             trip.uploadedCRC32 = nil
-            trip.uploadedKey = nil
         }
         library.saveTrip(trip)
         reloadTrips()
@@ -993,6 +973,19 @@ public final class MainScreenModel {
         return trip.id
     }
 
+    /// A route whose plan now has nights becomes a trip of the same name: the route leaves the
+    /// library, and its device copy becomes the copy of day 1.
+    @discardableResult
+    public func replaceRouteWithTrip(
+        _ id: RouteID, plan: PlannerPlan, line: [RoutePoint], pointIndices: [Int], bikeType: BikeType
+    ) -> TripID? {
+        guard let record = plannedRecords[id],
+              let tripID = createTrip(name: record.summary.name, plan: plan, line: line, pointIndices: pointIndices, bikeType: bikeType)
+        else { return nil }
+        moveIntoTrip(record, tripID: tripID, day: 0)
+        return tripID
+    }
+
     /// Set or clear the date of Day 1.
     public func setTripStartDay(_ id: TripID, to day: CivilDay?) {
         guard var trip = trip(id) else { return }
@@ -1048,6 +1041,7 @@ public final class MainScreenModel {
     ) -> TripID? {
         let days = files.indices.filter { Trip.isDay(files[$0]) }
         guard !days.isEmpty else { return nil }
+        guard days.count <= PlannerPlan.maxDays else { tripNotice = Self.tooManyDays; return nil }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         var trip = Trip.joining(
             days.map { files[$0] }, names: days.map { $0 < dayNames.count ? dayNames[$0] : nil },
@@ -1069,6 +1063,7 @@ public final class MainScreenModel {
         _ id: TripID, file: [RoutePoint], name: String? = nil, waypoints: [Waypoint] = []
     ) -> Bool {
         guard var trip = trip(id), Trip.isDay(file) else { return false }
+        guard trip.dayCount < PlannerPlan.maxDays else { tripNotice = Self.tooManyDays; return false }
         let plan = trip.plan
         tell(dropped: trip.append(file, name: name, waypoints: waypoints))
         trip.plan = plan?.appendingDay(file, name: name, waypoints: waypoints) ?? PlannerPlan.keptLine(trip)
@@ -1144,6 +1139,8 @@ public final class MainScreenModel {
             "Day end \u{201C}\(end.name ?? "unnamed")\u{201D} was removed. It is no longer on the line."
         }.joined(separator: " ")
     }
+
+    static let tooManyDays = "A trip has at most \(PlannerPlan.maxDays) days."
 
     /// Tell the rider that these routes are too short to be days and stay routes.
     public func noteTooShort(_ names: [String]) {

@@ -24,6 +24,8 @@ struct PlannerPreviewMapPin: Identifiable, Equatable {
 
 struct PlannerPreviewMap: UIViewRepresentable {
     let coordinates: [Coordinate]
+    /// The route measured with its transfer gaps, as the profile reads it.
+    var routeLine: MeasuredLine?
     let pins: [PlannerPreviewMapPin]
     let selectedID: String?
     let cursor: Coordinate?
@@ -84,7 +86,7 @@ struct PlannerPreviewMap: UIViewRepresentable {
         if coordinator.coordinates != coordinates || coordinator.strokes != strokes {
             if coordinator.coordinates != coordinates {
                 coordinator.coordinates = coordinates
-                coordinator.routeIndex = SegmentedLineOverlay(line: MeasuredLine(routePoints: coordinates.map { RoutePoint(coordinate: $0) }))
+                coordinator.routeIndex = SegmentedLineOverlay(line: routeLine ?? MeasuredLine(routePoints: coordinates.map { RoutePoint(coordinate: $0) }))
             }
             coordinator.strokes = strokes
             coordinator.drawRoute(map)
