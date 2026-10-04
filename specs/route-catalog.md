@@ -39,7 +39,7 @@ before latitude. Lengths and heights are integer metres.
 | `kind` | The OSM `route` value: `hiking`, `foot`, `bicycle` or `mtb` |
 | `name`, `ref`, `operator`, `description` | The OSM tag text |
 | `website` | The OSM `website` text, else `contact:website` |
-| `symbol` | The OSM `osmc:symbol` text |
+| `symbol` | The OSM `osmc:symbol` text; absent when the mark must not show, and the client then draws the `ref` |
 | `rank` | Network level from `network`: `4` for `iwn` and `icn`, `3` for `nwn` and `ncn`, `2` for `rwn` and `rcn`, `1` for `lwn` and `lcn`, else `0` |
 | `loop` | `true` for a loop, `false` for a one-way route |
 | `parent` | Stage only: relation ID of its long route |
@@ -62,9 +62,11 @@ of `line_udeg`. The finish is its last vertex. The shaping points are the
 vertices in `via`; vertex 0 and the last vertex are never in `via`. Every record
 has `via`, and it can be empty.
 
-The plan route is the route that the router gives for the plan, with the
-Balanced profile of the kind: `hiking` for `hiking` and `foot`, `mtb` for `mtb`,
-and `touring` for `bicycle`. A one-way plan runs in the member order of the
+The plan reproduces the route with the Balanced profile of each activity that
+lists the kind: `hiking` for `hiking` and `foot`, `mtb` for `mtb`, and `road`,
+`gravel` and `touring` for `bicycle`. The plan route is the route that the
+router gives for the plan with one of these profiles: `touring` for `bicycle`,
+else the only one. A one-way plan runs in the member order of the
 relation. A route is a loop when its main line is a closed ring, or when it
 has `roundtrip=yes` and its ends are within 200 m. A loop plan ends at its start,
 so the last vertex equals vertex 0.
