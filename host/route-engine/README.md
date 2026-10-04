@@ -55,15 +55,18 @@ candidates, minimizes total snap distance first, then route cost. Most points
 get a 50 m band. The two points of the leg that failed get a band to 1 km, and
 each further failed leg widens its two points in one more retry. Points already
 within 3 m of a road keep the narrow band. The route answer reports truncation
-only, not the retry. All attempts share the query budgets. A shape point keeps its direction between
+only, not the retry. A retry that reaches a limit returns `NoPath`. All attempts
+share the query and geometry budgets. A shape point keeps its direction between
 legs. Only an explicit `turnarounds` entry permits reversal there. Prepared
 access and turn rules apply.
 
 Alternatives use prepared goals and bounded corridor probes. They must pass a
-base-cost cap and a material benefit or separation test. Discovery is not
-exhaustive. Corridor probes currently apply to two-point requests. An empty
-alternative set is valid. The primary route remains first, except with
-`alternatives_only`, which leaves it out.
+base-cost cap and a material benefit or separation test. A corridor route must
+not go out and back along a road. Discovery is not exhaustive. Corridor probes
+currently apply to two-point requests. All routes of a request share its query
+budget. Cancellation or a limit stops the discovery, and the answer keeps the
+routes found before it. An empty alternative set is valid. The primary route
+remains first, except with `alternatives_only`, which leaves it out.
 
 Optional landmark columns guide long searches. Small searches finish before
 loading these columns. The same search applies with or without this index.

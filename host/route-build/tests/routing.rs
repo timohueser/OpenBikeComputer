@@ -812,6 +812,55 @@ fn alternatives_find_a_separate_corridor_without_an_out_and_back_probe() {
 }
 
 #[test]
+fn an_out_and_back_trip_gets_alternatives_within_one_query_budget() {
+    let template = fixture().roads[0].clone();
+    // A track (1) to (2) and a longer cycleway through (4); a short road leads on from each end.
+    let points: Vec<_> = [(-2_500, 0), (0, 0), (45_000, 0), (47_500, 0), (22_500, 12_000)]
+        .into_iter()
+        .map(|(lon, lat)| Point { lon, lat, elevation: NO_ELEVATION })
+        .collect();
+    let mut roads = vec![];
+    for (a, b, class) in [(0, 1, 0), (1, 2, 3), (1, 4, 0), (4, 2, 0), (2, 3, 0)] {
+        for (from, to) in [(a, b), (b, a)] {
+            roads.push(Road {
+                from: from as u32,
+                to: to as u32,
+                class,
+                surface: Surface::Paved,
+                shape: vec![points[from], points[to]],
+                length_m: points[from].distance(points[to]).round() as u32,
+                ..template.clone()
+            });
+        }
+    }
+    let graph =
+        Graph { points, roads, forbidden: vec![], forbidden_foot: vec![], warnings: vec![], ..Graph::default() };
+    let profiles: Vec<_> = Profile::presets().into_iter().filter(|p| p.name.starts_with("touring")).collect();
+    let (source, manifest) = package_with_profiles(&graph, &profiles);
+    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let request = Request {
+        points: vec![[-0.0015, 0.0], [0.0465, 0.0], [-0.0015, 0.0]],
+        profile: "touring".into(),
+        pace: Pace::default(),
+        alternatives: true,
+        alternatives_only: false,
+        turnarounds: vec![1],
+        start_position: None,
+        end_position: None,
+    };
+    let routes = router.routes(&request, &Control::default()).unwrap().routes;
+    assert_eq!(routes.iter().map(|r| r.reason).collect::<Vec<_>>(), ["primary", "shorter"]);
+    assert!(routes[1].totals.distance_m + 1000 < routes[0].totals.distance_m);
+    // The primary route spends the whole query budget, so the alternatives stop and the answer keeps it.
+    let alone = Request { alternatives: false, ..request.clone() };
+    let needed = (1..)
+        .find(|&queries| router.route(&alone, &Control { max_queries: queries, ..Control::default() }).is_ok())
+        .unwrap();
+    let kept = router.routes(&request, &Control { max_queries: needed, ..Control::default() }).unwrap().routes;
+    assert_eq!(kept.iter().map(|r| &r.id).collect::<Vec<_>>(), [&routes[0].id]);
+}
+
+#[test]
 fn partial_cost_localizes_climbing_and_telescopes_across_shape_points() {
     let mut road = fixture().roads[0].clone();
     let mut midpoint = road.shape[0];

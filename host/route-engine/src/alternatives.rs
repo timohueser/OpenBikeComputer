@@ -7,28 +7,47 @@ use crate::{
 use std::collections::BTreeSet;
 
 impl<P: RoutingData> Router<P> {
-    /// Alternative discovery is bounded. It does not enumerate all useful routes.
+    /// Alternative discovery is bounded. It does not enumerate all useful routes. All routes share
+    /// the query budget of `control`.
     pub fn routes(&mut self, request: &Request, control: &Control<'_>) -> Result<Response> {
-        let primary = self.route(request, control)?;
-        let mut routes = vec![primary];
-        if !request.alternatives && !request.alternatives_only {
-            return Ok(Response { routes });
+        let mut queries = 0;
+        let mut routes = vec![self.route_counted(request, control, &mut queries)?];
+        if request.alternatives || request.alternatives_only {
+            match self.alternatives(request, control, &mut queries, &mut routes) {
+                // The deadline or a limit ends the discovery, and the answer keeps what it found.
+                Ok(()) | Err(Error::Cancelled | Error::Limit) => {}
+                Err(error) => return Err(error),
+            }
+            if request.alternatives_only {
+                routes.remove(0);
+            }
         }
+        Ok(Response { routes })
+    }
+
+    /// Adds the accepted alternatives to `routes`, which holds the primary route.
+    fn alternatives(
+        &mut self,
+        request: &Request,
+        control: &Control<'_>,
+        queries: &mut usize,
+        routes: &mut Vec<Route>,
+    ) -> Result<()> {
         let base = request.profile.split('/').next().unwrap_or(&request.profile);
         for variant in ["shorter", "smoother", "less-climbing"] {
             let name = format!("{base}/{variant}");
             if name == request.profile || self.package.profile(&name).is_err() {
                 continue;
             }
-            let mut candidate =
-                match self.route(&Request { profile: name, alternatives: false, ..request.clone() }, control) {
-                    Ok(route) => route,
-                    Err(Error::NoPath | Error::NoSnap(_) | Error::Limit) => continue,
-                    Err(error) => return Err(error),
-                };
+            let goal = Request { profile: name, alternatives: false, ..request.clone() };
+            let mut candidate = match self.route_counted(&goal, control, queries) {
+                Ok(route) => route,
+                Err(Error::NoPath | Error::NoSnap(_)) => continue,
+                Err(error) => return Err(error),
+            };
             if let Some(reason) = tradeoff(&routes[0], &candidate) {
                 candidate.reason = reason;
-                if self.accept(&routes, &candidate, &request.profile)? {
+                if self.accept(routes, &candidate, &request.profile)? {
                     routes.push(candidate);
                 }
             }
@@ -73,20 +92,21 @@ impl<P: RoutingData> Router<P> {
                     continue;
                 };
                 let point = [attachment.projected.lon as f64 * 1e-6, attachment.projected.lat as f64 * 1e-6];
-                let mut candidate = match self.route(
-                    &Request {
-                        points: vec![request.points[0], point, request.points[1]],
-                        alternatives: false,
-                        ..request.clone()
-                    },
-                    control,
-                ) {
+                let probed = Request {
+                    points: vec![request.points[0], point, request.points[1]],
+                    alternatives: false,
+                    ..request.clone()
+                };
+                let mut candidate = match self.route_counted(&probed, control, queries) {
                     Ok(route) => route,
-                    Err(Error::NoPath | Error::NoSnap(_) | Error::MissingRegion(_) | Error::Limit) => continue,
+                    Err(Error::NoPath | Error::NoSnap(_) | Error::MissingRegion(_)) => continue,
                     Err(error) => return Err(error),
                 };
                 candidate.reason = "corridor";
-                if !distinct(&routes[0], &candidate) || !self.accept(&routes, &candidate, &request.profile)? {
+                if !distinct(&routes[0], &candidate)
+                    || self.spur(&candidate)?
+                    || !self.accept(routes, &candidate, &request.profile)?
+                {
                     continue;
                 }
                 let second = candidate.legs.pop().unwrap();
@@ -99,10 +119,24 @@ impl<P: RoutingData> Router<P> {
                 break;
             }
         }
-        if request.alternatives_only {
-            routes.remove(0);
+        Ok(())
+    }
+
+    /// Whether a route goes out along a road and back, as to a probe beside the road. Adjacent
+    /// slices on one road meet at a point; a repeated road or its reverse is a spur.
+    fn spur(&mut self, route: &Route) -> Result<bool> {
+        let mut previous = None;
+        let mut visited = BTreeSet::new();
+        for slice in route.legs.iter().flat_map(|l| &l.roads) {
+            if previous != Some(slice.road) {
+                let road = self.package.road(slice.road)?;
+                if !visited.insert((road.way, road.from.min(road.to), road.from.max(road.to))) {
+                    return Ok(true);
+                }
+            }
+            previous = Some(slice.road);
         }
-        Ok(Response { routes })
+        Ok(false)
     }
 
     fn accept(&mut self, selected: &[Route], candidate: &Route, metric: &str) -> Result<bool> {
@@ -116,34 +150,29 @@ impl<P: RoutingData> Router<P> {
             return Ok(false);
         }
         let mut cost = 0u64;
-        let mut previous = None;
-        let mut visited = BTreeSet::new();
-        for slice in candidate.legs.iter().flat_map(|l| &l.roads) {
-            let road = self.package.road(slice.road)?;
-            // Adjacent slices on one road are shaping points. A repeated road or its reverse is a spur.
-            if previous != Some(slice.road)
-                && !visited.insert((road.way, road.from.min(road.to), road.from.max(road.to)))
-            {
-                return Ok(false);
-            }
-            let endpoint = self.package.endpoint(metric, slice.road)?;
-            let Some(curve) = endpoint.cost.as_ref() else {
-                return Ok(false);
-            };
-            if let Some(before) = previous.filter(|&id| id != slice.road) {
-                let arrival = self.package.endpoint(metric, before)?.arrival;
-                let Some(entry) = endpoint.departures.iter().find(|d| d.state == arrival) else {
+        for leg in &candidate.legs {
+            // A leg continues the previous leg on its road, or turns back there at no turn cost.
+            let mut previous = None;
+            for slice in &leg.roads {
+                let endpoint = self.package.endpoint(metric, slice.road)?;
+                let Some(curve) = endpoint.cost.as_ref() else {
                     return Ok(false);
                 };
-                cost = cost.checked_add(entry.penalty).ok_or(Error::Limit)?;
+                if let Some(before) = previous.filter(|&id| id != slice.road) {
+                    let arrival = self.package.endpoint(metric, before)?.arrival;
+                    let Some(entry) = endpoint.departures.iter().find(|d| d.state == arrival) else {
+                        return Ok(false);
+                    };
+                    cost = cost.checked_add(entry.penalty).ok_or(Error::Limit)?;
+                }
+                previous = Some(slice.road);
+                cost = cost
+                    .checked_add(
+                        curve.prefix(slice.to).map_err(Error::InvalidData)?
+                            - curve.prefix(slice.from).map_err(Error::InvalidData)?,
+                    )
+                    .ok_or(Error::Limit)?;
             }
-            previous = Some(slice.road);
-            cost = cost
-                .checked_add(
-                    curve.prefix(slice.to).map_err(Error::InvalidData)?
-                        - curve.prefix(slice.from).map_err(Error::InvalidData)?,
-                )
-                .ok_or(Error::Limit)?;
         }
         Ok(cost as f64 <= primary.cost as f64 * 1.35)
     }

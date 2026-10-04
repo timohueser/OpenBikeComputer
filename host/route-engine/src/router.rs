@@ -148,7 +148,18 @@ impl<P: RoutingData> Router<P> {
     }
 
     pub fn route(&mut self, request: &Request, control: &Control<'_>) -> Result<Route> {
-        let mut work = Work::default();
+        self.route_counted(request, control, &mut 0)
+    }
+
+    /// Routes after `queries` attachment queries of the same request, and adds the queries of
+    /// this route to it.
+    pub(crate) fn route_counted(
+        &mut self,
+        request: &Request,
+        control: &Control<'_>,
+        queries: &mut usize,
+    ) -> Result<Route> {
+        let mut work = Work { queries: *queries, ..Work::default() };
         let mut result = self.route_with_policy(request, control, Policy::default(), None, &mut work);
         let policy = Policy { ambiguity_m: 50.0, max_candidates: 16, ..Policy::default() };
         let mut wide = vec![false; request.points.len()];
@@ -160,8 +171,13 @@ impl<P: RoutingData> Router<P> {
             wide[leg] = true;
             wide[leg + 1] = true;
             work.failed_leg = None;
-            result = self.route_with_policy(request, control, policy, Some(&wide), &mut work);
+            result = match self.route_with_policy(request, control, policy, Some(&wide), &mut work) {
+                // The client plans around a leg without a path; a limit in the retry must not hide it.
+                Err(Error::Limit) => Err(Error::NoPath),
+                result => result,
+            };
         }
+        *queries = work.queries;
         result
     }
 

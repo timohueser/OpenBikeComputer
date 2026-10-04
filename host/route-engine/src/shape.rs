@@ -82,6 +82,10 @@ fn to_segment(p: P, a: P, b: P) -> f64 {
 }
 
 /// Answers whether a point lies within `NEAR_M` of a line.
+///
+/// A cell is `2 * NEAR_M` wide, and each segment is in the cells of samples at most half a cell
+/// apart. A point within `NEAR_M` of a segment is then less than one cell from a sample, so the
+/// 3 x 3 cells around the point hold the segment. The index grows with the line length only.
 struct Near<'a> {
     line: &'a [P],
     cell: [f64; 2],
@@ -91,15 +95,20 @@ struct Near<'a> {
 impl<'a> Near<'a> {
     fn new(line: &'a [P]) -> Self {
         let lat = line.first().map_or(0.0, |p| p[1] as f64 * 1e-6);
-        let cell_lat = NEAR_M / 0.111195;
+        let cell_lat = 2.0 * NEAR_M / 0.111195;
         let cell = [cell_lat / lat.to_radians().cos().max(0.01), cell_lat];
         let mut cells = HashMap::<_, Vec<u32>>::new();
-        let key = |p: P, axis: usize| (p[axis] as f64 / cell[axis]).floor() as i32;
         for k in 0..line.len() {
             let (a, b) = (line[k], line[(k + 1).min(line.len() - 1)]);
-            for x in key(a, 0).min(key(b, 0))..=key(a, 0).max(key(b, 0)) {
-                for y in key(a, 1).min(key(b, 1))..=key(a, 1).max(key(b, 1)) {
-                    cells.entry((x, y)).or_default().push(k as u32);
+            let span = |axis: usize| (b[axis] - a[axis]) as f64 / cell[axis];
+            let steps = (2.0 * span(0).abs().max(span(1).abs())).ceil().max(1.0);
+            for s in 0..=steps as usize {
+                let t = s as f64 / steps;
+                let key = |axis: usize| (a[axis] as f64 / cell[axis] + span(axis) * t).floor() as i32;
+                let segments = cells.entry((key(0), key(1))).or_default();
+                // A straight segment never comes back to a cell that it left.
+                if segments.last() != Some(&(k as u32)) {
+                    segments.push(k as u32);
                 }
             }
         }
@@ -284,7 +293,9 @@ impl<D: RoutingData> Search<'_, D> {
         }
     }
 
-    fn stopped(&self) -> bool {
+    /// Polls the control, so that the search also stops between router calls.
+    fn stopped(&mut self) -> bool {
+        self.cancelled |= (self.control.cancelled)();
         self.cancelled || *self.calls >= self.max_calls
     }
 
@@ -493,9 +504,6 @@ pub struct LineRequest {
     /// Longitude, latitude.
     pub line: Vec<[f64; 2]>,
     pub profile: String,
-    /// The line returns to its start.
-    #[serde(default, rename = "loop")]
-    pub closed: bool,
 }
 
 /// The answer of `POST /v1/shape`: the plan points of one client line, with one profile and at
@@ -509,7 +517,7 @@ pub fn answer<D: RoutingData>(router: &mut Router<D>, request: &LineRequest, con
     }
     router.package().profile(&request.profile)?;
     let bounds = router.package().bounds();
-    let mut line = Vec::with_capacity(request.line.len() + 1);
+    let mut line = Vec::with_capacity(request.line.len());
     for &[lon, lat] in &request.line {
         if !lon.is_finite() || !lat.is_finite() || !(-180.0..=180.0).contains(&lon) || !(-85.0..=85.0).contains(&lat) {
             return Err(Error::InvalidRequest("Invalid longitude or latitude".into()));
@@ -523,34 +531,20 @@ pub fn answer<D: RoutingData>(router: &mut Router<D>, request: &LineRequest, con
     if line.len() < 2 {
         return Err(Error::InvalidRequest("The line has no length".into()));
     }
-    if request.closed && line[0] != line[line.len() - 1] {
-        line.push(line[0]);
-    }
     let length = length(&line);
     if length > MAX_LINE_M {
         return Err(Error::LineTooLong);
     }
     let (line, _) = simplify(&line, &[0, line.len() - 1], INPUT_TOLERANCE_M);
-    // A loop search starts with two shaping points, so its line needs a vertex between its ends.
-    if request.closed && line.len() < 3 {
-        return Err(Error::InvalidRequest("The line has no length".into()));
-    }
     let tips = reversals(&line);
     let mut limits = Limits { control, max_calls: MAX_CALLS, calls: 0 };
     let profiles = [request.profile.as_str()];
-    let plan =
-        shape(router, &profiles, &line, &tips, length, request.closed, &mut limits).map_err(
-            |failure| match failure {
-                Failure::Cancelled => Error::Cancelled,
-                Failure::Limit => Error::Limit,
-                Failure::TooManyPoints | Failure::Check | Failure::Budget | Failure::Stall => Error::NotReproducible,
-            },
-        )?;
-    let mut points = plan.points;
-    if request.closed {
-        points.pop();
-    }
-    let points: Vec<[f64; 2]> = points.iter().map(|p| [p[0] as f64 / 1e6, p[1] as f64 / 1e6]).collect();
+    let plan = shape(router, &profiles, &line, &tips, length, false, &mut limits).map_err(|failure| match failure {
+        Failure::Cancelled => Error::Cancelled,
+        Failure::Limit => Error::Limit,
+        Failure::TooManyPoints | Failure::Check | Failure::Budget | Failure::Stall => Error::NotReproducible,
+    })?;
+    let points: Vec<[f64; 2]> = plan.points.iter().map(|p| [p[0] as f64 / 1e6, p[1] as f64 / 1e6]).collect();
     Ok(json!({ "points": points, "turnarounds": plan.turnarounds }))
 }
 
@@ -602,6 +596,21 @@ mod tests {
         let (simple, positions) = simplify(&routed, &[0, 6, 11], 50.0);
         assert_eq!(simple, [line[0], line[4], routed[5], routed[6], routed[7], line[10]]);
         assert_eq!(positions, [0, 3, 5]);
+    }
+
+    #[test]
+    fn a_long_segment_indexes_only_the_cells_along_it() {
+        // One 124 km segment to the north-east.
+        let line: Vec<P> = vec![[8_000_000, 48_000_000], [9_000_000, 48_900_000]];
+        let near = Near::new(&line);
+        assert!(near.cells.len() < 5_000, "{}", near.cells.len());
+        // Points up to 60 m north and south of the segment, 9 microdegrees (1 m) apart.
+        for t in 0..=100 {
+            for north in -60..=60 {
+                let p = [8_000_000 + 10_000 * t, 48_000_000 + 9_000 * t + 9 * north];
+                assert_eq!(near.near(p), to_segment(p, line[0], line[1]) <= NEAR_M, "{p:?}");
+            }
+        }
     }
 
     #[test]
