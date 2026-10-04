@@ -14,9 +14,12 @@ target/release/route-server /data/routes/freiburg
 | `ROUTE_ORIGIN` | Unset | One allowed browser origin; omit for same-origin proxy |
 
 The service does not queue requests. Extra requests receive `503 busy`.
-Each worker has its own router with a 768 MiB routing budget plus its landmark
-cache. Workers share one immutable graph and road-to-junction mapping. Each
-retains up to three profile cost sets within its budget. A route request has a
+Each worker has its own router. The budget is the engine's default for the
+package: the costliest profile's routing bytes plus 256 MiB for the search
+queues, at least 768 MiB. The native host uses the same rule when it is given
+no budget. Workers share one immutable graph, the road-to-junction mapping, the
+closures and up to three prepared profiles (cost and landmark columns) within
+that budget. A route request has a
 15-second cooperative deadline, a shape request 30 seconds. Disconnects cancel
 its work. The body limit is 64 KiB.
 Put a public service behind TLS and an OS memory and CPU limit. Keep the package

@@ -21,6 +21,8 @@ pub mod shape;
 pub mod snap;
 pub mod storage;
 pub mod table;
+#[cfg(not(target_arch = "wasm32"))]
+pub use directory::open;
 pub use router::{Control, Request, Route, Router};
 
 #[derive(Debug, thiserror::Error)]

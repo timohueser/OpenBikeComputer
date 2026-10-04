@@ -39,7 +39,7 @@ fn publish(args: &Args, root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if definitions.is_empty() {
         return Err("The grid has no cells".into());
     }
-    let mut input = Directory::open(&args.source)?;
+    let input = Directory::open(&args.source)?;
     let bounds = input.manifest().bounds;
     let full_roads: Vec<_> = (0..input.manifest().roads).collect();
     let mut full = blocks::prepare(&input, bounds, &full_roads)?;
@@ -65,7 +65,7 @@ fn publish(args: &Args, root: &Path) -> Result<(), Box<dyn std::error::Error>> {
             return Err("Grid cell is outside source coverage".into());
         }
         eprintln!("Selecting routing cell {}", id);
-        let roads = blocks::roads(&mut input, cell)?;
+        let roads = blocks::roads(&input, cell)?;
         if !roads.is_empty() {
             let mut geometry = cell;
             for &id in &roads {

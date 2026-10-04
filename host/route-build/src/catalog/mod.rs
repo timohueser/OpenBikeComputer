@@ -3,7 +3,7 @@
 mod assemble;
 
 use route_engine::{
-    data::RoutingData,
+    data::{RoutingData, Selection},
     directory::Directory,
     osm::{Id, Node, Relation, Tags, Way},
     package::{Package, Source},
@@ -288,10 +288,7 @@ fn catalog<S: Source + Clone + Send>(
     relations: BTreeMap<i64, Relation>,
     france: bool,
     workers: usize,
-) -> Result<(Vec<Value>, Report), String>
-where
-    Package<S>: RoutingData + Send,
-{
+) -> Result<(Vec<Value>, Report), String> {
     let mut report = Report::default();
     let mut drops = BTreeMap::<i64, Reason>::new();
     let is_route = |id: &i64| relations.get(id).is_some_and(|r| matches!(tag(&r.tags, "type"), "route" | "superroute"));
@@ -354,7 +351,7 @@ where
     let queue = Mutex::new(jobs);
     let started = std::time::Instant::now();
     let results = Mutex::new(Vec::new());
-    let mut forks: Vec<_> = (0..workers.max(1)).map(|_| package.fork()).collect();
+    let mut forks: Vec<_> = (0..workers.max(1)).map(|_| Selection::whole(package.fork())).collect();
     std::thread::scope(|scope| {
         for routing in forks.drain(..) {
             let (queue, results, points) = (&queue, &results, &points);

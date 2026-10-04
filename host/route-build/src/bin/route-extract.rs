@@ -1,5 +1,6 @@
 use clap::Parser;
 use route_engine::{
+    data::Selection,
     directory::{Directory, Writer},
     package::Package,
 };
@@ -33,18 +34,19 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         return Err("Output already exists; choose a fresh directory".into());
     }
     let started = Instant::now();
-    let mut input = Directory::open(&args.input)?;
+    let input = Selection::whole(Directory::open(&args.input)?);
     let temp = args.output.with_extension(format!("building-{}", std::process::id()));
     fs::create_dir(&temp)?;
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let mut writer = Writer::create(&temp)?;
         let manifest =
-            route_build::extract::prepare(&mut input, args.region, bounds, !args.runtime, |bytes| writer.write(bytes))?;
+            route_build::extract::prepare(&input, args.region, bounds, !args.runtime, |bytes| writer.write(bytes))?;
         writer.finish()?;
         fs::write(temp.join("manifest.json"), serde_json::to_vec(&manifest)?)?;
         let prepare_seconds = started.elapsed().as_secs_f64();
-        let mut package = Directory::open(&temp)?;
-        package.verify()?;
+        let output = Selection::whole(Directory::open(&temp)?);
+        output.verify()?;
+        let package = output.package();
         let mut geometry_bounds = [180.0f64, 90.0f64, -180.0f64, -90.0f64];
         for id in 0..manifest.roads {
             for point in package.road(id)?.shape {
@@ -55,14 +57,14 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 geometry_bounds[3] = geometry_bounds[3].max(lat);
             }
         }
-        let source_bytes = source_bytes(&package)?;
+        let source_bytes = source_bytes(package)?;
         let routing_bytes = ["manifest.json", "pages.idx", "pages.bin"]
             .iter()
             .map(|name| fs::metadata(temp.join(name)).map(|m| m.len()))
             .collect::<Result<Vec<_>, _>>()?
             .iter()
             .sum::<u64>();
-        drop(package);
+        drop(output);
         fs::rename(&temp, &args.output)?;
         println!(
             "{}",

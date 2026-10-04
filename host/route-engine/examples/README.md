@@ -14,12 +14,12 @@ python3 tools/planner_bench.py audit RELEASE_DIRECTORY
 The native runner records complete route time, object reads, costs, geometry
 and metadata fingerprints, and failures. It runs each case with a fresh router
 and then with the same router. The operating system file cache stays uncontrolled.
-The optional final arguments set iterations and routing memory budget MiB. Timing excludes
+The optional final arguments set iterations and the routing memory budget in
+MiB; without one, the package's default budget applies. Timing excludes
 JSON serialization. Append `retained` to keep one router and change the first
 coordinate on each iteration. This mode measures fresh requests with retained
-caches. Set `ROUTE_BENCH_INDEX_MEMORY=1` to add the decoded landmark cache to the
-base memory allowance. Reports include the resulting budget. HTTP timing
-includes serialization and response transfer.
+caches. Reports include the budget. HTTP timing includes serialization and
+response transfer.
 Compare equal request corpora, profile lists, and input identities.
 
 The file audit verifies all runtime hashes and counts complete gzip output.
@@ -51,8 +51,8 @@ search costs.
 
 Launch each workload in a new process with `--terminate-existing`. Full routes
 use the default workload. Pass `--package RELATIVE_PATH` to use another routing
-directory below Documents. Copy each report before the next launch. Use `--retained --index-memory --hold` for the
-same fresh-request workload with the host memory allowance and an awake screen.
+directory below Documents. Copy each report before the next launch. Use
+`--retained --hold` for the same fresh-request workload with an awake screen.
 
 For lexical search and reverse lookup, install the locked search dependencies
 and build the shared JavaScript bundle and reference:

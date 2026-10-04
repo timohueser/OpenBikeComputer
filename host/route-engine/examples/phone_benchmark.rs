@@ -21,8 +21,8 @@ pub unsafe extern "C" fn planner_benchmark(
             (CStr::from_ptr(root).to_str()?, CStr::from_ptr(requests).to_str()?, CStr::from_ptr(output).to_str()?)
         };
         let cases: Vec<benchmark::Case> = serde_json::from_slice(&std::fs::read(requests)?)?;
-        let options = benchmark::Options { retained: retained & 1 != 0, extra_index_memory: retained & 2 != 0 };
-        let report = benchmark::run(std::path::Path::new(root), &cases, 3, 768 * 1024 * 1024, options)?;
+        let options = benchmark::Options { retained: retained & 1 != 0 };
+        let report = benchmark::run(std::path::Path::new(root), &cases, 3, None, options)?;
         std::fs::write(output, serde_json::to_vec(&report)?)?;
         Ok(())
     };

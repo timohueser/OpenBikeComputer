@@ -1,5 +1,6 @@
 use clap::Parser;
 use route_engine::{
+    data::Selection,
     directory::{Directory, Writer},
     package::{Manifest, Package},
 };
@@ -37,15 +38,16 @@ fn run(args: Args) -> Result<(), String> {
         manifest.osm = Default::default();
     }
     let bytes = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
-    let package =
-        Package::open(Directory::source(&args.input).map_err(|e| e.to_string())?, &bytes).map_err(|e| e.to_string())?;
+    let package = Selection::whole(
+        Package::open(Directory::source(&args.input).map_err(|e| e.to_string())?, &bytes).map_err(|e| e.to_string())?,
+    );
     let keys = package.objects().map_err(|e| e.to_string())?;
     let temp = args.output.with_extension(format!("building-{}", std::process::id()));
     fs::create_dir(&temp).map_err(|e| e.to_string())?;
     let result = (|| {
         let mut writer = Writer::create(&temp).map_err(|e| e.to_string())?;
         for key in &keys {
-            writer.write(&package.bytes(key).map_err(|e| e.to_string())?)?;
+            writer.write(&package.package().bytes(key).map_err(|e| e.to_string())?)?;
         }
         writer.finish().map_err(|e| e.to_string())?;
         fs::write(temp.join("manifest.json"), bytes).map_err(|e| e.to_string())?;
