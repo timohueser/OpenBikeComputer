@@ -1,6 +1,6 @@
 use super::*;
 use route_engine::{
-    model::{Graph, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH},
+    model::{Graph, Point, Profile, Road, Surface, BIKE, FOOT, PUSH},
     package::digest,
 };
 use std::sync::Arc;
@@ -25,8 +25,8 @@ fn way(a: i64, b: i64) -> i64 {
 /// Inside one zoom 9 cell.
 const ORIGIN: i32 = 100_000;
 
-/// A 7 by 7 grid of streets 445 m apart, with node `10 * row + column`. The way from node 0 to
-/// node 1 is T3.
+/// A 7 by 7 grid of streets 445 m apart on rolling ground, with node `10 * row + column`. The way
+/// from node 0 to node 1 is T3.
 fn grid(relations: Vec<Relation>) -> Package<Memory> {
     let mut graph = Graph::default();
     let mut index = HashMap::new();
@@ -36,7 +36,7 @@ fn grid(relations: Vec<Relation>) -> Package<Memory> {
             let point = Point {
                 lat: ORIGIN + row as i32 * 4_000,
                 lon: ORIGIN + column as i32 * 4_000,
-                elevation: NO_ELEVATION,
+                elevation: ((row * 3 + column * 7) % 5) as f32 * 20.0,
             };
             index.insert(id, graph.points.len() as u32);
             graph.points.push(point);
@@ -59,8 +59,8 @@ fn grid(relations: Vec<Relation>) -> Package<Memory> {
                         way: id,
                         reversed: from > to,
                         length_m: shape[0].distance(shape[1]).round() as u32,
-                        ascent_m: 0,
-                        descent_m: 0,
+                        ascent_m: (shape[1].elevation - shape[0].elevation).max(0.0) as u32,
+                        descent_m: (shape[0].elevation - shape[1].elevation).max(0.0) as u32,
                         surface: Surface::Paved,
                         class: 1,
                         access: BIKE | FOOT | PUSH,
@@ -99,8 +99,13 @@ fn path(nodes: &[i64]) -> Vec<i64> {
 
 #[test]
 fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), String> {
-    let trail =
-        [("route", "hiking"), ("name", "Trail"), ("network", "rwn"), ("osmc:symbol", "red"), ("url", "https://t.example")];
+    let trail = [
+        ("route", "hiking"),
+        ("name", "Trail"),
+        ("network", "rwn"),
+        ("osmc:symbol", "red"),
+        ("url", "https://t.example"),
+    ];
     let long = |id, children: &[i64]| Relation {
         id,
         tags: tags(&[("type", "superroute"), ("route", "hiking"), ("name", "Long"), ("network", "rwn")]),
@@ -126,7 +131,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         long(6, &[5]),
     ]);
     let relations = read!(package, relations, Relation, |_| true);
-    let (records, report) = catalog(&package, relations, false, 2)?;
+    let (records, report) = catalog(&package, relations, false, 2, 768 << 20)?;
     let by_id: HashMap<i64, &Value> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r)).collect();
     let dropped: Vec<_> = report.dropped.iter().map(|(reason, ids)| (reason.as_str(), ids.clone())).collect();
     assert_eq!(dropped, [("ExtractEdge", vec![7]), ("Gap", vec![3]), ("NestedLongRoute", vec![6])]);
@@ -140,6 +145,25 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     assert_eq!(trail["cells"], json!(["9-256-255"]));
     let via = trail["via"].as_array().unwrap().len();
     assert!(via > 0);
+    // The figures are the route engine's totals for the plan, as a client routes it.
+    let line: Vec<i64> = trail["line_udeg"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
+    let mut vertices = vec![[line[0], line[1]]];
+    for pair in line[2..].chunks(2) {
+        let last = vertices[vertices.len() - 1];
+        vertices.push([last[0] + pair[0], last[1] + pair[1]]);
+    }
+    let plan: Vec<P> = std::iter::once(0)
+        .chain(trail["via"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize))
+        .chain([vertices.len() - 1])
+        .map(|k| [vertices[k][0] as i32, vertices[k][1] as i32])
+        .collect();
+    let mut router = Router::new(package.fork(), 768 << 20);
+    let routed = router.route(&shape::request("hiking", &plan, vec![]), &Control::default()).unwrap().totals;
+    assert!(routed.ascent_m > 0);
+    assert_eq!(
+        [&trail["length_m"], &trail["ascent_m"], &trail["descent_m"]],
+        [&json!(routed.distance_m), &json!(routed.ascent_m), &json!(routed.descent_m)]
+    );
 
     let ring = by_id[&2];
     assert_eq!((&ring["loop"], &ring["length_m"]), (&json!(true), &json!(8 * 445)));

@@ -23,10 +23,10 @@ const MIN_LENGTH_M: f64 = 2_000.0;
 const MAX_GAP_M: f64 = 500.0;
 const ROUNDTRIP_M: f64 = 200.0;
 const DESCRIPTION_CHARS: usize = 200;
-/// The memory budget of one router. A fixed budget keeps the catalog the same on each machine.
-const ROUTER_BUDGET: usize = 768 << 20;
-/// The budget of all routers together; it limits the number of workers.
-const ROUTERS_BUDGET: usize = 6 << 30;
+/// The search scratch of one router, besides the costs it holds.
+const ROUTER_SCRATCH: usize = 768 << 20;
+/// The memory of all routers together; it limits the number of workers.
+const ROUTERS_MEMORY: usize = 6 << 30;
 
 /// Why a selected relation is not in the catalog.
 #[derive(Clone, Copy, Debug)]
@@ -38,6 +38,7 @@ pub enum Reason {
     TooManyPoints,
     ShapingCheck,
     RouterLimit,
+    SearchBudget,
     NestedLongRoute,
     NoStages,
     MissingStage,
@@ -177,18 +178,38 @@ pub struct Report {
     pub stages: usize,
     pub via: Vec<usize>,
     pub long_points: Vec<(i64, usize)>,
+    /// The search of each route: relation ID, seconds and router calls.
+    pub searches: Vec<(i64, f64, usize)>,
+    pub workers: usize,
+    /// Wall time of the parallel search.
+    pub search_seconds: f64,
     pub seconds: f64,
+}
+
+/// The median, the 90th percentile and the maximum.
+fn spread(mut values: Vec<f64>) -> Value {
+    values.sort_by(f64::total_cmp);
+    let at = |q: f64| values.get(((values.len() as f64 * q) as usize).min(values.len().saturating_sub(1))).copied();
+    json!({"median": at(0.5), "p90": at(0.9), "max": values.last()})
 }
 
 impl Report {
     pub fn to_json(&self) -> Value {
-        let mut via = self.via.clone();
-        via.sort_unstable();
-        let at = |q: f64| via.get(((via.len() as f64 * q) as usize).min(via.len().saturating_sub(1))).copied();
+        let mut slowest = self.searches.clone();
+        slowest.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let busy: f64 = self.searches.iter().map(|s| s.1).sum();
         json!({
             "tag_selected": self.tag_selected, "dropped": self.dropped, "kept": self.kept, "loops": self.loops,
             "long_routes": self.long_routes, "stages": self.stages,
-            "via": {"median": at(0.5), "p90": at(0.9), "max": via.last()},
+            "via": spread(self.via.iter().map(|&v| v as f64).collect()),
+            "search": {
+                "seconds": spread(self.searches.iter().map(|s| s.1).collect()),
+                "calls": spread(self.searches.iter().map(|s| s.2 as f64).collect()),
+                "slowest": slowest.iter().take(10).map(|s| json!([s.0, s.1, s.2])).collect::<Vec<_>>(),
+                "workers": self.workers,
+                "utilisation": busy / (self.workers as f64 * self.search_seconds).max(f64::MIN_POSITIVE),
+                "wall_seconds": self.search_seconds,
+            },
             "long_routes_over_64_points": self.long_points.iter().filter(|(_, n)| *n > 64).count(),
             "seconds": self.seconds,
         })
@@ -233,8 +254,19 @@ pub fn build(directory: &Path, countries: &[String]) -> Result<Option<Report>, S
         package.metric(profile).map_err(|_| format!("The routing package lacks the {profile} profile"))?;
     }
     let relations = read!(package, relations, Relation, |_| true);
+    // A router keeps the costs of the three bicycle profiles. With fewer, it decodes costs at
+    // each change of profile, and that decoding dominates the bake. The budget follows from the
+    // package alone, so the catalog is the same on each machine.
+    let costs = 3 * ["touring", "road", "gravel", "mtb", "hiking"]
+        .iter()
+        .map(|p| package.metric(p).map_or(0, |metric| metric.weights.decoded_bytes()))
+        .max()
+        .unwrap_or(0);
+    let shared = package.manifest().graph.decoded_bytes()
+        + package.manifest().landmarks.as_ref().map_or(0, |index| index.decoded_bytes());
+    let own = costs + ROUTER_SCRATCH;
     let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let (records, report) = catalog(&package, relations, france, cpus.min(ROUTERS_BUDGET / ROUTER_BUDGET))?;
+    let (records, report) = catalog(&package, relations, france, cpus.min(ROUTERS_MEMORY / own).max(1), shared + own)?;
     let partial = directory.join(format!(".{FILE}.partial"));
     let bytes = serde_json::to_vec(&json!({"format": 1, "routes": records})).map_err(|e| e.to_string())?;
     std::fs::write(&partial, bytes).map_err(|e| e.to_string())?;
@@ -247,6 +279,7 @@ fn catalog<S: Source + Clone + Send>(
     relations: BTreeMap<i64, Relation>,
     france: bool,
     workers: usize,
+    budget: usize,
 ) -> Result<(Vec<Value>, Report), String>
 where
     Package<S>: RoutingData + Send,
@@ -308,26 +341,36 @@ where
         true
     });
     drop(ways);
+    // The largest routes go first, so that the long searches run side by side.
+    jobs.sort_by_key(|job| job.members.iter().map(|m| m.nodes.len()).sum::<usize>());
     let queue = Mutex::new(jobs);
+    let started = std::time::Instant::now();
     let results = Mutex::new(Vec::new());
     let mut forks: Vec<_> = (0..workers.max(1)).map(|_| package.fork()).collect();
     std::thread::scope(|scope| {
         for routing in forks.drain(..) {
             let (queue, results, points) = (&queue, &results, &points);
             scope.spawn(move || {
-                let mut router = Router::new(routing, ROUTER_BUDGET);
+                let mut router = Router::new(routing, budget);
                 loop {
                     // The guard must drop before the work, so the job is taken in its own statement.
                     let job = queue.lock().unwrap().pop();
                     let Some(job) = job else { break };
-                    let result = route(&mut router, &job, points, france);
-                    results.lock().unwrap().push((job.relation.id, result));
+                    let begun = std::time::Instant::now();
+                    let mut calls = 0;
+                    let result = route(&mut router, &job, points, france, &mut calls);
+                    let search = (job.relation.id, begun.elapsed().as_secs_f64(), calls);
+                    results.lock().unwrap().push((search, result));
                 }
             });
         }
     });
     let mut kept = BTreeMap::new();
-    for (id, result) in results.into_inner().unwrap() {
+    report.workers = workers.max(1);
+    report.search_seconds = started.elapsed().as_secs_f64();
+    for (search, result) in results.into_inner().unwrap() {
+        let id = search.0;
+        report.searches.push(search);
         match result {
             Ok(route) => {
                 kept.insert(id, route);
@@ -419,6 +462,7 @@ fn route<D: RoutingData>(
     job: &Job,
     points: &HashMap<i64, P>,
     france: bool,
+    calls: &mut usize,
 ) -> Result<Kept, Reason> {
     let apart = |a: i64, b: i64| distance(points[&a], points[&b]);
     let mut runs = assemble::main_line(&job.members, &apart);
@@ -465,10 +509,11 @@ fn route<D: RoutingData>(
         || tag(&job.relation.tags, "roundtrip") == "yes" && distance(start, end) <= ROUNDTRIP_M && {
             patch(&mut line, start).is_ok()
         };
-    let plan = shape::shape(router, profiles, &line, length, closed).map_err(|failure| match failure {
+    let plan = shape::shape(router, profiles, &line, length, closed, calls).map_err(|failure| match failure {
         Failure::TooManyPoints => Reason::TooManyPoints,
         Failure::Check => Reason::ShapingCheck,
         Failure::Limit => Reason::RouterLimit,
+        Failure::Budget => Reason::SearchBudget,
     })?;
     let geometry = shape::vertices(&plan.route);
     let keep: Vec<usize> = plan.route.legs.iter().map(|leg| leg.from_index).chain([geometry.len() - 1]).collect();
