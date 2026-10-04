@@ -153,7 +153,7 @@ function counted(tiles: ReturnType<typeof climateTile>[]) {
     const requests: string[] = [];
     const get: TileGetter = async (level, x, y) => {
         requests.push(`${level}/${x}/${y}`);
-        return tiles.find(t => t.level === level && t.x === x && t.y === y);
+        return tiles.find(t => t.level === level && t.x === x && t.y === y) ?? null;
     };
     return { requests, get };
 }

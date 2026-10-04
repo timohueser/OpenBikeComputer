@@ -458,6 +458,12 @@
                     console.warn("Planner terrain:", event.error);
                     return;
                 }
+                // Data layers are decoration too, and each shows its own error. Their sources are named by the layer id.
+                const source = (event as { sourceId?: string }).sourceId;
+                if (source && dataLayer?.layers.some(layer => source === layer.id || source.startsWith(`${layer.id}-`))) {
+                    console.warn("Planner data layer:", event.error);
+                    return;
+                }
                 failure = "Some map data could not load. Check your connection, then retry.";
                 errorDetail = event.error.message;
                 console.error("Planner map:", event.error);

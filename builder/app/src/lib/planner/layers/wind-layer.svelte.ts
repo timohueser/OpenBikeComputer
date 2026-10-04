@@ -59,7 +59,7 @@ class WindLayer implements DataLayer<Samples> {
     icon = 'wind';
     description = 'Where the daytime wind blows most often, and how strong it is.';
     caveat = `${WIND_NOTE}.`;
-    meta = $state<ClimateMeta | null>(null);
+    meta = $state.raw<ClimateMeta | null>(null);
     error = $state('');
     private map?: Map;
     private listening?: Map;
@@ -84,7 +84,7 @@ class WindLayer implements DataLayer<Samples> {
 
     private open(): Promise<ClimateSource> {
         return openClimate(this.url).then(climate => {
-            this.meta = climate.meta;
+            if (this.meta !== climate.meta) this.meta = climate.meta;
             this.error = '';
             return climate;
         }, error => {

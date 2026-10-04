@@ -1,6 +1,7 @@
 import type { Coordinate } from '../map-types';
+import { latitudeAt, worldPixel } from './mercator';
 
-export const DEM_ZOOM = 12, INDEX_ZOOM = 10, TILE = 512, UNKNOWN_HEIGHT = 32767;
+export const DEM_ZOOM = 12, INDEX_ZOOM = 10, TILE = 512;
 export const SUN = 0, SHADE = 1, NIGHT = 2, UNKNOWN = 3;
 export const OUTSIDE = 4, TERRAIN_MAP_ZOOM = 7;
 const RAD = Math.PI / 180, RADIUS = 6371008.8, CURVE = 1 / (2 * RADIUS);
@@ -76,13 +77,13 @@ export function instantAt(date: string, minute: number, timezone: string): numbe
 export const clock = (minute: number) => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
 
 /** Coordinates of the native pixel centres; bounds use this grid, not lower-zoom height samples. */
-export function nativePoint([lon, lat]: Coordinate): [number, number] {
-    const scale = TILE * 2 ** DEM_ZOOM;
-    return [(lon + 180) / 360 * scale - .5, (.5 - Math.asinh(Math.tan(lat * RAD)) / (2 * Math.PI)) * scale - .5];
+export function nativePoint(coordinate: Coordinate): [number, number] {
+    const [x, y] = worldPixel(coordinate, TILE * 2 ** DEM_ZOOM);
+    return [x - .5, y - .5];
 }
 export function coordinateAt(x: number, y: number, z: number, size: number): Coordinate {
     const n = size * 2 ** z;
-    return [x / n * 360 - 180, Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n))) / RAD];
+    return [x / n * 360 - 180, latitudeAt(y, n)];
 }
 
 export interface Surface {

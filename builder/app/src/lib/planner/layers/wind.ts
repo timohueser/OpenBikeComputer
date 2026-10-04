@@ -4,6 +4,7 @@ import type { ExpressionSpecification } from 'maplibre-gl';
 import type { FeatureCollection, Point, Polygon } from 'geojson';
 import { OVERVIEW, SECTORS, WEEKS, cellAt, cellCentre, cellOf, locate, read, tileCells, weekMonth, windChance, windMode, windRose, windows, type ClimateTile } from './climate';
 import type { CellRef } from './climate-source';
+import { mix, noData } from './colour';
 import { dateLabel, weekOf, type Chart, type Grid, type Legend, type Swatch, type Theme } from './data-layer';
 
 /**
@@ -15,11 +16,6 @@ const RAMP = {
     light: ['#eef0f3', '#c9d1de', '#97a3bb', '#66738f', '#3f4964'],
     dark: ['#262a32', '#38404f', '#56607a', '#8590ac', '#c3cbe0'],
 };
-
-function mix(a: string, b: string, t: number): string {
-    const channel = (hex: string, i: number) => parseInt(hex.slice(1 + 2 * i, 3 + 2 * i), 16);
-    return '#' + [0, 1, 2].map(i => Math.round(channel(a, i) + t * (channel(b, i) - channel(a, i))).toString(16).padStart(2, '0')).join('');
-}
 
 export function speedColor(speed: number, theme: Theme): string {
     const ramp = RAMP[theme], at = Math.min(SPEEDS.length - 1, Math.max(0, speed - SPEEDS[0])), i = Math.min(SPEEDS.length - 2, Math.floor(at));
@@ -145,8 +141,8 @@ export function headClass(chance: number): number {
 }
 
 const HEAD = {
-    light: ['#e6e9ee', '#c3cad6', '#8792ab', '#414a66', '#b8b5ac'],
-    dark: ['#2c3040', '#4a5268', '#8a93ad', '#c3cbe0', '#6b685c'],
+    light: ['#e6e9ee', '#c3cad6', '#8792ab', '#414a66'],
+    dark: ['#2c3040', '#4a5268', '#8a93ad', '#c3cbe0'],
 };
 
 /** Swatches by headwind class; the last is no data. */
@@ -154,7 +150,7 @@ export function headFills(theme: Theme): Swatch[] {
     const c = HEAD[theme];
     return [
         { label: 'Headwind under 15 %', color: c[0] }, { label: '15–30 %', color: c[1] }, { label: '30–45 %', color: c[2] },
-        { label: '45 % or more', color: c[3] }, { label: 'No data', color: c[4], hatch: true },
+        { label: '45 % or more', color: c[3] }, noData(theme),
     ];
 }
 
