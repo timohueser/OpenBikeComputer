@@ -7,7 +7,7 @@ import type { Shape } from './routing';
 export interface ImportedLine {
     name: string;
     line: DrawnCoordinate[];
-    waypoints: { label: string; coordinate: Coordinate }[];
+    waypoints: { label: string; coordinate: Coordinate; note?: string }[];
     shape?: Shape;
 }
 
@@ -50,7 +50,7 @@ export function readTracks(files: { name: string; text: string }[]): ImportedLin
         try {
             const { name, points, waypoints } = readGpx(file.text, file.name.replace(/\.gpx$/i, ''));
             return { name, line: simplifyLine(points.map((p): DrawnCoordinate => p.ele === undefined ? [p.lon / 1e6, p.lat / 1e6] : [p.lon / 1e6, p.lat / 1e6, p.ele])),
-                waypoints: waypoints.map(w => ({ label: w.name ?? 'Marker', coordinate: [w.lon / 1e6, w.lat / 1e6] })) };
+                waypoints: waypoints.map(w => ({ label: w.name ?? 'Marker', coordinate: [w.lon / 1e6, w.lat / 1e6], ...w.note ? { note: w.note } : {} })) };
         } catch (error) {
             throw new Error(`${file.name}: ${(error as Error).message}`);
         }
@@ -102,9 +102,9 @@ export function importedTrip(base: Pick<Trip, 'bike' | 'preset'>, lines: Importe
     // progress (NaN), so its markers sit mid-day.
     const markers = lines.flatMap(({ line, waypoints }, file) => {
         const flat = line.map((c): Coordinate => [c[0], c[1]]);
-        return waypoints.map(({ label, coordinate }): RoutePoint => {
+        return waypoints.map(({ label, coordinate, note }): RoutePoint => {
             const progress = nearestProgress(flat, coordinate);
-            return { id: crypto.randomUUID(), kind: 'marker', label, coordinate, progress: (file + (Number.isNaN(progress) ? .5 : progress)) / lines.length };
+            return { id: crypto.randomUUID(), kind: 'marker', label, coordinate, progress: (file + (Number.isNaN(progress) ? .5 : progress)) / lines.length, ...note ? { note } : {} };
         });
     });
     const days = lines.length > 1 ? lines.length : undefined;
