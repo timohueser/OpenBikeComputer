@@ -2,13 +2,16 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import {spawn} from 'node:child_process';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {mkdtempSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
 
 test('disconnected clients retain admission slots until routing finishes',{timeout:10000},async t=>{
   const data=mkdtempSync(tmpdir()+'/planner-admission-');
+  // The server exits without a running query runtime.
+  const worker=data+'/worker';
+  writeFileSync(worker,`#!${process.execPath}\nconsole.log(JSON.stringify({ready:true})); process.stdin.resume();\n`,{mode:0o755});
   const waiting=[];
   let allAdmitted;
   const admitted=new Promise(resolve=>{allAdmitted=resolve;});
@@ -22,7 +25,7 @@ test('disconnected clients retain admission slots until routing finishes',{timeo
   await new Promise(resolve=>router.listen(0,'127.0.0.1',resolve));
   const server=spawn(process.execPath,[fileURLToPath(new URL('../server.mjs',import.meta.url))],{
     env:{...process.env,OBC_SEARCH_PORT:'0',OBC_SEARCH_DATA:data,OBC_SEARCH_REGIONS:'test',
-      OBC_SEARCH_PYTHON:process.execPath,OBC_QUERY_ROUTER:`http://127.0.0.1:${router.address().port}`},
+      OBC_SEARCH_PYTHON:worker,OBC_QUERY_ROUTER:`http://127.0.0.1:${router.address().port}`},
     stdio:['ignore','pipe','ignore'],
   });
   t.after(()=>{

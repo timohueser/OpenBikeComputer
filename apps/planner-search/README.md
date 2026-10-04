@@ -87,6 +87,8 @@ The combined development command passes `OBC_SEARCH_PORT` to the Vite proxy.
 - `runtime.mjs` supplies local database, parser, and calendar adapters. `server.mjs`
   serves JSON. The [native provider](native/README.md) uses the same runtime.
   Edited requests bypass inference. The client discards stale responses.
+- `server.mjs` exits with status 1 when the query runtime stops or hangs. Its supervisor,
+  such as systemd, restarts it.
 - `routing.mjs` sends the `/v1/route` answer on unchanged. Routing commands fail visibly
   if the routing engine is absent. No route is committed after a failed request.
 

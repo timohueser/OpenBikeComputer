@@ -77,6 +77,13 @@ test('every day ends resolve separately and riding-time splits use the supplied 
   assert.throws(()=>alongRange({ref:'end',at:{value:10,unit:'h'}},[0,total],timed),/beyond/);
 });
 
+test('a category point is the nearest mapped place within 25 km', () => {
+  const add = where => resolve(db, {type:'add_point', point:{kind:'bakery'}, where}, context).changes[0].point;
+  assert.equal(add({anchor:[7.858,47.99]}).source, 'n2');
+  assert.equal(add({anchor:[7.852,47.99]}).source, 'n1');
+  assert.throws(() => add({anchor:[9.5,47.99]}), /No mapped bakery within 25 km/);
+});
+
 test('repeated stops bound work before resolving duplicate destinations', () => {
   assert.throws(() => resolve(db, {type:'add_point', point:{name:'Kandel'}, every:{value:0.001,unit:'km'}}, context), /50 stop intervals/);
 });
