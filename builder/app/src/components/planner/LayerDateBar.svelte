@@ -60,8 +60,9 @@
 <style>
     .date-bar {
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
-        gap: 16px;
+        gap: 8px 16px;
         padding: 10px 16px 6px;
         border-radius: 8px;
         background: var(--panel);
@@ -78,6 +79,7 @@
     .date:focus-visible { outline: 2px solid var(--forest); outline-offset: 2px; }
     .popover { position: absolute; left: 0; bottom: calc(100% + 12px); z-index: 1; }
     .variable { flex: none; }
-    .year { flex: 1; min-width: 0; }
+    /* On a narrow map the year takes its own line under the date and the switch. */
+    .year { flex: 1 1 360px; min-width: 0; }
     .year p { margin: 0 0 6px; font-size: 12px; color: var(--ink-soft); }
 </style>

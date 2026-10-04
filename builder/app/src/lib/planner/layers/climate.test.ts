@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Coordinate } from '../map-types';
 import {
-    DETAIL, OVERVIEW, RAIN_DRIER, RAIN_TYPICAL, RAIN_UNKNOWN, RAIN_WETTER, SECTORS, WETTER_RATIO, cellAt, cellHistory, climateMeta,
-    climateTile, locate, rainClass, rainRatios, read, temperatureAt, weekMonth, weekValues, wetDaysOf7, windChance, windMode, windRose,
+    DETAIL, OVERVIEW, SECTORS, cellAt, cellHistory, climateMeta,
+    climateTile, locate, read, typicalRain, temperatureAt, weekMonth, weekValues, wetDaysOf7, windChance, windMode, windRose,
 } from './climate';
 import { lineBearings, weatherRows, windRow } from './climate-route';
 import { climateSource, detailCell, sampleLine, type TileGetter } from './climate-source';
@@ -91,22 +91,17 @@ describe('climate values', () => {
         expect(wetDaysOf7(t.tile(), 0, 20)).toBeCloseTo(2.38);
     });
 
-    it('measures rain against the mean week of the same series', () => {
-        // 1 mm a day. 2016, 2020 and 2024 are leap years: week 51 has 8.3 days in the overview mean.
+    it('smooths the typical rain over five weeks round the year, per 7 days', () => {
+        // 1 mm a day: week 51 has 8.3 days in the mean of 2016–2025, which hold three leap years.
         const even = Array.from({ length: 52 }, (_, week) => week === 51 ? 8.3 : 7);
-        expect([...rainRatios(even, 2016)].every(ratio => Math.abs(ratio - 1) < 1e-6)).toBe(true);
-        const ratios = rainRatios(even.map((mm, week) => week === 10 ? 2 * mm : mm), 2016);
-        expect(ratios[10] / ratios[11]).toBeCloseTo(2);
-        // Detail week 51 has 9 days in the leap years 2016, 2020 and 2024, else 8; slot 52 is week 0 of 2017.
-        const detail = Array.from({ length: 520 }, (_, i): number => i % 52 !== 51 ? 7 : [0, 4, 8].includes(Math.floor(i / 52)) ? 9 : 8);
-        expect([...rainRatios(detail, 2016)].every(ratio => Math.abs(ratio - 1) < 1e-6)).toBe(true);
-        detail[52] *= 3;
-        detail[60] = NaN;
-        const years = rainRatios(detail, 2016);
-        expect(years[52] / years[0]).toBeCloseTo(3);
-        expect(Number.isNaN(years[60])).toBe(true);
-        expect(Number.isNaN(rainRatios([0, 0], 2016)[0])).toBe(true);
-        expect([1 / WETTER_RATIO - 0.01, 1, WETTER_RATIO + 0.01, NaN].map(rainClass)).toEqual([RAIN_DRIER, RAIN_TYPICAL, RAIN_WETTER, RAIN_UNKNOWN]);
+        expect([...typicalRain(even, 2016)].every(mm => Math.abs(mm - 7) < 1e-5)).toBe(true);
+        // One wet week spreads over the two weeks on each side, across the end of the year.
+        const wet = even.map((mm, week) => week === 0 ? mm + 50 : mm);
+        const typical = typicalRain(wet, 2016);
+        expect([typical[50], typical[51], typical[0], typical[1], typical[2], typical[3]].map(mm => Math.round(mm))).toEqual([17, 17, 17, 17, 17, 7]);
+        // A missing week leaves the mean of the others.
+        expect(typicalRain(even.map((mm, week) => week === 10 ? NaN : week === 11 ? 12 : mm), 2016)[10]).toBeCloseTo(33 / 4);
+        expect(Number.isNaN(typicalRain(new Array(52).fill(NaN), 2016)[0])).toBe(true);
     });
 
     it('turns the wind rose to the direction the wind blows towards', () => {

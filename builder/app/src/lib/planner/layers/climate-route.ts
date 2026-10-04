@@ -57,16 +57,20 @@ function mean<T>(list: Run<T>[], value: (run: Run<T>) => number): number {
 }
 
 /**
- * Weather rows per week of overview cells: the daytime high and the night low in °C, and the wet
- * days of 7. With `elevations`, a run is corrected to the mean elevation of its samples, which equals
- * the mean of their corrected temperatures; a run with a sample without elevation is not corrected.
+ * Weather rows per week of overview cells: the daytime high and the night low in °C, the wet days
+ * of 7, and the mean rain total in mm. With `elevations`, a run is corrected to the mean elevation
+ * of its samples, which equals the mean of their corrected temperatures; a run with a sample without
+ * elevation is not corrected.
  */
 export function weatherRows(cells: (CellRef | undefined)[], km: ArrayLike<number>, elevations?: ArrayLike<number>) {
     const list = runs(cells, km, () => ({ height: 0 }), (sum, i, weight) => { sum.height += weight * (elevations?.[i] ?? NaN); });
     const row = (value: (run: Run<{ height: number }>, week: number) => number) =>
         Float32Array.from({ length: WEEKS }, (_, week) => mean(list, run => value(run, week)));
     const temperature = (plane: 'tmax' | 'tmin') => row(({ cell, weight, sum }, week) => temperatureAt(cell.tile, plane, week, cell.index, sum.height / weight));
-    return { high: temperature('tmax'), rain: row(({ cell }, week) => wetDaysOf7(cell.tile, cell.index, week)), low: temperature('tmin') };
+    return {
+        high: temperature('tmax'), rain: row(({ cell }, week) => wetDaysOf7(cell.tile, cell.index, week)), low: temperature('tmin'),
+        amount: row(({ cell }, week) => read(cell.tile, 'rain', week, cell.index)),
+    };
 }
 
 /** The headwind chance per month of overview cells, from 0 to 1, for the travel bearing at each sample. */
