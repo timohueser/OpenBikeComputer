@@ -82,6 +82,7 @@ and PMTiles packs once. Map packs group each tile under its ancestor at
 `min(tile_zoom, 11)`. Original compressed tile payloads remain unchanged.
 A routing pack contains pages with the same cell consumers, up to 16 MiB.
 Search and overlays retain whole intersecting records and their dependencies.
+Each cell also has its [route catalog](route-catalog.md) file.
 
 `offline/catalog.json` has `format: 3`. It lists cell bounds, logical file
 names, map packs, and routing cell descriptors. Its map packs omit the online

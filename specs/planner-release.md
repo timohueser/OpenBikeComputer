@@ -44,7 +44,8 @@ files of the map manifest and the manifest itself. `routing/` contains the three
 [route package contract](route-package.md), plus `overlays.sqlite`. The overlay
 index stores the routing manifest identity and has the same OSM source.
 `search/` contains `REGION.sqlite`
-and `model/`. `device/catalog.json` is a snapshot. Its file references are absolute
+and `model/`. `routes/` contains `REGION.json` from the
+[route catalog contract](route-catalog.md). `device/catalog.json` is a snapshot. Its file references are absolute
 URLs to the original immutable cell objects.
 
 The overlay database has SQLite `user_version=2`. `features` stores stable IDs,
@@ -93,7 +94,8 @@ The tile API serves `/releases/ID/basemap.json`, vector tiles at
 `/releases/ID/places/Z/X/Y.mvt`, `/releases/ID/overlays.json`, overlay tiles at
 `/releases/ID/overlays/Z/X/Y.mvt`, Terrarium tiles at
 `/releases/ID/terrain/Z/X/Y.webp`, and, for a release with snow,
-`/releases/ID/snow.json` and snow tiles at `/releases/ID/snow/Z/X/Y`. Each
+`/releases/ID/snow.json` and snow tiles at `/releases/ID/snow/Z/X/Y`. For a grid
+release, it serves route catalog cells at `/releases/ID/routes/tiles/9-X-Y.json`. Each
 TileJSON holds its archive metadata. Snow tiles keep their gzip encoding. An absent tile returns 204. The raw archives
 remain downloadable from R2.
 
@@ -111,14 +113,16 @@ R2 stores each distinct transport once at `planner/releases/ID/objects/SHA256`.
 The online services and offline installer consume this same pool.
 
 `public/grid.json` contains `format: 2` and `map_zoom`. Each map pack, asset,
-TileJSON, and device catalog has a small pointer at `public/LOGICAL_PATH.json`.
+TileJSON, route catalog cell, and device catalog has a small pointer at
+`public/LOGICAL_PATH.json`.
 A pointer repeats the transport entry and adds `decoded_bytes`. The tile
 service resolves a pack through this pointer. A tile without a pack is absent.
 No regional map archive is required beside the pool. Grid assets use the tile
 service origin.
 
 The VPS materializes routing, search, and offline selection metadata. Search
-uses `search/REGION.grid.json` to list cell files and coverage. The
+uses `search/REGION.grid.json` to list cell files and coverage. The route
+catalog has one file for each cell, `routes/tiles/9-X-Y.json`, and no region file. The
 [offline contract](planner-offline.md#grid-publication-and-selection) defines
 cell selection and download manifests.
 
