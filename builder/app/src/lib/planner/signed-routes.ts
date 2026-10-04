@@ -30,6 +30,9 @@ export interface CatalogRecord {
     start_udeg?: [number, number];
 }
 
+/** A record with a line, not a long route. */
+export type RouteRecord = CatalogRecord & Required<Pick<CatalogRecord, 'line_udeg' | 'via'>>;
+
 export type RouteShape = 'any' | 'loop' | 'one-way';
 export type RouteSort = 'nearest' | 'shortest' | 'longest' | 'most-climb' | 'least-climb';
 /** Inclusive bounds. An absent bound is no limit. */
@@ -57,7 +60,6 @@ export type CellLoader = (id: string) => Promise<CatalogRecord[] | null>;
 const kinds: Record<BikeType, CatalogRecord['kind'][]> = {
     hiking: ['hiking', 'foot'], mtb: ['mtb'], road: ['bicycle'], gravel: ['bicycle'], touring: ['bicycle'],
 };
-const topGrade = 3;
 const sortKeys: Record<RouteSort, (match: RouteMatch) => number> = {
     nearest: match => match.distanceM,
     shortest: match => match.route.length_m,
@@ -77,9 +79,8 @@ function passes(route: CatalogRecord, query: RouteQuery): boolean {
     if (!within(route.length_m, query.distanceKm, 1000) || !within(route.ascent_m, query.climbM)) return false;
     if (!hardest || (query.activity !== 'hiking' && query.activity !== 'mtb')) return true;
     // An ungraded route is easy for the upper bound, but only an explicit grade meets a lower bound.
-    // A grade above the slider counts as its top step for the lower bound.
     const [min, max] = hardest;
-    return (route.hardest ?? 0) <= max && (min === 0 || Math.min(route.hardest ?? -1, topGrade) >= min);
+    return (route.hardest ?? 0) <= max && (min === 0 || (route.hardest ?? -1) >= min);
 }
 
 /**
@@ -103,9 +104,9 @@ export async function searchRoutes(query: RouteQuery, loadCell: CellLoader): Pro
 }
 
 /** The plan of a route record: start, shaping points and finish, and the plan indices where it turns back on purpose. */
-export function routePlan(route: CatalogRecord): { points: Coordinate[]; turnarounds: number[] } {
-    const line = decodeCoordinates(route.line_udeg ?? []);
-    const via = route.via ?? [];
+export function routePlan(route: RouteRecord): { points: Coordinate[]; turnarounds: number[] } {
+    const line = decodeCoordinates(route.line_udeg);
+    const via = route.via;
     return {
         points: [line[0], ...via.map(index => line[index]), line[line.length - 1]],
         turnarounds: (route.turnarounds ?? []).map(index => via.indexOf(index) + 1),

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { Coordinate } from './editor';
 import type { BikeType } from './riding-profiles';
 import { decodeCoordinates } from './route-answer';
-import { nearestVertex, routePlan, searchRoutes, type Bounds, type CatalogRecord, type RouteQuery, type RouteShape, type RouteSort } from './signed-routes';
+import { nearestVertex, routePlan, searchRoutes, type Bounds, type CatalogRecord, type RouteQuery, type RouteRecord, type RouteShape, type RouteSort } from './signed-routes';
 
 type VectorQuery = {
     start: Coordinate; radius_km: number; activity: BikeType; shape: RouteShape; distance_km?: Bounds; climb_m?: Bounds;
@@ -36,7 +36,7 @@ describe('signed routes', () => {
     });
 
     it('lists, at a smaller radius, the matches of a larger search within that radius', async () => {
-        const wide = vector.queries[vector.queries.length - 1].query;
+        const wide = vector.queries.find(({ name }) => name.startsWith('Hiking within 50 km, least climb first'))!.query;
         const matches = await search(query(wide));
         for (const radius of [5, 10, 25]) {
             expect(await search(query({ ...wide, radius_km: radius }))).toEqual(matches.filter(match => match.distanceM <= radius * 1000));
@@ -44,8 +44,8 @@ describe('signed routes', () => {
     });
 
     it.each(vector.plans)('plans route $id', ({ id, points_udeg, turnarounds, place, nearest_vertex }) => {
-        const route = routes.find(route => route.id === id)!;
+        const route = routes.find(route => route.id === id) as RouteRecord;
         expect(routePlan(route)).toEqual({ points: points_udeg.map(([lon, lat]) => [lon / 1e6, lat / 1e6]), turnarounds });
-        expect(nearestVertex(decodeCoordinates(route.line_udeg!), place)).toBe(nearest_vertex);
+        expect(nearestVertex(decodeCoordinates(route.line_udeg), place)).toBe(nearest_vertex);
     });
 });
