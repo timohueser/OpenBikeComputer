@@ -1,5 +1,6 @@
 mod base;
 pub mod blocks;
+pub mod catalog;
 pub mod cost;
 pub mod extract;
 pub mod landmarks;

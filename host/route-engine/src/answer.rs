@@ -21,6 +21,11 @@ impl Edges {
             _ => runs.push((value, 1)),
         }
     }
+
+    /// The runs of one channel: each value with the number of edges it covers.
+    pub fn runs(&self, channel: &str) -> &[(Value, usize)] {
+        self.0.get(channel).map_or(&[], Vec::as_slice)
+    }
 }
 
 pub fn answer(response: &Response) -> Value {

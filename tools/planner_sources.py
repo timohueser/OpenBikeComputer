@@ -52,7 +52,7 @@ def basemap(osm, output, bounds, cache, auxiliary=None):
     jar = source / "tiles/target/protomaps-basemap-HEAD-with-deps.jar"
     if not jar.exists():
         maps.run("mvn", "-q", "package", "-DskipTests", cwd=source / "tiles")
-    maps.run("java", "-Xmx2g", "-jar", jar, "--download", f"--osm-path={osm}",
+    maps.run("java", "-Xmx6g", "-jar", jar, "--download", f"--osm-path={osm}",
              f"--output={output}", "--bounds=" + ",".join(map(str, bounds)),
              "--maxzoom=14", "--threads=2", cwd=source / "tiles")
     return {"protomaps_commit": PROTOMAPS, "planetiler": "0.10.2",
@@ -76,8 +76,10 @@ def search_dump(osm, output, cache, port=5434):
         socket.mkdir()
         maps.run(pg / "initdb", "-D", database, "--auth-local=trust", "--auth-host=trust",
                  "--encoding=UTF8", "--locale=C.UTF-8")
+        # On macOS, PostgreSQL refuses to start without a valid LC_ALL.
         maps.run(pg / "pg_ctl", "-D", database, "-l", work / "postgres.log", "-o",
-                 f"-p {port} -k {socket} -h 127.0.0.1 -c shared_buffers=256MB -c maintenance_work_mem=512MB", "start")
+                 f"-p {port} -k {socket} -h 127.0.0.1 -c shared_buffers=256MB -c maintenance_work_mem=512MB", "start",
+                 env={**os.environ, "LC_ALL": "C.UTF-8"})
         try:
             maps.run(pg / "createuser", "-h", "127.0.0.1", "-p", port, "www-data")
             env = {**os.environ, "NOMINATIM_DATABASE_DSN":

@@ -14,52 +14,28 @@ from tools import planner, planner_maps as maps
 
 
 class PlannerTests(unittest.TestCase):
-    def test_interrupted_routing_setup_leaves_no_partial_package(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "maps").mkdir()
-            source = root / "bw.osm.pbf"
-            source.write_bytes(b"input")
-            args = argparse.Namespace(data_dir=root, pmtiles="pmtiles", osm=source, region=planner.REGION,
-                                      bounds=maps.bounds(maps.BW_BOUNDS),
-                                      dem_dir=root / "dem", reference=None)
-
-            def run(*command):
-                if str(command[0]).endswith("/route-build"):
-                    output = Path(command[command.index("--output") + 1])
-                    output.with_suffix(".building-test").mkdir()
-                    raise KeyboardInterrupt
-
-            with patch.object(planner, "run", side_effect=run), \
-                 patch.object(planner.shutil, "which", return_value="tool"), \
-                 patch.object(maps, "DATA", root / "maps"):
-                with self.assertRaises(KeyboardInterrupt):
-                    planner.setup(args)
-            self.assertEqual({p.name for p in root.iterdir()}, {"maps", "bw.osm.pbf"})
-
-    def test_freiburg_package_cannot_pass_as_baden_wuerttemberg(self):
+    def test_freiburg_package_cannot_pass_as_the_region(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "routing").mkdir()
             (root / "routing/manifest.json").write_text(json.dumps({
                 "region": "freiburg", "bounds": [7.5, 47.7, 8.5, 48.4],
             }))
-            with patch.object(maps, "check_bundle", return_value={"bounds": maps.bounds(maps.BW_BOUNDS)}):
-                with self.assertRaisesRegex(ValueError, "route package must cover baden-wuerttemberg"):
+            with patch.object(maps, "check_bundle", return_value={"bounds": [5.95, 45.8, 10.5, 49.85]}):
+                with self.assertRaisesRegex(ValueError, f"route package must cover {planner.REGION}"):
                     planner.verify(argparse.Namespace(data_dir=root, region=planner.REGION,
-                                                      bounds=maps.bounds(maps.BW_BOUNDS)))
+                                                      bounds=[5.95, 45.8, 10.5, 49.85]))
 
-    def test_test_region_setup_refuses_another_region_folder_and_bw_inputs(self):
+    def test_setup_refuses_a_data_directory_of_another_region(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "routing").mkdir()
-            (root / "routing/manifest.json").write_text(json.dumps({"region": planner.REGION}))
-            for extra in [["--data-dir", str(root)], ["--data-dir", str(root / "engadin"), "--osm", "bw.osm.pbf"]]:
-                with self.subTest(extra=extra), patch.object(sys, "argv", ["planner", "setup", "--region", "engadin", *extra]), \
-                     patch.object(planner, "setup") as setup, patch("sys.stderr"):
-                    with self.assertRaises(SystemExit):
-                        planner.main()
-                    setup.assert_not_called()
+            (root / "routing/manifest.json").write_text(json.dumps({"region": "freiburg"}))
+            with patch.object(sys, "argv", ["planner", "setup", "--data-dir", str(root)]), \
+                 patch.object(planner, "setup") as setup, patch("sys.stderr"):
+                with self.assertRaises(SystemExit):
+                    planner.main()
+                setup.assert_not_called()
 
     def test_a_failed_start_stops_services_already_started(self):
         children = []

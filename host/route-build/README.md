@@ -35,6 +35,22 @@ with a runtime cutout. The JSON report gives the OSM byte count, the total
 routing size, preparation time, and `geometry_bounds`. Include these geometry
 bounds when you prepare dependent maps and terrain.
 
+## Route catalog
+
+Write the signed-route catalog into a package that still has its source OSM
+tables. Name the region's countries, so that the catalog can omit route marks in
+France:
+
+```sh
+cargo run --release -p route-build --bin route-catalog -- /data/routes/bw --countries DE
+```
+
+The command writes `route-catalog.json` in the format of
+[the catalog contract](../../specs/route-catalog.md) and prints a JSON report:
+the counts, the dropped relations by reason and the shaping points. A present
+file is current, so the command does nothing. When France is the only country,
+no record has a route mark. A region with France and another country fails.
+
 ## Terrain
 
 The base crate accepts a height callback through `terrain::apply`. It has no

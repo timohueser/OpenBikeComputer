@@ -41,7 +41,7 @@ heights are integer metres.
 | `kind` | The OSM `route` value: `hiking`, `foot`, `bicycle` or `mtb` |
 | `name`, `ref`, `operator` | The OSM tag text |
 | `description` | The OSM tag text, at most 200 characters |
-| `website` | The OSM `website` text, else `contact:website` |
+| `website` | The OSM `website` text, else `contact:website`, else `url` |
 | `symbol` | The OSM `osmc:symbol` text |
 | `rank` | Network level from `network`: `4` for `iwn` and `icn`, `3` for `nwn` and `ncn`, `2` for `rwn` and `rcn`, `1` for `lwn` and `lcn`, else `0` |
 | `loop` | `true` for a loop, `false` for a one-way route |
@@ -52,16 +52,16 @@ heights are integer metres.
 | `cells` | Sorted IDs `9-X-Y` of the zoom 9 cells that the plan route touches |
 | `line_udeg` | Route record only: the simplified plan route, flat |
 | `via` | Route record only: ascending indices of the shaping vertices in `line_udeg` |
-| `turnarounds` | Route record only: the entries of `via` where the plan route turns back |
+| `turnarounds` | Route record only: the entries of `via` where the plan route turns back, and `0` for a loop that turns back at its start |
 | `parent` | Stage only: relation ID of its long route |
 | `stage` | Stage only: its number in the stages of `parent`, from `1` |
 | `stages` | Long route only: the relation IDs of its stages, in order |
 | `start_udeg` | Long route only: `[longitude, latitude]` of its start |
 
 Each record has a `name` or a `ref`, or both. The builder cuts a longer
-`description` at a word boundary. `symbol` is absent when the start of the route
-lies in France: vertex 0 of `line_udeg`, or `start_udeg` for a long route. The
-client then draws the `ref`.
+`description` at a word boundary. `symbol` is absent when France is the only
+country of the region; the client then draws the `ref`. A region with France and
+another country has no catalog yet: the builder has no country lookup.
 
 ### Plan
 
@@ -75,11 +75,24 @@ needs more leaves the catalog.
 [route API request](route-api.md#request): at each of these shaping points the
 plan route turns back on purpose. In the request, the points are the start, the
 shaping points and the finish, so the request index of an entry is its position
-in `via` plus 1. It is absent when there are none.
+in `via` plus 1. For a loop, `turnarounds` can hold 0: the plan route turns
+back at its start. It is absent when there are none.
 
 The plan reproduces the route with the Balanced profile of each activity that
 lists the kind: `hiking` for `hiking` and `foot`, `mtb` for `mtb`, and `road`,
-`gravel` and `touring` for `bicycle`. The plan route is the route that the
+`gravel` and `touring` for `bicycle`. The main line is the member ways with an
+empty, `main`, `forward` or `backward` role, ordered as the Waymarked Trails route
+builder orders them, with the forward branch where the route splits by
+direction. When that order has more than one piece, the builder joins the
+pieces at their nearest ends, from the first piece on, into one chain that uses
+each piece once, with each join at most 500 m. When no such chain exists, for
+example because a piece ends inside another piece, the member order stays if
+each of its gaps is at most 500 m; otherwise the route leaves the catalog. The
+router patches each gap. To reproduce the route, the router's route for the plan
+with each profile has a deviation of at most 2 % of the main-line length. The
+deviation is the length of the routed line that is more than 30 m from the main
+line, plus the length of the main line that is more than 30 m from the routed
+line. The plan route is the route that the
 router gives for the plan with one of these profiles: `touring` for `bicycle`,
 else the only one. The plan runs in the member order of the relation, also for a
 loop. A route is a loop when its main line is a closed ring, or when it has
@@ -124,14 +137,16 @@ route. It is absent when the plan route has no explicit grade.
 ### Long routes
 
 A long route is a relation that holds route relations. Its stages are its child
-routes with the same `network`, in member order. A long route is in the catalog
-only when each of its stages is in it. A child relation that holds route
-relations is not a stage.
+routes with an empty or `main` role and the same `network`, in member order. A
+long route is in the catalog only when each of its stages is in it. A long route
+with a child relation that holds route relations leaves the catalog.
 
 A long route has no `line_udeg`, `via` or `turnarounds`. Its line and its plan
 are those of its stages in order. The client loads the stages by their IDs from
 the files of the long route's `cells`. The joined plan has the points of the
-stage plans, with each stage finish joined to the next stage start. A client
+stage plans in order. A stage finish and the next stage start are one point when
+they are the same vertex, and two points otherwise. Each stage turnaround moves
+to its position in the joined plan. A client
 plans a whole long route only when its joined plan has at most 64 points;
 otherwise it offers its stages only. `start_udeg` is the start of its first
 stage. `length_m`, `ascent_m`, `descent_m` and `grades_m` are the sums of the
