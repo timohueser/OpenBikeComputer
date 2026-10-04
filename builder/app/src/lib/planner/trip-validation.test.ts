@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { emptyTrip, setEndpoint, addRestDay, applyBudget, initialTrip, maxRidingDays, pinNight, reorderPoint, routingKey, setDrawnLeg } from './editor';
 import { isTrip, storedTrip } from './trip-validation';
-import { listVersions, readVersion, saveVersion } from './versions';
+import { newVersion } from './versions';
 
 describe('stored planner data', () => {
     it('round-trips a trip with ordered nights, drawings and rest days at the riding-day limit', () => {
@@ -11,20 +11,14 @@ describe('stored planner data', () => {
         const drawn = setDrawnLeg(pinned, 'night-1', [[7.3, 47.6]]);
         const trip = addRestDay(reorderPoint(drawn, 'night-1', 1), 2);
         expect(isTrip(JSON.parse(JSON.stringify(trip)))).toBe(true);
-        let json: string | null = null;
-        const store = { getItem: () => json, setItem: (_: string, value: string) => { json = value; } };
-        const version = saveVersion(trip, 'Trip', store);
-        expect(readVersion(version.id, store)).toEqual(trip);
+        expect(newVersion(trip, 'Trip').trip).toEqual(trip);
     });
 
     it('drops a stored routing line without edges from a draft and a version', () => {
         const trip = initialTrip();
         const stale = { ...trip, routing: { key: routingKey(trip), coordinates: trip.points.map(p => p.coordinate), surfaces: ['Paved'] } };
         expect(storedTrip(stale)).toEqual(trip);
-        const current = { ...stale, routing: { ...stale.routing, edges: {} } };
-        expect(storedTrip(current)).toEqual(current);
-        const store = { getItem: () => JSON.stringify([{ id: 'v', at: '2026-01-01T00:00:00Z', summary: 'Trip', trip: stale }]), setItem: () => {} };
-        expect(readVersion('v', store)).toEqual(trip);
+
     });
 
     it('rejects invalid endpoint roles, invalid geometry and broken route references', () => {
@@ -47,19 +41,9 @@ describe('stored planner data', () => {
     it('round-trips empty and one-endpoint drafts and versions', () => {
         for (const trip of [emptyTrip(), setEndpoint(emptyTrip('trip'), 'finish', [8, 48], 'Finish')]) {
             expect(isTrip(JSON.parse(JSON.stringify(trip)))).toBe(true);
-            let json: string | null = null;
-            const store = { getItem: () => json, setItem: (_: string, value: string) => { json = value; } };
-            const saved = saveVersion(trip, undefined, store);
-            expect(readVersion(saved.id, store)).toEqual(trip);
+            expect(newVersion(trip).trip).toEqual(trip);
         }
         expect(isTrip({ ...emptyTrip(), points: [{ ...initialTrip().points[0], kind: 'via' }] })).toBe(false);
     });
 
-    it('skips malformed and duplicate version entries while keeping readable versions', () => {
-        const valid = { id: 'valid', at: '2026-01-01T00:00:00Z', summary: 'Trip', trip: initialTrip() };
-        const store = { getItem: () => JSON.stringify([null, {}, { ...valid, id: 'broken', trip: {} }, valid, valid]), setItem: () => {} };
-        expect(listVersions(store)).toEqual([valid]);
-        expect(readVersion('broken', store)).toBeUndefined();
-        expect(readVersion('valid', store)).toEqual(valid.trip);
-    });
 });

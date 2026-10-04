@@ -1,23 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { addRestDay, coordinateAt, cumulative, initialTrip, pinNight, routeCoordinates } from './editor';
-import { deleteVersion, listVersions, readVersion, saveVersion, versionSummary } from './versions';
-
-function memoryStore() {
-    const items = new Map<string, string>();
-    return { getItem: (key: string) => items.get(key) ?? null, setItem: (key: string, value: string) => void items.set(key, value) };
-}
+import { newVersion, versionSummary } from './versions';
 
 describe('saved versions', () => {
-    it('keeps the ten newest unnamed versions and every named one', () => {
-        const store = memoryStore();
-        const named = saveVersion(initialTrip(), 'Before the pass', store);
-        const unnamed = Array.from({ length: 12 }, () => saveVersion(initialTrip(), undefined, store));
-        const kept = listVersions(store);
-        expect(kept.filter(v => !v.name).map(v => v.id)).toEqual(unnamed.slice(2).reverse().map(v => v.id));
-        expect(kept.at(-1)).toMatchObject({ id: named.id, name: 'Before the pass' });
-        expect(readVersion(named.id, store)).toEqual(initialTrip());
-        deleteVersion(named.id, store);
-        expect(listVersions(store)).toHaveLength(10);
+    it('captures the editable plan and a trimmed checkpoint name', () => {
+        const trip = initialTrip();
+        const version = newVersion(trip, '  Before the pass  ');
+        expect(version.trip).toEqual(trip);
+        expect(version.name).toBe('Before the pass');
+        expect(newVersion(trip, '  ').name).toBeUndefined();
     });
 
     it('summarises calendar days, pinned nights and distance', () => {

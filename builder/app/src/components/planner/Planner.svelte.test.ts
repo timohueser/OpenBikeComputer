@@ -238,24 +238,23 @@ describe('planner recovery', () => {
     });
 
     it('keeps a failed version save editable and lets the rider retry', async () => {
-        const onSaved = vi.fn();
+        const onChange = vi.fn().mockRejectedValueOnce(new Error('Storage full')).mockResolvedValue(undefined);
         mounted.push(mount(VersionsMenu, {
             target: document.body,
-            props: { trip: initialTrip(), draftSavedAt: null, draftError: '', onRestore: vi.fn(), onSaved },
+            props: { trip: initialTrip(), versions: [], draftSavedAt: null, draftError: '', onRestore: vi.fn(), onChange },
         }));
         await tick();
-        button('Save').click();
+        button('Save version').click();
         await tick();
-        vi.spyOn(localStorage, 'setItem').mockImplementationOnce(() => { throw new Error('Storage full'); });
         document.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
         await tick();
         expect(document.querySelector('[role="alert"]')?.textContent).toContain('Could not save');
         expect(document.querySelector('input')).not.toBeNull();
-        expect(onSaved).not.toHaveBeenCalled();
+        expect(onChange).toHaveBeenCalledTimes(1);
 
         document.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
         await tick();
-        expect(onSaved).toHaveBeenCalledOnce();
+        expect(onChange).toHaveBeenCalledTimes(2);
         expect(document.querySelector('[role="alert"]')).toBeNull();
     });
 });

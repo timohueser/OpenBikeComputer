@@ -1,4 +1,4 @@
-import { maxRidingDays, type Coordinate, type RoutePoint, type Trip } from './editor';
+import { maxRidingDays, routingKey, type Coordinate, type RoutePoint, type Trip } from './editor';
 import { ridingProfiles } from './riding-profiles';
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -23,10 +23,12 @@ function point(value: unknown): value is RoutePoint {
         && typeof value.kind === 'string' && ['start', 'finish', 'pass', 'via', 'waypoint', 'detour', 'night', 'marker'].includes(value.kind)
         && (value.leg === undefined || (typeof value.leg === 'string' && ['routed', 'straight', 'drawn'].includes(value.leg)))
         && (value.drawn === undefined || (Array.isArray(value.drawn) && value.drawn.every(coordinate)))
+        && (value.anchor === undefined || coordinate(value.anchor))
+        && (value.placeKind === undefined || typeof value.placeKind === 'string')
         && (value.autoLabel === undefined || typeof value.autoLabel === 'boolean');
 }
 
-/** Storage crosses a trust boundary: both drafts and versions must satisfy the route model. */
+/** Browser records and imported files must satisfy the route model. */
 export function isTrip(value: unknown): value is Trip {
     if (!record(value) || !integer(value.days, 1, maxRidingDays)
         || !Array.isArray(value.points) || !value.points.every(point)
@@ -35,6 +37,9 @@ export function isTrip(value: unknown): value is Trip {
         || !finite(value.target) || value.target < 1 || !finite(value.limit) || value.limit < 0
         || (value.climbTarget !== undefined && (!finite(value.climbTarget) || value.climbTarget < 0))
         || (value.mode !== undefined && value.mode !== 'route' && value.mode !== 'trip')
+        || (value.live !== undefined && typeof value.live !== 'boolean')
+        || (value.startDate !== undefined && (typeof value.startDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.startDate)
+            || !Number.isFinite(Date.parse(value.startDate)) || new Date(value.startDate).toISOString().slice(0, 10) !== value.startDate))
         || (value.loop !== undefined && value.loop !== true)) return false;
 
     const { points, days } = value;
@@ -62,11 +67,29 @@ export function isTrip(value: unknown): value is Trip {
     return value.preset === undefined || (typeof value.preset === 'string' && ridingProfiles[bike].presets.includes(value.preset));
 }
 
-/** A stored draft or version, or undefined when it is invalid. A stored routing line without `edges` goes, and the planner
- * routes the line again. */
+function routing(value: unknown, trip: Trip): boolean {
+    if (!record(value) || value.key !== routingKey(trip) || typeof value.choiceId !== 'string' || typeof value.profile !== 'string'
+        || !Array.isArray(value.coordinates) || value.coordinates.length < 2 || !value.coordinates.every(coordinate)
+        || !Array.isArray(value.elevation) || value.elevation.length !== value.coordinates.length || !value.elevation.every(h => h === null || finite(h))
+        || !Array.isArray(value.elapsed) || value.elapsed.length !== value.coordinates.length
+        || !value.elapsed.every((t, i, times) => finite(t) && t >= 0 && (!i || t >= times[i - 1]))
+        || !Array.isArray(value.stops) || !value.stops.every(stop => record(stop) && typeof stop.id === 'string'
+            && trip.points.some(p => p.id === stop.id) && finite(stop.distance) && stop.distance >= 0)
+        || !['seconds', 'unknownSurfaceKm', 'pushingKm', 'unroutedKm'].every(key => finite(value[key]) && value[key] >= 0)
+        || (value.picked !== undefined && typeof value.picked !== 'boolean') || !record(value.edges)) return false;
+    const edges = value.edges;
+    const closures = ['permit', 'private', 'farm', 'sidepath', 'discouraged', 'limited', 'seasonal', 'conditional', 'unclear'];
+    return Object.entries(edges).every(([channel, values]) => Array.isArray(values) && values.length === (value.coordinates as Coordinate[]).length - 1
+        && values.every(v => v === null || (channel === 'surfaces' ? ['Unknown', 'Paved', 'Compacted', 'Gravel', 'Dirt', 'Rough'].includes(v)
+            : channel === 'pushing' ? typeof v === 'boolean'
+            : channel === 'sac_scale' || channel === 'mtb_scale' ? integer(v, 0, 6)
+            : channel === 'closures' ? Array.isArray(v) && v.every(c => record(c) && typeof c.kind === 'string' && closures.includes(c.kind) && typeof c.condition === 'string') : true)));
+}
+
+/** An invalid cached line is recalculated. A valid picked alternative keeps its geometry. */
 export function storedTrip(value: unknown): Trip | undefined {
     if (!isTrip(value)) return undefined;
-    if (value.routing === undefined || (record(value.routing) && record(value.routing.edges))) return value;
+    if (value.routing === undefined) return value;
     const { routing: _, ...plan } = value;
-    return plan;
+    return routing(value.routing, value) ? { ...plan, routing: { ...value.routing, package: undefined, alternatives: [], alternativesReady: false } } : plan;
 }

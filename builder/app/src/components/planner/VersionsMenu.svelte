@@ -1,15 +1,16 @@
 <script lang="ts">
     import { tick } from 'svelte';
     import Icon from './PlannerIcon.svelte';
-    import { deleteVersion, listVersions, readVersion, renameLatest, saveVersion, versionSummary, type Version } from '../../lib/planner/versions';
+    import { newVersion, versionSummary, type Version } from '../../lib/planner/versions';
     import type { Trip } from '../../lib/planner/editor';
 
-    let { trip, draftSavedAt, draftError, onRestore, onSaved }: {
+    let { trip, versions, draftSavedAt, draftError, onRestore, onChange }: {
         trip: Trip;
+        versions: Version[];
         draftSavedAt: number | null;
         draftError: string;
         onRestore: (trip: Trip, name: string) => void;
-        onSaved: (version: Version) => void;
+        onChange: (versions: Version[]) => Promise<void>;
     } = $props();
 
     let open = $state(false);
@@ -17,12 +18,12 @@
     let naming = $state<'new' | 'latest' | null>(null);
     let name = $state('');
     let error = $state('');
-    let versions = $state<Version[]>([]);
+    let busy = $state(false);
     let root: HTMLDivElement;
     let menu = $state<HTMLDivElement>();
     let now = $state(Date.now());
 
-    const draft = $derived(draftError || (draftSavedAt === null ? 'Draft · no changes this session' : `Draft · saved ${ago(draftSavedAt)}`));
+    const draft = $derived(draftError || (draftSavedAt === null ? 'Not saved yet' : `Saved in this browser · ${ago(draftSavedAt)}`));
     const suggested = $derived(`Version ${versions.length + (naming === 'new' ? 1 : 0)} · ${versionSummary(trip).split(' · ')[0]}`);
 
     function ago(time: number) {
@@ -44,7 +45,6 @@
     async function startNaming(what: 'new' | 'latest') {
         now = Date.now();
         error = '';
-        versions = listVersions();
         open = true;
         naming = what;
         name = what === 'latest' ? versions[0]?.name ?? suggested : suggested;
@@ -55,20 +55,20 @@
     }
 
     /** Saves or renames with the typed name; the suggested name left as it is saves an unnamed version. */
-    function finishNaming() {
+    async function finishNaming() {
         const what = naming;
-        if (!what) return;
+        if (!what || busy) return;
         const typed = name.trim() === suggested ? '' : name;
         error = '';
+        busy = true;
         try {
-            if (what === 'new') onSaved(saveVersion(trip, typed));
-            else renameLatest(typed);
+            if (what === 'new') await onChange([newVersion(trip, typed), ...versions]);
+            else await onChange(versions.map((v, i) => i ? v : { ...v, name: typed.trim() || undefined }));
         } catch {
             error = 'Could not save the version. Press Enter to try again.';
             return;
-        }
+        } finally { busy = false; }
         naming = null;
-        versions = listVersions();
     }
 
     async function toggle() {
@@ -77,26 +77,23 @@
         if (!open) return;
         now = Date.now();
         error = '';
-        versions = listVersions();
         await tick();
         menu?.querySelector<HTMLElement>('button')?.focus();
     }
 
     function restore(version: Version) {
-        const saved = readVersion(version.id);
-        if (!saved) return;
         open = false;
-        onRestore(saved, title(version));
+        onRestore(version.trip, title(version));
     }
 
-    function remove(id: string) {
+    async function remove(id: string) {
+        busy = true;
         try {
-            deleteVersion(id);
+            await onChange(versions.filter(v => v.id !== id));
             error = '';
-            versions = listVersions();
         } catch {
             error = 'Could not delete the version. Try again.';
-        }
+        } finally { busy = false; }
     }
 
     function outside(event: PointerEvent) {
@@ -117,8 +114,8 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="versions" bind:this={root} onkeydown={key}>
     <div class="split">
-        <button type="button" class="save" onclick={() => startNaming('new')}>Save</button>
-        <button type="button" class="more" aria-label="Saved versions" aria-expanded={open} aria-haspopup="true" onclick={toggle}><Icon name="down" size={14} /></button>
+        <button type="button" class="save" disabled={busy || !trip.points.length} onclick={() => startNaming('new')}>Save version</button>
+        <button type="button" class="more" disabled={busy} aria-label="Saved versions" aria-expanded={open} aria-haspopup="true" onclick={toggle}><Icon name="down" size={14} /></button>
     </div>
     {#if open}
         <div class="menu" bind:this={menu}>
@@ -126,9 +123,10 @@
                 <form class="name" onsubmit={(event) => { event.preventDefault(); finishNaming(); }}>
                     <label>
                         <span>{naming === 'new' ? 'Save as' : 'Name the latest version'}</span>
-                        <input aria-label="Version name" maxlength="60" bind:value={name} onblur={finishNaming} />
+                        <input aria-label="Version name" maxlength="60" bind:value={name} disabled={busy} />
                     </label>
                     <small>Enter saves · Esc cancels</small>
+                    <button type="submit" class="planner-action" disabled={busy}>{busy ? 'Saving…' : 'Save checkpoint'}</button>
                 </form>
             {:else}
                 <p class="draft">{draft}</p>
@@ -142,16 +140,16 @@
                                 <strong>{title(version)}</strong>
                                 <small>{version.name ? `${when(version.at)} · ` : ''}{version.summary}</small>
                             </span>
-                            <button type="button" class="planner-action" onclick={() => restore(version)}>Restore</button>
-                            <button type="button" class="delete" aria-label={`Delete ${title(version)}`} onclick={() => remove(version.id)}><Icon name="close" size={14} /></button>
+                            <button type="button" class="planner-action" disabled={busy} onclick={() => restore(version)}>Restore</button>
+                            <button type="button" class="delete" disabled={busy} aria-label={`Delete ${title(version)}`} onclick={() => remove(version.id)}><Icon name="close" size={14} /></button>
                         </li>
                     {/each}
                 </ul>
                 {#if !naming}
-                    <button type="button" class="name-start" onclick={() => startNaming('latest')}>Name this version…</button>
+                    <button type="button" class="name-start" onclick={() => startNaming('latest')}>Rename latest version…</button>
                 {/if}
             {:else if !naming}
-                <p class="empty">No saved versions yet. Save keeps a copy you can return to.</p>
+                <p class="empty">No saved versions yet. Save version keeps a copy you can return to.</p>
             {/if}
         </div>
     {/if}
@@ -193,9 +191,9 @@
     .menu {
         position: absolute;
         top: 40px;
-        right: 68px;
+        right: 0;
         z-index: 30;
-        width: 340px;
+        width: min(340px, calc(100vw - 32px));
         padding: 8px;
         border-radius: 8px;
         background: var(--panel);

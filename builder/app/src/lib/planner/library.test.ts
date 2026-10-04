@@ -1,0 +1,71 @@
+import { IDBFactory } from 'fake-indexeddb';
+import { describe, expect, it } from 'vitest';
+import { initialTrip, emptyTrip, setEndpoint, pinNight, addRestDay, setDrawnLeg, routingKey } from './editor';
+import { PlanLibrary, exportPlan, importPlan, newPlan } from './library';
+import { newVersion } from './versions';
+
+describe('local plan library', () => {
+    it('keeps independent plans and checkpoints, resumes the active one and removes its pointer on deletion', async () => {
+        const factory = new IDBFactory();
+        const store = new PlanLibrary(factory);
+        const first = await store.save(newPlan(initialTrip(), 'Weekend'));
+        const next = { ...first, versions: [newVersion(first.trip, 'Valley')] };
+        await store.save(next);
+        const second = await store.save(newPlan(setEndpoint(emptyTrip(), 'start', [8, 48], 'Home'), 'Next ride'));
+        await store.activate(second.id);
+        await store.close();
+        const reopened = new PlanLibrary(factory);
+        expect((await reopened.active())?.id).toBe(second.id);
+        const plans = await reopened.list();
+        expect(plans).toHaveLength(2);
+        expect(plans.find(p => p.id === first.id)?.versions[0].name).toBe('Valley');
+        expect(plans.find(p => p.id === second.id)?.versions).toEqual([]);
+        await reopened.remove(second);
+        expect(await reopened.active()).toBeUndefined();
+        expect(await reopened.list()).toHaveLength(1);
+        await reopened.close();
+    });
+
+    it('orders rapid edits and refuses unseen edits or deletion from another tab', async () => {
+        const factory = new IDBFactory();
+        const first = new PlanLibrary(factory), second = new PlanLibrary(factory);
+        const plan = await first.save(newPlan(initialTrip(), 'Original'));
+        await first.activate(plan.id);
+        const stale = (await second.active())!;
+        await Promise.all([first.save({ ...plan, name: 'First edit' }), first.save({ ...plan, name: 'Last edit' })]);
+        expect((await first.list())[0]).toMatchObject({ name: 'Last edit', revision: 3 });
+        await expect(second.save({ ...stale, name: 'Unseen overwrite' })).rejects.toThrow('another tab');
+        await expect(second.remove(stale)).rejects.toThrow('changed');
+        const latest = (await second.get(plan.id))!;
+        await second.save({ ...latest, name: 'After reopening' });
+        expect((await first.list())[0].name).toBe('After reopening');
+        await first.close(); await second.close();
+    });
+
+    it('round-trips nights, dates, rest days, drawings and picked geometry with its versions under a new identity', () => {
+        const trip = { ...addRestDay(pinNight(initialTrip(), 1, [7.2, 47.5], 'Camp'), 1), startDate: '2026-10-04' };
+        const drawn = setDrawnLeg(trip, 'finish', [[7, 47.5]]);
+        const coordinates = drawn.points.map(p => p.coordinate);
+        const picked = { ...drawn, routing: { key: routingKey(drawn), choiceId: 'corridor', profile: 'touring', picked: true,
+            coordinates, elevation: coordinates.map(() => 10), elapsed: coordinates.map((_, i) => i * 10), edges: {},
+            stops: drawn.points.map((p, i) => ({ id: p.id, distance: i })), seconds: 20,
+            unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, alternatives: [], alternativesReady: false } };
+        const plan = newPlan(picked, 'Autumn tour', [newVersion(drawn, 'Before the detour')]);
+        const imported = importPlan(exportPlan(plan));
+        expect(imported.id).not.toBe(plan.id);
+        expect(imported).toMatchObject({ revision: 0, name: plan.name, trip: JSON.parse(JSON.stringify(picked)), versions: JSON.parse(JSON.stringify(plan.versions)) });
+    });
+
+    it('rejects malformed plans, versions and picked routes without accepting part of a file', () => {
+        const file = JSON.parse(exportPlan(newPlan(initialTrip(), 'Valid', [newVersion(initialTrip())])));
+        for (const invalid of [null, {}, { ...file, version: 99 }, { ...file, trip: {} },
+            { ...file, trip: { ...file.trip, startDate: '2026-02-30' } },
+            { ...file, trip: { ...file.trip, points: [{ ...file.trip.points[0], anchor: [999, 0] }, file.trip.points[1]] } },
+            { ...file, trip: { ...file.trip, routing: { picked: true, edges: {} } } },
+            { ...file, versions: [null] }, { ...file, versions: [file.versions[0], file.versions[0]] },
+            { ...file, versions: [{ ...file.versions[0], trip: {} }] }]) {
+            expect(() => importPlan(JSON.stringify(invalid))).toThrow();
+        }
+        expect(() => importPlan('{')).toThrow();
+    });
+});
