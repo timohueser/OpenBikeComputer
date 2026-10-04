@@ -48,9 +48,15 @@ struct Workers {
     metadata: Value,
 }
 
+/// Search labels and queues beyond the routing bytes of a package too large for the base budget.
+const SEARCH_HEAP: usize = 256 * 1024 * 1024;
+
 fn default_memory_budget(package: &route_engine::package::Package<impl route_engine::package::Source>) -> usize {
-    (768 * 1024 * 1024usize)
-        .saturating_add(package.manifest().landmarks.as_ref().map_or(0, |index| index.decoded_bytes()))
+    use route_engine::data::RoutingData;
+    let base = (768 * 1024 * 1024usize)
+        .saturating_add(package.manifest().landmarks.as_ref().map_or(0, |index| index.decoded_bytes()));
+    let costliest = package.manifest().metrics.keys().filter_map(|metric| package.routing_bytes(metric).ok()).max();
+    base.max(costliest.unwrap_or(0).saturating_add(SEARCH_HEAP))
 }
 
 pub fn app(directory: &Path, workers: usize) -> Result<axum::Router, Error> {
