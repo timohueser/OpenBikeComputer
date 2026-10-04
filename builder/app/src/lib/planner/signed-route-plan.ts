@@ -1,27 +1,28 @@
-import { loopTrip, type Coordinate, type RoutePoint, type Trip } from './editor';
+import { emptyTrip, loopTrip, type Coordinate, type RoutePoint, type Trip } from './editor';
+import type { BikeType } from './riding-profiles';
 import { decodeCoordinates } from './route-answer';
-import { routePlan, type RouteRecord } from './signed-routes';
+import { nearestVertex, routePlan, type CatalogRecord, type RouteRecord } from './signed-routes';
 
 /** The route API takes at most this many points. */
 const MAX_POINTS = 64;
 
+/** Index 0 in `turnarounds` marks a loop start where the route turns back; it is a turnaround once the start moves. */
 export interface RoutePlan { points: Coordinate[]; turnarounds: number[] }
 
-/**
- * The plan of a route record. A loop that starts at line vertex `start` runs from there around the loop, through the
- * data start, back to `start`. A rotation that needs more points than a request takes keeps the data start.
- */
+/** The line vertex where a loop starts nearest to `place`, or 0 (its own start) when that start needs more points than a request takes. */
+export function loopStart(route: RouteRecord, place: Coordinate): number {
+    const vertex = nearestVertex(decodeCoordinates(route.line_udeg), place);
+    return route.via.length + (route.via.includes(vertex) ? 2 : 3) <= MAX_POINTS ? vertex : 0;
+}
+
+/** The plan of a route record. A loop that starts at line vertex `start` runs from there around the loop, through its own start, back to `start`. */
 export function recordPlan(route: RouteRecord, start = 0): RoutePlan {
-    if (!route.loop || start <= 0) return routePlan(route);
+    if (!route.loop) return routePlan(route);
     const line = decodeCoordinates(route.line_udeg);
     const ends = [0, ...route.via];
-    const order = [start, ...ends.filter(i => i > start), ...ends.filter(i => i < start), start];
-    if (order.length > MAX_POINTS) return routePlan(route);
+    const order = start > 0 ? [start, ...ends.filter(i => i > start), ...ends.filter(i => i < start), start] : [...ends, line.length - 1];
     const turns = new Set(route.turnarounds ?? []);
-    return {
-        points: order.map(i => line[i]),
-        turnarounds: order.flatMap((i, k) => k > 0 && k < order.length - 1 && turns.has(i) ? [k] : []),
-    };
+    return { points: order.map(i => line[i]), turnarounds: order.flatMap((i, k) => k < order.length - 1 && turns.has(i) ? [k] : []) };
 }
 
 /** The stage plans of a long route in one plan, each stage finish joined to the next stage start. Null when it needs more points than a request takes. */
@@ -37,10 +38,22 @@ export function joinedPlan(stages: RoutePlan[]): RoutePlan | null {
     return joined.points.length <= MAX_POINTS ? joined : null;
 }
 
+/**
+ * The empty plan that a signed route fills: named after the route, with the Balanced preset of an activity that rides
+ * its kind, which the shaping points of the catalog reproduce.
+ */
+export function routeBase(route: CatalogRecord, trip: Trip): Trip {
+    const bike = trip.bike ?? 'touring';
+    const activity: BikeType = route.kind === 'hiking' || route.kind === 'foot' ? 'hiking' : route.kind === 'mtb' ? 'mtb'
+        : ['road', 'gravel', 'touring'].includes(bike) ? bike : 'touring';
+    return { ...emptyTrip(trip.mode), name: route.name ?? route.ref, bike: activity, preset: 'Balanced', startDate: trip.startDate };
+}
+
 /** A plan of `base` that follows `plan`. Its shaping points draw no pin; at a turnaround the route turns back. A loop plan ends at its start. */
 export function planTrip(base: Trip, { points, turnarounds }: RoutePlan, loop: boolean): Trip {
-    const shape = (point: RoutePoint, index: number): RoutePoint => point.kind !== 'via' ? point
-        : { ...point, hidden: true, ...turnarounds.includes(index) ? { turnaround: true } : {} };
+    const shape = (point: RoutePoint, index: number): RoutePoint => ({
+        ...point, ...point.kind === 'via' ? { hidden: true as const } : {}, ...turnarounds.includes(index) ? { turnaround: true as const } : {},
+    });
     if (loop) {
         const trip = loopTrip(base, points.slice(0, -1));
         return { ...trip, points: trip.points.map(shape) };

@@ -5,16 +5,17 @@ import { corridorTiles } from './place-index';
 import type { BikeType } from './riding-profiles';
 import { decodeCoordinates } from './route-answer';
 import type { RoutingLine } from './routing';
-import { joinedPlan, recordPlan, type RoutePlan } from './signed-route-plan';
-import { nearestVertex, searchRoutes, type Bounds, type CatalogRecord, type RouteMatch, type RouteRecord, type RouteShape, type RouteSort } from './signed-routes';
+import { joinedPlan, loopStart, recordPlan, type RoutePlan } from './signed-route-plan';
+import type { SignedRoutesView } from './signed-routes-map';
+import { searchRoutes, type Bounds, type CatalogRecord, type RouteMatch, type RouteRecord, type RouteShape, type RouteSort } from './signed-routes';
 
 export const RADII = [5, 10, 25, 50];
 
 /** A start from a place has its name; a map click has the name of the nearest place once it is known. */
 export interface RouteStart { coordinate: Coordinate; name?: string; near?: string }
 export interface RouteFilters { radiusKm: number; shape: RouteShape; distanceKm: Bounds; climbM: Bounds; hardest: [number, number]; sort: RouteSort }
-/** The shown route, its distance from the start when it is a match, and the stages of its long route once they load. */
-export interface RouteDetail { route: CatalogRecord; distanceM?: number; family?: CatalogRecord; stages?: CatalogRecord[] }
+/** The shown route, its distance from the start when it is a match, and the stages of its long route once they load or fail to. */
+export interface RouteDetail { route: CatalogRecord; distanceM?: number; family?: CatalogRecord; stages?: CatalogRecord[]; failed?: boolean }
 
 const cellsAround = (at: Coordinate, km: number) => corridorTiles([at], km, 9).map(key => key.replaceAll('/', '-'));
 
@@ -46,12 +47,18 @@ export class RouteFinder {
     detail = $state.raw<RouteDetail | null>(null);
     hovered = $state<number | null>(null);
     loopStart = $state<'near' | 'data'>('near');
-    /** The detail plan, routed once for its profile and time. */
-    preview = $state.raw<RoutingLine | null>(null);
+    /** A routed plan of the detail, for its profile, figures and time. */
+    routed = $state.raw<{ plan: RoutePlan; line: RoutingLine } | null>(null);
     private readonly covered = downloadedCells();
     private readonly cells = new Map<string, Promise<CatalogRecord[] | null>>();
     private readonly records = new Map<number, CatalogRecord>();
     private serial = 0;
+
+    /** The loop vertex nearest to the start place, when it is not the loop's own start. */
+    readonly nearStart = $derived.by(() => {
+        const route = this.detail?.route;
+        return route?.loop && route.line_udeg && this.start ? loopStart(route as RouteRecord, this.start.coordinate) : 0;
+    });
 
     /** The plan of the detail: a loop from the chosen start, or a long route joined from its stages. Null when a long route is too long for one plan; undefined while its stages load. */
     readonly plan = $derived.by((): RoutePlan | null | undefined => {
@@ -59,8 +66,30 @@ export class RouteFinder {
         if (!detail) return undefined;
         const { route, stages } = detail;
         if (route.stages) return stages?.length === route.stages.length ? joinedPlan(stages.map(stage => recordPlan(stage as RouteRecord))) : undefined;
-        const start = route.loop && this.loopStart === 'near' && this.start ? nearestVertex(recordLine(route), this.start.coordinate) : 0;
-        return recordPlan(route as RouteRecord, start);
+        return recordPlan(route as RouteRecord, this.loopStart === 'near' ? this.nearStart : 0);
+    });
+
+    /** The routed line of the current plan only, so figures and time never mix two plans. */
+    readonly preview = $derived(this.routed && this.routed.plan === this.plan ? this.routed.line : null);
+
+    /** The listed routes as numbered lines; the other matches as start dots. */
+    readonly mapView = $derived.by((): SignedRoutesView | null => {
+        const start = this.start, detail = this.detail;
+        if (!start) return null;
+        const startOf = ({ start_udeg, line_udeg }: CatalogRecord): Coordinate => {
+            const [lon, lat] = start_udeg ?? line_udeg!;
+            return [lon / 1e6, lat / 1e6];
+        };
+        return {
+            center: start.coordinate, radiusKm: this.filters.radiusKm,
+            lines: this.matches.slice(0, this.shown).map(({ route }, i) => {
+                const line = recordLine(route, route.stages?.flatMap(id => this.records.get(id) ?? []));
+                return { id: route.id, number: i + 1, rank: route.rank, line: line.length ? line : [startOf(route)],
+                    label: `${route.name ?? route.ref} · ${(route.length_m / 1000).toFixed(1)} km · ↑ ${route.ascent_m} m` };
+            }),
+            dots: this.matches.slice(this.shown).map(({ route }) => ({ id: route.id, rank: route.rank, at: startOf(route) })),
+            selected: detail ? { id: detail.route.id, line: recordLine(detail.route, detail.stages) } : null,
+        };
     });
 
     /** A loaded record, such as the long route of a stage. */
@@ -114,7 +143,7 @@ export class RouteFinder {
     /** Shows a record, and loads the stages of its long route. */
     async select(id: number | null) {
         this.loopStart = 'near';
-        this.preview = null;
+        this.routed = null;
         const route = id === null ? undefined : this.records.get(id);
         if (!route) { this.detail = null; return; }
         const detail: RouteDetail = { route, distanceM: this.matches.find(match => match.route.id === id)?.distanceM };
@@ -122,7 +151,7 @@ export class RouteFinder {
         const family = route.stages ? route : route.parent ? this.records.get(route.parent) : undefined;
         if (!family?.stages) return;
         const stages = await this.stagesOf(family).catch(() => undefined);
-        if (stages && this.detail === detail) this.detail = { ...detail, family, stages };
+        if (this.detail === detail) this.detail = stages ? { ...detail, family, stages } : { ...detail, failed: true };
     }
 
     private async stagesOf(route: CatalogRecord): Promise<CatalogRecord[]> {

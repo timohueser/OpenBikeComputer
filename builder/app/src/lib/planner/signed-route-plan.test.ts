@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { emptyTrip, orderedRoutePoints, type Coordinate } from './editor';
+import { emptyTrip, orderedRoutePoints, startLoopHere, type Coordinate } from './editor';
 import { LegCache } from './route-legs';
 import { decodeCoordinates } from './route-answer';
 import { calculateLine } from './routing';
@@ -29,7 +29,19 @@ describe('signed route plans', () => {
     it('moves the turnarounds of a rotated loop with their points', () => {
         const loop = { ...record(103), turnarounds: [9] };
         expect(recordPlan(loop, 4).turnarounds).toEqual([2]);
-        expect(recordPlan(loop, 9).turnarounds).toEqual([]);
+        // A start at a turnaround keeps the mark for a later move of the start.
+        expect(recordPlan(loop, 9).turnarounds).toEqual([0]);
+    });
+
+    it('keeps a lollipop loop turning back at its own start after the start moves', () => {
+        const lollipop = { ...record(103), turnarounds: [0] };
+        expect(routePlan(lollipop).turnarounds).toEqual([]);
+        expect(recordPlan(lollipop, 4).turnarounds).toEqual([3]);
+        const trip = planTrip(base(), recordPlan(lollipop), true);
+        const start = trip.points.find(point => point.kind === 'start')!;
+        expect(start.turnaround).toBe(true);
+        const moved = startLoopHere(trip, orderedRoutePoints(trip)[2].id, line(103)[4]);
+        expect(moved.points.find(point => point.id === start.id)).toMatchObject({ kind: 'via', hidden: true, turnaround: true });
     });
 
     it('joins the stages of a long route at their shared ends', () => {

@@ -76,8 +76,7 @@
     button:hover { background: var(--parchment-2); }
     .close { display: grid; place-items: center; padding: 6px; border: 0; }
     .use { width: 100%; margin-top: 4px; }
-    .plan { margin-top: 6px; min-height: 30px; border: 0; background: var(--amber); color: var(--on-amber); font-weight: 600; font-size: 12.5px; }
-    .plan:hover { background: var(--amber); filter: brightness(.95); }
+    .plan { margin-top: 6px; min-height: 30px; font-weight: 600; font-size: 12.5px; }
     a { color: var(--link); text-underline-offset: 3px; overflow-wrap: anywhere; }
     details { margin: 10px 0; }
     summary { cursor: pointer; }

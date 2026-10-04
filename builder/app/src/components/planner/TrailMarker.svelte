@@ -14,5 +14,5 @@
 <style>
     span { display: flex; flex: 0 0 24px; }
     canvas { width: 24px; height: 24px; }
-    .ref { display: grid; place-items: center; height: 24px; overflow: hidden; border: 1.5px solid var(--ink-soft); border-radius: 3px; color: var(--ink-soft); font: 700 8.5px var(--mono); letter-spacing: -.02em; white-space: nowrap; }
+    .ref { display: grid; place-items: center; flex: none; min-width: 24px; height: 24px; padding: 0 3px; border: 1.5px solid var(--ink-soft); border-radius: 3px; color: var(--ink-soft); font: 700 8.5px var(--mono); letter-spacing: -.02em; white-space: nowrap; }
 </style>

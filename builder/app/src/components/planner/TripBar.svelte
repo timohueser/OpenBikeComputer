@@ -23,7 +23,7 @@
     const bike = $derived(trip.bike ?? 'touring');
     const start = $derived(trip.points.find(p => p.kind === 'start'));
     const finish = $derived(trip.points.find(p => p.kind === 'finish'));
-    const title = $derived(start && trip.loop ? `Loop from ${start.label}` : start && finish ? `${start.label} → ${finish.label}` : start ? `From ${start.label}` : finish ? `To ${finish.label}` : 'New plan');
+    const title = $derived(trip.name ? trip.name : start && trip.loop ? `Loop from ${start.label}` : start && finish ? `${start.label} → ${finish.label}` : start ? `From ${start.label}` : finish ? `To ${finish.label}` : 'New plan');
 </script>
 
 <div class="trip-bar">

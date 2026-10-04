@@ -35,6 +35,8 @@ export type Place = RoutePoint & {
     hoursStatus?: import('./search/types').HoursStatus;
 };
 export interface Trip {
+    /** The name of a planned signed route; the title shows it. */
+    name?: string;
     startDate?: string;
     live?: boolean;
     routing?: import('./routing').RoutingLine;
@@ -620,15 +622,17 @@ export function canMoveLoopStart(trip: Trip): boolean {
 
 // Makes the route point `id` the start. The points keep their order around the loop, and no leg changes.
 // The old start becomes a visit when it has a name of its own, and a shaping point otherwise.
+// The old start of a signed loop stays one of its hidden shaping points, with its turnaround.
 function startLoopAt(trip: Trip, id: string): Trip {
     const route = orderedRoutePoints(trip).slice(0, -1);
     const index = route.findIndex(p => p.id === id);
     if (!canMoveLoopStart(trip) || index < 1) return trip;
     const old = route[0];
-    const unnamed = old.label === startLabel || old.label === shapeLabel;
+    const signed = trip.points.some(p => p.hidden);
+    const unnamed = signed || old.label === startLabel || old.label === shapeLabel;
     return { ...trip, splits: undefined, routeOrder: [...route.slice(index + 1), old, ...route.slice(1, index)].map(p => p.id),
         points: trip.points.map(p => p.id === id ? { ...p, kind: 'start' as const, progress: 0, anchor: undefined }
-            : p.id === old.id ? { ...p, kind: unnamed ? 'via' as const : 'waypoint' as const } : p) };
+            : p.id === old.id ? { ...p, kind: unnamed ? 'via' as const : 'waypoint' as const, ...signed ? { hidden: true as const } : {} } : p) };
 }
 
 /** "Start the loop here": a new start at `coordinate` on the leg that ends at `legEndId`. */

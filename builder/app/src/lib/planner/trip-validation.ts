@@ -36,6 +36,7 @@ export function isTrip(value: unknown): value is Trip {
         || !finite(value.target) || value.target < 1 || !finite(value.limit) || value.limit < 0
         || (value.climbTarget !== undefined && (!finite(value.climbTarget) || value.climbTarget < 0))
         || (value.mode !== undefined && value.mode !== 'route' && value.mode !== 'trip')
+        || (value.name !== undefined && typeof value.name !== 'string')
         || (value.loop !== undefined && value.loop !== true)) return false;
 
     const { points, days } = value;

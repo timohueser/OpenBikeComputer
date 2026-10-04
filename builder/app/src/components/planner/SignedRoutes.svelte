@@ -6,6 +6,8 @@
     import RouteStats from './RouteStats.svelte';
     import TrailMarker from './TrailMarker.svelte';
     import { gradeBands } from '../../lib/planner/grade-data';
+    import { cumulative } from '../../lib/planner/editor';
+    import { profileAscent, profileDescent } from '../../lib/planner/profile-data';
     import { routeWebsite } from '../../lib/planner/route-overlays';
     import { RADII, type RouteFinder } from '../../lib/planner/route-finder.svelte';
     import type { RoutePlan } from '../../lib/planner/signed-route-plan';
@@ -61,6 +63,14 @@
     const detail = $derived(finder.detail);
     const plan = $derived(finder.plan);
     const km = (metres: number) => `${(metres / 1000).toFixed(1)} km`;
+    // The routed plan gives all four figures once it is ready, so the time never belongs to other figures.
+    function figures(route: CatalogRecord) {
+        const line = finder.preview;
+        if (!line) return { distance: route.length_m / 1000, ascent: route.ascent_m, descent: route.descent_m, hours: null };
+        const known = line.elevation.every(height => height !== null);
+        return { distance: cumulative(line.coordinates).at(-1)!, ascent: known ? profileAscent(0, 1, line) : null,
+            descent: known ? profileDescent(0, 1, line) : null, hours: line.seconds / 3600 };
+    }
 
     function kindLine(route: CatalogRecord): string {
         if (route.stages) return `Long route · ${route.stages.length} stages`;
@@ -114,7 +124,7 @@
                 <h3>{title(route)}<small>{[kindLine(route), detail.distanceM === undefined ? '' : `${km(detail.distanceM)} from ${place}`].filter(Boolean).join(' · ')}</small></h3>
             </div>
             <p class="kind">{route.stage && detail.family ? `Official stage ${route.stage} of ${detail.family.stages!.length} · ${title(detail.family)}, ${km(detail.family.length_m)} · ` : ''}{network(route)}</p>
-            <RouteStats distance={route.length_m / 1000} ascent={route.ascent_m} descent={route.descent_m} walking={activity === 'hiking'} hours={finder.preview ? finder.preview.seconds / 3600 : null} />
+            <RouteStats {...figures(route)} walking={activity === 'hiking'} />
             {#if detail.stages && detail.family}
                 <p class="sub">{title(detail.family)} stages</p>
                 <ol class="stages">
@@ -147,8 +157,10 @@
         <footer class="plan-foot">
             {#if plan === null}
                 <p class="note">This route is too long for one plan. Choose a stage to plan it.</p>
+            {:else if !plan && detail.failed}
+                <p class="note" role="alert">This route could not load. Choose a stage to plan it.</p>
             {:else}
-                {#if route.loop}
+                {#if finder.nearStart > 0}
                     <div class="loop-start" role="radiogroup" aria-label="Loop start">
                         <label><input type="radio" name="loop-start" value="near" bind:group={finder.loopStart} />Start nearest to {place}</label>
                         <label><input type="radio" name="loop-start" value="data" bind:group={finder.loopStart} />Start at the route's own start</label>
@@ -297,7 +309,7 @@
     .row { display: flex; align-items: flex-start; gap: 10px; width: calc(100% + 16px); margin: 0 -8px; padding: 12px 8px; border-radius: 8px; text-align: left; }
     .row:hover, .row.hovered { background: var(--parchment-2); }
     .row .n { flex: none; width: 14px; padding-top: 2px; font: 600 12px var(--mono); color: var(--ink-faint); text-align: right; }
-    .row .marker { flex: none; display: flex; width: 24px; }
+    .row .marker { flex: none; display: flex; min-width: 24px; }
     .row .body { flex: 1; min-width: 0; }
     .row strong { display: block; font: 600 14px/1.4 var(--sans); overflow-wrap: anywhere; }
     .row small { display: block; margin-top: 2px; font: 400 13px/1.4 var(--sans); color: var(--ink-soft); }

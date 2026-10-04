@@ -1,7 +1,6 @@
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, GeoJSONSource, Map, MapMouseEvent } from 'maplibre-gl';
 import type { Feature, FeatureCollection, Geometry } from 'geojson';
-import { dayColor } from './day-colors';
 import type { Coordinate } from './editor';
 import { networkLevels } from './route-overlays';
 
@@ -41,7 +40,8 @@ export class SignedRoutesLayer {
         const color: ExpressionSpecification = ['step', ['get', 'rank'], shade(3), 1, shade(2), 2, shade(1), 3, shade(0)];
         const hovered = (on: number, off: number): ExpressionSpecification => ['case', ['==', ['get', 'id'], ['global-state', 'signedHover']], on, off];
         const panel = dark ? '#201f17' : '#ffffff';
-        const magenta = dayColor(1, theme);
+        // The page sets the route token for its theme before the map style loads.
+        const magenta = getComputedStyle(this.map.getContainer()).getPropertyValue('--route').trim() || (dark ? '#f175c5' : '#cc2a93');
         const ink = dark ? '#f2efe3' : '#1c1b14';
         for (const id of ['signed-circle', 'signed-lines', 'signed-selected', 'signed-points']) this.map.addSource(id, { type: 'geojson', data: empty });
         this.map.addLayer({ id: 'signed-circle', type: 'line', source: 'signed-circle', paint: { 'line-color': ink, 'line-width': 1, 'line-opacity': .7 } });

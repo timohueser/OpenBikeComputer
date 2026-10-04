@@ -18,7 +18,7 @@
     import { MAP_BOUNDS, OVERLAYS_URL } from "../../lib/planner/map-data";
     import { categoryIds, placeCategories, type PlaceCategory } from "../../lib/planner/poi-kinds";
     import { poiPlace } from "../../lib/planner/place-index";
-    import { coordinateAt, nearestProgress, type Place } from "../../lib/planner/editor";
+    import { coordinateAt, kilometres, nearestProgress, type Place } from "../../lib/planner/editor";
     import type { Coordinate, MapPoint, MapSegment } from "../../lib/planner/map-types";
     import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection } from "../../lib/planner/route-overlays";
     import type { DataLayer } from "../../lib/planner/layers/data-layer";
@@ -141,6 +141,17 @@
         cancelGesture();
         consumedPress = true;
         overlaySelection = selected;
+    }
+
+    /** The name of the basemap place nearest to `coordinate` within 5 km, such as a village or a hamlet, from the loaded tiles. */
+    export function placeName(coordinate: Coordinate): string | undefined {
+        let best: { name: string; km: number } | undefined;
+        for (const feature of map?.querySourceFeatures("basemap", { sourceLayer: "places", filter: ["==", ["get", "kind"], "locality"] }) ?? []) {
+            const name = feature.properties.name, at = feature.geometry.type === "Point" ? feature.geometry.coordinates as Coordinate : undefined;
+            const km = at && kilometres(at, coordinate);
+            if (name && km !== undefined && km < 5 && (!best || km < best.km)) best = { name, km };
+        }
+        return best?.name;
     }
 
     export function fitRoute() {
