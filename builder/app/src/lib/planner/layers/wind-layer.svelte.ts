@@ -3,8 +3,8 @@ import type { FeatureCollection } from 'geojson';
 import WindRose from '../../../components/planner/WindRose.svelte';
 import { cumulative } from '../editor';
 import { OVERVIEW, weekMonth, type ClimateMeta, type ClimateTile } from './climate';
-import { lineBearings, windRow } from './climate-route';
-import { detailCell, openClimate, sampleLine, type CellRef, type ClimateSource } from './climate-source';
+import { lineBearings, speedRow, windRow } from './climate-route';
+import { openClimate, sampleLine, type CellRef, type ClimateSource } from './climate-source';
 import { weekOf, type DataLayer, type Line, type Theme, type View } from './data-layer';
 import { ARROW_ICONS, WIND_NOTE, arrowStride, headClasses, headFills, mapLegend, speedPaint, viewTiles, windChart, windMap, windYear } from './wind';
 
@@ -14,6 +14,7 @@ const EMPTY: FeatureCollection = { type: 'FeatureCollection', features: [] };
 const STRETCH_KM = 0.5;
 
 const ink = { light: { fill: '#ffffff', halo: '#2b2a22' }, dark: { fill: '#f2efe3', halo: '#14130e' } };
+const label = { light: { text: '#2b2a22', halo: '#ffffff' }, dark: { text: '#f2efe3', halo: '#14130e' } };
 const RATIO = 2, SIZE = 28;
 
 /**
@@ -45,13 +46,11 @@ function arrowImage(icon: string, theme: Theme): ImageData {
     return context.getImageData(0, 0, canvas.width, canvas.height);
 }
 
-/** The overview cell of each coordinate, the travel bearings and the headwind row of a route; a map point has neither. */
+/** The overview cell of each coordinate, and of a route the travel bearings, the headwind row and the speed row; a map point has none. */
 interface Samples {
     overview: (CellRef | undefined)[];
-    /** The detail cell of a sample, loaded on the first read (`detailCell`). */
-    detail: (i: number) => CellRef | null | undefined;
     bearings: Float32Array | null;
-    row: Float32Array | null;
+    route: { row: Float32Array; speeds: Float32Array } | null;
 }
 
 class WindLayer implements DataLayer<Samples> {
@@ -122,13 +121,16 @@ class WindLayer implements DataLayer<Samples> {
         map.addSource(ARROWS, { type: 'geojson', data: EMPTY });
         // Under the relief, so the hillshade shades the colours; without antialiasing, neighbour cells have no seams.
         map.addLayer({ id: CELLS, type: 'fill', source: CELLS, layout: { visibility }, paint: { 'fill-color': speedPaint(theme), 'fill-antialias': false } }, map.getLayer('relief') ? 'relief' : undefined);
-        // Over roads and under labels.
+        // Over roads and under labels. The speed label sits below the arrow, clear of its turning radius; the
+        // basemap labels are higher, so they are placed first and a colliding speed label is dropped.
         map.addLayer({
             id: ARROWS, type: 'symbol', source: ARROWS,
             layout: {
                 visibility, 'icon-image': ['concat', ['get', 'icon'], `-${theme}`], 'icon-rotate': ['get', 'rotate'], 'icon-rotation-alignment': 'map',
                 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-size': ['interpolate', ['linear'], ['zoom'], 6, 0.8, 9, 1, 12, 1.2],
+                'text-field': ['get', 'label'], 'text-font': ['Noto Sans Regular'], 'text-size': 10, 'text-anchor': 'top', 'text-offset': [0, 1.8], 'text-optional': true,
             },
+            paint: { 'text-color': label[theme].text, 'text-halo-color': label[theme].halo, 'text-halo-width': 1.2 },
         }, map.getStyle().layers.find(layer => layer.type === 'symbol')?.id);
         this.drawn = '';
         if (this.listening !== map) {
@@ -170,10 +172,9 @@ class WindLayer implements DataLayer<Samples> {
         const climate = await this.open();
         const overview = await sampleLine(coordinates, climate.tile);
         signal.throwIfAborted();
-        const detail = (i: number) => detailCell(climate, coordinates[i]);
-        if (coordinates.length < 2) return { overview, detail, bearings: null, row: null };
+        if (coordinates.length < 2) return { overview, bearings: null, route: null };
         const km = cumulative(coordinates), bearings = lineBearings(coordinates, km, STRETCH_KM);
-        return { overview, detail, bearings, row: windRow(overview, km, bearings) };
+        return { overview, bearings, route: { row: windRow(overview, km, bearings), speeds: speedRow(overview, km) } };
     }
 
     strip = {
@@ -182,14 +183,14 @@ class WindLayer implements DataLayer<Samples> {
         values: ({ overview, bearings }: Samples, date: string) => headClasses(overview, bearings ?? [], weekMonth(weekOf(date))),
     };
 
-    /** The weekly grid appears when the detail tile of the point arrives; the headline and the rose read the overview. */
-    chart({ overview, detail, bearings }: Samples, i: number, { date, theme }: View) {
-        const { chart, rose } = windChart({ overview: overview[i], detail: detail(i) ?? undefined, bearing: bearings?.[i] }, this.meta?.firstYear ?? 0, date, theme);
+    /** The point chart reads only the overview tiles the samples already hold, so it requests nothing. */
+    chart({ overview, bearings }: Samples, i: number, { date, theme }: View) {
+        const { chart, rose } = windChart({ overview: overview[i], bearing: bearings?.[i] }, date);
         return rose ? { ...chart, extra: { component: WindRose, props: { ...rose, theme } } } : chart;
     }
 
     year(samples: Samples | null, { date, theme }: View) {
-        return windYear(samples?.row ?? null, date, theme);
+        return windYear(samples?.route ?? null, date, theme);
     }
 }
 

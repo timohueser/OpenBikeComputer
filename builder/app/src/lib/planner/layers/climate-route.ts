@@ -1,6 +1,6 @@
 // Year-slider rows of a route: one value per column, the distance-weighted mean of the samples with data.
 import type { Coordinate } from '../map-types';
-import { MONTHS, SECTORS, WEEKS, headPart, temperatureAt, wetDaysOf7, windRose } from './climate';
+import { MONTHS, SECTORS, WEEKS, headPart, read, temperatureAt, wetDaysOf7, windRose } from './climate';
 import type { CellRef } from './climate-source';
 
 /**
@@ -81,4 +81,10 @@ export function windRow(cells: (CellRef | undefined)[], km: ArrayLike<number>, b
         for (let s = 0; s < SECTORS; s++) head += rose[s] * sum[s];
         return head / weight;
     }));
+}
+
+/** The daytime mean wind speed per week of overview cells, in m/s. */
+export function speedRow(cells: (CellRef | undefined)[], km: ArrayLike<number>): Float32Array {
+    const list = runs(cells, km, () => null, () => {});
+    return Float32Array.from({ length: WEEKS }, (_, week) => mean(list, ({ cell }) => read(cell.tile, 'wind', week, cell.index)));
 }
