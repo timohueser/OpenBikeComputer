@@ -64,15 +64,18 @@ struct SignedRoutesTests {
     }
 
     @Test func aPlanThatDoesNotFitItsLineIsRejected() throws {
-        func record(_ fields: String) throws -> CatalogRecord {
+        func record(_ fields: String, loop: Bool = false) throws -> CatalogRecord {
             try JSONDecoder().decode(CatalogRecord.self, from: Data("""
-            {"id":1,"kind":"hiking","rank":1,"loop":false,"length_m":1,"ascent_m":0,"descent_m":0,"cells":[],\(fields)}
+            {"id":1,"kind":"hiking","rank":1,"loop":\(loop),"length_m":1,"ascent_m":0,"descent_m":0,"cells":[],\(fields)}
             """.utf8))
         }
         #expect(try record(#""line_udeg":[0,0,1,1,1,1],"via":[1],"turnarounds":[1]"#).plan != nil)
         #expect(try record(#""line_udeg":[0,0,1,1,1,1],"via":[2]"#).plan == nil)
         #expect(try record(#""line_udeg":[0,0,1,1,1,1],"via":[1],"turnarounds":[2]"#).plan == nil)
         #expect(try record(#""line_udeg":[0,0,1,1,1],"via":[]"#).plan == nil)
+        // Only a loop turns back at its start.
+        #expect(try record(#""line_udeg":[0,0,1,1,-1,-1],"via":[1],"turnarounds":[0,1]"#, loop: true).plan?.turnarounds == [0, 1])
+        #expect(try record(#""line_udeg":[0,0,1,1,1,1],"via":[1],"turnarounds":[0]"#).plan == nil)
         #expect(SignedRoutes.nearestVertex([], to: Coordinate(latitude: 0, longitude: 0)) == nil)
     }
 

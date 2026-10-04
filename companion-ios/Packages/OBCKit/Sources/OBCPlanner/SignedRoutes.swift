@@ -37,9 +37,10 @@ public struct CatalogRecord: Decodable, Equatable, Sendable {
         let line = line, turnarounds = turnarounds ?? []
         guard let via, line.count > 1, via.allSatisfy({ (1..<line.count - 1).contains($0) }),
               let first = line.first, let last = line.last else { return nil }
-        let indices = turnarounds.compactMap { via.firstIndex(of: $0) }
+        // A loop can turn back at its start, vertex 0, which is plan index 0.
+        let indices = turnarounds.compactMap { $0 == 0 && loop ? 0 : via.firstIndex(of: $0).map { $0 + 1 } }
         guard indices.count == turnarounds.count else { return nil }
-        return ([first] + via.map { line[$0] } + [last], indices.map { $0 + 1 })
+        return ([first] + via.map { line[$0] } + [last], indices)
     }
 }
 
