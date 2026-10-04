@@ -512,10 +512,21 @@ struct RootView: View {
         switch destination {
         case .planner(let sample):
             PlannerPreviewView(
-                onSave: savePlannerPreview,
+                onSave: { route, plan, bikeType, _ in savePlannerPreview(route, plan: plan, bikeType: bikeType) },
                 onClose: { path.removeAll() },
                 sample: sample, source: plannerSource
             )
+        case .editRoute(let id):
+            if let plan = mainModel.plannedPlan(for: id) {
+                PlannerPreviewView(
+                    editing: plan,
+                    onSave: { route, plan, bikeType, inPlace in
+                        savePlannerPreview(route, plan: plan, bikeType: bikeType, replacing: inPlace ? id : nil)
+                    },
+                    onClose: { path.removeLast() },
+                    source: plannerSource
+                )
+            }
         case .route(let id):
             if let route = mainModel.routes.first(where: { $0.id == id }) {
                 RouteDetailScreen(
@@ -540,12 +551,7 @@ struct RootView: View {
                     },
                     onRename: { mainModel.renameRoute(id, to: $0) },
                     onBikeTypeChange: { mainModel.setBikeType(id, to: $0) },
-                    // Reverse lands a flipped copy alongside the original and opens it.
-                    onReverse: {
-                        if let reversedID = mainModel.reverseRoute(id) {
-                            path.append(.route(id: reversedID))
-                        }
-                    },
+                    onEdit: { path.append(.editRoute(id: id)) },
                     onUploaded: { objectID, crc in
                         if let objectID {
                             mainModel.markRouteUploaded(
@@ -560,6 +566,8 @@ struct RootView: View {
                         path.append(.trip(id: tripID))
                     }
                 )
+                // Saved changes build the screen again: its model holds the line it was built with.
+                .id([route.distanceMeters, route.elevationGainMeters, Double(route.pointCount)])
             }
         case .ride(let id):
             if let ride = mainModel.rides.first(where: { $0.id == id }) {
@@ -727,10 +735,11 @@ struct RootView: View {
         { path.append(.planner(sample: false)) }
     }
 
-    /// A hiking plan takes the last bike type, as an import does.
-    private func savePlannerPreview(_ route: ImportedRoute, bikeType: BikeType?) {
+    /// A hiking plan takes the last bike type, as an import does, or keeps the type of the route it
+    /// edits. `replacing` saves the changes to that route; else the plan lands as a new route.
+    private func savePlannerPreview(_ route: ImportedRoute, plan: PlannerPlan, bikeType: BikeType?, replacing id: RouteID? = nil) {
         guard let end = route.points.last, route.points.count > 1, let name = route.name else { return }
-        let bikeType = bikeType ?? lastBikeType.value
+        let bikeType = bikeType ?? id.map(mainModel.plannedBikeType(for:)) ?? lastBikeType.value
         let fileName = GPXFile.fileName(for: name)
         let line = MeasuredLine(routePoints: route.points)
         let trip = Trip(
@@ -742,10 +751,16 @@ struct RootView: View {
         let detail = RouteDetailModel(
             transport: transport, dressing: .imported(route, fileName: fileName), bikeType: bikeType
         ).makeDetail()
-        mainModel.addImportedRoute(PlannedRouteRecord(
+        let record = PlannedRouteRecord(
             summary: detail.summary, route: route, bikeType: bikeType,
-            sourceFileName: fileName, sourceFileData: GPXTripEncoder.encode(trip)
-        ))
+            sourceFileName: fileName, sourceFileData: GPXTripEncoder.encode(trip), plan: plan
+        )
+        if let id {
+            mainModel.saveRouteChanges(id, to: record)
+            path.removeLast()
+            return
+        }
+        mainModel.addImportedRoute(record)
         mainModel.searchText = ""
         path.removeAll()
     }
@@ -770,6 +785,8 @@ private struct DayEditorHost: View {
 /// Library destinations carry ids so a rename mid-stack reads the live summary.
 enum MainDestination: Hashable {
     case planner(sample: Bool)
+    /// The planner on a saved route's plan.
+    case editRoute(id: RouteID)
     case route(id: RouteID)
     case trip(id: TripID)
     /// The trip's day editor, in split mode when one file just became the trip.

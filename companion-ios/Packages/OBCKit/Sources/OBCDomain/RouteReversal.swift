@@ -5,8 +5,7 @@ import Foundation
 /// swaps ascent and descent for free. Only the waypoints need explicit work: `Distance Along`
 /// becomes `total_length - Distance Along` (`OBCR_Spec.md`).
 public extension ImportedRoute {
-    /// A copy of this route flipped end to end. `name` and `creator` are unchanged: the caller
-    /// owns the display-name disambiguation (see ``RouteReversal/reversedName(_:)``).
+    /// A copy of this route flipped end to end. `name` and `creator` are unchanged.
     func reversed() -> ImportedRoute {
         let reversedPoints = points.indices.reversed().map { i in
             RoutePoint(coordinate: points[i].coordinate, elevationMeters: points[i].elevationMeters, surface: i + 1 < points.count ? points[i+1].surface : 0, elevationIncomplete: i + 1 < points.count ? points[i+1].elevationIncomplete : false)
@@ -61,15 +60,5 @@ public extension ImportedRoute {
             total += points[i - 1].coordinate.routeDistance(to: points[i].coordinate)
         }
         return total
-    }
-}
-
-/// Display-name disambiguation for a reversed route.
-public enum RouteReversal {
-    public static let nameSuffix = " (reversed)"
-
-    public static func reversedName(_ name: String) -> String {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (trimmed.isEmpty ? "Route" : trimmed) + nameSuffix
     }
 }

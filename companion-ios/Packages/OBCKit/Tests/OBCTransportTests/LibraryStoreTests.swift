@@ -44,7 +44,8 @@ final class LibraryStoreTests: XCTestCase {
             summary: summary, route: route,
             sourceFileName: sourceFileName,
             sourceFileData: sourceFileData,
-            addedAt: addedAt
+            addedAt: addedAt,
+            plan: PlannerPlan.keptLine(points)
         )
     }
 

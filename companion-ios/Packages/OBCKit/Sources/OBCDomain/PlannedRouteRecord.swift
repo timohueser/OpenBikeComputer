@@ -44,6 +44,8 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
     public var uploadedCRC32: UInt32?
     /// When the route entered the library. The list orders newest first.
     public var addedAt: Date
+    /// The planner plan the line was made from. Nil for a route that was never planned.
+    public var plan: PlannerPlan?
 
     public var id: RouteID { summary.id }
 
@@ -57,7 +59,8 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
         sourceFileData: Data,
         deviceLink: DeviceRouteLink? = nil,
         uploadedCRC32: UInt32? = nil,
-        addedAt: Date = Date()
+        addedAt: Date = Date(),
+        plan: PlannerPlan? = nil
     ) {
         self.summary = summary
         self.route = route
@@ -67,6 +70,7 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
         self.deviceLink = deviceLink
         self.uploadedCRC32 = uploadedCRC32
         self.addedAt = addedAt
+        self.plan = plan
     }
 
     /// The detail screen's data, derived from the canonical geometry. The device may never

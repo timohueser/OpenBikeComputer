@@ -88,22 +88,52 @@ public struct PlannerPreviewStats: Equatable, Sendable {
     public let seconds: Double
 }
 
+/// A leg that does not simply follow the router, or that keeps a drawn line to go back to.
+public struct PlannerPreviewLeg: Equatable, Sendable {
+    public var mode: PlanPoint.Leg
+    /// The inner line of the leg, without its end points, with elevations where known.
+    public var drawn: [RoutePoint]?
+    public init(mode: PlanPoint.Leg, drawn: [RoutePoint]? = nil) { self.mode = mode; self.drawn = drawn }
+}
+
+/// A tap on the line of a leg: the IDs of the points the leg joins and the tapped point on its line.
+public struct PlannerPreviewLegHit: Equatable, Sendable {
+    public let from: String
+    public let to: String
+    public let coordinate: Coordinate
+}
+
 /// Editing intent is reversible. Geometry comes from the published route service.
 @MainActor @Observable
 public final class PlannerPreviewModel {
+    struct LegID: Hashable { let from: String; let to: String }
     private struct State: Equatable {
         var points: [PlannerPreviewPoint] = []
         var markers: [PlannerPreviewPoint] = []
         var activity = RouteActivity.gravel
         var preset: PlannerPreviewPreset = .balanced
-        var overnightPointID: String?
+        /// The points where a day ends.
+        var nights: Set<String> = []
+        /// Only the legs that are not plainly routed. A leg joins two consecutive route points.
+        var legs: [LegID: PlannerPreviewLeg] = [:]
         /// The finish is the start: the route returns to the first point, and there is no finish point.
         var loop = false
         /// The title of a plan from a signed route.
         var name: String?
         /// Where a new stop goes: before the finish, or at the end of a loop.
         var stopEnd: Int { loop || points.count < 2 ? points.count : points.count - 1 }
-        var coordinates: [Coordinate] { (points + (loop ? points.prefix(1) : [])).map(\.place.coordinate) }
+        /// The route points in ride order; a loop ends at its start again.
+        var route: [PlannerPreviewPoint] { points + (loop ? points.prefix(1) : []) }
+        var coordinates: [Coordinate] { route.map(\.place.coordinate) }
+        var legIDs: [LegID] { zip(route, route.dropFirst()).map { LegID(from: $0.id, to: $1.id) } }
+        /// Where day 1 ends. The overnight controls change this night and leave the others.
+        var overnight: String? {
+            get { points.first { nights.contains($0.id) }?.id }
+            set {
+                if let old = overnight { nights.remove(old) }
+                if let newValue { nights.insert(newValue) }
+            }
+        }
         /// Only an interior point turns back, so a loop start sends its turnaround once the start moves.
         var turnarounds: [Int] { points.indices.filter { points[$0].turnaround && $0 > 0 && $0 < coordinates.count - 1 } }
     }
@@ -127,14 +157,23 @@ public final class PlannerPreviewModel {
         if sample { state = Self.sampleState }
     }
 
+    /// Opens `plan` without an undo step.
+    public init(plan: PlannerPlan, service: any PlannerDataSource = PlannerService.shared) {
+        self.service = service
+        state = Self.state(plan)
+    }
+
     private struct RoutingKey: Equatable {
         let coordinates: [Coordinate]
         let turnarounds: [Int]
         let activity: RouteActivity
         let preset: PlannerPreviewPreset
+        /// One per leg; nil for a routed leg.
+        let legs: [PlannerPreviewLeg?]
     }
     private var routingKey: RoutingKey {
-        .init(coordinates: state.coordinates, turnarounds: state.turnarounds, activity: activity, preset: preset)
+        .init(coordinates: state.coordinates, turnarounds: state.turnarounds, activity: activity, preset: preset,
+              legs: state.legIDs.map { state.legs[$0].flatMap { $0.mode == .routed ? nil : $0 } })
     }
     public var canSave: Bool { path != nil && !isRouting && routeError == nil }
     public func retryRoute() { routingRevision += 1 }
@@ -153,8 +192,7 @@ public final class PlannerPreviewModel {
             guard let preference = RoutePreference(rawValue: preset == .lessClimbing ? "less-climbing" : preset.rawValue) else {
                 throw PlannerFailure.invalidData
             }
-            let result = try await service.route(points: key.coordinates, turnarounds: key.turnarounds, activity: key.activity,
-                                                 preference: preference, release: selected)
+            let result = try await path(key, preference: preference, release: selected)
             try Task.checkCancellation()
             guard revision == routingRevision else { return }
             path = result
@@ -166,6 +204,29 @@ public final class PlannerPreviewModel {
             path = nil; routeLine = MeasuredLine(routePoints: []); geometry = []; profile = PlannerPreviewGrade(routePoints: [])
             routeError = error.localizedDescription
         }
+    }
+
+    /// Consecutive routed legs are one request, so a shaping point keeps its road direction. Every other
+    /// leg is its line: the drawn line, or a straight one.
+    private func path(_ key: RoutingKey, preference: RoutePreference, release: PlannerRelease) async throws -> PlannedPath {
+        let nodes = key.coordinates
+        var path = PathBuilder()
+        var leg = 0
+        while leg < key.legs.count {
+            if let special = key.legs[leg] {
+                path.append(from: nodes[leg], to: nodes[leg + 1], inner: special.mode == .drawn ? special.drawn ?? [] : [],
+                            timed: special.mode != .transfer)
+                leg += 1
+                continue
+            }
+            var end = leg + 1
+            while end < key.legs.count, key.legs[end] == nil { end += 1 }
+            let turns = key.turnarounds.filter { $0 > leg && $0 < end }.map { $0 - leg }
+            path.append(try await service.route(points: Array(nodes[leg...end]), turnarounds: turns, activity: key.activity,
+                                                preference: preference, release: release))
+            leg = end
+        }
+        return path.result
     }
 
     public func positionedPlace(_ place: PlannerPreviewPlace) -> PlannerPreviewPlace {
@@ -218,15 +279,18 @@ public final class PlannerPreviewModel {
         activities = RouteActivity.allCases.filter { profiles.contains(RoutePreference.balanced.profile(for: $0)) }
     }
     public var preset: PlannerPreviewPreset { state.preset }
-    public var overnightPointID: String? { state.overnightPointID }
-    public var overnight: PlannerPreviewPlace? { points.first { $0.id == overnightPointID }?.place }
+    /// The points where a day ends, in ride order.
+    public var nights: [PlannerPreviewPoint] { points.filter { state.nights.contains($0.id) } }
+    /// Where day 1 ends.
+    public var overnightPointID: String? { nights.first?.id }
+    public var overnight: PlannerPreviewPlace? { nights.first?.place }
     public var hasRoute: Bool { points.count > 1 }
     public var canUndo: Bool { !past.isEmpty }
     /// The number of edits that undo can take back. It changes with every edit, undo and redo.
     public var undoDepth: Int { past.count }
     public var planName: String? { state.name }
     public var canRedo: Bool { !future.isEmpty }
-    public var dayCount: Int { overnight == nil ? 1 : 2 }
+    public var dayCount: Int { nights.count + 1 }
     public var routeTitle: String {
         guard let start, let finish else { return "New route" }
         if let name = state.name { return name }
@@ -243,12 +307,16 @@ public final class PlannerPreviewModel {
         .init(distanceMeters: path?.distance ?? 0, ascentMeters: path?.ascent ?? 0, seconds: path?.seconds ?? 0)
     }
     public var dayStats: [PlannerPreviewStats] {
-        guard let path, let id = overnightPointID, let position = points.firstIndex(where: { $0.id == id }) else { return [stats] }
-        let index = path.pointIndices[position], split = routeLine.vertices[index].distance
-        let fraction = routeLine.length > 0 ? split / routeLine.length : 0
-        let ascent = routeLine.climb(from: 0, to: split)
-        return [.init(distanceMeters: path.distance * fraction, ascentMeters: min(path.ascent, ascent), seconds: path.elapsed[index]),
-                .init(distanceMeters: path.distance * (1 - fraction), ascentMeters: max(0, path.ascent - ascent), seconds: max(0, path.seconds - path.elapsed[index]))]
+        guard let path, !state.nights.isEmpty else { return [stats] }
+        // Each day ends at a night and the last at the line end, as (distance along, climb, elapsed seconds).
+        let ends = points.indices.filter { state.nights.contains(points[$0].id) }.map { position in
+            let index = path.pointIndices[position], split = routeLine.vertices[index].distance
+            return (split, min(path.ascent, routeLine.climb(from: 0, to: split)), path.elapsed[index])
+        } + [(routeLine.length, path.ascent, path.seconds)]
+        let length = routeLine.length
+        return zip([(0.0, 0.0, 0.0)] + ends, ends).map { from, to in
+            .init(distanceMeters: length > 0 ? path.distance * (to.0 - from.0) / length : 0, ascentMeters: max(0, to.1 - from.1), seconds: max(0, to.2 - from.2))
+        }
     }
 
     public func exportRoute(name: String) -> ImportedRoute {
@@ -267,6 +335,32 @@ public final class PlannerPreviewModel {
         let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
         return ImportedRoute(name: title.isEmpty ? routeTitle : title,
                              creator: "OpenBikeComputer", points: routePoints, waypoints: waypoints)
+    }
+
+    /// The plan behind the line, in the `specs/planner-plan.md` shape. Nights take the IDs `night-N`.
+    public func exportPlan() -> PlannerPlan {
+        let route = state.route, nightIDs = nights.map(\.id)
+        func id(_ point: PlannerPreviewPoint) -> String {
+            if let night = nightIDs.firstIndex(of: point.id) { return "night-\(night + 1)" }
+            return point.id.hasPrefix("night-") ? UUID().uuidString : point.id
+        }
+        let ids = Dictionary((points + markers).map { ($0.id, id($0)) }, uniquingKeysWith: { a, _ in a })
+        let distances = pointDistances, length = routeLine.length
+        // The leg into each point; in a loop the start's leg is the closing leg.
+        let legs = Dictionary(state.legIDs.compactMap { leg in state.legs[leg].map { (leg.to, $0) } }, uniquingKeysWith: { a, _ in a })
+        let planned = points.enumerated().map { index, point in
+            let kind: PlanPoint.Kind = index == 0 ? .start : isEndpoint(point.id) ? .finish
+                : nightIDs.contains(point.id) ? .night : point.kind == .shape ? .via : .waypoint
+            let leg = legs[point.id]
+            return PlanPoint(id: ids[point.id]!, label: point.place.name, coordinate: point.place.coordinate,
+                             progress: length > 0 ? min(1, (distances[point.id] ?? 0) / length) : 0, kind: kind,
+                             night: nightIDs.firstIndex(of: point.id).map { $0 + 1 },
+                             placeKind: point.place.kind == .town ? nil : point.place.kind.rawValue,
+                             leg: leg.flatMap { $0.mode == .routed ? nil : $0.mode }, drawn: leg?.drawn, turnaround: point.turnaround)
+        } + markers.map { PlanPoint(id: ids[$0.id]!, label: $0.place.name, coordinate: $0.place.coordinate, progress: 0, kind: .marker,
+                                    placeKind: $0.place.kind == .town ? nil : $0.place.kind.rawValue) }
+        return PlannerPlan(points: planned, mode: .route, name: state.name, bike: activity.rawValue, preset: preset.title,
+                           loop: isLoop, routeOrder: route.dropFirst().dropLast().map { ids[$0.id]! })
     }
 
     public func newRoute() { edit { $0 = State() } }
@@ -289,22 +383,22 @@ public final class PlannerPreviewModel {
     public func setOvernight(_ place: PlannerPreviewPlace?) {
         guard hasRoute || place == nil else { return }
         edit { next in
-            guard let place else { next.overnightPointID = nil; return }
+            guard let place else { next.nights = []; return }
             if let index = next.points.firstIndex(where: { $0.place.id == place.id }) {
                 next.points[index].kind = .visit
-                next.overnightPointID = next.points[index].id
+                next.overnight = next.points[index].id
             } else {
                 let marker = next.markers.first { $0.place.id == place.id }
                 let point = marker.map { PlannerPreviewPoint(place: place, id: $0.id) } ?? Self.newPoint(place, in: next)
                 next.markers.removeAll { $0.id == point.id }
                 next.points.insert(point, at: next.stopEnd)
-                next.overnightPointID = point.id
+                next.overnight = point.id
             }
         }
     }
     public func setOvernightPoint(id: String?) {
         edit { next in
-            next.overnightPointID = id
+            next.overnight = id
             if let index = next.points.firstIndex(where: { $0.id == id }) { next.points[index].kind = .visit }
         }
     }
@@ -355,6 +449,88 @@ public final class PlannerPreviewModel {
         edit { $0.loop = true; $0.points[$0.points.count - 1].kind = .visit }
     }
 
+    // MARK: Legs
+
+    /// The leg whose line passes nearest `coordinate`, within `tolerance` metres. Only a leg with a drawn
+    /// line answers: the other legs keep the map point actions.
+    public func leg(near coordinate: Coordinate, within tolerance: Double) -> PlannerPreviewLegHit? {
+        guard let path, path.pointIndices.count == state.legIDs.count + 1 else { return nil }
+        var best: (hit: PlannerPreviewLegHit, error: Double)?
+        for (index, id) in state.legIDs.enumerated() where state.legs[id]?.drawn != nil {
+            let line = MeasuredLine(routePoints: Array(path.points[path.pointIndices[index]...path.pointIndices[index + 1]]))
+            let projection = line.projection(of: coordinate, near: line.length / 2, window: line.length)
+            guard projection.error <= tolerance, projection.error < best?.error ?? .infinity else { continue }
+            best = (.init(from: id.from, to: id.to, coordinate: line.coordinate(at: projection.distance)), projection.error)
+        }
+        return best?.hit
+    }
+
+    public func leg(_ hit: PlannerPreviewLegHit) -> PlannerPreviewLeg {
+        state.legs[LegID(from: hit.from, to: hit.to)] ?? .init(mode: .routed)
+    }
+
+    /// A leg with a drawn line can follow the router and go back to the line.
+    public func setLegMode(_ hit: PlannerPreviewLegHit, to mode: PlanPoint.Leg) {
+        let id = LegID(from: hit.from, to: hit.to)
+        guard let leg = state.legs[id], mode != .drawn || leg.drawn != nil else { return }
+        edit { $0.legs[id]?.mode = mode }
+    }
+
+    /// Adds a shaping point on the line of a leg. A drawn line splits there and does not change.
+    public func addPoint(on hit: PlannerPreviewLegHit) {
+        guard let from = state.points.first(where: { $0.id == hit.from }), let to = state.points.firstIndex(where: { $0.id == hit.to }) else { return }
+        let id = LegID(from: hit.from, to: hit.to)
+        var coordinate = hit.coordinate, halves: ([RoutePoint], [RoutePoint])?
+        if let leg = state.legs[id], leg.mode == .drawn, let drawn = leg.drawn {
+            let full = [RoutePoint(coordinate: from.place.coordinate)] + drawn + [RoutePoint(coordinate: state.points[to].place.coordinate)]
+            let line = MeasuredLine(routePoints: full)
+            let distance = line.project(hit.coordinate, near: line.length / 2, window: line.length)
+            let segment = min(line.index(at: distance), full.count - 2)
+            coordinate = line.coordinate(at: distance)
+            // Both halves keep the height at the split, so the profile does not change either.
+            let split = RoutePoint(coordinate: coordinate, elevationMeters: line.hasElevation ? line.elevation(at: distance) : nil)
+            halves = (Array(full[1..<(segment + 1)]) + [split], [split] + full[(segment + 1)..<(full.count - 1)])
+        }
+        let point = PlannerPreviewPoint(place: .init(id: UUID().uuidString, name: Self.shapeName, coordinate: coordinate), kind: .shape)
+        edit { next in
+            // The closing leg of a loop ends at the start; its new point goes last.
+            next.points.insert(point, at: to == 0 ? next.points.count : to)
+            next.legs[id] = nil
+            if let halves {
+                next.legs[LegID(from: id.from, to: point.id)] = .init(mode: .drawn, drawn: halves.0)
+                next.legs[LegID(from: point.id, to: id.to)] = .init(mode: .drawn, drawn: halves.1)
+            }
+        }
+    }
+
+    /// The editor state of a plan. Pass and detour points have no kind of their own here: a pass is a
+    /// shaping point and a detour a stop.
+    private static func state(_ plan: PlannerPlan) -> State {
+        let route = plan.routePoints
+        var state = State()
+        state.points = route.map { planned in
+            let kind = PlannerPreviewPlace.Kind(rawValue: planned.placeKind ?? "") ?? planned.placeKind.map(NativePlaceKind.kind(for:)) ?? .town
+            var point = PlannerPreviewPoint(place: .init(id: planned.id, name: planned.label, coordinate: planned.coordinate, kind: kind),
+                                            kind: [.via, .pass].contains(planned.kind) ? .shape : .visit)
+            point.turnaround = planned.turnaround == true
+            return point
+        }
+        state.markers = plan.markers.map {
+            .init(place: .init(id: $0.id, name: $0.label, coordinate: $0.coordinate,
+                               kind: PlannerPreviewPlace.Kind(rawValue: $0.placeKind ?? "") ?? .town), kind: .marker)
+        }
+        state.nights = Set(route.filter { $0.kind == .night }.map(\.id))
+        state.loop = plan.isLoop && route.count > 1
+        state.name = plan.name
+        state.activity = plan.bike.flatMap(RouteActivity.init(rawValue:)) ?? .gravel
+        state.preset = PlannerPreviewPreset.allCases.first { $0.title == plan.preset } ?? .balanced
+        let ends = route + (state.loop ? route.prefix(1) : [])
+        for (from, to) in zip(ends, ends.dropFirst()) where (to.leg ?? .routed) != .routed || to.drawn != nil {
+            state.legs[LegID(from: from.id, to: to.id)] = .init(mode: to.leg ?? .routed, drawn: to.drawn)
+        }
+        return state
+    }
+
     /// A signed route as a plan from its own start, named after the route: the shaping points in their order, each with
     /// its turnaround, and the Balanced preset that the catalog plan reproduces. A loop drops its closing point.
     public func planSignedRoute(_ plan: RoutePlan, loop: Bool, name: String, startName: String?, finishName: String?) {
@@ -371,7 +547,7 @@ public final class PlannerPreviewModel {
                 point.turnaround = turnarounds.contains(index)
                 return point
             }
-            next.markers = []; next.overnightPointID = nil; next.loop = loop; next.name = name; next.preset = .balanced
+            next.markers = []; next.nights = []; next.legs = [:]; next.loop = loop; next.name = name; next.preset = .balanced
         }
     }
 
@@ -383,7 +559,7 @@ public final class PlannerPreviewModel {
 
     // The old start becomes a stop when it has a name of its own, and a shaping point otherwise.
     private static func startLoop(_ state: inout State, at id: String) {
-        guard state.loop, state.overnightPointID == nil,
+        guard state.loop, state.nights.isEmpty,
               let index = state.points.firstIndex(where: { $0.id == id }), index > 0 else { return }
         var old = state.points[0]
         old.kind = [startName, shapeName, mapPointName].contains(old.place.name) ? .shape : .visit
@@ -407,7 +583,12 @@ public final class PlannerPreviewModel {
         case .createSample: loadSample()
         case .reverse:
             guard hasRoute else { return }
-            edit { $0.points = $0.loop ? Array($0.points.prefix(1) + $0.points.dropFirst().reversed()) : $0.points.reversed() }
+            edit {
+                $0.points = $0.loop ? Array($0.points.prefix(1) + $0.points.dropFirst().reversed()) : $0.points.reversed()
+                $0.legs = Dictionary(uniqueKeysWithValues: $0.legs.map { id, leg in
+                    (LegID(from: id.to, to: id.from), PlannerPreviewLeg(mode: leg.mode, drawn: leg.drawn?.reversed()))
+                })
+            }
         case .splitDays:
             guard hasRoute else { return }
             setOvernight(mapPlaces.first { $0.kind == .camping })
@@ -459,9 +640,13 @@ public final class PlannerPreviewModel {
         // A plan with fewer than two points is no longer the signed route it was named after.
         if next.points.count < 2 { next.loop = false; next.name = nil }
         let stops = next.points.dropFirst().prefix(max(0, next.stopEnd - 1))
-        if !stops.contains(where: { $0.id == next.overnightPointID && $0.kind == .visit }) {
-            next.overnightPointID = nil
-        }
+        next.nights = next.nights.filter { id in stops.contains { $0.id == id && $0.kind == .visit } }
+        // A leg keeps its line only while it joins the same two points at the same places.
+        let moved = Set(next.points.filter { point in
+            state.points.contains { $0.id == point.id && $0.place.coordinate != point.place.coordinate }
+        }.map(\.id))
+        let joined = Set(next.legIDs)
+        next.legs = next.legs.filter { joined.contains($0.key) && !moved.contains($0.key.from) && !moved.contains($0.key.to) }
         guard next != state else { return }
         let key = routingKey
         past.append(state); state = next; future.removeAll()
@@ -499,4 +684,51 @@ public final class PlannerPreviewModel {
     ]
 
     #endif
+}
+
+/// Joins routed runs and drawn or straight legs into one path. A piece that starts away from the
+/// end of the path joins it with a straight line.
+private struct PathBuilder {
+    /// The speed of a line the router did not plan, as the web planner assumes.
+    static let lineSpeed = 15 / 3.6
+    private var points: [RoutePoint] = [], elapsed: [Double] = [], indices: [Int] = []
+    private var distance = 0.0, ascent = 0.0, seconds = 0.0
+
+    var result: PlannedPath {
+        PlannedPath(points: points, distance: distance, ascent: ascent, seconds: seconds, pointIndices: indices, elapsed: elapsed)
+    }
+
+    mutating func append(_ run: PlannedPath) {
+        let start = join(run.points, elapsed: run.elapsed)
+        indices += run.pointIndices.dropFirst(indices.isEmpty ? 0 : 1).map { start + $0 }
+        distance += run.distance; ascent += run.ascent; seconds += run.seconds
+    }
+
+    /// A drawn or straight leg. Its end points take the nearest known elevation, so the leg adds no
+    /// unknown elevation and a straight or transfer leg no climb. `timed` false is a transfer: no riding time.
+    mutating func append(from: Coordinate, to: Coordinate, inner: [RoutePoint], timed: Bool) {
+        let head = inner.first?.elevationMeters ?? points.last?.elevationMeters
+        let tail = inner.last?.elevationMeters ?? head
+        let line = [RoutePoint(coordinate: from, elevationMeters: head)] + inner + [RoutePoint(coordinate: to, elevationMeters: tail)]
+        let measured = MeasuredLine(routePoints: line)
+        let times = measured.vertices.map { timed ? $0.distance / Self.lineSpeed : 0 }
+        let start = join(line, elapsed: times)
+        if indices.isEmpty { indices.append(start) }
+        indices.append(start + line.count - 1)
+        distance += measured.length; ascent += measured.climb(from: 0, to: measured.length); seconds += times.last ?? 0
+    }
+
+    /// Returns the index of the piece's first point in the path.
+    private mutating func join(_ piece: [RoutePoint], elapsed times: [Double]) -> Int {
+        let repeats = points.last?.coordinate == piece.first?.coordinate
+        if !repeats, let last = points.last, let first = piece.first {
+            let gap = last.coordinate.routeDistance(to: first.coordinate)
+            distance += gap; seconds += gap / Self.lineSpeed
+        }
+        let start = points.count - (repeats ? 1 : 0), base = seconds
+        for index in piece.indices.dropFirst(repeats ? 1 : 0) {
+            points.append(piece[index]); elapsed.append(base + times[index])
+        }
+        return start
+    }
 }

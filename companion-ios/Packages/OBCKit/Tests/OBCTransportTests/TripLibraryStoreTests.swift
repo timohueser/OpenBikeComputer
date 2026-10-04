@@ -52,6 +52,8 @@ struct TripLibraryStoreTests {
         t.deviceLink = link
         t.uploadedCRC32 = 0xDEAD_BEEF
         t.dayCopies = [nil, TripDayCopy(link: link, uploadedCRC32: 7)]
+        t.plan = PlannerPlan.keptLine(t)
+        #expect(t.plan != nil)
         store.saveTrip(t)
 
         #expect(t.startName == "Brig")

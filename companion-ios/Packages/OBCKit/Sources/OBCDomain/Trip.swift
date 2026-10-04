@@ -107,6 +107,8 @@ public struct Trip: Identifiable, Equatable, Sendable {
     /// When the rider last changed the trip. Import offers to add a file to the most recently
     /// edited trip.
     public var editedAt: Date
+    /// The planner plan the line was made from. Nil for a trip that was never planned.
+    public var plan: PlannerPlan?
 
     public init(
         id: TripID,
@@ -124,7 +126,8 @@ public struct Trip: Identifiable, Equatable, Sendable {
         uploadedCRC32: UInt32? = nil,
         uploadedKey: UInt64? = nil,
         addedAt: Date,
-        editedAt: Date? = nil
+        editedAt: Date? = nil,
+        plan: PlannerPlan? = nil
     ) {
         self.id = id
         self.key = max(key, 1)
@@ -142,6 +145,7 @@ public struct Trip: Identifiable, Equatable, Sendable {
         self.uploadedKey = uploadedKey
         self.addedAt = addedAt
         self.editedAt = editedAt ?? addedAt
+        self.plan = plan
     }
 
     /// A fresh trip key. The device reads key 0 as "no trip".

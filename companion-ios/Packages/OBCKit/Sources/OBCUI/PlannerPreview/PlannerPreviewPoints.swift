@@ -62,7 +62,8 @@ struct PlannerPreviewPoints: View {
         let point = model.points[index]
         if index == 0 { return model.isLoop ? "Start and finish" : "Start" }
         if model.isEndpoint(point.id) { return "Finish" }
-        return point.id == model.overnightPointID ? "End of day 1" : point.kind.title
+        if let night = model.nights.firstIndex(where: { $0.id == point.id }) { return "End of day \(night + 1)" }
+        return point.kind.title
     }
 
     private func row(_ point: PlannerPreviewPoint, role: String, symbol: String) -> some View {
