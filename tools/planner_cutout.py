@@ -55,15 +55,20 @@ def overlays(source, destination, selection, coverage, package):
 
 
 def route_catalog(source, destination, bounds):
-    """Keep the records that touch the cutout grid. A long route stays only with all of its stages."""
-    try: from .planner_blocks import cells
-    except ImportError: from planner_blocks import cells
+    """Keep the route records whose line lies inside the bounds, where the cutout router can plan them.
+    A long route stays only with all of its stages."""
     document = json.loads(source.read_bytes())
     if document["format"] != 1: raise ValueError("Unsupported route catalog")
-    grid = {name for name, _ in cells(bounds)}
-    kept = {record["id"]: dict(record) for record in document["routes"] if grid & set(record["cells"])}
-    for record in list(kept.values()):
-        if "stages" in record and not all(stage in kept for stage in record["stages"]): del kept[record["id"]]
+    west, south, east, north = (round(value * 1e6) for value in bounds)
+    def inside(line):
+        lon, lat = 0, 0
+        for step in range(0, len(line), 2):
+            lon, lat = lon + line[step], lat + line[step + 1]
+            if not (west <= lon <= east and south <= lat <= north): return False
+        return True
+    kept = {record["id"]: dict(record) for record in document["routes"] if "line_udeg" in record and inside(record["line_udeg"])}
+    kept.update((record["id"], dict(record)) for record in document["routes"]
+                if "stages" in record and all(stage in kept for stage in record["stages"]))
     for record in kept.values():
         record.pop("parent", None); record.pop("stage", None)
     # A stage of two long routes takes the one with the lower relation ID as its parent.

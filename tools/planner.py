@@ -112,7 +112,7 @@ def verify(args, full=False):
             raise ValueError(f"Route package lacks {name}.")
     search = args.data_dir / "search"
     releases.search_metadata(search / (args.region + ".sqlite"), full)
-    for path in [search / "model" / name for name in
+    for path in [route / "route-catalog.json"] + [search / "model" / name for name in
                  ["model.int8.onnx", "tokenizer.json", "tokenizer_config.json", "labels.json"]] + [
                      SEARCH / ".venv/bin/python", SEARCH / "node_modules/opening_hours/package.json",
                      maps.APP / "node_modules/vite/package.json", ROOT / "target/release/route-server"]:

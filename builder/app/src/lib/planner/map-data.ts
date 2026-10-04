@@ -99,8 +99,8 @@ let regionRoutes: Promise<RouteRecord[]> | undefined;
 
 /**
  * The catalog records of the zoom 9 cell `9-X-Y`. A covered cell with no routes gives an empty list.
- * A cell outside the release bounds, which online are the grid and offline the downloaded cells,
- * gives null and is not fetched.
+ * A cell outside the release bounds gives null and is not fetched. Online the bounds cover the grid.
+ * Offline they cover exactly the downloaded cells, because planner_downloads sets them to the union of those cells.
  */
 export async function loadRouteCell(id: string): Promise<RouteRecord[] | null> {
     if (!ROUTES_URL || !MAP_BOUNDS || !coversCell(MAP_BOUNDS, id)) return null;

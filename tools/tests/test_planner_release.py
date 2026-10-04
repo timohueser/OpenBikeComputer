@@ -105,6 +105,8 @@ class ReleaseTests(unittest.TestCase):
             self.assertIn("planner/releases/test/objects/" + entry["transport"]["sha256"], keys)
             self.assertNotIn("planner/releases/test/search/tiles/9-1-1.sqlite", keys)
             self.assertIn("planner/releases/test/public/grid.json", keys)
+            cell = runtime.public_metadata({**document, "files": {"routes/tiles/9-1-1.json": entry}})["public/routes/tiles/9-1-1.json.json"]
+            self.assertEqual(json.loads(cell), {**entry["transport"], "decoded_bytes": entry["bytes"]})
             (root / "objects" / entry["transport"]["sha256"]).write_bytes(b"corrupt")
             with self.assertRaisesRegex(ValueError, "checksum mismatch"):
                 runtime.release(root)

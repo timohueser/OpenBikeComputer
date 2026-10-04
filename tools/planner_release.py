@@ -91,6 +91,7 @@ def seal(data, region, device_catalog, provenance):
     catalog = data / "routes" / f"{region}.json"
     catalog.parent.mkdir(exist_ok=True)
     baked = data / "routing/route-catalog.json"
+    if not baked.is_file(): raise ValueError("Missing route catalog; run obc planner prepare")
     shutil.copyfile(baked, catalog)
     for part in ["routing", "routes", "search/model", "device"]:
         for path in sorted((data / part).rglob("*")):

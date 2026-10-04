@@ -54,11 +54,15 @@ class PlannerCutout(unittest.TestCase):
 
     def test_route_catalog_keeps_touching_records_and_long_routes_with_all_their_stages(self):
         inside, outside = ["9-267-178"], ["9-268-178"]
-        record = lambda id, cells, **fields: {"id": id, "kind": "hiking", "name": str(id), "cells": cells, **fields}
-        routes = [record(10, inside + outside, stages=[21, 22]), record(21, inside, parent=10, stage=1),
-                  record(22, outside, parent=10, stage=2), record(30, inside, stages=[31]), record(31, inside, parent=30, stage=1),
-                  record(40, inside + outside, stages=[41, 42]), record(41, inside, parent=40, stage=1),
-                  record(42, outside, parent=40, stage=2), record(45, inside, stages=[41]), record(50, outside)]
+        near, far = [8000000, 47800000], [9000000, 47800000]
+        record = lambda id, cells, line=None, **fields: {"id": id, "kind": "hiking", "name": str(id), "cells": cells,
+                                                         **({"line_udeg": line} if line else {}), **fields}
+        routes = [record(10, inside + outside, stages=[21, 22]), record(21, inside, near, parent=10, stage=1),
+                  record(22, outside, far, parent=10, stage=2), record(30, inside, stages=[31]), record(31, inside, near, parent=30, stage=1),
+                  record(40, inside + outside, stages=[41, 42]), record(41, inside, near, parent=40, stage=1),
+                  record(42, outside, far, parent=40, stage=2), record(45, inside, stages=[41]), record(50, outside, far),
+                  # This route touches the grid cell but leaves the bounds at 8.5 E.
+                  record(60, inside, near + [500000, 0])]
         with tempfile.TemporaryDirectory() as temporary:
             source, target = Path(temporary) / "region.json", Path(temporary) / "routes/cutout.json"
             source.write_text(json.dumps({"format": 1, "routes": routes}))
@@ -66,7 +70,7 @@ class PlannerCutout(unittest.TestCase):
             cutout.route_catalog(source, target, [7.8, 47.6, 8.4, 47.9])
             kept = {route["id"]: route for route in json.loads(target.read_bytes())["routes"]}
         self.assertEqual(list(kept), [21, 30, 31, 41, 45])
-        self.assertEqual(kept[21], record(21, inside))
+        self.assertEqual(kept[21], record(21, inside, near))
         self.assertEqual((kept[31]["parent"], kept[31]["stage"]), (30, 1))
         self.assertEqual((kept[41]["parent"], kept[41]["stage"]), (45, 1))
 
