@@ -59,9 +59,8 @@ heights are integer metres.
 | `start_udeg` | Long route only: `[longitude, latitude]` of its start |
 
 Each record has a `name` or a `ref`, or both. The builder cuts a longer
-`description` at a word boundary. `symbol` is absent when the start of the route
-lies in France: vertex 0 of `line_udeg`, or `start_udeg` for a long route. The
-client then draws the `ref`.
+`description` at a word boundary. `symbol` is absent when the region's countries
+include France. The client then draws the `ref`.
 
 ### Plan
 
@@ -83,12 +82,12 @@ lists the kind: `hiking` for `hiking` and `foot`, `mtb` for `mtb`, and `road`,
 `gravel` and `touring` for `bicycle`. The main line is the member ways with an
 empty, `main`, `forward` or `backward` role, ordered as the Waymarked Trails route
 builder orders them, with the forward branch where the route splits by
-direction. When that order has a gap of more than 500 m, the builder joins the
-pieces of the main line at their nearest ends, from the first piece on. The
-result must be one chain that uses each piece once, with each join at most
-500 m. A piece that ends inside another piece is a fork, and the route leaves
-the catalog. The router patches each gap of up to 500 m; a route with a longer
-gap leaves the catalog. To reproduce the route, the router's route for the plan
+direction. When that order has more than one piece, the builder joins the
+pieces at their nearest ends, from the first piece on, into one chain that uses
+each piece once, with each join at most 500 m. When no such chain exists, for
+example because a piece ends inside another piece, the member order stays if
+each of its gaps is at most 500 m; otherwise the route leaves the catalog. The
+router patches each gap. To reproduce the route, the router's route for the plan
 with each profile has a deviation of at most 2 % of the main-line length. The
 deviation is the length of the routed line that is more than 30 m from the main
 line, plus the length of the main line that is more than 30 m from the routed

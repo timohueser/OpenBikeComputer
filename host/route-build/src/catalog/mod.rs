@@ -23,6 +23,8 @@ const MIN_LENGTH_M: f64 = 2_000.0;
 const MAX_GAP_M: f64 = 500.0;
 const ROUNDTRIP_M: f64 = 200.0;
 const DESCRIPTION_CHARS: usize = 200;
+/// The search and cost caches of all routers together, besides the shared graph.
+const ROUTER_MEMORY: usize = 4 << 30;
 
 /// Why a selected relation is not in the catalog.
 #[derive(Clone, Copy, Debug)]
@@ -155,8 +157,8 @@ struct Kept {
 }
 
 /// One route relation with its main-line members.
-struct Job {
-    relation: Relation,
+struct Job<'a> {
+    relation: &'a Relation,
     kind: String,
     members: Vec<assemble::Member>,
 }
@@ -212,13 +214,7 @@ pub fn build(directory: &Path, countries: &[String], workers: usize) -> Result<O
     if output.exists() {
         return Ok(None);
     }
-    let france = match countries {
-        [only] => only == "FR",
-        _ if countries.iter().any(|c| c == "FR") => {
-            return Err("A region with France and another country needs a country lookup for route marks".into())
-        }
-        _ => false,
-    };
+    let france = countries.iter().any(|c| c == "FR");
     let started = std::time::Instant::now();
     let package = Directory::open(directory).map_err(|e| e.to_string())?;
     if package.manifest().osm.tables().all(|table| table.len == 0) {
@@ -267,7 +263,7 @@ where
         } else if children.iter().any(is_route) {
             long.push((relation, kind.to_string()));
         } else {
-            jobs.push(Job { relation: relation.clone(), kind: kind.into(), members: Vec::new() });
+            jobs.push(Job { relation, kind: kind.into(), members: Vec::new() });
         }
     }
     let needed: HashSet<i64> = jobs
@@ -304,17 +300,22 @@ where
     drop(ways);
     let queue = Mutex::new(jobs);
     let results = Mutex::new(Vec::new());
-    let mut forks: Vec<_> = (0..workers.max(1)).map(|_| (package.fork(), package.fork())).collect();
+    let workers = workers.max(1);
+    // Each router counts the shared graph in its budget, but the process holds it only once.
+    let shared = package.manifest().graph.decoded_bytes()
+        + package.manifest().landmarks.as_ref().map_or(0, |index| index.decoded_bytes());
+    let budget = shared + ROUTER_MEMORY / workers;
+    let mut forks: Vec<_> = (0..workers).map(|_| package.fork()).collect();
     std::thread::scope(|scope| {
-        for (routing, mut roads) in forks.drain(..) {
+        for routing in forks.drain(..) {
             let (queue, results, points) = (&queue, &results, &points);
             scope.spawn(move || {
-                let mut router = Router::new(routing, 768 * 1024 * 1024);
+                let mut router = Router::new(routing, budget);
                 loop {
                     // The guard must drop before the work, so the job is taken in its own statement.
                     let job = queue.lock().unwrap().pop();
                     let Some(job) = job else { break };
-                    let result = route(&mut router, &mut roads, &job, points, france);
+                    let result = route(&mut router, &job, points, france);
                     results.lock().unwrap().push((job.relation.id, result));
                 }
             });
@@ -322,7 +323,7 @@ where
     });
     let mut kept = BTreeMap::new();
     for (id, result) in results.into_inner().unwrap() {
-        match result? {
+        match result {
             Ok(route) => {
                 kept.insert(id, route);
             }
@@ -408,24 +409,26 @@ where
 }
 
 /// Builds the record of one route, or the reason it leaves the catalog.
-fn route<D: RoutingData, S: Source>(
+fn route<D: RoutingData>(
     router: &mut Router<D>,
-    roads: &mut Package<S>,
     job: &Job,
     points: &HashMap<i64, P>,
     france: bool,
-) -> Result<Result<Kept, Reason>, String> {
+) -> Result<Kept, Reason> {
     let apart = |a: i64, b: i64| distance(points[&a], points[&b]);
     let mut runs = assemble::main_line(&job.members, &apart);
-    if runs.windows(2).any(|w| apart(w[0][w[0].len() - 1], w[1][0]) > MAX_GAP_M) {
+    // A shuffled member order with small jumps would retrace itself; the nearest-end chain does not.
+    if runs.len() > 1 {
         match assemble::chain(&runs, &apart, MAX_GAP_M) {
             Some(chained) => runs = chained,
-            None => return Ok(Err(Reason::Gap)),
+            None if runs.windows(2).all(|w| apart(w[0][w[0].len() - 1], w[1][0]) <= MAX_GAP_M) => {}
+            None => return Err(Reason::Gap),
         }
     }
     let runs: Vec<Vec<P>> = runs.iter().map(|run| run.iter().map(|n| points[n]).collect()).collect();
-    if runs.iter().map(|run| shape::length(run)).sum::<f64>() < MIN_LENGTH_M {
-        return Ok(Err(Reason::Short));
+    let length: f64 = runs.iter().map(|run| shape::length(run)).sum();
+    if length < MIN_LENGTH_M {
+        return Err(Reason::Short);
     }
     let profiles = profiles(&job.kind);
     let mut patch = |line: &mut Vec<P>, to: P| -> Result<(), Reason> {
@@ -445,9 +448,7 @@ fn route<D: RoutingData, S: Source>(
     };
     let mut line = runs[0].clone();
     for run in &runs[1..] {
-        if let Err(reason) = patch(&mut line, run[0]) {
-            return Ok(Err(reason));
-        }
+        patch(&mut line, run[0])?;
         line.extend(&run[1..]);
     }
     let (start, end) = (line[0], line[line.len() - 1]);
@@ -455,11 +456,10 @@ fn route<D: RoutingData, S: Source>(
         || tag(&job.relation.tags, "roundtrip") == "yes" && distance(start, end) <= ROUNDTRIP_M && {
             patch(&mut line, start).is_ok()
         };
-    let plan = match shape::shape(router, profiles, &line, closed) {
-        Ok(plan) => plan,
-        Err(Failure::TooManyPoints) => return Ok(Err(Reason::TooManyPoints)),
-        Err(Failure::Check) => return Ok(Err(Reason::ShapingCheck)),
-    };
+    let plan = shape::shape(router, profiles, &line, length, closed).map_err(|failure| match failure {
+        Failure::TooManyPoints => Reason::TooManyPoints,
+        Failure::Check => Reason::ShapingCheck,
+    })?;
     let geometry = shape::vertices(&plan.route);
     let keep: Vec<usize> = plan.route.legs.iter().map(|leg| leg.from_index).chain([geometry.len() - 1]).collect();
     let (mut simple, positions) = shape::simplify(&geometry, &keep);
@@ -469,7 +469,7 @@ fn route<D: RoutingData, S: Source>(
     }
     let mut cover = BTreeSet::new();
     cells(&geometry, &mut cover);
-    let mut record = header(&job.relation, &job.kind, france);
+    let mut record = header(job.relation, &job.kind, france);
     let totals = &plan.route.totals;
     record.insert("loop".into(), json!(closed));
     record.insert("length_m".into(), json!(totals.distance_m));
@@ -477,7 +477,7 @@ fn route<D: RoutingData, S: Source>(
     record.insert("descent_m".into(), json!(totals.descent_m));
     let mut grades = None;
     if graded(&job.kind) {
-        let (lengths, hardest) = grade_lengths(roads, &plan.route, job.kind == "mtb")?;
+        let (lengths, hardest) = grade_lengths(&plan.route, &geometry, job.kind == "mtb");
         record.insert("grades_m".into(), json!(lengths));
         if let Some(hardest) = hardest {
             record.insert("hardest".into(), json!(hardest));
@@ -498,40 +498,37 @@ fn route<D: RoutingData, S: Source>(
     if !turnarounds.is_empty() {
         record.insert("turnarounds".into(), json!(turnarounds));
     }
-    Ok(Ok(Kept {
+    Ok(Kept {
         record,
         start: simple[0],
         finish: simple[simple.len() - 1],
         points: plan.points.len(),
         cells: cover,
         grades,
-    }))
+    })
 }
 
-/// The length of the plan route with each grade, and the hardest explicit grade.
-fn grade_lengths<S: Source>(
-    roads: &mut Package<S>,
-    route: &route_engine::Route,
-    mtb: bool,
-) -> Result<([u64; 6], Option<usize>), String> {
-    let mut lengths = [0u64; 6];
+/// The length of the plan route with each grade, and the hardest explicit grade, from the grade
+/// channel of the route edges.
+fn grade_lengths(route: &route_engine::Route, geometry: &[P], mtb: bool) -> ([u64; 6], Option<usize>) {
+    let edges = json!(route.edges);
+    let runs = edges[if mtb { "mtb_scale" } else { "sac_scale" }].as_array().cloned().unwrap_or_default();
+    let values =
+        runs.iter().flat_map(|run| std::iter::repeat_n(run[0].as_u64(), run[1].as_u64().unwrap_or(0) as usize));
+    let mut lengths = [0.0f64; 6];
     let mut hardest = None;
-    for slice in route.legs.iter().flat_map(|leg| &leg.roads) {
-        let road = roads.road(slice.road).map_err(|e| e.to_string())?;
-        // The same rounding as the route totals, so the grades add up to the route length.
-        let shape: f64 = road.shape.windows(2).map(|w| w[0].distance(w[1])).sum();
-        let length = (shape * (slice.to - slice.from)).round() as u64;
-        let explicit = if mtb {
-            (road.difficulty <= 6).then(|| (road.difficulty as usize).min(5))
-        } else {
-            road.hiking_difficulty.filter(|&d| d <= 6).map(|d| (d as usize).max(1) - 1)
-        };
+    for (w, value) in geometry.windows(2).zip(values) {
+        let explicit = value.filter(|&d| d <= 6).map(|d| if mtb { d.min(5) } else { d.max(1) - 1 } as usize);
+        let length = distance(w[0], w[1]);
         lengths[explicit.unwrap_or(0)] += length;
-        if length > 0 {
+        if length > 0.0 {
             hardest = hardest.max(explicit);
         }
     }
-    Ok((lengths, hardest))
+    // Scaled to the route length, so that the six rounded lengths add up to it within 3 m.
+    let sum: f64 = lengths.iter().sum();
+    let scale = if sum > 0.0 { route.totals.distance_m as f64 / sum } else { 0.0 };
+    (lengths.map(|l| (l * scale).round() as u64), hardest)
 }
 
 #[cfg(test)]

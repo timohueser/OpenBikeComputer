@@ -207,20 +207,21 @@ impl<D: RoutingData> Search<'_, D> {
         Leg { off: missed + extra, via }
     }
 
-    /// The deviation of each profile, and the shaping point for the worst leg.
-    fn totals(&mut self, plan: &[usize]) -> (Vec<f64>, Option<usize>) {
-        let mut worst = (0.0, None);
-        let mut totals = vec![0.0; self.profiles.len()];
-        for (p, total) in totals.iter_mut().enumerate() {
-            for w in plan.windows(2) {
-                let leg = self.leg(p, w[0], w[1]);
-                *total += leg.off;
-                if leg.off > worst.0 {
-                    worst = (leg.off, leg.via);
-                }
-            }
-        }
-        (totals, worst.1)
+    /// The deviation of each profile.
+    fn totals(&mut self, plan: &[usize]) -> Vec<f64> {
+        (0..self.profiles.len()).map(|p| plan.windows(2).map(|w| self.leg(p, w[0], w[1]).off).sum()).collect()
+    }
+
+    /// The shaping point of the worst leg, of a profile over the budget, that has an untried one.
+    fn next(&mut self, plan: &[usize], totals: &[f64]) -> Option<usize> {
+        let mut legs: Vec<Leg> = (0..self.profiles.len())
+            .filter(|&p| totals[p] > self.budget)
+            .flat_map(|p| plan.windows(2).map(move |w| (p, w[0], w[1])))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|(p, i, j)| self.leg(p, i, j))
+            .collect();
+        untried(&mut legs, &self.tried)
     }
 
     /// Removes each shaping point whose removal keeps every profile within the budget, and does
@@ -243,7 +244,8 @@ impl<D: RoutingData> Search<'_, D> {
     }
 
     fn insert(&mut self, plan: &mut Vec<usize>, via: Option<usize>) -> Result<(), Failure> {
-        let via = via.filter(|&k| self.tried.insert(k)).ok_or(Failure::Check)?;
+        let via = via.ok_or(Failure::Check)?;
+        self.tried.insert(via);
         let at = plan.binary_search(&via).err().ok_or(Failure::Check)?;
         plan.insert(at, via);
         Ok(())
@@ -254,6 +256,12 @@ impl<D: RoutingData> Search<'_, D> {
             .route(&request(profile, points, turnarounds.to_vec()), &Control::default())
             .map_err(|_| Failure::Check)
     }
+}
+
+/// The shaping point of the worst leg whose shaping point was never in the plan.
+fn untried(legs: &mut [Leg], tried: &HashSet<usize>) -> Option<usize> {
+    legs.sort_by(|a, b| b.off.total_cmp(&a.off));
+    legs.iter().filter_map(|leg| leg.via).find(|k| !tried.contains(k))
 }
 
 fn point_at(line: &[P], at: f64) -> P {
@@ -272,16 +280,19 @@ fn point_at(line: &[P], at: f64) -> P {
     line[line.len() - 1]
 }
 
-/// Finds a plan whose route follows `line` with each profile. The first profile gives the plan route.
+/// Finds a plan whose route follows `line` with each profile. The first profile gives the plan
+/// route. The budget is `SHARE` of `length`, the length of the main line without its patches.
 ///
-/// Each leg is first routed alone: the leg with the largest deviation gets a shaping point in the
-/// middle of its longest stretch away from the line, until the plan is within the budget. Then
-/// every shaping point that does not help goes. The whole plan is routed last; when it fails, its
-/// worst leg gets a shaping point and the search continues.
+/// Each leg is first routed alone. Of the profiles over the budget, the worst leg with an untried
+/// shaping point gets that point, in the middle of its longest stretch away from the line, until
+/// the plan is within the budget. Then every shaping point that does not help goes. The whole
+/// plan is routed last; when it fails, its worst leg with an untried point gets that point and the
+/// search continues.
 pub fn shape<D: RoutingData>(
     router: &mut Router<D>,
     profiles: &[&str],
     line: &[P],
+    length: f64,
     closed: bool,
 ) -> Result<Plan, Failure> {
     let n = line.len();
@@ -305,14 +316,14 @@ pub fn shape<D: RoutingData>(
         profiles,
         line,
         along,
-        budget: SHARE * total,
+        budget: SHARE * length,
         legs: HashMap::new(),
         fixed: tips.iter().copied().collect(),
         tried: plan.iter().copied().collect(),
     };
     for _ in 0..ROUNDS {
         loop {
-            let (mut totals, via) = search.totals(&plan);
+            let mut totals = search.totals(&plan);
             if totals.iter().all(|&total| total <= search.budget) {
                 search.prune(&mut plan, &mut totals);
                 break;
@@ -323,7 +334,11 @@ pub fn shape<D: RoutingData>(
                     return Err(Failure::TooManyPoints);
                 }
             }
+            let via = search.next(&plan, &totals);
             search.insert(&mut plan, via)?;
+        }
+        if plan.len() > MAX_VIA + 2 {
+            return Err(Failure::TooManyPoints);
         }
         let turnarounds: Vec<usize> =
             plan.iter().enumerate().filter(|(_, k)| tips.contains(k)).map(|(i, _)| i).collect();
@@ -334,27 +349,25 @@ pub fn shape<D: RoutingData>(
         let mut snapped: Vec<P> = first.legs.iter().map(|leg| geometry[leg.from_index]).collect();
         snapped.push(if closed { snapped[0] } else { geometry[geometry.len() - 1] });
         let mut routes = Vec::new();
-        let mut worst: Option<(f64, usize)> = None;
+        let mut legs = Vec::new();
         for profile in profiles {
             let route = search.route(profile, &snapped, &turnarounds)?;
-            let off = deviation(&vertices(&route), line);
-            if off > search.budget && worst.is_none_or(|w| off > w.0) {
-                worst = Some((off, routes.len()));
+            let geometry = vertices(&route);
+            if deviation(&geometry, line) > search.budget {
+                legs.extend(
+                    route
+                        .legs
+                        .iter()
+                        .enumerate()
+                        .map(|(k, l)| search.compare(&geometry[l.from_index..=l.to_index], plan[k], plan[k + 1])),
+                );
             }
             routes.push(route);
         }
-        let Some((_, failed)) = worst else {
+        if legs.is_empty() {
             return Ok(Plan { points: snapped, turnarounds, route: routes.swap_remove(0) });
-        };
-        let failed = &routes[failed];
-        let geometry = vertices(failed);
-        let via = failed
-            .legs
-            .iter()
-            .enumerate()
-            .map(|(k, l)| search.compare(&geometry[l.from_index..=l.to_index], plan[k], plan[k + 1]))
-            .max_by(|a, b| a.off.total_cmp(&b.off))
-            .and_then(|leg| leg.via);
+        }
+        let via = untried(&mut legs, &search.tried);
         search.insert(&mut plan, via)?;
         search.fixed.extend(via);
     }

@@ -48,8 +48,8 @@ cargo run --release -p route-build --bin route-catalog -- /data/routes/bw --coun
 The command writes `route-catalog.json` in the format of
 [the catalog contract](../../specs/route-catalog.md) and prints a JSON report:
 the counts, the dropped relations by reason and the shaping points. A present
-file is current, so the command does nothing. A region with France and another
-country fails, because the builder has no country lookup.
+file is current, so the command does nothing. When the countries include France,
+no record has a route mark.
 
 ## Terrain
 

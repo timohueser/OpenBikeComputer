@@ -609,6 +609,9 @@ mod tests {
         let runs = [vec![10, 20], vec![50, 40], vec![21, 30], vec![9, 0]];
         assert_eq!(chain(&runs, &distance, 10.0).unwrap(), [vec![0, 9], vec![10, 20], vec![21, 30], vec![40, 50]]);
         assert_eq!(chain(&runs, &distance, 5.0), None, "a join of 10 m is too long");
+        // Small jumps in a shuffled order: the chain does not retrace itself.
+        let shuffled = [vec![0, 9], vec![21, 30], vec![10, 20], vec![31, 40]];
+        assert_eq!(chain(&shuffled, &distance, 10.0).unwrap(), [vec![0, 9], vec![10, 20], vec![21, 30], vec![31, 40]]);
         // The second run starts inside the first: a branch.
         assert_eq!(chain(&[vec![10, 20, 30], vec![20, 25]], &distance, 10.0), None);
     }
