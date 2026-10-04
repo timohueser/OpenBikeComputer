@@ -184,7 +184,8 @@ fn with_sources(mut graph: Graph) -> Graph {
 // Independent arrival-road Dijkstra. The target is a partial transition, not a compact state.
 fn oracle(graph: &Graph, profile: &Profile, from: &Candidate, to: &Candidate) -> Option<u64> {
     let graph = with_sources(graph.clone());
-    let costing = route_build::cost::Costing::new(&graph, profile, &Default::default()).unwrap();
+    let none = route_build::cost::Doubts::default();
+    let costing = route_build::cost::Costing::new(&graph, profile, &none).unwrap();
     let (a, b) = (from.position, to.position);
     let prefix = costing.roads[a.road as usize].as_ref().unwrap().prefix(a.fraction).unwrap();
     let suffix = costing.roads[b.road as usize].as_ref().unwrap().prefix(b.fraction).unwrap();
@@ -466,7 +467,8 @@ fn lazy_endpoint_costs_preserve_every_profile_and_partial_offset() {
     let (source, manifest) = package_with_profiles(&graph, &profiles);
     let mut package = Package::open(source, &manifest).unwrap();
     for profile in &profiles {
-        let costing = route_build::cost::Costing::new(&graph, profile, &Default::default()).unwrap();
+        let none = route_build::cost::Doubts::default();
+        let costing = route_build::cost::Costing::new(&graph, profile, &none).unwrap();
         for (id, expected) in costing.roads.iter().enumerate() {
             let actual = package.endpoint(&profile.name, id as u32).unwrap().cost;
             assert_eq!(actual, *expected, "{} road {id}", profile.name);
@@ -823,7 +825,8 @@ fn partial_cost_localizes_climbing_and_telescopes_across_shape_points() {
     let mut graph = fixture();
     graph.roads = vec![road];
     let graph = with_sources(graph);
-    let costing = route_build::cost::Costing::new(&graph, &profile, &Default::default()).unwrap();
+    let none = route_build::cost::Doubts::default();
+    let costing = route_build::cost::Costing::new(&graph, &profile, &none).unwrap();
     let curve = costing.roads[0].as_ref().unwrap();
     let full = curve.total();
     assert!(curve.prefix(0.5).unwrap() > full / 2);

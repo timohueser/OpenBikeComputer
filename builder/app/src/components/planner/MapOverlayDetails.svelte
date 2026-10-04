@@ -8,7 +8,7 @@
         construction: { title: 'Under construction', detail: 'OSM maps this section as construction. The router excludes it.' },
         closed: { title: 'No access', detail: 'The mapped rules exclude this travel mode. This is not just a requirement to dismount.' },
         private: { title: 'Private access', detail: 'Permission is required. The router avoids this road where it can, and the route notes it.' },
-        limited: { title: 'Limited access', detail: 'Access is reserved for destinations, customers or deliveries. The router avoids this road where it can, and the route notes it.' },
+        limited: { title: 'Limited access', detail: 'Access is limited, for example to destinations, farm traffic or permit holders. The router avoids this road where it can, and the route notes it.' },
         push: { title: 'Dismount and push', detail: 'Riding is not allowed here. You can push your bike; the router can include this as a walking section.' },
         no_bikes: { title: 'No bicycles', detail: 'Walking is allowed, but taking a bicycle through is restricted, including pushing.' },
         directional: { title: 'Directional access', detail: 'Access differs by direction. Check the mapped rules below.' },

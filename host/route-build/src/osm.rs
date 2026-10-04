@@ -142,7 +142,7 @@ fn barrier(value: Option<&str>) -> Option<u8> {
 /// The possible closures of a node: its access tags, and an unknown barrier that a rider may
 /// have to push through.
 pub fn node_closures<'a>(tags: impl Iterator<Item = (&'a str, &'a str)> + Clone) -> Vec<(u8, Closure)> {
-    let mut closures = source::closures(tags.clone());
+    let mut closures = source::closures(tags.clone(), &["forward", "backward"]);
     if let Some((_, value)) = tags.into_iter().find(|&(key, value)| key == "barrier" && barrier(Some(value)).is_none())
     {
         closures.push((FOOT | PUSH, Closure { kind: Kind::Unclear, condition: format!("barrier={value}") }));

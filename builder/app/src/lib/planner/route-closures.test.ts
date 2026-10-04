@@ -29,7 +29,7 @@ describe('possible closures', () => {
         expect(note(closure('seasonal', 'dec-mar'))).toBe('May be closed seasonally (Dec–Mar) · 400 m');
         expect(note(closure('conditional', 'wet'), closure('conditional', 'Mo-Fr 07:00-19:00')))
             .toBe('May be closed (wet, Mo–Fr 07:00–19:00) · 400 m');
-        expect(note(closure('limited', 'destination'), closure('limited', 'customers;motor_vehicle'))).toBe('Access for destination or customers or motor vehicle only · 400 m');
+        expect(note(closure('limited', 'destination'), closure('limited', 'customers;psv;motor_vehicle'))).toBe('Access for destination or customers or motor vehicles only · 400 m');
         expect(note(closure('unclear', 'unknown'))).toBe('Access unclear (unknown) · 400 m');
         expect(note(closure('private', 'private'), closure('farm', 'agricultural;forestry'), closure('sidepath', 'use_sidepath'), closure('discouraged', 'discouraged')))
             .toBe('Private road · Farm or forest traffic only · Use the side path · Access discouraged · 400 m');

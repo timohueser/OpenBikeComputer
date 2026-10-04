@@ -161,13 +161,14 @@ pub fn conditional_modes<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> 
 
 /// What may close a road that the router keeps open: an uncertain access value, or a conditional
 /// restriction. Only a restricting clause counts: `yes @ (May-Oct)` names the open season. A
-/// conditional one-way closes one direction only, so it is no closure of the road.
-pub fn closures<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Vec<(u8, Closure)> {
+/// conditional one-way closes one direction only, so it is no closure of the road. Only the tags
+/// of the given `directions` of travel count.
+pub fn closures<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, directions: &[&str]) -> Vec<(u8, Closure)> {
     let tags: BTreeMap<&str, &str> = tags.collect();
     let get = |key: &str| tags.get(key).copied();
     let mut found = Vec::new();
     for (mode, bits) in [("foot", FOOT | PUSH), ("bicycle", BIKE)] {
-        for direction in ["forward", "backward"] {
+        for &direction in directions {
             if let Some(value) = inherited(&get, mode, direction) {
                 if let Access::Uncertain(kind) = classify(value) {
                     found.push((bits, kind, value));
@@ -176,7 +177,8 @@ pub fn closures<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Vec<(u8, 
         }
     }
     for (key, modes, clauses) in conditions(tags.iter().map(|(key, value)| (*key, *value))) {
-        if modes == 0 || key.starts_with("oneway") {
+        let other = ["forward", "backward"].into_iter().find(|d| key.ends_with(d) && !directions.contains(d));
+        if modes == 0 || key.starts_with("oneway") || other.is_some() {
             continue;
         }
         for (_, condition) in clauses.into_iter().filter(|(value, _)| !granted(value)) {
@@ -311,7 +313,7 @@ mod tests {
         assert_eq!(access(permit, BIKE | FOOT | PUSH, "forward", true), BIKE | FOOT | PUSH);
         assert_eq!(access(permit, BIKE | FOOT | PUSH, "forward", false), 0);
 
-        let closures = |tags: &[(&'static str, &'static str)]| closures(tags.iter().copied());
+        let closures = |tags: &[(&'static str, &'static str)]| closures(tags.iter().copied(), &["forward", "backward"]);
         let closure = |kind, condition: &str| Closure { kind, condition: condition.into() };
         let all = BIKE | FOOT | PUSH;
         assert_eq!(
@@ -330,6 +332,9 @@ mod tests {
             closures(&[("access", "private"), ("bicycle", "use_sidepath")]),
             vec![(FOOT | PUSH, closure(Kind::Private, "private")), (BIKE, closure(Kind::Sidepath, "use_sidepath"))]
         );
+        let one_way = [("bicycle:backward", "use_sidepath"), ("bicycle:backward:conditional", "no @ (wet)")];
+        assert_eq!(super::closures(one_way.into_iter(), &["forward"]), vec![]);
+        assert_eq!(super::closures(one_way.into_iter(), &["backward"]).len(), 2);
         assert_eq!(
             closures(&[
                 ("access:conditional", "no @ (Nov-May)"),

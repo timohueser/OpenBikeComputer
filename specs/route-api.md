@@ -75,10 +75,12 @@ every edge. A client accepts a channel that it does not know.
 The router blocks a mode only for the access value `no`; `dismount` blocks
 riding only. It uses an edge that is possibly closed for the mode that the route
 uses on it, and reports it. A closure on a node, such as a gate, belongs to the
-edges of the road that arrives at the node. A closure from an access value
-makes the road cost three times its length. Thus a route uses the road only
-where the alternative is much longer, or where a shaping point is on it. A
-`seasonal` or `conditional` closure adds no cost:
+edges of the road that arrives at the node. A closure applies only to the
+direction of travel that its tag names. A closure from an access value makes
+the road cost three times its length, and a node cost as much as 300 m of good
+road. Thus a route uses the road only where every alternative is more than three
+times as long, or where a shaping point is on it. A `seasonal` or `conditional`
+closure adds no cost:
 
 | `kind` | Source | `condition` |
 | --- | --- | --- |
