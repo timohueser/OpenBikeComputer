@@ -85,7 +85,9 @@ def deploy(args):
         maps.run("rsync", "-az", str(runtime / "search") + "/", f"{args.host}:{base}/search/data/")
     else:
         maps.run("rsync", "-az", str(args.data_dir / "routing") + "/", f"{args.host}:{base}/routing/")
-        maps.run("rsync", "-az", str(args.data_dir / "search" / (document["region"] + ".sqlite")), f"{args.host}:{base}/search/data/")
+        search_files = [name.removeprefix("search/") for name in document["files"] if name.startswith("search/") and name.endswith(".sqlite")]
+        maps.run("rsync", "-az", "--files-from=-", str(args.data_dir / "search") + "/", f"{args.host}:{base}/search/data/",
+                 input=("\n".join(search_files) + "\n").encode())
         maps.run("rsync", "-az", str(args.data_dir / "search/model") + "/", f"{args.host}:{base}/search/data/model/")
     search_prefix = b"apps/planner-search/"
     search_files = b"\0".join(path[len(search_prefix):] for path in tracked.stdout.split(b"\0")
