@@ -326,7 +326,7 @@ private actor ShapeSource: PlannerDataSource {
     func release() async throws -> PlannerRelease {
         let host = URL(string: "https://planner.test")!
         return PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: [7, 47, 9, 49], basemap: host,
-                              glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host, manifest: host)
+                              glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host, manifest: host, overlays: host)
     }
     func route(points: [Coordinate], turnarounds: [Int], activity: RouteActivity, preference: RoutePreference,
                release: PlannerRelease) async throws -> PlannedPath {

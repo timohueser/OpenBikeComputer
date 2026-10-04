@@ -128,7 +128,7 @@ struct SignedRoutesTests {
         func release(_ routes: String, cells: [String]? = nil) -> PlannerRelease {
             PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: bounds, basemap: directory, glyphs: "",
                            sprites: "", terrain: "", terrain_attribution: "", search: directory, routing: directory,
-                           manifest: directory.appending(path: "release.json"), routes: routes, offlineCells: cells)
+                           manifest: directory.appending(path: "release.json"), overlays: directory, routes: routes, offlineCells: cells)
         }
         let tiles = directory.appending(path: "routes/tiles").absoluteString + "/{cell}.json"
         let grid = try #require(RouteCatalog(release: release(tiles, cells: ["9-267-177", "9-267-178"])))

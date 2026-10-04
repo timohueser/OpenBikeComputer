@@ -53,15 +53,6 @@ fn access_zoom(status: &str) -> Option<f64> {
     })
 }
 
-fn layer_id(kind: &str) -> i64 {
-    match kind {
-        "cycling" => 0,
-        "hiking" => 1,
-        "mtb" => 3,
-        _ => 2,
-    }
-}
-
 type Memberships = BTreeMap<i64, Vec<i64>>;
 
 fn memberships(relations: &BTreeMap<i64, Relation>) -> (Memberships, BTreeMap<i64, Value>) {
@@ -120,9 +111,7 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
         CREATE TABLE attributes(id INTEGER PRIMARY KEY, properties TEXT NOT NULL);
         CREATE TABLE features(id INTEGER PRIMARY KEY, kind TEXT NOT NULL,
             cycling_minzoom REAL, walking_minzoom REAL,
-            geometry INTEGER NOT NULL, attributes INTEGER NOT NULL);
-        CREATE VIRTUAL TABLE bounds USING rtree(id, west, east, south, north,
-            facet_min, facet_max);",
+            geometry INTEGER NOT NULL, attributes INTEGER NOT NULL);",
         )
         .map_err(text)?;
     transaction
@@ -174,9 +163,8 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
                     )
                     .map_err(text)?;
                 let geometry = transaction.last_insert_rowid();
-                let coordinates: Vec<_> = run.iter().map(|p| p.map(|v| v as f64 * 1e-6)).collect();
                 for (activity, properties) in &properties {
-                    insert(&transaction, &mut attributes, geometry, &coordinates, activity, properties)?;
+                    insert(&transaction, &mut attributes, geometry, activity, properties)?;
                 }
             }
             run.clear();
@@ -206,13 +194,9 @@ fn insert(
     database: &Transaction<'_>,
     attributes: &mut HashMap<String, i64>,
     geometry: i64,
-    coordinates: &[[f64; 2]],
     kind: &str,
     properties: &Value,
 ) -> Result<(), String> {
-    let bounds = coordinates.iter().fold([180.0f64, 90.0f64, -180.0f64, -90.0f64], |b, p| {
-        [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
-    });
     let (cycling_minzoom, walking_minzoom) = if kind == "access" {
         (
             access_zoom(properties["cycling_status"].as_str().unwrap_or("")),
@@ -242,14 +226,6 @@ fn insert(
         .execute(
             "INSERT INTO features(kind,cycling_minzoom,walking_minzoom,geometry,attributes) VALUES (?,?,?,?,?)",
             params![kind, cycling_minzoom, walking_minzoom, geometry, attribute],
-        )
-        .map_err(text)?;
-    let facet = layer_id(kind) as f64 * 32.0
-        + cycling_minzoom.into_iter().chain(walking_minzoom).reduce(f64::min).unwrap_or(23.0);
-    database
-        .execute(
-            "INSERT INTO bounds VALUES (?,?,?,?,?,?,?)",
-            params![database.last_insert_rowid(), bounds[0], bounds[2], bounds[1], bounds[3], facet, facet],
         )
         .map_err(text)?;
     Ok(())
@@ -304,17 +280,18 @@ mod tests {
         let path = std::env::temp_dir().join(format!("route-build-overlays-{}.sqlite", std::process::id()));
         write(&path, "package", [-1.0, -1.0, 1.0, 1.0], &osm).unwrap();
         let database = Connection::open(&path).unwrap();
-        let counts: (i64, i64, i64) = database
+        let counts: (i64, i64, i64, i64) = database
             .query_row(
-                "SELECT (SELECT count(*) FROM features), (SELECT count(*) FROM geometries), (SELECT count(*) FROM routes)",
+                "SELECT (SELECT count(*) FROM features), (SELECT count(*) FROM geometries), (SELECT count(*) FROM routes),
+                    (SELECT points FROM geometries WHERE way=2)",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
         drop(database);
         std::fs::remove_file(&path).unwrap();
         // Way 1 carries three routes. Way 2 keeps only the run before its missing node; way 3 is one access line.
-        assert_eq!(counts, (5, 3, 3));
+        assert_eq!(counts, (5, 3, 3, 2));
     }
 
     #[test]

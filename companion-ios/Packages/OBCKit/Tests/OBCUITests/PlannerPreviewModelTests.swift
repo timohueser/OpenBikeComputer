@@ -509,6 +509,6 @@ private actor ControlledPlannerSource: PlannerDataSource {
 }
 
 private let testRelease: PlannerRelease = try! JSONDecoder().decode(PlannerRelease.self, from: Data("""
-{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","region":"test","bounds":[7,47,9,49],"basemap":"https://test/basemap.json","glyphs":"https://test/fonts/{fontstack}/{range}.pbf","sprites":"https://test/sprites","terrain":"https://test/{z}/{x}/{y}.webp","terrain_attribution":"Terrain","search":"https://test/search","routing":"https://test/routing","manifest":"https://test/manifest.json"}
+{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","region":"test","bounds":[7,47,9,49],"basemap":"https://test/basemap.json","glyphs":"https://test/fonts/{fontstack}/{range}.pbf","sprites":"https://test/sprites","terrain":"https://test/{z}/{x}/{y}.webp","terrain_attribution":"Terrain","search":"https://test/search","routing":"https://test/routing","manifest":"https://test/manifest.json","overlays":"https://test/overlays.json"}
 """.utf8))
 #endif

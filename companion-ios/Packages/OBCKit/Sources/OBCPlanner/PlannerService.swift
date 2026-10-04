@@ -14,7 +14,7 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
     public let routing: URL
     public let manifest: URL
     /// The route network TileJSON.
-    public let overlays: URL?
+    public let overlays: URL
     /// The route catalog: a cell file URL with `{cell}`. Nil when the release has none.
     public let routes: String?
     /// The cell IDs of an offline grid selection. Only routes wholly inside them are listed.
@@ -22,7 +22,7 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
 
     public init(id: String, region: String, bounds: [Double], basemap: URL, glyphs: String,
                 sprites: String, terrain: String, terrain_attribution: String, search: URL, routing: URL, manifest: URL,
-                overlays: URL? = nil, routes: String? = nil, offlineCells: [String]? = nil) {
+                overlays: URL, routes: String? = nil, offlineCells: [String]? = nil) {
         self.id = id; self.region = region; self.bounds = bounds; self.basemap = basemap
         self.glyphs = glyphs; self.sprites = sprites; self.terrain = terrain
         self.terrain_attribution = terrain_attribution; self.search = search; self.routing = routing; self.manifest = manifest
@@ -210,7 +210,7 @@ public actor PlannerService: PlannerDataSource {
                   r.bounds.allSatisfy(\.isFinite), r.bounds[0] < r.bounds[2], r.bounds[1] < r.bounds[3],
                   r.bounds[0] >= -180, r.bounds[2] <= 180, r.bounds[1] >= -90, r.bounds[3] <= 90,
                   r.basemap.scheme == "https", r.routing.scheme == "https", r.manifest.scheme == "https", r.search.scheme == "https",
-                  r.overlays.map({ $0.scheme == "https" }) ?? true,
+                  r.overlays.scheme == "https",
                   r.routes.map({ $0.hasPrefix("https://") && $0.contains("{cell}") }) ?? true,
                   [r.glyphs, r.sprites, r.terrain].allSatisfy({ $0.hasPrefix("https://") })
             else { throw PlannerFailure.invalidData }

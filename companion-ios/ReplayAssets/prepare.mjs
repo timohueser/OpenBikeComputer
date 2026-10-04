@@ -32,8 +32,7 @@ for (const theme of ['light', 'dark']) {
   // The web renderer generates contours from DEM tiles; native uses the DEM hillshade.
   style.layers = style.layers.filter(layer => layer.source !== 'contours');
   delete style.sources.contours;
-  style.sources.networks = { type: 'geojson', data: { type: 'FeatureCollection', features: [] },
-    attribution: '<a href="https://www.openstreetmap.org/copyright">Route networks © OpenStreetMap contributors</a>' };
+  // OBCNativeMapView adds the release's `networks` vector source.
   const colors = theme === 'dark' ? ['#b0b8be','#a4cf67','#79b7f1','#c49de0'] : ['#626a70','#4f8b24','#2368b5','#7c519c'];
   const color = ['match', ['get', 'rank'], 1, colors[1], 2, colors[2], 3, colors[3], colors[0]];
   const before = style.layers.findIndex(layer => layer.type === 'symbol');

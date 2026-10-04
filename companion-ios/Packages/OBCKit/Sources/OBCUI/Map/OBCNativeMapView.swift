@@ -174,18 +174,16 @@ final class OBCNativeMapView: MLNMapView {
         }
         sources["terrain"]?["bounds"] = release.bounds
         sources["terrain"]?["attribution"] = release.terrain_attribution
-        if let overlays = release.overlays {
-            // Each network layer draws one layer of the tiles; the planner map shows one network at a time.
-            sources["networks"] = ["type": "vector", "url": overlays.absoluteString]
-            data["layers"] = (data["layers"] as! [[String: Any]]).flatMap { layer -> [[String: Any]] in
-                guard layer["source"] as? String == "networks" else { return [layer] }
-                return ["cycling", "hiking"].map { network in
-                    var copy = layer
-                    copy["id"] = "\(layer["id"]!)-\(network)"
-                    copy["source-layer"] = network
-                    copy["layout"] = (layer["layout"] as? [String: Any] ?? [:]).merging(["visibility": "none"]) { $1 }
-                    return copy
-                }
+        // Each network layer draws one layer of the tiles; the planner map shows one network at a time.
+        sources["networks"] = ["type": "vector", "url": release.overlays.absoluteString]
+        data["layers"] = (data["layers"] as! [[String: Any]]).flatMap { layer -> [[String: Any]] in
+            guard layer["source"] as? String == "networks" else { return [layer] }
+            return ["cycling", "hiking"].map { network in
+                var copy = layer
+                copy["id"] = "\(layer["id"]!)-\(network)"
+                copy["source-layer"] = network
+                copy["layout"] = (layer["layout"] as? [String: Any] ?? [:]).merging(["visibility": "none"]) { $1 }
+                return copy
             }
         }
         data["sources"] = sources

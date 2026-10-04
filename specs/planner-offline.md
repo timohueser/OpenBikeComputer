@@ -60,7 +60,8 @@ reads only the glyphs of the requested range from the file. A missing range
 file stops the labels of each tile that requests it.
 
 The selected release has `offline.format: 2`, `id`, `zoom`, `map_zoom`,
-`source_routing`, and `cells`. Each cell has `id` and `bounds`.
+`source_routing`, and `cells`. Each cell has `id`, `bounds`, and `files`: the
+cell's search databases and route catalog file.
 `routing/blocks.json` follows the [routing selection contract](route-package.md#grid-selections).
 Map selection takes basemap, overlay and terrain packs. It covers retained road
 geometry; terrain includes tile neighbours. `maps/basemap.json`,

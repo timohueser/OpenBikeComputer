@@ -50,7 +50,7 @@ class Downloads:
         if not cells: raise ValueError("This area has no published map data.")
         actual = [min(c["bounds"][0] for c in cells), min(c["bounds"][1] for c in cells),
                   max(c["bounds"][2] for c in cells), max(c["bounds"][3] for c in cells)]
-        identity = hashlib.sha256(planner_runtime.encoded({"format": 3, "source": self.identity, "bounds": actual})).hexdigest()
+        identity = hashlib.sha256(planner_runtime.encoded({"format": 4, "source": self.identity, "bounds": actual})).hexdigest()
         with self.lock:
             destination = self.cache / identity
             if not (destination / "bundle.json").exists():
@@ -99,7 +99,7 @@ class Downloads:
                    "routing_package": package, "source_files": {}, "terrain_bounds": terrain,
                    "offline": {"format": 2, "id": identity, "zoom": publication["zoom"], "map_zoom": publication["map_zoom"],
                                "source_routing": publication["routing_source"],
-                               "cells": [{"id": c["id"], "bounds": c["bounds"]} for c in cells]},
+                               "cells": [{"id": c["id"], "bounds": c["bounds"], "files": c["files"]} for c in cells]},
                    "files": {name: {k: item[k] for k in ("bytes", "sha256")} for name, item in files.items()}}
         encoded = planner_runtime.encoded(release)
         bundle = planner_runtime.encoded({"format": 1, "release": {"bytes": len(encoded),
