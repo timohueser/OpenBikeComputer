@@ -157,6 +157,7 @@ for name,rows in [('forward',records),('reverse',list(reversed(records)))]:
 `,new URL('..',import.meta.url).pathname,directory]);
     const read=name=>{
       const conn=new DatabaseSync(join(directory,`${name}.sqlite`),{readOnly:true});connections.push(conn);
+      assert.equal(conn.prepare('SELECT count(*) n FROM place_contexts WHERE id NOT IN (SELECT context_id FROM place_records)').get().n,0);
       return conn.prepare('SELECT source,name,aliases,lon,lat,city,postcode,context,country,west,south,east,north FROM places ORDER BY name,country').all().map(r=>({...r}));
     };
     const forward=read('forward');

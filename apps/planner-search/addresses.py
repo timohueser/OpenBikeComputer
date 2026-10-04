@@ -51,3 +51,4 @@ def finish(writer):
         writer.db.execute('UPDATE place_records SET aliases=?,lon=?,lat=?,context_id=?,west=?,south=?,east=?,north=? WHERE id=?',
                           (aliases, group.lon, group.lat,
                            writer.context_id(city, postcode, region, group.context, country), *group.bbox, group.id))
+    writer.db.execute('DELETE FROM place_contexts WHERE id NOT IN (SELECT context_id FROM place_records)')
