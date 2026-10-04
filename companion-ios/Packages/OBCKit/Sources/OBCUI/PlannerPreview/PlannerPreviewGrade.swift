@@ -17,8 +17,9 @@ struct PlannerPreviewGrade {
     let grades: [Double?]
     var distance: Double { samples.last?.distance ?? 0 }
 
-    init(routePoints: [RoutePoint]) {
-        let line = MeasuredLine(routePoints: routePoints)
+    /// `line` measures `routePoints`, gaps included.
+    init(routePoints: [RoutePoint], line: MeasuredLine? = nil) {
+        let line = line ?? MeasuredLine(routePoints: routePoints)
         self.init(samples: zip(line.vertices, routePoints).map {
             Sample(distance: $0.0.distance, elevation: $0.1.elevationIncomplete ? nil : $0.1.elevationMeters)
         })

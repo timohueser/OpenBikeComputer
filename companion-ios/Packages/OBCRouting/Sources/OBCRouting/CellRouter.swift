@@ -300,20 +300,3 @@ struct Job: Encodable {
     var knownEmpty: [KnownEmpty] = []
     var terrain: [TerrainCell] = []
 }
-
-extension CellRouter: LegRouter {
-    public func route(
-        from: Coordinate, to: Coordinate, bikeType: BikeType, onDownload: @escaping @Sendable () -> Void
-    ) async throws -> [RoutePoint] {
-        do {
-            return try await route(from: from, to: to, profile: bikeType.rawValue, onDownload: onDownload).points
-        } catch let failure as RouteFailure {
-            switch failure {
-            case .noConnection: throw LegRouteFailure.noConnection
-            case .cellDownloadFailed, .mapUnreadable: throw LegRouteFailure.mapData
-            case .noMap: throw LegRouteFailure.noMap
-            case .noRoad, .noPath, .exhausted: throw LegRouteFailure.noRoad
-            }
-        }
-    }
-}

@@ -2,8 +2,8 @@
 import SwiftUI
 import OBCDomain
 
-/// The marker-on-line editor with sample data: a three-day trip line and a ride with trim
-/// handles. The dense-line toggle is the load for the frame-rate check.
+/// The marker-on-line editor with sample data: a ride with trim handles. The dense-line toggle is
+/// the load for the frame-rate check.
 struct LineMarkerGallerySection: View {
     @State private var dense = false
 
@@ -14,69 +14,27 @@ struct LineMarkerGallerySection: View {
                 .foregroundStyle(OBCTheme.secondary)
                 .tint(OBCTheme.tint)
 
-            TripEditorSample(dense: dense)
+            TrimEditorSample(line: dense ? SampleLine.alpsDense : SampleLine.alps)
                 .id(dense)
-            OBCEyebrow("Ride trim")
-            TrimEditorSample()
-        }
-    }
-}
-
-private struct TripEditorSample: View {
-    @State private var model: LineMarkerEditorModel
-
-    init(dense: Bool) {
-        let line = dense ? SampleLine.alpsDense : SampleLine.alps
-        _model = State(initialValue: LineMarkerEditorModel(
-            line: line,
-            markers: [
-                LineMarker(id: 1, distance: line.length * 0.36, name: "Day 1 end"),
-                LineMarker(id: 2, distance: line.length * 0.68, name: "Day 2 end"),
-            ],
-            segmentColors: (0..<3).map { OBCTheme.stageColor(index: $0) }
-        )!)
-        model.stops = GalleryStops.nearby.map { stop in
-            let projection = line.projection(of: stop.coordinate, near: 0, window: line.length)
-            return PlacedStop(stop: stop, distance: projection.distance, offset: projection.error)
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            LineMarkerEditor(model: model)
-            let bounds = [0] + model.markers.map(\.distance) + [model.line.length]
-            ForEach(0..<3, id: \.self) { day in
-                let from = bounds[day], to = bounds[day + 1]
-                HStack(spacing: 8) {
-                    Circle().fill(model.segmentColors[day]).frame(width: 9, height: 9)
-                    Text("Day \(day + 1)")
-                        .font(.system(.subheadline, weight: .semibold))
-                        .foregroundStyle(OBCTheme.ink)
-                    Spacer()
-                    Text(
-                        OBCFormat.distance(meters: to - from) + " · "
-                            + OBCFormat.climb(meters: model.line.climb(from: from, to: to)) + " · "
-                            + OBCFormat.climbValue(meters: model.line.descent(from: from, to: to)) + " m ↓"
-                    )
-                    .font(.system(.caption).monospacedDigit())
-                    .foregroundStyle(OBCTheme.secondary)
-                }
-            }
         }
     }
 }
 
 private struct TrimEditorSample: View {
-    @State private var model = LineMarkerEditorModel(
-        line: SampleLine.alps,
-        markers: [
-            LineMarker(id: 1, distance: 2_500, name: "Trim start"),
-            LineMarker(id: 2, distance: SampleLine.alps.length - 4_000, name: "Trim end"),
-        ],
-        segmentColors: [OBCTheme.secondary.opacity(0.55), OBCTheme.ride, OBCTheme.secondary.opacity(0.55)],
-        dashedSegments: [0, 2],
-        cased: false
-    )!
+    @State private var model: LineMarkerEditorModel
+
+    init(line: MeasuredLine) {
+        _model = State(initialValue: LineMarkerEditorModel(
+            line: line,
+            markers: [
+                LineMarker(id: 1, distance: 2_500, name: "Trim start"),
+                LineMarker(id: 2, distance: line.length - 4_000, name: "Trim end"),
+            ],
+            segmentColors: [OBCTheme.secondary.opacity(0.55), OBCTheme.ride, OBCTheme.secondary.opacity(0.55)],
+            dashedSegments: [0, 2],
+            cased: false
+        )!)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {

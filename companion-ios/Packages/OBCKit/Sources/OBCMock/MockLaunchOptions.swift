@@ -47,8 +47,6 @@ public struct MockLaunchOptions: Equatable, Sendable {
     public var photoAccess: PhotoAccess?
     /// The mock library's last photo is gone after it is added.
     public var photoGone: Bool
-    /// Every request to the mock router fails this way. `nil` routes.
-    public var routerFailure: LegRouteFailure?
 
     public init(
         scenario: Scenario? = nil,
@@ -67,8 +65,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
         deviceRoutesFull: Bool = false,
         oldFirmware: Bool = false,
         photoAccess: PhotoAccess? = nil,
-        photoGone: Bool = false,
-        routerFailure: LegRouteFailure? = nil
+        photoGone: Bool = false
     ) {
         self.scenario = scenario
         self.fixtures = fixtures
@@ -87,7 +84,6 @@ public struct MockLaunchOptions: Equatable, Sendable {
         self.oldFirmware = oldFirmware
         self.photoAccess = photoAccess
         self.photoGone = photoGone
-        self.routerFailure = routerFailure
     }
 
     /// Parse process launch arguments (`-OBCKey value` pairs, flag args) with environment
@@ -166,14 +162,6 @@ public struct MockLaunchOptions: Equatable, Sendable {
         }
         let photoGone = arguments.contains("-OBCPhotoGone")
             || environment["OBC_PHOTO_GONE"] == "1"
-        let routerFailure: LegRouteFailure? = switch value("OBCRouter", env: "OBC_ROUTER") {
-        case "noRoad": .noRoad
-        case "offline": .noConnection
-        case "mapData": .mapData
-        case "noMap": .noMap
-        default: nil
-        }
-
         return MockLaunchOptions(
             scenario: scenario,
             fixtures: fixtures,
@@ -191,8 +179,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
             deviceRoutesFull: deviceRoutesFull,
             oldFirmware: oldFirmware,
             photoAccess: photoAccess,
-            photoGone: photoGone,
-            routerFailure: routerFailure)
+            photoGone: photoGone)
     }
 
     public func makeControl() -> MockControl {

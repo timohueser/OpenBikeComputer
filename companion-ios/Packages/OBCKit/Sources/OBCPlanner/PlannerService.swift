@@ -493,20 +493,3 @@ public actor PlannerService: PlannerDataSource {
         catch { throw PlannerFailure.unavailable }
     }
 }
-
-public struct OnlineLegRouter: LegRouter {
-    private let service: any RoutePlanning
-    public init(service: any RoutePlanning = PlannerService.shared) { self.service = service }
-    public func route(from: Coordinate, to: Coordinate, bikeType: BikeType,
-                      onDownload: @escaping @Sendable () -> Void) async throws -> [RoutePoint] {
-        do {
-            let release = try await service.release()
-            return try await service.route(points: [from, to], turnarounds: [], activity: RouteActivity(bikeType), preference: .balanced, release: release).points
-        } catch is CancellationError { throw CancellationError() }
-        catch PlannerFailure.noRoad { throw LegRouteFailure.noRoad }
-        catch PlannerFailure.outsideRegion { throw LegRouteFailure.noMap }
-        catch PlannerFailure.unavailable { throw LegRouteFailure.noConnection }
-        catch PlannerFailure.offlineUnavailable { throw LegRouteFailure.noConnection }
-        catch { throw LegRouteFailure.mapData }
-    }
-}

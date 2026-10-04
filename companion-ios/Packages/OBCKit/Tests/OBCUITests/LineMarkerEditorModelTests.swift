@@ -4,8 +4,7 @@ import OBCDomain
 @testable import OBCUI
 
 /// The drag rules behind the marker control: markers never cross, a map move projects
-/// within its window, the profile shows the stretch the map shows, VoiceOver steps are whole
-/// moves, and every move is reported once.
+/// within its window, VoiceOver steps are whole moves, and every move is reported once.
 @MainActor
 struct LineMarkerEditorModelTests {
     /// Latitude `meters` north of 47° N.
@@ -104,23 +103,6 @@ struct LineMarkerEditorModelTests {
     }
 
     @Test
-    func markersAndTheLineAreReplacedInOneCall() {
-        var events: [LineMarkerEvent] = []
-        let model = model { events.append($0) }
-        model.begin(1)
-        model.setMarkers([LineMarker(id: 7, distance: 9_000, name: "Day 1 end")], segmentColors: [.red, .blue])
-        #expect(model.activeID == nil, "a replacement ends the drag first")
-        #expect(events.last == .ended(1, distance: 3_000))
-        #expect(model.markers.map(\.id) == [7])
-
-        let shorter = MeasuredLine(coordinates: [point(0, 0), point(0, 4_000)], elevations: [0, 0])
-        model.setLine(shorter, markers: [LineMarker(id: 7, distance: 9_000, name: "Day 1 end")], segmentColors: [.red, .blue])
-        #expect(model.lineVersion == 1)
-        #expect(abs(model.markers[0].distance - model.line.length) < 1e-9, "held inside the new line")
-        #expect(model.profile.count == 2)
-    }
-
-    @Test
     func aLineWithoutASegmentIsRefused() {
         let dot = MeasuredLine(coordinates: [point(0, 0)])
         #expect(LineMarkerEditorModel(line: dot, markers: [], segmentColors: [.red]) == nil)
@@ -129,11 +111,11 @@ struct LineMarkerEditorModelTests {
 
     @Test
     func coincidentHandlesGoToTheOneThatCanMove() {
-        let model = model()
-        model.setMarkers(
-            [LineMarker(id: 1, distance: 9_999.99, name: "A"), LineMarker(id: 2, distance: 9_999.99, name: "B")],
+        let model = LineMarkerEditorModel(
+            line: model().line,
+            markers: [LineMarker(id: 1, distance: 9_999.99, name: "A"), LineMarker(id: 2, distance: 9_999.99, name: "B")],
             segmentColors: [.red, .green, .blue]
-        )
+        )!
         #expect(model.grab(among: [1, 2], forward: false) == 1, "backward, the first is free")
         #expect(model.grab(among: [1, 2], forward: true) == 2)
         model.begin(1)
@@ -182,39 +164,11 @@ struct LineMarkerEditorModelTests {
         #expect(LineMarkerEditorModel.mapWindow(travelMeters: 5_000) == 2_000)
     }
 
-    /// From the first metre in view to the last, unless the hidden part between the pieces is
-    /// longer than the pieces: then only the piece nearest the map centre.
-    @Test
-    func theProfileShowsTheStretchInView() {
-        // A snaking route leaves the view twice for short bends: one stretch.
-        #expect(LineMarkerEditorModel.window(visible: [1_000...3_000, 3_500...5_000, 5_400...8_000], centre: 4_000)
-            == 1_000...8_000)
-        // A 40 km loop with both ends in view: 4 km shown, 36 km hidden.
-        let ends = [0.0...2_000, 38_000.0...40_000]
-        #expect(LineMarkerEditorModel.window(visible: ends, centre: 39_000) == 38_000...40_000)
-        #expect(LineMarkerEditorModel.window(visible: ends, centre: 2_500) == 0...2_000, "the nearer piece")
-        #expect(LineMarkerEditorModel.window(visible: [], centre: 0) == nil, "no line in view keeps the window")
-    }
-
-    @Test
-    func aDragStaysInTheStretchInViewAndTheWindowHoldsUnderTheFinger() {
-        let model = model()
-        model.showVisible([2_000...5_000], centre: 3_500)
-        #expect(model.window == 2_000...5_000)
-        model.begin(1)
-        model.move(1, to: 5_500)
-        #expect(model.markers[0].distance == 5_000, "held at the edge of the stretch in view")
-        model.showVisible([0...model.line.length], centre: 5_000)
-        #expect(model.window == 2_000...5_000, "the window holds still under the finger")
-        model.end()
-        #expect(model.window == 0...model.line.length, "the map's stretch applies on release")
-    }
-
     /// A short window is sampled afresh, so its curve keeps its shape.
     @Test
     func aWindowIsSampledAcrossItsOwnStretch() {
         let model = model()
-        model.showVisible([5_000...6_000], centre: 5_500)
+        model.setWindow(5_000...6_000)
         #expect(model.profile.first?.distance == 5_000)
         #expect(model.profile.last?.distance == 6_000)
         #expect(model.profile.count == 11, "one sample per vertex, up to the cap")
