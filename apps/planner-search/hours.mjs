@@ -2,9 +2,9 @@ import OpeningHours from 'opening_hours';
 import {calendarDate} from './calendar-date.mjs';
 
 const weekdays = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-// The library selects public holidays by country and state.
+// The library selects holidays by country and state, and reads the position for sun times only as strings.
 const schedule = (place) => new OpeningHours(place.opening_hours, {
-  lat: place.lat, lon: place.lon,
+  lat: String(place.lat), lon: String(place.lon),
   address: { country_code: place.country, state: place.region },
 });
 
@@ -71,10 +71,12 @@ export function openingHours(timeZone) {
   const Regional = calendarDate(timeZone);
   // The evaluator and its library read local fields through the global Date. Evaluation is
   // synchronous, so the regional constructor replaces the global one only during a call.
+  // The library also logs each holiday gap, such as PH in Liechtenstein; the result is unknown.
   const regional = (evaluate) => (...args) => {
-    const host = globalThis.Date;
+    const host = globalThis.Date, log = console.error;
     globalThis.Date = Regional;
-    try { return evaluate(...args); } finally { globalThis.Date = host; }
+    console.error = () => {};
+    try { return evaluate(...args); } finally { globalThis.Date = host; console.error = log; }
   };
   return { timeZone: Regional.timeZone, openingState: regional(openingState), currentOpening: regional(currentOpening) };
 }

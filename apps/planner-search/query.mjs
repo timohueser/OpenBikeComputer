@@ -1,10 +1,9 @@
 import { simpleRequest, search, cuisineOf } from './web/engine.mjs';
-import { currentOpening } from './hours.mjs';
 import { resolve } from './resolver.mjs';
 import { validateRequest, RequestError } from './validation.mjs';
 import { localQuery } from './local-query.mjs';
 
-export async function answerQuery(db, input, parser, hours = {currentOpening}) {
+export async function answerQuery(db, input, parser, hours) {
   if (input.source) {
     const now = input.now === undefined ? Date.now() : Date.parse(input.now);
     const results = db.all('SELECT p.* FROM places p WHERE p.source = ? LIMIT 1', [input.source], {bounds: input.view});

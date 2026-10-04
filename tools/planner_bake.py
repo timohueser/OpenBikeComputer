@@ -140,8 +140,13 @@ def build_overlays(stage, routing):
     maps.overlays_archive(routing / "overlays.sqlite", stage / "overlays.pmtiles")
 
 
+def layer_options(config, name):
+    """The sunlight index evaluates local clock times in the region's time zone."""
+    return {**config[name], "time_zone": config["time_zone"]} if name == "sun" else config[name]
+
+
 def build_layer(stage, config, name, terrain=None):
-    options = [item for key, value in config[name].items() for item in (f"--{key.replace('_', '-')}", str(value))]
+    options = [item for key, value in layer_options(config, name).items() for item in (f"--{key.replace('_', '-')}", str(value))]
     maps.run("uv", "run", "--with-requirements", maps.ROOT / f"tools/requirements-planner-{name}.txt",
              "python", "-m", f"tools.planner_{name}", config["region"], "--bounds", ",".join(map(str, config["bounds"])),
              *options, *(["--terrain", terrain / "terrain.pmtiles"] if name == "sun" else []), "--output", stage / f"{name}.pmtiles", cwd=maps.ROOT)
@@ -199,7 +204,7 @@ def specifications(config, prepared=None):
         if name in config:
             paths = [maps.ROOT / f"tools/planner_{name}.py", maps.ROOT / f"tools/requirements-planner-{name}.txt"]
             if name == "sun": paths.extend(maps.ROOT / path for path in ("tools/planner_sun_horizons.py", "tools/planner_map_archive.py"))
-            add(name, build_layer, {}, config[name], dependencies=["terrain"] if name == "sun" else [], paths=paths)
+            add(name, build_layer, {}, layer_options(config, name), dependencies=["terrain"] if name == "sun" else [], paths=paths)
     return result
 
 

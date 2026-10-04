@@ -165,6 +165,7 @@ class ComponentTests(unittest.TestCase):
                 bake.build_layer(stage, config, "sun", terrain)
             command = run.call_args.args
             self.assertEqual(command[command.index("--terrain") + 1], terrain / "terrain.pmtiles")
+            self.assertEqual(command[command.index("--time-zone") + 1], config["time_zone"])
 
     def test_receipts_are_verified_atomic_and_reused(self):
         with tempfile.TemporaryDirectory() as temporary:

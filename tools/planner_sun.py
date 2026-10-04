@@ -129,7 +129,7 @@ def main():
     parser.add_argument("region")
     parser.add_argument("--terrain", type=Path, required=True)
     parser.add_argument("--bounds", required=True)
-    parser.add_argument("--timezone", default="Europe/Berlin")
+    parser.add_argument("--time-zone", required=True)
     parser.add_argument("--distance-m", type=int, default=30000)
     parser.add_argument("--horizon-samples", type=int, choices=(32, 64), default=32)
     parser.add_argument("--horizon-directions", type=int, choices=(36, 72), default=72)
@@ -138,8 +138,8 @@ def main():
     bounds = list(map(float, args.bounds.split(",")))
     if len(bounds) != 4 or not all(math.isfinite(value) for value in bounds) or not (-180 <= bounds[0] < bounds[2] <= 180 and -85 < bounds[1] < bounds[3] < 85) or not 0 < args.distance_m <= 30000:
         parser.error("Provide four bounds and a search distance up to 30000 metres")
-    ZoneInfo(args.timezone)
-    bake(args.terrain, args.output, bounds, args.timezone, args.distance_m, args.horizon_samples, args.horizon_directions)
+    ZoneInfo(args.time_zone)
+    bake(args.terrain, args.output, bounds, args.time_zone, args.distance_m, args.horizon_samples, args.horizon_directions)
 
 
 if __name__ == "__main__":

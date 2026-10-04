@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {database} from './database.mjs';
 import {resolve,findPlaces,resolvePoint} from '../resolver.mjs';
 import {lengths,at,alongRange} from '../web/geography.mjs';
-import {openingState} from '../hours.mjs';
+import {openingHours} from '../hours.mjs';
 import {validateInput} from '../validation.mjs';
 const {db,conn}=database();
 conn.exec("UPDATE place_records SET opening_hours='Mo-Sa 08:00-18:00; Su 08:00-12:00' WHERE source='n1'");
@@ -30,11 +30,12 @@ test('an empty viewport widens visibly, an explicit interval does not',()=>{
   assert.equal(explicit.results.length,0);assert.doesNotMatch(explicit.note,/widened/);
 });
 test('opening filters exclude unknown tags and require a dated trip for day filters',()=>{
-  const out=findPlaces(db,{type:'places',what:['bakery'],open:{weekday:'sun'}},context);
+  const {openingState}=openingHours('Europe/Berlin'), opening={...context,openingState};
+  const out=findPlaces(db,{type:'places',what:['bakery'],open:{weekday:'sun'}},opening);
   assert.deepEqual(out.results.map(p=>p.source),['n1']);assert.match(out.note,/unknown opening/);
-  assert.throws(()=>findPlaces(db,{type:'places',what:['bakery'],open:{day:1}},context),/start date/);
-  assert.equal(openingState({opening_hours:'Mo-Su 08:00-18:00; PH off',lat:48,lon:8,region:'Baden-Württemberg'},{weekday:'sun'},{}),'unknown');
-  assert.equal(openingState({opening_hours:'24/7',lat:48,lon:8},{now:true},{now:'2026-09-28T06:00:00Z'}),'open');
+  assert.throws(()=>findPlaces(db,{type:'places',what:['bakery'],open:{day:1}},opening),/start date/);
+  assert.equal(openingState({opening_hours:'Mo-Su 08:00-18:00; PH off',lat:48,lon:8,region:'Baden-Württemberg',country:'de'},{weekday:'sun'},{}),'unknown');
+  assert.equal(openingState({opening_hours:'24/7',lat:48,lon:8,country:'de'},{now:true},{now:'2026-09-28T06:00:00Z'}),'open');
 });
 test('route and plan mutations return reviewable commands without changing context',()=>{
   const before=JSON.stringify(context);

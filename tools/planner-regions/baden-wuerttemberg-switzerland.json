@@ -129,7 +129,6 @@
     ]
   },
   "sun": {
-    "timezone": "Europe/Berlin",
     "distance_m": 30000,
     "horizon_samples": 32,
     "horizon_directions": 72

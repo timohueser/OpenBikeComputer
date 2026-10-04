@@ -22,7 +22,6 @@ import {
   crossesView,
   kmQuantity,
 } from './web/geography.mjs';
-import { openingState } from './hours.mjs';
 import { routeResults } from './web/route-results.mjs';
 
 const groups = {
@@ -332,7 +331,7 @@ export function findPlaces(db, request, context, { all = false } = {}) {
       )
         return [];
       if (request.cuisine && !servesCuisine(p, request.cuisine)) return [];
-      const opening = (context.openingState || openingState)(p, request.open, context);
+      const opening = request.open ? context.openingState(p, request.open, context) : null;
       if (opening === 'unknown') unknown++;
       if (opening && opening !== 'open') return [];
       return [

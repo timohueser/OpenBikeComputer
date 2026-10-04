@@ -114,7 +114,7 @@ def seal(data, region, device_catalog, provenance):
                 files[path.relative_to(data).as_posix()] = {"bytes": path.stat().st_size, "sha256": sources.digest(path)}
     for database in databases:
         files[database.relative_to(data).as_posix()] = {"bytes": database.stat().st_size, "sha256": sources.digest(database)}
-    document = {"format": 1, "region": region, "bounds": routing["bounds"], "time_zone": metadata["time_zone"], "osm_sha256": osm,
+    document = {"format": 1, "region": region, "bounds": routing["bounds"], "osm_sha256": osm,
                 "routing_package": sources.digest(data / "routing/manifest.json"), "profiles": sorted(routing["metrics"]),
                 "attribution": routing["attribution"], "terrain_attribution": map_manifest["terrain_attribution"],
                 "terrain_bounds": map_manifest["terrain_bounds"], "sources": provenance,

@@ -2,6 +2,10 @@
 from records import category, names, values
 from storage import create, finish
 
+# opening_hours selects cantonal holidays by the German canton name. Photon's default name can be
+# French, Italian or multilingual, and the German OSM name differs for one canton.
+CANTONS = {'St. Gallen': 'Sankt Gallen'}
+
 
 class Writer:
     def __init__(self, name, output, component='all'):
@@ -36,10 +40,13 @@ class Writer:
         a = p.get('address', {})
         ns = names(p.get('name', {}))
         lon, lat = p['centroid']
+        country_code = p.get('country_code', '')
         region = a.get('state', '')
+        if country_code == 'ch':
+            region = a.get('state:de') or region
+            region = CANTONS.get(region, region)
         city = (values(a, ['city', 'town', 'village', 'county']) or [''])[0]
         postcode = p.get('postcode', '')
-        country_code = p.get('country_code', '')
         country = 'Deutschland Germany' if country_code == 'de' else ' '.join(values(a, ['country', 'country:en']))
         context = ' '.join(values(a, ['city', 'city:de', 'city:en', 'district', 'locality',
                                      'county', 'state', 'street']) + [postcode, country])

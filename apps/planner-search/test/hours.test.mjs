@@ -35,12 +35,22 @@ test('open-ended hours do not imply a known closing time or an open badge', () =
   assert.equal(current.closesAt, undefined);
 });
 
-test('each place uses its own country holidays in the region time zone', () => {
+test('each place uses its own country and state holidays in the region time zone', () => {
   const day = {openDate:'2026-08-01'}, tag = 'Mo-Su 08:00-18:00; PH off';
   const graubuenden = {lat:46.85, lon:9.53, region:'Graubünden', country:'ch', opening_hours:tag};
   assert.equal(openingHours('Europe/Zurich').openingState(graubuenden, {}, day), 'closed');
   assert.equal(berlin.openingState({...place, opening_hours:tag}, {}, day), 'open');
+  const corpusChristi = {openDate:'2026-06-04'};
+  assert.equal(berlin.openingState({...place, opening_hours:tag}, {}, corpusChristi), 'closed');
+  assert.equal(berlin.openingState({...place, region:'Berlin', lat:52.52, lon:13.4, opening_hours:tag}, {}, corpusChristi), 'open');
   assert.throws(()=>openingHours(), /time zone/);
+});
+
+test('the region time zone decides the local day', () => {
+  const boulder = {lat:40.01, lon:-105.27, region:'Colorado', country:'us', opening_hours:'Mo-Su 00:00-24:00; PH off'};
+  const now = {now:'2026-07-05T03:00:00Z'};
+  assert.equal(openingHours('America/Denver').openingState(boulder, {now:true}, now), 'closed');
+  assert.equal(berlin.openingState(boulder, {now:true}, now), 'open');
 });
 
 test('regional hours match native Berlin results on hosts in other time zones', () => {
