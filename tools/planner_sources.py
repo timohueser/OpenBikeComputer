@@ -54,7 +54,7 @@ def basemap(osm, output, bounds, cache, auxiliary=None):
         maps.run("mvn", "-q", "package", "-DskipTests", cwd=source / "tiles")
     maps.run("java", "-Xmx6g", "-jar", jar, "--download", f"--osm-path={osm}",
              f"--output={output}", "--bounds=" + ",".join(map(str, bounds)),
-             "--maxzoom=14", "--threads=2", cwd=source / "tiles")
+             "--maxzoom=14", f"--threads={os.cpu_count()}", cwd=source / "tiles")
     return {"protomaps_commit": PROTOMAPS, "planetiler": "0.10.2",
             "auxiliary": {p.name: {"sha256": digest(p), "bytes": p.stat().st_size}
                           for p in sorted(directory.iterdir()) if p.is_file()}}
@@ -76,9 +76,12 @@ def search_dump(osm, output, cache, port=5434):
         socket.mkdir()
         maps.run(pg / "initdb", "-D", database, "--auth-local=trust", "--auth-host=trust",
                  "--encoding=UTF8", "--locale=C.UTF-8")
+        # The database is deleted after the export, so the import gives up crash safety for speed.
+        settings = ("shared_buffers=1GB maintenance_work_mem=1GB work_mem=50MB fsync=off full_page_writes=off "
+                    "synchronous_commit=off wal_level=minimal max_wal_senders=0")
         # On macOS, PostgreSQL refuses to start without a valid LC_ALL.
         maps.run(pg / "pg_ctl", "-D", database, "-l", work / "postgres.log", "-o",
-                 f"-p {port} -k {socket} -h 127.0.0.1 -c shared_buffers=256MB -c maintenance_work_mem=512MB", "start",
+                 f"-p {port} -k {socket} -h 127.0.0.1 " + " ".join(f"-c {item}" for item in settings.split()), "start",
                  env={**os.environ, "LC_ALL": "C.UTF-8"})
         try:
             maps.run(pg / "createuser", "-h", "127.0.0.1", "-p", port, "www-data")
@@ -86,13 +89,14 @@ def search_dump(osm, output, cache, port=5434):
                    f"pgsql:dbname=nominatim;host=127.0.0.1;port={port};user={getpass.getuser()}",
                    "NOMINATIM_IMPORT_STYLE": "extratags"}
             maps.run("nominatim", "import", "--project-dir", project, "--osm-file", osm,
-                     "--reverse-only", "--no-updates", "--no-partitions", "--osm2pgsql-cache", "650", "-j", "2", env=env)
+                     "--reverse-only", "--no-updates", "--no-partitions", "--osm2pgsql-cache", "650", "-j", str(os.cpu_count()), env=env)
             maps.run(pg / "psql", "-h", "127.0.0.1", "-p", port, "-d", "nominatim", "-c",
                      "CREATE INDEX placex_country_code_idx ON placex(country_code);")
             partial = output.with_suffix(".download")
             export = subprocess.Popen(["java", "-Xmx1g", "-jar", str(photon), "dump-nominatim-db",
                                        "-host", "127.0.0.1", "-port", str(port), "-user", getpass.getuser(),
                                        "-extra-tags", "ALL", "-full-geometries", "-export-file", "-"], stdout=subprocess.PIPE, start_new_session=True)
+            maps.RUNNING.add(export)
             try:
                 with export.stdout, partial.open("wb") as stream:
                     compressed = subprocess.run(["zstd", "-3", "-q"], stdin=export.stdout, stdout=stream)
@@ -100,8 +104,10 @@ def search_dump(osm, output, cache, port=5434):
                     raise ValueError("Nominatim export failed")
             finally:
                 if export.poll() is None: maps.stop_process(export)
+                maps.RUNNING.discard(export)
             partial.rename(output)
         finally:
-            maps.run(pg / "pg_ctl", "-D", database, "stop", "-m", "fast")
+            # Not through maps.run: a stopping bake stops those processes, and PostgreSQL must still stop.
+            subprocess.run([pg / "pg_ctl", "-D", database, "stop", "-m", "fast"], check=True)
     return {"nominatim": "5.3.2", "photon": "1.3.0", "photon_sha256": PHOTON_SHA,
             "dump_sha256": digest(output), "importance": "Nominatim default; no external Wikipedia ranks"}
