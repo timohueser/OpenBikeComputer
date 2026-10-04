@@ -56,7 +56,7 @@ through `planner_overlays_query`.
 | Directional rule | 14 |
 | Pushing section | 15 |
 
-A query has `bbox`, `zoom` from 6 to 22, `layers` from `cycling,hiking,access`
+A query has `bbox`, `zoom` from 6 to 22, `layers` from `cycling,hiking,mtb,access`
 and `mode` (`cycling` or `walking`). Bounds are at most 30 degrees wide and high.
 The answer is GeoJSON with the coverage bounds, the routing package ID and a
 `routes` dictionary. Geometry is simplified within half a map pixel. Dense

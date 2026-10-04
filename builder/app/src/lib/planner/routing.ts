@@ -36,6 +36,8 @@ export interface Edges {
     closures?: (RouteClosure[] | null)[];
     /** The SAC hiking grade of each edge: 0 (`strolling`) or 1 (T1) to 6 (T6). */
     sac_scale?: (number | null)[];
+    /** The MTB grade of each edge: 0 (S0) to 6 (S6). */
+    mtb_scale?: (number | null)[];
 }
 
 /** Appends the edges `from` to `to` of `source`, or null edges without a source, to `target`, which holds `length` edges.

@@ -11,7 +11,7 @@ import sqlite3
 
 from . import planner_mvt as mvt
 
-LAYERS = ("cycling", "hiking", "access", "routes")
+LAYERS = ("cycling", "hiking", "mtb", "access", "routes")
 # The basemap's deepest zoom. The planner draws deeper zooms from these tiles.
 MAX_ZOOM = 14
 # Tile units around each tile: line joins and caps at the edge draw without a seam.
@@ -132,7 +132,7 @@ def merge(lines):
 
 
 def derive(index, destination):
-    """Write one vector tile pyramid with the `cycling`, `hiking`, `access` and `routes` layers of the overlay index."""
+    """Write one vector tile pyramid with the `cycling`, `hiking`, `mtb`, `access` and `routes` layers of the overlay index."""
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import write
 

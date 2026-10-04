@@ -95,7 +95,10 @@ fn attributes(tags: &Tags, counts: &mut Counts) -> Option<Attributes> {
         "sand" | "mud" | "rock" | "stone" | "cobblestone" | "sett" => Surface::Rough,
         _ => Surface::Unknown,
     };
-    let difficulty = tag(tags, "mtb:scale").and_then(|v| v.parse::<u8>().ok()).filter(|v| *v <= 6).unwrap_or(255);
+    let difficulty = tag(tags, "mtb:scale")
+        .and_then(|v| v.trim_end_matches(['+', '-']).parse::<u8>().ok())
+        .filter(|v| *v <= 6)
+        .unwrap_or(255);
     let hiking_difficulty = match tag(tags, "sac_scale") {
         Some("strolling") => Some(0),
         Some("hiking") => Some(1),
@@ -913,6 +916,12 @@ mod tests {
             vec![],
         );
         assert!(profiles.iter().all(|p| !p.permits(&climbing.roads[0])));
+    }
+
+    #[test]
+    fn mtb_scale_with_a_sign_counts_as_its_digit() {
+        let graph = fixture(vec![way(10, &[1, 2], &[("highway", "path"), ("mtb:scale", "2+")])], &[1, 2], vec![]);
+        assert_eq!(graph.roads[0].mtb_scale(), Some(2));
     }
 
     #[test]
