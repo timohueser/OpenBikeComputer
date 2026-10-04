@@ -2,11 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cumulative, kilometres, orderedRoutePoints, riddenKm, routeCoordinates, tripDays, type Coordinate, type DrawnCoordinate } from './editor';
 import { profileAscent } from './profile-data';
 import { importedTrip, planOnRoads, readTracks } from './gpx-import';
+import { exportPlan, importPlan, newPlan } from './library';
 import { LegCache } from './route-legs';
 import { calculateLine, requestShape } from './routing';
 import { isTrip } from './trip-validation';
 
-const gpx = (line: DrawnCoordinate[], name?: string) => `<?xml version="1.0"?><gpx>${name ? `<trk><name>${name}</name>` : '<trk>'}<trkseg>${
+const gpx = (line: DrawnCoordinate[], name?: string, wpts = '') => `<?xml version="1.0"?><gpx>${wpts}${name ? `<trk><name>${name}</name>` : '<trk>'}<trkseg>${
     line.map(([lon, lat, ele]) => `<trkpt lat="${lat}" lon="${lon}">${ele === undefined ? '' : `<ele>${ele}</ele>`}</trkpt>`).join('')}</trkseg></trk></gpx>`;
 // Points every 0.001° of longitude, about 75 m at this latitude.
 const track = (from: Coordinate, count: number): Coordinate[] => Array.from({ length: count }, (_, i) => [from[0] + i * .001, from[1]]);
@@ -52,6 +53,17 @@ describe('GPX import', () => {
         expect(days[2].hours).toBeCloseTo(cumulative(third).at(-1)! / 15, 6);
     });
 
+    it('keeps file waypoints as markers that survive save and reload', () => {
+        const wpts = '<wpt lat="47.501" lon="7.61"><name>Spring &amp; bench</name><sym>Drinking Water</sym></wpt><wpt lat="47.499" lon="7.62"/><wpt lat="x" lon="7.6"/>';
+        const lines = readTracks([{ name: 'ride.gpx', text: gpx(track([7.6, 47.5], 50), undefined, wpts) }]);
+        expect(lines[0].name).toBe('ride');
+        const trip = importedTrip({}, lines);
+        expect(orderedRoutePoints(trip).map(p => [p.kind, p.leg])).toEqual([['start', undefined], ['finish', 'drawn']]);
+        const markers = [{ kind: 'marker', label: 'Spring & bench', coordinate: [7.61, 47.501] }, { kind: 'marker', label: 'Marker', coordinate: [7.62, 47.499] }];
+        expect(trip.points.filter(p => p.kind === 'marker')).toMatchObject(markers);
+        expect(importPlan(exportPlan(newPlan(trip, 'ride'))).trip.points.filter(p => p.kind === 'marker')).toMatchObject(markers);
+    });
+
     it('rejects more files than a trip has days', () => {
         const files = Array.from({ length: 15 }, (_, i) => ({ name: `${i}.gpx`, text: gpx(track([7.6, 47.5], 2)) }));
         expect(() => readTracks(files)).toThrow('A trip has at most 14 days. Import 14 files or fewer.');
@@ -62,7 +74,9 @@ describe('GPX import', () => {
             .mockResolvedValueOnce({ ok: true, json: async () => ({ points: [[7.6, 47.5], [7.62, 47.51], [7.65, 47.5]], turnarounds: [1] }) })
             .mockResolvedValueOnce({ ok: false, status: 503, json: async () => ({ code: 'busy', message: 'The routing service is busy.' }) });
         vi.stubGlobal('fetch', fetch);
-        const lines = readTracks([{ name: 'a.gpx', text: gpx(track([7.6, 47.5], 50)) }, { name: 'b.gpx', text: gpx(track([7.65, 47.5], 50)) }]);
+        const lines = readTracks([
+            { name: 'a.gpx', text: gpx(track([7.6, 47.5], 50), undefined, '<wpt lat="47.51" lon="7.62"><name>Hut</name></wpt>') },
+            { name: 'b.gpx', text: gpx(track([7.65, 47.5], 50), undefined, '<wpt lat="47.49" lon="7.67"><name>Cafe</name></wpt>') }]);
         const planned = await planOnRoads(lines, line => requestShape(line, 'touring'));
         expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ line: lines[0].line, profile: 'touring' });
         expect(planned.failed).toEqual(['b']);
@@ -70,5 +84,7 @@ describe('GPX import', () => {
         expect(isTrip(trip)).toBe(true);
         expect(orderedRoutePoints(trip).map(p => [p.kind, p.leg, p.turnaround])).toEqual([
             ['start', undefined, undefined], ['via', undefined, true], ['night', undefined, undefined], ['finish', 'drawn', undefined]]);
+        expect(trip.points.filter(p => p.kind === 'marker').map(p => p.label)).toEqual(['Hut', 'Cafe']);
+        expect(trip.routeOrder).toHaveLength(2);
     });
 });

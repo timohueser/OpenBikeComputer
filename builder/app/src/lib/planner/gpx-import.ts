@@ -1,11 +1,13 @@
 import { readGpx } from '../coverage/gpx';
-import { emptyTrip, kilometres, maxRidingDays, type Coordinate, type DrawnCoordinate, type RoutePoint, type Trip } from './editor';
+import { emptyTrip, kilometres, maxRidingDays, nearestProgress, type Coordinate, type DrawnCoordinate, type RoutePoint, type Trip } from './editor';
 import type { Shape } from './routing';
 
-/** One imported file: its name, its simplified line with the file's elevations and, when planned on roads, its shape. */
+/** One imported file: its name, its simplified line with the file's elevations, its waypoints and, when planned on roads,
+ * its shape. */
 export interface ImportedLine {
     name: string;
     line: DrawnCoordinate[];
+    waypoints: { label: string; coordinate: Coordinate }[];
     shape?: Shape;
 }
 
@@ -46,8 +48,9 @@ export function readTracks(files: { name: string; text: string }[]): ImportedLin
     if (files.length > maxRidingDays) throw new Error(`A trip has at most ${maxRidingDays} days. Import ${maxRidingDays} files or fewer.`);
     return files.map(file => {
         try {
-            const { name, points } = readGpx(file.text, file.name.replace(/\.gpx$/i, ''));
-            return { name, line: simplifyLine(points.map((p): DrawnCoordinate => p.ele === undefined ? [p.lon / 1e6, p.lat / 1e6] : [p.lon / 1e6, p.lat / 1e6, p.ele])) };
+            const { name, points, waypoints } = readGpx(file.text, file.name.replace(/\.gpx$/i, ''));
+            return { name, line: simplifyLine(points.map((p): DrawnCoordinate => p.ele === undefined ? [p.lon / 1e6, p.lat / 1e6] : [p.lon / 1e6, p.lat / 1e6, p.ele])),
+                waypoints: waypoints.map(w => ({ label: w.name ?? 'Marker', coordinate: [w.lon / 1e6, w.lat / 1e6] })) };
         } catch (error) {
             throw new Error(`${file.name}: ${(error as Error).message}`);
         }
@@ -69,7 +72,7 @@ export async function planOnRoads(lines: ImportedLine[], shape: (line: Coordinat
  * One file is a route; several are a trip with one day per file and a night at each day end. A kept line is one drawn
  * leg that repeats its ends, so their elevations stay; a day that continues from the previous day end also repeats that
  * end. A shaped line is routed through its shape points. A day that starts more than 200 m from the previous day end
- * starts with a transfer; a nearer day continues from that day end.
+ * starts with a transfer; a nearer day continues from that day end. The files' waypoints are markers, never route points.
  */
 export function importedTrip(base: Pick<Trip, 'bike' | 'preset'>, lines: ImportedLine[]): Trip {
     const points: RoutePoint[] = [];
@@ -95,7 +98,10 @@ export function importedTrip(base: Pick<Trip, 'bike' | 'preset'>, lines: Importe
         }
     });
     points.forEach((point, i) => point.progress = i / (points.length - 1));
+    const whole = lines.flatMap(({ line }) => line.map((c): Coordinate => [c[0], c[1]]));
+    const markers = lines.flatMap(({ waypoints }) => waypoints).map(({ label, coordinate }): RoutePoint =>
+        ({ id: crypto.randomUUID(), kind: 'marker', label, coordinate, progress: nearestProgress(whole, coordinate) }));
     const days = lines.length > 1 ? lines.length : undefined;
-    return { ...emptyTrip(days ? 'trip' : 'route'), bike: base.bike, preset: base.preset, points,
+    return { ...emptyTrip(days ? 'trip' : 'route'), bike: base.bike, preset: base.preset, points: [...points, ...markers],
         routeOrder: points.slice(1, -1).map(point => point.id), ...days ? { days, target: days } : {} };
 }

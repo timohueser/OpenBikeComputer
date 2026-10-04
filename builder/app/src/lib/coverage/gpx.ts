@@ -3,7 +3,7 @@
 // The corridor panel takes "a route" from two places — a `.gpx` upload and the routes
 // stored on a connected device — and both end as a named polyline in integer
 // microdegrees. This module is the upload half. The web planner reads the same files
-// with `readGpx`, which keeps every point.
+// with `readGpx`, which keeps every point and reads the `<wpt>`s.
 //
 // It is a **string scanner, not an XML parser**, and that is a decision rather than a
 // shortcut. The only facts a corridor needs are the `lat`/`lon` attribute pairs of the
@@ -21,6 +21,9 @@ import { M_PER_DEG } from "../catalog/corridor";
 
 /** One GPX point; `ele` is the `<ele>` height in metres, when the file has one. */
 export type GpxPoint = LatLon & { ele?: number };
+
+/** One `<wpt>` with its `<name>`, when it has one. */
+export type GpxWaypoint = LatLon & { name?: string };
 
 /** One route as the corridor panel lists it. */
 export interface GpxRoute {
@@ -56,22 +59,29 @@ function pointOf(tag: string): LatLon | null {
     return { lat: Math.round(latDeg * 1e6), lon: Math.round(lonDeg * 1e6) };
 }
 
-/** The first `<name>` inside the first `<trk>`/`<rte>`, else the file-level one. */
+const WPT = /<wpt\b([^>]*?)(?:\/>|>([\s\S]*?)<\/wpt\s*>)/g;
+
+/** The first non-empty `<name>` in `text`. GPX is XML, so the five predefined entities
+ *  are all that can appear un-escaped in a name. */
+function firstName(text: string): string | null {
+    const name = /<name>\s*([\s\S]*?)\s*<\/name>/.exec(text)?.[1].trim();
+    if (!name) return null;
+    return name
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/&amp;/g, "&");
+}
+
+/** The first `<name>` inside the first `<trk>`/`<rte>`, else the file-level one. A
+ *  waypoint's name never names the route. */
 function nameOf(text: string): string | null {
     const scoped = /<(?:trk|rte)\b[^>]*>([\s\S]*?)<\/(?:trk|rte)>/.exec(text)?.[1];
-    for (const within of scoped === undefined ? [text] : [scoped, text]) {
-        const name = /<name>\s*([\s\S]*?)\s*<\/name>/.exec(within);
-        if (name && name[1].trim()) {
-            // GPX is XML, so the five predefined entities are all that can
-            // appear un-escaped in a name.
-            return name[1]
-                .trim()
-                .replace(/&lt;/g, "<")
-                .replace(/&gt;/g, ">")
-                .replace(/&quot;/g, '"')
-                .replace(/&apos;/g, "'")
-                .replace(/&amp;/g, "&");
-        }
+    const file = text.replace(WPT, "");
+    for (const within of scoped === undefined ? [file] : [scoped, file]) {
+        const name = firstName(within);
+        if (name) return name;
     }
     return null;
 }
@@ -111,7 +121,7 @@ function decimate(points: LatLon[], max: number): LatLon[] {
  * @param fallbackName used when the file names nothing — the filename, usually.
  * @throws {GpxError} when no usable points survive.
  */
-export function readGpx(text: string, fallbackName: string): { name: string; points: GpxPoint[] } {
+export function readGpx(text: string, fallbackName: string): { name: string; points: GpxPoint[]; waypoints: GpxWaypoint[] } {
     const elements = [...text.matchAll(/<(trkpt|rtept)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/\1\s*>)/g)];
     const trk: GpxPoint[] = [];
     const rte: GpxPoint[] = [];
@@ -136,7 +146,12 @@ export function readGpx(text: string, fallbackName: string): { name: string; poi
                   : "the file has fewer than two points, which is not a route",
         );
     }
-    return { name: nameOf(text) ?? fallbackName, points };
+    // A waypoint with malformed coordinates is skipped; it never refuses the route.
+    const waypoints = [...text.matchAll(WPT)].flatMap(([, attributes, body]): GpxWaypoint[] => {
+        const p = pointOf(attributes);
+        return p ? [{ ...p, name: firstName(body ?? "") ?? undefined }] : [];
+    });
+    return { name: nameOf(text) ?? fallbackName, points, waypoints };
 }
 
 /** One GPX body → one corridor route, decimated to {@link MAX_ROUTE_POINTS}. */
