@@ -50,7 +50,6 @@ pub struct Road {
     /// MTB scale; 255 means that the source has no classification.
     pub difficulty: u8,
     pub hiking_difficulty: Option<u8>,
-    pub uncertain_access: bool,
     /// A bridge or tunnel uses endpoint-interpolated elevation.
     pub structure: bool,
     pub shape: Vec<Point>,
@@ -67,8 +66,10 @@ pub struct Profile {
     pub name: String,
     pub weighting: Weighting,
     pub walking: bool,
-    pub pushing: bool,
-    pub ferries: bool,
+    /// Moving time follows the mountain-bike pace curve.
+    pub mtb_pace: bool,
+    /// The cost discount per level of a signed cycle route, on a road the rider cycles.
+    pub route_bonus: f64,
     pub max_difficulty: u8,
 }
 
@@ -82,9 +83,7 @@ pub enum Weighting {
 pub enum RoadBike {
     Balanced,
     Shorter,
-    Smoother,
     LessClimbing,
-    Quieter,
 }
 
 impl Profile {
@@ -98,8 +97,8 @@ impl Profile {
                     road: [1.0, 1.15, 3.0, 1.2, 2.0, 8.0, 2.0],
                     climb: 10.0,
                 },
-                pushing: true,
-                ferries: true,
+                mtb_pace: false,
+                route_bonus: 0.1,
                 max_difficulty: 1,
             },
             Self {
@@ -110,16 +109,16 @@ impl Profile {
                     road: [1.1, 1.2, 4.0, 1.0, 1.7, 8.0, 2.0],
                     climb: 6.0,
                 },
-                pushing: true,
-                ferries: true,
+                mtb_pace: false,
+                route_bonus: 0.04,
                 max_difficulty: 1,
             },
             Self {
                 name: "road".into(),
                 walking: false,
                 weighting: Weighting::RoadBike(RoadBike::Balanced),
-                pushing: true,
-                ferries: true,
+                mtb_pace: false,
+                route_bonus: 0.04,
                 max_difficulty: 0,
             },
             Self {
@@ -130,8 +129,8 @@ impl Profile {
                     road: [1.4, 2.0, 8.0, 1.1, 1.0, 1.2, 2.0],
                     climb: 4.0,
                 },
-                pushing: true,
-                ferries: true,
+                mtb_pace: false,
+                route_bonus: 0.0,
                 // Up to `alpine_hiking` (T4), the route of marked alpine summits. T5 and T6 need climbing.
                 max_difficulty: 4,
             },
@@ -144,43 +143,37 @@ impl Profile {
             climb: 6.0,
         };
         mtb.max_difficulty = 3;
+        mtb.mtb_pace = true;
         profiles.push(mtb);
         let variants: Vec<_> = profiles
             .iter()
             .flat_map(|profile| {
-                ["shorter", "smoother", "less-climbing"].map(|variant| {
+                ["shorter", "less-climbing"].map(|variant| {
                     let mut p = profile.clone();
                     p.name = format!("{}/{variant}", profile.name);
+                    let shorter = variant == "shorter";
                     match &mut p.weighting {
                         Weighting::RoadBike(road) => {
-                            *road = match variant {
-                                "shorter" => RoadBike::Shorter,
-                                "smoother" => RoadBike::Smoother,
-                                _ => RoadBike::LessClimbing,
-                            }
+                            *road = if shorter { RoadBike::Shorter } else { RoadBike::LessClimbing }
                         }
-                        Weighting::Weighted { surface, road, climb } => match variant {
-                            "shorter" => {
+                        Weighting::Weighted { road, climb, .. } => {
+                            if shorter {
                                 *road = [1.0; 7];
                                 *climb = 0.0;
+                            } else {
+                                *climb *= 3.0;
                             }
-                            "smoother" => {
-                                for (weight, minimum) in surface.iter_mut().zip([2.0, 1.0, 1.4, 3.0, 6.0, 12.0]) {
-                                    *weight = weight.max(minimum);
-                                }
-                            }
-                            _ => *climb *= 3.0,
-                        },
+                        }
+                    }
+                    // The shortest route follows the plain costs; a signed route is no shortcut.
+                    if shorter {
+                        p.route_bonus = 0.0;
                     }
                     p
                 })
             })
             .collect();
         profiles.extend(variants);
-        let mut quieter = profiles[2].clone();
-        quieter.name = "road/quieter".into();
-        quieter.weighting = Weighting::RoadBike(RoadBike::Quieter);
-        profiles.push(quieter);
         profiles
     }
 
@@ -193,21 +186,40 @@ impl Profile {
                 return Err("Weights must be finite, positive and at most 1000; climb may be zero".into());
             }
         }
+        // Five route levels at the bonus must leave a positive factor.
+        if !self.route_bonus.is_finite() || !(0.0..0.2).contains(&self.route_bonus) {
+            return Err("A route bonus is a fraction below 0.2 per route level".into());
+        }
         Ok(())
     }
 
     pub fn permits(&self, road: &Road) -> bool {
-        let permitted = if self.walking {
-            road.access & FOOT != 0
-        } else {
-            road.access & BIKE != 0 || self.pushing && road.access & PUSH != 0
-        };
         let too_difficult = if self.walking {
             road.hiking_difficulty.is_some_and(|d| d > self.max_difficulty)
         } else {
             road.mtb_scale().is_some_and(|d| d > self.max_difficulty) || road.hiking_difficulty.is_some_and(|d| d > 2)
         };
-        permitted && (road.class != 6 || self.ferries) && !too_difficult
+        road.access & self.modes() != 0 && !too_difficult
+    }
+
+    /// The modes the profile moves in: on foot, or cycling and pushing.
+    pub fn modes(&self) -> u8 {
+        if self.walking {
+            FOOT
+        } else {
+            BIKE | PUSH
+        }
+    }
+
+    /// The mode the rider uses on a permitted road: a cyclist pushes where riding is not allowed.
+    pub fn mode(&self, road: &Road) -> u8 {
+        if self.walking {
+            FOOT
+        } else if road.access & BIKE != 0 {
+            BIKE
+        } else {
+            PUSH
+        }
     }
 }
 
@@ -237,17 +249,8 @@ impl Pace {
     }
 
     pub fn seconds(&self, road: &Road, profile: &Profile) -> f64 {
-        road.shape
-            .windows(2)
-            .map(|p| {
-                self.segment_seconds(
-                    p[0],
-                    p[1],
-                    profile.walking || road.access & BIKE == 0,
-                    profile.name.starts_with("mtb"),
-                )
-            })
-            .sum()
+        let walk = profile.mode(road) != BIKE;
+        road.shape.windows(2).map(|p| self.segment_seconds(p[0], p[1], walk, profile.mtb_pace)).sum()
     }
 
     pub fn segment_seconds(&self, from: Point, to: Point, walk: bool, mtb: bool) -> f64 {
@@ -275,7 +278,6 @@ pub struct Totals {
     pub seconds: f64,
     pub surface_m: [u64; 6],
     pub unknown_elevation_m: u64,
-    pub uncertain_access_m: u64,
     pub pushing_m: u64,
 }
 
@@ -289,10 +291,7 @@ impl Totals {
         if road.shape.iter().any(|p| p.elevation == NO_ELEVATION) {
             self.unknown_elevation_m += road.length_m as u64;
         }
-        if road.uncertain_access {
-            self.uncertain_access_m += road.length_m as u64;
-        }
-        if !profile.walking && road.access & BIKE == 0 {
+        if profile.mode(road) == PUSH {
             self.pushing_m += road.length_m as u64;
         }
     }

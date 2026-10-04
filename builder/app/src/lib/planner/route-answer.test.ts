@@ -16,7 +16,7 @@ describe('route answer', () => {
         route.elapsed.forEach((t, i) => expect(Math.abs(t - source.elapsed[i])).toBeLessThanOrEqual(0.5));
         expect(route.edges).toEqual(source.edges);
         expect(route.legs.map(leg => [leg.from_index, leg.to_index])).toEqual(source.legs.map((leg: RouteLeg) => [leg.from_index, leg.to_index]));
-        const expectTotals = (totals: RouteTotals, { seconds, descent_m: _descent, uncertain_access_m: _uncertain, ...exact }: RouteTotals & Record<string, number>) => {
+        const expectTotals = (totals: RouteTotals, { seconds, descent_m: _descent, ...exact }: RouteTotals & Record<string, number>) => {
             expect(totals).toMatchObject(exact);
             expect(Math.abs(totals.seconds - seconds)).toBeLessThanOrEqual(0.5);
         };

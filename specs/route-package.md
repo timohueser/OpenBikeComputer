@@ -30,7 +30,7 @@ bytes. Offsets and lengths must lie within `pages.bin`.
 
 A `Table` contains `len`, the number of entries, and `blocks`, the ordered
 digests of its index blocks. Each block stores up to 4096 entries. Page tables
-store `Vec<String>` digests. Metric `allowed` stores `Vec<u64>` access words.
+store `Vec<String>` digests. Metric `allowed` stores `Vec<u64>` snap words.
 Metric `costs` stores `Vec<u32>`. Manifest `costs` stores
 `Vec<cost::CostBasis>`. These value tables refer directly to their blocks.
 The last block contains the remaining entries. Consumers load bounded blocks.
@@ -43,15 +43,19 @@ always refers to the actual stored bytes.
 | Manifest reference | Decoded type | Ordering |
 | --- | --- | --- |
 | `geometry` | `geometry::Columns` | Directed road ID, 128 roads per page |
-| `closures` | `closures::Closures` | `(road, entry)` pairs by directed road ID |
+| `closures.sets` | `Vec<closures::Set>` | Distinct closure sets, by set index |
+| `closures.roads` | Column | One set index per directed road |
 | `spatial` directory | `BTreeMap<String, String>` | Fine cell key to road-list digest |
 | Spatial road list | `Vec<u32>` | Sorted road IDs |
 | Manifest `graph` | `base::Topology` direct tables | Directed road ID and ordered turns |
 | Metric `weights` | `base::Weights` direct columns | Directed road ID and ordered turns |
 
-The optional manifest `closures` is the digest of one object. It is absent when
-no road has a possible closure. An entry is `(modes, {kind, condition})`, as
-[the route API](route-api.md#edges) lists the kinds.
+The optional manifest `closures` is absent when no road has a possible closure.
+`sets` is the digest of one object with the distinct closure sets. `roads` is a
+column with one set index per directed road; the all-ones value means no
+possible closure, and a finite value is below the number of sets. A set entry is
+`(modes, {kind, condition})`, as [the route API](route-api.md#edges) lists the
+kinds. A set keeps the order of its source: access values before conditions.
 
 Cells span 10,000 microdegrees on each axis. Cell indices use floor division,
 including for negative coordinates. A road appears in all cells crossed by
@@ -75,28 +79,30 @@ Reconstruction preserves every coordinate and elevation bit.
 The package holds no source OSM objects. Source hashes and attribution identify
 the input. Terrain samples belong to the directed road geometry.
 
-Metric `allowed` holds one bit per directed road: road `i` uses bit `i % 64`
-of word `i / 64`. Its table length is `ceil(roads / 64)`. It agrees with endpoint
-cost eligibility and finite road costs. Queries use it to snap without reading
-geometry cost curves.
+Metric `allowed` holds one snap bit per directed road: road `i` uses bit `i % 64`
+of word `i / 64`. Its table length is `ceil(roads / 64)`. A set bit means that
+the metric has a finite cost for the road, and that the road lies in the
+metric's largest strongly connected component of road states or in one of at
+least `connectivity::MINIMUM_COMPONENT` states (`host/route-build`). Turn rules
+and node access shape these components. Queries snap only to roads with a set
+bit, so a leg without a path joins points that no legal route connects.
 
 The manifest contains one directed topology shared by all metrics. A state is the
 arrival at one directed road. Its state ID equals its road ID. An edge joins each
 pair of roads whose physical endpoints meet, including pairs forbidden by some
 or all metrics. Edges are unique and sorted by source road, then destination road.
 
-`first` and `reverse_first` are `Vec<u32>` tables of length `roads + 1`.
-They start at zero, end at the edge count, and never decrease. The outgoing edge
-range of road `i` is `first[i]..first[i+1]`. `head` stores each destination road.
-The incoming range uses `reverse_first`; `reverse_tail` stores each source road.
-`reverse_offsets` stores the local index within that source's outgoing range.
-Every reverse entry must identify the same forward edge.
+`first` is a `Vec<u32>` table of length `roads + 1`. It starts at zero, ends at
+the edge count, and never decreases. The outgoing edge range of road `i` is
+`first[i]..first[i+1]`. `head` stores each destination road. `offsets` is the
+narrowest width that holds every position within an outgoing range. A consumer
+builds the incoming edges from `first` and `head`, and stores the position of
+each incoming edge within its source's outgoing range at this width.
 
 A column has a `width` and a direct value table. Width is `U8`, `U16`, `U32`, or
 `U64`; its blocks store vectors of that exact unsigned type. The all-ones value
 means unavailable. Finite values cannot use this sentinel. The writer chooses
-the smallest width that holds every finite value without collision. Reverse
-edge offsets are always finite.
+the smallest width that holds every finite value without collision.
 
 Each metric stores two columns. `road_costs` has one exact total cost per road.
 `turns` has one exact entry penalty per edge in the shared topology order.
@@ -124,22 +130,25 @@ coverage or a phone performance target.
 
 ## Optional search bounds
 
-`landmarks` can be absent. When present, it contains `scale`, `junctions`,
-`mapping`, and `profiles`. `scale` and `junctions` are positive integers.
-`mapping` has one arrival junction ID per directed road. Each ID is less than
-`junctions`. `profiles` maps prepared metric IDs to one through 32 distance
-columns. Each column has `junctions` entries.
+`landmarks` can be absent. When present, it contains `junctions`, `mapping`,
+and `profiles`. `junctions` is a positive integer. `mapping` has one arrival
+junction ID per directed road. Each ID is less than `junctions`. `profiles` maps
+prepared metric IDs to a positive integer `scale` and `tables`, one through 32
+distance columns. Each column has `junctions` entries.
 
 These tables store `Vec<i64>` deltas. Values accumulate from zero within each
 4096-entry block. Mapping values fit `u32`. Distance values fit `u16`; 65535 is
 a capped distance, not an unavailable-cost sentinel.
 
-A distance column `d` must satisfy `scale * (d(u) - d(v)) <= w(u, v)` for every
-legal road-state transition, where `u` and `v` use their mapped arrival
-junctions and `w` is the exact transition cost. The builder computes reverse
-junction distances with each legal road cost divided by `scale` and rounded
-down. It omits turn penalties from these lower bounds. Distances saturate at
-65535. The exact search still uses all prepared road and turn costs.
+A distance column `d` of a profile must satisfy `scale * (d(u) - d(v)) <= w(u, v)`
+for every legal road-state transition, where `u` and `v` use their mapped
+arrival junctions and `w` is the exact transition cost. The builder computes
+reverse junction distances with each legal road cost divided by the profile's
+`scale` and rounded down. It omits turn penalties from these lower bounds. It
+chooses the scale from the farthest junction to the first landmark plus the
+farthest junction from it, so that no column of the connected component reaches
+the cap; a distance outside the component saturates at 65535. The exact search
+still uses all prepared road and turn costs.
 
 ## Grid selections
 
@@ -155,8 +164,11 @@ absent roads are removed. `snap` maps source spatial keys to page hashes.
 `archives` is the sorted unique list of pack IDs. Each pack is
 `packs/ID/{pages.idx,pages.bin}` and uses the object encoding above.
 
-A selection retains source geometry, weights, turn penalties, and landmark
-values. Runtime road IDs are compact indices in source road order. Queries
-use only transitions whose two roads are present. The source junction IDs
+A selection retains source geometry, weights, turn penalties, snap bits and
+landmark values. Runtime road IDs are compact indices in source road order.
+Queries use only transitions whose two roads are present. The snap bits come
+from the whole region, so a road near the edge of a selection can be snappable
+although the selection has no path to it; such a query returns `no_path`. The
+source junction IDs
 connect retained roads to the original landmark columns. The selection
 manifest hash is its package identity. Different source releases cannot mix.

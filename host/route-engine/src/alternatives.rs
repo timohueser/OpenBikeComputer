@@ -34,7 +34,7 @@ impl<P: RoutingData> Router<P> {
         routes: &mut Vec<Route>,
     ) -> Result<()> {
         let base = request.profile.split('/').next().unwrap_or(&request.profile);
-        for variant in ["shorter", "smoother", "less-climbing"] {
+        for variant in ["shorter", "less-climbing"] {
             let name = format!("{base}/{variant}");
             if name == request.profile || self.package.profile(&name).is_err() {
                 continue;
@@ -159,8 +159,7 @@ impl<P: RoutingData> Router<P> {
                     return Ok(false);
                 };
                 if let Some(before) = previous.filter(|&id| id != slice.road) {
-                    let arrival = self.package.endpoint(metric, before)?.arrival;
-                    let Some(entry) = endpoint.departures.iter().find(|d| d.state == arrival) else {
+                    let Some(entry) = endpoint.departures.iter().find(|d| d.state == before) else {
                         return Ok(false);
                     };
                     cost = cost.checked_add(entry.penalty).ok_or(Error::Limit)?;

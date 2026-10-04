@@ -108,16 +108,16 @@ pub fn prepare(input: &Package<impl Source>, bounds: [f64; 4], roads: &[u32]) ->
     }
     retain(&mut data.graph.first, &row_pages, &mut objects)?;
     retain(&mut data.graph.head, &arc_pages, &mut objects)?;
-    for table in [&mut data.graph.reverse_first, &mut data.graph.reverse_tail, &mut data.graph.reverse_offsets.values] {
-        table.retain(&BTreeSet::new())?;
-    }
     let geometry: BTreeSet<_> = roads.iter().map(|id| id / route_engine::package::ROADS_PER_PAGE).collect();
     retain(&mut data.geometry, &pages(geometry.iter().copied()), &mut objects)?;
     for page in geometry {
         objects.insert(input.key(&data.geometry, page)?);
     }
     objects.extend(data.costs.blocks.iter().cloned());
-    objects.extend(data.closures.iter().cloned());
+    if let Some(index) = &mut data.closures {
+        objects.insert(index.sets.clone());
+        retain(&mut index.roads.values, &road_pages, &mut objects)?;
+    }
     let allowed = pages(roads.iter().map(|id| id / 64));
     for metric in data.metrics.values_mut() {
         retain(&mut metric.allowed, &allowed, &mut objects)?;
@@ -130,7 +130,7 @@ pub fn prepare(input: &Package<impl Source>, bounds: [f64; 4], roads: &[u32]) ->
             route_engine::landmarks::read(input, &index.mapping, roads.iter().copied(), index.junctions - 1)?;
         let junction_pages = pages(junctions.into_iter());
         retain(&mut index.mapping, &road_pages, &mut objects)?;
-        for column in index.profiles.values_mut().flatten() {
+        for column in index.profiles.values_mut().flat_map(|columns| &mut columns.tables) {
             retain(column, &junction_pages, &mut objects)?;
         }
     }

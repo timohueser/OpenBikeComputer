@@ -44,7 +44,7 @@ public struct PlannerPreviewPlace: Identifiable, Equatable, Sendable {
 }
 
 public enum PlannerPreviewPreset: String, CaseIterable, Sendable {
-    case balanced, shorter, smoother, lessClimbing
+    case balanced, shorter, lessClimbing
     public var title: String { self == .lessClimbing ? "Less climbing" : rawValue.capitalized }
 }
 

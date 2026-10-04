@@ -1,10 +1,9 @@
-use route_engine::{landmarks, table::Table};
+use route_engine::landmarks;
 use std::{
     cmp::Reverse,
     collections::{BTreeMap, BinaryHeap, HashMap},
 };
 
-const SCALE: u32 = 8;
 const LANDMARKS: usize = 6;
 
 pub struct Junctions {
@@ -46,7 +45,6 @@ impl Junctions {
 
     pub fn index(&self, write: &mut impl FnMut(&[u8]) -> Result<String, String>) -> Result<landmarks::Index, String> {
         Ok(landmarks::Index {
-            scale: SCALE,
             junctions: self.first[0].len() as u32 - 1,
             mapping: landmarks::write(self.to.iter().copied(), write)?,
             profiles: BTreeMap::new(),
@@ -109,26 +107,29 @@ impl Junctions {
         largest
     }
 
-    fn distances(&self, costs: &[u64], source: u32) -> Vec<u16> {
-        let mut distances = vec![u16::MAX; self.first[0].len() - 1];
+    /// The cost from every junction to `source`, or with `forward` from `source` to every
+    /// junction, with each road cost divided by `scale` first. Rounding arc costs down preserves
+    /// feasibility; distance rounding alone does not.
+    fn distances(&self, costs: &[u64], source: u32, scale: u64, forward: bool) -> Vec<u64> {
+        let side = usize::from(!forward);
+        let mut distances = vec![u64::MAX; self.first[0].len() - 1];
         let mut queue = BinaryHeap::new();
         distances[source as usize] = 0;
-        queue.push(Reverse((0u32, source)));
+        queue.push(Reverse((0u64, source)));
         while let Some(Reverse((cost, node))) = queue.pop() {
-            if cost != distances[node as usize] as u32 {
+            if cost != distances[node as usize] {
                 continue;
             }
-            for arc in self.first[1][node as usize]..self.first[1][node as usize + 1] {
-                let road = self.roads[1][arc as usize] as usize;
+            for arc in self.first[side][node as usize]..self.first[side][node as usize + 1] {
+                let road = self.roads[side][arc as usize] as usize;
                 if costs[road] == u64::MAX {
                     continue;
                 }
-                let from = self.from[road] as usize;
-                // Rounding arc costs down preserves feasibility. Distance rounding alone does not.
-                let next = cost + (costs[road] / SCALE as u64).min(u16::MAX as u64) as u32;
-                if next < distances[from] as u32 {
-                    distances[from] = next as u16;
-                    queue.push(Reverse((next, from as u32)));
+                let beyond = if forward { self.to[road] } else { self.from[road] } as usize;
+                let next = cost + costs[road] / scale;
+                if next < distances[beyond] {
+                    distances[beyond] = next;
+                    queue.push(Reverse((next, beyond as u32)));
                 }
             }
         }
@@ -139,7 +140,7 @@ impl Junctions {
         &self,
         costs: &[u64],
         write: &mut impl FnMut(&[u8]) -> Result<String, String>,
-    ) -> Result<Vec<Table>, String> {
+    ) -> Result<landmarks::Columns, String> {
         let component = self.component(costs);
         let mut next = component
             .iter()
@@ -157,29 +158,38 @@ impl Junctions {
             })
             .or_else(|| component.first().copied())
             .ok_or("Landmark graph is empty")?;
-        let mut nearest = vec![u16::MAX; self.first[0].len() - 1];
-        let mut columns = Vec::new();
+        // A column that reaches the cap is flat there and guides nothing. The cost from any
+        // junction to any landmark is at most its cost to the first landmark plus the cost from
+        // there, so this scale keeps every column of the component below the cap.
+        let farthest =
+            |forward| self.distances(costs, next, 1, forward).into_iter().filter(|&d| d != u64::MAX).max().unwrap_or(0);
+        let span = farthest(false).saturating_add(farthest(true));
+        let scale = u32::try_from(span.div_ceil(u16::MAX as u64 - 1).max(1))
+            .map_err(|_| "Landmark distances exceed the scale range")?;
+        let mut nearest = vec![u64::MAX; self.first[0].len() - 1];
+        let mut tables = Vec::new();
         for _ in 0..LANDMARKS {
-            let distances = self.distances(costs, next);
+            let distances = self.distances(costs, next, scale as u64, false);
             for &node in &component {
                 nearest[node as usize] = nearest[node as usize].min(distances[node as usize]);
             }
             next = *component.iter().max_by_key(|&&node| nearest[node as usize]).unwrap();
-            columns.push(landmarks::write(distances.into_iter().map(u32::from), write)?);
+            tables.push(landmarks::write(distances.into_iter().map(|d| d.min(u16::MAX as u64) as u32), write)?);
             if nearest[next as usize] == 0 {
                 break;
             }
         }
-        Ok(columns)
+        Ok(landmarks::Columns { scale, tables })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use route_engine::table::Table;
 
     #[test]
-    fn compressed_bounds_stay_feasible_with_sparse_junction_ids_and_saturated_costs() {
+    fn compressed_bounds_stay_feasible_with_sparse_junction_ids_and_a_scale_for_the_region() {
         let endpoints = [(10, 20), (20, 30), (30, 10), (30, 40), (40, 30), (2_000_000_000, 2_000_000_001)];
         let graph = Junctions::new(endpoints.into_iter()).unwrap();
         let mut objects = BTreeMap::new();
@@ -212,24 +222,32 @@ mod tests {
                 .collect()
         };
         assert_eq!(read(&index.mapping), graph.to);
-        // A capped but connected junction remains a landmark candidate.
-        assert!(index.profiles["0"].iter().any(|table| read(table)[graph.to[3] as usize] == 0));
+        // The far junction of the costly roads is a landmark, and the scale keeps it below the cap.
+        assert!(index.profiles["0"].tables.iter().any(|table| read(table)[graph.to[3] as usize] == 0));
+        assert!(index.profiles["0"].scale > 1);
+        assert_eq!(index.profiles["1"].scale, 1);
         let mut saturated = false;
         for (i, costs) in metrics.iter().enumerate() {
-            for table in &index.profiles[&i.to_string()] {
+            let columns = &index.profiles[&i.to_string()];
+            for table in &columns.tables {
                 let distances = read(table);
                 assert_eq!(distances.len(), index.junctions as usize);
                 saturated |= distances.contains(&(u16::MAX as u32));
                 for (road, &cost) in costs.iter().enumerate() {
                     if cost != u64::MAX {
                         assert!(
-                            distances[graph.from[road] as usize] as u64 * SCALE as u64
-                                <= cost + distances[graph.to[road] as usize] as u64 * SCALE as u64
+                            distances[graph.from[road] as usize] as u64 * columns.scale as u64
+                                <= cost + distances[graph.to[road] as usize] as u64 * columns.scale as u64
                         );
                     }
                 }
             }
         }
+        // Only the junction outside the component stays at the cap.
         assert!(saturated);
+        for table in &index.profiles["0"].tables {
+            let distances = read(table);
+            assert!((0..4).all(|road| distances[graph.from[road] as usize] < u16::MAX as u32));
+        }
     }
 }

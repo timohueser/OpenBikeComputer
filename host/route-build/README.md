@@ -83,9 +83,7 @@ Rebuild packages after changing the profile code. Rider validation is required.
 | --- | --- |
 | `road` | BRouter fastbike road classes, turns and downhill costs |
 | `road/shorter` | Same road suitability; no terrain penalty; lower turn cost |
-| `road/smoother` | Higher costs for rough surfaces and poor smoothness |
 | `road/less-climbing` | Additional uphill cost above the slope threshold |
-| `road/quieter` | Road class, signed speed, cycle lanes and bicycle routes |
 
 Road weights derive from the MIT-licensed BRouter
 [fastbike](https://github.com/abrensch/brouter/blob/29898106b555e342ff3ade7ae3e9c1ae6644a43b/misc/profiles2/fastbike.brf),
@@ -105,12 +103,15 @@ profiles. Preserve [the licence notice](LICENSE.brouter) when redistributing the
 | Pushing | Allowed where permitted, with distance and entry costs; no cycling permission implied |
 
 Touring, gravel, MTB and hiking use separate surface and road-class tables.
-Each has shorter, smoother and less-climbing variants. Shorter ignores road
-class and climb preferences but keeps surface preferences. Smoother raises
-surface costs. Access rules apply to every variant.
+Each has shorter and less-climbing variants. Shorter ignores road class, climb
+preferences and signed cycle routes but keeps surface preferences. Access rules
+apply to every variant.
 
 The package includes geometry, snap cells, a shared directed graph, profile
-costs, and compressed landmark bounds. It is separate from map tiles. See [the package contract](../../specs/route-package.md).
+costs and snap bits, possible closures, and compressed landmark bounds. A
+profile's snap bits mark the roads in a large strongly connected part of its
+graph (`connectivity`); the build log counts the roads in fragments and prints
+the landmark scale. It is separate from map tiles. See [the package contract](../../specs/route-package.md).
 Preserve OpenStreetMap attribution and ODbL notices when distributing the data.
 
 ```sh

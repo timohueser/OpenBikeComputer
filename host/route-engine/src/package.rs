@@ -34,7 +34,9 @@ pub struct Metric {
     pub profile: Profile,
     pub weights: base::Weights,
     pub costs: Table,
-    /// One eligibility bit per directed road; snapping does not load cost pages.
+    /// One snap bit per directed road: the metric can use the road, and the road is in a large
+    /// strongly connected part of the metric's graph, so a snapped point never sits on a fragment
+    /// that no route leaves. Snapping reads these words, not the cost pages.
     pub allowed: Table,
 }
 
@@ -56,9 +58,9 @@ pub struct Manifest {
     pub costs: Table,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub landmarks: Option<crate::landmarks::Index>,
-    /// The `closures::Closures` object; absent when no road has a seasonal closure.
+    /// Absent when no road has a possible closure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub closures: Option<String>,
+    pub closures: Option<crate::closures::Index>,
 }
 
 impl Manifest {
@@ -69,6 +71,7 @@ impl Manifest {
             .into_iter()
             .chain([&self.geometry, &self.costs])
             .chain(self.landmarks.iter().flat_map(|index| index.tables()))
+            .chain(self.closures.iter().flat_map(|index| index.tables()))
             .chain(self.metrics.values().flat_map(|m| m.weights.tables().into_iter().chain([&m.allowed, &m.costs])))
     }
 
@@ -100,17 +103,17 @@ impl Manifest {
             && self.graph.valid(self.roads)
             && self.tables().all(Table::valid)
             && self.spatial.values().all(|key| table::valid_digest(key))
-            && self.closures.as_ref().is_none_or(|key| table::valid_digest(key))
+            && self.closures.as_ref().is_none_or(|index| index.valid(self.roads))
             && self.landmarks.as_ref().is_none_or(|index| {
                 index.valid(self.roads) && index.profiles.keys().all(|name| self.metrics.contains_key(name))
             })
     }
 }
 
+/// How a road joins the search. Its arrival state is its road id.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Endpoint {
     pub cost: Option<RoadCost>,
-    pub arrival: u32,
     /// States from which this road can legally be entered.
     pub departures: Vec<Departure>,
 }
@@ -282,16 +285,6 @@ impl<S: Source> Package<S> {
         storage::decode(&self.bytes(key)?).map_err(Error::InvalidData)
     }
 
-    /// The closures table in source road ids.
-    pub fn closures(&self) -> Result<crate::closures::Closures> {
-        let Some(key) = &self.manifest.closures else { return Ok(Default::default()) };
-        let closures: crate::closures::Closures = self.read(key)?;
-        if !closures.valid(self.manifest.roads) {
-            return Err(Error::InvalidData("Invalid seasonal closures".into()));
-        }
-        Ok(closures)
-    }
-
     pub fn metric(&self, name: &str) -> Result<&Metric> {
         self.manifest.metric(name)
     }
@@ -352,9 +345,6 @@ impl<S: Source> Package<S> {
         }
         let prepared = self.metric(metric)?;
         let cost_id = self.number(&prepared.costs, id)?;
-        if self.allowed(metric, id)? != (cost_id != 0) {
-            return Err(Error::InvalidData("Cost and snap eligibility differ".into()));
-        }
         if cost_id == 0 {
             return Ok(None);
         }

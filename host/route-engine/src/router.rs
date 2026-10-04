@@ -1,13 +1,13 @@
 use crate::{
     answer::Edges,
     data::RoutingData,
-    model::{Pace, Point, Road, Totals, BIKE, FOOT, NO_ELEVATION, PUSH},
+    model::{Pace, Point, Road, Totals, BIKE, NO_ELEVATION, PUSH},
     search::{Query, Seed, Workspace},
     snap::{self, Candidate, Policy},
     Error, Result,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -105,8 +105,6 @@ struct Choice {
 struct Work {
     queries: usize,
     witnesses: usize,
-    /// The leg that found no path: it joins this point and the next.
-    failed_leg: Option<usize>,
 }
 
 pub struct Router<P> {
@@ -115,8 +113,8 @@ pub struct Router<P> {
     metric: String,
     paths: VecDeque<(String, Choice)>,
     cached_roads: usize,
-    /// Snaps by point, profile, recovery and a band to `REACH_M`.
-    snaps: VecDeque<(i32, i32, String, bool, bool, snap::Candidates)>,
+    /// Snaps by point and profile.
+    snaps: VecDeque<(i32, i32, String, snap::Candidates)>,
 }
 
 impl<P: RoutingData> Router<P> {
@@ -140,6 +138,8 @@ impl<P: RoutingData> Router<P> {
         }
     }
 
+    /// Snapping attaches only to roads in a large connected part of the profile's graph, so a leg
+    /// without a path means the points are truly disconnected and the client plans around it.
     pub fn route(&mut self, request: &Request, control: &Control<'_>) -> Result<Route> {
         self.route_counted(request, control, &mut 0)
     }
@@ -153,36 +153,12 @@ impl<P: RoutingData> Router<P> {
         queries: &mut usize,
     ) -> Result<Route> {
         let mut work = Work { queries: *queries, ..Work::default() };
-        let mut result = self.route_with_policy(request, control, Policy::default(), None, &mut work);
-        let policy = Policy { ambiguity_m: 50.0, max_candidates: 16, ..Policy::default() };
-        let mut wide = vec![false; request.points.len()];
-        // Each retry searches the bands of the two points of the leg that found no path to `REACH_M`.
-        while let (Err(Error::NoPath), Some(leg)) = (&result, work.failed_leg) {
-            if wide[leg] && wide[leg + 1] {
-                break;
-            }
-            wide[leg] = true;
-            wide[leg + 1] = true;
-            work.failed_leg = None;
-            result = match self.route_with_policy(request, control, policy, Some(&wide), &mut work) {
-                // The client plans around a leg without a path; a limit in the retry must not hide it.
-                Err(Error::Limit) => Err(Error::NoPath),
-                result => result,
-            };
-        }
+        let result = self.search(request, control, &mut work);
         *queries = work.queries;
         result
     }
 
-    fn route_with_policy(
-        &mut self,
-        request: &Request,
-        control: &Control<'_>,
-        policy: Policy,
-        recovery: Option<&[bool]>,
-        work: &mut Work,
-    ) -> Result<Route> {
-        let nearest = recovery.is_some();
+    fn search(&mut self, request: &Request, control: &Control<'_>, work: &mut Work) -> Result<Route> {
         if !(2..=64).contains(&request.points.len()) {
             return Err(Error::InvalidRequest("Use 2 to 64 ordered points".into()));
         }
@@ -214,38 +190,24 @@ impl<P: RoutingData> Router<P> {
             }
             let point =
                 Point { lat: (lat * 1e6).round() as i32, lon: (lon * 1e6).round() as i32, elevation: NO_ELEVATION };
-            let wide = recovery.is_some_and(|wide| wide[index]);
-            let mut found = if let Some((.., found)) =
-                self.snaps.iter().find(|(lat, lon, metric, recovery, band, _)| {
-                    *lat == point.lat
-                        && *lon == point.lon
-                        && metric == &request.profile
-                        && *recovery == nearest
-                        && *band == wide
-                }) {
+            let mut found = if let Some((.., found)) = self
+                .snaps
+                .iter()
+                .find(|(lat, lon, metric, _)| *lat == point.lat && *lon == point.lon && metric == &request.profile)
+            {
                 found.clone()
             } else {
-                let mut found = self.package.snap(point, &request.profile, policy)?;
-                let on_road = found.nearest_distance_m.is_some_and(|d| d <= Policy::default().ambiguity_m);
-                // A wide band may pass over the nearest road of a point off the road: it can be a fragment that no route reaches.
-                if found.retained.is_empty() || wide && !on_road {
-                    let ambiguity_m = if wide { snap::REACH_M } else { policy.ambiguity_m };
-                    let far = Policy { radius_m: snap::REACH_M, ambiguity_m, ..policy };
+                let mut found = self.package.snap(point, &request.profile, Policy::default())?;
+                if found.retained.is_empty() {
+                    let far = Policy { radius_m: snap::REACH_M, ..Policy::default() };
                     found = self.package.snap(point, &request.profile, far)?;
                 }
                 if self.snaps.len() == 32 {
                     self.snaps.pop_front();
                 }
-                self.snaps.push_back((point.lat, point.lon, request.profile.clone(), nearest, wide, found.clone()));
+                self.snaps.push_back((point.lat, point.lon, request.profile.clone(), found.clone()));
                 found
             };
-            // Recovery must not move a point that is already on a road to a different road.
-            if nearest && found.nearest_distance_m.is_some_and(|d| d <= Policy::default().ambiguity_m) {
-                let cutoff = found.nearest_distance_m.unwrap() + Policy::default().ambiguity_m;
-                found.retained.retain(|c| c.snap_distance_m <= cutoff);
-                found.truncated = found.retained.len() > Policy::default().max_candidates;
-                found.retained.truncate(Policy::default().max_candidates);
-            }
             let pin = match index {
                 0 => request.start_position.as_ref(),
                 last if last + 1 == request.points.len() => request.end_position.as_ref(),
@@ -261,11 +223,10 @@ impl<P: RoutingData> Router<P> {
             candidates.push(found.retained);
         }
         // A candidate is shared by both adjacent legs. The dynamic program preserves its direction.
-        let snap_cost = |c: &Candidate| if nearest { (c.snap_distance_m * 1000.0).round() as u64 } else { 0 };
-        let mut costs: Vec<_> = candidates[0].iter().map(|c| (snap_cost(c), 0u64)).collect();
+        let mut costs = vec![0u64; candidates[0].len()];
         let mut stages = Vec::<Vec<Option<(usize, usize, Path)>>>::new();
         for (stage_index, pair) in candidates.windows(2).enumerate() {
-            let mut next = vec![(u64::MAX, u64::MAX); pair[1].len()];
+            let mut next = vec![u64::MAX; pair[1].len()];
             let mut paths = vec![None; pair[1].len()];
             let previous: Vec<_> = pair[0]
                 .iter()
@@ -286,64 +247,43 @@ impl<P: RoutingData> Router<P> {
                     }
                 })
                 .collect();
-            let mut groups = BTreeMap::<u64, Vec<(usize, &Candidate, u64)>>::new();
-            for (i, from) in pair[0].iter().enumerate() {
-                let prior = costs[previous[i]];
-                if prior.1 != u64::MAX {
-                    groups.entry(prior.0).or_default().push((i, from, prior.1));
-                }
-            }
-            let mut targets = BTreeMap::<u64, Vec<(usize, &Candidate)>>::new();
-            if stage_index + 2 == candidates.len() {
-                for (j, to) in pair[1].iter().enumerate() {
-                    targets.entry(snap_cost(to)).or_default().push((j, to));
-                }
-            }
-            let mut batches = Vec::new();
-            for (&snap, starts) in &groups {
-                if targets.is_empty() {
-                    for (j, to) in pair[1].iter().enumerate() {
-                        batches.push((snap.checked_add(snap_cost(to)).ok_or(Error::Limit)?, starts, vec![(j, to)]));
-                    }
-                } else {
-                    for (&end_snap, ends) in &targets {
-                        batches.push((snap.checked_add(end_snap).ok_or(Error::Limit)?, starts, ends.clone()));
-                    }
-                }
-            }
-            batches.sort_by_key(|v| v.0);
-            for (snap, starts, ends) in batches {
-                if !targets.is_empty() && next.iter().any(|c| c.0 < snap) {
-                    break;
-                }
-                if targets.is_empty() && next[ends[0].0].0 < snap {
-                    continue;
-                }
+            let starts: Vec<_> = pair[0]
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| costs[previous[*i]] != u64::MAX)
+                .map(|(i, from)| (i, from, costs[previous[i]]))
+                .collect();
+            // The last leg needs only its best end. An inner leg needs the best cost to each
+            // candidate of the next point, so each is one query.
+            let ends: Vec<Vec<(usize, &Candidate)>> = if stage_index + 2 == candidates.len() {
+                vec![pair[1].iter().enumerate().collect()]
+            } else {
+                pair[1].iter().enumerate().map(|end| vec![end]).collect()
+            };
+            for ends in ends {
                 work.queries += 1;
                 if work.queries > control.max_queries {
                     return Err(Error::Limit);
                 }
-                if let Some(found) = self.leg_batch(starts, &ends, control)? {
+                if let Some(found) = self.leg_batch(&starts, &ends, control)? {
                     work.witnesses = work.witnesses.saturating_add(found.path.roads.len());
                     if work.witnesses > control.max_geometry {
                         return Err(Error::Limit);
                     }
                     let j = found.target;
-                    let score = (snap, found.cost);
-                    if score < next[j] {
-                        next[j] = score;
+                    if found.cost < next[j] {
+                        next[j] = found.cost;
                         paths[j] = Some((previous[found.source], found.source, found.path));
                     }
                 }
             }
-            if next.iter().all(|cost| cost.1 == u64::MAX) {
-                work.failed_leg = Some(stage_index);
+            if next.iter().all(|&cost| cost == u64::MAX) {
                 return Err(Error::NoPath);
             }
             costs = next;
             stages.push(paths);
         }
-        let (mut selected, &(_, cost)) = costs.iter().enumerate().min_by_key(|(_, cost)| *cost).ok_or(Error::NoPath)?;
+        let (mut selected, &cost) = costs.iter().enumerate().min_by_key(|(_, cost)| *cost).ok_or(Error::NoPath)?;
         let mut attachments = vec![candidates.last().unwrap()[selected].clone()];
         let mut paths = Vec::new();
         for (index, stage) in stages.into_iter().enumerate().rev() {
@@ -378,25 +318,15 @@ impl<P: RoutingData> Router<P> {
                     return Err(Error::Cancelled);
                 }
                 let road = trim(self.package.road(slice.road)?, slice.from, slice.to);
-                let mode = if profile.walking {
-                    FOOT
-                } else if road.access & BIKE != 0 {
-                    BIKE
-                } else {
-                    PUSH
-                };
+                let mode = profile.mode(&road);
                 let closure = closures.closing(slice.road, mode);
                 totals.add(&road, &request.pace, &profile);
                 route.totals.add(&road, &request.pace, &profile);
                 let mut seconds = *route.elapsed.last().unwrap_or(&0.0);
                 for (index, point) in road.shape.iter().enumerate() {
                     if index > 0 {
-                        seconds += request.pace.segment_seconds(
-                            road.shape[index - 1],
-                            *point,
-                            mode != BIKE,
-                            profile.name.starts_with("mtb"),
-                        );
+                        seconds +=
+                            request.pace.segment_seconds(road.shape[index - 1], *point, mode != BIKE, profile.mtb_pace);
                     }
                     let coordinate = [point.lon as f64 * 1e-6, point.lat as f64 * 1e-6];
                     if route.geometry.last() == Some(&coordinate) {
@@ -471,9 +401,8 @@ impl<P: RoutingData> Router<P> {
                 cost.total().checked_sub(prefix).ok_or_else(|| Error::InvalidData("Invalid source cost".into()))?;
             source_prefixes.push(prefix);
             starts.push(Seed {
-                node: e.arrival,
+                node: from.position.road,
                 cost: prior.checked_add(remaining).ok_or(Error::Limit)?,
-                road: from.position.road,
                 choice: u8::try_from(index).map_err(|_| Error::Limit)?,
             });
         }
@@ -488,7 +417,6 @@ impl<P: RoutingData> Router<P> {
                 ends.push(Seed {
                     node: d.state,
                     cost: prefix.checked_add(d.penalty).ok_or(Error::Limit)?,
-                    road: to.position.road,
                     choice: u8::try_from(index).map_err(|_| Error::Limit)?,
                 });
                 end_targets.push(target);

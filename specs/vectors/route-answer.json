@@ -34,7 +34,6 @@
           "seconds": 13.4,
           "surface_m": [0, 95, 0, 0, 0, 0],
           "unknown_elevation_m": 64,
-          "uncertain_access_m": 0,
           "pushing_m": 0
         }
       },
@@ -50,7 +49,6 @@
           "seconds": 46.8,
           "surface_m": [0, 0, 0, 317, 0, 0],
           "unknown_elevation_m": 0,
-          "uncertain_access_m": 0,
           "pushing_m": 95
         }
       }
@@ -63,7 +61,6 @@
       "seconds": 60.2,
       "surface_m": [0, 95, 0, 317, 0, 0],
       "unknown_elevation_m": 64,
-      "uncertain_access_m": 0,
       "pushing_m": 95
     }
   },

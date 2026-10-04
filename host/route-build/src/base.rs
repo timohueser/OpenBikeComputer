@@ -50,11 +50,13 @@ pub(crate) fn edges(roads: &[Road]) -> Result<Vec<(u32, u32)>, String> {
     Ok(edges)
 }
 
+/// `allowed` holds the snap bits of `connectivity::States::snappable`.
 pub(crate) fn metric(
     profile: &Profile,
     bases: impl IntoIterator<Item = Option<CostBasis>>,
     road_costs: &[u64],
     turns: &[u64],
+    allowed: &[u64],
     dictionary: &mut Dictionary,
     mut write: impl FnMut(&[u8]) -> Result<String, String>,
 ) -> Result<Metric, String> {
@@ -68,20 +70,17 @@ pub(crate) fn metric(
             basis.map(|basis| dictionary.insert(basis)).transpose().map(|id| id.unwrap_or(0))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    if costs.len() != road_costs.len() {
+    if costs.len() != road_costs.len() || allowed.len() != costs.len().div_ceil(64) {
         return Err("Incomplete road costs".into());
     }
-    let mut allowed = vec![0u64; costs.len().div_ceil(64)];
-    for (id, &cost) in costs.iter().enumerate() {
-        if cost != 0 {
-            allowed[id / 64] |= 1 << (id % 64);
-        }
+    if costs.iter().enumerate().any(|(id, &cost)| cost == 0 && allowed[id / 64] & (1 << (id % 64)) != 0) {
+        return Err("A snappable road has no cost".into());
     }
     Ok(Metric {
         profile: profile.clone(),
         weights: base::write_weights(road_costs, turns, &mut write)?,
         costs: Table::write(&costs, &mut write)?,
-        allowed: Table::write(&allowed, &mut write)?,
+        allowed: Table::write(allowed, &mut write)?,
     })
 }
 

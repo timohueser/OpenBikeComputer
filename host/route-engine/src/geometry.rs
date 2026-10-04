@@ -88,7 +88,6 @@ mod tests {
             access: 7,
             difficulty: 2,
             hiking_difficulty: Some(3),
-            uncertain_access: true,
             structure: true,
             shape: vec![
                 Point { lat: -85_000_000, lon: 180_000_000, elevation: NO_ELEVATION },

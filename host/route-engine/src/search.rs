@@ -82,10 +82,10 @@ pub struct Workspace {
     heaps: [Queue; 2],
 }
 
+/// A search enters or leaves at the arrival state of a road, which is its road id.
 pub struct Seed {
     pub node: u32,
     pub cost: u64,
-    pub road: u32,
     pub choice: u8,
 }
 
@@ -280,7 +280,7 @@ impl Workspace {
             })
             .ok_or_else(|| Error::InvalidData("Missing target witness".into()))?;
         let mut roads = Vec::with_capacity(arcs.len() + 1);
-        roads.push(starts[source].road);
+        roads.push(starts[source].node);
         let mut check = starts[source].cost.checked_add(ends[target].cost).ok_or(Error::Limit)?;
         for arc in arcs {
             check = check.checked_add(costs.arc(graph, arc as usize)).ok_or(Error::Limit)?;
@@ -333,8 +333,8 @@ mod tests {
             // A queue too small for its first entry aborts the search with labels already set.
             for (from, to, heap_bytes) in [(0, nodes - 1, 1), (0, nodes - 1, 1024 * 1024), (nodes - 1, 0, 1024 * 1024)]
             {
-                let starts = [Seed { node: from as u32, cost: 0, road: from as u32, choice: 0 }];
-                let ends = [Seed { node: to as u32, cost: 0, road: to as u32, choice: 0 }];
+                let starts = [Seed { node: from as u32, cost: 0, choice: 0 }];
+                let ends = [Seed { node: to as u32, cost: 0, choice: 0 }];
                 let result = workspace.run(
                     &graph,
                     &costs,
@@ -405,12 +405,12 @@ mod tests {
             };
             for case in 0..16 {
                 let starts = [
-                    Seed { node: (case % nodes) as u32, cost: 7, road: (case % nodes) as u32, choice: 3 },
-                    Seed { node: ((case + 2) % nodes) as u32, cost: 11, road: ((case + 2) % nodes) as u32, choice: 1 },
+                    Seed { node: (case % nodes) as u32, cost: 7, choice: 3 },
+                    Seed { node: ((case + 2) % nodes) as u32, cost: 11, choice: 1 },
                 ];
                 let ends = [
-                    Seed { node: ((case + trial) % nodes) as u32, cost: 17, road: 99, choice: 2 },
-                    Seed { node: ((case + trial + 4) % nodes) as u32, cost: 0, road: 98, choice: 0 },
+                    Seed { node: ((case + trial) % nodes) as u32, cost: 17, choice: 2 },
+                    Seed { node: ((case + trial + 4) % nodes) as u32, cost: 0, choice: 0 },
                 ];
                 let mut distances = vec![(u64::MAX, u8::MAX); nodes];
                 for s in &starts {
@@ -458,7 +458,7 @@ mod tests {
                         expected
                     );
                     if let Some(result) = result {
-                        assert_eq!(result.roads[0], starts[result.source].road);
+                        assert_eq!(result.roads[0], starts[result.source].node);
                         assert_eq!(result.roads.last().copied(), Some(ends[result.target].node));
                         let mut total = starts[result.source].cost + ends[result.target].cost;
                         for pair in result.roads.windows(2) {
@@ -473,8 +473,8 @@ mod tests {
         }
         let g = graph(2, &[(0, 1)]);
         let costs = Costs { roads: Numbers::U8(vec![1, 1]), turns: Numbers::U8(vec![0]).into() };
-        let starts = [Seed { node: 0, cost: 0, road: 0, choice: 0 }];
-        let ends = [Seed { node: 1, cost: 0, road: 1, choice: 0 }];
+        let starts = [Seed { node: 0, cost: 0, choice: 0 }];
+        let ends = [Seed { node: 1, cost: 0, choice: 0 }];
         assert!(matches!(
             workspace.run(
                 &g,
@@ -508,7 +508,7 @@ mod tests {
         ));
         let g = graph(1, &[]);
         let costs = Costs { roads: Numbers::U8(vec![1]), turns: Numbers::U8(vec![]).into() };
-        let ends = [Seed { node: 0, cost: 3, road: 0, choice: 0 }, Seed { node: 0, cost: 1, road: 0, choice: 1 }];
+        let ends = [Seed { node: 0, cost: 3, choice: 0 }, Seed { node: 0, cost: 1, choice: 1 }];
         let result = workspace
             .run(
                 &g,

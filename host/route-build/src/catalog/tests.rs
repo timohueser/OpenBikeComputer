@@ -70,7 +70,6 @@ fn grid(relations: Vec<Relation>) -> (Package<Memory>, Data) {
                         access: BIKE | FOOT | PUSH,
                         difficulty: 255,
                         hiking_difficulty: (id == way(0, 1)).then_some(3),
-                        uncertain_access: false,
                         structure: false,
                         shape,
                     });

@@ -1,6 +1,7 @@
 mod base;
 pub mod blocks;
 pub mod catalog;
+pub mod connectivity;
 pub mod cost;
 pub mod landmarks;
 pub mod layout;
@@ -14,7 +15,7 @@ pub mod terrain;
 
 use base::Dictionary;
 use route_engine::{
-    closures::Closures,
+    closures::{self, Closures},
     model::{Point, Profile, Road},
     package::{self, Manifest, CELL, ROADS_PER_PAGE},
     storage,
@@ -153,14 +154,14 @@ pub fn prepare(
         nodes: nodes.iter().map(|(&point, closures)| (point, cost::Doubts::modes(closures))).collect(),
     };
     // A road reports the closures of its way and of the node where it arrives.
-    let closures =
-        Closures::build(ways.into_iter().zip(&graph.roads).enumerate().map(|(id, (mut closures, road))| {
-            closures.extend(nodes.get(&road.to).into_iter().flatten().cloned());
-            (id as u32, closures)
-        }))?;
+    let closures = Closures::build(ways.into_iter().zip(&graph.roads).map(|(mut closures, road)| {
+        closures.extend(nodes.get(&road.to).into_iter().flatten().cloned());
+        closures
+    }))?;
     let mut dictionary = Dictionary::default();
     let junctions = landmarks::Junctions::new(graph.roads.iter().map(|r| (r.from, r.to)))?;
     let mut landmarks = junctions.index(&mut write)?;
+    let states = connectivity::States::new(graph.roads.len(), &edges);
     for profile in profiles {
         eprintln!("Preparing profile {}", profile.name);
         if manifest.metrics.contains_key(&profile.name) {
@@ -169,16 +170,25 @@ pub fn prepare(
         let costing = cost::Costing::new(graph, profile, &doubts)?;
         let road_costs: Vec<_> =
             costing.roads.iter().map(|cost| cost.as_ref().map_or(u64::MAX, |cost| cost.total())).collect();
-        landmarks.profiles.insert(profile.name.clone(), junctions.prepare(&road_costs, &mut write)?);
+        let columns = junctions.prepare(&road_costs, &mut write)?;
         let turns: Vec<_> =
             edges.iter().map(|&(before, after)| costing.transition(before, after).unwrap_or(u64::MAX)).collect();
+        let allowed = states.snappable(&road_costs, &turns);
+        let fragments = road_costs.iter().filter(|&&c| c != u64::MAX).count()
+            - allowed.iter().map(|word| word.count_ones() as usize).sum::<usize>();
+        eprintln!(
+            "Profile {}: {fragments} roads in fragments are not snappable; landmark scale {}",
+            profile.name, columns.scale
+        );
+        landmarks.profiles.insert(profile.name.clone(), columns);
         manifest.metrics.insert(
             profile.name.clone(),
             base::metric(
                 profile,
-                (0..graph.roads.len()).map(|road| costing.basis(road)),
+                costing.bases.iter().copied(),
                 &road_costs,
                 &turns,
+                &allowed,
                 &mut dictionary,
                 &mut write,
             )?,
@@ -186,6 +196,21 @@ pub fn prepare(
     }
     manifest.costs = Table::write(&dictionary.into_values(), &mut write)?;
     manifest.landmarks = Some(landmarks);
-    manifest.closures = if closures.roads.is_empty() { None } else { Some(write(&storage::encode(&closures)?)?) };
+    manifest.closures = write_closures(&closures, &mut write)?;
     Ok(manifest)
+}
+
+/// Writes the sets object and the per-road column only when a road has a possible closure.
+fn write_closures(
+    closures: &Closures,
+    write: &mut impl FnMut(&[u8]) -> Result<String, String>,
+) -> Result<Option<closures::Index>, String> {
+    let ids: Vec<u64> = (0..closures.roads.len()).map(|road| closures.roads.get(road)).collect();
+    if ids.iter().all(|&id| id == u64::MAX) {
+        return Ok(None);
+    }
+    Ok(Some(closures::Index {
+        sets: write(&storage::encode(&closures.sets)?)?,
+        roads: route_engine::base::write_column(&ids, write)?,
+    }))
 }
