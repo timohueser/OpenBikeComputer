@@ -7,15 +7,15 @@
     let { selection, onclose, onuse, canPlan, onplan }: {
         selection: OverlaySelection; onclose: () => void; onuse: () => void;
         /** Whether a route is in the route catalog, so "Plan this route" can plan it. */
-        canPlan?: (id: number, at: Coordinate) => Promise<boolean>;
+        canPlan?: (id: number, at: Coordinate) => Promise<'plan' | 'too-long' | 'missing'>;
         onplan?: (id: number) => void;
     } = $props();
-    let plannable = $state<number[]>([]);
+    let plannable = $state<Record<number, 'plan' | 'too-long' | 'missing'>>({});
     $effect(() => {
         const { routes = [], coordinate } = selection;
         let current = true;
-        plannable = [];
-        for (const { id } of canPlan ? routes : []) canPlan!(id, coordinate).then(found => { if (found && current) plannable = [...plannable, id]; }, () => {});
+        plannable = {};
+        for (const { id } of canPlan ? routes : []) canPlan!(id, coordinate).then(status => { if (current) plannable = { ...plannable, [id]: status }; }, () => {});
         return () => { current = false; };
     });
     const access: Record<string, { title: string; detail: string }> = {
@@ -56,7 +56,9 @@
                     {:else}<b class="route-name">{route.name || route.ref || 'Unnamed route'}{route.name && route.ref ? ` · ${route.ref}` : ''}</b>{/if}
                     <span>{networkName(route)}</span>
                     {#if route.kind === 'hiking' && route.symbol_text}<span>{route.symbol_text}</span>{/if}
-                    {#if plannable.includes(route.id)}<button class="plan" onclick={() => onplan?.(route.id)}>Plan this route</button>{/if}
+                    {#if plannable[route.id] === 'plan'}<button class="plan" onclick={() => onplan?.(route.id)}>Plan this route</button>
+                    {:else if plannable[route.id] === 'too-long'}<span>Too long for one plan · Plan a stage in the Routes view</span>
+                    {:else if plannable[route.id] === 'missing'}<span>Not in the route catalog</span>{/if}
                 </div>
             </li>
         {/each}</ul>

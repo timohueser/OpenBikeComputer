@@ -3,7 +3,7 @@
     import Select from './PlannerSelect.svelte';
     import VersionsMenu from './VersionsMenu.svelte';
     import { ridingProfiles, type BikeType } from '../../lib/planner/riding-profiles';
-    import type { Trip } from '../../lib/planner/editor';
+    import { planTitle, type Trip } from '../../lib/planner/editor';
     import type { Version } from '../../lib/planner/versions';
 
     let { trip, canUndo, canRedo, draftSavedAt, draftError, onChange, onUndo, onRedo, onRestore, onSaved, onNew }: {
@@ -21,9 +21,7 @@
     } = $props();
 
     const bike = $derived(trip.bike ?? 'touring');
-    const start = $derived(trip.points.find(p => p.kind === 'start'));
-    const finish = $derived(trip.points.find(p => p.kind === 'finish'));
-    const title = $derived(trip.name ? trip.name : start && trip.loop ? `Loop from ${start.label}` : start && finish ? `${start.label} → ${finish.label}` : start ? `From ${start.label}` : finish ? `To ${finish.label}` : 'New plan');
+    const title = $derived(planTitle(trip));
 </script>
 
 <div class="trip-bar">

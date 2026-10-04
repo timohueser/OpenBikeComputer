@@ -10,6 +10,9 @@ import type { SignedRoutesView } from './signed-routes-map';
 import { routePlan, searchRoutes, type Bounds, type CatalogRecord, type RouteMatch, type RouteRecord, type RouteShape, type RouteSort } from './signed-routes';
 
 export const RADII = [5, 10, 25, 50];
+/** The filters that can remove every match near the start. */
+export type RouteFilter = 'distanceKm' | 'climbM' | 'hardest';
+const open = { distanceKm: {}, climbM: {}, hardest: [0, 3] } as const;
 
 /** A start from a place has its name; a map click has the name of the nearest place once it is known. */
 export interface RouteStart { coordinate: Coordinate; name?: string; near?: string }
@@ -42,6 +45,8 @@ export class RouteFinder {
     progress = $state({ loaded: 0, total: 0 });
     /** With no match: the next radius that has matches, and their count. */
     wider = $state.raw<{ radiusKm: number; count: number } | null>(null);
+    /** With no match: the filter without which some routes within the radius match. */
+    blocker = $state<RouteFilter | null>(null);
     /** The listed rows; the map draws their lines. */
     shown = $state(20);
     detail = $state.raw<RouteDetail | null>(null);
@@ -49,6 +54,8 @@ export class RouteFinder {
     /** A routed plan of the detail, for its profile, figures and time. */
     routed = $state.raw<{ plan: RoutePlan; line: RoutingLine } | null>(null);
     private readonly covered = downloadedCells();
+    /** Offline, only routes wholly inside the download match. */
+    readonly offline = !!this.covered;
     private readonly cells = new Map<string, Promise<CatalogRecord[] | null>>();
     private readonly records = new Map<number, CatalogRecord>();
     private serial = 0;
@@ -117,8 +124,14 @@ export class RouteFinder {
         };
         try {
             const matches = await searchRoutes(query, counted);
-            let wider: RouteFinder['wider'] = null;
-            if (!matches.length && query.radiusKm < RADII.at(-1)!) {
+            let wider: RouteFinder['wider'] = null, blocker: RouteFilter | null = null;
+            const graded = activity === 'hiking' || activity === 'mtb';
+            const active = (key: RouteFilter) => key === 'hardest' ? graded && (query.hardest[0] > 0 || query.hardest[1] < 3)
+                : query[key].from !== undefined || query[key].to !== undefined;
+            for (const key of matches.length ? [] : (['distanceKm', 'climbM', 'hardest'] as const).filter(active)) {
+                if ((await searchRoutes({ ...query, [key]: open[key] }, counted)).length) { blocker = key; break; }
+            }
+            if (!matches.length && !blocker && query.radiusKm < RADII.at(-1)!) {
                 const wide = await searchRoutes({ ...query, radiusKm: RADII.at(-1)! }, counted);
                 const radiusKm = RADII.find(km => km > query.radiusKm && wide.some(match => match.distanceM <= km * 1000));
                 if (radiusKm) wider = { radiusKm, count: wide.filter(match => match.distanceM <= radiusKm * 1000).length };
@@ -126,11 +139,18 @@ export class RouteFinder {
             if (id !== this.serial) return;
             this.matches = matches;
             this.wider = wider;
+            this.blocker = blocker;
             this.shown = 20;
             this.status = 'ready';
         } catch {
             if (id === this.serial) this.status = 'failed';
         }
+    }
+
+    /** Removes a filter: no distance or climb bound, or every grade. */
+    clear(filter: RouteFilter) {
+        if (filter === 'hardest') this.filters.hardest = [0, 3];
+        else this.filters[filter] = {};
     }
 
     /** Shows a record, and loads the stages of its long route. */

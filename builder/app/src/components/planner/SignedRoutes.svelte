@@ -9,18 +9,26 @@
     import { cumulative } from '../../lib/planner/editor';
     import { profileAscent, profileDescent } from '../../lib/planner/profile-data';
     import { routeWebsite } from '../../lib/planner/route-overlays';
-    import { RADII, type RouteFinder } from '../../lib/planner/route-finder.svelte';
+    import { RADII, recordLine, type RouteFilter, type RouteFinder } from '../../lib/planner/route-finder.svelte';
+    import { kindLabel } from '../../lib/planner/search/presentation';
+    import type { SearchPlace } from '../../lib/planner/search/types';
+    import type { Coordinate } from '../../lib/planner/editor';
     import type { RoutePlan } from '../../lib/planner/signed-route-plan';
     import type { Bounds, CatalogRecord, RouteShape, RouteSort } from '../../lib/planner/signed-routes';
     import type { BikeType } from '../../lib/planner/riding-profiles';
 
-    let { finder, activity, theme = 'light', onClose, onClearStart, onPlan }: {
+    let { finder, activity, theme = 'light', current = null, placeName, findPlaces, onClose, onPlan }: {
         finder: RouteFinder;
         activity: BikeType;
         theme?: 'light' | 'dark';
+        /** The plan that the view hides, for the line that leads back to it. */
+        current?: { title: string; km: number } | null;
+        /** The nearest place to a map point, from the loaded map. */
+        placeName: (coordinate: Coordinate) => string | undefined;
+        /** Places for a typed start. */
+        findPlaces: (text: string, signal: AbortSignal) => Promise<SearchPlace[]>;
         /** Back to the normal panel; the filters and the list stay. */
         onClose: () => void;
-        onClearStart: () => void;
         onPlan: (route: CatalogRecord, plan: RoutePlan) => void;
     } = $props();
 
@@ -52,9 +60,31 @@
     const readingDetail = $derived(low === 0
         ? `Routes whose hardest part is ${gradeList(0, high)}. A ${activity === 'mtb' ? 'trail' : 'path'} without a grade counts as ${grade(0)}.`
         : `Only routes with a part graded ${gradeList(low, high)}.`);
-    const range = ({ from, to }: Bounds, unit: string) => from !== undefined && to !== undefined ? ` · ${from}–${to} ${unit}`
-        : from !== undefined ? ` · from ${from} ${unit}` : to !== undefined ? ` · up to ${to} ${unit}` : '';
-    const summary = $derived(`${place} · ${filters.radiusKm} km · ${{ any: 'Any', loop: 'Loop', 'one-way': 'One way' }[filters.shape]}${range(filters.distanceKm, 'km')}${range(filters.climbM, 'm')}${graded ? ` · ${low === 0 ? `up to ${grade(high)}` : `${grade(low)} or harder`}` : ''}`);
+    const range = ({ from, to }: Bounds, unit: string) => from !== undefined && to !== undefined ? `${from}–${to} ${unit}`
+        : from !== undefined ? `${from} ${unit} or more` : to !== undefined ? `up to ${to} ${unit}` : '';
+    const hardestText = $derived(low === 0 ? `up to ${grade(high)}` : low === high ? grade(low) : `${grade(low)} or harder`);
+    const summary = $derived([place, `${filters.radiusKm} km`, { any: 'Any', loop: 'Loop', 'one-way': 'One way' }[filters.shape],
+        range(filters.distanceKm, 'km'), range(filters.climbM, 'm'), graded ? hardestText : ''].filter(Boolean).join(' · '));
+    const filterNames: Record<RouteFilter, string> = { distanceKm: 'distance', climbM: 'climb', hardest: 'hardest part' };
+    const filterText = (filter: RouteFilter) => `${filterNames[filter]} ${filter === 'hardest' ? hardestText : range(filters[filter], filter === 'distanceKm' ? 'km' : 'm')}`;
+
+    // The form folds to its summary once there is a start; Edit opens it again.
+    let editing = $state(false);
+    const folded = $derived(!!start && !editing);
+    let typed = $state('');
+    let typedPlaces = $state.raw<SearchPlace[]>([]);
+    $effect(() => {
+        const text = typed.trim();
+        if (start || !text) { typedPlaces = []; return; }
+        const abort = new AbortController();
+        const timer = setTimeout(() => findPlaces(text, abort.signal).then(places => typedPlaces = places.slice(0, 6), () => {}), 300);
+        return () => { clearTimeout(timer); abort.abort(); };
+    });
+    function clearStart() {
+        finder.start = null;
+        typed = '';
+        void finder.select(null);
+    }
 
     // Searches again when the start, a filter or the activity changes. The search itself writes state that it must not track.
     $effect(() => { void [start, $state.snapshot(filters), activity]; untrack(() => finder.search(activity)); });
@@ -72,14 +102,21 @@
             descent: known ? profileDescent(0, 1, line) : null, hours: line.seconds / 3600 };
     }
 
-    function kindLine(route: CatalogRecord): string {
-        if (route.stages) return `Long route · ${route.stages.length} stages`;
+    function kindLine(route: CatalogRecord, short = false): string {
+        if (route.stages) return short ? `${route.stages.length} stages` : `Long route · ${route.stages.length} stages`;
         const total = route.parent ? finder.record(route.parent)?.stages?.length : undefined;
         if (route.stage) return total ? `Stage ${route.stage} of ${total}` : `Stage ${route.stage}`;
-        return route.loop ? 'Signed loop' : 'Signed route';
+        return short ? route.loop ? 'Loop' : 'One way' : route.loop ? 'Signed loop' : 'Signed route';
     }
+    // Where the plan starts and ends, by the nearest places of the loaded map.
+    const ends = $derived.by(() => {
+        const line = detail ? recordLine(detail.route, detail.stages) : [];
+        if (!detail || !line.length) return '';
+        const [from, to] = [placeName(line[0]), placeName(line.at(-1)!)];
+        return detail.route.loop ? from ? `Starts and ends at ${from}` : '' : from && to ? `${from} → ${to}` : '';
+    });
     const network = (route: CatalogRecord) => levels[route.rank] ? `${levels[route.rank]} ${kindWords[route.kind]}` : `${kindWords[route.kind][0].toUpperCase()}${kindWords[route.kind].slice(1)}`;
-    const rowLine = (route: CatalogRecord) => [kindLine(route), levels[route.rank], graded ? `Hardest part ${grade(route.hardest ?? 0)}` : ''].filter(Boolean).join(' · ');
+    const rowLine = (route: CatalogRecord) => [kindLine(route, true), levels[route.rank], graded ? `Hardest ${grade(route.hardest ?? 0)}` : ''].filter(Boolean).join(' · ');
     const title = (route: CatalogRecord) => route.name ?? route.ref ?? 'Unnamed route';
 
     function bound(key: 'distanceKm' | 'climbM', end: 'from' | 'to', value: string) {
@@ -94,14 +131,6 @@
     }
 
     let scroller: HTMLDivElement | undefined = $state();
-    let form: HTMLElement | undefined = $state();
-    let folded = $state(false);
-    $effect(() => {
-        if (!scroller || !form) return;
-        const observer = new IntersectionObserver(([entry]) => folded = !entry.isIntersecting, { root: scroller, threshold: 0 });
-        observer.observe(form);
-        return () => observer.disconnect();
-    });
     // A hovered line or marker on the map brings its row into view.
     $effect(() => {
         const id = finder.hovered;
@@ -114,6 +143,7 @@
         <button type="button" class="back" aria-label="Back to the planner" onclick={onClose}><Icon name="back" size={18} /></button>
         <h2>Signed routes</h2>
     </header>
+    {#if current}<p class="current">Your plan: {current.title}, {current.km.toFixed(1)} km · <button type="button" onclick={onClose}>Show</button></p>{/if}
     {#if detail}
         {@const route = detail.route}
         {@const website = routeWebsite(route.website)}
@@ -125,6 +155,7 @@
             </div>
             <p class="kind">{route.stage && detail.family ? `Official stage ${route.stage} of ${detail.family.stages!.length} · ${title(detail.family)}, ${km(detail.family.length_m)} · ` : ''}{network(route)}</p>
             <RouteStats {...figures(route)} walking={activity === 'hiking'} />
+            {#if ends}<p class="ends"><Icon name="flag" size={16} />{ends}</p>{/if}
             {#if detail.stages && detail.family}
                 <p class="sub">{title(detail.family)} stages</p>
                 <ol class="stages">
@@ -163,15 +194,28 @@
         </footer>
     {:else}
         <div class="pane-scroll" bind:this={scroller}>
-            <div class="form" bind:this={form}>
+            {#if folded}
+                <div class="summary"><span>{summary}</span><button type="button" onclick={() => editing = true}>Edit</button></div>
+            {:else}
+            <div class="form">
                 <div class="field"><span class="label">Start</span>
-                    <div class="start">
-                        <Icon name="pin" size={16} />
-                        <span>{start?.name ?? `Point on the map${start?.near ? ` · near ${start.near}` : ''}`}</span>
-                        <button type="button" aria-label="Clear the start" onclick={onClearStart}><Icon name="close" size={16} /></button>
-                    </div>
+                    {#if start}
+                        <div class="start">
+                            <Icon name="pin" size={16} />
+                            <span>{start.name ?? `Point on the map${start.near ? ` · near ${start.near}` : ''}`}</span>
+                            <button type="button" aria-label="Clear the start" onclick={clearStart}><Icon name="close" size={16} /></button>
+                        </div>
+                    {:else}
+                        <!-- svelte-ignore a11y_autofocus -->
+                        <label class="start"><Icon name="search" size={16} /><input aria-label="Start place" placeholder="Type a place" autofocus bind:value={typed} /></label>
+                        {#each typedPlaces as found (found.source)}
+                            <button type="button" class="found" onclick={() => finder.start = { coordinate: [found.lon, found.lat], name: found.name }}>
+                                <strong>{found.name}</strong><small>{kindLabel(found.kind)}{found.city && found.city !== found.name ? ` · ${found.city}` : ''}</small>
+                            </button>
+                        {/each}
+                    {/if}
                 </div>
-                <p class="hint"><Icon name="locate" size={13} />Click the map to move the start.</p>
+                <p class="hint"><Icon name="locate" size={13} />{start ? 'Click the map to move the start.' : 'Type a place, or click the map to move the start.'}</p>
                 <div class="two">
                     <div class="field"><span class="label">Within</span>
                         <PlannerSelect label="Within" value={String(filters.radiusKm)} options={RADII.map(radius => ({ value: String(radius), label: `${radius} km` }))} onChange={value => finder.filters.radiusKm = Number(value)} />
@@ -206,24 +250,31 @@
                     <p class="reading"><b>{reading}</b> {readingDetail}</p>
                 {/if}
             </div>
-            <div class="folded" class:shown={folded} aria-hidden={!folded}><span>{summary}</span><button type="button" tabindex={folded ? 0 : -1} onclick={() => scroller?.scrollTo({ top: 0, behavior: 'smooth' })}>Edit</button></div>
+            {/if}
             <div class="results" aria-busy={finder.status === 'loading'}>
-                {#if finder.status === 'failed'}
+                {#if !start}
+                    <p class="note">The list shows the routes around the start.</p>
+                {:else if finder.status === 'failed'}
                     <p class="note" role="alert">The routes could not load.</p>
                     <button type="button" class="more" onclick={() => finder.search(activity)}>Retry</button>
                 {:else if finder.status === 'loading' && finder.progress.loaded < finder.progress.total}
                     <p class="note" role="status">Loading the routes around {place} · {finder.progress.loaded} of {finder.progress.total} map cells</p>
+                {:else if !finder.matches.length && finder.blocker}
+                    {@const blocker = finder.blocker}
+                    <p class="note empty" role="status">No routes match the {filterText(blocker)}.</p>
+                    <button type="button" class="more" onclick={() => finder.clear(blocker)}>Clear {filterNames[blocker]}</button>
                 {:else if !finder.matches.length}
                     <p class="note empty" role="status">No signed {activityWord} {plural} within {filters.radiusKm} km of {place}.{finder.wider ? ` ${finder.wider.count} within ${finder.wider.radiusKm} km.` : ''}</p>
                     {#if finder.wider}{@const wider = finder.wider.radiusKm}<button type="button" class="more" onclick={() => finder.filters.radiusKm = wider}>Search within {wider} km</button>{/if}
                 {:else}
-                    <div class="list-head" class:stuck={folded}>
+                    <div class="list-head">
                         <strong>{count(finder.matches.length)} within {filters.radiusKm} km</strong>
                         <label class="sort"><span class="visually-hidden">Sort</span>
                             <select value={filters.sort} onchange={event => finder.filters.sort = event.currentTarget.value as RouteSort}>{#each sorts as sort (sort.value)}<option value={sort.value}>{sort.label}</option>{/each}</select>
                             <Icon name="down" size={12} />
                         </label>
                     </div>
+                    {#if finder.offline}<p class="note">Only routes inside your download are shown.</p>{/if}
                     {#each listed as { route, distanceM }, i (route.id)}
                         <button type="button" class="row" class:hovered={finder.hovered === route.id} data-route={route.id}
                             onmouseenter={() => finder.hovered = route.id} onmouseleave={() => finder.hovered = null}
@@ -284,14 +335,19 @@
     .rail input:focus-visible::-webkit-slider-thumb { outline: 2px solid var(--forest); outline-offset: 2px; }
     .reading { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--parchment); font-size: 13px; line-height: 1.45; }
     .reading b { font-weight: 600; }
-    /* The summary takes no room, so it shows over the list without moving it. */
-    .folded { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 39px; margin-bottom: -39px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 13px; visibility: hidden; }
-    .folded.shown { visibility: visible; }
-    .folded span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .folded button { color: var(--link); text-decoration: underline; text-underline-offset: 3px; }
+    .summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 16px 8px; font-size: 13px; }
+    .summary span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .summary button, .current button { color: var(--link); text-decoration: underline; text-underline-offset: 3px; }
+    .current { margin: 0 16px 6px; font-size: 13px; color: var(--ink-soft); }
+    .start input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; color: var(--ink); font: inherit; }
+    .found { display: block; width: 100%; padding: 6px 8px; border-radius: 6px; text-align: left; }
+    .found:hover { background: var(--parchment-2); }
+    .found strong, .found small { display: block; }
+    .found small { color: var(--ink-soft); font-size: 12px; }
+    .ends { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; font-size: 13px; }
+    .ends :global(svg) { flex: none; color: var(--ink-soft); }
     .results { padding: 12px 16px 16px; }
     .list-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 13px; }
-    .list-head.stuck { position: sticky; top: 39px; z-index: 1; padding-top: 8px; }
     .list-head strong { font-weight: 600; }
     .sort { position: relative; display: inline-flex; align-items: center; gap: 4px; color: var(--ink-soft); font-size: 12px; }
     .sort select { padding: 0 14px 0 0; border: 0; background: transparent; color: inherit; font: inherit; appearance: none; cursor: pointer; }

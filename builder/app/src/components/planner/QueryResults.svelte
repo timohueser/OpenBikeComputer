@@ -1,6 +1,6 @@
 <script lang="ts">
     import PlaceRow from './PlaceRow.svelte';
-    import { asPlace } from '../../lib/planner/search/presentation';
+    import { asPlace, kindLabel, routesPlaces } from '../../lib/planner/search/presentation';
     import Icon from './PlannerIcon.svelte';
     import type { SearchPlace, SearchState } from '../../lib/planner/search/types';
     import type { Coordinate, Place } from '../../lib/planner/editor';
@@ -32,11 +32,11 @@
             {#each answer.stretches ?? [] as stretch}<button type="button" class="stretch" onclick={() => onStretch(stretch.coordinates)}>{stretch.label}<span>km {stretch.from.toFixed(1)}–{stretch.to.toFixed(1)} · {(stretch.to - stretch.from).toFixed(1)} km</span></button>{/each}
             {#if !answer.stretches?.length}<p>No matching stretch in this route data.</p>{/if}
         {:else if answer.type === 'places'}
-            {@const near = answer.request.type === 'place' ? answer.results?.[0] : undefined}
+            {@const near = answer.request.type === 'place' ? routesPlaces(answer.results ?? [], answer.request.name ?? '')[0] : undefined}
             {#if near && routes && onRoutes}
                 <button type="button" class="routes-row" onclick={() => onRoutes(near)}>
                     <span class="routes-icon"><Icon name="diamond" size={17} /></span>
-                    <span class="routes-text"><strong>Signed routes near {near.name}</strong><small>{routes}</small></span>
+                    <span class="routes-text"><strong>Signed routes near {near.name}</strong><small>{near.name} · {kindLabel(near.kind)}{near.city && near.city !== near.name ? ` · ${near.city}` : ''}</small><small>{routes}</small></span>
                     <Icon name="chevron" size={13} />
                 </button>
             {/if}

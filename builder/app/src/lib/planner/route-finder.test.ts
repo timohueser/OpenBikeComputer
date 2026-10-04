@@ -27,10 +27,21 @@ const ids = (found: InstanceType<typeof RouteFinder>) => found.matches.map(match
 describe('route finder', () => {
     it('names the next radius with matches when none is near', async () => {
         host.load = cell;
-        const found = finder({ radiusKm: 5, shape: 'loop', hardest: [2, 3] });
+        const found = finder({ radiusKm: 10, shape: 'loop' });
+        await found.search('touring');
+        expect(found.matches).toEqual([]);
+        expect(found.wider).toEqual({ radiusKm: 25, count: 1 });
+    });
+
+    it('names the filter that removes every match near the start', async () => {
+        host.load = cell;
+        const found = finder({ radiusKm: 25, shape: 'loop', distanceKm: { from: 200 } });
         await found.search('hiking');
         expect(found.matches).toEqual([]);
-        expect(found.wider).toEqual({ radiusKm: 10, count: 1 });
+        expect(found.blocker).toBe('distanceKm');
+        found.clear('distanceKm');
+        await found.search('hiking');
+        expect(found.matches.length).toBeGreaterThan(0);
     });
 
     it('lists offline only the routes wholly inside the downloaded cells', async () => {

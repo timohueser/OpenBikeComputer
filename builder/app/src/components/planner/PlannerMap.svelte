@@ -31,16 +31,20 @@
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         shownCategories = categoryIds, highlightedPlaces = [], landmarks = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
-        signedRoutes = null, signedHovered = null, onSignedRoute, onSignedHover, canPlanRoute, onPlanRoute,
+        signedRoutes = null, signedHovered = null, planMuted = false, onIdle, onSignedRoute, onSignedHover, canPlanRoute, onPlanRoute,
         onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
         /** The Routes view: while it is open, a click on one of its routes selects that route. */
         signedRoutes?: SignedRoutesView | null;
         signedHovered?: number | null;
+        /** The plan draws in a quiet tone and takes no edits, as behind the Routes view. */
+        planMuted?: boolean;
+        /** After each map move and tile load. */
+        onIdle?: () => void;
         onSignedRoute?: (id: number) => void;
         onSignedHover?: (id: number | null) => void;
         /** Whether the route-network details offer "Plan this route" for a relation at a map point. */
-        canPlanRoute?: (id: number, at: Coordinate) => Promise<boolean>;
+        canPlanRoute?: (id: number, at: Coordinate) => Promise<'plan' | 'too-long' | 'missing'>;
         onPlanRoute?: (id: number, at: Coordinate) => void;
         segments?: MapSegment[];
         /** Dashed connectors from the route to points that it does not reach. */
@@ -288,7 +292,13 @@
 
     function syncRouteVisibility() {
         if (!map?.getLayer("trip-line")) return;
-        for (const id of ["trip-line", "trip-casing", "trip-casing-drawn", "trip-gap", "trip-highlight"]) map.setLayoutProperty(id, "visibility", showRoute ? "visible" : "none");
+        for (const id of ["trip-line", "trip-casing", "trip-casing-drawn", "trip-gap", "trip-highlight"]) {
+            map.setLayoutProperty(id, "visibility", showRoute && (!planMuted || id === "trip-line") ? "visible" : "none");
+        }
+        // Magenta stays for the selected signed route, so the muted plan takes the amber token.
+        const amber = getComputedStyle(container).getPropertyValue("--amber").trim() || "#f4a81d";
+        map.setPaintProperty("trip-line", "line-color", planMuted ? amber : ["get", "color"]);
+        map.setPaintProperty("trip-line", "line-opacity", planMuted ? 0.6 : 1);
     }
 
     function syncTerrainAndOverlays() {
@@ -314,7 +324,7 @@
 
     /** The nearest point on a leg within reach of a screen position. */
     function lineHit(point: maplibregl.Point): LineHit | null {
-        if (!map || !showRoute) return null;
+        if (!map || !showRoute || planMuted) return null;
         let best: { legEndId: string; x: number; y: number; pixels: number } | null = null;
         for (const segment of segments) {
             const projected = segment.coordinates.map((coordinate) => map!.project(coordinate));
@@ -490,6 +500,7 @@
             });
             map.on("movestart", (event) => { if (event.originalEvent) wholeRoute = false; overOverlay = false; overlayLayer?.hover(); });
             map.on("moveend", reportView);
+            map.on("idle", () => onIdle?.());
             map.on("move", () => fitCallout(false));
         } catch (error) {
             failure = "The map could not start. This view needs a browser with WebGL enabled.";
@@ -541,7 +552,7 @@
     });
     $effect(() => { hillshade; contours; if (ready) syncTerrain(); });
     $effect(() => { const options = { ...mapOverlays }; const mode = accessMode; if (ready) { overlaySelection = null; overOverlay = false; overlayLayer?.set(options, mode); } });
-    $effect(() => { showRoute; if (ready) syncRouteVisibility(); });
+    $effect(() => { void [showRoute, planMuted]; if (ready) syncRouteVisibility(); });
     $effect(() => { const view = signedRoutes; if (ready) signedLayer?.set(view); });
     $effect(() => { const id = signedHovered; if (ready) signedLayer?.hover(id); });
     const routesShown = $derived(!!signedRoutes);

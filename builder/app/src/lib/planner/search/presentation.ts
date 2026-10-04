@@ -44,3 +44,13 @@ export function fieldLabel(key: string, value: unknown): string {
     if (typeof value === 'object' && value && 'unit' in value && 'value' in value) return `${kindLabel(key)}: ${value.value} ${value.unit}`;
     return `${kindLabel(key)}: ${kindLabel(String(value))}`;
 }
+
+// Settlement kinds from the largest down.
+const settlements = ['city', 'town', 'village', 'suburb', 'district', 'hamlet', 'locality', 'isolated_dwelling'];
+
+/** Starts for signed routes near a typed name, best first: an exact name before others, then the larger settlement, then the search order. */
+export function routesPlaces(results: SearchPlace[], name: string): SearchPlace[] {
+    const typed = name.trim().toLowerCase();
+    const rank = (place: SearchPlace) => (place.name.toLowerCase() === typed ? 0 : 100) + (settlements.includes(place.kind) ? settlements.indexOf(place.kind) : 50);
+    return [...results].sort((a, b) => rank(a) - rank(b));
+}

@@ -99,6 +99,13 @@ export function emptyTrip(mode: Trip['mode'] = 'route'): Trip {
 const startLabel = 'Start';
 const shapeLabel = 'Shaping point';
 
+/** The title of a plan: the name of its signed route, else its start and finish. */
+export function planTitle(trip: Trip): string {
+    const start = trip.points.find(p => p.kind === 'start'), finish = trip.points.find(p => p.kind === 'finish');
+    return trip.name ? trip.name : start && trip.loop ? `Loop from ${start.label}` : start && finish ? `${start.label} → ${finish.label}`
+        : start ? `From ${start.label}` : finish ? `To ${finish.label}` : 'New plan';
+}
+
 /** A start, and a finish or a loop: enough points for a route. */
 export function hasEndpoints(trip: Trip): boolean {
     return trip.points.some(p => p.kind === 'start') && (!!trip.loop || trip.points.some(p => p.kind === 'finish'));
@@ -636,8 +643,8 @@ function startLoopAt(trip: Trip, id: string): Trip {
 }
 
 /** "Start the loop here": a new start at `coordinate` on the leg that ends at `legEndId`. */
-export function startLoopHere(trip: Trip, legEndId: string, coordinate: Coordinate): Trip {
-    const point: RoutePoint = { id: crypto.randomUUID(), kind: 'via', label: startLabel, coordinate: [...coordinate], progress: 0 };
+export function startLoopHere(trip: Trip, legEndId: string, coordinate: Coordinate, label = startLabel): Trip {
+    const point: RoutePoint = { id: crypto.randomUUID(), kind: 'via', label, coordinate: [...coordinate], progress: 0 };
     return canMoveLoopStart(trip) && trip.points.some(p => p.id === legEndId) ? startLoopAt(intoLeg(trip, point, legEndId), point.id) : trip;
 }
 
