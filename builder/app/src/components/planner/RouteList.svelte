@@ -3,8 +3,10 @@
     import Icon from './PlannerIcon.svelte';
     import type { RoutePoint } from '../../lib/planner/editor';
 
-    let { stops, onInspect, onReorder, measured = true, hoveredId = null, onHover }: {
+    let { stops, onInspect, onReorder, measured = true, loop = false, hoveredId = null, onHover }: {
         hoveredId?: string | null;
+        /** The last stop returns to the start, which has one row. */
+        loop?: boolean;
         onHover?: (id: string | null) => void;
         measured?: boolean;
         stops: { point: RoutePoint; distance: number }[];
@@ -13,16 +15,18 @@
     } = $props();
 
     const helpId = $props.id();
-    const listed = $derived(stops.filter(stop => stop.point.kind !== 'via'));
+    const listed = $derived(stops.filter((stop, i) => stop.point.kind !== 'via' && !(loop && i === stops.length - 1)));
+    // Rows 1 to `last - 1` can move; a loop has no finish row.
+    const last = $derived(loop ? listed.length : listed.length - 1);
     let list: HTMLOListElement;
     let drag = $state<{ id: string; from: number; to: number; y: number; delta: number; centers: number[] } | null>(null);
     let announcement = $state('');
 
     async function move(id: string, from: number, to: number, restoreFocus = false) {
-        if (from === to || to < 1 || to > listed.length - 2) return;
+        if (from === to || to < 1 || to >= last) return;
         const label = listed[from].point.label;
         onReorder(id, to - from);
-        announcement = `${label} moved to stop ${to} of ${listed.length - 2}. Changed legs follow roads.`;
+        announcement = `${label} moved to stop ${to} of ${last - 1}. Changed legs follow roads.`;
         if (restoreFocus) {
             await tick();
             [...list.querySelectorAll<HTMLButtonElement>('.handle')].find(handle => handle.dataset.point === id)?.focus();
@@ -30,7 +34,7 @@
     }
 
     function startDrag(event: PointerEvent, id: string, index: number) {
-        if (event.button !== 0 || listed.length < 4) return;
+        if (event.button !== 0 || last < 3) return;
         const centers = [...list.children].map(row => { const rect = row.getBoundingClientRect(); return rect.top + rect.height / 2; });
         drag = { id, from: index, to: index, y: event.clientY, delta: 0, centers };
         event.currentTarget instanceof HTMLElement && event.currentTarget.setPointerCapture(event.pointerId);
@@ -40,7 +44,7 @@
         if (!drag) return;
         drag.delta = event.clientY - drag.y;
         drag.to = drag.centers.reduce((nearest, center, index) =>
-            index > 0 && index < listed.length - 1 && Math.abs(center - event.clientY) < Math.abs(drag!.centers[nearest] - event.clientY) ? index : nearest, drag.from);
+            index > 0 && index < last && Math.abs(center - event.clientY) < Math.abs(drag!.centers[nearest] - event.clientY) ? index : nearest, drag.from);
     }
 
     function drop(event: PointerEvent) {
@@ -69,9 +73,9 @@
                     {#if measured}<small>{distance.toFixed(1)} km</small>{/if}
                 </span>
             </button>
-            {#if index > 0 && index < listed.length - 1}
+            {#if index > 0 && index < last}
                 <button type="button" class="handle" data-point={point.id} aria-label={`Reorder ${point.label}`} aria-describedby={helpId}
-                    title="Drag to reorder · use ↑ or ↓ when focused" disabled={listed.length < 4}
+                    title="Drag to reorder · use ↑ or ↓ when focused" disabled={last < 3}
                     onpointerdown={(event) => startDrag(event, point.id, index)} onpointermove={dragMove}
                     onpointerup={drop} onpointercancel={() => drag = null}
                     onkeydown={(event) => {
@@ -81,7 +85,7 @@
                         }
                     }}><Icon name="grip" size={20} /></button>
             {:else}
-                <small class="end">{point.kind === 'start' ? 'Start' : 'Finish'}</small>
+                <small class="end">{point.kind === 'start' ? loop ? 'Start and finish' : 'Start' : 'Finish'}</small>
             {/if}
         </li>
     {/each}

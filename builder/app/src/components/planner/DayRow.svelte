@@ -6,7 +6,7 @@
     import { dayColor } from '../../lib/planner/day-colors';
     import { kindLabel } from '../../lib/planner/search/presentation';
     import { profileAscent, profileDescent } from '../../lib/planner/profile-data';
-    import { dayOverTarget, dayStops, routingKey, type ItineraryDay, type OvernightCandidate, type Place, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
+    import { dayOverTarget, dayStops, orderedRoutePoints, routingKey, type ItineraryDay, type OvernightCandidate, type Place, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
 
     let {
         trip, day, days, theme, overnightNote = '', scale, expanded, changing, candidates, conflict, selectedId, revealId, hoveredId = null, onHover, calendar,
@@ -45,8 +45,9 @@
     const last = $derived(riding === days.length);
     const previous = $derived(days[riding - 2]);
     const start = $derived(riding === 1 ? trip.points.find(p => p.kind === 'start')!.label : previous?.pinned?.label ?? `Day ${calendar[riding - 1]} overnight`);
-    const end = $derived(last ? trip.points.find(p => p.kind === 'finish')!.label : day.pinned?.label ?? 'Overnight to choose');
-    const endId = $derived(last ? trip.points.find(p => p.kind === 'finish')!.id : day.pinned?.id ?? null);
+    const finish = $derived(orderedRoutePoints(trip).at(-1)!);
+    const end = $derived(last ? finish.label : day.pinned?.label ?? 'Overnight to choose');
+    const endId = $derived(last ? finish.id : day.pinned?.id ?? null);
     const line = $derived(trip.routing?.key === routingKey(trip) ? trip.routing : undefined);
     const ascent = $derived(profileAscent(day.from, day.to, line));
     const descent = $derived(profileDescent(day.from, day.to, line));

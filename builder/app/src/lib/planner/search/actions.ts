@@ -2,6 +2,7 @@ import {
   addPointNear,
   coordinateAt,
   cumulative,
+  hasEndpoints,
   itineraryDays,
   nearestProgress,
   pinNight,
@@ -50,8 +51,11 @@ export async function applyQueryChanges(
   }
   let trip = { ...original };
   for (const change of changes) {
-    if (change.op !== 'route' && (!trip.points.some(p => p.kind === 'start') || !trip.points.some(p => p.kind === 'finish')))
+    if (change.op !== 'route' && !hasEndpoints(trip))
       throw new Error('Choose a start and finish before editing the route.');
+    // Both rebuild the points from the stops, and a loop lists its start twice.
+    if (trip.loop && (change.op === 'reverse' || change.op === 'reroute'))
+      throw new Error('Search cannot change a loop this way yet. Edit the loop on the map.');
     const line = routeCoordinates(trip),
       total = cumulative(line).at(-1)!;
     const ridingDay = (number: number) => {
@@ -213,6 +217,7 @@ export async function applyQueryChanges(
         );
       trip = {
         ...trip,
+        loop: undefined,
         points,
         routeOrder: points.slice(1, -1).map((p) => p.id),
         splits: undefined,

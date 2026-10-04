@@ -34,7 +34,8 @@ export function isTrip(value: unknown): value is Trip {
         || typeof value.variant !== 'string' || !['valley', 'direct'].includes(value.variant)
         || !finite(value.target) || value.target < 1 || !finite(value.limit) || value.limit < 0
         || (value.climbTarget !== undefined && (!finite(value.climbTarget) || value.climbTarget < 0))
-        || (value.mode !== undefined && value.mode !== 'route' && value.mode !== 'trip')) return false;
+        || (value.mode !== undefined && value.mode !== 'route' && value.mode !== 'trip')
+        || (value.loop !== undefined && value.loop !== true)) return false;
 
     const { points, days } = value;
     const ids = new Set(points.map(point => point.id));
@@ -43,7 +44,8 @@ export function isTrip(value: unknown): value is Trip {
     const starts = route.filter(point => point.kind === 'start').length;
     const finishes = route.filter(point => point.kind === 'finish').length;
     if (ids.size !== points.length || starts > 1 || finishes > 1
-        || (route.length >= 2 ? starts !== 1 || finishes !== 1 : starts + finishes !== route.length)
+        || (value.loop ? route.length < 2 || starts !== 1 || finishes !== 0
+            : route.length >= 2 ? starts !== 1 || finishes !== 1 : starts + finishes !== route.length)
         || nights.some(point => !integer(point.night, 1, days - 1) || point.id !== `night-${point.night}`)
         || new Set(nights.map(point => point.night)).size !== nights.length) return false;
 

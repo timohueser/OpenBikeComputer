@@ -16,7 +16,7 @@ export interface RoutePoint {
     kind: PointKind;
     progress: number;
     night?: number;
-    /** Mode of the leg that ends at this point; absent means routed. */
+    /** Mode of the leg that ends at this point; absent means routed. In a loop the start also ends the closing leg. */
     leg?: LegMode;
     /** Inner path of a drawn leg. The leg always joins its two points, so moving a point keeps the drawing. */
     drawn?: Coordinate[];
@@ -39,6 +39,8 @@ export interface Trip {
     routeOrder?: string[];
     restNames?: string[];
     mode?: 'route' | 'trip';
+    /** The finish is the start: the route order ends with the start again, and a loop has no finish point. */
+    loop?: boolean;
     points: RoutePoint[];
     days: number;
     budget: 'days' | 'distance' | 'hours';
@@ -90,7 +92,20 @@ export function emptyTrip(mode: Trip['mode'] = 'route'): Trip {
         days: 3, budget: 'days', target: 3, limit: 50, variant: 'valley', restAfter: [] };
 }
 
+const startLabel = 'Start';
+
+/** A start, and a finish or a loop: enough points for a route. */
+export function hasEndpoints(trip: Trip): boolean {
+    return trip.points.some(p => p.kind === 'start') && (!!trip.loop || trip.points.some(p => p.kind === 'finish'));
+}
+
+/** A finish opens a loop: the route ends at the new finish instead of returning to the start. */
 export function setEndpoint(trip: Trip, kind: 'start' | 'finish', coordinate: Coordinate, label?: string): Trip {
+    if (kind === 'finish' && trip.loop) {
+        const point: RoutePoint = { id: crypto.randomUUID(), kind, coordinate: [...coordinate], label: label ?? 'Finish', progress: 1 };
+        return { ...trip, loop: undefined, splits: undefined, routeOrder: orderedRoutePoints(trip).slice(1, -1).map(p => p.id),
+            points: [...trip.points.map(p => p.kind === 'start' ? { ...p, leg: undefined, drawn: undefined } : p), point] };
+    }
     const previous = trip.points.find(p => p.kind === kind);
     if (kind === 'finish' && previous) {
         if (previous.coordinate[0] === coordinate[0] && previous.coordinate[1] === coordinate[1]) return trip;
@@ -99,7 +114,7 @@ export function setEndpoint(trip: Trip, kind: 'start' | 'finish', coordinate: Co
         return { ...trip, points: [...trip.points.map(p => p.id === previous.id ? { ...p, kind: 'waypoint' as const } : p), point], routeOrder: order };
     }
     const point: RoutePoint = { id: previous?.id ?? crypto.randomUUID(), kind, coordinate: [...coordinate],
-        label: label ?? (kind === 'start' ? 'Start' : 'Finish'), progress: kind === 'start' ? 0 : 1 };
+        label: label ?? (kind === 'start' ? startLabel : 'Finish'), progress: kind === 'start' ? 0 : 1 };
     return { ...trip, splits: undefined,
         points: previous ? trip.points.map(p => p.id === previous.id ? point : p) : [...trip.points, point] };
 }
@@ -117,8 +132,10 @@ export function removeRoutePoint(trip: Trip, id: string): Trip {
         progress: removed.kind === 'start' ? 0 : 1, night: undefined, anchor: undefined,
         leg: removed.kind === 'start' ? undefined : p.leg, drawn: removed.kind === 'start' ? undefined : p.drawn,
     });
-    const next = { ...trip, points, routing: undefined, splits: undefined };
+    const next: Trip = { ...trip, points, routing: undefined, splits: undefined };
     next.routeOrder = route.map(p => p === promoted ? points.find(point => point.kind === removed.kind)!.id : p.id);
+    // A loop needs a point to ride to before it returns.
+    if (next.loop && orderedRoutePoints(next).length < 3) next.loop = undefined;
     return next;
 }
 
@@ -158,7 +175,8 @@ export function orderedRoutePoints(trip: Trip): RoutePoint[] {
     const middle = trip.points.filter(p => !['start', 'finish', 'marker'].includes(p.kind)).sort((a, b) => a.progress - b.progress);
     const order = trip.routeOrder ?? middle.map(p => p.id);
     const ranked = order.flatMap(id => middle.filter(p => p.id === id));
-    return [...trip.points.filter(p => p.kind === 'start'), ...ranked, ...middle.filter(p => !order.includes(p.id)), ...trip.points.filter(p => p.kind === 'finish')];
+    const start = trip.points.filter(p => p.kind === 'start');
+    return [...start, ...ranked, ...middle.filter(p => !order.includes(p.id)), ...trip.loop ? start : trip.points.filter(p => p.kind === 'finish')];
 }
 
 export function reorderPoint(trip: Trip, id: string, offset: number): Trip {
@@ -180,7 +198,8 @@ export function reorderPoint(trip: Trip, id: string, offset: number): Trip {
         previous = point;
     }
     const changed = new Set(points.slice(1).filter((point, i) => before.get(point.id) !== points[i].id).map(point => point.id));
-    const reordered = points.flatMap(point => [...(changed.has(point.id) ? [] : shapes.get(point.id) ?? []), point]);
+    // In a loop the start's shapes belong to the closing leg, at the end.
+    const reordered = points.flatMap((point, i) => [...(!i || changed.has(point.id) ? [] : shapes.get(point.id) ?? []), point]);
     const retained = new Set(reordered.map(point => point.id));
     return { ...trip, routeOrder: reordered.map(point => point.id), splits: undefined,
         points: trip.points.filter(point => point.kind !== 'via' || retained.has(point.id)).map(point =>
@@ -196,11 +215,12 @@ function routeLayout(trip: Trip): { coordinates: Coordinate[]; stops: Stop[] } {
         const line = trip.routing?.key === routingKey(trip) ? trip.routing : undefined;
         return {
             coordinates: line?.coordinates ?? [points[0].coordinate],
-            stops: points.map(point => ({ point, distance: line?.stops.find(stop => stop.id === point.id)?.distance ?? 0 })),
+            // By position: a loop lists its start twice.
+            stops: points.map((point, i) => ({ point, distance: line?.stops[i]?.distance ?? 0 })),
         };
     }
     const base = corridorCoordinates(trip);
-    if (!trip.routeOrder && points.slice(1).every(p => (p.leg ?? 'routed') === 'routed')) {
+    if (!trip.routeOrder && !trip.loop && points.slice(1).every(p => (p.leg ?? 'routed') === 'routed')) {
         const total = cumulative(base).at(-1)!;
         return {coordinates:base, stops:points.map(point=>({point,distance:point.kind==='start'?0:point.kind==='finish'?total:nearestProgress(base,point.coordinate)*total}))};
     }
@@ -514,7 +534,7 @@ export function pinNight(trip: Trip, night: number, coordinate: Coordinate, labe
 /** A clicked point extends a single route at its end. On a trip it joins its nearest leg, so it stays in the day it lies in. */
 export function addClickedPoint(trip: Trip, point: RoutePoint): Trip {
     if (trip.mode !== 'route') return addPointNear(trip, point);
-    return point.kind === 'marker' ? { ...trip, points: [...trip.points, point] } : intoLeg(trip, point, finishId(trip));
+    return point.kind === 'marker' ? { ...trip, points: [...trip.points, point] } : intoLeg(trip, point, orderedRoutePoints(trip).at(-1)!.id);
 }
 
 /** Adds a point in the leg nearest to it; the other points keep their order. */
@@ -526,7 +546,7 @@ export function addPointNear(trip: Trip, point: RoutePoint): Trip {
 /** Inserts a shaping point into the leg that ends at `legEndId`. */
 export function insertPoint(trip: Trip, legEndId: string, coordinate: Coordinate): Trip {
     const end = trip.points.find(p => p.id === legEndId);
-    if (!end || end.kind === 'start' || end.kind === 'marker') return trip;
+    if (!end || (end.kind === 'start' && !trip.loop) || end.kind === 'marker') return trip;
     return intoLeg(trip, { id: crypto.randomUUID(), kind: 'via', label: 'Shaping point', coordinate: [...coordinate], progress: trip.live ? nearestProgress(routeCoordinates(trip), coordinate) : anchorProgress(coordinate) }, legEndId);
 }
 
@@ -558,10 +578,6 @@ function intoLeg(trip: Trip, point: RoutePoint, legEndId: string): Trip {
     return { ...trip, points: [...points, placed], routeOrder: orderBefore(trip, point.id, legEndId) };
 }
 
-function finishId(trip: Trip): string {
-    return trip.points.find(p => p.kind === 'finish')!.id;
-}
-
 function nearestLegEnd(trip: Trip, coordinate: Coordinate): string {
     const { coordinates, stops } = routeLayout(trip);
     const distance = nearestProgress(coordinates, coordinate) * stops.at(-1)!.distance;
@@ -574,6 +590,39 @@ function orderBefore(trip: Trip, id: string, legEndId: string): string[] {
     const index = middle.indexOf(legEndId);
     middle.splice(index < 0 ? middle.length : index, 0, id);
     return middle;
+}
+
+/** "Back to start": the finish becomes the last stop, and a routed leg returns to the start. */
+export function closeLoop(trip: Trip): Trip {
+    const finish = trip.points.find(p => p.kind === 'finish');
+    if (trip.loop || !finish || !hasEndpoints(trip)) return trip;
+    return { ...trip, loop: true, splits: undefined, routeOrder: orderedRoutePoints(trip).slice(1).map(p => p.id),
+        points: trip.points.map(p => p.id === finish.id ? { ...p, kind: 'waypoint' as const } : p) };
+}
+
+/** A loop from the first coordinate through the others as shaping points. */
+export function loopTrip(trip: Trip, coordinates: Coordinate[], label = startLabel): Trip {
+    const [start, ...shape] = coordinates.map((coordinate, i): RoutePoint => ({ id: crypto.randomUUID(), kind: i ? 'via' : 'start',
+        label: i ? 'Shaping point' : label, coordinate: [...coordinate], progress: i / coordinates.length }));
+    return { ...trip, loop: true, routing: undefined, splits: undefined, points: [start, ...shape], routeOrder: shape.map(p => p.id) };
+}
+
+/** Makes the route point `id` the start of a loop. The points keep their order around the loop, and no leg changes.
+ * The old start becomes a visit when it has a name of its own, and a shaping point otherwise. */
+export function startLoopAt(trip: Trip, id: string): Trip {
+    const route = orderedRoutePoints(trip).slice(0, -1);
+    const index = route.findIndex(p => p.id === id);
+    if (!trip.loop || index < 1) return trip;
+    const old = route[0];
+    return { ...trip, splits: undefined, routeOrder: [...route.slice(index + 1), old, ...route.slice(1, index)].map(p => p.id),
+        points: trip.points.map(p => p.id === id ? { ...p, id: p.kind === 'night' ? crypto.randomUUID() : p.id, kind: 'start' as const, progress: 0, night: undefined, anchor: undefined }
+            : p.id === old.id ? { ...p, kind: old.label === startLabel ? 'via' as const : 'waypoint' as const } : p) };
+}
+
+/** "Start the loop here": a new start at `coordinate` on the leg that ends at `legEndId`. */
+export function startLoopHere(trip: Trip, legEndId: string, coordinate: Coordinate): Trip {
+    const point: RoutePoint = { id: crypto.randomUUID(), kind: 'via', label: startLabel, coordinate: [...coordinate], progress: 0 };
+    return trip.loop && trip.points.some(p => p.id === legEndId) ? startLoopAt(intoLeg(trip, point, legEndId), point.id) : trip;
 }
 
 export function nightOrderConflicts(trip: Trip): [RoutePoint, RoutePoint][] {
