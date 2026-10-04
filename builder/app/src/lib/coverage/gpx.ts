@@ -2,7 +2,8 @@
 //
 // The corridor panel takes "a route" from two places — a `.gpx` upload and the routes
 // stored on a connected device — and both end as a named polyline in integer
-// microdegrees. This module is the upload half.
+// microdegrees. This module is the upload half. The web planner reads the same files
+// with `readGpx`, which keeps every point.
 //
 // It is a **string scanner, not an XML parser**, and that is a decision rather than a
 // shortcut. The only facts a corridor needs are the `lat`/`lon` attribute pairs of the
@@ -10,7 +11,7 @@
 // to a browser, putting the one piece of the corridor flow that is pure data juggling
 // out of reach of the unit suite.
 //
-// Points are **decimated** to a ceiling before they leave here. A recorded track can
+// `parseGpx` **decimates** points to a ceiling. A recorded track can
 // carry a point per second, and the corridor test is per segment per candidate cell. At
 // the grid's cell sizes, dropping intermediate points moves the corridor's edge by
 // metres. The ends are always kept.
@@ -97,7 +98,7 @@ function decimate(points: LatLon[], max: number): LatLon[] {
 }
 
 /**
- * One GPX body → one route.
+ * One GPX body → one named line with every point.
  *
  * One, deliberately: a corridor part buffers a single polyline, and a file whose tracks
  * are two different rides belongs in the panel as two files. Multiple `<trkseg>`s are
@@ -107,7 +108,7 @@ function decimate(points: LatLon[], max: number): LatLon[] {
  * @param fallbackName used when the file names nothing — the filename, usually.
  * @throws {GpxError} when no usable points survive.
  */
-export function parseGpx(text: string, fallbackName: string): GpxRoute {
+export function readGpx(text: string, fallbackName: string): { name: string; points: LatLon[] } {
     const tags = text.match(/<(?:trkpt|rtept)\b[^>]*>/g) ?? [];
     const trk: LatLon[] = [];
     const rte: LatLon[] = [];
@@ -130,10 +131,12 @@ export function parseGpx(text: string, fallbackName: string): GpxRoute {
                   : "the file has fewer than two points, which is not a route",
         );
     }
+    return { name: nameOf(text) ?? fallbackName, points };
+}
+
+/** One GPX body → one corridor route, decimated to {@link MAX_ROUTE_POINTS}. */
+export function parseGpx(text: string, fallbackName: string): GpxRoute {
+    const { name, points } = readGpx(text, fallbackName);
     const decimated = decimate(points, MAX_ROUTE_POINTS);
-    return {
-        name: nameOf(text) ?? fallbackName,
-        points: decimated,
-        distanceKm: lengthKm(decimated),
-    };
+    return { name, points: decimated, distanceKm: lengthKm(decimated) };
 }

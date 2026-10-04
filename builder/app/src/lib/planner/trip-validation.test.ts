@@ -34,7 +34,9 @@ describe('stored planner data', () => {
             { ...trip, routeOrder: ['missing'] }, { ...trip, routeOrder: ['finish', 'finish'] },
             { ...trip, restAfter: [4] }, { ...trip, splits: { 3: .5 } },
             { ...trip, points: [...trip.points, { ...trip.points[0], id: 'night-3', kind: 'night', night: 3 }] },
+            { ...trip, points: [trip.points[0], { ...trip.points[1], leg: 'ferry' }] },
         ];
+        expect(isTrip({ ...trip, points: [trip.points[0], { ...trip.points[1], leg: 'transfer' }] })).toBe(true);
         for (const value of invalid) expect(isTrip(value), JSON.stringify(value)).toBe(false);
     });
 

@@ -49,8 +49,9 @@ Longitude is from -180 to 180. Latitude is from -90 to 90.
 
 The point `kind` is `start`, `finish`, `pass`, `via`, `waypoint`, `detour`, `night`,
 or `marker`. Optional fields are boolean `autoLabel`, string `placeKind`, a
-coordinate `anchor`, and `leg` (`routed`, `straight`, or `drawn`). A drawn leg can
-have a `drawn` array of coordinates between its endpoints. Optional `turnaround`
+coordinate `anchor`, and `leg` (`routed`, `straight`, `drawn`, or `transfer`). A drawn leg can
+have a `drawn` array of coordinates between its endpoints. A transfer leg is a straight
+line that the rider does not ride, such as a train. It adds no ridden distance or time. Optional `turnaround`
 is `true` when the point turns the route back.
 
 A night has integer `night` from 1 to `days - 1` and ID `night-N`, where `N` is

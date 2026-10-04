@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { closeLoop, loopTrip, startLoopHere, storedPlan, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, routeStops, addRestDay, anchorProgress, addClickedPoint, addPointNear, dayStops, applyBudget, coordinateAt, cumulative, initialTrip, insertPoint, itineraryDays, kilometres, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, removeRestDay, routeCoordinates, routeSlice, routingKey, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Place, type Coordinate, type RoutePoint, type Trip } from './editor';
+import { closeLoop, loopTrip, startLoopHere, storedPlan, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, routeStops, addRestDay, anchorProgress, addClickedPoint, addPointNear, dayStops, applyBudget, coordinateAt, cumulative, initialTrip, insertPoint, itineraryDays, kilometres, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, removeRestDay, routeCoordinates, routeLegsAround, routeSlice, routingKey, setDrawnLeg, setLegMode, setSplit, TripHistory, tripDays, type Place, type Coordinate, type RoutePoint, type Trip } from './editor';
 import { isTrip } from './trip-validation';
 import { calculateLine } from './routing';
 import { LegCache } from './route-legs';
@@ -430,11 +430,27 @@ describe('legs', () => {
         expect(dayStops(added, tripDays(added)[1])).toEqual([]);
     });
 
-    it('splits a drawn leg where a pinned night joins it', () => {
+    it('splits a drawn leg where a pinned night joins it and keeps every drawn vertex', () => {
         const initial = initialTrip();
         const drawn = setDrawnLeg(initial, 'finish', [[7.2, 47.7], [6.8, 47.7], [6.4, 47.5]]);
         const pinned = pinNight(drawn, 1, [6.8, 47.69], 'Camp');
-        expect(routeCoordinates(pinned)).toEqual([initial.points[0].coordinate, [7.2, 47.7], [6.8, 47.69], [6.4, 47.5], initial.points[1].coordinate]);
+        expect(routeCoordinates(pinned)).toEqual([initial.points[0].coordinate, [7.2, 47.7], [6.8, 47.7], [6.8, 47.69], [6.4, 47.5], initial.points[1].coordinate]);
+    });
+
+    it('adds a point on a drawn line without changing the line, and a drag routes only the legs beside it', () => {
+        const initial = initialTrip();
+        const sketch: Coordinate[] = [[7.4, 47.6], [7.0, 47.6], [6.6, 47.4]];
+        const drawn = setDrawnLeg(initial, 'finish', sketch);
+        const before = routeCoordinates(drawn);
+        const on: Coordinate = [7.2, 47.6];
+        const split = insertPoint(drawn, 'finish', on);
+        expect(routeCoordinates(split)).toEqual([...before.slice(0, 2), on, ...before.slice(2)]);
+        const added = orderedRoutePoints(split)[1];
+        const again = insertPoint(split, 'finish', [6.8, 47.5]);
+        const middle = orderedRoutePoints(again)[2];
+        const moved = routeLegsAround(again, middle.id);
+        expect(orderedRoutePoints(moved).map(point => point.leg)).toEqual([undefined, 'drawn', undefined, undefined]);
+        expect(moved.points.find(point => point.id === added.id)!.drawn).toEqual([sketch[0]]);
     });
 });
 

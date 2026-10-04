@@ -21,7 +21,7 @@ function point(value: unknown): value is RoutePoint {
     return record(value) && typeof value.id === 'string' && value.id.length > 0 && typeof value.label === 'string'
         && coordinate(value.coordinate) && finite(value.progress) && value.progress >= 0 && value.progress <= 1
         && typeof value.kind === 'string' && ['start', 'finish', 'pass', 'via', 'waypoint', 'detour', 'night', 'marker'].includes(value.kind)
-        && (value.leg === undefined || (typeof value.leg === 'string' && ['routed', 'straight', 'drawn'].includes(value.leg)))
+        && (value.leg === undefined || (typeof value.leg === 'string' && ['routed', 'straight', 'drawn', 'transfer'].includes(value.leg)))
         && (value.drawn === undefined || (Array.isArray(value.drawn) && value.drawn.every(coordinate)))
         && (value.anchor === undefined || coordinate(value.anchor))
         && (value.placeKind === undefined || typeof value.placeKind === 'string')

@@ -86,18 +86,35 @@ export interface RoutingLine {
 
 const endpoint = import.meta.env.VITE_PLANNER_ROUTING_URL ?? '/routing';
 
+async function post(path: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
+    const response = await fetch(`${endpoint}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal, body: JSON.stringify(body) });
+    const data = await response.json().catch(() => { throw new Error('The routing service returned an invalid response.'); });
+    if (!response.ok) throw Object.assign(new Error(data.message ?? 'Routing is unavailable.'), { code: data.code as string | undefined });
+    return data;
+}
+
 /** With `'only'`, the answer leaves out the primary route and can be empty. */
 export async function requestRoute(points: Coordinate[], profile: string, signal: AbortSignal, alternatives: boolean | 'only' = false, turnarounds: number[] = [],
     pins: { start_position?: string; end_position?: string } = {}): Promise<EngineRoute[]> {
-    const response = await fetch(`${endpoint}/v1/route`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
-        body: JSON.stringify({ points, profile, ...(alternatives === 'only' ? { alternatives_only: true } : { alternatives }), turnarounds, ...pins }),
-    });
-    const data = await response.json().catch(() => { throw new Error('The routing service returned an invalid response.'); });
-    if (!response.ok) throw Object.assign(new Error(data.message ?? 'Routing is unavailable.'), { code: data.code as string | undefined });
-    const routes = decodeRoutes(data);
+    const body = { points, profile, ...(alternatives === 'only' ? { alternatives_only: true } : { alternatives }), turnarounds, ...pins };
+    const routes = decodeRoutes(await post('/v1/route', body, signal) as Parameters<typeof decodeRoutes>[0]);
     if (!routes.length && alternatives !== 'only') throw new Error('The routing service returned no route.');
     return routes;
+}
+
+/** Points that `/v1/route` routes along `line` (`specs/route-api.md`); a turnaround is an index into `points`. */
+export interface Shape {
+    points: Coordinate[];
+    turnarounds: number[];
+}
+
+export async function requestShape(line: Coordinate[], profile: string, signal?: AbortSignal): Promise<Shape> {
+    const data = await post('/v1/shape', { line, profile }, signal) as Partial<Shape>;
+    const points = data.points, turnarounds = data.turnarounds ?? [];
+    if (!Array.isArray(points) || points.length < 2 || !points.every(p => Array.isArray(p) && p.length === 2 && p.every(Number.isFinite))
+        || !Array.isArray(turnarounds) || !turnarounds.every(i => Number.isInteger(i) && i > 0 && i < points.length - 1))
+        throw new Error('The routing service returned an invalid response.');
+    return { points, turnarounds };
 }
 
 /** The primary route and the alternatives of a line whose alternatives are not ready. Such a line is one routed request
@@ -156,11 +173,12 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         const end = points[i];
         const before = points[i - 1];
         const origin = before.kind === 'detour' ? before.anchor ?? before.coordinate : before.coordinate;
-        if (end.leg === 'straight' || end.leg === 'drawn') {
+        if (end.leg && end.leg !== 'routed') {
             const line = [origin, ...(end.leg === 'drawn' ? end.drawn ?? [] : []), end.coordinate];
             const lengths = cumulative(line);
-            append(line, line.map(() => null), lengths.map(km => km / 15 * 3600), {});
-            const km = lengths.at(-1)!;
+            const ridden = end.leg !== 'transfer';
+            append(line, line.map(() => null), lengths.map(km => ridden ? km / 15 * 3600 : 0), {});
+            const km = ridden ? lengths.at(-1)! : 0;
             result.unknownSurfaceKm += km;
             result.unroutedKm += km;
             result.stops.push({ id: end.id, distance });
