@@ -102,8 +102,10 @@ export function importedTrip(base: Pick<Trip, 'bike' | 'preset'>, lines: Importe
     // progress (NaN), so its markers sit mid-day.
     const markers = lines.flatMap(({ line, waypoints }, file) => {
         const flat = line.map((c): Coordinate => [c[0], c[1]]);
-        return waypoints.map(({ label, coordinate }): RoutePoint => ({ id: crypto.randomUUID(), kind: 'marker', label, coordinate,
-            progress: (file + (nearestProgress(flat, coordinate) || .5)) / lines.length }));
+        return waypoints.map(({ label, coordinate }): RoutePoint => {
+            const progress = nearestProgress(flat, coordinate);
+            return { id: crypto.randomUUID(), kind: 'marker', label, coordinate, progress: (file + (Number.isNaN(progress) ? .5 : progress)) / lines.length };
+        });
     });
     const days = lines.length > 1 ? lines.length : undefined;
     return { ...emptyTrip(days ? 'trip' : 'route'), bike: base.bike, preset: base.preset, points: [...points, ...markers],

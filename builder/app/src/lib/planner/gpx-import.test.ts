@@ -82,7 +82,7 @@ describe('GPX import', () => {
         vi.stubGlobal('fetch', fetch);
         const lines = readTracks([
             { name: 'a.gpx', text: gpx(track([7.6, 47.5], 50), undefined, '<wpt lat="47.51" lon="7.62"><name>Hut</name></wpt>') },
-            { name: 'b.gpx', text: gpx(track([7.65, 47.5], 50), undefined, '<wpt lat="47.49" lon="7.67"><name>Cafe</name></wpt>') }]);
+            { name: 'b.gpx', text: gpx(track([7.65, 47.5], 50), undefined, '<wpt lat="47.49" lon="7.67"><name>Cafe</name></wpt><wpt lat="47.5" lon="7.65"><name>Gate</name></wpt>') }]);
         const planned = await planOnRoads(lines, line => requestShape(line, 'touring'));
         expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ line: lines[0].line, profile: 'touring' });
         expect(planned.failed).toEqual(['b']);
@@ -90,7 +90,9 @@ describe('GPX import', () => {
         expect(isTrip(trip)).toBe(true);
         expect(orderedRoutePoints(trip).map(p => [p.kind, p.leg, p.turnaround])).toEqual([
             ['start', undefined, undefined], ['via', undefined, true], ['night', undefined, undefined], ['finish', 'drawn', undefined]]);
-        expect(trip.points.filter(p => p.kind === 'marker').map(p => p.label)).toEqual(['Hut', 'Cafe']);
+        expect(trip.points.filter(p => p.kind === 'marker').map(p => p.label)).toEqual(['Hut', 'Cafe', 'Gate']);
+        // A waypoint at the first point of file 2 starts day 2; `nearestProgress` keeps 0.005 from each end.
+        expect(trip.points.find(p => p.label === 'Gate')!.progress).toBeCloseTo(1 / 2, 2);
         expect(trip.routeOrder).toHaveLength(2);
     });
 });
