@@ -27,7 +27,8 @@ function point(value: unknown): value is RoutePoint {
         && (value.anchor === undefined || coordinate(value.anchor))
         && (value.placeKind === undefined || typeof value.placeKind === 'string')
         && (value.autoLabel === undefined || typeof value.autoLabel === 'boolean')
-        && (value.turnaround === undefined || value.turnaround === true);
+        && (value.turnaround === undefined || value.turnaround === true)
+        && (value.note === undefined || typeof value.note === 'string');
 }
 
 /** Browser records and imported files must satisfy the route model. */

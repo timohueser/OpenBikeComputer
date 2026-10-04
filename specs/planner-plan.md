@@ -53,7 +53,8 @@ coordinate `anchor`, and `leg` (`routed`, `straight`, `drawn`, or `transfer`). A
 have a `drawn` array of coordinates between its endpoints. A drawn coordinate can have a
 third finite number, the elevation in metres. A transfer leg is a straight
 line that the rider does not ride, such as a train. It adds no ridden distance or time. Optional `turnaround`
-is `true` when the point turns the route back.
+is `true` when the point turns the route back. Any point can have an optional string `note`, such as the
+description of a route file's waypoint.
 
 A night has integer `night` from 1 to `days - 1` and ID `night-N`, where `N` is
 that number. Night numbers are unique. Markers do not count as route points.
