@@ -63,8 +63,10 @@ class WeatherLayer implements DataLayer<Samples> {
     private shown = false;
     /** The week, variable and theme of the drawn tiles. */
     private drawn = '';
-    /** The label data on the map, so an unchanged view sets nothing. */
+    /** The view, week, variable and decoded tiles of the labels on the map; an unchanged view rebuilds nothing. */
     private labelled = '';
+    /** The basemap town labels are hidden in the current style. */
+    private townsHidden = false;
     private frame = 0;
 
     constructor(private url: string) {}
@@ -165,11 +167,15 @@ class WeatherLayer implements DataLayer<Samples> {
     /**
      * Labels the places of the loaded basemap tiles with the value of the layer week: the high at the
      * place's height, or the typical rain. It reads only decoded tiles, so it requests nothing; a town
-     * without a decoded DEM tile keeps its bare name until the map renders that tile.
+     * without a decoded DEM tile keeps its bare name until the map renders that tile. It runs on each
+     * `idle`, so it sets nothing that renders again unless the view, week or decoded tiles changed.
      */
     private relabel = async () => {
         const map = this.map, climate = this.climate, variable = this.variable.value as Variable, date = this.date;
         if (!map?.getSource(LABELS) || !climate || !this.shown) return;
+        const view = `${map.getBounds().toArray()} ${map.getZoom()} ${weekOf(date)} ${variable} ${[...this.dems.keys()]} ${climate.decoded.size}`;
+        if (view === this.labelled) return;
+        this.labelled = view;
         const places = mapPlaces([
             ...map.querySourceFeatures('basemap', { sourceLayer: 'places', filter: ['==', ['get', 'kind'], 'locality'] }),
             ...map.querySourceFeatures('basemap', { sourceLayer: 'pois', filter: ['==', ['get', 'kind'], 'peak'] }),
@@ -177,24 +183,25 @@ class WeatherLayer implements DataLayer<Samples> {
         const week = weekOf(date);
         const values = variable === 'rain'
             ? places.map(({ coordinate }) => rainAt(coordinate, this.cell, week, climate.meta.firstYear))
-            : await Promise.all(places.map(async place => highAt(place.coordinate, place.elevation ?? await this.heightAt(place.coordinate, false), this.cell, week)));
+            : await Promise.all(places.map(async place => {
+                const height = place.elevation ?? await this.heightAt(place.coordinate, false);
+                return Number.isNaN(height) ? NaN : highAt(place.coordinate, height, this.cell, week);
+            }));
         // A newer view, week or variable relabels on its own.
-        if (map !== this.map || date !== this.date || variable !== this.variable.value || !this.shown || !map.getSource(LABELS)) return;
+        if (map !== this.map || view !== this.labelled || !this.shown || !map.getSource(LABELS)) return;
         const labels = placeLabels(places, values.map(value => Number.isNaN(value) ? undefined : variable === 'rain' ? `${rainRange(value, '-')} mm` : mapDegrees(value)));
-        this.townLabels(map, false);
-        const key = JSON.stringify(labels);
-        if (key === this.labelled) return;
-        this.labelled = key;
         (map.getSource(LABELS) as GeoJSONSource).setData(labels);
     };
 
     /**
      * Shows or hides the basemap town labels. Opacity, not visibility: a layout change would make the
      * basemap parse its tiles again. The hidden labels still take their space, but the layer's labels
-     * are above them, so MapLibre places those first.
+     * are above them, so MapLibre places those first. MapLibre renders again on each paint change, even
+     * to the same value, so this changes the labels only when they are not already as asked.
      */
     private townLabels(map: Map, shown: boolean) {
-        if (!map.getLayer(TOWNS)) return;
+        if (!map.getLayer(TOWNS) || this.townsHidden === !shown) return;
+        this.townsHidden = !shown;
         for (const property of ['text-opacity', 'icon-opacity'] as const) map.setPaintProperty(TOWNS, property, shown ? undefined : 0);
     }
 
@@ -205,8 +212,12 @@ class WeatherLayer implements DataLayer<Samples> {
         this.shown = shown;
         if (map.getLayer(this.id)) {
             map.setLayoutProperty(this.id, 'visibility', shown ? 'visible' : 'none');
-            if (map.getLayer(LABELS)) map.setLayoutProperty(LABELS, 'visibility', shown ? 'visible' : 'none');
-            if (!shown) this.townLabels(map, true);
+            if (map.getLayer(LABELS)) {
+                map.setLayoutProperty(LABELS, 'visibility', shown ? 'visible' : 'none');
+                this.townLabels(map, !shown);
+            }
+            // A relabel that a hide cut short runs again on show.
+            if (!shown) this.labelled = '';
             // A hidden layer keeps its old tiles, so a change while hidden refreshes on show.
             const look = `${weekOf(date)} ${this.variable.value} ${theme}`;
             if (shown && look !== this.drawn) {
@@ -224,6 +235,8 @@ class WeatherLayer implements DataLayer<Samples> {
             if (this.map !== map || this.theme !== theme || map.getSource(this.id)) return;
             this.drawn = `${weekOf(this.date)} ${this.variable.value} ${theme}`;
             this.labelled = '';
+            // A new style shows its town labels.
+            this.townsHidden = false;
             map.addSource(this.id, { type: 'raster', tiles: [`${PROTOCOL}://{z}/{x}/{y}`], tileSize: TILE, maxzoom: MAX_ZOOM, bounds, attribution: this.meta?.attribution });
             // Under the relief, so the hillshade shades the colours.
             map.addLayer({ id: this.id, type: 'raster', source: this.id, layout: { visibility: this.shown ? 'visible' : 'none' }, paint: { 'raster-fade-duration': 0 } }, map.getLayer('relief') ? 'relief' : undefined);
@@ -231,6 +244,7 @@ class WeatherLayer implements DataLayer<Samples> {
             map.addSource(LABELS, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
             const order = map.getLayersOrder();
             map.addLayer(labelLayer(map, theme, this.shown), order[order.indexOf(TOWNS) + 1]);
+            this.townLabels(map, !this.shown);
             // Each rendered view relabels: the rendered tiles have decoded the DEM and climate tiles it reads.
             map.off('idle', this.relabel);
             map.on('idle', this.relabel);

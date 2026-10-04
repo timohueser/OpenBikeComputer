@@ -132,6 +132,9 @@ describe('weather along a route', () => {
         expect(stripScale(highs)).toEqual({ range: '9–19 °C along the route', marks: [{ index: 0, label: '9°' }, { index: 4, label: '19°' }] });
         // One temperature along the whole route takes the middle colour and needs no marks.
         expect([...stripClasses([5, 5])]).toEqual([16, 16]);
+        // A route within 4 °C keeps near-even colours: 5.0 and 5.2 °C are neighbouring steps, not the ramp ends.
+        expect([...stripClasses([5, 5.2])]).toEqual([15, 16]);
+        expect([...stripClasses([5, 9])]).toEqual([0, 31]);
         expect(stripScale([5, 5.2])!.marks).toEqual([]);
         expect(stripScale([NaN])).toBeNull();
     });

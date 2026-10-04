@@ -294,13 +294,20 @@ export function stripFills(theme: Theme): Swatch[] {
 }
 
 /**
+ * The narrowest span of the stretched strip ramp in °C, centred between the coldest and the warmest
+ * sample. Chosen for this strip: a rider barely notices less than a few degrees, so a route within
+ * them keeps near-even colours instead of the full ramp.
+ */
+const STRIP_MIN_SPAN = 4;
+
+/**
  * The strip class of each high on the ramp stretched from the coldest to the warmest sample, so the
  * strip shows where the route is warmer even where the map colours barely change along it.
  */
 export function stripClasses(highs: ArrayLike<number>): Uint8Array {
     const [low, high] = minMax(highs) ?? [0, 0];
-    return Uint8Array.from(highs, value => Number.isNaN(value) ? STRIP_STEPS
-        : high > low ? Math.round((value - low) / (high - low) * (STRIP_STEPS - 1)) : STRIP_STEPS >> 1);
+    const span = Math.max(high - low, STRIP_MIN_SPAN), from = (low + high - span) / 2;
+    return Uint8Array.from(highs, value => Number.isNaN(value) ? STRIP_STEPS : Math.round((value - from) / span * (STRIP_STEPS - 1)));
 }
 
 /** The middle sample of the stretch around sample `at` that stays within half a degree of its value. */
