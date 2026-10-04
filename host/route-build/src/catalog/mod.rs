@@ -1,0 +1,524 @@
+//! The route catalog: the signed routes of a region, each with the plan that reproduces it.
+//! `specs/route-catalog.md` is the contract.
+mod assemble;
+mod shape;
+
+use route_engine::{
+    data::RoutingData,
+    directory::Directory,
+    osm::{Id, Node, Relation, Tags, Way},
+    package::{Package, Source},
+    Control, Router,
+};
+use serde_json::{json, Map, Value};
+use shape::{distance, Failure, P};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    path::Path,
+    sync::Mutex,
+};
+
+pub const FILE: &str = "route-catalog.json";
+const MIN_LENGTH_M: f64 = 2_000.0;
+const MAX_GAP_M: f64 = 500.0;
+const ROUNDTRIP_M: f64 = 200.0;
+const DESCRIPTION_CHARS: usize = 200;
+
+/// Why a selected relation is not in the catalog.
+#[derive(Clone, Copy, Debug)]
+pub enum Reason {
+    ExtractEdge,
+    Short,
+    Gap,
+    UnroutableGap,
+    TooManyPoints,
+    ShapingCheck,
+    NestedLongRoute,
+    NoStages,
+    MissingStage,
+}
+
+fn tag<'a>(tags: &'a Tags, key: &str) -> &'a str {
+    tags.get(key).map(String::as_str).unwrap_or("")
+}
+
+/// The `route` value of a relation that the catalog selects by its tags.
+fn selected(tags: &Tags) -> Option<&str> {
+    let kind = tag(tags, "route");
+    (matches!(tag(tags, "type"), "route" | "superroute")
+        && matches!(kind, "hiking" | "foot" | "bicycle" | "mtb")
+        && !(tag(tags, "name").is_empty() && tag(tags, "ref").is_empty())
+        && !matches!(tag(tags, "network:type"), "node_network" | "basic_network")
+        && !matches!(tag(tags, "state"), "proposed" | "planned" | "disused" | "abandoned"))
+    .then_some(kind)
+}
+
+/// The Balanced profiles of the activities that list a kind. The first gives the plan route.
+fn profiles(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "bicycle" => &["touring", "road", "gravel"],
+        "mtb" => &["mtb"],
+        _ => &["hiking"],
+    }
+}
+
+fn graded(kind: &str) -> bool {
+    kind != "bicycle"
+}
+
+fn rank(network: &str) -> u8 {
+    match network {
+        "iwn" | "icn" => 4,
+        "nwn" | "ncn" => 3,
+        "rwn" | "rcn" => 2,
+        "lwn" | "lcn" => 1,
+        _ => 0,
+    }
+}
+
+fn description(text: &str) -> &str {
+    let Some((end, _)) = text.char_indices().nth(DESCRIPTION_CHARS) else { return text };
+    // A space right after the limit also ends a word.
+    let head = &text[..end + text[end..].chars().next().map_or(0, char::len_utf8)];
+    match head.rfind(char::is_whitespace) {
+        Some(space) if space > 0 => head[..space].trim_end(),
+        _ => &text[..end],
+    }
+}
+
+/// The OSM tag fields of a record.
+fn header(relation: &Relation, kind: &str, france: bool) -> Map<String, Value> {
+    let tags = &relation.tags;
+    let mut record = Map::new();
+    record.insert("id".into(), json!(relation.id));
+    record.insert("kind".into(), json!(kind));
+    record.insert("rank".into(), json!(rank(tag(tags, "network"))));
+    let website = Some(tag(tags, "website")).filter(|w| !w.is_empty()).unwrap_or(tag(tags, "contact:website"));
+    let symbol = if france { "" } else { tag(tags, "osmc:symbol") };
+    for (field, value) in [
+        ("name", tag(tags, "name")),
+        ("ref", tag(tags, "ref")),
+        ("operator", tag(tags, "operator")),
+        ("description", description(tag(tags, "description"))),
+        ("website", website),
+        ("symbol", symbol),
+    ] {
+        if !value.is_empty() {
+            record.insert(field.into(), json!(value));
+        }
+    }
+    record
+}
+
+/// The zoom 9 cells that the bounding box of each segment touches, edges included.
+fn cells(line: &[P], into: &mut BTreeSet<(u32, u32)>) {
+    let tile = |p: P| {
+        let (lon, lat) = (p[0] as f64 * 1e-6, (p[1] as f64 * 1e-6).to_radians());
+        [(lon + 180.0) / 360.0 * 512.0, (1.0 - lat.tan().asinh() / std::f64::consts::PI) / 2.0 * 512.0]
+    };
+    let range = |a: f64, b: f64| (a.min(b).ceil() as i64 - 1).max(0)..=(a.max(b).floor() as i64).min(511);
+    for w in line.windows(2).chain(std::iter::once(&line[..1]).filter(|_| line.len() == 1)) {
+        let (a, b) = (tile(w[0]), tile(w[w.len() - 1]));
+        for x in range(a[0], b[0]) {
+            for y in range(a[1], b[1]) {
+                into.insert((x as u32, y as u32));
+            }
+        }
+    }
+}
+
+fn cell_ids(cells: &BTreeSet<(u32, u32)>) -> Vec<String> {
+    let mut ids: Vec<_> = cells.iter().map(|(x, y)| format!("9-{x}-{y}")).collect();
+    ids.sort();
+    ids
+}
+
+fn encode(line: &[P]) -> Vec<i64> {
+    let mut previous = [0i64; 2];
+    line.iter()
+        .flat_map(|p| {
+            let delta = [p[0] as i64 - previous[0], p[1] as i64 - previous[1]];
+            previous = [p[0] as i64, p[1] as i64];
+            delta
+        })
+        .collect()
+}
+
+/// A kept route, as its long route needs it.
+struct Kept {
+    record: Map<String, Value>,
+    start: P,
+    finish: P,
+    points: usize,
+    cells: BTreeSet<(u32, u32)>,
+    grades: Option<[u64; 6]>,
+}
+
+/// One route relation with its main-line members.
+struct Job {
+    relation: Relation,
+    kind: String,
+    members: Vec<assemble::Member>,
+}
+
+/// The facts that the report needs, besides the records.
+#[derive(Default)]
+pub struct Report {
+    pub tag_selected: usize,
+    pub dropped: BTreeMap<String, Vec<i64>>,
+    pub kept: BTreeMap<String, usize>,
+    pub loops: usize,
+    pub long_routes: usize,
+    pub stages: usize,
+    pub via: Vec<usize>,
+    pub long_points: Vec<(i64, usize)>,
+    pub seconds: f64,
+}
+
+impl Report {
+    pub fn to_json(&self) -> Value {
+        let mut via = self.via.clone();
+        via.sort_unstable();
+        let at = |q: f64| via.get(((via.len() as f64 * q) as usize).min(via.len().saturating_sub(1))).copied();
+        json!({
+            "tag_selected": self.tag_selected, "dropped": self.dropped, "kept": self.kept, "loops": self.loops,
+            "long_routes": self.long_routes, "stages": self.stages,
+            "via": {"median": at(0.5), "p90": at(0.9), "max": via.last()},
+            "long_routes_over_64_points": self.long_points.iter().filter(|(_, n)| *n > 64).count(),
+            "seconds": self.seconds,
+        })
+    }
+}
+
+/// Reads the items of a source OSM table that `keep` accepts, by ID.
+macro_rules! read {
+    ($package:expr, $table:ident, $type:ty, $keep:expr) => {{
+        let mut items = BTreeMap::<i64, $type>::new();
+        for key in $package.keys(&$package.manifest().osm.$table).map_err(|e| e.to_string())? {
+            for item in $package.read::<Vec<$type>>(&key).map_err(|e| e.to_string())? {
+                if $keep(item.id) {
+                    items.insert(item.id, item);
+                }
+            }
+        }
+        items
+    }};
+}
+
+/// Writes `route-catalog.json` into a routing package with source OSM tables. A present file is
+/// current: the package is immutable, and the file only moves on with it.
+pub fn build(directory: &Path, countries: &[String], workers: usize) -> Result<Option<Report>, String> {
+    let output = directory.join(FILE);
+    if output.exists() {
+        return Ok(None);
+    }
+    let france = match countries {
+        [only] => only == "FR",
+        _ if countries.iter().any(|c| c == "FR") => {
+            return Err("A region with France and another country needs a country lookup for route marks".into())
+        }
+        _ => false,
+    };
+    let started = std::time::Instant::now();
+    let package = Directory::open(directory).map_err(|e| e.to_string())?;
+    if package.manifest().osm.tables().all(|table| table.len == 0) {
+        return Err("The routing package has no source OSM tables".into());
+    }
+    for profile in ["touring", "road", "gravel", "mtb", "hiking"] {
+        package.metric(profile).map_err(|_| format!("The routing package lacks the {profile} profile"))?;
+    }
+    let relations = read!(package, relations, Relation, |_| true);
+    let (records, report) = catalog(&package, relations, france, workers)?;
+    let partial = directory.join(format!(".{FILE}.partial"));
+    let bytes = serde_json::to_vec(&json!({"format": 1, "routes": records})).map_err(|e| e.to_string())?;
+    std::fs::write(&partial, bytes).map_err(|e| e.to_string())?;
+    std::fs::rename(&partial, &output).map_err(|e| e.to_string())?;
+    Ok(Some(Report { seconds: started.elapsed().as_secs_f64(), ..report }))
+}
+
+fn catalog<S: Source + Clone + Send>(
+    package: &Package<S>,
+    relations: BTreeMap<i64, Relation>,
+    france: bool,
+    workers: usize,
+) -> Result<(Vec<Value>, Report), String>
+where
+    Package<S>: RoutingData + Send,
+{
+    let mut report = Report::default();
+    let mut drops = BTreeMap::<i64, Reason>::new();
+    let is_route = |id: &i64| relations.get(id).is_some_and(|r| matches!(tag(&r.tags, "type"), "route" | "superroute"));
+    let children = |relation: &Relation| -> Vec<i64> {
+        relation
+            .members
+            .iter()
+            .filter(|(_, role)| assemble::is_main(role))
+            .filter_map(|(id, _)| if let Id::Relation(id) = id { Some(*id) } else { None })
+            .collect()
+    };
+    let mut long = Vec::new();
+    let mut jobs = Vec::new();
+    for relation in relations.values() {
+        let Some(kind) = selected(&relation.tags) else { continue };
+        report.tag_selected += 1;
+        let children = children(relation);
+        if children.iter().any(|id| !relations.contains_key(id)) {
+            drops.insert(relation.id, Reason::ExtractEdge);
+        } else if children.iter().any(is_route) {
+            long.push((relation, kind.to_string()));
+        } else {
+            jobs.push(Job { relation: relation.clone(), kind: kind.into(), members: Vec::new() });
+        }
+    }
+    let needed: HashSet<i64> = jobs
+        .iter()
+        .flat_map(|job| &job.relation.members)
+        .filter(|(_, role)| assemble::is_main(role))
+        .filter_map(|(id, _)| if let Id::Way(id) = id { Some(*id) } else { None })
+        .collect();
+    let ways = read!(package, ways, Way, |id| needed.contains(&id));
+    let needed: HashSet<i64> = ways.values().flat_map(|w| w.nodes.iter().copied()).collect();
+    let nodes = read!(package, nodes, Node, |id| needed.contains(&id));
+    let points: HashMap<i64, P> = nodes.values().map(|n| (n.id, [n.point.lon, n.point.lat])).collect();
+    drop(nodes);
+    jobs.retain_mut(|job| {
+        for (id, role) in &job.relation.members {
+            let Id::Way(id) = id else { continue };
+            if !assemble::is_main(role) {
+                continue;
+            }
+            match ways.get(id) {
+                Some(way) if way.nodes.iter().all(|n| points.contains_key(n)) => job.members.push(assemble::Member {
+                    nodes: way.nodes.clone(),
+                    role: role.clone(),
+                    roundabout: matches!(tag(&way.tags, "junction"), "roundabout" | "circular"),
+                }),
+                _ => {
+                    drops.insert(job.relation.id, Reason::ExtractEdge);
+                    return false;
+                }
+            }
+        }
+        true
+    });
+    drop(ways);
+    let queue = Mutex::new(jobs);
+    let results = Mutex::new(Vec::new());
+    let mut forks: Vec<_> = (0..workers.max(1)).map(|_| (package.fork(), package.fork())).collect();
+    std::thread::scope(|scope| {
+        for (routing, mut roads) in forks.drain(..) {
+            let (queue, results, points) = (&queue, &results, &points);
+            scope.spawn(move || {
+                let mut router = Router::new(routing, 768 * 1024 * 1024);
+                loop {
+                    // The guard must drop before the work, so the job is taken in its own statement.
+                    let job = queue.lock().unwrap().pop();
+                    let Some(job) = job else { break };
+                    let result = route(&mut router, &mut roads, &job, points, france);
+                    results.lock().unwrap().push((job.relation.id, result));
+                }
+            });
+        }
+    });
+    let mut kept = BTreeMap::new();
+    for (id, result) in results.into_inner().unwrap() {
+        match result? {
+            Ok(route) => {
+                kept.insert(id, route);
+            }
+            Err(reason) => {
+                drops.insert(id, reason);
+            }
+        }
+    }
+    // Long routes: their stages are kept routes; they get a record and their stages a parent.
+    let mut parents = BTreeMap::<i64, (i64, usize)>::new();
+    let mut records = Vec::new();
+    for (relation, kind) in long {
+        let network = tag(&relation.tags, "network");
+        let stages: Vec<i64> = children(relation)
+            .into_iter()
+            .filter(|id| tag(&relations[id].tags, "network") == network && is_route(id))
+            .collect();
+        let reason = if children(relation).iter().any(|id| children(&relations[id]).iter().any(is_route)) {
+            Some(Reason::NestedLongRoute)
+        } else if stages.is_empty() {
+            Some(Reason::NoStages)
+        } else if stages.iter().any(|id| !kept.contains_key(id)) {
+            Some(Reason::MissingStage)
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            drops.insert(relation.id, reason);
+            continue;
+        }
+        let parts: Vec<&Kept> = stages.iter().map(|id| &kept[id]).collect();
+        let (start, finish) = (parts[0].start, parts[parts.len() - 1].finish);
+        let roundtrip = tag(&relation.tags, "roundtrip") == "yes" && distance(start, finish) <= ROUNDTRIP_M;
+        let joins = parts.windows(2).filter(|w| w[0].finish == w[1].start).count();
+        report.long_points.push((relation.id, parts.iter().map(|k| k.points).sum::<usize>() - joins));
+        let mut record = header(relation, &kind, france);
+        let sum = |field: &str| parts.iter().map(|k| k.record[field].as_u64().unwrap()).sum::<u64>();
+        record.insert("loop".into(), json!(start == finish || roundtrip));
+        for field in ["length_m", "ascent_m", "descent_m"] {
+            record.insert(field.into(), json!(sum(field)));
+        }
+        if graded(&kind) {
+            let mut grades = [0u64; 6];
+            for part in &parts {
+                for (total, value) in grades.iter_mut().zip(part.grades.unwrap_or_default()) {
+                    *total += value;
+                }
+            }
+            record.insert("grades_m".into(), json!(grades));
+        }
+        if let Some(hardest) = parts.iter().filter_map(|k| k.record.get("hardest").and_then(Value::as_u64)).max() {
+            record.insert("hardest".into(), json!(hardest));
+        }
+        let cells: BTreeSet<_> = parts.iter().flat_map(|k| k.cells.iter().copied()).collect();
+        record.insert("cells".into(), json!(cell_ids(&cells)));
+        record.insert("stages".into(), json!(stages));
+        record.insert("start_udeg".into(), json!(start));
+        for (number, id) in stages.iter().enumerate() {
+            parents.entry(*id).or_insert((relation.id, number + 1));
+        }
+        *report.kept.entry(kind.clone()).or_default() += 1;
+        report.long_routes += 1;
+        report.loops += usize::from(start == finish || roundtrip);
+        records.push(Value::Object(record));
+    }
+    for (id, mut route) in kept {
+        if let Some((parent, number)) = parents.get(&id) {
+            route.record.insert("parent".into(), json!(parent));
+            route.record.insert("stage".into(), json!(number));
+            report.stages += 1;
+        }
+        let kind = route.record["kind"].as_str().unwrap().to_string();
+        *report.kept.entry(kind).or_default() += 1;
+        report.loops += usize::from(route.record["loop"] == true);
+        report.via.push(route.points - 2);
+        records.push(Value::Object(route.record));
+    }
+    records.sort_by_key(|record| record["id"].as_i64());
+    for (id, reason) in drops {
+        report.dropped.entry(format!("{reason:?}")).or_default().push(id);
+    }
+    Ok((records, report))
+}
+
+/// Builds the record of one route, or the reason it leaves the catalog.
+fn route<D: RoutingData, S: Source>(
+    router: &mut Router<D>,
+    roads: &mut Package<S>,
+    job: &Job,
+    points: &HashMap<i64, P>,
+    france: bool,
+) -> Result<Result<Kept, Reason>, String> {
+    let runs = assemble::main_line(&job.members, &|a, b| distance(points[&a], points[&b]));
+    let runs: Vec<Vec<P>> = runs.iter().map(|run| run.iter().map(|n| points[n]).collect()).collect();
+    if runs.iter().map(|run| shape::length(run)).sum::<f64>() < MIN_LENGTH_M {
+        return Ok(Err(Reason::Short));
+    }
+    let profiles = profiles(&job.kind);
+    let mut patch = |line: &mut Vec<P>, to: P| -> Result<(), Reason> {
+        let from = line[line.len() - 1];
+        if from == to {
+            return Ok(());
+        }
+        if distance(from, to) > MAX_GAP_M {
+            return Err(Reason::Gap);
+        }
+        let route = router
+            .route(&shape::request(profiles[0], &[from, to], vec![]), &Control::default())
+            .map_err(|_| Reason::UnroutableGap)?;
+        line.extend(shape::vertices(&route).into_iter().chain([to]));
+        line.dedup();
+        Ok(())
+    };
+    let mut line = runs[0].clone();
+    for run in &runs[1..] {
+        if let Err(reason) = patch(&mut line, run[0]) {
+            return Ok(Err(reason));
+        }
+        line.extend(&run[1..]);
+    }
+    let (start, end) = (line[0], line[line.len() - 1]);
+    let closed = start == end
+        || tag(&job.relation.tags, "roundtrip") == "yes" && distance(start, end) <= ROUNDTRIP_M && {
+            patch(&mut line, start).is_ok()
+        };
+    let plan = match shape::shape(router, profiles, &line, closed) {
+        Ok(plan) => plan,
+        Err(Failure::TooManyPoints) => return Ok(Err(Reason::TooManyPoints)),
+        Err(Failure::Check) => return Ok(Err(Reason::ShapingCheck)),
+    };
+    let geometry = shape::vertices(&plan.route);
+    let keep: Vec<usize> = plan.route.legs.iter().map(|leg| leg.from_index).chain([geometry.len() - 1]).collect();
+    let (mut simple, positions) = shape::simplify(&geometry, &keep);
+    if closed {
+        let first = simple[0];
+        *simple.last_mut().unwrap() = first;
+    }
+    let mut cover = BTreeSet::new();
+    cells(&geometry, &mut cover);
+    let mut record = header(&job.relation, &job.kind, france);
+    let totals = &plan.route.totals;
+    record.insert("loop".into(), json!(closed));
+    record.insert("length_m".into(), json!(totals.distance_m));
+    record.insert("ascent_m".into(), json!(totals.ascent_m));
+    record.insert("descent_m".into(), json!(totals.descent_m));
+    let mut grades = None;
+    if graded(&job.kind) {
+        let (lengths, hardest) = grade_lengths(roads, &plan.route, job.kind == "mtb")?;
+        record.insert("grades_m".into(), json!(lengths));
+        if let Some(hardest) = hardest {
+            record.insert("hardest".into(), json!(hardest));
+        }
+        grades = Some(lengths);
+    }
+    record.insert("cells".into(), json!(cell_ids(&cover)));
+    record.insert("line_udeg".into(), json!(encode(&simple)));
+    let via = &positions[1..positions.len() - 1];
+    record.insert("via".into(), json!(via));
+    if !plan.turnarounds.is_empty() {
+        record.insert("turnarounds".into(), json!(plan.turnarounds.iter().map(|&i| positions[i]).collect::<Vec<_>>()));
+    }
+    Ok(Ok(Kept {
+        record,
+        start: simple[0],
+        finish: simple[simple.len() - 1],
+        points: plan.points.len(),
+        cells: cover,
+        grades,
+    }))
+}
+
+/// The length of the plan route with each grade, and the hardest explicit grade.
+fn grade_lengths<S: Source>(
+    roads: &mut Package<S>,
+    route: &route_engine::Route,
+    mtb: bool,
+) -> Result<([u64; 6], Option<usize>), String> {
+    let mut lengths = [0u64; 6];
+    let mut hardest = None;
+    for slice in route.legs.iter().flat_map(|leg| &leg.roads) {
+        let road = roads.road(slice.road).map_err(|e| e.to_string())?;
+        // The same rounding as the route totals, so the grades add up to the route length.
+        let shape: f64 = road.shape.windows(2).map(|w| w[0].distance(w[1])).sum();
+        let length = (shape * (slice.to - slice.from)).round() as u64;
+        let explicit = if mtb {
+            (road.difficulty <= 6).then(|| (road.difficulty as usize).min(5))
+        } else {
+            road.hiking_difficulty.filter(|&d| d <= 6).map(|d| (d as usize).max(1) - 1)
+        };
+        lengths[explicit.unwrap_or(0)] += length;
+        if length > 0 {
+            hardest = hardest.max(explicit);
+        }
+    }
+    Ok((lengths, hardest))
+}
+
+#[cfg(test)]
+mod tests;

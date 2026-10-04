@@ -67,7 +67,7 @@ def add_layers(data, config):
 
 
 def runtime_routing(routing):
-    """Keep compiled routing and overlays; omit their source OSM tables."""
+    """Keep compiled routing, overlays and the route catalog; omit their source OSM tables."""
     manifest = json.loads((routing / "manifest.json").read_bytes())
     if not any(table["len"] for table in manifest["osm"].values()):
         return
@@ -75,6 +75,7 @@ def runtime_routing(routing):
         stage = Path(directory) / "routing"
         maps.run(maps.ROOT / "target/release/route-select", routing, "--output", stage, "--runtime")
         shutil.copyfile(routing / "overlays.sqlite", stage / "overlays.sqlite")
+        shutil.copyfile(routing / "route-catalog.json", stage / "route-catalog.json")
         with sqlite3.connect(stage / "overlays.sqlite") as db:
             db.execute("UPDATE metadata SET package=?", (sources.digest(stage / "manifest.json"),))
         maps.run(maps.ROOT / "target/release/route-server", stage, "--verify")
@@ -165,6 +166,7 @@ def prepare(args):
     if set(json.loads((routing / "manifest.json").read_bytes())["metrics"]) != set(config["profiles"]):
         raise ValueError("Routing profiles differ from the recipe; choose a fresh package")
     maps.run(maps.ROOT / "target/release/route-server", routing, "--build-overlays")
+    maps.run(maps.ROOT / "target/release/route-catalog", routing, "--countries", ",".join(config["countries"]))
     runtime_routing(routing)
     # The map manifest is written last, so it marks a complete maps folder.
     if not (data / "maps/manifest.json").exists():

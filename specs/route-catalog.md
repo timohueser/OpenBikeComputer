@@ -79,7 +79,14 @@ in `via` plus 1. It is absent when there are none.
 
 The plan reproduces the route with the Balanced profile of each activity that
 lists the kind: `hiking` for `hiking` and `foot`, `mtb` for `mtb`, and `road`,
-`gravel` and `touring` for `bicycle`. The plan route is the route that the
+`gravel` and `touring` for `bicycle`. The main line is the member ways with an
+empty, `main`, `forward` or `backward` role, ordered as the Waymarked Trails route
+builder orders them, with the forward branch where the route splits by
+direction. To reproduce the route, the router's route for the plan with each
+profile has a deviation of at most 2 % of the main-line length. The deviation is the length of the routed line that is more than 30 m
+from the main line, plus the length of the main line that is more than 30 m
+from the routed line. The router patches each main-line gap of up to 500 m; a
+route with a longer gap leaves the catalog. The plan route is the route that the
 router gives for the plan with one of these profiles: `touring` for `bicycle`,
 else the only one. The plan runs in the member order of the relation, also for a
 loop. A route is a loop when its main line is a closed ring, or when it has
@@ -125,13 +132,15 @@ route. It is absent when the plan route has no explicit grade.
 
 A long route is a relation that holds route relations. Its stages are its child
 routes with the same `network`, in member order. A long route is in the catalog
-only when each of its stages is in it. A child relation that holds route
-relations is not a stage.
+only when each of its stages is in it. A long route with a child relation that
+holds route relations leaves the catalog.
 
 A long route has no `line_udeg`, `via` or `turnarounds`. Its line and its plan
 are those of its stages in order. The client loads the stages by their IDs from
 the files of the long route's `cells`. The joined plan has the points of the
-stage plans, with each stage finish joined to the next stage start. A client
+stage plans in order. A stage finish and the next stage start are one point when
+they are the same vertex, and two points otherwise. Each stage turnaround moves
+to its position in the joined plan. A client
 plans a whole long route only when its joined plan has at most 64 points;
 otherwise it offers its stages only. `start_udeg` is the start of its first
 stage. `length_m`, `ascent_m`, `descent_m` and `grades_m` are the sums of the
