@@ -75,10 +75,11 @@ obc planner prepare --input-release /srv/planner/bw-source --component pois --da
 obc planner grid --input-release /srv/planner/bw-source-next --data-dir /srv/planner/bw-next
 ```
 
-Publish and deploy `bw-next`. Repeat `--component` for more producers:
+Publish and deploy `bw-next`. Repeat `--component` for:
 `pois`, `addresses`, `basemap`, `places`, `terrain`, `routing`, `overlays`,
-`assets`, `model`, or a recipe data layer. Routing updates include overlays;
-basemap updates include places. Small pinned recipes use the same producers.
+`assets`, `model`, or data layers. Routing updates include overlays;
+basemap updates include places. Elevation changes select terrain,
+routing, and overlays together. Tile encoding changes reuse routing.
 
 `plan` and `prepare --dry-run` read no large artifacts and download nothing.
 Updates need a modular regional release and its cache. Source refreshes keep

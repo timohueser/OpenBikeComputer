@@ -168,6 +168,8 @@ canonical JSON `spec`, including its trailing newline. The spec contains
 Producer identities include effective source code and dependency contracts.
 Inputs identify source snapshots and upstream component keys. Coverage uses
 `[west,south,east,north]`. A receipt contains only completed, verified files.
+Selection includes consumers of changed shared inputs. Terrain and routing
+share an elevation identity for source rasters and local elevation code.
 Each file entry has `bytes` and `sha256`. Cost fields are `elapsed_seconds`,
 `cpu_seconds`, `output_bytes`, and `peak_ram_bytes`; unavailable RAM is null.
 `sources.grid_components` records the partition and transport receipts.
