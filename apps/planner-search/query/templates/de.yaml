@@ -431,8 +431,6 @@ banks:
       - ["(von der|neben der|abseits der) <(Route|Strecke)>", route]
       - ["um die <(Route|Strecke)>", route]
       - ["von <meiner Route>", route]
-    whole:
-      - ["die <(ganze|gesamte) (Route|Tour|Strecke)>", route]
 
   ALONG:
     default:
@@ -567,18 +565,6 @@ banks:
       - ["mit <(möglichst |)vielen Höhenmetern>", most_climbing]
       - ["<(möglichst bergig|so bergig wie möglich)>", most_climbing]
       - ["<ausgewogen>", balanced]
-    cmp:
-      - ["(flacher|leichter|einfacher)", least_climbing]
-      - ["(kürzer|direkter)", shortest]
-      - ["(bergiger|hügeliger|anspruchsvoller|schwerer)", most_climbing]
-    cmp_e:
-      - ["(flachere|leichtere)", least_climbing]
-      - ["(kürzere|direktere)", shortest]
-      - ["(bergigere|anspruchsvollere)", most_climbing]
-    cmp_n:
-      - ["weniger (Höhenmeter|Anstiege|Steigung)", least_climbing]
-      - ["weniger (Schotter|Feldwege)", least_unpaved]
-      - ["mehr (Höhenmeter|Anstiege)", most_climbing]
 
   DAYS:
     default:
@@ -1140,33 +1126,6 @@ templates:
     - "ich will (die Tour|die Route|das) in (der anderen|umgekehrter|entgegengesetzter) Richtung fahren"
     - "(Reihenfolge|Richtung) der (Etappen|Route|Tage) umkehren"
     - "(von Süden nach Norden|von Norden nach Süden|von Osten nach Westen|von Westen nach Osten) statt andersrum"
-
-  reroute:
-    - "{DAY:plain} {GOAL:cmp} (machen|planen|gestalten)"
-    - "(mach|mache|plane|plan) {DAY:plain} {GOAL:cmp}"
-    - "{DAY:plain} {GOAL:post} (neu planen|umplanen|neu berechnen)"
-    - "{GOAL:post} {DAY:dated}"
-    - "{GOAL:cmp_n} {DAY:dated}"
-    - "{ALONG:range} {GOAL:post}"
-    - "{ALONG:range} {GOAL:post} (neu planen|umplanen)"
-    - "zwischen {NEAR:.name} und {NEAR:.name} {GOAL:post}"
-    - "{DAY:plain} (mit dem|fürs|für das) {BIKE} (neu planen|umplanen|planen)"
-    - "{DAY:plain} (mit dem|fürs) {BIKE}"
-    - "(stell|stelle) {DAY:plain} (auf das|aufs) {BIKE} um"
-    - "{SCOPE:whole} {GOAL:post} (neu planen|umplanen)"
-    - "{SCOPE:whole} (fürs|für das|mit dem) {BIKE} (neu planen|umplanen)"
-    - "{AFTER:nach_after.name} {GOAL:post} (neu planen|)"
-    - "{AFTER:nach_after.day+along} {GOAL:post} (neu planen|umplanen|)"
-    - "{BEFORE:vor.day+along} {GOAL:post} (neu planen|)"
-    - "{BEFORE:vor.name} {GOAL:post}"
-    - "{GOAL:cmp} {ALONG:range}"
-    - "(gibt es|finde) (eine |){GOAL:cmp_e} (Variante|Route|Alternative) für {DAY:plain}(?|)"
-    - "{DAY:plain} {GOAL:post}"
-    - "(bitte |){DAY:plain} {GOAL:post} (umplanen|neu planen)(?|)"
-    - "{DAY:plain} {GOAL:post} {IGNORED:route}"
-    - "{GOAL:cmp_n} {ALONG:range}"
-    - "{GOAL:cmp_e} (Route|Variante) für {DAY:plain}"
-    - "{DAY:plain} neu (routen|berechnen), {GOAL:post}"
 
   stretches:
     - "{WHAT:gap_n}"

@@ -98,12 +98,12 @@
 {"id": "de-098", "lang": "de", "text": "Etappe 6 mit der nächsten verbinden", "scope": "in", "request": {"type": "join", "day": 6}}
 {"id": "de-099", "lang": "de", "text": "Route umdrehn", "scope": "in", "request": {"type": "reverse"}, "note": "typo"}
 {"id": "de-100", "lang": "de", "text": "andersrum fahren bitte", "scope": "in", "request": {"type": "reverse"}}
-{"id": "de-101", "lang": "de", "text": "Tag 3 flacher", "scope": "in", "request": {"type": "reroute", "where": {"day": 3}, "goal": "least_climbing"}}
-{"id": "de-102", "lang": "de", "text": "an Tag 2 Schotter vermeiden", "scope": "in", "request": {"type": "reroute", "where": {"day": 2}, "goal": "least_unpaved"}}
-{"id": "de-103", "lang": "de", "text": "morgen weniger Höhenmeter", "scope": "in", "request": {"type": "reroute", "where": {"day": "tomorrow"}, "goal": "least_climbing"}}
-{"id": "de-104", "lang": "de", "text": "km 40 bis 60 fürs Rennrad neu planen", "scope": "in", "request": {"type": "reroute", "where": {"along": {"ref": "km", "from": {"value": 40, "unit": "km"}, "to": {"value": 60, "unit": "km"}}}, "bike": "road"}}
-{"id": "de-105", "lang": "de", "text": "die letzten 20 km von Tag 2 als MTB-Strecke", "scope": "in", "request": {"type": "reroute", "where": {"day": 2, "along": {"ref": "end", "to": {"value": 20, "unit": "km"}}}, "bike": "mtb"}}
-{"id": "de-106", "lang": "de", "text": "kürzer zwischen Chur und Thusis", "scope": "in", "request": {"type": "reroute", "where": {"near": [{"name": "Chur"}, {"name": "Thusis"}]}, "goal": "shortest"}}
+{"id": "de-101", "lang": "de", "text": "Tag 3 flacher", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
+{"id": "de-102", "lang": "de", "text": "an Tag 2 Schotter vermeiden", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
+{"id": "de-103", "lang": "de", "text": "morgen weniger Höhenmeter", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
+{"id": "de-104", "lang": "de", "text": "km 40 bis 60 fürs Rennrad neu planen", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
+{"id": "de-105", "lang": "de", "text": "die letzten 20 km von Tag 2 als MTB-Strecke", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
+{"id": "de-106", "lang": "de", "text": "kürzer zwischen Chur und Thusis", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
 {"id": "de-107", "lang": "de", "text": "lohnt sich das Stilfser Joch", "scope": "out", "request": {"type": "none"}}
 {"id": "de-108", "lang": "de", "text": "Campingplätze nahe einem Supermarkt am Ende von Tag 4", "scope": "out", "request": {"type": "places", "what": ["campsite"], "where": {"day": 4, "part": "end"}, "ignored": ["nahe einem Supermarkt"]}}
 {"id": "de-109", "lang": "de", "text": "Apotheke bei einem Hotel im Umkreis von 20 km um Chur", "scope": "out", "request": {"type": "none"}}

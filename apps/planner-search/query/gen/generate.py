@@ -85,7 +85,7 @@ import words  # noqa: E402
 
 SHARE = {
     "places": 30, "route": 14, "none": 11, "stretches": 8, "place": 8, "add_point": 7,
-    "end_day": 6, "reroute": 5, "split": 4, "remove_point": 3, "join": 2, "reverse": 2,
+    "end_day": 6, "split": 4, "remove_point": 3, "join": 2, "reverse": 2,
 }
 POINT_SLOTS = {"FROM", "TO", "VIA", "NEAR", "POINT", "BEFORE", "AFTER"}
 FORM_WEIGHT = {"name": 10, "kind": 4, "here": 2, "plan": 1, "day": 1, "along": 1}

@@ -245,8 +245,8 @@ def _intent(sp: Span, items: list[Item]) -> str:
         return "end_day"
     if "add" in kw or (first and first.cat == "prep" and first.val == "via" and first.i == 0):
         return "add_point"
-    if cats & {"goal", "bike"} and "to" not in roles and "route" not in kw:
-        return "reroute" if "goal" in cats or day else "route"
+    if "goal" in cats and "to" not in roles and "route" not in kw:
+        return "none"         # a goal alone asks to re-route the plan: not in the language
     if "gapkind" in cats or cats & {"stretch", "gap"} and cats & {"kind", "stretch"}:
         return "stretches"
     unknown = _chunks(sp, items)
@@ -300,7 +300,6 @@ _ROLE = {
     "add_point": {"at": "POINT", "to": "POINT", "via": "POINT", "near": "NEAR",
                   "before": "BEFORE", "after": "AFTER"},
     "remove_point": {"at": "POINT", "to": "POINT", "from": "POINT", "near": "POINT"},
-    "reroute": {"near": "NEAR", "before": "BEFORE", "after": "AFTER", "between": "NEAR"},
 }
 _SIMPLE = {"day": "DAY", "bike": "BIKE", "goal": "GOAL", "scope": "SCOPE",
            "point_kind": "KIND", "open": "OPEN", "now": "OPEN", "weekday": "OPEN"}
@@ -414,7 +413,7 @@ def _qty_slot(it: Item, intent: str) -> str | None:
         return "RADIUS"
     if intent in ("end_day", "add_point") and "every" not in f:
         return "POINT"
-    return "ALONG" if intent in ("places", "stretches", "add_point", "reroute") else None
+    return "ALONG" if intent in ("places", "stretches", "add_point") else None
 
 
 def _labels(sp: Span, items: list[Item]) -> list[str]:

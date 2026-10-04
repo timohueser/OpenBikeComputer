@@ -794,18 +794,8 @@ def _join(r: _Req):
     return {"type": "join", "day": day}
 
 
-def _reroute(r: _Req):
-    req: dict[str, Any] = {"type": "reroute", "where": r.where() or {"scope": "route"}}
-    if (g := r.one("GOAL", parse_goal)) is not None:
-        req["goal"] = g
-    if (b := r.one("BIKE", parse_bike)) is not None:
-        req["bike"] = b
-    return req if "goal" in req or "bike" in req else None
-
-
 _BUILD = {
     "places": _places, "place": _place, "route": _route, "stretches": _stretches,
     "end_day": _end_day, "add_point": _add_point, "remove_point": _remove_point,
     "split": _split, "join": _join, "reverse": lambda r: {"type": "reverse"},
-    "reroute": _reroute,
 }

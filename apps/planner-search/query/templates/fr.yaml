@@ -409,10 +409,6 @@ banks:
       - ["<de l'itinéraire>", route]
       - ["de <ma trace>", route]
       - ["du <tracé>", route]
-    whole:
-      - ["<tout le parcours>", route]
-      - ["<tout l'itinéraire>", route]
-      - ["<l'itinéraire complet>", route]
 
   ALONG:
     default:
@@ -527,14 +523,6 @@ banks:
       - ["avec <(un max de|beaucoup de|le plus de) dénivelé>", most_climbing]
       - ["<le plus vallonné possible>", most_climbing]
       - ["<équilibré>", balanced]
-    cmp:
-      - ["(plus plat|plus facile|moins dur)", least_climbing]
-      - ["(plus court|plus direct)", shortest]
-      - ["(plus vallonné|plus dur|plus sportif)", most_climbing]
-    cmp_n:
-      - ["moins de (dénivelé|côtes|montées)", least_climbing]
-      - ["moins de (gravier|chemins|pistes)", least_unpaved]
-      - ["plus de (dénivelé|côtes)", most_climbing]
 
   DAYS:
     default:
@@ -1037,31 +1025,6 @@ templates:
     - "fais-le dans l'autre sens"
     - "on repart dans l'autre sens"
     - "(hé|dis|ok) (inverse|retourne) le parcours"
-
-  reroute:
-    - "(rendre|rends) {DAY:plain} {GOAL:cmp}"
-    - "{DAY:plain} {GOAL:cmp}"
-    - "(recalcule|recalculer|refais|replanifie) {DAY:plain} {GOAL:post}"
-    - "{GOAL:post} {DAY:dated}"
-    - "{GOAL:cmp_n} {DAY:dated}"
-    - "{ALONG:range} {GOAL:post}"
-    - "(recalcule|refais) {ALONG:range} {GOAL:post}"
-    - "(recalcule|refais) entre {NEAR:.name} et {NEAR:.name} {GOAL:post}"
-    - "(refais|recalcule|replanifie) {DAY:plain} (en|avec le|pour le) {BIKE}"
-    - "{DAY:plain} (en|avec le) {BIKE} (plutôt|stp|)"
-    - "passe {DAY:plain} (en|au) {BIKE}"
-    - "(recalcule|refais) {SCOPE:whole} {GOAL:post}"
-    - "(recalcule|refais) {SCOPE:whole} (en|pour le|pour un) {BIKE}"
-    - "(recalcule|refais) {AFTER:apres} {GOAL:post}"
-    - "(recalcule|refais) {BEFORE:avant} {GOAL:post}"
-    - "{GOAL:cmp} {ALONG:range}"
-    - "(il y a|y a-t-il|trouve) (une variante|un itinéraire|une alternative) {GOAL:cmp} pour {DAY:plain}( ?|?|)"
-    - "{DAY:plain} {GOAL:post}"
-    - "(stp|svp) (recalcule|refais) {DAY:plain} {GOAL:post}( ?|?|)"
-    - "{DAY:plain} {GOAL:post} {IGNORED:route}"
-    - "{GOAL:cmp_n} {ALONG:range}"
-    - "(une variante|un itinéraire) {GOAL:cmp} pour {DAY:plain}"
-    - "(recalcule|refais) {DAY:plain}, {GOAL:post}"
 
   stretches:
     - "{WHAT:gap_sans} {DAY}"

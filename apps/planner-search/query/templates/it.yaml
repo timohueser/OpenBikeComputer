@@ -405,9 +405,6 @@ banks:
       - ["dal <percorso>", route]
       - ["<dall'itinerario>", route]
       - ["dalla <traccia>", route]
-    whole:
-      - ["<tutto il (percorso|giro)>", route]
-      - ["<l'intero percorso>", route]
 
   ALONG:
     default:
@@ -523,14 +520,6 @@ banks:
       - ["con <(tanto dislivello|più dislivello|il massimo di dislivello)>", most_climbing]
       - ["con <tante salite>", most_climbing]
       - ["<equilibrato>", balanced]
-    cmp:
-      - ["(più piatto|più facile|meno duro)", least_climbing]
-      - ["(più breve|più corto|più diretto)", shortest]
-      - ["(più impegnativo|più duro|più collinare)", most_climbing]
-    cmp_n:
-      - ["meno (dislivello|salite)", least_climbing]
-      - ["meno (sterrato|ghiaia)", least_unpaved]
-      - ["più (dislivello|salite)", most_climbing]
 
   DAYS:
     default:
@@ -1029,31 +1018,6 @@ templates:
     - "fallo al contrario"
     - "ripartiamo nell'altro senso"
     - "(ehi|ok|dai) (inverti|gira) il percorso"
-
-  reroute:
-    - "(rendi|rendere) {DAY:plain} {GOAL:cmp}"
-    - "{DAY:plain} {GOAL:cmp}"
-    - "(ricalcola|ricalcolare|rifai|ripianifica) {DAY:plain} {GOAL:post}"
-    - "{GOAL:post} {DAY:dated}"
-    - "{GOAL:cmp_n} {DAY:dated}"
-    - "{ALONG:range} {GOAL:post}"
-    - "(ricalcola|rifai) {ALONG:range} {GOAL:post}"
-    - "(ricalcola|rifai) tra {NEAR:.name} e {NEAR:.name} {GOAL:post}"
-    - "(rifai|ricalcola|ripianifica) {DAY:plain} (in|con la|per la) {BIKE}"
-    - "{DAY:plain} (in|con la) {BIKE}( piuttosto| per favore|)"
-    - "passa {DAY:plain} (in|alla) {BIKE}"
-    - "(ricalcola|rifai) {SCOPE:whole} {GOAL:post}"
-    - "(ricalcola|rifai) {SCOPE:whole} (in|per la) {BIKE}"
-    - "(ricalcola|rifai) {AFTER:dopo} {GOAL:post}"
-    - "(ricalcola|rifai) {BEFORE:prima} {GOAL:post}"
-    - "{GOAL:cmp} {ALONG:range}"
-    - "(c'è|trova) (una variante|un percorso|un'alternativa) {GOAL:cmp} per {DAY:plain}(?|)"
-    - "{DAY:plain} {GOAL:post}"
-    - "per favore (ricalcola|rifai) {DAY:plain} {GOAL:post}(?|)"
-    - "{DAY:plain} {GOAL:post} {IGNORED:route}"
-    - "{GOAL:cmp_n} {ALONG:range}"
-    - "(una variante|un percorso) {GOAL:cmp} per {DAY:plain}"
-    - "(ricalcola|rifai) {DAY:plain}, {GOAL:post}"
 
   stretches:
     - "{WHAT:gap_senza} {DAY}"

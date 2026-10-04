@@ -5,6 +5,8 @@ from __future__ import annotations
 import unicodedata
 from typing import Any
 
+# The model's intent head in output order; a change needs a retrained model. `reroute` has no
+# request type, so the decoder returns `none` for it.
 INTENTS = [
     "places", "place", "route", "stretches", "end_day", "add_point", "remove_point",
     "split", "join", "reverse", "reroute", "none",
@@ -78,8 +80,7 @@ ARTICLES = {
 }
 
 # Types that act on the plan: a where of {"scope": "route"} says nothing there.
-PLAN_TYPES = {"stretches", "end_day", "add_point", "remove_point", "split", "join", "reverse",
-              "reroute"}
+PLAN_TYPES = {"stretches", "end_day", "add_point", "remove_point", "split", "join", "reverse"}
 
 FIELDS = {
     "places": ({"what"}, {"where", "open", "radius"}),
@@ -92,7 +93,6 @@ FIELDS = {
     "split": (set(), {"days", "per_day", "where"}),
     "join": ({"day"}, set()),
     "reverse": (set(), set()),
-    "reroute": ({"where"}, {"goal", "bike"}),
     "none": (set(), set()),
 }
 
@@ -235,8 +235,6 @@ def validate(r: Any) -> None:
         _quantity(r["min"], {"km", "m", "%"})
     if t == "split":
         _need(("days" in r) != ("per_day" in r), "split needs exactly one of days, per_day")
-    if t == "reroute":
-        _need("goal" in r or "bike" in r, "reroute needs a goal or a bike")
 
 
 def fold_name(name: str) -> str:
