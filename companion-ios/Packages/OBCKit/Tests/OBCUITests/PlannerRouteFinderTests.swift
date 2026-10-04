@@ -58,10 +58,10 @@ struct PlannerRouteFinderTests {
         finder.filters.shape = .any
         finder.start = Self.near
         await cells.hold("9-267-")
-        let first = Task { await finder.search(bike: .mtb) }
+        let first = Task { await finder.search(activity: .mtb) }
         while await cells.asked.isEmpty { await Task.yield() }
         finder.start = Self.far
-        let second = Task { await finder.search(bike: .mtb) }
+        let second = Task { await finder.search(activity: .mtb) }
         while await !cells.asked.contains(where: { $0.hasPrefix("9-268-") }) { await Task.yield() }
         await cells.release()
         await first.value; await second.value
@@ -73,9 +73,9 @@ struct PlannerRouteFinderTests {
         finder.filters.shape = .any
         finder.start = Self.near
         await cells.fail("9-267-178")
-        await finder.search(bike: .mtb)
+        await finder.search(activity: .mtb)
         #expect(finder.status == .failed)
-        await finder.search(bike: .mtb)
+        await finder.search(activity: .mtb)
         #expect(finder.status == .ready && finder.matches.map(\.route.id) == [201])
     }
 
@@ -84,7 +84,7 @@ struct PlannerRouteFinderTests {
         finder.filters.radiusKm = 25
         finder.filters.shape = .any
         finder.start = Self.near
-        await finder.search(bike: .touring)
+        await finder.search(activity: .touring)
         // Route 301 also crosses 9-267-177, which is not downloaded.
         #expect(finder.offline && finder.status == .ready && finder.matches.isEmpty)
         #expect(Set(await cells.asked) == ["9-267-178"])

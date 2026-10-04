@@ -6,13 +6,13 @@ import SwiftUI
 /// The filter form, full screen from the summary line. The filters apply with the amber action.
 struct PlannerRouteFiltersPage: View {
     let finder: PlannerRouteFinder
-    let bike: BikeType
+    let activity: RouteActivity
     let onClose: () -> Void
     @State private var draft: PlannerRouteFilters
     @State private var count: Int?
 
-    init(finder: PlannerRouteFinder, bike: BikeType, onClose: @escaping () -> Void) {
-        self.finder = finder; self.bike = bike; self.onClose = onClose
+    init(finder: PlannerRouteFinder, activity: RouteActivity, onClose: @escaping () -> Void) {
+        self.finder = finder; self.activity = activity; self.onClose = onClose
         _draft = State(initialValue: finder.filters)
     }
 
@@ -39,10 +39,10 @@ struct PlannerRouteFiltersPage: View {
                         bounds("Distance", unit: "km", value: $draft.distanceKm)
                         bounds("Climb", unit: "m", value: $draft.climbM, divider: false)
                     }
-                    if bike == .mtb {
+                    if PlannerRoutesText.graded(activity) {
                         section("Hardest part") {
-                            PlannerGradeRange(range: $draft.hardest)
-                            let reading = PlannerRoutesText.reading(draft.hardest)
+                            PlannerGradeRange(range: $draft.hardest, mtb: activity == .mtb)
+                            let reading = PlannerRoutesText.reading(draft.hardest, mtb: activity == .mtb)
                             (Text(reading.0).fontWeight(.semibold) + Text(" " + reading.1)).font(.footnote).foregroundStyle(OBCTheme.secondary)
                         }
                     }
@@ -67,7 +67,7 @@ struct PlannerRouteFiltersPage: View {
             count = nil
             do {
                 try await Task.sleep(for: .milliseconds(200))
-                count = try await finder.count(draft, bike: bike)
+                count = try await finder.count(draft, activity: activity)
             } catch {}
         }
     }
@@ -106,9 +106,10 @@ struct PlannerRouteFiltersPage: View {
     }
 }
 
-/// A range over the four grades S0–S3. A tap or a drag moves the nearer end to the grade under the finger.
+/// A range over four grades: T1–T4, or S0–S3 for mountain bike. A tap or a drag moves the nearer end to the grade under the finger.
 struct PlannerGradeRange: View {
     @Binding var range: ClosedRange<Int>
+    let mtb: Bool
     /// Which end the current touch moves, fixed when it starts.
     @State private var movesLower: Bool?
 
@@ -118,7 +119,7 @@ struct PlannerGradeRange: View {
             HStack(spacing: 0) {
                 ForEach(0..<4, id: \.self) { grade in
                     let on = range.contains(grade)
-                    Text("S\(grade)").font(.subheadline.weight(.semibold).monospacedDigit())
+                    Text(PlannerRoutesText.grade(grade, mtb: mtb)).font(.subheadline.weight(.semibold).monospacedDigit())
                         .foregroundStyle(on ? OBCTheme.onAmber : OBCTheme.secondary)
                         .frame(width: step, height: 40)
                         .background(on ? OBCTheme.amber : OBCTheme.fill)
@@ -144,7 +145,7 @@ struct PlannerGradeRange: View {
         .frame(height: 40)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Hardest part")
-        .accessibilityValue(PlannerRoutesText.reading(range).0)
+        .accessibilityValue(PlannerRoutesText.reading(range, mtb: mtb).0)
         .accessibilityAdjustableAction { direction in
             let upper = min(3, max(range.lowerBound, range.upperBound + (direction == .increment ? 1 : -1)))
             range = range.lowerBound...upper

@@ -40,9 +40,9 @@ extension PlannerRouteFinder {
     }
 
     /// The line under the routes row of the search, such as "Gravel · loops within 10 km".
-    func subtitle(bike: BikeType) -> String {
+    func subtitle(activity: RouteActivity) -> String {
         let shape = switch filters.shape { case .loop: "loops"; case .oneWay: "routes"; case .any: "loops and routes" }
-        return "\(bike.name) · \(shape) within \(Int(filters.radiusKm)) km"
+        return "\(activity.name) · \(shape) within \(Int(filters.radiusKm)) km"
     }
 
     private static func circle(_ center: Coordinate, km: Double) -> [Coordinate] {

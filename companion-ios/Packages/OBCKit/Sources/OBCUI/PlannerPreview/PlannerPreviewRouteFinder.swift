@@ -14,7 +14,7 @@ struct PlannerRouteFilters: Equatable {
     var shape = RouteShape.loop
     var distanceKm = RouteBounds()
     var climbM = RouteBounds()
-    /// Grade indices of the hardest part: S0–S3 for mountain bike. Other bikes have no difficulty filter.
+    /// Grade indices of the hardest part: T1–T4 for hiking, S0–S3 for mountain bike. Other activities have no difficulty filter.
     var hardest = 0...2
     var sort = RouteSort.nearest
 }
@@ -65,19 +65,15 @@ final class PlannerRouteFinder {
         cells = [:]; records = [:]; lines = [:]; matches = []; detail = nil; status = .idle
     }
 
-    static func activity(_ bike: BikeType) -> RouteActivity {
-        switch bike { case .road: .road; case .gravel: .gravel; case .mtb: .mtb; case .touring: .touring }
-    }
-
-    func query(_ filters: PlannerRouteFilters, bike: BikeType) -> RouteQuery? {
+    func query(_ filters: PlannerRouteFilters, activity: RouteActivity) -> RouteQuery? {
         guard let start else { return nil }
-        return RouteQuery(start: start.coordinate, radiusKm: filters.radiusKm, activity: Self.activity(bike), shape: filters.shape,
+        return RouteQuery(start: start.coordinate, radiusKm: filters.radiusKm, activity: activity, shape: filters.shape,
                           distanceKm: filters.distanceKm, climbM: filters.climbM, hardest: filters.hardest, sort: filters.sort,
                           covered: catalog?.value.covered)
     }
 
-    func search(bike: BikeType) async {
-        guard let query = query(filters, bike: bike), catalog != nil else { return }
+    func search(activity: RouteActivity) async {
+        guard let query = query(filters, activity: activity), catalog != nil else { return }
         serial += 1
         let id = serial
         status = .loading; progress = (0, 0)
@@ -93,8 +89,8 @@ final class PlannerRouteFinder {
     }
 
     /// The number of matches for draft filters, for the filter page.
-    func count(_ filters: PlannerRouteFilters, bike: BikeType) async throws -> Int {
-        guard let query = query(filters, bike: bike) else { return 0 }
+    func count(_ filters: PlannerRouteFilters, activity: RouteActivity) async throws -> Int {
+        guard let query = query(filters, activity: activity) else { return 0 }
         return try await SignedRoutes.search(query) { [weak self] cell in try await self?.cell(cell, counting: nil) ?? nil }.count
     }
 
@@ -150,11 +146,11 @@ final class PlannerRouteFinder {
     }
 
     /// Routes the plan of the detail once, with the request that "Plan this route" makes.
-    func routePreview(service: any PlannerDataSource, release: PlannerRelease, bike: BikeType) async {
+    func routePreview(service: any PlannerDataSource, release: PlannerRelease, activity: RouteActivity) async {
         guard case .ready(let plan) = plan, let route = detail?.route, preview?.plan != plan else { return }
         let points = plan.requestPoints(loop: route.loop)
         let turnarounds = plan.turnarounds.filter { $0 > 0 && $0 < points.count - 1 }
-        guard let path = try? await service.route(points: points, turnarounds: turnarounds, bike: bike, preference: .balanced,
+        guard let path = try? await service.route(points: points, turnarounds: turnarounds, activity: activity, preference: .balanced,
                                                   release: release), self.plan == .ready(plan) else { return }
         preview = (plan, path, PlannerPreviewGrade(routePoints: path.points))
     }

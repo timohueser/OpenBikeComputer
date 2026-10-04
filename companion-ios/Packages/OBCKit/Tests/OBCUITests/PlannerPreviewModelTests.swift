@@ -164,7 +164,7 @@ struct PlannerPreviewModelTests {
         let model = PlannerPreviewModel(sample: true, service: source)
         let first = Task { await model.calculateRoute() }
         await source.waitForRequest(1)
-        model.setBike(.road)
+        model.setActivity(.road)
         let second = Task { await model.calculateRoute() }
         await source.waitForRequest(2)
         await source.finish(1)
@@ -270,13 +270,31 @@ struct PlannerPreviewModelTests {
         model.undo(); model.undo()
         #expect(model.points.map(\.id) == ["titisee", "freiburg", "cafe"] && model.planName == nil)
     }
+
+    @Test func onlyTheActivitiesOfTheReleaseAreOffered() async {
+        let model = PlannerPreviewModel(sample: true, service: PlannerTestSource())
+        #expect(model.activities == RouteActivity.allCases)
+        await model.calculateRoute()
+        await model.loadActivities()
+        #expect(model.activities == [.road, .gravel, .mtb, .touring])
+    }
+
+    @Test func theHardestPartReadsInTheGradesOfTheActivity() {
+        #expect(PlannerRoutesText.reading(0...2, mtb: false).0 == "Up to T3.")
+        #expect(PlannerRoutesText.reading(0...1, mtb: false).1 == "Routes whose hardest part is T1 or T2. A path without a grade counts as T1.")
+        #expect(PlannerRoutesText.reading(2...3, mtb: false).0 == "Must include T3 or harder.")
+        #expect(PlannerRoutesText.reading(1...2, mtb: true).0 == "Must include S1 or harder, up to S2.")
+        #expect(PlannerRoutesText.summary(PlannerRouteFilters(), activity: .hiking) == "10 km · Loop · up to T3")
+        #expect(PlannerRoutesText.summary(PlannerRouteFilters(), activity: .touring) == "10 km · Loop")
+    }
 }
 
 private actor PlannerTestSource: PlannerDataSource {
     /// The turnarounds of each route request.
     var turnarounds: [[Int]] = []
     func release() async throws -> PlannerRelease { testRelease }
-    func route(points: [Coordinate], turnarounds: [Int], bike: BikeType, preference: RoutePreference, release: PlannerRelease) async throws -> PlannedPath {
+    func profiles(release: PlannerRelease) -> [String]? { ["gravel", "gravel/shorter", "mtb", "road", "touring"] }
+    func route(points: [Coordinate], turnarounds: [Int], activity: RouteActivity, preference: RoutePreference, release: PlannerRelease) async throws -> PlannedPath {
         self.turnarounds.append(turnarounds)
         let samples = points.map { RoutePoint(coordinate: $0, elevationMeters: 300) }
         let length = MeasuredLine(routePoints: samples).length
@@ -293,7 +311,7 @@ private actor ControlledPlannerSource: PlannerDataSource {
     private var replies: [Int: CheckedContinuation<PlannedPath, any Error>] = [:]
     private var waiters: [(Int, CheckedContinuation<Void, Never>)] = []
     func release() async throws -> PlannerRelease { testRelease }
-    func route(points: [Coordinate], turnarounds: [Int], bike: BikeType, preference: RoutePreference, release: PlannerRelease) async throws -> PlannedPath {
+    func route(points: [Coordinate], turnarounds: [Int], activity: RouteActivity, preference: RoutePreference, release: PlannerRelease) async throws -> PlannedPath {
         try await withCheckedThrowingContinuation { continuation in
             let index = requests.count
             requests.append(points); replies[index] = continuation

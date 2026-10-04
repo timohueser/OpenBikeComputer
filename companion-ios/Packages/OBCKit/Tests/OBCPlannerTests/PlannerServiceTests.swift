@@ -12,7 +12,7 @@ struct PlannerServiceTests {
     }
     @Test func decodesCoordinatesElevationAndServerTotals() async throws {
         let service = client(), release = try await service.release()
-        let route = try await service.route(points: [a, b], bike: .gravel, preference: .shorter, release: release)
+        let route = try await service.route(points: [a, b], activity: .gravel, preference: .shorter, release: release)
         #expect(release.contains(a))
         #expect(route.points.map(\.coordinate) == [a, b])
         #expect(route.points.map(\.elevationMeters) == [270, nil])
@@ -22,13 +22,18 @@ struct PlannerServiceTests {
     func rejectsUnrelatedOrMalformedRoutes(_ kind: String) async throws {
         let service = client(route: kind), release = try await service.release()
         await #expect(throws: PlannerFailure.invalidData) {
-            try await service.route(points: [a, b], bike: .gravel, preference: .shorter, release: release)
+            try await service.route(points: [a, b], activity: .gravel, preference: .shorter, release: release)
         }
     }
     @Test(arguments: [(422, "no_path", PlannerFailure.noRoad), (503, "busy", .busy), (422, "missing_region", .outsideRegion)])
     func reportsFailuresWithoutSubstituteGeometry(_ status: Int, _ code: String, _ failure: PlannerFailure) async throws {
         let service = client(route: code, status: status), release = try await service.release()
-        await #expect(throws: failure) { try await service.route(points: [a, b], bike: .gravel, release: release) }
+        await #expect(throws: failure) { try await service.route(points: [a, b], activity: .gravel, release: release) }
+    }
+    @Test func eachActivityNamesItsRoutingProfile() {
+        #expect(RouteActivity.allCases.map { RoutePreference.balanced.profile(for: $0) } == ["road", "gravel", "mtb", "touring", "hiking"])
+        #expect(RoutePreference.lessClimbing.profile(for: .hiking) == "hiking/less-climbing")
+        #expect(BikeType.allCases.allSatisfy { RouteActivity($0).bikeType == $0 } && RouteActivity.hiking.bikeType == nil)
     }
     /// The route is the straight line through the request points. A leg position names its point.
     private func lineService(_ sent: Bodies) -> (PlannerService, PlannerRelease) {
@@ -62,9 +67,9 @@ struct PlannerServiceTests {
         let points = (0...4).map { Coordinate(latitude: 48, longitude: 8 + Double($0) / 10) }
         var moved = points
         moved[2] = Coordinate(latitude: 48.05, longitude: 8.2)
-        let whole = try await service.route(points: points, bike: .gravel, release: release)
-        let edited = try await service.route(points: moved, bike: .gravel, release: release)
-        #expect(try await service.route(points: points, bike: .gravel, release: release).points == whole.points)
+        let whole = try await service.route(points: points, activity: .gravel, release: release)
+        let edited = try await service.route(points: moved, activity: .gravel, release: release)
+        #expect(try await service.route(points: points, activity: .gravel, release: release).points == whole.points)
         let bodies = try await sent.values.map { try JSONSerialization.jsonObject(with: $0) as! [String: Any] }
         #expect(bodies.count == 2 && bodies[0]["start_position"] == nil)
         #expect(bodies[1]["points"] as? [[Double]] == [[8.1, 48], [8.2, 48.05], [8.3, 48]])
@@ -74,7 +79,7 @@ struct PlannerServiceTests {
         // A window whose ends do not join the cached legs is followed by one request for the whole route.
         await sent.change(identity: "new")
         moved[2] = Coordinate(latitude: 48.06, longitude: 8.2)
-        #expect(try await service.route(points: moved, bike: .gravel, release: release).points.map(\.coordinate) == moved)
+        #expect(try await service.route(points: moved, activity: .gravel, release: release).points.map(\.coordinate) == moved)
         let retried = try await sent.values.suffix(2).map { try JSONSerialization.jsonObject(with: $0) as! [String: Any] }
         #expect(retried[0]["start_position"] as? String == "[8100000, 48000000]")
         #expect(retried[1]["points"] as? [[Double]] == moved.map { [$0.longitude, $0.latitude] } && retried[1]["start_position"] == nil)
@@ -84,10 +89,10 @@ struct PlannerServiceTests {
         let points = (0...4).map { Coordinate(latitude: 48, longitude: 8 + Double($0) / 10) }
         var moved = points
         moved[3] = Coordinate(latitude: 48.05, longitude: 8.3)
-        _ = try await service.route(points: points, turnarounds: [2], bike: .gravel, release: release)
-        _ = try await service.route(points: moved, turnarounds: [2], bike: .gravel, release: release)
+        _ = try await service.route(points: points, turnarounds: [2], activity: .gravel, release: release)
+        _ = try await service.route(points: moved, turnarounds: [2], activity: .gravel, release: release)
         // The same points without the turnaround are other legs.
-        _ = try await service.route(points: moved, bike: .gravel, release: release)
+        _ = try await service.route(points: moved, activity: .gravel, release: release)
         let bodies = try await sent.values.map { try JSONSerialization.jsonObject(with: $0) as! [String: Any] }
         #expect(bodies.count == 3 && bodies[0]["turnarounds"] as? [Int] == [2])
         // The edited legs start at the turnaround, so the request starts one point before it.
@@ -95,7 +100,7 @@ struct PlannerServiceTests {
         #expect(bodies[1]["turnarounds"] as? [Int] == [1] && bodies[1]["start_position"] as? String == "[8100000, 48000000]")
         #expect(bodies[2]["turnarounds"] == nil)
         await #expect(throws: PlannerFailure.invalidData) {
-            try await service.route(points: points, turnarounds: [0], bike: .gravel, release: release)
+            try await service.route(points: points, turnarounds: [0], activity: .gravel, release: release)
         }
     }
     @Test func searchUsesCanonicalFiltersAndRouteDistances() async throws {
@@ -148,7 +153,7 @@ struct PlannerServiceTests {
     @Test func rejectsPointsBeyondTheReleaseBeforeRouting() async throws {
         let service = client(), release = try await service.release()
         await #expect(throws: PlannerFailure.outsideRegion) {
-            try await service.route(points: [a, Coordinate(latitude: 0, longitude: 0)], bike: .road, release: release)
+            try await service.route(points: [a, Coordinate(latitude: 0, longitude: 0)], activity: .road, release: release)
         }
     }
 }

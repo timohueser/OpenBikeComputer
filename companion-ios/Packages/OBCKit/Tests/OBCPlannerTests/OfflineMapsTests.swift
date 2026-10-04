@@ -106,26 +106,26 @@ struct OfflineMapsTests {
             try await planner.mapRelease(bounds: [10,50,11,51], allowNetwork: false)
         }
         let points = [Coordinate(latitude: 48, longitude: 8), Coordinate(latitude: 48.1, longitude: 8.1)]
-        _ = try await planner.route(points: points, bike: .gravel, preference: .balanced, release: release)
+        _ = try await planner.route(points: points, activity: .gravel, preference: .balanced, release: release)
         let results = try await planner.search(.init(text: "absent", view: [8,48,8.1,48.1]), release: release)
         #expect(results.isEmpty)
         #expect(await online.calls.isEmpty)
         #expect(await local.calls == ["release", "release", "release", "route", "release", "search"])
         let far = [points[0], Coordinate(latitude: 50, longitude: 10)]
-        _ = try await planner.route(points: far, bike: .gravel, preference: .balanced, release: release)
+        _ = try await planner.route(points: far, activity: .gravel, preference: .balanced, release: release)
         #expect(await online.calls == ["release", "route"])
         await online.fail(.unavailable)
         await #expect(throws: PlannerFailure.offlineUnavailable) {
-            try await planner.route(points: far, bike: .gravel, preference: .balanced, release: release)
+            try await planner.route(points: far, activity: .gravel, preference: .balanced, release: release)
         }
         await local.fail(.noRoad)
         await online.fail(nil)
-        _ = try await planner.route(points: points, bike: .gravel, preference: .balanced, release: release)
+        _ = try await planner.route(points: points, activity: .gravel, preference: .balanced, release: release)
         #expect(await online.calls.suffix(2) == ["release", "route"])
         await local.cancel()
         let before = await online.calls.count
         await #expect(throws: CancellationError.self) {
-            try await planner.route(points: points, bike: .gravel, preference: .balanced, release: release)
+            try await planner.route(points: points, activity: .gravel, preference: .balanced, release: release)
         }
         #expect(await online.calls.count == before)
     }
@@ -245,7 +245,7 @@ private actor RecordingSource: PlannerDataSource {
             basemap: local ? URL(string: "pmtiles://file:///map.pmtiles")! : url,
             glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: url, routing: url, manifest: url)
     }
-    func route(points: [Coordinate], turnarounds: [Int], bike: BikeType, preference: RoutePreference, release: PlannerRelease) throws -> PlannedPath {
+    func route(points: [Coordinate], turnarounds: [Int], activity: RouteActivity, preference: RoutePreference, release: PlannerRelease) throws -> PlannedPath {
         calls.append("route")
         if cancelled { throw CancellationError() }
         if let failure { throw failure }

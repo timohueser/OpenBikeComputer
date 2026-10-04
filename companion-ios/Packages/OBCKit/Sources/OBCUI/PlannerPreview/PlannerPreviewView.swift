@@ -63,10 +63,11 @@ public struct PlannerPreviewView: View {
     @State private var routeEnds: (start: String?, finish: String?) = (nil, nil)
     /// The plan that "Plan this route" replaced, while undo brings it back in one step.
     @State private var replaced: (title: String, depth: Int)?
-    private let onSave: (ImportedRoute, BikeType) -> Void
+    /// The device type is nil for a hiking plan.
+    private let onSave: (ImportedRoute, BikeType?) -> Void
     private let onClose: () -> Void
 
-    public init(onSave: @escaping (ImportedRoute, BikeType) -> Void,
+    public init(onSave: @escaping (ImportedRoute, BikeType?) -> Void,
                 onClose: @escaping () -> Void, sample: Bool = false, source: any PlannerDataSource = PlannerService.shared) {
         _model = State(initialValue: PlannerPreviewModel(sample: sample, service: source))
         self.onSave = onSave
@@ -149,10 +150,10 @@ public struct PlannerPreviewView: View {
                                                  onRequestChange: { queryRequest = $0 },
                                                  isInMapView: isInMapView)
                                 .withViewBounds(searchBounds)
-                                .withRoutes(finder.available ? (finder.subtitle(bike: model.bike), { searchRoutesPlace = $0; searchShown = false }) : nil)
+                                .withRoutes(finder.available ? (finder.subtitle(activity: model.activity), { searchRoutesPlace = $0; searchShown = false }) : nil)
                         }
                         .fullScreenCover(isPresented: $filtersShown) {
-                            PlannerRouteFiltersPage(finder: finder, bike: model.bike) { filtersShown = false }
+                            PlannerRouteFiltersPage(finder: finder, activity: model.activity) { filtersShown = false }
                         }
                         .sheet(isPresented: $editorShown, onDismiss: finishOpeningSearch) { focusedEditor }
                         .fullScreenCover(item: $offlineAreaRequest) { request in
@@ -165,7 +166,7 @@ public struct PlannerPreviewView: View {
                         }
                         .obcRenameSheet("Save route", isPresented: $saveShown, name: model.routeTitle, placeholder: "Route name",
                                         canSave: { model.canSave && !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) { name in
-                            let route = model.exportRoute(name: name), bike = model.bike
+                            let route = model.exportRoute(name: name), bike = model.activity.bikeType
                             leave { onSave(route, bike) }
                         }
                         .obcDestructiveConfirm("Discard this route?", isPresented: $closeShown,
@@ -226,15 +227,15 @@ public struct PlannerPreviewView: View {
         .onChange(of: drawerPosition) { _, position in
             if position != .collapsed { layersShown = false; infoShown = false }
         }
-        .task(id: model.release?.id) { finder.use(model.release) }
+        .task(id: model.release?.id) { finder.use(model.release); await model.loadActivities() }
         .task(id: routesSearch) {
             guard routesSearch != nil else { return }
-            await finder.search(bike: model.bike)
+            await finder.search(activity: model.activity)
         }
         .task(id: panel == .route ? finder.plan : nil) {
             guard panel == .route, let release = model.release else { return }
             routeEnds = (nil, nil)
-            await finder.routePreview(service: model.service, release: release, bike: model.bike)
+            await finder.routePreview(service: model.service, release: release, activity: model.activity)
             nameRouteEnds()
         }
         .onChange(of: routesFit) { if routesOpen { fraction = nil; fitRevision += 1 } }
@@ -342,9 +343,10 @@ public struct PlannerPreviewView: View {
                         OBCListRow(icon: "point.topleft.down.to.point.bottomright.curvepath", label: "Route points",
                                    value: model.points.isEmpty ? nil : "\(model.points.count)", showsChevron: true) { show(.stops) }
                             .accessibilityIdentifier("planner.points")
-                        OBCListRow(icon: "bicycle", label: "Bike", value: model.bike.name, showsChevron: true, showsDivider: false) {
+                        OBCListRow(icon: model.activity == .hiking ? "figure.hiking" : "bicycle", label: "Activity", value: model.activity.name,
+                                   showsChevron: true, showsDivider: false) {
                             show(.preferences)
-                        }.accessibilityIdentifier("planner.bike")
+                        }.accessibilityIdentifier("planner.activity")
                     }
                 }.padding(.horizontal, 16).padding(.bottom, 8)
                 // The expanded profile must not feed back into the open detent.
@@ -372,19 +374,19 @@ public struct PlannerPreviewView: View {
             }.scrollBounceBehavior(.basedOnSize)
         case .routes:
             ScrollView {
-                PlannerRoutesList(finder: finder, bike: model.bike,
+                PlannerRoutesList(finder: finder, activity: model.activity,
                                   plan: model.hasRoute ? (model.routeTitle, model.stats.distanceMeters) : nil,
                                   onShowPlan: { returnToPlanning(); fitRevision += 1 },
                                   onFilters: { filtersShown = true },
                                   onSelect: { route in panel = .route; Task { await finder.select(route) } },
-                                  onRetry: { Task { await finder.search(bike: model.bike) } })
+                                  onRetry: { Task { await finder.search(activity: model.activity) } })
                     .padding(.horizontal, 16).padding(.bottom, 16)
             }
         case .route:
             VStack(spacing: 0) {
                 ScrollView {
                     if let detail = finder.detail {
-                        PlannerRouteDetail(finder: finder, detail: detail, bike: model.bike, ends: routeEnds, fraction: $fraction,
+                        PlannerRouteDetail(finder: finder, detail: detail, ends: routeEnds, fraction: $fraction,
                                            onSelect: { route in Task { await finder.select(route) } })
                             .padding(.horizontal, 16).padding(.bottom, 12)
                             .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { routeContentHeight = $0 }
@@ -520,7 +522,7 @@ public struct PlannerPreviewView: View {
         .foregroundStyle(OBCTheme.ink).tint(OBCTheme.tint)
     }
 
-    private var editorTitle: String { editorPanel == .days ? "Days" : "Bike" }
+    private var editorTitle: String { editorPanel == .days ? "Days" : "Activity" }
 
     @ViewBuilder private var pointEditor: some View {
         if let point = (model.points + model.markers).first(where: { $0.id == editingPointID }) {
@@ -556,8 +558,8 @@ public struct PlannerPreviewView: View {
 
     private var preferences: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Picker("Bike", selection: Binding(get: { model.bike }, set: { model.setBike($0) })) {
-                ForEach(BikeType.allCases, id: \.self) { Text($0.name).tag($0) }
+            Picker("Activity", selection: Binding(get: { model.activity }, set: { model.setActivity($0) })) {
+                ForEach(model.activities, id: \.self) { Text($0.name).tag($0) }
             }.pickerStyle(.segmented)
             VStack(spacing: 0) {
                 ForEach(Array(PlannerPreviewPreset.allCases.enumerated()), id: \.element) { index, preset in
@@ -808,12 +810,12 @@ public struct PlannerPreviewView: View {
     private struct RoutesSearch: Equatable {
         let start: PlannerRouteStart?
         let filters: PlannerRouteFilters
-        let bike: BikeType
+        let activity: RouteActivity
         let release: String?
     }
     /// What the list depends on while the Routes view is open.
     private var routesSearch: RoutesSearch? {
-        routesOpen ? RoutesSearch(start: finder.start, filters: finder.filters, bike: model.bike, release: model.release?.id) : nil
+        routesOpen ? RoutesSearch(start: finder.start, filters: finder.filters, activity: model.activity, release: model.release?.id) : nil
     }
     /// The map fits the circle for the list, and the route for a detail.
     private var routesFit: String {
