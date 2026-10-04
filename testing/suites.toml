@@ -610,6 +610,7 @@ jobs = ["ios-app"]
 platforms = ["macos"]
 triggers = [
   "companion-ios/OBCDevice/**",
+  "companion-ios/OBCCompanion/Assets.xcassets/**",
   "companion-ios/project.yml",
   "companion-ios/ReplayAssets/**",
   "apps/obc-ios-host/**",

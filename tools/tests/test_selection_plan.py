@@ -484,7 +484,11 @@ class ShippedPlanTests(unittest.TestCase):
 
     def test_a_foundation_change_selects_the_whole_relevant_graph(self) -> None:
         whole = self.jobs_for(".github/workflows/ci.yml")
-        for path in ("tools/test_plan.py", "tools/ci/test.sh", "testing/suites.toml"):
+        for path in (
+            "tools/test_plan.py", "tools/ci/test.sh", "testing/suites.toml",
+            ".github/workflows/release.yml", ".github/workflows/test-weekly.yml",
+            ".github/workflows/verification-candidate.yml", ".github/workflows/new-check.yml",
+        ):
             with self.subTest(path=path):
                 self.assertEqual(self.jobs_for(path), whole)
         for path in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rustfmt.toml", ".cargo/config.toml"):
@@ -493,6 +497,52 @@ class ShippedPlanTests(unittest.TestCase):
                     {"boot", "clippy", "desktop", "device", "embedded", "fmt", "test", "wasm", "wasm-bridges"},
                     set(self.jobs_for(path)),
                 )
+
+    def test_publication_workflows_keep_guards_without_product_builds(self) -> None:
+        for path in sorted(plan.PUBLICATION_WORKFLOWS):
+            with self.subTest(path=path):
+                chosen = plan.select(self.units, self.graph, [path])
+                self.assertEqual(chosen.errors, [])
+                self.assertEqual(plan.required_jobs(chosen), ["guards", "selection"])
+                self.assertIn("python.repository-tools", {item.id for item in chosen.selected})
+
+    def test_ios_steps_follow_the_plan_and_build_screenshot_prerequisites(self) -> None:
+        import yaml
+
+        workflow = yaml.safe_load((self.root / ".github/workflows/ci.yml").read_text())
+        steps = workflow["jobs"]["ios-app"]["steps"]
+        app = {"Build (Debug, simulator SDK)", "Mock marker present in Debug"}
+        device = {"Pack the iOS host (simulator slice)", "Build OBCDevice (Debug, simulator SDK)"}
+        capture = {"Install WebP tools", "Start the screenshot simulator", "Companion website screenshots are current"}
+        routed = app | device | capture
+        cases = [
+            ("companion-ios/OBCDevice/App.swift", device),
+            ("host/obc-host-core/src/lib.rs", device),
+            ("apps/planner-search/server.mjs", app),
+            ("companion-ios/scripts/capture-website-screenshots.sh", app | capture),
+            ("companion-ios/OBCCompanionUITests/WebsiteScreenshotTests.swift", app | capture),
+            ("companion-ios/OBCCompanion/App.swift", app | capture),
+            ("companion-ios/OBCCompanion/Assets.xcassets/AppIcon.appiconset/Contents.json", routed),
+            ("companion-ios/project.yml", routed),
+            (".github/workflows/ci.yml", routed),
+            (None, routed),  # Release candidates select every routed suite.
+        ]
+        operand = r"contains\(fromJSON\(needs.selection.outputs.plan\).selected_suite_ids, '([^']+)'\)"
+        for path, expected in cases:
+            with self.subTest(path=path):
+                chosen = plan.select(self.units, self.graph, [path] if path else [])
+                if path is None:
+                    chosen = plan.select_release(chosen)
+                selected = {item.id for item in chosen.selected}
+                executed = set()
+                for step in steps:
+                    if step.get("name") not in routed:
+                        continue
+                    condition = step.get("if", "")
+                    self.assertRegex(condition, rf"^{operand}(?: \|\| {operand})*$")
+                    if selected.intersection(re.findall(operand, condition)):
+                        executed.add(step["name"])
+                self.assertEqual(executed, expected)
 
     def test_the_snapshot_sweep_requires_its_own_rendering_inputs(self) -> None:
         cases = [

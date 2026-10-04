@@ -971,20 +971,10 @@ jobs:
           path: ${{ runner.temp }}/planner-host.log
           if-no-files-found: error
 
-  # iOS companion, app tier: xcodegen + simulator-SDK builds of the app target. One deliberately
-  # narrow XCUITest flow also refreshes the five real app screens used by the landing page and
-  # compares them with the committed, compressed assets; this keeps the marketing surface honest
-  # without paying for the full simulator suite on every PR.
-  # The pbxproj is gitignored, so running xcodegen here also validates the fresh-clone setup
-  # and catches project.yml drift. This job owns the Debug half of the mock-seam gate: OBCMock's
-  # build marker must be present in the Debug binary, which proves the `ios-release` grep is not
-  # vacuous.
-  #
-  # Two costs used to dominate the job and neither bought a check. The Debug build and the
-  # screenshot run each built the same app into the same DerivedData, so the app is now built
-  # once with `build-for-testing` and the capture only executes the test. A cold simulator needs
-  # about three minutes of data migration, so it starts booting beside that build instead of in
-  # front of the capture.
+  # iOS app builds and companion screenshots.
+  # The screenshot suite builds its UI-test bundle once, then runs test-without-building.
+  # Each build and capture follows the selected suite IDs. The companion Debug build also
+  # runs for screenshot-only changes because the capture needs its app and test bundle.
   ios-app:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'ios-app')
@@ -999,13 +989,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Install XcodeGen and WebP tools
-        run: brew install xcodegen webp
-      - name: Start the screenshot simulator
-        run: companion-ios/scripts/capture-website-screenshots.sh --boot
-      # The OBCDevice shell links the Rust host and the app links the companion core, so this job
-      # needs a Rust toolchain and both simulator slices packed before xcodebuild plans a build:
-      # Xcode resolves an XCFramework before any of the target's own script phases run.
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Install WebP tools
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ios.xcuitest')
+        run: brew install webp
+      # Xcode resolves the selected target's Rust framework before its script phases run.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
@@ -1013,7 +1002,11 @@ jobs:
         with:
           workspaces: .
           key: ios-host
+      - name: Start the screenshot simulator
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ios.xcuitest')
+        run: companion-ios/scripts/capture-website-screenshots.sh --boot
       - name: Pack the iOS host (simulator slice)
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ci.ios-device-build')
         run: tools/build-ios-host.sh --sim-only
       - name: xcodegen generate
         working-directory: companion-ios
@@ -1021,6 +1014,7 @@ jobs:
       # build-for-testing, not build: the same pass produces the app and the
       # OBCCompanionUITests bundle the screenshot step runs.
       - name: Build (Debug, simulator SDK)
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ci.ios-app-build') || contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ios.xcuitest')
         working-directory: companion-ios
         run: |
           ../tools/build-companion-core.sh aarch64-apple-ios-sim
@@ -1031,15 +1025,18 @@ jobs:
       # (OBCCompanion.debug.dylib), not the stub executable; -a forces byte matching in
       # binaries regardless of grep flavor.
       - name: Mock marker present in Debug
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ci.ios-app-build') || contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ios.xcuitest')
         working-directory: companion-ios
         run: grep -raq "OBCMock:DEBUG-only" DerivedData/Build/Products/Debug-iphonesimulator/OBCCompanion.app
       - name: Build OBCDevice (Debug, simulator SDK)
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ci.ios-device-build')
         working-directory: companion-ios
         run: |
           xcodebuild build -project OBCCompanion.xcodeproj -scheme OBCDevice \
             -configuration Debug -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO
       - name: Companion website screenshots are current
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ios.xcuitest')
         id: ios-screenshots
         env:
           OBC_DERIVED_DATA_PATH: ${{ github.workspace }}/companion-ios/DerivedData
