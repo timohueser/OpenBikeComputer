@@ -54,13 +54,14 @@ describe('GPX import', () => {
     });
 
     it('keeps file waypoints as markers that survive save and reload', () => {
-        const wpts = '<wpt lat="47.501" lon="7.61"><name>Spring &amp; bench</name><sym>Drinking Water</sym></wpt><wpt lat="47.499" lon="7.62"/><wpt lat="x" lon="7.6"/>';
+        const wpts = '<wpt lat="47.501" lon="7.61"><name>Spring &amp; bench</name><cmt>Tap</cmt><desc> Cold water </desc><sym>Drinking Water</sym></wpt><wpt lat="47.499" lon="7.62"><desc> </desc></wpt><wpt lat="x" lon="7.6"/>';
         const lines = readTracks([{ name: 'ride.gpx', text: gpx(track([7.6, 47.5], 50), undefined, wpts) }]);
         expect(lines[0].name).toBe('ride');
         const trip = importedTrip({}, lines);
         expect(orderedRoutePoints(trip).map(p => [p.kind, p.leg])).toEqual([['start', undefined], ['finish', 'drawn']]);
-        const markers = [{ kind: 'marker', label: 'Spring & bench', coordinate: [7.61, 47.501] }, { kind: 'marker', label: 'Marker', coordinate: [7.62, 47.499] }];
+        const markers = [{ kind: 'marker', label: 'Spring & bench', coordinate: [7.61, 47.501], note: 'Cold water' }, { kind: 'marker', label: 'Marker', coordinate: [7.62, 47.499] }];
         expect(trip.points.filter(p => p.kind === 'marker')).toMatchObject(markers);
+        expect(trip.points.at(-1)).not.toHaveProperty('note');
         expect(importPlan(exportPlan(newPlan(trip, 'ride'))).trip.points.filter(p => p.kind === 'marker')).toMatchObject(markers);
     });
 

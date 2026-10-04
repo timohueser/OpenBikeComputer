@@ -17,12 +17,12 @@
     } = $props();
 </script>
 
-<section class="inspect" class:compact aria-label="Past years here">
+<section class="inspect" class:compact aria-label="Layer at this place">
     {#if compact}
-        <p class="headline"><Icon name={icon} size={15} />{chart?.headline ?? (error || 'Loading past years…')}</p>
+        <p class="headline"><Icon name={icon} size={15} />{chart?.headline ?? (error || 'Loading layer data…')}</p>
     {:else}
         <p class="title"><strong>{title}</strong>{#if detail}<span>{detail}</span>{/if}</p>
-        <p class="headline">{chart?.headline ?? (error || 'Loading the years at this point…')}</p>
+        <p class="headline">{chart?.headline ?? (error || 'Loading layer data at this point…')}</p>
     {/if}
     {#if chart}
         {#each chart.grids as grid, g (g)}
