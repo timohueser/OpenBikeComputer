@@ -12,8 +12,8 @@ use std::{
     collections::BTreeMap,
     fs::{File, OpenOptions},
     io::{Read, Write},
-    path::{Path, PathBuf},
-    sync::{Arc, OnceLock},
+    path::Path,
+    sync::Arc,
 };
 
 const MAGIC: &[u8; 8] = b"OBCRIDX3";
@@ -22,14 +22,11 @@ const RECORD: u64 = 48;
 
 struct Pack {
     index: memmap2::Mmap,
+    data: memmap2::Mmap,
     count: u64,
-    pages: PathBuf,
-    bytes: u64,
-    /// Opened on the first read and kept for the pack's lifetime.
-    data: OnceLock<File>,
 }
 
-/// One pack: a mapped digest index and its page file.
+/// One pack: its digest index and its pages, both mapped, so no pack holds a file handle.
 #[derive(Clone)]
 pub struct Directory(Arc<Pack>);
 
@@ -51,19 +48,14 @@ impl Directory {
         {
             return Err(Error::InvalidData("Incomplete routing index".into()));
         }
-        // SAFETY: Published packages are immutable. Replacement uses another directory.
-        let index = unsafe { memmap2::Mmap::map(&index) }.map_err(invalid)?;
-        let pages = path.join("pages.bin");
-        let bytes = std::fs::metadata(&pages).map_err(|e| file_error(&pages, e))?.len();
-        Ok(Self(Arc::new(Pack { index, count, pages, bytes, data: OnceLock::new() })))
-    }
-
-    fn data(&self) -> Result<&File> {
-        if let Some(data) = self.0.data.get() {
-            return Ok(data);
+        let data = file(&path.join("pages.bin"))?;
+        if data.metadata().map_err(invalid)?.len() == 0 {
+            return Err(Error::InvalidData("Empty routing pack".into()));
         }
-        let data = file(&self.0.pages)?;
-        Ok(self.0.data.get_or_init(|| data))
+        // SAFETY: Published packages are immutable. Replacement uses another directory.
+        let (index, data) =
+            unsafe { (memmap2::Mmap::map(&index).map_err(invalid)?, memmap2::Mmap::map(&data).map_err(invalid)?) };
+        Ok(Self(Arc::new(Pack { index, data, count })))
     }
 
     /// Enumerate a pack index without loading its page payloads.
@@ -76,7 +68,7 @@ impl Directory {
             let len = u64::from_le_bytes(record[40..48].try_into().unwrap());
             if keys.last().is_some_and(|previous| previous >= &key)
                 || len > MAX_PAGE_BYTES as u64
-                || offset.checked_add(len).is_none_or(|end| end > self.0.bytes)
+                || offset.checked_add(len).is_none_or(|end| end > self.0.data.len() as u64)
             {
                 return Err(Error::InvalidData("Invalid routing pack index".into()));
             }
@@ -98,7 +90,9 @@ impl Directory {
                 std::cmp::Ordering::Equal => {
                     let offset = u64::from_le_bytes(record[32..40].try_into().unwrap());
                     let len = u64::from_le_bytes(record[40..48].try_into().unwrap());
-                    if len > MAX_PAGE_BYTES as u64 || offset.checked_add(len).is_none_or(|end| end > self.0.bytes) {
+                    if len > MAX_PAGE_BYTES as u64
+                        || offset.checked_add(len).is_none_or(|end| end > self.0.data.len() as u64)
+                    {
                         return Err(Error::InvalidData("Routing page outside archive".into()));
                     }
                     return Ok((offset, len));
@@ -112,33 +106,12 @@ impl Directory {
 impl Source for Directory {
     fn read(&self, digest: &str) -> Result<Vec<u8>> {
         let (offset, len) = self.location(digest)?;
-        let mut bytes = vec![0; len as usize];
-        read_at(self.data()?, &mut bytes, offset).map_err(invalid)?;
-        Ok(bytes)
+        Ok(self.0.data[offset as usize..(offset + len) as usize].to_vec())
     }
 
     fn order_for_verify(&self, digests: &mut [String]) -> Result<()> {
         Files::order(digests, |digest| self.location(digest).map(|(offset, _)| (0, offset)))
     }
-}
-
-fn read_at(file: &File, mut bytes: &mut [u8], mut offset: u64) -> std::io::Result<()> {
-    while !bytes.is_empty() {
-        #[cfg(unix)]
-        let result = std::os::unix::fs::FileExt::read_at(file, bytes, offset);
-        #[cfg(windows)]
-        let result = std::os::windows::fs::FileExt::seek_read(file, bytes, offset);
-        match result {
-            Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
-            Ok(read) => {
-                offset += read as u64;
-                bytes = &mut bytes[read..];
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(())
 }
 
 /// The packs of a grid selection. Every page is in exactly one pack.
@@ -201,10 +174,6 @@ impl Source for Files {
         self.pack(digest)?.1.read(digest)
     }
 
-    fn resident_bytes(&self) -> usize {
-        self.objects.capacity() * std::mem::size_of::<([u8; 32], u32)>()
-    }
-
     fn order_for_verify(&self, digests: &mut [String]) -> Result<()> {
         Self::order(digests, |digest| {
             let (index, pack) = self.pack(digest)?;
@@ -223,13 +192,9 @@ pub fn open(path: &Path) -> Result<Selection<Files>> {
     }
     let bytes = manifest(&blocks)?;
     let manifest: blocks::Manifest = serde_json::from_slice(&bytes).map_err(invalid)?;
-    manifest.validate()?;
-    let packs = manifest
-        .archives
-        .iter()
-        .map(|id| Directory::source(&path.join("packs").join(id)))
-        .collect::<Result<Vec<_>>>()?;
-    Selection::new(Files::open(packs)?, manifest, digest(&bytes))
+    Selection::new(manifest, digest(&bytes), |archives| {
+        Files::open(archives.iter().map(|id| Directory::source(&path.join("packs").join(id))).collect::<Result<_>>()?)
+    })
 }
 
 fn manifest(path: &Path) -> Result<Vec<u8>> {
@@ -297,15 +262,13 @@ fn invalid(error: impl std::fmt::Display) -> Error {
 }
 
 fn file(path: &Path) -> Result<File> {
-    File::open(path).map_err(|e| file_error(path, e))
-}
-
-fn file_error(path: &Path, error: std::io::Error) -> Error {
-    if error.kind() == std::io::ErrorKind::NotFound {
-        Error::MissingRegion(path.display().to_string())
-    } else {
-        invalid(error)
-    }
+    File::open(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Error::MissingRegion(path.display().to_string())
+        } else {
+            invalid(e)
+        }
+    })
 }
 
 #[cfg(test)]

@@ -21,10 +21,6 @@ pub const CELL: i32 = 10_000;
 /// Hosts read local files, browser storage or application assets through this seam.
 /// A source is immutable for the lifetime of a package. A missing object is never an empty page.
 pub trait Source {
-    fn resident_bytes(&self) -> usize {
-        0
-    }
-
     fn read(&self, digest: &str) -> Result<Vec<u8>>;
 
     /// Packed sources can verify pages in physical order to avoid random disk reads.

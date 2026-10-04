@@ -1,7 +1,7 @@
 use super::*;
 use route_engine::{
     model::{Graph, Point, Profile, Road, Surface, BIKE, FOOT, PUSH},
-    package::digest,
+    package::{digest, Package},
 };
 use std::sync::Arc;
 
@@ -131,7 +131,8 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         long(6, &[5]),
     ]);
     let relations = read!(package, relations, Relation, |_| true);
-    let (records, report) = catalog(&package, relations, false, 2)?;
+    let selection = Selection::whole(package.fork());
+    let (records, report) = catalog(&selection, relations, false, 2)?;
     let by_id: HashMap<i64, &Value> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r)).collect();
     let dropped: Vec<_> = report.dropped.iter().map(|(reason, ids)| (reason.as_str(), ids.clone())).collect();
     assert_eq!(dropped, [("ExtractEdge", vec![7]), ("Gap", vec![3]), ("NestedLongRoute", vec![6])]);

@@ -164,16 +164,6 @@ impl Numbers {
         }
     }
 }
-impl Column {
-    pub fn decoded_bytes(&self) -> usize {
-        (self.values.len as usize).saturating_mul(match self.width {
-            Width::U8 => 1,
-            Width::U16 => 2,
-            Width::U32 => 4,
-            Width::U64 => 8,
-        })
-    }
-}
 impl Topology {
     pub fn valid(&self, roads: u32) -> bool {
         roads.checked_add(1).is_some_and(|n| self.first.len == n && self.reverse_first.len == n)
@@ -183,9 +173,6 @@ impl Topology {
     }
 }
 impl Weights {
-    pub fn decoded_bytes(&self) -> usize {
-        self.road_costs.decoded_bytes().saturating_add(self.turns.decoded_bytes())
-    }
     pub fn valid(&self, graph: &Topology, roads: u32) -> bool {
         self.road_costs.values.len == roads
             && self.turns.values.len == graph.head.len

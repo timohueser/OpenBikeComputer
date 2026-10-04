@@ -847,7 +847,7 @@ fn an_out_and_back_trip_gets_alternatives_within_one_query_budget() {
         Graph { points, roads, forbidden: vec![], forbidden_foot: vec![], warnings: vec![], ..Graph::default() };
     let profiles: Vec<_> = Profile::presets().into_iter().filter(|p| p.name.starts_with("touring")).collect();
     let (source, manifest) = package_with_profiles(&graph, &profiles);
-    let mut router = Router::new(Package::open(source, &manifest).unwrap(), 768 * 1024 * 1024);
+    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let request = Request {
         points: vec![[-0.0015, 0.0], [0.0465, 0.0], [-0.0015, 0.0]],
         profile: "touring".into(),
@@ -1360,7 +1360,7 @@ fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
     partial.set_memory_budget(partial.routing_bytes("touring").unwrap());
     assert!(Arc::ptr_eq(&cached, &partial.prepared("touring").unwrap()));
     partial.set_memory_budget(1);
-    assert!(matches!(partial.prepared("touring"), Err(Error::Limit)));
+    assert!(matches!(partial.prepared("hiking"), Err(Error::Limit)));
 }
 
 #[test]
