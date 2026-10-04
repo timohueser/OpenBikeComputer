@@ -11,17 +11,22 @@ export interface AnswerRoute extends Omit<EngineRoute, 'geometry' | 'elevation' 
 
 const count = (runs: [unknown, number][]) => runs.reduce((sum, [, length]) => sum + length, 0);
 
-function decodeRoute({ coordinates_udeg, elevation_dm, elapsed_s, edges = {}, ...route }: AnswerRoute): EngineRoute {
-    const geometry: Coordinate[] = [];
-    for (let i = 0, lon = 0, lat = 0; i < coordinates_udeg.length; i += 2) {
-        lon += coordinates_udeg[i];
-        lat += coordinates_udeg[i + 1];
-        geometry.push([lon / 1e6, lat / 1e6]);
+/** Coordinates from integer microdegree pairs: the first pair absolute, each later pair the difference from the one before. */
+export function decodeCoordinates(udeg: number[]): Coordinate[] {
+    const coordinates: Coordinate[] = [];
+    for (let i = 0, lon = 0, lat = 0; i < udeg.length; i += 2) {
+        lon += udeg[i];
+        lat += udeg[i + 1];
+        coordinates.push([lon / 1e6, lat / 1e6]);
     }
+    return coordinates;
+}
+
+function decodeRoute({ coordinates_udeg, elevation_dm, elapsed_s, edges = {}, ...route }: AnswerRoute): EngineRoute {
     let height = 0;
     let time = 0;
     return {
-        ...route, geometry,
+        ...route, geometry: decodeCoordinates(coordinates_udeg),
         elevation: elevation_dm.map(delta => delta === null ? null : (height += delta) / 10),
         elapsed: elapsed_s.map(delta => time += delta),
         edges: Object.fromEntries(Object.entries(edges).map(([channel, runs]) =>
