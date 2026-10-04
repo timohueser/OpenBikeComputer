@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cumulative, kilometres, orderedRoutePoints, riddenKm, routeCoordinates, tripDays, type Coordinate, type DrawnCoordinate } from './editor';
+import { applyBudget, orderedRoutePoints, planView, type DrawnCoordinate } from './editor';
+import { cumulative, kilometres, type Coordinate } from './geo';
 import { profileAscent } from './profile-data';
 import { importedTrip, planOnRoads, readTracks } from './gpx-import';
 import { exportPlan, importPlan, newPlan } from './library';
@@ -42,15 +43,26 @@ describe('GPX import', () => {
         expect(orderedRoutePoints(trip).map(p => [p.id.startsWith('night') ? p.id : p.kind, p.leg]))
             .toEqual([['start', undefined], ['night-1', 'drawn'], ['night-2', 'drawn'], ['via', 'transfer'], ['finish', 'drawn']]);
         const routed = { ...trip, routing: await calculateLine(trip, new AbortController().signal, new LegCache()) };
-        const ridden = cumulative(routeCoordinates(routed)).at(-1)! - kilometres(second.at(-1)!, third[0]);
-        expect(riddenKm(routed)).toBeCloseTo(ridden, 9);
-        expect(routed.routing.seconds).toBeCloseTo(ridden / 15 * 3600, 6);
+        const ridden = planView(routed).total - kilometres(second.at(-1)!, third[0]);
+        expect(planView(routed).summary.distance).toBeCloseTo(ridden, 9);
+        expect(routed.routing.seconds).toBeCloseTo(ridden / 19 * 3600, 6);
         expect(routed.routing.unroutedKm).toBeCloseTo(ridden, 9);
         expect(routed.routing.unknownElevationKm).toBe(0);
         expect(profileAscent(0, 1, routed.routing)).toBe(57);
-        const days = tripDays(routed);
+        const days = planView(routed).days;
         expect(days.reduce((km, day) => km + day.distance, 0)).toBeCloseTo(ridden, 9);
-        expect(days[2].hours).toBeCloseTo(cumulative(third).at(-1)! / 15, 6);
+        expect(days[2].hours).toBeCloseTo(cumulative(third).at(-1)! / 19, 6);
+    });
+
+    it('budgets the hours of a kept line at the pace of its activity', async () => {
+        // About 60 km: 13.4 h of walking at 4.5 km/h, or 3.2 h of riding at 19 km/h.
+        const [file] = readTracks([{ name: 'walk.gpx', text: gpx(track([7.6, 47.5], 801)) }]);
+        const days = async (bike: 'hiking' | 'gravel') => {
+            const trip = importedTrip({ bike }, [file]);
+            const routed = { ...trip, routing: await calculateLine(trip, new AbortController().signal, new LegCache()) };
+            return applyBudget(routed, 'hours', 6, 0).days;
+        };
+        expect([await days('hiking'), await days('gravel')]).toEqual([3, 1]);
     });
 
     it('keeps file waypoints as markers that survive save and reload', () => {
@@ -92,8 +104,8 @@ describe('GPX import', () => {
         expect(orderedRoutePoints(trip).map(p => [p.kind, p.leg, p.turnaround])).toEqual([
             ['start', undefined, undefined], ['via', undefined, true], ['night', undefined, undefined], ['finish', 'drawn', undefined]]);
         expect(trip.points.filter(p => p.kind === 'marker').map(p => p.label)).toEqual(['Hut', 'Cafe', 'Gate']);
-        // A waypoint at the first point of file 2 starts day 2; `nearestProgress` keeps 0.005 from each end.
-        expect(trip.points.find(p => p.label === 'Gate')!.progress).toBeCloseTo(1 / 2, 2);
+        // A waypoint at the first point of file 2 starts day 2.
+        expect(trip.points.find(p => p.label === 'Gate')!.progress).toBe(1 / 2);
         expect(trip.routeOrder).toHaveLength(2);
     });
 });

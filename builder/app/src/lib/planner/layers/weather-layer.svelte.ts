@@ -1,5 +1,5 @@
 import { addProtocol, type ExpressionSpecification, type GeoJSONSource, type Map, type RequestParameters, type SymbolLayerSpecification } from 'maplibre-gl';
-import { kilometres } from '../editor';
+import { kilometres } from '../geo';
 import { TERRAIN_URL } from '../map-data';
 import { DEM_MAX_ZOOM, DEM_TILE } from '../map-style';
 import type { Coordinate } from '../map-types';
@@ -258,7 +258,7 @@ class WeatherLayer implements DataLayer<Samples> {
         // A map point has no profile height, so the rendered terrain gives it one. A route keeps its profile, so its values never depend on the view.
         const heights = coordinates.length === 1 && elevation[0] === null ? [await this.heightAt(coordinates[0])] : elevation.map(height => height ?? NaN);
         signal.throwIfAborted();
-        // Not editor's cumulative: it freezes the coordinates, and a map point is a state proxy that cannot freeze.
+        // Not geo's cumulative: it freezes the coordinates, and a map point is a state proxy that cannot freeze.
         const km = new Float64Array(coordinates.length);
         for (let i = 1; i < km.length; i++) km[i] = km[i - 1] + kilometres(coordinates[i - 1], coordinates[i]);
         return { overview, detail: i => detailCell(source, coordinates[i]), elevation: Float32Array.from(heights), km };

@@ -5,7 +5,8 @@ import { routeService } from '../../../test-support/planner/route-service';
 import { decodeRoutes, type AnswerRoute } from './route-answer';
 import { ridingProfiles, presetName, type BikeType } from './riding-profiles';
 import { surfaceRuns, surfaceWindow } from './surface-data';
-import { initialTrip, cumulative, planOf, removeRoutePoint, storedPlan, setEndpoint, routingKey, routeCoordinates, TripHistory, type Coordinate, type RoutePoint, type Trip } from './editor';
+import { initialTrip, planOf, planView, removeRoutePoint, storedPlan, setEndpoint, routingKey, TripHistory, type RoutePoint, type Trip } from './editor';
+import { cumulative, type Coordinate } from './geo';
 
 const totals = (metres: number, unknown = 0, pushing = 0): RouteTotals =>
     ({ distance_m: metres, ascent_m: 0, seconds: metres, surface_m: [unknown, metres - unknown, 0, 0, 0, 0], unknown_elevation_m: metres, pushing_m: pushing });
@@ -56,23 +57,22 @@ describe('routing integration', () => {
         expect(movingSecondsAt(line, 0.5)).toBeCloseTo(3000);
         expect(line.elevation).toEqual([200, null, 400]);
         expect(line.stops.map(s => s.distance)).toEqual(cumulative(route.geometry));
-        expect(routeCoordinates({ ...plan, routing: line })).toEqual(route.geometry);
+        expect(planView({ ...plan, routing: line }).coordinates).toEqual(route.geometry);
     });
     it('keeps itinerary edits outside routing and preserves a selected saved line', () => {
-        const plan = trip();
-        plan.routing = selectRoute(plan, route, [route]);
+        const plan = { ...trip(), routing: selectRoute(trip(), route, [route]) };
         const edited = { ...plan, days: 5, splits: { 1: .4 }, restAfter: [1], limit: 10, points: plan.points.map(p => ({ ...p, label: 'Renamed' })) };
         expect(routingKey(edited)).toBe(routingKey(plan));
-        expect(routeCoordinates(edited)).toEqual(route.geometry);
+        expect(planView(edited).coordinates).toEqual(route.geometry);
         const sameStart = setEndpoint(edited, 'start', edited.points[0].coordinate, 'New label');
-        expect(routeCoordinates(sameStart)).toEqual(route.geometry);
+        expect(planView(sameStart).coordinates).toEqual(route.geometry);
         const marked = { ...edited, points: [...edited.points, { ...edited.points[0], id: 'note', kind: 'marker' as const }] };
         const unmarked = removeRoutePoint(marked, 'note');
         expect(unmarked.routing).toBe(edited.routing);
         expect(unmarked.splits).toEqual(edited.splits);
         const moved = { ...edited, points: edited.points.map(p => p.id === 'shape' ? { ...p, coordinate: [8.1, 48] as [number, number] } : p) };
         expect(routingKey(moved)).not.toBe(routingKey(plan));
-        expect(routeCoordinates(moved)).toEqual([plan.points[0].coordinate]);
+        expect(planView(moved).coordinates).toEqual([plan.points[0].coordinate]);
     });
     it('requests only the legs that an edit changes, pinned to the cached legs on both sides', async () => {
         const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
@@ -171,7 +171,7 @@ describe('routing integration', () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, json: async () => ({ code: 'no_path', message: 'No legal route.' }) }));
         const plan = trip();
         await expect(calculateLine(plan, new AbortController().signal, new LegCache())).rejects.toThrow('No legal route.');
-        expect(routeCoordinates(plan)).toEqual([plan.points[0].coordinate]);
+        expect(planView(plan).coordinates).toEqual([plan.points[0].coordinate]);
     });
 });
 

@@ -22,7 +22,6 @@
     import { dataLayers } from '../../lib/planner/layers/registry';
     import { addDays, type DataLayer } from '../../lib/planner/layers/data-layer';
     import type { OverlayOptions } from '../../lib/planner/route-overlays';
-    import NearbyLandmark from './NearbyLandmark.svelte';
     import SignedRoutes from './SignedRoutes.svelte';
     import { presetName, ridingProfiles, type BikeType } from '../../lib/planner/riding-profiles';
     import { RouteFinder, recordLine, type RouteStart } from '../../lib/planner/route-finder.svelte';
@@ -33,20 +32,20 @@
     import { PlanLibrary, newPlan as makePlan, downloadPlan, importPlan, type Plan } from '../../lib/planner/library';
     import { versionSummary } from '../../lib/planner/versions';
     import {
-        addClickedPoint, addPointNear, addRestDay, applyBudget, closeLoop, coordinateAt, cumulative, emptyTrip, hasEndpoints as endpointsChosen,
-        insertPoint, itineraryDays, kilometres, planTitle, nearestProgress, nightOrderConflicts, overnightCandidates, riddenKm, routeLegsAround, dragPointOut,
-        orderedRoutePoints, overnightWindow, pinNight, removeRestDay, reorderPoint, routeCoordinates, startLoopHere, routeSlice, routeStops,
-        setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint, TripHistory, tripDays, routingKey, planOf, storedPlan,
-        type Coordinate, type Day, type LegMode, type Place, type PointKind, type RoutePoint, type Trip,
+        addClickedPoint, addPointNear, addRestDay, applyBudget, closeLoop, emptyTrip, hasEndpoints as endpointsChosen,
+        insertPoint, planTitle, nightOrderConflicts, overnightCandidates, routeLegsAround, dragPointOut,
+        orderedRoutePoints, overnightWindow, pinNight, planView, removeRestDay, reorderPoint, startLoopHere,
+        setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint, TripHistory, routingKey, planOf, storedPlan,
+        type Day, type LegMode, type Place, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
+    import { coordinateAt, cumulative, kmPerDegree, nearestOnLine, nearestProgress, routeDistance, routeSlice, type Coordinate } from '../../lib/planner/geo';
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
-    import { corridorPlaces, routeDistance } from '../../lib/planner/place-index';
-    import { landmarks } from '../../lib/planner/landmarks';
+    import { corridorPlaces } from '../../lib/planner/place-index';
     import { MAP_BOUNDS, PLACES_URL, ROUTES_URL } from '../../lib/planner/map-data';
     import { coordinateName, visitName } from '../../lib/planner/point-names';
     import { SEARCH_URL, HOSTED_SEARCH, SEARCH_REGIONS, REGION_NAME } from '../../lib/planner/search/config';
     import { dayColor } from '../../lib/planner/day-colors';
-    import { profileAscent, profileDescent, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
+    import { profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import { searchPlaces, placeDetails, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
     import { asPlace, routesPlaces } from '../../lib/planner/search/presentation';
     import { buildQueryRoute } from '../../lib/planner/search/route-client';
@@ -105,7 +104,7 @@
     let routeFailed = $state(false);
     const routingInput = $derived(routingKey(trip));
     // Undo returns a plan without its route, often with an unchanged routing key.
-    const routed = $derived(trip.routing?.key === routingInput);
+    const routed = $derived(!!planView(trip).line);
     $effect(() => {
         const key = routingInput;
         const planId = activePlanId;
@@ -129,10 +128,9 @@
     });
     function pickRoute(route: EngineRoute) {
         const next = { ...trip, preset: presetName(route.profile) };
-        next.routing = selectRoute(next, route, trip.routing?.alternatives ?? [route]);
-        commit(next, 'Route preference changed');
+        commit({ ...next, routing: selectRoute(next, route, trip.routing?.alternatives ?? [route]) }, 'Route preference changed');
     }
-    const currentRoute = $derived(hasEndpoints && shownTrip.routing?.key === routingKey(shownTrip) ? shownTrip.routing : undefined);
+    const currentRoute = $derived(hasEndpoints ? planView(shownTrip).line : undefined);
     $effect(() => {
         if (fitPlan && currentRoute && map) {
             const id = activePlanId;
@@ -154,7 +152,7 @@
         : routingStatus);
     let list = $state<'plan' | 'ways'>('plan');
     let waysStatus = $state('');
-    const needsAlternatives = $derived(trip.routing?.key === routingInput && !trip.routing.alternativesReady);
+    const needsAlternatives = $derived(routed && !trip.routing!.alternativesReady);
     $effect(() => {
         const key = routingInput;
         if (list !== 'ways' || draggingPoint || !needsAlternatives) return;
@@ -186,7 +184,7 @@
     // Where an add or leg callout opened; a leg callout also names its leg.
     let spot = $state<{ coordinate: Coordinate; legEndId?: string } | null>(null);
     let drawing = $state<string | null>(null);
-    // The selected place when it is not a fixture: a basemap place or a landmark.
+    // The selected place when it is not a fixture: a basemap place.
     let mapPlace = $state<Place | null>(null);
     let hiddenCategories = $state<PlaceCategory[]>([]);
     let highlightedCategories = $state<PlaceCategory[]>([]);
@@ -260,14 +258,15 @@
     }
     const canUndo = $derived.by(() => { void revision; return history.canUndo; });
     const canRedo = $derived.by(() => { void revision; return history.canRedo; });
-    const coordinates = $derived(routeCoordinates(visualTrip));
+    const view = $derived(planView(visualTrip));
+    const coordinates = $derived(view.coordinates);
     const lengths = $derived(cumulative(coordinates));
-    const total = $derived(lengths.at(-1)!);
-    const stops = $derived(routeStops(shownTrip));
-    const visualStops = $derived(routeStops(visualTrip));
-    const days = $derived(tripDays(visualTrip));
+    const total = $derived(view.total);
+    const stops = $derived(planView(shownTrip).stops);
+    const visualStops = $derived(view.stops);
+    const days = $derived(view.days);
     const multi = $derived(trip.mode !== 'route');
-    const itinerary = $derived(itineraryDays(visualTrip));
+    const itinerary = $derived(view.itinerary);
     const focusedDay = $derived(multi && list === 'plan' && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
     const searchPlan = $derived<SearchContext['plan']>({ coordinates, km: lengths, seconds: currentRoute?.unroutedKm === 0 ? currentRoute.elapsed : undefined,
@@ -329,13 +328,6 @@
         : highlightCandidates.length > highlightLimit ? `Showing ${highlightLimit} of ${highlightCandidates.length} highlighted places, nearest the route first`
         : '',
     );
-    // The next landmark along the route within 15 km that the route does not visit yet.
-    const nearbyLandmark = $derived.by(() => {
-        const distance = routeDistance(coordinates, 15);
-        return landmarks
-            .filter(landmark => Number.isFinite(distance(landmark.coordinate)) && !trip.points.some(p => kilometres(p.coordinate, landmark.coordinate) < .3))
-            .sort((a, b) => nearestProgress(coordinates, a.coordinate) - nearestProgress(coordinates, b.coordinate))[0];
-    });
     const selectedPlace = $derived((mapPlace?.id === selectedId ? mapPlace : undefined) ?? visiblePlaces.find(p => p.id === selectedId) ?? corridor.find(p => p.id === selectedId));
     let detailsError = $state('');
     $effect(() => {
@@ -653,8 +645,8 @@
         if (roads) message = 'Planning on roads…';
         await libraryAction(async () => {
             const planned = roads ? await planOnRoads(lines, line => requestShape(line, profileId(trip))) : { lines, failed: [] };
-            const next = importedTrip(trip, planned.lines);
-            next.points = next.points.map(p => p.kind === 'via' || p.kind === 'marker' ? p : { ...p, label: map?.placeName(p.coordinate) ?? p.label });
+            const imported = importedTrip(trip, planned.lines);
+            const next = { ...imported, points: imported.points.map(p => p.kind === 'via' || p.kind === 'marker' ? p : { ...p, label: map?.placeName(p.coordinate) ?? p.label }) };
             await lastSave;
             const saved = await library.save(makePlan(next, lines[0].name));
             await library.activate(saved.id);
@@ -724,7 +716,7 @@
         draggingPoint = false;
         revision++;
         clearSelection();
-        night = Math.max(1, Math.min(night, tripDays(trip).length));
+        night = Math.max(1, Math.min(night, planView(trip).days.length));
         if (expandedDay !== null) expandedDay = night;
         void save().catch(() => {});
         message = description;
@@ -883,7 +875,7 @@
     function showRoutesArea() {
         const start = finder.start;
         if (!start) return;
-        const [lon, lat] = start.coordinate, dLat = finder.filters.radiusKm / 111.32, dLon = dLat / Math.cos(lat * Math.PI / 180);
+        const [lon, lat] = start.coordinate, dLat = finder.filters.radiusKm / kmPerDegree, dLon = dLat / Math.cos(lat * Math.PI / 180);
         map?.fitCoordinates([[lon - dLon, lat - dLat], [lon + dLon, lat + dLat], ...finder.mapView?.lines.flatMap(route => route.line) ?? []]);
     }
 
@@ -1049,11 +1041,11 @@
     }
 
     function movePoint(id: string, coordinate: Coordinate) {
-        const next = movedPoint(id, coordinate);
-        if (previewTrip?.routing?.key === routingKey(next)) next.routing = previewTrip.routing;
+        const moved = movedPoint(id, coordinate);
+        const next = previewTrip?.routing?.key === routingKey(moved) ? { ...moved, routing: previewTrip.routing } : moved;
         commit(next, 'Point moved');
-        const moved = next.points.find(p => p.id === id);
-        if (moved) void nameVisit(moved);
+        const point = next.points.find(p => p.id === id);
+        if (point) void nameVisit(point);
     }
 
     function removePoint() {
@@ -1113,7 +1105,7 @@
         const label = autoLabel ? coordinateName(point.coordinate) : point.label;
         const next = { ...trip };
         next.points = next.points.map(p => p.id === point.id ? { ...p, id, kind, night: undefined, label, autoLabel: autoLabel || undefined,
-            anchor: kind === 'detour' ? coordinateAt(coordinates, nearestProgress(coordinates, point.coordinate)) : undefined } : p);
+            anchor: kind === 'detour' ? nearestOnLine(coordinates, point.coordinate).at : undefined } : p);
         next.routeOrder = next.routeOrder?.map(old => old === point.id ? id : old);
         commit(next, 'Point type updated');
         selectedId = id;
@@ -1186,7 +1178,7 @@
         commit(planOf(saved), `Restored ‘${name}’`);
         undoable = true;
         clearSelection();
-        night = Math.max(1, Math.min(night, tripDays(trip).length));
+        night = Math.max(1, Math.min(night, planView(trip).days.length));
         if (expandedDay !== null) expandedDay = night;
     }
 
@@ -1244,7 +1236,7 @@
             {/if}
             {#if routesOpen}
                 <SignedRoutes {finder} activity={bike} {theme} onClose={closeRoutes} onPlan={planSignedRoute} {placeName}
-                    current={hasEndpoints && total > 0 ? { title: planTitle(trip), km: riddenKm(visualTrip) } : null}
+                    current={hasEndpoints && total > 0 ? { title: planTitle(trip), km: view.summary.distance } : null}
                     findPlaces={(text, signal) => searchPlaces(text, searchContext, searchRegion, 6, signal).then(answer => routesPlaces(answer.results ?? [], text))} />
             {:else if searching}
                 <div class="pane-scroll">
@@ -1275,7 +1267,7 @@
                     </div>
                 {/if}
                 {#if !focusedDay && visualRoute}
-                    <div class="trip-summary"><RouteStats distance={riddenKm(visualTrip)} ascent={visualRoute?.unknownElevationKm === 0 ? profileAscent(0, 1, visualRoute) : null} descent={visualRoute?.unknownElevationKm === 0 ? profileDescent(0, 1, visualRoute) : null} walking={visualTrip.bike === 'hiking'} hours={visualRoute ? visualRoute.seconds / 3600 : null} /></div>
+                    <div class="trip-summary"><RouteStats distance={view.summary.distance} ascent={view.line?.unknownElevationKm === 0 ? view.summary.ascent : null} descent={view.line?.unknownElevationKm === 0 ? view.summary.descent : null} walking={visualTrip.bike === 'hiking'} hours={view.line ? view.summary.hours : null} /></div>
                 {/if}
                 {#if !focusedDay && gaps.length}
                     <p class="closure-note"><Icon name="pin" size={15} /><span>{gapNote(gaps)}</span></p>
@@ -1318,9 +1310,6 @@
                         <RouteList {stops} loop={!!trip.loop} onLoop={multi ? undefined : closeToStart} {hoveredId} onHover={(id) => hoveredId = id} measured={!!currentRoute} onInspect={inspectPoint}
                             onReorder={(id, offset) => commit(reorderPoint(trip, id, offset), 'Stops reordered · changed legs follow roads')} />
                     {/if}
-                    {#if nearbyLandmark && !focusedDay}
-                        <NearbyLandmark landmark={nearbyLandmark} onRide={addVisit} onShow={selectPlace} />
-                    {/if}
                 </div>
             {/if}
         </aside>
@@ -1333,7 +1322,7 @@
                     bind:this={map} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={routesOpen ? [] : mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
                     {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} planMuted={routesOpen} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
-                    shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces} {landmarks}
+                    shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={previewPoint} onDayEndDrag={moveDayEnd}
                     onLegClick={legClick} onInsert={(legEndId, coordinate) => insert(legEndId, coordinate, true)} onDrawn={drawn} onPlaceClick={place => routesOpen ? moveRoutesStart({ coordinate: place.coordinate, name: place.label }) : choosePlace(place)}
                     signedRoutes={routesOpen ? finder.mapView : null} signedHovered={finder.hovered} onSignedRoute={id => void finder.select(id)} onSignedHover={id => finder.hovered = id}
@@ -1397,7 +1386,7 @@
             <Resize value={drawerHeight} min={DRAWER_CLOSED} max={maxProfile} axis="y" label="Elevation height" onResize={resizeProfile} />
             {#if routesOpen && finder.preview}
                 <Profile lineData={finder.preview} walking={bike === 'hiking'} height={drawerHeight} open={profileOpen} onToggle={() => profileOpen = !profileOpen} total={previewKm} {theme}
-                    days={[{ number: 1, from: 0, to: 1, distance: previewKm, hours: finder.preview.seconds / 3600, pinned: undefined }]} dayLabels={{ 1: 1 }}
+                    days={[{ number: 1, from: 0, to: 1, pinned: undefined }]} dayLabels={{ 1: 1 }}
                     activeNight={0} band={null} onNight={() => {}} onDayEndDrag={() => {}} onHover={() => {}} />
             {:else if routesOpen || !visualRoute}
                 <section class="empty-profile" aria-label="Elevation profile" style:height={`${drawerHeight}px`}>

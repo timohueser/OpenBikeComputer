@@ -5,8 +5,7 @@
     import RouteStats from './RouteStats.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
     import { kindLabel } from '../../lib/planner/search/presentation';
-    import { profileAscent, profileDescent } from '../../lib/planner/profile-data';
-    import { dayOverTarget, dayStops, orderedRoutePoints, routingKey, type ItineraryDay, type OvernightCandidate, type Place, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
+    import { dayOverTarget, dayStops, planView, type ItineraryDay, type OvernightCandidate, type Place, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
 
     let {
         trip, day, days, theme, overnightNote = '', scale, expanded, changing, candidates, conflict, selectedId, revealId, hoveredId = null, onHover, calendar,
@@ -45,14 +44,13 @@
     const last = $derived(riding === days.length);
     const previous = $derived(days[riding - 2]);
     const start = $derived(riding === 1 ? trip.points.find(p => p.kind === 'start')!.label : previous?.pinned?.label ?? `Day ${calendar[riding - 1]} overnight`);
-    const finish = $derived(orderedRoutePoints(trip).at(-1)!);
+    const view = $derived(planView(trip));
+    const finish = $derived(view.stops.at(-1)!.point);
     const end = $derived(last ? finish.label : day.pinned?.label ?? 'Overnight to choose');
     const endId = $derived(last ? finish.id : day.pinned?.id ?? null);
-    const line = $derived(trip.routing?.key === routingKey(trip) ? trip.routing : undefined);
-    const ascent = $derived(profileAscent(day.from, day.to, line));
-    const descent = $derived(profileDescent(day.from, day.to, line));
+    const line = $derived(view.line);
     const ascentKnown = $derived(line?.unknownElevationKm === 0);
-    const over = $derived(dayOverTarget(trip, day, ascent));
+    const over = $derived(dayOverTarget(trip, day, day.ascent));
     // Both ends chosen: the figures are what the rider will ride. Otherwise they are a suggestion, shown with ≈.
     const confirmed = $derived((riding === 1 || !!previous?.pinned) && (last || !!day.pinned));
     const overParts = $derived([
@@ -91,14 +89,14 @@
             <span class="badge">{day.number}</span>
             <h2>{start} → {end}</h2>
         </header>
-        <RouteStats distance={day.distance} ascent={ascentKnown ? ascent : null} descent={ascentKnown ? descent : null} walking={trip.bike === 'hiking'} hours={line ? day.hours : null} />
+        <RouteStats distance={day.distance} ascent={ascentKnown ? day.ascent : null} descent={ascentKnown ? day.descent : null} walking={trip.bike === 'hiking'} hours={line ? day.hours : null} />
     {:else}
     <button type="button" class="heading" data-day={riding} onclick={onToggle} aria-label={`Open day ${day.number}: ${start} to ${end}`}>
         <span class="heading-content">
         <span class="badge">{day.number}</span>
         <span class="title">
             <strong>{start} → {end}</strong>
-            <small>{duration(day.hours)} · <span class:over={over.climb > 0}>↑ {ascentKnown ? ascent : '—'} m</span> · ↓ {ascentKnown ? descent : '—'} m{day.pinned?.placeKind ? ` · ${kindLabel(day.pinned.placeKind)}` : ''}</small>
+            <small>{duration(day.hours)} · <span class:over={over.climb > 0}>↑ {ascentKnown ? day.ascent : '—'} m</span> · ↓ {ascentKnown ? day.descent : '—'} m{day.pinned?.placeKind ? ` · ${kindLabel(day.pinned.placeKind)}` : ''}</small>
         </span>
         <span class="distance" class:over={over.km > 0}>{day.distance.toFixed(1)}<small>km</small></span>
         <Icon name="chevron" size={14} />

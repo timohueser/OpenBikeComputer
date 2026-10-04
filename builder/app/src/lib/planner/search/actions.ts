@@ -1,21 +1,14 @@
 import {
   addPointNear,
-  coordinateAt,
-  cumulative,
   hasEndpoints,
-  itineraryDays,
-  nearestProgress,
   pinNight,
-  routeCoordinates,
-  routeSlice,
-  routeStops,
+  planView,
   routingKey,
   setSplit,
-  tripDays,
   type Trip,
   type RoutePoint,
-  type Coordinate,
 } from '../editor';
+import { coordinateAt, cumulative, nearestProgress, routeSlice, type Coordinate } from '../geo';
 import type { RoutingLine } from '../routing';
 import type { QueryChange, ResolvedPoint } from './types';
 
@@ -55,10 +48,9 @@ export async function applyQueryChanges(
       throw new Error('Choose a start and finish before editing the route.');
     // Reroute rebuilds the points from the stops, and a loop lists its start twice.
     if (trip.loop && change.op === 'reroute') throw new Error('Reroute does not work on a loop yet.');
-    const line = routeCoordinates(trip),
-      total = cumulative(line).at(-1)!;
+    const { coordinates: line, total } = planView(trip);
     const ridingDay = (number: number) => {
-      const day = itineraryDays(trip).find(
+      const day = planView(trip).itinerary.find(
         (d) => d.number === number && !d.rest,
       );
       if (!day) throw new Error(`Day ${number} is no longer a riding day.`);
@@ -88,12 +80,13 @@ export async function applyQueryChanges(
     } else if (change.op === 'end_day') {
       const n = ridingDay(change.day!),
         p = change.point!;
-      if (n >= tripDays(trip).length)
+      if (n >= planView(trip).days.length)
         throw new Error('The last day ends at the finish.');
       if (p.along !== undefined) {
-        trip.points = trip.points.filter(
-          (p) => p.kind !== 'night' || p.night !== n,
-        );
+        trip = {
+          ...trip,
+          points: trip.points.filter((p) => p.kind !== 'night' || p.night !== n),
+        };
         trip = setSplit(trip, n, p.along / total);
         if (Math.abs((trip.splits?.[n] ?? -1) - p.along / total) > 1e-6)
           throw new Error(
@@ -110,7 +103,7 @@ export async function applyQueryChanges(
         );
       if (trip.restAfter?.length)
         throw new Error('Remove rest days before changing the day count.');
-      let boundaries = tripDays(trip)
+      let boundaries = planView(trip).days
         .slice(0, -1)
         .map((d) => d.to * total);
       const [from, to] = change.range!;
@@ -142,7 +135,7 @@ export async function applyQueryChanges(
           'Move the rest day at the finish before reversing this trip.',
         );
       // A loop keeps its start, which lists last again and holds the closing leg.
-      const stops = routeStops(trip).reverse();
+      const stops = [...planView(trip).stops].reverse();
       const kept = trip.loop ? stops.slice(0, -1) : stops;
       const drawn = (i: number) =>
         routeSlice(line, stops[i - 1].distance / total, stops[i].distance / total).slice(1, -1);
@@ -238,13 +231,11 @@ async function reroute(
   change: QueryChange,
   build: RouteBuilder,
 ): Promise<Trip> {
-  const line = routeCoordinates(trip),
-    total = cumulative(line).at(-1)!;
+  const { coordinates: line, stops, total } = planView(trip);
   const [from, to] = change.range ?? [0, total];
   if (from < 0 || to > total + 0.01 || to <= from)
     throw new Error('Choose a nonempty route section.');
-  const stops = routeStops(trip),
-    inner = stops.filter((s) => s.distance > from && s.distance < to);
+  const inner = stops.filter((s) => s.distance > from && s.distance < to);
   const inputs = [
     { coordinate: coordinateAt(line, from / total), label: 'Section start' },
     ...inner.map((s) => ({

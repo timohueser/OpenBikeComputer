@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { calculateLine, type EngineRoute } from './routing';
-import { emptyTrip, routeStops, type RoutePoint, type Trip } from './editor';
+import { emptyTrip, planView, type RoutePoint, type Trip } from './editor';
 import type { LegCache } from './route-legs';
 import { gapNote, routeGaps } from './route-gaps';
 
@@ -19,7 +19,7 @@ const point = (id: string, kind: RoutePoint['kind'], coordinate: [number, number
 async function gaps(points: RoutePoint[]) {
     const plan: Trip = { ...emptyTrip(), bike: 'hiking', points };
     const trip = { ...plan, routing: await calculateLine(plan, new AbortController().signal, legs) };
-    return routeGaps(routeStops(trip), trip.routing.coordinates);
+    return routeGaps(planView(trip).stops, trip.routing.coordinates);
 }
 
 describe('route gaps', () => {

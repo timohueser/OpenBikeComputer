@@ -14,8 +14,8 @@
     import { websiteLink, phoneNumbers, phoneLink } from '../../lib/planner/contact-links';
     import Segmented from './Segmented.svelte';
     import { placeCategories } from '../../lib/planner/poi-kinds';
-    import { profileAscent } from '../../lib/planner/profile-data';
-    import { canMoveLoopStart, dayOverTarget, hasEndpoints as endpointsChosen, maxRidingDays, nearestProgress, routeCoordinates, tripDays, type Coordinate, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import { canMoveLoopStart, dayOverTarget, hasEndpoints as endpointsChosen, maxRidingDays, planView, provisionalDays, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import { nearestProgress, type Coordinate } from '../../lib/planner/geo';
 
     let {
         kind, trip, days, overnightNote = '', detailsError = '', dayLabels, night, point, place, coordinate, candidates, legMode,
@@ -84,10 +84,9 @@
     const sleeps = $derived(hasEndpoints && days.length > 0 && multi);
     const preview = $derived.by(() => {
         if (!coordinate || sleepDay >= days.length) return null;
-        const day = tripDays(trip, { night: sleepDay, progress: nearestProgress(routeCoordinates(trip), coordinate) })[sleepDay - 1];
-        const ascent = profileAscent(day.from, day.to, trip.routing);
-        const over = dayOverTarget(trip, day, ascent);
-        return { distance: day.distance, ascent, over: over.km > 0 || over.climb > 0 };
+        const day = provisionalDays(trip, sleepDay, nearestProgress(planView(trip).coordinates, coordinate))[sleepDay - 1];
+        const over = dayOverTarget(trip, day, day.ascent);
+        return { distance: day.distance, ascent: day.ascent, over: over.km > 0 || over.climb > 0 };
     });
 
     onMount(() => {

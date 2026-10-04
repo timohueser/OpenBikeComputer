@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { corridorTiles, routeDistance, osmSource, poiPlace } from './place-index';
-import type { Coordinate } from './editor';
+import { corridorTiles, osmSource, poiPlace } from './place-index';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
 
@@ -36,21 +35,5 @@ describe('corridor tiles', () => {
 
     it('covers every tile along a line without gaps', () => {
         expect(corridorTiles([[7.4, 47.55], [7.8, 47.55]], 1, 12).sort()).toEqual([2132, 2133, 2134, 2135, 2136].map(x => `12/${x}/1431`));
-    });
-});
-
-// At 48° N, one kilometre is 0.00899° of latitude and 0.01344° of longitude.
-describe('route distance', () => {
-    const line = Array.from({ length: 100 }, (_, i): Coordinate => [8 + i / 99, 48]);
-    const distance = routeDistance(line, 5);
-
-    it('measures a place beside any part of the route and drops one beyond the corridor', () => {
-        expect(distance([8.9, 48 + 4 * .00899])).toBeCloseTo(4, 2);
-        expect(distance([8.9, 48 + 6 * .00899])).toBe(Infinity);
-    });
-
-    it('measures past the route end to the end point', () => {
-        expect(distance([9 + 4 * .01344, 48])).toBeCloseTo(4, 2);
-        expect(distance([9 + 6 * .01344, 48])).toBe(Infinity);
     });
 });

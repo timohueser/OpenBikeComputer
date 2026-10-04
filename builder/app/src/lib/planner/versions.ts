@@ -1,4 +1,4 @@
-import { hasEndpoints, itineraryDays, riddenKm, routingKey, storedPlan, type Trip } from './editor';
+import { hasEndpoints, planView, storedPlan, type Trip } from './editor';
 
 export interface Version {
     id: string;
@@ -11,9 +11,10 @@ export interface Version {
 export function versionSummary(trip: Trip): string {
     const endpoints = trip.points.filter(p => p.kind === 'start' || p.kind === 'finish');
     if (!hasEndpoints(trip)) return endpoints.length ? `${endpoints[0].kind === 'start' ? 'Start' : 'Finish'} chosen` : 'Empty plan';
-    const distance = trip.live && trip.routing?.key !== routingKey(trip) ? 'Distance pending' : `${riddenKm(trip).toFixed(1)} km`;
+    const view = planView(trip);
+    const distance = trip.live && !view.line ? 'Distance pending' : `${view.summary.distance.toFixed(1)} km`;
     if (trip.mode === 'route') return `Single route · ${distance}`;
-    const days = itineraryDays(trip).length;
+    const days = view.itinerary.length;
     const pinned = trip.points.filter(p => p.kind === 'night').length;
     const parts = [`${days} ${days === 1 ? 'day' : 'days'}`];
     if (pinned) parts.push(`${pinned} ${pinned === 1 ? 'night' : 'nights'} pinned`);
