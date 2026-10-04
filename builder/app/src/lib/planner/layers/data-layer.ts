@@ -5,7 +5,7 @@ import type { Coordinate } from '../map-types';
 export type Theme = 'light' | 'dark';
 
 /** The data archives of a region; each data layer reads one. */
-export type Archive = 'snow' | 'climate';
+export type Archive = 'snow' | 'climate' | 'sun';
 
 export interface Swatch {
     label: string;
@@ -59,17 +59,21 @@ export interface DataLayer<Samples = unknown> {
     readonly source: string;
     readonly error: string;
     /** A choice of the map variable in the date bar; the map redraws when `value` changes. */
+    readonly time?: { value: string; timezone: string; detail?: string };
+    /** Resample when a layer depends on the selected instant. */
+    sampleKey?(date: string): string;
     readonly variable?: { label: string; options: { value: string; label: string }[]; value: string };
     /** The legend of the map. */
     legend(theme: Theme): Legend;
     /** Installs the layer when it is first shown; a hidden layer requests nothing. */
     sync(map: Map, view: View & { shown: boolean }): void;
     /** The data at each coordinate of a line. */
-    sample(line: Line, signal: AbortSignal): Promise<Samples>;
+    sample(line: Line, signal: AbortSignal, view?: View): Promise<Samples>;
     /** The strip under the profile; a layer without it has no strip. Each sample has a value that indexes `fills`. */
     readonly strip?: {
         /** The strip title; the layer label without it. */
         label?: string;
+        hint?: string;
         legend?(theme: Theme): Legend;
         fills(theme: Theme): Swatch[];
         values(samples: Samples, date: string): Uint8Array;
@@ -79,14 +83,14 @@ export interface DataLayer<Samples = unknown> {
     /** The years at sample `i`. */
     chart(samples: Samples, i: number, view: View): Chart;
     /** The year slider of a route: its label line and one row per variable; empty rows without samples. */
-    year(samples: Samples | null, view: View): Grid;
+    year?(samples: Samples | null, view: View): Grid;
     /** A short label for each overnight stop, at sample `index` on the night of `date`; '' for none. A layer without it labels no stops. */
     nights?(samples: Samples, stops: { index: number; date: string }[]): string[];
 }
 
 /** The layers whose archive the region has, in list order. */
-export function availableLayers(entries: readonly { archive: Archive; create: (url: string) => DataLayer }[], urls: Record<Archive, string>): DataLayer[] {
-    return entries.flatMap(({ archive, create }) => urls[archive] ? [create(urls[archive])] : []);
+export function availableLayers(entries: readonly { archive: Archive; create: (url: string) => DataLayer }[], urls: Partial<Record<Archive, string>>): DataLayer[] {
+    return entries.flatMap(({ archive, create }) => urls[archive] ? [create(urls[archive]!)] : []);
 }
 
 const DAY_MS = 86_400_000;

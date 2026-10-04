@@ -231,6 +231,7 @@ triggers = [
   "tools/requirements-test.txt",
   "tools/requirements-planner-maps.txt",
   "tools/requirements-planner-snow.txt",
+  "tools/requirements-planner-sun.txt",
   "tools/*.py",
   "tools/**/*.py",
   "tools/planner-regions/**",

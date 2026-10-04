@@ -249,8 +249,9 @@
     const placeName = $derived.by(() => { void mapIdle; return (coordinate: Coordinate) => map?.placeName(coordinate); });
     const previewKm = $derived(finder.preview ? cumulative(finder.preview.coordinates).at(-1)! : 0);
 
-    const maxProfile = $derived(Math.max(DRAWER_MIN, Math.min(340, viewportHeight - 400)));
-    const drawerHeight = $derived(profileOpen ? Math.min(profileHeight, maxProfile) : DRAWER_CLOSED);
+    const minProfile = $derived(viewportWidth <= 760 && dataLayer?.strip ? 320 : DRAWER_MIN);
+    const maxProfile = $derived(Math.max(minProfile, Math.min(340, viewportHeight - 400)));
+    const drawerHeight = $derived(profileOpen ? Math.min(Math.max(profileHeight, minProfile), maxProfile) : DRAWER_CLOSED);
     const maxSide = $derived(Math.max(320, Math.min(460, viewportWidth - 540)));
     function resizeProfile(value: number, byKey: boolean) {
         const next = resizeDrawer(drawerHeight, value, byKey);
@@ -400,16 +401,16 @@
         return to > from ? { from, to } : { from: 0, to: 1 };
     });
 
-    let lineSamples = $state.raw<{ layer: DataLayer; line: RoutingLine; samples: unknown } | null>(null);
+    let lineSamples = $state.raw<{ layer: DataLayer; line: RoutingLine; key: string; samples: unknown } | null>(null);
     $effect(() => {
-        const layer = dataLayer, line = visualRoute;
-        if (!layer || !line || untrack(() => lineSamples?.layer === layer && lineSamples.line === line)) return;
+        const layer = dataLayer, line = visualRoute, key = layer?.sampleKey?.(shownDate) ?? '';
+        if (!layer || !line || untrack(() => lineSamples?.layer === layer && lineSamples.line === line && lineSamples.key === key)) return;
         const abort = new AbortController();
-        layer.sample(line, abort.signal).then(samples => { if (!abort.signal.aborted) lineSamples = { layer, line, samples }; }, () => {});
+        layer.sample(line, abort.signal, { date: shownDate, theme }).then(samples => { if (!abort.signal.aborted) lineSamples = { layer, line, key, samples }; }, () => {});
         return () => abort.abort();
     });
-    const routeSamples = $derived(dataLayer && visualRoute && lineSamples?.layer === dataLayer && lineSamples.line === visualRoute ? lineSamples.samples : null);
-    const layerYear = $derived(dataLayer?.year(routeSamples, { date: shownDate, theme }));
+    const routeSamples = $derived(dataLayer && visualRoute && lineSamples?.layer === dataLayer && lineSamples.line === visualRoute && lineSamples.key === (dataLayer.sampleKey?.(shownDate) ?? '') ? lineSamples.samples : null);
+    const layerYear = $derived(dataLayer?.year?.(routeSamples, { date: shownDate, theme }));
     // The night after day n falls n − 1 calendar days after the layer date.
     const layerNotes = $derived.by(() => {
         if (!multi || !dataLayer?.nights || !routeSamples || !visualRoute) return [];
@@ -419,15 +420,15 @@
         return dataLayer.nights(routeSamples, stops).flatMap((text, i) => text ? [{ coordinate: coordinateAt(coordinates, ends[i].to), text }] : []);
     });
     // A map click with a layer shown adds the years at that spot to the callout.
-    let pinSamples = $state.raw<{ layer: DataLayer; at: Coordinate; samples: unknown } | null>(null);
+    let pinSamples = $state.raw<{ layer: DataLayer; at: Coordinate; key: string; samples: unknown } | null>(null);
     $effect(() => {
-        const layer = dataLayer, at = calloutKind === 'add' ? spot?.coordinate : undefined;
+        const layer = dataLayer, at = calloutKind === 'add' ? spot?.coordinate : undefined, key = layer?.sampleKey?.(shownDate) ?? '';
         if (!layer || !at) return;
         const abort = new AbortController();
-        layer.sample({ coordinates: [at], elevation: [null] }, abort.signal).then(samples => { if (!abort.signal.aborted) pinSamples = { layer, at, samples }; }, () => {});
+        layer.sample({ coordinates: [at], elevation: [null] }, abort.signal, { date: shownDate, theme }).then(samples => { if (!abort.signal.aborted) pinSamples = { layer, at, key, samples }; }, () => {});
         return () => abort.abort();
     });
-    const pinChart = $derived(dataLayer && calloutKind === 'add' && pinSamples?.layer === dataLayer && pinSamples.at === spot?.coordinate ? dataLayer.chart(pinSamples.samples, 0, { date: shownDate, theme }) : null);
+    const pinChart = $derived(dataLayer && calloutKind === 'add' && pinSamples?.layer === dataLayer && pinSamples.at === spot?.coordinate && pinSamples.key === (dataLayer.sampleKey?.(shownDate) ?? '') ? dataLayer.chart(pinSamples.samples, 0, { date: shownDate, theme }) : null);
 
     $effect(() => {
         if (!highlights.length || coordinates.length < 2) return;
@@ -1324,7 +1325,7 @@
             {/if}
         </aside>
         <Resize value={Math.min(sideWidth, maxSide)} min={320} max={maxSide} axis="x" label="Sidebar width" onResize={(value) => sideWidth = value} />
-        <section inert={!ready || libraryBusy || versionsSaving} class="geography" aria-label="Map and elevation" aria-busy={hasEndpoints && !currentRoute}>
+        <section inert={!ready || libraryBusy || versionsSaving} class="geography" class:sunlight={dataLayer?.id === 'sun'} style:--layer-panel-height={`${dateBarHeight}px`} aria-label="Map and elevation" aria-busy={hasEndpoints && !currentRoute}>
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="map-area" bind:clientHeight={mapHeight} style:--map-height={`${mapHeight}px`} ondragover={dragOver} ondrop={drop}
                 ondragleave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) dropping = false; }}>
@@ -1380,8 +1381,8 @@
                     </div>
                     <LayerMenu {theme} {dataLayers} bind:shownLayer={shownLayerId} walking={trip.bike === 'hiking'} bind:autoCenter bind:mapOverlays bind:hillshade bind:contours bind:hidden={hiddenCategories} bind:highlighted={highlightedCategories} />
                 </div>
-                {#if dataLayer && layerYear}
-                    <div class="layer-date" bind:clientHeight={dateBarHeight}><LayerDateBar date={shownDate} year={layerYear} variable={dataLayer.variable} onDate={(date) => layerDate = date} /></div>
+                {#if dataLayer && (layerYear || dataLayer.time)}
+                    <div class="layer-date" bind:clientHeight={dateBarHeight}><LayerDateBar date={shownDate} year={layerYear} time={dataLayer.time} legend={dataLayer.time ? dataLayer.legend(theme) : undefined} variable={dataLayer.variable} onDate={(date) => layerDate = date} /></div>
                 {/if}
                 {#if dropping}
                     <div class="drop-frame"><strong>Drop to open as a plan</strong><span>One file is a route. Several files are a trip.</span></div>
@@ -1725,6 +1726,8 @@
         main > :global([aria-label="Sidebar width"]) { display: none; }
         .planner-pane { max-height: 50dvh; }
         .geography { height: 75dvh; }
+        .geography.sunlight { height: auto; min-height: 75dvh; }
+        .sunlight .map-area { min-height: calc(240px + var(--layer-panel-height)); }
         .status-line { height: auto; min-height: 38px; flex-wrap: wrap; padding-block: 8px; }
         .lab-note { display: none; }
         .legal { margin-left: auto; }
