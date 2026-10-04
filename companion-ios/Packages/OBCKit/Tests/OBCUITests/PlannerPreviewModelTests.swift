@@ -313,7 +313,7 @@ struct PlannerPreviewModelTests {
         #expect(waypoints.map(\.name) == ["Spring", "Hut"] && waypoints.map(\.category) == [.water, .accommodation])
         #expect(waypoints.map(\.index) == [0, 1] && waypoints[0].distanceAlongMeters < waypoints[1].distanceAlongMeters)
         // Off the line, as the import placed it: a signed offset and the note stay.
-        #expect(waypoints[0].note == "Cold all year" && waypoints[0].lateralOffsetMeters < -500)
+        #expect(waypoints[0].note == "Cold all year" && (-200 ... -50).contains(waypoints[0].lateralOffsetMeters))
         #expect(model.exportPlan().markers.first { $0.label == "Spring" }?.note == "Cold all year")
     }
 

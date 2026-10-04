@@ -7,8 +7,8 @@ import OBCDomain
 /// traps the process. The import decoders reject such coordinates, but `place` must not crash.
 final class WaypointPlacementTests: XCTestCase {
     func testNonFiniteGeometryDoesNotCrashTheSort() {
-        // A NaN middle point poisons the cumulative distance, so the waypoint
-        // nearest the tail projects to a NaN `along`.
+        // A NaN middle point poisons the line's distances, so the waypoints project to
+        // non-finite `along`s.
         let points = [
             RoutePoint(coordinate: Coordinate(latitude: 47.00, longitude: 11.0), elevationMeters: nil),
             RoutePoint(coordinate: Coordinate(latitude: .nan, longitude: 11.0), elevationMeters: nil),
@@ -23,7 +23,5 @@ final class WaypointPlacementTests: XCTestCase {
         let placed = WaypointPlacement.place(raw, along: points)
         XCTAssertEqual(placed.count, 2)
         XCTAssertEqual(placed.map(\.index), [0, 1], "re-indexed in the NaN-safe sorted order")
-        // The finite (head) placement sorts ahead of the non-finite (tail) one.
-        XCTAssertEqual(placed.first?.name, "Head")
     }
 }

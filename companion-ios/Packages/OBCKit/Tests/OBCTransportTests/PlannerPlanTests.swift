@@ -49,6 +49,23 @@ struct PlannerPlanTests {
         #expect(PlannerPlan.keptLine([line[0]]) == nil)
     }
 
+    @Test func waypointsPlaceOnTheSegmentsOfASparseLine() throws {
+        // 6 km east in 10 m steps; the kept line has only its ends left.
+        let east = 111_320 * cos(46.5 * .pi / 180)
+        func metres(_ x: Double, _ y: Double = 0) -> Coordinate { Coordinate(latitude: 46.5 + y / 111_320, longitude: 8 + x / east) }
+        let line = (0...600).map { RoutePoint(coordinate: metres(Double($0) * 10)) }
+        let plan = try #require(PlannerPlan.keptLine(line))
+        let kept = [plan.points[0].coordinate] + (plan.points[1].drawn ?? []).map(\.coordinate) + [plan.points[1].coordinate]
+        #expect(kept.count <= 4)
+        let placed = Waypoint.placed([
+            Waypoint(index: 0, name: "Hut", distanceAlongMeters: 0, coordinate: metres(3_731, -150)),
+            Waypoint(index: 0, name: "Spring", distanceAlongMeters: 0, coordinate: metres(1_492, 150)),
+        ], along: kept.map { RoutePoint(coordinate: $0) })
+        #expect(placed.map(\.name) == ["Spring", "Hut"])
+        #expect(abs(placed[0].distanceAlongMeters - 1_492) < 3 && abs(placed[0].lateralOffsetMeters + 150) < 3)
+        #expect(abs(placed[1].distanceAlongMeters - 3_731) < 3 && abs(placed[1].lateralOffsetMeters - 150) < 3)
+    }
+
     @Test func aKeptTripHasANightAtEachDayEndAndATransferAcrossAGap() throws {
         let file = { (from: Double, to: Double) in stride(from: from, through: to, by: 0.005).map { RoutePoint(coordinate: self.at($0)) } }
         var trip = Trip.joining([file(8.0, 8.02), file(8.02, 8.04), file(8.10, 8.12)], id: TripID("t"), name: "Jura",
