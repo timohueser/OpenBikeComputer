@@ -44,15 +44,6 @@ The split runs once per source identity. A POI transform update reads only
 its filtered records. Addresses own streets and houses; POIs own places and
 localities. Both retain their indexes and source context.
 
-Extract from a complete schema 4 package:
-
-```sh
-python3 apps/planner-search/extract.py SOURCE.sqlite OUTPUT.sqlite --bounds=7.77,47.965,7.96,48.06
-```
-
-The selection keeps intersecting places and streets referenced by its houses.
-The source must cover the box. Search uses the same indexes.
-
 For local map tiles, place `basemap.pmtiles` and `places.pmtiles` in `builder/app/public/data/planner/`:
 
 ```sh

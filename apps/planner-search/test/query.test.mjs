@@ -37,6 +37,7 @@ test('native JSON capabilities preserve complete replies, metadata and reverse l
   assert.equal(answer.region,'test');assert.deepEqual(answer.attribution,['OSM contributors']);
   fixture.conn.exec("UPDATE place_records SET website='https://bakery.example',phone='+49 123',description='Bread and coffee.' WHERE source='n1'");
   const details=await native.request('query',{...input,q:'',source:'n1'});
+  assert.equal(details.notice,undefined);
   assert.equal(details.results[0].website,'https://bakery.example');
   assert.equal(details.results[0].phone,'+49 123');
   assert.equal(details.results[0].description,'Bread and coffee.');

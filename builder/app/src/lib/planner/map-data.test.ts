@@ -64,7 +64,7 @@ describe('planner map hosting', () => {
     });
 });
 
-// The bounds of an offline download of the cells 9-267-178 and 9-268-178, as the release builder writes them.
+// Cell-aligned bounds of the cells 9-267-178 and 9-268-178, as the release builder writes them.
 const BOUNDS = '7.734375,47.51720069783939,9.140625,47.98992166741417';
 const record = (id: number, cells: string[]) => ({ id, kind: 'hiking', name: `Route ${id}`, rank: 1, loop: false,
     length_m: 3000, ascent_m: 10, descent_m: 10, cells, line_udeg: [8000000, 47800000, 100, 100], via: [] });
@@ -89,7 +89,7 @@ describe('route catalog cells', () => {
         });
         expect(await loadRouteCell('9-267-178')).toEqual([loop]);
         expect(await loadRouteCell('9-268-178')).toEqual([]);
-        // These neighbours share an edge with the download only.
+        // These neighbours share only an edge with the bounds.
         for (const cell of ['9-266-178', '9-269-178', '9-267-177', '9-268-179']) expect(await loadRouteCell(cell)).toBeNull();
         expect(fetch).toHaveBeenCalledTimes(2);
     });
