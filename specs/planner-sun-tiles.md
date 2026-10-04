@@ -73,7 +73,7 @@ The extra rows have alpha 255. The tile has `512 + horizon_samples² ×
 horizon_directions / 1536` rows. Its first 512 rows retain the height bounds.
 
 The map uses profiles one zoom above its raster tile, up to zoom 12. Terrain
-shading starts at map zoom 7. Routes use zoom 12.
+shading starts at raster tile zoom 7. Routes use zoom 12.
 The client interpolates between neighbouring bearings and grid centres.
 These profiles are overview estimates. A 32-cell tile represents about 200 m
 in Baden-Württemberg. Changing the time reuses the decoded profiles.
@@ -90,9 +90,9 @@ For point inspection, the worker skips a block only when its known upper bound i
 block entry. At a native leaf it evaluates the bilinear patch along the ray,
 including an interior maximum. It does not sample only the segment endpoints.
 
-The map samples tile pixels at the chosen instant. Below map zoom 7, it shows
+The map samples tile pixels at the chosen instant. Below raster tile zoom 7, it shows
 global night from the solar position, with transparent daytime pixels. It reads
-no terrain profiles at those zooms. At map zoom 7 and above, pixels outside
+no terrain profiles at those zooms. At raster tile zoom 7 and above, pixels outside
 the visible bounds are transparent. The interface identifies the day/night overview.
 Point inspection uses five-minute bins for the local date. A missing
 spring clock-change bin is unknown. A repeated autumn hour uses one of its

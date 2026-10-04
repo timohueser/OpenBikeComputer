@@ -216,11 +216,11 @@ npx vitest run src/lib/planner/ src/components/planner/
 npm run check
 ```
 
-The full type check needs the generated WASM packages.
+Type checking needs generated WASM.
 Sunlight benchmark:
 
 ```sh
-node tools/planner_sun_bench.mjs http://127.0.0.1:4175
+node ../../tools/planner_sun_bench.mjs http://127.0.0.1:4175
 ```
 
 [Sunlight index](../../../../../specs/planner-sun-tiles.md).
