@@ -2,7 +2,7 @@ import type { ExpressionSpecification, FilterSpecification, Map, MapGeoJSONFeatu
 import { PMTiles } from 'pmtiles';
 import type { Coordinate } from './map-types';
 
-export interface OverlayOptions { network: 'cycling' | 'hiking' | 'none'; access: boolean }
+export interface OverlayOptions { network: 'cycling' | 'hiking' | 'mtb' | 'none'; access: boolean }
 export type AccessMode = 'cycling' | 'walking';
 export interface NetworkRoute { id: number; kind: string; network: string; rank: number; name: string; ref: string; website?: string | null; symbol?: string; symbol_text?: string }
 export interface OverlaySelection {
@@ -26,16 +26,20 @@ export const networkLevels = [
     { label: 'Local', color: '#4f8b24', dark: '#a4cf67', rank: 1 },
     { label: 'Unspecified network', color: '#626a70', dark: '#b0b8be', rank: 0 },
 ];
-export const networkNames: Record<string, string> = {
-    icn: 'International cycling route', ncn: 'National cycling route', rcn: 'Regional cycling route', lcn: 'Local cycling route',
-    iwn: 'International hiking route', nwn: 'National hiking route', rwn: 'Regional hiking route', lwn: 'Local hiking route',
-};
+const networkScopes: Record<string, string> = { i: 'International', n: 'National', r: 'Regional', l: 'Local' };
+const routeKinds: Record<string, string> = { cycling: 'cycling route', hiking: 'hiking route', mtb: 'mountain bike route' };
+/** MTB routes use the cycling network values `icn` to `lcn`. */
+export function networkName({ kind, network }: Pick<NetworkRoute, 'kind' | 'network'>): string {
+    const scope = networkScopes[/^([inrl])[cw]n$/.exec(network)?.[1] ?? ''];
+    return scope && routeKinds[kind] ? `${scope} ${routeKinds[kind]}` : 'Network level unspecified';
+}
 const source = 'route-overlays';
 const labelZoom = 11;
-const interactiveLayers = ['network-cycling', 'network-hiking', 'hiking-markers', 'access-symbols'];
+const interactiveLayers = ['network-cycling', 'network-hiking', 'network-mtb', 'hiking-markers', 'access-symbols'];
 const layers = {
     cycling: ['network-cycling', 'network-cycling-labels'],
     hiking: ['network-hiking', 'network-hiking-labels', 'hiking-markers'],
+    mtb: ['network-mtb', 'network-mtb-labels'],
     access: ['access-lines', 'access-symbols'],
 } as const;
 
@@ -116,7 +120,7 @@ export class RouteOverlays {
         const shade = (level: number) => networkLevels[level][theme === 'dark' ? 'dark' : 'color'];
         const color: ExpressionSpecification = ['step', ['get', 'rank'], shade(3), 1, shade(2), 2, shade(1), 3, shade(0)];
         const hovered = (on: number, off: number): ExpressionSpecification => ['case', ['boolean', ['feature-state', 'hover'], false], on, off];
-        for (const activity of ['cycling', 'hiking']) {
+        for (const activity of ['cycling', 'hiking', 'mtb']) {
             this.map.addLayer({
                 id: `network-${activity}`, type: 'line', source, 'source-layer': activity,
                 layout: { 'line-join': 'round', 'line-sort-key': ['get', 'rank'] },

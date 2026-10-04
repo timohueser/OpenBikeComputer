@@ -101,6 +101,14 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
                         members: vec![(Id::Way(1), String::new())],
                     },
                 ),
+                (
+                    3,
+                    Relation {
+                        id: 3,
+                        tags: [("type".into(), "route".into()), ("route".into(), "mtb".into())].into(),
+                        members: vec![(Id::Way(1), String::new())],
+                    },
+                ),
             ]
             .into(),
         },
@@ -137,7 +145,7 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!(counts, (4, 3, 2));
+    assert_eq!(counts, (5, 3, 3));
     drop(database);
     let app = route_server::app(&path, 1).unwrap();
     let path_string = CString::new(path.to_str().unwrap()).unwrap();
@@ -161,6 +169,8 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         ("bbox=-0.1,-0.1,0.1,0.1&zoom=8&layers=cycling,access", StatusCode::OK, 1),
         ("bbox=-10,-10,10,10&zoom=10&layers=cycling,access", StatusCode::OK, 2),
         ("bbox=-0.1,-0.1,0.1,0.1&zoom=12&layers=hiking", StatusCode::OK, 1),
+        ("bbox=-0.1,-0.1,0.1,0.1&zoom=12&layers=mtb", StatusCode::OK, 1),
+        ("bbox=-0.1,-0.1,0.1,0.1&zoom=10&layers=mtb", StatusCode::OK, 0),
         ("bbox=1,1,2,2&zoom=12&layers=cycling,access", StatusCode::OK, 0),
         ("bbox=NaN,0,1,1&zoom=12&layers=cycling", StatusCode::BAD_REQUEST, 0),
         ("bbox=-180,-90,180,90&zoom=12&layers=cycling", StatusCode::BAD_REQUEST, 0),

@@ -391,6 +391,7 @@ impl<P: RoutingData> Router<P> {
                         route.edges.push("pushing", mode == PUSH);
                         route.edges.push("closures", &closure);
                         route.edges.push("sac_scale", road.hiking_difficulty);
+                        route.edges.push("mtb_scale", (road.difficulty != 255).then_some(road.difficulty));
                     }
                     route.geometry.push(coordinate);
                     route.elapsed.push(seconds);

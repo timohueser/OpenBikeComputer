@@ -2,7 +2,7 @@
     import Icon from './PlannerIcon.svelte';
     import TrailMarker from './TrailMarker.svelte';
     import { trailMarker } from '../../lib/planner/trail-markers';
-    import { networkNames, routeWebsite, type OverlaySelection } from '../../lib/planner/route-overlays';
+    import { networkName, routeWebsite, type OverlaySelection } from '../../lib/planner/route-overlays';
     let { selection, onclose, onuse }: { selection: OverlaySelection; onclose: () => void; onuse: () => void } = $props();
     const access: Record<string, { title: string; detail: string }> = {
         construction: { title: 'Under construction', detail: 'OSM maps this section as construction. The router excludes it.' },
@@ -17,7 +17,7 @@
     const restriction = $derived(access[selection.status ?? ''] ?? access.closed);
     const title = $derived(selection.kind === 'access'
         ? restriction.title
-        : selection.kind === 'cycling' ? 'Cycling routes' : 'Hiking routes');
+        : ({ cycling: 'Cycling routes', hiking: 'Hiking routes', mtb: 'Mountain bike routes' } as Record<string, string>)[selection.kind]);
     function permission(values: boolean[] | undefined, bit: number) {
         if ((selection.conditional ?? 0) & bit) return 'Conditional';
         return values?.every(Boolean) ? 'Allowed' : values?.some(Boolean) ? 'One direction' : 'Not allowed';
@@ -40,7 +40,7 @@
                 <div>
                     {#if website}<a href={website} target="_blank" rel="noreferrer">{route.name || route.ref || 'Unnamed route'}{route.name && route.ref ? ` · ${route.ref}` : ''}</a>
                     {:else}<b class="route-name">{route.name || route.ref || 'Unnamed route'}{route.name && route.ref ? ` · ${route.ref}` : ''}</b>{/if}
-                    <span>{networkNames[route.network] ?? 'Network level unspecified'}</span>
+                    <span>{networkName(route)}</span>
                     {#if route.kind === 'hiking' && route.symbol_text}<span>{route.symbol_text}</span>{/if}
                 </div>
             </li>

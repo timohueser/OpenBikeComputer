@@ -34,7 +34,7 @@
     let open = $state(false);
     let root: HTMLDivElement;
     const networks: { value: OverlayOptions['network']; label: string }[] = [
-        { value: 'none', label: 'Off' }, { value: 'cycling', label: 'Cycling' }, { value: 'hiking', label: 'Hiking' },
+        { value: 'none', label: 'Off' }, { value: 'cycling', label: 'Cycling' }, { value: 'hiking', label: 'Hiking' }, { value: 'mtb', label: 'MTB' },
     ];
     const layerOptions = $derived([{ value: '', label: 'Off' }, ...dataLayers.map(layer => ({ value: layer.id, label: layer.label }))]);
     const dataLayer = $derived(dataLayers.find(layer => layer.id === shownLayer));
