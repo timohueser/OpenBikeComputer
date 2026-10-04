@@ -28,7 +28,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import warnings
 
 import numpy as np
 
@@ -156,9 +155,11 @@ def blend(values, weights, median=False):
     winner = np.argmax(np.stack([dated, full, none]), axis=0)[:, None]
     dw = (w * dated_mask)[:, :, None]
     if median:
-        with np.errstate(all="ignore"), warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)  # a pixel without dated inputs has no median
-            centre = np.nan_to_num(np.nanmedian(np.where(dated_mask[:, :, None], values, np.nan).astype(np.float32), axis=0))
+        # Undated inputs sort last, so the k dated inputs of a pixel come first. A pixel without one takes 0.
+        ordered = np.sort(np.where(dated_mask[:, :, None], values, NO_DATA), axis=0)
+        count = dated_mask.sum(0)[:, None]
+        low, high = (np.take_along_axis(ordered, index[None], 0)[0] for index in (np.maximum(count - 1, 0) // 2, count // 2))
+        centre = np.where(count > 0, (low.astype(np.float32) + high) / 2, 0)
     else:
         centre = (dw * values).sum(0) / np.maximum(dated, 1e-9)[:, None]
     out = np.where(winner == 0, np.floor(centre + 0.5), np.where(winner == 1, FULL, NO_SNOW))
@@ -285,10 +286,11 @@ def trails(bounds):
     return lon[inside], lat[inside], metres[inside]
 
 
-def bake(source, first_season, seasons, name, bounds, output, trail_segments=None):
+def bake(source, first_season, seasons, name, bounds, output, trail_segments=None, workers=4):
     """Write the archive; return the tile count and, with trail segments, the share of trail length on no data.
 
-    `source(bounds)` gives the season planes and their grid around the bounds of one chunk tile.
+    `source(bounds)` gives the season planes and their grid around the bounds of one chunk tile. The chunks
+    bake in `workers` threads: numpy, zlib and GDAL release the GIL. CDSE S3 allows 4 connections per user.
     """
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import Writer
@@ -296,20 +298,27 @@ def bake(source, first_season, seasons, name, bounds, output, trail_segments=Non
     top = max_zoom(SOURCES[name]["resolution_m"], bounds)
     chunk = min(CHUNK_ZOOM, top)
     west, south, east, north = bounds
-    tiles, masked, planes, grid = {}, 0.0, None, None
+    tiles = {}
     if trail_segments is not None:
         lon, lat, metres = trail_segments
         n = 2 ** top * TILE
         px = ((lon + 180) / 360 * n).astype(np.int64)
         py = ((1 - np.log(np.tan(np.radians(lat)) + 1 / np.cos(np.radians(lat))) / np.pi) / 2 * n).astype(np.int64)
 
-    def build(z, x, y):
-        nonlocal masked, planes, grid
+    def area(z, x, y):
+        """The part of the bounds in tile z/x/y, or None."""
         w, s, e, n_ = tile_bounds(z, x, y)
         if w >= east or e <= west or s >= north or n_ <= south:
             return None
-        if z == chunk:
-            planes, grid = source((max(w, west), max(s, south), min(e, east), min(n_, north)))
+        return max(w, west), max(s, south), min(e, east), min(n_, north)
+
+    def build(z, x, y, planes=None, grid=None):
+        """The body of tile z/x/y and its trail length on no data. Its tiles and those below go into `tiles`."""
+        if area(z, x, y) is None:
+            return None, 0.0
+        if z == chunk and planes is None:
+            return chunks[x, y].result()
+        masked = 0.0
         if z == top:
             body = sample(planes, grid, z, x, y)
             lon_c, lat_c = tile_lonlat(z, x, y)
@@ -320,17 +329,25 @@ def bake(source, first_season, seasons, name, bounds, output, trail_segments=Non
             if trail_segments is not None:
                 here = (px // TILE == x) & (py // TILE == y)
                 missing = (body[:, 0] == NO_DATA).all(0)
-                masked += metres[here][missing[py[here] % TILE, px[here] % TILE]].sum()
+                masked = metres[here][missing[py[here] % TILE, px[here] % TILE]].sum()
         else:
-            children = {(dx, dy): build(z + 1, 2 * x + dx, 2 * y + dy) for dx in (0, 1) for dy in (0, 1)}
-            body = parent(children, seasons, SOURCES[name]["smooth"])
-        if z == chunk:
-            planes = grid = None
+            children = {(dx, dy): build(z + 1, 2 * x + dx, 2 * y + dy, planes, grid) for dx in (0, 1) for dy in (0, 1)}
+            masked = sum(length for _, length in children.values())
+            body = parent({key: child for key, (child, _) in children.items()}, seasons, SOURCES[name]["smooth"])
         if (body != NO_DATA).any():
             tiles[zxy_to_tileid(z, x, y)] = gzip.compress(body.tobytes(), mtime=0)
-        return body
+        return body, masked
 
-    build(0, 0, 0)
+    count = 2 ** chunk
+    row = lambda lat: int((1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * count)
+    pool = ThreadPoolExecutor(workers)
+    try:
+        chunks = {(x, y): pool.submit(lambda x, y, part: build(chunk, x, y, *source(part)), x, y, part)
+                  for x in range(int((west + 180) / 360 * count), int((east + 180) / 360 * count) + 1)
+                  for y in range(row(north), row(south) + 1) if (part := area(chunk, x, y))}
+        _, masked = build(0, 0, 0)
+    finally:
+        pool.shutdown(cancel_futures=True)
     output.parent.mkdir(parents=True, exist_ok=True)
     e7 = lambda value: round(value * 1e7)
     with tempfile.NamedTemporaryFile(dir=output.parent, prefix=".snow-", delete=False) as stream:
