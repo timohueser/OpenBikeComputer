@@ -76,13 +76,15 @@ def search_dump(osm, output, cache, port=5434):
         socket.mkdir()
         maps.run(pg / "initdb", "-D", database, "--auth-local=trust", "--auth-host=trust",
                  "--encoding=UTF8", "--locale=C.UTF-8")
-        # The database is deleted after the export, so the import gives up crash safety for speed.
-        settings = ("shared_buffers=1GB maintenance_work_mem=1GB work_mem=50MB fsync=off full_page_writes=off "
+        # The database is deleted after the export, so the import gives up crash safety for speed. Nominatim
+        # builds up to eight indexes at once; 256 MB each keeps them within 2 GB.
+        settings = ("shared_buffers=1GB maintenance_work_mem=256MB work_mem=50MB fsync=off full_page_writes=off "
                     "synchronous_commit=off wal_level=minimal max_wal_senders=0")
-        # On macOS, PostgreSQL refuses to start without a valid LC_ALL.
-        maps.run(pg / "pg_ctl", "-D", database, "-l", work / "postgres.log", "-o",
-                 f"-p {port} -k {socket} -h 127.0.0.1 " + " ".join(f"-c {item}" for item in settings.split()), "start",
-                 env={**os.environ, "LC_ALL": "C.UTF-8"})
+        # Not through maps.run: a stopped pg_ctl leaves its server running. On macOS, PostgreSQL refuses to
+        # start without a valid LC_ALL.
+        subprocess.run([pg / "pg_ctl", "-D", database, "-l", work / "postgres.log", "-o",
+                        f"-p {port} -k {socket} -h 127.0.0.1 " + " ".join(f"-c {item}" for item in settings.split()), "start"],
+                       env={**os.environ, "LC_ALL": "C.UTF-8"}, check=True)
         try:
             maps.run(pg / "createuser", "-h", "127.0.0.1", "-p", port, "www-data")
             env = {**os.environ, "NOMINATIM_DATABASE_DSN":

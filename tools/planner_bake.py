@@ -242,10 +242,15 @@ def execute(args, config, cache, specs, active):
                 for future in done:
                     built[running.pop(future)] = future.result()
         except BaseException:
-            # A producer beside the failed one can start a process at any moment until it ends.
+            # The other producer stops at its next process. A repeated interrupt must not end the wait.
+            maps.STOPPING.set()
             while not all(future.done() for future in running):
-                maps.stop_running()
-                wait(running, timeout=1)
+                try:
+                    maps.stop_running()
+                    wait(running, timeout=1)
+                except KeyboardInterrupt:
+                    pass
+            maps.STOPPING.clear()
             raise
     return built
 
