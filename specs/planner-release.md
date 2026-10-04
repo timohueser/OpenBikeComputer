@@ -11,7 +11,6 @@ its files are immutable.
 | `format` | `1` |
 | `region` | Lowercase region ID, with letters, digits, and hyphens |
 | `bounds` | `[west,south,east,north]` in degrees |
-| `time_zone` | IANA time zone of the region recipe; equal to the search metadata `time_zone` |
 | `osm_sha256` | Hash of the common OSM PBF |
 | `routing_package` | Hash of `routing/manifest.json` or `routing/blocks.json` |
 | `profiles` | Sorted routing profile IDs |
@@ -52,7 +51,8 @@ URLs to the original immutable cell objects.
 Search packages use schema `5`. Each place stores `website`, `phone`, and
 `description` as UTF-8 text. Empty values are empty strings. Each place stores
 `country`, the lowercase ISO 3166-1 code of its source record, and `region`, its
-state. Opening hours select public holidays by `country` and `region`, and
+state. A Swiss `region` is the German canton name of the opening hours library,
+for example `Sankt Gallen`. Opening hours select public holidays by `country` and `region`, and
 evaluate times in the metadata `time_zone`. The producer uses
 `website` before `contact:website`, and `phone` before `contact:phone`, skipping
 empty values. A description uses `description`, then `description:en`, then
