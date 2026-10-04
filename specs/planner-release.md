@@ -21,7 +21,7 @@ its files are immutable.
 | `device_catalog_source` | Original device catalogue URL |
 | `files` | Relative file names, each with `bytes` and `sha256` |
 | `source_files` | Local source mirror names, each with `bytes` and `sha256` |
-| `probe` | Regional route points, search query, and view for service deployment; absent from offline cutouts |
+| `probe` | Regional route points, search query, and view for service deployment |
 
 File paths stay inside the release directory. File hashes use lowercase
 64-character hex. Maps, search, and routing have the same OSM hash and bounds.
@@ -70,8 +70,8 @@ an R-tree over feature IDs with longitude, latitude, and facet axes. The facet
 is `32 * layer + minimum_zoom`. Cycling, hiking, access, and MTB have layer values
 0, 1, 2, and 3. The minimum is the lower non-null mode minimum, or 23 for an
 invisible feature. The facet has equal lower and upper bounds. The query also
-checks each mode's minimum zoom. A cutout retains every referenced geometry,
-attribute, and route.
+checks each mode's minimum zoom. A grid overlay cell retains every referenced
+geometry, attribute, and route.
 
 `places.pmtiles` holds the rider places of the basemap. It has gzip MVT tiles
 at zoom 11 only, with extent 4096 and one `pois` layer. Each feature is one

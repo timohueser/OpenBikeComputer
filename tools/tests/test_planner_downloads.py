@@ -1,5 +1,7 @@
 """Area selections reuse published bytes, preserve coverage, and support resume."""
 
+import gzip
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -138,13 +140,16 @@ class PlannerDownloads(unittest.TestCase):
         self.addCleanup(close)
         return f"http://127.0.0.1:{server.server_port}"
 
-    def test_generated_metadata_travels_gzip_and_installs_decoded(self):
+    def test_generated_metadata_travels_gzip_and_decodes_to_the_release_file(self):
         job = self.service.prepare(self.request())
-        bundle = json.loads((self.service.cache / job["id"] / "bundle.json").read_bytes())
-        self.assertEqual(bundle["files"]["routing/blocks.json"]["transport"]["encoding"], "gzip")
-        result = offline.install(f"{self.serve()}/bundles/{job['id']}", self.root / "installed")
-        blocks = json.loads((self.root / "installed/releases" / result["release"] / "routing/blocks.json").read_bytes())
-        self.assertEqual(blocks["archives"], ["c" * 64])
+        base = f"{self.serve()}/bundles/{job['id']}"
+        with urlopen(f"{base}/bundle.json") as response:
+            entry = json.load(response)["files"]["routing/blocks.json"]
+        self.assertEqual(entry["transport"]["encoding"], "gzip")
+        with urlopen(f"{base}/objects/{entry['transport']['sha256']}") as response:
+            data = gzip.decompress(response.read())
+        self.assertEqual((len(data), hashlib.sha256(data).hexdigest()), (entry["bytes"], entry["sha256"]))
+        self.assertEqual(json.loads(data)["archives"], ["c" * 64])
 
     def test_http_supports_exact_ranges_and_rejects_traversal(self):
         job = self.service.prepare(self.request())

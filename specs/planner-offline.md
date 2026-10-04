@@ -1,19 +1,8 @@
 # Offline planner bundle
 
-A bundle contains the runtime files from one [planner release](planner-release.md).
-It omits source mirrors. It preserves the exact release manifest and every runtime
-file. It does not combine routing graphs or change coverage.
-
-A geographic cutout is a new release. It rebuilds routing for whole intersecting
-roads and retains all source profiles. Its declared bounds limit route endpoints.
-It omits source OSM tables after routing and overlays are compiled.
-Map and overlay selection covers both these bounds and the complete retained road
-geometry. Terrain adds its tile neighbours. Search includes its address and context
-dependencies. Intersecting overlay features keep complete geometry and properties.
-The [route catalog](route-catalog.md) keeps each route record whose line is inside the
-bounds, and a long route only with all of its stages.
-The source release identity and geometry envelope are recorded in `sources.extraction`.
-Old and new graphs do not combine into a regional union.
+A bundle carries one [planner release](planner-release.md) that the download
+service selects from a grid publication. It preserves the exact release manifest
+and every runtime file. It omits source mirrors.
 
 ## Transfer layout
 
@@ -35,42 +24,6 @@ Each file entry repeats the release's `bytes` and `sha256`. Its `transport` obje
 has `bytes`, `sha256`, and `encoding`. Encoding is `identity` or `gzip`. Decoded
 bytes match the release entry. Repeated content uses one object. Paths are relative,
 contain no `..`, and cannot replace `release.json`.
-
-## Local installation
-
-| Path | Content |
-| --- | --- |
-| `objects/SHA256` | Verified decoded file bytes |
-| `downloads/SHA256` | Incomplete or complete transport bytes pending verification |
-| `releases/ID/` | Original runtime file layout, linked to verified objects |
-| `active.json` | Active release `release` ID and `region` |
-
-The installer locks one destination at a time. It resumes transport downloads by
-byte offset. An HTTP 206 response must match the requested range and complete
-object size. An HTTP 200 response restarts the object. A short download stays
-available for resumption. A complete object with a wrong hash is discarded.
-
-Activation follows verification of the complete decoded runtime closure. Files
-and directories are synchronized before the atomic activation write. A failure
-keeps the previous activation. Old releases and verified objects stay installed.
-This layout does not provide eviction or combine separately prepared regions.
-
-## Size fields
-
-The pack and install commands return JSON. `transfer_bytes` includes both
-manifests and each distinct transport object. `installed_bytes` counts the logical
-release files and release manifest, so it counts a shared font file once for
-each range path. `unique_installed_bytes` deduplicates equal runtime files by
-their decoded hashes.
-
-An install also reports bytes received in this run as `downloaded_bytes`, and
-file bytes already retained as `retained_before_bytes`. `stored_bytes` counts
-distinct installed file inodes, including retained releases, objects, downloads,
-and activation metadata. `peak_install_bytes` includes transient decoded files
-and activation writes. `peak_added_bytes` and `added_stored_bytes` subtract the
-initial retained total. `download_cache_bytes` counts pending transport files.
-These are file byte counts. They exclude filesystem allocation overhead and
-caches made by the application.
 
 ## Grid publication and selection
 
@@ -139,10 +92,17 @@ server language model and device catalog.
 
 ## iOS library
 
-The iOS installer uses the object and release layout above. `maps.json` replaces
-`active.json` with a list of installed maps. Each entry contains `id`, `name`,
-`region`, `bounds`, and `installedBytes`. `pending.json` holds one resumable
-download. `downloads/SHA256.resume` holds opaque URLSession resume data.
+| Path | Content |
+| --- | --- |
+| `objects/SHA256` | Verified decoded file bytes |
+| `downloads/SHA256` | Incomplete or complete transport bytes pending verification |
+| `downloads/SHA256.resume` | Opaque URLSession resume data |
+| `releases/ID/` | Original runtime file layout, linked to verified objects |
+| `maps.json` | List of installed maps |
+| `pending.json` | One resumable download |
+
+Each `maps.json` entry contains `id`, `name`, `region`, `bounds`, and
+`installedBytes`.
 
 The app checks free space before transfer. Its estimate includes filesystem
 allocation, missing decoded objects, the four largest temporary compressed
