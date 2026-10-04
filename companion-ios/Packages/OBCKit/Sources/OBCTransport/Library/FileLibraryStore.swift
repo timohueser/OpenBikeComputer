@@ -632,8 +632,6 @@ private struct DayEndDTO: Codable {
     var name: String?
     var title: String?
     var distance: Double
-    var stop: StopDTO?
-    var stopRoute: StopRouteDTO?
     var transfer: String?
     var resumeName: String?
 
@@ -643,8 +641,6 @@ private struct DayEndDTO: Codable {
         name = end.name
         title = end.title
         distance = end.distance
-        stop = end.stop.map(StopDTO.init)
-        stopRoute = end.stopRoute.map(StopRouteDTO.init)
         transfer = end.transfer?.rawValue
         resumeName = end.resumeName
     }
@@ -652,33 +648,7 @@ private struct DayEndDTO: Codable {
     var domain: DayEnd {
         DayEnd(
             coordinate: Coordinate(latitude: lat, longitude: lon), name: name, title: title, distance: distance,
-            stop: stop?.domain, stopRoute: stopRoute?.domain,
             transfer: transfer.flatMap(TransferKind.init(rawValue:)), resumeName: resumeName)
-    }
-}
-
-/// An out and back keeps its spur in `toStop`; a via keeps both legs and where they meet the line.
-private struct StopRouteDTO: Codable {
-    var toStop: ImportedRouteDTO
-    var fromStop: ImportedRouteDTO?
-    var leave: Double?
-    var rejoin: Double?
-
-    init(_ route: StopRoute) {
-        switch route {
-        case .outAndBack(let spur):
-            toStop = ImportedRouteDTO(ImportedRoute(points: spur))
-        case .via(let to, let from, let leave, let rejoin):
-            toStop = ImportedRouteDTO(ImportedRoute(points: to))
-            fromStop = ImportedRouteDTO(ImportedRoute(points: from))
-            self.leave = leave
-            self.rejoin = rejoin
-        }
-    }
-
-    var domain: StopRoute {
-        guard let fromStop, let leave, let rejoin else { return .outAndBack(spur: toStop.domain.points) }
-        return .via(toStop: toStop.domain.points, fromStop: fromStop.domain.points, leave: leave, rejoin: rejoin)
     }
 }
 

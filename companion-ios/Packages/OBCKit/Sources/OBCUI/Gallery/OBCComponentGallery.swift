@@ -144,18 +144,6 @@ public struct OBCComponentGallery: View {
                     LineMarkerGallerySection()
                 }
 
-                section("Trip stops sheet") {
-                    TripStopsGallerySection()
-                }
-
-                section("Day editor") {
-                    TripDayEditorGallerySection()
-                }
-
-                section("Stop off the line") {
-                    OffLineStopGallerySection()
-                }
-
                 section("Ride edit") {
                     RideEditGallerySection()
                 }

@@ -9,7 +9,8 @@ struct PlannerPreviewMapPin: Identifiable, Equatable {
     /// A `stop` sits on the route line, so it draws as a disc like the start; a `place` is a
     /// candidate off the line and hangs from a stem.
     /// `route` is the start of a signed route: numbered when it is listed, a dot otherwise.
-    enum Kind: Equatable { case start, finish, stop, shape, marker, place, route(number: Int?, rank: Int) }
+    /// `night` ends a day and shows the day's number.
+    enum Kind: Equatable { case start, finish, stop, shape, night(Int), marker, place, route(number: Int?, rank: Int) }
     let id: String
     let title: String
     let coordinate: Coordinate
@@ -17,6 +18,8 @@ struct PlannerPreviewMapPin: Identifiable, Equatable {
     var kind: Kind = .place
     var highlighted = false
     var isAmbient = false
+    /// A press and hold picks the pin up; the drop moves it.
+    var isDraggable = false
 }
 
 struct PlannerPreviewMap: UIViewRepresentable {
@@ -30,6 +33,8 @@ struct PlannerPreviewMap: UIViewRepresentable {
     let onMapPoint: (Coordinate, CGPoint) -> Void
     /// A tap near the route line, with the tap tolerance in metres. True when the line takes the tap.
     var onLine: (Coordinate, _ tolerance: Double) -> Bool = { _, _ in false }
+    /// A draggable pin was dropped at a new place.
+    var onDrag: (String, Coordinate) -> Void = { _, _ in }
     var showCycling = false
     var showHiking = false
     var onVisibleMapRect: (MKMapRect) -> Void = { _ in }
@@ -274,6 +279,12 @@ struct PlannerPreviewMap: UIViewRepresentable {
             view.annotation = annotation
             view.accessibilityLabel = pin.pin.title
             view.accessibilityIdentifier = "planner.pin.\(pin.pin.id)"
+            view.isDraggable = pin.pin.isDraggable
+            view.onDrop = { [weak self, weak map, weak view] center in
+                guard let self, let map, let view else { return }
+                let point = map.convert(center, toCoordinateFrom: view.superview)
+                self.parent.onDrag(pin.pin.id, Coordinate(latitude: point.latitude, longitude: point.longitude))
+            }
             style(view, pin: pin, traits: map.traitCollection)
             setVisibility(view, pin: pin, ambientVisible: showsAmbientPlaces(map))
             return view
@@ -318,6 +329,13 @@ struct PlannerPreviewMap: UIViewRepresentable {
                 surface.setFill(); shape.fill()
                 outline.setStroke(); shape.lineWidth = selected ? 2 : 1.5; shape.stroke()
                 guard kind != .shape else { return }
+                if case .night(let day) = kind {
+                    let text = NSAttributedString(string: "\(day)", attributes: [
+                        .font: UIFont.monospacedDigitSystemFont(ofSize: 13, weight: .bold), .foregroundColor: outline])
+                    let size = text.size()
+                    text.draw(at: CGPoint(x: 22 - size.width / 2, y: 22 - size.height / 2))
+                    return
+                }
                 let symbol = kind == .start ? "play.fill" : kind == .finish ? "flag.checkered" : pin.pin.symbol
                 let config = UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
                 let image = UIImage(systemName: symbol, withConfiguration: config)?.withTintColor(outline, renderingMode: .alwaysOriginal)
@@ -477,7 +495,27 @@ final class PlannerPinView: MLNAnnotationView {
     var image: UIImage? {
         didSet { drawing.image = image; frame.size = image?.size ?? .zero; drawing.frame = bounds }
     }
+    /// The point under the dropped pin, in its superview's space.
+    var onDrop: ((CGPoint) -> Void)?
     override init(reuseIdentifier: String?) { super.init(reuseIdentifier: reuseIdentifier); addSubview(drawing) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        onDrop = nil
+        isDraggable = false
+    }
+
+    override func setDragState(_ dragState: MLNAnnotationViewDragState, animated: Bool) {
+        // Read before super: the drop resets the view to its annotation's old place.
+        let dropped = dragState == .ending ? CGPoint(x: center.x - centerOffset.dx, y: center.y - centerOffset.dy) : nil
+        super.setDragState(dragState, animated: animated)
+        switch dragState {
+        case .starting: UIImpactFeedbackGenerator(style: .medium).impactOccurred(); transform = CGAffineTransform(scaleX: 1.2, y: 1.2)
+        case .ending, .canceling, .none: transform = .identity
+        default: break
+        }
+        if let dropped { onDrop?(dropped) }
+    }
 }
 #endif

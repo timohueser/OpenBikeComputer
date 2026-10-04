@@ -4,9 +4,21 @@ import OBCDomain
 import OBCPlanner
 import SwiftUI
 
+/// What the planner saves: the line, its plan, and where each route point lies on the line.
+public struct PlannerPreviewSave {
+    public let route: ImportedRoute
+    public let plan: PlannerPlan
+    /// The index in `route.points` of each route point in ride order; a loop ends at its start again.
+    public let pointIndices: [Int]
+    /// Nil for a hiking plan.
+    public let bikeType: BikeType?
+    /// Save the changes to the route or trip that was opened.
+    public let inPlace: Bool
+}
+
 /// The map-first planner uses the same points, search, and drawer interactions in every build.
 public struct PlannerPreviewView: View {
-    private enum Panel { case planning, stops, preferences, days, results, place, routes, route, leg }
+    private enum Panel: Identifiable { case planning, stops, preferences, days, results, place, routes, route, leg; var id: Self { self } }
     private enum SearchIntent: Equatable { case general, overnight, replace(String) }
     @State private var searchAfterDismissal = false
     @State private var searchQuery = ""
@@ -21,7 +33,6 @@ public struct PlannerPreviewView: View {
     /// Runs once the drawer has gone: a pop or a save that follows it must not race its dismissal.
     @State private var afterDrawerDismiss: (() -> Void)?
     @State private var drawerPosition = PlannerPreviewDrawerPosition.open
-    @State private var editorShown = false
     @State private var layersShown = false
     @State private var infoShown = false
     @State private var attributionShown = false
@@ -35,7 +46,8 @@ public struct PlannerPreviewView: View {
     }
     @State private var offlineAreaRequest: OfflineAreaRequest?
     @Environment(\.obcOfflineMaps) private var offlineMaps
-    @State private var editorPanel = Panel.preferences
+    /// The Activity or Days sheet. An item, so the sheet always shows the panel that opened it.
+    @State private var editor: Panel?
     @State private var panel = Panel.planning
     @State private var intent = SearchIntent.general
     @State private var sheetHeight: CGFloat = 340
@@ -65,13 +77,12 @@ public struct PlannerPreviewView: View {
     @State private var routeEnds: (start: String?, finish: String?) = (nil, nil)
     /// The plan that "Plan this route" replaced, while undo brings it back in one step.
     @State private var replaced: (title: String, depth: Int)?
-    /// The device type is nil for a hiking plan. `inPlace` saves the changes to the route that was opened.
-    private let onSave: (_ route: ImportedRoute, _ plan: PlannerPlan, _ bikeType: BikeType?, _ inPlace: Bool) -> Void
+    private let onSave: (PlannerPreviewSave) -> Void
     private let onClose: () -> Void
     /// The planner edits a saved route.
     private let isEditing: Bool
 
-    public init(onSave: @escaping (_ route: ImportedRoute, _ plan: PlannerPlan, _ bikeType: BikeType?, _ inPlace: Bool) -> Void,
+    public init(onSave: @escaping (PlannerPreviewSave) -> Void,
                 onClose: @escaping () -> Void, sample: Bool = false, source: any PlannerDataSource = PlannerService.shared) {
         _model = State(initialValue: PlannerPreviewModel(sample: sample, service: source))
         self.onSave = onSave
@@ -79,9 +90,9 @@ public struct PlannerPreviewView: View {
         isEditing = false
     }
 
-    /// Edits a saved route from its plan.
+    /// Edits a saved route or trip from its plan.
     public init(editing plan: PlannerPlan,
-                onSave: @escaping (_ route: ImportedRoute, _ plan: PlannerPlan, _ bikeType: BikeType?, _ inPlace: Bool) -> Void,
+                onSave: @escaping (PlannerPreviewSave) -> Void,
                 onClose: @escaping () -> Void, source: any PlannerDataSource = PlannerService.shared) {
         _model = State(initialValue: PlannerPreviewModel(plan: plan, service: source))
         self.onSave = onSave
@@ -96,13 +107,14 @@ public struct PlannerPreviewView: View {
                                 : panel == .route ? finder.detail.map { "route-\($0.route.id)" } : nil,
                               cursor: cursor, bottomInset: sheetHeight + geometry.safeAreaInsets.bottom,
                               fitRevision: fitRevision, onSelect: selectPin, onMapPoint: selectMapPoint, onLine: selectLine,
+                              onDrag: dragPoint,
                               showCycling: network == .cycling, showHiking: network == .hiking,
                               onVisibleMapRect: { visibleMapRect = $0 },
                               onVisibleRouteRange: { visibleRouteRange = $0 },
                               release: model.release, source: model.service,
                               hiddenCategories: hiddenCategories, highlightedCategories: highlightedCategories,
                               onPlace: selectResult, onNetworkStatus: { networkStatus = $0 },
-                              strokes: routesOpen ? finder.strokes(plan: model.geometry) : nil, focus: routesOpen ? finder.focus : nil,
+                              strokes: routesOpen ? finder.strokes(plan: model.geometry) : planStrokes, focus: routesOpen ? finder.focus : nil,
                               namer: namer, onIdle: nameRouteEnds)
                 .ignoresSafeArea(edges: .bottom)
                 .overlay(alignment: .topTrailing) { if !layersShown { mapTools.padding(12) } }
@@ -170,7 +182,7 @@ public struct PlannerPreviewView: View {
                         .fullScreenCover(isPresented: $filtersShown) {
                             PlannerRouteFiltersPage(finder: finder, activity: model.activity) { filtersShown = false }
                         }
-                        .sheet(isPresented: $editorShown, onDismiss: finishOpeningSearch) { focusedEditor }
+                        .sheet(item: $editor, onDismiss: finishOpeningSearch) { focusedEditor($0) }
                         .fullScreenCover(item: $offlineAreaRequest) { request in
                             if let offlineMaps {
                                 NavigationStack {
@@ -180,7 +192,7 @@ public struct PlannerPreviewView: View {
                             }
                         }
                         .obcRenameSheet(isEditing ? "Save as copy" : "Save route", isPresented: $saveShown, name: model.routeTitle,
-                                        placeholder: "Route name",
+                                        placeholder: model.isTrip ? "Trip name" : "Route name",
                                         canSave: { model.canSave && !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) { name in
                             save(name: name, inPlace: false)
                         }
@@ -194,7 +206,7 @@ public struct PlannerPreviewView: View {
                         }
                 }
         }
-        .navigationTitle(isEditing ? "Edit route" : "Plan a route")
+        .navigationTitle(isEditing ? (model.isTrip ? "Edit trip" : "Edit route") : "Plan a route")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden()
         .toolbar(.visible, for: .navigationBar)
@@ -451,7 +463,7 @@ public struct PlannerPreviewView: View {
         }.buttonStyle(.plain).accessibilityIdentifier("planner.days")
     }
 
-    /// Done is quiet text, as on the trip day editor; amber stays for the one action.
+    /// Done is quiet text; amber stays for the one action.
     private func doneButton(action: @escaping () -> Void) -> some View {
         Button("Done", action: action)
             .font(.body.weight(.semibold)).foregroundStyle(OBCTheme.tint)
@@ -533,21 +545,19 @@ public struct PlannerPreviewView: View {
     }
 
     /// The app's self-sizing sheet: the detent fits the content instead of a fixed half screen.
-    private var focusedEditor: some View {
+    private func focusedEditor(_ panel: Panel) -> some View {
         OBCSheetContainer {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(editorTitle).font(.system(.title3, weight: .semibold)).lineLimit(1)
+                    Text(panel == .days ? "Days" : "Activity").font(.system(.title3, weight: .semibold)).lineLimit(1)
                     Spacer(minLength: 8)
-                    doneButton { editorShown = false }
+                    doneButton { editor = nil }
                 }
-                if editorPanel == .days { days } else { preferences }
+                if panel == .days { days } else { preferences }
             }.frame(maxWidth: .infinity, alignment: .leading)
         }
         .foregroundStyle(OBCTheme.ink).tint(OBCTheme.tint)
     }
-
-    private var editorTitle: String { editorPanel == .days ? "Days" : "Activity" }
 
     @ViewBuilder private var pointEditor: some View {
         if let point = (model.points + model.markers).first(where: { $0.id == editingPointID }) {
@@ -566,10 +576,14 @@ public struct PlannerPreviewView: View {
             Button("Replace place", systemImage: "magnifyingglass") {
                 intent = .replace(point.id); searchQuery = ""; openSearchFromDetail()
             }.frame(minHeight: 44)
-            if !model.isEndpoint(point.id), point.kind != .marker {
-                Button(model.overnightPointID == point.id ? "Remove overnight break" : "End day 1 here", systemImage: "moon") {
-                    model.setOvernightPoint(id: model.overnightPointID == point.id ? nil : point.id)
-                }.frame(minHeight: 44)
+            if !model.isEndpoint(point.id), point.kind != .marker, model.isNight(point.id) || model.canAddDay {
+                let isNight = model.isNight(point.id)
+                Button(isNight ? "Remove the night" : "End day here", systemImage: "moon") {
+                    model.setNight(id: point.id, !isNight, name: namer.name(near: point.place.coordinate))
+                }.frame(minHeight: 44).accessibilityIdentifier("planner.endDay")
+            }
+            if point.kind != .marker, let hit = model.leg(into: point.id) {
+                OBCGroupedSection { legModeMenu(hit, title: "Leg to here") }
             }
             if model.hasRoute, !model.isLoop, point.id == model.points.last?.id {
                 Button("Back to start", systemImage: "arrow.triangle.2.circlepath") { model.closeLoop(); resetPanel() }
@@ -602,32 +616,35 @@ public struct PlannerPreviewView: View {
         }
     }
 
+    /// One row per day, from → to with its figures, then the ways to add or remove nights.
     private var days: some View {
         VStack(alignment: .leading, spacing: 16) {
             if !model.hasRoute {
                 Text("Choose your start and finish first.").foregroundStyle(OBCTheme.secondary)
-            } else if !model.nights.isEmpty {
-                let ends = [model.start!] + model.nights.map(\.place) + [model.finish!]
-                ForEach(Array(model.dayStats.enumerated()), id: \.offset) { index, stats in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Day \(index + 1)").font(.headline)
-                        Text("\(ends[index].name) → \(ends[index + 1].name)")
-                            .font(.subheadline)
-                        statsRow(stats)
-                    }.padding(.vertical, 4)
-                    Divider()
-                }
-                Button("Change overnight stop", systemImage: "tent") {
-                    searchQuery = "camping"; intent = .overnight; openSearchFromDetail()
-                }
-                    .frame(minHeight: 44)
-                Button("Make it a single day") { model.setOvernight(nil) }.buttonStyle(.obcGhost)
             } else {
-                Button("Add an overnight stop", systemImage: "tent") {
-                    searchQuery = "camping"; queryRequest = PlannerPreviewPlaceQuery.parse("camping", hasRoute: model.hasRoute)
-                    queryEditor = nil; intent = .overnight
-                    openSearchFromDetail()
-                }.buttonStyle(.obcPrimary)
+                if !model.nights.isEmpty, let start = model.start, let finish = model.finish {
+                    let ends = [start] + model.nights.map(\.place) + [finish]
+                    ForEach(Array(model.dayStats.enumerated()), id: \.offset) { index, stats in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Day \(index + 1)").font(.headline)
+                            if index + 1 < ends.count {
+                                Text("\(ends[index].name) → \(ends[index + 1].name)").font(.subheadline)
+                            }
+                            statsRow(stats)
+                        }.padding(.vertical, 4).accessibilityElement(children: .combine)
+                        Divider()
+                    }
+                }
+                if model.canAddDay {
+                    Button("Add a night", systemImage: "tent") {
+                        searchQuery = "camping"; queryRequest = PlannerPreviewPlaceQuery.parse("camping", hasRoute: model.hasRoute)
+                        queryEditor = nil; intent = .overnight
+                        openSearchFromDetail()
+                    }.buttonStyle(.obcPrimary).accessibilityIdentifier("planner.addNight")
+                }
+                if !model.nights.isEmpty {
+                    Button("Make it a single day") { model.clearNights() }.buttonStyle(.obcGhost)
+                }
             }
         }
     }
@@ -656,7 +673,7 @@ public struct PlannerPreviewView: View {
         } else if case .replace(let id) = intent {
             Button("Use this place") { model.replacePoint(id: id, with: place); finishIntent() }.buttonStyle(.obcPrimary)
         } else if intent == .overnight {
-            Button("End day 1 here", systemImage: "moon") { model.setOvernight(place); finishIntent() }.buttonStyle(.obcPrimary)
+            Button("End day here", systemImage: "moon") { model.endDay(at: place); finishIntent() }.buttonStyle(.obcPrimary)
         } else if model.start == nil {
             Button("Start here") { model.setStart(place); resetPanel() }.buttonStyle(.obcPrimary)
         } else if model.finish == nil {
@@ -672,8 +689,8 @@ public struct PlannerPreviewView: View {
                 Button("Mark on the map only", systemImage: PlannerPreviewPointKind.marker.symbol) {
                     model.addPoint(place, kind: .marker); resetPanel()
                 }
-                if place.kind == .camping {
-                    Button("End day 1 here", systemImage: "moon") { model.setOvernight(place); resetPanel() }
+                if model.canAddDay {
+                    Button("End day here", systemImage: "moon") { model.endDay(at: place); resetPanel() }
                 }
                 if model.isLoop {
                     Button("Finish here", systemImage: "flag.checkered") { model.setFinish(place); resetPanel(); fitRevision += 1 }
@@ -725,7 +742,7 @@ public struct PlannerPreviewView: View {
     private func openSearchFromDetail() {
         searchSnapshot = nil
         queryRequest = nil; queryEditor = nil
-        if editorShown { searchAfterDismissal = true; editorShown = false }
+        if editor != nil { searchAfterDismissal = true; editor = nil }
         else { searchShown = true }
     }
 
@@ -749,14 +766,17 @@ public struct PlannerPreviewView: View {
     }
 
     private func save(name: String, inPlace: Bool) {
-        let route = model.exportRoute(name: name), plan = model.exportPlan(), bike = model.activity.bikeType
-        leave { onSave(route, plan, bike, inPlace) }
+        var plan = model.exportPlan()
+        if !inPlace { plan.name = name.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let saved = PlannerPreviewSave(route: model.exportRoute(name: name), plan: plan, pointIndices: model.routePointIndices,
+                                       bikeType: model.activity.bikeType, inPlace: inPlace)
+        leave { onSave(saved) }
     }
 
     private func show(_ panel: Panel) {
         layersShown = false; infoShown = false
         if panel == .stops || panel == .results { self.panel = panel; drawerPosition = .open }
-        else { editorPanel = panel; editorShown = true }
+        else { editor = panel }
     }
 
     private func returnToPlanning() {
@@ -821,25 +841,38 @@ public struct PlannerPreviewView: View {
 
     @ViewBuilder private var legPanel: some View {
         if let hit = legHit {
-            let leg = model.leg(hit)
             Button("Add point here") { model.addPoint(on: hit); returnToPlanning() }
                 .buttonStyle(.obcPrimary).accessibilityIdentifier("planner.leg.addPoint")
-            OBCGroupedSection {
-                Menu {
-                    Picker("This leg", selection: Binding(get: { leg.mode }, set: { model.setLegMode(hit, to: $0) })) {
-                        Text("Routed").tag(PlanPoint.Leg.routed)
-                        if leg.drawn != nil { Text("As imported").tag(PlanPoint.Leg.drawn) }
-                    }
-                } label: {
-                    HStack {
-                        Text("This leg").foregroundStyle(OBCTheme.ink)
-                        Spacer(minLength: 8)
-                        Text(leg.mode == .drawn ? "As imported" : "Routed").foregroundStyle(OBCTheme.secondary)
-                        Image(systemName: "chevron.up.chevron.down").font(.caption).foregroundStyle(OBCTheme.secondary)
-                    }.padding(.horizontal, 16).frame(minHeight: 44).contentShape(Rectangle())
-                }.accessibilityIdentifier("planner.leg.mode")
-            }
+            OBCGroupedSection { legModeMenu(hit, title: "This leg") }
         }
+    }
+
+    private static func title(_ mode: PlanPoint.Leg) -> String {
+        switch mode {
+        case .routed: "Routed"
+        case .straight: "Straight"
+        case .drawn: "As imported"
+        case .transfer: "Transfer (not ridden)"
+        }
+    }
+
+    /// How a leg runs. "As imported" shows only for a leg that keeps a drawn line.
+    private func legModeMenu(_ hit: PlannerPreviewLegHit, title: String) -> some View {
+        let leg = model.leg(hit)
+        return Menu {
+            Picker(title, selection: Binding(get: { leg.mode }, set: { model.setLegMode(hit, to: $0) })) {
+                ForEach([PlanPoint.Leg.routed, .straight, .drawn, .transfer].filter { $0 != .drawn || leg.drawn != nil }, id: \.self) {
+                    Text(Self.title($0)).tag($0)
+                }
+            }
+        } label: {
+            HStack {
+                Text(title).foregroundStyle(OBCTheme.ink)
+                Spacer(minLength: 8)
+                Text(Self.title(leg.mode)).foregroundStyle(OBCTheme.secondary).lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down").font(.caption).foregroundStyle(OBCTheme.secondary)
+            }.padding(.horizontal, 16).frame(minHeight: 44).contentShape(Rectangle())
+        }.accessibilityIdentifier("planner.leg.mode")
     }
 
     private func selectMapPoint(_ coordinate: Coordinate, at location: CGPoint) {
@@ -916,10 +949,14 @@ public struct PlannerPreviewView: View {
     }
 
     private var pins: [PlannerPreviewMapPin] {
+        let nights = model.nights.map(\.id)
         var pins = model.points.enumerated().map { index, point in
-            PlannerPreviewMapPin(id: point.id, title: point.place.name, coordinate: point.place.coordinate,
-                symbol: point.id == model.overnightPointID ? "moon.fill" : point.place.kind.symbol,
-                kind: index == 0 ? .start : model.isEndpoint(point.id) ? .finish : point.kind == .shape ? .shape : .stop)
+            let night = nights.firstIndex(of: point.id)
+            return PlannerPreviewMapPin(id: point.id, title: night.map { "End of day \($0 + 1), \(point.place.name)" } ?? point.place.name,
+                coordinate: point.place.coordinate, symbol: point.place.kind.symbol,
+                kind: index == 0 ? .start : model.isEndpoint(point.id) ? .finish : night.map { .night($0 + 1) }
+                    ?? (point.kind == .shape ? .shape : .stop),
+                isDraggable: true)
         }
         pins += model.markers.map { .init(id: $0.id, title: $0.place.name, coordinate: $0.place.coordinate, symbol: "mappin", kind: .marker) }
         var places = results?.places ?? []
@@ -941,6 +978,23 @@ public struct PlannerPreviewView: View {
         return pins
     }
     private static let legPinID = "planner-leg-point"
+
+    /// The plan's line with each transfer dashed and muted; nil draws the plain route line.
+    private var planStrokes: [MapStroke]? {
+        let runs = model.lineRuns
+        guard runs.contains(where: \.isTransfer) else { return nil }
+        return runs.map { run in
+            run.isTransfer ? MapStroke(coordinates: run.coordinates, color: OBCTheme.secondary, width: 3, cased: false, dash: [1.5, 1.5])
+                : MapStroke(coordinates: run.coordinates, color: OBCTheme.route, width: 3.5)
+        }
+    }
+
+    /// A route point dropped on the map: only the legs at it plan again.
+    private func dragPoint(_ id: String, to coordinate: Coordinate) {
+        guard let point = model.points.first(where: { $0.id == id }) else { return }
+        model.movePoint(id: id, to: coordinate, name: point.kind == .shape ? nil : namer.name(near: coordinate))
+        if editingPointID == id, let moved = model.points.first(where: { $0.id == id }) { selectedPlace = moved.place }
+    }
     private var cursor: Coordinate? {
         guard let fraction, model.geometry.count > 1 else { return nil }
         let line = model.routeLine

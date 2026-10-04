@@ -1,7 +1,7 @@
 import Foundation
 
-/// A place where a day of a trip can end: a campsite or a hotel from place search, another place
-/// the rider searched for, or a waypoint from the trip's route files.
+/// A named place near a line: a campsite or a hotel from place search, another place the rider
+/// searched for, or a waypoint from a trip's route files.
 public struct Stop: Hashable, Sendable {
     /// The raw value is the stored name.
     public enum Kind: String, Hashable, Sendable {
@@ -31,17 +31,6 @@ public struct Stop: Hashable, Sendable {
     }
 }
 
-extension Stop {
-    /// The stops of several searches around one point, each stop once, in answer order. It fails
-    /// only when every search failed: part of an answer is better than none.
-    public static func merging(_ answers: [Result<[Stop], any Error>]) throws -> [Stop] {
-        let found = answers.compactMap { try? $0.get() }
-        if found.isEmpty, case .failure(let error)? = answers.first { throw error }
-        var seen = Set<String>()
-        return found.joined().filter { seen.insert($0.mapItemID ?? "\($0.name) \($0.coordinate)").inserted }
-    }
-}
-
 /// A stop measured against a trip line.
 public struct PlacedStop: Hashable, Sendable {
     public var stop: Stop
@@ -57,12 +46,4 @@ public struct PlacedStop: Hashable, Sendable {
     }
 
     public var isOnLine: Bool { offset <= Trip.onLineMeters }
-}
-
-/// Place search, behind a seam so tests and the simulator run without a network.
-public protocol StopSearch: Sendable {
-    /// Campsites and hotels within `radius` metres of `center`.
-    func stops(near center: Coordinate, radius: Double) async throws -> [Stop]
-    /// Places of any kind that match `query`, inside the box from `southWest` to `northEast`.
-    func places(matching query: String, southWest: Coordinate, northEast: Coordinate) async throws -> [Stop]
 }

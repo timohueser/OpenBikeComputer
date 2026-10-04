@@ -4,8 +4,7 @@ import OBCDomain
 import OBCTransport
 
 /// The trip review, which reads as the journal of the trip: the planned line with the ridden
-/// part, the totals, one entry per ridden day with its note and photos, and the offer to even
-/// out the days after a day that ended far from its plan.
+/// part, the totals, and one entry per ridden day with its note and photos.
 ///
 /// One per trip page. Each `load` replaces the last; a load that a newer one overtook changes
 /// nothing. The page shows as soon as the rides are read, and the places the trip does not name
@@ -42,8 +41,6 @@ public final class TripJournalModel {
     public private(set) var photoPins: [Coordinate] = []
     /// By the day the transfer follows.
     public private(set) var transfers: [Int: TransferPlaces] = [:]
-    /// The re-balance offer until the rider uses or dismisses it.
-    public private(set) var offer: RebalanceOffer?
     /// "Furka 2,431 m · Biggest day 82.0 km".
     public private(set) var highlights: String?
 
@@ -59,13 +56,6 @@ public final class TripJournalModel {
     public init(library: any LibraryStore, placeName: (@Sendable (Coordinate) async -> String?)? = nil) {
         self.library = library
         self.placeName = placeName
-    }
-
-    /// "Days 3–4 are longer now. Even them out?"
-    public var offerTitle: String? {
-        offer.map { offer in
-            "Days \(offer.days.lowerBound + 1)–\(offer.days.upperBound + 1) are \(offer.shortfall > 0 ? "longer" : "shorter") now. Even them out?"
-        }
     }
 
     /// Build from the same edited tracks the review used, with each ride as a separate piece.
@@ -138,18 +128,8 @@ public final class TripJournalModel {
         transfers = Dictionary(uniqueKeysWithValues: trip.dayEnds.indices.filter { trip.endsAtTransfer($0) }.map {
             ($0, TransferPlaces(from: trip.dayEnds[$0].name, to: trip.dayStart($0 + 1)?.name))
         })
-        offer = review.rebalance.flatMap { library.rideJournal($0.ride).closedRows.contains(.rebalance) ? nil : $0 }
         highlights = Self.highlights(review, trip: trip)
         await namePlaces(trip, review, tracks, generation: current)
-    }
-
-    /// The rider used or dismissed the offer: it never comes back for that day.
-    public func closeOffer() {
-        guard let offer else { return }
-        var journal = library.rideJournal(offer.ride)
-        journal.close(.rebalance)
-        library.saveRideJournal(journal, thumbnails: [:], for: offer.ride)
-        self.offer = nil
     }
 
     private static func header(

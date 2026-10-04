@@ -70,9 +70,7 @@ struct RootView: View {
         // The sync coordinator's own timing seam, threaded so the composition root can park the
         // post-sync confirmation for an automated capture. Untouched in every ordinary run.
         syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing(),
-        placeName: (@Sendable (Coordinate) async -> String?)? = nil,
-        stopSearch: (any StopSearch)? = nil,
-        legRouter: (any LegRouter)? = nil
+        placeName: (@Sendable (Coordinate) async -> String?)? = nil
     ) {
         self.transport = transport
         self.bondStore = bondStore
@@ -113,9 +111,7 @@ struct RootView: View {
             // config disagrees, which heals a rename whose write never landed.
             nameReconciler: DeviceNameReconciler(transport: transport, bondStore: bondStore),
             transferActivity: transferActivity,
-            placeName: placeName,
-            stopSearch: stopSearch,
-            legRouter: legRouter
+            placeName: placeName
         ))
         _importModel = State(initialValue: ImportFlowModel(
             // The decode stays app-side, because OBCUI does not import OBCFormats; the flow model
@@ -432,10 +428,8 @@ struct RootView: View {
                     return
                 }
                 // A trip choice moves the route into the trip and opens the trip page.
-                // A new trip from one file opens in the day editor's split mode.
                 if let tripID = mainModel.fileRoute(detail.summary.id, into: tripSelection) {
                     path = [.trip(id: tripID)]
-                    if case .new = tripSelection { path.append(.dayEditor(id: tripID, isSplitMode: true)) }
                 }
                 importModel.closeImport()
             },
@@ -512,7 +506,7 @@ struct RootView: View {
         switch destination {
         case .planner(let sample):
             PlannerPreviewView(
-                onSave: { route, plan, bikeType, _ in savePlannerPreview(route, plan: plan, bikeType: bikeType) },
+                onSave: { savePlannerPreview($0) },
                 onClose: { path.removeAll() },
                 sample: sample, source: plannerSource
             )
@@ -520,9 +514,16 @@ struct RootView: View {
             if let plan = mainModel.plannedPlan(for: id) {
                 PlannerPreviewView(
                     editing: plan,
-                    onSave: { route, plan, bikeType, inPlace in
-                        savePlannerPreview(route, plan: plan, bikeType: bikeType, replacing: inPlace ? id : nil)
-                    },
+                    onSave: { savePlannerPreview($0, replacing: $0.inPlace ? id : nil) },
+                    onClose: { path.removeLast() },
+                    source: plannerSource
+                )
+            }
+        case .editTrip(let id):
+            if let plan = mainModel.tripPlan(for: id) {
+                PlannerPreviewView(
+                    editing: plan,
+                    onSave: { saveTripPlan($0, editing: id) },
                     onClose: { path.removeLast() },
                     source: plannerSource
                 )
@@ -627,19 +628,12 @@ struct RootView: View {
                     }
                 },
                 onOpenRide: { path.append(.ride(id: $0)) },
-                onEvenOut: { offer in Task { await mainModel.evenOutDays(id, from: offer.fixedBefore) } },
-                onEditDays: { path.append(.dayEditor(id: id, isSplitMode: false)) },
+                onEdit: mainModel.tripPlan(for: id) == nil ? nil : { path.append(.editTrip(id: id)) },
                 onOpenDay: { path.append(.tripDay(id: id, day: $0)) },
                 encodeGPX: { GPXTripEncoder.encode($0) },
                 uploadTiming: TripUploadModel.Timing(
                     doneAutoDismiss: OBCCompanionApp.launchUploadTiming().doneAutoDismiss)
             )
-        case .dayEditor(let id, let isSplitMode):
-            DayEditorHost(make: { mainModel.dayEditor(id, isSplitMode: isSplitMode) }) {
-                if let index = path.lastIndex(of: .dayEditor(id: id, isSplitMode: isSplitMode)) {
-                    path.removeSubrange(index...)
-                }
-            }
         case .tripDay(let id, let day):
             if let trip = mainModel.trip(id), let route = mainModel.tripDays(id).first(where: { $0.day == day }) {
                 RouteDetailScreen(
@@ -737,9 +731,10 @@ struct RootView: View {
 
     /// A hiking plan takes the last bike type, as an import does, or keeps the type of the route it
     /// edits. `replacing` saves the changes to that route; else the plan lands as a new route.
-    private func savePlannerPreview(_ route: ImportedRoute, plan: PlannerPlan, bikeType: BikeType?, replacing id: RouteID? = nil) {
+    private func savePlannerPreview(_ saved: PlannerPreviewSave, replacing id: RouteID? = nil) {
+        let route = saved.route, plan = saved.plan
         guard let end = route.points.last, route.points.count > 1, let name = route.name else { return }
-        let bikeType = bikeType ?? id.map(mainModel.plannedBikeType(for:)) ?? lastBikeType.value
+        let bikeType = saved.bikeType ?? id.map(mainModel.plannedBikeType(for:)) ?? lastBikeType.value
         let fileName = GPXFile.fileName(for: name)
         let line = MeasuredLine(routePoints: route.points)
         let trip = Trip(
@@ -764,21 +759,20 @@ struct RootView: View {
         mainModel.searchText = ""
         path.removeAll()
     }
-}
 
-/// Owns the day editor's draft for the screen's life. The destination body runs on every pass
-/// of the root, so the model is made once, on appear, not in the body.
-private struct DayEditorHost: View {
-    let make: () -> TripDayEditorModel?
-    let onClose: () -> Void
-    @State private var model: TripDayEditorModel?
-
-    var body: some View {
-        if let model {
-            TripDayEditorView(model: model, onClose: onClose)
-        } else {
-            OBCTheme.page.ignoresSafeArea().onAppear { model = make() }
+    /// "Save changes" writes the plan into the trip it edits; "Save as copy" makes a new trip and
+    /// opens it. A hiking plan keeps the trip's bike type.
+    private func saveTripPlan(_ saved: PlannerPreviewSave, editing id: TripID) {
+        let line = saved.route.points
+        if saved.inPlace {
+            mainModel.saveTripChanges(id, plan: saved.plan, line: line, pointIndices: saved.pointIndices)
+            path.removeLast()
+            return
         }
+        let bikeType = saved.bikeType ?? mainModel.trip(id)?.bikeType ?? lastBikeType.value
+        guard let copy = mainModel.createTrip(name: saved.route.name ?? "New trip", plan: saved.plan, line: line,
+                                              pointIndices: saved.pointIndices, bikeType: bikeType) else { return }
+        path = [.trip(id: copy)]
     }
 }
 
@@ -789,8 +783,8 @@ enum MainDestination: Hashable {
     case editRoute(id: RouteID)
     case route(id: RouteID)
     case trip(id: TripID)
-    /// The trip's day editor, in split mode when one file just became the trip.
-    case dayEditor(id: TripID, isSplitMode: Bool)
+    /// The planner on a saved trip's plan.
+    case editTrip(id: TripID)
     case tripDay(id: TripID, day: Int)
     case ride(id: RideID)
     case trash

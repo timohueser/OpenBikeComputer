@@ -127,24 +127,8 @@ extension Trip {
     }
 }
 
-/// The offer to even out the days after a day that ended far from its plan: the days in
-/// ``days`` share the line after ``fixedBefore`` equally, and nothing before it moves.
-public struct RebalanceOffer: Equatable, Sendable {
-    /// The ridden day that ended away from its planned end.
-    public let day: Int
-    /// The last ride of that day. Its journal remembers that the rider used or dismissed the offer.
-    public let ride: RideID
-    /// The unridden days to even out: the days after ``day`` up to the next transfer or the trip end.
-    public let days: ClosedRange<Int>
-    /// Where the day ended, in metres along the line.
-    public let fixedBefore: Double
-    /// The planned day end minus where the day ended. Positive when the day stopped early, so the
-    /// days after it are longer.
-    public let shortfall: Double
-}
-
 /// A trip read against its synced rides: each day planned and ridden, the ridden parts of the
-/// line, the totals, and the re-balance offer. A ride belongs to the trip day it records, so the
+/// line and the totals. A ride belongs to the trip day it records, so the
 /// grouping needs no dates.
 public struct TripReview: Equatable, Sendable {
     public struct Day: Equatable, Sendable {
@@ -160,9 +144,6 @@ public struct TripReview: Equatable, Sendable {
         public var totals: RideTotals { RideTotals(rides) }
     }
 
-    /// A day that ended more than this from its planned end offers to even out the days after it.
-    public static let rebalanceMinMeters = 5_000.0
-
     public let days: [Day]
     /// The parts of the line the rides covered: ascending and disjoint.
     public let ridden: [ClosedRange<Double>]
@@ -172,7 +153,6 @@ public struct TripReview: Equatable, Sendable {
     public let totals: RideTotals
     /// The day after the last ridden day; nil once the last day is ridden.
     public let currentDay: Int?
-    public let rebalance: RebalanceOffer?
     /// The highest ridden point with an elevation.
     public let highPoint: RidePoint?
 
@@ -201,7 +181,6 @@ public struct TripReview: Equatable, Sendable {
         plannedMeters = trip.dayEnds.last?.distance ?? 0
         totals = RideTotals(days.flatMap(\.rides))
         currentDay = lastRidden + 1 < trip.dayCount ? lastRidden + 1 : nil
-        rebalance = Self.rebalance(trip: trip, days: days, lastRidden: lastRidden)
         highPoint = days.flatMap(\.rides).flatMap { tracks[$0.id] ?? [] }
             .filter { $0.elevationMeters != nil }
             .max { ($0.elevationMeters ?? 0) < ($1.elevationMeters ?? 0) }
@@ -212,19 +191,5 @@ public struct TripReview: Equatable, Sendable {
         let ridden = days.indices.filter { !days[$0].rides.isEmpty }
         guard ridden.count > 1 else { return nil }
         return ridden.max { days[$0].totals.distanceMeters < days[$1].totals.distanceMeters }
-    }
-
-    /// The offer after the last ridden day, when it ended more than ``rebalanceMinMeters`` from
-    /// its plan and at least two unridden days can share the change. A day that ends at a
-    /// transfer passes nothing on, because the next day starts elsewhere.
-    private static func rebalance(trip: Trip, days: [Day], lastRidden day: Int) -> RebalanceOffer? {
-        guard let ended = days[day].endedAt, let ride = days[day].rides.last, !trip.endsAtTransfer(day)
-        else { return nil }
-        let shortfall = days[day].planned.upperBound - ended
-        guard abs(shortfall) > rebalanceMinMeters else { return nil }
-        var last = day + 1
-        while last < trip.dayCount - 1, !trip.endsAtTransfer(last) { last += 1 }
-        guard last < trip.dayCount, last > day + 1 else { return nil }
-        return RebalanceOffer(day: day, ride: ride.id, days: (day + 1)...last, fixedBefore: ended, shortfall: shortfall)
     }
 }

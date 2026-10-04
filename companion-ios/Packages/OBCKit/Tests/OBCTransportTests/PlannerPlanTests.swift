@@ -56,7 +56,7 @@ struct PlannerPlanTests {
         trip.namePlace(0, to: "Camp")
         let plan = try #require(PlannerPlan.keptLine(trip))
         let route = plan.routePoints
-        #expect(route.map(\.kind) == [.start, .night, .night, .waypoint, .finish] && plan.days == 3 && plan.mode == .trip)
+        #expect(route.map(\.kind) == [.start, .night, .night, .via, .finish] && plan.days == 3 && plan.mode == .trip)
         #expect(route.map(\.id) == ["start", "night-1", "night-2", "day-3", "finish"] && route[1].label == "Camp")
         #expect(route.map(\.leg) == [nil, .drawn, .drawn, .transfer, .drawn])
         #expect(route[3].coordinate == at(8.10) && route[2].coordinate == at(8.04))

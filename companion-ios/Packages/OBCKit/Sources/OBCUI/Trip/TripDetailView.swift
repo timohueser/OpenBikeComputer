@@ -5,8 +5,8 @@ import OBCTransport
 /// The trip page, behind a trip card in the routes list, in the route page's order: the map in
 /// day colours, the name, what the device holds with the one action, the ledger, one row per day
 /// with a bar as long as the day, then the start date and the bike type. A tap on a day opens its
-/// route detail; its More menu offers Rename day and End day at a stop. A tap on a transfer line
-/// picks how the rider travels it. The overflow menu carries Reverse and Delete trip.
+/// route detail; its More menu offers Rename day. Edit opens the trip in the planner. The
+/// overflow menu carries Delete trip.
 ///
 /// Once the trip has a ride, the page is the trip review: the line with the ridden part, the
 /// totals so far, one journal entry per ridden day, and the days still to ride as rows. Its share
@@ -19,9 +19,8 @@ public struct TripDetailView: View {
     private let tripID: TripID
     private let onClose: () -> Void
     private let onOpenRide: (RideID) -> Void
-    /// Even out the days of a re-balance offer. The offer shows only with it.
-    private let onEvenOut: ((RebalanceOffer) -> Void)?
-    private let onEditDays: () -> Void
+    /// Opens the trip in the planner. Nil hides Edit.
+    private let onEdit: (() -> Void)?
     private let onOpenDay: (Int) -> Void
     /// The planned line as GPX. The review's share button shows only with it.
     private let encodeGPX: (@Sendable (Trip) -> Data)?
@@ -29,7 +28,6 @@ public struct TripDetailView: View {
 
     @State private var renameShown = false
     @State private var deleteDialogShown = false
-    @State private var reverseDialogShown = false
     /// The whole-trip upload sheet's driver, created once at the Upload tap. A model built inline
     /// in the `.sheet` closure would rebuild on every body pass and restart the queue.
     @State private var tripUploadModel: TripUploadModel?
@@ -43,8 +41,6 @@ public struct TripDetailView: View {
     @State private var replayShown = false
     @State private var replayPreparing = false
     @State private var replayContent: ReplayContent?
-    /// The stops sheet of one day end.
-    @State private var stopsModel: TripStopsModel?
     /// The trip review, once the trip has a ride.
     @State private var journal: TripJournalModel?
     /// Each open of the page, and each return from a ride, which may bring a new note or new photos,
@@ -58,8 +54,7 @@ public struct TripDetailView: View {
         tripID: TripID,
         onClose: @escaping () -> Void = {},
         onOpenRide: @escaping (RideID) -> Void = { _ in },
-        onEvenOut: ((RebalanceOffer) -> Void)? = nil,
-        onEditDays: @escaping () -> Void = {},
+        onEdit: (() -> Void)? = nil,
         onOpenDay: @escaping (Int) -> Void = { _ in },
         encodeGPX: (@Sendable (Trip) -> Data)? = nil,
         uploadTiming: TripUploadModel.Timing = TripUploadModel.Timing()
@@ -68,18 +63,10 @@ public struct TripDetailView: View {
         self.tripID = tripID
         self.onClose = onClose
         self.onOpenRide = onOpenRide
-        self.onEvenOut = onEvenOut
-        self.onEditDays = onEditDays
+        self.onEdit = onEdit
         self.onOpenDay = onOpenDay
         self.encodeGPX = encodeGPX
         self.uploadTiming = uploadTiming
-    }
-
-    private var editDaysButton: some View {
-        Button("Edit days", action: onEditDays)
-            .buttonStyle(.obcGhost)
-            .padding(.top, 10)
-            .accessibilityIdentifier("trip.editDays")
     }
 
     private var trip: Trip? { model.trip(tripID) }
@@ -110,7 +97,6 @@ public struct TripDetailView: View {
                             .padding(.top, 30)
                             .padding(.bottom, 6)
                         dayRows(unridden)
-                        editDaysButton
                     }
                 } else {
                     header
@@ -118,7 +104,6 @@ public struct TripDetailView: View {
                         .padding(.top, 24)
                         .padding(.bottom, 6)
                     dayRows(Array(days.indices))
-                    editDaysButton
                 }
                 OBCGroupedSection {
                     OBCListRow(
@@ -147,6 +132,11 @@ public struct TripDetailView: View {
                 ToolbarItem(placement: .primaryAction) { shareMenu }
             }
             #endif
+            if let onEdit {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Edit", action: onEdit).accessibilityIdentifier("trip.edit")
+                }
+            }
             overflowMenu
         }
         .accessibilityIdentifier("trip.screen")
@@ -184,11 +174,6 @@ public struct TripDetailView: View {
         }
         .sheet(item: $tripUploadModel) { model in
             TripUploadSheetView(model: model)
-        }
-        .sheet(item: $stopsModel) { model in
-            TripStopsSheet(model: model)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
         }
         #if os(iOS)
         .fullScreenCover(isPresented: $mapShown) { tripMapCover }
@@ -286,7 +271,6 @@ public struct TripDetailView: View {
             ForEach(indices, id: \.self) { index in
                 let day = days[index]
                 let end = trip?.dayEnds[safe: index]
-                let transfer = trip?.transferMeters(after: index)
                 HStack(spacing: 0) {
                     TripDayRow(
                         color: OBCTheme.stageColor(index: index),
@@ -295,7 +279,7 @@ public struct TripDetailView: View {
                         detail: [
                             dates[safe: index].flatMap { $0 }.map { OBCFormat.tripDay($0) },
                             OBCFormat.distance(meters: day.distanceMeters), OBCFormat.climb(meters: day.elevationGainMeters),
-                            day.estimatedDuration.map { OBCFormat.movingTime($0) + " h" }, offLineNote(end),
+                            day.estimatedDuration.map { OBCFormat.movingTime($0) + " h" },
                         ].compactMap { $0 }.joined(separator: " · "),
                         note: copies[safe: index]?.shown,
                         fraction: longest > 0 ? day.distanceMeters / longest : 0,
@@ -318,15 +302,9 @@ public struct TripDetailView: View {
                 }
                 .contextMenu { dayActions(index) }
                 .overlay(alignment: .bottom) {
-                    if index != indices.last && transfer == nil {
+                    if index != indices.last {
                         OBCTheme.hairline.frame(height: 1).padding(.leading, 16)
                     }
-                }
-                if let meters = transfer {
-                    TripTransferRow(kind: end?.transfer, meters: meters) {
-                        model.setTripTransfer(tripID, day: index, to: $0)
-                    }
-                    .accessibilityIdentifier("trip.transfer.\(index)")
                 }
             }
         }
@@ -335,12 +313,6 @@ public struct TripDetailView: View {
     @ViewBuilder
     private func dayActions(_ index: Int) -> some View {
         Button { dayRename = index } label: { Label("Rename day", systemImage: "pencil") }
-        if index < days.count - 1 {
-            Button {
-                stopsModel = model.tripStops(tripID, day: index, isOnline: isOnline)
-            } label: { Label("End day at a stop", systemImage: "tent") }
-            .accessibilityIdentifier("trip.day.stops")
-        }
     }
 
     /// What the device holds of each day. The row shows it only while the trip on the device is
@@ -356,12 +328,6 @@ public struct TripDetailView: View {
             }
             return (showsDays && state != .upToDate ? line : nil, line)
         }
-    }
-
-    /// "330 m off the line" when the day ends at a stop away from the line.
-    private func offLineNote(_ end: DayEnd?) -> String? {
-        guard let offset = end?.stopOffset, offset > Trip.onLineMeters else { return nil }
-        return OBCFormat.stopOffset(meters: offset)
     }
 
     // MARK: Trip review
@@ -436,8 +402,7 @@ public struct TripDetailView: View {
         }
     }
 
-    /// The ridden days in order, each with the transfer after it and the offer under the day that
-    /// ended far from its plan.
+    /// The ridden days in order, each with the transfer after it.
     private func journalEntries(_ journal: TripJournalModel, _ trip: Trip) -> some View {
         ForEach(journal.entries) { entry in
             TripJournalDayEntry(
@@ -449,18 +414,6 @@ public struct TripDetailView: View {
                 TripJournalTransfer(kind: transferKind(entry.day), from: places.from, to: places.to) { model.setTripTransfer(tripID, day: entry.day, to: $0) }
                     .padding(.top, 22)
                     .accessibilityIdentifier("trip.journal.transfer.\(entry.day)")
-            }
-            if let offer = journal.offer, offer.day == entry.day, let onEvenOut, let title = journal.offerTitle {
-                OBCQuietRow(
-                    systemImage: "arrow.left.and.right", title: title,
-                    onOpen: {
-                        journal.closeOffer()
-                        onEvenOut(offer)
-                    },
-                    onDismiss: { withAnimation(.snappy) { journal.closeOffer() } }
-                )
-                .padding(.top, 16)
-                .accessibilityIdentifier("trip.journal.offer")
             }
         }
     }
@@ -554,13 +507,6 @@ public struct TripDetailView: View {
     private var overflowMenu: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             Menu {
-                Button { reverseDialogShown = true } label: {
-                    Label("Reverse trip…", systemImage: "arrow.left.arrow.right")
-                }
-                .accessibilityIdentifier("trip.reverse")
-
-                Divider()
-
                 Button(role: .destructive) { deleteDialogShown = true } label: {
                     Label("Delete trip…", systemImage: "trash")
                 }
@@ -570,11 +516,6 @@ public struct TripDetailView: View {
             }
             .accessibilityLabel("More")
             .accessibilityIdentifier("trip.overflow")
-            .obcChoiceSheet(
-                "Reverse this trip?", isPresented: $reverseDialogShown,
-                message: "Reverses the direction and day order of this trip. Its device progress starts over.",
-                actions: [OBCSheetAction("Reverse trip") { model.reverseTrip(tripID) }]
-            )
             .obcDestructiveConfirm(
                 "Delete \(trip?.name.quoted ?? "trip")?",
                 isPresented: $deleteDialogShown,

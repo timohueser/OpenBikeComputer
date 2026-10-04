@@ -1,8 +1,8 @@
 import SwiftUI
 import OBCDomain
 
-/// Markers on a line, on the map and on the elevation profile at once: the day-end handles of
-/// the day editor and the trim handles of ride editing. Drag a handle on either view and the
+/// Markers on a line, on the map and on the elevation profile at once: the trim handles of ride
+/// editing. Drag a handle on either view and the
 /// other follows in the same frame. Offline, the map is the grid preview and only the profile
 /// drags.
 public struct LineMarkerEditor: View {

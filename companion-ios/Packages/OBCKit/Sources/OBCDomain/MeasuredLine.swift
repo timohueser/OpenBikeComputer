@@ -2,7 +2,7 @@ import Foundation
 
 /// A polyline measured along its length: every vertex carries its cumulative distance,
 /// elevation and cumulative climb, so a position on the line is one number, a distance in
-/// metres. The marker-on-line control, the day editor and ride trims all speak in these
+/// metres. The marker-on-line control, trips and ride trims all speak in these
 /// distances.
 ///
 /// A line is made of pieces. The segment into a piece start is a gap: it carries no distance,

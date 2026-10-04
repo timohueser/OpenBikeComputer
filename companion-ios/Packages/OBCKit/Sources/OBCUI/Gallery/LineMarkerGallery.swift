@@ -35,11 +35,18 @@ private struct TripEditorSample: View {
             ],
             segmentColors: (0..<3).map { OBCTheme.stageColor(index: $0) }
         )!)
-        model.stops = GalleryStops.nearby.map { stop in
+        model.stops = Self.nearby.map { stop in
             let projection = line.projection(of: stop.coordinate, near: 0, window: line.length)
             return PlacedStop(stop: stop, distance: projection.distance, offset: projection.error)
         }
     }
+
+    /// Places near Ulrichen on the sample line.
+    private static let nearby = [
+        Stop(name: "Hotel Walser", coordinate: Coordinate(latitude: 46.5054, longitude: 8.3128), kind: .hotel),
+        Stop(name: "Hotel Astoria", coordinate: Coordinate(latitude: 46.5076, longitude: 8.3062), kind: .hotel),
+        Stop(name: "camping riverside", coordinate: Coordinate(latitude: 46.4648, longitude: 8.2449), kind: .campsite),
+    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {

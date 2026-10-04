@@ -138,10 +138,11 @@ extension PlannerPlan {
     }
 
     /// A trip kept as it is: one drawn leg per day, a night at each day end, and a transfer leg
-    /// where the next day starts farther than ``Trip/transferMinMeters`` from where a day ends.
+    /// to a plain route point where the next day starts farther than ``Trip/transferMinMeters``
+    /// from where a day ends. Nil for a trip of more than ``maxDays`` days.
     public static func keptLine(_ trip: Trip) -> PlannerPlan? {
         let days = trip.dayLines().map(\.points).filter { $0.count > 1 }
-        guard let first = days.first?.first?.coordinate, days.count == trip.dayCount else { return nil }
+        guard let first = days.first?.first?.coordinate, days.count == trip.dayCount, days.count <= maxDays else { return nil }
         var points = [PlanPoint(id: "start", label: trip.startName ?? "Start", coordinate: first, progress: 0, kind: .start)]
         var distance = 0.0
         var here = first
@@ -149,7 +150,7 @@ extension PlannerPlan {
             if let start = line.first?.coordinate, start.distance(to: here) > Trip.transferMinMeters {
                 distance += start.distance(to: here)
                 points.append(PlanPoint(id: "day-\(day + 1)", label: trip.dayEnds[day - 1].resumeName ?? "Start of day \(day + 1)",
-                                        coordinate: start, progress: distance, kind: .waypoint, leg: .transfer))
+                                        coordinate: start, progress: distance, kind: .via, leg: .transfer))
                 here = start
             }
             let end = line[line.count - 1].coordinate, isLast = day == days.count - 1

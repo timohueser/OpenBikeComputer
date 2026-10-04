@@ -5,7 +5,7 @@ import Testing
 @testable import OBCUI
 
 /// The trip review as the page reads it: one entry per ridden day with its note, the places the
-/// trip does not name, and the re-balance offer that goes away for good once closed.
+/// trip does not name, and the transfers between days.
 @MainActor
 struct TripJournalModelTests {
     private let library = InMemoryLibraryStore()
@@ -43,7 +43,7 @@ struct TripJournalModelTests {
         return summary
     }
 
-    @Test func entriesNameTheDaysAndTheOfferStaysClosed() async throws {
+    @Test func entriesNameTheDaysAndTheTransfers() async throws {
         let trip = trip()
         // Day 2 stops 7 km early, at 14 km.
         let rides = [
@@ -59,27 +59,6 @@ struct TripJournalModelTests {
         #expect(journal.entries[0].note == "Train up the gorge.")
         #expect(journal.entries[1].header.contains("Andermatt → Reckingen"), "the day after the train starts at its own place")
         #expect(journal.transfers == [0: .init(from: "Göschenen", to: "Andermatt")])
-        #expect(journal.offerTitle == "Days 3–4 are longer now. Even them out?")
-
-        journal.closeOffer()
-        #expect(journal.offer == nil)
-        let again = TripJournalModel(library: library, placeName: placeName)
-        await again.load(trip: trip, rides: rides)
-        #expect(again.review?.rebalance != nil)
-        #expect(again.offer == nil, "a closed offer never comes back")
-    }
-
-    @Test func afterAReverseTheTransferReadsFromTheOtherSide() async throws {
-        var trip = trip()
-        trip.reverse()
-        // The reversed Day 3 runs from Reckingen to the train, which now leaves from Andermatt.
-        let ride = try ride("d3", day: 2, of: trip, from: 21, to: 11, hour: 0)
-        let journal = TripJournalModel(library: library) { $0.longitude < 8.16 ? "Andermatt" : "Ulrichen" }
-        await journal.load(trip: trip, rides: [ride])
-
-        let places = try #require(journal.transfers[2])
-        #expect(TripJournalTransfer.text(kind: trip.dayEnds[2].transfer, from: places.from, to: places.to)
-            == "Train · Andermatt → Göschenen")
     }
 
     @Test func aLoadThatANewerOneOvertookChangesNothing() async throws {
