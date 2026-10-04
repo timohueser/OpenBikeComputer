@@ -52,7 +52,7 @@ def basemap(osm, output, bounds, cache, auxiliary=None):
     jar = source / "tiles/target/protomaps-basemap-HEAD-with-deps.jar"
     if not jar.exists():
         maps.run("mvn", "-q", "package", "-DskipTests", cwd=source / "tiles")
-    maps.run("java", "-Xmx2g", "-jar", jar, "--download", f"--osm-path={osm}",
+    maps.run("java", "-Xmx6g", "-jar", jar, "--download", f"--osm-path={osm}",
              f"--output={output}", "--bounds=" + ",".join(map(str, bounds)),
              "--maxzoom=14", "--threads=2", cwd=source / "tiles")
     return {"protomaps_commit": PROTOMAPS, "planetiler": "0.10.2",
