@@ -122,11 +122,18 @@ obc planner verify
 ```
 
 Open `http://127.0.0.1:4175/planner.html`. Setup runs `prepare` with the
-region recipe. Normal launch has no downloads. `verify` checks map hashes,
-SQLite integrity, and routing object closure.
+region recipe and `~/obc-reference`; run `prepare` directly for other inputs.
+Normal launch has no downloads. `verify` checks map hashes, SQLite integrity,
+and routing object closure.
 
-The pinned OSM extract merges the Geofabrik Baden-Württemberg and Switzerland
-extracts of one date, clipped to the recipe bounds with `osmium`.
+Before publication, seed the source cache. The OSM extract merges two
+Geofabrik extracts of one date:
+
+```sh
+osmium merge baden-wuerttemberg-latest.osm.pbf switzerland-latest.osm.pbf -o merged.osm.pbf
+osmium extract -b 5.95,45.8,10.5,49.85 merged.osm.pbf -o ~/.cache/obc/planner/sources/SHA256.osm.pbf
+cp AUXILIARY_FILE ~/.cache/obc/planner/sources/auxiliary/NAME
+```
 
 | Setting | Default |
 | --- | --- |
@@ -137,6 +144,7 @@ extracts of one date, clipped to the recipe bounds with `osmium`.
 | `--tile-port` | Terrain `8789` |
 | `--route-port` | Routing `8787` |
 | `--search-port` | Search `8786` |
+| `--pmtiles` or `PMTILES` | `pmtiles` |
 
 ## Client configuration
 

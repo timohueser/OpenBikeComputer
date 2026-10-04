@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build, compact and serve local planner map archives with the PMTiles deployment layout."""
+"""Planner map archive helpers, and a command that compacts an archive to a smaller box."""
 
 import argparse
 import hashlib
@@ -8,7 +8,6 @@ import json
 import math
 import os
 from pathlib import Path
-import shutil
 import signal
 import socket
 import subprocess
@@ -22,7 +21,7 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "builder/app"
-DATA = APP / "public/data/planner"
+DATA = None  # the maps folder of the data directory in use; its caller sets it
 ASSETS_REV = "028c18f713baecad011301ff7a69acc39bcc2ae7"
 ASSETS_URL = f"https://codeload.github.com/protomaps/basemaps-assets/zip/{ASSETS_REV}"
 SPRITES_LICENSE_URL = "https://raw.githubusercontent.com/tangrams/icons/92510779634f4a006c61ea70e50cb8c52c765a81/LICENSE.md"
@@ -200,20 +199,8 @@ def supervise(commands, env, ready=None):
             stop_process(child)
 
 
-def serve(args):
-    if args.port == args.tile_port:
-        raise ValueError("The page and tile ports must differ.")
-    check_port(args.port)
-    check_port(args.tile_port)
-    commands, env = preview(args)
-    print(f"Planner: http://127.0.0.1:{args.port}/planner.html", flush=True)
-    print(f"Routing: {args.routing} (start route-server separately)", flush=True)
-    supervise(commands, env)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pmtiles", default=os.environ.get("PMTILES", "pmtiles"))
     commands = parser.add_subparsers(dest="command", required=True)
     compact = commands.add_parser("compact", help="Extract a box and losslessly compress its terrain")
     compact.add_argument("source", type=Path)
@@ -221,21 +208,12 @@ def main():
     compact.add_argument("--bbox", type=bounds, required=True)
     compact.add_argument("--terrain", action="store_true")
     compact.add_argument("--no-recompress", action="store_true")
-    preview = commands.add_parser("serve", help="Run the map tile server and planner")
-    preview.add_argument("--port", type=int, default=4175)
-    preview.add_argument("--tile-port", type=int, default=8789)
-    preview.add_argument("--routing", default="http://127.0.0.1:8788")
     args = parser.parse_args()
-    if args.command != "compact" and not shutil.which(args.pmtiles):
-        parser.error("Install the PMTiles CLI, or pass --pmtiles /path/to/pmtiles.")
     def stop(_signum, _frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop)
     try:
-        if args.command == "compact":
-            compact_archive(args.source, args.output, args.bbox, args.terrain, not args.no_recompress)
-        else:
-            serve(args)
+        compact_archive(args.source, args.output, args.bbox, args.terrain, not args.no_recompress)
     except KeyboardInterrupt:
         pass
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:

@@ -30,7 +30,8 @@ def run(*command, **kwargs):
 
 
 def setup(args):
-    releases.main(["prepare", "--recipe", str(RECIPES / f"{args.region}.json"), "--data-dir", str(args.data_dir)])
+    releases.main(["prepare", "--recipe", str(RECIPES / f"{args.region}.json"), "--data-dir", str(args.data_dir),
+                   "--pmtiles", args.pmtiles])
     print(f"Setup complete. Run: obc planner serve --region {args.region}", flush=True)
 
 
