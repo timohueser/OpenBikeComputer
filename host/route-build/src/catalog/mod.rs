@@ -252,7 +252,7 @@ where
         relation
             .members
             .iter()
-            .filter(|(_, role)| assemble::is_main(role))
+            .filter(|(_, role)| matches!(role.as_str(), "" | "main"))
             .filter_map(|(id, _)| if let Id::Relation(id) = id { Some(*id) } else { None })
             .collect()
     };
@@ -415,7 +415,14 @@ fn route<D: RoutingData, S: Source>(
     points: &HashMap<i64, P>,
     france: bool,
 ) -> Result<Result<Kept, Reason>, String> {
-    let runs = assemble::main_line(&job.members, &|a, b| distance(points[&a], points[&b]));
+    let apart = |a: i64, b: i64| distance(points[&a], points[&b]);
+    let mut runs = assemble::main_line(&job.members, &apart);
+    if runs.windows(2).any(|w| apart(w[0][w[0].len() - 1], w[1][0]) > MAX_GAP_M) {
+        match assemble::chain(&runs, &apart, MAX_GAP_M) {
+            Some(chained) => runs = chained,
+            None => return Ok(Err(Reason::Gap)),
+        }
+    }
     let runs: Vec<Vec<P>> = runs.iter().map(|run| run.iter().map(|n| points[n]).collect()).collect();
     if runs.iter().map(|run| shape::length(run)).sum::<f64>() < MIN_LENGTH_M {
         return Ok(Err(Reason::Short));
@@ -481,8 +488,15 @@ fn route<D: RoutingData, S: Source>(
     record.insert("line_udeg".into(), json!(encode(&simple)));
     let via = &positions[1..positions.len() - 1];
     record.insert("via".into(), json!(via));
-    if !plan.turnarounds.is_empty() {
-        record.insert("turnarounds".into(), json!(plan.turnarounds.iter().map(|&i| positions[i]).collect::<Vec<_>>()));
+    let mut turnarounds: Vec<usize> = plan.turnarounds.iter().map(|&i| positions[i]).collect();
+    // A loop that leaves and returns on the same road turns back at its start; a client that
+    // rotates the loop needs to know.
+    let n = geometry.len();
+    if closed && n > 3 && distance(geometry[1], geometry[n - 2]) <= 1.0 {
+        turnarounds.insert(0, 0);
+    }
+    if !turnarounds.is_empty() {
+        record.insert("turnarounds".into(), json!(turnarounds));
     }
     Ok(Ok(Kept {
         record,

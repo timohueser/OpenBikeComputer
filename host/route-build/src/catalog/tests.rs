@@ -117,6 +117,10 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         route(3, &trail, [path(&[0, 10, 20, 30]), path(&[5, 6, 16])].concat()),
         route(4, &[("route", "mtb"), ("name", "Planned"), ("state", "proposed")], path(&[0, 1, 2, 3, 4, 5, 6])),
         route(7, &trail, [path(&[0, 1, 2, 3, 4, 5]), vec![999]].concat()),
+        // A lollipop: out on one street, around a block and back.
+        route(8, &trail, path(&[60, 61, 62, 52, 51, 61, 60])),
+        // The member order jumps, and the way from node 21 to node 22 is missing.
+        route(9, &trail, [path(&[22, 23, 33, 43, 53]), path(&[20, 21])].concat()),
         long(5, &[1, 2]),
         long(6, &[5]),
     ]);
@@ -125,7 +129,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     let by_id: HashMap<i64, &Value> = records.iter().map(|r| (r["id"].as_i64().unwrap(), r)).collect();
     let dropped: Vec<_> = report.dropped.iter().map(|(reason, ids)| (reason.as_str(), ids.clone())).collect();
     assert_eq!(dropped, [("ExtractEdge", vec![7]), ("Gap", vec![3]), ("NestedLongRoute", vec![6])]);
-    assert_eq!(by_id.keys().copied().collect::<BTreeSet<_>>(), BTreeSet::from([1, 2, 5]));
+    assert_eq!(by_id.keys().copied().collect::<BTreeSet<_>>(), BTreeSet::from([1, 2, 5, 8, 9]));
 
     let trail = by_id[&1];
     assert_eq!((&trail["loop"], &trail["length_m"]), (&json!(false), &json!(8 * 445)));
@@ -141,6 +145,14 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     let line = ring["line_udeg"].as_array().unwrap();
     let end = |axis: usize| line.iter().skip(axis).step_by(2).map(|v| v.as_i64().unwrap()).sum::<i64>();
     assert_eq!([end(0), end(1)], [line[0].as_i64().unwrap(), line[1].as_i64().unwrap()]);
+
+    let lollipop = by_id[&8];
+    assert_eq!(lollipop["loop"], true);
+    assert_eq!(lollipop["turnarounds"][0], 0, "the plan route turns back at its start");
+    assert!(ring.get("turnarounds").is_none());
+    let jumping = by_id[&9];
+    assert_eq!(jumping["length_m"], 6 * 445);
+    assert_eq!(&jumping["line_udeg"].as_array().unwrap()[..2], [json!(ORIGIN), json!(ORIGIN + 2 * 4_000)]);
 
     let whole = by_id[&5];
     assert_eq!((&whole["stages"], &whole["length_m"]), (&json!([1, 2]), &json!(16 * 445)));

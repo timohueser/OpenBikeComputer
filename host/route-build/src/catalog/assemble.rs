@@ -68,6 +68,53 @@ pub fn main_line(members: &[Member], distance: &dyn Fn(i64, i64) -> f64) -> Vec<
     runs
 }
 
+/// Joins runs greedily at their nearest ends, from the first run on, for a relation whose member
+/// order jumps. `None` when the runs fork (a run ends inside another run) or when a join is
+/// longer than `max_gap`.
+pub fn chain(runs: &[Vec<i64>], distance: &dyn Fn(i64, i64) -> f64, max_gap: f64) -> Option<Vec<Vec<i64>>> {
+    let inside = |j: usize, node: i64| runs[j].len() > 2 && runs[j][1..runs[j].len() - 1].contains(&node);
+    let forks = runs.iter().enumerate().any(|(i, run)| {
+        [run[0], run[run.len() - 1]].iter().any(|&end| (0..runs.len()).any(|j| j != i && inside(j, end)))
+    });
+    if forks {
+        return None;
+    }
+    let mut chain = std::collections::VecDeque::from([runs[0].clone()]);
+    let mut rest = runs[1..].to_vec();
+    while !rest.is_empty() {
+        let (head, tail) = (chain[0][0], chain[chain.len() - 1][chain[chain.len() - 1].len() - 1]);
+        // (gap, run, reverse the run, join at the head)
+        let mut best = (f64::MAX, 0, false, false);
+        for (i, run) in rest.iter().enumerate() {
+            let (first, last) = (run[0], run[run.len() - 1]);
+            for (gap, reverse, at_head) in [
+                (distance(tail, first), false, false),
+                (distance(tail, last), true, false),
+                (distance(last, head), false, true),
+                (distance(first, head), true, true),
+            ] {
+                if gap < best.0 {
+                    best = (gap, i, reverse, at_head);
+                }
+            }
+        }
+        let (gap, i, reverse, at_head) = best;
+        if gap > max_gap {
+            return None;
+        }
+        let mut run = rest.swap_remove(i);
+        if reverse {
+            run.reverse();
+        }
+        if at_head {
+            chain.push_front(run);
+        } else {
+            chain.push_back(run);
+        }
+    }
+    Some(chain.into())
+}
+
 #[derive(Clone, Debug)]
 struct Way {
     nodes: Vec<i64>,
@@ -553,6 +600,17 @@ mod tests {
             line(&[way(&[1, 2], ""), way(&[2, 7], "excursion"), way(&[2, 5], ""), way(&[2, 5], ""), way(&[2, 3], "")]),
             [vec![1, 2, 5, 2, 3]]
         );
+    }
+
+    #[test]
+    fn jumping_member_order_joins_at_nearest_ends_but_a_fork_does_not() {
+        // The nodes lie on a line; the distance is the difference of the IDs.
+        let distance = |a: i64, b: i64| (a - b).abs() as f64;
+        let runs = [vec![10, 20], vec![50, 40], vec![21, 30], vec![9, 0]];
+        assert_eq!(chain(&runs, &distance, 10.0).unwrap(), [vec![0, 9], vec![10, 20], vec![21, 30], vec![40, 50]]);
+        assert_eq!(chain(&runs, &distance, 5.0), None, "a join of 10 m is too long");
+        // The second run starts inside the first: a branch.
+        assert_eq!(chain(&[vec![10, 20, 30], vec![20, 25]], &distance, 10.0), None);
     }
 
     #[test]

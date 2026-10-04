@@ -52,7 +52,7 @@ heights are integer metres.
 | `cells` | Sorted IDs `9-X-Y` of the zoom 9 cells that the plan route touches |
 | `line_udeg` | Route record only: the simplified plan route, flat |
 | `via` | Route record only: ascending indices of the shaping vertices in `line_udeg` |
-| `turnarounds` | Route record only: the entries of `via` where the plan route turns back |
+| `turnarounds` | Route record only: the entries of `via` where the plan route turns back, and `0` for a loop that turns back at its start |
 | `parent` | Stage only: relation ID of its long route |
 | `stage` | Stage only: its number in the stages of `parent`, from `1` |
 | `stages` | Long route only: the relation IDs of its stages, in order |
@@ -75,18 +75,24 @@ needs more leaves the catalog.
 [route API request](route-api.md#request): at each of these shaping points the
 plan route turns back on purpose. In the request, the points are the start, the
 shaping points and the finish, so the request index of an entry is its position
-in `via` plus 1. It is absent when there are none.
+in `via` plus 1. For a loop, `turnarounds` can hold 0: the plan route turns
+back at its start. It is absent when there are none.
 
 The plan reproduces the route with the Balanced profile of each activity that
 lists the kind: `hiking` for `hiking` and `foot`, `mtb` for `mtb`, and `road`,
 `gravel` and `touring` for `bicycle`. The main line is the member ways with an
 empty, `main`, `forward` or `backward` role, ordered as the Waymarked Trails route
 builder orders them, with the forward branch where the route splits by
-direction. To reproduce the route, the router's route for the plan with each
-profile has a deviation of at most 2 % of the main-line length. The deviation is the length of the routed line that is more than 30 m
-from the main line, plus the length of the main line that is more than 30 m
-from the routed line. The router patches each main-line gap of up to 500 m; a
-route with a longer gap leaves the catalog. The plan route is the route that the
+direction. When that order has a gap of more than 500 m, the builder joins the
+pieces of the main line at their nearest ends, from the first piece on. The
+result must be one chain that uses each piece once, with each join at most
+500 m. A piece that ends inside another piece is a fork, and the route leaves
+the catalog. The router patches each gap of up to 500 m; a route with a longer
+gap leaves the catalog. To reproduce the route, the router's route for the plan
+with each profile has a deviation of at most 2 % of the main-line length. The
+deviation is the length of the routed line that is more than 30 m from the main
+line, plus the length of the main line that is more than 30 m from the routed
+line. The plan route is the route that the
 router gives for the plan with one of these profiles: `touring` for `bicycle`,
 else the only one. The plan runs in the member order of the relation, also for a
 loop. A route is a loop when its main line is a closed ring, or when it has
@@ -131,9 +137,9 @@ route. It is absent when the plan route has no explicit grade.
 ### Long routes
 
 A long route is a relation that holds route relations. Its stages are its child
-routes with the same `network`, in member order. A long route is in the catalog
-only when each of its stages is in it. A long route with a child relation that
-holds route relations leaves the catalog.
+routes with an empty or `main` role and the same `network`, in member order. A
+long route is in the catalog only when each of its stages is in it. A long route
+with a child relation that holds route relations leaves the catalog.
 
 A long route has no `line_udeg`, `via` or `turnarounds`. Its line and its plan
 are those of its stages in order. The client loads the stages by their IDs from
