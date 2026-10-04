@@ -63,8 +63,15 @@ def seal(data, region, device_catalog, provenance):
         raise ValueError("Overlay tiles use another routing package")
     maps.DATA = data / "maps"
     map_manifest = maps.check_bundle(full=True)
-    database = data / "search" / f"{region}.sqlite"
-    metadata = search_metadata(database, full=True)
+    databases = [data / "search" / component / f"{region}.sqlite" for component in ("pois", "addresses")]
+    if not any(path.exists() for path in databases):
+        databases = [data / "search" / f"{region}.sqlite"]
+    search = [search_metadata(database, full=True) for database in databases]
+    metadata = search[0]
+    if any(item.get("osm_sha256") != metadata.get("osm_sha256") or item.get("bounds") != metadata.get("bounds") for item in search):
+        raise ValueError("Search components must use one OSM snapshot and coverage")
+    if len(databases) == 2 and [item.get("component") for item in search] != ["pois", "addresses"]:
+        raise ValueError("Search component ownership differs")
     osm = map_manifest["osm_sha256"]
     if osm not in routing["source_sha256"] or metadata.get("osm_sha256") != osm:
         raise ValueError("Maps, routing, and search must use one OSM snapshot")
@@ -73,7 +80,7 @@ def seal(data, region, device_catalog, provenance):
     if not set(routing["source_sha256"][1:]) <= set(map_manifest["terrain_sources"]):
         raise ValueError("Maps and routing must use the same terrain inputs")
     maps.run(maps.ROOT / "target/release/route-server", data / "routing", "--verify")
-    device = read_url(device_catalog)
+    device = json.loads((data / "device/catalog.json").read_bytes()) if (data / "device/catalog.json").exists() else read_url(device_catalog)
     # Catalogue file references remain at their original content-addressed URLs.
     from urllib.parse import urljoin
     def absolute(value):
@@ -97,7 +104,8 @@ def seal(data, region, device_catalog, provenance):
         for path in sorted((data / part).rglob("*")):
             if path.is_file() and path != baked:
                 files[path.relative_to(data).as_posix()] = {"bytes": path.stat().st_size, "sha256": sources.digest(path)}
-    files[database.relative_to(data).as_posix()] = {"bytes": database.stat().st_size, "sha256": sources.digest(database)}
+    for database in databases:
+        files[database.relative_to(data).as_posix()] = {"bytes": database.stat().st_size, "sha256": sources.digest(database)}
     document = {"format": 1, "region": region, "bounds": routing["bounds"], "osm_sha256": osm,
                 "routing_package": sources.digest(data / "routing/manifest.json"), "profiles": sorted(routing["metrics"]),
                 "attribution": routing["attribution"], "terrain_attribution": map_manifest["terrain_attribution"],
@@ -204,11 +212,13 @@ def main(argv=None):
     def stop(_signum, _frame): raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["prepare", "grid", "publish", "deploy", "rollback", "finalize", "site-config"])
+    parser.add_argument("command", choices=["prepare", "plan", "inventory", "grid", "publish", "deploy", "rollback", "finalize", "site-config"])
     parser.add_argument("--input-release", type=Path, help="Verified regional bake to partition with grid")
     parser.add_argument("--data-dir", type=Path, default=os.environ.get("OBC_PLANNER_RELEASE", str(Path.home() / ".cache/obc/planner/bw-online")))
     parser.add_argument("--recipe", type=Path, default=maps.ROOT / "tools/planner-regions/baden-wuerttemberg-switzerland.json")
     parser.add_argument("--source-cache", type=Path, default=Path.home() / ".cache/obc/planner/sources")
+    parser.add_argument("--component", action="append", help="Update one component and its dependencies; repeat for multiple components")
+    parser.add_argument("--dry-run", action="store_true", help="Print component identities and reuse reasons without downloading or building")
     parser.add_argument("--osm", type=Path)
     parser.add_argument("--inputs", type=Path, help="Verified source-builder output directory")
     parser.add_argument("--dem-dir", type=Path, default=Path.home() / ".cache/obcm/dem")
@@ -230,7 +240,11 @@ def main(argv=None):
         value = getattr(args, name)
         if value is not None: setattr(args, name, value.expanduser().resolve())
     try:
-        if args.command == "prepare":
+        if args.command == "inventory":
+            from tools.planner_components import Cache
+            print(json.dumps(list(Cache(args.source_cache).inventory()), indent=2))
+        elif args.command in {"prepare", "plan"}:
+            args.dry_run = args.dry_run or args.command == "plan"
             try: from .planner_prepare import prepare
             except ImportError: from planner_prepare import prepare
             prepare(args)
@@ -238,7 +252,8 @@ def main(argv=None):
             if not args.input_release: raise ValueError("Provide --input-release for grid publication")
             try:
                 maps.run("uv", "run", "--with-requirements", maps.ROOT / "tools/requirements-planner-maps.txt",
-                         "python", maps.ROOT / "tools/planner_blocks.py", args.input_release, args.data_dir, cwd=maps.ROOT)
+                         "python", "-m", "tools.planner_blocks", args.input_release, args.data_dir,
+                         "--source-cache", args.source_cache, cwd=maps.ROOT)
             except subprocess.CalledProcessError as error:
                 raise ValueError(f"grid step failed with exit status {error.returncode}") from None
         elif args.command == "publish": publish(args)

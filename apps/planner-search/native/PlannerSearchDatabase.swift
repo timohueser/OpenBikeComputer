@@ -23,6 +23,20 @@ final class PlannerSearchDatabase {
         self.files = files; self.bounds = bounds
         metadata = try PlannerSearchConnection(first.path)
         merge = try PlannerSearchConnection(":memory:", memory: true)
+        let reference = try Self.provenance(metadata)
+        for file in files {
+            let current = try Self.provenance(PlannerSearchConnection(file.path))
+            guard current["schema"] == reference["schema"], current["osm_sha256"] == reference["osm_sha256"] else {
+                throw plannerSearchError("Search components have incompatible provenance")
+            }
+            let component = file.pathComponents.first { $0 == "pois" || $0 == "addresses" }
+            if let component, current["component"] != "\"\(component)\"" {
+                throw plannerSearchError("Search component identity differs")
+            }
+            let expected = bounds[file].flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) }
+            let coverage = expected.map { String(decoding: $0, as: UTF8.self) } ?? reference["bounds"]
+            guard current["bounds"] == coverage else { throw plannerSearchError("Search components have incompatible coverage") }
+        }
         if files.count == 1 { groups = [Group(indices: [0], database: metadata)]; return }
         for start in stride(from: 0, to: files.count, by: 8) {
             let indices = Array(start..<min(start + 8, files.count))
@@ -58,6 +72,21 @@ final class PlannerSearchDatabase {
             }
         }
         fuzzy = state
+    }
+
+    private static func provenance(_ connection: PlannerSearchConnection) throws -> [String: String] {
+        var result: [String: String] = [:]
+        for row in try connection.rows("SELECT * FROM metadata") {
+            guard let key = row["key"] as? String, let value = row["value"] as? String else {
+                throw plannerSearchError("Invalid search metadata")
+            }
+            if key == "bounds" {
+                let object = try JSONSerialization.jsonObject(with: Data(value.utf8))
+                let canonical = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+                result[key] = String(decoding: canonical, as: UTF8.self)
+            } else { result[key] = value }
+        }
+        return result
     }
 
     private func plan(_ sql: String) -> Plan {

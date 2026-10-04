@@ -17,7 +17,8 @@ from urllib.request import urlopen
 try:
     from . import planner_maps as maps, planner_prepare, planner_release as releases
 except ImportError:
-    import planner_maps as maps, planner_prepare, planner_release as releases
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from tools import planner_maps as maps, planner_prepare, planner_release as releases
 
 ROOT = maps.ROOT
 SEARCH = ROOT / "apps/planner-search"
@@ -115,9 +116,9 @@ def serve(args):
 
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] in {"prepare", "grid", "publish", "deploy", "rollback", "finalize", "site-config"}:
+    if len(sys.argv) > 1 and sys.argv[1] in {"prepare", "plan", "inventory", "grid", "publish", "deploy", "rollback", "finalize", "site-config"}:
         try: from .planner_release import main as release_main
-        except ImportError: from planner_release import main as release_main
+        except ImportError: from tools.planner_release import main as release_main
         release_main(sys.argv[1:])
         return
     parser = argparse.ArgumentParser(description=__doc__)

@@ -56,7 +56,7 @@ def map_kinds(maps):
     return ["basemap", "places", "overlays", "terrain"] + [layer for layer in planner_runtime.DATA_LAYERS if (maps / f"{layer}.pmtiles").exists()]
 
 
-def map_tiles(source, output):
+def map_tiles(source, output, kinds=None):
     from pmtiles.reader import Reader, MmapSource, all_tiles
     from pmtiles.tile import zxy_to_tileid
     from pmtiles.writer import Writer
@@ -64,7 +64,7 @@ def map_tiles(source, output):
     import tempfile
 
     output.mkdir(parents=True, exist_ok=True)
-    for kind in map_kinds(source):
+    for kind in kinds or map_kinds(source):
         target = output / kind
         target.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".tiles-", dir=output) as temporary:
@@ -218,122 +218,28 @@ def search_shard(source, lookup, output, bounds, metadata):
         db.close(); raise
 
 
-def publish(source, routing, output):
-    identity, release = planner_runtime.release(source, include_sources=False)
-    if (output / "release.json").exists(): raise ValueError("Publication already exists")
-    output.mkdir(parents=True, exist_ok=True)
-    work = output / "building"
-    work.mkdir(exist_ok=True)
-    objects = output / "objects"
-    files = {}
-    def add(path, name):
-        entry = planner_offline.pack_file(path, objects)
-        files[name] = entry
-        return name
-    def metadata(name, value):
-        path = work / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(planner_runtime.encoded(value))
-        return add(path, name)
-    graph = json.loads((routing / "blocks.json").read_bytes())
-    if graph["source"] != release["routing_package"]: raise ValueError("Routing blocks use another release")
-    add(routing / "blocks.json", "routing/blocks.json")
-    print("Publishing routing page packs", flush=True)
-    for archive in graph["archives"]:
-        for filename in ("pages.bin", "pages.idx"):
-            add(routing / "packs" / archive / filename, f"routing/packs/{archive}/{filename}")
-    routing_index = json.loads((routing / "catalog.json").read_bytes())
-    routing_cells = {cell["id"]: cell for cell in routing_index["cells"]}
-    for cell_id, cell in routing_cells.items():
-        source_manifest = routing / cell["manifest"]
-        name = add(source_manifest, f"offline/routing-cells/{cell_id}.json")
-        cell["manifest"] = name.removeprefix("offline/")
-        cell["sha256"] = files[name]["sha256"]
-    shared = {name: add(source / name, name) for name in release["files"] if name.startswith("maps/assets/")}
-    print("Joining offline fonts", flush=True)
-    for path, names in offline_fonts(source, release, work).items():
-        shared.update(dict.fromkeys(names, add(path, f"offline/fonts/{path.name}")))
-    tiles = work / "tiles"
-    if not (work / "tiles.complete").exists():
-        if tiles.exists(): raise ValueError("Incomplete tile publication; use a fresh output directory")
-        print("Partitioning map tiles", flush=True)
-        map_tiles(source / "maps", tiles)
-        (work / "tiles.complete").touch()
-    map_blocks = []
-    for path in sorted(tiles.glob("*/*.pmtiles")):
-        z, x, y = map(int, path.stem.split("-"))
-        name = add(path, f"maps/tiles/{path.parent.name}/{path.name}")
-        # Offline planners read places from the basemap and search, and overlays from the routing cells.
-        # They have no data layers yet.
-        if path.parent.name not in ("places", "overlays", *planner_runtime.DATA_LAYERS):
-            map_blocks.append({"kind": path.parent.name, "tile": [z,x,y], "bounds": box(z, x, y), "files": [name]})
-    search = source / "search" / f"{release['region']}.sqlite"
-    lookup = work / "search-lookup.sqlite"
-    stage_sqlite(lookup, lambda path: search_lookup(search, path))
-    with closing(sqlite3.connect(search)) as db:
-        search_metadata = {k: json.loads(v) for k, v in db.execute("SELECT * FROM metadata")}
-    geographic = []
-    all_cells = list(cells(release["bounds"]))
-    routes = route_tiles(source / "routes" / f"{release['region']}.json", [name for name, _ in all_cells])
-    for index, (name, bounds) in enumerate(all_cells):
-        print(f"Publishing places and overlays {index + 1}/{len(all_cells)} · {name}", flush=True)
-        places = work / "search" / f"{name}.sqlite"
-        stage_sqlite(places, lambda path: search_shard(search, lookup, path, bounds, search_metadata))
-        overlays = work / "overlays" / f"{name}.sqlite"
-        stage_sqlite(overlays, lambda path: planner_cutout.overlays(source / "routing/overlays.sqlite", path, bounds, bounds, release["routing_package"]))
-        geographic.append({"id": name, "bounds": bounds, "routing": routing_cells.get(name), "files": [add(places, f"search/tiles/{name}.sqlite"),
-            add(overlays, f"routing/layers/{name}.sqlite"), metadata(f"routes/tiles/{name}.json", routes[name])]})
-    metadata(f"search/{release['region']}.grid.json", {"format": 2, "metadata": search_metadata,
-        "cells": [{"id": name, "bounds": bounds} for name, bounds in all_cells]})
-    metadata("routing/layers.json", [name for name, _ in all_cells])
-    from pmtiles.reader import Reader, MmapSource
-    for kind in map_kinds(source / "maps"):
-        with (source / "maps" / f"{kind}.pmtiles").open("rb") as stream:
-            reader = Reader(MmapSource(stream))
-            header, info = reader.header(), reader.metadata()
-        if kind == "overlays":
-            # The grid packs the same routing graph under its own identity, which its route answers carry.
-            if info.get("routing_package") != graph["source"]: raise ValueError("Overlay tiles use another routing package")
-            info["routing_package"] = files["routing/blocks.json"]["sha256"]
-        metadata(f"maps/{kind}.json", {**info, "tilejson": "3.0.0", "minzoom": header["min_zoom"],
-            "maxzoom": header["max_zoom"], "bounds": release["terrain_bounds"] if kind == "terrain" else release["bounds"]})
-    for name in release["files"]:
-        if name.startswith(("search/model/", "device/")): add(source / name, name)
-    catalog = {"format": 3, "source": identity, "release": {k:v for k,v in release.items() if k not in {"files", "source_files"}},
-        "routing_source": graph["source"], "map_blocks": map_blocks, "cells": geographic,
-        "shared": shared, "files": dict(files), "zoom": ZOOM, "map_zoom": MAP_ZOOM}
-    metadata("offline/catalog.json", catalog)
-    document = {**catalog["release"], "routing_package": files["routing/blocks.json"]["sha256"],
-        "source_files": {}, "grid": {"format": 2, "zoom": ZOOM, "map_zoom": MAP_ZOOM}, "files": files}
-    planner_offline.atomic_write(output / "release.json", planner_runtime.encoded(document))
-    return catalog
+def publish(source, routing, output, cache=None):
+    from tools.planner_grid_components import publish as compose
+    return compose(source, routing, output, cache)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--source-cache", type=Path, default=Path.home() / ".cache/obc/planner/sources")
     args = parser.parse_args()
     try:
-        prepare(args.source, args.output)
+        prepare(args.source, args.output, args.source_cache)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"planner grid: {error}\n")
 
 
-def prepare(source, output):
+def prepare(source, output, cache_root=None):
     """Build the canonical grid from one verified regional bake."""
-    _, document = planner_runtime.release(source, include_sources=False)
-    output.mkdir(parents=True, exist_ok=True)
-    if (output / "release.json").exists(): raise ValueError("Publication already exists")
-    work = output / "building"
-    work.mkdir(exist_ok=True)
-    selection = work / "cells.json"
-    selection.write_bytes(planner_runtime.encoded([{"id": name, "bounds": bounds} for name, bounds in cells(document["bounds"])]))
-    routing = work / "routing"
-    if not (routing / "catalog.json").exists():
-        planner_maps.run("cargo", "build", "--locked", "--release", "-p", "route-build", "--bin", "route-blocks", cwd=planner_maps.ROOT)
-        planner_maps.run(planner_maps.ROOT / "target/release/route-blocks", source / "routing", routing, "--cells", selection)
-    publish(source, routing, output)
+    from tools.planner_components import Cache
+    cache = Cache(cache_root) if cache_root else None
+    publish(source, None, output, cache)
     identity, _ = planner_runtime.release(output, include_sources=False)
     print(f"Prepared grid release {identity}")
 
