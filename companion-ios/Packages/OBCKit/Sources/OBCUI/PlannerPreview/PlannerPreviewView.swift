@@ -43,6 +43,8 @@ public struct PlannerPreviewView: View {
     @State private var networkStatus: String?
     @State private var results: PlannerPreviewQueryResult?
     @State private var selectedPlace: PlannerPreviewPlace?
+    @State private var detailsError: String?
+    @State private var selectionRevision = 0
     @State private var editingPointID: String?
     @State private var visibleRouteRange: ClosedRange<Double>? = 0...1
     @State private var network = PlannerPreviewNetwork.none
@@ -181,6 +183,25 @@ public struct PlannerPreviewView: View {
         }
         .tint(OBCTheme.tint)
         .task { drawerShown = true }
+        .task(id: "\(selectedPlace?.id ?? "")-\(selectionRevision)") {
+            detailsError = nil
+            guard let place = selectedPlace, !place.detailsLoaded,
+                  place.id.range(of: #"^[nwr][1-9][0-9]*$"#, options: .regularExpression) != nil else { return }
+            let coordinate = place.coordinate
+            var query = PlannerSearchQuery(text: "Place", view: [coordinate.longitude - 0.01, coordinate.latitude - 0.01,
+                                                                  coordinate.longitude + 0.01, coordinate.latitude + 0.01])
+            query.source = place.id
+            do {
+                let details = try await model.searchPlaces(query).first
+                try Task.checkCancellation()
+                guard selectedPlace?.id == place.id, let details else { return }
+                selectedPlace = .init(id: place.id, name: place.name, coordinate: coordinate, kind: place.kind,
+                    alongRouteMeters: place.alongRouteMeters, offRouteMeters: place.offRouteMeters,
+                    hours: details.hours, note: details.note, website: details.website, phone: details.phone, description: details.description, detailsLoaded: true)
+            } catch {
+                if !Task.isCancelled { detailsError = "Place details are unavailable. Try selecting the place again." }
+            }
+        }
         .task(id: model.routingRevision) {
             do {
                 if model.hasRoute { try await Task.sleep(for: .milliseconds(250)) }
@@ -346,6 +367,26 @@ public struct PlannerPreviewView: View {
                     Text(PlannerPlaceRow.detail(for: place, showsRouteDistances: model.canSave))
                         .font(.system(.subheadline).monospacedDigit()).foregroundStyle(OBCTheme.secondary)
                 }
+            }
+            if let description = place.description, !description.isEmpty {
+                Text(verbatim: description).font(.subheadline).fixedSize(horizontal: false, vertical: true)
+            }
+            if place.website?.isEmpty == false || place.phone?.isEmpty == false {
+                VStack(alignment: .leading, spacing: 0) {
+                    if let website = PlaceContact.website(place.website) {
+                        Link("Website", destination: website).frame(minHeight: 44)
+                    } else if let website = place.website, !website.isEmpty {
+                        Text(verbatim: website)
+                    }
+                    ForEach(PlaceContact.numbers(place.phone), id: \.self) { phone in
+                        if let url = PlaceContact.phone(phone) {
+                            Link(destination: url) { Text(verbatim: phone) }.frame(minHeight: 44)
+                        } else { Text(verbatim: phone) }
+                    }
+                }.font(.subheadline)
+            }
+            if let detailsError {
+                Text(detailsError).font(.subheadline).foregroundStyle(OBCTheme.secondary)
             }
             if place.hours != nil || place.note != nil {
                 OBCGroupedSection {
@@ -631,6 +672,7 @@ public struct PlannerPreviewView: View {
 
     private func selectResult(_ place: PlannerPreviewPlace) {
         selectedPlace = model.positionedPlace(place); editingPointID = nil
+        selectionRevision += 1
         panel = .place; drawerPosition = .open
     }
 

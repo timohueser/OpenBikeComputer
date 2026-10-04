@@ -27,12 +27,19 @@ public struct PlannerPreviewPlace: Identifiable, Equatable, Sendable {
     public let hours: String?
     /// One fact worth a line, such as "Drinking water".
     public let note: String?
+    public let website: String?
+    public let phone: String?
+    public let description: String?
+    public let detailsLoaded: Bool
 
     public init(id: String, name: String, coordinate: Coordinate, kind: Kind = .town,
-                alongRouteMeters: Double = 0, offRouteMeters: Double = 0, hours: String? = nil, note: String? = nil) {
+                alongRouteMeters: Double = 0, offRouteMeters: Double = 0, hours: String? = nil, note: String? = nil,
+                website: String? = nil, phone: String? = nil, description: String? = nil, detailsLoaded: Bool = false) {
         self.id = id; self.name = name; self.coordinate = coordinate; self.kind = kind
         self.alongRouteMeters = alongRouteMeters; self.offRouteMeters = offRouteMeters
         self.hours = hours; self.note = note
+        self.website = website; self.phone = phone; self.description = description
+        self.detailsLoaded = detailsLoaded
     }
 }
 
@@ -158,7 +165,7 @@ public final class PlannerPreviewModel {
         let projection = routeLine.projection(of: place.coordinate, near: routeLine.length / 2, window: routeLine.length)
         return .init(id: place.id, name: place.name, coordinate: place.coordinate, kind: place.kind,
                      alongRouteMeters: projection.distance, offRouteMeters: projection.error,
-                     hours: place.hours, note: place.note)
+                     hours: place.hours, note: place.note, website: place.website, phone: place.phone, description: place.description, detailsLoaded: place.detailsLoaded)
     }
 
     public func searchPlaces(_ query: PlannerSearchQuery) async throws -> [PlannerPreviewPlace] {
@@ -175,7 +182,8 @@ public final class PlannerPreviewModel {
                 ?? line.projection(of: place.coordinate, near: line.length / 2, window: line.length)
             return .init(id: place.source, name: place.name, coordinate: place.coordinate, kind: kind,
                          alongRouteMeters: projection.distance, offRouteMeters: projection.error,
-                         hours: place.opening_hours, note: place.city.isEmpty ? nil : place.city)
+                         hours: place.opening_hours, note: place.city.isEmpty ? nil : place.city,
+                         website: place.website, phone: place.phone, description: place.description, detailsLoaded: true)
         }
     }
 

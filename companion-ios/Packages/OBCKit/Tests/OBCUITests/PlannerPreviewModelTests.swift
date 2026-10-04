@@ -7,6 +7,23 @@ import OBCPlanner
 
 @MainActor
 struct PlannerPreviewModelTests {
+    @Test func projectionsAndMapFeaturesRetainPlaceDetails() async throws {
+        let model = PlannerPreviewModel(sample: true, service: PlannerTestSource())
+        await model.calculateRoute()
+        let data = Data(#"{"source":"n123","name":"Camp","city":"","kind":"campsite","lon":8,"lat":48,"website":"camp.example","phone":"+49 123","description":"Small tents only."}"#.utf8)
+        let record = try JSONDecoder().decode(PlannerPlace.self, from: data)
+        let place = PlannerPreviewPlace(id: record.source, name: record.name, coordinate: record.coordinate, kind: .camping,
+            website: record.website, phone: record.phone, description: record.description)
+        let positioned = model.positionedPlace(place)
+        #expect(positioned.website == place.website && positioned.phone == place.phone && positioned.description == place.description)
+        let features = try #require(JSONSerialization.jsonObject(with: NativePlaceKind.geoJSON([record])) as? [String: Any])
+        let properties = try #require((features["features"] as? [[String: Any]])?.first?["properties"] as? [String: Any])
+        #expect(properties["website"] as? String == place.website && properties["description"] as? String == place.description)
+        for (type, letter) in [(1,"n"),(2,"w"),(3,"r")] {
+            #expect(NativePlaceKind.source(for: NSNumber(value: (Int64(type) << 44) | 123)) == "\(letter)123")
+        }
+        #expect(NativePlaceKind.source(for: "n123") == "n123")
+    }
     @Test func previewAndApplyAreSeparateAndNewRouteIsOneUndoStep() async throws {
         let model = PlannerPreviewModel(service: PlannerTestSource())
         let query = model.lookup("Freiburg to Titisee")

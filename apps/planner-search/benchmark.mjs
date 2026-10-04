@@ -20,7 +20,7 @@ function open(file) {
   return {conn,db,schema};
 }
 function reverse(package_,point) {
-  if (package_.schema===3) return reverseAddress(package_.db,point);
+  if (package_.schema===4) return reverseAddress(package_.db,point);
   const candidates = package_.db.all(`SELECT a.house,a.lon,a.lat,p.name,p.city,a.source
     FROM address_spatial b CROSS JOIN addresses a ON a.rowid=b.id JOIN places p ON p.id=a.street_id
     WHERE b.east>=? AND b.north>=? AND b.west<=? AND b.south<=?`,around(point,.1));

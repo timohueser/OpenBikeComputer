@@ -28,6 +28,7 @@ export function validateInput(input) {
   )
     fail();
   if (input.here && !coord(input.here)) fail();
+  if (input.source !== undefined && (typeof input.source !== 'string' || !/^[nwr][1-9]\d{0,13}$/.test(input.source))) fail();
   if (
     input.limit !== undefined &&
     (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100)

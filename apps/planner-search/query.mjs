@@ -5,6 +5,13 @@ import { validateRequest } from './validation.mjs';
 import { localQuery } from './local-query.mjs';
 
 export async function answerQuery(db, input, parser, hours = {currentOpening}) {
+  if (input.source) {
+    const now = input.now === undefined ? Date.now() : Date.parse(input.now);
+    const results = db.all('SELECT p.* FROM places p WHERE p.source = ? LIMIT 1', [input.source], {bounds: input.view});
+    return {type:'places', request:{type:'place',name:input.q}, results:results.map(place=>({
+      ...place, precision:'place', distance:0, hoursStatus:hours.currentOpening(place,now),
+    }))};
+  }
   let canRetry = false;
   const local = !input.request && input.submitted && input.q.length <= 80
     ? localQuery(db, input.q) : null;
