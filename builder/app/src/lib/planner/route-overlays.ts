@@ -27,6 +27,7 @@ export const networkLevels = [
     { label: 'Unspecified network', color: '#626a70', dark: '#b0b8be', rank: 0 },
 ];
 const networkScopes: Record<string, string> = { i: 'International', n: 'National', r: 'Regional', l: 'Local' };
+export const routeKindTitles: Record<string, string> = { cycling: 'Cycling routes', hiking: 'Hiking routes', mtb: 'Mountain bike routes' };
 const routeKinds: Record<string, string> = { cycling: 'cycling route', hiking: 'hiking route', mtb: 'mountain bike route' };
 /** MTB routes use the cycling network values `icn` to `lcn`. */
 export function networkName({ kind, network }: Pick<NetworkRoute, 'kind' | 'network'>): string {
