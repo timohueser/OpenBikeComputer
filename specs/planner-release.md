@@ -121,8 +121,8 @@ No regional map archive is required beside the pool. Grid assets use the tile
 service origin.
 
 The VPS materializes routing, search, and offline selection metadata. Search
-uses `search/REGION.grid.json` to list cell files and coverage. The route
-catalog has one file for each cell, `routes/tiles/9-X-Y.json`, and no region file. The
+uses `search/REGION.grid.json` to list cell files and coverage. Route catalog
+cells follow the [route catalog contract](route-catalog.md#files). The
 [offline contract](planner-offline.md#grid-publication-and-selection) defines
 cell selection and download manifests.
 
@@ -131,7 +131,10 @@ cell selection and download manifests.
 `planner/catalog.json` has `format: 1`, `active`, and `previous`.
 `active` contains the release `id`, manifest URL, region, bounds, attribution,
 device catalogue URL, map asset URLs, tile URLs, and routing and search API
-prefixes. `snow` is the snow TileJSON URL, only for a release with snow. Its `slot` is `0` or `1`. `previous` has the same shape or is `null`.
+prefixes. `snow` is the snow TileJSON URL, only for a release with snow.
+`routes` is the route catalog cell URL template on the tile API origin,
+`/releases/ID/routes/tiles/{cell}.json`, where `{cell}` is a cell ID `9-X-Y`. It is
+present only for a grid release. Its `slot` is `0` or `1`. `previous` has the same shape or is `null`.
 
 The publisher uploads and verifies all release files before the manifest.
 The deployer verifies public services before changing the catalogue. The
