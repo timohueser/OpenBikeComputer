@@ -51,6 +51,12 @@ def main():
             obj = orjson.loads(line)
             if obj['type'] == 'NominatimDumpFile':
                 meta['timestamp'] = obj['content']['data_timestamp']
+                generator = obj['content'].get('generator', 'photon')
+                if obj['content'].get('scope') == 'addresses' and args.component != 'addresses':
+                    ap.error('This source contains addresses only; use --component addresses')
+                if generator != 'photon':
+                    meta['source_generator'] = generator
+                    meta['attribution'] = f'© OpenStreetMap contributors, ODbL 1.0; prepared by {generator}'
             if obj['type'] != 'Place':
                 continue
             for p in obj['content']:

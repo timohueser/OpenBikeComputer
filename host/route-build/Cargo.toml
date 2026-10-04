@@ -9,6 +9,12 @@ license = "GPL-3.0-only"
 [features]
 obc-terrain = ["dep:obc-dem"]
 planner-dem = ["obc-terrain", "dep:image", "dep:rusqlite"]
+address-bake = ["dep:geo", "dep:rstar", "dep:zstd", "dep:unicode-normalization", "dep:flate2"]
+
+[[bin]]
+name = "address-bake"
+path = "src/bin/address-bake.rs"
+required-features = ["address-bake"]
 
 [[bin]]
 name = "planner-dem"
@@ -24,3 +30,8 @@ clap = { version = "4", features = ["derive"] }
 obc-dem = { path = "../obc-dem", default-features = false, features = ["geotiff"], optional = true }
 image = { version = "0.25", default-features = false, features = ["webp"], optional = true }
 rusqlite = { version = "0.38", features = ["bundled"], optional = true }
+geo = { version = "0.31", default-features = false, optional = true }
+rstar = { version = "0.12", optional = true }
+zstd = { version = "0.13", optional = true }
+unicode-normalization = { version = "0.1", optional = true }
+flate2 = { version = "1", optional = true }
