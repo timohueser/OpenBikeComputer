@@ -6,9 +6,13 @@ use route_build::Graph;
 use route_engine::{
     directory::Writer,
     model::{Pace, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION},
+    Router,
 };
 use route_server::native;
-use std::ffi::{c_char, CStr, CString};
+use std::{
+    ffi::{c_char, CStr, CString},
+    sync::atomic::AtomicBool,
+};
 use tower::ServiceExt;
 
 fn native_body(response: *mut c_char) -> Vec<u8> {
@@ -73,17 +77,10 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
     writer.finish().unwrap();
     std::fs::write(path.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
     let app = route_server::app(&path, 1).unwrap();
-    let path_string = CString::new(path.to_str().unwrap()).unwrap();
-    let mut error = std::ptr::null_mut();
-    // SAFETY: The test retains the path and error storage for initialization.
-    let native_router = unsafe { native::planner_router_open(path_string.as_ptr(), 128 * 1024 * 1024, &mut error) };
-    assert!(!native_router.is_null() && error.is_null());
-    let mut native_status = 0;
-    // SAFETY: This test serializes all calls to the live native router.
-    let native_region = native_body(unsafe { native::planner_router_region(native_router, &mut native_status) });
     let response = app.clone().oneshot(Request::get("/v1/region").body(Body::empty()).unwrap()).await.unwrap();
-    assert_eq!(response.status().as_u16(), native_status);
-    assert_eq!(to_bytes(response.into_body(), 1024 * 1024).await.unwrap().as_ref(), native_region);
+    assert_eq!(response.status(), StatusCode::OK);
+    let region: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap()).unwrap();
 
     let request = route_engine::Request {
         points: vec![[0.002, 0.0], [0.008, 0.0]],
@@ -105,10 +102,6 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         ("{\"points\":[[0,0],[0,0]],\"profile\":\"absent\"}".into(), StatusCode::BAD_REQUEST, Some("invalid_request")),
         ("not json".into(), StatusCode::BAD_REQUEST, Some("invalid_request")),
     ] {
-        // SAFETY: The test retains the handle and request bytes and serializes queries.
-        let native_response = native_body(unsafe {
-            native::planner_router_request(native_router, body.as_ptr(), body.len(), &mut native_status)
-        });
         let response = app
             .clone()
             .oneshot(
@@ -117,9 +110,7 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
             .await
             .unwrap();
         assert_eq!(response.status(), status);
-        assert_eq!(status.as_u16(), native_status);
         let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
-        assert_eq!(bytes.as_ref(), native_response);
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         if let Some(code) = code {
             assert_eq!(value["code"], code);
@@ -144,10 +135,6 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         ),
         (r#"{"line":[[0.005,0],[0.005,0]],"profile":"touring"}"#, StatusCode::BAD_REQUEST, Some("invalid_request")),
     ] {
-        // SAFETY: The test retains the handle and request bytes and serializes queries.
-        let native_response = native_body(unsafe {
-            native::planner_router_shape(native_router, body.as_ptr(), body.len(), &mut native_status)
-        });
         let response = app
             .clone()
             .oneshot(
@@ -156,9 +143,7 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
             .await
             .unwrap();
         assert_eq!(response.status(), status);
-        assert_eq!(status.as_u16(), native_status);
         let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
-        assert_eq!(bytes.as_ref(), native_response);
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         match code {
             Some(code) => assert_eq!(value["code"], code),
@@ -177,6 +162,41 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         .await
         .unwrap();
     assert_eq!(response.headers()["content-encoding"], "br");
+    // Every failure, also a body over the limit or an unknown call, has the error contract.
+    for (path, body, status, code) in [
+        ("/v1/shape", "x".repeat(65 * 1024), StatusCode::BAD_REQUEST, "invalid_request"),
+        ("/v1/unknown", "{}".into(), StatusCode::NOT_FOUND, "not_found"),
+    ] {
+        let response = app.clone().oneshot(Request::post(path).body(Body::from(body)).unwrap()).await.unwrap();
+        assert_eq!(response.status(), status);
+        let value: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+        assert_eq!(value["code"], code);
+    }
+
+    // The phone's provider answers through the same `respond`.
+    let path_string = CString::new(path.to_str().unwrap()).unwrap();
+    let mut error = std::ptr::null_mut();
+    // SAFETY: The test retains the path and error storage for initialization.
+    let native_router = unsafe { native::planner_router_open(path_string.as_ptr(), 128 * 1024 * 1024, &mut error) };
+    assert!(!native_router.is_null() && error.is_null());
+    let body = serde_json::to_vec(&request).unwrap();
+    let mut native_status = 0;
+    // SAFETY: The handle is live and the test serializes its calls.
+    let answer = native_body(unsafe {
+        // A cancel with no call in progress must not stop the next call.
+        native::planner_router_cancel(native_router);
+        native::planner_router_call(native_router, c"route".as_ptr(), body.as_ptr(), body.len(), &mut native_status)
+    });
+    assert_eq!(native_status, 200);
+    let answer: serde_json::Value = serde_json::from_slice(&answer).unwrap();
+    assert_eq!(answer["routes"][0]["package"], region["package"]);
     // SAFETY: All native calls have completed; the handle is closed once.
     unsafe { native::planner_router_close(native_router) };
+    let mut router = Router::new(route_engine::open(&path).unwrap(), 128 * 1024 * 1024);
+    for (call, cancelled, status, code) in [("route", true, 408, "cancelled"), ("other", false, 404, "not_found")] {
+        let (actual, answer) = route_server::respond(&mut router, call, &body, &AtomicBool::new(cancelled));
+        let answer: serde_json::Value = serde_json::from_slice(&answer).unwrap();
+        assert_eq!((actual, answer["code"].as_str().unwrap()), (status, code));
+    }
 }

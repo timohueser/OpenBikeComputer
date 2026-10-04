@@ -4758,7 +4758,6 @@ dependencies = [
  "axum",
  "route-build",
  "route-engine",
- "serde",
  "serde_json",
  "tokio",
  "tower",

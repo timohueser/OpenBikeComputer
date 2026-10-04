@@ -2,8 +2,8 @@
 
 `POST /v1/route` on the [route service](../apps/route-server/README.md) calculates
 routes. `POST /v1/shape` finds the plan points of a route that follows a line. The
-native provider (`planner_router_request`, `planner_router_shape`) returns the same
-bytes for the same request. Request and answer bodies are UTF-8 JSON.
+native provider answers both with the same code (`planner_router_call` with the call
+`route` or `shape`). Request and answer bodies are UTF-8 JSON.
 
 ## Request
 
@@ -180,11 +180,17 @@ consecutive points; the service does not try other roads for them.
 than 200 km. `line_not_reproducible` means that the search found no plan of at
 most 64 points that follows the line, within its 200 route calculations.
 
+`busy` means that no worker became free within 1 s. `internal` means that the
+service failed, not the request or the data. Send the request again. A body
+larger than the limit is an `invalid_request`. A call other than `route` and
+`shape` is `not_found`.
+
 | Code | Status |
 | --- | --- |
 | `invalid_request` | 400 |
+| `not_found` | 404 |
 | `no_snap`, `no_path`, `missing_region` | 422 |
 | `line_too_long`, `line_not_reproducible` | 422 |
 | `cancelled` | 408 |
 | `busy`, `limit` | 503 |
-| `invalid_data` | 500 |
+| `invalid_data`, `internal` | 500 |

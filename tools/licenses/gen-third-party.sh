@@ -37,12 +37,12 @@ if [ "$have" != "$PINNED" ] && [ "${OBC_LICENSES_ANY_VERSION:-0}" != "1" ]; then
     exit 1
 fi
 
-# artifact-title | manifest | what it is | target triple (optional)
+# artifact-title | manifest | what it is | target triple (optional) | feature flags (optional)
 ARTIFACTS=(
     "Device firmware (\`UPDATE.BIN\`)|firmware/obc-fw-nrf54l/Cargo.toml|the image the device runs, and the one served from updates.openbikecomputer.com"
     "Bootloader (\`obc-boot\`)|firmware/obc-boot/Cargo.toml|flashed once at manufacture; it installs the image above"
     "Desktop application|apps/obc-desktop/Cargo.toml|the Rust half of the desktop app — its web half ships its own notices beside the bundle"
-    "iOS route library (\`route-server\`)|apps/route-server/Cargo.toml|the static library that the iOS companion links for offline routing. The app carries this file. The list has all crates of the library, also the crates that the app link removes|aarch64-apple-ios"
+    "iOS route library (\`route-server\`)|apps/route-server/Cargo.toml|the static library that the iOS companion links for offline routing. The app carries this file. The list has all crates of the library, also the crates that the app link removes|aarch64-apple-ios|--no-default-features"
 )
 
 # Make the output byte-stable across machines. cargo-about fills gaps in a crate's own licence
@@ -94,12 +94,12 @@ trap 'rm -f "$tmp"' EXIT
     echo
 
     for entry in "${ARTIFACTS[@]}"; do
-        IFS='|' read -r title manifest blurb target <<<"$entry"
+        IFS='|' read -r title manifest blurb target flags <<<"$entry"
         echo "## $title"
         echo
         echo "_${blurb}._"
         echo
-        cargo about generate --manifest-path "$ROOT/$manifest" -c "$CFG" ${target:+--target "$target"} "$TPL"
+        cargo about generate --manifest-path "$ROOT/$manifest" -c "$CFG" ${target:+--target "$target"} ${flags:-} "$TPL"
         echo
     done
 } | canonicalize >"$tmp"

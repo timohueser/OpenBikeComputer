@@ -1,4 +1,5 @@
 use std::path::Path;
+use tokio::signal::unix::{signal, SignalKind};
 use tower_http::cors::CorsLayer;
 
 #[tokio::main]
@@ -24,9 +25,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let listener = tokio::net::TcpListener::bind(&address).await?;
     eprintln!("Routing service listening on {address}");
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut interrupt = signal(SignalKind::interrupt())?;
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+        .with_graceful_shutdown(async move {
+            tokio::select! {
+                _ = terminate.recv() => {}
+                _ = interrupt.recv() => {}
+            }
         })
         .await?;
     Ok(())
