@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { specTile } from '../../../../test-support/planner/climate-tiles';
-import { DETAIL, OVERVIEW, SECTORS } from './climate';
-import { lineBearings } from './climate-route';
-import { HEADWIND_EDGES, NO_WIND, arrowAxis, arrowStride, headClass, headClasses, viewTiles, windChart, windMap, windYear } from './wind';
+import { OVERVIEW, SECTORS } from './climate';
+import { lineBearings, speedRow } from './climate-route';
+import { HEADWIND_EDGES, NO_WIND, arrowAxis, arrowStride, headClass, headClasses, kmhRange, mapLegend, viewTiles, windChart, windFacts, windMap, windYear } from './wind';
 
 // Overview tile 78/26 holds Freiburg at cell 4 × 24 + 7, column 1879 and row 420.
 const FREIBURG = 4 * 24 + 7, EAST = FREIBURG + 1, SOUTH = FREIBURG + 24;
@@ -31,7 +31,7 @@ describe('wind map', () => {
         const [north, south] = windMap([overview()], 0, APRIL, 1).cells.features.map(f => f.geometry.coordinates[0]);
         expect(north[0][1]).toBe(south[2][1]);
         expect(north[0]).toEqual([-180 + 0.1 * 1878.5, 90 - 0.1 * 420.5]);
-        expect(arrows.features.map(f => f.properties)).toEqual([{ icon: 'wind-arrow-2', rotate: 0 }, { icon: 'wind-double-1', rotate: 270 }]);
+        expect(arrows.features.map(f => f.properties)).toEqual([{ icon: 'wind-arrow-2', rotate: 0, label: '5–10' }, { icon: 'wind-double-1', rotate: 270, label: '5–10' }]);
         const [lon, lat] = arrows.features[0].geometry.coordinates;
         expect([lon, lat].map(v => v.toFixed(6))).toEqual(['7.900000', '48.000000']);
     });
@@ -79,10 +79,13 @@ describe('wind along a route', () => {
         expect([...lineBearings(line, km, 0.2)].map(Math.round)).toEqual([0, 0, 0, 0, 0]);
     });
 
-    it('shows the headwind chance of each month on the year slider', () => {
+    it('shows the headwind chance of each month and the typical speed of the week on the year slider', () => {
         const row = Float32Array.from({ length: 12 }, (_, month) => month / 12);
-        const year = windYear(row, '2026-04-16', 'light');
-        expect(year.label).toBe('Chance of headwind on the route in April: 25 %');
+        // The speed row is the distance-weighted mean of the cells with data.
+        const speeds = speedRow(cells(), [0, 1, 2]);
+        expect(speeds[WEEK]).toBe(2.5);
+        const year = windYear({ row, speeds }, '2026-04-16', 'light');
+        expect(year.label).toBe('Chance of headwind on the route in April: 25 % · typically 5–10 km/h');
         expect(year.rows[0].cells[0]).toBe(0);
         expect(year.rows[0].cells[WEEK]).toBe(1);
         expect(year.rows[0].cells[51]).toBe(3);
@@ -92,31 +95,42 @@ describe('wind along a route', () => {
     });
 });
 
-describe('wind at a point', () => {
-    const detail = () => {
-        const t = specTile(DETAIL, 156, 52);
-        for (let i = 0; i < 520; i++) t.set('wind', i, 4 * 12 + 7, i % 52 === WEEK ? 9 : 4);
-        t.set('wind', 52 * 9 + WEEK, 4 * 12 + 7, 255);
-        return { tile: t.tile(), index: 4 * 12 + 7 };
-    };
+describe('wind speed', () => {
+    it('gives a speed as its 5 km/h range, never a single value', () => {
+        // The archive steps of 0.5 m/s are 1.8 km/h.
+        expect([0, 1, 2.5, 2.5 + 1 / 3.6, 3, 4.5, 12.5].map(kmhRange)).toEqual(['0–5', '0–5', '5–10', '10–15', '10–15', '15–20', '45–50']);
+    });
 
-    it('gives each week of ten years as its daytime mean speed, and the rose of the month', () => {
-        const { chart, rose } = windChart({ overview: { tile: overview(), index: FREIBURG }, detail: detail() }, 2016, '2026-04-16', 'light');
-        expect(chart.headline).toBe('In April the wind most often blows towards N');
-        const grid = chart.grids[0];
-        expect(grid.label).toBe('Daytime wind around 16 Apr: 2.5 m/s on average');
-        expect(grid.rows.map(row => row.label)).toEqual(Array.from({ length: 10 }, (_, year) => String(2016 + year)));
-        // Codes count 0.5 m/s: 4.5 m/s is code 9, 2 m/s is code 4, a missing week is empty.
-        expect([grid.rows[0].cells[WEEK], grid.rows[0].cells[0], grid.rows[9].cells[WEEK]]).toEqual([9, 4, 255]);
-        expect(rose?.month).toBe('April');
+    it('labels the map legend in km/h', () => {
+        const legend = mapLegend('light');
+        expect('scale' in legend && legend.scale.map(stop => stop.label)).toEqual(['10', '', '15', '', '20+ km/h']);
+        expect(legend.marks?.[0].label).toBe('No colour: under 9 km/h');
+    });
+});
+
+describe('wind at a point', () => {
+    const at = (bearing?: number) => windChart({ overview: { tile: overview(), index: FREIBURG }, bearing }, '2026-04-16');
+
+    it('states the main direction and the typical speed of the week beside the rose', () => {
+        const { chart, rose } = at();
+        expect(chart.headline).toBe('Daytime wind in April');
+        expect(chart.grids).toEqual([]);
+        // 85 % from the south plus an even rest of 1 % per sector: 87 % in the window round N.
+        expect(rose?.facts).toEqual(['Blows towards NNW–NNE on 87 % of April daytime hours', 'Typically 5–10 km/h around 16 Apr']);
         expect(rose?.shares[0]).toBeCloseTo(0.85);
     });
 
-    it('gives the headwind and tailwind chances for a travel direction', () => {
-        const { chart, rose } = windChart({ overview: { tile: overview(), index: FREIBURG }, bearing: 180 }, 2016, '2026-04-16', 'light');
-        expect(chart.headline).toBe('Headwind in 88 % of April daytime hours, tailwind in 4 %');
-        expect(chart.grids).toEqual([]);
+    it('puts the headwind chance and the all-direction speed first on a route', () => {
+        const { rose } = at(180);
+        expect(rose?.facts.slice(0, 2)).toEqual(['Headwind on 88 % of hours · typically 5–10 km/h', 'Tailwind on 4 % of hours for your direction']);
         expect(rose?.bearing).toBe(180);
-        expect(windChart({}, 2016, '2026-04-16', 'light')).toEqual({ chart: { headline: 'No wind data here', grids: [], note: '~9 km grid, daytime wind (09–18 h)' } });
+        expect(windChart({}, '2026-04-16')).toEqual({ chart: { headline: 'No wind data here', grids: [], note: '~9 km grid, daytime wind (09–18 h)' } });
+    });
+
+    it('names both windows of two opposite winds, and leaves out a missing speed', () => {
+        const rose = Float32Array.from({ length: SECTORS }, (_, s) => [4, 12].includes(s) ? 0.4 : 0.2 / 14);
+        expect(windFacts(rose, NaN, '2026-04-16')).toEqual(['Blows towards ENE–ESE on 43 % and WSW–WNW on 43 % of April daytime hours']);
+        expect(windFacts(rose, NaN, '2026-04-16', 90)[0]).toBe('Headwind on 44 % of hours');
+        expect(windFacts(Float32Array.from({ length: SECTORS }, () => NaN), 3, '2026-04-16')).toEqual([]);
     });
 });
