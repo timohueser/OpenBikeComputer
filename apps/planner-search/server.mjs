@@ -25,7 +25,7 @@ for (const region of (process.env.OBC_SEARCH_REGIONS || 'germany,baden-wuerttemb
   const gridFile = path.join(data, `${region}.grid.json`);
   if (existsSync(gridFile)) {
     const grid = JSON.parse(readFileSync(gridFile,'utf8'));
-    if (grid.format !== 2 || grid.metadata?.schema !== 3 || !Array.isArray(grid.cells) ||
+    if (grid.format !== 2 || grid.metadata?.schema !== 4 || !Array.isArray(grid.cells) ||
         grid.cells.some(c=>!/^9-[0-9]+-[0-9]+$/.test(c.id))) throw new Error('Invalid search grid.');
     const files = grid.cells.map(c=>({file:path.join(data,'tiles',`${c.id}.sqlite`),bounds:c.bounds}));
     const db = openCells(files,grid.metadata);
@@ -51,7 +51,7 @@ for (const region of (process.env.OBC_SEARCH_REGIONS || 'germany,baden-wuerttemb
   const metadata = Object.fromEntries(
     db.all('SELECT * FROM metadata').map((r) => [r.key, JSON.parse(r.value)]),
   );
-  if (metadata.schema !== 3)
+  if (metadata.schema !== 4)
     throw new Error(`Rebuild ${region}: incompatible search data.`);
   conn.prepare('SELECT rowid FROM addresses INDEXED BY address_cells LIMIT 0');
   databases.set(region, {

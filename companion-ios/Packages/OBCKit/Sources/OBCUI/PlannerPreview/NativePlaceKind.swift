@@ -2,6 +2,15 @@ import Foundation
 import OBCPlanner
 
 enum NativePlaceKind {
+    static func source(for identifier: Any?) -> String? {
+        guard let identifier else { return nil }
+        let text = String(describing: identifier)
+        if text.range(of: #"^[nwr][1-9][0-9]*$"#, options: .regularExpression) != nil { return text }
+        guard let value = UInt64(text) else { return nil }
+        let type = value >> 44, identity = value & ((1 << 44) - 1)
+        guard (1...3).contains(type), identity > 0 else { return nil }
+        return "\(["n", "w", "r"][Int(type) - 1])\(identity)"
+    }
     struct Entry: Decodable { let category: String; let label: String }
     static let entries: [String: Entry] = {
         guard let url = Bundle.module.url(forResource: "poi-kinds", withExtension: "json", subdirectory: "Map"),
@@ -37,7 +46,8 @@ enum NativePlaceKind {
             return ["type": "Feature", "id": place.source,
                     "geometry": ["type": "Point", "coordinates": [place.lon, place.lat]],
                     "properties": ["kind": place.kind, "category": category, "name": place.name,
-                                   "opening_hours": place.opening_hours ?? ""]]
+                                   "opening_hours": place.opening_hours ?? "", "website": place.website ?? "",
+                                   "phone": place.phone ?? "", "description": place.description ?? ""]]
         }
         return try JSONSerialization.data(withJSONObject: ["type": "FeatureCollection", "features": features])
     }

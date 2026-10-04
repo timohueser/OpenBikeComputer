@@ -11,16 +11,18 @@
     import PlaceRow from './PlaceRow.svelte';
     import OpeningHours from './OpeningHours.svelte';
     import { kindLabel } from '../../lib/planner/search/presentation';
+    import { websiteLink, phoneNumbers, phoneLink } from '../../lib/planner/contact-links';
     import Segmented from './Segmented.svelte';
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import { profileAscent } from '../../lib/planner/profile-data';
     import { canMoveLoopStart, dayOverTarget, hasEndpoints as endpointsChosen, maxRidingDays, nearestProgress, routeCoordinates, tripDays, type Coordinate, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
 
     let {
-        kind, trip, days, overnightNote = '', dayLabels, night, point, place, coordinate, candidates, legMode,
+        kind, trip, days, overnightNote = '', detailsError = '', dayLabels, night, point, place, coordinate, candidates, legMode,
         onClose, onEndpoint, onAddHere, onLegMode, onInsert, onLoop, onLoopStart, onPick, onSelectPlace, onStay, onAddVisit, onRename, onKind, onRemove, children,
     }: {
         overnightNote?: string;
+        detailsError?: string;
         kind: CalloutKind;
         trip: Trip;
         days: Day[];
@@ -55,6 +57,8 @@
     } = $props();
 
     const hasEndpoints = $derived(endpointsChosen(trip));
+    const website = $derived(websiteLink(place?.website));
+    const phones = $derived(phoneNumbers(place?.phone));
     const multi = $derived(trip.mode !== 'route');
     const types = $derived(([
         { value: 'via', label: 'Shape', icon: 'route' },
@@ -159,6 +163,17 @@
             </div>
         </div>
         {#if place?.description && place.description !== placeCategories[place.category].label}<p class="place-note">{place.description}</p>{/if}
+        {#if website || place?.website || phones.length}
+            <div class="contacts">
+                {#if website}<a href={website} target="_blank" rel="noopener noreferrer">Website</a>
+                {:else if place?.website}<span>{place.website}</span>{/if}
+                {#each phones as phone}
+                    {@const link = phoneLink(phone)}
+                    {#if link}<a href={link}>{phone}</a>{:else}<span>{phone}</span>{/if}
+                {/each}
+            </div>
+        {/if}
+        {#if detailsError}<p class="hint" role="status">{detailsError}</p>{/if}
         {#if place && (place.openingHours || ['shop','food','pharmacy','hotel','bike'].includes(place.category))}<OpeningHours value={place.openingHours} />{/if}
         {#if place}{@render endpoints()}{/if}
         {#if sleeps}
@@ -267,7 +282,11 @@
     .place-heading h2 { margin: 0 12px 5px 0; font-size: 17px; line-height: 1.3; overflow-wrap: anywhere; }
     .place-symbol { display: grid; place-items: center; width: 40px; height: 40px; flex: none; border-radius: 50%; color: var(--query-place); background: color-mix(in srgb, var(--query-place) 10%, var(--panel)); }
     .kind { margin: 0; color: var(--ink-soft); font-size: 13px; line-height: 1.45; }
-    .place-note { margin: 10px 0; color: var(--ink-soft); line-height: 1.45; }
+    .place-note { margin: 10px 0; color: var(--ink); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .contacts { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 12px 0; overflow-wrap: anywhere; }
+    .contacts a { color: var(--ink); text-underline-offset: 3px; padding: 4px 0; }
+    .contacts a:hover { color: var(--query-place); }
+    .contacts a:focus-visible { outline: 2px solid var(--query-place); outline-offset: 3px; border-radius: 2px; }
     .endpoints { margin-bottom: 12px; }
     .add-types {
         display: flex;

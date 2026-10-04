@@ -69,6 +69,9 @@ public struct PlannerPlace: Decodable, Identifiable, Sendable {
     public let city: String
     public let kind: String
     public let opening_hours: String?
+    public let website: String?
+    public let phone: String?
+    public let description: String?
     public struct Position: Decodable, Sendable { public let along: Double; public let distance: Double }
     public let position: Position?
     public let lon: Double
@@ -97,6 +100,7 @@ public protocol RoutePlanning: Sendable {
 
 public struct PlannerSearchQuery: Sendable {
     public var text: String
+    public var source: String?
     public var view: [Double]?
     public var kinds: [String] = []
     public var route: [Coordinate] = []
@@ -310,15 +314,17 @@ public actor PlannerService: PlannerDataSource {
         } else { queryRequest["where"] = ["scope": "view"] }
         if kinds.isEmpty { queryRequest.removeValue(forKey: "where") }
         if let radiusMeters, !kinds.isEmpty { queryRequest["radius"] = ["value": radiusMeters / 1000, "unit": "km"] }
-        let body: [String: Any] = ["q": text, "region": release.region, "view": view ?? release.bounds,
+        var body: [String: Any] = ["q": text, "region": release.region, "view": view ?? release.bounds,
                                   "plan": context, "limit": 100, "submitted": true, "request": queryRequest]
+        if let source = query.source { body["source"] = source }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         struct Response: Decodable { let results: [PlannerPlace] }
         let data = try await Self.send(request, transport: transport)
         let result = try Self.decode(Response.self, data: data)
         guard result.results.count <= 100, Set(result.results.map(\.id)).count == result.results.count,
               result.results.allSatisfy({ place in
-                  place.lat.isFinite && place.lon.isFinite && (-90...90).contains(place.lat) && (-180...180).contains(place.lon)
+                  (query.source.map { $0 == place.source } ?? true)
+                    && place.lat.isFinite && place.lon.isFinite && (-90...90).contains(place.lat) && (-180...180).contains(place.lon)
                     && (place.position.map { $0.along.isFinite && $0.distance.isFinite && $0.along >= 0 && $0.distance >= 0 } ?? true)
               }) else { throw PlannerFailure.invalidData }
         try Task.checkCancellation()

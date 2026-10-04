@@ -91,7 +91,7 @@ struct PlannerPreviewPlaceQuery: Equatable {
             let projection = line.projection(of: place.coordinate, near: line.length / 2, window: line.length)
             return PlannerPreviewPlace(id: place.id, name: place.name, coordinate: place.coordinate, kind: place.kind,
                                        alongRouteMeters: projection.distance, offRouteMeters: projection.error,
-                                       hours: place.hours, note: place.note)
+                                       hours: place.hours, note: place.note, website: place.website, phone: place.phone, description: place.description, detailsLoaded: place.detailsLoaded)
         }
         let places = filter(candidates, routeLengthMeters: line.length, isInMapView: isInMapView)
         return .init(title: kinds.isEmpty ? name : kindLabel,
