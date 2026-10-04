@@ -8,6 +8,7 @@
     import { profileHeightAt, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import type { RoutingLine } from '../../lib/planner/routing';
     import type { Day } from '../../lib/planner/editor';
+    type ProfileDay = Pick<Day, 'number' | 'from' | 'to' | 'pinned' | 'split'>;
 
     let {
         lineData, total, days, dayLabels, walking = false, singleRoute = true, theme = 'light', activeNight, band, focus = null, window: view = { from: 0, to: 1 }, height = 260, open = true,
@@ -16,7 +17,7 @@
         /** Route length in km. */
         lineData?: RoutingLine;
         total: number;
-        days: Day[];
+        days: ProfileDay[];
         /** Riding number → calendar number. */
         dayLabels: Record<number, number>;
         singleRoute?: boolean;
@@ -144,7 +145,7 @@
         onHover(null);
     }
 
-    function press(event: PointerEvent, day: Day) {
+    function press(event: PointerEvent, day: ProfileDay) {
         if (event.button !== 0) return;
         event.preventDefault();
         (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);

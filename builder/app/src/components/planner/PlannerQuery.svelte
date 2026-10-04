@@ -3,7 +3,7 @@
     import PlannerIcon from './PlannerIcon.svelte';
     import { HOSTED_SEARCH, REGION_NAME, SEARCH_REGIONS, regionName } from '../../lib/planner/search/config';
     import QueryChip from './QueryChip.svelte';
-    import type { Coordinate } from '../../lib/planner/editor';
+    import type { Coordinate } from '../../lib/planner/geo';
     import { searchPlaces, type QueryRequest, type SearchContext, type SearchState, type Where } from '../../lib/planner/search/types';
 
     let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, selection, region = $bindable(SEARCH_REGIONS[0]), revision = 0, viewRevision = 0, onResults, onSearch, onClear, onLocation, onSample, onDate, onPointing }: {

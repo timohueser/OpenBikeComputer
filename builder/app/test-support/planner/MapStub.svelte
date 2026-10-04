@@ -1,6 +1,6 @@
 <script lang="ts">
     import type { Snippet } from 'svelte';
-    import type { Coordinate } from '../../src/lib/planner/editor';
+    import type { Coordinate } from '../../src/lib/planner/geo';
     import type { MapPoint } from '../../src/lib/planner/map-types';
 
     let { accessMode = 'cycling', popup, points = [], onPointSelect, onPointHover, hoveredId, onEmptyClick, onBounds }: { accessMode?: 'cycling' | 'walking'; onBounds?: (bounds: [number, number, number, number], preserveSearch: boolean) => void; hoveredId?: string | null; onPointHover?: (id: string | null) => void; popup?: Snippet; points?: MapPoint[]; onPointSelect?: (id: string) => void; onEmptyClick?: (coordinate: Coordinate) => void } = $props();

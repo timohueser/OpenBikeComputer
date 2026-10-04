@@ -6,13 +6,12 @@
     import RouteStats from './RouteStats.svelte';
     import TrailMarker from './TrailMarker.svelte';
     import { gradeBands } from '../../lib/planner/grade-data';
-    import { cumulative } from '../../lib/planner/editor';
+    import { cumulative, type Coordinate } from '../../lib/planner/geo';
     import { profileAscent, profileDescent } from '../../lib/planner/profile-data';
     import { routeWebsite } from '../../lib/planner/route-overlays';
     import { RADII, recordLine, type RouteFilter, type RouteFinder } from '../../lib/planner/route-finder.svelte';
     import { kindLabel } from '../../lib/planner/search/presentation';
     import type { SearchPlace } from '../../lib/planner/search/types';
-    import type { Coordinate } from '../../lib/planner/editor';
     import type { RoutePlan } from '../../lib/planner/signed-route-plan';
     import type { Bounds, CatalogRecord, RouteShape, RouteSort } from '../../lib/planner/signed-routes';
     import type { BikeType } from '../../lib/planner/riding-profiles';

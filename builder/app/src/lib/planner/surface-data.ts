@@ -1,4 +1,4 @@
-import { cumulative } from './editor';
+import { cumulative } from './geo';
 import type { RoutingLine, Surface } from './routing';
 
 export function surfaceRuns(line?: RoutingLine) {

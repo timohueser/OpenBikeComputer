@@ -1,4 +1,4 @@
-import { cumulative, type Coordinate } from './editor';
+import { cumulative, type Coordinate } from './geo';
 import type { RouteClosure, RoutingLine } from './routing';
 
 export interface Stretch {

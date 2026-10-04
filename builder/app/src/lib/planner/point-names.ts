@@ -1,4 +1,4 @@
-import type { Coordinate } from './editor';
+import type { Coordinate } from './geo';
 import { SEARCH_URL } from './search/config';
 
 export const coordinateName = (coordinate: Coordinate) => `${coordinate[1].toFixed(5)}, ${coordinate[0].toFixed(5)}`;

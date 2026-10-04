@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { coordinateAt, cumulative, emptyTrip, initialTrip, maxRidingDays, routeCoordinates, routingKey, type Coordinate, type Place } from '../../lib/planner/editor';
+import { emptyTrip, initialTrip, maxRidingDays, planView, routingKey, type Place } from '../../lib/planner/editor';
+import { coordinateAt, cumulative, type Coordinate } from '../../lib/planner/geo';
 import { corridorPlaces } from '../../lib/planner/place-index';
 import PlannerApp from './PlannerApp.svelte';
 import * as routing from '../../lib/planner/routing';
@@ -34,14 +35,14 @@ vi.mock('../../lib/planner/library', async original => ({
         async close() {}
     },
 }));
-const tilePlace: Place = { id: 'poi-123', kind: 'place', label: 'Tile camp', category: 'camp', description: 'Campsite', progress: .25, coordinate: coordinateAt(routeCoordinates(initialTrip()), .25) };
+const tilePlace: Place = { id: 'poi-123', kind: 'place', label: 'Tile camp', category: 'camp', description: 'Campsite', progress: .25, coordinate: coordinateAt(planView(initialTrip()).coordinates, .25) };
 
 beforeEach(() => {
     stored.clear();
     savedPlan = undefined;
     vi.stubGlobal('confirm', vi.fn(() => true));
     const trip = { ...initialTrip(), live: true };
-    const coordinates = routeCoordinates(initialTrip());
+    const coordinates = planView(initialTrip()).coordinates;
     const distance = cumulative(coordinates);
     const line: RoutingLine = {
         key: routingKey(trip), choiceId: 'saved-route', profile: 'touring', coordinates,
@@ -309,7 +310,7 @@ describe('planner app transitions', () => {
                 edges: {}, totals,
                 legs: [{ from_index: 0, to_index: geometry.length - 1, start: 'a', end: 'b', totals }], snap_truncated: false };
         };
-        const coordinates = routeCoordinates(initialTrip());
+        const coordinates = planView(initialTrip()).coordinates;
         const primary = engine('primary', 'primary', coordinates);
         const corridor = engine('corridor', 'corridor', coordinates.map(([x, y], i) => (i && i < coordinates.length - 1 ? [x, y + .02] : [x, y]) as Coordinate));
         vi.mocked(routing.calculateLine).mockImplementation(async plan => routing.selectRoute(plan, primary, [primary, corridor]));

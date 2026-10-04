@@ -18,7 +18,8 @@
     import { MAP_BOUNDS, OVERLAYS_URL } from "../../lib/planner/map-data";
     import { categoryIds, placeCategories, type PlaceCategory } from "../../lib/planner/poi-kinds";
     import { poiPlace } from "../../lib/planner/place-index";
-    import { coordinateAt, kilometres, nearestProgress, type Place } from "../../lib/planner/editor";
+    import type { Place } from "../../lib/planner/editor";
+    import { coordinateAt, kilometres, nearestProgress } from "../../lib/planner/geo";
     import type { Coordinate, MapPoint, MapSegment } from "../../lib/planner/map-types";
     import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection } from "../../lib/planner/route-overlays";
     import type { DataLayer } from "../../lib/planner/layers/data-layer";
@@ -30,7 +31,7 @@
         segments = [], gaps = [], coordinates = [], highlightedCoordinates = [], points = [], selectedId = null, hoveredId = null, callout = null,
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
-        shownCategories = categoryIds, highlightedPlaces = [], landmarks = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
+        shownCategories = categoryIds, highlightedPlaces = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
         signedRoutes = null, signedHovered = null, planMuted = false, onIdle, onSignedRoute, onSignedHover, canPlanRoute, onPlanRoute,
         onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
@@ -58,8 +59,6 @@
         shownCategories?: PlaceCategory[];
         /** Places drawn with a ring at every zoom. */
         highlightedPlaces?: Place[];
-        /** Places to ride over, drawn from zoom 10. */
-        landmarks?: Place[];
         mapOverlays?: OverlayOptions;
         /** The region's data layers, the shown one if any, the layer date, and the shown layer's labels beside the overnight stops. */
         dataLayer?: { layers: DataLayer[]; shown?: DataLayer; date: string; notes?: { coordinate: Coordinate; text: string }[] };
@@ -275,12 +274,6 @@
         const panel = dark ? "#201f17" : "#ffffff";
         const text: maplibregl.SymbolLayerSpecification["layout"] = { "text-font": ["Noto Sans Regular"], "text-size": 11, "text-anchor": "top", "text-offset": [0, 1], "text-optional": true };
         const textPaint = { "text-color": dark ? "#f2efe3" : "#1c1b14", "text-halo-color": panel, "text-halo-width": 1.2 };
-        map.addSource("planner-landmarks", { type: "geojson", data: placeData(landmarks) });
-        map.addLayer({
-            id: "planner-landmarks", type: "symbol", source: "planner-landmarks", minzoom: 10,
-            layout: { "icon-image": `landmark-${theme}`, "icon-allow-overlap": true, "text-field": ["step", ["zoom"], "", 12, ["get", "name"]], ...text },
-            paint: textPaint,
-        });
         map.addSource("planner-highlights", { type: "geojson", data: placeData(highlightedPlaces) });
         map.addLayer({ id: "planner-highlight-rings", type: "circle", source: "planner-highlights", paint: { "circle-radius": 12, "circle-color": panel, "circle-stroke-color": dark ? "#f2a93a" : "#f4a81d", "circle-stroke-width": 2.5 } });
         map.addLayer({
@@ -344,16 +337,16 @@
         return { legEndId: best.legEndId, coordinate: [at.lng, at.lat] };
     }
 
-    const placeLayers = ["planner-pois", "planner-poi-icons", "planner-highlight-rings", "planner-highlight-icons", "planner-landmarks"];
+    const placeLayers = ["planner-pois", "planner-poi-icons", "planner-highlight-rings", "planner-highlight-icons"];
 
-    /** The basemap place, highlighted place or landmark under a screen position. */
+    /** The basemap place or highlighted place under a screen position. */
     function placeAt(point: maplibregl.Point): Place | null {
         if (!map) return null;
         const box: [maplibregl.PointLike, maplibregl.PointLike] = [[point.x - 4, point.y - 4], [point.x + 4, point.y + 4]];
         const feature = map.queryRenderedFeatures(box, { layers: placeLayers.filter((id) => map!.getLayer(id)) })[0];
         if (!feature || feature.geometry.type !== "Point") return null;
         const { pid, kind } = feature.properties;
-        if (pid) return [...highlightedPlaces, ...landmarks].find((place) => place.id === pid) ?? null;
+        if (pid) return highlightedPlaces.find((place) => place.id === pid) ?? null;
         const [longitude, latitude] = feature.geometry.coordinates;
         return poiPlace(feature.id, String(kind), feature.properties["name:en"] ?? feature.properties.name, [longitude, latitude]);
     }
@@ -590,10 +583,6 @@
     $effect(() => {
         const data = placeData(highlightedPlaces);
         if (map && ready) (map.getSource("planner-highlights") as GeoJSONSource | undefined)?.setData(data);
-    });
-    $effect(() => {
-        const data = placeData(landmarks);
-        if (map && ready) (map.getSource("planner-landmarks") as GeoJSONSource | undefined)?.setData(data);
     });
     $effect(() => {
         if (pickMode) hover = null;

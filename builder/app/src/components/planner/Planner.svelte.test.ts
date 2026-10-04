@@ -2,7 +2,7 @@
 
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { addRestDay, initialTrip, itineraryDays, tripDays, type Place } from '../../lib/planner/editor';
+import { addRestDay, initialTrip, planView, type Place } from '../../lib/planner/editor';
 import Itinerary from './Itinerary.svelte';
 import Profile from './PlannerProfile.svelte';
 import MapCallout from './MapCallout.svelte';
@@ -119,7 +119,7 @@ describe('route stop handles', () => {
 function itineraryProps(expandedDay: number | null) {
     const trip = addRestDay(initialTrip(), 1);
     return {
-        trip, expandedDay, itinerary: itineraryDays(trip), days: tripDays(trip), theme: 'light' as const,
+        trip, expandedDay, itinerary: planView(trip).itinerary, days: planView(trip).days, theme: 'light' as const,
         changing: false, candidates: [], conflicts: [], selectedId: null, revealId: null,
         onToggle: vi.fn(), onOverview: vi.fn(), onInspect: vi.fn(), onShowEnd: vi.fn(),
         onSelectPlace: vi.fn(), onPick: vi.fn(), onChangeOvernight: vi.fn(), onEditTarget: vi.fn(),
@@ -162,7 +162,7 @@ describe('planner day views', () => {
         mounted.push(mount(Profile, {
             target: document.body,
             props: {
-                total: 144, days: tripDays(initialTrip()), dayLabels: { 1: 1, 2: 3, 3: 4 },
+                total: 144, days: planView(initialTrip()).days, dayLabels: { 1: 1, 2: 3, 3: 4 },
                 activeNight: 2, band: null, focus: { from: 1 / 3, to: 2 / 3, label: 'Day 3' },
                 window: { from: 0, to: 1 }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
             },
@@ -218,7 +218,7 @@ describe('planner recovery', () => {
         mounted.push(mount(MapCallout, {
             target: document.body,
             props: {
-                kind: 'place', trip, days: tripDays(trip), dayLabels: { 1: 1, 2: 2, 3: 3 }, night: 1,
+                kind: 'place', trip, days: planView(trip).days, dayLabels: { 1: 1, 2: 2, 3: 3 }, night: 1,
                 place: { ...places[0], website: 'camp.example', phone: '+49 (123) 45-67', description: 'Small tents only.\n<script>Ask at reception.</script>' },
                 coordinate: places[0].coordinate, candidates: [], legMode: 'routed',
                 onClose, onAddHere: vi.fn(), onLegMode: vi.fn(), onInsert: vi.fn(), onPick: vi.fn(),

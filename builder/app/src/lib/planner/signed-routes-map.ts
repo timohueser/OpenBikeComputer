@@ -1,7 +1,7 @@
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, GeoJSONSource, Map, MapMouseEvent } from 'maplibre-gl';
 import type { Feature, FeatureCollection, Geometry } from 'geojson';
-import type { Coordinate } from './editor';
+import { kmPerDegree, type Coordinate } from './geo';
 import { networkLevels } from './route-overlays';
 
 /** What the Routes view draws: the search circle, the listed routes as numbered lines, start dots for the other matches, and the selection. */
@@ -20,7 +20,7 @@ const feature = (geometry: Geometry, properties: Record<string, unknown> = {}): 
 const plain = (line: Coordinate[]) => line.map(([lon, lat]) => [lon, lat]);
 
 function circle([lon, lat]: Coordinate, km: number): Coordinate[] {
-    const dLat = km / 111.32, dLon = dLat / Math.cos(lat * Math.PI / 180);
+    const dLat = km / kmPerDegree, dLon = dLat / Math.cos(lat * Math.PI / 180);
     return Array.from({ length: 97 }, (_, i) => [lon + dLon * Math.cos(i / 48 * Math.PI), lat + dLat * Math.sin(i / 48 * Math.PI)]);
 }
 

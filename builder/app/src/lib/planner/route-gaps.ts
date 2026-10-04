@@ -1,4 +1,5 @@
-import { coordinateAt, cumulative, kilometres, type Coordinate, type RoutePoint } from './editor';
+import { coordinateAt, cumulative, kilometres, type Coordinate } from './geo';
+import type { RoutePoint } from './editor';
 
 /** A shorter gap is a coarse click, or a building set back from its road: a map pixel at zoom 10 is about 100 m. */
 const shortestKm = 0.1;

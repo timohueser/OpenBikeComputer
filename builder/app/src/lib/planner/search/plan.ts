@@ -1,4 +1,4 @@
-import type { Coordinate } from '../editor';
+import { simplify, type Coordinate } from '../geo';
 
 type SearchLine = { coordinates: Coordinate[]; km: number[]; hours?: number[] };
 const lines = new WeakMap<Coordinate[], { seconds?: number[]; line: SearchLine }>();
@@ -9,7 +9,10 @@ const lines = new WeakMap<Coordinate[], { seconds?: number[]; line: SearchLine }
 export function searchLine(coordinates: Coordinate[], km: readonly number[], seconds?: number[]): SearchLine {
     const cached = lines.get(coordinates);
     if (cached && cached.seconds === seconds) return cached.line;
-    const kept = simplify(coordinates, km, seconds);
+    // Douglas–Peucker over two errors: the distance from the kept line, and the riding time against the time
+    // interpolated by kilometre between kept points.
+    const kept = simplify(coordinates, OFFSET_KM, seconds && ((i, a, b) =>
+        (seconds[i] - seconds[a] - (seconds[b] - seconds[a]) / (km[b] - km[a] || 1) * (km[i] - km[a])) / DELAY_SECONDS));
     const line = {
         coordinates: kept.map(i => coordinates[i].map(v => round(v, 5)) as Coordinate),
         // The last kilometre stays exact: the planner sends the last day's end as the route length.
@@ -27,29 +30,3 @@ const OFFSET_KM = .01;
 // Search places hour marks between kept points by kilometre. Ten seconds of riding is about as
 // far as the offset moves a place along the route.
 const DELAY_SECONDS = 10;
-
-/** Douglas–Peucker over two errors: the distance from the kept line, and the riding time
- *  against the time interpolated by kilometre between kept points. */
-function simplify(line: Coordinate[], km: readonly number[], seconds?: number[]): number[] {
-    const keep = new Uint8Array(line.length);
-    keep[0] = keep[line.length - 1] = 1;
-    const spans = line.length > 2 ? [[0, line.length - 1]] : [];
-    const offset = (OFFSET_KM / 111.195) ** 2;
-    while (spans.length) {
-        const [a, b] = spans.pop()!;
-        // Squared distances in latitude degrees, with longitude scaled at the span start.
-        const [ax, ay] = line[a], k = Math.cos(ay * Math.PI / 180);
-        const dx = (line[b][0] - ax) * k, dy = line[b][1] - ay, length = dx * dx + dy * dy || 1;
-        const pace = seconds ? (seconds[b] - seconds[a]) / (km[b] - km[a] || 1) : 0;
-        let worst = 1, split = 0;
-        for (let i = a + 1; i < b; i++) {
-            const px = (line[i][0] - ax) * k, py = line[i][1] - ay;
-            const t = Math.max(0, Math.min(1, (px * dx + py * dy) / length));
-            const off = ((px - t * dx) ** 2 + (py - t * dy) ** 2) / offset;
-            const late = seconds ? ((seconds[i] - seconds[a] - pace * (km[i] - km[a])) / DELAY_SECONDS) ** 2 : 0;
-            if (Math.max(off, late) > worst) { worst = Math.max(off, late); split = i; }
-        }
-        if (split) { keep[split] = 1; spans.push([a, split], [split, b]); }
-    }
-    return line.flatMap((_, i) => keep[i] ? [i] : []);
-}

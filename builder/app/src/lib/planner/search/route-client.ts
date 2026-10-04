@@ -1,4 +1,4 @@
-import type { Coordinate } from '../editor';
+import type { Coordinate } from '../geo';
 import { decodeRoutes } from '../route-answer';
 import type { ResolvedPoint } from './types';
 import { SEARCH_URL } from './config';

@@ -1,4 +1,4 @@
-import type { Coordinate } from './editor';
+import type { Coordinate } from './geo';
 import type { EngineRoute } from './routing';
 
 /** One route as the routing service sends it: integer deltas and runs, as `specs/route-api.md` specifies. */

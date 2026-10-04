@@ -1,5 +1,6 @@
-import { presetSuffix } from './riding-profiles';
-import { cumulative, firstIndex, orderedRoutePoints, routingKey, type Coordinate, type DrawnCoordinate, type Trip } from './editor';
+import { presetSuffix, ridingProfiles } from './riding-profiles';
+import { orderedRoutePoints, routingKey, type DrawnCoordinate, type Trip } from './editor';
+import { cumulative, firstIndex, type Coordinate } from './geo';
 import { decodeRoutes } from './route-answer';
 import type { LegCache } from './route-legs';
 
@@ -87,11 +88,25 @@ export interface RoutingLine {
 }
 
 const endpoint = import.meta.env.VITE_PLANNER_ROUTING_URL ?? '/routing';
+/** Longer than the deadlines of the route service, so its own error arrives first. A hung call frees its caller. */
+const timeoutMs = { '/v1/route': 20_000, '/v1/shape': 40_000 };
 
-async function post(path: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
-    const response = await fetch(`${endpoint}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal, body: JSON.stringify(body) });
-    const data = await response.json().catch(() => { throw new Error('The routing service returned an invalid response.'); });
-    if (!response.ok) throw Object.assign(new Error(data.message ?? 'Routing is unavailable.'), { code: data.code as string | undefined });
+/** The answer, or an error with a message for the rider and the service's error `code`. A caller's abort passes through. */
+async function post(path: keyof typeof timeoutMs, body: unknown, signal?: AbortSignal): Promise<unknown> {
+    const timeout = AbortSignal.timeout(timeoutMs[path]);
+    let response: Response | undefined, data: { code?: string; message?: string } | undefined;
+    try {
+        response = await fetch(`${endpoint}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            signal: signal ? AbortSignal.any([signal, timeout]) : timeout, body: JSON.stringify(body) });
+        data = await response.json();
+    } catch (error) {
+        if (signal?.aborted) throw error;
+        // A proxy answers with an HTML page while the service restarts.
+        throw new Error(timeout.aborted ? 'The routing service did not answer in time. Retry shortly.'
+            : !response ? 'The routing service is unreachable. Check your connection and retry.'
+            : response.ok ? 'The routing service returned an invalid response.' : 'Routing is unavailable. Retry shortly.');
+    }
+    if (!response.ok) throw Object.assign(new Error(data?.message ?? 'Routing is unavailable. Retry shortly.'), { code: data?.code });
     return data;
 }
 
@@ -110,12 +125,9 @@ export interface Shape {
     turnarounds: number[];
 }
 
-/** Longer than the 30 s shape deadline of the route service, so its own error arrives first. A hung call frees the import,
- * and the file keeps its line. */
-const shapeTimeoutMs = 40_000;
-
-export async function requestShape(line: Coordinate[], profile: string, signal = AbortSignal.timeout(shapeTimeoutMs)): Promise<Shape> {
-    const data = await post('/v1/shape', { line, profile }, signal) as Partial<Shape>;
+/** A failed or hung call keeps the file's line. */
+export async function requestShape(line: Coordinate[], profile: string): Promise<Shape> {
+    const data = await post('/v1/shape', { line, profile }) as Partial<Shape>;
     const points = data.points, turnarounds = data.turnarounds ?? [];
     if (!Array.isArray(points) || points.length < 2 || !points.every(p => Array.isArray(p) && p.length === 2 && p.every(Number.isFinite))
         || !Array.isArray(turnarounds) || !turnarounds.every(i => Number.isInteger(i) && i > 0 && i < points.length - 1))
@@ -154,6 +166,8 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
     if (points.length < 2) throw new Error('Choose a start and finish to calculate a route.');
     const result: RoutingLine = { choiceId: '', key: routingKey(trip), coordinates: [], elevation: [], elapsed: [], edges: {}, stops: [], seconds: 0,
         alternatives: [], alternativesReady: true, profile: profileId(trip), unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
+    // Seconds per kilometre on a manual leg or connector.
+    const pace = 3600 / ridingProfiles[trip.bike ?? 'touring'].kmh;
     let distance = 0;
     let afterTransfer = false;
     function append(line: Coordinate[], elevation: (number | null)[], elapsed: number[], edges: Edges, transfer = false) {
@@ -161,7 +175,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         const gap = last ? cumulative([last, line[0]])[1] : 0;
         // A join to a manually drawn leg is itself an explicit, unverified connector. A join to a transfer is not ridden.
         if (gap > 0 && !transfer && !afterTransfer) {
-            result.unroutedKm += gap; result.unknownSurfaceKm += gap; result.seconds += gap / 15 * 3600;
+            result.unroutedKm += gap; result.unknownSurfaceKm += gap; result.seconds += gap * pace;
             if (result.elevation.at(-1) === null || elevation[0] === null) result.unknownElevationKm += gap;
         }
         distance += gap;
@@ -197,7 +211,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
             if (line.length > 2 && same(line.length - 1, line.length - 2)) heights[line.length - 1] ??= heights[line.length - 2];
             const lengths = cumulative(line);
             const ridden = end.leg !== 'transfer';
-            append(line, heights, lengths.map(km => ridden ? km / 15 * 3600 : 0), {}, !ridden);
+            append(line, heights, lengths.map(km => ridden ? km * pace : 0), {}, !ridden);
             const km = ridden ? lengths.at(-1)! : 0;
             result.unknownSurfaceKm += km;
             result.unroutedKm += km;

@@ -1,5 +1,5 @@
-import type { Coordinate } from './editor';
-import { corridorTiles, routeDistance } from './place-index';
+import { routeDistance, type Coordinate } from './geo';
+import { corridorTiles } from './place-index';
 import type { BikeType } from './riding-profiles';
 import { decodeCoordinates } from './route-answer';
 

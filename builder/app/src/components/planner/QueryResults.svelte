@@ -3,7 +3,8 @@
     import { asPlace, kindLabel, routesPlaces } from '../../lib/planner/search/presentation';
     import Icon from './PlannerIcon.svelte';
     import type { SearchPlace, SearchState } from '../../lib/planner/search/types';
-    import type { Coordinate, Place } from '../../lib/planner/editor';
+    import type { Place } from '../../lib/planner/editor';
+    import type { Coordinate } from '../../lib/planner/geo';
     let { state, selectedId, hoveredId = null, onHover, applying = false, applyError = '', routes, onRoutes, onSelect, onApply, onMore, onRetry, onStretch }: {
         state: SearchState; selectedId: string | null; hoveredId?: string | null; onHover?: (id: string | null) => void; applying?: boolean; applyError?: string;
         /** What a search for signed routes near the found place lists, such as "Hiking · loops within 10 km". Absent without a route catalog. */

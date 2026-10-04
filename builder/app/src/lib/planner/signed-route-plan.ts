@@ -1,4 +1,5 @@
-import { emptyTrip, loopTrip, type Coordinate, type RoutePoint, type Trip } from './editor';
+import { emptyTrip, loopTrip, type RoutePoint, type Trip } from './editor';
+import type { Coordinate } from './geo';
 import type { BikeType } from './riding-profiles';
 import type { CatalogRecord } from './signed-routes';
 

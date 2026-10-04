@@ -1,7 +1,7 @@
 import type { GeoJSONSource, Map } from 'maplibre-gl';
 import type { FeatureCollection } from 'geojson';
 import WindRose from '../../../components/planner/WindRose.svelte';
-import { cumulative } from '../editor';
+import { cumulative } from '../geo';
 import { OVERVIEW, weekMonth, type ClimateMeta, type ClimateTile } from './climate';
 import { lineBearings, speedRow, windRow } from './climate-route';
 import { openClimate, sampleLine, type CellRef, type ClimateSource } from './climate-source';
