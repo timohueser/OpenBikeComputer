@@ -56,6 +56,12 @@ pub struct Road {
     pub shape: Vec<Point>,
 }
 
+impl Road {
+    pub fn mtb_scale(&self) -> Option<u8> {
+        (self.difficulty != 255).then_some(self.difficulty)
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Graph {
     pub points: Vec<Point>,
@@ -227,8 +233,7 @@ impl Profile {
         let too_difficult = if self.walking {
             road.hiking_difficulty.is_some_and(|d| d > self.max_difficulty)
         } else {
-            road.difficulty != 255 && road.difficulty > self.max_difficulty
-                || road.hiking_difficulty.is_some_and(|d| d > 2)
+            road.mtb_scale().is_some_and(|d| d > self.max_difficulty) || road.hiking_difficulty.is_some_and(|d| d > 2)
         };
         permitted && (road.class != 6 || self.ferries) && !too_difficult
     }

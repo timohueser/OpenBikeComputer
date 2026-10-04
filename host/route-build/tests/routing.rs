@@ -1056,7 +1056,7 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
             surface: Surface::Paved,
             class: 1,
             access: BIKE | FOOT | PUSH,
-            difficulty: 0,
+            difficulty: if from.min(to) == 1 { 0 } else { 255 },
             hiking_difficulty: (from.min(to) == 1).then_some(2),
             uncertain_access: false,
             structure: false,
@@ -1093,8 +1093,9 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
     let route = router.route(&request, &Control::default()).unwrap();
     let walking = json!([permit, closure(Kind::Conditional, "wet")]);
     assert_eq!(edges(&route, "closures"), json!([null, walking, null]));
-    // The SAC grade travels with the road geometry, like the surface.
+    // The SAC and MTB grades travel with the road geometry, like the surface.
     assert_eq!(edges(&route, "sac_scale"), json!([null, 2, null]));
+    assert_eq!(edges(&route, "mtb_scale"), json!([null, 0, null]));
     // An extraction renumbers its roads and keeps their closures.
     let (source, bytes) = package(&graph);
     let mut objects = HashMap::new();

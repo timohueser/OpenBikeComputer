@@ -18,7 +18,8 @@
       "surfaces": ["Paved", "Paved", "Gravel", "Gravel", "Gravel"],
       "pushing": [false, false, false, true, false],
       "closures": [null, null, [{ "kind": "seasonal", "condition": "Nov-May" }], [{ "kind": "seasonal", "condition": "Nov-May" }], null],
-      "sac_scale": [null, null, 1, 2, 2]
+      "sac_scale": [null, null, 1, 2, 2],
+      "mtb_scale": [null, null, 0, 3, null]
     },
     "legs": [
       {
@@ -80,7 +81,8 @@
           "surfaces": [["Paved", 2], ["Gravel", 3]],
           "pushing": [[false, 3], [true, 1], [false, 1]],
           "closures": [[null, 2], [[{ "kind": "seasonal", "condition": "Nov-May" }], 2], [null, 1]],
-          "sac_scale": [[null, 2], [1, 1], [2, 2]]
+          "sac_scale": [[null, 2], [1, 1], [2, 2]],
+          "mtb_scale": [[null, 2], [0, 1], [3, 1], [null, 1]]
         },
         "legs": [
           {

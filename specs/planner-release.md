@@ -57,8 +57,8 @@ Each coordinate pair is longitude and latitude in microdegrees. The first pair
 is absolute; each later pair is a difference from the previous pair. Decoding
 uses checked addition. Shared geometry retains every source point. `bounds` is
 an R-tree over feature IDs with longitude, latitude, and facet axes. The facet
-is `32 * layer + minimum_zoom`. Cycling, hiking, and access have layer values
-0, 1, and 2. The minimum is the lower non-null mode minimum, or 23 for an
+is `32 * layer + minimum_zoom`. Cycling, hiking, access, and MTB have layer values
+0, 1, 2, and 3. The minimum is the lower non-null mode minimum, or 23 for an
 invisible feature. The facet has equal lower and upper bounds. The query also
 checks each mode's minimum zoom. A cutout retains every referenced geometry,
 attribute, and route.
@@ -79,7 +79,7 @@ SHA-256 of `routing/blocks.json`, which packs the same graph.
 
 | Layer | Feature ID | Properties |
 | --- | --- | --- |
-| `cycling`, `hiking` | Way ID of the first way in the line | `rank`, `ref`, and `routes`: a JSON array of relation IDs in rank order. `hiking` adds `marker`, the first route `symbol` that is not empty. |
+| `cycling`, `hiking`, `mtb` | Way ID of the first way in the line | `rank`, `ref`, and `routes`: a JSON array of relation IDs in rank order. `hiking` adds `marker`, the first route `symbol` that is not empty. |
 | `access` | Way ID | `cycling_status`, `walking_status`, `name`, `ref`, `conditional`; `riding`, `walking`, `pushing` and `tags` as JSON text; `cycling_minzoom` and `walking_minzoom`, the overlay index minimum zoom of each restricted mode |
 | `routes` | Relation ID | The route properties that are not empty: `kind`, `network`, `rank`, `name`, `ref`, `website`, `symbol`, `symbol_text`. The point is the tile origin. |
 

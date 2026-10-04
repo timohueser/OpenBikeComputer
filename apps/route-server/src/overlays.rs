@@ -34,6 +34,7 @@ fn kind(tags: &Tags) -> Option<&'static str> {
     match tag(tags, "route") {
         "bicycle" => Some("cycling"),
         "hiking" | "foot" => Some("hiking"),
+        "mtb" => Some("mtb"),
         _ => None,
     }
 }
@@ -103,7 +104,9 @@ fn memberships(relations: &BTreeMap<i64, Relation>) -> (Memberships, BTreeMap<i6
 
 pub(crate) fn query_window(params: &HashMap<String, String>) -> Result<([f64; 4], f64, Vec<&str>, &str)> {
     let invalid = || {
-        Error::InvalidRequest("Provide bbox=west,south,east,north, zoom=6..22 and layers=cycling,hiking,access".into())
+        Error::InvalidRequest(
+            "Provide bbox=west,south,east,north, zoom=6..22 and layers=cycling,hiking,mtb,access".into(),
+        )
     };
     let bounds: [f64; 4] = params
         .get("bbox")
@@ -125,7 +128,7 @@ pub(crate) fn query_window(params: &HashMap<String, String>) -> Result<([f64; 4]
         || bounds[3] > 90.0
         || bounds[0] >= bounds[2]
         || bounds[1] >= bounds[3]
-        || layers.iter().any(|l| !matches!(*l, "cycling" | "hiking" | "access"))
+        || layers.iter().any(|l| !matches!(*l, "cycling" | "hiking" | "mtb" | "access"))
     {
         return Err(invalid());
     }
@@ -264,7 +267,7 @@ impl Overlays {
                 if let Some(access) = access {
                     properties.push(("access", access));
                 }
-                for activity in ["cycling", "hiking"] {
+                for activity in ["cycling", "hiking", "mtb"] {
                     let mut selected: Vec<_> =
                         memberships.iter().map(|id| &routes[id]).filter(|route| route["kind"] == activity).collect();
                     selected.sort_by_key(|route| std::cmp::Reverse(route["rank"].as_u64().unwrap_or(0)));
@@ -331,13 +334,13 @@ impl Overlays {
                 "WITH selected AS MATERIALIZED (
                 SELECT id FROM bounds
                 WHERE west<=?1 AND east>=?2 AND south<=?3 AND north>=?4
-                    AND facet_min>=?10 AND facet_max<=?11
+                    AND facet_min>=?11 AND facet_max<=?12
                 ORDER BY id)
             SELECT f.id,f.kind,g.coordinates,a.properties,g.way
             FROM selected b CROSS JOIN features f ON f.id=b.id
                 JOIN geometries g ON g.id=f.geometry JOIN attributes a ON a.id=f.attributes
-            WHERE (CASE ?9 WHEN 'cycling' THEN f.cycling_minzoom ELSE f.walking_minzoom END)<=?5
-                AND f.kind IN (?6,?7,?8)",
+            WHERE (CASE ?10 WHEN 'cycling' THEN f.cycling_minzoom ELSE f.walking_minzoom END)<=?5
+                AND f.kind IN (?6,?7,?8,?9)",
             )
             .map_err(invalid_data)?;
         let selected = |kind| if layers.contains(&kind) { kind } else { "" };
@@ -350,6 +353,7 @@ impl Overlays {
                 zoom,
                 selected("cycling"),
                 selected("hiking"),
+                selected("mtb"),
                 selected("access"),
                 mode,
                 layers.iter().map(|layer| layer_id(layer) * 32).min(),
@@ -499,6 +503,7 @@ fn layer_id(kind: &str) -> i64 {
     match kind {
         "cycling" => 0,
         "hiking" => 1,
+        "mtb" => 3,
         _ => 2,
     }
 }

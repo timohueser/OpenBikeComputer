@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import type { Map as MapLibreMap, MapMouseEvent } from 'maplibre-gl';
-import { RouteOverlays, routeWebsite } from './route-overlays';
+import { networkName, RouteOverlays, routeWebsite } from './route-overlays';
 import { trailMarker } from './trail-markers';
 
 afterEach(() => { vi.unstubAllGlobals(); });
@@ -42,10 +42,12 @@ it('loads the archive when an overlay is first shown, then draws the network and
     view.layer.set({ network: 'hiking', access: true }, 'walking');
     expect(view.visible()).toEqual(['network-hiking', 'network-hiking-labels', 'hiking-markers', 'access-lines', 'access-symbols']);
     expect(JSON.stringify(view.definitions.get('access-symbols')!.filter)).toContain('walking_minzoom');
+    view.layer.set({ network: 'mtb', access: false });
+    expect(view.visible()).toEqual(['network-mtb', 'network-mtb-labels']);
     // A new style after a theme change reuses the archive's TileJSON.
     view.sources.clear(); view.definitions.clear();
     await view.layer.install('dark');
-    expect(view.definitions.size).toBe(7);
+    expect(view.definitions.size).toBe(9);
     view.layer.set({ network: 'none', access: false });
     expect(view.visible()).toEqual([]);
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -126,6 +128,12 @@ it('highlights only the hovered network line and clears it when leaving or switc
     view.layer.set({ network: 'none', access: false });
     expect(view.map.setFeatureState).toHaveBeenLastCalledWith(state, { hover: false });
     view.layer.destroy();
+});
+
+it('names the network level of each route kind', () => {
+    expect(networkName({ kind: 'mtb', network: 'rcn' })).toBe('Regional mountain bike route');
+    expect(networkName({ kind: 'hiking', network: 'nwn' })).toBe('National hiking route');
+    expect(networkName({ kind: 'mtb', network: '' })).toBe('Network level unspecified');
 });
 
 it('only links valid route websites', () => {

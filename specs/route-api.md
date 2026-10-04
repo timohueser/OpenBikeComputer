@@ -70,6 +70,7 @@ every edge. A client accepts a channel that it does not know.
 | `pushing` | `true` where the rider must push the bicycle |
 | `closures` | `null`, or a list of possible closures, each `{"kind", "condition"}` |
 | `sac_scale` | The OSM `sac_scale` as an integer from `0` (`strolling`) through `1` (`hiking`, T1) to `6` (`difficult_alpine_hiking`, T6), or `null` when the way has none |
+| `mtb_scale` | The OSM `mtb:scale` as an integer from `0` (S0) to `6` (S6), or `null` when the way has no grade from 0 to 6; `2+` and `1-` count as their digit |
 
 The router blocks a mode only where the rider surely
 has no access. It uses an edge that is possibly closed for the mode that the
