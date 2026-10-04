@@ -152,6 +152,18 @@ def offline_fonts(source, release, work):
     return result
 
 
+def route_tiles(catalog, names):
+    """Split a region route catalog into the documents of the grid cells `names`."""
+    document = json.loads(catalog.read_bytes())
+    if document["format"] != 1: raise ValueError("Unsupported route catalog")
+    tiles = {name: [] for name in names}
+    for record in sorted(document["routes"], key=lambda record: record["id"]):
+        # A cell outside the grid has no file.
+        for cell in record["cells"]:
+            if cell in tiles: tiles[cell].append(record)
+    return {name: {"format": 1, "routes": routes} for name, routes in tiles.items()}
+
+
 def search_lookup(source, output):
     with closing(sqlite3.connect(output, uri=True)) as db:
         db.execute("ATTACH DATABASE ? AS original", (source.resolve().as_uri() + "?mode=ro",))
@@ -262,6 +274,7 @@ def publish(source, routing, output):
         search_metadata = {k: json.loads(v) for k, v in db.execute("SELECT * FROM metadata")}
     geographic = []
     all_cells = list(cells(release["bounds"]))
+    routes = route_tiles(source / "routes" / f"{release['region']}.json", [name for name, _ in all_cells])
     for index, (name, bounds) in enumerate(all_cells):
         print(f"Publishing places and overlays {index + 1}/{len(all_cells)} · {name}", flush=True)
         places = work / "search" / f"{name}.sqlite"
@@ -269,7 +282,7 @@ def publish(source, routing, output):
         overlays = work / "overlays" / f"{name}.sqlite"
         stage_sqlite(overlays, lambda path: planner_cutout.overlays(source / "routing/overlays.sqlite", path, bounds, bounds, release["routing_package"]))
         geographic.append({"id": name, "bounds": bounds, "routing": routing_cells.get(name), "files": [add(places, f"search/tiles/{name}.sqlite"),
-            add(overlays, f"routing/layers/{name}.sqlite")]})
+            add(overlays, f"routing/layers/{name}.sqlite"), metadata(f"routes/tiles/{name}.json", routes[name])]})
     metadata(f"search/{release['region']}.grid.json", {"format": 2, "metadata": search_metadata,
         "cells": [{"id": name, "bounds": bounds} for name, bounds in all_cells]})
     metadata("routing/layers.json", [name for name, _ in all_cells])

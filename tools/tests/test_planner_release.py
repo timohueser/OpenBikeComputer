@@ -123,6 +123,10 @@ class ReleaseTests(unittest.TestCase):
         env = release.vite_environment(active)
         for key in ["VITE_PLANNER_TILEJSON_URL", "VITE_PLANNER_PLACES_URL", "VITE_PLANNER_SEARCH_URL", "VITE_PLANNER_SNOW_URL", "VITE_CATALOG_URL"]:
             self.assertIn("a" * 64, env[key])
+        self.assertEqual(env["VITE_PLANNER_ROUTES_URL"], "")
+        grid = release.endpoints("a" * 64, {**document, "grid": {"format": 2}}, "https://maps.example", "https://tiles.example", "https://api.example")
+        self.assertEqual(release.vite_environment(grid)["VITE_PLANNER_ROUTES_URL"],
+                         "https://tiles.example/releases/" + "a" * 64 + "/routes/tiles/{cell}.json")
         active["terrain_attribution"] = "Terrain\nOTHER=value"
         with self.assertRaisesRegex(ValueError, "configuration"): release.vite_environment(active)
 

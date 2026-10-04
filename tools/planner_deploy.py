@@ -187,7 +187,8 @@ def verify_services(active, document, origin):
     for url in [tilejson["tiles"][0].replace("{z}", "12").replace("{x}", str(x)).replace("{y}", str(y)),
                 active["terrain"].replace("{z}", "12").replace("{x}", str(x)).replace("{y}", str(y)),
                 active["sprites"] + "/light@2x.json", active["sprites"] + "/light@2x.png",
-                active["glyphs"].replace("{fontstack}", "Noto%20Sans%20Regular").replace("{range}", "0-255")]:
+                active["glyphs"].replace("{fontstack}", "Noto%20Sans%20Regular").replace("{range}", "0-255"),
+                *([active["routes"].replace("{cell}", f"9-{x >> 3}-{y >> 3}")] if "routes" in active else [])]:
         with sources.open_url(url) as response:
             if response.status != 200 or not response.read(): raise ValueError("Regional map tiles or style assets are absent")
     with sources.open_url(active["search"] + "/sample") as response:
