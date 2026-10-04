@@ -170,11 +170,11 @@ the limits of a route request. The deadline is 30 s.
 
 An error answer is `{"code", "message"}`. It never contains a substitute route.
 
-The service attaches each point to the nearest road that the profile can use,
-within 250 m. When none is that near, it uses the nearest one within 1 km. When
-no route reaches the nearest road of a point that is not on a road, it uses the
-next nearest road within 1 km. When that retry reaches a limit, the error stays
-`no_path`. `no_snap` means that no such road is within 1 km.
+The service attaches each point to the nearest road that the profile can use
+and that lies in a large connected part of its road graph, within 250 m. When
+none is that near, it uses the nearest such road within 1 km. `no_snap` means
+that no such road is within 1 km. `no_path` means that no legal route joins two
+consecutive points; the service does not try other roads for them.
 
 `line_too_long` means that a shape line has more than 2,000 points or is longer
 than 200 km. `line_not_reproducible` means that the search found no plan of at

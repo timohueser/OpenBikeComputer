@@ -53,16 +53,13 @@ cargo run --release -p route-engine --example query -- /data/freiburg < request.
 
 The primary route minimizes the selected metric over retained attachments.
 The snap radius is 250 m. A point with no road that near uses the nearest
-road within 1 km (`snap::REACH_M`). The first attempt retains up to eight roads
-within 3 m of the nearest distance. If a leg cannot connect, a retry uses 16
-candidates, minimizes total snap distance first, then route cost. Most points
-get a 50 m band. The two points of the leg that failed get a band to 1 km, and
-each further failed leg widens its two points in one more retry. Points already
-within 3 m of a road keep the narrow band. The route answer reports truncation
-only, not the retry. A retry that reaches a limit returns `NoPath`. All attempts
-share the query and geometry budgets. A shape point keeps its direction between
-legs. Only an explicit `turnarounds` entry permits reversal there. Prepared
-access and turn rules apply.
+road within 1 km (`snap::REACH_M`). Snapping retains up to eight roads within
+3 m of the nearest distance, among the roads whose snap bit the package sets:
+roads the profile can use in a large strongly connected part of its graph
+(`route-build`'s `connectivity`). A leg that cannot connect is `NoPath`; there
+is no retry with other roads. The route answer reports truncation only. A shape
+point keeps its direction between legs. Only an explicit `turnarounds` entry
+permits reversal there. Prepared access and turn rules apply.
 
 Alternatives use prepared goals and bounded corridor probes. They must pass a
 base-cost cap and a material benefit or separation test. A corridor route must
