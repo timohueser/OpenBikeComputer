@@ -298,12 +298,6 @@ public final class PlannerPreviewModel {
     public var routePoints: [RoutePoint] { path?.points ?? [] }
     /// The index in ``routePoints`` of each route point in ride order; a loop ends at its start again.
     public var routePointIndices: [Int] { path?.pointIndices ?? [] }
-    public var pointDistances: [String: Double] {
-        guard let path else { return [:] }
-        return Dictionary(uniqueKeysWithValues: zip(points, path.pointIndices).map {
-            ($0.0.id, routeLine.vertices[$0.1].distance)
-        })
-    }
     public var stats: PlannerPreviewStats {
         .init(distanceMeters: path?.distance ?? 0, ascentMeters: path?.ascent ?? 0, seconds: path?.seconds ?? 0)
     }
@@ -381,20 +375,18 @@ public final class PlannerPreviewModel {
             return point.id.hasPrefix("night-") ? UUID().uuidString : point.id
         }
         let ids = Dictionary((points + markers).map { ($0.id, id($0)) }, uniquingKeysWith: { a, _ in a })
-        let distances = pointDistances, length = routeLine.length
         // The leg into each point; in a loop the start's leg is the closing leg.
         let legs = Dictionary(state.legIDs.compactMap { leg in state.legs[leg].map { (leg.to, $0) } }, uniquingKeysWith: { a, _ in a })
         let planned = points.enumerated().map { index, point in
             let kind: PlanPoint.Kind = index == 0 ? .start : isEndpoint(point.id) ? .finish
                 : nightIDs.contains(point.id) ? .night : point.kind == .shape ? .via : .waypoint
             let leg = legs[point.id]
-            return PlanPoint(id: ids[point.id]!, label: point.place.name, coordinate: point.place.coordinate,
-                             progress: length > 0 ? min(1, (distances[point.id] ?? 0) / length) : 0, kind: kind,
+            return PlanPoint(id: ids[point.id]!, label: point.place.name, coordinate: point.place.coordinate, kind: kind,
                              night: nightIDs.firstIndex(of: point.id).map { $0 + 1 },
                              placeKind: point.place.kind == .town ? nil : point.place.kind.rawValue,
                              leg: leg.flatMap { $0.mode == .routed ? nil : $0.mode }, drawn: leg?.drawn, turnaround: point.turnaround,
                              note: point.place.note)
-        } + markers.map { PlanPoint(id: ids[$0.id]!, label: $0.place.name, coordinate: $0.place.coordinate, progress: 0, kind: .marker,
+        } + markers.map { PlanPoint(id: ids[$0.id]!, label: $0.place.name, coordinate: $0.place.coordinate, kind: .marker,
                                     placeKind: $0.place.kind == .town ? nil : $0.place.kind.rawValue, note: $0.place.note) }
         return PlannerPlan(points: planned, mode: isTrip || !nightIDs.isEmpty ? .trip : .route, name: state.name, bike: activity.rawValue, preset: preset.title,
                            loop: isLoop, routeOrder: route.dropFirst().dropLast().map { ids[$0.id]! })

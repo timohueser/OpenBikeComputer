@@ -1,6 +1,6 @@
 import { readGpx } from '../coverage/gpx';
 import { emptyTrip, maxRidingDays, type DrawnCoordinate, type RoutePoint, type Trip } from './editor';
-import { kilometres, nearestProgress, simplify, type Coordinate } from './geo';
+import { kilometres, simplify, type Coordinate } from './geo';
 import type { Shape } from './routing';
 
 /** One imported file: its name, its simplified line with the file's elevations, its waypoints and, when planned on roads,
@@ -53,7 +53,7 @@ export function importedTrip(base: Pick<Trip, 'bike' | 'preset'>, lines: Importe
     const points: RoutePoint[] = [];
     const add = (kind: RoutePoint['kind'], coordinate: Coordinate, extra: Partial<RoutePoint> = {}) =>
         points.push({ id: crypto.randomUUID(), kind, label: kind === 'start' ? 'Start' : kind === 'finish' ? 'Finish' : kind === 'night' ? 'Overnight spot' : 'Shaping point',
-            coordinate, progress: 0, ...extra });
+            coordinate, ...extra });
     lines.forEach(({ line, shape }, day) => {
         const before = points.at(-1);
         const previous = lines[day - 1]?.line.at(-1);
@@ -72,13 +72,8 @@ export function importedTrip(base: Pick<Trip, 'bike' | 'preset'>, lines: Importe
             });
         }
     });
-    points.forEach((point, i) => point.progress = i / (points.length - 1));
-    // A marker stays in its own file's day; one array per line lets `cumulative` measure it once.
-    const markers = lines.flatMap(({ line, waypoints }, file) => {
-        const flat = line.map((c): Coordinate => [c[0], c[1]]);
-        return waypoints.map(({ label, coordinate, note }): RoutePoint => ({ id: crypto.randomUUID(), kind: 'marker', label, coordinate,
-            progress: (file + nearestProgress(flat, coordinate)) / lines.length, ...note ? { note } : {} }));
-    });
+    const markers = lines.flatMap(({ waypoints }) => waypoints.map(({ label, coordinate, note }): RoutePoint =>
+        ({ id: crypto.randomUUID(), kind: 'marker', label, coordinate, ...note ? { note } : {} })));
     const days = lines.length > 1 ? lines.length : undefined;
     return { ...emptyTrip(days ? 'trip' : 'route'), bike: base.bike, preset: base.preset, points: [...points, ...markers],
         routeOrder: points.slice(1, -1).map(point => point.id), ...days ? { days, target: days } : {} };

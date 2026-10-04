@@ -20,7 +20,7 @@ function coordinate(value: unknown): value is Coordinate {
 
 function point(value: unknown): value is RoutePoint {
     return record(value) && typeof value.id === 'string' && value.id.length > 0 && typeof value.label === 'string'
-        && coordinate(value.coordinate) && finite(value.progress) && value.progress >= 0 && value.progress <= 1
+        && coordinate(value.coordinate)
         && typeof value.kind === 'string' && ['start', 'finish', 'pass', 'via', 'waypoint', 'detour', 'night', 'marker'].includes(value.kind)
         && (value.leg === undefined || (typeof value.leg === 'string' && ['routed', 'straight', 'drawn', 'transfer'].includes(value.leg)))
         && (value.drawn === undefined || (Array.isArray(value.drawn) && value.drawn.every(c =>
@@ -37,11 +37,9 @@ export function isTrip(value: unknown): value is Trip {
     if (!record(value) || !integer(value.days, 1, maxRidingDays)
         || !Array.isArray(value.points) || !value.points.every(point)
         || typeof value.budget !== 'string' || !['days', 'distance', 'hours'].includes(value.budget)
-        || typeof value.variant !== 'string' || !['valley', 'direct'].includes(value.variant)
         || !finite(value.target) || value.target < 1 || !finite(value.limit) || value.limit < 0
         || (value.climbTarget !== undefined && (!finite(value.climbTarget) || value.climbTarget < 0))
         || (value.mode !== undefined && value.mode !== 'route' && value.mode !== 'trip')
-        || (value.live !== undefined && typeof value.live !== 'boolean')
         || (value.name !== undefined && typeof value.name !== 'string')
         || (value.startDate !== undefined && (typeof value.startDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.startDate)
             || !Number.isFinite(Date.parse(value.startDate)) || new Date(value.startDate).toISOString().slice(0, 10) !== value.startDate))
@@ -59,9 +57,9 @@ export function isTrip(value: unknown): value is Trip {
         || nights.some(point => !integer(point.night, 1, days - 1) || point.id !== `night-${point.night}`)
         || new Set(nights.map(point => point.night)).size !== nights.length) return false;
 
-    if (value.routeOrder !== undefined && (!Array.isArray(value.routeOrder)
-        || !value.routeOrder.every(id => typeof id === 'string' && ids.has(id))
-        || new Set(value.routeOrder).size !== value.routeOrder.length)) return false;
+    // With unique point IDs, this makes the route order a permutation of the points between the start and the finish.
+    const order = value.routeOrder, middle = route.filter(point => point.kind !== 'start' && point.kind !== 'finish');
+    if (!Array.isArray(order) || order.length !== middle.length || !middle.every(point => order.includes(point.id))) return false;
     if (value.restAfter !== undefined && (!Array.isArray(value.restAfter) || !value.restAfter.every(after => integer(after, 1, days)))) return false;
     if (value.restNames !== undefined && (!Array.isArray(value.restNames) || !value.restNames.every(name => typeof name === 'string'))) return false;
     if (value.splits !== undefined && (!record(value.splits) || !Object.entries(value.splits).every(([night, progress]) =>

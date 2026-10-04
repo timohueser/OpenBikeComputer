@@ -20,31 +20,29 @@ calculates each summary from the plan. It rejects duplicate version IDs.
 
 ## Plan object
 
-Required fields are `points`, `days`, `budget`, `target`, `limit`, and `variant`.
+Required fields are `points`, `routeOrder`, `days`, `budget`, `target`, and `limit`.
 
 | Field | Value |
 | --- | --- |
 | `points` | Array of point objects |
+| `routeOrder` | Array of point IDs in route order, as specified below |
 | `days` | Integer from 1 to 14 |
 | `budget` | `days`, `distance`, or `hours` |
 | `target` | Finite number, at least 1 |
 | `limit` | Finite non-negative number |
-| `variant` | `valley` or `direct` |
 | `mode` | Optional `route` or `trip` |
-| `live` | Optional boolean |
 | `name` | Optional signed-route name |
 | `bike`, `preset` | Optional activity and preset from the planner profile list |
 | `startDate` | Optional valid calendar date in `YYYY-MM-DD` form |
 | `loop` | Optional `true`; the start also ends the route |
-| `routeOrder` | Optional array of unique point IDs that exist in `points` |
 | `restAfter` | Optional array of riding-day numbers from 1 to `days` |
 | `restNames` | Optional array of strings |
 | `splits` | Optional object from night numbers to progress from 0 to 1 |
 | `climbTarget` | Optional finite non-negative number |
 | `routing` | Optional selected alternative, as specified below |
 
-Each point has a unique non-empty string `id`, a string `label`, a two-number
-`coordinate` in longitude/latitude order, and finite `progress` from 0 to 1.
+Each point has a unique non-empty string `id`, a string `label`, and a two-number
+`coordinate` in longitude/latitude order.
 Longitude is from -180 to 180. Latitude is from -90 to 90.
 
 The point `kind` is `start`, `finish`, `pass`, `via`, `waypoint`, `detour`, `night`,
@@ -61,6 +59,10 @@ that number. Night numbers are unique. Markers do not count as route points.
 An open plan with two or more route points has one start and one finish. An
 incomplete plan has zero points or one endpoint, with optional markers. A loop
 has at least two route points, one start, and no finish.
+
+The route goes from the start through the points of `routeOrder` to the finish.
+A loop goes back to its start. `routeOrder` contains each route point that is not
+the start or the finish one time.
 
 ## Selected alternative
 

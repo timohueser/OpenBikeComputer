@@ -5,8 +5,9 @@ import { routeService } from '../../../test-support/planner/route-service';
 import { decodeRoutes, type AnswerRoute } from './route-answer';
 import { ridingProfiles, presetName, type BikeType } from './riding-profiles';
 import { surfaceRuns, surfaceWindow } from './surface-data';
-import { initialTrip, planOf, planView, removeRoutePoint, storedPlan, setEndpoint, routingKey, TripHistory, type RoutePoint, type Trip } from './editor';
+import { planOf, planView, removeRoutePoint, storedPlan, setEndpoint, routingKey, TripHistory, type RoutePoint, type Trip } from './editor';
 import { cumulative, type Coordinate } from './geo';
+import { testTrip } from '../../../test-support/planner/trip';
 
 const totals = (metres: number, unknown = 0, pushing = 0): RouteTotals =>
     ({ distance_m: metres, ascent_m: 0, seconds: metres, surface_m: [unknown, metres - unknown, 0, 0, 0, 0], unknown_elevation_m: metres, pushing_m: pushing });
@@ -20,10 +21,10 @@ const answer: AnswerRoute = {
 };
 const [route] = decodeRoutes({ routes: [answer] });
 function trip(): Trip {
-    return { ...initialTrip(), live: true, points: [
-        { id: 'start', kind: 'start', coordinate: [7.8, 48], label: 'Start', progress: 0 },
-        { id: 'shape', kind: 'via', coordinate: [7.9, 48], label: 'Shape', progress: .5 },
-        { id: 'finish', kind: 'finish', coordinate: [8, 48], label: 'End', progress: 1 },
+    return { ...testTrip(), routeOrder: ['shape'], points: [
+        { id: 'start', kind: 'start', coordinate: [7.8, 48], label: 'Start' },
+        { id: 'shape', kind: 'via', coordinate: [7.9, 48], label: 'Shape' },
+        { id: 'finish', kind: 'finish', coordinate: [8, 48], label: 'End' },
     ] };
 }
 afterEach(() => vi.unstubAllGlobals());
@@ -80,7 +81,7 @@ describe('routing integration', () => {
         const body = (call: number) => JSON.parse(fetch.mock.calls[call][1].body as string);
         const cache = new LegCache();
         const signal = new AbortController().signal;
-        const plan: Trip = { ...trip(), points: [7.8, 7.85, 7.9, 7.95, 8].map((lon, i) => ({ id: `p${i}`, kind: i ? i < 4 ? 'via' : 'finish' : 'start', coordinate: [lon, 48], label: '', progress: i / 4 })) };
+        const plan: Trip = { ...trip(), routeOrder: ['p1', 'p2', 'p3'], points: [7.8, 7.85, 7.9, 7.95, 8].map((lon, i) => ({ id: `p${i}`, kind: i ? i < 4 ? 'via' : 'finish' : 'start', coordinate: [lon, 48], label: '' })) };
         const move = (lon: number): Trip => ({ ...plan, points: plan.points.map(p => p.id === 'p2' ? { ...p, coordinate: [lon, 48.01] } : p) });
         const coordinates = (trip: Trip) => trip.points.map(p => p.coordinate);
         const whole = await calculateLine(plan, signal, cache);
@@ -198,7 +199,7 @@ describe('joins beside manual legs', () => {
         return { ok: true, json: async () => ({ routes }) };
     };
     const point = (id: string, kind: RoutePoint['kind'], lon: number, extra: Partial<RoutePoint> = {}): RoutePoint =>
-        ({ id, kind, label: id, coordinate: [lon, 48], progress: 0, ...extra });
+        ({ id, kind, label: id, coordinate: [lon, 48], ...extra });
 
     it('knows the heights of a routed day beside a transfer or a drawn line with heights', async () => {
         vi.stubGlobal('fetch', vi.fn(snapping));

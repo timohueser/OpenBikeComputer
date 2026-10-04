@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { emptyTrip, initialTrip, maxRidingDays, planView, routingKey, type Place } from '../../lib/planner/editor';
+import { emptyTrip, maxRidingDays, routingKey, type Place } from '../../lib/planner/editor';
 import { coordinateAt, cumulative, type Coordinate } from '../../lib/planner/geo';
 import { corridorPlaces } from '../../lib/planner/place-index';
 import PlannerApp from './PlannerApp.svelte';
@@ -11,6 +11,7 @@ import { storedTrip } from '../../lib/planner/trip-validation';
 import type { EngineRoute, RoutingLine } from '../../lib/planner/routing';
 
 import { routeService } from '../../../test-support/planner/route-service';
+import { testTrip } from '../../../test-support/planner/trip';
 vi.mock('./PlannerMap.svelte', async () => ({ default: (await import('../../../test-support/planner/MapStub.svelte')).default }));
 vi.mock('../../lib/planner/place-index', async original => ({ ...await original<object>(), corridorPlaces: vi.fn() }));
 
@@ -35,14 +36,16 @@ vi.mock('../../lib/planner/library', async original => ({
         async close() {}
     },
 }));
-const tilePlace: Place = { id: 'poi-123', kind: 'place', label: 'Tile camp', category: 'camp', description: 'Campsite', progress: .25, coordinate: coordinateAt(planView(initialTrip()).coordinates, .25) };
+// The line of the stored plan, from its start to its finish with two bends.
+const routeLine: Coordinate[] = [[7.6, 47.56], [7.7, 47.36], [7.55, 47.06], [7.6, 46.76]];
+const tilePlace: Place = { id: 'poi-123', kind: 'place', label: 'Tile camp', category: 'camp', description: 'Campsite', coordinate: coordinateAt(routeLine, .25) };
 
 beforeEach(() => {
     stored.clear();
     savedPlan = undefined;
     vi.stubGlobal('confirm', vi.fn(() => true));
-    const trip = { ...initialTrip(), live: true };
-    const coordinates = planView(initialTrip()).coordinates;
+    const trip = testTrip();
+    const coordinates = routeLine;
     const distance = cumulative(coordinates);
     const line: RoutingLine = {
         key: routingKey(trip), choiceId: 'saved-route', profile: 'touring', coordinates,
@@ -149,7 +152,8 @@ describe('planner app transitions', () => {
 
     it('keeps a resolved address on reload when search is unavailable', async () => {
         const saved = JSON.parse(stored.get('trip')!);
-        saved.points.push({ id: 'visit', kind: 'waypoint', autoLabel: true, label: 'Dorfstraße 12, Teningen', coordinate: [7.84, 48], progress: .5 });
+        saved.points.push({ id: 'visit', kind: 'waypoint', autoLabel: true, label: 'Dorfstraße 12, Teningen', coordinate: [7.84, 48] });
+        saved.routeOrder = ['visit'];
         stored.set('trip', JSON.stringify(saved));
         vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Search offline')));
         await startApp(); await tick();
@@ -310,7 +314,7 @@ describe('planner app transitions', () => {
                 edges: {}, totals,
                 legs: [{ from_index: 0, to_index: geometry.length - 1, start: 'a', end: 'b', totals }], snap_truncated: false };
         };
-        const coordinates = planView(initialTrip()).coordinates;
+        const coordinates = routeLine;
         const primary = engine('primary', 'primary', coordinates);
         const corridor = engine('corridor', 'corridor', coordinates.map(([x, y], i) => (i && i < coordinates.length - 1 ? [x, y + .02] : [x, y]) as Coordinate));
         vi.mocked(routing.calculateLine).mockImplementation(async plan => routing.selectRoute(plan, primary, [primary, corridor]));
@@ -463,7 +467,7 @@ describe('planner app transitions', () => {
         days.dispatchEvent(new Event('input', { bubbles: true }));
         days.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
         await tick();
-        button(`Open day ${maxRidingDays}: Day ${maxRidingDays - 1} overnight to Besançon`).click();
+        button(`Open day ${maxRidingDays}: Day ${maxRidingDays - 1} overnight to Thun`).click();
         await tick();
         await search(`campsites day ${maxRidingDays}`);
         await vi.waitFor(() => expect(button(`Map place: ${tilePlace.label}`)).toBeDefined());

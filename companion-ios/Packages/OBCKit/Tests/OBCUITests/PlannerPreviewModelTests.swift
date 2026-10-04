@@ -138,7 +138,7 @@ struct PlannerPreviewModelTests {
         model.movePoint(fromOffsets: IndexSet(integer: 3), toOffset: 1)
         await model.calculateRoute()
         #expect(model.nights.first?.id == id && model.points[1].id == id && model.dayCount == 2)
-        #expect(abs(model.dayStats[0].distanceMeters - (model.pointDistances[id] ?? -1)) < 0.01)
+        #expect(abs(model.dayStats[0].distanceMeters - model.routeLine.vertices[model.routePointIndices[1]].distance) < 0.01)
         model.movePoint(fromOffsets: IndexSet(integer: 1), toOffset: model.points.count)
         #expect(model.points.last?.id == id && model.nights.first?.id == nil && model.dayCount == 1)
         model.undo()
@@ -192,7 +192,7 @@ struct PlannerPreviewModelTests {
         await model.calculateRoute()
         #expect(model.isLoop && model.points == points && model.finish == model.start)
         #expect(model.routeTitle == "Loop from Freiburg" && model.stats.distanceMeters > open)
-        #expect(model.routePoints.last?.coordinate == model.start?.coordinate && model.pointDistances.count == 3)
+        #expect(model.routePoints.last?.coordinate == model.start?.coordinate && model.routePointIndices.count == model.points.count + 1)
         #expect(model.exportRoute(name: "").waypoints.map(\.name) == ["Valley café", "Titisee"])
         model.undo()
         #expect(!model.isLoop && model.finish?.id == "titisee")
@@ -336,14 +336,14 @@ struct PlannerPreviewModelTests {
     @Test func aPlanWithNightsRoundTripsThroughThePlanner() throws {
         let at = { (lon: Double) in Coordinate(latitude: 47.9, longitude: lon) }
         let plan = PlannerPlan(points: [
-            PlanPoint(id: "start", label: "Freiburg", coordinate: at(7.8), progress: 0, kind: .start),
-            PlanPoint(id: "night-1", label: "Camp", coordinate: at(7.9), progress: 0, kind: .night, night: 1, placeKind: "camping",
+            PlanPoint(id: "start", label: "Freiburg", coordinate: at(7.8), kind: .start),
+            PlanPoint(id: "night-1", label: "Camp", coordinate: at(7.9), kind: .night, night: 1, placeKind: "camping",
                       leg: .drawn, drawn: [RoutePoint(coordinate: at(7.85), elevationMeters: 420)]),
-            PlanPoint(id: "v", label: "Shaping point", coordinate: at(7.95), progress: 0, kind: .via, turnaround: true),
-            PlanPoint(id: "w", label: "Fountain", coordinate: at(8.0), progress: 0, kind: .waypoint, placeKind: "water"),
-            PlanPoint(id: "night-2", label: "Hut", coordinate: at(8.05), progress: 0, kind: .night, night: 2),
-            PlanPoint(id: "finish", label: "Titisee", coordinate: at(8.15), progress: 0, kind: .finish),
-            PlanPoint(id: "m", label: "View", coordinate: at(8.1), progress: 0, kind: .marker),
+            PlanPoint(id: "v", label: "Shaping point", coordinate: at(7.95), kind: .via, turnaround: true),
+            PlanPoint(id: "w", label: "Fountain", coordinate: at(8.0), kind: .waypoint, placeKind: "water"),
+            PlanPoint(id: "night-2", label: "Hut", coordinate: at(8.05), kind: .night, night: 2),
+            PlanPoint(id: "finish", label: "Titisee", coordinate: at(8.15), kind: .finish),
+            PlanPoint(id: "m", label: "View", coordinate: at(8.1), kind: .marker),
         ], mode: .trip, bike: "road", preset: "Shorter", routeOrder: ["night-1", "v", "w", "night-2"])
         let model = PlannerPreviewModel(plan: plan, service: PlannerTestSource())
         #expect(model.dayCount == 3 && model.activity == .road && model.preset == .shorter)
@@ -369,9 +369,9 @@ struct PlannerPreviewModelTests {
 
     @Test func nightsEndDaysAtAnyPointUpToFourteenDays() async throws {
         let at = { (lon: Double) in Coordinate(latitude: 47.9, longitude: lon) }
-        let vias = (1...14).map { PlanPoint(id: "v\($0)", label: "Shaping point", coordinate: at(7.8 + 0.01 * Double($0)), progress: 0, kind: .via) }
-        let plan = PlannerPlan(points: [PlanPoint(id: "start", label: "A", coordinate: at(7.8), progress: 0, kind: .start)] + vias
-            + [PlanPoint(id: "finish", label: "B", coordinate: at(8.0), progress: 1, kind: .finish)], routeOrder: vias.map(\.id))
+        let vias = (1...14).map { PlanPoint(id: "v\($0)", label: "Shaping point", coordinate: at(7.8 + 0.01 * Double($0)), kind: .via) }
+        let plan = PlannerPlan(points: [PlanPoint(id: "start", label: "A", coordinate: at(7.8), kind: .start)] + vias
+            + [PlanPoint(id: "finish", label: "B", coordinate: at(8.0), kind: .finish)], routeOrder: vias.map(\.id))
         let model = PlannerPreviewModel(plan: plan, service: PlannerTestSource())
         for via in vias.prefix(13) { model.setNight(id: via.id, true, name: "Camp \(via.id)") }
         #expect(model.dayCount == 14 && !model.canAddDay)
@@ -414,10 +414,10 @@ struct PlannerPreviewModelTests {
     @Test func aTransferRunsOnlyFromANight() throws {
         let at = { (lon: Double) in Coordinate(latitude: 47.9, longitude: lon) }
         let plan = PlannerPlan(points: [
-            PlanPoint(id: "start", label: "A", coordinate: at(7.80), progress: 0, kind: .start),
-            PlanPoint(id: "b", label: "B", coordinate: at(7.82), progress: 0, kind: .waypoint, leg: .transfer),
-            PlanPoint(id: "c", label: "C", coordinate: at(7.84), progress: 0, kind: .waypoint),
-            PlanPoint(id: "finish", label: "D", coordinate: at(7.90), progress: 1, kind: .finish),
+            PlanPoint(id: "start", label: "A", coordinate: at(7.80), kind: .start),
+            PlanPoint(id: "b", label: "B", coordinate: at(7.82), kind: .waypoint, leg: .transfer),
+            PlanPoint(id: "c", label: "C", coordinate: at(7.84), kind: .waypoint),
+            PlanPoint(id: "finish", label: "D", coordinate: at(7.90), kind: .finish),
         ], routeOrder: ["b", "c"])
         let model = PlannerPreviewModel(plan: plan, service: PlannerTestSource())
         #expect(model.exportPlan().routePoints.map(\.leg) == [nil, nil, nil, nil], "inside a day a transfer is routed")
@@ -437,12 +437,12 @@ struct PlannerPreviewModelTests {
     @Test func aDraggedPointPlansOnlyItsTwoLegsAndATransferStaysOne() async throws {
         let at = { (lon: Double) in Coordinate(latitude: 47.9, longitude: lon) }
         let plan = PlannerPlan(points: [
-            PlanPoint(id: "start", label: "A", coordinate: at(7.80), progress: 0, kind: .start),
-            PlanPoint(id: "b", label: "B", coordinate: at(7.82), progress: 0, kind: .waypoint, leg: .drawn, drawn: [RoutePoint(coordinate: at(7.81))]),
-            PlanPoint(id: "c", label: "C", coordinate: at(7.84), progress: 0, kind: .waypoint, leg: .drawn, drawn: [RoutePoint(coordinate: at(7.83))]),
-            PlanPoint(id: "night-1", label: "D", coordinate: at(7.86), progress: 0, kind: .night, night: 1, leg: .drawn,
+            PlanPoint(id: "start", label: "A", coordinate: at(7.80), kind: .start),
+            PlanPoint(id: "b", label: "B", coordinate: at(7.82), kind: .waypoint, leg: .drawn, drawn: [RoutePoint(coordinate: at(7.81))]),
+            PlanPoint(id: "c", label: "C", coordinate: at(7.84), kind: .waypoint, leg: .drawn, drawn: [RoutePoint(coordinate: at(7.83))]),
+            PlanPoint(id: "night-1", label: "D", coordinate: at(7.86), kind: .night, night: 1, leg: .drawn,
                       drawn: [RoutePoint(coordinate: at(7.85))]),
-            PlanPoint(id: "finish", label: "E", coordinate: at(7.90), progress: 1, kind: .finish, leg: .transfer),
+            PlanPoint(id: "finish", label: "E", coordinate: at(7.90), kind: .finish, leg: .transfer),
         ], routeOrder: ["b", "c", "night-1"])
         let source = PlannerTestSource()
         let model = PlannerPreviewModel(plan: plan, service: source)

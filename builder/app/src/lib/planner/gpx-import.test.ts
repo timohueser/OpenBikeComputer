@@ -25,7 +25,7 @@ describe('GPX import', () => {
         expect(micro(file.line)).toEqual(micro([noisy[0], noisy[24], noisy[25], noisy[26], noisy[49]]));
         const trip = importedTrip({ bike: 'gravel' }, [file]);
         expect(isTrip(trip)).toBe(true);
-        expect(trip).toMatchObject({ mode: 'route', bike: 'gravel', live: true });
+        expect(trip).toMatchObject({ mode: 'route', bike: 'gravel' });
         expect(orderedRoutePoints(trip).map(p => [p.kind, p.leg])).toEqual([['start', undefined], ['finish', 'drawn']]);
         expect(trip.points[1].drawn).toEqual(file.line);
         expect((await calculateLine(trip, new AbortController().signal, new LegCache())).unknownElevationKm).toBeGreaterThan(0);
@@ -77,12 +77,6 @@ describe('GPX import', () => {
         expect(importPlan(exportPlan(newPlan(trip, 'ride'))).trip.points.filter(p => p.kind === 'marker')).toMatchObject(markers);
     });
 
-    it('keeps a valid plan when a file with waypoints has a zero-length line', () => {
-        const trip = importedTrip({}, readTracks([{ name: 'still.gpx', text: gpx([[7.6, 47.5], [7.6, 47.5]], undefined, '<wpt lat="47.51" lon="7.6"/>') }]));
-        expect(isTrip(trip)).toBe(true);
-        expect(trip.points.find(p => p.kind === 'marker')!.progress).toBe(.5);
-    });
-
     it('rejects more files than a trip has days', () => {
         const files = Array.from({ length: 15 }, (_, i) => ({ name: `${i}.gpx`, text: gpx(track([7.6, 47.5], 2)) }));
         expect(() => readTracks(files)).toThrow('A trip has at most 14 days. Import 14 files or fewer.');
@@ -104,8 +98,6 @@ describe('GPX import', () => {
         expect(orderedRoutePoints(trip).map(p => [p.kind, p.leg, p.turnaround])).toEqual([
             ['start', undefined, undefined], ['via', undefined, true], ['night', undefined, undefined], ['finish', 'drawn', undefined]]);
         expect(trip.points.filter(p => p.kind === 'marker').map(p => p.label)).toEqual(['Hut', 'Cafe', 'Gate']);
-        // A waypoint at the first point of file 2 starts day 2.
-        expect(trip.points.find(p => p.label === 'Gate')!.progress).toBe(1 / 2);
         expect(trip.routeOrder).toHaveLength(2);
     });
 });

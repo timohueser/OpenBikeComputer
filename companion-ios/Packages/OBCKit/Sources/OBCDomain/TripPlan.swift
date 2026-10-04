@@ -24,15 +24,15 @@ extension PlannerPlan {
         var here = end
         if first.distance(to: end) > Trip.transferMinMeters {
             let id = "day-\(night + 1)"
-            points.append(PlanPoint(id: id, label: "Start of day \(night + 1)", coordinate: first, progress: 1, kind: .via, leg: .transfer))
+            points.append(PlanPoint(id: id, label: "Start of day \(night + 1)", coordinate: first, kind: .via, leg: .transfer))
             order.append(id)
             here = first
         }
-        points.append(PlanPoint(id: "finish", label: name ?? "Finish", coordinate: last, progress: 1, kind: .finish,
+        points.append(PlanPoint(id: "finish", label: name ?? "Finish", coordinate: last, kind: .finish,
                                 leg: .drawn, drawn: Self.drawnLeg(from: here, along: day)))
         points += waypoints.enumerated().map { index, waypoint in
             PlanPoint(id: "day-\(night + 1)-waypoint-\(index + 1)", label: waypoint.name, coordinate: waypoint.coordinate,
-                      progress: 0, kind: .marker, placeKind: waypoint.category?.placeKind, note: waypoint.note)
+                      kind: .marker, placeKind: waypoint.category?.placeKind, note: waypoint.note)
         }
         var plan = self
         plan.points = points

@@ -1,14 +1,15 @@
 import { IDBFactory } from 'fake-indexeddb';
 import { describe, expect, it } from 'vitest';
-import { initialTrip, emptyTrip, setEndpoint, pinNight, addRestDay, setDrawnLeg, routingKey, orderedRoutePoints, closeLoop } from './editor';
+import { emptyTrip, setEndpoint, pinNight, addRestDay, setDrawnLeg, routingKey, orderedRoutePoints, closeLoop } from './editor';
 import { PlanLibrary, exportPlan, importPlan, newPlan } from './library';
 import { newVersion } from './versions';
+import { testTrip } from '../../../test-support/planner/trip';
 
 describe('local plan library', () => {
     it('keeps independent plans and checkpoints, resumes the active one and removes its pointer on deletion', async () => {
         const factory = new IDBFactory();
         const store = new PlanLibrary(factory);
-        const first = await store.save(newPlan(initialTrip(), 'Weekend'));
+        const first = await store.save(newPlan(testTrip(), 'Weekend'));
         const next = { ...first, versions: [newVersion(first.trip, 'Valley')] };
         await store.save(next);
         const second = await store.save(newPlan(setEndpoint(emptyTrip(), 'start', [8, 48], 'Home'), 'Next ride'));
@@ -29,7 +30,7 @@ describe('local plan library', () => {
     it('orders rapid edits and refuses unseen edits or deletion from another tab', async () => {
         const factory = new IDBFactory();
         const first = new PlanLibrary(factory), second = new PlanLibrary(factory);
-        const plan = await first.save(newPlan(initialTrip(), 'Original'));
+        const plan = await first.save(newPlan(testTrip(), 'Original'));
         await first.activate(plan.id);
         const stale = (await second.active())!;
         await Promise.all([first.save({ ...plan, name: 'First edit' }), first.save({ ...plan, name: 'Last edit' })]);
@@ -45,7 +46,7 @@ describe('local plan library', () => {
     it('accepts a refreshed catalog revision while keeping stale active edits protected', async () => {
         const factory = new IDBFactory();
         const first = new PlanLibrary(factory), second = new PlanLibrary(factory);
-        const original = await first.save(newPlan(initialTrip(), 'Original'));
+        const original = await first.save(newPlan(testTrip(), 'Original'));
         const other = (await second.get(original.id))!;
         await second.save({ ...other, name: 'Other tab' });
         const [refreshed] = await first.list();
@@ -57,7 +58,7 @@ describe('local plan library', () => {
     });
 
     it('round-trips nights, dates, rest days, drawings and picked geometry with its versions under a new identity', () => {
-        const trip = { ...addRestDay(pinNight(initialTrip(), 1, [7.2, 47.5], 'Camp'), 1), startDate: '2026-10-04' };
+        const trip = { ...addRestDay(pinNight(testTrip(), 1, [7.2, 47.5], 'Camp'), 1), startDate: '2026-10-04' };
         const drawn = setDrawnLeg(trip, 'finish', [[7, 47.5]]);
         const points = orderedRoutePoints(drawn);
         const coordinates = points.map(p => p.coordinate);
@@ -72,7 +73,7 @@ describe('local plan library', () => {
     });
 
     it('requires ordered stops with increasing progress and keeps the repeated loop start', () => {
-        const loop = { ...closeLoop(initialTrip()), live: true };
+        const loop = closeLoop(testTrip());
         const points = orderedRoutePoints(loop);
         const coordinates = points.map(p => p.coordinate);
         const stops = points.map((p, i) => ({ id: p.id, distance: i }));
@@ -93,7 +94,7 @@ describe('local plan library', () => {
     });
 
     it('rejects malformed plans, versions and picked routes without accepting part of a file', () => {
-        const file = JSON.parse(exportPlan(newPlan(initialTrip(), 'Valid', [newVersion(initialTrip())])));
+        const file = JSON.parse(exportPlan(newPlan(testTrip(), 'Valid', [newVersion(testTrip())])));
         for (const invalid of [null, {}, { ...file, version: 99 }, { ...file, trip: {} },
             { ...file, trip: { ...file.trip, startDate: '2026-02-30' } },
             { ...file, trip: { ...file.trip, points: [{ ...file.trip.points[0], anchor: [999, 0] }, file.trip.points[1]] } },

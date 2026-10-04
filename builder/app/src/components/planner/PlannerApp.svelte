@@ -941,7 +941,7 @@
     $effect(() => {
         const detail = finder.detail, plan = routesOpen ? finder.plan : undefined;
         if (!detail || !plan) return;
-        const draft = { ...untrack(() => planTrip(routeBase(detail.route, trip), plan, detail.route.loop)), live: true };
+        const draft = untrack(() => planTrip(routeBase(detail.route, trip), plan, detail.route.loop));
         const abort = new AbortController();
         calculateLine(draft, abort.signal, legs).then(line => { if (!abort.signal.aborted) finder.routed = { plan, line }; }, () => {});
         return () => abort.abort();
@@ -985,7 +985,7 @@
     function newPoint(coordinate: Coordinate, kind: EditableKind, label?: string): RoutePoint {
         const autoLabel = kind === 'waypoint' && label === undefined;
         return { id: crypto.randomUUID(), coordinate: [...coordinate], label: label ?? (autoLabel ? coordinateName(coordinate) : defaultLabels[kind]),
-            autoLabel: autoLabel || undefined, kind, progress: nearestProgress(coordinates, coordinate) };
+            autoLabel: autoLabel || undefined, kind };
     }
 
     async function nameVisit(point: RoutePoint) {
@@ -1025,10 +1025,7 @@
         const next = { ...trip };
         const point = next.points.find(p => p.id === id);
         if (point?.kind === 'night') return routeLegsAround(pinNight(next, point.night!, coordinate, point.label), id);
-        next.points = next.points.map(p => p.id === id
-            ? { ...p, coordinate, label: p.autoLabel ? coordinateName(coordinate) : p.label,
-                progress: p.kind === 'start' || p.kind === 'finish' ? p.progress : nearestProgress(coordinates, coordinate) }
-            : p);
+        next.points = next.points.map(p => p.id === id ? { ...p, coordinate, label: p.autoLabel ? coordinateName(coordinate) : p.label } : p);
         return routeLegsAround(next, id);
     }
 
@@ -1105,7 +1102,9 @@
         const next = { ...trip };
         next.points = next.points.map(p => p.id === point.id ? { ...p, id, kind, night: undefined, label, autoLabel: autoLabel || undefined,
             anchor: kind === 'detour' ? nearestOnLine(coordinates, point.coordinate).at : undefined } : p);
-        next.routeOrder = next.routeOrder?.map(old => old === point.id ? id : old);
+        // A marker is not in the route order; one that becomes a route point joins the route before the finish.
+        const order = trip.routeOrder.map(old => old === point.id ? id : old);
+        next.routeOrder = kind === 'marker' ? order.filter(other => other !== id) : order.includes(id) ? order : [...order, id];
         commit(next, 'Point type updated');
         selectedId = id;
         void nameVisit(next.points.find(p => p.id === id)!);

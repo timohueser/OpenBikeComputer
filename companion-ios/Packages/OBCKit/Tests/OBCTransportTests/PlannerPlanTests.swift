@@ -9,17 +9,17 @@ struct PlannerPlanTests {
 
     @Test func encodesTheFieldsOfTheSpec() throws {
         let plan = PlannerPlan(points: [
-            PlanPoint(id: "start", label: "Brig", coordinate: at(8.0), progress: 0, kind: .start),
-            PlanPoint(id: "night-1", label: "Camp", coordinate: at(8.1), progress: 0.4, kind: .night, night: 1,
+            PlanPoint(id: "start", label: "Brig", coordinate: at(8.0), kind: .start),
+            PlanPoint(id: "night-1", label: "Camp", coordinate: at(8.1), kind: .night, night: 1,
                       placeKind: "camping", leg: .drawn, drawn: [RoutePoint(coordinate: at(8.05, 46.51), elevationMeters: 612), RoutePoint(coordinate: at(8.07, 46.52))]),
-            PlanPoint(id: "v", label: "Shaping point", coordinate: at(8.2), progress: 0.6, kind: .via, turnaround: true),
-            PlanPoint(id: "finish", label: "Sion", coordinate: at(8.3), progress: 1, kind: .finish, leg: .transfer),
-            PlanPoint(id: "m", label: "View", coordinate: at(8.15, 46.6), progress: 0, kind: .marker, note: "Best at dusk"),
+            PlanPoint(id: "v", label: "Shaping point", coordinate: at(8.2), kind: .via, turnaround: true),
+            PlanPoint(id: "finish", label: "Sion", coordinate: at(8.3), kind: .finish, leg: .transfer),
+            PlanPoint(id: "m", label: "View", coordinate: at(8.15, 46.6), kind: .marker, note: "Best at dusk"),
         ], mode: .route, bike: "gravel", preset: "Balanced", routeOrder: ["night-1", "v"])
 
         let json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(plan)) as? [String: Any])
         #expect(json["days"] as? Int == 2 && json["target"] as? Double == 2 && json["budget"] as? String == "days")
-        #expect(json["limit"] as? Double == 50 && json["variant"] as? String == "valley" && json["mode"] as? String == "route")
+        #expect(json["limit"] as? Double == 50 && json["mode"] as? String == "route")
         #expect(json["loop"] == nil && json["routeOrder"] as? [String] == ["night-1", "v"])
         let points = try #require(json["points"] as? [[String: Any]])
         #expect(points[0]["coordinate"] as? [Double] == [8.0, 46.5])
@@ -77,7 +77,6 @@ struct PlannerPlanTests {
         #expect(route.map(\.id) == ["start", "night-1", "night-2", "day-3", "finish"] && route[1].label == "Camp")
         #expect(route.map(\.leg) == [nil, .drawn, .drawn, .transfer, .drawn])
         #expect(route[3].coordinate == at(8.10) && route[2].coordinate == at(8.04))
-        #expect(route.map(\.progress) == route.map(\.progress).sorted() && route.last?.progress == 1)
     }
 
     /// Imported files as days: a day that starts at the night before continues from it, a day that starts
@@ -85,8 +84,7 @@ struct PlannerPlanTests {
     @Test func importedDaysJoinAtTheirNightsWithATransferAcrossAGap() throws {
         let line = { (from: Double, to: Double) in stride(from: from, through: to, by: 0.005).map { RoutePoint(coordinate: self.at($0)) } }
         let spring = Waypoint(index: 0, name: "Spring", distanceAlongMeters: 0, coordinate: at(8.03, 46.51), category: .water)
-        let shaped = try #require(PlannerPlan.shaped([at(8.02), at(8.03), at(8.04)], turnarounds: [1], progress: [0, 0.5, 1],
-                                                     waypoints: [spring]))
+        let shaped = try #require(PlannerPlan.shaped([at(8.02), at(8.03), at(8.04)], turnarounds: [1], waypoints: [spring]))
         let days = [try #require(PlannerPlan.keptLine(line(8.0, 8.02))), shaped, try #require(PlannerPlan.keptLine(line(8.10, 8.12)))]
 
         let plan = try #require(PlannerPlan.trip(days: days))
@@ -94,7 +92,6 @@ struct PlannerPlanTests {
         #expect(route.map(\.kind) == [.start, .night, .via, .night, .via, .finish] && plan.days == 3 && plan.mode == .trip)
         #expect(route.map(\.id) == ["start", "night-1", route[2].id, "night-2", "day-3", "finish"] && route[2].turnaround == true)
         #expect(route.map(\.leg) == [nil, .drawn, nil, nil, .transfer, .drawn])
-        #expect(route.map(\.progress) == route.map(\.progress).sorted() && route.last?.progress == 1)
         #expect(plan.markers.map(\.label) == ["Spring"] && plan.markers.map(\.placeKind) == ["water"])
     }
 
