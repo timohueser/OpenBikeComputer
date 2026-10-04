@@ -88,9 +88,8 @@ leg is routed.
 Surface, gradient, access, and closure queries report missing segment data.
 Split and join keep the line. They require unpinned nights and no rest days.
 
-Opening filters use mapped `opening_hours`. Unknown hours are excluded and counted.
-Holidays come from each place's country and state. Times use the region's time zone
-from the search metadata. The host time zone has no effect.
+Opening filters use mapped `opening_hours`, each place's country holidays, and the
+region time zone. Unknown hours are excluded and counted.
 Trip-day filters need a start date. Weekday filters need no date; date-dependent rules
 remain unknown. No filter predicts arrival time. Distances from the route are geometric,
 not routed detours. Place gaps depend on map completeness. Search does not interpolate
