@@ -166,6 +166,57 @@ struct PlannerPreviewModelTests {
         #expect(!model.canSave && model.geometry.isEmpty && model.routeError != nil)
     }
 
+    @Test func backToStartRoutesTheWholeRoundAndUndoOpensThePlan() async {
+        let model = PlannerPreviewModel(sample: true, service: PlannerTestSource())
+        model.addPoint(PlannerPreviewModel.sampleMapPlaces[2])
+        await model.calculateRoute()
+        let open = model.stats.distanceMeters, points = model.points
+        model.closeLoop()
+        await model.calculateRoute()
+        #expect(model.isLoop && model.points == points && model.finish == model.start)
+        #expect(model.routeTitle == "Loop from Freiburg" && model.stats.distanceMeters > open)
+        #expect(model.routePoints.last?.coordinate == model.start?.coordinate && model.pointDistances.count == 3)
+        #expect(model.exportRoute(name: "").waypoints.map(\.name) == ["Valley café", "Titisee"])
+        model.undo()
+        #expect(!model.isLoop && model.finish?.id == "titisee")
+    }
+
+    @Test func aLoopKeepsItsStartThroughEdits() {
+        let model = PlannerPreviewModel(sample: true, service: PlannerTestSource())
+        let cafe = PlannerPreviewModel.sampleMapPlaces[2], water = PlannerPreviewModel.sampleMapPlaces[3]
+        model.closeLoop()
+        model.addPoint(cafe)
+        #expect(model.points.map(\.id) == ["freiburg", "titisee", "cafe"])
+        model.movePoint(fromOffsets: IndexSet(integer: 0), toOffset: 2)
+        model.movePoint(fromOffsets: IndexSet(integer: 2), toOffset: 0)
+        model.movePoint(fromOffsets: IndexSet(integer: 2), toOffset: 1)
+        #expect(model.points.map(\.id) == ["freiburg", "cafe", "titisee"])
+        model.apply(.reverse)
+        #expect(model.isLoop && model.points.map(\.id) == ["freiburg", "titisee", "cafe"])
+        model.setFinish(water)
+        #expect(!model.isLoop && model.finish == water && model.points.count == 4)
+        model.undo()
+        model.removePoint(id: "titisee")
+        #expect(model.isLoop && model.hasRoute)
+        model.removePoint(id: "cafe")
+        #expect(!model.isLoop && !model.hasRoute)
+    }
+
+    @Test func movingTheStartKeepsTheOrderAroundTheLoop() async {
+        let model = PlannerPreviewModel(sample: true, service: PlannerTestSource())
+        model.addPoint(PlannerPreviewModel.sampleMapPlaces[2])
+        model.closeLoop()
+        model.startLoop(at: "titisee")
+        #expect(model.points.map(\.id) == ["titisee", "freiburg", "cafe"] && model.points[1].kind == .visit)
+        let corners = (0..<4).map { Coordinate(latitude: 47.9 + Double($0 % 2) / 100, longitude: 7.9 + Double($0 / 2) / 100) }
+        model.makeLoop(corners, startingAt: 2)
+        await model.calculateRoute()
+        #expect(model.isLoop && model.routeTitle == "Loop from Start")
+        #expect(model.routePoints.map(\.coordinate) == [corners[2], corners[3], corners[0], corners[1], corners[2]])
+        #expect(model.points.dropFirst().allSatisfy { $0.kind == .shape } && model.exportRoute(name: "").waypoints.isEmpty)
+        model.undo()
+        #expect(model.points.map(\.id) == ["titisee", "freiburg", "cafe"])
+    }
 }
 
 private actor PlannerTestSource: PlannerDataSource {

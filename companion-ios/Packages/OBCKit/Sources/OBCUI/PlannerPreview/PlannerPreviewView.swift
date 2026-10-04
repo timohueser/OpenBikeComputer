@@ -403,7 +403,7 @@ public struct PlannerPreviewView: View {
     @ViewBuilder private var pointEditor: some View {
         if let point = (model.points + model.markers).first(where: { $0.id == editingPointID }) {
             // The start and finish are always visits; only the points between them have a kind.
-            if point.id != model.points.first?.id, point.id != model.points.last?.id {
+            if !model.isEndpoint(point.id) {
                 Picker("Point type", selection: Binding(get: { point.kind }, set: { model.setPointKind(id: point.id, kind: $0) })) {
                     ForEach(PlannerPreviewPointKind.allCases, id: \.self) { Text($0.title).tag($0) }
                 }.pickerStyle(.segmented)
@@ -411,10 +411,14 @@ public struct PlannerPreviewView: View {
             Button("Replace place", systemImage: "magnifyingglass") {
                 intent = .replace(point.id); searchQuery = ""; openSearchFromDetail()
             }.frame(minHeight: 44)
-            if model.points.count > 2, point.id != model.points.first?.id, point.id != model.points.last?.id, point.kind != .marker {
+            if !model.isEndpoint(point.id), point.kind != .marker {
                 Button(model.overnightPointID == point.id ? "Remove overnight break" : "End day 1 here", systemImage: "moon") {
                     model.setOvernightPoint(id: model.overnightPointID == point.id ? nil : point.id)
                 }.frame(minHeight: 44)
+            }
+            if model.hasRoute, !model.isLoop, point.id == model.points.last?.id {
+                Button("Back to start", systemImage: "arrow.triangle.2.circlepath") { model.closeLoop(); resetPanel() }
+                    .frame(minHeight: 44)
             }
             Button("Remove point", systemImage: "trash", role: .destructive) {
                 model.removePoint(id: point.id); resetPanel()
@@ -514,6 +518,9 @@ public struct PlannerPreviewView: View {
                 }
                 if place.kind == .camping {
                     Button("End day 1 here", systemImage: "moon") { model.setOvernight(place); resetPanel() }
+                }
+                if model.isLoop {
+                    Button("Finish here", systemImage: "flag.checkered") { model.setFinish(place); resetPanel() }
                 }
             } label: {
                 Text("More").font(.subheadline.weight(.semibold)).foregroundStyle(OBCTheme.tint)
@@ -633,7 +640,7 @@ public struct PlannerPreviewView: View {
 
     private func selectMapPoint(_ coordinate: Coordinate, at location: CGPoint) {
         editingPointID = nil; layersShown = false; infoShown = false
-        selectedPlace = model.positionedPlace(.init(id: UUID().uuidString, name: "Map point", coordinate: coordinate))
+        selectedPlace = model.positionedPlace(.init(id: UUID().uuidString, name: PlannerPreviewModel.mapPointName, coordinate: coordinate))
         panel = .place; drawerPosition = .open
     }
 
@@ -658,7 +665,7 @@ public struct PlannerPreviewView: View {
         var pins = model.points.enumerated().map { index, point in
             PlannerPreviewMapPin(id: point.id, title: point.place.name, coordinate: point.place.coordinate,
                 symbol: point.id == model.overnightPointID ? "moon.fill" : point.place.kind.symbol,
-                kind: index == 0 ? .start : index == model.points.count - 1 ? .finish : point.kind == .shape ? .shape : .stop)
+                kind: index == 0 ? .start : model.isEndpoint(point.id) ? .finish : point.kind == .shape ? .shape : .stop)
         }
         pins += model.markers.map { .init(id: $0.id, title: $0.place.name, coordinate: $0.place.coordinate, symbol: "mappin", kind: .marker) }
         var places = results?.places ?? []
