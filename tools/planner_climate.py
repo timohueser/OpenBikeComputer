@@ -37,7 +37,7 @@ WEEKS = 52
 WET_MM = 2.3
 # ERA5-Land weekly rain totals are too high, most in winter. The bake multiplies them by the factor of the
 # week's month, January first: the sum of the station weekly totals ÷ the sum of the ERA5-Land weekly totals
-# of their cells, at the same 58 DWD stations, 2016–2025.
+# of their cells, at the same 58 DWD stations over the ten years.
 RAIN_FACTORS = (0.791, 0.766, 0.759, 0.755, 0.883, 0.865, 0.942, 0.882, 0.869, 0.875, 0.866, 0.744)
 SECTORS = 16
 # Final ERA5-Land replaces the preliminary ERA5-Land-T data about two months after each month (ECMWF,
