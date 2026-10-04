@@ -6,6 +6,7 @@
 //! length, for every profile.
 use crate::{
     data::RoutingData,
+    geometry::{self, METRES_PER_UDEG},
     model::{Pace, Point},
     Control, Error, Request, Route, Router,
 };
@@ -45,8 +46,11 @@ pub struct Limits<'a> {
     pub calls: usize,
 }
 
+fn point(p: P) -> Point {
+    Point { lon: p[0], lat: p[1], elevation: 0.0 }
+}
+
 pub fn distance(a: P, b: P) -> f64 {
-    let point = |p: P| Point { lon: p[0], lat: p[1], elevation: 0.0 };
     point(a).distance(point(b))
 }
 
@@ -68,17 +72,19 @@ pub fn request(profile: &str, points: &[P], turnarounds: Vec<usize>) -> Request 
 }
 
 pub fn vertices(route: &Route) -> Vec<P> {
-    route.geometry.iter().map(|p| [(p[0] * 1e6).round() as i32, (p[1] * 1e6).round() as i32]).collect()
+    route.points.iter().map(|p| [p.lon, p.lat]).collect()
 }
 
 /// Metres from `p` to the segment `a`–`b`.
 fn to_segment(p: P, a: P, b: P) -> f64 {
-    let scale = (p[1] as f64 * 1e-6).to_radians().cos() * 0.111195;
-    let xy = |q: P| [(q[0] - p[0]) as f64 * scale, (q[1] - p[1]) as f64 * 0.111195];
-    let (a, b) = (xy(a), xy(b));
-    let d = [b[0] - a[0], b[1] - a[1]];
-    let t = (-(a[0] * d[0] + a[1] * d[1]) / (d[0] * d[0] + d[1] * d[1]).max(f64::MIN_POSITIVE)).clamp(0.0, 1.0);
-    (a[0] + d[0] * t).hypot(a[1] + d[1] * t)
+    geometry::project(point(p), point(a), point(b)).1
+}
+
+/// The point `at` metres along a line of two or more points.
+fn point_at(line: &[P], at: f64) -> P {
+    let line: Vec<Point> = line.iter().map(|&p| point(p)).collect();
+    let p = geometry::at(&line, &geometry::cumulative(&line), at);
+    [p.lon, p.lat]
 }
 
 /// Answers whether a point lies within `NEAR_M` of a line.
@@ -97,7 +103,7 @@ impl<'a> Near<'a> {
     fn new(line: &'a [P]) -> Self {
         // A degree of longitude is shortest at the latitude farthest from the equator.
         let lat = line.iter().map(|p| (p[1] as f64 * 1e-6).abs()).fold(0.0, f64::max);
-        let cell_lat = 2.0 * NEAR_M / 0.111195;
+        let cell_lat = 2.0 * NEAR_M / METRES_PER_UDEG;
         let cell = [cell_lat / lat.to_radians().cos().max(0.01), cell_lat];
         let mut cells = HashMap::<_, Vec<u32>>::new();
         for k in 0..line.len() {
@@ -150,11 +156,8 @@ fn off(a: &[P], b: &Near) -> (f64, Option<f64>) {
         let length = distance(w[0], w[1]);
         let steps = (length / STEP_M).ceil().max(1.0);
         for s in 0..steps as usize {
-            let t = (s as f64 + 0.5) / steps;
-            let p = [
-                w[0][0] + ((w[1][0] - w[0][0]) as f64 * t).round() as i32,
-                w[0][1] + ((w[1][1] - w[0][1]) as f64 * t).round() as i32,
-            ];
+            let sample = geometry::lerp(point(w[0]), point(w[1]), (s as f64 + 0.5) / steps);
+            let p = [sample.lon, sample.lat];
             let step = length / steps;
             if b.near(p) {
                 close(&mut run, along, &mut longest);
@@ -343,22 +346,6 @@ impl<D: RoutingData> Search<'_, D> {
 fn untried(legs: &mut [Leg], tried: &HashSet<usize>) -> Option<usize> {
     legs.sort_by(|a, b| b.off.total_cmp(&a.off));
     legs.iter().filter_map(|leg| leg.via).find(|k| !tried.contains(k))
-}
-
-fn point_at(line: &[P], at: f64) -> P {
-    let mut along = 0.0;
-    for w in line.windows(2) {
-        let length = distance(w[0], w[1]);
-        if along + length >= at {
-            let t = ((at - along) / length.max(f64::MIN_POSITIVE)).clamp(0.0, 1.0);
-            return [
-                w[0][0] + ((w[1][0] - w[0][0]) as f64 * t).round() as i32,
-                w[0][1] + ((w[1][1] - w[0][1]) as f64 * t).round() as i32,
-            ];
-        }
-        along += length;
-    }
-    line[line.len() - 1]
 }
 
 /// Finds a plan whose route follows `line` with each profile. The first profile gives the plan
@@ -555,22 +542,15 @@ pub fn answer<D: RoutingData>(router: &mut Router<D>, request: &LineRequest, con
 /// adjacent such vertices, the one where the line is nearest itself is the tip.
 fn reversals(line: &[P]) -> Vec<usize> {
     const REVERSAL_M: f64 = 5.0 * NEAR_M;
-    let mut along = vec![0.0];
-    for w in line.windows(2) {
-        along.push(along[along.len() - 1] + distance(w[0], w[1]));
-    }
-    let at = |d: f64| {
-        let i = along.partition_point(|&a| a < d).clamp(1, line.len() - 1);
-        let t = ((d - along[i - 1]) / (along[i] - along[i - 1]).max(f64::MIN_POSITIVE)).clamp(0.0, 1.0);
-        let (a, b) = (line[i - 1], line[i]);
-        [a[0] + ((b[0] - a[0]) as f64 * t).round() as i32, a[1] + ((b[1] - a[1]) as f64 * t).round() as i32]
-    };
+    let line: Vec<Point> = line.iter().map(|&p| point(p)).collect();
+    let along = geometry::cumulative(&line);
+    let at = |d: f64| geometry::at(&line, &along, d);
     let total = along[along.len() - 1];
     let mut tips = Vec::new();
     let mut run: Option<(usize, f64)> = None;
     for (k, &s) in along.iter().enumerate().take(line.len() - 1).skip(1) {
         let gap = (s >= REVERSAL_M && s + REVERSAL_M <= total)
-            .then(|| (1..=5).map(|i| i as f64 * NEAR_M).map(|d| distance(at(s - d), at(s + d))).fold(0.0, f64::max))
+            .then(|| (1..=5).map(|i| i as f64 * NEAR_M).map(|d| at(s - d).distance(at(s + d))).fold(0.0, f64::max))
             .filter(|&gap| gap <= NEAR_M);
         match gap {
             Some(gap) if run.is_none_or(|(_, best)| gap < best) => run = Some((k, gap)),

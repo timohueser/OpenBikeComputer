@@ -25,7 +25,8 @@ pub trait RoutingData {
     fn profiles(&self) -> Vec<&str>;
     fn profile(&self, name: &str) -> Result<&Profile>;
     fn snap(&self, point: Point, metric: &str, policy: Policy) -> Result<Candidates>;
-    fn road(&self, road: u32) -> Result<Road>;
+    /// Applies `f` to a road without a copy of its shape.
+    fn with_road<T>(&self, road: u32, f: impl FnOnce(&Road) -> T) -> Result<T>;
     fn closures(&self) -> Result<Arc<Closures>>;
     fn endpoint(&self, metric: &str, road: u32) -> Result<Endpoint>;
     /// A metric's graph, costs and landmark columns, loaded and budgeted together.
@@ -464,18 +465,18 @@ impl<S: Source> RoutingData for Selection<S> {
                 return Err(Error::Limit);
             }
         }
-        snap::candidates(roads, point, policy, |local| {
+        snap::candidates(roads, policy, |local| {
             let source = self.ids.source(local)?;
             if package.allowed(metric, source)? {
-                package.road(source).map(Some)
+                package.with_road(source, |road| snap::project(local, road, point, policy.radius_m))
             } else {
                 Ok(None)
             }
         })
     }
 
-    fn road(&self, road: u32) -> Result<Road> {
-        self.package.road(self.ids.source(road)?)
+    fn with_road<T>(&self, road: u32, f: impl FnOnce(&Road) -> T) -> Result<T> {
+        self.package.with_road(self.ids.source(road)?, f)
     }
 
     /// The closures of the selected roads, decoded once from their pages and shared by forks.
@@ -502,7 +503,8 @@ impl<S: Source> RoutingData for Selection<S> {
         let Some(basis) = self.package.prepared_cost(metric, source)? else {
             return Ok(Endpoint { cost: None, departures: Vec::new() });
         };
-        let cost = basis.compile(&self.package.road(source)?, self.profile(metric)?).map_err(Error::InvalidData)?;
+        let profile = self.profile(metric)?;
+        let cost = self.package.with_road(source, |road| basis.compile(road, profile))?.map_err(Error::InvalidData)?;
         let prepared = self.prepared(metric)?;
         Ok(Endpoint { cost: Some(cost), departures: departures(&prepared.graph, &prepared.costs, road) })
     }

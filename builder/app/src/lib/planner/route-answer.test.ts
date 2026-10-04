@@ -9,7 +9,7 @@ describe('route answer', () => {
     it('decodes the shared vector to its source route within the specified precision', () => {
         const source = vector.route;
         const [route] = decodeRoutes(vector.answer);
-        expect(route).toMatchObject({ id: source.id, reason: source.reason, package: source.package, profile: source.profile, snap_truncated: source.snap_truncated });
+        expect(route).toMatchObject({ id: source.id, reason: source.reason, package: source.package, profile: source.profile, snap_truncated: source.snap_truncated, via: source.via });
         expect(route.geometry).toEqual(source.geometry);
         expect(route.elevation.map(h => h === null)).toEqual(source.elevation.map((h: number | null) => h === null));
         route.elevation.forEach((h, i) => h !== null && expect(Math.abs(h - source.elevation[i])).toBeLessThanOrEqual(0.05));

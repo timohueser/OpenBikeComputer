@@ -1,9 +1,11 @@
 use route_build::Graph;
 use route_engine::{
+    answer::answer,
     data::{RoutingData, Selection},
     model::{Pace, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH},
     package::{digest, Package, Source},
-    snap::{Candidate, Policy, REACH_M},
+    router::Response,
+    snap::{Candidate, Policy, Position, REACH_M},
     Control, Error, Request, Route, Router,
 };
 use serde_json::{json, Value};
@@ -38,17 +40,29 @@ fn package_with_profiles(graph: &Graph, profiles: &[Profile]) -> (Memory, Vec<u8
     .unwrap();
     (Memory(Arc::new(objects)), serde_json::to_vec(&manifest).unwrap())
 }
-/// One value for each edge of the route, from the runs of one edge channel.
+/// One value for each edge of the route, from the runs of one edge channel of its answer.
 fn edges(route: &Route, channel: &str) -> Value {
-    let runs = json!(route.edges)[channel].clone();
-    runs.as_array().unwrap().iter().flat_map(|run| vec![run[0].clone(); run[1].as_u64().unwrap() as usize]).collect()
+    let answer = answer(&Response { routes: vec![route.clone()] });
+    let runs = answer["routes"][0]["edges"][channel].as_array().unwrap().clone();
+    runs.iter().flat_map(|run| vec![run[0].clone(); run[1].as_u64().unwrap() as usize]).collect()
+}
+fn point([lon, lat]: [f64; 2]) -> Point {
+    Point { lon: (lon * 1e6).round() as i32, lat: (lat * 1e6).round() as i32, elevation: NO_ELEVATION }
+}
+/// The route point where the route attaches request point `k`, and its distance from that point.
+fn attachment(route: &Route, request: &Request, k: usize) -> (Point, f64) {
+    let attached = route.points[if k == 0 { 0 } else { route.legs[k - 1].to_index }];
+    (attached, attached.distance(point(request.points[k])))
 }
 /// The candidates a route request attaches a point to: within 250 m, or else within reach.
-fn snaps(router: &mut Router<Selection<Memory>>, [lon, lat]: [f64; 2], profile: &str) -> Vec<Candidate> {
-    let point = Point { lon: (lon * 1e6).round() as i32, lat: (lat * 1e6).round() as i32, elevation: NO_ELEVATION };
-    let found = router.snap(point, profile, Policy::default()).unwrap();
+fn snaps(router: &Router<Selection<Memory>>, coordinate: [f64; 2], profile: &str) -> Vec<Candidate> {
+    let package = router.package();
+    let found = package.snap(point(coordinate), profile, Policy::default()).unwrap();
     if found.retained.is_empty() {
-        return router.snap(point, profile, Policy { radius_m: REACH_M, ..Policy::default() }).unwrap().retained;
+        return package
+            .snap(point(coordinate), profile, Policy { radius_m: REACH_M, ..Policy::default() })
+            .unwrap()
+            .retained;
     }
     found.retained
 }
@@ -123,11 +137,10 @@ fn with_sources(mut graph: Graph) -> Graph {
     graph
 }
 // Independent arrival-road Dijkstra. The target is a partial transition, not a compact state.
-fn oracle(graph: &Graph, profile: &Profile, from: &Candidate, to: &Candidate) -> Option<u64> {
+fn oracle(graph: &Graph, profile: &Profile, a: Position, b: Position) -> Option<u64> {
     let graph = with_sources(graph.clone());
     let none = route_build::cost::Doubts::default();
     let costing = route_build::cost::Costing::new(&graph, profile, &none).unwrap();
-    let (a, b) = (from.position, to.position);
     let prefix = costing.roads[a.road as usize].as_ref().unwrap().prefix(a.fraction).unwrap();
     let suffix = costing.roads[b.road as usize].as_ref().unwrap().prefix(b.fraction).unwrap();
     let mut best = if a.road == b.road && a.fraction <= b.fraction { Some(suffix - prefix) } else { None };
@@ -189,9 +202,11 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     for profile in &profiles {
         for &from in &coords {
             for &to in &coords {
-                let (starts, ends) = (snaps(&mut router, from, &profile.name), snaps(&mut router, to, &profile.name));
-                let expected =
-                    starts.iter().flat_map(|a| ends.iter().filter_map(|b| oracle(&graph, profile, a, b))).min();
+                let (starts, ends) = (snaps(&router, from, &profile.name), snaps(&router, to, &profile.name));
+                let expected = starts
+                    .iter()
+                    .flat_map(|a| ends.iter().filter_map(|b| oracle(&graph, profile, a.position, b.position)))
+                    .min();
                 let actual = router.route(
                     &Request {
                         points: vec![from, to],
@@ -208,7 +223,7 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
                 match (expected, actual) {
                     (Some(cost), Ok(route)) => {
                         assert_eq!(cost, route.cost, "{from:?} -> {to:?}");
-                        for pair in route.legs[0].roads.windows(2) {
+                        for pair in route.legs[0].pieces.windows(2) {
                             assert_eq!(graph.roads[pair[0].road as usize].to, graph.roads[pair[1].road as usize].from);
                             assert!(graph.permits_turn(pair[0].road, pair[1].road, profile.walking));
                         }
@@ -277,24 +292,24 @@ fn via_direction_pace_and_failure_states_are_explicit() {
         end_position: None,
     };
     let route = router.route(&request, &Control::default()).unwrap();
-    assert_eq!(route.attachments.len(), 3);
+    assert_eq!(route.legs.len(), 2);
     let surfaces = edges(&route, "surfaces");
-    assert_eq!(surfaces.as_array().unwrap().len(), route.geometry.len() - 1);
-    assert_eq!(edges(&route, "pushing").as_array().unwrap().len(), route.geometry.len() - 1);
+    assert_eq!(surfaces.as_array().unwrap().len(), route.points.len() - 1);
+    assert_eq!(edges(&route, "pushing").as_array().unwrap().len(), route.points.len() - 1);
     for leg in &route.legs {
-        assert_eq!(surfaces[leg.from_index], json!(graph.roads[leg.roads[0].road as usize].surface));
-        assert_eq!(surfaces[leg.to_index - 1], json!(graph.roads[leg.roads.last().unwrap().road as usize].surface));
+        assert_eq!(surfaces[leg.from_index], json!(graph.roads[leg.pieces[0].road as usize].surface));
+        assert_eq!(surfaces[leg.to_index - 1], json!(graph.roads[leg.pieces.last().unwrap().road as usize].surface));
     }
     for pair in route.legs.windows(2) {
-        let (a, b) = (pair[0].roads.last().unwrap(), pair[1].roads.first().unwrap());
+        let (a, b) = (pair[0].pieces.last().unwrap(), pair[1].pieces.first().unwrap());
         assert_eq!(a.road, b.road);
         assert_eq!(a.to, b.from);
     }
     request.pace.personal_multiplier = 1.5;
     let slower = router.route(&request, &Control::default()).unwrap();
     assert_eq!(route.cost, slower.cost);
-    assert_eq!(route.geometry, slower.geometry);
-    assert!((route.totals.seconds * 1.5 - slower.totals.seconds).abs() < 1e-6);
+    assert_eq!(route.points, slower.points);
+    assert!((route.totals().seconds * 1.5 - slower.totals().seconds).abs() < 1e-6);
     assert!(matches!(
         router.route(&request, &Control { cancelled: &|| true, ..Control::default() }),
         Err(Error::Cancelled)
@@ -341,9 +356,9 @@ fn a_point_without_a_road_nearby_attaches_to_the_nearest_road_within_reach() {
         end_position: None,
     };
     let route = router.route(&request, &Control::default()).unwrap();
-    let end = route.attachments.last().unwrap();
-    assert!((Policy::default().radius_m..=REACH_M).contains(&end.snap_distance_m));
-    assert_eq!((end.projected.lat, end.projected.lon), (0, 15_000));
+    let (end, distance) = attachment(&route, &request, 1);
+    assert!((Policy::default().radius_m..=REACH_M).contains(&distance));
+    assert_eq!((end.lat, end.lon), (0, 15_000));
     request.points[1] = [0.015, -0.012];
     assert!(matches!(router.route(&request, &Control::default()), Err(Error::NoSnap(1))));
 }
@@ -373,11 +388,11 @@ fn a_shape_keeps_direction_and_only_an_explicit_visit_can_reverse() {
     let shaped = router.route(&request, &Control::default()).unwrap();
     request.turnarounds = vec![1];
     let visit = router.route(&request, &Control::default()).unwrap();
-    assert!(shaped.totals.distance_m > visit.totals.distance_m + 400);
-    assert_ne!(visit.legs[1].start_attachment.position.road, visit.attachments[1].position.road);
-    assert_eq!(visit.geometry.len(), visit.elapsed.len());
+    assert!(shaped.totals().distance_m > visit.totals().distance_m + 400);
+    assert_ne!(visit.legs[1].start.road, visit.legs[0].end.road);
+    assert_eq!(visit.points.len(), visit.elapsed.len());
     assert!(visit.elapsed.is_sorted_by(|a, b| a <= b));
-    assert!((visit.elapsed.last().unwrap() - visit.totals.seconds).abs() < 1e-6);
+    assert!((visit.elapsed.last().unwrap() - visit.totals().seconds).abs() < 1e-6);
 }
 
 #[test]
@@ -400,25 +415,21 @@ fn a_window_pinned_to_its_neighbour_legs_repeats_the_whole_trip() {
     let route = router.route(&whole, &Control::default()).unwrap();
     let leg = |route: &Route, k: usize| {
         let leg = &route.legs[k];
-        (
-            route.geometry[leg.from_index..=leg.to_index].to_vec(),
-            leg.totals.distance_m,
-            leg.start_attachment.position.id(),
-        )
+        (route.points[leg.from_index..=leg.to_index].to_vec(), leg.totals.distance_m, leg.start.id())
     };
     for k in 1..route.legs.len() {
         let window = Request {
             points: whole.points[k - 1..=k + 1].to_vec(),
-            start_position: Some(route.legs[k - 1].start_attachment.position.id()),
-            end_position: Some(route.attachments[k + 1].position.id()),
+            start_position: Some(route.legs[k - 1].start.id()),
+            end_position: Some(route.legs[k].end.id()),
             ..whole.clone()
         };
         let pinned = router.route(&window, &Control::default()).unwrap();
         assert_eq!([leg(&pinned, 0), leg(&pinned, 1)], [leg(&route, k - 1), leg(&route, k)], "window at point {k}");
-        assert_eq!(pinned.attachments[2].position.id(), route.attachments[k + 1].position.id());
+        assert_eq!(pinned.legs[1].end.id(), route.legs[k].end.id());
     }
     let foreign = Request { start_position: Some("0:0.5".into()), end_position: Some("x".into()), ..whole.clone() };
-    assert_eq!(router.route(&foreign, &Control::default()).unwrap().geometry, route.geometry);
+    assert_eq!(router.route(&foreign, &Control::default()).unwrap().points, route.points);
 }
 
 #[test]
@@ -506,11 +517,8 @@ fn closed_packages_route_across_multiple_checked_blocks() {
     let result = router.routes(&request, &Control::default()).unwrap();
     assert_eq!(result.routes.len(), 1, "A single corridor does not need invented alternatives");
     let route = &result.routes[0];
-    assert_eq!(
-        route.cost,
-        oracle(&graph, &Profile::presets()[0], &route.attachments[0], &route.attachments[1]).unwrap()
-    );
-    assert_eq!(route.legs[0].roads.len(), 2199);
+    assert_eq!(route.cost, oracle(&graph, &Profile::presets()[0], route.legs[0].start, route.legs[0].end).unwrap());
+    assert_eq!(route.legs[0].pieces.len(), 2199);
 }
 
 #[test]
@@ -551,9 +559,12 @@ fn alternatives_find_a_separate_corridor_without_an_out_and_back_probe() {
     assert_eq!(routes.len(), 2);
     assert_eq!(routes[1].reason, "corridor");
     assert_eq!(routes[1].legs.len(), 1);
-    assert_eq!(routes[1].attachments.len(), 2);
     assert_ne!(routes[0].id, routes[1].id);
-    assert_eq!(routes[0].totals.distance_m, routes[1].totals.distance_m);
+    assert_eq!(routes[0].totals().distance_m, routes[1].totals().distance_m);
+    // One shaping point keeps the corridor.
+    assert!(routes[0].via.is_none());
+    let via = Request { points: vec![request.points[0], routes[1].via.unwrap(), request.points[1]], ..request.clone() };
+    assert_eq!(router.route(&via, &Control::default()).unwrap().points, routes[1].points);
     let only = Request { alternatives: false, alternatives_only: true, ..request };
     let alternatives = router.routes(&only, &Control::default()).unwrap().routes;
     assert_eq!(alternatives.iter().map(|r| &r.id).collect::<Vec<_>>(), [&routes[1].id]);
@@ -598,13 +609,15 @@ fn an_out_and_back_trip_gets_alternatives_within_one_query_budget() {
     };
     let routes = router.routes(&request, &Control::default()).unwrap().routes;
     assert_eq!(routes.iter().map(|r| r.reason).collect::<Vec<_>>(), ["primary", "shorter"]);
-    assert!(routes[1].totals.distance_m + 1000 < routes[0].totals.distance_m);
+    assert!(routes[1].totals().distance_m + 1000 < routes[0].totals().distance_m);
     // The primary route spends the whole query budget, so the alternatives stop and the answer keeps it.
     let alone = Request { alternatives: false, ..request.clone() };
     let needed = (1..)
         .find(|&queries| router.route(&alone, &Control { max_queries: queries, ..Control::default() }).is_ok())
         .unwrap();
-    let kept = router.routes(&request, &Control { max_queries: needed, ..Control::default() }).unwrap().routes;
+    // A new router, because a router answers a repeated request from its last primary route.
+    let mut fresh = Router::new(router.package().fork(), 768 * 1024 * 1024);
+    let kept = fresh.routes(&request, &Control { max_queries: needed, ..Control::default() }).unwrap().routes;
     assert_eq!(kept.iter().map(|r| &r.id).collect::<Vec<_>>(), [&routes[0].id]);
 }
 
@@ -717,26 +730,28 @@ fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profi
         end_position: None,
     };
     let route = router.route(&request, &Control::default()).unwrap();
-    assert_eq!(route.attachments[1].projected.lat, 0);
-    assert!(route.attachments[1].snap_distance_m < 25.0);
-    assert_eq!(route.attachments[0].snap_distance_m, 0.0);
-    assert_eq!(route.attachments[2].snap_distance_m, 0.0);
+    let (driveway, distance) = attachment(&route, &request, 1);
+    assert_eq!(driveway.lat, 0);
+    assert!(distance < 25.0);
+    assert_eq!(attachment(&route, &request, 0).1, 0.0);
+    assert_eq!(attachment(&route, &request, 2).1, 0.0);
     request.profile = "mtb".into();
     let mtb = router.route(&request, &Control::default()).unwrap();
-    assert_eq!(mtb.attachments[1].projected.lat, 100);
+    assert_eq!(attachment(&mtb, &request, 1).0.lat, 100);
     // The driveway is a fragment of the road profile's graph, so a point on it is not a candidate
     // there: the first search already attaches it to the connected road.
     request.profile = "road".into();
     request.points[1][1] = 0.0001;
-    let snapped = router.snap(
+    let snapped = router.package().snap(
         Point { lon: 5_000, lat: 100, elevation: NO_ELEVATION },
         "road",
         Policy { radius_m: REACH_M, ..Policy::default() },
     );
     assert!(snapped.unwrap().retained.iter().all(|c| c.projected.lat == 0));
     let route = router.route(&request, &Control::default()).unwrap();
-    assert_eq!(route.attachments[1].projected.lat, 0);
-    assert!((10.0..12.0).contains(&route.attachments[1].snap_distance_m));
+    let (driveway, distance) = attachment(&route, &request, 1);
+    assert_eq!(driveway.lat, 0);
+    assert!((10.0..12.0).contains(&distance));
 }
 
 #[test]
@@ -779,13 +794,13 @@ fn route_goals_preserve_the_bikes_surface_suitability() {
     for profile in ["road", "road/shorter"] {
         request.profile = profile.into();
         let route = router.route(&request, &Control::default()).unwrap();
-        assert_eq!(route.totals.surface_m[Surface::Gravel as usize], 0, "{profile}");
-        assert!(route.totals.surface_m[Surface::Paved as usize] > 3000, "{profile}");
+        assert_eq!(route.totals().surface_m[Surface::Gravel as usize], 0, "{profile}");
+        assert!(route.totals().surface_m[Surface::Paved as usize] > 3000, "{profile}");
     }
     request.profile = "gravel/shorter".into();
     let route = router.route(&request, &Control::default()).unwrap();
-    assert_eq!(route.totals.surface_m[Surface::Paved as usize], 0);
-    assert!(route.totals.distance_m < 1200);
+    assert_eq!(route.totals().surface_m[Surface::Paved as usize], 0);
+    assert!(route.totals().distance_m < 1200);
 }
 
 #[test]
@@ -839,7 +854,7 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
     let (source, manifest) = package(&graph);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let route = router.route(&request, &Control::default()).unwrap();
-    assert_eq!(route.totals.pushing_m, 111);
+    assert_eq!(route.totals().pushing_m, 111);
     assert_eq!(edges(&route, "pushing"), json!([false, true, false]));
     for road in &mut graph.roads {
         road.access &= !PUSH;
@@ -901,9 +916,9 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
     let route = router.route(&request, &Control::default()).unwrap();
     let walking = json!([permit, closure(Kind::Conditional, "wet")]);
     assert_eq!(edges(&route, "closures"), json!([null, walking, null]));
-    // The SAC and MTB grades travel with the road geometry, like the surface.
+    // The grades travel with the road geometry, like the surface.
     assert_eq!(edges(&route, "sac_scale"), json!([null, 2, null]));
-    assert_eq!(edges(&route, "mtb_scale"), json!([null, 0, null]));
+    assert_eq!(route.pieces().map(|p| p.mtb_scale).collect::<Vec<_>>(), [None, Some(0), None]);
 }
 
 #[test]
@@ -966,7 +981,7 @@ fn a_route_avoids_a_private_road_unless_a_shaping_point_is_on_it() {
     request.points.insert(1, [0.001, 0.0]);
     let shaped = router.route(&request, &Control::default()).unwrap();
     assert!(edges(&shaped, "closures").as_array().unwrap().contains(&private));
-    assert!(shaped.totals.distance_m < open.totals.distance_m);
+    assert!(shaped.totals().distance_m < open.totals().distance_m);
 }
 
 #[test]
@@ -1023,10 +1038,11 @@ fn a_spur_that_ends_at_a_closed_gate_stays_snappable_through_its_u_turn() {
         end_position: None,
     };
     let route = router.route(&request, &Control::default()).unwrap();
-    assert_eq!(route.attachments[1].snap_distance_m, 0.0);
-    assert!((330..=338).contains(&route.totals.distance_m), "{}", route.totals.distance_m);
+    assert_eq!(attachment(&route, &request, 1).1, 0.0);
+    let distance = route.totals().distance_m;
+    assert!((330..=338).contains(&distance), "{distance}");
     let back = Request { points: vec![[0.0015, 0.0], [-0.0015, 0.0]], ..request };
-    assert_eq!(router.route(&back, &Control::default()).unwrap().attachments[0].snap_distance_m, 0.0);
+    assert_eq!(attachment(&router.route(&back, &Control::default()).unwrap(), &back, 0).1, 0.0);
 }
 
 #[test]
@@ -1065,7 +1081,7 @@ fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
             let before = original_router.route(&request, &Control::default()).unwrap();
             let after = full_router.route(&request, &Control::default()).unwrap();
             assert_eq!(after.cost, before.cost);
-            assert_eq!(after.geometry, before.geometry);
+            assert_eq!(after.points, before.points);
             assert_eq!(after.elapsed, before.elapsed);
         }
         let whole = original.prepared(&name).unwrap();
@@ -1088,8 +1104,8 @@ fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
             let global = partial.source_id(from).unwrap();
             assert_eq!(partial.local_id(global), Some(from));
             assert_eq!(
-                serde_json::to_value(partial.road(from).unwrap()).unwrap(),
-                serde_json::to_value(original.road(global).unwrap()).unwrap()
+                partial.with_road(from, |road| serde_json::to_value(road).unwrap()).unwrap(),
+                original.with_road(global, |road| serde_json::to_value(road).unwrap()).unwrap()
             );
             let expected: Vec<_> = (graph.first[global as usize]..graph.first[global as usize + 1])
                 .filter_map(|arc| {

@@ -519,7 +519,7 @@ fn route<D: RoutingData>(
     let mut cover = BTreeSet::new();
     cells(&geometry, &mut cover);
     let mut record = header(job.relation, &job.kind, france);
-    let totals = &plan.route.totals;
+    let totals = plan.route.totals();
     record.insert("loop".into(), json!(closed));
     record.insert("length_m".into(), json!(totals.distance_m));
     record.insert("ascent_m".into(), json!(totals.ascent_m));
@@ -557,24 +557,27 @@ fn route<D: RoutingData>(
     })
 }
 
-/// The length of the plan route with each grade, and the hardest explicit grade, from the grade
-/// channel of the route edges.
+/// The length of the plan route with each grade, and the hardest explicit grade, from the grades
+/// of the route pieces.
 fn grade_lengths(route: &route_engine::Route, geometry: &[P], mtb: bool) -> ([u64; 6], Option<usize>) {
-    let runs = route.edges.runs(if mtb { "mtb_scale" } else { "sac_scale" });
-    let values = runs.iter().flat_map(|(value, edges)| std::iter::repeat_n(value.as_u64(), *edges));
     let mut lengths = [0.0f64; 6];
     let mut hardest = None;
-    for (w, value) in geometry.windows(2).zip(values) {
-        let explicit = value.filter(|&d| d <= 6).map(|d| if mtb { d.min(5) } else { d.max(1) - 1 } as usize);
-        let length = distance(w[0], w[1]);
-        lengths[explicit.unwrap_or(0)] += length;
-        if length > 0.0 {
-            hardest = hardest.max(explicit);
+    let mut start = 0;
+    for piece in route.pieces() {
+        let grade = if mtb { piece.mtb_scale } else { piece.sac_scale };
+        let explicit = grade.filter(|&d| d <= 6).map(|d| if mtb { d.min(5) } else { d.max(1) - 1 } as usize);
+        for w in geometry[start..=piece.end].windows(2) {
+            let length = distance(w[0], w[1]);
+            lengths[explicit.unwrap_or(0)] += length;
+            if length > 0.0 {
+                hardest = hardest.max(explicit);
+            }
         }
+        start = piece.end;
     }
     // Scaled to the route length, so that the six rounded lengths add up to it within 3 m.
     let sum: f64 = lengths.iter().sum();
-    let scale = if sum > 0.0 { route.totals.distance_m as f64 / sum } else { 0.0 };
+    let scale = if sum > 0.0 { route.totals().distance_m as f64 / sum } else { 0.0 };
     (lengths.map(|l| (l * scale).round() as u64), hardest)
 }
 

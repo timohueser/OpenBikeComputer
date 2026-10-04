@@ -290,12 +290,22 @@ impl<S: Source> Package<S> {
     }
 
     pub fn road(&self, id: u32) -> Result<Road> {
+        self.with_road(id, Road::clone)
+    }
+
+    /// Applies `f` to a road of the cached page, without a copy of its shape.
+    pub fn with_road<T>(&self, id: u32, f: impl FnOnce(&Road) -> T) -> Result<T> {
+        let page = self.page(id)?;
+        page.get((id % ROADS_PER_PAGE) as usize).map(f).ok_or_else(|| Error::InvalidData("Missing road".into()))
+    }
+
+    fn page(&self, id: u32) -> Result<Arc<Vec<Road>>> {
         if id >= self.manifest.roads {
             return Err(Error::InvalidData("Road outside package".into()));
         }
         let page = id / ROADS_PER_PAGE;
         let mut geometry = self.geometry.borrow_mut();
-        let value = if let Some((value, _)) = geometry.pages.get(&page) {
+        Ok(if let Some((value, _)) = geometry.pages.get(&page) {
             Arc::clone(value)
         } else {
             let value = crate::geometry::decode(&self.bytes(&self.key(&self.manifest.geometry, page)?)?)
@@ -326,8 +336,7 @@ impl<S: Source> Package<S> {
                 geometry.bytes += size;
             }
             value
-        };
-        value.get((id % ROADS_PER_PAGE) as usize).cloned().ok_or_else(|| Error::InvalidData("Missing road".into()))
+        })
     }
 
     fn number(&self, table: &Table, index: u32) -> Result<u32> {
