@@ -331,6 +331,7 @@ command = "tools/build-companion-core.sh aarch64-apple-ios-sim && companion-ios/
 jobs = ["ios-app"]
 platforms = ["macos"]
 triggers = [
+  "companion-ios/scripts/generate-website-fixture.py",
   "companion-ios/scripts/capture-website-screenshots.sh",
   "companion-ios/OBCCompanionUITests/WebsiteScreenshotTests.swift",
   "companion-ios/OBCCompanion/**",

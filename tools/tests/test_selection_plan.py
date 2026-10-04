@@ -519,6 +519,7 @@ class ShippedPlanTests(unittest.TestCase):
             ("companion-ios/OBCDevice/App.swift", device),
             ("host/obc-host-core/src/lib.rs", device),
             ("apps/planner-search/server.mjs", app),
+            ("companion-ios/scripts/generate-website-fixture.py", app | capture),
             ("companion-ios/scripts/capture-website-screenshots.sh", app | capture),
             ("companion-ios/OBCCompanionUITests/WebsiteScreenshotTests.swift", app | capture),
             ("companion-ios/OBCCompanion/App.swift", app | capture),
