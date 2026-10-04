@@ -1,5 +1,6 @@
 """Prepare independent planner components and compose a coherent regional release."""
 
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import json
 import math
 from pathlib import Path
@@ -7,12 +8,18 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
 
 from . import planner_components as components, planner_maps as maps, planner_sources as sources
 from . import planner_prepare as preparation, planner_release as releases
 
 
 SEARCH = maps.ROOT / "apps/planner-search"
+# Producers that bake at the same time. Most leave cores idle in long single-threaded steps; two at a
+# time keeps the two largest, the search database and the basemap heap, within 16 GB of memory.
+CONCURRENT = 2
+# Terrain and routing fetch into one DEM directory.
+DEM_FETCH = threading.Lock()
 
 
 def source_basemap(stage, osm, config, cache, prepared):
@@ -83,8 +90,9 @@ def terrain_coverage(config):
 
 def terrain_inputs(args, config, bounds=None):
     bounds = bounds or maps.terrain_bounds(config["bounds"])
-    maps.run(maps.ROOT / "target/release/obc-dem", "fetch", "--bbox",
-             ",".join(map(str, [bounds[1], bounds[0], bounds[3], bounds[2]])), "--out", args.dem_dir)
+    with DEM_FETCH:
+        maps.run(maps.ROOT / "target/release/obc-dem", "fetch", "--bbox",
+                 ",".join(map(str, [bounds[1], bounds[0], bounds[3], bounds[2]])), "--out", args.dem_dir)
     terrain = config["terrain"]
     if terrain.get("reference_index_sha256"):
         if not args.reference or sources.digest(args.reference / "index.json") != terrain["reference_index_sha256"]:
@@ -196,9 +204,11 @@ def specifications(config, prepared=None):
 
 
 def execute(args, config, cache, specs, active):
-    built = {}
+    """Bake each component once its dependencies are built, CONCURRENT at a time, in the order of `specs`."""
+    built, download = {}, threading.Lock()
     def osm():
-        path = args.osm or sources.download(config["osm"]["url"], cache.root / "downloads" / (config["osm"]["sha256"] + ".osm.pbf"), config["osm"]["sha256"])
+        with download:
+            path = args.osm or sources.download(config["osm"]["url"], cache.root / "downloads" / (config["osm"]["sha256"] + ".osm.pbf"), config["osm"]["sha256"])
         if sources.digest(path) != config["osm"]["sha256"]: raise ValueError("OSM input does not match the recipe")
         return path
     callbacks = {
@@ -213,13 +223,35 @@ def execute(args, config, cache, specs, active):
         "overlays": lambda stage: build_overlays(stage, built["routing"][0]),
         "assets": build_assets, "model": build_model,
         **{name: (lambda stage, name=name: build_layer(stage, config, name, built["terrain"][0] if name == "sun" else None)) for name in releases.DATA_LAYERS if name in config}}
-    for name, spec in specs.items():
+    def produce(name):
         if name in active and args.inputs and name in ("source-basemap", "source-search"):
             supplied = json.loads((args.inputs / "inputs.json").read_bytes())
             filename = "basemap.pmtiles" if name == "source-basemap" else "search.jsonl.zst"
             if sources.digest(args.inputs / filename) != supplied["files"][filename]:
                 raise ValueError(f"Prepared input checksum mismatch: {filename}")
-        built[name] = cache.build(spec, callbacks[name]) if name in active else cache.read(spec)
+        return cache.build(specs[name], callbacks[name]) if name in active else cache.read(specs[name])
+    pending, running = list(specs), {}
+    with ThreadPoolExecutor(CONCURRENT) as pool:
+        try:
+            while pending or running:
+                for name in [name for name in pending if set(specs[name]["dependencies"]) <= set(built)][:CONCURRENT - len(running)]:
+                    pending.remove(name)
+                    running[pool.submit(produce, name)] = name
+                if not running: raise ValueError("Component dependencies form a cycle")
+                done, _ = wait(running, return_when=FIRST_COMPLETED)
+                for future in done:
+                    built[running.pop(future)] = future.result()
+        except BaseException:
+            # The other producer stops at its next process. A repeated interrupt must not end the wait.
+            maps.STOPPING.set()
+            while not all(future.done() for future in running):
+                try:
+                    maps.stop_running()
+                    wait(running, timeout=1)
+                except KeyboardInterrupt:
+                    pass
+            maps.STOPPING.clear()
+            raise
     return built
 
 

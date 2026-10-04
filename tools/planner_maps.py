@@ -11,6 +11,7 @@ from pathlib import Path
 import signal
 import socket
 import subprocess
+import threading
 import time
 import zipfile
 
@@ -22,6 +23,9 @@ except ImportError:
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "builder/app"
 DATA = None  # the maps folder of the data directory in use; its caller sets it
+# Child processes start in their own session, so an interrupt reaches only this process. A caller that
+# runs producers in threads sets STOPPING and stops these; `run` then starts no new process.
+RUNNING, STOPPING = set(), threading.Event()
 ASSETS_REV = "028c18f713baecad011301ff7a69acc39bcc2ae7"
 ASSETS_URL = f"https://codeload.github.com/protomaps/basemaps-assets/zip/{ASSETS_REV}"
 SPRITES_LICENSE_URL = "https://raw.githubusercontent.com/tangrams/icons/92510779634f4a006c61ea70e50cb8c52c765a81/LICENSE.md"
@@ -43,14 +47,23 @@ def run(*args, **kwargs):
     if kwargs.pop("capture_output", False):
         kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     process = subprocess.Popen([str(arg) for arg in args], start_new_session=True, **kwargs)
+    RUNNING.add(process)
     try:
+        if STOPPING.is_set(): raise RuntimeError("The bake is stopping")
         stdout, stderr = process.communicate(input_data)
     except BaseException:
         stop_process(process)
         raise
+    finally:
+        RUNNING.discard(process)
     if process.returncode:
         raise subprocess.CalledProcessError(process.returncode, args, stdout, stderr)
     return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+
+
+def stop_running():
+    for process in list(RUNNING):
+        stop_process(process)
 
 
 def stop_process(process):

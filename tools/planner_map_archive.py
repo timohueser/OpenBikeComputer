@@ -56,7 +56,7 @@ def lossless(data):
     return (encoded if len(encoded) < len(data) else data), original
 
 
-def extract(source, destination, region, terrain=False, workers=2, recompress=True):
+def extract(source, destination, region, terrain=False, workers=os.cpu_count(), recompress=True):
     from pmtiles.reader import Reader, all_tiles
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import Writer
@@ -146,7 +146,7 @@ def main():
     parser.add_argument("--bbox", type=bounds, required=True)
     parser.add_argument("--terrain", action="store_true")
     parser.add_argument("--no-recompress", action="store_true")
-    parser.add_argument("--workers", type=int, choices=range(1, 9), default=2)
+    parser.add_argument("--workers", type=int, default=os.cpu_count())
     args = parser.parse_args()
     print(json.dumps(extract(args.source, args.output, args.bbox, args.terrain, args.workers,
                              not args.no_recompress), sort_keys=True))

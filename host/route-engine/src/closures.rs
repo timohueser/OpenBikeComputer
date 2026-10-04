@@ -55,7 +55,7 @@ impl Closures {
     pub fn build(roads: impl IntoIterator<Item = (u32, Vec<(u8, Closure)>)>) -> Result<Self, String> {
         let mut table = Self::default();
         for (road, closures) in roads {
-            let start = table.roads.len();
+            let mut entries = Vec::with_capacity(closures.len());
             for closure in closures {
                 let entry = match table.entries.iter().position(|known| *known == closure) {
                     Some(entry) => entry,
@@ -64,10 +64,11 @@ impl Closures {
                         table.entries.len() - 1
                     }
                 };
-                table.roads.push((road, u16::try_from(entry).map_err(|_| "Too many closures")?));
+                entries.push(u16::try_from(entry).map_err(|_| "Too many closures")?);
             }
-            table.roads[start..].sort_unstable();
-            table.roads.dedup();
+            entries.sort_unstable();
+            entries.dedup();
+            table.roads.extend(entries.into_iter().map(|entry| (road, entry)));
         }
         table.valid(u32::MAX).then_some(table).ok_or_else(|| "Unsorted closures".into())
     }

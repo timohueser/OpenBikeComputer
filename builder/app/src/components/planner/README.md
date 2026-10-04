@@ -14,7 +14,7 @@ pins the OSM extract, map, elevation, and data-layer inputs, and routing profile
 Map and search builders need Linux, Java 21, Maven, PostgreSQL 17,
 PostGIS 3, osm2pgsql 2, zstd, and `nominatim-db==5.3.2`.
 Add PostgreSQL's binaries to `PATH`. Run as a normal user.
-Allow temporary database space; builders use two threads.
+Allow temporary database space; builders use every core.
 
 ```sh
 obc planner prepare --data-dir /srv/planner/bw-source --reference /srv/obc-reference

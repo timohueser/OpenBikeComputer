@@ -7,6 +7,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -214,6 +215,18 @@ class ComponentTests(unittest.TestCase):
                 bake.execute(args, config, cache, selected, active)
                 self.assertEqual(build.call_count, 1)
                 run.assert_not_called()
+
+    def test_a_failed_producer_stops_the_producer_that_runs_beside_it(self):
+        config = preparation.recipe(bake.maps.ROOT / "tools/planner-regions/baden-wuerttemberg-switzerland.json")
+        specs = {name: spec for name, spec in bake.specifications(config).items() if name in ("terrain", "assets")}
+        def fail(stage): raise ValueError("assets failed")
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bake, "build_assets", side_effect=fail), \
+                patch.object(bake, "build_terrain", side_effect=lambda *_: bake.maps.run("sleep", "60")):
+            start = time.monotonic()
+            with self.assertRaisesRegex(ValueError, "assets failed"):
+                bake.execute(argparse.Namespace(osm=None, inputs=None), config, components.Cache(Path(temporary)), specs, set(specs))
+        self.assertLess(time.monotonic() - start, 30)
+        self.assertFalse(bake.maps.RUNNING)
 
     def test_grid_poi_update_does_not_partition_or_compress_other_components(self):
         with tempfile.TemporaryDirectory() as temporary:
