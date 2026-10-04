@@ -104,9 +104,8 @@ struct RouteDetailScreen: View {
     private let onRename: ((String) -> Void)?
     private let onRenameTap: (() -> Void)?
     private let onBikeTypeChange: ((BikeType) -> Void)?
-    /// Reverse the route, planned dressing only: it creates the flipped copy and navigates to it.
-    /// Nil on rides and imports.
-    private let onReverse: (() -> Void)?
+    /// Open the route in the planner, planned dressing only.
+    private let onEdit: (() -> Void)?
     private let onUploaded: ((DeviceObjectID?, UInt32) -> Void)?
     private let isRide: Bool
     /// Add to trip, planned only: the route becomes a day of the picked trip.
@@ -141,7 +140,7 @@ struct RouteDetailScreen: View {
         onRename: ((String) -> Void)? = nil,
         onRenameTap: (() -> Void)? = nil,
         onBikeTypeChange: ((BikeType) -> Void)? = nil,
-        onReverse: (() -> Void)? = nil,
+        onEdit: (() -> Void)? = nil,
         onUploaded: ((DeviceObjectID?, UInt32) -> Void)? = nil,
         tripPickerItems: [TripPickerItem] = [],
         onAddToTrip: ((TripSelection) -> Void)? = nil,
@@ -162,7 +161,7 @@ struct RouteDetailScreen: View {
         self.onRename = onRename
         self.onRenameTap = onRenameTap
         self.onBikeTypeChange = onBikeTypeChange
-        self.onReverse = onReverse
+        self.onEdit = onEdit
         self.onUploaded = onUploaded
         self.tripPickerItems = tripPickerItems
         self.onAddToTrip = onAddToTrip
@@ -218,9 +217,14 @@ struct RouteDetailScreen: View {
             if let rideShareMenu {
                 ToolbarItem(placement: .primaryAction) { rideShareMenu.photos(from: photos) }
             }
+            if let onEdit {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Edit", action: onEdit).accessibilityIdentifier("detail.edit")
+                }
+            }
             if let rideEditMenu {
                 ToolbarItem(placement: .primaryAction) { rideEditMenu.deleteAction(onDelete) }
-            } else if onAddToTrip != nil || onReverse != nil || onDelete != nil {
+            } else if onAddToTrip != nil || onDelete != nil {
                 ToolbarItem(placement: .primaryAction) { routeMenu }
             }
         }
@@ -247,15 +251,8 @@ struct RouteDetailScreen: View {
                 }
                 .accessibilityIdentifier("detail.addToTrip")
             }
-            if let onReverse {
-                // Reverse lands a copy; the original direction stays.
-                Button(action: onReverse) {
-                    Label("Create reversed copy", systemImage: "arrow.uturn.backward")
-                }
-                .accessibilityIdentifier("detail.reverse")
-            }
             if onDelete != nil {
-                if onAddToTrip != nil || onReverse != nil { Divider() }
+                if onAddToTrip != nil { Divider() }
                 Button(role: .destructive) { deleteShown = true } label: {
                     Label(isRide ? "Delete ride…" : "Delete route…", systemImage: "trash")
                 }

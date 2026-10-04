@@ -28,6 +28,8 @@ export interface RoutePoint {
     anchor?: Coordinate;
     /** The route turns back at this shaping point. */
     turnaround?: true;
+    /** A line about the place, such as a route file's waypoint description. */
+    note?: string;
 }
 export type Place = RoutePoint & {
     category: PlaceCategory;

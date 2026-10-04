@@ -663,6 +663,24 @@ final class MainScreenModelTests: XCTestCase {
         XCTAssertEqual(model.onDeviceState(record.id), .upToDate)
     }
 
+    /// Changes saved from the planner keep the route's device link, so the device copy reads out
+    /// of date until the next upload.
+    func testSavedPlannerChangesOutdateTheDeviceCopy() async throws {
+        let (model, _) = makeModel(.happyPath)
+        try await startLoaded(model)
+        try await waitFor("the identity scope") { model.connectedScope != nil }
+        let record = importedRecord()
+        model.addImportedRoute(record)
+        model.markRouteUploaded(record.id, objectID: DeviceObjectID(7), crc32: RouteObjectCodec.payloadCRC(for: record))
+        XCTAssertEqual(model.onDeviceState(record.id), .upToDate)
+
+        var edited = record
+        edited.route.points.removeLast()
+        model.saveRouteChanges(record.id, to: edited)
+        XCTAssertEqual(model.onDeviceState(record.id), .outdated)
+        XCTAssertEqual(model.plannedDeviceObjectID(for: record.id), DeviceObjectID(7))
+    }
+
     /// A link with no committed fingerprint is unproven: the app cannot verify what the linked
     /// id points at, so it shows no badge. The route still offers Upload, so the next push
     /// self-heals it with a real fingerprint.

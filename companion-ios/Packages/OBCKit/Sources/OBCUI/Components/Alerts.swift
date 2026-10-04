@@ -5,7 +5,8 @@ import SwiftUI
 
 /// One choice on an `obcChoiceSheet`.
 public struct OBCSheetAction {
-    public enum Role { case normal, destructive }
+    /// A `primary` choice is the amber action beside the other choices.
+    public enum Role { case normal, primary, destructive }
     let title: String
     let role: Role
     let action: () -> Void
@@ -19,16 +20,18 @@ public struct OBCSheetAction {
 
 public extension View {
     /// The app's bottom sheet for a question with a few answers: a title, one line, the choices,
-    /// and Cancel. One plain choice is the amber action; several are grouped rows; a destructive
-    /// choice is red text. A sheet, not a confirmation dialog: the dialog pops up as a bubble
-    /// beside its control.
+    /// and Cancel. A `primary` choice is the amber action, and the plain choices beside it are
+    /// grouped rows; one plain choice alone is the amber action; a destructive choice is red text.
+    /// A sheet, not a confirmation dialog: the dialog pops up as a bubble beside its control.
+    /// `onDismiss` runs once the sheet has gone, so a choice can open the next sheet there.
     func obcChoiceSheet(
         _ title: String,
         isPresented: Binding<Bool>,
         message: String? = nil,
-        actions: [OBCSheetAction]
+        actions: [OBCSheetAction],
+        onDismiss: (() -> Void)? = nil
     ) -> some View {
-        sheet(isPresented: isPresented) {
+        sheet(isPresented: isPresented, onDismiss: onDismiss) {
             OBCChoiceSheet(title: title, message: message, actions: actions)
         }
     }
@@ -38,7 +41,7 @@ public extension View {
     func obcDestructiveConfirm(
         _ title: String,
         isPresented: Binding<Bool>,
-        message: String,
+        message: String?,
         actionTitle: String,
         onConfirm: @escaping () -> Void
     ) -> some View {
@@ -85,6 +88,8 @@ private struct OBCChoiceSheet: View {
     private var plain: [(offset: Int, element: OBCSheetAction)] {
         Array(actions.enumerated()).filter { $0.element.role == .normal }
     }
+    /// Plain choices are rows unless one alone is the amber action.
+    private var rows: Bool { plain.count > 1 || actions.contains { $0.role == .primary } }
 
     var body: some View {
         OBCSheetContainer {
@@ -98,7 +103,14 @@ private struct OBCChoiceSheet: View {
                         .foregroundStyle(OBCTheme.secondary)
                         .padding(.bottom, 6)
                 }
-                if plain.count > 1 {
+                ForEach(Array(actions.enumerated()), id: \.offset) { index, action in
+                    if action.role == .primary {
+                        Button(action.title) { choose(action) }
+                            .buttonStyle(.obcPrimary)
+                            .accessibilityIdentifier("confirm.action.\(index)")
+                    }
+                }
+                if rows {
                     OBCGroupedSection {
                         ForEach(plain, id: \.offset) { index, action in
                             OBCListRow(label: action.title, showsChevron: true,
@@ -112,7 +124,7 @@ private struct OBCChoiceSheet: View {
                         Button(action.title) { choose(action) }
                             .buttonStyle(.obcDestructive)
                             .accessibilityIdentifier("confirm.action.\(index)")
-                    } else if plain.count == 1 {
+                    } else if action.role == .normal && !rows {
                         Button(action.title) { choose(action) }
                             .buttonStyle(.obcPrimary)
                             .accessibilityIdentifier("confirm.action.\(index)")
