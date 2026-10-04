@@ -32,6 +32,7 @@ Required fields are `points`, `days`, `budget`, `target`, `limit`, and `variant`
 | `variant` | `valley` or `direct` |
 | `mode` | Optional `route` or `trip` |
 | `live` | Optional boolean |
+| `name` | Optional signed-route name |
 | `bike`, `preset` | Optional activity and preset from the planner profile list |
 | `startDate` | Optional valid calendar date in `YYYY-MM-DD` form |
 | `loop` | Optional `true`; the start also ends the route |
@@ -49,7 +50,8 @@ Longitude is from -180 to 180. Latitude is from -90 to 90.
 The point `kind` is `start`, `finish`, `pass`, `via`, `waypoint`, `detour`, `night`,
 or `marker`. Optional fields are boolean `autoLabel`, string `placeKind`, a
 coordinate `anchor`, and `leg` (`routed`, `straight`, or `drawn`). A drawn leg can
-have a `drawn` array of coordinates between its endpoints.
+have a `drawn` array of coordinates between its endpoints. Optional `turnaround`
+is `true` when the point turns the route back.
 
 A night has integer `night` from 1 to `days - 1` and ID `night-N`, where `N` is
 that number. Night numbers are unique. Markers do not count as route points.
@@ -65,7 +67,10 @@ matches the plan. Other routes are calculated again. The line contains
 `edges`, `stops`, `seconds`, `unknownSurfaceKm`, `pushingKm`, and `unroutedKm`.
 Elevation and elapsed arrays have one entry per coordinate. Elevation can be
 null. Elapsed seconds are finite, non-negative, and do not decrease. Each stop
-has a point `id` and finite non-negative distance in kilometres.
+has a point `id` and finite non-negative distance in kilometres. Stops match all
+route points in route order. A loop repeats its start as the last stop. The first
+distance is zero, and distances do not decrease. A line with distinct
+coordinates has a positive last distance.
 
 Edge arrays have one entry per segment. Their channels use the decoded values
 of [the route API](route-api.md). Unknown channels stay with the line.
