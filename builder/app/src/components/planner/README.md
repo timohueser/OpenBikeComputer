@@ -8,8 +8,8 @@ search. The map builder uses its device catalogue.
 Run from the checkout. Install Rust, Node 24+, Python 3.12+, `uv`, `gh`, `rclone`,
 and the [PMTiles CLI](https://docs.protomaps.com/pmtiles/cli).
 Authenticate `gh` for the query model release. Set the R2 credential in
-`tools/obc.local`. The [region recipe](../../../../../tools/planner-regions/baden-wuerttemberg.json)
-pins the OSM extract, map, elevation, and snow inputs, and routing profiles.
+`tools/obc.local`. The [region recipe](../../../../../tools/planner-regions/baden-wuerttemberg-switzerland.json)
+pins the OSM extract, map, elevation, and data-layer inputs, and routing profiles.
 
 Map and search builders need Linux, Java 21, Maven, PostgreSQL 17,
 PostGIS 3, osm2pgsql 2, zstd, and `nominatim-db==5.3.2`.
@@ -121,32 +121,22 @@ obc planner
 obc planner verify
 ```
 
-Open `http://127.0.0.1:4175/planner.html`. Setup downloads regional PMTiles,
-prepared Photon records, and the query model. It builds BW routing with all
-profiles. Normal launch has no downloads.
-`verify` checks map hashes, SQLite integrity, and routing object closure.
+Open `http://127.0.0.1:4175/planner.html`. Setup runs `prepare` with the
+region recipe. Normal launch has no downloads. `verify` checks map hashes,
+SQLite integrity, and routing object closure.
 
-A test-region setup runs `prepare`. First copy its inputs:
-
-```sh
-# The source mirror does not hold them yet. SHA256 and NAME come from the recipe.
-# prepare reads its source cache, ~/.cache/obc/planner/sources.
-cp EXTRACT.osm.pbf ~/.cache/obc/planner/sources/SHA256.osm.pbf
-cp AUXILIARY_FILE ~/.cache/obc/planner/sources/auxiliary/NAME
-```
+The pinned OSM extract merges the Geofabrik Baden-Württemberg and Switzerland
+extracts of one date, clipped to the recipe bounds with `osmium`.
 
 | Setting | Default |
 | --- | --- |
-| `--region` | `baden-wuerttemberg`; test regions `engadin`, `colorado-front-range` |
+| `--region` | `baden-wuerttemberg-switzerland`; test regions `engadin`, `colorado-front-range` |
 | `--data-dir` | `OBC_PLANNER_DATA/REGION`; `OBC_PLANNER_DATA` is `~/.cache/obc/planner` |
 | `OBC_PLANNER_RELEASE` | `~/.cache/obc/planner/bw-online` |
 | `--port` | Planner `4175` |
 | `--tile-port` | Terrain `8789` |
 | `--route-port` | Routing `8787` |
 | `--search-port` | Search `8786` |
-| `--reference` or `OBC_REFERENCE_ARCHIVE` | `~/obc-reference` if present |
-| `--dem-dir` | `~/.cache/obcm/dem` |
-| `--pmtiles`, `--basemap`, `--osm`, `--dem-dir`, `--reference` | BW setup only; a test-region setup refuses them |
 
 ## Client configuration
 

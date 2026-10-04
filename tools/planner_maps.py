@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare and serve a local planner map with the PMTiles deployment layout."""
+"""Build, compact and serve local planner map archives with the PMTiles deployment layout."""
 
 import argparse
 import hashlib
@@ -12,9 +12,7 @@ import shutil
 import signal
 import socket
 import subprocess
-import tempfile
 import time
-from urllib.request import urlopen
 import zipfile
 
 try:
@@ -28,7 +26,6 @@ DATA = APP / "public/data/planner"
 ASSETS_REV = "028c18f713baecad011301ff7a69acc39bcc2ae7"
 ASSETS_URL = f"https://codeload.github.com/protomaps/basemaps-assets/zip/{ASSETS_REV}"
 SPRITES_LICENSE_URL = "https://raw.githubusercontent.com/tangrams/icons/92510779634f4a006c61ea70e50cb8c52c765a81/LICENSE.md"
-BW_BOUNDS = "7.45,47.5,10.5,49.85"
 
 
 def bounds(value):
@@ -136,49 +133,6 @@ def overlays_archive(index, destination):
         "python", "-m", "tools.planner_overlays", index, destination, cwd=ROOT)
 
 
-def prepare(args):
-    if DATA.exists():
-        raise ValueError(f"{DATA} already exists. Move it aside before preparing another map.")
-    DATA.parent.mkdir(parents=True, exist_ok=True)
-    # Publish only a complete bundle. A failed download leaves the current map untouched.
-    with tempfile.TemporaryDirectory(prefix=".planner-", dir=DATA.parent) as directory:
-        stage = Path(directory)
-        for name, source, kind, zoom in [("basemap", args.basemap, "mvt", 14),
-                                         ("terrain", args.terrain, "webp", 12)]:
-            path = stage / f"{name}.pmtiles"
-            extract_bounds = terrain_bounds(args.bbox) if name == "terrain" else args.bbox
-            run(args.pmtiles, "extract", source, str(path),
-                "--bbox=" + ",".join(map(str, extract_bounds)), f"--maxzoom={zoom}")
-            if name == "terrain":
-                compact = stage / "compact.pmtiles"
-                compact_archive(path, compact, args.bbox, terrain=True)
-                compact.replace(path)
-            verify_archive(args.pmtiles, path, kind, zoom)
-        places_archive(stage / "basemap.pmtiles", stage / "places.pmtiles")
-        with urlopen(ASSETS_URL, timeout=120) as response:
-            install_assets(response.read(), stage / "assets")
-        with urlopen(SPRITES_LICENSE_URL, timeout=30) as response:
-            (stage / "assets/sprites/LICENSE.txt").write_bytes(response.read())
-        manifest = {
-            "bounds": args.bbox,
-            "terrain_bounds": terrain_bounds(args.bbox),
-            "sources": {"basemap": args.basemap, "terrain": args.terrain,
-                        "assets": ASSETS_URL, "sprites_license": SPRITES_LICENSE_URL},
-            "files": {},
-        }
-        for path in sorted(stage.rglob("*")):
-            if path.is_file():
-                with path.open("rb") as stream:
-                    digest = hashlib.file_digest(stream, "sha256").hexdigest()
-                manifest["files"][path.relative_to(stage).as_posix()] = {
-                    "bytes": path.stat().st_size, "sha256": digest,
-                }
-        (stage / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        stage.rename(DATA)
-    size = sum(item["bytes"] for item in manifest["files"].values())
-    print(f"Prepared {DATA} ({size / 1024**2:.1f} MiB)")
-
-
 def check_port(port):
     with socket.socket() as listener:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -261,10 +215,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pmtiles", default=os.environ.get("PMTILES", "pmtiles"))
     commands = parser.add_subparsers(dest="command", required=True)
-    download = commands.add_parser("prepare", help="Extract Baden-Württemberg and copy map assets")
-    download.add_argument("--basemap", required=True, help="Protomaps PMTiles source URL or file")
-    download.add_argument("--terrain", default="https://download.mapterhorn.com/planet.pmtiles")
-    download.add_argument("--bbox", type=bounds, default=BW_BOUNDS)
     compact = commands.add_parser("compact", help="Extract a box and losslessly compress its terrain")
     compact.add_argument("source", type=Path)
     compact.add_argument("output", type=Path)
@@ -285,7 +235,7 @@ def main():
         if args.command == "compact":
             compact_archive(args.source, args.output, args.bbox, args.terrain, not args.no_recompress)
         else:
-            (prepare if args.command == "prepare" else serve)(args)
+            serve(args)
     except KeyboardInterrupt:
         pass
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:

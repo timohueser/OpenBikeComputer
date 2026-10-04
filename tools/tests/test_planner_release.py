@@ -16,7 +16,7 @@ class ReleaseTests(unittest.TestCase):
     def test_search_validation_rejects_old_or_missing_address_indexes_before_preparation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            database = root / 'search/baden-wuerttemberg.sqlite'
+            database = root / 'search/baden-wuerttemberg-switzerland.sqlite'
             database.parent.mkdir()
             with sqlite3.connect(database) as db:
                 db.execute('CREATE TABLE metadata(key TEXT,value TEXT)')
@@ -28,7 +28,7 @@ class ReleaseTests(unittest.TestCase):
                     release.search_metadata(database)
                 with patch.object(planner_prepare.maps, 'run') as run:
                     with self.assertRaisesRegex(ValueError, 'Rebuild search package'):
-                        planner_prepare.prepare(argparse.Namespace(data_dir=root, recipe=release.maps.ROOT / 'tools/planner-regions/baden-wuerttemberg.json'))
+                        planner_prepare.prepare(argparse.Namespace(data_dir=root, recipe=release.maps.ROOT / 'tools/planner-regions/baden-wuerttemberg-switzerland.json'))
                     run.assert_not_called()
             with sqlite3.connect(database) as db:
                 db.execute('CREATE TABLE addresses(lat REAL,lon REAL)')
@@ -138,7 +138,7 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(planner_prepare.recipe(path)["region"], path.stem)
 
     def test_recipe_names_explicit_profiles_and_rejects_invalid_selection(self):
-        config = json.loads((release.maps.ROOT / "tools/planner-regions/baden-wuerttemberg.json").read_bytes())
+        config = json.loads((release.maps.ROOT / "tools/planner-regions/baden-wuerttemberg-switzerland.json").read_bytes())
         expected = {bike + suffix for bike in ["touring", "road", "gravel", "mtb", "hiking"]
                     for suffix in ["", "/less-climbing", "/shorter"]}
         self.assertEqual(set(config["profiles"]), expected)

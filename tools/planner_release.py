@@ -198,7 +198,7 @@ def main(argv=None):
     parser.add_argument("command", choices=["prepare", "grid", "publish", "deploy", "rollback", "finalize", "site-config"])
     parser.add_argument("--input-release", type=Path, help="Verified regional bake to partition with grid")
     parser.add_argument("--data-dir", type=Path, default=os.environ.get("OBC_PLANNER_RELEASE", str(Path.home() / ".cache/obc/planner/bw-online")))
-    parser.add_argument("--recipe", type=Path, default=maps.ROOT / "tools/planner-regions/baden-wuerttemberg.json")
+    parser.add_argument("--recipe", type=Path, default=maps.ROOT / "tools/planner-regions/baden-wuerttemberg-switzerland.json")
     parser.add_argument("--source-cache", type=Path, default=Path.home() / ".cache/obc/planner/sources")
     parser.add_argument("--osm", type=Path)
     parser.add_argument("--inputs", type=Path, help="Verified source-builder output directory")

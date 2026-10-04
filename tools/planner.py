@@ -7,13 +7,10 @@ import fcntl
 import json
 import os
 from pathlib import Path
-import re
-import shutil
 import signal
 import sqlite3
 import subprocess
 import sys
-import tempfile
 import time
 from urllib.request import urlopen
 
@@ -24,68 +21,17 @@ except ImportError:
 
 ROOT = maps.ROOT
 SEARCH = ROOT / "apps/planner-search"
-REGION = "baden-wuerttemberg"
+REGION = "baden-wuerttemberg-switzerland"
 RECIPES = ROOT / "tools/planner-regions"
-CACHE = Path.home() / ".cache/obcm"
 
 
 def run(*command, **kwargs):
     return maps.run(*command, cwd=ROOT, **kwargs)
 
 
-def latest_basemap():
-    result = run("curl", "-fsSL", "https://build-metadata.protomaps.dev/builds.json", capture_output=True, text=True)
-    keys = [b["key"] for b in json.loads(result.stdout)
-            if b["version"].startswith("4.") and re.fullmatch(r"\d{8}\.pmtiles", b["key"])]
-    if not keys:
-        raise ValueError("No compatible Protomaps build. Pass setup --basemap URL.")
-    return "https://build.protomaps.com/" + max(keys)
-
-
 def setup(args):
-    if args.region != REGION:
-        # Only Baden-Württemberg has prepared development inputs; other regions bake from their recipe.
-        releases.main(["prepare", "--recipe", str(RECIPES / f"{args.region}.json"), "--data-dir", str(args.data_dir)])
-        print(f"Setup complete. Run: obc planner serve --region {args.region}", flush=True)
-        return
-    for executable in ["node", "npm", "uv", "gh", "cargo", "curl", args.pmtiles]:
-        if not shutil.which(executable):
-            raise ValueError(f"Install {executable}, then repeat obc planner setup.")
-    run("cargo", "build", "--release", "-p", "route-build", "-p", "route-server",
-        "-p", "obc-dem", "--features", "route-build/obc-terrain")
-    run(sys.executable, SEARCH / "setup.py", "--build-data", "--region", REGION,
-        "--data-dir", args.data_dir / "search")
-    if not maps.DATA.exists():
-        maps.prepare(argparse.Namespace(pmtiles=args.pmtiles, basemap=args.basemap or latest_basemap(),
-                     terrain="https://download.mapterhorn.com/planet.pmtiles", bbox=args.bounds))
-    route = args.data_dir / "routing"
-    if not route.exists():
-        source = args.osm or CACHE / "geofabrik/europe_germany_baden-wuerttemberg-latest.osm.pbf"
-        if not source.is_file():
-            if args.osm:
-                raise ValueError(f"OSM input does not exist: {source}")
-            source.parent.mkdir(parents=True, exist_ok=True)
-            partial = source.with_suffix(".download")
-            run("curl", "--fail", "--location", "--retry", "3",
-                "--output", partial, "https://download.geofabrik.de/europe/germany/baden-wuerttemberg-latest.osm.pbf")
-            partial.rename(source)
-        west, south, east, north = args.bounds
-        run(ROOT / "target/release/obc-dem", "fetch", "--bbox", f"{south},{west},{north},{east}", "--out", args.dem_dir)
-        with tempfile.TemporaryDirectory(prefix=".routing-", dir=args.data_dir) as stage:
-            output = Path(stage) / "routing"
-            command = [ROOT / "target/release/route-build", source, "--output", output,
-                       "--region", REGION, "--country", "DE", "--bounds", ",".join(map(str, args.bounds)),
-                       "--profiles", "all", "--dem", args.dem_dir]
-            if args.reference:
-                command += ["--reference", args.reference]
-            print("Building BW routing with local elevation data. This can take a long time.", flush=True)
-            run(*command)
-            output.rename(route)
-    run(ROOT / "target/release/route-server", route, "--build-overlays")
-    if not current_overlays(route):
-        maps.overlays_archive(route / "overlays.sqlite", maps.DATA / "overlays.pmtiles")
-    verify(args, full=True)
-    print("Setup complete. Run: obc planner", flush=True)
+    releases.main(["prepare", "--recipe", str(RECIPES / f"{args.region}.json"), "--data-dir", str(args.data_dir)])
+    print(f"Setup complete. Run: obc planner serve --region {args.region}", flush=True)
 
 
 def current_overlays(route):
@@ -175,26 +121,12 @@ def main():
     parser.add_argument("--region", default=REGION, choices=sorted(p.stem for p in RECIPES.glob("*.json")))
     parser.add_argument("--data-dir", type=Path, help="Default: OBC_PLANNER_DATA/REGION")
     parser.add_argument("--pmtiles")
-    parser.add_argument("--basemap", help="Override the available Protomaps v4 build for a new map bundle")
-    parser.add_argument("--osm", type=Path, help="Use an existing BW OSM PBF for routing")
-    parser.add_argument("--dem-dir", type=Path)
-    parser.add_argument("--reference", type=Path)
     parser.add_argument("--port", type=int, default=4175)
     parser.add_argument("--tile-port", type=int, default=8789)
     parser.add_argument("--route-port", type=int, default=8787)
     parser.add_argument("--search-port", type=int, default=8786)
     args = parser.parse_args()
-    if args.command == "setup" and args.region != REGION:
-        named = [f"--{name.replace('_', '-')}" for name in ["pmtiles", "basemap", "osm", "dem_dir", "reference"]
-                 if getattr(args, name) is not None]
-        if named:
-            parser.error(f"{', '.join(named)} only apply to {REGION}. Setup bakes {args.region} from its recipe.")
     args.pmtiles = args.pmtiles or os.environ.get("PMTILES", "pmtiles")
-    args.dem_dir = args.dem_dir or CACHE / "dem"
-    reference = args.reference or os.environ.get("OBC_REFERENCE_ARCHIVE")
-    if not reference and (Path.home() / "obc-reference/index.json").is_file():
-        reference = Path.home() / "obc-reference"
-    args.reference = Path(reference) if reference else None
     base = Path(os.environ.get("OBC_PLANNER_DATA", Path.home() / ".cache/obc/planner"))
     args.data_dir = (args.data_dir or base / args.region).expanduser().resolve()
     routing = args.data_dir / "routing/manifest.json"
