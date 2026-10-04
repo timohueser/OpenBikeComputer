@@ -59,8 +59,9 @@ heights are integer metres.
 | `start_udeg` | Long route only: `[longitude, latitude]` of its start |
 
 Each record has a `name` or a `ref`, or both. The builder cuts a longer
-`description` at a word boundary. `symbol` is absent when the region's countries
-include France. The client then draws the `ref`.
+`description` at a word boundary. `symbol` is absent when France is the only
+country of the region; the client then draws the `ref`. A region with France and
+another country has no catalog yet: the builder has no country lookup.
 
 ### Plan
 

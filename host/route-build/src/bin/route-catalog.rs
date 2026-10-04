@@ -8,13 +8,11 @@ struct Args {
     /// The ISO codes of the region's countries.
     #[arg(long, required = true, value_delimiter = ',')]
     countries: Vec<String>,
-    #[arg(long, default_value_t = std::thread::available_parallelism().map_or(1, |n| n.get()))]
-    workers: usize,
 }
 
 fn main() {
     let args = Args::parse();
-    match route_build::catalog::build(&args.package, &args.countries, args.workers) {
+    match route_build::catalog::build(&args.package, &args.countries) {
         Ok(Some(report)) => println!("{}", report.to_json()),
         Ok(None) => eprintln!("The route catalog is current"),
         Err(error) => {

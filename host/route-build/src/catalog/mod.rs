@@ -23,8 +23,10 @@ const MIN_LENGTH_M: f64 = 2_000.0;
 const MAX_GAP_M: f64 = 500.0;
 const ROUNDTRIP_M: f64 = 200.0;
 const DESCRIPTION_CHARS: usize = 200;
-/// The search and cost caches of all routers together, besides the shared graph.
-const ROUTER_MEMORY: usize = 4 << 30;
+/// The memory budget of one router. A fixed budget keeps the catalog the same on each machine.
+const ROUTER_BUDGET: usize = 768 << 20;
+/// The budget of all routers together; it limits the number of workers.
+const ROUTERS_BUDGET: usize = 6 << 30;
 
 /// Why a selected relation is not in the catalog.
 #[derive(Clone, Copy, Debug)]
@@ -35,6 +37,7 @@ pub enum Reason {
     UnroutableGap,
     TooManyPoints,
     ShapingCheck,
+    RouterLimit,
     NestedLongRoute,
     NoStages,
     MissingStage,
@@ -209,12 +212,18 @@ macro_rules! read {
 
 /// Writes `route-catalog.json` into a routing package with source OSM tables. A present file is
 /// current: the package is immutable, and the file only moves on with it.
-pub fn build(directory: &Path, countries: &[String], workers: usize) -> Result<Option<Report>, String> {
+pub fn build(directory: &Path, countries: &[String]) -> Result<Option<Report>, String> {
     let output = directory.join(FILE);
     if output.exists() {
         return Ok(None);
     }
-    let france = countries.iter().any(|c| c == "FR");
+    let france = match countries {
+        [only] => only == "FR",
+        _ if countries.iter().any(|c| c == "FR") => {
+            return Err("A region with France and another country needs a country lookup for route marks".into())
+        }
+        _ => false,
+    };
     let started = std::time::Instant::now();
     let package = Directory::open(directory).map_err(|e| e.to_string())?;
     if package.manifest().osm.tables().all(|table| table.len == 0) {
@@ -224,7 +233,8 @@ pub fn build(directory: &Path, countries: &[String], workers: usize) -> Result<O
         package.metric(profile).map_err(|_| format!("The routing package lacks the {profile} profile"))?;
     }
     let relations = read!(package, relations, Relation, |_| true);
-    let (records, report) = catalog(&package, relations, france, workers)?;
+    let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let (records, report) = catalog(&package, relations, france, cpus.min(ROUTERS_BUDGET / ROUTER_BUDGET))?;
     let partial = directory.join(format!(".{FILE}.partial"));
     let bytes = serde_json::to_vec(&json!({"format": 1, "routes": records})).map_err(|e| e.to_string())?;
     std::fs::write(&partial, bytes).map_err(|e| e.to_string())?;
@@ -300,17 +310,12 @@ where
     drop(ways);
     let queue = Mutex::new(jobs);
     let results = Mutex::new(Vec::new());
-    let workers = workers.max(1);
-    // Each router counts the shared graph in its budget, but the process holds it only once.
-    let shared = package.manifest().graph.decoded_bytes()
-        + package.manifest().landmarks.as_ref().map_or(0, |index| index.decoded_bytes());
-    let budget = shared + ROUTER_MEMORY / workers;
-    let mut forks: Vec<_> = (0..workers).map(|_| package.fork()).collect();
+    let mut forks: Vec<_> = (0..workers.max(1)).map(|_| package.fork()).collect();
     std::thread::scope(|scope| {
         for routing in forks.drain(..) {
             let (queue, results, points) = (&queue, &results, &points);
             scope.spawn(move || {
-                let mut router = Router::new(routing, budget);
+                let mut router = Router::new(routing, ROUTER_BUDGET);
                 loop {
                     // The guard must drop before the work, so the job is taken in its own statement.
                     let job = queue.lock().unwrap().pop();
@@ -439,9 +444,13 @@ fn route<D: RoutingData>(
         if distance(from, to) > MAX_GAP_M {
             return Err(Reason::Gap);
         }
-        let route = router
-            .route(&shape::request(profiles[0], &[from, to], vec![]), &Control::default())
-            .map_err(|_| Reason::UnroutableGap)?;
+        let route =
+            router.route(&shape::request(profiles[0], &[from, to], vec![]), &Control::default()).map_err(|error| {
+                match error {
+                    route_engine::Error::Limit => Reason::RouterLimit,
+                    _ => Reason::UnroutableGap,
+                }
+            })?;
         line.extend(shape::vertices(&route).into_iter().chain([to]));
         line.dedup();
         Ok(())
@@ -459,6 +468,7 @@ fn route<D: RoutingData>(
     let plan = shape::shape(router, profiles, &line, length, closed).map_err(|failure| match failure {
         Failure::TooManyPoints => Reason::TooManyPoints,
         Failure::Check => Reason::ShapingCheck,
+        Failure::Limit => Reason::RouterLimit,
     })?;
     let geometry = shape::vertices(&plan.route);
     let keep: Vec<usize> = plan.route.legs.iter().map(|leg| leg.from_index).chain([geometry.len() - 1]).collect();
@@ -511,10 +521,8 @@ fn route<D: RoutingData>(
 /// The length of the plan route with each grade, and the hardest explicit grade, from the grade
 /// channel of the route edges.
 fn grade_lengths(route: &route_engine::Route, geometry: &[P], mtb: bool) -> ([u64; 6], Option<usize>) {
-    let edges = json!(route.edges);
-    let runs = edges[if mtb { "mtb_scale" } else { "sac_scale" }].as_array().cloned().unwrap_or_default();
-    let values =
-        runs.iter().flat_map(|run| std::iter::repeat_n(run[0].as_u64(), run[1].as_u64().unwrap_or(0) as usize));
+    let runs = route.edges.runs(if mtb { "mtb_scale" } else { "sac_scale" });
+    let values = runs.iter().flat_map(|(value, edges)| std::iter::repeat_n(value.as_u64(), *edges));
     let mut lengths = [0.0f64; 6];
     let mut hardest = None;
     for (w, value) in geometry.windows(2).zip(values) {

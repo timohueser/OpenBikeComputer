@@ -7,7 +7,7 @@
 use route_engine::{
     data::RoutingData,
     model::{Pace, Point},
-    Control, Request, Route, Router,
+    Control, Error, Request, Route, Router,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -161,6 +161,8 @@ pub struct Plan {
 pub enum Failure {
     TooManyPoints,
     Check,
+    /// The router reached its resource limit.
+    Limit,
 }
 
 /// The search for one line. A plan is a list of ascending line vertex indices.
@@ -176,6 +178,8 @@ struct Search<'a, D> {
     fixed: HashSet<usize>,
     /// Vertices that were in the plan once; a second try does not help.
     tried: HashSet<usize>,
+    /// A leg reached the router limit, so a failed search is the limit's fault.
+    limited: bool,
 }
 
 impl<D: RoutingData> Search<'_, D> {
@@ -184,7 +188,13 @@ impl<D: RoutingData> Search<'_, D> {
             return *leg;
         }
         let points = [self.line[i], self.line[j]];
-        let routed = self.route(self.profiles[p], &points, &[]).map(|route| vertices(&route)).unwrap_or_default();
+        let routed = match self.route(self.profiles[p], &points, &[]) {
+            Ok(route) => vertices(&route),
+            Err(failure) => {
+                self.limited |= failure == Failure::Limit;
+                Vec::new()
+            }
+        };
         let leg = self.compare(&routed, i, j);
         self.legs.insert((p, i, j), leg);
         leg
@@ -243,18 +253,31 @@ impl<D: RoutingData> Search<'_, D> {
         }
     }
 
+    /// Why the search found no plan.
+    fn failure(&self) -> Failure {
+        if self.limited {
+            Failure::Limit
+        } else {
+            Failure::Check
+        }
+    }
+
     fn insert(&mut self, plan: &mut Vec<usize>, via: Option<usize>) -> Result<(), Failure> {
-        let via = via.ok_or(Failure::Check)?;
+        let via = via.ok_or_else(|| self.failure())?;
         self.tried.insert(via);
-        let at = plan.binary_search(&via).err().ok_or(Failure::Check)?;
+        let at = plan.binary_search(&via).err().ok_or_else(|| self.failure())?;
         plan.insert(at, via);
         Ok(())
     }
 
     fn route(&mut self, profile: &str, points: &[P], turnarounds: &[usize]) -> Result<Route, Failure> {
-        self.router
-            .route(&request(profile, points, turnarounds.to_vec()), &Control::default())
-            .map_err(|_| Failure::Check)
+        self.router.route(&request(profile, points, turnarounds.to_vec()), &Control::default()).map_err(|error| {
+            if matches!(error, Error::Limit) {
+                Failure::Limit
+            } else {
+                Failure::Check
+            }
+        })
     }
 }
 
@@ -320,6 +343,7 @@ pub fn shape<D: RoutingData>(
         legs: HashMap::new(),
         fixed: tips.iter().copied().collect(),
         tried: plan.iter().copied().collect(),
+        limited: false,
     };
     for _ in 0..ROUNDS {
         loop {
@@ -371,7 +395,7 @@ pub fn shape<D: RoutingData>(
         search.insert(&mut plan, via)?;
         search.fixed.extend(via);
     }
-    Err(Failure::Check)
+    Err(search.failure())
 }
 
 /// Simplifies a line, keeping the vertices at `keep` (ascending indices). Returns the line and the
