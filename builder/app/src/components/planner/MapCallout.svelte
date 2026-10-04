@@ -14,7 +14,7 @@
     import Segmented from './Segmented.svelte';
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import { profileAscent } from '../../lib/planner/profile-data';
-    import { dayOverTarget, hasEndpoints as endpointsChosen, maxRidingDays, nearestProgress, routeCoordinates, tripDays, type Coordinate, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import { canMoveLoopStart, dayOverTarget, hasEndpoints as endpointsChosen, maxRidingDays, nearestProgress, routeCoordinates, tripDays, type Coordinate, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
 
     let {
         kind, trip, days, overnightNote = '', dayLabels, night, point, place, coordinate, candidates, legMode,
@@ -138,7 +138,7 @@
         <Segmented label="Leg mode" options={legModes} value={legMode} onChange={onLegMode} />
         <p class="hint">Straight lines join shaping points without following roads.</p>
         <button type="button" class="secondary" onclick={onInsert}>Insert point here</button>
-        {#if trip.loop}<button type="button" class="secondary" onclick={onLoopStart}>Start the loop here</button>{/if}
+        {#if canMoveLoopStart(trip)}<button type="button" class="secondary" onclick={onLoopStart}>Start the loop here</button>{/if}
     {:else if kind === 'dayend'}
         <h2>Day {dayLabels[night]} ends here for now</h2>
         {#if overnightNote}<p class="hint" role="status">{overnightNote}</p>{/if}

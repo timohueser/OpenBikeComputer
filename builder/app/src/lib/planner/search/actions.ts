@@ -54,8 +54,8 @@ export async function applyQueryChanges(
     if (change.op !== 'route' && !hasEndpoints(trip))
       throw new Error('Choose a start and finish before editing the route.');
     // Both rebuild the points from the stops, and a loop lists its start twice.
-    if (trip.loop && (change.op === 'reverse' || change.op === 'reroute'))
-      throw new Error('Search cannot change a loop this way yet. Edit the loop on the map.');
+    if (trip.loop && change.op === 'reverse') throw new Error('Reverse does not work on a loop yet.');
+    if (trip.loop && change.op === 'reroute') throw new Error('Reroute does not work on a loop yet.');
     const line = routeCoordinates(trip),
       total = cumulative(line).at(-1)!;
     const ridingDay = (number: number) => {
