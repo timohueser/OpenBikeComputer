@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { DETAIL, OVERVIEW, WEEKS, climateTile, type Level } from './climate';
 import {
-    NO_TEMPERATURE, nightLabels, paintWeather, rainWeeks, rampColor, spread, temperatureClass, weatherChart, weatherYear, weekLabel, word, type CellBlock, type Samples,
+    NO_TEMPERATURE, highAt, mapPlaces, nightLabels, paintWeather, placeLabels, rainRange, rainWeeks, rampColor, spread, stripClasses, stripScale, temperatureClass,
+    weatherChart, weatherYear, weekLabel, word, type CellBlock, type Samples,
 } from './weather';
 
 // Plane order and value counts of specs/planner-climate-tiles.md; orography is the only 2-byte plane.
@@ -92,6 +93,7 @@ describe('weather along a route', () => {
         overview.set('lapse_tmin', 4, cell, -50);
         overview.set('wet_share', week, cell, 30);
         overview.set('tmin', week, cell, 8);
+        overview.set('rain', week, cell, 13);
     }
     overview.set('tmax', week, 0, 28);
     overview.set('tmax', week, 1, 24);
@@ -106,14 +108,32 @@ describe('weather along a route', () => {
     };
 
     it('has a High, a Low and a Rain row and names the week in its label', () => {
-        const year = weatherYear(samples([500, 500]), date, 'light');
+        const year = weatherYear(samples([500, 500]), date, 'light', 2016);
         expect(year.rows.map(row => row.label)).toEqual(['High', 'Low', 'Rain']);
-        expect(year.label).toBe('On the route, 14–20 May: highs 12–14 °C · lows 4 °C · rain on 2.1 of 7 days');
+        // The only rain week of the archive is the typical rain of the weeks around it.
+        expect(year.label).toBe('On the route, 14–20 May: highs 12–14 °C · lows 4 °C · rain on 2.1 of 7 days, 10–20 mm');
         expect(year.rows[0].cells[week]).toBe(temperatureClass(13));
         expect(year.rows[1].cells[week]).toBe(temperatureClass(4));
         expect(year.fills[year.rows[2].cells[week]].label).toBe('2 of 7 days');
         expect(year.rows[0].cells[0]).toBe(NO_TEMPERATURE);
-        expect(weatherYear(null, date, 'light').rows[0].cells.every(cell => cell === 255)).toBe(true);
+        expect(weatherYear(null, date, 'light', 2016).rows[0].cells.every(cell => cell === 255)).toBe(true);
+    });
+
+    it('gives each row its value in every week for the slider', () => {
+        const rows = weatherYear(samples([500, 500]), date, 'light', 2016).rows;
+        expect(rows.map(row => row.values![week])).toEqual(['13°', '4°', '2/7 d · 10–20 mm']);
+        expect(rows.map(row => row.values![week + 2])).toEqual(['–', '–', '–']);
+    });
+
+    it('stretches the strip colours over the highs of the route and marks its coldest and warmest stretch', () => {
+        const highs = Float32Array.of(9, 9.2, 12, 19, 18.8, 18.7, NaN, 14);
+        const classes = stripClasses(highs);
+        expect([classes[0], classes[3], classes[6]]).toEqual([0, 31, 32]);
+        expect(stripScale(highs)).toEqual({ range: '9–19 °C along the route', marks: [{ index: 0, label: '9°' }, { index: 4, label: '19°' }] });
+        // One temperature along the whole route takes the middle colour and needs no marks.
+        expect([...stripClasses([5, 5])]).toEqual([16, 16]);
+        expect(stripScale([5, 5.2])!.marks).toEqual([]);
+        expect(stripScale([NaN])).toBeNull();
     });
 
     it('charts the wet days of the week for rain, and highs and lows for temperature', () => {
@@ -132,9 +152,8 @@ describe('weather along a route', () => {
         expect(weeks.mean[51]).toBeCloseTo((7 * 7 + 3 * 7 * 8 / 9) / 10);
         const point = { ...samples([500]), detail: () => ({ tile: rainy.tile(), index: 0 }) };
         const rain = weatherChart(point, 0, 2016, date, 'light', 'rain');
-        expect(rain.headline).toBe('14–20 May: rain on about 3 of 7 days (1–5 in most years)');
+        expect(rain.headline).toBe('14–20 May: rain on about 3 of 7 days (1–5 in most years) · 5–15 mm a week');
         expect(rain.grids).toEqual([]);
-        expect(rain.note).toBe('Usually more rain than in an average week here.');
         expect(weatherChart(samples([500, 500]), 0, 2016, date, 'light', 'temperature').grids.map(grid => grid.label)).toEqual(['Daytime high', 'Night low']);
     });
 
@@ -142,6 +161,55 @@ describe('weather along a route', () => {
         expect(nightLabels(samples([500, 500]), [{ index: 0, date }, { index: 1, date }])).toEqual(['Night 2–9 °C', '']);
         // 1000 m higher at −5 K/km: 5 °C colder.
         expect(nightLabels(samples([1500, 500]), [{ index: 0, date }])).toEqual(['Night −3 to 4 °C']);
+    });
+});
+
+describe('weather map labels', () => {
+    const feature = (id: number, properties: Record<string, unknown>, coordinates = [8, 48]) => ({ id, properties, geometry: { type: 'Point', coordinates } });
+
+    it('takes towns, villages and named peaks once each, with the basemap names', () => {
+        const places = mapPlaces([
+            feature(1, { kind: 'locality', name: 'Freiburg im Breisgau', 'name:en': 'Freiburg', population: 220286, population_rank: 10, min_zoom: 7 }),
+            feature(1, { kind: 'locality', name: 'Freiburg im Breisgau', 'name:en': 'Freiburg', population: 220286, population_rank: 10, min_zoom: 7 }),
+            feature(2, { kind: 'peak', name: 'Feldberg', elevation: 1494, min_zoom: 12 }),
+            feature(3, { kind: 'peak', elevation: 1306 }),
+            feature(4, { kind: 'neighbourhood', name: 'Wiehre' }),
+        ]);
+        expect(places.map(place => [place.name, place.peak, place.elevation])).toEqual([['Freiburg', false, undefined], ['Feldberg', true, 1494]]);
+    });
+
+    it('ranks towns, then named peaks, then villages, and labels a peak only with a value', () => {
+        const places = mapPlaces([
+            feature(1, { kind: 'locality', name: 'Eschbach', population: 2000 }),
+            feature(2, { kind: 'peak', name: 'Feldberg', elevation: 1494 }),
+            feature(3, { kind: 'locality', name: 'Titisee-Neustadt', population: 12000 }),
+            feature(4, { kind: 'peak', name: 'Belchen', elevation: 1414 }),
+        ]);
+        const labels = placeLabels(places, ['18°', '9°', undefined, undefined]).features.map(({ properties }) => properties);
+        expect(labels.map(label => label.name)).toEqual(['Eschbach', 'Feldberg', 'Titisee-Neustadt']);
+        const byRank = [...labels].sort((a, b) => a.sort - b.sort);
+        expect(byRank.map(label => [label.name, label.value])).toEqual([['Titisee-Neustadt', undefined], ['Feldberg', '9°'], ['Eschbach', '18°']]);
+    });
+
+    it('reads the high at a place as the map colours it, at the place height', () => {
+        // Four cells at 10 °C on 1000 m with −6.5 K/km; a place at 2000 m between their centres.
+        const t = tile(OVERVIEW);
+        for (const cell of [0, 1, 24, 25]) {
+            t.set('orography', 0, cell, 1000);
+            t.set('lapse_tmax', 4, cell, -65);
+            t.set('tmax', 19, cell, 20);
+        }
+        const decoded = t.tile();
+        const cell = (col: number, row: number) => col < 2 && row < 2 ? { tile: decoded, index: row * 24 + col } : undefined;
+        // Cell column 0 is centred on 180° W and row 0 on 90° N.
+        expect(highAt([-179.95, 89.95], 2000, cell, 19)).toBeCloseTo(3.5);
+        expect(highAt([-179.95, 89.95], NaN, cell, 19)).toBeCloseTo(10);
+        expect(Number.isNaN(highAt([-170, 80], 500, cell, 19))).toBe(true);
+    });
+
+    it('gives the typical rain as a range two 5 mm steps wide', () => {
+        expect([0, 2.4, 2.6, 7.4, 12.4, 13, 17.4, 42].map(mm => rainRange(mm))).toEqual(['0–5', '0–5', '0–10', '0–10', '5–15', '10–20', '10–20', '35–45']);
+        expect(rainRange(13, '-')).toBe('10-20');
     });
 });
 

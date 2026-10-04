@@ -19,11 +19,14 @@
     const gap = $derived(grid.rows.length > 1 ? Math.min(3, Math.ceil(rowHeight / 3)) : 0);
     const height = $derived(grid.rows.length * (rowHeight + gap) - gap);
     const labelled = $derived(grid.rows.some(row => row.label));
+    const valued = $derived(grid.rows.some(row => row.values));
+    // The values fit the longest of the year, so the plot keeps its width while the marker moves.
+    const widest = $derived(Math.max(0, ...grid.rows.flatMap(row => (row.values ?? []).map(value => value.length))));
     const columns = $derived(grid.columns);
     const marker = $derived(dateColumn(date, columns));
     // Every few rows carry a label, counted from the newest.
     const every = $derived(Math.ceil(14 / (rowHeight + gap)));
-    const monthName = (column: number) => columnDay(column, columns).toLocaleDateString('en-GB', { month: width > 480 ? 'short' : 'narrow', timeZone: 'UTC' });
+    const monthName = (column: number) => columnDay(column, columns).toLocaleDateString('en-GB', { month: width > 400 ? 'short' : 'narrow', timeZone: 'UTC' });
 
     function hatch(context: CanvasRenderingContext2D, color: string, scale: number) {
         const tile = document.createElement('canvas');
@@ -67,8 +70,13 @@
     }
 </script>
 
-<div class="season-grid" class:labelled class:pickable={!!onPick} class:slider={!!slider} class:dragging>
-    {#if labelled}
+<div class="season-grid" class:labelled class:valued class:pickable={!!onPick} class:slider={!!slider} class:dragging>
+    {#if valued}
+        <!-- Every row carries a label and its value at the marker, in a column as wide as the longest. -->
+        <ol class="values" aria-hidden="true" style:row-gap={`${gap}px`} style:--widest={`${widest}ch`} style:grid-auto-rows={`${rowHeight}px`}>
+            {#each grid.rows as row (row.label)}<li><span>{row.label}</span><b>{row.values?.[marker] ?? ''}</b></li>{/each}
+        </ol>
+    {:else if labelled}
         <ol class="rows" aria-hidden="true" style:height={`${height}px`}>
             {#each grid.rows as row, r (row.label)}
                 {#if (grid.rows.length - 1 - r) % every === 0}<li style:top={`${r * (rowHeight + gap) + rowHeight / 2}px`}>{row.label}</li>{/if}
@@ -95,6 +103,13 @@
 <style>
     .season-grid { display: grid; grid-template-columns: minmax(0, 1fr); }
     .season-grid.labelled { grid-template-columns: 48px minmax(0, 1fr); }
+    .season-grid.valued { grid-template-columns: max-content minmax(0, 1fr); container-type: inline-size; }
+    .values { display: grid; grid-template-columns: auto var(--widest); column-gap: 6px; align-content: start; align-items: center; margin: 0 10px 0 0; padding: 0; list-style: none; font-size: 11px; line-height: 1; font-variant-numeric: tabular-nums; }
+    .values li { display: contents; }
+    .values span { color: var(--ink-soft); }
+    .values b { font-weight: 600; color: var(--ink); white-space: nowrap; }
+    /* A narrow plot keeps its width; the grid label above it names the values of the marked week. */
+    @container (max-width: 440px) { .values { grid-template-columns: auto; } .values b { display: none; } }
     .rows { position: relative; margin: 0; padding: 0; list-style: none; }
     .rows li { position: absolute; right: 6px; transform: translateY(-50%); font-size: 11px; line-height: 1; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
     .plot { position: relative; min-width: 0; padding-bottom: 16px; }

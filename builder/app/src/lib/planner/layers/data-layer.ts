@@ -23,7 +23,8 @@ export type Legend = ({ swatches: Swatch[] } | { scale: { color: string; label: 
 export interface Grid {
     label: string;
     columns: number;
-    rows: { label: string; cells: Uint8Array }[];
+    /** `values` has a short value for each column, shown beside the label for the marked column. */
+    rows: { label: string; cells: Uint8Array; values?: string[] }[];
     /** A cell value indexes `fills`; 255 leaves the cell empty. */
     fills: Swatch[];
     legend?: Legend;
@@ -69,9 +70,11 @@ export interface DataLayer<Samples = unknown> {
     readonly strip?: {
         /** The strip title; the layer label without it. */
         label?: string;
-        legend(theme: Theme): Legend;
+        legend?(theme: Theme): Legend;
         fills(theme: Theme): Swatch[];
         values(samples: Samples, date: string): Uint8Array;
+        /** A strip coloured over its own range instead of a legend: the range as text, and labels at stretches, such as the warmest. */
+        scaled?(samples: Samples, date: string): { range: string; marks: { index: number; label: string }[] } | null;
     };
     /** The years at sample `i`. */
     chart(samples: Samples, i: number, view: View): Chart;

@@ -22,6 +22,7 @@
     const points = $derived(profileSamples(line));
     const strip = $derived(layer.strip!);
     const fills = $derived(strip.fills(theme));
+    const scaled = $derived(samples && strip.scaled ? strip.scaled(samples, date) : null);
     const runs = $derived(samples ? valueRuns(strip.values(samples, date), points.map(point => point.progress)).filter(run => run.to > from && run.from < to) : []);
     let bar: HTMLDivElement;
     let at = $state<{ progress: number; x: number; bottom: number } | null>(null);
@@ -52,8 +53,8 @@
 
 <div class="strip">
     <div class="label">
-        <span><strong>{strip.label ?? layer.label}</strong><span class="hint">{layer.error || (samples ? `${dateLabel(date)} · hover for past years` : 'Loading…')}</span></span>
-        <span class="key"><LayerLegend legend={strip.legend(theme)} label={`${layer.label} colours`} /></span>
+        <span><strong>{strip.label ?? layer.label}</strong><span class="hint">{layer.error || (samples ? `${scaled ? `${scaled.range} · ` : ''}${dateLabel(date)} · hover for past years` : 'Loading…')}</span></span>
+        {#if strip.legend}<span class="key"><LayerLegend legend={strip.legend(theme)} label={`${layer.label} colours`} /></span>{/if}
     </div>
     <div class="bar" bind:this={bar} role="slider" tabindex={samples ? 0 : -1} aria-label={`${layer.label} along the route on ${dateLabel(date)}`}
         aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round((at?.progress ?? from) * 100)} aria-valuetext={chart?.headline ?? 'Hover or use the arrow keys for past years'}
@@ -62,6 +63,10 @@
             {@const swatch = fills[run.value]}
             <span class:hatch={swatch.hatch} style:--swatch={swatch.color}
                 style:left={`${(Math.max(run.from, from) - from) / (to - from) * 100}%`} style:width={`${(Math.min(run.to, to) - Math.max(run.from, from)) / (to - from) * 100}%`}></span>
+        {/each}
+        {#each scaled?.marks ?? [] as mark (mark.index)}
+            {@const progress = points[mark.index].progress}
+            {#if progress >= from && progress <= to}<b class="mark" style:left={`clamp(16px, ${(progress - from) / (to - from) * 100}%, calc(100% - 16px))`}>{mark.label}</b>{/if}
         {/each}
         {#if at}<i style:left={`${(at.progress - from) / (to - from) * 100}%`}></i>{/if}
     </div>
@@ -82,6 +87,8 @@
     .bar { position: relative; height: 22px; cursor: crosshair; }
     .bar::before { content: ""; position: absolute; inset: 3px 0; border: 1px solid var(--line-strong); border-radius: 3px; }
     .bar > span { position: absolute; top: 4px; height: 14px; background: var(--swatch); }
+    /* A value chip on the strip; the pointer passes through it to the strip. */
+    .mark { position: absolute; top: 3px; height: 16px; padding: 0 4px; transform: translateX(-50%); border-radius: 3px; background: var(--panel); box-shadow: 0 0 0 1px var(--line-strong); font-size: 11px; font-weight: 600; line-height: 16px; color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; }
     .bar i { position: absolute; top: 0; bottom: 0; width: 3px; transform: translateX(-50%); background: var(--ink); border: 1px solid var(--panel); border-radius: 2px; pointer-events: none; }
     .bar:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
     .popover { position: fixed; z-index: 20; border-radius: 8px; background: var(--panel); box-shadow: var(--planner-shadow); pointer-events: none; }

@@ -1,7 +1,9 @@
 // The Weather layer of the climate archive: daytime highs or the wet-day share on the map; highs,
 // rain and night lows along a route and at a point.
+import type { FeatureCollection, Point } from 'geojson';
 import RainWeeks from '../../../components/planner/RainWeeks.svelte';
-import { RAIN_DRIER, RAIN_UNKNOWN, RAIN_WETTER, atElevation, rainClass, rainRatios, read, temperatureAt, weekMonth, wetDaysOf7, WEEKS, YEARS } from './climate';
+import type { Coordinate } from '../map-types';
+import { atElevation, read, temperatureAt, typicalRain, typicalRainAt, weekMonth, wetDaysOf7, WEEKS, YEARS } from './climate';
 import type { CellRef } from './climate-source';
 import { weatherRows } from './climate-route';
 import { dateLabel, weekOf, type Chart, type Grid, type Legend, type Swatch, type Theme } from './data-layer';
@@ -142,33 +144,124 @@ export function tileCells(z: number, x: number, y: number): { cols: Float64Array
 }
 
 /**
- * Writes a 256 px map tile: each pixel blends the four nearest cell centres. A temperature moves to
- * the pixel's height from each cell's orography with the cell's lapse rate, so valleys and ridges
- * show inside a cell; without `heights` it stays at the blended orography. Less than half the weight
- * on cells with data leaves the pixel clear, so the data ends at the cell edges.
+ * The value at fractional cell position (`fr`, `fc`) from the block origin: the four nearest cell
+ * centres blended. A temperature moves to `height` from each cell's orography with the cell's lapse
+ * rate, so valleys and ridges show inside a cell; a NaN height leaves it at the blended orography.
+ * NaN when less than half the weight is on cells with data, so the data ends at the cell edges.
  */
-export function paintWeather(words: Uint32Array, cells: { cols: Float64Array; rows: Float64Array }, block: CellBlock, heights: Float32Array | undefined, variable: Variable, palette: Uint32Array) {
+export function blend(block: CellBlock, fr: number, fc: number, height: number): number {
     const { value, lapse, orography, cols, rows } = block;
+    const r0 = Math.floor(fr), wy = fr - r0, c0 = Math.floor(fc), wx = fc - c0;
+    let sum = 0, weight = 0;
+    for (let k = 0; k < 4; k++) {
+        const r = r0 + (k >> 1), c = c0 + (k & 1);
+        if (r < 0 || c < 0 || r >= rows || c >= cols) continue;
+        const i = r * cols + c;
+        if (Number.isNaN(value[i])) continue;
+        const w = (k >> 1 ? wy : 1 - wy) * (k & 1 ? wx : 1 - wx);
+        weight += w;
+        sum += w * (Number.isNaN(height) ? value[i] : atElevation(value[i], lapse[i], orography[i], height));
+    }
+    return weight < 0.5 ? NaN : sum / weight;
+}
+
+/** Writes a 256 px map tile: each pixel blends the cells around it, a temperature at the pixel's height in `heights`. */
+export function paintWeather(words: Uint32Array, cells: { cols: Float64Array; rows: Float64Array }, block: CellBlock, heights: Float32Array | undefined, variable: Variable, palette: Uint32Array) {
     for (let py = 0; py < 256; py++) {
-        const fr = cells.rows[py] - block.row, r0 = Math.floor(fr), wy = fr - r0;
+        const fr = cells.rows[py] - block.row;
         for (let px = 0; px < 256; px++) {
-            const fc = cells.cols[px] - block.col, c0 = Math.floor(fc), wx = fc - c0;
             const height = variable === 'temperature' ? heights?.[py * 256 + px] ?? NaN : NaN;
-            let sum = 0, weight = 0;
-            for (let k = 0; k < 4; k++) {
-                const r = r0 + (k >> 1), c = c0 + (k & 1);
-                if (r < 0 || c < 0 || r >= rows || c >= cols) continue;
-                const i = r * cols + c;
-                if (Number.isNaN(value[i])) continue;
-                const w = (k >> 1 ? wy : 1 - wy) * (k & 1 ? wx : 1 - wx);
-                weight += w;
-                // Each cell's own lapse rate moves its temperature to the pixel height.
-                sum += w * (Number.isNaN(height) ? value[i] : atElevation(value[i], lapse[i], orography[i], height));
-            }
-            words[py * 256 + px] = weight < 0.5 ? 0 : word(variable, palette, sum / weight);
+            words[py * 256 + px] = word(variable, palette, blend(block, fr, cells.cols[px] - block.col, height));
         }
     }
 }
+
+/** A basemap place that can carry a label: a town or village, or a named peak with its height. */
+export interface MapPlace { name: string; coordinate: Coordinate; peak: boolean; population: number; rank: number; minZoom: number; elevation?: number }
+
+/** A basemap feature as `querySourceFeatures` returns it. */
+export interface BasemapFeature { id?: string | number; properties: Record<string, unknown> | null; geometry: { type: string; coordinates?: unknown } }
+
+/** The towns, villages and named peaks among basemap features, once each: a place repeats in each loaded tile that holds it. */
+export function mapPlaces(features: BasemapFeature[]): MapPlace[] {
+    const places = new Map<string, MapPlace>();
+    for (const { id, properties: p, geometry } of features) {
+        if (!p || geometry.type !== 'Point') continue;
+        // The name the basemap labels show.
+        const name = p['name:en'] ?? p['pgf:name'] ?? p.name, peak = p.kind === 'peak';
+        if (typeof name !== 'string' || !(p.kind === 'locality' || (peak && typeof p.elevation === 'number'))) continue;
+        const coordinate = geometry.coordinates as Coordinate;
+        places.set(String(id ?? `${name} ${coordinate}`), {
+            name, coordinate, peak, population: Number(p.population ?? 0), rank: Number(p.population_rank ?? 0), minZoom: Number(p.min_zoom ?? 0),
+            ...(peak ? { elevation: p.elevation as number } : {}),
+        });
+    }
+    return [...places.values()];
+}
+
+/**
+ * A named peak ranks with a town of this many people plus its height in metres, so labels go to
+ * towns first, then named peaks, then villages: basemap towns have about 5,000 people or more.
+ */
+const PEAK_POPULATION = 5000;
+
+/** The properties of a map label; `min_zoom` and `population_rank` feed the basemap's town label style. */
+export interface PlaceLabel { name: string; peak: boolean; min_zoom: number; population_rank: number; sort: number; value?: string }
+
+/**
+ * Map labels of the places: the name, and `values[i]` beside it where known. MapLibre places them in
+ * `sort` order and drops each label that collides, so a busy view thins from the smallest places. A
+ * peak without a value has no label, because the planner marks peaks itself.
+ */
+export function placeLabels(places: MapPlace[], values: (string | undefined)[]): FeatureCollection<Point, PlaceLabel> {
+    return {
+        type: 'FeatureCollection',
+        features: places.flatMap((place, i) => place.peak && !values[i] ? [] : [{
+            type: 'Feature' as const,
+            geometry: { type: 'Point' as const, coordinates: place.coordinate },
+            properties: {
+                name: place.name, peak: place.peak, min_zoom: place.minZoom, population_rank: place.rank,
+                sort: -(place.peak ? PEAK_POPULATION + place.elevation! : place.population),
+                ...(values[i] ? { value: values[i] } : {}),
+            },
+        }]),
+    };
+}
+
+/** The overview cell at the north-west of a coordinate's four nearest cell centres, and the coordinate's position from it. */
+function around([longitude, latitude]: Coordinate): { col: number; row: number; fc: number; fr: number } {
+    const fc = 10 * (longitude + 180), fr = 10 * (90 - latitude), col = Math.floor(fc), row = Math.floor(fr);
+    return { col, row, fc: fc - col, fr: fr - row };
+}
+
+/** The daytime high of a week at a coordinate and height, as the map colours it there. */
+export function highAt(coordinate: Coordinate, height: number, cell: (col: number, row: number) => CellRef | undefined, week: number): number {
+    const { col, row, fc, fr } = around(coordinate);
+    return blend(cellBlock(col, row, 2, 2, cell, 'temperature', week), fr, fc, height);
+}
+
+/** The typical rain of a week at a coordinate in mm per 7 days, blended between the cells like the map. */
+export function rainAt(coordinate: Coordinate, cell: (col: number, row: number) => CellRef | undefined, week: number, firstYear: number): number {
+    const { col, row, fc, fr } = around(coordinate);
+    const value = Float32Array.from([[0, 0], [1, 0], [0, 1], [1, 1]], ([c, r]) => {
+        const ref = cell(col + c, row + r);
+        return ref ? typicalRainAt(ref.tile, ref.index, week, firstYear) : NaN;
+    });
+    return blend({ col, row, cols: 2, rows: 2, value, lapse: new Float32Array(4), orography: new Float32Array(4) }, fr, fc, NaN);
+}
+
+/**
+ * Typical rain as a range two 5 mm steps wide, centred on the 5 mm step nearest the value: 13 mm is
+ * "10–20", so the value is always at least 2.5 mm inside it. Below 2.5 mm it is "0–5". A map label
+ * passes a hyphen as `dash`, because the en dash is in a glyph range the basemap does not load.
+ */
+export function rainRange(mm: number, dash = '–'): string {
+    const high = 5 * Math.round(mm / 5) + 5;
+    return `${Math.max(0, high - 10)}${dash}${high}`;
+}
+
+/** "18°", or "-3°" with a hyphen: the true minus sign is in a glyph range the basemap does not load. */
+export const mapDegrees = (celsius: number) => `${Math.round(celsius)}°`;
 
 /** A route or a point: the overview cell of each sample, its height, and the route kilometres. */
 export interface Samples {
@@ -191,24 +284,73 @@ const minMax = (values: ArrayLike<number>) => {
     return known.length ? [Math.min(...known), Math.max(...known)] as const : null;
 };
 
-const oneDecimal = (value: number) => value.toLocaleString('en-GB', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+/** Colour steps of the route strip. */
+const STRIP_STEPS = 32;
 
-/** The year slider of a route: per week, the mean high, wet days and night low along the route. */
-export function weatherYear(samples: Samples | null, date: string, theme: Theme): Grid {
+/** The route strip colours: the temperature ramp in even steps, then no data. */
+export function stripFills(theme: Theme): Swatch[] {
+    const { from, to } = RAMPS.temperature;
+    return [...Array.from({ length: STRIP_STEPS }, (_, i) => ({ label: '', color: rampColor('temperature', theme, from + (to - from) * i / (STRIP_STEPS - 1)) })), noData(theme)];
+}
+
+/**
+ * The strip class of each high on the ramp stretched from the coldest to the warmest sample, so the
+ * strip shows where the route is warmer even where the map colours barely change along it.
+ */
+export function stripClasses(highs: ArrayLike<number>): Uint8Array {
+    const [low, high] = minMax(highs) ?? [0, 0];
+    return Uint8Array.from(highs, value => Number.isNaN(value) ? STRIP_STEPS
+        : high > low ? Math.round((value - low) / (high - low) * (STRIP_STEPS - 1)) : STRIP_STEPS >> 1);
+}
+
+/** The middle sample of the stretch around sample `at` that stays within half a degree of its value. */
+function stretchMiddle(highs: ArrayLike<number>, at: number): number {
+    const near = (i: number) => Math.abs(highs[i] - highs[at]) <= 0.5;
+    let from = at, to = at;
+    while (from > 0 && near(from - 1)) from--;
+    while (to < highs.length - 1 && near(to + 1)) to++;
+    return (from + to) >> 1;
+}
+
+/** The range of the highs along the route, and labels at its coldest and warmest stretch; null without data. */
+export function stripScale(highs: ArrayLike<number>): { range: string; marks: { index: number; label: string }[] } | null {
+    const extremes = minMax(highs);
+    if (!extremes) return null;
+    const values = Array.from(highs);
+    const marks = celsius(extremes[0]) === celsius(extremes[1]) ? []
+        : extremes.map(value => ({ index: stretchMiddle(highs, values.indexOf(value)), label: `${celsius(value)}°` }));
+    return { range: `${range(...extremes)} along the route`, marks };
+}
+
+const oneDecimal = (value: number) => value.toLocaleString('en-GB', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const degrees = (value: number) => Number.isNaN(value) ? '–' : `${celsius(value)}°`;
+const rainValue = (days: number, mm: number) => Number.isNaN(days) ? '–' : `${Math.round(days)}/7 d${Number.isNaN(mm) ? '' : ` · ${rainRange(mm)} mm`}`;
+
+/** The year slider of a route: per week, the mean high, night low, wet days and typical rain along the route. */
+export function weatherYear(samples: Samples | null, date: string, theme: Theme, firstYear: number): Grid {
     const fills = [...temperatureFills(theme), ...wetFills(theme)];
     const empty = new Uint8Array(WEEKS).fill(255);
-    const grid = (label: string, high: Uint8Array, low: Uint8Array, rain: Uint8Array): Grid => ({
-        label, columns: WEEKS, fills,
-        rows: [{ label: 'High', cells: high }, { label: 'Low', cells: low }, { label: 'Rain', cells: rain }],
-    });
-    if (!samples) return grid('Plan a route to see its weather through the year.', empty, empty, empty);
+    const grid = (label: string, rows: Grid['rows']): Grid => ({ label, columns: WEEKS, fills, rows });
+    const blank = (label: string) => grid(label, ['High', 'Low', 'Rain'].map(row => ({ label: row, cells: empty })));
+    if (!samples) return blank('Plan a route to see its weather through the year.');
     const rows = weatherRows(samples.overview, samples.km, samples.elevation);
     const week = weekOf(date);
     const highs = minMax(sampleHighs(samples, date));
-    if (!highs) return grid('No weather data along the route', empty, empty, empty);
+    if (!highs) return blank('No weather data along the route');
     const lows = minMax(Float32Array.from(samples.overview, (ref, i) => ref ? temperatureAt(ref.tile, 'tmin', week, ref.index, samples.elevation[i]) : NaN));
-    const label = `On the route, ${weekLabel(date)}: highs ${range(...highs)} · lows ${lows ? range(...lows) : 'unknown'} · rain on ${oneDecimal(rows.rain[week])} of 7 days`;
-    return grid(label, Uint8Array.from(rows.high, temperatureClass), Uint8Array.from(rows.low, temperatureClass), Uint8Array.from(rows.rain, days => Number.isNaN(days) ? 255 : WET_BASE + wetClass(days)));
+    const amount = typicalRain(rows.amount, firstYear);
+    const label = `On the route, ${weekLabel(date)}: highs ${range(...highs)} · lows ${lows ? range(...lows) : 'unknown'} · rain on ${oneDecimal(rows.rain[week])} of 7 days${Number.isNaN(amount[week]) ? '' : `, ${rainRange(amount[week])} mm`}`;
+    return grid(label, [
+        { label: 'High', cells: Uint8Array.from(rows.high, temperatureClass), values: Array.from(rows.high, degrees) },
+        { label: 'Low', cells: Uint8Array.from(rows.low, temperatureClass), values: Array.from(rows.low, degrees) },
+        { label: 'Rain', cells: Uint8Array.from(rows.rain, days => Number.isNaN(days) ? 255 : WET_BASE + wetClass(days)), values: Array.from(rows.rain, (days, w) => rainValue(days, amount[w])) },
+    ]);
+}
+
+/** The mean of the values that are not missing; NaN without any. */
+function mean(values: number[]): number {
+    const known = values.filter(v => !Number.isNaN(v));
+    return known.length ? known.reduce((a, b) => a + b, 0) / known.length : NaN;
 }
 
 const leap = (year: number) => year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
@@ -217,17 +359,16 @@ const daysOf = (week: number, year: number) => week < WEEKS - 1 ? 7 : leap(year)
 
 /** Wet days of 7 in each week of the years at a detail cell: the mean, and the spread without the extreme years. */
 export function rainWeeks(ref: CellRef, firstYear: number): { mean: Float32Array; low: Float32Array; high: Float32Array } {
-    const mean = new Float32Array(WEEKS), low = new Float32Array(WEEKS), high = new Float32Array(WEEKS);
+    const means = new Float32Array(WEEKS), low = new Float32Array(WEEKS), high = new Float32Array(WEEKS);
     for (let week = 0; week < WEEKS; week++) {
         const years = Array.from({ length: YEARS }, (_, year) => 7 * read(ref.tile, 'wet_days', year * WEEKS + week, ref.index) / daysOf(week, firstYear + year));
-        const known = years.filter(v => !Number.isNaN(v));
-        mean[week] = known.length ? known.reduce((a, b) => a + b, 0) / known.length : NaN;
+        means[week] = mean(years);
         [low[week], high[week]] = spread(years) ?? [NaN, NaN];
     }
-    return { mean, low, high };
+    return { mean: means, low, high };
 }
 
-/** The years at one sample for the map variable: highs and lows, or wet days through the year. */
+/** The years at one sample for the map variable: highs and lows, or wet days through the year with the typical rain. */
 export function weatherChart(samples: Samples, i: number, firstYear: number, date: string, theme: Theme, variable: Variable): Chart {
     const ref = samples.detail(i), height = samples.elevation[i];
     if (ref === undefined) return { headline: 'Loading the years at this point…', grids: [] };
@@ -237,15 +378,13 @@ export function weatherChart(samples: Samples, i: number, firstYear: number, dat
         const weeks = rainWeeks(ref, firstYear);
         if (Number.isNaN(weeks.mean[week])) return { headline: 'No rain data here', grids: [] };
         const most = Math.round(weeks.low[week]) === Math.round(weeks.high[week]) ? `${Math.round(weeks.low[week])}` : `${Math.round(weeks.low[week])}–${Math.round(weeks.high[week])}`;
-        // The rain amount of the week against the mean week of the cell, over the years.
-        const ratios = rainRatios(Float32Array.from({ length: YEARS * WEEKS }, (_, slot) => read(ref.tile, 'rain', slot, ref.index)), firstYear);
-        const ofWeek = Array.from({ length: YEARS }, (_, year) => ratios[year * WEEKS + week]).filter(v => !Number.isNaN(v));
-        const amount = ofWeek.length ? rainClass(ofWeek.reduce((a, b) => a + b, 0) / ofWeek.length) : RAIN_UNKNOWN;
+        // The detail cell is the overview cell, so its ten-year mean totals are the overview's.
+        const totals = Float32Array.from({ length: WEEKS }, (_, w) => mean(Array.from({ length: YEARS }, (_, year) => read(ref.tile, 'rain', year * WEEKS + w, ref.index))));
+        const mm = typicalRain(totals, firstYear)[week];
         return {
-            headline: `${weekLabel(date)}: rain on about ${Math.round(weeks.mean[week])} of 7 days (${most} in most years)`,
+            headline: `${weekLabel(date)}: rain on about ${Math.round(weeks.mean[week])} of 7 days (${most} in most years)${Number.isNaN(mm) ? '' : ` · ${rainRange(mm)} mm a week`}`,
             grids: [],
             extra: { component: RainWeeks, props: { ...weeks, week, colors: { line: rampColor('rain', theme, 5), band: rampColor('rain', theme, theme === 'dark' ? 3 : 1.5) } } },
-            note: amount === RAIN_WETTER ? 'Usually more rain than in an average week here.' : amount === RAIN_DRIER ? 'Usually less rain than in an average week here.' : undefined,
         };
     }
     const temperatures = (plane: 'tmax' | 'tmin') => Float32Array.from({ length: YEARS * WEEKS }, (_, slot) => temperatureAt(ref.tile, plane, slot, ref.index, height));

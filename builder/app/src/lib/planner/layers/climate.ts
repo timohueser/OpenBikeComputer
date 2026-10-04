@@ -134,45 +134,38 @@ export function wetDaysOf7(tile: ClimateTile, cell: number, week: number): numbe
 
 const leap = (year: number) => year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
 
-/**
- * Days of week slot i: week 51 has 8 days, or 9 in a leap year. In the 52 overview means it has the
- * mean over the archive years.
- */
-function weekDays(i: number, slots: number, firstYear: number): number {
-    if (i % WEEKS !== WEEKS - 1) return 7;
-    if (slots === WEEKS) return 8 + Array.from({ length: YEARS }, (_, year) => leap(firstYear + year)).filter(Boolean).length / YEARS;
-    return leap(firstYear + Math.floor(i / WEEKS)) ? 9 : 8;
+/** Days of a week in the overview means: week 51 has 8 days, plus the share of leap years in the archive. */
+function meanWeekDays(week: number, firstYear: number): number {
+    if (week !== WEEKS - 1) return 7;
+    return 8 + Array.from({ length: YEARS }, (_, year) => leap(firstYear + year)).filter(Boolean).length / YEARS;
 }
 
+/** Weeks in the centred moving mean of the typical rain; chosen by the owner to steady ten years of weekly totals. */
+export const RAIN_WEEKS = 5;
+
 /**
- * Rain of each week as a multiple of the mean week of the same series: (rain ÷ days of the week) ÷
- * (total rain ÷ total days), over the weeks that are not missing. Slot i is week i mod 52 of year
- * ⌊i ÷ 52⌋, so the 52 overview means and the 520 detail weeks of a cell both work. A series without
- * rain gives NaN.
+ * The typical rain of each week in mm per 7 days, from the 52 mean weekly totals of the overview:
+ * week 51 counts per 7 of its days, then a centred mean over RAIN_WEEKS weeks round the year steadies
+ * the ten-year means. A missing week is left out of a mean; NaN where all its weeks are missing.
  */
-export function rainRatios(rain: ArrayLike<number>, firstYear: number): Float32Array {
-    const days = Float32Array.from({ length: rain.length }, (_, i) => weekDays(i, rain.length, firstYear));
-    let total = 0, count = 0;
-    for (let i = 0; i < rain.length; i++) {
-        if (Number.isNaN(rain[i])) continue;
-        total += rain[i];
-        count += days[i];
-    }
-    const daily = total / count;
-    return Float32Array.from({ length: rain.length }, (_, i) => daily > 0 ? rain[i] / days[i] / daily : NaN);
+export function typicalRain(totals: ArrayLike<number>, firstYear: number): Float32Array {
+    const weekly = Float32Array.from({ length: WEEKS }, (_, week) => 7 * totals[week] / meanWeekDays(week, firstYear));
+    const half = (RAIN_WEEKS - 1) / 2;
+    return Float32Array.from({ length: WEEKS }, (_, week) => {
+        let sum = 0, count = 0;
+        for (let d = -half; d <= half; d++) {
+            const value = weekly[(week + d + WEEKS) % WEEKS];
+            if (Number.isNaN(value)) continue;
+            sum += value;
+            count++;
+        }
+        return sum / count;
+    });
 }
 
-export const RAIN_DRIER = 0, RAIN_TYPICAL = 1, RAIN_WETTER = 2, RAIN_UNKNOWN = 3;
-/**
- * A week is wetter above this multiple of the mean week and drier below its inverse. Chosen for this
- * layer: a quarter more rain is a difference a rider notices, and the ten-year means of Baden-Württemberg
- * put about a fifth of the cell weeks on each side.
- */
-export const WETTER_RATIO = 1.25;
-
-export function rainClass(ratio: number): number {
-    if (Number.isNaN(ratio)) return RAIN_UNKNOWN;
-    return ratio > WETTER_RATIO ? RAIN_WETTER : ratio < 1 / WETTER_RATIO ? RAIN_DRIER : RAIN_TYPICAL;
+/** The typical rain of a week at an overview cell, in mm per 7 days. */
+export function typicalRainAt(tile: ClimateTile, cell: number, week: number, firstYear: number): number {
+    return typicalRain(Float32Array.from({ length: WEEKS }, (_, w) => read(tile, 'rain', w, cell)), firstYear)[week];
 }
 
 /**

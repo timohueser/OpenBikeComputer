@@ -1,4 +1,4 @@
-import { addProtocol, type Map, type RequestParameters } from 'maplibre-gl';
+import { addProtocol, type ExpressionSpecification, type GeoJSONSource, type Map, type RequestParameters, type SymbolLayerSpecification } from 'maplibre-gl';
 import { kilometres } from '../editor';
 import { TERRAIN_URL } from '../map-data';
 import { DEM_MAX_ZOOM, DEM_TILE } from '../map-style';
@@ -8,8 +8,8 @@ import { detailCell, openClimate, sampleLine, type CellRef, type ClimateSource }
 import { cropHeights, demPixels, demTile, pixelHeight, reliefZoom } from './climate-terrain';
 import { weekOf, type DataLayer, type Line, type Theme, type View } from './data-layer';
 import {
-    cellBlock, mapLegend, nightLabels, paintWeather, rampWords, sampleHighs, temperatureClass, temperatureFills, tileCells,
-    weatherChart, weatherYear, type Samples, type Variable,
+    cellBlock, highAt, mapDegrees, mapLegend, mapPlaces, nightLabels, paintWeather, placeLabels, rainAt, rainRange, rampWords, sampleHighs,
+    stripClasses, stripFills, stripScale, tileCells, weatherChart, weatherYear, type BasemapFeature, type Samples, type Variable,
 } from './weather';
 
 const PROTOCOL = 'obc-weather';
@@ -18,9 +18,31 @@ const TILE = 256;
 const MAX_ZOOM = DEM_MAX_ZOOM + 1;
 // A decoded DEM tile takes 1 MB; four map tiles share one.
 const DEM_TILES = 16;
+/** The labels of the layer replace the basemap's town labels while they show. */
+const LABELS = 'weather-labels', TOWNS = 'places_locality';
+/** From this zoom the planner marks peaks with its own symbol and name. */
+const PEAK_SYMBOLS = 13;
 
 const palettes = Object.fromEntries((['temperature', 'rain'] as const).map(variable =>
     [variable, { light: rampWords(variable, 'light'), dark: rampWords(variable, 'dark') }])) as Record<Variable, Record<Theme, Uint32Array>>;
+
+/** The town label layer of the basemap with the layer's values beside the names, and named peaks with the planner's peak symbol. */
+function labelLayer(map: Map, theme: Theme, visible: boolean): SymbolLayerSpecification {
+    const town = <K extends 'text-size' | 'text-font' | 'text-padding'>(name: K) => map.getLayoutProperty(TOWNS, name) as NonNullable<SymbolLayerSpecification['layout']>[K];
+    const peak: ExpressionSpecification = ['get', 'peak'];
+    return {
+        id: LABELS, type: 'symbol', source: LABELS,
+        filter: ['any', ['!', peak], ['<', ['zoom'], PEAK_SYMBOLS]],
+        layout: {
+            'text-field': ['case', ['has', 'value'], ['format', ['get', 'name'], {}, '  ', {}, ['get', 'value'], { 'font-scale': 1.1 }], ['get', 'name']],
+            'text-size': town('text-size'), 'text-font': town('text-font'), 'text-padding': town('text-padding'), 'text-max-width': 14,
+            'text-anchor': ['case', peak, 'left', 'center'], 'text-offset': ['case', peak, ['literal', [0.8, 0]], ['literal', [0, 0]]],
+            'icon-image': ['case', peak, `poi-peak-${theme}`, ''], 'icon-size': 0.8,
+            'symbol-sort-key': ['get', 'sort'], visibility: visible ? 'visible' : 'none',
+        },
+        paint: { 'text-color': map.getPaintProperty(TOWNS, 'text-color'), 'text-halo-color': map.getPaintProperty(TOWNS, 'text-halo-color'), 'text-halo-width': 1.2 },
+    };
+}
 
 class WeatherLayer implements DataLayer<Samples> {
     id = 'weather';
@@ -32,6 +54,7 @@ class WeatherLayer implements DataLayer<Samples> {
     error = $state('');
     variable = $state({ label: 'Map shows', options: [{ value: 'temperature', label: 'Temperature' }, { value: 'rain', label: 'Rain' }], value: 'temperature' });
     private archive?: Promise<ClimateSource>;
+    private climate?: ClimateSource;
     /** Decoded DEM tiles of rendered map tiles, newest last. */
     private dems = new globalThis.Map<string, Promise<Uint8ClampedArray | undefined>>();
     private map?: Map;
@@ -40,6 +63,8 @@ class WeatherLayer implements DataLayer<Samples> {
     private shown = false;
     /** The week, variable and theme of the drawn tiles. */
     private drawn = '';
+    /** The label data on the map, so an unchanged view sets nothing. */
+    private labelled = '';
     private frame = 0;
 
     constructor(private url: string) {}
@@ -56,6 +81,7 @@ class WeatherLayer implements DataLayer<Samples> {
     private open(): Promise<ClimateSource> {
         this.archive ??= openClimate(this.url).then(source => {
             this.meta = source.meta;
+            this.climate = source;
             this.error = '';
             return source;
         }).catch(error => {
@@ -77,10 +103,11 @@ class WeatherLayer implements DataLayer<Samples> {
     }
 
     /**
-     * The height at a coordinate from the most detailed decoded DEM tile that holds it, or else from
-     * the DEM tile of the view zoom, which the relief has loaded; NaN without terrain.
+     * The height at a coordinate from the most detailed decoded DEM tile that holds it. With `load`, a
+     * coordinate outside them reads the DEM tile of the view zoom, which the relief has loaded; NaN
+     * without terrain.
      */
-    private async heightAt([longitude, latitude]: Coordinate): Promise<number> {
+    private async heightAt([longitude, latitude]: Coordinate, load = true): Promise<number> {
         const sin = Math.sin(latitude * Math.PI / 180);
         const pixel = (z: number) => {
             const scale = DEM_TILE * 2 ** z;
@@ -92,10 +119,18 @@ class WeatherLayer implements DataLayer<Samples> {
             const rgba = await this.dems.get(key.join('/'));
             if (rgba) return pixelHeight(rgba, column, row);
         }
+        if (!load) return NaN;
         const { key, column, row } = pixel(reliefZoom(this.map?.getZoom() ?? 0));
         const rgba = await this.dem(...key);
         return rgba ? pixelHeight(rgba, column, row) : NaN;
     }
+
+    /** The decoded overview cell of a global cell; undefined while its tile loads. */
+    private cell = (col: number, row: number): CellRef | undefined => {
+        const { x, y, index } = locate(OVERVIEW, { col, row });
+        const tile = this.climate?.decoded.get(`${OVERVIEW}/${x}/${y}`);
+        return tile ? { tile, index } : undefined;
+    };
 
     /** Colours one map tile for the layer week and variable. */
     private render = async (params: RequestParameters) => {
@@ -127,6 +162,42 @@ class WeatherLayer implements DataLayer<Samples> {
         return { data: await createImageBitmap(image) };
     };
 
+    /**
+     * Labels the places of the loaded basemap tiles with the value of the layer week: the high at the
+     * place's height, or the typical rain. It reads only decoded tiles, so it requests nothing; a town
+     * without a decoded DEM tile keeps its bare name until the map renders that tile.
+     */
+    private relabel = async () => {
+        const map = this.map, climate = this.climate, variable = this.variable.value as Variable, date = this.date;
+        if (!map?.getSource(LABELS) || !climate || !this.shown) return;
+        const places = mapPlaces([
+            ...map.querySourceFeatures('basemap', { sourceLayer: 'places', filter: ['==', ['get', 'kind'], 'locality'] }),
+            ...map.querySourceFeatures('basemap', { sourceLayer: 'pois', filter: ['==', ['get', 'kind'], 'peak'] }),
+        ] as BasemapFeature[]);
+        const week = weekOf(date);
+        const values = variable === 'rain'
+            ? places.map(({ coordinate }) => rainAt(coordinate, this.cell, week, climate.meta.firstYear))
+            : await Promise.all(places.map(async place => highAt(place.coordinate, place.elevation ?? await this.heightAt(place.coordinate, false), this.cell, week)));
+        // A newer view, week or variable relabels on its own.
+        if (map !== this.map || date !== this.date || variable !== this.variable.value || !this.shown || !map.getSource(LABELS)) return;
+        const labels = placeLabels(places, values.map(value => Number.isNaN(value) ? undefined : variable === 'rain' ? `${rainRange(value, '-')} mm` : mapDegrees(value)));
+        this.townLabels(map, false);
+        const key = JSON.stringify(labels);
+        if (key === this.labelled) return;
+        this.labelled = key;
+        (map.getSource(LABELS) as GeoJSONSource).setData(labels);
+    };
+
+    /**
+     * Shows or hides the basemap town labels. Opacity, not visibility: a layout change would make the
+     * basemap parse its tiles again. The hidden labels still take their space, but the layer's labels
+     * are above them, so MapLibre places those first.
+     */
+    private townLabels(map: Map, shown: boolean) {
+        if (!map.getLayer(TOWNS)) return;
+        for (const property of ['text-opacity', 'icon-opacity'] as const) map.setPaintProperty(TOWNS, property, shown ? undefined : 0);
+    }
+
     sync(map: Map, { shown, date, theme }: View & { shown: boolean }) {
         this.date = date;
         this.theme = theme;
@@ -134,6 +205,8 @@ class WeatherLayer implements DataLayer<Samples> {
         this.shown = shown;
         if (map.getLayer(this.id)) {
             map.setLayoutProperty(this.id, 'visibility', shown ? 'visible' : 'none');
+            if (map.getLayer(LABELS)) map.setLayoutProperty(LABELS, 'visibility', shown ? 'visible' : 'none');
+            if (!shown) this.townLabels(map, true);
             // A hidden layer keeps its old tiles, so a change while hidden refreshes on show.
             const look = `${weekOf(date)} ${this.variable.value} ${theme}`;
             if (shown && look !== this.drawn) {
@@ -141,6 +214,7 @@ class WeatherLayer implements DataLayer<Samples> {
                 cancelAnimationFrame(this.frame);
                 this.frame = requestAnimationFrame(() => map.getSource(this.id) && map.refreshTiles(this.id));
             }
+            if (shown) void this.relabel();
             return;
         }
         if (!shown) return;
@@ -149,9 +223,17 @@ class WeatherLayer implements DataLayer<Samples> {
             // A theme change during the request installs into the new style instead.
             if (this.map !== map || this.theme !== theme || map.getSource(this.id)) return;
             this.drawn = `${weekOf(this.date)} ${this.variable.value} ${theme}`;
+            this.labelled = '';
             map.addSource(this.id, { type: 'raster', tiles: [`${PROTOCOL}://{z}/{x}/{y}`], tileSize: TILE, maxzoom: MAX_ZOOM, bounds, attribution: this.meta?.attribution });
             // Under the relief, so the hillshade shades the colours.
             map.addLayer({ id: this.id, type: 'raster', source: this.id, layout: { visibility: this.shown ? 'visible' : 'none' }, paint: { 'raster-fade-duration': 0 } }, map.getLayer('relief') ? 'relief' : undefined);
+            if (!map.getLayer(TOWNS)) return;
+            map.addSource(LABELS, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+            const order = map.getLayersOrder();
+            map.addLayer(labelLayer(map, theme, this.shown), order[order.indexOf(TOWNS) + 1]);
+            // Each rendered view relabels: the rendered tiles have decoded the DEM and climate tiles it reads.
+            map.off('idle', this.relabel);
+            map.on('idle', this.relabel);
         }, () => {});
     }
 
@@ -170,9 +252,9 @@ class WeatherLayer implements DataLayer<Samples> {
 
     strip = {
         label: 'Daytime high',
-        legend: (theme: Theme) => mapLegend('temperature', theme),
-        fills: temperatureFills,
-        values: (samples: Samples, date: string) => Uint8Array.from(sampleHighs(samples, date), temperatureClass),
+        fills: stripFills,
+        values: (samples: Samples, date: string) => stripClasses(sampleHighs(samples, date)),
+        scaled: (samples: Samples, date: string) => stripScale(sampleHighs(samples, date)),
     };
 
     chart(samples: Samples, i: number, { date, theme }: View) {
@@ -180,7 +262,7 @@ class WeatherLayer implements DataLayer<Samples> {
     }
 
     year(samples: Samples | null, { date, theme }: View) {
-        return weatherYear(samples, date, theme);
+        return weatherYear(samples, date, theme, this.meta?.firstYear ?? 0);
     }
 
     nights(samples: Samples, stops: { index: number; date: string }[]) {
