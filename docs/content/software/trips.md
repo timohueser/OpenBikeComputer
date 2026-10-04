@@ -45,19 +45,15 @@ A reversed trip is a new trip with its own key, so its progress starts empty.
 
 ### From files to a trip
 
-An imported file offers three choices: a new route, add it to a trip as the next day, or start a
-trip. When the rider shares several files at once, the phone asks to make one trip from them. It
-proposes an order that chains the file ends. The rider can drag the rows into a different order.
+An import asks once: keep the file's line, or plan it on roads. When the planner cannot follow
+the line, the phone keeps it and says why. One file is saved as a route and its page opens. When
+the rider shares several files at once, the phone asks to make one trip from them. It proposes an
+order that chains the file ends. The rider can drag the rows into a different order.
 Between two rows, the sheet says "joins" or shows the gap. A trip made from files gets one day per
 file, with the day ends on the file boundaries.
 
 At a gap between two files, the next day starts where its file starts, and the device's "Ride to
 start" covers the way there.
-
-One long file becomes a trip in the day editor with a day-count stepper (− N +). The phone splits
-the line into days of equal riding time for the trip's bike type. It moves each end to a campsite,
-a hotel or a waypoint when one is near the ideal place. The map shows the result while the rider
-changes the count. After this first split, the day count changes only with Split and Join.
 
 ### The day editor
 
@@ -271,7 +267,7 @@ first split does. The offer closes for good when the rider uses or dismisses it.
 
 The rides list has a year menu and bike-type filters, a totals card, and a map with every ride on
 it. The rider can share a ride as a GPX file or as an image, or save it as a route. A saved route
-keeps the ride's bike type and opens as an import, so it can become the next day of a trip.
+keeps the ride's line and bike type, and its page opens.
 
 The rider can trim a ride or merge it with the next ride. When the next ride starts
 soon after and near the end of a ride, on the same trip day, the ride detail offers to merge them.

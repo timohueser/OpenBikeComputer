@@ -18,7 +18,7 @@ import OBCTransport
     )
 
     private static func flow(_ library: any LibraryStore) -> ImportFlowModel {
-        ImportFlowModel(decode: { _, _ in throw CocoaError(.fileReadCorruptFile) }, library: library, isBonded: { true })
+        ImportFlowModel(decode: { _, _ in throw CocoaError(.fileReadCorruptFile) }, library: library)
     }
 
     private static func open(_ flow: ImportFlowModel) throws {
@@ -26,21 +26,20 @@ import OBCTransport
             route: try #require(ride.plannedRoute()),
             fileName: GPXFile.fileName(for: ride.summary.name),
             fileData: Data(),
-            source: .ride(ride.summary.date),
             bikeType: ride.summary.bikeType
         )
     }
 
-    @Test func saveAsRouteOpensTheImportLanding() throws {
+    /// No choice: a ride keeps its line, and it lands at once with a kept-line plan.
+    @Test func saveAsRouteLandsAKeptLineAtOnce() throws {
         let flow = Self.flow(InMemoryLibraryStore())
 
         try Self.open(flow)
 
-        #expect(flow.pendingImport?.route.name == "Lunch / Loop")
-        #expect(flow.pendingImport?.fileName == "Lunch - Loop.gpx")
-        #expect(flow.pendingImport?.source == .ride(Self.ride.summary.date))
-        #expect(flow.pendingImport?.bikeType == .gravel)
-        #expect(flow.collision == nil)
+        let landed = try #require(flow.landed)
+        #expect(flow.pendingChoice == nil && flow.collision == nil)
+        #expect(landed.route.name == "Lunch / Loop" && landed.fileName == "Lunch - Loop.gpx" && landed.bikeType == .gravel)
+        #expect(landed.plan?.routePoints.last?.leg == .drawn && landed.plan?.bike == "gravel")
     }
 
     /// The second save of one ride meets the first: the import's update-or-add dialog, never a
@@ -56,7 +55,7 @@ import OBCTransport
 
         try Self.open(flow)
 
-        #expect(flow.pendingImport == nil)
+        #expect(flow.landed == nil)
         #expect(flow.collision?.existing.id == RouteID("saved"))
     }
 

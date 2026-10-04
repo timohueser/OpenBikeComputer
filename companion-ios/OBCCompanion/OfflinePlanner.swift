@@ -60,9 +60,10 @@ actor OfflinePlanner {
         let response: (status: Int, body: Data)
         switch url.lastPathComponent {
         case "release.json": response = (200, try Data(contentsOf: directory.appending(path: "release.json")))
-        case "route":
+        case "route", "shape":
             if router == nil { router = try RouteProvider(directory: directory.appending(path: "routing")) }
-            response = try await router!.route(request.httpBody ?? Data())
+            let body = request.httpBody ?? Data()
+            response = try await url.lastPathComponent == "route" ? router!.route(body) : router!.shape(body)
         case "overlays":
             let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedQuery ?? ""
             if overlays == nil { overlays = try OverlayProvider(directory: directory.appending(path: "routing")) }

@@ -156,6 +156,45 @@ struct PlannerServiceTests {
             try await service.route(points: [a, Coordinate(latitude: 0, longitude: 0)], activity: .road, release: release)
         }
     }
+    /// The line goes out simplified within 10 m with 6 decimals; the answer comes back as plan points.
+    @Test(arguments: [(200, nil), (422, PlannerFailure.lineNotReproducible), (422, .lineTooLong)])
+    func shapesALineInOneRequest(_ status: Int, _ failure: PlannerFailure?) async throws {
+        let host = URL(string: "https://planner.test")!
+        let release = PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: [7, 47, 9, 49], basemap: host,
+                                     glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host, manifest: host)
+        let sent = Bodies()
+        let service = PlannerService(release: release) { request in
+            #expect(request.url?.path == "/v1/shape" && request.timeoutInterval == 40)
+            await sent.append(request.httpBody!)
+            let body = status == 200 ? #"{"points": [[8, 48], [8.05, 48.05], [8.1, 48.1]], "turnarounds": [1]}"#
+                : #"{"code": "\#(failure == .lineTooLong ? "line_too_long" : "line_not_reproducible")", "message": ""}"#
+            return (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+        }
+        let line = [a, Coordinate(latitude: 48.05, longitude: 8.05), Coordinate(latitude: 48.1000000004, longitude: 8.1000000004)]
+        if let failure {
+            await #expect(throws: failure) { try await service.shape(line: line, profile: "gravel") }
+            return
+        }
+        let shape = try await service.shape(line: line, profile: "gravel")
+        #expect(shape.points == [a, Coordinate(latitude: 48.05, longitude: 8.05), b] && shape.turnarounds == [1])
+        let query = try #require(try JSONSerialization.jsonObject(with: await sent.values[0]) as? [String: Any])
+        #expect(query["profile"] as? String == "gravel" && query["line"] as? [[Double]] == [[8, 48], [8.1, 48.1]])
+    }
+    /// A line over the service's 200 km cap fails before any request.
+    @Test func aTooLongLineFailsWithoutARequest() async throws {
+        let host = URL(string: "https://planner.test")!
+        let release = PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: [7, 47, 9, 49], basemap: host,
+                                     glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host, manifest: host)
+        let sent = Bodies()
+        let service = PlannerService(release: release) { request in
+            await sent.append(request.httpBody ?? Data())
+            throw URLError(.badServerResponse)
+        }
+        await #expect(throws: PlannerFailure.lineTooLong) {
+            try await service.shape(line: [a, Coordinate(latitude: 50, longitude: 8)], profile: "gravel")
+        }
+        #expect(await sent.values.isEmpty)
+    }
 }
 
 private let a = Coordinate(latitude: 48, longitude: 8)
