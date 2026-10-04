@@ -87,7 +87,7 @@ public final class PlannerPreviewModel {
     private struct State: Equatable {
         var points: [PlannerPreviewPoint] = []
         var markers: [PlannerPreviewPoint] = []
-        var bike: BikeType = .gravel
+        var activity = RouteActivity.gravel
         var preset: PlannerPreviewPreset = .balanced
         var overnightPointID: String?
         /// The finish is the start: the route returns to the first point, and there is no finish point.
@@ -123,11 +123,11 @@ public final class PlannerPreviewModel {
     private struct RoutingKey: Equatable {
         let coordinates: [Coordinate]
         let turnarounds: [Int]
-        let bike: BikeType
+        let activity: RouteActivity
         let preset: PlannerPreviewPreset
     }
     private var routingKey: RoutingKey {
-        .init(coordinates: state.coordinates, turnarounds: state.turnarounds, bike: bike, preset: preset)
+        .init(coordinates: state.coordinates, turnarounds: state.turnarounds, activity: activity, preset: preset)
     }
     public var canSave: Bool { path != nil && !isRouting && routeError == nil }
     public func retryRoute() { routingRevision += 1 }
@@ -146,7 +146,7 @@ public final class PlannerPreviewModel {
             guard let preference = RoutePreference(rawValue: preset == .lessClimbing ? "less-climbing" : preset.rawValue) else {
                 throw PlannerFailure.invalidData
             }
-            let result = try await service.route(points: key.coordinates, turnarounds: key.turnarounds, bike: key.bike,
+            let result = try await service.route(points: key.coordinates, turnarounds: key.turnarounds, activity: key.activity,
                                                  preference: preference, release: selected)
             try Task.checkCancellation()
             guard revision == routingRevision else { return }
@@ -202,7 +202,7 @@ public final class PlannerPreviewModel {
     public var isLoop: Bool { state.loop }
     /// The start, and the finish of a plan that is not a loop. Only the other points have a kind.
     public func isEndpoint(_ id: String) -> Bool { id == points.first?.id || (!isLoop && id == points.last?.id) }
-    public var bike: BikeType { state.bike }
+    public var activity: RouteActivity { state.activity }
     public var preset: PlannerPreviewPreset { state.preset }
     public var overnightPointID: String? { state.overnightPointID }
     public var overnight: PlannerPreviewPlace? { points.first { $0.id == overnightPointID }?.place }
@@ -270,7 +270,7 @@ public final class PlannerPreviewModel {
             else { $0.points[$0.points.count - 1].place = place }
         }
     }
-    public func setBike(_ bike: BikeType) { edit { $0.bike = bike } }
+    public func setActivity(_ activity: RouteActivity) { edit { $0.activity = activity } }
     public func setPreset(_ preset: PlannerPreviewPreset) { edit { $0.preset = preset } }
     public func setOvernight(_ place: PlannerPreviewPlace?) {
         guard hasRoute || place == nil else { return }
@@ -402,8 +402,8 @@ public final class PlannerPreviewModel {
     public func actionSummary(_ action: PlannerPreviewAction) -> String {
         switch action {
         case .createSample: "Freiburg to Titisee with online gravel routing."
-        case .reverse: isLoop ? "Ride the loop the other way. Your stops reverse too."
-            : "Start at \(finish?.name ?? "the finish") and ride to \(start?.name ?? "the start"). Your stops reverse too."
+        case .reverse: isLoop ? "Go around the loop the other way. Your stops reverse too."
+            : "Start at \(finish?.name ?? "the finish") and go to \(start?.name ?? "the start"). Your stops reverse too."
         case .splitDays: "End day 1 at a campsite in the search results. Continue to \(finish?.name ?? "the finish") on day 2."
         }
     }
@@ -416,9 +416,9 @@ public final class PlannerPreviewModel {
                     action: PlannerPreviewAction? = nil) -> PlannerPreviewQueryResult {
             .init(title: title, explanation: explanation, places: places, action: action)
         }
-        if q.isEmpty { return result("Where would you like to ride?", "Try Freiburg, Titisee, cafés or water.") }
+        if q.isEmpty { return result("Where would you like to go?", "Try Freiburg, Titisee, cafés or water.") }
         if q.contains("reverse") {
-            return result(hasRoute ? "Ride the other way" : "Create a route first", "Review the change before you apply it.", action: hasRoute ? .reverse : nil)
+            return result(hasRoute ? "Go the other way" : "Create a route first", "Review the change before you apply it.", action: hasRoute ? .reverse : nil)
         }
         if q.contains("two day") || q.contains("2 day") || q.contains("split") {
             return result(hasRoute ? "Make it two days" : "Create a route first", "Find a campsite, then set it as your overnight stop.", action: hasRoute && mapPlaces.contains(where: { $0.kind == .camping }) ? .splitDays : nil)

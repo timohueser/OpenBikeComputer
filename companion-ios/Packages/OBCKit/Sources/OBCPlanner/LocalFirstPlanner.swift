@@ -52,18 +52,18 @@ public actor LocalFirstPlanner: PlannerDataSource {
         }
     }
 
-    public func route(points: [Coordinate], turnarounds: [Int] = [], bike: BikeType, preference: RoutePreference,
+    public func route(points: [Coordinate], turnarounds: [Int] = [], activity: RouteActivity, preference: RoutePreference,
                       release: PlannerRelease) async throws -> PlannedPath {
         guard (2...64).contains(points.count) else { throw PlannerFailure.invalidData }
         for map in try await installed() where points.allSatisfy({ covers(map.bounds, $0) }) {
             do {
                 let source = try await source(map), local = try await source.release()
-                return try await source.route(points: points, turnarounds: turnarounds, bike: bike, preference: preference, release: local)
+                return try await source.route(points: points, turnarounds: turnarounds, activity: activity, preference: preference, release: local)
             } catch { try cancellation(error) }
         }
         do {
             let remote = try await remoteRelease(release)
-            return try await online.route(points: points, turnarounds: turnarounds, bike: bike, preference: preference, release: remote)
+            return try await online.route(points: points, turnarounds: turnarounds, activity: activity, preference: preference, release: remote)
         } catch { throw try fallbackError(error) }
     }
 

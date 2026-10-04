@@ -34,6 +34,7 @@ struct RootView: View {
     private let bondStore: any BondStore
     private let library: any LibraryStore
     private let photoLibrary: any PhotoLibrary
+    private let lastBikeType: LastBikeTypeStore
     /// Names places from coordinates; nil in mock runs.
     private let placeName: (@Sendable (Coordinate) async -> String?)?
     /// The proactive-update preferences: the auto-check toggle, the answered ledger and the
@@ -77,6 +78,7 @@ struct RootView: View {
         self.bondStore = bondStore
         self.library = library
         self.photoLibrary = photoLibrary
+        self.lastBikeType = lastBikeType
         self.placeName = placeName
         self.updateSurface = updateSurface
         self.importAtLaunch = importAtLaunch
@@ -725,8 +727,10 @@ struct RootView: View {
         { path.append(.planner(sample: false)) }
     }
 
-    private func savePlannerPreview(_ route: ImportedRoute, bikeType: BikeType) {
+    /// A hiking plan takes the last bike type, as an import does.
+    private func savePlannerPreview(_ route: ImportedRoute, bikeType: BikeType?) {
         guard let end = route.points.last, route.points.count > 1, let name = route.name else { return }
+        let bikeType = bikeType ?? lastBikeType.value
         let fileName = GPXFile.fileName(for: name)
         let line = MeasuredLine(routePoints: route.points)
         let trip = Trip(

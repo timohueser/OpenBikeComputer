@@ -42,9 +42,21 @@ public enum RoutePreference: String, CaseIterable, Sendable {
     public var title: String {
         switch self { case .balanced: "Balanced"; case .shorter: "Shorter"; case .lessClimbing: "Less climbing" }
     }
-    public func profile(for bike: BikeType) -> String {
-        let mode = switch bike { case .road: "road"; case .gravel: "gravel"; case .mtb: "mtb"; case .touring: "touring" }
-        return mode + (self == .balanced ? "" : "/" + rawValue)
+    public func profile(for activity: RouteActivity) -> String {
+        activity.rawValue + (self == .balanced ? "" : "/" + rawValue)
+    }
+}
+
+/// The planner activities. The raw value is the mode of the routing profile.
+public enum RouteActivity: String, CaseIterable, Sendable {
+    case road, gravel, mtb, touring, hiking
+    public init(_ bike: BikeType) {
+        switch bike { case .road: self = .road; case .gravel: self = .gravel; case .mtb: self = .mtb; case .touring: self = .touring }
+    }
+    public var name: String { bikeType?.name ?? "Hiking" }
+    /// The device type of a saved plan. The device has no hiking type.
+    public var bikeType: BikeType? {
+        switch self { case .road: .road; case .gravel: .gravel; case .mtb: .mtb; case .touring: .touring; case .hiking: nil }
     }
 }
 
@@ -93,7 +105,7 @@ public enum PlannerFailure: Error, Equatable, Sendable, LocalizedError {
 public protocol RoutePlanning: Sendable {
     func release() async throws -> PlannerRelease
     /// `turnarounds` are interior point indices where the route turns back on purpose.
-    func route(points: [Coordinate], turnarounds: [Int], bike: BikeType, preference: RoutePreference,
+    func route(points: [Coordinate], turnarounds: [Int], activity: RouteActivity, preference: RoutePreference,
                release: PlannerRelease) async throws -> PlannedPath
 }
 
@@ -188,14 +200,14 @@ public actor PlannerService: PlannerDataSource {
         return release
     }
 
-    public func route(points: [Coordinate], turnarounds: [Int] = [], bike: BikeType, preference: RoutePreference = .balanced,
+    public func route(points: [Coordinate], turnarounds: [Int] = [], activity: RouteActivity, preference: RoutePreference = .balanced,
                       release: PlannerRelease) async throws -> PlannedPath {
         guard (2...64).contains(points.count), points.allSatisfy(release.contains) else {
             throw PlannerFailure.outsideRegion
         }
         guard turnarounds.allSatisfy({ (1..<points.count - 1).contains($0) }) else { throw PlannerFailure.invalidData }
         let manifest = try await manifest(release)
-        let profile = preference.profile(for: bike)
+        let profile = preference.profile(for: activity)
         guard manifest.profiles.contains(profile) else { throw PlannerFailure.invalidData }
         return try await route(points, turnarounds: Set(turnarounds), profile: profile, release: release,
                                package: manifest.routing_package, whole: false)
@@ -429,7 +441,7 @@ public struct OnlineLegRouter: LegRouter {
                       onDownload: @escaping @Sendable () -> Void) async throws -> [RoutePoint] {
         do {
             let release = try await service.release()
-            return try await service.route(points: [from, to], turnarounds: [], bike: bikeType, preference: .balanced, release: release).points
+            return try await service.route(points: [from, to], turnarounds: [], activity: RouteActivity(bikeType), preference: .balanced, release: release).points
         } catch is CancellationError { throw CancellationError() }
         catch PlannerFailure.noRoad { throw LegRouteFailure.noRoad }
         catch PlannerFailure.outsideRegion { throw LegRouteFailure.noMap }

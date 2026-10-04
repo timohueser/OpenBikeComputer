@@ -1,12 +1,19 @@
-#if os(iOS)
+import Foundation
 import OBCDomain
 import OBCPlanner
+#if os(iOS)
 import SwiftUI
+#endif
 
-/// The words of the Routes view. Only mountain bike has a difficulty filter on the phone.
+/// The words of the Routes view. Hiking grades are T1–T4, mountain bike grades S0–S3.
 @MainActor enum PlannerRoutesText {
     static let levels = ["", "Local", "Regional", "National", "International"]
-    static func grade(_ index: Int, kind: CatalogRecord.Kind) -> String { kind == .mtb ? "S\(index)" : "T\(index + 1)" }
+    static func grade(_ index: Int, mtb: Bool) -> String { mtb ? "S\(index)" : "T\(index + 1)" }
+    static func graded(_ activity: RouteActivity) -> Bool { activity == .hiking || activity == .mtb }
+    /// The word in "No signed … loops".
+    static func activity(_ activity: RouteActivity) -> String {
+        switch activity { case .hiking: "hiking"; case .mtb: "mountain bike"; case .road, .gravel, .touring: "cycling" }
+    }
     static func noun(_ shape: RouteShape, count: Int) -> String {
         "\(count) \(shape == .loop ? "loop" : "route")\(count == 1 ? "" : "s")"
     }
@@ -22,23 +29,25 @@ import SwiftUI
         default: return nil
         }
     }
-    static func hardest(_ range: ClosedRange<Int>) -> String {
-        range.lowerBound == 0 ? "up to S\(range.upperBound)" : range.lowerBound == range.upperBound ? "S\(range.lowerBound)"
-            : "S\(range.lowerBound) or harder"
+    static func hardest(_ range: ClosedRange<Int>, mtb: Bool) -> String {
+        let grade = { self.grade($0, mtb: mtb) }
+        return range.lowerBound == 0 ? "up to \(grade(range.upperBound))" : range.lowerBound == range.upperBound ? grade(range.lowerBound)
+            : "\(grade(range.lowerBound)) or harder"
     }
     /// The reading under the hardest-part control, and its detail.
-    static func reading(_ range: ClosedRange<Int>) -> (String, String) {
-        let (low, high) = (range.lowerBound, range.upperBound)
-        let names = (low...high).map { "S\($0)" }
+    static func reading(_ range: ClosedRange<Int>, mtb: Bool) -> (String, String) {
+        let grade = { self.grade($0, mtb: mtb) }
+        let (low, high) = (grade(range.lowerBound), grade(range.upperBound))
+        let names = range.map(grade)
         let list = names.count > 1 ? names.dropLast().joined(separator: ", ") + " or " + names.last! : names[0]
-        let reading = low == 0 ? "Up to S\(high)." : high == 3 ? "Must include S\(low) or harder."
-            : low == high ? "Hardest part S\(low)." : "Must include S\(low) or harder, up to S\(high)."
-        return (reading, low == 0 ? "Routes whose hardest part is \(list). A trail without a grade counts as S0."
+        let reading = range.lowerBound == 0 ? "Up to \(high)." : range.upperBound == 3 ? "Must include \(low) or harder."
+            : low == high ? "Hardest part \(low)." : "Must include \(low) or harder, up to \(high)."
+        return (reading, range.lowerBound == 0 ? "Routes whose hardest part is \(list). A \(mtb ? "trail" : "path") without a grade counts as \(grade(0))."
                 : "Only routes with a part graded \(list).")
     }
-    static func summary(_ filters: PlannerRouteFilters, graded: Bool) -> String {
+    static func summary(_ filters: PlannerRouteFilters, activity: RouteActivity) -> String {
         ["\(Int(filters.radiusKm)) km", shape(filters.shape), range(filters.distanceKm, unit: "km"), range(filters.climbM, unit: "m"),
-         graded ? hardest(filters.hardest) : nil].compactMap { $0 }.joined(separator: " · ")
+         graded(activity) ? hardest(filters.hardest, mtb: activity == .mtb) : nil].compactMap { $0 }.joined(separator: " · ")
     }
     static func kind(_ route: CatalogRecord, finder: PlannerRouteFinder) -> String {
         if let stages = route.stages { return "\(stages.count) stages" }
@@ -59,6 +68,7 @@ import SwiftUI
     }
 }
 
+#if os(iOS)
 /// A route's number in the list and on the map, in its network colour.
 struct PlannerRouteNumber: View {
     let number: Int
@@ -94,7 +104,7 @@ struct PlannerRouteRefBadge: View {
 /// The list in the middle sheet: the way back to the plan, the summary with Filters, the count, and one list.
 struct PlannerRoutesList: View {
     let finder: PlannerRouteFinder
-    let bike: BikeType
+    let activity: RouteActivity
     /// The plan under the view, for the line that leads back to it.
     let plan: (title: String, meters: Double)?
     let onShowPlan: () -> Void
@@ -102,7 +112,7 @@ struct PlannerRoutesList: View {
     let onSelect: (CatalogRecord) -> Void
     let onRetry: () -> Void
 
-    private var graded: Bool { bike == .mtb }
+    private var graded: Bool { PlannerRoutesText.graded(activity) }
     private var place: String { finder.start?.name ?? "the start" }
 
     var body: some View {
@@ -116,7 +126,7 @@ struct PlannerRoutesList: View {
             }
             Button(action: onFilters) {
                 HStack {
-                    Text(PlannerRoutesText.summary(finder.filters, graded: graded)).font(.subheadline).foregroundStyle(OBCTheme.ink)
+                    Text(PlannerRoutesText.summary(finder.filters, activity: activity)).font(.subheadline).foregroundStyle(OBCTheme.ink)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Label("Filters", systemImage: "slider.horizontal.3").font(.subheadline.weight(.semibold)).foregroundStyle(OBCTheme.tint)
                 }
@@ -177,7 +187,7 @@ struct PlannerRoutesList: View {
             let value = switch filter {
             case .distance: PlannerRoutesText.range(filters.distanceKm, unit: "km") ?? ""
             case .climb: PlannerRoutesText.range(filters.climbM, unit: "m") ?? ""
-            case .hardest: PlannerRoutesText.hardest(filters.hardest)
+            case .hardest: PlannerRoutesText.hardest(filters.hardest, mtb: activity == .mtb)
             }
             note("No routes match the \(name) \(value).")
             Button("Clear \(name)") {
@@ -188,10 +198,10 @@ struct PlannerRoutesList: View {
                 }
             }.buttonStyle(.obcGhost)
         case .wider(let radius, let count):
-            note("No signed \(bike == .mtb ? "mountain bike" : "cycling") \(filters.shape == .loop ? "loops" : "routes") within \(Int(filters.radiusKm)) km of \(place). \(count) within \(Int(radius)) km.")
+            note("No signed \(PlannerRoutesText.activity(activity)) \(filters.shape == .loop ? "loops" : "routes") within \(Int(filters.radiusKm)) km of \(place). \(count) within \(Int(radius)) km.")
             Button("Search within \(Int(radius)) km") { finder.filters.radiusKm = radius }.buttonStyle(.obcGhost)
         case nil:
-            note("No signed \(bike == .mtb ? "mountain bike" : "cycling") \(filters.shape == .loop ? "loops" : "routes") within \(Int(filters.radiusKm)) km of \(place).")
+            note("No signed \(PlannerRoutesText.activity(activity)) \(filters.shape == .loop ? "loops" : "routes") within \(Int(filters.radiusKm)) km of \(place).")
         }
     }
 
@@ -201,7 +211,7 @@ struct PlannerRoutesList: View {
 
     private func row(_ match: RouteMatch, number: Int) -> some View {
         let route = match.route
-        let facts = [PlannerRoutesText.kind(route, finder: finder), graded ? route.hardest.map { PlannerRoutesText.grade($0, kind: route.kind) } : nil,
+        let facts = [PlannerRoutesText.kind(route, finder: finder), graded ? route.hardest.map { PlannerRoutesText.grade($0, mtb: route.kind == .mtb) } : nil,
                      "\(OBCFormat.distance(meters: match.distanceM)) away"].compactMap { $0 }.joined(separator: " · ")
         return HStack(spacing: 12) {
             PlannerRouteNumber(number: number, rank: route.rank)
@@ -226,7 +236,6 @@ struct PlannerRoutesList: View {
 struct PlannerRouteDetail: View {
     let finder: PlannerRouteFinder
     let detail: PlannerRouteFinder.Detail
-    let bike: BikeType
     /// The start and finish of the plan, by the nearest places of the loaded map.
     let ends: (start: String?, finish: String?)
     @Binding var fraction: Double?
@@ -304,7 +313,7 @@ struct PlannerRouteDetail: View {
             }.frame(height: 8).clipShape(Capsule())
             HStack(spacing: 12) {
                 ForEach(parts, id: \.offset) { part in
-                    Text("\(PlannerRoutesText.grade(part.offset, kind: kind)) \(OBCFormat.distance(meters: part.element))")
+                    Text("\(PlannerRoutesText.grade(part.offset, mtb: kind == .mtb)) \(OBCFormat.distance(meters: part.element))")
                 }
             }.font(.caption.monospacedDigit()).foregroundStyle(OBCTheme.secondary)
         }
@@ -355,13 +364,13 @@ struct PlannerRoutePlanFoot: View {
 /// The filter form, full screen from the summary line. The filters apply with the amber action.
 struct PlannerRouteFiltersPage: View {
     let finder: PlannerRouteFinder
-    let bike: BikeType
+    let activity: RouteActivity
     let onClose: () -> Void
     @State private var draft: PlannerRouteFilters
     @State private var count: Int?
 
-    init(finder: PlannerRouteFinder, bike: BikeType, onClose: @escaping () -> Void) {
-        self.finder = finder; self.bike = bike; self.onClose = onClose
+    init(finder: PlannerRouteFinder, activity: RouteActivity, onClose: @escaping () -> Void) {
+        self.finder = finder; self.activity = activity; self.onClose = onClose
         _draft = State(initialValue: finder.filters)
     }
 
@@ -388,10 +397,10 @@ struct PlannerRouteFiltersPage: View {
                         bounds("Distance", unit: "km", value: $draft.distanceKm)
                         bounds("Climb", unit: "m", value: $draft.climbM, divider: false)
                     }
-                    if bike == .mtb {
+                    if PlannerRoutesText.graded(activity) {
                         section("Hardest part") {
-                            PlannerGradeRange(range: $draft.hardest)
-                            let reading = PlannerRoutesText.reading(draft.hardest)
+                            PlannerGradeRange(range: $draft.hardest, mtb: activity == .mtb)
+                            let reading = PlannerRoutesText.reading(draft.hardest, mtb: activity == .mtb)
                             (Text(reading.0).fontWeight(.semibold) + Text(" " + reading.1)).font(.footnote).foregroundStyle(OBCTheme.secondary)
                         }
                     }
@@ -416,7 +425,7 @@ struct PlannerRouteFiltersPage: View {
             count = nil
             do {
                 try await Task.sleep(for: .milliseconds(200))
-                count = try await finder.count(draft, bike: bike)
+                count = try await finder.count(draft, activity: activity)
             } catch {}
         }
     }
@@ -455,9 +464,10 @@ struct PlannerRouteFiltersPage: View {
     }
 }
 
-/// A range over the four grades S0–S3. A tap or a drag moves the nearer end to the grade under the finger.
+/// A range over four grades: T1–T4, or S0–S3 for mountain bike. A tap or a drag moves the nearer end to the grade under the finger.
 struct PlannerGradeRange: View {
     @Binding var range: ClosedRange<Int>
+    let mtb: Bool
     /// Which end the current touch moves, fixed when it starts.
     @State private var movesLower: Bool?
 
@@ -467,7 +477,7 @@ struct PlannerGradeRange: View {
             HStack(spacing: 0) {
                 ForEach(0..<4, id: \.self) { grade in
                     let on = range.contains(grade)
-                    Text("S\(grade)").font(.subheadline.weight(.semibold).monospacedDigit())
+                    Text(PlannerRoutesText.grade(grade, mtb: mtb)).font(.subheadline.weight(.semibold).monospacedDigit())
                         .foregroundStyle(on ? OBCTheme.onAmber : OBCTheme.secondary)
                         .frame(width: step, height: 40)
                         .background(on ? OBCTheme.amber : OBCTheme.fill)
@@ -493,7 +503,7 @@ struct PlannerGradeRange: View {
         .frame(height: 40)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Hardest part")
-        .accessibilityValue(PlannerRoutesText.reading(range).0)
+        .accessibilityValue(PlannerRoutesText.reading(range, mtb: mtb).0)
         .accessibilityAdjustableAction { direction in
             let upper = min(3, max(range.lowerBound, range.upperBound + (direction == .increment ? 1 : -1)))
             range = range.lowerBound...upper

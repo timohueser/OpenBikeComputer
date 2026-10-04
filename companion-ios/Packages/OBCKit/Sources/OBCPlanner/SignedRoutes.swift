@@ -71,9 +71,8 @@ public struct RoutePlan: Equatable, Sendable {
     }
 }
 
-/// The activities of the route search; each lists its own route kinds.
-public enum RouteActivity: String, CaseIterable, Sendable {
-    case hiking, mtb, road, gravel, touring
+/// Each activity lists its own route kinds.
+extension RouteActivity {
     var kinds: Set<CatalogRecord.Kind> {
         switch self { case .hiking: [.hiking, .foot]; case .mtb: [.mtb]; case .road, .gravel, .touring: [.bicycle] }
     }
