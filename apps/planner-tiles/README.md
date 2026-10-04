@@ -42,6 +42,7 @@ npm run deploy --prefix apps/planner-tiles
 | `/releases/ID/snow/Z/X/Y` | Snow tile: gzip-encoded bytes, `application/octet-stream` |
 | `/releases/ID/climate.json` | Climate TileJSON with the archive metadata, when the release has climate |
 | `/releases/ID/climate/Z/X/Y` | Climate tile: gzip-encoded bytes, `application/octet-stream` |
+| `/releases/ID/routes/tiles/9-X-Y.json` | Route catalog cell of a grid release; 404 for a cell outside the grid |
 
 The archive header gives the zoom levels and the tile type. A tile extension is
 optional and must match the tile type. TileJSON tile URLs have no extension.

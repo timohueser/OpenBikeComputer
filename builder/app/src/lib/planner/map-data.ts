@@ -43,3 +43,71 @@ export const MAP_VIEWS: { name: string; center: Coordinate; zoom: number }[] = [
     { name: "Stuttgart · city", center: [9.182, 48.775], zoom: 12 },
     { name: "Baden-Württemberg · overview", center: [8.95, 48.65], zoom: 7 },
 ];
+
+/** The route catalog of specs/route-catalog.md: a cell template with `{cell}` for a grid release, else the region file. Empty when the release has none. */
+export const ROUTES_URL = dataUrl(import.meta.env.VITE_PLANNER_ROUTES_URL);
+
+/** A route catalog record: a route record or a long route. A field with no value is absent. */
+export interface RouteRecord {
+    id: number;
+    kind: "hiking" | "foot" | "bicycle" | "mtb";
+    name?: string;
+    ref?: string;
+    operator?: string;
+    description?: string;
+    website?: string;
+    symbol?: string;
+    rank: number;
+    loop: boolean;
+    length_m: number;
+    ascent_m: number;
+    descent_m: number;
+    grades_m?: number[];
+    hardest?: number;
+    cells: string[];
+    line_udeg?: number[];
+    via?: number[];
+    turnarounds?: number[];
+    parent?: number;
+    stage?: number;
+    stages?: number[];
+    start_udeg?: [number, number];
+}
+
+/** Whether the zoom 9 cell `9-X-Y` overlaps the bounds with a positive area. */
+function coversCell(bounds: [number, number, number, number], id: string): boolean {
+    const match = /^9-(\d+)-(\d+)$/.exec(id);
+    const n = 512, x = Number(match?.[1]), y = Number(match?.[2]);
+    if (!match || x >= n || y >= n) throw new Error(`Invalid route catalog cell ${id}`);
+    const latitude = (row: number) => Math.atan(Math.sinh(Math.PI * (1 - 2 * row / n))) * 180 / Math.PI;
+    // Offline bounds are the edges of their cells. The margin keeps a neighbour that only touches
+    // such an edge outside, also when its edge latitude differs from the release builder's in the last bit.
+    const margin = 1e-9;
+    return Math.min(bounds[2], (x + 1) / n * 360 - 180) - Math.max(bounds[0], x / n * 360 - 180) > margin
+        && Math.min(bounds[3], latitude(y)) - Math.max(bounds[1], latitude(y + 1)) > margin;
+}
+
+async function routeFile(url: string): Promise<RouteRecord[]> {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Route catalog request failed with status ${response.status}`);
+    const document = await response.json();
+    if (document?.format !== 1 || !Array.isArray(document.routes)) throw new Error("Unsupported route catalog");
+    return document.routes;
+}
+
+let regionRoutes: Promise<RouteRecord[]> | undefined;
+
+/**
+ * The catalog records of the zoom 9 cell `9-X-Y`. A covered cell with no routes gives an empty list.
+ * A cell outside the release bounds gives null and is not fetched. Online the bounds cover the grid.
+ * Offline they cover exactly the downloaded cells, because planner_downloads sets them to the union of those cells.
+ */
+export async function loadRouteCell(id: string): Promise<RouteRecord[] | null> {
+    if (!ROUTES_URL || !MAP_BOUNDS || !coversCell(MAP_BOUNDS, id)) return null;
+    if (ROUTES_URL.includes("{cell}")) return routeFile(ROUTES_URL.replace("{cell}", id));
+    regionRoutes ??= routeFile(ROUTES_URL).catch((error) => {
+        regionRoutes = undefined;
+        throw error;
+    });
+    return (await regionRoutes).filter((record) => record.cells.includes(id));
+}
