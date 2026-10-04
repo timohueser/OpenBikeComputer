@@ -1071,7 +1071,7 @@ public final class MainScreenModel {
         guard var trip = trip(id), Trip.isDay(file) else { return false }
         let plan = trip.plan
         tell(dropped: trip.append(file, name: name, waypoints: waypoints))
-        trip.plan = plan?.appendingDay(file, name: name) ?? PlannerPlan.keptLine(trip)
+        trip.plan = plan?.appendingDay(file, name: name, waypoints: waypoints) ?? PlannerPlan.keptLine(trip)
         saveEditedTrip(trip)
         nameDayEnds(id)
         return true

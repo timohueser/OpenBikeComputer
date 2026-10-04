@@ -34,7 +34,7 @@ public struct StopIcon: View {
     }
 
     /// The kind as a word: "Hotel".
-    static func name(_ kind: Stop.Kind) -> String {
+    nonisolated static func name(_ kind: Stop.Kind) -> String {
         switch kind {
         case .campsite: "Campsite"
         case .hotel: "Hotel"

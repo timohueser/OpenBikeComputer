@@ -11,9 +11,10 @@ extension PlannerPlan {
     }
 
     /// The plan with `day` as its new last day: the finish becomes a night, a transfer leg goes to
-    /// the day's start when that is farther than ``Trip/transferMinMeters``, and the day is one
-    /// drawn leg. Nil for a loop, or when the plan already has ``maxDays`` days.
-    public func appendingDay(_ day: [RoutePoint], name: String?) -> PlannerPlan? {
+    /// the day's start when that is farther than ``Trip/transferMinMeters``, the day is one drawn
+    /// leg, and its waypoints are markers. Nil for a loop, or when the plan already has
+    /// ``maxDays`` days.
+    public func appendingDay(_ day: [RoutePoint], name: String?, waypoints: [Waypoint] = []) -> PlannerPlan? {
         guard !isLoop, days < Self.maxDays, let first = day.first?.coordinate, let last = day.last?.coordinate,
               let finishIndex = points.firstIndex(where: { $0.kind == .finish }) else { return nil }
         var points = points, order = routePoints.dropFirst().map(\.id)
@@ -32,6 +33,10 @@ extension PlannerPlan {
         }
         points.append(PlanPoint(id: "finish", label: name ?? "Finish", coordinate: last, progress: 1, kind: .finish,
                                 leg: .drawn, drawn: Self.drawnLeg(from: here, along: day)))
+        points += waypoints.enumerated().map { index, waypoint in
+            PlanPoint(id: "day-\(night + 1)-waypoint-\(index + 1)", label: waypoint.name, coordinate: waypoint.coordinate,
+                      progress: 0, kind: .marker, placeKind: waypoint.category?.placeKind, note: waypoint.note)
+        }
         var plan = self
         plan.points = points
         plan.routeOrder = order
