@@ -1,6 +1,7 @@
 // Snow history decoded per specs/planner-snow-tiles.md: every season from 1 September has an onset
 // and a melt-out byte per pixel, as a day index in 2-day steps.
-import { columnDate, dateLabel, type Chart, type Grid, type Swatch, type Theme } from './data-layer';
+import { noData } from './colour';
+import { columnDate, dateLabel, DAY_MS, type Chart, type Grid, type Swatch, type Theme } from './data-layer';
 
 /** Per season, `size` onset bytes, then `size` melt-out bytes. A tile has 65,536 items; a line has one per sample. */
 export interface Planar { data: Uint8Array; size: number; seasons: number }
@@ -9,7 +10,6 @@ const DAYS = 183;
 const NO_SNOW = 253, WHOLE_SEASON = 254, NO_DATA = 255;
 /** Classes by share of seasons with snow on a date. */
 export const FREE = 0, MOSTLY_FREE = 1, MOSTLY_SNOW = 2, SNOW = 3, UNKNOWN = 4;
-const DAY_MS = 86_400_000;
 const SEPTEMBER = Date.UTC(2001, 8, 1);
 
 export interface SnowMeta { firstSeason: number; seasons: number; resolution: number; attribution: string }
@@ -206,7 +206,7 @@ export function snowChart(p: Planar, i: number, firstSeason: number, date: strin
         cells: Uint8Array.from(columns, ({ season, index }) => cell(r + season - 2001, index)),
     }));
     const palette = colors[theme];
-    const history: Swatch[] = [{ label: 'Snow on the ground', color: palette.history }, { label: 'No data', color: palette.unknown, hatch: true }];
+    const history: Swatch[] = [{ label: 'Snow on the ground', color: palette.history }, noData(theme)];
     return {
         headline: known ? `Snow on ${dateLabel(date)} in ${snow} of ${years(known)}` : 'No snow data here',
         grids: [{ label: '', columns: COLUMNS, rows, fills: [{ label: 'Clear', color: palette.clear }, ...history], legend: { swatches: history } }],
@@ -214,8 +214,8 @@ export function snowChart(p: Planar, i: number, firstSeason: number, date: strin
 }
 
 export const colors = {
-    light: { free: '#e6e0cc', mostlyFree: '#d3dcdc', mostlySnow: '#a9c1d8', snow: '#e8f1fa', unknown: '#b8b5ac', clear: '#efede4', history: '#5f7d91' },
-    dark: { free: '#3b382b', mostlyFree: '#33434e', mostlySnow: '#6a88a3', snow: '#e8f0f8', unknown: '#6b685c', clear: '#2b2a21', history: '#9fb7c6' },
+    light: { free: '#e6e0cc', mostlyFree: '#d3dcdc', mostlySnow: '#a9c1d8', snow: '#e8f1fa', clear: '#efede4', history: '#5f7d91' },
+    dark: { free: '#3b382b', mostlyFree: '#33434e', mostlySnow: '#6a88a3', snow: '#e8f0f8', clear: '#2b2a21', history: '#9fb7c6' },
 } as const;
 
 /** Swatches by class value. The map leaves the first, snow-free, clear. */
@@ -223,6 +223,6 @@ export function snowClasses(theme: Theme): Swatch[] {
     const c = colors[theme];
     return [
         { label: 'Snow-free', color: c.free }, { label: 'Mostly snow-free', color: c.mostlyFree },
-        { label: 'Mostly still snow', color: c.mostlySnow }, { label: 'Snow', color: c.snow }, { label: 'No data', color: c.unknown, hatch: true },
+        { label: 'Mostly still snow', color: c.mostlySnow }, { label: 'Snow', color: c.snow }, noData(theme),
     ];
 }

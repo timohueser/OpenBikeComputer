@@ -3,10 +3,12 @@
 import type { FeatureCollection, Point } from 'geojson';
 import RainWeeks from '../../../components/planner/RainWeeks.svelte';
 import type { Coordinate } from '../map-types';
-import { atElevation, read, temperatureAt, typicalRain, typicalRainAt, weekMonth, wetDaysOf7, WEEKS, YEARS } from './climate';
+import { atElevation, leap, read, temperatureAt, typicalRain, typicalRainAt, weekMonth, wetDaysOf7, WEEKS, YEARS } from './climate';
 import type { CellRef } from './climate-source';
 import { weatherRows } from './climate-route';
-import { dateLabel, weekOf, type Chart, type Grid, type Legend, type Swatch, type Theme } from './data-layer';
+import { abgr, mix, noData } from './colour';
+import { dateLabel, DAY_MS, weekOf, type Chart, type Grid, type Legend, type Swatch, type Theme } from './data-layer';
+import { latitudeAt } from './mercator';
 
 export type Variable = 'temperature' | 'rain';
 
@@ -27,15 +29,12 @@ const RAMPS: Record<Variable, Ramp> = {
     },
 };
 
-const rgb = (hex: string) => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
-const hex = (channels: number[]) => '#' + channels.map(c => Math.round(c).toString(16).padStart(2, '0')).join('');
-
 /** The colour of a value on the variable's scale, mixed between the two nearest stops. */
 export function rampColor(variable: Variable, theme: Theme, value: number): string {
     const { from, to, colors } = RAMPS[variable], stops = colors[theme];
     const at = Math.min(1, Math.max(0, (value - from) / (to - from))) * (stops.length - 1);
-    const i = Math.min(stops.length - 2, Math.floor(at)), a = rgb(stops[i]), b = rgb(stops[i + 1]);
-    return hex(a.map((c, k) => c + (b[k] - c) * (at - i)));
+    const i = Math.min(stops.length - 2, Math.floor(at));
+    return mix(stops[i], stops[i + 1], at - i);
 }
 
 export function mapLegend(variable: Variable, theme: Theme): Legend {
@@ -46,10 +45,7 @@ export function mapLegend(variable: Variable, theme: Theme): Legend {
 /** 256 ABGR words over the scale of a variable, for ImageData pixels. */
 export function rampWords(variable: Variable, theme: Theme): Uint32Array {
     const { from, to } = RAMPS[variable];
-    return Uint32Array.from({ length: 256 }, (_, i) => {
-        const [r, g, b] = rgb(rampColor(variable, theme, from + (to - from) * i / 255));
-        return ((255 << 24) | (b << 16) | (g << 8) | r) >>> 0;
-    });
+    return Uint32Array.from({ length: 256 }, (_, i) => abgr(rampColor(variable, theme, from + (to - from) * i / 255)));
 }
 
 /** The word of a value; 0 (transparent) for NaN. */
@@ -67,8 +63,6 @@ const WET_STEP = 0.25, WET_CLASSES = 7 / WET_STEP + 1;
 export function temperatureClass(celsius: number): number {
     return Number.isNaN(celsius) ? NO_TEMPERATURE : Math.min(T_HIGH, Math.max(T_LOW, Math.round(celsius))) - T_LOW;
 }
-
-const noData = (theme: Theme): Swatch => ({ label: 'No data', color: theme === 'dark' ? '#6b685c' : '#b8b5ac', hatch: true });
 
 export function temperatureFills(theme: Theme): Swatch[] {
     return [...Array.from({ length: NO_TEMPERATURE }, (_, i) => ({ label: `${celsius(T_LOW + i)} °C`, color: rampColor('temperature', theme, T_LOW + i) })), noData(theme)];
@@ -96,8 +90,6 @@ export function spread(values: ArrayLike<number>): [number, number] | null {
     const drop = sorted.length >= 5 ? 1 : 0;
     return [sorted[drop], sorted[sorted.length - 1 - drop]];
 }
-
-const DAY_MS = 86_400_000;
 
 /** "14–20 May" or "28 Apr – 4 May": the days of the climate week of a date. */
 export function weekLabel(date: string): string {
@@ -139,7 +131,7 @@ export function tileCells(z: number, x: number, y: number): { cols: Float64Array
     const scale = 256 * 2 ** z;
     return {
         cols: Float64Array.from({ length: 256 }, (_, px) => 10 * ((x * 256 + px + 0.5) / scale * 360)),
-        rows: Float64Array.from({ length: 256 }, (_, py) => 10 * (90 - Math.atan(Math.sinh(Math.PI * (1 - 2 * (y * 256 + py + 0.5) / scale))) * 180 / Math.PI)),
+        rows: Float64Array.from({ length: 256 }, (_, py) => 10 * (90 - latitudeAt(y * 256 + py + 0.5, scale))),
     };
 }
 
@@ -360,7 +352,6 @@ function mean(values: number[]): number {
     return known.length ? known.reduce((a, b) => a + b, 0) / known.length : NaN;
 }
 
-const leap = (year: number) => year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
 /** Days of a week of the spec: week 51 also holds the last one or two days of the year. */
 const daysOf = (week: number, year: number) => week < WEEKS - 1 ? 7 : leap(year) ? 9 : 8;
 

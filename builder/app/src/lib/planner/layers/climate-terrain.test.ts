@@ -3,19 +3,11 @@ import { describe, expect, it, vi } from 'vitest';
 // map-style reads the page URL when it loads.
 vi.stubGlobal('window', { location: { href: 'https://planner.example/plan/' } });
 const { cropHeights, demTile, reliefZoom } = await import('./climate-terrain');
+const { UNKNOWN_HEIGHT } = await import('./terrain');
 
-/** A 512 px Terrarium tile whose height at (column, row) is 10 × row + column − 100. */
-function terrarium(): Uint8ClampedArray {
-    const rgba = new Uint8ClampedArray(512 * 512 * 4);
-    for (let row = 0; row < 512; row++) {
-        for (let col = 0; col < 512; col++) {
-            const code = (10 * row + col - 100 + 32768) * 256, p = 4 * (row * 512 + col);
-            rgba.set([code >> 16, (code >> 8) & 255, code & 255, 255], p);
-        }
-    }
-    return rgba;
-}
 const height = (col: number, row: number) => 10 * row + col - 100;
+/** A 512 px DEM tile with a height at each (column, row). */
+const dem = () => Int16Array.from({ length: 512 * 512 }, (_, i) => height(i % 512, Math.floor(i / 512)));
 
 describe('climate terrain', () => {
     it('reads the DEM tile that the 512 px terrain source loads for the view', () => {
@@ -29,13 +21,15 @@ describe('climate terrain', () => {
         expect([reliefZoom(9.4), reliefZoom(9.6), reliefZoom(15), reliefZoom(-1)]).toEqual([9, 10, 12, 0]);
     });
 
-    it('decodes Terrarium heights of the covered part, one DEM pixel per map pixel at the view zoom', () => {
-        const rgba = terrarium();
-        const quarter = cropHeights(rgba, demTile(10, 533, 355));
+    it('reads the heights of the covered part, one DEM pixel per map pixel at the view zoom', () => {
+        const heights = dem();
+        const quarter = cropHeights(heights, demTile(10, 533, 355));
         expect([quarter[0], quarter[1], quarter[256], quarter[65_535]]).toEqual([height(256, 256), height(257, 256), height(256, 257), height(511, 511)]);
-        const whole = cropHeights(rgba, demTile(0, 0, 0));
+        const whole = cropHeights(heights, demTile(0, 0, 0));
         expect([whole[1], whole[256]]).toEqual([height(2, 0), height(0, 2)]);
-        const enlarged = cropHeights(rgba, demTile(15, 803, 407));
+        const enlarged = cropHeights(heights, demTile(15, 803, 407));
         expect([enlarged[3], enlarged[4]]).toEqual([height(192, 448), height(193, 448)]);
+        heights[0] = UNKNOWN_HEIGHT;
+        expect(cropHeights(heights, demTile(0, 0, 0))[0]).toBeNaN();
     });
 });

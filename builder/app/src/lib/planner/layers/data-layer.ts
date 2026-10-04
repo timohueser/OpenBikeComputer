@@ -93,7 +93,7 @@ export function availableLayers(entries: readonly { archive: Archive; create: (u
     return entries.flatMap(({ archive, create }) => urls[archive] ? [create(urls[archive]!)] : []);
 }
 
-const DAY_MS = 86_400_000;
+export const DAY_MS = 86_400_000;
 const JANUARY = Date.UTC(2001, 0, 1);
 
 /** Days per column; the last column takes the rest of the year. */

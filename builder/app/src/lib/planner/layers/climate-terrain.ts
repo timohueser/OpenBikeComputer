@@ -1,5 +1,8 @@
 // Terrain heights for the temperature map, read from the same Terrarium tiles as the map's terrain source.
 import { DEM_MAX_ZOOM, DEM_TILE } from '../map-style';
+import type { Coordinate } from '../map-types';
+import { worldPixel } from './mercator';
+import { UNKNOWN_HEIGHT } from './terrain';
 
 const TILE = 256;
 
@@ -19,34 +22,22 @@ export function reliefZoom(zoom: number): number {
     return Math.min(Math.max(Math.round(zoom), 0), DEM_MAX_ZOOM);
 }
 
-/** The height in metres of pixel (column, row) of a 512 px Terrarium RGBA tile: R × 256 + G + B ÷ 256 − 32768. */
-export function pixelHeight(rgba: ArrayLike<number>, column: number, row: number): number {
-    const p = 4 * (row * DEM_TILE + column);
-    return rgba[p] * 256 + rgba[p + 1] + rgba[p + 2] / 256 - 32768;
+/** The DEM tile at zoom z that holds a coordinate, and the index of its pixel there. */
+export function demPixel(coordinate: Coordinate, z: number): { x: number; y: number; pixel: number } {
+    const [px, py] = worldPixel(coordinate, DEM_TILE * 2 ** z).map(Math.floor);
+    return { x: Math.floor(px / DEM_TILE), y: Math.floor(py / DEM_TILE), pixel: (py % DEM_TILE) * DEM_TILE + (px % DEM_TILE) };
 }
 
-/** Heights in metres of the 256 × 256 nearest pixels of the part of a 512 px Terrarium RGBA tile that a map tile covers. */
-export function cropHeights(rgba: ArrayLike<number>, { scale, left, top }: { scale: number; left: number; top: number }): Float32Array {
+/** Metres; NaN where the height is unknown. */
+export const metres = (height: number) => height === UNKNOWN_HEIGHT ? NaN : height;
+
+/** Heights of the 256 × 256 nearest pixels of the part of a 512 px DEM tile that a map tile covers. */
+export function cropHeights(heights: Int16Array, { scale, left, top }: { scale: number; left: number; top: number }): Float32Array {
     const step = DEM_TILE / scale / TILE;
     const out = new Float32Array(TILE * TILE);
     for (let py = 0; py < TILE; py++) {
-        const row = top + Math.floor(py * step);
-        for (let px = 0; px < TILE; px++) out[py * TILE + px] = pixelHeight(rgba, left + Math.floor(px * step), row);
+        const row = (top + Math.floor(py * step)) * DEM_TILE;
+        for (let px = 0; px < TILE; px++) out[py * TILE + px] = metres(heights[row + left + Math.floor(px * step)]);
     }
     return out;
-}
-
-/**
- * The RGBA pixels of DEM tile z/x/y; undefined where the terrain service has no tile. `template` is
- * the map's Terrarium URL, so the browser cache serves tiles that the map has loaded.
- */
-export async function demPixels(template: string, z: number, x: number, y: number, signal?: AbortSignal): Promise<Uint8ClampedArray | undefined> {
-    const response = await fetch(template.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y)), { signal });
-    if (!response.ok || response.status === 204) return undefined;
-    // Without these options the browser may convert colours or premultiply, which changes the heights.
-    const image = await createImageBitmap(await response.blob(), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
-    const context = new OffscreenCanvas(DEM_TILE, DEM_TILE).getContext('2d', { willReadFrequently: true })!;
-    context.drawImage(image, 0, 0, DEM_TILE, DEM_TILE);
-    image.close();
-    return context.getImageData(0, 0, DEM_TILE, DEM_TILE).data;
 }

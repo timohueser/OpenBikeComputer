@@ -132,7 +132,7 @@ export function wetDaysOf7(tile: ClimateTile, cell: number, week: number): numbe
     return 7 * read(tile, 'wet_share', week, cell) / 100;
 }
 
-const leap = (year: number) => year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+export const leap = (year: number) => year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
 
 /** Days of a week in the overview means: week 51 has 8 days, plus the share of leap years in the archive. */
 function meanWeekDays(week: number, firstYear: number): number {
