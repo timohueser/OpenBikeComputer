@@ -138,7 +138,10 @@
         <Segmented label="Leg mode" options={legModes} value={legMode} onChange={onLegMode} />
         <p class="hint">Straight lines join shaping points without following roads.</p>
         <button type="button" class="secondary" onclick={onInsert}>Insert point here</button>
-        {#if canMoveLoopStart(trip)}<button type="button" class="secondary" onclick={onLoopStart}>Start the loop here</button>{/if}
+        {#if canMoveLoopStart(trip)}
+            <button type="button" class="secondary" onclick={onLoopStart}>Start the loop here</button>
+            <p class="hint">The start moves to this point. The stops keep their order.</p>
+        {/if}
     {:else if kind === 'dayend'}
         <h2>Day {dayLabels[night]} ends here for now</h2>
         {#if overnightNote}<p class="hint" role="status">{overnightNote}</p>{/if}

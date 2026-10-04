@@ -631,6 +631,11 @@
         commit(setLegMode(trip, legEndId, mode), mode === 'straight' ? 'Leg set to a straight line' : 'Leg set to routed');
     }
 
+    function closeToStart() {
+        clearSelection();
+        commit(closeLoop(trip), 'Loop closed · the route returns to the start');
+    }
+
     function insert(legEndId: string, coordinate: Coordinate) {
         clearSelection();
         commit(insertPoint(trip, legEndId, coordinate), 'Shaping point inserted');
@@ -959,7 +964,7 @@
                             onNameRest={nameRest}
                         />
                     {:else}
-                        <RouteList {stops} loop={!!trip.loop} {hoveredId} onHover={(id) => hoveredId = id} measured={!!currentRoute} onInspect={inspectPoint}
+                        <RouteList {stops} loop={!!trip.loop} onLoop={closeToStart} {hoveredId} onHover={(id) => hoveredId = id} measured={!!currentRoute} onInspect={inspectPoint}
                             onReorder={(id, offset) => commit(reorderPoint(trip, id, offset), 'Stops reordered · changed legs follow roads')} />
                     {/if}
                     {#if nearbyLandmark && !focusedDay}
@@ -990,7 +995,7 @@
                                     onAddHere={addHere}
                                     onLegMode={setLeg}
                                     onInsert={() => insert(spot!.legEndId!, spot!.coordinate)}
-                                    onLoop={() => { clearSelection(); commit(closeLoop(trip), 'Loop closed · the route returns to the start'); }}
+                                    onLoop={closeToStart}
                                     onLoopStart={() => { const { legEndId, coordinate } = spot!; clearSelection(); commit(startLoopHere(trip, legEndId!, coordinate), 'Loop start moved'); }}
                                     onPick={pickOnMap}
                                     onSelectPlace={selectPlace}

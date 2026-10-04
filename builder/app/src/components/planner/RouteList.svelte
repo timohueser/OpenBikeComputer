@@ -3,7 +3,7 @@
     import Icon from './PlannerIcon.svelte';
     import type { RoutePoint } from '../../lib/planner/editor';
 
-    let { stops, onInspect, onReorder, measured = true, loop = false, hoveredId = null, onHover }: {
+    let { stops, onInspect, onReorder, onLoop, measured = true, loop = false, hoveredId = null, onHover }: {
         hoveredId?: string | null;
         /** The last stop returns to the start, which has one row. */
         loop?: boolean;
@@ -12,6 +12,8 @@
         stops: { point: RoutePoint; distance: number }[];
         onInspect: (point: RoutePoint) => void;
         onReorder: (id: string, offset: number) => void;
+        /** "Back to start", offered for an open plan with a finish. */
+        onLoop?: () => void;
     } = $props();
 
     const helpId = $props.id();
@@ -90,6 +92,9 @@
         </li>
     {/each}
 </ol>
+{#if onLoop && !loop && listed.at(-1)?.point.kind === 'finish'}
+    <button type="button" class="stop back" onclick={onLoop}><Icon name="loop" size={17} />Back to start</button>
+{/if}
 {#if measured}<p class="note">Cumulative from the start</p>{/if}
 {#if stops.some(stop => stop.point.kind === 'via' || stop.point.leg === 'drawn')}<p class="note">Edit shaping points on the map. Reordering stops clears shapes on changed legs. Undo restores them.</p>{/if}
 <span class="sr-only" id={helpId}>Drag to reorder. Use the up and down arrow keys when focused.</span>
@@ -130,6 +135,13 @@
         border-radius: 6px;
         text-align: left;
     }
+    .stop.back {
+        width: calc(100% - 16px);
+        margin: 4px 8px 0;
+        color: var(--ink-soft);
+        font: 600 14px var(--sans);
+    }
+    .stop.back:hover { color: var(--ink); }
     .stop:hover, .stop.highlighted {
         background: var(--parchment-2);
     }
