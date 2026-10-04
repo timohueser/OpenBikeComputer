@@ -44,6 +44,15 @@ The split runs once per source identity. A POI transform update reads only
 its filtered records. Addresses own streets and houses; POIs own places and
 localities. Both retain their indexes and source context.
 
+Compare packages from the same builder, snapshot, bounds, and countries:
+
+```sh
+node apps/planner-search/address-parity.mjs CANDIDATE.sqlite REFERENCE.sqlite 500
+```
+
+All house records and sampled lookups are compared. Add `--require-equivalent`
+to fail on differences within a one-metre coordinate tolerance.
+
 For local map tiles, place `basemap.pmtiles` and `places.pmtiles` in `builder/app/public/data/planner/`:
 
 ```sh
