@@ -964,7 +964,7 @@
                             onNameRest={nameRest}
                         />
                     {:else}
-                        <RouteList {stops} loop={!!trip.loop} onLoop={closeToStart} {hoveredId} onHover={(id) => hoveredId = id} measured={!!currentRoute} onInspect={inspectPoint}
+                        <RouteList {stops} loop={!!trip.loop} onLoop={multi ? undefined : closeToStart} {hoveredId} onHover={(id) => hoveredId = id} measured={!!currentRoute} onInspect={inspectPoint}
                             onReorder={(id, offset) => commit(reorderPoint(trip, id, offset), 'Stops reordered · changed legs follow roads')} />
                     {/if}
                     {#if nearbyLandmark && !focusedDay}
