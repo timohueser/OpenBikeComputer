@@ -408,6 +408,12 @@ public struct PlannerPreviewView: View {
                     ForEach(PlannerPreviewPointKind.allCases, id: \.self) { Text($0.title).tag($0) }
                 }.pickerStyle(.segmented)
             }
+            if model.canMoveLoopStart, !model.isEndpoint(point.id), point.kind != .marker {
+                Button("Make this the start", systemImage: "play") { model.startLoop(at: point.id); resetPanel() }
+                    .frame(minHeight: 44).accessibilityIdentifier("planner.makeStart")
+                Text("The loop starts and finishes at \(point.place.name). The stops keep their order.")
+                    .font(.footnote).foregroundStyle(OBCTheme.secondary)
+            }
             Button("Replace place", systemImage: "magnifyingglass") {
                 intent = .replace(point.id); searchQuery = ""; openSearchFromDetail()
             }.frame(minHeight: 44)
@@ -520,7 +526,7 @@ public struct PlannerPreviewView: View {
                     Button("End day 1 here", systemImage: "moon") { model.setOvernight(place); resetPanel() }
                 }
                 if model.isLoop {
-                    Button("Finish here", systemImage: "flag.checkered") { model.setFinish(place); resetPanel() }
+                    Button("Finish here", systemImage: "flag.checkered") { model.setFinish(place); resetPanel(); fitRevision += 1 }
                 }
             } label: {
                 Text("More").font(.subheadline.weight(.semibold)).foregroundStyle(OBCTheme.tint)

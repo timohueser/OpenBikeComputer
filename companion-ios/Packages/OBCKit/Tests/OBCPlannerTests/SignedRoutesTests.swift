@@ -63,6 +63,19 @@ struct SignedRoutesTests {
         #expect(matches.map { Vector.Expected(id: $0.route.id, distance_m: $0.distanceM.rounded()) } == test.expect)
     }
 
+    @Test func aPlanThatDoesNotFitItsLineIsRejected() throws {
+        func record(_ fields: String) throws -> CatalogRecord {
+            try JSONDecoder().decode(CatalogRecord.self, from: Data("""
+            {"id":1,"kind":"hiking","rank":1,"loop":false,"length_m":1,"ascent_m":0,"descent_m":0,"cells":[],\(fields)}
+            """.utf8))
+        }
+        #expect(try record(#""line_udeg":[0,0,1,1,1,1],"via":[1],"turnarounds":[1]"#).plan != nil)
+        #expect(try record(#""line_udeg":[0,0,1,1,1,1],"via":[2]"#).plan == nil)
+        #expect(try record(#""line_udeg":[0,0,1,1,1,1],"via":[1],"turnarounds":[2]"#).plan == nil)
+        #expect(try record(#""line_udeg":[0,0,1,1,1],"via":[]"#).plan == nil)
+        #expect(SignedRoutes.nearestVertex([], to: Coordinate(latitude: 0, longitude: 0)) == nil)
+    }
+
     @Test func plansTheSharedVector() throws {
         for plan in Self.vector.plans {
             let route = try #require(Self.vector.routes.first { $0.id == plan.id })
@@ -89,18 +102,21 @@ struct SignedRoutesTests {
         try write(routes, "routes/test.json")
         // The union of cells 9-267-177 and 9-267-178.
         let bounds = [7.734375, 47.5172006978394, 8.4375, 48.45835188280866]
-        func release(_ routes: String) -> PlannerRelease {
+        func release(_ routes: String, cells: [String]? = nil) -> PlannerRelease {
             PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: bounds, basemap: directory, glyphs: "",
                            sprites: "", terrain: "", terrain_attribution: "", search: directory, routing: directory,
-                           manifest: directory.appending(path: "release.json"), routes: routes)
+                           manifest: directory.appending(path: "release.json"), routes: routes, offlineCells: cells)
         }
-        let grid = try #require(RouteCatalog(release: release(directory.appending(path: "routes/tiles").absoluteString + "/{cell}.json")))
+        let tiles = directory.appending(path: "routes/tiles").absoluteString + "/{cell}.json"
+        let grid = try #require(RouteCatalog(release: release(tiles, cells: ["9-267-177", "9-267-178"])))
         #expect(grid.covered == ["9-267-177", "9-267-178"])
         #expect(try await grid.loadCell("9-267-178")?.map(\.id) == [101, 105])
-        // A neighbour that only shares an edge with the download is not covered.
         #expect(try await grid.loadCell("9-268-178") == nil)
         await #expect(throws: PlannerFailure.invalidData) { try await grid.loadCell("9-267-177") }
         let region = try #require(RouteCatalog(release: release(directory.appending(path: "routes/test.json").absoluteString)))
+        #expect(region.covered == nil)
+        // A neighbour that only shares an edge with the bounds is not covered.
+        #expect(try await region.loadCell("9-268-178") == nil)
         #expect(try await region.loadCell("9-267-177")?.map(\.id) == [105])
         #expect(try await region.loadCell("9-267-178")?.map(\.id) == [101, 105])
     }

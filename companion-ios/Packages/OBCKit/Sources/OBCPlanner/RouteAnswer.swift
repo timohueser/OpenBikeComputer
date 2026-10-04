@@ -25,11 +25,10 @@ struct RouteAnswer: Decodable {
         profile = try values.decode(String.self, forKey: .profile)
         legs = try values.decode([Leg].self, forKey: .legs)
         totals = try values.decode(Totals.self, forKey: .totals)
-        let deltas = try values.decode([Int].self, forKey: .coordinates_udeg)
-        guard deltas.count.isMultiple(of: 2) else {
+        guard let coordinates = decodeCoordinates(try values.decode([Int].self, forKey: .coordinates_udeg)) else {
             throw DecodingError.dataCorruptedError(forKey: .coordinates_udeg, in: values, debugDescription: "Unpaired coordinate")
         }
-        coordinates = decodeCoordinates(deltas)
+        self.coordinates = coordinates
         var height = 0
         elevation = try values.decode([Int?].self, forKey: .elevation_dm).map { delta in
             delta.map { height &+= $0; return Double(height) / 10 }
@@ -40,10 +39,11 @@ struct RouteAnswer: Decodable {
 }
 
 /// Coordinates from integer microdegree pairs, longitude first: the first pair absolute, each later pair the
-/// difference from the one before. Wrapping sums cannot trap on corrupt data; the caller's range checks reject it.
-func decodeCoordinates(_ udeg: [Int]) -> [Coordinate] {
+/// difference from the one before. Nil for an unpaired value. Wrapping sums cannot trap on corrupt data.
+func decodeCoordinates(_ udeg: [Int]) -> [Coordinate]? {
+    guard udeg.count.isMultiple(of: 2) else { return nil }
     var longitude = 0, latitude = 0
-    return stride(from: 0, to: udeg.count - 1, by: 2).map { index in
+    return stride(from: 0, to: udeg.count, by: 2).map { index in
         longitude &+= udeg[index]
         latitude &+= udeg[index + 1]
         return Coordinate(latitude: Double(latitude) / 1e6, longitude: Double(longitude) / 1e6)

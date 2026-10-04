@@ -17,14 +17,16 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
     public let overlays: URL?
     /// The route catalog: a cell file URL with `{cell}`, or the one region file. Nil when the release has none.
     public let routes: String?
+    /// The cell IDs of an offline grid selection. Only routes wholly inside them are listed.
+    public let offlineCells: [String]?
 
     public init(id: String, region: String, bounds: [Double], basemap: URL, glyphs: String,
                 sprites: String, terrain: String, terrain_attribution: String, search: URL, routing: URL, manifest: URL,
-                overlays: URL? = nil, routes: String? = nil) {
+                overlays: URL? = nil, routes: String? = nil, offlineCells: [String]? = nil) {
         self.id = id; self.region = region; self.bounds = bounds; self.basemap = basemap
         self.glyphs = glyphs; self.sprites = sprites; self.terrain = terrain
         self.terrain_attribution = terrain_attribution; self.search = search; self.routing = routing; self.manifest = manifest
-        self.overlays = overlays; self.routes = routes
+        self.overlays = overlays; self.routes = routes; self.offlineCells = offlineCells
     }
 
     public var isLocal: Bool { manifest.isFileURL || (basemap.scheme == "pmtiles" && basemap.absoluteString.hasPrefix("pmtiles://file:")) }

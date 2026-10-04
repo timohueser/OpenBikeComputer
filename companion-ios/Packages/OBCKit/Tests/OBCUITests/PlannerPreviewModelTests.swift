@@ -208,13 +208,28 @@ struct PlannerPreviewModelTests {
         model.closeLoop()
         model.startLoop(at: "titisee")
         #expect(model.points.map(\.id) == ["titisee", "freiburg", "cafe"] && model.points[1].kind == .visit)
-        let corners = (0..<4).map { Coordinate(latitude: 47.9 + Double($0 % 2) / 100, longitude: 7.9 + Double($0 / 2) / 100) }
-        model.makeLoop(corners, startingAt: 2)
+        model.setOvernightPoint(id: "cafe")
+        #expect(!model.canMoveLoopStart)
+        model.startLoop(at: "cafe")
+        #expect(model.start?.id == "titisee")
+        model.setOvernightPoint(id: nil)
+
+        // A closed square with one shaping point, where the route turns back.
+        let route = try! JSONDecoder().decode(CatalogRecord.self, from: Data("""
+        {"id":1,"kind":"hiking","name":"Square","rank":1,"loop":true,"length_m":4000,"ascent_m":0,"descent_m":0,"cells":[],
+         "line_udeg":[8000000,47900000,10000,0,0,10000,-10000,0,0,-10000],"via":[2],"turnarounds":[2]}
+        """.utf8))
+        let line = route.line
+        model.makeLoop(route, startingAt: 1)
         await model.calculateRoute()
-        #expect(model.isLoop && model.routeTitle == "Loop from Start")
-        #expect(model.routePoints.map(\.coordinate) == [corners[2], corners[3], corners[0], corners[1], corners[2]])
-        #expect(model.points.dropFirst().allSatisfy { $0.kind == .shape } && model.exportRoute(name: "").waypoints.isEmpty)
-        model.undo()
+        #expect(model.isLoop && model.routeTitle == "Loop from Start" && model.points.map(\.kind) == [.visit, .shape, .shape])
+        #expect(model.routePoints.map(\.coordinate) == [line[1], line[2], line[0], line[1]])
+        #expect(model.points.map(\.turnaround) == [false, true, false] && model.exportRoute(name: "").waypoints.isEmpty)
+        model.makeLoop(route, startingAt: 2)
+        #expect(model.points.map(\.place.coordinate) == [line[2], line[0]])
+        model.makeLoop(route, startingAt: 4)
+        #expect(model.points.map(\.place.coordinate) == [line[0], line[2]])
+        model.undo(); model.undo(); model.undo()
         #expect(model.points.map(\.id) == ["titisee", "freiburg", "cafe"])
     }
 }

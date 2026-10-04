@@ -28,15 +28,18 @@ public struct CatalogRecord: Decodable, Equatable, Sendable {
     public let stages: [Int]?
     public let start_udeg: [Int]?
 
-    /// The decoded line of a route record; empty for a long route.
-    public var line: [Coordinate] { decodeCoordinates(line_udeg ?? []) }
+    /// The decoded line of a route record; empty for a long route or a line with an unpaired value.
+    public var line: [Coordinate] { decodeCoordinates(line_udeg ?? []) ?? [] }
 
     /// The start, the shaping points and the finish, and the plan indices where the route turns back on purpose.
-    /// A long route has no plan of its own.
+    /// Nil for a long route, and for a record whose shaping points or turnarounds do not fit its line.
     public var plan: (points: [Coordinate], turnarounds: [Int])? {
-        let line = line
-        guard let via, let first = line.first, let last = line.last else { return nil }
-        return ([first] + via.map { line[$0] } + [last], (turnarounds ?? []).map { (via.firstIndex(of: $0) ?? -1) + 1 })
+        let line = line, turnarounds = turnarounds ?? []
+        guard let via, line.count > 1, via.allSatisfy({ (1..<line.count - 1).contains($0) }),
+              let first = line.first, let last = line.last else { return nil }
+        let indices = turnarounds.compactMap { via.firstIndex(of: $0) }
+        guard indices.count == turnarounds.count else { return nil }
+        return ([first] + via.map { line[$0] } + [last], indices.map { $0 + 1 })
     }
 }
 
@@ -104,7 +107,7 @@ public enum SignedRoutes {
             return records
         }
         let matches = records.values.filter { passes($0, query) }.compactMap { route in
-            let line = route.start_udeg.map { decodeCoordinates($0) } ?? route.line
+            let line = route.start_udeg.map { decodeCoordinates($0) ?? [] } ?? route.line
             return distanceKm(from: query.start, to: line, within: query.radiusKm).map { RouteMatch(route: route, distanceM: $0 * 1000) }
         }
         let key: (RouteMatch) -> Double = switch query.sort {
@@ -117,8 +120,9 @@ public enum SignedRoutes {
         return matches.sorted { (key($0), $0.route.id) < (key($1), $1.route.id) }
     }
 
-    /// Index of the line vertex nearest to `place`, the first on a tie: where a loop plan starts.
-    public static func nearestVertex(_ line: [Coordinate], to place: Coordinate) -> Int {
+    /// Index of the line vertex nearest to `place`, the first on a tie: where a loop plan starts. Nil for an empty line.
+    public static func nearestVertex(_ line: [Coordinate], to place: Coordinate) -> Int? {
+        guard !line.isEmpty else { return nil }
         let kx = cos(place.latitude * .pi / 180)
         func squared(_ vertex: Coordinate) -> Double {
             let dx = (vertex.longitude - place.longitude) * kx, dy = vertex.latitude - place.latitude

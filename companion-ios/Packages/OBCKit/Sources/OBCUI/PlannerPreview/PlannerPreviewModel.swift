@@ -53,6 +53,8 @@ public struct PlannerPreviewPoint: Identifiable, Equatable, Sendable {
     public let id: String
     public var place: PlannerPreviewPlace
     public var kind: PlannerPreviewPointKind
+    /// The route turns back here on purpose, as a signed route's plan says.
+    public var turnaround = false
 
     public init(place: PlannerPreviewPlace, kind: PlannerPreviewPointKind = .visit, id: String? = nil) {
         self.id = id ?? place.id; self.place = place; self.kind = kind
@@ -327,25 +329,41 @@ public final class PlannerPreviewModel {
         edit { $0.loop = true; $0.points[$0.points.count - 1].kind = .visit }
     }
 
-    /// A loop through `coordinates` in their order, started at `coordinates[start]`. The other points are shaping points.
-    public func makeLoop(_ coordinates: [Coordinate], startingAt start: Int = 0, name: String = "Start") {
-        guard coordinates.count > 1, coordinates.indices.contains(start) else { return }
-        let rotated = coordinates[start...] + coordinates[..<start]
+    /// A signed loop as a plan that starts at its line vertex `vertex`: the route's start and shaping points in their
+    /// order, and a new point at `vertex` when it is not one of them. The turnarounds stay on their points.
+    public func makeLoop(_ route: CatalogRecord, startingAt vertex: Int = 0, name: String = "Start") {
+        let line = route.line
+        guard route.plan != nil, let via = route.via else { return }
+        var vertices = [0] + via
+        if line.last != line.first { vertices.append(line.count - 1) }
+        var start = 0
+        if vertex > 0 && vertex < line.count - 1 {
+            start = vertices.firstIndex { $0 >= vertex } ?? vertices.count
+            if start == vertices.count || vertices[start] != vertex { vertices.insert(vertex, at: start) }
+        }
+        let turnarounds = Set(route.turnarounds ?? [])
+        let rotated = vertices[start...] + vertices[..<start]
         edit { next in
-            next.points = rotated.enumerated().map { index, coordinate in
-                PlannerPreviewPoint(place: .init(id: UUID().uuidString, name: index == 0 ? name : Self.shapeName, coordinate: coordinate),
-                                    kind: .shape)
+            next.points = rotated.enumerated().map { index, vertex in
+                var point = PlannerPreviewPoint(place: .init(id: UUID().uuidString, name: index == 0 ? name : Self.shapeName,
+                                                             coordinate: line[vertex]), kind: index == 0 ? .visit : .shape)
+                point.turnaround = turnarounds.contains(vertex)
+                return point
             }
             next.markers = []; next.overnightPointID = nil; next.loop = true
         }
     }
+
+    /// Day ends follow the point order, so a loop with an overnight stop keeps its start.
+    public var canMoveLoopStart: Bool { isLoop && overnightPointID == nil }
 
     /// Makes the point `id` the start of the loop. The points keep their order around the loop.
     public func startLoop(at id: String) { edit { Self.startLoop(&$0, at: id) } }
 
     // The old start becomes a stop when it has a name of its own, and a shaping point otherwise.
     private static func startLoop(_ state: inout State, at id: String) {
-        guard state.loop, let index = state.points.firstIndex(where: { $0.id == id }), index > 0 else { return }
+        guard state.loop, state.overnightPointID == nil,
+              let index = state.points.firstIndex(where: { $0.id == id }), index > 0 else { return }
         var old = state.points[0]
         old.kind = [startName, shapeName, mapPointName].contains(old.place.name) ? .shape : .visit
         state.points = Array(state.points[index...]) + [old] + state.points[1..<index]

@@ -42,7 +42,8 @@ actor OfflinePlanner {
             search: directory.appending(path: "search"), routing: directory.appending(path: "routing"),
             manifest: directory.appending(path: "release.json"),
             routes: blocks == nil ? directory.appending(path: "routes/\(map.region).json").absoluteString
-                : directory.appending(path: "routes/tiles").absoluteString + "/{cell}.json")
+                : directory.appending(path: "routes/tiles").absoluteString + "/{cell}.json",
+            offlineCells: blocks?.cells.map(\.id))
         let runtime = OfflinePlanner(map: map, directory: directory, scripts: scripts, blocks: blocks, routingPackage: routingPackage)
         return PlannerService(release: release) { try await runtime.respond($0) }
     }
