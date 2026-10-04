@@ -60,7 +60,8 @@ heights are integer metres.
 
 Each record has a `name` or a `ref`, or both. The builder cuts a longer
 `description` at a word boundary. `symbol` is absent when the start of the route
-lies in France; the client then draws the `ref`.
+lies in France: vertex 0 of `line_udeg`, or `start_udeg` for a long route. The
+client then draws the `ref`.
 
 ### Plan
 
@@ -72,7 +73,9 @@ needs more leaves the catalog.
 
 `turnarounds` has the meaning of `turnarounds` in the
 [route API request](route-api.md#request): at each of these shaping points the
-plan route turns back on purpose. It is absent when there are none.
+plan route turns back on purpose. In the request, the points are the start, the
+shaping points and the finish, so the request index of an entry is its position
+in `via` plus 1. It is absent when there are none.
 
 The plan reproduces the route with the Balanced profile of each activity that
 lists the kind: `hiking` for `hiking` and `foot`, `mtb` for `mtb`, and `road`,
@@ -122,11 +125,15 @@ route. It is absent when the plan route has no explicit grade.
 
 A long route is a relation that holds route relations. Its stages are its child
 routes with the same `network`, in member order. A long route is in the catalog
-only when each of its stages is in it. A stage can be a long route.
+only when each of its stages is in it. A child relation that holds route
+relations is not a stage.
 
 A long route has no `line_udeg`, `via` or `turnarounds`. Its line and its plan
 are those of its stages in order. The client loads the stages by their IDs from
-the files of the long route's `cells`. `start_udeg` is the start of its first
+the files of the long route's `cells`. The joined plan has the points of the
+stage plans, with each stage finish joined to the next stage start. A client
+plans a whole long route only when its joined plan has at most 64 points;
+otherwise it offers its stages only. `start_udeg` is the start of its first
 stage. `length_m`, `ascent_m`, `descent_m` and `grades_m` are the sums of the
 values of its stages. `hardest` is the largest `hardest` of its stages. Its
 `cells` are the union of the `cells` of its stages. Thus each file that holds a
