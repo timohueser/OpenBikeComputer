@@ -8,7 +8,7 @@ use axum::{
     routing::{get, post},
     Json,
 };
-use route_engine::{directory::Directory, shape::LineRequest, Control, Error, Request, Router};
+use route_engine::{data::RoutingData, directory::Directory, shape::LineRequest, Control, Error, Request, Router};
 use serde_json::{json, Value};
 use std::{
     path::Path,
@@ -48,28 +48,28 @@ struct Workers {
     metadata: Value,
 }
 
-fn default_memory_budget(package: &route_engine::package::Package<impl route_engine::package::Source>) -> usize {
-    (768 * 1024 * 1024usize)
-        .saturating_add(package.manifest().landmarks.as_ref().map_or(0, |index| index.decoded_bytes()))
+/// Room above the costliest profile's routing bytes for search labels and queues and for the
+/// cached costs of other profiles, which a router drops first when it needs the room.
+const SEARCH_HEAP: usize = 256 * 1024 * 1024;
+
+fn default_memory_budget(data: &dyn RoutingData) -> usize {
+    let costliest = data.profiles().into_iter().filter_map(|profile| data.routing_bytes(profile).ok()).max();
+    (768 * 1024 * 1024usize).max(costliest.unwrap_or(0).saturating_add(SEARCH_HEAP))
 }
 
 pub fn app(directory: &Path, workers: usize) -> Result<axum::Router, Error> {
     if !(1..=8).contains(&workers) {
         return Err(Error::InvalidRequest("Use 1 to 8 workers".into()));
     }
-    let mut routers: Vec<Engine> = Vec::new();
-    if directory.join("blocks.json").exists() {
+    let packages: Vec<Box<dyn RoutingData + Send>> = if directory.join("blocks.json").exists() {
         let source = route_engine::blocks::Files::open(directory)?;
-        let budget = (768 * 1024 * 1024usize).saturating_add(source.roads() as usize * 16);
-        for _ in 0..workers {
-            routers.push(Router::new(Box::new(source.fork()), budget));
-        }
+        (0..workers).map(|_| Box::new(source.fork()) as Box<dyn RoutingData + Send>).collect()
     } else {
         let source = Directory::open(directory)?;
-        for _ in 0..workers {
-            routers.push(Router::new(Box::new(source.fork()), default_memory_budget(&source)));
-        }
-    }
+        (0..workers).map(|_| Box::new(source.fork()) as Box<dyn RoutingData + Send>).collect()
+    };
+    let budget = default_memory_budget(packages[0].as_ref());
+    let routers: Vec<Engine> = packages.into_iter().map(|package| Router::new(package, budget)).collect();
     let metadata = metadata(&routers[0]);
     let state =
         Arc::new(Workers { routers: Mutex::new(routers), permits: Arc::new(Semaphore::new(workers)), metadata });

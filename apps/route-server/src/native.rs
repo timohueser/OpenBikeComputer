@@ -67,19 +67,13 @@ pub unsafe extern "C" fn planner_router_open(
             .to_str()
             .map_err(|_| Error::InvalidRequest("Routing directory must be UTF-8".into()))?;
         let root = Path::new(root);
-        let (package, default): (Box<dyn route_engine::data::RoutingData + Send>, usize) =
-            if root.join("blocks.json").exists() {
-                {
-                    let package = route_engine::blocks::Files::open(root)?;
-                    let roads: usize = package.roads() as usize;
-                    (Box::new(package), (768 * 1024 * 1024usize).saturating_add(roads.saturating_mul(16)))
-                }
-            } else {
-                let package = Directory::open(root)?;
-                let budget = crate::default_memory_budget(&package);
-                (Box::new(package), budget)
-            };
-        let budget = if memory_budget_bytes == 0 { default } else { memory_budget_bytes };
+        let package: Box<dyn route_engine::data::RoutingData + Send> = if root.join("blocks.json").exists() {
+            Box::new(route_engine::blocks::Files::open(root)?)
+        } else {
+            Box::new(Directory::open(root)?)
+        };
+        let budget =
+            if memory_budget_bytes == 0 { crate::default_memory_budget(package.as_ref()) } else { memory_budget_bytes };
         Ok(Router::new(package, budget))
     };
     match catch_unwind(run).unwrap_or(Err(Error::Limit)) {
