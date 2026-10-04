@@ -5,10 +5,10 @@ export type Bounds = [number, number, number, number];
 export type TileGetter = (z: number, x: number, y: number, signal: AbortSignal) => Promise<ArrayBuffer | undefined>;
 
 /**
- * A request that takes longer fails, so its load leaves the cache and runs again on the next read
- * instead of waiting forever. The same limit as the map's terrain tiles.
+ * The signal of one request. A request fails after the same limit as the map's terrain tiles, so its
+ * load leaves the cache and runs again on the next read instead of waiting forever.
  */
-const TIMEOUT_MS = 20_000;
+export const requestSignal = () => AbortSignal.timeout(20_000);
 
 /** Tile z/x/y of a `{z}/{x}/{y}` URL template. A tile service answers 204 for an absent tile. */
 export async function fetchTile(template: string, z: number, x: number, y: number, signal: AbortSignal): Promise<ArrayBuffer | undefined> {
@@ -68,7 +68,7 @@ export function decodedTiles<T>(get: TileGetter, decode: (body: Uint8Array<Array
             let entry = entries.get(key);
             if (entry) touch(key, entry);
             else {
-                const signal = AbortSignal.timeout(TIMEOUT_MS);
+                const signal = requestSignal();
                 const created: Entry = entry = { load: waiting(get(z, x, y, signal), signal).then(body => body ? decode(new Uint8Array(body), z, x, y) : null), bytes: 0 };
                 entries.set(key, created);
                 created.load.then(tile => arrive(key, created, tile), () => { if (entries.get(key) === created) entries.delete(key); });
@@ -94,7 +94,7 @@ export interface Source { metadata: Record<string, unknown>; minZoom: number; ma
  * tile service; a local region reads the PMTiles archive.
  */
 export async function openSource(url: string): Promise<Source> {
-    const signal = AbortSignal.timeout(TIMEOUT_MS);
+    const signal = requestSignal();
     if (new URL(url).pathname.endsWith('.json')) {
         const response = await fetch(url, { signal });
         if (!response.ok) throw new Error(`TileJSON answered ${response.status}.`);
