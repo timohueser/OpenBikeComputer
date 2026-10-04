@@ -79,8 +79,7 @@ def deploy(args):
         try: from . import planner_offline
         except ImportError: import planner_offline
         runtime = args.data_dir / "runtime"
-        # The route server serves no overlays; phones read their overlay cells from the object pool.
-        planner_offline.materialize(args.data_dir, runtime, ("routing/", "search/", "offline/"), skip=("routing/layers",))
+        planner_offline.materialize(args.data_dir, runtime, ("routing/", "search/", "offline/"))
         maps.run("rsync", "-az", str(runtime / "routing") + "/", f"{args.host}:{base}/routing/")
         maps.run("rsync", "-az", str(runtime / "search") + "/", f"{args.host}:{base}/search/data/")
     else:

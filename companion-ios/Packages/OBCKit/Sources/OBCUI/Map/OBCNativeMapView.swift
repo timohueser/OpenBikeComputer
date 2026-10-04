@@ -174,7 +174,7 @@ final class OBCNativeMapView: MLNMapView {
         }
         sources["terrain"]?["bounds"] = release.bounds
         sources["terrain"]?["attribution"] = release.terrain_attribution
-        if let overlays = release.overlays, !release.isLocal {
+        if let overlays = release.overlays {
             // Each network layer draws one layer of the tiles; the planner map shows one network at a time.
             sources["networks"] = ["type": "vector", "url": overlays.absoluteString]
             data["layers"] = (data["layers"] as! [[String: Any]]).flatMap { layer -> [[String: Any]] in

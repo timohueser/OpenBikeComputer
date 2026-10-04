@@ -19,7 +19,18 @@ The builder also writes `overlays.sqlite` into the output directory: the route
 networks and access restrictions of the source data, bound to the new manifest
 identity. The [planner release contract](../../specs/planner-release.md) gives
 its layout. The source OSM objects stay in memory only; the package does not
-keep them.
+keep them. The index omits proposed routes. Access markings are snapshot data,
+not live closures.
+
+| Overlay feature | Minimum zoom |
+| --- | --- |
+| National or international route | 6 |
+| Regional route | 8 |
+| Local route | 11 |
+| Construction or conditional access | 10 |
+| Other access restriction | 13 |
+| Directional rule | 14 |
+| Pushing section | 15 |
 
 ## Route catalog
 

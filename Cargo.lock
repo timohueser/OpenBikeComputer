@@ -4756,10 +4756,8 @@ name = "route-server"
 version = "0.1.0"
 dependencies = [
  "axum",
- "postcard",
  "route-build",
  "route-engine",
- "rusqlite",
  "serde",
  "serde_json",
  "tokio",

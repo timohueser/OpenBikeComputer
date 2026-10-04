@@ -44,30 +44,6 @@ curl http://127.0.0.1:8788/v1/route \
   --data '{"points":[[7.849,47.997],[8.154,47.902]],"profile":"touring","alternatives":true}'
 ```
 
-## Overlay index
-
-[route-build](../../host/route-build/README.md) writes `overlays.sqlite` with the
-package. Its package identity must match the routing manifest. The planner bake
-derives the overlay tiles from it. The phone reads its offline overlay cells
-through `planner_overlays_query`.
-
-| Feature | Minimum zoom |
-| --- | --- |
-| National or international route | 6 |
-| Regional route | 8 |
-| Local route | 11 |
-| Construction or conditional access | 10 |
-| Other access restriction | 13 |
-| Directional rule | 14 |
-| Pushing section | 15 |
-
-A query has `bbox`, `zoom` from 6 to 22, `layers` from `cycling,hiking,mtb,access`
-and `mode` (`cycling` or `walking`). Bounds are at most 30 degrees wide and high.
-The answer is GeoJSON with the coverage bounds, the routing package ID and a
-`routes` dictionary. Geometry is simplified within half a map pixel. Dense
-queries fail with a zoom-in message. Proposed routes are not included. Access
-markings are snapshot data, not live closures.
-
 ## Planner
 
 Start this service, then start Vite from `builder/app`. Its `/routing` proxy

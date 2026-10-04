@@ -1,8 +1,8 @@
 # Native planner providers
 
 The Companion app compiles the Swift files in this directory. `RouteProvider`
-calls the route-server static library. `OverlayProvider` reads overlay cells.
-`PMTilesArchive` reads map tiles from an installed map. Follow
+calls the route-server static library. `PMTilesArchive` reads the map and route
+network tiles of an installed map. Follow
 [the iOS on-ramp](../../companion-ios/CLAUDE.md) to build the app.
 
 Run from the repository root to compare the PMTiles reader with the pinned

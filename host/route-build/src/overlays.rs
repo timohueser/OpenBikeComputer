@@ -272,6 +272,52 @@ mod tests {
     }
 
     #[test]
+    fn index_holds_route_and_access_lines_and_cuts_ways_at_missing_nodes() {
+        use crate::source::{Node, Way};
+        use route_engine::model::{Point, NO_ELEVATION};
+        let way = |id, nodes: Vec<i64>, pairs: &[(&str, &str)]| (id, Way { id, nodes, tags: tags(pairs) });
+        let route = |id, kind, network| {
+            let tags = tags(&[("type", "route"), ("route", kind), ("network", network)]);
+            (id, Relation { id, tags, members: vec![(Id::Way(1), String::new())] })
+        };
+        let osm = Data {
+            nodes: (0..2)
+                .map(|id| {
+                    (
+                        id,
+                        Node {
+                            id,
+                            point: Point { lon: id as i32 * 10_000, lat: 0, elevation: NO_ELEVATION },
+                            tags: Tags::new(),
+                        },
+                    )
+                })
+                .collect(),
+            ways: [
+                way(1, vec![0, 1], &[("highway", "tertiary")]),
+                way(2, vec![0, 1, 999, 0], &[("highway", "construction")]),
+                way(3, vec![0, 1], &[("highway", "footway"), ("bicycle", "no")]),
+            ]
+            .into(),
+            relations: [route(1, "bicycle", "rcn"), route(2, "hiking", "rwn"), route(3, "mtb", "")].into(),
+        };
+        let path = std::env::temp_dir().join(format!("route-build-overlays-{}.sqlite", std::process::id()));
+        write(&path, "package", [-1.0, -1.0, 1.0, 1.0], &osm).unwrap();
+        let database = Connection::open(&path).unwrap();
+        let counts: (i64, i64, i64) = database
+            .query_row(
+                "SELECT (SELECT count(*) FROM features), (SELECT count(*) FROM geometries), (SELECT count(*) FROM routes)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        drop(database);
+        std::fs::remove_file(&path).unwrap();
+        // Way 1 carries three routes. Way 2 keeps only the run before its missing node; way 3 is one access line.
+        assert_eq!(counts, (5, 3, 3));
+    }
+
+    #[test]
     fn nested_routes_keep_overlaps_but_not_proposed_sections_or_cycles() {
         let relation = |id, network, members: Vec<Id>, state| Relation {
             id,

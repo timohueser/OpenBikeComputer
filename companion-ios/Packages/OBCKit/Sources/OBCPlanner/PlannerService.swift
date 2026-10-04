@@ -13,9 +13,9 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
     public let search: URL
     public let routing: URL
     public let manifest: URL
-    /// Route network tiles of an online release. Offline releases read networks from their routing cells.
+    /// The route network TileJSON.
     public let overlays: URL?
-    /// The route catalog: a cell file URL with `{cell}`, or the one region file. Nil when the release has none.
+    /// The route catalog: a cell file URL with `{cell}`. Nil when the release has none.
     public let routes: String?
     /// The cell IDs of an offline grid selection. Only routes wholly inside them are listed.
     public let offlineCells: [String]?
@@ -29,7 +29,7 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
         self.overlays = overlays; self.routes = routes; self.offlineCells = offlineCells
     }
 
-    public var isLocal: Bool { manifest.isFileURL || (basemap.scheme == "pmtiles" && basemap.absoluteString.hasPrefix("pmtiles://file:")) }
+    public var isLocal: Bool { manifest.isFileURL }
 
     public func contains(_ coordinate: Coordinate) -> Bool {
         bounds.count == 4 && (bounds[0]...bounds[2]).contains(coordinate.longitude)
@@ -140,13 +140,12 @@ public struct PlannerSearchQuery: Sendable {
     public init(text: String, view: [Double]? = nil) { self.text = text; self.view = view }
 }
 
-/// The same release supplies maps, search, routing, and viewport overlays.
+/// The same release supplies maps, search, and routing.
 /// A local provider can implement this boundary without changing planner interactions.
 public protocol PlannerDataSource: RoutePlanning {
     var supportsOffline: Bool { get }
     func mapRelease(bounds: [Double]?, allowNetwork: Bool) async throws -> PlannerRelease
     func search(_ query: PlannerSearchQuery, release: PlannerRelease) async throws -> [PlannerPlace]
-    func overlays(bounds: [Double], zoom: Double, network: String, release: PlannerRelease) async throws -> Data
     /// The routing profiles of the release, or nil when the source does not know them.
     func profiles(release: PlannerRelease) async throws -> [String]?
     /// The plan points of a route with `profile` that follows `line`.
@@ -408,40 +407,6 @@ public actor PlannerService: PlannerDataSource {
               }) else { throw PlannerFailure.invalidData }
         try Task.checkCancellation()
         return result.results
-    }
-
-    public func overlays(bounds: [Double], zoom: Double, network: String, release: PlannerRelease) async throws -> Data {
-        guard bounds.count == 4, bounds.allSatisfy(\.isFinite), bounds[0] < bounds[2], bounds[1] < bounds[3], zoom.isFinite,
-              ["cycling", "hiking"].contains(network) else { throw PlannerFailure.invalidData }
-        var url = URLComponents(url: release.routing.appending(path: "v1/overlays"), resolvingAgainstBaseURL: false)!
-        url.queryItems = [URLQueryItem(name: "bbox", value: bounds.map { String($0) }.joined(separator: ",")),
-                          URLQueryItem(name: "zoom", value: String(min(22, max(6, floor(zoom))))),
-                          URLQueryItem(name: "layers", value: network),
-                          URLQueryItem(name: "mode", value: network == "hiking" ? "walking" : "cycling")]
-        let data = try await Self.get(url.url!, transport: transport)
-        struct Collection: Codable {
-            let package: String
-            let type: String
-            struct Feature: Codable {
-                let type: String
-                struct Geometry: Codable { let type: String; let coordinates: [[Double]] }
-                struct Properties: Codable { let kind: String; let rank: Int; let ref: String }
-                let geometry: Geometry
-                let properties: Properties
-            }
-            let features: [Feature]
-        }
-        let collection = try Self.decode(Collection.self, data: data)
-        guard collection.type == "FeatureCollection", collection.package == (try await manifest(release)).routing_package,
-              collection.features.reduce(0, { $0 + $1.geometry.coordinates.count }) <= 200_000,
-              collection.features.allSatisfy({ feature in
-                  feature.type == "Feature" && feature.geometry.type == "LineString" && feature.geometry.coordinates.count >= 2
-                    && feature.geometry.coordinates.allSatisfy { $0.count == 2 && $0.allSatisfy(\.isFinite)
-                        && (-180...180).contains($0[0]) && (-90...90).contains($0[1]) }
-              }) else { throw PlannerFailure.invalidData }
-        try Task.checkCancellation()
-        // Native workers need geometry and style properties, not the relation catalogue or tags.
-        return try JSONEncoder().encode(collection)
     }
 
     private func searchCoordinates(_ coordinates: [Coordinate]) -> [Coordinate] {

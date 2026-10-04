@@ -24,5 +24,3 @@ targets:
     dependencies:
       - framework: ../../../../target/aarch64-apple-ios/release/examples/libphone_benchmark.a
         embed: false
-      - framework: ../../../../target/aarch64-apple-ios/release/examples/libphone_overlay_benchmark.a
-        embed: false

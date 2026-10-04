@@ -1,5 +1,4 @@
 pub mod native;
-mod native_overlays;
 use axum::{
     extract::{rejection::JsonRejection, DefaultBodyLimit, State},
     http::StatusCode,
@@ -24,11 +23,6 @@ use std::{
 };
 use tokio::sync::Semaphore;
 use tower_http::{compression::CompressionLayer, CompressionLevel};
-
-mod overlay_source;
-mod overlays;
-pub use overlay_source::OverlaySource;
-pub use overlays::Overlays;
 
 type Engine = Router<Selection<Files>>;
 

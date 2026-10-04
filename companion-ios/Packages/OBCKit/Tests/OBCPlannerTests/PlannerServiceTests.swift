@@ -131,15 +131,6 @@ struct PlannerServiceTests {
         query.source = "n456"
         await #expect(throws: PlannerFailure.invalidData) { try await service.search(query, release: release) }
     }
-    @Test func overlaysKeepOnlyNativeStyleDataAndCheckReleaseIdentity() async throws {
-        let service = client(), release = try await service.release()
-        let data = try await service.overlays(bounds: [7.9,47.9,8.2,48.2], zoom: 13.7, network: "hiking", release: release)
-        let collection = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        let feature = try #require((collection["features"] as? [[String: Any]])?.first)
-        let properties = try #require(feature["properties"] as? [String: Any])
-        #expect(properties["kind"] as? String == "hiking" && properties["rank"] as? Int == 2)
-        #expect(properties["tags"] == nil && collection["routes"] == nil)
-    }
     @Test func longRoutesFitTheSearchContractAndKeepTheirEnds() async throws {
         let service = client(), release = try await service.release()
         var query = PlannerSearchQuery(text: "long route")
@@ -247,13 +238,6 @@ private final class StubHTTP: URLProtocol, @unchecked Sendable {
             data = try! JSONSerialization.data(withJSONObject: ["results": [["source": "n123", "name": "Camp", "kind": "campsite",
                 "city": "Freiburg", "lon": 8, "lat": 48, "opening_hours": "24/7", "website": "camp.example",
                 "phone": "+49 123", "description": "Small tents only.", "position": ["along": 0.4, "distance": 0.02]]]])
-        } else if url.lastPathComponent == "overlays" {
-            let params = Dictionary(uniqueKeysWithValues: components.queryItems!.map { ($0.name, $0.value!) })
-            precondition(request.httpMethod == "GET" && params["layers"] == "hiking" && params["zoom"] == "13.0" && params["mode"] == "walking")
-            data = try! JSONSerialization.data(withJSONObject: ["type": "FeatureCollection", "package": packageID,
-                "routes": ["123": ["name": "Trail"]], "features": [["type": "Feature",
-                "geometry": ["type": "LineString", "coordinates": [[8,48],[8.1,48.1]]],
-                "properties": ["kind": "hiking", "rank": 2, "ref": "Trail", "tags": ["name": "Trail"]]]]])
         } else {
             code = Int(url.path.split(separator: "/")[0])!
             let kind = String(url.path.split(separator: "/")[1])

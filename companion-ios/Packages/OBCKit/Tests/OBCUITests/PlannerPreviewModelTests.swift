@@ -479,7 +479,6 @@ private actor PlannerTestSource: PlannerDataSource {
                            pointIndices: Array(points.indices), elapsed: elapsed)
     }
     func search(_ query: PlannerSearchQuery, release: PlannerRelease) async throws -> [PlannerPlace] { [] }
-    func overlays(bounds: [Double], zoom: Double, network: String, release: PlannerRelease) async throws -> Data { Data() }
 }
 
 private actor ControlledPlannerSource: PlannerDataSource {
@@ -507,7 +506,6 @@ private actor ControlledPlannerSource: PlannerDataSource {
                                            pointIndices: Array(points.indices), elapsed: [0,Double(index)]))
     }
     func search(_ query: PlannerSearchQuery, release: PlannerRelease) async throws -> [PlannerPlace] { [] }
-    func overlays(bounds: [Double], zoom: Double, network: String, release: PlannerRelease) async throws -> Data { Data() }
 }
 
 private let testRelease: PlannerRelease = try! JSONDecoder().decode(PlannerRelease.self, from: Data("""

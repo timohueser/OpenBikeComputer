@@ -3,8 +3,6 @@ import SwiftUI
 
 @_silgen_name("planner_benchmark")
 func plannerBenchmark(_ root: UnsafePointer<CChar>, _ requests: UnsafePointer<CChar>, _ output: UnsafePointer<CChar>, _ retained: Int32) -> Int32
-@_silgen_name("planner_overlay_benchmark")
-func plannerOverlayBenchmark(_ root: UnsafePointer<CChar>, _ output: UnsafePointer<CChar>) -> Int32
 
 @main
 struct BenchmarkApp: App {
@@ -83,7 +81,6 @@ private func run() -> String {
     guard !package.hasPrefix("/"), !package.split(separator: "/").contains("..") else { return "Invalid package path" }
     let search = arguments.contains("--search")
     let hours = arguments.contains("--hours")
-    let overlays = arguments.contains("--overlays")
     let started = Date().ISO8601Format()
     let code: Int32
     if search || hours {
@@ -92,10 +89,6 @@ private func run() -> String {
             try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]).write(to: root.appendingPathComponent("result.json"), options: .atomic)
             code = report["error"] == nil && (report["mismatches"] as? [Any])?.isEmpty == true ? 0 : 1
         } catch { return "Could not write report: \(error.localizedDescription)" }
-    } else if overlays {
-        code = root.appendingPathComponent("overlays").path.withCString { directory in
-            root.appendingPathComponent("result.json").path.withCString { plannerOverlayBenchmark(directory, $0) }
-        }
     } else {
         code = root.appendingPathComponent(package).path.withCString { directory in
             root.appendingPathComponent("requests.json").path.withCString { requests in
@@ -120,11 +113,10 @@ private func run() -> String {
     metadata["exit_code"] = code
     metadata["build"] = "Release"
     metadata["started"] = started
-    metadata["workload"] = search ? "search" : hours ? "hours" : overlays ? "overlays" : "routes"
+    metadata["workload"] = search ? "search" : hours ? "hours" : "routes"
     metadata["low_power_mode"] = ProcessInfo.processInfo.isLowPowerModeEnabled
     metadata["duration_ms"] = (ProcessInfo.processInfo.systemUptime - monotonicStart) * 1000
     metadata["file_cache"] = search || hours ? "Uncontrolled OS cache; one SQLite connection for the full corpus"
-        : overlays ? "Uncontrolled OS cache; one SQLite connection for the complete query corpus"
         : arguments.contains("--retained") ? "Uncontrolled OS cache; retained router with distinct request coordinates"
         : "Uncontrolled OS cache; each cold sample creates a new router"
     do {

@@ -1,7 +1,4 @@
 //! Retained native provider. Calls on each handle must be serialized by the host.
-pub use crate::native_overlays::{
-    planner_overlays_close, planner_overlays_open, planner_overlays_open_package, planner_overlays_query,
-};
 use crate::{error_body, invalid, metadata, Engine as NativeRouter, BODY_LIMIT, ROUTE_DEADLINE, SHAPE_DEADLINE};
 use route_engine::{data::RoutingData, shape::LineRequest, Control, Error, Request, Router};
 use serde_json::Value;

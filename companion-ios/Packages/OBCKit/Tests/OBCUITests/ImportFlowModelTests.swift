@@ -336,5 +336,4 @@ private actor ShapeSource: PlannerDataSource {
                            pointIndices: Array(points.indices), elapsed: points.map { _ in 0 })
     }
     func search(_ query: PlannerSearchQuery, release: PlannerRelease) async throws -> [PlannerPlace] { [] }
-    func overlays(bounds: [Double], zoom: Double, network: String, release: PlannerRelease) async throws -> Data { Data() }
 }
