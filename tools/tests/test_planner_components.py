@@ -68,6 +68,80 @@ def sample_release(root, changed=False):
 
 
 class ComponentTests(unittest.TestCase):
+    def test_component_keys_include_invoked_producers_and_local_rust_dependencies(self):
+        config = preparation.recipe(bake.maps.ROOT / "tools/planner-regions/baden-wuerttemberg.json")
+        original = bake.specifications(config)
+        digest = components.digest
+        cases = {
+            "tools/planner_places.py": {"places"},
+            "builder/app/src/lib/planner/poi-kinds.json": {"places"},
+            "tools/planner_overlays.py": {"overlays"},
+            "tools/planner_map_archive.py": {"terrain"},
+            "firmware/obc-elevation/src/grid.rs": {"terrain", "routing", "overlays"},
+            "firmware/obc-formats/Cargo.toml": {"terrain", "routing", "overlays"},
+        }
+        for filename, expected in cases.items():
+            with self.subTest(filename=filename):
+                changed_path = bake.maps.ROOT / filename
+                self.assertTrue(changed_path.exists())
+                with patch.object(components, "digest", side_effect=lambda path: "changed" if path == changed_path else digest(path)):
+                    changed = bake.specifications(config)
+                self.assertEqual({name for name in original if original[name] != changed[name]}, expected)
+
+    def test_composition_does_not_write_through_the_previous_device_catalogue(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            previous = root / "previous"
+            document = sample_release(previous)
+            catalogue = previous / "device/catalog.json"
+            catalogue.parent.mkdir()
+            catalogue.write_bytes(b'{"url":"https://maps.test/catalog.json"}\n')
+            before = catalogue.read_bytes()
+            catalogue.chmod(0o444)
+            terrain = previous / "maps/provenance.json"
+            terrain.write_bytes(runtime.encoded({"terrain_sources": [], "terrain_attribution": "Terrain"}))
+            built = {}
+            for name in ("basemap", "places", "overlays", "terrain", "assets", "routing", "model", "pois", "addresses"):
+                folder = previous / ("maps" if name in {"basemap", "places", "overlays", "terrain", "assets"} else
+                                     f"search/{name}" if name in {"pois", "addresses"} else "search" if name == "model" else name)
+                filenames = [f"{name}.pmtiles"] if name in {"basemap", "places", "overlays", "terrain"} else \
+                    ["assets/fonts/Noto Sans Regular/0-255.pbf"] if name == "assets" else \
+                    ["model/labels.json"] if name == "model" else ["test.sqlite"] if name in {"pois", "addresses"} else ["overlays.sqlite"]
+                built[name] = (folder, {"files": {filename: {"bytes": (folder / filename).stat().st_size,
+                    "sha256": runtime.digest(folder / filename)} for filename in filenames}})
+            args = argparse.Namespace(data_dir=root / "updated", source_cache=root / "cache", osm=None,
+                recipe=bake.maps.ROOT / "tools/planner-regions/baden-wuerttemberg.json", device_catalog="https://maps.test/catalog.json")
+            config = {"region": "test", "bounds": BOUNDS, "osm": {"sha256": document["osm_sha256"]}, "probe": {}}
+            def seal(stage, *_args):
+                copied = stage / "device/catalog.json"
+                self.assertNotEqual(copied.stat().st_ino, catalogue.stat().st_ino)
+                copied.write_bytes(b'{"url":"normalized"}\n')
+                return "release-id", {}
+            with patch.object(bake.releases, "seal", side_effect=seal):
+                bake.compose(args, config, built, previous)
+            self.assertEqual(catalogue.read_bytes(), before)
+            self.assertEqual((args.data_dir / "device/catalog.json").read_bytes(), b'{"url":"normalized"}\n')
+
+    def test_shared_elevation_changes_select_routing_but_visual_terrain_edits_do_not(self):
+        config = preparation.recipe(bake.maps.ROOT / "tools/planner-regions/baden-wuerttemberg.json")
+        original = bake.specifications(config)
+        previous = {name: {"spec": spec} for name, spec in original.items()}
+        changed_config = json.loads(json.dumps(config))
+        tile = next(iter(changed_config["terrain"]["dem"]))
+        changed_config["terrain"]["dem"][tile] = "d" * 64
+        changed = bake.specifications(changed_config)
+        for selected in ("terrain", "routing"):
+            _, active = components.plan(changed, [selected], previous)
+            self.assertEqual(active, {"terrain", "routing", "overlays"})
+        digest = components.digest
+        for filename, expected in [("firmware/obc-elevation/src/grid.rs", {"terrain", "routing", "overlays"}),
+                                   ("tools/planner_map_archive.py", {"terrain"})]:
+            with self.subTest(filename=filename):
+                with patch.object(components, "digest", side_effect=lambda path: "changed" if path == bake.maps.ROOT / filename else digest(path)):
+                    changed = bake.specifications(config)
+                _, active = components.plan(changed, ["terrain"], previous)
+                self.assertEqual(active, expected)
+
     def test_receipts_are_verified_atomic_and_reused(self):
         with tempfile.TemporaryDirectory() as temporary:
             cache = components.Cache(Path(temporary))

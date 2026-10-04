@@ -63,6 +63,8 @@ def publish(source, routing, output, cache=None):
     objects.mkdir(exist_ok=True)
     coverage = release["bounds"]
     def package(name, inputs, producer, build, bounds=coverage, paths=()):
+        if producer in (partition_maps, joined_fonts):
+            paths = [*paths, maps.ROOT / "tools/requirements-planner-maps.txt"]
         dependency_functions = {partition_maps: [blocks.map_tiles], partition_search: [blocks.search_lookup, blocks.search_shard],
                                 joined_fonts: [blocks.offline_fonts, blocks.glyph_ranges, blocks.label_texts], partition_routing: [], partition_overlays: []}
         spec = components.specification(name, components.implementation([producer, offline.pack_file, offline.item, offline.verify, *dependency_functions.get(producer, [])], paths), inputs,
@@ -89,9 +91,7 @@ def publish(source, routing, output, cache=None):
         return name
 
     selection = [{"id": name, "bounds": bounds} for name, bounds in blocks.cells(coverage)]
-    paths = [maps.ROOT / "Cargo.toml", maps.ROOT / "Cargo.lock", maps.ROOT / "rust-toolchain.toml",
-             *[maps.ROOT / directory / "Cargo.toml" for directory in ["host/route-build", "host/route-engine"]],
-             *[path for directory in ["host/route-build/src", "host/route-engine/src"] for path in (maps.ROOT / directory).rglob("*.rs")]]
+    paths = components.rust_sources("host/route-build")
     root, _ = package("grid-routing", {"routing": release["routing_package"]}, partition_routing,
                       lambda stage: partition_routing(stage, source, selection), paths=paths)
     info = json.loads((root / "routing-info.json").read_bytes())

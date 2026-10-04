@@ -150,23 +150,28 @@ def specifications(config, prepared=None):
         config.get("auxiliary", {}), functions=[sources.basemap, sources.download])
     add("source-search", source_search, {"osm": osm, "nominatim": "5.3.2", "photon": sources.PHOTON_SHA},
         functions=[sources.search_dump, sources.download])
-    add("source-records", source_records, {}, dependencies=["source-search"], paths=[SEARCH / "split.py", SEARCH / "records.py"])
+    add("source-records", source_records, {}, dependencies=["source-search"],
+        paths=[SEARCH / "split.py", SEARCH / "records.py", SEARCH / "requirements-build.txt"])
     common = [SEARCH / path for path in ["build.py", "writer.py", "records.py", "storage.py", "index.py", "schema.sql", "indexes.sql", "web/address-terms.json", "requirements-build.txt"]]
     for component in ["pois", "addresses"]:
         add(component, build_search, {"osm": osm}, {"region": config["region"], "countries": config["countries"], "component": component, "schema": 4},
             ["source-records"], [*common, SEARCH / f"{component}.py"])
     add("basemap", build_basemap, {}, dependencies=["source-basemap"])
-    add("places", build_places, {}, dependencies=["basemap"], paths=[maps.ROOT / "tools/planner_maps.py", maps.ROOT / "tools/planner_mvt.py"])
+    map_requirements = maps.ROOT / "tools/requirements-planner-maps.txt"
+    add("places", build_places, {}, dependencies=["basemap"], paths=[maps.ROOT / path for path in
+        ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_places.py", "tools/requirements-planner-maps.txt", "builder/app/src/lib/planner/poi-kinds.json")])
     rust_manifests = [maps.ROOT / path for path in ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "host/route-build/Cargo.toml", "host/route-engine/Cargo.toml", "host/obc-dem/Cargo.toml"]]
-    terrain_paths = [*rust_manifests, *list((maps.ROOT / "host/obc-dem/src").rglob("*.rs")),
+    elevation_paths = [*components.rust_sources("host/obc-dem"), maps.ROOT / "host/route-build/src/obc_terrain.rs"]
+    elevation = {"sources": config["terrain"], "producer": components.implementation(paths=elevation_paths)}
+    terrain_paths = [*rust_manifests, *elevation_paths, map_requirements, maps.ROOT / "tools/planner_map_archive.py",
                      *[maps.ROOT / path for path in ["host/route-build/src/obc_terrain.rs", "host/route-build/src/bin/planner-dem.rs", "host/route-engine/src/model.rs"]]]
-    add("terrain", build_terrain, config["terrain"], {"terrain_bounds": maps.terrain_bounds(bounds)}, paths=terrain_paths,
+    add("terrain", build_terrain, {"elevation": elevation}, {"terrain_bounds": maps.terrain_bounds(bounds)}, paths=terrain_paths,
         functions=[terrain_inputs, maps.compact_archive, maps.verify_archive])
-    routing_paths = [*rust_manifests, maps.ROOT / "apps/route-server/Cargo.toml",
-                     *[path for root in ["host/route-build/src", "host/route-engine/src", "host/obc-dem/src", "apps/route-server/src"] for path in (maps.ROOT / root).rglob("*.rs")]]
-    add("routing", build_routing, {"osm": osm, "terrain": config["terrain"]}, {"region": config["region"], "access": config["access"], "profiles": config["profiles"]}, paths=routing_paths,
+    routing_paths = components.rust_sources("host/route-build", "apps/route-server")
+    add("routing", build_routing, {"osm": osm, "elevation": elevation}, {"region": config["region"], "access": config["access"], "profiles": config["profiles"]}, paths=routing_paths,
         functions=[terrain_inputs, preparation.runtime_routing])
-    add("overlays", build_overlays, {}, dependencies=["routing"], paths=[maps.ROOT / "tools/planner_maps.py", maps.ROOT / "tools/planner_mvt.py"])
+    add("overlays", build_overlays, {}, dependencies=["routing"], paths=[maps.ROOT / path for path in
+        ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_overlays.py", "tools/requirements-planner-maps.txt")])
     add("assets", build_assets, {"assets": maps.ASSETS_URL, "license": maps.SPRITES_LICENSE_URL}, paths=[maps.ROOT / "tools/planner_maps.py"])
     add("model", build_model, {}, paths=[SEARCH / "setup.py", SEARCH / "query/artifacts.py", SEARCH / "query/schema.py"])
     for name in releases.DATA_LAYERS:
@@ -247,7 +252,7 @@ def compose(args, config, built, previous=None):
                       "components": receipts}
         if previous:
             (stage / "device").mkdir()
-            preparation.link(previous / "device/catalog.json", stage / "device/catalog.json")
+            shutil.copyfile(previous / "device/catalog.json", stage / "device/catalog.json")
         identity, _ = releases.seal(stage, config["region"], args.device_catalog, provenance)
         if data.exists(): data.rmdir()
         stage.rename(data)

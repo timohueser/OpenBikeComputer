@@ -10,6 +10,7 @@ import resource
 import re
 import tempfile
 import time
+import tomllib
 
 from .planner_runtime import digest, encoded
 
@@ -20,6 +21,33 @@ def implementation(functions=(), paths=()):
     repository = Path(__file__).resolve().parent.parent
     files = {path.relative_to(repository).as_posix(): digest(path) for path in sorted(paths)}
     return hashlib.sha256(encoded({"code": code, "files": files})).hexdigest()
+
+
+def rust_sources(*roots):
+    """Include local build dependencies without running Cargo or fetching packages."""
+    repository = Path(__file__).resolve().parent.parent
+    workspace = tomllib.loads((repository / "Cargo.toml").read_text()).get("workspace", {}).get("dependencies", {})
+    paths = {repository / name for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml")}
+    pending = [repository / root for root in roots]
+    while pending:
+        root = pending.pop().resolve()
+        manifest = root / "Cargo.toml"
+        if manifest in paths:
+            continue
+        paths.add(manifest)
+        paths.update(path for path in (root / "src").rglob("*") if path.is_file())
+        if (root / "build.rs").exists(): paths.add(root / "build.rs")
+        package = tomllib.loads(manifest.read_text())
+        for group in [package, *package.get("target", {}).values()]:
+            for table in ("dependencies", "build-dependencies"):
+                for name, dependency in group.get(table, {}).items():
+                    if not isinstance(dependency, dict): continue
+                    base = root
+                    if dependency.get("workspace"):
+                        dependency, base = workspace.get(name, {}), repository
+                    if isinstance(dependency, dict) and "path" in dependency:
+                        pending.append(base / dependency["path"])
+    return sorted(paths)
 
 
 def specification(name, producer, inputs, options, coverage, dependencies=()):
@@ -124,19 +152,22 @@ def plan(specs, selected=None, previous=None):
     selected = set(specs) if selected is None else set(selected)
     if selected - set(specs):
         raise ValueError(f"Unknown components: {', '.join(sorted(selected - set(specs)))}")
-    active = set(selected)
-    # Derived artifacts follow explicitly selected producers, not unchanged ancestors.
-    changed = True
-    while changed:
-        derived = {name for name, spec in specs.items() if set(spec["dependencies"]) & active}
-        changed = bool(derived - active)
-        active.update(derived)
-    pending = list(active)
-    while pending:
-        name = pending.pop()
-        for dependency in specs[name]["dependencies"]:
-            if dependency not in active:
-                active.add(dependency); pending.append(dependency)
+    drivers = set(selected)
+    while True:
+        active = set(drivers)
+        pending = list(active)
+        while pending:
+            for dependency in specs[pending.pop()]["dependencies"]:
+                if dependency not in active:
+                    active.add(dependency); pending.append(dependency)
+        # Retain unchanged ancestors. Shared input changes select every consumer.
+        changed_inputs = {(key, encoded(value)) for name in active for key, value in specs[name]["inputs"].items()
+                          if previous and previous.get(name, {}).get("spec", {}).get("inputs", {}).get(key) != value}
+        derived = {name for name, spec in specs.items() if set(spec["dependencies"]) & drivers or
+                   any((key, encoded(value)) in changed_inputs for key, value in spec["inputs"].items())}
+        if derived <= drivers:
+            break
+        drivers.update(derived)
     if previous is None and active != set(specs):
         raise ValueError("A component-only update needs --input-release; prepare all components for the first release")
     return {name: specs[name] if name in active else previous[name]["spec"] for name in specs}, active
