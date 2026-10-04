@@ -12,7 +12,7 @@ use crate::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak},
 };
 
 /// What the router reads. `Selection` is its one implementation; the trait keeps the router
@@ -31,8 +31,8 @@ pub trait RoutingData {
     fn endpoint(&self, metric: &str, road: u32) -> Result<Endpoint>;
     /// A metric's graph, costs and landmark columns, loaded and budgeted together.
     fn prepared(&self, metric: &str) -> Result<Arc<Prepared>>;
-    /// This router's estimated working set with `metric` prepared: its own label blocks and its
-    /// share of the data the forks hold together.
+    /// This router's estimated working set with `metric` prepared: its own label blocks and the
+    /// data the forks hold together.
     fn routing_bytes(&self, metric: &str) -> Result<usize>;
     fn memory_budget(&self) -> usize;
     fn set_memory_budget(&mut self, bytes: usize);
@@ -86,11 +86,11 @@ struct Shared {
 #[derive(Default)]
 struct State {
     profiles: VecDeque<(String, Arc<Prepared>)>,
-    /// Evicted metrics a router still uses; they count until their last reference drops.
-    retired: Vec<(String, Arc<Prepared>)>,
-    /// Live handles and the sum of their budgets: the cache is sized for all of them.
-    handles: usize,
-    budgets: u128,
+    /// Evicted metrics. One a router still holds counts, and comes back when asked for.
+    retired: Vec<(String, Weak<Prepared>)>,
+    /// The budget of every live handle. The cache is budgeted like one router: the shared data
+    /// plus one router's own blocks and queue headroom fit the largest budget.
+    budgets: Vec<usize>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -130,7 +130,7 @@ fn turn_groups(manifest: &Manifest) -> BTreeMap<String, usize> {
 
 impl<S: Source> Selection<S> {
     fn with(package: Package<S>, identity: String, ids: Ids, arcs: u32, snap: Snap) -> Self {
-        let state = State { profiles: VecDeque::new(), retired: Vec::new(), handles: 1, budgets: usize::MAX as u128 };
+        let state = State { budgets: vec![usize::MAX], ..Default::default() };
         Self {
             turn_groups: Arc::new(turn_groups(package.manifest())),
             package,
@@ -179,11 +179,7 @@ impl<S: Source> Selection<S> {
     where
         S: Clone,
     {
-        {
-            let mut state = lock(&self.shared.state);
-            state.handles += 1;
-            state.budgets += self.memory_budget as u128;
-        }
+        lock(&self.shared.state).budgets.push(self.memory_budget);
         Self {
             package: self.package.fork(),
             identity: self.identity.clone(),
@@ -334,41 +330,52 @@ impl<S: Source> Selection<S> {
         Ok(bytes)
     }
 
-    /// The metrics the cache holds with `metric` beside them.
-    fn held<'a>(&self, state: &'a State, metric: &'a str) -> BTreeSet<&'a str> {
-        let retired = state.retired.iter().filter(|(_, prepared)| Arc::strong_count(prepared) > 1);
-        state.profiles.iter().chain(retired).map(|(name, _)| name.as_str()).chain(std::iter::once(metric)).collect()
+    /// The metrics the cache holds, with `metric` beside them. A retired metric counts while a
+    /// router still holds it.
+    fn held<'a>(&self, state: &'a State, metric: &'a str) -> Vec<&'a str> {
+        let mut names: Vec<&str> = state.profiles.iter().map(|(name, _)| name.as_str()).collect();
+        names.extend(state.retired.iter().filter(|(_, weak)| weak.strong_count() > 0).map(|(name, _)| name.as_str()));
+        if !names.contains(&metric) {
+            names.push(metric);
+        }
+        names
     }
 
-    /// One router's view: its own blocks plus its share of what the forks hold together.
+    /// One router's view: its own blocks plus everything the forks hold together.
     fn share(&self, state: &State, metric: &str) -> Result<usize> {
-        let shared = self.shared_bytes(self.held(state, metric))?;
-        Ok(self.router_bytes().saturating_add(shared.div_ceil(state.handles.max(1))))
+        Ok(self.router_bytes().saturating_add(self.shared_bytes(self.held(state, metric))?))
     }
 
-    /// Drops the oldest metrics until the cache fits the routers that share it: at most
-    /// `CACHED_PROFILES` per router, and the shared data plus every router's own blocks and
-    /// queue headroom within the sum of their budgets.
+    /// Drops the oldest metrics until the cache fits: at most `CACHED_PROFILES` per router, and
+    /// the shared data plus one router's own blocks and queue headroom within the largest budget,
+    /// so each further router adds only what it allocates itself.
     fn retain(&self, state: &mut State, metric: &str) -> Result<()> {
-        state.retired.retain(|(_, prepared)| Arc::strong_count(prepared) > 1);
+        state.retired.retain(|(_, weak)| weak.strong_count() > 0);
+        let largest = state.budgets.iter().copied().max().unwrap_or(usize::MAX);
+        let room = largest.saturating_sub(self.router_bytes().saturating_add(QUEUE_HEADROOM));
         loop {
-            let slots = state.profiles.len() < CACHED_PROFILES.saturating_mul(state.handles.max(1));
-            let routers = (state.handles as u128) * (self.router_bytes().saturating_add(QUEUE_HEADROOM) as u128);
-            let fits = slots && self.shared_bytes(self.held(state, metric))? as u128 + routers <= state.budgets;
-            if fits || state.profiles.is_empty() {
+            let slots = state.profiles.len() < CACHED_PROFILES.saturating_mul(state.budgets.len().max(1));
+            if (slots && self.shared_bytes(self.held(state, metric))? <= room) || state.profiles.is_empty() {
                 return Ok(());
             }
-            let old = state.profiles.pop_front().unwrap();
-            if Arc::strong_count(&old.1) > 1 {
-                state.retired.push(old);
+            let (name, old) = state.profiles.pop_front().unwrap();
+            if Arc::strong_count(&old) > 1 {
+                state.retired.push((name, Arc::downgrade(&old)));
             }
         }
     }
 
+    /// A cached metric, or a retired one that a router still holds; either moves to the back.
     fn cached(&self, metric: &str) -> Option<Arc<Prepared>> {
         let mut state = lock(&self.shared.state);
-        let at = state.profiles.iter().position(|(name, _)| name == metric)?;
-        let entry = state.profiles.remove(at).unwrap();
+        let entry = match state.profiles.iter().position(|(name, _)| name == metric) {
+            Some(at) => state.profiles.remove(at).unwrap(),
+            None => {
+                let at = state.retired.iter().position(|(name, weak)| name == metric && weak.strong_count() > 0)?;
+                let (name, weak) = state.retired.remove(at);
+                (name, weak.upgrade()?)
+            }
+        };
         let prepared = Arc::clone(&entry.1);
         state.profiles.push_back(entry);
         Some(prepared)
@@ -398,9 +405,10 @@ impl<S: Source> Selection<S> {
         let union = self.union()?;
         let turns = {
             let state = lock(&self.shared.state);
-            state.profiles.iter().chain(&state.retired).find_map(|(name, prepared)| {
-                (self.turn_groups[name] == self.turn_groups[metric]).then(|| Arc::clone(&prepared.costs.turns))
-            })
+            let same = |name: &String| self.turn_groups[name] == self.turn_groups[metric];
+            let cached = state.profiles.iter().filter(|(name, _)| same(name)).map(|(_, p)| Arc::clone(p)).next();
+            let retired = || state.retired.iter().filter(|(name, _)| same(name)).find_map(|(_, weak)| weak.upgrade());
+            cached.or_else(retired).map(|prepared| Arc::clone(&prepared.costs.turns))
         };
         let costs = union.costs(package, &self.ids, metric, turns)?;
         let columns =
@@ -423,8 +431,9 @@ impl<S: Source> Selection<S> {
 impl<S> Drop for Selection<S> {
     fn drop(&mut self) {
         let mut state = lock(&self.shared.state);
-        state.handles = state.handles.saturating_sub(1);
-        state.budgets = state.budgets.saturating_sub(self.memory_budget as u128);
+        if let Some(at) = state.budgets.iter().position(|&budget| budget == self.memory_budget) {
+            state.budgets.remove(at);
+        }
     }
 }
 
@@ -555,7 +564,9 @@ impl<S: Source> RoutingData for Selection<S> {
     }
     fn set_memory_budget(&mut self, bytes: usize) {
         let mut state = lock(&self.shared.state);
-        state.budgets = state.budgets.saturating_sub(self.memory_budget as u128) + bytes as u128;
+        if let Some(budget) = state.budgets.iter_mut().find(|budget| **budget == self.memory_budget) {
+            *budget = bytes;
+        }
         self.memory_budget = bytes;
     }
 }
@@ -701,15 +712,16 @@ mod tests {
         assert!(!Arc::ptr_eq(&touring.costs.turns, &hiking.costs.turns));
         let graph = &touring.graph;
         assert_eq!([touring.costs.arc(graph, 0), gravel.costs.arc(graph, 0), hiking.costs.arc(graph, 0)], [2, 5, 9]);
+        // The fourth metric evicts the oldest; held by this test, it comes back without a read.
         selection.prepared("mtb").unwrap();
         memory.reads.store(0, Ordering::Relaxed);
         assert!(Arc::ptr_eq(&selection.prepared("gravel").unwrap(), &gravel));
+        assert!(Arc::ptr_eq(&selection.prepared("touring").unwrap(), &touring));
         assert_eq!(memory.reads(), 0);
-        assert!(!Arc::ptr_eq(&selection.prepared("touring").unwrap(), &touring));
     }
 
     #[test]
-    fn the_cache_is_sized_for_every_fork_and_counts_evicted_metrics_still_in_use() {
+    fn the_cache_is_budgeted_like_one_router_and_keeps_evicted_metrics_a_router_still_holds() {
         let memory = Memory::default();
         let topology = write_topology(2, &[(0, 1)], |b| memory.write(b)).unwrap();
         let weights = write_weights(&[1, 2], &[0], |b| memory.write(b)).unwrap();
@@ -721,27 +733,39 @@ mod tests {
         let router = selection.router_bytes();
         let one = selection.shared_bytes(["touring"]).unwrap();
         let two = selection.shared_bytes(["touring", "gravel"]).unwrap();
-        assert!(one < two && two < 2 * one);
+        let three = selection.shared_bytes(["touring", "gravel", "hiking"]).unwrap();
+        assert!(one < two && two < three);
         // Room for one metric beside this router's own blocks and queue headroom.
         selection.set_memory_budget(router + QUEUE_HEADROOM + one);
         let gravel = selection.prepared("gravel").unwrap();
-        // The evicted metric counts while a router still holds it.
+        // The evicted metric counts while a router holds it, and comes back without a read.
         assert_eq!(selection.routing_bytes("gravel").unwrap(), router + two);
-        assert!(!Arc::ptr_eq(&selection.prepared("touring").unwrap(), &touring));
-        drop((touring, gravel));
-        assert_eq!(selection.routing_bytes("touring").unwrap(), router + one);
-        // A second router with the same budget doubles the room, and both see one cache.
-        let fork = selection.fork();
-        let hiking = fork.prepared("hiking").unwrap();
+        memory.reads.store(0, Ordering::Relaxed);
+        assert!(Arc::ptr_eq(&selection.prepared("touring").unwrap(), &touring));
+        assert_eq!(memory.reads(), 0);
+        drop(touring);
+        let hiking = selection.prepared("hiking").unwrap();
+        let kept = selection.shared_bytes(["gravel", "hiking"]).unwrap();
+        assert_eq!(selection.routing_bytes("hiking").unwrap(), router + kept);
+        drop((gravel, hiking));
+        assert_eq!(selection.routing_bytes("hiking").unwrap(), router + selection.shared_bytes(["hiking"]).unwrap());
+        // A second router with the same budget adds only its own blocks: the room stays one metric.
+        let mut fork = selection.fork();
         let gravel = fork.prepared("gravel").unwrap();
-        assert!(Arc::ptr_eq(&selection.prepared("hiking").unwrap(), &hiking));
-        assert!(Arc::ptr_eq(&selection.prepared("gravel").unwrap(), &gravel));
-        let three = selection.shared_bytes(["touring", "hiking", "gravel"]).unwrap();
-        assert_eq!(selection.routing_bytes("gravel").unwrap(), router + three.div_ceil(2));
-        drop((fork, hiking, gravel));
+        assert_eq!(fork.routing_bytes("gravel").unwrap(), router + selection.shared_bytes(["gravel"]).unwrap());
+        drop(gravel);
+        // The largest budget sets the room, and both routers see one cache.
+        fork.set_memory_budget(router + QUEUE_HEADROOM + three);
+        let touring = fork.prepared("touring").unwrap();
+        let mtb = fork.prepared("mtb").unwrap();
+        assert!(Arc::ptr_eq(&selection.prepared("touring").unwrap(), &touring));
+        assert!(Arc::ptr_eq(&selection.prepared("mtb").unwrap(), &mtb));
+        let all = selection.shared_bytes(["gravel", "touring", "mtb"]).unwrap();
+        assert_eq!(selection.routing_bytes("mtb").unwrap(), router + all);
+        drop((fork, touring, mtb));
         // Alone again, the next load shrinks the cache back to one metric.
-        selection.prepared("mtb").unwrap();
-        assert_eq!(selection.routing_bytes("mtb").unwrap(), router + selection.shared_bytes(["mtb"]).unwrap());
+        selection.prepared("hiking").unwrap();
+        assert_eq!(selection.routing_bytes("hiking").unwrap(), router + selection.shared_bytes(["hiking"]).unwrap());
     }
 
     #[test]

@@ -18,8 +18,9 @@ Each worker has its own router. The budget is the engine's default for the
 package: the costliest profile's routing bytes plus 256 MiB for the search
 queues, at least 768 MiB. The native host uses the same rule when it is given
 no budget. Workers share one immutable graph, the road-to-junction mapping, the
-closures and one cache of prepared profiles (cost and landmark columns), sized
-for their combined budget. A route request has a
+closures and one cache of prepared profiles (cost and landmark columns),
+budgeted like one router: each further worker adds only its own label blocks and
+queues. A route request has a
 15-second cooperative deadline, a shape request 30 seconds. Disconnects cancel
 its work. The body limit is 64 KiB.
 Put a public service behind TLS and an OS memory and CPU limit. Keep the package

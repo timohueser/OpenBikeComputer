@@ -99,10 +99,12 @@ serialization add memory. Search labels allocate visited blocks and retain a
 small reuse pool. Prepared profiles share identical turn columns.
 `Selection::fork` gives a worker its own page caches; forks share the graph, the
 junction mapping, the closures and one cache of prepared profiles. That cache is
-sized for all of them: the shared data plus every router's label blocks and
-16 MiB of queue headroom fit the sum of their budgets, with at most three
-profiles per router. A cold load never blocks the other routers' reads.
-`routing_bytes` is one router's own blocks plus its share of the shared data.
+budgeted like one router: the shared data plus one router's label blocks and
+16 MiB of queue headroom fit the largest router budget, so each further router
+adds only its own blocks and queues; at most three profiles stay per router. An
+evicted profile a router still holds counts, and comes back without a load. A
+cold load never blocks the other routers' reads. `routing_bytes` is one router's
+own blocks plus the shared data.
 
 The router retains up to 256 leg choices with at most 65,536 road slices and
 32 snap results. The geometry cache has a 32 MiB ceiling. A decoded page is at

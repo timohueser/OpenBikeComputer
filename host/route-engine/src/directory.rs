@@ -52,7 +52,9 @@ impl Directory {
         if data.metadata().map_err(invalid)?.len() == 0 {
             return Err(Error::InvalidData("Empty routing pack".into()));
         }
-        // SAFETY: Published packages are immutable. Replacement uses another directory.
+        // SAFETY: Published packages are immutable. Replacement uses another directory. A pack
+        // truncated in place, or a failing disk read, raises SIGBUS, which nothing catches,
+        // instead of `InvalidData`; the immutability contract makes that acceptable.
         let (index, data) =
             unsafe { (memmap2::Mmap::map(&index).map_err(invalid)?, memmap2::Mmap::map(&data).map_err(invalid)?) };
         Ok(Self(Arc::new(Pack { index, data, count })))
