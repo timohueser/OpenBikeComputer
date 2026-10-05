@@ -61,6 +61,22 @@ class DevCleanupTests(unittest.TestCase):
                 [],
             )
 
+    def test_temp_candidates_never_select_a_registered_worktree_parent(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            parent = root / "obc-review"
+            parent.mkdir()
+            worktree = parent / "OSM"
+            cleanup.git(parent, "init", str(worktree))
+            old = time.time() - 8 * cleanup.SECONDS_PER_DAY
+            for path in (worktree, parent):
+                os.utime(path, (old, old))
+
+            self.assertEqual(
+                cleanup.temp_candidates(time.time(), 7, root, excluded={worktree}),
+                [],
+            )
+
     def test_temp_candidates_never_follow_symlinks_outside_temp(self):
         with tempfile.TemporaryDirectory() as scratch, tempfile.TemporaryDirectory() as outside:
             root = Path(scratch)

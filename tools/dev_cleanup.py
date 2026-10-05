@@ -133,7 +133,7 @@ def temp_candidates(
             continue
         resolved = path.resolve()
         # Review clones and registered worktrees can also use these prefixes.
-        if resolved in excluded or is_git_repository(path):
+        if any(worktree.is_relative_to(resolved) for worktree in excluded) or is_git_repository(path):
             continue
         try:
             if shallow_activity(path) <= cutoff:
