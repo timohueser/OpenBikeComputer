@@ -184,9 +184,11 @@ struct PlannerServiceTests {
             return (try JSONSerialization.data(withJSONObject: body), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
         }
         let old = try await service.release()
-        #expect(try await service.profiles(release: old) == ["gravel"])
-        #expect(await sent.values.map { String(decoding: $0, as: UTF8.self) } == ["https://planner.test/catalog.json",
-            "https://planner.test/a/manifest.json", "https://planner.test/catalog.json", "https://planner.test/b/manifest.json"])
+        let profiles = try await service.profiles(release: old)
+        let urls = await sent.values.map { String(decoding: $0, as: UTF8.self) }
+        #expect(profiles == ["gravel"])
+        #expect(urls == ["https://planner.test/catalog.json", "https://planner.test/a/manifest.json",
+                         "https://planner.test/catalog.json", "https://planner.test/b/manifest.json"])
     }
     /// Route catalog cells that answer 404 load from the new active release, after one catalogue read.
     @Test func aRemovedReleaseLoadsItsRouteCellFromTheNewRelease() async throws {
@@ -197,15 +199,19 @@ struct PlannerServiceTests {
                                   manifest: host, overlays: host, routes: "https://planner.test/\(id)/{cell}.json")
         }
         let next = release("b"), reads = Bodies()
-        let catalog = try #require(RouteCatalog(release: release("a"), transport: { request in
+        let transport: RouteCatalog.Transport = { request in
             let status = request.url!.absoluteString.hasPrefix("https://planner.test/a/") ? 404 : 200
             return (Data(#"{"format": 1, "routes": []}"#.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
-        }, active: { await reads.append(Data()); return next }))
+        }
+        let active: @Sendable () async throws -> PlannerRelease = { await reads.append(Data()); return next }
+        let made = RouteCatalog(release: release("a"), transport: transport, active: active)
+        let catalog = try #require(made)
         async let first = catalog.loadCell("9-267-178")
         async let second = catalog.loadCell("9-268-178")
-        #expect(try await first?.count == 0)
-        #expect(try await second?.count == 0)
-        #expect(await reads.values.count == 1)
+        let counts = try await [first?.count, second?.count]
+        let readCount = await reads.values.count
+        #expect(counts == [0, 0])
+        #expect(readCount == 1)
     }
     /// A line over the service's 200 km cap fails before any request.
     @Test func aTooLongLineFailsWithoutARequest() async throws {
