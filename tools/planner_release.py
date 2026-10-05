@@ -113,7 +113,7 @@ def seal(data, region, device_catalog, provenance):
 
 
 def endpoints(identity, document, name, public, tiles, api):
-    """The catalogue entry of a grid release, which is also the planner config of the site build."""
+    """The catalogue entry of a grid release, which the web planner reads as its config at page load."""
     tile_prefix = f"{tiles}/releases/{identity}"
     service = f"{api}/planner-api/releases/{identity}"
     return {"id": identity, "manifest": f"{public}/planner/releases/{identity}/release.json", "region": document["region"],

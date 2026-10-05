@@ -79,23 +79,43 @@ describe('live catalogue', () => {
         await expect(load()).rejects.toThrow('format that this page does not know');
     });
 
-    it('reads the catalogue again once after a 404, and loads the page again on a new release', async () => {
+    it('reads the catalogue again once after a 404 or no answer, and loads the page again on a new release', async () => {
         const { fetch, reload, load } = await page([{ format: 1, active: release('a') }, { format: 1, active: release('b') }],
-            () => new Response('Not found', { status: 404 }));
-        const { releaseFetch } = await load();
-        const answers = await Promise.all([releaseFetch('https://api.test/releases/a/routing/v1/region'), releaseFetch('https://api.test/releases/a/routing/v1/route')]);
-        expect(answers.map(answer => answer.status)).toEqual([404, 404]);
+            url => { if (url.endsWith('/route')) throw new TypeError('Failed to fetch'); return new Response('Not found', { status: 404 }); });
+        await load();
+        const { releaseFetch } = await import('./release');
+        await expect(releaseFetch('https://api.test/releases/a/routing/v1/route')).rejects.toThrow(TypeError);
+        expect((await releaseFetch('https://api.test/releases/a/routing/v1/region')).status).toBe(404);
         await vi.waitFor(() => expect(reload).toHaveBeenCalledOnce());
         expect(fetch.mock.calls.filter(([url]) => url === CATALOG)).toHaveLength(2);
     });
 
-    it('keeps the page when the active release did not change', async () => {
-        const { fetch, reload, load } = await page([{ format: 1, active: release('a') }], () => new Response('', { status: 404 }));
-        const { releaseFetch } = await load();
-        await releaseFetch('https://api.test/releases/a/routing/v1/region');
-        await vi.waitFor(() => expect(fetch.mock.calls.filter(([url]) => url === CATALOG)).toHaveLength(2));
-        await new Promise(resolve => setTimeout(resolve));
-        expect(reload).not.toHaveBeenCalled();
+    it('loads the MapLibre objects of the release through the release fetch', async () => {
+        const tilejson = { tiles: ['https://tiles.test/releases/a/basemap/{z}/{x}/{y}.mvt'] };
+        const { fetch, load } = await page([{ format: 1, active: release('a') }], () => Response.json(tilejson));
+        await load();
+        const { releaseProtocol, releaseUrl } = await import('./release');
+        const url = releaseUrl('https://tiles.test/releases/a/basemap.json');
+        expect(url).toBe('release://tiles.test/releases/a/basemap.json');
+        expect((await releaseProtocol({ url, type: 'json' }, new AbortController())).data)
+            .toEqual({ tiles: ['release://tiles.test/releases/a/basemap/{z}/{x}/{y}.mvt'] });
+        expect(fetch).toHaveBeenLastCalledWith('https://tiles.test/releases/a/basemap.json', expect.anything());
+    });
+
+    it('keeps the page when the active release did not change, or when the plan is not saved', async () => {
+        for (const [catalogs, saved] of [[[release('a')], true], [[release('a'), release('b')], false]] as const) {
+            vi.resetModules();
+            const { fetch, reload, load } = await page(catalogs.map(active => ({ format: 1, active })), () => new Response('', { status: 404 }));
+            await load();
+            const { beforeReload, releaseFetch } = await import('./release');
+            const wait = vi.fn(async () => saved);
+            beforeReload(wait);
+            await releaseFetch('https://api.test/releases/a/routing/v1/region');
+            await vi.waitFor(() => expect(fetch.mock.calls.filter(([url]) => url === CATALOG)).toHaveLength(2));
+            await new Promise(resolve => setTimeout(resolve));
+            expect(reload).not.toHaveBeenCalled();
+            expect(wait).toHaveBeenCalledTimes(saved ? 0 : 1);
+        }
     });
 });
 

@@ -152,8 +152,8 @@ catalogue cache lifetime is 30 seconds. Immutable objects have a one-year
 cache lifetime. The web planner and the map builder read the catalogue at page
 load. The planner uses `active`, unchanged, as its configuration. The map builder
 uses its device catalogue. A client refuses a catalogue `format` that it does not
-know. When a release object returns 404, a client reads the catalogue again, once,
-and retries with the new `active` entry.
+know. When a release object returns 404 or no answer, a client reads the catalogue
+again, once, and retries with the new `active` entry.
 
 Finalization verifies the live services and the public catalogue against `active`. It stops
 the other VPS slot, removes its Caddy route, and deletes every other release

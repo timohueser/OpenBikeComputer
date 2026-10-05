@@ -81,7 +81,7 @@ describe("static documents", () => {
                 : new Response("", { status, statusText: "Unavailable" });
         }) as typeof fetch;
         const platform = await freshHost();
-        await expect(platform.catalog()).rejects.toThrow(/503/);
+        await expect(platform.catalog()).rejects.toThrow(/unavailable/);
         status = 200;
         await expect(platform.catalog()).resolves.toMatchObject({ body: EXAMPLE });
         expect(urls).toEqual([PLANNER, PLANNER, release("a")]);

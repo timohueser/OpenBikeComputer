@@ -41,6 +41,7 @@
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import { corridorPlaces } from '../../lib/planner/place-index';
     import { config } from '../../lib/planner/map-data';
+    import { beforeReload } from '../../lib/planner/release';
     import { coordinateName } from '../../lib/planner/point-names';
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileSamples, sampleIndex } from '../../lib/planner/profile-data';
@@ -387,6 +388,7 @@
 
     onMount(() => {
         void session.start();
+        beforeReload(() => session.saved());
         try { autoCenter = localStorage.getItem('obc-planner-auto-center') === 'true'; } catch { /* Optional browser preference. */ }
         return () => session.close();
     });

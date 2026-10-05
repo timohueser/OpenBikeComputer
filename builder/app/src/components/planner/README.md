@@ -99,8 +99,8 @@ Each kind of change goes out in one way:
   see a short outage. This is accepted during development.
 - **New data release.** `deploy` installs it into the other slot and switches the
   download service to it. The old slot serves open pages until finalize stops
-  it. Then run finalize. An open page that gets a 404 then loads the new release.
-  To recover before finalize, deploy the previous release's local data directory again.
+  it. Then run finalize. To recover before finalize, deploy the previous release's
+  local data directory again.
 - **New catalogue field.** Deploy the release from the branch first. Merge the
   branch second.
 

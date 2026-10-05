@@ -1,5 +1,6 @@
 import type { Coordinate } from './geo';
-import { config, releaseFetch } from './map-data';
+import { config } from './map-data';
+import { releaseFetch } from './release';
 
 export const coordinateName = (coordinate: Coordinate) => `${coordinate[1].toFixed(5)}, ${coordinate[0].toFixed(5)}`;
 

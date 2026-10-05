@@ -1,6 +1,7 @@
 import type { Coordinate } from '../geo';
 import type { RoutingLine } from '../routing';
-import { config, releaseFetch } from '../map-data';
+import { config } from '../map-data';
+import { releaseFetch } from '../release';
 import { searchLine } from './plan';
 import { routeSegments } from './segments';
 

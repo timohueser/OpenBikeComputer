@@ -1,7 +1,8 @@
 import { presetSuffix, ridingProfiles } from './riding-profiles';
 import { orderedRoutePoints, type DrawnCoordinate, type Trip } from './editor';
 import { cumulative, firstIndex, type Coordinate } from './geo';
-import { config, releaseFetch } from './map-data';
+import { config } from './map-data';
+import { releaseFetch } from './release';
 import { decodeRoutes } from './route-answer';
 import type { LegCache } from './route-legs';
 

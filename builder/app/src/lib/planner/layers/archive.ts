@@ -1,5 +1,5 @@
 import { PMTiles } from 'pmtiles';
-import { releaseFetch } from '../map-data';
+import { releaseFetch } from '../release';
 
 export type Bounds = [number, number, number, number];
 /** The body of tile z/x/y, or undefined for an absent tile. */

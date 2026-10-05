@@ -14,6 +14,7 @@
     import mlcontour from "maplibre-contour";
     import "maplibre-gl/dist/maplibre-gl.css";
     import { mapStyle, poiFilter } from "../../lib/planner/map-style";
+    import { releaseProtocol } from "../../lib/planner/release";
     import { mapIcon } from "../../lib/planner/map-icons";
     import { categoryIds, placeCategories, type PlaceCategory } from "../../lib/planner/poi-kinds";
     import { poiPlace } from "../../lib/planner/place-index";
@@ -429,6 +430,7 @@
         maplibregl.setWorkerUrl(mapWorkerUrl);
         const protocol = new Protocol();
         maplibregl.addProtocol("pmtiles", protocol.tile);
+        maplibregl.addProtocol("release", releaseProtocol);
         const terrainLease = terrain.acquire(maplibregl);
         dem = terrainLease.dem;
         const contourUrl = dem.contourProtocolUrl({ thresholds: { 10: [200, 1000], 11: [100, 500], 13: [50, 250], 14: [20, 100] }, contourLayer: "contours", elevationKey: "ele", levelKey: "level" });
