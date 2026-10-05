@@ -1,7 +1,6 @@
 ---
 title: Trips and rides
 description: How a rider plans a multi-day trip on the phone, rides it day by day on the device, and keeps the rides as a journal.
-copy: ai
 ---
 
 # Trips and rides

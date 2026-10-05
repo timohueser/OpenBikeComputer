@@ -17,9 +17,8 @@ use route_build::grid::{mercator, tile_bounds};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::maps::{invalid, outlines, text, TILE_LIST};
+use crate::maps::{invalid, outlines, text, EXTRACTS, TILE_LIST};
 
-const EXTRACTS: &str = "geofabrik-extracts";
 /// The uv environment, and the request of a step: code of every Python step.
 const PYTHON: [&str; 4] = [".python-version", "pyproject.toml", "uv.lock", "tools/step_request.py"];
 
@@ -130,7 +129,7 @@ impl Product for Planner {
         };
         let routing = Step {
             name: "planner/routing".into(),
-            inputs: std::iter::once(Input::Layer(osm.name.clone())).chain(tiles(bounds, &land, &glo30)).collect(),
+            inputs: std::iter::once(Input::layer(osm.name.clone())).chain(tiles(bounds, &land, &glo30)).collect(),
             options: json!({
                 // The last part of the id: the old planner names its files after it.
                 "region": region.id.rsplit('/').next(),
@@ -144,7 +143,7 @@ impl Product for Planner {
         };
         let overlays = python(
             "planner/overlays",
-            vec![Input::Layer(routing.name.clone())],
+            vec![Input::layer(routing.name.clone())],
             json!({"attribution": attribution("osm-planet")}),
             ("tools.planner_overlays", Some("planner-maps")),
             &["tools/planner_overlays.py", "tools/planner_geo.py", "tools/planner_mvt.py"],
@@ -204,7 +203,7 @@ impl Product for Planner {
         if on("sun") {
             steps.push(python(
                 "planner/sun",
-                vec![Input::Layer("planner/terrain".into())],
+                vec![Input::layer("planner/terrain")],
                 json!({
                     "bounds": bounds,
                     "time_zone": region.time_zone,
@@ -355,7 +354,8 @@ mod tests {
     }
 
     /// A store with what the step list of `AREA` reads: its `.poly`, a box near Freiburg; the
-    /// tile list, which names the two squares west of 8°; and the extract of each of `days`.
+    /// tile list, which names the two squares west of 8°; the land polygons; and the extract of
+    /// each of `days`.
     fn store(temp: &Temp, days: &[&str]) -> Store {
         let store = Store::at(temp.0.join("store"));
         let area = [("area".to_string(), AREA.to_string())];
@@ -363,6 +363,7 @@ mod tests {
         fetched(&store, "geofabrik-poly", "2026-10-01", &area, &[(format!("{AREA}.poly"), poly.into())]);
         let list = "Copernicus_DSM_COG_10_N47_00_E007_00_DEM\nCopernicus_DSM_COG_10_N48_00_E007_00_DEM\n";
         fetched(&store, TILE_LIST, "1", &[], &[("tileList.txt".into(), list.into())]);
+        fetched(&store, obc_pack::step::LAND, "1", &[], &[("land-polygons-split-3857.zip".into(), "land".into())]);
         for day in days {
             fetched(&store, EXTRACTS, day, &area, &[(format!("{AREA}-{day}.osm.pbf"), (*day).into())]);
         }
@@ -398,7 +399,9 @@ mod tests {
             ["N47_00_E007", "N48_00_E007"],
             "the tile list names no square east of 8°"
         );
-        assert!(matches!(&routing.inputs[0], Input::Layer(name) if name == "planner/osm"));
+        assert!(
+            matches!(&routing.inputs[0], Input::Layer { name, files } if name == "planner/osm" && files.is_empty())
+        );
         assert_eq!(tiles(&routing.inputs[1]), ["N47_00_E007", "N48_00_E007"]);
         assert_eq!(routing.options["bounds"], json!([7.79, 47.99, 7.82, 48.02]));
         assert_eq!((&routing.options["region"], &routing.options["countries"]), (&json!("test"), &json!(["DE"])));

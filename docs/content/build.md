@@ -1,7 +1,6 @@
 ---
 title: Build your own
 description: The build guide is coming soon. Explore the prototype and its source code.
-copy: ai
 ---
 
 # Build your own

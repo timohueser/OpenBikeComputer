@@ -1,7 +1,6 @@
 ---
 title: Public releases
 description: Public releases are coming soon. Explore the prototype in the browser.
-copy: ai
 ---
 
 # Public releases

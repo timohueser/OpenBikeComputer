@@ -58,7 +58,6 @@ pub fn fingerprint(paths: &[PathBuf]) -> Result<String, String> {
     h.update(include_bytes!("landmarks/credit.rs"));
     h.update(include_bytes!("../../../firmware/obc-formats/src/obcm/peaks.rs"));
     h.update(include_bytes!("../../../firmware/obc-formats/src/articles.rs"));
-    h.update(include_bytes!("../../../Cargo.lock"));
     Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 /// Duplicate articles use canonical encoded-byte order. Conflicting summit links fail closed.

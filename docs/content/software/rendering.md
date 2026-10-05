@@ -1,7 +1,6 @@
 ---
 title: Rendering pipeline
 description: How OpenBikeComputer selects, draws, and presents one map frame.
-copy: ai
 ---
 
 # The rendering pipeline

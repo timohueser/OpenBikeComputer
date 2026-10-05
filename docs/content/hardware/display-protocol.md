@@ -1,7 +1,6 @@
 ---
 title: The display protocol
 description: How the reflective memory LCD holds an image and how the device writes one.
-copy: ai
 ---
 
 # Display protocol

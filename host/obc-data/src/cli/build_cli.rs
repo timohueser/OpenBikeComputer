@@ -608,7 +608,7 @@ fn next(
     let mut reads = next.snapshots();
     reads.extend(unbuilt.filter_map(|input| match input {
         Input::Snapshot { source, version, .. } => Some((source.clone(), version.clone())),
-        Input::Layer(_) => None,
+        Input::Layer { .. } => None,
     }));
     next.inputs =
         live.inputs.iter().filter(|(read, _)| reads.contains(*read)).map(|(k, v)| (k.clone(), v.clone())).collect();

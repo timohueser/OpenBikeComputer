@@ -1,7 +1,6 @@
 ---
 title: System architecture
 description: The shared runtime, the host boundary, the frame loop, and the routing seam.
-copy: ai
 ---
 
 # System architecture
