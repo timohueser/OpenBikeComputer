@@ -33,7 +33,7 @@ The planner also searches categories that the device does not display.
 Compare addresses against an existing reference export and its `inputs.json`:
 
 ```sh
-uv run --with-requirements apps/planner-search/requirements-build.txt python apps/planner-search/address-parity.py search.jsonl.zst REFERENCE.jsonl.zst --reference-inputs INPUTS.json --countries=de,ch --time-zone=Europe/Berlin --output /tmp/address-comparison --require-equivalent
+uv run --with-requirements apps/planner-search/requirements-build.txt python apps/planner-search/address-parity.py search.jsonl.zst REFERENCE.jsonl.zst --reference-inputs INPUTS.json --countries=de,ch --time-zone=Europe/Berlin --output /tmp/address-comparison
 ```
 
 The comparison verifies source hashes and checks address fields, coordinates,
