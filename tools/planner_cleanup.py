@@ -12,6 +12,8 @@ from urllib.parse import urljoin, urlsplit
 from . import planner_deploy as deploy, r2
 from .planner_runtime import open_url, public_metadata, relative_path, storage_files
 
+RECIPES = Path(__file__).resolve().parent / "planner-regions"
+
 
 def catalog(remote):
     return json.loads(r2.run_rclone(["cat", remote.path + "/planner/catalog.json"], remote.env, capture=True))
@@ -96,11 +98,17 @@ def referenced_keys(document, prefix):
     return keys
 
 
+def pinned_sources():
+    """The mirror keys that a region recipe downloads; a later bake of any region needs them."""
+    text = "".join(path.read_text() for path in sorted(RECIPES.glob("*.json")))
+    return {key: None for key in re.findall(r'/(planner/sources/[^"/?#]+)"', text)}
+
+
 def plan(remote, current):
     if active_id(current) is None:
         raise ValueError("Deploy a planner release before cleanup.")
     document, prefix = manifest(remote, current["active"])
-    keep = referenced_keys(document, prefix)
+    keep = {**pinned_sources(), **referenced_keys(document, prefix)}
     rows = json.loads(r2.run_rclone(["lsjson", remote.path + "/planner", "--recursive", "--files-only", "--use-server-modtime", "--no-mimetype"], remote.env, capture=True))
     found = {"planner/" + row["Path"]: row for row in rows}
     for key in found:

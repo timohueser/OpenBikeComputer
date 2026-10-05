@@ -36,7 +36,10 @@ class CleanupTests(unittest.TestCase):
         return self.raw if command[0] == "cat" else json.dumps(self.rows)
 
     def test_plan_keeps_active_objects_and_shared_sources(self):
-        with patch.object(r2, "run_rclone", side_effect=self.transfer):
+        self.rows.append({"Path": "sources/pinned.pbf", "Size": 5, "ModTime": "2000-01-02T00:00:00Z"})
+        with tempfile.TemporaryDirectory() as directory, patch.object(cleanup, "RECIPES", Path(directory)), \
+             patch.object(r2, "run_rclone", side_effect=self.transfer):
+            (Path(directory) / "other.json").write_text(json.dumps({"osm": {"url": "https://maps.example/planner/sources/pinned.pbf"}}))
             document, stale = cleanup.plan(self.remote, self.current)
         self.assertEqual(document, self.document)
         self.assertEqual({item.key for item in stale}, {"planner/sources/unused.pbf", "planner/sources/current.pbf ",

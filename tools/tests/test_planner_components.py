@@ -2,6 +2,7 @@
 
 import argparse
 from contextlib import closing
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -11,11 +12,12 @@ import time
 import unittest
 from unittest.mock import patch
 
-from tools import planner_bake as bake, planner_blocks as blocks, planner_components as components
+from tools import planner_bake as bake, planner_blocks as blocks, planner_cleanup as cleanup, planner_components as components
 from tools import planner_grid_components as grid, planner_prepare as preparation, planner_runtime as runtime
 
 
 BOUNDS = [7.75, 48, 7.76, 48.01]
+OSM_SHA256 = hashlib.sha256(b"osm").hexdigest()
 
 
 def database(path, component, name="Bakery"):
@@ -67,7 +69,11 @@ def sample_release(root, changed=False):
     document = {"format": 1, "region": "test", "bounds": BOUNDS, "terrain_bounds": BOUNDS, "osm_sha256": "a" * 64,
         "routing_package": package, "profiles": ["touring"], "sources": {},
         "files": {path.relative_to(root).as_posix(): {"bytes": path.stat().st_size, "sha256": runtime.digest(path)}
-                  for path in root.rglob("*") if path.is_file()}, "source_files": {}}
+                  for path in root.rglob("*") if path.is_file()}}
+    mirror = root / "sources" / f"{OSM_SHA256}.osm.pbf"
+    mirror.parent.mkdir()
+    mirror.write_bytes(b"osm")
+    document["source_files"] = {"sources/" + mirror.name: {"bytes": 3, "sha256": OSM_SHA256}}
     (root / "release.json").write_bytes(runtime.encoded(document))
     return document
 
@@ -261,6 +267,7 @@ class ComponentTests(unittest.TestCase):
             self.assertTrue(all(item["component"].startswith(("grid-search-pois", "grid-search-lookup-pois")) for item in added), added)
             _, first = runtime.release(root / "grid-first")
             _, second = runtime.release(root / "grid-updated")
+            self.assertIn(f"planner/sources/{OSM_SHA256}.osm.pbf", cleanup.referenced_keys(second, ""))
             changed_files = {name for name in first["files"] if first["files"][name] != second["files"].get(name)}
             self.assertTrue(any(name.startswith("search/tiles/pois/") for name in changed_files))
             self.assertTrue(all(name.startswith(("search/tiles/pois/", "offline/catalog.json", "search/test.grid.json")) for name in changed_files), changed_files)

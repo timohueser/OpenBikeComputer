@@ -129,9 +129,9 @@ def endpoints(identity, document, name, public, tiles, api):
             "routes": tile_prefix + "/routes/tiles/{cell}.json"}
 
 
-def grid_release(data):
+def grid_release(data, include_sources=True):
     """The identity and verified manifest of a grid release; only grid releases go online."""
-    identity, document = release(data)
+    identity, document = release(data, include_sources)
     if not document.get("grid"):
         raise ValueError("Online services serve grid releases only. Run obc planner grid first.")
     return identity, document
