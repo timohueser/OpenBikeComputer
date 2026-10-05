@@ -36,8 +36,9 @@ function hostFor(mode: string): HostName {
 
 export default defineConfig(({ mode }) => {
     const host = HOSTS[hostFor(mode)];
-    // A config that the planner cannot use fails the planner build, so the published planner stays as it is.
-    if (mode === "planner") plannerConfig(loadEnv(mode, process.cwd(), "VITE_PLANNER_CONFIG").VITE_PLANNER_CONFIG);
+    // A preview config that the planner cannot use fails the build. Without one, the planner reads the live catalogue.
+    const preview = loadEnv(mode, process.cwd(), "VITE_PLANNER_CONFIG").VITE_PLANNER_CONFIG;
+    if (mode === "planner" && preview) plannerConfig(JSON.parse(preview));
     return {
         // base "./" keeps every asset URL relative, so the built app works mounted at
         // "/" (local FastAPI) or under a sub-path (a future single-server deployment

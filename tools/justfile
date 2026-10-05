@@ -623,11 +623,8 @@ docs *args:
     fi
 
 # Serve the static hosted tier — the no-backend site (phase C of #894), as deployed.
-# Builds and serves it on :4173. Args: [PORT]. A catalog.json is the bakery's
-# output; without one the site says so and shows no coverage — that is OBCC_Spec.md
-# §7 refusing a manifest it has not got, not a bug.
-# Point it at a real one with OBC_CATALOG_URL=… (the deploy passes the same value as
-# VITE_CATALOG_URL from a repository variable — .github/workflows/deploy-site.yml).
+# Builds and serves it on :4173. Args: [PORT]. It reads the device catalogue of the
+# active planner release, as deployed; OBC_CATALOG_URL=… points it at another one.
 # Two deliberate differences from the deploy: this mounts the builder at the server
 # root rather than at /builder/ (nothing else is being served beside it), and it leaves
 # VITE_SITE_BASE unset, so the Docs/Home links point at the published site instead of

@@ -13,6 +13,9 @@ name: Deploy site
 # static files: there is no backend on this tier. Route conversion runs as wasm
 # in the tab. Routing and search use the VPS. The tile Worker serves map tiles.
 #
+# The site carries code only. The planner and the map builder read the active release from
+# `planner/catalog.json` at page load, so a data release never runs this workflow.
+#
 # ── What GitHub Pages can and cannot do (C6 #905; measured 2026-07-26) ──────────────
 #
 # Pages serves every object with a fixed header set and offers **no** configuration
@@ -34,8 +37,7 @@ name: Deploy site
 #    only change by redeploying the site, which is exactly what #905 says a fresh bake
 #    must not require. So the manifest lives **with the artifacts**, on whatever object
 #    storage the bakery (B1 #898) publishes to, where its cache policy is that host's
-#    to set (OBCC_Spec.md §11 states the ≤ 60 s expectation). This workflow carries only
-#    its URL — see OBC_CATALOG_URL below.
+#    to set (OBCC_Spec.md §11 states the ≤ 60 s expectation).
 #
 # 2. **No cross-origin isolation, ever, on this host.** Setting
 #    `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy:
@@ -92,15 +94,6 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
-env:
-  OBC_PLANNER_CATALOG_URL: ${{ vars.OBC_PLANNER_CATALOG_URL }}
-  # Where the builder reads the OBCC catalog manifest (#897). A repository variable
-  # rather than a code constant, because the manifest lives with the artifacts and B1
-  # (#898) owns where that is — the frontend already treats it as configuration
-  # (platform/web.ts). Unset until something is baked: the builder is still published,
-  # says it has no catalog, and nothing on the site links to it (see OBC_BUILDER_PATH).
-  OBC_CATALOG_URL: ${{ vars.OBC_CATALOG_URL }}
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -129,12 +122,6 @@ jobs:
       # instead of a rebuild. --release turns on wasm-opt (see data-wasm-opt in
       # index.html). The pre_build hook renders docs/ + blog/ into dist as it goes.
       - name: Build the landing page, the demo, and the docs
-        env:
-          # The docs/blog header links the builder only when the builder has something
-          # to offer. A nav link to a map builder that opens on "couldn't load the map
-          # catalog" is a broken front door, and the front door is the one place never
-          # worth being brave about.
-          OBC_BUILDER_PATH: ${{ vars.OBC_CATALOG_URL != '' && 'builder/' || '' }}
         run: trunk build --release --config docs/Trunk.toml --public-url "./"
 
       # The builder imports the shared obc-route GPX↔OBCR path (#896), the cell
@@ -155,21 +142,15 @@ jobs:
       # they are siblings inside this artifact, so naming them by absolute URL would be
       # the one place a domain move still bit us. Left unset everywhere else (dev
       # server, desktop app), where the site genuinely is somewhere else.
-      - name: Read the active planner release
-        if: env.OBC_PLANNER_CATALOG_URL != ''
-        run: python3 tools/planner.py site-config --catalog "$OBC_PLANNER_CATALOG_URL" --output "$GITHUB_ENV"
-
       - name: Build the static map builder
         working-directory: builder/app
         env:
           VITE_SITE_BASE: "../"
         run: |
           npm ci
-          export VITE_CATALOG_URL="${VITE_CATALOG_URL:-$OBC_CATALOG_URL}"
           npm run build:web
 
       - name: Build the public route planner
-        if: env.OBC_PLANNER_CATALOG_URL != ''
         working-directory: builder/app
         env:
           VITE_SITE_BASE: "../"
@@ -179,11 +160,9 @@ jobs:
         run: |
           mkdir -p docs/dist/builder
           cp -R builder/app/dist/web/. docs/dist/builder/
-          if [ -n "$OBC_PLANNER_CATALOG_URL" ]; then
-            mkdir -p docs/dist/plan
-            cp -R builder/app/dist/planner/. docs/dist/plan/
-            mv docs/dist/plan/planner.html docs/dist/plan/index.html
-          fi
+          mkdir -p docs/dist/plan
+          cp -R builder/app/dist/planner/. docs/dist/plan/
+          mv docs/dist/plan/planner.html docs/dist/plan/index.html
           du -sh docs/dist/* | sort -h
 
       - name: Generate sitemap
@@ -242,7 +221,7 @@ jobs:
           check "$base/"
           check "$base/builder/"
           check "$base/docs/"
-          if [ -n "$OBC_PLANNER_CATALOG_URL" ]; then check "$base/plan/"; fi
+          check "$base/plan/"
           [ "$fail" = 0 ] || { echo "::error::the artifact is not mountable at a sub-path"; exit 1; }
 
       - name: Upload Pages artifact

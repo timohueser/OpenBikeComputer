@@ -1,6 +1,7 @@
 import type { ExpressionSpecification, FilterSpecification, Map, MapGeoJSONFeature, MapMouseEvent, VectorSourceSpecification } from 'maplibre-gl';
 import { PMTiles } from 'pmtiles';
 import type { Coordinate } from './map-types';
+import { releaseFetch, releaseUrl } from './release';
 
 export interface OverlayOptions { network: 'cycling' | 'hiking' | 'mtb' | 'none'; access: boolean }
 export type AccessMode = 'cycling' | 'walking';
@@ -55,10 +56,10 @@ export async function overlayArchive(url: string): Promise<Archive> {
         return { source: { type: 'vector', url: `pmtiles://${url}`, attribution: metadata.attribution }, minzoom: header.minZoom,
             bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat], routingPackage: metadata.routing_package };
     }
-    const response = await fetch(url);
+    const response = await releaseFetch(url);
     if (!response.ok) throw new Error('Route networks and access could not load.');
     const { tiles, minzoom, maxzoom, bounds, attribution, routing_package } = await response.json();
-    return { source: { type: 'vector', tiles, minzoom, maxzoom, bounds, attribution }, minzoom, bounds, routingPackage: routing_package };
+    return { source: { type: 'vector', tiles: tiles.map(releaseUrl), minzoom, maxzoom, bounds, attribution }, minzoom, bounds, routingPackage: routing_package };
 }
 
 /** Details of an overlay feature. Vector tiles carry lists as JSON text; a route line names its routes by ID. */
