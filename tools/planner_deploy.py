@@ -64,7 +64,7 @@ def deploy(args):
         raise ValueError("Provide an HTTPS --site-origin with no path")
     if args.api_url != "https://releases.openbikecomputer.com":
         raise ValueError("Configure the Caddy API virtual host before changing --api-url")
-    identity, document = releases.grid_release(args.data_dir)
+    identity, document = releases.grid_release(args.data_dir, include_sources=False)
     recipe = planner_prepare.recipe(args.recipe)
     if recipe["region"] != document["region"]:
         raise ValueError(f"Pass --region {document['region']} or its --recipe for this release")

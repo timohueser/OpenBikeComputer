@@ -155,7 +155,7 @@ configuration of the web planner, and uses its device catalogue for the map buil
 Finalization verifies the live services and site against `active`. It stops
 the other VPS slot, removes its Caddy route, and deletes every other release
 directory on the VPS. It removes inactive planner releases and source mirrors
-that `active` does not name. It then sets `previous` to `null`. Device cell objects and terrain reference
+that neither `active` nor a region recipe names. It then sets `previous` to `null`. Device cell objects and terrain reference
 objects remain outside planner cleanup. A completed rollout retains one
 regional planner dataset in R2.
 

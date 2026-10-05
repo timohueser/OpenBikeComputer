@@ -175,7 +175,8 @@ def publish(source, routing, output, cache=None):
         "files": dict(files), "zoom": blocks.ZOOM, "map_zoom": blocks.MAP_ZOOM}
     metadata("offline/catalog.json", catalog)
     # Publication uploads the source mirror and finalization keeps the mirror that the active release names.
-    for name in release["source_files"]: preparation.link(source / name, output / name)
+    for name in release["source_files"]:
+        if not (output / name).exists(): preparation.link(source / name, output / name)
     document = {**catalog["release"], "routing_package": files["routing/blocks.json"]["sha256"], "source_files": release["source_files"],
         "grid": {"format": 2, "zoom": blocks.ZOOM, "map_zoom": blocks.MAP_ZOOM}, "files": files,
         "sources": {**release["sources"], "grid_components": receipts}}
