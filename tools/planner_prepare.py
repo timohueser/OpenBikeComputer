@@ -6,10 +6,7 @@ import re
 import shutil
 from zoneinfo import ZoneInfo
 
-try:
-    from . import planner_maps as maps, planner_sources as sources, planner_release as releases
-except ImportError:
-    import planner_maps as maps, planner_sources as sources, planner_release as releases
+from . import planner_maps as maps
 
 
 def recipe(path):
@@ -42,17 +39,3 @@ def link(source, destination):
         os.link(source, destination)
     except OSError:
         shutil.copyfile(source, destination)
-
-
-def add_map(folder, name):
-    manifest = json.loads((folder / "manifest.json").read_bytes())
-    manifest["files"][name] = {"bytes": (folder / name).stat().st_size, "sha256": sources.digest(folder / name)}
-    (folder / "manifest.json").write_bytes(releases.encoded(manifest))
-
-
-def prepare(args):
-    try:
-        from .planner_bake import prepare as bake
-    except ImportError:
-        from tools.planner_bake import prepare as bake
-    return bake(args)

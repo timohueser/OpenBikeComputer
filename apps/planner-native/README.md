@@ -14,14 +14,9 @@ bash apps/planner-native/test-tiles.sh
 
 ## Companion download service
 
-Use a canonical grid release from `obc planner grid`. The standard
-`obc planner deploy` command installs the download service with the online
-services. To replace only its metadata, run from the repository root:
-
-```sh
-python3 -m tools.planner_downloads_deploy --host USER@VPS --source RELEASE --max-cache-bytes 268435456
-# Repeat with --apply to install and start the service.
-```
+Use a canonical grid release from `obc planner grid`. `obc planner deploy`
+installs the download service with the online services and switches it to each
+new release before the catalogue activates that release.
 
 The service uses port 8790 on loopback and the existing Caddy planner import.
 The VPS holds selection metadata; published payloads stream from R2. Inspect

@@ -5,6 +5,7 @@ import hashlib
 from io import BytesIO
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -18,7 +19,7 @@ class CleanupTests(unittest.TestCase):
                          "source_files": {"sources/current.pbf": {"bytes": 7}}}
         self.raw = release.encoded(self.document).decode()
         self.identity = hashlib.sha256(self.raw.encode()).hexdigest()
-        self.active = {"id": self.identity, "region": "test", **{key: "https://maps.example/" + self.identity + "/" + key
+        self.active = {"id": self.identity, "region": "test", "slot": 1, **{key: "https://maps.example/" + self.identity + "/" + key
                        for key in ["basemap", "places", "overlays", "terrain", "routing", "search"]}}
         self.current = {"format": 1, "active": self.active, "previous": {"id": "b" * 64}}
         self.remote = r2.Remote("test:bucket", {})
@@ -41,7 +42,7 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual({item.key for item in stale}, {"planner/sources/unused.pbf", "planner/sources/current.pbf ",
                          "planner/releases/" + "b" * 64 + "/routing/pages.bin"})
 
-    def test_rollback_removes_known_newer_release_but_blocks_unknown_uploads(self):
+    def test_an_abandoned_newer_release_is_removed_but_unknown_uploads_block(self):
         previous_document = {**self.document, "files": {"routing/pages.bin": {"bytes": 100}},
                              "source_files": {**self.document["source_files"], "sources/unused.pbf": {"bytes": 4}}}
         previous_raw = release.encoded(previous_document).decode()
@@ -83,7 +84,7 @@ class CleanupTests(unittest.TestCase):
     def test_site_must_reference_active_endpoints(self):
         for active in [True, False]:
             code = "\n".join(self.active[key] for key in ["basemap", "places", "overlays", "terrain", "routing", "search"]) if active else "old release"
-            with patch.object(cleanup.sources, "open_url", side_effect=[
+            with patch.object(cleanup, "open_url", side_effect=[
                     BytesIO(b'<script type="module" src="./assets/planner.js"></script>'), BytesIO(code.encode())]):
                 if active: cleanup.verify_site(self.active, "https://site.example")
                 else:
@@ -98,32 +99,47 @@ class CleanupTests(unittest.TestCase):
                  patch.object(cleanup, "catalog", side_effect=[self.current, {**self.current, "active": {}} if changed else self.current, self.current]), \
                  patch.object(cleanup, "plan", side_effect=[(self.document, stale), (self.document, [])]), \
                  patch.object(cleanup.deploy, "verify_services"), patch.object(cleanup, "verify_site"), \
+                 patch.object(cleanup.deploy, "retire") as retire, \
                  patch.object(r2, "append_log") as log, patch.object(cleanup.deploy, "activate") as activate:
                 removed = []
                 def remove(command, *_args, **_kwargs):
                     self.assertEqual(command[:2], ["delete", self.remote.path])
                     removed.extend(Path(command[command.index("--files-from-raw") + 1]).read_text().splitlines())
                 with patch.object(r2, "run_rclone", side_effect=remove):
-                    args = argparse.Namespace(apply=True, site_origin="https://site.example", public_url="https://maps.example")
+                    args = argparse.Namespace(apply=True, host="root@vps.example", site_origin="https://site.example",
+                                              public_url="https://maps.example")
                     if changed:
                         with self.assertRaisesRegex(ValueError, "catalogue changed"): cleanup.finalize(args)
+                        retire.assert_not_called()
                         log.assert_not_called()
                         activate.assert_not_called()
                         self.assertEqual(removed, [])
                     else:
                         cleanup.finalize(args)
+                        retire.assert_called_once_with("root@vps.example", self.active)
                         self.assertEqual(removed, [item.key for item in stale])
                         log.assert_called_once()
                         activate.assert_called_once_with(args.public_url, {**self.current, "previous": None})
+
+    def test_retirement_stops_only_the_inactive_slot_and_keeps_the_active_release(self):
+        with patch.object(cleanup.deploy, "ssh") as ssh:
+            cleanup.deploy.retire("root@vps.example", self.active)
+        script = ssh.call_args.args[1]
+        subprocess.run(["bash", "-n"], input=script.encode(), check=True)
+        self.assertIn("unit=obc-planner-$name-0\n", script)
+        self.assertIn("rm -f /etc/caddy/planner/slot-0.caddy\n", script)
+        self.assertIn(f"! -name {self.identity} -exec rm -rf", script)
+        self.assertFalse("$name-1" in script or "slot-1" in script)
 
     def test_preview_does_not_change_storage_or_probe_services(self):
         with patch.object(r2, "bucket_remote", return_value=self.remote), \
              patch.object(cleanup, "catalog", return_value=self.current), \
              patch.object(cleanup, "plan", return_value=(self.document, [])), \
-             patch.object(cleanup.deploy, "verify_services") as verify, \
+             patch.object(cleanup.deploy, "verify_services") as verify, patch.object(cleanup.deploy, "ssh") as ssh, \
              patch.object(r2, "append_log") as log, patch.object(cleanup.deploy, "activate") as activate:
-            cleanup.finalize(argparse.Namespace(apply=False))
+            cleanup.finalize(argparse.Namespace(apply=False, host="root@vps.example"))
             verify.assert_not_called()
+            ssh.assert_not_called()
             log.assert_not_called()
             activate.assert_not_called()
 

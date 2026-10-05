@@ -39,11 +39,10 @@ class PlannerMaps(unittest.TestCase):
             (destination / "basemap.pmtiles").write_bytes(b"base")
             (destination / "manifest.json").write_text(json.dumps({"files": {"basemap.pmtiles": {
                 "bytes": 4, "sha256": hashlib.sha256(b"base").hexdigest()}}}))
-            with patch.object(maps, "DATA", destination):
-                maps.check_bundle(full=True)
-                (destination / "basemap.pmtiles").write_bytes(b"oops")
-                with self.assertRaisesRegex(ValueError, "checksum mismatch"):
-                    maps.check_bundle(full=True)
+            maps.check_bundle(destination, full=True)
+            (destination / "basemap.pmtiles").write_bytes(b"oops")
+            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                maps.check_bundle(destination, full=True)
 
     def test_per_zoom_halo_covers_contour_overzoom_without_growing_high_zoom_padding(self):
         for region in [[5.95, 45.8, 10.5, 49.85], [148.8, -37.2, 149.1, -36.5], [-180, 0, -179, 1], [179, -1, 180, 0]]:

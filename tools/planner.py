@@ -14,16 +14,18 @@ import sys
 import time
 from urllib.request import urlopen
 
-try:
-    from . import planner_maps as maps, planner_prepare, planner_release as releases
-except ImportError:
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from tools import planner_maps as maps, planner_prepare, planner_release as releases
+if not __package__:  # `obc planner` and the Deploy site workflow run this file as a script.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tools import planner_bake, planner_cleanup, planner_deploy, planner_maps as maps, planner_prepare, r2
+from tools import planner_release as releases
+from tools.planner_components import Cache
 
 ROOT = maps.ROOT
 SEARCH = ROOT / "apps/planner-search"
 REGION = "baden-wuerttemberg-switzerland"
 RECIPES = ROOT / "tools/planner-regions"
+# The local preview commands. Each holds the lock of its data directory.
+LOCAL = {"setup", "serve", "verify"}
 
 
 def run(*command, **kwargs):
@@ -31,14 +33,13 @@ def run(*command, **kwargs):
 
 
 def setup(args):
-    releases.main(["prepare", "--recipe", str(RECIPES / f"{args.region}.json"), "--data-dir", str(args.data_dir),
-                   "--pmtiles", args.pmtiles])
+    planner_bake.prepare(args)
     print(f"Setup complete. Run: obc planner serve --region {args.region}", flush=True)
 
 
-def current_overlays(route):
+def current_overlays(data):
     """Whether the overlay tiles come from the overlay index of this routing package."""
-    tiles, index = maps.DATA / "overlays.pmtiles", route / "overlays.sqlite"
+    tiles, index = data / "maps/overlays.pmtiles", data / "routing/overlays.sqlite"
     if not tiles.is_file() or not index.is_file(): return False
     with closing(sqlite3.connect(f"{index.as_uri()}?mode=ro", uri=True)) as db:
         package = db.execute("SELECT package FROM metadata").fetchone()[0]
@@ -46,14 +47,14 @@ def current_overlays(route):
 
 
 def verify(args, full=False):
-    manifest = maps.check_bundle(full)
+    manifest = maps.check_bundle(args.data_dir / "maps", full)
     if manifest["bounds"] != args.bounds:
         raise ValueError(f"The map bundle must cover {args.region}.")
     route = args.data_dir / "routing"
     routing = json.loads((route / "manifest.json").read_text())
     if routing["region"] != args.region or routing["bounds"] != args.bounds:
         raise ValueError(f"The route package must cover {args.region}. Repeat setup with a fresh data directory.")
-    if not current_overlays(route):
+    if not current_overlays(args.data_dir):
         raise ValueError("Missing or stale overlay index or tiles. Run obc planner setup.")
     for name in ["touring", "road", "gravel", "mtb", "hiking"]:
         if name not in routing["metrics"]:
@@ -72,6 +73,11 @@ def verify(args, full=False):
         run(ROOT / "target/release/route-server", route, "--verify")
 
 
+def verify_local(args):
+    verify(args, full=True)
+    print("Local planner data verified.")
+
+
 def serve(args):
     verify(args)
     ports = [args.port, args.tile_port, args.route_port, args.search_port]
@@ -80,7 +86,7 @@ def serve(args):
     for port in ports:
         maps.check_port(port)
     args.routing = f"http://127.0.0.1:{args.route_port}"
-    commands, env = maps.preview(args)
+    commands, env = maps.preview(args, args.data_dir / "maps")
     env.update({
         "ROUTE_LISTEN": f"127.0.0.1:{args.route_port}",
         "OBC_SEARCH_PORT": str(args.search_port),
@@ -116,52 +122,94 @@ def serve(args):
     maps.supervise(commands, env, ready)
 
 
-def main():
-    if len(sys.argv) > 1 and sys.argv[1] in {"prepare", "plan", "inventory", "grid", "publish", "deploy", "rollback", "finalize", "site-config"}:
-        try: from .planner_release import main as release_main
-        except ImportError: from tools.planner_release import main as release_main
-        release_main(sys.argv[1:])
-        return
+def inventory(args):
+    print(json.dumps(list(Cache(args.source_cache).inventory()), indent=2))
+
+
+def grid(args):
+    if not args.input_release: raise ValueError("Provide --input-release for grid publication")
+    # The grid producers need the map packages of their own environment.
+    try:
+        run("uv", "run", "--with-requirements", ROOT / "tools/requirements-planner-maps.txt",
+            "python", "-m", "tools.planner_blocks", args.input_release, args.data_dir, "--source-cache", args.source_cache)
+    except subprocess.CalledProcessError as error:
+        raise ValueError(f"grid step failed with exit status {error.returncode}") from None
+
+
+def site_config(args):
+    if not args.output: raise ValueError("Provide --output for site-config")
+    releases.site_config(args.catalog, args.output)
+
+
+COMMANDS = {"serve": serve, "setup": setup, "verify": verify_local, "prepare": planner_bake.prepare,
+            "plan": planner_bake.prepare, "inventory": inventory, "grid": grid, "publish": releases.publish,
+            "deploy": planner_deploy.deploy, "finalize": planner_cleanup.finalize, "site-config": site_config}
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["setup", "serve", "verify"], nargs="?", default="serve")
+    parser.add_argument("command", choices=COMMANDS, nargs="?", default="serve")
     parser.add_argument("--region", default=REGION, choices=sorted(p.stem for p in RECIPES.glob("*.json")))
+    parser.add_argument("--recipe", type=Path, help="Default: the recipe of --region")
     parser.add_argument("--data-dir", type=Path, help="Default: OBC_PLANNER_DATA/REGION")
-    parser.add_argument("--pmtiles")
     parser.add_argument("--port", type=int, default=4175)
     parser.add_argument("--tile-port", type=int, default=8789)
     parser.add_argument("--route-port", type=int, default=8787)
     parser.add_argument("--search-port", type=int, default=8786)
-    args = parser.parse_args()
-    args.pmtiles = args.pmtiles or os.environ.get("PMTILES", "pmtiles")
-    base = Path(os.environ.get("OBC_PLANNER_DATA", Path.home() / ".cache/obc/planner"))
-    args.data_dir = (args.data_dir or base / args.region).expanduser().resolve()
-    routing = args.data_dir / "routing/manifest.json"
-    if routing.exists() and json.loads(routing.read_text())["region"] != args.region:
-        parser.error(f"{args.data_dir} holds another region. Choose a data directory for {args.region}.")
-    recipe = planner_prepare.recipe(RECIPES / f"{args.region}.json")
-    args.bounds, args.name = recipe["bounds"], recipe.get("name", "")
-    maps.DATA = args.data_dir / "maps"
-    args.data_dir.mkdir(parents=True, exist_ok=True)
+    parser.add_argument("--input-release", type=Path, help="Verified regional bake to update or to partition with grid")
+    parser.add_argument("--source-cache", type=Path, default=Path.home() / ".cache/obc/planner/sources")
+    parser.add_argument("--component", action="append", help="Update one component and its dependencies; repeat for multiple components")
+    parser.add_argument("--dry-run", action="store_true", help="Print component identities and reuse reasons without downloading or building")
+    parser.add_argument("--osm", type=Path)
+    parser.add_argument("--inputs", type=Path, help="Verified source-builder output directory")
+    parser.add_argument("--dem-dir", type=Path, default=Path.home() / ".cache/obcm/dem")
+    reference = os.environ.get("OBC_REFERENCE_ARCHIVE")
+    if not reference and (Path.home() / "obc-reference/index.json").is_file(): reference = str(Path.home() / "obc-reference")
+    parser.add_argument("--reference", type=Path, default=reference)
+    parser.add_argument("--pmtiles", default=os.environ.get("PMTILES", "pmtiles"))
+    parser.add_argument("--device-catalog", default=os.environ.get("OBC_CATALOG_URL", "https://maps.openbikecomputer.com/cell-catalog/catalog.json"))
+    parser.add_argument("--public-url", default="https://maps.openbikecomputer.com")
+    parser.add_argument("--tiles-url", default="https://tiles.openbikecomputer.com")
+    parser.add_argument("--api-url", default="https://releases.openbikecomputer.com")
+    parser.add_argument("--site-origin", default="https://openbikecomputer.com")
+    parser.add_argument("--host", default=os.environ.get("OBC_PLANNER_HOST"), help="VPS for deploy and finalize: USER@HOST")
+    parser.add_argument("--apply", action="store_true", help="Upload, install, or remove what the command previews")
+    parser.add_argument("--catalog", default=os.environ.get("OBC_PLANNER_CATALOG_URL", "https://maps.openbikecomputer.com/planner/catalog.json"))
+    parser.add_argument("--output", type=Path, help="Output environment file for site-config")
+    args = parser.parse_args(argv)
+    args.recipe = args.recipe or RECIPES / f"{args.region}.json"
+    args.data_dir = args.data_dir or Path(os.environ.get("OBC_PLANNER_DATA", Path.home() / ".cache/obc/planner")) / args.region
+    for name in ["data_dir", "input_release", "recipe", "source_cache", "osm", "inputs", "dem_dir", "reference", "output"]:
+        value = getattr(args, name)
+        if value is not None: setattr(args, name, value.expanduser().resolve())
+    args.dry_run = args.dry_run or args.command == "plan"
+
     def stop(_signum, _frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop)
     try:
-        with (args.data_dir / ".lock").open("w") as lock:
+        if args.command not in LOCAL:
+            COMMANDS[args.command](args)
+            return
+        routing = args.data_dir / "routing/manifest.json"
+        if routing.exists() and json.loads(routing.read_text())["region"] != args.region:
+            parser.error(f"{args.data_dir} holds another region. Choose a data directory for {args.region}.")
+        recipe = planner_prepare.recipe(args.recipe)
+        args.bounds, args.name = recipe["bounds"], recipe.get("name", "")
+        # The lock sits beside the data directory: setup needs that directory fresh.
+        args.data_dir.parent.mkdir(parents=True, exist_ok=True)
+        with (args.data_dir.parent / f".{args.data_dir.name}.lock").open("w") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise ValueError("This data directory is already in use. Stop its planner before setup or another launch.")
-            if args.command == "setup":
-                setup(args)
-            elif args.command == "verify":
-                verify(args, full=True)
-                print("Local planner data verified.")
-            else:
-                serve(args)
+            COMMANDS[args.command](args)
     except KeyboardInterrupt:
-        pass
-    except (OSError, ValueError, KeyError, RuntimeError, sqlite3.Error, subprocess.CalledProcessError) as error:
-        parser.exit(1, f"planner: {error}\nUse obc planner setup to prepare local data and dependencies.\n")
+        if args.command not in LOCAL:
+            parser.exit(130, "Planner command interrupted. Check the active catalogue before retrying.\n")
+    except (OSError, ValueError, KeyError, RuntimeError, sqlite3.Error, subprocess.CalledProcessError, r2.Refuse) as error:
+        hint = "\nUse obc planner setup to prepare local data and dependencies." if args.command in LOCAL else ""
+        parser.exit(1, f"planner: {error}{hint}\n")
 
 
 if __name__ == "__main__":

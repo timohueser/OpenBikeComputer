@@ -175,12 +175,6 @@ def tile_lonlat(z, x, y):
     return lon.ravel(), lat.ravel()
 
 
-def tile_bounds(z, x, y):
-    n = 2 ** z
-    lat = lambda row: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * row / n))))
-    return x / n * 360 - 180, lat(y + 1), (x + 1) / n * 360 - 180, lat(y)
-
-
 def sample(planes, grid, z, x, y):
     """Bilinear blend of the source planes (seasons, 2, rows, cols) at the pixel centres of a tile."""
     from rasterio.warp import transform
@@ -241,7 +235,7 @@ def canopy_cover(z, x, y):
     from rasterio.warp import Resampling, reproject, transform_bounds
     from rasterio.windows import Window, from_bounds as window_from_bounds
 
-    bounds = tile_bounds(z, x, y)
+    bounds = maps.tile_bounds(z, x, y)
     cover = np.zeros((TILE, TILE), np.float32)
     target = from_bounds(*transform_bounds("EPSG:4326", "EPSG:3857", *bounds), TILE, TILE)
     for name in canopy_tiles(bounds):
@@ -307,7 +301,7 @@ def bake(source, first_season, seasons, name, bounds, output, trail_segments=Non
 
     def area(z, x, y):
         """The part of the bounds in tile z/x/y, or None."""
-        w, s, e, n_ = tile_bounds(z, x, y)
+        w, s, e, n_ = maps.tile_bounds(z, x, y)
         if w >= east or e <= west or s >= north or n_ <= south:
             return None
         return max(w, west), max(s, south), min(e, east), min(n_, north)
@@ -338,13 +332,13 @@ def bake(source, first_season, seasons, name, bounds, output, trail_segments=Non
             tiles[zxy_to_tileid(z, x, y)] = gzip.compress(body.tobytes(), mtime=0)
         return body, masked
 
-    count = 2 ** chunk
-    row = lambda lat: int((1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * count)
+    x0, y0 = maps.mercator(west, north, chunk)
+    x1, y1 = maps.mercator(east, south, chunk)
     pool = ThreadPoolExecutor(workers)
     try:
         chunks = {(x, y): pool.submit(lambda x, y, part: build(chunk, x, y, *source(part)), x, y, part)
-                  for x in range(int((west + 180) / 360 * count), int((east + 180) / 360 * count) + 1)
-                  for y in range(row(north), row(south) + 1) if (part := area(chunk, x, y))}
+                  for x in range(int(x0), int(x1) + 1)
+                  for y in range(int(y0), int(y1) + 1) if (part := area(chunk, x, y))}
         _, masked = build(0, 0, 0)
     finally:
         pool.shutdown(cancel_futures=True)

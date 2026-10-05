@@ -12,6 +12,7 @@ import threading
 
 from . import planner_components as components, planner_maps as maps, planner_sources as sources
 from . import planner_prepare as preparation, planner_release as releases
+from .planner_runtime import open_url
 
 
 SEARCH = maps.ROOT / "apps/planner-search"
@@ -72,9 +73,9 @@ def build_places(stage, basemap):
 
 
 def build_assets(stage):
-    with sources.open_url(maps.ASSETS_URL, timeout=120) as response:
+    with open_url(maps.ASSETS_URL, timeout=120) as response:
         maps.install_assets(response.read(), stage / "assets")
-    with sources.open_url(maps.SPRITES_LICENSE_URL, timeout=30) as response:
+    with open_url(maps.SPRITES_LICENSE_URL, timeout=30) as response:
         (stage / "assets/sprites/LICENSE.txt").write_bytes(response.read())
 
 
