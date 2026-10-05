@@ -193,7 +193,7 @@ fn gc_store(root: &Path, apply: bool, json: bool) -> Result<(), Error> {
         return print_json(&plan);
     }
     println!(
-        "Roots: the pins of {}/data/env/*.toml, its fixtures and planner recipes, the import records, and the newest record of each source.",
+        "Roots: the pins of {}/data/env/*.toml, its fixtures and planner recipes, the import records, and the newest record of each source and request.",
         root.display()
     );
     println!("{} {}", if apply { "REMOVED FROM" } else { "REMOVE FROM" }, store.root().display());
