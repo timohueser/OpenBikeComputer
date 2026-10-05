@@ -238,7 +238,6 @@ pub fn compile(
         include_bytes!("text.rs"),
         include_bytes!("locale.rs"),
         include_bytes!("../poi.rs"),
-        include_bytes!("../../../../Cargo.lock"),
         locale::LANGUAGE_BYTES,
         PHOTO_POOL_BYTES,
     ] {

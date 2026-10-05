@@ -368,7 +368,6 @@ fn compile_selected(
         include_bytes!("photo.rs"),
         include_bytes!("assets.rs"),
         include_bytes!("policy.rs"),
-        include_bytes!("../../../../Cargo.lock"),
     ] {
         policy_input.extend_from_slice(source);
     }

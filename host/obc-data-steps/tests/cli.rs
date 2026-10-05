@@ -62,6 +62,7 @@ fn with_live_outline(temp: &Temp) {
     let area = vec![("area".into(), "europe/germany/baden-wuerttemberg".into())];
     fetched(&store, "geofabrik-poly", "2026-10-05", area.clone(), "europe/germany/baden-wuerttemberg.poly", poly);
     fetched(&store, "geofabrik-extracts", "2026-10-05", area, "europe/germany/baden-wuerttemberg.osm.pbf", "osm");
+    fetched(&store, "land-polygons", "2026-10-05", Vec::new(), "land-polygons-split-3857.zip", "land");
     let tiles = "Copernicus_DSM_COG_10_N47_00_E007_00_DEM\nCopernicus_DSM_COG_10_N48_00_E007_00_DEM\n";
     let version = live.version("copernicus-glo-30-tiles").unwrap();
     fetched(&store, "copernicus-glo-30-tiles", version, Vec::new(), "tileList.txt", tiles);

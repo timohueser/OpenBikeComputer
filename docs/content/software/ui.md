@@ -1,7 +1,6 @@
 ---
 title: UI system
 description: The screen model, the four buttons, the drawers, and what a rider can do from where.
-copy: ai
 ---
 
 # The UI system

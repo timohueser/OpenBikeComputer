@@ -252,7 +252,8 @@ releases (see [Live](#live)), the files of the checkout that it runs in, and the
   record releases its objects.
 - A layer is reached when each of its inputs is reached: a snapshot input whose digest is the
   digest of all the files, or of one file, of a reached record of its source, and a layer input
-  whose digest is the digest of a reached layer.
+  whose digest is the digest of the files that it selects of a reached layer of its step: the
+  `files` of the input, or all files when it names none.
 
 The plan lists what the collection deletes and what stays. What stays is one entry for each
 reached snapshot record, with the reasons: `live PRODUCT, …`, `pin of ENV, …`,
@@ -401,7 +402,7 @@ A step declares:
 | Field | Meaning |
 | --- | --- |
 | `name` | The layer name: lowercase kebab-case segments joined by `/` |
-| `inputs` | Snapshots, as `source`, `version`, `params` and `files`. With `params` (the `NAME=VALUE` of the fetch), the step reads the files that a fetch with them gives, and `files` is empty. Without, `files` names the files that the step reads, or is empty for every file. The layers of other steps, by name |
+| `inputs` | Snapshots, as `source`, `version`, `params` and `files`. With `params` (the `NAME=VALUE` of the fetch), the step reads the files that a fetch with them gives, and `files` is empty. Without, `files` names the files that the step reads, or is empty for every file. The layers of other steps, as `name` and `files`: the paths in the layer that the step reads, or none for every file. A selected path that the layer does not have fails the step |
 | `options` | A JSON object |
 | `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. A Rust step declares the crate of its function |
 | `outputs` | Paths in the output directory. A path is a file, or a directory whose files are all part of the layer. The step must write each path and no other file. A symbolic link fails the step |
@@ -417,7 +418,8 @@ The digest of a list of files is the SHA-256 of the text that `sha256sum` writes
 line `<sha256>  <name>` with a final newline per file, in byte order of the names.
 
 - The digest of a snapshot input lists its selected files by `name`.
-- The digest of a layer lists its files by `path`.
+- The digest of a layer lists its files by `path`. The digest of a layer input lists the files
+  that it selects.
 - The code hash lists the code files by their path relative to the repository root, with `/`.
   A path adds the files that `git ls-files --cached --others --exclude-standard` lists for
   it: the files that git tracks or does not ignore. A path that lists no file fails the step,
@@ -457,7 +459,7 @@ Python step that ships adds a `uv.lock`; from then on, a Python step runs with
 binary, but its code hash comes from the files in the repository root. `obc data` runs with
 `cargo run` in the checkout that it reads, so the two are the same sources.
 
-The recipe of a step is the SHA-256 of the same object, with each input as `{"kind", "name"}`
+The recipe of a step is the SHA-256 of the same object, with each input as `{"kind", "name", "files"}`
 for a layer and `{"kind", "name", "version", "params", "files"}` for a snapshot, `params` and
 `files` sorted, and the inputs sorted by their compact JSON. It holds no digest, so a plan has it
 also for a step whose key waits for a fetch or another build.
@@ -471,7 +473,7 @@ same fields.
 | --- | --- |
 | `step` | The layer name |
 | `snapshots` | `{source: {file name: object path}}` |
-| `layers` | `{layer name: {path in the layer: object path}}` |
+| `layers` | `{layer name: {path in the layer: object path}}`, with the files that the input selects |
 | `options` | The options |
 | `output` | An empty directory. The layer is the files that the step writes in it |
 | `metrics` | A path. The step can write a JSON object there, for example the size of each section |
@@ -501,7 +503,7 @@ ends.
 | Key | Meaning |
 | --- | --- |
 | `step`, `key`, `options`, `code`, `command`, `outputs` | As in the key |
-| `inputs` | As in the key |
+| `inputs` | As in the key, and `files` for a layer input that selects files: the selected paths, sorted |
 | `digest` | The digest of `files` |
 | `files` | One item per file: `path` in the layer, `size` in bytes and `sha256`, sorted by `path` |
 | `built` | `YYYY-MM-DDTHH:MM:SSZ` |
@@ -620,7 +622,8 @@ release of that product.
 The device maps have layers per leaf: a cell of size `2^23` µdeg of the OBCA grid that the
 outline of the region touches. The outline of a `box` region is its box; the outline of a
 `geofabrik` region is its `.poly` from `geofabrik-poly`, `area=<region id>`. The product has no
-steps for a `polygon` region yet. The environment pins `copernicus-glo-30`.
+steps for a `polygon` region yet. The environment pins `copernicus-glo-30`. Only a `geofabrik`
+region has map cells: they read the OSM of its area. Another region has terrain only.
 
 A file that the step list reads, such as a `.poly` or the GLO-30 tile list, is at the version
 of the environment. Without one, the product names a fetch of the newest version upstream, and
@@ -628,6 +631,8 @@ then reads the newest version of that fetch in the store.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
+| `maps/osm` | `geofabrik-extracts`, `area=<region id>` | `leaves`: `[i, j]` of each leaf | `osm/<i>-<j>.osm.pbf`: the `osmium extract --strategy smart --set-bounds` of the square of the leaf and one µdeg around it. The key holds no Osmium version: another Osmium can give other bytes. The metrics name the version (`osmium`) |
+| `maps/<band>/<i>-<j>` | `maps/osm`, the file of the leaf; `land-polygons`; `maps/terrain/<i>-<j>` when the cells of the band read heights: contours in their levels, or a nav graph or POIs | `band`: `coarse`, `mid`, `fine` or `network` of the recommended band table (`OBCA_Spec.md`); `leaf`: `[23, i, j]`; `cells`: `[ci, cj]` of each cell of the band in the leaf that the outline touches | `cells/<band>/<ci>/<cj>.obcm` for each cell with content; `cells/<band>/empty.json`: the ids of the other cells. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks |
 | `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13); `terrain/empty.json`: the ids of the cells without a height |
 
 `<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id.
@@ -1917,6 +1922,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "properties": {
         "digest": {
           "type": "string"
+        },
+        "files": {
+          "description": "The paths that a layer input selects, sorted, or none for every file. Not in the key: the\ndigest names the paths.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "kind": {
           "$ref": "#/$defs/InputKind"

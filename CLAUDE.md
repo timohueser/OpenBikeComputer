@@ -90,8 +90,7 @@ not grow.
 - A guide page says why and links the spec with `[text](src:path)`; it never restates a spec
   table. A README is instructions and reference tables, not explanation.
 - On a pull request, say whether public docs changed. If they did, the change is its own `docs:`
-  commit. Pages under `docs/content/` carry `copy: ai | mixed | human`; do not rewrite human-owned
-  prose, add a `copy-review` note beside it instead ([docs/README.md](docs/README.md)).
+  commit.
 - After editing public docs, run `python3 docs/build_docs.py --check-links`.
 
 ## System requirements and release evidence

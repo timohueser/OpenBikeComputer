@@ -1,7 +1,6 @@
 ---
 title: Ride replay
 description: Replay recorded rides and ridden trip days on the phone.
-copy: ai
 ---
 
 # Ride replay
