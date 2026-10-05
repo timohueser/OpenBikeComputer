@@ -197,13 +197,35 @@ public actor PlannerService: PlannerDataSource {
         self.transport = transport
     }
 
+    init(catalogURL: URL, transport: @escaping Transport) {
+        self.catalogURL = catalogURL
+        self.fixedRelease = nil
+        self.transport = transport
+    }
+
+    /// A release object answered 404.
+    private struct ReleaseGone: Error {}
+
+    /// Release objects are immutable, so a 404 means that a catalogue switch removed the release. The catalogue is read
+    /// again, once, and the request repeats with the new active release.
+    private func onActive<T>(_ release: PlannerRelease, _ body: (PlannerRelease) async throws -> T) async throws -> T {
+        do { return try await body(release) } catch is ReleaseGone {
+            guard fixedRelease == nil else { throw PlannerFailure.unavailable }
+            cached = nil
+            let active = try await self.release()
+            guard active.id != release.id else { throw PlannerFailure.unavailable }
+            do { return try await body(active) } catch is ReleaseGone { throw PlannerFailure.unavailable }
+        }
+    }
+
     public func release() async throws -> PlannerRelease {
         if let fixedRelease { return fixedRelease }
         if let cached, Date().timeIntervalSince(cached.fetched) < 30 { return cached.release }
         if let loading { return try await loading.value }
         let task = Task { [transport, catalogURL] in
             struct Catalog: Decodable { let format: Int; let active: PlannerRelease }
-            let data = try await Self.get(catalogURL, transport: transport)
+            let data: Data
+            do { data = try await Self.get(catalogURL, transport: transport) } catch is ReleaseGone { throw PlannerFailure.unavailable }
             let catalog = try Self.decode(Catalog.self, data: data)
             let r = catalog.active
             guard catalog.format == 1, r.id.count == 64, r.id.allSatisfy({ $0.isHexDigit && $0.isASCII }), r.bounds.count == 4,
@@ -223,7 +245,9 @@ public actor PlannerService: PlannerDataSource {
         return release
     }
 
-    public func profiles(release: PlannerRelease) async throws -> [String]? { try await manifest(release).profiles }
+    public func profiles(release: PlannerRelease) async throws -> [String]? {
+        try await onActive(release) { try await self.manifest($0).profiles }
+    }
 
     public func route(points: [Coordinate], turnarounds: [Int] = [], activity: RouteActivity, preference: RoutePreference = .balanced,
                       release: PlannerRelease) async throws -> PlannedPath {
@@ -231,11 +255,13 @@ public actor PlannerService: PlannerDataSource {
             throw PlannerFailure.outsideRegion
         }
         guard turnarounds.allSatisfy({ (1..<points.count - 1).contains($0) }) else { throw PlannerFailure.invalidData }
-        let manifest = try await manifest(release)
         let profile = preference.profile(for: activity)
-        guard manifest.profiles.contains(profile) else { throw PlannerFailure.invalidData }
-        return try await route(points, turnarounds: Set(turnarounds), profile: profile, release: release,
-                               package: manifest.routing_package, whole: false)
+        return try await onActive(release) { release in
+            let manifest = try await self.manifest(release)
+            guard manifest.profiles.contains(profile) else { throw PlannerFailure.invalidData }
+            return try await self.route(points, turnarounds: Set(turnarounds), profile: profile, release: release,
+                                        package: manifest.routing_package, whole: false)
+        }
     }
 
     /// One request at most: for the legs from the first to the last leg that is not cached, pinned to the cached legs
@@ -343,17 +369,19 @@ public actor PlannerService: PlannerDataSource {
         guard simplified.count <= Self.shapeMaxPoints,
               zip(simplified, simplified.dropFirst()).reduce(0, { $0 + $1.0.distance(to: $1.1) }) <= Self.shapeMaxMeters
         else { throw PlannerFailure.lineTooLong }
-        let release = try await release()
         struct Query: Encodable { let line: [[Double]]; let profile: String }
         func rounded(_ value: Double) -> Double { (value * 1e6).rounded() / 1e6 }
-        var request = URLRequest(url: release.routing.appending(path: "v1/shape"))
-        request.httpMethod = "POST"
-        // The service stops a shape after 30 s.
-        request.timeoutInterval = 40
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(Query(line: simplified.map { [rounded($0.longitude), rounded($0.latitude)] }, profile: profile))
+        let body = try JSONEncoder().encode(Query(line: simplified.map { [rounded($0.longitude), rounded($0.latitude)] }, profile: profile))
         struct Answer: Decodable { let points: [[Double]]; let turnarounds: [Int] }
-        let answer = try Self.decode(Answer.self, data: await Self.send(request, transport: transport))
+        let answer = try await onActive(try await release()) { release in
+            var request = URLRequest(url: release.routing.appending(path: "v1/shape"))
+            request.httpMethod = "POST"
+            // The service stops a shape after 30 s.
+            request.timeoutInterval = 40
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = body
+            return try Self.decode(Answer.self, data: await Self.send(request, transport: self.transport))
+        }
         guard (2...64).contains(answer.points.count),
               answer.points.allSatisfy({ $0.count == 2 && (-180...180).contains($0[0]) && (-90...90).contains($0[1]) }),
               answer.turnarounds.allSatisfy({ (1..<answer.points.count - 1).contains($0) })
@@ -363,13 +391,17 @@ public actor PlannerService: PlannerDataSource {
     }
 
     public func search(_ query: PlannerSearchQuery, release: PlannerRelease) async throws -> [PlannerPlace] {
+        try await onActive(release) { try await self.search(query, on: $0) }
+    }
+
+    private func search(_ query: PlannerSearchQuery, on release: PlannerRelease) async throws -> [PlannerPlace] {
         if query.kinds.count > 3 {
             var results: [PlannerPlace] = [], ids: Set<String> = []
             for start in stride(from: 0, to: query.kinds.count, by: 3) {
                 try Task.checkCancellation()
                 var part = query
                 part.kinds = Array(query.kinds[start..<min(start + 3, query.kinds.count)])
-                for place in try await search(part, release: release) where ids.insert(place.id).inserted { results.append(place) }
+                for place in try await search(part, on: release) where ids.insert(place.id).inserted { results.append(place) }
             }
             return Array(results.prefix(100))
         }
@@ -439,6 +471,7 @@ public actor PlannerService: PlannerDataSource {
             let (data, response) = try await transport(request)
             try Task.checkCancellation()
             guard let response = response as? HTTPURLResponse else { throw PlannerFailure.invalidData }
+            if response.statusCode == 404 { throw ReleaseGone() }
             guard response.statusCode == 200 else {
                 struct Failure: Decodable { let code: String }
                 let code = try? JSONDecoder().decode(Failure.self, from: data).code
@@ -455,6 +488,7 @@ public actor PlannerService: PlannerDataSource {
         } catch is CancellationError { throw CancellationError() }
         catch let error as URLError where error.code == .cancelled { throw CancellationError() }
         catch let error as PlannerFailure { throw error }
+        catch let error as ReleaseGone { throw error }
         catch { throw PlannerFailure.unavailable }
     }
 }

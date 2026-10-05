@@ -171,6 +171,23 @@ struct PlannerServiceTests {
         let query = try #require(try JSONSerialization.jsonObject(with: await sent.values[0]) as? [String: Any])
         #expect(query["profile"] as? String == "gravel" && query["line"] as? [[Double]] == [[8, 48], [8.1, 48.1]])
     }
+    /// A 404 from a release object reads the catalogue again, once, and repeats the request with the new active release.
+    @Test func aRemovedReleaseReadsTheCatalogueAgainAndRetries() async throws {
+        let sent = Bodies()
+        let service = PlannerService(catalogURL: URL(string: "https://planner.test/catalog.json")!) { request in
+            let url = request.url!.absoluteString
+            await sent.append(Data(url.utf8))
+            let catalogs = await sent.values.filter { $0 == Data("https://planner.test/catalog.json".utf8) }.count
+            let body: [String: Any] = url.hasSuffix("/catalog.json") ? ["format": 1, "active": catalogRelease(catalogs == 1 ? "a" : "b")]
+                : ["routing_package": packageID, "profiles": ["gravel"]]
+            let status = url.hasPrefix("https://planner.test/a/") ? 404 : 200
+            return (try JSONSerialization.data(withJSONObject: body), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+        }
+        let old = try await service.release()
+        #expect(try await service.profiles(release: old) == ["gravel"])
+        #expect(await sent.values.map { String(decoding: $0, as: UTF8.self) } == ["https://planner.test/catalog.json",
+            "https://planner.test/a/manifest.json", "https://planner.test/catalog.json", "https://planner.test/b/manifest.json"])
+    }
     /// A line over the service's 200 km cap fails before any request.
     @Test func aTooLongLineFailsWithoutARequest() async throws {
         let host = URL(string: "https://planner.test")!
@@ -192,6 +209,15 @@ private let a = Coordinate(latitude: 48, longitude: 8)
 private let b = Coordinate(latitude: 48.1, longitude: 8.1)
 private let packageID = String(repeating: "b", count: 64)
 private let goodRoute = "good"
+
+/// A catalogue entry whose objects live under `https://planner.test/ID/`.
+private func catalogRelease(_ id: Character) -> [String: Any] {
+    let host = "https://planner.test/\(id)"
+    return ["id": String(repeating: id, count: 64), "region": "test", "bounds": [7, 47, 9, 49], "basemap": host + "/basemap.json",
+            "glyphs": host + "/fonts/{fontstack}/{range}.pbf", "sprites": host + "/sprites", "terrain": host + "/{z}/{x}/{y}.webp",
+            "terrain_attribution": "Terrain", "search": host + "/search", "routing": host + "/routing",
+            "manifest": host + "/manifest.json", "overlays": host + "/overlays.json"]
+}
 
 private actor Bodies {
     var values: [Data] = []
