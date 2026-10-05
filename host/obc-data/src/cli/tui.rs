@@ -141,6 +141,16 @@ type Tui = Terminal<CrosstermBackend<Stdout>>;
 /// How often Runs reads the runs again while one runs.
 const TICK: Duration = Duration::from_secs(1);
 
+/// The plan before Store has one.
+static NO_PLAN: gc::Plan = gc::Plan {
+    kept: Vec::new(),
+    snapshots: Vec::new(),
+    objects: Vec::new(),
+    remove_bytes: 0,
+    keep_objects: 0,
+    keep_bytes: 0,
+};
+
 pub fn run(root: &Path) -> Result<(), Error> {
     let store = Store::open()?;
     let mut app = App::new(source_rows(&registry(root)?, false)?, list_runs(&store)?);
@@ -351,10 +361,11 @@ impl App {
                 if self.chooses() {
                     keys.push(bar(KeyCode::Enter, Action::Choose, "enter", "choose"));
                 }
-                match (overlay, self.asking) {
-                    (Overlay::Clean, false) => keys.push(bar(KeyCode::Char('a'), Action::Ask, "a", "clean")),
-                    (Overlay::Clean, true) => keys.push(bar(KeyCode::Char('y'), Action::Clean, "y", "clean")),
-                    _ => {}
+                if overlay == Overlay::Clean && self.works(Action::Open(Overlay::Clean)) {
+                    keys.push(match self.asking {
+                        false => bar(KeyCode::Char('a'), Action::Ask, "a", "clean"),
+                        true => bar(KeyCode::Char('y'), Action::Clean, "y", "clean"),
+                    });
                 }
                 keys.push(bar(KeyCode::Esc, Action::Close, "esc", if self.asking { "cancel" } else { "close" }));
             }
@@ -516,7 +527,7 @@ impl App {
 
     fn draw_store(&mut self, frame: &mut Frame, area: Rect) {
         let mut table = vec![["ENTRY", "SIZE", "KEPT BECAUSE"].map(String::from).to_vec()];
-        let plan = self.store.clone().unwrap_or_default();
+        let plan = self.store.as_ref().unwrap_or(&NO_PLAN);
         table
             .extend(plan.kept.iter().map(|kept| vec![kept.entry.clone(), bytes(kept.bytes), kept.because.join(" · ")]));
         let unused = !plan.objects.is_empty();
@@ -628,7 +639,10 @@ impl App {
     }
 
     fn clean_lines(&self) -> Vec<Line<'static>> {
-        let plan = self.store.clone().unwrap_or_default();
+        let plan = self.store.as_ref().unwrap_or(&NO_PLAN);
+        if plan.snapshots.is_empty() && plan.objects.is_empty() {
+            return vec![Line::from("nothing to clean")];
+        }
         let mut lines: Vec<Line> =
             plan.snapshots.iter().map(|snapshot| Line::from(format!("snapshot {snapshot}"))).collect();
         let objects = gc::objects_text(plan.objects.len() as u64);
@@ -845,6 +859,7 @@ mod tests {
             states.push(opened(overlay, 1, 1));
         }
         states.push(App { asking: true, ..opened(Overlay::Clean, 0, 0) });
+        states.push(App { store: Some(gc::Plan::default()), ..opened(Overlay::Clean, 0, 0) });
         states.push(App { screen: Screen::Store, ..app() });
         states.push(App { screen: Screen::Store, store: Some(gc::Plan::default()), ..app() });
         states.push(App { screen: Screen::Runs, ..app() });
@@ -898,6 +913,9 @@ mod tests {
         app.key(KeyCode::Char('a'));
         assert_eq!(app.key(KeyCode::Char('y')), Effect::Clean);
         assert_eq!(app.overlay, None);
+        let mut empty = App { store: Some(gc::Plan::default()), ..app };
+        empty.act(Action::Open(Overlay::Clean));
+        assert_eq!(empty.key(KeyCode::Char('a')), Effect::None, "an empty plan has nothing to clean");
     }
 
     #[test]
