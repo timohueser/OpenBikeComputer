@@ -94,12 +94,6 @@
         "changes": "Crc32::update is out of line. All 35 allocation sizes remain unchanged. CI remains the authority for the resident band.",
         "verification": "Shipping image 1,929,532 B; resident 311,904 B; poll 9,760 B; residual stack 47,520 B; task body 5,008 B; boot chain 17,592 B; init_idle 1,856 B. All resource guards pass. No base rebuild."
       },
-      "_metadata_stream_measurement": {
-        "source_commit": "5322b46ac",
-        "build": "Shipping and resource-report head builds on aarch64-apple-darwin, rustc 1.96.0, LLVM 22.1.2, riscv64-elf-gcc 16.1.0; cargo build --release --locked -j 2",
-        "changes": "Metadata reads use a checked 512 B cache. One synchronous editor owns the 6,784 B write buffer. All 35 allocation sizes and all ceilings remain unchanged. CI remains the authority for the resident band.",
-        "verification": "Shipping image 1,925,280 B, 4,252 B below the saved CRC baseline; metadata text 22,656 B, 2,406 B below its saved baseline. The largest metadata read/public frame is 1,736 B; the sole editor frame is 7,528 B. Resident 311,904 B; poll 9,760 B; residual stack 47,520 B; task body 5,008 B; boot chain 17,592 B; init_idle 1,856 B. Board and allocation guards pass. No base rebuild. The flash target and catalog-loader frames remain open."
-      },
       "deep_ride_high_water": 31340,
       "deep_ride_high_water_measured": "2026-09-22 (nRF54LM20-DK, debug-uart image 17cb922ac2f45eb358303a7117a1cb34f0f4e6725aaa66b40103bf7bcb47e1bc of 0ff49e0c; 31,340 / 45,080 B; reproduced on two boots)",
       "deep_ride_margin_min": 8704,
