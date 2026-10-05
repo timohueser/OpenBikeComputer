@@ -94,7 +94,8 @@ pub struct Kept {
 /// newest record of its source or of a request. An object is reached when a pin, a fixture, a planner recipe or an
 /// import record names it, or a reached record or layer has it. A layer is reached when each input
 /// is: a snapshot input whose digest is of all the files, or of one file, of a reached record of
-/// its source, and a layer input whose digest is of a reached layer.
+/// its source, and a layer input whose digest is of the files that it selects (all when it names
+/// none) of a reached layer of its step.
 pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     let mut named = roots.sha256s.clone();
     for path in files(&store.root().join("imports"), &["jsonl"])? {

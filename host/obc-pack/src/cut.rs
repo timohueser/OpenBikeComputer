@@ -235,14 +235,13 @@ fn run(
     // Contours are generated once over the whole extract and then cut like any other feature, for
     // the same reason land is: a cell's geometry must not depend on which cell asked for it. This
     // opens the terrain set a second time, which costs a header read and a directory validation per
-    // container, and only when a band of the run has contours.
-    let contours = selected_bands(opts).any(|band| has_contours(config, band));
-    let contour_terrain = match (&opts.terrain, contours) {
-        (Some(path), true) => Some(TerrainSet::open(path)?),
-        _ => None,
-    };
-    crate::contour::add_contours(&mut ingested, config, extract, contour_terrain.as_ref(), progress)?;
-    progress.check()?;
+    // container, and only when a band of the run has contours: a run whose bands hold no contour
+    // level traces none and has nothing to warn about.
+    if selected_bands(opts).any(|band| has_contours(config, band)) {
+        let contour_terrain = opts.terrain.as_deref().map(TerrainSet::open).transpose()?;
+        crate::contour::add_contours(&mut ingested, config, extract, contour_terrain.as_ref(), progress)?;
+        progress.check()?;
+    }
     cut_ingested(&ingested, &ways, config, out_dir, opts, progress)
 }
 
