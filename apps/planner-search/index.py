@@ -76,9 +76,11 @@ def index_search(db):
                 forms.add(norm(variant))
                 if kind == 'street':
                     forms.add(street_norm(variant))
+        # In sorted order: the order of a set changes with the hash seed, and the pages with it.
+        forms = sorted(forms)
         name_rows.extend((term, pid) for term in forms)
         compact_rows.extend((term.replace(' ', ''), pid) for term in forms)
-        text_rows.append((pid, ' '.join(sorted(forms)), norm(context)))
+        text_rows.append((pid, ' '.join(forms), norm(context)))
         if len(text_rows) >= 10000:
             flush()
     flush()

@@ -95,8 +95,13 @@ triggers = [
   "tools/step_request.py",
   "tools/data_registry.py",
   "tools/planner_*.py",
-  "apps/planner-search/setup.py",
+  "apps/planner-search/*.py",
+  "apps/planner-search/*.sql",
+  "apps/planner-search/web/address-terms.json",
   "apps/planner-search/query/*.py",
+  "apps/planner-search/query/contract.json",
+  "host/obc-search-bake/policy.py",
+  "builder/app/src/lib/planner/poi-kinds.json",
 ]
 
 [[package]]
