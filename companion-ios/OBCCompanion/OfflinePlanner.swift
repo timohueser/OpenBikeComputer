@@ -26,6 +26,7 @@ actor OfflinePlanner {
         let assets = directory.appending(path: "maps/assets").absoluteString
         let release = PlannerRelease(id: map.id, region: map.region, bounds: map.bounds,
             basemap: directory.appending(path: "maps/basemap.json"),
+            places: directory.appending(path: "maps/places.json"),
             glyphs: assets + "/fonts/{fontstack}/{range}.pbf", sprites: assets + "/sprites/v4",
             terrain: directory.appending(path: "maps/terrain.json").absoluteString,
             terrain_attribution: manifest.terrain_attribution ?? "",

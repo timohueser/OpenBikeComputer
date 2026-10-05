@@ -92,17 +92,6 @@ refresh = 90
 redistribute = true
 r2_copy = true
 
-[[source]]
-id = "photon-dump"
-kind = "data"
-licence = "ODbL-1.0"
-licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
-attribution = "© OpenStreetMap contributors"
-obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
-fetch = { kind = "http", url = "https://download1.graphhopper.com/public/europe/germany/photon-dump-germany-release-{version}.jsonl.zst" }
-version = "release"
-refresh = "manual"
-redistribute = true
 
 # ── Terrain ──────────────────────────────────────────────────────────────────
 
@@ -605,22 +594,13 @@ refresh = "manual"
 redistribute = false
 
 [[source]]
-id = "photon"
-kind = "tool"
-licence = "Apache-2.0"
-licence_url = "https://github.com/komoot/photon"
-fetch = { kind = "github", url = "https://github.com/komoot/photon/releases/download/{version}/photon-{version}.jar" }
-hosts = ["api.github.com"]
-version = "release"
-refresh = "manual"
-redistribute = false
-
-[[source]]
-id = "nominatim"
-kind = "tool"
-licence = "GPL-2.0-only AND GPL-3.0-or-later"
+id = "nominatim-country-data"
+kind = "data"
+licence = "ODbL-1.0 AND GPL-2.0-only AND GPL-3.0-or-later"
 licence_url = "https://github.com/osm-search/Nominatim"
-fetch = { kind = "installed" }
+attribution = "© OpenStreetMap contributors"
+obligations = "Credit OpenStreetMap; keep the country grid under ODbL and country settings under their GPL licences"
+fetch = { kind = "http", url = "https://files.pythonhosted.org/packages/fc/9e/3f6a9706fdf54241e3adfffcb80f6fdba6d439c7506564cdc0f1b91bc5aa/nominatim_db-{version}-py3-none-any.whl" }
 version = "release"
 refresh = "manual"
 redistribute = false

@@ -177,7 +177,7 @@ export function reliefPaint(dark: boolean, snow = false) {
 
 export function mapStyle(theme: "light" | "dark", config: PlannerConfig, demUrl: string, contourUrl: string): StyleSpecification {
     const dark = theme === "dark";
-    const base = baseLayers(dark);
+    const base = baseLayers(dark).filter(layer => layer.id !== "pois");
     const afterLand = base.findIndex((layer) => layer.id === "land-detail") + 1;
     const terrain: LayerSpecification[] = [
         {
@@ -204,22 +204,13 @@ export function mapStyle(theme: "light" | "dark", config: PlannerConfig, demUrl:
         filter: ["==", ["get", "kind_detail"], "cycleway"],
         paint: { "line-color": dark ? "#b39de8" : "#7762b1", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 1.4, 16, 2.8] },
     });
-    // The planner draws its own place kinds; the basemap keeps the rest.
-    const pois = base.find((layer) => layer.id === "pois");
-    if (pois?.type === "symbol") {
-        pois.filter = ["all", pois.filter as ExpressionSpecification, ["!", poiFilter(categoryIds)]];
-        if (pois.layout?.["icon-image"]) {
-            // The sprite atlas supplies a building glyph for town halls.
-            pois.layout["icon-image"] = ["match", ["get", "kind"], "townhall", "building", pois.layout["icon-image"] as ExpressionSpecification];
-        }
-    }
     const panel = dark ? "#201f17" : "#ffffff";
     const category = ["match", ["get", "kind"], ...categoryIds.flatMap((id) => [Object.keys(placeCategories[id].kinds), id]), ""] as unknown as ExpressionSpecification;
     base.push({
-        id: "planner-pois", type: "circle", source: "basemap", "source-layer": "pois", minzoom: 12, maxzoom: 13, filter: poiFilter(categoryIds),
+        id: "planner-pois", type: "circle", source: "places", "source-layer": "pois", minzoom: 12, maxzoom: 13, filter: poiFilter(categoryIds),
         paint: { "circle-radius": 3.5, "circle-color": panel, "circle-stroke-color": dark ? "#aaa383" : "#676443", "circle-stroke-width": 1.5 },
     }, {
-        id: "planner-poi-icons", type: "symbol", source: "basemap", "source-layer": "pois", minzoom: 13, filter: poiFilter(categoryIds),
+        id: "planner-poi-icons", type: "symbol", source: "places", "source-layer": "pois", minzoom: 13, filter: poiFilter(categoryIds),
         layout: {
             "icon-image": ["concat", "poi-", category, `-${theme}`], "icon-padding": 1,
             "text-field": ["step", ["zoom"], "", 14, ["coalesce", ["get", "name:en"], ["get", "name"]]],
@@ -239,6 +230,7 @@ export function mapStyle(theme: "light" | "dark", config: PlannerConfig, demUrl:
         sprite: `${config.sprites}/${theme}`,
         sources: {
             basemap: basemapSource(config),
+            places: { type: "vector", url: config.places.endsWith(".json") ? config.places : `pmtiles://${config.places}`, attribution: config.attribution },
             terrain: { type: "raster-dem", tiles: [demUrl], bounds: config.bounds, tileSize: DEM_TILE, encoding: "terrarium", maxzoom: DEM_MAX_ZOOM, attribution: config.terrain_attribution },
             contours: { type: "vector", tiles: [contourUrl], bounds: config.bounds, maxzoom: 15, attribution: config.terrain_attribution },
         },
@@ -246,7 +238,7 @@ export function mapStyle(theme: "light" | "dark", config: PlannerConfig, demUrl:
     };
 }
 
-/** Matches basemap places of the given categories. */
+/** Matches searchable places of the given categories. */
 export function poiFilter(categories: PlaceCategory[]): ExpressionSpecification {
     return ["in", ["get", "kind"], ["literal", Object.keys(poiKinds).filter((kind) => categories.includes(poiKinds[kind].category))]];
 }

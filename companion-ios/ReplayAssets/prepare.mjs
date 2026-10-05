@@ -22,7 +22,7 @@ for (const name of ['poi-kinds', 'map-style']) {
   }).outputText);
 }
 // OBCNativeMapView replaces these placeholders and sets the terrain bounds of the release.
-const config = { basemap: '__BASEMAP__', glyphs: '__GLYPHS__', sprites: '__SPRITES__', terrain_attribution: '__TERRAIN_ATTRIBUTION__',
+const config = { basemap: '__BASEMAP__', places: '__PLACES__.json', glyphs: '__GLYPHS__', sprites: '__SPRITES__', terrain_attribution: '__TERRAIN_ATTRIBUTION__',
   attribution: '__ATTRIBUTION__', landcover_attribution: '__LANDCOVER_ATTRIBUTION__' };
 const { mapStyle } = await import(new URL('map-style.mjs', cache).href);
 const { poiKinds } = await import(new URL('poi-kinds.mjs', cache).href);
@@ -47,7 +47,7 @@ for (const theme of ['light', 'dark']) {
       layout: { 'symbol-placement': 'line', 'symbol-spacing': 350, 'text-field': ['get','ref'],
         'text-font': ['Noto Sans Medium'], 'text-size': 11, 'text-offset': [0,0.8] },
       paint: { 'text-color': color, 'text-halo-color': theme === 'dark' ? '#181d19' : '#ffffff', 'text-halo-width': 2 } });
-  style.layers.push({ id: 'planner-poi-highlight', type: 'circle', source: 'basemap', 'source-layer': 'pois', minzoom: 13,
+  style.layers.push({ id: 'planner-poi-highlight', type: 'circle', source: 'places', 'source-layer': 'pois', minzoom: 13,
     filter: ['in', ['get','kind'], ['literal',[]]],
     paint: { 'circle-radius': 19, 'circle-color': 'transparent', 'circle-stroke-color': '#e1ac42', 'circle-stroke-width': 3 } });
   style.sources['highlighted-places'] = { type: 'geojson', data: { type: 'FeatureCollection', features: [] } };

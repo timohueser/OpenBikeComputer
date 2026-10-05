@@ -350,7 +350,7 @@
         const { pid, kind } = feature.properties;
         if (pid) return highlightedPlaces.find((place) => place.id === pid) ?? null;
         const [longitude, latitude] = feature.geometry.coordinates;
-        return poiPlace(feature.id, String(kind), feature.properties["name:en"] ?? feature.properties.name, [longitude, latitude]);
+        return poiPlace(feature.id, String(kind), feature.properties.name, [Number(feature.properties.lon ?? longitude), Number(feature.properties.lat ?? latitude)]);
     }
 
     function legEnds(legEndId: string): [Coordinate, Coordinate] {

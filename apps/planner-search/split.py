@@ -1,4 +1,4 @@
-"""Split an enriched Photon dump once into independent POI and address inputs."""
+"""Split an enriched OSM search dump once into independent POI and address inputs."""
 import argparse
 from contextlib import ExitStack
 import io

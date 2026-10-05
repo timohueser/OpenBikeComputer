@@ -114,7 +114,7 @@ def publish(source, routing, output, cache=None):
     def copy_files(stage, names): return {name: source / name for name in names}
     _, entries = package("grid-assets", shared_inputs, copy_files, lambda stage: copy_files(stage, shared_inputs))
     shared = {name: name for name in entries}
-    font_inputs = {"basemap": release["files"]["maps/basemap.pmtiles"], "routing": release["routing_package"],
+    font_inputs = {"basemap": release["files"]["maps/basemap.pmtiles"], "places": release["files"]["maps/places.pmtiles"], "routing": release["routing_package"],
                    "assets": shared_inputs, "label_keys": sorted(blocks.LABEL_KEYS)}
     root, _ = package("grid-fonts", font_inputs, joined_fonts, lambda stage: joined_fonts(stage, source, release),
                       paths=[maps.ROOT / "tools/planner_mvt.py"])
@@ -123,7 +123,7 @@ def publish(source, routing, output, cache=None):
     for kind in blocks.map_kinds(source / "maps"):
         _, entries = package(f"grid-map-{kind}", {"source": release["files"][f"maps/{kind}.pmtiles"]}, partition_maps,
                              lambda stage, kind=kind: partition_maps(stage, source, kind))
-        if kind in ("basemap", "overlays", "terrain"):
+        if kind in ("basemap", "places", "overlays", "terrain"):
             for name in entries:
                 z, x, y = map(int, Path(name).stem.split("-"))
                 map_blocks.append({"kind": kind, "tile": [z,x,y], "bounds": maps.tile_bounds(z,x,y), "files": [name]})

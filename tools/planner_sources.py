@@ -1,23 +1,20 @@
 """Build planner map and search inputs from one OSM snapshot."""
 
-import getpass
 import json
 import os
 from pathlib import Path
 import shutil
-import subprocess
 import tarfile
 import tempfile
 
-from . import planner_maps as maps
+from . import data_registry, planner_maps as maps
 from .planner_runtime import digest, open_url
 
 PROTOMAPS = maps.PINS["protomaps-basemaps"]
 PROTO_SHA = "f89ff8ee6aff13baf60c83b5e98d3811ddb946cc1089d437c435885395764696"
-PHOTON = maps.PINS["photon"]
-PHOTON_URL = f"https://github.com/komoot/photon/releases/download/{PHOTON}/photon-{PHOTON}.jar"
-NOMINATIM = maps.PINS["nominatim"]
-PHOTON_SHA = "a89707c0045e4807b2a1180e132e68e108d998709f48b6c94b98a6e281f571a5"
+COUNTRY_DATA_VERSION = maps.PINS["nominatim-country-data"]
+COUNTRY_DATA_URL = data_registry.SOURCES["nominatim-country-data"]["fetch"]["url"].format(version=COUNTRY_DATA_VERSION)
+COUNTRY_DATA_SHA = "c5e1c4bd27f52a48843a5fe204a1a7b5f4d4d2911880e65721b4c900b13227e5"
 
 
 def download(url, path, sha):
@@ -58,56 +55,16 @@ def basemap(osm, output, bounds, cache, auxiliary=None):
                           for p in sorted(directory.iterdir()) if p.is_file()}}
 
 
-def search_dump(osm, output, cache, port=5434):
-    if os.geteuid() == 0:
-        raise ValueError("Run source preparation as a normal user. PostgreSQL cannot run as root.")
-    version = subprocess.check_output(["nominatim", "--version"], text=True)
-    if NOMINATIM not in version:
-        raise ValueError(f"Install nominatim-db=={NOMINATIM} in the build environment.")
-    photon = download(PHOTON_URL, cache / "photon.jar", PHOTON_SHA)
-    pg = Path(subprocess.check_output(["pg_config", "--bindir"], text=True).strip())
-    maps.check_port(port)
-    with tempfile.TemporaryDirectory(prefix=".nominatim-", dir=cache) as directory:
-        work = Path(directory)
-        database, project, socket = work / "postgres", work / "project", work / "socket"
-        project.mkdir()
-        socket.mkdir()
-        maps.run(pg / "initdb", "-D", database, "--auth-local=trust", "--auth-host=trust",
-                 "--encoding=UTF8", "--locale=C.UTF-8")
-        # The database is deleted after the export, so the import gives up crash safety for speed. Nominatim
-        # builds up to eight indexes at once; 256 MB each keeps them within 2 GB.
-        settings = ("shared_buffers=1GB maintenance_work_mem=256MB work_mem=50MB fsync=off full_page_writes=off "
-                    "synchronous_commit=off wal_level=minimal max_wal_senders=0")
-        # Not through maps.run: a stopped pg_ctl leaves its server running. On macOS, PostgreSQL refuses to
-        # start without a valid LC_ALL.
-        subprocess.run([pg / "pg_ctl", "-D", database, "-l", work / "postgres.log", "-o",
-                        f"-p {port} -k {socket} -h 127.0.0.1 " + " ".join(f"-c {item}" for item in settings.split()), "start"],
-                       env={**os.environ, "LC_ALL": "C.UTF-8"}, check=True)
-        try:
-            maps.run(pg / "createuser", "-h", "127.0.0.1", "-p", port, "www-data")
-            env = {**os.environ, "NOMINATIM_DATABASE_DSN":
-                   f"pgsql:dbname=nominatim;host=127.0.0.1;port={port};user={getpass.getuser()}",
-                   "NOMINATIM_IMPORT_STYLE": "extratags"}
-            maps.run("nominatim", "import", "--project-dir", project, "--osm-file", osm,
-                     "--reverse-only", "--no-updates", "--no-partitions", "--osm2pgsql-cache", "650", "-j", str(os.cpu_count()), env=env)
-            maps.run(pg / "psql", "-h", "127.0.0.1", "-p", port, "-d", "nominatim", "-c",
-                     "CREATE INDEX placex_country_code_idx ON placex(country_code);")
-            partial = output.with_suffix(".download")
-            export = subprocess.Popen(["java", "-Xmx1g", "-jar", str(photon), "dump-nominatim-db",
-                                       "-host", "127.0.0.1", "-port", str(port), "-user", getpass.getuser(),
-                                       "-extra-tags", "ALL", "-full-geometries", "-export-file", "-"], stdout=subprocess.PIPE, start_new_session=True)
-            maps.RUNNING.add(export)
-            try:
-                with export.stdout, partial.open("wb") as stream:
-                    compressed = subprocess.run(["zstd", "-3", "-q"], stdin=export.stdout, stdout=stream)
-                if export.wait() or compressed.returncode:
-                    raise ValueError("Nominatim export failed")
-            finally:
-                if export.poll() is None: maps.stop_process(export)
-                maps.RUNNING.discard(export)
-            partial.rename(output)
-        finally:
-            # Not through maps.run: a stopping bake stops those processes, and PostgreSQL must still stop.
-            subprocess.run([pg / "pg_ctl", "-D", database, "stop", "-m", "fast"], check=True)
-    return {"nominatim": NOMINATIM, "photon": PHOTON, "photon_sha256": PHOTON_SHA,
-            "dump_sha256": digest(output), "importance": "Nominatim default; no external Wikipedia ranks"}
+def search_dump(osm, output, cache, country):
+    archive = download(COUNTRY_DATA_URL, cache / 'nominatim-country-data.whl', COUNTRY_DATA_SHA)
+    with tempfile.TemporaryDirectory(prefix='.country-data-', dir=cache) as directory:
+        data = Path(directory)
+        maps.run('uv', 'run', '--with', 'PyYAML==6.0.2', 'python',
+                 maps.ROOT / 'host/obc-search-bake/policy.py', archive, data, cwd=maps.ROOT)
+        maps.run('cargo', 'build', '--locked', '--release', '-p', 'obc-search-bake', '--bin', 'search-bake', cwd=maps.ROOT)
+        maps.run(maps.ROOT / 'target/release/search-bake', osm, '--output', output,
+                 '--default-country', country.lower(), '--policy', data / 'policy.json',
+                 '--country-grid', data / 'country_osm_grid.sql.gz')
+        return {'generator': 'obc-search-bake', 'country_data_sha256': COUNTRY_DATA_SHA,
+                'policy_sha256': digest(data / 'policy.json'), 'country_grid_sha256': digest(data / 'country_osm_grid.sql.gz'),
+                'dump_sha256': digest(output)}

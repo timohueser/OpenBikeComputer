@@ -174,18 +174,18 @@ export interface MapPlace { name: string; coordinate: Coordinate; peak: boolean;
 /** A basemap feature as `querySourceFeatures` returns it. */
 export interface BasemapFeature { id?: string | number; properties: Record<string, unknown> | null; geometry: { type: string; coordinates?: unknown } }
 
-/** The towns, villages and named peaks among basemap features, once each: a place repeats in each loaded tile that holds it. */
+/** The towns, villages and named peaks from map features, once each: a place repeats in each loaded tile that holds it. */
 export function mapPlaces(features: BasemapFeature[]): MapPlace[] {
     const places = new Map<string, MapPlace>();
     for (const { id, properties: p, geometry } of features) {
         if (!p || geometry.type !== 'Point') continue;
         // The name the basemap labels show.
-        const name = p['name:en'] ?? p['pgf:name'] ?? p.name, peak = p.kind === 'peak';
-        if (typeof name !== 'string' || !(p.kind === 'locality' || (peak && typeof p.elevation === 'number'))) continue;
-        const coordinate = geometry.coordinates as Coordinate;
+        const name = p['name:en'] ?? p['pgf:name'] ?? p.name, peak = p.kind === 'summit';
+        if (typeof name !== 'string' || !(p.kind === 'locality' || peak)) continue;
+        const coordinate = p.lon != null && p.lat != null ? [Number(p.lon), Number(p.lat)] as Coordinate : geometry.coordinates as Coordinate;
         places.set(String(id ?? `${name} ${coordinate}`), {
-            name, coordinate, peak, population: Number(p.population ?? 0), rank: Number(p.population_rank ?? 0), minZoom: Number(p.min_zoom ?? 0),
-            ...(peak ? { elevation: p.elevation as number } : {}),
+            name, coordinate, peak, population: Number(p.population ?? 0), rank: Number(p.population_rank ?? 0), minZoom: Number(p.min_zoom ?? (peak ? 12 : 0)),
+            ...(peak && typeof p.elevation === 'number' ? { elevation: p.elevation } : {}),
         });
     }
     return [...places.values()];
