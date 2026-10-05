@@ -65,17 +65,24 @@ A `[[suite]]` entry is verification no Cargo package owns:
 | `triggers` | paths that select it, including its own test sources |
 | `fixtures` | captured or production-shaped inputs it needs |
 | `platforms`, `foundation`, `ci_only` | platform restriction; selected by manifest or toolchain changes; not reproducible locally |
+| `scoped` | follows its own inputs instead of broad policy or unowned-deletion selection |
+| `rust_packages` | linked libraries; Cargo supplies their non-development dependencies |
+| `rust_excludes` | source paths outside the linked feature set |
 | `package`, `targets` | Cargo test targets this suite owns, which then belong to no tier |
 
 Neither entry lists dependencies, test counts, durations or source files; Cargo and the result
 artifacts supply those. The CI job table is in `tools/test_plan.py`; `obc suites validate-filters`
 checks that it and `.github/workflows/ci.yml` describe the same jobs.
 
-Selection fails closed: a changed tracked source or policy path that no unit owns is an error, a
-selected suite with no CI route is an error, and a selection error publishes no plan, so the `ci`
-aggregate fails. A manifest, lockfile, toolchain, planner, workflow, `tools/ci/**` or
-`testing/suites.toml` change selects the whole relevant graph. A deleted path selects the whole
-graph, because its owner may be gone with it.
+Selection fails closed: an unowned source path or a selected suite without a CI route is an error.
+An error publishes no plan, so the `ci` aggregate fails. Foundation and policy changes select
+unscoped suites across the relevant graph. An unowned deletion also selects that graph.
+
+The iOS suites are scoped. They follow their source, tests, build inputs and linked Rust libraries.
+Rust tests, examples, binaries and Markdown do not select a linked library build. A changed suite
+entry selects that suite; an unrelated entry does not select iOS. Changes to the selector, aggregate
+or CI workflow select scoped suites too. Full release verification includes every routed suite.
+Within `ios-unit`, only selected camera, OBCKit and PMTiles suites execute.
 
 ## Real time in tests
 
