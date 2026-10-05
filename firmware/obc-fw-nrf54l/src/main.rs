@@ -314,9 +314,7 @@ static mut TERRAIN_WINDOW: MaybeUninit<obc_formats::io::WindowSource<'static>> =
 #[cfg(has_nav)]
 static mut NULL_ELEV: obc_route::NullElevation = obc_route::NullElevation;
 
-/// Parse and place the immutable map tables without retaining the by-value result in the async
-/// boot frame. The parse temporary lives only in this shallow synchronous frame; the caller keeps
-/// the returned pointer-sized result across recovery awaits.
+/// Parse immutable map tables directly in the static slot.
 ///
 /// # Safety
 /// `slot` must be the uniquely owned static map-table slot and must be written only by this call.
@@ -325,10 +323,8 @@ unsafe fn parse_map_tables(
     map: &'static dyn obc_formats::io::ByteSource,
     slot: *mut MaybeUninit<MapTables>,
 ) -> Result<&'static MapTables, obc_reader::Error> {
-    let tables = MapTables::parse(map)?;
-    let ptr = slot as *mut MapTables;
-    ptr.write(tables);
-    Ok(&*ptr)
+    // SAFETY: the caller owns the aligned static slot exclusively.
+    unsafe { MapTables::parse_in_place(map, &mut *slot) }
 }
 
 /// Mount the map's embedded terrain into the `.bss` [`TERRAIN`] slot and hand back the sampler.
