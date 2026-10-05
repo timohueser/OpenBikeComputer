@@ -36,12 +36,6 @@ custom-protocol = ["tauri/custom-protocol"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# The device's own CRC-32/IEEE, linked rather than re-typed. A file streamed to a
-# device needs its whole-object checksum before the descriptor is written (spec
-# §4.2), and this is the implementation `lib/usb/crc32.ts` was ported from — so
-# the host, the app and the firmware cannot drift. No radio types come with it:
-# obc-ble is deliberately no_std and transport-free.
-obc-ble = { path = "../../firmware/obc-ble" }
 obc-usb = { path = "../../host/obc-usb" }
 tauri = { version = "2", features = [] }
 # Native USB (#909). Pure Rust: there is no C library to vendor, no CMake leg,

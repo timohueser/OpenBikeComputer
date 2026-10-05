@@ -27,7 +27,6 @@ obc-replay = { path = "../../host/obc-replay" }
 # The device-resolution frame authority (FRAME_W/FRAME_H) — no re-declared 240×320 literals.
 # The display seam lives in obc-display (#807); only its pure `ls021` geometry surface is used.
 obc-display = { path = "../../firmware/obc-display" }
-embedded-graphics = "0.8"
 # --- Web (wasm32) surface — the only target this host actually ships on. The demo core above
 # stays target-independent so `cargo test` exercises it natively in the workspace.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
