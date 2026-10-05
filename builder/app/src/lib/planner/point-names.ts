@@ -1,11 +1,11 @@
 import type { Coordinate } from './geo';
-import { SEARCH_URL } from './search/config';
+import { config } from './map-data';
 
 export const coordinateName = (coordinate: Coordinate) => `${coordinate[1].toFixed(5)}, ${coordinate[0].toFixed(5)}`;
 
 export async function visitName(coordinate: Coordinate): Promise<string | null> {
     try {
-        const response = await fetch(`${SEARCH_URL}/reverse`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        const response = await fetch(`${config.search}/reverse`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ coordinate }), signal: AbortSignal.timeout(2000) });
         if (response.ok) {
             const { label } = await response.json();

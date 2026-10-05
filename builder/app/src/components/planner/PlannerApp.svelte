@@ -40,9 +40,8 @@
     import { coordinateAt, cumulative, kmPerDegree, nearestOnLine, nearestProgress, routeDistance, routeSlice, type Coordinate } from '../../lib/planner/geo';
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import { corridorPlaces } from '../../lib/planner/place-index';
-    import { MAP_BOUNDS, PLACES_URL, ROUTES_URL } from '../../lib/planner/map-data';
+    import { config } from '../../lib/planner/map-data';
     import { coordinateName } from '../../lib/planner/point-names';
-    import { HOSTED_SEARCH, REGION_NAME } from '../../lib/planner/search/config';
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import { searchPlaces, placeDetails, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
@@ -139,14 +138,14 @@
     let searchBox: Query | undefined;
     let searchRevision = $state(0);
     let searchViewRevision = $state(0);
-    let viewBounds = $state<[number, number, number, number]>(MAP_BOUNDS ?? [7.77,47.965,7.96,48.06]);
+    let viewBounds = $state<[number, number, number, number]>(config.bounds);
     let here = $state<Coordinate | undefined>();
     let pointing = $state<Where | undefined>();
     let applyingQuery = $state(false);
     let queryApplyError = $state('');
     let overnightPlaces = $state<Place[]>([]);
     let overnightNote = $state('');
-    let message = $state(`Plan a ride in ${REGION_NAME}`);
+    let message = $state(`Plan a ride in ${config.name}`);
     // The status line offers Undo after a version restore, until the next change.
     let undoable = $state(false);
     let visibleRange = $state<[number, number] | null>(null);
@@ -350,7 +349,7 @@
         const route = coordinates;
         let current = true;
         corridorLoad = 'loading';
-        corridorPlaces(PLACES_URL, route).then(
+        corridorPlaces(config.places, route).then(
             found => { if (current) { corridor = found; corridorLoad = 'done'; } },
             () => { if (current) corridorLoad = 'failed'; },
         );
@@ -945,11 +944,11 @@
     <header class="site-header">
         <a class="brand" href={siteBase}><img src={`${siteBase}brand/app-icon.svg`} alt="" /><span>OpenBikeComputer</span></a>
         <nav aria-label="Main navigation">
-            {#if HOSTED_SEARCH}
+            {#if import.meta.env.MODE === 'planner'}
                 <a href={`${siteBase}docs/`}>Docs</a>
                 <a href={`${siteBase}blog/`}>Blog</a>
                 <a href={`${siteBase}builder/`}>Maps</a>
-            {:else if import.meta.env.MODE !== 'planner'}<a href="/map-study.html">Map study</a>{/if}
+            {:else}<a href="/map-study.html">Map study</a>{/if}
             <span aria-current="page">Route planner</span>
         </nav>
         <button type="button" class="theme" aria-label={theme === 'light' ? 'Use dark theme' : 'Use light theme'} onclick={() => theme = theme === 'light' ? 'dark' : 'light'}>
@@ -981,7 +980,7 @@
                     findPlaces={(text, signal) => searchPlaces(text, searchContext, 6, signal).then(answer => routesPlaces(answer.results ?? [], text))} />
             {:else if searching}
                 <div class="pane-scroll">
-                    <QueryResults routes={ROUTES_URL ? `${ridingProfiles[bike].label} · ${routesNoun()} within ${finder.filters.radiusKm} km` : undefined}
+                    <QueryResults routes={config.routes ? `${ridingProfiles[bike].label} · ${routesNoun()} within ${finder.filters.radiusKm} km` : undefined}
                         onRoutes={place => openRoutes({ coordinate: [place.lon, place.lat], name: place.name })} state={searchState} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
                 </div>
             {:else if !hasEndpoints}
@@ -1003,7 +1002,7 @@
                         {#if routingStatus !== 'Calculating route…'}
                             {#if session.canUndo}<button type="button" class="planner-action" onclick={undo}>Undo last change</button>{/if}
                             <button type="button" class="planner-action" onclick={() => session.retry()}>Retry routing</button>
-                            <p>Move a point or choose another place in {REGION_NAME}.</p>
+                            <p>Move a point or choose another place in {config.name}.</p>
                         {/if}
                     </div>
                 {/if}
@@ -1067,7 +1066,7 @@
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={(id, coordinate) => session.previewMove(id, coordinate)} onDayEndDrag={moveDayEnd}
                     onLegClick={legClick} onInsert={(legEndId, coordinate) => insert(legEndId, coordinate, true)} onDrawn={drawn} onPlaceClick={place => routesOpen ? moveRoutesStart({ coordinate: place.coordinate, name: place.label }) : choosePlace(place)}
                     signedRoutes={routesOpen ? finder.mapView : null} signedHovered={finder.hovered} onSignedRoute={id => void finder.select(id)} onSignedHover={id => finder.hovered = id}
-                    canPlanRoute={ROUTES_URL ? routeStatus : undefined} onPlanRoute={planNetworkRoute} onIdle={() => mapIdle++}
+                    canPlanRoute={config.routes ? routeStatus : undefined} onPlanRoute={planNetworkRoute} onIdle={() => mapIdle++}
                     onVisibleRange={(range) => visibleRange = range}
                 >
                     {#snippet popup()}
@@ -1076,7 +1075,7 @@
                                 <MapCallout
                                     kind={calloutKind} {trip} line={session.line} {days} {overnightNote} {dayLabels} {night} {candidates} {legMode}
                                     onEndpoint={chooseEndpoint} point={selectedPoint} place={selectedPlace} coordinate={previewCoordinate} {detailsError}
-                                    onRoutes={ROUTES_URL ? () => openRoutes(selectedPlace ? { coordinate: [...selectedPlace.coordinate], name: selectedPlace.label }
+                                    onRoutes={config.routes ? () => openRoutes(selectedPlace ? { coordinate: [...selectedPlace.coordinate], name: selectedPlace.label }
                                         : { coordinate: [...spot!.coordinate], near: map?.placeName(spot!.coordinate) }) : undefined}
                                     onClose={clearSelection}
                                     onAddHere={addHere}
@@ -1152,7 +1151,7 @@
                 {#if session.saveError}<button type="button" class="planner-action" onclick={() => session.download()}>Download plan</button><button type="button" class="planner-action" onclick={() => { session.save().catch(() => {}); }}>Retry save</button>{/if}
                 {#if undoable}<span>·</span><button type="button" class="planner-action" onclick={undo}>Undo</button>{/if}
                 {#if placeNote}<span>· {placeNote}</span>{/if}
-                <span class="lab-note">Regional map, search and routing{#if import.meta.env.VITE_PLANNER_DATA_URL} · <a href={import.meta.env.VITE_PLANNER_DATA_URL}>Routing data · ODbL</a>{/if}</span>
+                <span class="lab-note">Regional map, search and routing</span>
                 <span class="legal"><a href={`${siteBase}docs/impressum/`}>Impressum</a> · <a href={`${siteBase}docs/datenschutz/`}>Datenschutz</a></span>
             </div>
         </section>

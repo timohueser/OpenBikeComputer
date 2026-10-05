@@ -131,18 +131,20 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "checksum mismatch"):
                 runtime.release(root)
 
-    def test_site_configuration_uses_one_release_and_rejects_line_injection(self):
+    def test_site_configuration_is_the_active_entry_and_rejects_line_injection(self):
         document = {"region": "test", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain",
                     "files": {"maps/snow.json": {}}}
-        active = release.endpoints("a" * 64, document, "https://maps.example", "https://tiles.example", "https://api.example")
-        self.assertEqual((active["snow"], "climate" in active), ("https://tiles.example/releases/" + "a" * 64 + "/snow.json", False))
-        env = release.vite_environment(active)
-        self.assertEqual(env["VITE_PLANNER_CLIMATE_URL"], "")
-        for key in ["VITE_PLANNER_TILEJSON_URL", "VITE_PLANNER_PLACES_URL", "VITE_PLANNER_SEARCH_URL", "VITE_PLANNER_SNOW_URL", "VITE_CATALOG_URL"]:
-            self.assertIn("a" * 64, env[key])
-        self.assertEqual(env["VITE_PLANNER_ROUTES_URL"], "https://tiles.example/releases/" + "a" * 64 + "/routes/tiles/{cell}.json")
-        active["terrain_attribution"] = "Terrain\nOTHER=value"
-        with self.assertRaisesRegex(ValueError, "configuration"): release.vite_environment(active)
+        active = release.endpoints("a" * 64, document, "Test region", "https://maps.example", "https://tiles.example", "https://api.example")
+        self.assertEqual(active["layers"], {"snow": "https://tiles.example/releases/" + "a" * 64 + "/snow.json"})
+        with tempfile.TemporaryDirectory() as directory:
+            env = Path(directory) / "env"
+            with patch.object(release, "read_url", return_value={"format": 1, "active": active, "previous": None}):
+                release.site_config("https://maps.example/planner/catalog.json", env)
+                lines = env.read_text().splitlines()
+                self.assertEqual(lines, ["VITE_PLANNER_CONFIG=" + json.dumps(active), "VITE_CATALOG_URL=" + active["device_catalog"]])
+                active["device_catalog"] += "\nNODE_OPTIONS=--require=/tmp/x"
+                with self.assertRaisesRegex(ValueError, "configuration"):
+                    release.site_config("https://maps.example/planner/catalog.json", env)
 
     def test_region_recipe_refuses_unsupported_country_defaults(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -169,10 +171,11 @@ class ReleaseTests(unittest.TestCase):
 
     def deploy_args(self):
         return argparse.Namespace(host="root@vps.example", data_dir=Path("/release"), apply=True,
+                                  recipe=release.maps.ROOT / "tools/planner-regions/engadin.json",
                                   site_origin="https://site.example", public_url="https://maps.example",
                                   tiles_url="https://tiles.example", api_url="https://releases.openbikecomputer.com")
 
-    DOCUMENT = {"region": "test", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain",
+    DOCUMENT = {"region": "engadin", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain",
                 "grid": {"format": 2, "zoom": 9, "map_zoom": 11}, "files": {}}
 
     def test_failed_service_probe_does_not_activate_a_release(self):

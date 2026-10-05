@@ -64,8 +64,8 @@ def verify_site(active, origin):
             raise ValueError("Planner module uses another origin; cleanup is blocked.")
         with open_url(url) as response:
             scripts.append(response.read().decode())
-    code = "\n".join(scripts)
-    if not all(active[key] in code for key in ["basemap", "places", "overlays", "terrain", "routing", "search"]):
+    # The site build carries the whole active catalogue entry as its planner config.
+    if not any(active["id"] in script for script in scripts):
         raise ValueError("Deploy site must serve the active planner release before cleanup.")
 
 

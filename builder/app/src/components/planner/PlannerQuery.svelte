@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onDestroy, untrack } from 'svelte';
     import PlannerIcon from './PlannerIcon.svelte';
-    import { HOSTED_SEARCH, REGION_NAME } from '../../lib/planner/search/config';
+    import { config } from '../../lib/planner/map-data';
     import QueryChip from './QueryChip.svelte';
     import type { Coordinate } from '../../lib/planner/geo';
     import { searchPlaces, type QueryRequest, type SearchContext, type SearchState, type Where } from '../../lib/planner/search/types';
@@ -10,6 +10,8 @@
         text?: string; searchState?: SearchState; context: SearchContext; selection?: Where;
         revision?: number; viewRevision?: number; onResults?: (coordinates: Coordinate[]) => void; onSearch: () => void; onClear: () => void; onLocation: () => void; onSample: () => void; onDate: (date: string) => void; onPointing: (where?: Where) => void;
     } = $props();
+    // The planner build is the published planner; a local preview uses local data.
+    const online = import.meta.env.MODE === 'planner';
     let edited = $state(false);
     let request = $state<QueryRequest | undefined>();
     let removed = $state<Record<string, unknown>>({});
@@ -117,13 +119,13 @@
     {#if !text.trim()}
         <div class="meaning"><QueryChip bind:active={activeFilter} field="where" value={context.pointing ?? { scope: 'view' }} {days} {selection} onChange={value => onPointing(value as Where)} onToggle={() => onPointing()} /></div>
     {/if}
-    <button type="button" class="data-button" aria-expanded={settings} onclick={() => settings = !settings}>{REGION_NAME} · {HOSTED_SEARCH ? 'online' : 'local data'}<PlannerIcon name="down" size={12} /></button>
+    <button type="button" class="data-button" aria-expanded={settings} onclick={() => settings = !settings}>{config.name} · {online ? 'online' : 'local data'}<PlannerIcon name="down" size={12} /></button>
     {#if settings}
         <div class="settings">
             <label>Trip start date<input type="date" value={context.startDate ?? ''} onchange={e => onDate(e.currentTarget.value)} /></label>
             <button type="button" onclick={onLocation}>{context.here ? 'Update my location' : 'Use my location'}</button>
             <button type="button" onclick={onSample}>Load Black Forest test route</button>
-            <p class="note">{HOSTED_SEARCH ? `Maps, routing, and search cover ${REGION_NAME}.` : 'Search uses the local package. Map tiles have their own coverage.'}</p>
+            <p class="note">{online ? `Maps, routing, and search cover ${config.name}.` : 'Search uses the local package. Map tiles have their own coverage.'}</p>
         </div>
     {/if}
 </div>

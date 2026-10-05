@@ -19,9 +19,10 @@ export function reply(body, { status, headers }) {
 }
 const notFound = () => new Response('Tile not found', { status: 404, headers: { ...headers, 'Cache-Control': 'no-store' } });
 
-// Zooms and tile format come from each archive's header; PMTiles tile IDs end at zoom 26.
+// Zooms and tile format come from each archive's header; PMTiles tile IDs end at zoom 26. An archive
+// name is served when the release publishes its TileJSON pointer.
 export function tileRoute(path) {
-  const match = /^\/releases\/([a-f0-9]{64})\/(basemap|places|overlays|terrain|snow|climate|sun)(?:\.json|\/(0|[1-9]\d?)\/(0|[1-9]\d*)\/(0|[1-9]\d*)(\.mvt|\.webp)?)$/.exec(path);
+  const match = /^\/releases\/([a-f0-9]{64})\/([a-z]{1,32})(?:\.json|\/(0|[1-9]\d?)\/(0|[1-9]\d*)\/(0|[1-9]\d*)(\.mvt|\.webp)?)$/.exec(path);
   if (!match) return null;
   const [, release, name, z, x, y, ext] = match;
   if (z !== undefined && (Number(z) > 26 || Number(x) >= 2 ** Number(z) || Number(y) >= 2 ** Number(z))) return null;
@@ -66,6 +67,7 @@ export default {
         data.tiles = [`${url.origin}/releases/${route.release}/${route.name}/{z}/{x}/{y}`];
         response = reply(JSON.stringify(data), { status: 200, headers: { ...headers, 'Content-Type': 'application/json' } });
       } else {
+        await objectPointer(env.BUCKET, prefix, `maps/${route.name}.json`);
         const grid = await gridConfig(env.BUCKET, prefix);
         // A grid has packs only where an archive has tiles, so a tile without a pack is absent.
         const pointer = await objectPointer(env.BUCKET, prefix, packName(route.name, route.tile, grid.map_zoom))

@@ -1,6 +1,8 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import { thirdPartyLicenses } from "./vite/third-party-licenses";
+import { plannerConfig } from "./src/lib/planner/config";
+import { testConfig } from "./test-support/planner/config";
 
 // One frontend, three hosts. Which host `$host` resolves to is decided here, at
 // build time — a conditional alias, not a runtime `if` — so the two hosts you did not
@@ -34,6 +36,8 @@ function hostFor(mode: string): HostName {
 
 export default defineConfig(({ mode }) => {
     const host = HOSTS[hostFor(mode)];
+    // A config that the planner cannot use fails the planner build, so the published planner stays as it is.
+    if (mode === "planner") plannerConfig(loadEnv(mode, process.cwd(), "VITE_PLANNER_CONFIG").VITE_PLANNER_CONFIG);
     return {
         // base "./" keeps every asset URL relative, so the built app works mounted at
         // "/" (local FastAPI) or under a sub-path (a future single-server deployment
@@ -83,6 +87,8 @@ export default defineConfig(({ mode }) => {
         },
         test: {
             environment: "node",
+            // Planner modules read their config on import, as in a planner build.
+            env: { VITE_PLANNER_CONFIG: JSON.stringify(testConfig) },
             // `test-support/` holds what no tier's build has as an input; its suites run here.
             include: ["src/**/*.test.ts", "test-support/**/*.test.ts"],
             coverage: {

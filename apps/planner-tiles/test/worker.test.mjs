@@ -10,7 +10,7 @@ test('tile routes bound archive selection and coordinates', () => {
   assert.deepEqual(tileRoute(`${base}/sun/10/535/356.webp`).tile, [10, 535, 356]);
   assert.equal(tileRoute(`${base}/terrain.json`).name, 'terrain');
   for (const path of [`${base}/terrain/12/4096/0.webp`, `${base}/basemap/27/0/0.mvt`, `${base}/places/0/0/0.png`,
-    `${base}/other.json`, '/cell-catalog/catalog.json', `${base}/basemap/01/0/0.mvt`]) {
+    `${base}/Other.json`, `${base}/${'a'.repeat(33)}.json`, '/cell-catalog/catalog.json', `${base}/basemap/01/0/0.mvt`]) {
     assert.equal(tileRoute(path), null, path);
   }
 });
@@ -41,7 +41,8 @@ function archive(tileType = 1, meta = { attribution: 'Test data' }) {
 }
 const pointer = (sha256, bytes, encoding = 'identity', decoded = bytes.length) =>
   JSON.stringify({ sha256, encoding, bytes: bytes.length, decoded_bytes: decoded });
-// A grid release in R2: small public pointers and the object pool, read whole or by range.
+// A grid release in R2: small public pointers and the object pool, read whole or by range. Each archive
+// publishes a TileJSON pointer.
 function bucket(objects, reads = { count: 0 }) {
   return { async get(path, options) {
     reads.count++;
@@ -56,7 +57,8 @@ function grid(prefix, packs) {
   return [[`${prefix}/public/grid.json`, JSON.stringify({ format: 2, map_zoom: 11 })],
     ...Object.entries(packs).flatMap(([name, bytes], i) => {
       const digest = String(i).repeat(64);
-      return [[`${prefix}/public/maps/tiles/${name}/0-0-0.pmtiles.json`, pointer(digest, bytes)], [`${prefix}/objects/${digest}`, bytes]];
+      return [[`${prefix}/public/maps/${name}.json.json`, pointer('9'.repeat(64), Buffer.from('{}'))],
+        [`${prefix}/public/maps/tiles/${name}/0-0-0.pmtiles.json`, pointer(digest, bytes)], [`${prefix}/objects/${digest}`, bytes]];
     })];
 }
 
@@ -90,7 +92,9 @@ test('range reads deliver decoded tiles, cache tiles and empty coverage, and do 
   const readsBeforeEmpty = reads.count;
   assert.equal((await worker.fetch(new Request(emptyUrl), env, ctx)).status, 204);
   assert.equal(reads.count, readsBeforeEmpty);
-  for (const missing of [`https://tiles.example/releases/${'b'.repeat(64)}/terrain.json`, `https://tiles.example/releases/${'b'.repeat(64)}/terrain/0/0/0`]) {
+  // A missing release, and an archive that the release does not publish.
+  for (const missing of [`https://tiles.example/releases/${'b'.repeat(64)}/terrain.json`, `https://tiles.example/releases/${'b'.repeat(64)}/terrain/0/0/0`,
+    `https://tiles.example${base}/sun.json`, `https://tiles.example${base}/sun/0/0/0`]) {
     const response = await worker.fetch(new Request(missing), env, ctx);
     assert.equal(response.status, 404); assert.equal(response.headers.get('Cache-Control'), 'no-store');
     assert.ok(!cached.has(missing));

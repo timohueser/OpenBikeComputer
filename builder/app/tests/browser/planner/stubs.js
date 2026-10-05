@@ -1,4 +1,4 @@
-/** The two hosts the planner build is pointed at (see `pretest:planner` in package.json). */
+/** The two hosts the planner build is pointed at (see `config.json`). */
 export const HOSTS = { tiles: 'tiles.test', api: 'api.test' };
 
 /** The tile Worker serves these, and Cloudflare bills them; the VPS serves `api`. */

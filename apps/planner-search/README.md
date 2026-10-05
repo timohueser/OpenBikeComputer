@@ -16,7 +16,7 @@ repository root. Allow 12 GB for sources and packages.
 
 ```sh
 python3 apps/planner-search/setup.py --build-data
-npm run dev --prefix apps/planner-search
+npm start --prefix apps/planner-search
 ```
 
 Setup verifies the source and model hashes before use. It builds both SQLite packages
@@ -41,27 +41,15 @@ addresses. The service opens both directories from `OBC_SEARCH_DATA=DATA`.
 The split runs once per source identity. A POI transform update reads only
 its filtered records.
 
-For local map tiles, place `basemap.pmtiles` and `places.pmtiles` in `builder/app/public/data/planner/`:
-
-```sh
-VITE_PLANNER_PMTILES_URL=/data/planner/basemap.pmtiles npm run dev --prefix apps/planner-search
-```
-
-Terrain uses `VITE_PLANNER_DEM_URL`, a Terrarium WebP tile URL template. The default map
-URLs point to local files and services. Search still works if
-those sources are unavailable.
-
 | Setting | Default |
 | --- | --- |
 | `OBC_SEARCH_DATA` | This folder's `data/` |
 | `OBC_SEARCH_PYTHON` | This folder's `.venv/bin/python` |
 | `OBC_SEARCH_PORT` | `8780` |
-| `OBC_PLANNER_PORT` | `4184` |
 | `OBC_SEARCH_REGIONS` | `baden-wuerttemberg` |
 | `OBC_SEARCH_ORIGINS` | Loopback origins only when unset |
 
-One process serves the one region that `OBC_SEARCH_REGIONS` names. The combined
-development command passes `OBC_SEARCH_PORT` to the Vite proxy.
+One process serves the one region that `OBC_SEARCH_REGIONS` names.
 
 ## Boundaries
 

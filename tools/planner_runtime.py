@@ -8,6 +8,8 @@ from urllib.request import Request, urlopen
 
 # Optional data layers. Each is one archive `maps/NAME.pmtiles`, baked by `tools/planner_NAME.py` when
 # the region recipe has the field NAME. The value is a metadata key that every complete archive has.
+# The catalogue entry lists each layer in `layers`; the web planner shows it through its module in
+# builder/app/src/lib/planner/layers/registry.ts.
 DATA_LAYERS = {"snow": "seasons", "climate": "years", "sun": "sun_format"}
 
 

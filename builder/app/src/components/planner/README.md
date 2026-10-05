@@ -64,10 +64,11 @@ Publication refuses another release while an inactive dataset remains.
 
 ## Replace a release
 
-For a larger region, add a recipe with its ID, bounds, time zone, and pinned
-inputs. Build into a fresh data directory with `--recipe PATH`. Pass
+For a larger region, add a recipe with its ID, name, bounds, time zone, and
+pinned inputs. Build into a fresh data directory with `--recipe PATH`. Pass
 `--device-catalog URL` for that region's published device catalogue. Use the
-same three commands, then run **Deploy site** again.
+same three commands, then run **Deploy site** again. `deploy` takes the region
+name from the recipe.
 
 For a component update, keep the recipe's pinned OSM snapshot and bounds:
 
@@ -144,27 +145,15 @@ cp AUXILIARY_FILE ~/.cache/obc/planner/sources/downloads/auxiliary/NAME
 
 ## Client configuration
 
-`obc planner site-config --output ENV_FILE` writes these settings from the active
-release. Use them for a hosted build with the configured API origin.
+A planner build reads `VITE_PLANNER_CONFIG`: the `active`
+[catalogue](../../../../../specs/planner-release.md#catalogue) entry as JSON. The
+build fails without a usable config. The map builder takes its basemap from it,
+else from the live catalogue.
 
-| Variable | Value |
+| Source | Command |
 | --- | --- |
-| `VITE_PLANNER_TILEJSON_URL` | Hosted basemap TileJSON |
-| `VITE_PLANNER_PMTILES_URL` | Local basemap archive, when TileJSON is absent |
-| `VITE_PLANNER_PLACES_URL` | Rider places TileJSON or PMTiles archive |
-| `VITE_PLANNER_OVERLAYS_URL` | Overlay TileJSON or PMTiles archive |
-| `VITE_PLANNER_SNOW_URL` | Snow TileJSON or PMTiles archive, if any |
-| `VITE_PLANNER_CLIMATE_URL` | Climate TileJSON or PMTiles archive, if any |
-| `VITE_PLANNER_SUN_URL` | Sunlight TileJSON or PMTiles |
-| `VITE_PLANNER_ROUTING_URL` | Routing API prefix |
-| `VITE_PLANNER_SEARCH_URL` | Search API prefix |
-| `VITE_PLANNER_ROUTES_URL` | Route catalog: a cell template with `{cell}`, or the region file, if any |
-| `VITE_PLANNER_SEARCH_REGIONS` | Region ID that names the map when `VITE_PLANNER_REGION_NAME` is unset |
-| `VITE_PLANNER_DEM_URL` | Terrarium WebP XYZ template |
-| `VITE_PLANNER_TERRAIN_ATTRIBUTION` | Elevation source credits |
-| `VITE_PLANNER_GLYPHS_URL` | Font template |
-| `VITE_PLANNER_SPRITES_URL` | Sprite directory |
-| `VITE_PLANNER_MAP_BOUNDS` | `west,south,east,north` |
+| Active release | `obc planner site-config --output ENV_FILE`, which also writes `VITE_CATALOG_URL` |
+| Local data directory | `obc planner`, with local URLs for the same fields |
 
 Basemap zooms are 0–14; terrain zooms are 0–12. Browser contours use terrain
 neighbours. Highlighted places use zoom 11.

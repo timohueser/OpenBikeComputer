@@ -1,6 +1,6 @@
 import type { ExpressionSpecification, GeoJSONSource, Map, SymbolLayerSpecification } from 'maplibre-gl';
 import { cumulative } from '../geo';
-import { TERRAIN_URL } from '../map-data';
+import { config } from '../map-data';
 import { DEM_MAX_ZOOM } from '../map-style';
 import type { Coordinate } from '../map-types';
 import { fetchTile } from './archive';
@@ -25,7 +25,7 @@ const PEAK_SYMBOLS = 13;
 const FAILED = 'Weather data could not load for this region.';
 
 /** The map's terrain tiles; the relief has loaded most of them, so the browser cache serves them. */
-const terrain = terrainHeights((z, x, y, signal) => fetchTile(TERRAIN_URL, z, x, y, signal));
+const terrain = terrainHeights((z, x, y, signal) => fetchTile(config.terrain, z, x, y, signal));
 
 const palettes = Object.fromEntries((['temperature', 'rain'] as const).map(variable =>
     [variable, { light: rampWords(variable, 'light'), dark: rampWords(variable, 'dark') }])) as Record<Variable, Record<Theme, Uint32Array>>;

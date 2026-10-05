@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPropertyExpression, latest, type StylePropertySpecification } from '@maplibre/maplibre-gl-style-spec';
 import type { LayerSpecification } from 'maplibre-gl';
+import { testConfig } from '../../../test-support/planner/config';
 
 afterEach(() => {
-    vi.unstubAllGlobals();
     vi.resetModules();
 });
 
@@ -17,9 +17,8 @@ const tileKinds = [
 ];
 
 async function landLayers(theme: 'light' | 'dark') {
-    vi.stubGlobal('window', { location: { href: 'https://planner.example/plan/' } });
     const { mapStyle } = await import('./map-style');
-    const layers = mapStyle(theme, 'dem://tiles', 'contours://tiles').layers;
+    const layers = mapStyle(theme, testConfig, 'dem://tiles', 'contours://tiles').layers;
     const kinds = (layer: LayerSpecification) => ('filter' in layer ? (layer.filter as [string, unknown, [string, string[]]])[2][1] : []);
     return { layers, land: layers.filter((layer) => layer.id.startsWith('land-')), kinds };
 }

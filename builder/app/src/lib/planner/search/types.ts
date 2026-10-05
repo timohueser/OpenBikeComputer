@@ -1,6 +1,6 @@
 import type { Coordinate } from '../geo';
 import type { RoutingLine } from '../routing';
-import { SEARCH_URL } from './config';
+import { config } from '../map-data';
 import { searchLine } from './plan';
 import { routeSegments } from './segments';
 
@@ -48,7 +48,7 @@ export interface SearchAnswer {
 export type SearchState = { loading: boolean; error: string; answer: SearchAnswer | null };
 export async function placeDetails(source: string, coordinate: Coordinate, signal: AbortSignal): Promise<SearchPlace | undefined> {
     const [lon, lat] = coordinate;
-    const response = await fetch(`${SEARCH_URL}/query`, { method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
+    const response = await fetch(`${config.search}/query`, { method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ q: '', source, view: [lon - .01, lat - .01, lon + .01, lat + .01] }) });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Place details are unavailable.');
@@ -59,7 +59,7 @@ export async function placeDetails(source: string, coordinate: Coordinate, signa
 export async function searchPlaces(q: string, context: SearchContext, limit: number, signal: AbortSignal, request?: QueryRequest): Promise<SearchAnswer> {
     const { coordinates, km, seconds, line, ...plan } = context.plan;
     const segments = line && routeSegments(line);
-    const response = await fetch(`${SEARCH_URL}/query`, { method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
+    const response = await fetch(`${config.search}/query`, { method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...context, plan: { ...plan, ...searchLine(coordinates, km, seconds), segments }, q, limit, request }) });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Search failed. Try again.');
