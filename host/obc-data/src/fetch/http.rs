@@ -40,6 +40,25 @@ pub fn not_found(error: &str) -> bool {
     error.ends_with("HTTP 404")
 }
 
+/// Whether an error of [`Http::modified`] or [`Http::text`] says that the connection failed or
+/// timed out: upstream could not be asked.
+pub fn unreachable(error: &str) -> bool {
+    error.contains(UNREACHABLE)
+}
+
+const UNREACHABLE: &str = ": unreachable: ";
+
+/// The error of a request that got no answer, marked when no connection was made or it timed out.
+fn no_answer(method: &str, url: &str, error: ureq::Error) -> String {
+    use ureq::Error::{ConnectProxyFailed, ConnectionFailed, HostNotFound, Io, Timeout};
+    match error {
+        Io(_) | Timeout(_) | HostNotFound | ConnectionFailed | ConnectProxyFailed(_) => {
+            format!("{method} {url}{UNREACHABLE}{error}")
+        }
+        error => format!("{method} {url}: {error}"),
+    }
+}
+
 pub struct Http {
     agent: ureq::Agent,
     backoff: Duration,
@@ -72,7 +91,7 @@ impl Http {
     /// The `Last-Modified` day of `url`, after redirects. A 404 is an error that [`not_found`] knows.
     pub fn modified(&self, url: &str) -> Result<Option<String>, String> {
         let request = self.agent.head(url).config().timeout_global(Some(SMALL)).build();
-        let response = request.call().map_err(|e| format!("HEAD {url}: {e}"))?;
+        let response = request.call().map_err(|e| no_answer("HEAD", url, e))?;
         if !response.status().is_success() {
             return Err(format!("HEAD {url}: HTTP {}", response.status().as_u16()));
         }
@@ -89,7 +108,7 @@ impl Http {
     /// A small document, such as an index or an API answer.
     pub fn text(&self, url: &str, accept: &str) -> Result<String, String> {
         let request = self.agent.get(url).header("accept", accept).config().timeout_global(Some(SMALL)).build();
-        let mut response = request.call().map_err(|e| format!("GET {url}: {e}"))?;
+        let mut response = request.call().map_err(|e| no_answer("GET", url, e))?;
         if !response.status().is_success() {
             return Err(format!("GET {url}: HTTP {}", response.status().as_u16()));
         }

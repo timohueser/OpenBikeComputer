@@ -58,8 +58,9 @@ fn fetch_files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot
 /// program: at `version`, or else at its live pin, or else at the newest version upstream. Each
 /// file comes with its object. This is `obc data fetch` for code that links the library.
 ///
-/// Without a version or a pin, a failed upstream that is not a 404 gives the newest version in the
-/// store that has the requested files, with a warning, so a bake works offline.
+/// Without a version or a pin, when the request for the newest version upstream gets no connection
+/// or times out, the newest version in the store that has the requested files serves, with a
+/// warning, so a bake works offline. Every other error stays an error.
 pub fn live(id: &str, version: Option<&str>, params: Vec<(String, String)>) -> Result<Fetched, LiveError> {
     let starts = [std::env::current_dir().ok(), std::env::current_exe().ok()];
     let root = starts.into_iter().flatten().find_map(|start| crate::find_root(&start));
@@ -73,7 +74,7 @@ pub fn live(id: &str, version: Option<&str>, params: Vec<(String, String)>) -> R
     let snapshot = match fetch(&store, &Http::new(), &Request { source, version, params: params.clone() }) {
         Ok(snapshot) => snapshot,
         Err(error) if http::not_found(&error) => return Err(LiveError::NotFound(error)),
-        Err(error) if unpinned => match newest_stored(&store, id, &params)? {
+        Err(error) if unpinned && http::unreachable(&error) => match newest_stored(&store, id, &params)? {
             Some(snapshot) => {
                 eprintln!("obc data: {error}; using `{id}` {} from the store", snapshot.version);
                 snapshot
@@ -806,6 +807,18 @@ pub(crate) mod tests {
         assert_eq!(log.lock().unwrap().len(), 2);
         let gone = Request { source: &extracts, version: Some("2026-08-15".into()), params: area };
         assert!(fetch(&store, &quick(), &gone).unwrap_err().contains("first of each month"));
+    }
+
+    /// Only a request that gets no connection is unreachable; an answer, also a 500, is not.
+    #[test]
+    fn only_no_connection_is_unreachable() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/x", closed.local_addr().unwrap());
+        drop(closed);
+        assert!(http::unreachable(&quick().modified(&url).unwrap_err()));
+        let (url, _) = serve(|_, _| Reply { status: 500, headers: vec![], body: vec![], length: 0 });
+        let error = quick().modified(&url).unwrap_err();
+        assert!(!http::unreachable(&error) && !http::not_found(&error), "{error}");
     }
 
     /// The dated file of the newest day can come after its `state.txt`. Offline, the newest stored

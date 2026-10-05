@@ -371,8 +371,7 @@ pub(crate) fn cache_dir() -> Result<PathBuf, String> {
 }
 
 /// Return the `land_polygons.shp` of `zip`, a zip of the store. It unpacks into
-/// `<cache>/<object name>/`, so another version unpacks again, and the directories of other
-/// versions are deleted after it.
+/// `<cache>/<object name>/`, so another version unpacks again; see [`prune`] for the others.
 ///
 /// Concurrency-safe: the extract goes to a pid-suffixed temp path, then the extracted directory is
 /// renamed into place. Two cold-cache packers racing each other both succeed, and the loser's
@@ -385,10 +384,13 @@ fn ensure_dataset(cache: &Path, zip: &Path, progress: &Progress) -> Result<PathB
     let dir = cache.join(name);
     let dataset = dir.join("land-polygons-split-3857");
     let shp = dataset.join("land_polygons.shp");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    // The time of `used` is the last time a packer took this version.
+    std::fs::write(dir.join(USED), b"").map_err(|e| format!("{}: {e}", dir.display()))?;
+    prune(cache, name);
     if shp.exists() {
         return Ok(shp);
     }
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let extract_dir = dir.join(format!("extract-{}", std::process::id()));
     progress.warn("Extracting land polygons ...");
     if let Err(e) = net::extract_zip(zip, &extract_dir, progress) {
@@ -405,23 +407,36 @@ fn ensure_dataset(cache: &Path, zip: &Path, progress: &Progress) -> Result<PathB
             Ok(()) => format!("land dataset missing after unpacking {}", zip.display()),
         });
     }
-    // Each other version is a 2.3 GB directory that nothing reads again.
-    for entry in std::fs::read_dir(cache).map_err(|e| format!("{}: {e}", cache.display()))?.flatten() {
+    Ok(shp)
+}
+
+const USED: &str = "used";
+
+/// Another version that no packer took for this long is a 2.3 GB directory that nothing reads
+/// again. A bake runs for up to a day and reads its version all that time, so a version used in
+/// the last two days stays.
+const UNUSED: std::time::Duration = std::time::Duration::from_secs(2 * 24 * 60 * 60);
+
+/// Delete each unpacked version in `cache` but `keep` that no packer took for [`UNUSED`].
+fn prune(cache: &Path, keep: &std::ffi::OsStr) {
+    for entry in std::fs::read_dir(cache).into_iter().flatten().flatten() {
         let other = entry.file_name();
         let digest = other.len() == 64 && other.to_string_lossy().bytes().all(|b| b.is_ascii_hexdigit());
-        if digest && other != name {
-            let _ = std::fs::remove_dir_all(entry.path());
+        let path = entry.path();
+        let used = std::fs::metadata(path.join(USED)).or_else(|_| std::fs::metadata(&path)).and_then(|m| m.modified());
+        let unused = used.ok().and_then(|time| time.elapsed().ok()).is_some_and(|age| age > UNUSED);
+        if digest && other != keep && unused {
+            let _ = std::fs::remove_dir_all(path);
         }
     }
-    Ok(shp)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A zip from the store unpacks in a directory named by its object, and the directory of
-    /// another version goes.
+    /// A zip from the store unpacks in a directory named by its object. Another version that no
+    /// packer took for two days goes; one in use stays.
     #[test]
     fn a_zip_from_the_store_unpacks_under_its_object_name_alone() {
         let dir = std::env::temp_dir().join(format!("obc-pack-land-zip-{}", std::process::id()));
@@ -436,11 +451,17 @@ mod tests {
         zip.finish().unwrap();
 
         let cache = dir.join("land");
-        let older = cache.join("0".repeat(64));
-        std::fs::create_dir_all(&older).unwrap();
+        let (older, recent) = (cache.join("0".repeat(64)), cache.join("1".repeat(64)));
+        for (version, age) in [(&older, 3), (&recent, 1)] {
+            std::fs::create_dir_all(version).unwrap();
+            let used = std::fs::File::create(version.join(USED)).unwrap();
+            let days = std::time::Duration::from_secs(age * 24 * 60 * 60);
+            used.set_modified(std::time::SystemTime::now() - days).unwrap();
+        }
         let shp = ensure_dataset(&cache, &object, &Progress::silent()).unwrap();
         assert_eq!(shp, cache.join(&name).join("land-polygons-split-3857/land_polygons.shp"));
-        assert!(!older.exists(), "another version is deleted");
+        assert!(!older.exists(), "a version unused for two days is deleted");
+        assert!(recent.is_dir(), "a version that a packer may still read stays");
         assert_eq!(std::fs::read(&shp).unwrap(), b"shapefile");
         assert!(object.is_file(), "the store keeps its object");
         let _ = std::fs::remove_dir_all(&dir);
