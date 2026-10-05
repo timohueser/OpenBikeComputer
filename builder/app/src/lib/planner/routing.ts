@@ -1,5 +1,5 @@
 import { presetSuffix, ridingProfiles } from './riding-profiles';
-import { orderedRoutePoints, routingKey, type DrawnCoordinate, type Trip } from './editor';
+import { orderedRoutePoints, type DrawnCoordinate, type Trip } from './editor';
 import { cumulative, firstIndex, type Coordinate } from './geo';
 import { decodeRoutes } from './route-answer';
 import type { LegCache } from './route-legs';
@@ -64,17 +64,16 @@ export interface EngineRoute {
     /** A corridor alternative's shaping point: a request through the start, this point and the finish gives the same line. */
     via?: Coordinate;
 }
+/** The calculated line of a plan. It is not part of the plan: the planner calculates it again from the plan's points. */
 export interface RoutingLine {
-    choiceId: string;
-    key: string;
     coordinates: Coordinate[];
     elevation: (number | null)[];
     elapsed: number[];
     edges: Edges;
     stops: { id: string; distance: number }[];
     seconds: number;
-    alternatives: EngineRoute[];
-    alternativesReady: boolean;
+    /** The route of a line that is one routed run through all points of its plan; only such a line has alternatives. */
+    primary?: EngineRoute;
     profile: string;
     unknownSurfaceKm: number;
     pushingKm: number;
@@ -83,8 +82,6 @@ export interface RoutingLine {
     unknownElevationKm: number;
     /** Routing package of the routed legs. */
     package?: string;
-    /** A picked alternative with the profile of its primary route, such as another corridor. No request for its plan returns it. */
-    picked?: boolean;
 }
 
 const endpoint = import.meta.env.VITE_PLANNER_ROUTING_URL ?? '/routing';
@@ -135,11 +132,10 @@ export async function requestShape(line: Coordinate[], profile: string): Promise
     return { points, turnarounds };
 }
 
-/** The primary route and the alternatives of a line whose alternatives are not ready. Such a line is one routed request
- * through the points of its plan. It holds its primary route, unless it was stored without its routes (`storedPlan`). */
-export async function requestAlternatives(trip: Trip, line: RoutingLine, signal: AbortSignal): Promise<EngineRoute[]> {
+/** The primary route of the line of `trip`, then its alternatives. */
+export async function requestAlternatives(trip: Trip, primary: EngineRoute, signal: AbortSignal): Promise<EngineRoute[]> {
     const points = orderedRoutePoints(trip).map(point => point.coordinate);
-    return [...line.alternatives, ...await requestRoute(points, line.profile, signal, line.alternatives.length ? 'only' : true)];
+    return [primary, ...await requestRoute(points, primary.profile, signal, 'only')];
 }
 
 export function profileId(trip: Trip): string {
@@ -147,25 +143,23 @@ export function profileId(trip: Trip): string {
     return `${trip.bike ?? 'touring'}${variant ? `/${variant}` : ''}`;
 }
 
-export function selectRoute(trip: Trip, route: EngineRoute, alternatives: EngineRoute[]): RoutingLine {
-    const points = orderedRoutePoints(trip);
-    const distance = cumulative(route.geometry);
-    const primary = alternatives[0] ?? route;
-    return {
-        choiceId: route.id, key: routingKey(trip), coordinates: route.geometry, elevation: route.elevation, elapsed: route.elapsed, edges: route.edges, seconds: route.totals.seconds,
-        profile: route.profile, package: route.package, alternatives, alternativesReady: true, unknownSurfaceKm: route.totals.surface_m[0] / 1000, pushingKm: route.totals.pushing_m / 1000, unroutedKm: 0,
-        unknownElevationKm: route.totals.unknown_elevation_m / 1000,
-        stops: [{ id: points[0].id, distance: 0 }, ...route.legs.map((leg, i) => ({ id: points[i + 1].id, distance: distance[leg.to_index] }))],
-        picked: route.id !== primary.id && route.profile === primary.profile,
-    };
+const keys = new WeakMap<Trip, string>();
+
+/** What the line of a trip depends on, so equal keys share one line. Itinerary edits and labels never change it. */
+export function routingKey(trip: Trip): string {
+    let key = keys.get(trip);
+    if (key === undefined) {
+        key = JSON.stringify([trip.bike ?? 'touring', trip.preset ?? 'Balanced', orderedRoutePoints(trip).map(p => [p.id, p.coordinate, p.leg ?? 'routed', p.drawn ?? [], p.kind === 'detour', p.anchor, p.turnaround])]);
+        keys.set(trip, key);
+    }
+    return key;
 }
 
 /** Consecutive routed legs form one run, so a shaping point keeps its road direction. */
 export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCache): Promise<RoutingLine> {
     const points = orderedRoutePoints(trip);
     if (points.length < 2) throw new Error('Choose a start and finish to calculate a route.');
-    const result: RoutingLine = { choiceId: '', key: routingKey(trip), coordinates: [], elevation: [], elapsed: [], edges: {}, stops: [], seconds: 0,
-        alternatives: [], alternativesReady: true, profile: profileId(trip), unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
+    const result: RoutingLine = { coordinates: [], elevation: [], elapsed: [], edges: {}, stops: [], seconds: 0, profile: profileId(trip), unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
     // Seconds per kilometre on a manual leg or connector.
     const pace = 3600 / ridingProfiles[trip.bike ?? 'touring'].kmh;
     let distance = 0;
@@ -241,7 +235,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         const canOfferAlternatives = i === 1 && until === points.length - 1 && !turnarounds.length;
         const route = await legs.route(expanded, turnarounds, result.profile, signal);
         result.package = route.package;
-        if (canOfferAlternatives) { result.alternatives = [route]; result.choiceId = route.id; result.alternativesReady = false; }
+        if (canOfferAlternatives) result.primary = route;
         const start = append(route.geometry, route.elevation, route.elapsed, route.edges);
         const lengths = cumulative(route.geometry);
         result.unknownSurfaceKm += route.totals.surface_m[0] / 1000;

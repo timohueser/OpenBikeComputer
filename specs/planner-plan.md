@@ -1,8 +1,9 @@
 # Editable planner files
 
 An `.obcplan` file is a UTF-8 JSON object. It contains one editable plan and its
-saved versions. It has no browser database ID or database revision. Import gives
-the plan a new ID and does not replace another plan.
+saved versions. It has no browser database ID or database revision, and no routed
+line: the planner calculates the line again from the points. Import gives the plan
+a new ID and does not replace another plan.
 
 ## Envelope
 
@@ -39,7 +40,6 @@ Required fields are `points`, `routeOrder`, `days`, `budget`, `target`, and `lim
 | `restNames` | Optional array of strings |
 | `splits` | Optional object from night numbers to progress from 0 to 1 |
 | `climbTarget` | Optional finite non-negative number |
-| `routing` | Optional selected alternative, as specified below |
 
 Each point has a unique non-empty string `id`, a string `label`, and a two-number
 `coordinate` in longitude/latitude order.
@@ -64,24 +64,7 @@ The route goes from the start through the points of `routeOrder` to the finish.
 A loop goes back to its start. `routeOrder` contains each route point that is not
 the start or the finish one time.
 
-## Selected alternative
+## Import
 
-Export includes a routing line only when it is a picked alternative and its key
-matches the plan. Other routes are calculated again. The line contains
-`choiceId`, `key`, `profile`, `picked`, `coordinates`, `elevation`, `elapsed`,
-`edges`, `stops`, `seconds`, `unknownSurfaceKm`, `pushingKm`, `unroutedKm`, and
-`unknownElevationKm`.
-Elevation and elapsed arrays have one entry per coordinate. Elevation can be
-null. Elapsed seconds are finite, non-negative, and do not decrease. Each stop
-has a point `id` and finite non-negative distance in kilometres. Stops match all
-route points in route order. A loop repeats its start as the last stop. The first
-distance is zero, and distances do not decrease. A line with distinct
-coordinates has a positive last distance.
-
-Edge arrays have one entry per segment. Their channels use the decoded values
-of [the route API](route-api.md). Unknown channels stay with the line.
-The line has no routing package or other alternatives. Import resets
-`alternatives` to an empty array and `alternativesReady` to false.
-
-Import validates the complete file before saving it. An invalid plan, version,
-or selected routing line rejects the file. The open plan stays unchanged.
+Import validates the complete file before saving it. An invalid plan or version
+rejects the file. The open plan stays unchanged.

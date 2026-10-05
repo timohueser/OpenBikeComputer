@@ -3,9 +3,12 @@
     import Icon from './PlannerIcon.svelte';
     import { newVersion, versionSummary, type Version } from '../../lib/planner/versions';
     import type { Trip } from '../../lib/planner/editor';
+    import type { RoutingLine } from '../../lib/planner/routing';
 
-    let { trip, versions, draftSavedAt, draftError, onRestore, onChange }: {
+    let { trip, line, versions, draftSavedAt, draftError, onRestore, onChange }: {
         trip: Trip;
+        /** The line of the trip, for the distance in a new version's summary. */
+        line?: RoutingLine;
         versions: Version[];
         draftSavedAt: number | null;
         draftError: string;
@@ -24,7 +27,7 @@
     let now = $state(Date.now());
 
     const draft = $derived(draftError || (draftSavedAt === null ? 'Not saved yet' : `Saved in this browser · ${ago(draftSavedAt)}`));
-    const suggested = $derived(`Version ${versions.length + (naming === 'new' ? 1 : 0)} · ${versionSummary(trip).split(' · ')[0]}`);
+    const suggested = $derived(`Version ${versions.length + (naming === 'new' ? 1 : 0)} · ${versionSummary(trip, line).split(' · ')[0]}`);
 
     function ago(time: number) {
         const minutes = Math.floor((now - time) / 60000);
@@ -62,7 +65,7 @@
         error = '';
         busy = true;
         try {
-            if (what === 'new') await onChange([newVersion(trip, typed), ...versions]);
+            if (what === 'new') await onChange([newVersion(trip, line, typed), ...versions]);
             else await onChange(versions.map((v, i) => i ? v : { ...v, name: typed.trim() || undefined }));
         } catch {
             error = 'Could not save the version. Press Enter to try again.';

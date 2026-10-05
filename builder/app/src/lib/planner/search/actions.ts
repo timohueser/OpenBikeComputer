@@ -4,12 +4,11 @@ import {
   orderedRoutePoints,
   pinNight,
   planView,
-  routingKey,
   setSplit,
   type Trip,
   type RoutePoint,
 } from '../editor';
-import type { RoutingLine } from '../routing';
+import { routingKey, type RoutingLine } from '../routing';
 import type { QueryChange, ResolvedPoint } from './types';
 
 const makePoint = (p: ResolvedPoint, kind: RoutePoint['kind']): RoutePoint => ({
@@ -25,31 +24,39 @@ const presets: Record<string, string> = {
   least_climbing: 'Less climbing',
 };
 
-/** All operations use a copy. A failed resolution never commits half of a sentence. */
+/**
+ * The plan after all changes, with its line. `line` is the line of `original`. An edit of the points or the profile
+ * calculates the line again before the next change. All operations use a copy. A failed resolution never commits half of
+ * a sentence.
+ */
 export async function applyQueryChanges(
   original: Trip,
+  line: RoutingLine | undefined,
   changes: QueryChange[],
   refreshRoute?: (trip: Trip) => Promise<RoutingLine>,
-): Promise<Trip> {
-  async function refresh(trip: Trip): Promise<Trip> {
-    if (trip.routing?.key === routingKey(trip)) return trip;
+): Promise<{ trip: Trip; line: RoutingLine | undefined }> {
+  let routed = original;
+  async function refresh(next: Trip): Promise<Trip> {
+    if (line && routingKey(next) === routingKey(routed)) return next;
     if (!refreshRoute) throw new Error('The routing engine must refresh the edited route.');
-    return { ...trip, routing: await refreshRoute(trip) };
+    line = await refreshRoute(next);
+    routed = next;
+    return next;
   }
   let trip = { ...original };
   for (const change of changes) {
     if (change.op !== 'route' && !hasEndpoints(trip))
       throw new Error('Choose a start and finish before editing the route.');
-    const { total } = planView(trip);
+    const { total } = planView(trip, line);
     const ridingDay = (number: number) => {
-      const day = planView(trip).itinerary.find(
+      const day = planView(trip, line).itinerary.find(
         (d) => d.number === number && !d.rest,
       );
       if (!day) throw new Error(`Day ${number} is no longer a riding day.`);
       return day.ridingNumber;
     };
     if (change.op === 'add_point') {
-      trip = addPointNear(trip, makePoint(change.point!, change.kind === 'pass' ? 'pass' : 'waypoint'));
+      trip = addPointNear(trip, line, makePoint(change.point!, change.kind === 'pass' ? 'pass' : 'waypoint'));
     } else if (change.op === 'remove_point') {
       if (
         !trip.points.some(
@@ -65,20 +72,20 @@ export async function applyQueryChanges(
     } else if (change.op === 'end_day') {
       const n = ridingDay(change.day!),
         p = change.point!;
-      if (n >= planView(trip).days.length)
+      if (n >= planView(trip, line).days.length)
         throw new Error('The last day ends at the finish.');
       if (p.along !== undefined) {
         trip = {
           ...trip,
           points: trip.points.filter((p) => p.kind !== 'night' || p.night !== n),
         };
-        trip = setSplit(trip, n, p.along / total);
+        trip = setSplit(trip, line, n, p.along / total);
         if (Math.abs((trip.splits?.[n] ?? -1) - p.along / total) > 1e-6)
           throw new Error(
             'That day end crosses another day boundary. Choose a point between the adjacent day ends.',
           );
       } else {
-        trip = pinNight(trip, n, p.coordinate, p.label);
+        trip = pinNight(trip, line, n, p.coordinate, p.label);
         trip.points.find((point) => point.night === n)!.placeKind = p.kind;
       }
     } else if (change.op === 'split' || change.op === 'join') {
@@ -88,7 +95,7 @@ export async function applyQueryChanges(
         );
       if (trip.restAfter?.length)
         throw new Error('Remove rest days before changing the day count.');
-      let boundaries = planView(trip).days
+      let boundaries = planView(trip, line).days
         .slice(0, -1)
         .map((d) => d.to * total);
       const [from, to] = change.range!;
@@ -169,7 +176,7 @@ export async function applyQueryChanges(
         preset: change.goal ? presets[change.goal] : trip.preset,
       });
       const days = Math.max(1, change.days ??
-        (change.perDay ? Math.ceil(planView(trip).total / change.perDay.value) : 1));
+        (change.perDay ? Math.ceil(planView(trip, line).total / change.perDay.value) : 1));
       if (days > 14)
         throw new Error(
           'This request needs more than 14 riding days. Increase the daily distance.',
@@ -184,5 +191,5 @@ export async function applyQueryChanges(
     } else throw new Error('This edit is not available. Search again.');
     trip = await refresh(trip);
   }
-  return trip;
+  return { trip, line };
 }

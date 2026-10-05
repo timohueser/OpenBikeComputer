@@ -16,15 +16,18 @@
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import { canMoveLoopStart, dayOverTarget, hasEndpoints as endpointsChosen, maxRidingDays, planView, provisionalDays, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import { nearestProgress, type Coordinate } from '../../lib/planner/geo';
+    import type { RoutingLine } from '../../lib/planner/routing';
 
     let {
-        kind, trip, days, overnightNote = '', detailsError = '', dayLabels, night, point, place, coordinate, candidates, legMode,
+        kind, trip, line, days, overnightNote = '', detailsError = '', dayLabels, night, point, place, coordinate, candidates, legMode,
         onClose, onEndpoint, onRoutes, onAddHere, onLegMode, onInsert, onLoop, onLoopStart, onPick, onSelectPlace, onStay, onAddVisit, onRename, onKind, onRemove, children,
     }: {
         overnightNote?: string;
         detailsError?: string;
         kind: CalloutKind;
         trip: Trip;
+        /** The line of the trip, once it is calculated. */
+        line?: RoutingLine;
         days: Day[];
         /** Riding number → calendar number. */
         dayLabels: Record<number, number>;
@@ -84,7 +87,7 @@
     const sleeps = $derived(hasEndpoints && days.length > 0 && multi);
     const preview = $derived.by(() => {
         if (!coordinate || sleepDay >= days.length) return null;
-        const day = provisionalDays(trip, sleepDay, nearestProgress(planView(trip).coordinates, coordinate))[sleepDay - 1];
+        const day = provisionalDays(trip, line, sleepDay, nearestProgress(planView(trip, line).coordinates, coordinate))[sleepDay - 1];
         const over = dayOverTarget(trip, day, day.ascent);
         return { distance: day.distance, ascent: day.ascent, over: over.km > 0 || over.climb > 0 };
     });

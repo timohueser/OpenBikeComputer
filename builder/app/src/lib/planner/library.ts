@@ -1,5 +1,5 @@
-import { storedPlan, type Trip } from './editor';
-import { storedTrip } from './trip-validation';
+import type { Trip } from './editor';
+import { isTrip } from './trip-validation';
 import { planTitle, versionSummary, type Version } from './versions';
 
 export interface Plan {
@@ -13,7 +13,7 @@ export interface Plan {
 }
 
 export function newPlan(trip: Trip, name = '', versions: Version[] = []): Plan {
-    return { id: crypto.randomUUID(), revision: 0, name: name.trim().slice(0, 120), updatedAt: Date.now(), summary: versionSummary(trip), trip: storedPlan(trip), versions };
+    return { id: crypto.randomUUID(), revision: 0, name: name.trim().slice(0, 120), updatedAt: Date.now(), summary: versionSummary(trip, undefined), trip, versions };
 }
 
 /** Writes are ordered within a tab; revisions prevent a second tab from replacing unseen edits. */
@@ -65,7 +65,7 @@ export class PlanLibrary {
 
     async get(id: string): Promise<Plan | undefined> {
         const plan = await this.read('plans', id) as Plan | undefined;
-        if (plan && !storedTrip(plan.trip)) throw new Error('Saved plan is invalid. Open another plan or import a backup.');
+        if (plan && !isTrip(plan.trip)) throw new Error('Saved plan is invalid. Open another plan or import a backup.');
         if (plan) this.revisions.set(id, plan.revision);
         return plan;
     }
@@ -137,26 +137,24 @@ export class PlanLibrary {
 
 export function exportPlan(plan: Plan): string {
     return JSON.stringify({ format: 'openbikecomputer-plan', version: 1, name: (plan.name || planTitle(plan.trip)).slice(0, 120),
-        trip: storedPlan(plan.trip), versions: plan.versions }, null, 2);
+        trip: plan.trip, versions: plan.versions }, null, 2);
 }
 
 export function importPlan(text: string): Plan {
     const file = JSON.parse(text);
     if (!file || file.format !== 'openbikecomputer-plan' || file.version !== 1 || typeof file.name !== 'string'
         || !file.name.trim() || file.name.length > 120 || !Array.isArray(file.versions)) throw new Error('Not an OpenBikeComputer plan file.');
-    const trip = storedTrip(file.trip);
-    if (!trip || (file.trip.routing && !trip.routing)) throw new Error('The file contains an invalid plan.');
+    if (!isTrip(file.trip)) throw new Error('The file contains an invalid plan.');
     const ids = new Set<string>();
     const versions = file.versions.map((value: unknown): Version => {
         const v = value as Partial<Version> | null;
-        const trip = storedTrip(v?.trip);
-        if (!v || !trip || (v.trip?.routing && !trip.routing) || typeof v.id !== 'string' || !v.id || ids.has(v.id) || typeof v.at !== 'string'
+        if (!v || !isTrip(v.trip) || typeof v.id !== 'string' || !v.id || ids.has(v.id) || typeof v.at !== 'string'
             || !Number.isFinite(Date.parse(v.at)) || new Date(v.at).toISOString() !== v.at || (v.name !== undefined && (typeof v.name !== 'string' || v.name.length > 120)))
             throw new Error('The file contains an invalid version.');
         ids.add(v.id);
-        return { id: v.id, at: v.at, ...(v.name ? { name: v.name } : {}), summary: versionSummary(trip), trip: storedPlan(trip) };
+        return { id: v.id, at: v.at, ...(v.name ? { name: v.name } : {}), summary: versionSummary(v.trip, undefined), trip: v.trip };
     });
-    return newPlan(trip, file.name.trim(), versions);
+    return newPlan(file.trip, file.name.trim(), versions);
 }
 
 export function downloadPlan(plan: Plan): void {

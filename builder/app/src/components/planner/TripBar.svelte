@@ -4,10 +4,12 @@
     import VersionsMenu from './VersionsMenu.svelte';
     import { ridingProfiles, type BikeType } from '../../lib/planner/riding-profiles';
     import { planTitle, type Trip } from '../../lib/planner/editor';
+    import type { RoutingLine } from '../../lib/planner/routing';
     import type { Version } from '../../lib/planner/versions';
 
-    let { trip, name, versions, canUndo, canRedo, draftSavedAt, draftError, onChange, onUndo, onRedo, onRestore, onVersions, onNew, onLibrary, ready }: {
+    let { trip, line, name, versions, canUndo, canRedo, draftSavedAt, draftError, onChange, onUndo, onRedo, onRestore, onVersions, onNew, onLibrary, ready }: {
         trip: Trip;
+        line?: RoutingLine;
         name: string;
         versions: Version[];
         ready: boolean;
@@ -51,7 +53,7 @@
         <button type="button" class="icon" disabled={!canUndo} onclick={onUndo} aria-label="Undo" title="Undo"><Icon name="undo" /></button>
         <button type="button" class="icon" disabled={!canRedo} onclick={onRedo} aria-label="Redo" title="Redo"><Icon name="redo" /></button>
         <button type="button" class="planner-action" disabled={!ready} onclick={onLibrary}>My plans</button>
-        <VersionsMenu {trip} {versions} {draftSavedAt} {draftError} {onRestore} onChange={onVersions} />
+        <VersionsMenu {trip} {line} {versions} {draftSavedAt} {draftError} {onRestore} onChange={onVersions} />
     </div>
 </div>
 

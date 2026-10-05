@@ -42,14 +42,14 @@ describe('GPX import', () => {
         expect(trip).toMatchObject({ mode: 'trip', days: 3, target: 3 });
         expect(orderedRoutePoints(trip).map(p => [p.id.startsWith('night') ? p.id : p.kind, p.leg]))
             .toEqual([['start', undefined], ['night-1', 'drawn'], ['night-2', 'drawn'], ['via', 'transfer'], ['finish', 'drawn']]);
-        const routed = { ...trip, routing: await calculateLine(trip, new AbortController().signal, new LegCache()) };
-        const ridden = planView(routed).total - kilometres(second.at(-1)!, third[0]);
-        expect(planView(routed).summary.distance).toBeCloseTo(ridden, 9);
-        expect(routed.routing.seconds).toBeCloseTo(ridden / 19 * 3600, 6);
-        expect(routed.routing.unroutedKm).toBeCloseTo(ridden, 9);
-        expect(routed.routing.unknownElevationKm).toBe(0);
-        expect(profileAscent(0, 1, routed.routing)).toBe(57);
-        const days = planView(routed).days;
+        const line = await calculateLine(trip, new AbortController().signal, new LegCache());
+        const ridden = planView(trip, line).total - kilometres(second.at(-1)!, third[0]);
+        expect(planView(trip, line).summary.distance).toBeCloseTo(ridden, 9);
+        expect(line.seconds).toBeCloseTo(ridden / 19 * 3600, 6);
+        expect(line.unroutedKm).toBeCloseTo(ridden, 9);
+        expect(line.unknownElevationKm).toBe(0);
+        expect(profileAscent(0, 1, line)).toBe(57);
+        const days = planView(trip, line).days;
         expect(days.reduce((km, day) => km + day.distance, 0)).toBeCloseTo(ridden, 9);
         expect(days[2].hours).toBeCloseTo(cumulative(third).at(-1)! / 19, 6);
     });
@@ -59,8 +59,7 @@ describe('GPX import', () => {
         const [file] = readTracks([{ name: 'walk.gpx', text: gpx(track([7.6, 47.5], 801)) }]);
         const days = async (bike: 'hiking' | 'gravel') => {
             const trip = importedTrip({ bike }, [file]);
-            const routed = { ...trip, routing: await calculateLine(trip, new AbortController().signal, new LegCache()) };
-            return applyBudget(routed, 'hours', 6, 0).days;
+            return applyBudget(trip, await calculateLine(trip, new AbortController().signal, new LegCache()), 'hours', 6, 0).days;
         };
         expect([await days('hiking'), await days('gravel')]).toEqual([3, 1]);
     });

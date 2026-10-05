@@ -1,14 +1,14 @@
 // @vitest-environment happy-dom
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { emptyTrip, maxRidingDays, routingKey, type Place } from '../../lib/planner/editor';
+import { emptyTrip, maxRidingDays, type Place } from '../../lib/planner/editor';
 import { coordinateAt, cumulative, type Coordinate } from '../../lib/planner/geo';
 import { corridorPlaces } from '../../lib/planner/place-index';
 import PlannerApp from './PlannerApp.svelte';
 import * as routing from '../../lib/planner/routing';
 import { newPlan, type Plan } from '../../lib/planner/library';
-import { storedTrip } from '../../lib/planner/trip-validation';
-import type { EngineRoute, RoutingLine } from '../../lib/planner/routing';
+import { isTrip } from '../../lib/planner/trip-validation';
+import type { RoutingLine } from '../../lib/planner/routing';
 
 import { routeService } from '../../../test-support/planner/route-service';
 import { testTrip } from '../../../test-support/planner/trip';
@@ -23,7 +23,7 @@ vi.mock('../../lib/planner/library', async original => ({
     ...await original<object>(),
     PlanLibrary: class {
         async active() {
-            const trip = storedTrip(JSON.parse(stored.get('trip') ?? 'null'));
+            const value: unknown = JSON.parse(stored.get('trip') ?? 'null'), trip = isTrip(value) ? value : undefined;
             if (!trip && stored.has('trip')) throw new Error('Saved plan is invalid. Open another plan or import a backup.');
             return trip ? { ...newPlan(trip), revision: 1, versions: savedPlan?.versions ?? [] } : undefined;
         }
@@ -48,14 +48,14 @@ beforeEach(() => {
     const coordinates = routeLine;
     const distance = cumulative(coordinates);
     const line: RoutingLine = {
-        key: routingKey(trip), choiceId: 'saved-route', profile: 'touring', coordinates,
+        profile: 'touring', coordinates,
         elevation: coordinates.map(() => 200), elapsed: distance.map(km => km * 240),
         edges: { pushing: coordinates.slice(1).map(() => false) }, seconds: distance.at(-1)! * 240,
         stops: [{ id: 'start', distance: 0 }, { id: 'finish', distance: distance.at(-1)! }],
-        alternatives: [], alternativesReady: true, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0,
+        unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0,
     };
     stored.set('trip', JSON.stringify(trip));
-    vi.spyOn(routing, 'calculateLine').mockImplementation(async plan => ({ ...line, key: routingKey(plan) }));
+    vi.spyOn(routing, 'calculateLine').mockResolvedValue(line);
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
         if (!_url.includes('planner-search')) throw new Error('Routing service offline');
         const input = JSON.parse(String(init.body));
@@ -275,14 +275,13 @@ describe('planner app transitions', () => {
     });
 
     it('ignores an in-flight route after an endpoint is removed', async () => {
-        const saved = JSON.parse(stored.get('trip')!);
         let finish!: (line: RoutingLine) => void;
         const calculate = vi.spyOn(routing, 'calculateLine').mockImplementation(() => new Promise(resolve => finish = resolve));
         await startApp(); await tick();
         button('Map point: Basel').click(); await tick();
         button('Remove point').click(); await tick();
         expect(calculate.mock.calls[0][1].aborted).toBe(true);
-        finish({ key: routingKey(saved) } as RoutingLine); await tick();
+        finish({} as RoutingLine); await tick();
         expect(document.body.textContent).toContain('Choose your start');
     });
 
@@ -304,55 +303,6 @@ describe('planner app transitions', () => {
             await vi.waitFor(() => expect(document.querySelector('section.elevation')).not.toBeNull());
         }
         expect(routeRequests()).toBe(2);
-    });
-
-    it('keeps a picked corridor, without its alternatives, through undo, redo, a saved version and a reload', async () => {
-        const engine = (id: string, reason: string, geometry: Coordinate[]): EngineRoute => {
-            const km = cumulative(geometry).at(-1)!;
-            const totals = { distance_m: km * 1000, ascent_m: 0, seconds: km * 240, surface_m: [0, km * 1000, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 };
-            return { id, reason, package: 'test', profile: 'touring', geometry, elevation: geometry.map(() => 200), elapsed: cumulative(geometry).map(d => d * 240),
-                edges: {}, totals,
-                legs: [{ from_index: 0, to_index: geometry.length - 1, start: 'a', end: 'b', totals }], snap_truncated: false };
-        };
-        const coordinates = routeLine;
-        const primary = engine('primary', 'primary', coordinates);
-        const corridor = engine('corridor', 'corridor', coordinates.map(([x, y], i) => (i && i < coordinates.length - 1 ? [x, y + .02] : [x, y]) as Coordinate));
-        vi.mocked(routing.calculateLine).mockImplementation(async plan => routing.selectRoute(plan, primary, [primary, corridor]));
-        vi.spyOn(routing, 'requestAlternatives').mockResolvedValue([primary, corridor]);
-        const chosen = () => document.querySelector('.ways [aria-checked="true"]')?.textContent ?? '';
-        const options = async () => { await vi.waitFor(() => button('Route options · 2').click()); await tick(); };
-        await startApp();
-        await options();
-        [...document.querySelectorAll<HTMLButtonElement>('.ways [role="radio"]')].find(way => way.textContent?.includes('Different corridor'))!.click(); await tick();
-        expect(chosen()).toContain('Different corridor');
-        expect(JSON.parse(stored.get('trip')!).routing).toMatchObject({ choiceId: 'corridor', picked: true, alternatives: [] });
-        button('Undo').click(); await tick();
-        await vi.waitFor(() => expect(chosen()).toContain('Balanced'));
-        button('Redo').click(); await tick();
-        expect(chosen()).toContain('Different corridor');
-        button('Save version').click(); await tick();
-        document.querySelector('form.name')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-        await vi.waitFor(() => expect(document.querySelector('form.name')).toBeNull());
-        button('Undo').click(); await tick();
-        await vi.waitFor(() => expect(chosen()).toContain('Balanced'));
-        button('Restore').click(); await tick();
-        await vi.waitFor(() => expect(chosen()).toContain('Different corridor'));
-        await unmount(app!);
-        const calculated = vi.mocked(routing.calculateLine).mock.calls.length;
-        await startApp(); await tick();
-        expect(routing.calculateLine).toHaveBeenCalledTimes(calculated);
-        expect(routing.requestAlternatives).toHaveBeenCalledTimes(1);
-        button('Route options').click();
-        await vi.waitFor(() => expect(chosen()).toContain('Different corridor'));
-        for (const bike of ['Gravel bike', 'Touring bike']) {
-            button('Activity').click(); await tick();
-            button(bike).click(); await tick();
-            await vi.waitFor(() => expect(chosen()).not.toBe(''));
-        }
-        expect(chosen()).toContain('Balanced');
-        button('Undo').click(); await tick();
-        button('Undo').click(); await tick();
-        expect(chosen()).toContain('Different corridor');
     });
 
     it('opens a tile place from both a search row and its map pin, then adds a visit', async () => {
@@ -441,8 +391,7 @@ describe('planner app transitions', () => {
         expect(document.querySelector('.route-status')?.textContent).toContain('Calculating route');
         button('Pan map').click(); await tick();
         expect(calculate).toHaveBeenCalledTimes(2);
-        const draft = JSON.parse(stored.get('trip')!);
-        finish({ ...line, key: routingKey(draft), stops: [line.stops[0], { id: 'night-1', distance: line.stops[1].distance * .25 }, line.stops[1]] });
+        finish({ ...line, stops: [line.stops[0], { id: 'night-1', distance: line.stops[1].distance * .25 }, line.stops[1]] });
         await vi.waitFor(() => expect(document.querySelector('.route-status')).toBeNull());
         expect(document.querySelector('.elevation')).toBe(profile);
         expect(document.querySelector('.day h2')?.textContent).toContain(tilePlace.label);

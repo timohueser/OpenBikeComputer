@@ -8,7 +8,7 @@
         plans: Plan[]; activeId: string; busy: boolean; error: string;
         /** The GPX files that wait for a choice, in day order. */
         gpxNames: string[] | null;
-        onClose: () => void; onOpen: (plan: Plan) => void; onRename: (plan: Plan, name: string) => Promise<void>;
+        onClose: () => void; onOpen: (plan: Plan) => void; onRename: (plan: Plan, name: string) => Promise<unknown>;
         onDuplicate: (plan: Plan) => void; onDelete: (plan: Plan) => void; onDownload: (plan: Plan) => void;
         onImport: (files: File[]) => void;
         /** `true` plans the files on roads, `false` keeps their lines, `null` cancels. */
