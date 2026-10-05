@@ -2,6 +2,9 @@
 //! which objects are which source version, and the receipts that say which objects are which
 //! layer. `specs/obc-data.md` describes the layout.
 
+pub mod gc;
+pub mod import;
+
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -104,7 +107,7 @@ impl Store {
         Ok(Lock(file))
     }
 
-    fn snapshot_path(&self, source: &str, version: &str) -> PathBuf {
+    pub(crate) fn snapshot_path(&self, source: &str, version: &str) -> PathBuf {
         self.root.join("snapshots").join(source).join(format!("{version}.json"))
     }
 

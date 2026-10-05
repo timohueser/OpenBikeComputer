@@ -143,6 +143,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `snapshots/<source>/<version>.json` | The snapshot record of one source version |
 | `layers/<key>.json` | The receipt of the layer with that key, see [Layers](#layers) |
 | `upstream/<source>.json` | The last upstream check of a source: `checked` (seconds since 1970-01-01 UTC), `version` (a string, or `null` when the check failed) and `error` (only when it failed) |
+| `imports/<YYYYMMDDTHHMMSSZ>.json` | The import record of one `obc data store import --apply`, see [Import and collection](#import-and-collection) |
 | `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write |
 | `locks/` | One lock file per key |
 
@@ -173,6 +174,34 @@ record has for another URL fails the fetch.
 A version is one or more segments joined by `/`. A segment has letters, digits, `.`, `_`, `+`
 and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` date, and a
 `digest` version is 64 lowercase hex digits.
+
+### Import and collection
+
+`obc data store import` moves the cache directories of the older bake tools into the store:
+`~/.cache/obcm`, `~/.cache/obc/planner`, `~/.cache/openbikecomputer`, `~/obc-bake` and
+`~/obc-reference`. Each regular file becomes an object, so the same bytes are one object. The
+store and the files below it stay where they are, also when the store is in one of these
+directories. Symbolic links are not followed. Without `--apply` the command hashes every file
+and changes nothing. With `--apply` it moves each file, writes the import record, and deletes the
+directories. The import record is a JSON object: `imported` (`YYYY-MM-DDTHH:MM:SSZ`) and `dirs`,
+one item per directory with `dir` and `files`, one item per file with `path` (below `dir`, with
+`/`), `size` and `sha256`.
+
+`obc data gc store` deletes what no environment, pin or fixture reaches:
+
+- A snapshot record is reached when `[pins]` of a `data/env/*.toml` file names its source and
+  version.
+- An object is reached when a reached snapshot record or a reached layer has it, or when a pin,
+  `fixtures/catalog.toml`, a JSON or TOML file below `fixtures/sources/`, or a planner region
+  recipe in `tools/planner-regions/` names its SHA-256.
+- A layer is reached when each of its inputs is reached: a snapshot input whose digest is the
+  digest of all the files, or of one file, of a reached record of its source, and a layer input
+  whose digest is the digest of a reached layer.
+
+Without `--apply` the command lists what it deletes and changes nothing. With `--apply` it
+deletes each snapshot record and each object that is not reached. Receipts, import records and
+upstream checks stay. A fetch or a build that runs during a collection can lose an object that it
+has not recorded yet; the next fetch or build then makes it again.
 
 ## Fetch
 
@@ -383,6 +412,8 @@ A step that needs a package or a tool finds it installed, or reads it as a snaps
 | `obc data sources [--json]` | Every source with licence, R2 copy, live pin, newest upstream version, age, policy and state. Rows are in kind order: data, then assets, then tools |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the live pin, or else the newest file upstream. Writes the store path of each file |
 | `obc data refresh SOURCE [NAME=VALUE…] [--env ENV] [--json]` | Fetches the newest upstream version, checked now, and writes it to `[pins]` of `data/env/ENV.toml` (default `live`). `ENV` is lowercase kebab-case. The edit keeps comments, line order and CRLF line ends. Writes the store path of each file. A version after the pin of a source whose `fetch.from` names `SOURCE` is refused before the fetch: refresh that source first |
+| `obc data store import [--apply] [--json]` | The old cache directories, their files and sizes, and how much the store grows. `--apply` moves them into the store |
+| `obc data gc store [--apply] [--json]` | The snapshot records and the objects that nothing reaches, and what stays. `--apply` deletes them |
 | `obc data region [list] [--json]` | Every region with its name and definition |
 | `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
 
@@ -393,6 +424,11 @@ A step that needs a package or a tool finds it installed, or reads it as a snaps
   (`null` when there is nothing to say).
 - `fetch` and `refresh`: the snapshot, `{"source": ..., "version": ..., "files": [...]}`, with
   the requested files only. Each file has the keys of the record and `path`, its object.
+- `store import`: `dirs` (one item per directory: `dir`, `present`, `files`, `bytes` and
+  `links`), `bytes` (all files) and `new_bytes` (the growth of the store).
+- `gc store`: `snapshots` (`source@version` of each record that it deletes), `objects`
+  (`[sha256, size]` of each object that it deletes), `remove_bytes`, `keep_objects` and
+  `keep_bytes`.
 - `region list`: `{"regions": [...]}`. Each item has `id`, `name`, `kind` and the key its
   kind names. A `box` is an object with `west`, `south`, `east` and `north`.
 - `region show`: the region item, and `leaves` (the region ids it resolves to) and

@@ -14,7 +14,7 @@ use obc_data::fetch::upstream::{self, Upstream};
 use obc_data::fetch::{self, osm, Request};
 use obc_data::regions::{Area, Bbox, Region, Regions};
 use obc_data::sources::{self, FetchKind, Kind, Registry, Source, State, VersionScheme};
-use obc_data::store::{self, FileRecord, Snapshot, Store};
+use obc_data::store::{self, gc, import, FileRecord, Snapshot, Store};
 
 #[derive(Parser)]
 #[command(name = "obc data", about = "Data sources, regions and pins")]
@@ -56,8 +56,40 @@ enum Command {
         #[arg(long, global = true)]
         json: bool,
     },
+    /// The local store.
+    Store {
+        #[command(subcommand)]
+        action: StoreAction,
+    },
+    /// Delete what nothing uses.
+    Gc {
+        #[command(subcommand)]
+        what: GcWhat,
+    },
     /// Plumbing for scripts: list, read, upload and delete objects in an R2 bucket.
     R2(r2_cli::R2),
+}
+
+#[derive(Subcommand)]
+enum StoreAction {
+    /// Move the cache directories of the older bake tools into the store. Shows the plan; `--apply` moves.
+    Import {
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum GcWhat {
+    /// The objects and snapshot records that no environment, pin or fixture reaches. Shows the plan; `--apply` deletes.
+    Store {
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -121,7 +153,60 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 Some(RegionAction::Show { id }) => print_region(&regions, &id, json),
             }
         }
+        Command::Store { action: StoreAction::Import { apply, json } } => store_import(apply, json),
+        Command::Gc { what: GcWhat::Store { apply, json } } => gc_store(&root()?, apply, json),
         Command::R2(r2) => r2_cli::run(r2),
+    }
+}
+
+fn store_import(apply: bool, json: bool) -> Result<(), Failure> {
+    let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
+    let (store, dirs) = (Store::open()?, import::old_dirs(Path::new(&home)));
+    let plan = if apply { import::apply(&store, &dirs)? } else { import::plan(&store, &dirs)? };
+    if json {
+        return print_json(&plan);
+    }
+    println!("{} INTO {}", if apply { "MOVED" } else { "MOVE" }, store.root().display());
+    let mut table = Vec::new();
+    for dir in &plan.dirs {
+        let size = if dir.present { format!("{} files", dir.files) } else { "not present".into() };
+        let short =
+            dir.dir.strip_prefix(&home).map_or(dir.dir.display().to_string(), |dir| format!("~/{}", dir.display()));
+        table.push(vec![format!("  {short}"), size, bytes(dir.bytes)]);
+    }
+    print_table(&table);
+    println!("{} in; duplicates are kept once; the store grows by {}.", bytes(plan.bytes), bytes(plan.new_bytes));
+    if !apply {
+        println!(
+            "`--apply` moves the files and deletes the directories. The older bake tools then fetch and build again."
+        );
+    }
+    Ok(())
+}
+
+fn gc_store(root: &Path, apply: bool, json: bool) -> Result<(), Failure> {
+    let store = Store::open()?;
+    let plan = gc::plan(&store, &gc::Roots::from_repo(root)?)?;
+    if apply {
+        gc::apply(&store, &plan)?;
+    }
+    if json {
+        return print_json(&plan);
+    }
+    println!("{} {}", if apply { "REMOVED FROM" } else { "REMOVE FROM" }, store.root().display());
+    plan.snapshots.iter().for_each(|snapshot| println!("  snapshot {snapshot}"));
+    println!("  {} objects that nothing reaches, {}", plan.objects.len(), bytes(plan.remove_bytes));
+    println!("KEEP {} objects, {}", plan.keep_objects, bytes(plan.keep_bytes));
+    if !apply {
+        println!("`--apply` deletes them.");
+    }
+    Ok(())
+}
+
+fn bytes(bytes: u64) -> String {
+    match bytes {
+        0..1_000_000_000 => format!("{:.1} MB", bytes as f64 / 1e6),
+        _ => format!("{:.1} GB", bytes as f64 / 1e9),
     }
 }
 
