@@ -12,7 +12,7 @@ export function versionSummary(trip: Trip): string {
     const endpoints = trip.points.filter(p => p.kind === 'start' || p.kind === 'finish');
     if (!hasEndpoints(trip)) return endpoints.length ? `${endpoints[0].kind === 'start' ? 'Start' : 'Finish'} chosen` : 'Empty plan';
     const view = planView(trip);
-    const distance = trip.live && !view.line ? 'Distance pending' : `${view.summary.distance.toFixed(1)} km`;
+    const distance = view.line ? `${view.summary.distance.toFixed(1)} km` : 'Distance pending';
     if (trip.mode === 'route') return `Single route · ${distance}`;
     const days = view.itinerary.length;
     const pinned = trip.points.filter(p => p.kind === 'night').length;

@@ -225,6 +225,24 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertNil(store.plannedRoutes().first?.deviceLink)
 
     }
+
+    func testAPlanThatNoLongerDecodesLeavesItsRoute() throws {
+        let (store, dir) = makeFileStore()
+        var record = makeRecord()
+        record.uploadedCRC32 = 0x1234_5678
+        store.savePlannedRoute(record)
+        let file = dir.appendingPathComponent("planned/imported-1/route.json")
+        var json = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        var plan = try XCTUnwrap(json["plan"] as? [String: Any])
+        plan.removeValue(forKey: "routeOrder")
+        json["plan"] = plan
+        try JSONSerialization.data(withJSONObject: json).write(to: file)
+
+        let loaded = try XCTUnwrap(FileLibraryStore(directory: dir).plannedRoutes().first)
+        XCTAssertNil(loaded.plan)
+        XCTAssertEqual(loaded.route, record.route)
+        XCTAssertEqual(loaded.uploadedCRC32, 0x1234_5678)
+    }
     // MARK: Rides and the synced set
 
     func testRideSummariesRoundTripNewestFirst() throws {

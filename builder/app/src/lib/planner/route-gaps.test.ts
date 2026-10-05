@@ -14,10 +14,10 @@ const road: EngineRoute = {
 };
 const legs = { route: async () => road } as unknown as LegCache;
 const point = (id: string, kind: RoutePoint['kind'], coordinate: [number, number], leg?: RoutePoint['leg']): RoutePoint =>
-    ({ id, kind, coordinate, label: id, progress: kind === 'start' ? 0 : 1, leg });
+    ({ id, kind, coordinate, label: id, leg });
 
 async function gaps(points: RoutePoint[]) {
-    const plan: Trip = { ...emptyTrip(), bike: 'hiking', points };
+    const plan: Trip = { ...emptyTrip(), bike: 'hiking', points, routeOrder: points.slice(1, -1).map(point => point.id) };
     const trip = { ...plan, routing: await calculateLine(plan, new AbortController().signal, legs) };
     return routeGaps(planView(trip).stops, trip.routing.coordinates);
 }

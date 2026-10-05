@@ -17,7 +17,7 @@ struct TripPlanTests {
 
     private func point(_ id: String, _ label: String, _ x: Double, _ kind: PlanPoint.Kind, night: Int? = nil,
                        leg: PlanPoint.Leg? = nil) -> PlanPoint {
-        PlanPoint(id: id, label: label, coordinate: coordinate(x), progress: 0, kind: kind, night: night, leg: leg)
+        PlanPoint(id: id, label: label, coordinate: coordinate(x), kind: kind, night: night, leg: leg)
     }
 
     @Test func savingAPlanMakesItsDaysAndKeepsTheTripsOwnFacts() throws {

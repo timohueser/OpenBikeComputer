@@ -1,6 +1,6 @@
 import { VectorTile } from '@mapbox/vector-tile';
 import { PbfReader } from 'pbf';
-import { anchorProgress, type Place } from './editor';
+import type { Place } from './editor';
 import { kmPerDegree, routeDistance, type Coordinate } from './geo';
 import { openSource, requestSignal, type Source } from './layers/archive';
 import { poiKinds } from './poi-kinds';
@@ -18,7 +18,7 @@ export function poiPlace(id: string | number | undefined, kind: string, name: un
     if (!known) return null;
     return {
         id: osmSource(id) ?? `poi-${id}`, kind: 'place', placeKind: kind, label: String(name ?? known.label), coordinate,
-        progress: anchorProgress(coordinate), category: known.category, description: known.label,
+        category: known.category, description: known.label,
     };
 }
 

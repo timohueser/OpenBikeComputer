@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { addRestDay, emptyTrip, initialTrip, planView, routingKey, TripHistory, type RoutePoint, type Trip } from '../editor';
+import { addRestDay, emptyTrip, planOf, planView, routingKey, TripHistory, type RoutePoint, type Trip } from '../editor';
 import { coordinateAt, type Coordinate } from '../geo';
+import { routed, testTrip } from '../../../../test-support/planner/trip';
 import { calculateLine } from '../routing';
 import { LegCache } from '../route-legs';
 import { routeService } from '../../../../test-support/planner/route-service';
@@ -9,7 +10,7 @@ import type { QueryChange } from './types';
 
 const length = (trip: Trip) => planView(trip).total;
 const refresh = (trip: Trip) => calculateLine(trip, new AbortController().signal, new LegCache());
-const point = (id: string, kind: RoutePoint['kind'], coordinate: Coordinate, extra: Partial<RoutePoint> = {}): RoutePoint => ({ id, kind, label: id, coordinate, progress: 0, ...extra });
+const point = (id: string, kind: RoutePoint['kind'], coordinate: Coordinate, extra: Partial<RoutePoint> = {}): RoutePoint => ({ id, kind, label: id, coordinate, ...extra });
 afterEach(() => vi.unstubAllGlobals());
 
 describe('query edits', () => {
@@ -39,20 +40,20 @@ describe('query edits', () => {
     });
     it('rejects an edit it does not know instead of committing an unchanged plan', async () => {
         const reroute = { op: 'reroute', range: [0, 10] } as unknown as QueryChange;
-        await expect(applyQueryChanges(initialTrip(), [reroute])).rejects.toThrow('not available');
+        await expect(applyQueryChanges(testTrip(), [reroute])).rejects.toThrow('not available');
     });
     it('commits a sentence atomically and supports the existing undo history', async () => {
-        const before = initialTrip(), saved = structuredClone(before);
+        const before = routed(testTrip()), saved = structuredClone(before);
         const next = await applyQueryChanges(before, [{ op: 'split', range: [0,length(before)], count: 5 }]);
         expect(next.days).toBe(5);
         expect(planView(next).coordinates).toEqual(planView(before).coordinates);
         const history = new TripHistory();
-        expect(history.undo(history.commit(before,next))).toEqual(before);
+        expect(history.undo(history.commit(before,next))).toEqual(planOf(before));
         await expect(applyQueryChanges(before, [{ op: 'split', range: [0,length(before)], count: 5 }, { op:'remove_point', id:'absent' }])).rejects.toThrow('changed');
         expect(before).toEqual(saved);
     });
     it('resolves calendar days around rest days and moves a boundary without changing the line', async () => {
-        const trip = addRestDay(initialTrip(),1), km = length(trip)*.7;
+        const trip = addRestDay(routed(testTrip()),1), km = length(trip)*.7;
         const next = await applyQueryChanges(trip, [{ op:'end_day', day:3, point:{coordinate:coordinateAt(planView(trip).coordinates,.7),label:'km mark',along:km} }]);
         expect(next.splits?.[2]).toBeCloseTo(.7);
         expect(planView(next).coordinates).toEqual(planView(trip).coordinates);
@@ -83,8 +84,9 @@ describe('query edits', () => {
         expect(planView(next).coordinates).toEqual([...planView(trip).coordinates].reverse());
     });
     it('refreshes live geometry between edits and preserves the original on a routing failure', async () => {
-        const base = initialTrip(), line = planView(base).coordinates;
-        const plan: Trip = {...base, live:true, routeOrder:[], points:[base.points[0], {...base.points.at(-1)!,leg:'drawn',drawn:line.slice(1,-1)}]};
+        const base = testTrip(), inner: Coordinate[] = [[7.7, 47.4], [7.5, 47.1]];
+        const line = [base.points[0].coordinate, ...inner, base.points[1].coordinate];
+        const plan: Trip = {...base, points:[base.points[0], {...base.points[1],leg:'drawn',drawn:inner}]};
         const trip = { ...plan, routing: await refresh(plan) };
         const before = structuredClone(trip);
         const counted = vi.fn(refresh);

@@ -9,20 +9,14 @@ import {
   type Trip,
   type RoutePoint,
 } from '../editor';
-import { nearestProgress } from '../geo';
 import type { RoutingLine } from '../routing';
 import type { QueryChange, ResolvedPoint } from './types';
 
-const makePoint = (
-  p: ResolvedPoint,
-  kind: RoutePoint['kind'],
-  progress: number,
-): RoutePoint => ({
+const makePoint = (p: ResolvedPoint, kind: RoutePoint['kind']): RoutePoint => ({
   id: crypto.randomUUID(),
   kind,
   coordinate: p.coordinate,
   label: p.label,
-  progress,
   placeKind: p.kind,
 });
 const presets: Record<string, string> = {
@@ -38,7 +32,7 @@ export async function applyQueryChanges(
   refreshRoute?: (trip: Trip) => Promise<RoutingLine>,
 ): Promise<Trip> {
   async function refresh(trip: Trip): Promise<Trip> {
-    if (!trip.live || trip.routing?.key === routingKey(trip)) return trip;
+    if (trip.routing?.key === routingKey(trip)) return trip;
     if (!refreshRoute) throw new Error('The routing engine must refresh the edited route.');
     return { ...trip, routing: await refreshRoute(trip) };
   }
@@ -46,7 +40,7 @@ export async function applyQueryChanges(
   for (const change of changes) {
     if (change.op !== 'route' && !hasEndpoints(trip))
       throw new Error('Choose a start and finish before editing the route.');
-    const { coordinates: line, total } = planView(trip);
+    const { total } = planView(trip);
     const ridingDay = (number: number) => {
       const day = planView(trip).itinerary.find(
         (d) => d.number === number && !d.rest,
@@ -55,14 +49,7 @@ export async function applyQueryChanges(
       return day.ridingNumber;
     };
     if (change.op === 'add_point') {
-      trip = addPointNear(
-        trip,
-        makePoint(
-          change.point!,
-          change.kind === 'pass' ? 'pass' : 'waypoint',
-          nearestProgress(line, change.point!.coordinate),
-        ),
-      );
+      trip = addPointNear(trip, makePoint(change.point!, change.kind === 'pass' ? 'pass' : 'waypoint'));
     } else if (change.op === 'remove_point') {
       if (
         !trip.points.some(
@@ -73,7 +60,7 @@ export async function applyQueryChanges(
       trip = {
         ...trip,
         points: trip.points.filter((p) => p.id !== change.id),
-        routeOrder: trip.routeOrder?.filter((id) => id !== change.id),
+        routeOrder: trip.routeOrder.filter((id) => id !== change.id),
       };
     } else if (change.op === 'end_day') {
       const n = ridingDay(change.day!),
@@ -144,18 +131,12 @@ export async function applyQueryChanges(
         ...p,
         ...(i ? legInto(i) : trip.loop ? legInto(order.length - 1) : { leg: undefined, drawn: undefined }),
         kind: i === 0 ? 'start' : !trip.loop && i === kept.length - 1 ? 'finish' : p.kind,
-        progress: i === 0 ? 0 : 1 - p.progress,
         // Pinning finds a night by its id `night-N`.
         ...(p.night ? { id: `night-${trip.days - p.night}`, night: trip.days - p.night } : {}),
       }));
       trip = {
         ...trip,
-        points: [
-          ...points,
-          ...trip.points
-            .filter((p) => p.kind === 'marker')
-            .map((p) => ({ ...p, progress: 1 - p.progress })),
-        ],
+        points: [...points, ...trip.points.filter((p) => p.kind === 'marker')],
         routeOrder: points.slice(1, trip.loop ? undefined : -1).map((p) => p.id),
         splits: Object.fromEntries(
           Object.entries(trip.splits ?? {}).map(([n, p]) => [
@@ -173,16 +154,11 @@ export async function applyQueryChanges(
         );
       const resolved = change.points!;
       const points = resolved.map((p, i) =>
-        makePoint(
-          p,
-          i === 0 ? 'start' : i === resolved.length - 1 ? 'finish' : 'pass',
-          i / (resolved.length - 1),
-        ),
+        makePoint(p, i === 0 ? 'start' : i === resolved.length - 1 ? 'finish' : 'pass'),
       );
       trip = await refresh({
         ...trip,
         name: undefined,
-        live: true,
         loop: undefined,
         points,
         routeOrder: points.slice(1, -1).map((p) => p.id),

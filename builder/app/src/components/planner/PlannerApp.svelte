@@ -34,7 +34,7 @@
     import {
         addClickedPoint, addPointNear, addRestDay, applyBudget, closeLoop, emptyTrip, hasEndpoints as endpointsChosen,
         insertPoint, planTitle, nightOrderConflicts, overnightCandidates, routeLegsAround, dragPointOut,
-        orderedRoutePoints, overnightWindow, pinNight, planView, removeRestDay, reorderPoint, startLoopHere,
+        orderedRoutePoints, overnightWindow, pinNight, planView, removeRestDay, reorderPoint, replacePoint, startLoopHere,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint, TripHistory, routingKey, planOf, storedPlan,
         type Day, type LegMode, type Place, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
@@ -941,7 +941,7 @@
     $effect(() => {
         const detail = finder.detail, plan = routesOpen ? finder.plan : undefined;
         if (!detail || !plan) return;
-        const draft = { ...untrack(() => planTrip(routeBase(detail.route, trip), plan, detail.route.loop)), live: true };
+        const draft = untrack(() => planTrip(routeBase(detail.route, trip), plan, detail.route.loop));
         const abort = new AbortController();
         calculateLine(draft, abort.signal, legs).then(line => { if (!abort.signal.aborted) finder.routed = { plan, line }; }, () => {});
         return () => abort.abort();
@@ -985,7 +985,7 @@
     function newPoint(coordinate: Coordinate, kind: EditableKind, label?: string): RoutePoint {
         const autoLabel = kind === 'waypoint' && label === undefined;
         return { id: crypto.randomUUID(), coordinate: [...coordinate], label: label ?? (autoLabel ? coordinateName(coordinate) : defaultLabels[kind]),
-            autoLabel: autoLabel || undefined, kind, progress: nearestProgress(coordinates, coordinate) };
+            autoLabel: autoLabel || undefined, kind };
     }
 
     async function nameVisit(point: RoutePoint) {
@@ -1025,10 +1025,7 @@
         const next = { ...trip };
         const point = next.points.find(p => p.id === id);
         if (point?.kind === 'night') return routeLegsAround(pinNight(next, point.night!, coordinate, point.label), id);
-        next.points = next.points.map(p => p.id === id
-            ? { ...p, coordinate, label: p.autoLabel ? coordinateName(coordinate) : p.label,
-                progress: p.kind === 'start' || p.kind === 'finish' ? p.progress : nearestProgress(coordinates, coordinate) }
-            : p);
+        next.points = next.points.map(p => p.id === id ? { ...p, coordinate, label: p.autoLabel ? coordinateName(coordinate) : p.label } : p);
         return routeLegsAround(next, id);
     }
 
@@ -1102,10 +1099,8 @@
         const id = point.kind === 'night' ? crypto.randomUUID() : point.id;
         const autoLabel = ['waypoint', 'detour'].includes(kind) && (point.kind === 'via' || point.autoLabel);
         const label = autoLabel ? coordinateName(point.coordinate) : point.label;
-        const next = { ...trip };
-        next.points = next.points.map(p => p.id === point.id ? { ...p, id, kind, night: undefined, label, autoLabel: autoLabel || undefined,
-            anchor: kind === 'detour' ? nearestOnLine(coordinates, point.coordinate).at : undefined } : p);
-        next.routeOrder = next.routeOrder?.map(old => old === point.id ? id : old);
+        const next = replacePoint(trip, point.id, { ...point, id, kind, night: undefined, label, autoLabel: autoLabel || undefined,
+            anchor: kind === 'detour' ? nearestOnLine(coordinates, point.coordinate).at : undefined });
         commit(next, 'Point type updated');
         selectedId = id;
         void nameVisit(next.points.find(p => p.id === id)!);
@@ -1171,8 +1166,13 @@
     }
 
     function restoreVersion(saved: Trip, name: string) {
+        const restored = storedTrip(saved);
+        if (!restored) {
+            message = `‘${name}’ is in an older plan format and cannot be restored`;
+            return;
+        }
         fromRoutes = false;
-        commit(planOf(saved), `Restored ‘${name}’`);
+        commit(planOf(restored), `Restored ‘${name}’`);
         undoable = true;
         clearSelection();
         night = Math.max(1, Math.min(night, planView(trip).days.length));

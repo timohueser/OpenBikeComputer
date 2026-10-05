@@ -14,7 +14,7 @@ export function category(kind: string): PlaceCategory {
     return (kinds[kind]?.category ?? kinds[dataKinds[kind]]?.category ?? (Object.hasOwn(placeCategories, kind) ? kind : 'viewpoint')) as PlaceCategory;
 }
 export function asPlace(p: SearchPlace): Place {
-    return { id: p.source, placeKind: p.kind, label: p.name, kind: 'place', category: category(p.kind), coordinate: [p.lon, p.lat], progress: 0,
+    return { id: p.source, placeKind: p.kind, label: p.name, kind: 'place', category: category(p.kind), coordinate: [p.lon, p.lat],
         locality: p.city, openingHours: p.opening_hours, hoursStatus: p.hoursStatus, website: p.website, phone: p.phone, detailsLoaded: true,
         description: p.precision === 'street' ? 'Street location only' : p.description ?? '' };
 }

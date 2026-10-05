@@ -2,7 +2,8 @@
 
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { addRestDay, initialTrip, planView, type Place } from '../../lib/planner/editor';
+import { addRestDay, planView, type Place } from '../../lib/planner/editor';
+import { routed, testTrip } from '../../../test-support/planner/trip';
 import Itinerary from './Itinerary.svelte';
 import Profile from './PlannerProfile.svelte';
 import MapCallout from './MapCallout.svelte';
@@ -11,7 +12,7 @@ import Select from './PlannerSelect.svelte';
 import RouteList from './RouteList.svelte';
 import type { RoutingLine } from '../../lib/planner/routing';
 
-const places: Place[] = [{id:'test-camp',kind:'place',label:'Test camp',category:'camp',description:'',progress:.25,coordinate:[7.5,47.5]}];
+const places: Place[] = [{id:'test-camp',kind:'place',label:'Test camp',category:'camp',description:'',coordinate:[7.5,47.5]}];
 
 const mounted: ReturnType<typeof mount>[] = [];
 
@@ -117,7 +118,7 @@ describe('route stop handles', () => {
 });
 
 function itineraryProps(expandedDay: number | null) {
-    const trip = addRestDay(initialTrip(), 1);
+    const trip = addRestDay(routed(testTrip()), 1);
     return {
         trip, expandedDay, itinerary: planView(trip).itinerary, days: planView(trip).days, theme: 'light' as const,
         changing: false, candidates: [], conflicts: [], selectedId: null, revealId: null,
@@ -151,7 +152,7 @@ describe('planner day views', () => {
         expect(button('Next riding day').disabled).toBe(true);
         button('Previous riding day').click();
         expect(props.onToggle).toHaveBeenCalledWith(2);
-        const finish = [...document.querySelectorAll('button')].find(button => button.textContent?.includes('Besançon') && button.textContent?.includes('Finish'))!;
+        const finish = [...document.querySelectorAll('button')].find(button => button.textContent?.includes('Thun') && button.textContent?.includes('Finish'))!;
         finish.click();
         expect(props.onShowEnd).toHaveBeenCalledWith(props.days[2]);
         button('All days').click();
@@ -162,7 +163,7 @@ describe('planner day views', () => {
         mounted.push(mount(Profile, {
             target: document.body,
             props: {
-                total: 144, days: planView(initialTrip()).days, dayLabels: { 1: 1, 2: 3, 3: 4 },
+                total: 144, days: planView(routed(testTrip())).days, dayLabels: { 1: 1, 2: 3, 3: 4 },
                 activeNight: 2, band: null, focus: { from: 1 / 3, to: 2 / 3, label: 'Day 3' },
                 window: { from: 0, to: 1 }, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
             },
@@ -214,7 +215,7 @@ describe('planner recovery', () => {
         document.body.append(opener);
         opener.focus();
         const onClose = vi.fn();
-        const trip = initialTrip();
+        const trip = testTrip();
         mounted.push(mount(MapCallout, {
             target: document.body,
             props: {
@@ -241,7 +242,7 @@ describe('planner recovery', () => {
         const onChange = vi.fn().mockRejectedValueOnce(new Error('Storage full')).mockResolvedValue(undefined);
         mounted.push(mount(VersionsMenu, {
             target: document.body,
-            props: { trip: initialTrip(), versions: [], draftSavedAt: null, draftError: '', onRestore: vi.fn(), onChange },
+            props: { trip: testTrip(), versions: [], draftSavedAt: null, draftError: '', onRestore: vi.fn(), onChange },
         }));
         await tick();
         button('Save version').click();

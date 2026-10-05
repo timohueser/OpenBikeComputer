@@ -522,7 +522,7 @@ private struct PlannedRouteFile: Codable {
     var uploadedCRC32: UInt32?
     var addedAt: Date
     /// The planner plan, in the `specs/planner-plan.md` shape.
-    var plan: PlannerPlan?
+    var plan: PlanDTO?
 
     init(_ record: PlannedRouteRecord) {
         version = 1
@@ -535,7 +535,7 @@ private struct PlannedRouteFile: Codable {
         deviceStoreID = record.deviceLink?.storeID
         uploadedCRC32 = record.uploadedCRC32
         addedAt = record.addedAt
-        plan = record.plan
+        plan = record.plan.map(PlanDTO.init)
     }
 
     func record(sourceFileData: Data) -> PlannedRouteRecord {
@@ -556,9 +556,19 @@ private struct PlannedRouteFile: Codable {
             deviceLink: link,
             uploadedCRC32: uploadedCRC32,
             addedAt: addedAt,
-            plan: plan
+            plan: plan?.plan
         )
     }
+}
+
+/// A saved plan. One that no longer decodes, such as one in an older plan format, is dropped, so
+/// its route or trip still loads and opens as the kept line.
+private struct PlanDTO: Codable {
+    var plan: PlannerPlan?
+
+    init(_ plan: PlannerPlan) { self.plan = plan }
+    init(from decoder: Decoder) throws { plan = try? PlannerPlan(from: decoder) }
+    func encode(to encoder: Encoder) throws { try plan.encode(to: encoder) }
 }
 
 /// A trip: its line, its day ends and its device copies. Device links persist as a planned
@@ -580,7 +590,7 @@ private struct TripFile: Codable {
     var device: DeviceCopyDTO?
     var addedAt: Date
     var editedAt: Date
-    var plan: PlannerPlan?
+    var plan: PlanDTO?
 
     init(_ trip: Trip) {
         version = FileLibraryStore.tripSchemaVersion
@@ -598,7 +608,7 @@ private struct TripFile: Codable {
         device = trip.deviceLink.map { DeviceCopyDTO(link: $0, crc32: trip.uploadedCRC32) }
         addedAt = trip.addedAt
         editedAt = trip.editedAt
-        plan = trip.plan
+        plan = trip.plan.map(PlanDTO.init)
     }
 
     var trip: Trip {
@@ -618,7 +628,7 @@ private struct TripFile: Codable {
             uploadedCRC32: device?.crc32,
             addedAt: addedAt,
             editedAt: editedAt,
-            plan: plan
+            plan: plan?.plan
         )
     }
 }
