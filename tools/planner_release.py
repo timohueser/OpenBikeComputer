@@ -151,7 +151,7 @@ def publish(args):
     print(f"Release {identity}\n{document['region']}: {count} objects, {size / 1e9:.2f} GB")
     print(f"R2 storage ceiling for this release: ${size / 1e9 * .015:.2f}/month before the free allowance.")
     print(f"Initial object writes: approximately ${count / 1e6 * 4.5:.3f} before the free allowance.")
-    print("Publication stages data. Run deploy, Deploy site, and finalize to complete the rollout.")
+    print("Publication stages data. Run deploy and finalize to complete the rollout.")
     if not args.apply:
         return
     remote = r2.bucket_remote()
@@ -181,15 +181,3 @@ def publish(args):
                        "--immutable", "--checksum", "--header-upload", "Content-Type: application/json",
                        "--header-upload", "Cache-Control: public,max-age=31536000,immutable"], remote.env)
     print(f"Published {args.public_url}/planner/releases/{identity}/release.json")
-
-
-def site_config(catalog_url, destination):
-    """Write the build settings of the site: the active catalogue entry as the planner config, and its device catalogue."""
-    catalog = read_url(catalog_url)
-    if catalog["format"] != 1:
-        raise ValueError("Unsupported planner catalogue")
-    active = catalog["active"]
-    # Each value is one line of the environment file; ASCII JSON escapes every line break.
-    if any(c in active["device_catalog"] for c in "\r\n"):
-        raise ValueError("Invalid planner configuration")
-    destination.write_text(f"VITE_PLANNER_CONFIG={json.dumps(active)}\nVITE_CATALOG_URL={active['device_catalog']}\n")

@@ -1,4 +1,5 @@
 import { PMTiles } from 'pmtiles';
+import { releaseFetch } from '../map-data';
 
 export type Bounds = [number, number, number, number];
 /** The body of tile z/x/y, or undefined for an absent tile. */
@@ -12,7 +13,7 @@ export const requestSignal = () => AbortSignal.timeout(20_000);
 
 /** Tile z/x/y of a `{z}/{x}/{y}` URL template. A tile service answers 204 for an absent tile. */
 export async function fetchTile(template: string, z: number, x: number, y: number, signal: AbortSignal): Promise<ArrayBuffer | undefined> {
-    const response = await fetch(template.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y)), { signal });
+    const response = await releaseFetch(template.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y)), { signal });
     if (response.status === 204) return undefined;
     if (!response.ok) throw new Error(`Tile ${z}/${x}/${y} answered ${response.status}.`);
     return response.arrayBuffer();
@@ -96,7 +97,7 @@ export interface Source { metadata: Record<string, unknown>; minZoom: number; ma
 export async function openSource(url: string): Promise<Source> {
     const signal = requestSignal();
     if (new URL(url).pathname.endsWith('.json')) {
-        const response = await fetch(url, { signal });
+        const response = await releaseFetch(url, { signal });
         if (!response.ok) throw new Error(`TileJSON answered ${response.status}.`);
         const json = await response.json();
         const template: string = json.tiles[0];

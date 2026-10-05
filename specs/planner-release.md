@@ -149,10 +149,13 @@ Its `slot` is `0` or `1`. `previous` has the same shape or is `null`.
 The publisher uploads and verifies all release files before the manifest.
 The deployer verifies public services before changing the catalogue. The
 catalogue cache lifetime is 30 seconds. Immutable objects have a one-year
-cache lifetime. A site build carries one active catalogue entry, unchanged, as the
-configuration of the web planner, and uses its device catalogue for the map builder.
+cache lifetime. The web planner and the map builder read the catalogue at page
+load. The planner uses `active`, unchanged, as its configuration. The map builder
+uses its device catalogue. A client refuses a catalogue `format` that it does not
+know. When a release object returns 404, a client reads the catalogue again, once,
+and retries with the new `active` entry.
 
-Finalization verifies the live services and site against `active`. It stops
+Finalization verifies the live services and the public catalogue against `active`. It stops
 the other VPS slot, removes its Caddy route, and deletes every other release
 directory on the VPS. It removes inactive planner releases and source mirrors
 that `active` does not name. It then sets `previous` to `null`. Device cell objects and terrain reference

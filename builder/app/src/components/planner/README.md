@@ -45,18 +45,15 @@ at `/usr/local/bin/node`. Services bind to loopback under
 
 Deploy the [tile Worker](../../../../../apps/planner-tiles/README.md) first.
 
-Set the GitHub repository variable `OBC_PLANNER_CATALOG_URL` to
-`https://maps.openbikecomputer.com/planner/catalog.json`. Run **Deploy site**
-from `develop`. The workflow publishes `/plan/` and adds **Route planner** to
-site navigation. It uses the release's device catalogue for `/builder/`.
-After the workflow succeeds, finish the rollout:
+`/plan/` and `/builder/` read `planner/catalog.json` at page load, so a release
+needs no site build. Then finish the rollout:
 
 ```sh
 obc planner finalize --host root@YOUR_VPS
 obc planner finalize --host root@YOUR_VPS --apply
 ```
 
-Finalization checks the live services and web planner. Then it stops the
+Finalization checks the live services and the public catalogue. Then it stops the
 inactive VPS slot, removes its Caddy route and every other release directory, and
 removes inactive planner releases and unused source mirrors from R2. It keeps one
 regional dataset. It preserves device cell objects and terrain reference data.
@@ -67,8 +64,7 @@ Publication refuses another release while an inactive dataset remains.
 For a larger region, add a recipe with its ID, name, bounds, time zone, and
 pinned inputs. Build into a fresh data directory with `--recipe PATH`. Pass
 `--device-catalog URL` for that region's published device catalogue. Use the
-same three commands, then run **Deploy site** again. `deploy` takes the region
-name from the recipe.
+same three commands. `deploy` takes the region name from the recipe.
 
 For a component update, keep the recipe's pinned OSM snapshot and bounds:
 
@@ -103,11 +99,10 @@ Each kind of change goes out in one way:
   see a short outage. This is accepted during development.
 - **New data release.** `deploy` installs it into the other slot and switches the
   download service to it. The old slot serves open pages until finalize stops
-  it. Then run **Deploy site** and finalize. To recover before finalize, deploy
-  the previous release's local data directory again, then run **Deploy site**.
+  it. Then run finalize. An open page that gets a 404 then loads the new release.
+  To recover before finalize, deploy the previous release's local data directory again.
 - **New catalogue field.** Deploy the release from the branch first. Merge the
-  branch second. **Deploy site** fails while the live catalogue does not have
-  the field.
+  branch second.
 
 ## Local preview
 
@@ -145,15 +140,10 @@ cp AUXILIARY_FILE ~/.cache/obc/planner/sources/downloads/auxiliary/NAME
 
 ## Client configuration
 
-A planner build reads `VITE_PLANNER_CONFIG`: the `active`
-[catalogue](../../../../../specs/planner-release.md#catalogue) entry as JSON. The
-build fails without a usable config. The map builder takes its basemap from it,
-else from the live catalogue.
-
-| Source | Command |
-| --- | --- |
-| Active release | `obc planner site-config --output ENV_FILE`, which also writes `VITE_CATALOG_URL` |
-| Local data directory | `obc planner`, with local URLs for the same fields |
+The planner reads the `active`
+[catalogue](../../../../../specs/planner-release.md#catalogue) entry at page load.
+`obc planner` builds with `VITE_PLANNER_CONFIG`, the same entry with local URLs.
+`VITE_CATALOG_URL` gives the map builder another device catalogue.
 
 Basemap zooms are 0–14; terrain zooms are 0–12. Browser contours use terrain
 neighbours. Highlighted places use zoom 11.

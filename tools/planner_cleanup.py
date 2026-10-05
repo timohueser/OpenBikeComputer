@@ -2,15 +2,13 @@
 
 import hashlib
 from datetime import datetime
-from html.parser import HTMLParser
 import json
 from pathlib import Path
 import re
 import tempfile
-from urllib.parse import urljoin, urlsplit
 
 from . import planner_deploy as deploy, r2
-from .planner_runtime import open_url, public_metadata, relative_path, storage_files
+from .planner_runtime import public_metadata, read_url, relative_path, storage_files
 
 
 def catalog(remote):
@@ -37,36 +35,10 @@ def before_publish(remote, identity):
         raise ValueError("Finish the active deployment with obc planner finalize --host HOST --apply before publishing another release.")
 
 
-class Modules(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.urls = []
-
-    def handle_starttag(self, tag, attrs):
-        attrs = dict(attrs)
-        if tag == "script" and attrs.get("type") == "module" and attrs.get("src"):
-            self.urls.append(attrs["src"])
-
-
-def verify_site(active, origin):
-    address = urlsplit(origin)
-    if address.scheme != "https" or not address.netloc or address.path or address.query or address.fragment:
-        raise ValueError("Provide an HTTPS site origin with no path")
-    page = origin + "/plan/"
-    modules = Modules()
-    with open_url(page) as response:
-        modules.feed(response.read().decode())
-    scripts = []
-    for path in modules.urls:
-        url = urljoin(page, path)
-        module = urlsplit(url)
-        if (module.scheme, module.netloc) != (address.scheme, address.netloc):
-            raise ValueError("Planner module uses another origin; cleanup is blocked.")
-        with open_url(url) as response:
-            scripts.append(response.read().decode())
-    # The site build carries the whole active catalogue entry as its planner config.
-    if not any(active["id"] in script for script in scripts):
-        raise ValueError("Deploy site must serve the active planner release before cleanup.")
+def verify_public_catalogue(active, public_url):
+    # The web planner and the map builder read the public catalogue at page load.
+    if active_id(read_url(public_url + "/planner/catalog.json")) != active["id"]:
+        raise ValueError("The public planner catalogue does not serve the active release yet; repeat cleanup.")
 
 
 def manifest(remote, entry):
@@ -124,7 +96,7 @@ def plan(remote, current):
 
 def finalize(args):
     # GOVERNS: specs/planner-release.md
-    # RULE: Remove inactive planner data only after the live services and web planner use the active release.
+    # RULE: Remove inactive planner data only after the live services and the public catalogue serve the active release.
     host = deploy.checked_host(args.host)
     remote = r2.bucket_remote()
     current = catalog(remote)
@@ -138,7 +110,7 @@ def finalize(args):
     if not args.apply:
         return
     deploy.verify_services(active, document, args.site_origin)
-    verify_site(active, args.site_origin)
+    verify_public_catalogue(active, args.public_url)
     if catalog(remote) != current:
         raise ValueError("Planner catalogue changed; repeat cleanup.")
     deploy.retire(host, active)

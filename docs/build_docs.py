@@ -603,7 +603,7 @@ def site_head(site_root, crumb, nav_toggle=""):
     return fill(SITEHEAD_TEMPLATE.read_text(),
                 {"site_root": site_root, "crumb": crumb, "nav_toggle": nav_toggle,
                  "builder_link": builder_link(site_root),
-                 "planner_link": ('<a href="%splan/">Route planner</a>' % esc(site_root)) if os.environ.get("OBC_PLANNER_CATALOG_URL") else "",
+                 "planner_link": '<a href="%splan/">Route planner</a>' % esc(site_root),
                  "docs_current": ' aria-current="page"' if crumb == "/ docs" else "",
                  "blog_current": ' aria-current="page"' if crumb == "/ log" else ""})
 

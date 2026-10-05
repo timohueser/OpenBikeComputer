@@ -15,12 +15,12 @@ describe("shared basemap hosting", () => {
             glyphs: "https://maps.openbikecomputer.com/releases/id/fonts/{fontstack}/{range}.pbf",
             sprites: "https://maps.openbikecomputer.com/releases/id/sprites",
         };
-        const fetch = vi.fn().mockResolvedValue(Response.json({ active }));
+        const fetch = vi.fn().mockResolvedValue(Response.json({ format: 1, active }));
         vi.stubGlobal("fetch", fetch);
         const { basemapConfig } = await import("./basemap-config");
         const { basemapStyle } = await import("../planner/map-style");
         const config = await basemapConfig();
-        expect(fetch).toHaveBeenCalledWith("https://maps.openbikecomputer.com/planner/catalog.json");
+        expect(fetch).toHaveBeenCalledWith("https://maps.openbikecomputer.com/planner/catalog.json", { cache: "no-cache" });
         expect(config).toEqual(active);
         for (const theme of ["light", "dark"] as const) {
             const style = basemapStyle(theme, config);
@@ -43,10 +43,14 @@ describe("shared basemap hosting", () => {
         expect(fetch).not.toHaveBeenCalled();
     });
 
-    it.each([Response.json({ active: null }), new Response("", { status: 503 })])("rejects an unavailable release", async (response) => {
+    it.each([
+        [Response.json({ format: 1, active: null }), "no active release"],
+        [Response.json({ format: 1, active: {} }), "no basemap"],
+        [new Response("", { status: 503 }), "HTTP 503"],
+    ])("rejects an unavailable release", async (response, message) => {
         vi.stubEnv("VITE_PLANNER_CONFIG", "");
         vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
         const { basemapConfig } = await import("./basemap-config");
-        await expect(basemapConfig()).rejects.toThrow("Basemap catalog");
+        await expect(basemapConfig()).rejects.toThrow(message);
     });
 });

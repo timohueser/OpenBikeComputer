@@ -1,9 +1,27 @@
 import { plannerConfig, type Bounds } from "./config";
 import type { Coordinate } from "./map-types";
+import { activeRelease } from "./release";
 import type { CatalogRecord } from "./signed-routes";
 
-/** The planner config of this build. */
-export const config = plannerConfig(import.meta.env.VITE_PLANNER_CONFIG, globalThis.location?.href);
+const preview: string | undefined = import.meta.env.VITE_PLANNER_CONFIG;
+
+/** The planner config: the one that a local preview build carries, else the active release at page load. */
+export const config = plannerConfig(preview ? JSON.parse(preview) : await activeRelease(), globalThis.location?.href);
+
+let check: Promise<void> | undefined;
+
+/**
+ * `fetch` for an object of the release. Release objects are immutable, so a 404 means that the release can be gone after
+ * a catalogue switch: the catalogue is read again, once, and the page loads again on a new active release.
+ */
+export async function releaseFetch(url: string, init?: RequestInit): Promise<Response> {
+    const response = await fetch(url, init);
+    if (response.status === 404 && config.id) {
+        check ??= activeRelease().then((active) => { if (active.id !== config.id) location.reload(); }, () => {})
+            .finally(() => { check = undefined; });
+    }
+    return response;
+}
 
 export const MAP_VIEWS: { name: string; center: Coordinate; zoom: number }[] = [
     { name: "Freiburg · street detail", center: [7.849, 47.997], zoom: 14 },
@@ -26,7 +44,7 @@ export function coversCell(bounds: Bounds, id: string): boolean {
 }
 
 async function routeFile(url: string): Promise<CatalogRecord[]> {
-    const response = await fetch(url);
+    const response = await releaseFetch(url);
     if (!response.ok) throw new Error(`Route catalog request failed with status ${response.status}`);
     const document = await response.json();
     if (document?.format !== 1 || !Array.isArray(document.routes)) throw new Error("Unsupported route catalog");
