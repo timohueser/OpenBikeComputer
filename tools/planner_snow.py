@@ -1,6 +1,6 @@
 """Bake the planner snow layer of one region: `snow.pmtiles`, as `specs/planner-snow-tiles.md` defines it.
 
-    uv run --with-requirements tools/requirements-planner-snow.txt python -m tools.planner_snow REGION
+    uv run --locked --group planner-snow python -m tools.planner_snow REGION
 
 The default source is NASA MODIS daily snow cover from the anonymous Microsoft Planetary Computer
 copy. It ends in June 2025. The bake reads only the region window of each daily file and writes no
@@ -31,7 +31,7 @@ import urllib.request
 
 import numpy as np
 
-from . import data_registry, planner_maps as maps
+from . import data_registry, planner_maps as maps, step_request
 
 NO_SNOW, FULL, NO_DATA = 253, 254, 255
 LAST_STEP = 182
@@ -246,8 +246,8 @@ def canopy_cover(z, x, y):
     return cover
 
 
-def trails(bounds):
-    """OSM `highway=path|track` segments inside the bounds: midpoint longitude, latitude and length in metres."""
+def overpass_trails(bounds):
+    """The Overpass answer, in JSON, with the OSM `highway=path|track` ways that the bounds touch."""
     west, south, east, north = bounds
     query = f'[out:json][timeout:180];way["highway"~"^(path|track)$"]({south},{west},{north},{east});out geom;'
     request = urllib.request.Request(OVERPASS, data=urllib.parse.urlencode({"data": query}).encode(),
@@ -255,15 +255,19 @@ def trails(bounds):
     for attempt in range(4):
         try:
             with urllib.request.urlopen(request, timeout=300) as response:
-                ways = json.load(response)["elements"]
-            break
+                return response.read()
         except urllib.error.HTTPError as error:
             # Overpass answers 429 and 504 when it is busy.
             if error.code not in (429, 504) or attempt == 3:
                 raise
             time.sleep(60 * (attempt + 1))
+
+
+def trails(answer, bounds):
+    """The segments of the ways of an Overpass answer inside the bounds: midpoint longitude, latitude and length in metres."""
+    west, south, east, north = bounds
     lon, lat, metres = [], [], []
-    for way in ways:
+    for way in json.loads(answer)["elements"]:
         points = np.radians([[p["lon"], p["lat"]] for p in way.get("geometry", [])])
         if len(points) < 2:
             continue
@@ -278,7 +282,7 @@ def trails(bounds):
     return lon[inside], lat[inside], metres[inside]
 
 
-def bake(source, first_season, seasons, name, bounds, output, trail_segments=None, workers=4):
+def bake(source, first_season, seasons, name, bounds, output, trail_segments=None, workers=4, attribution=None):
     """Write the archive; return the tile count and, with trail segments, the share of trail length on no data.
 
     `source(bounds)` gives the season planes and their grid around the bounds of one chunk tile. The chunks
@@ -354,7 +358,7 @@ def bake(source, first_season, seasons, name, bounds, output, trail_segments=Non
                 "center_zoom": top, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2),
             }, {
                 "first_season": first_season, "seasons": seasons, "step_days": 2, "source": name,
-                "resolution_m": meta["resolution_m"], "attribution": meta["attribution"],
+                "resolution_m": meta["resolution_m"], "attribution": attribution or meta["attribution"],
             })
             stream.flush()
             os.replace(stream.name, output)
@@ -589,6 +593,25 @@ def fetch(source, bounds, first_season, last_season, out):
         print(f"Season {season}/{(season + 1) % 100:02d}: {len(hrefs)} files", file=sys.stderr, flush=True)
 
 
+def step():
+    """The `obc data` step `planner/snow`: `snow.pmtiles` from the HR-WSI Snow Phenology windows of
+    the `hr-wsi` snapshot. The metrics hold the share of the trail length of `osm-trails` with no
+    data in every season."""
+    request = step_request.read()
+    options = request["options"]
+    bounds, (first, last) = options["bounds"], options["seasons"]
+    files = {}
+    for name, path in sorted(step_request.files(request, "hr-wsi").items()):
+        season, layer = re.fullmatch(r".*_(\d{4})0901P1Y_.*_(SCO|SCM|SCD)\.tif", name).groups()
+        files.setdefault(int(season), {}).setdefault(layer, []).append(str(path))
+    seasons = range(first, last + 1)
+    (answer,) = step_request.files(request, "osm-trails").values()
+    count, share = bake(lambda chunk: copernicus_planes(files, chunk, seasons), first, len(seasons), "copernicus-hr-wsi",
+                        bounds, Path(request["output"]) / "snow.pmtiles", trails(answer.read_bytes(), bounds),
+                        attribution=data_registry.attribution("hr-wsi", year=options["year"]))
+    step_request.metrics(request, {"tiles": count, "no_data_trail_share": round(share, 3)})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("region", nargs="?", help="region id: a box region in data/regions/ and the default output folder")
@@ -599,10 +622,15 @@ def main():
     parser.add_argument("--last-season", type=int, default=2024, help="the last NASA season (2024 ends in June 2025)")
     parser.add_argument("--trails", action="store_true", help="report the share of OSM path and track length with no data in every season")
     parser.add_argument("--fetch", type=Path, help="only write the source windows of the seasons to this directory")
+    parser.add_argument("--fetch-trails", type=Path, help="only write the Overpass answer of the trails to trails.json in this directory")
     args = parser.parse_args()
-    if not args.region and not (args.fetch and args.bounds):
-        parser.error("give a region, or --bounds with --fetch")
+    if not args.region and not ((args.fetch or args.fetch_trails) and args.bounds):
+        parser.error("give a region, or --bounds with --fetch or --fetch-trails")
     bounds = args.bounds or data_registry.region_box(args.region)
+    if args.fetch_trails:
+        args.fetch_trails.mkdir(parents=True, exist_ok=True)
+        (args.fetch_trails / "trails.json").write_bytes(overpass_trails(bounds))
+        return
     if args.fetch:
         fetch(args.source, bounds, args.first_season, args.last_season, args.fetch)
         return
@@ -616,7 +644,7 @@ def main():
         planes, grid = nasa_planes(bounds, args.first_season, args.last_season)
         seasons = range(args.first_season, args.first_season + planes.shape[0])
         source = lambda chunk: (planes, grid)
-    count, share = bake(source, seasons.start, len(seasons), args.source, bounds, output, trails(bounds) if args.trails else None)
+    count, share = bake(source, seasons.start, len(seasons), args.source, bounds, output, trails(overpass_trails(bounds), bounds) if args.trails else None)
     report = {"output": str(output), "bytes": output.stat().st_size, "tiles": count, "seasons": len(seasons),
               "total_s": round(time.monotonic() - start)}
     if share is not None:
@@ -625,4 +653,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    step() if sys.argv[1:] == ["--step"] else main()

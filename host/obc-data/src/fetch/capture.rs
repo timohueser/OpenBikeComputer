@@ -25,7 +25,9 @@ pub fn dtm(store: &Store, request: &Request) -> Result<Snapshot, String> {
         &[source],
         |_| &[0],
         |work, out| {
-            let mut command = python(&root, Some("tools/requirements-bake.txt"));
+            // The pinned rasterio needs Python 3.12 or later.
+            let mut command =
+                python(&root, &["--python", ">=3.12", "--with-requirements", "tools/requirements-bake.txt"]);
             command.arg("host/obc-dem/reference/ingest.py");
             command.args(["fetch", &key, &format!("--bbox={bbox}"), "--work"]).arg(work).arg("--out").arg(out);
             command
@@ -52,9 +54,25 @@ pub fn run(store: &Store, request: &Request) -> Result<Snapshot, String> {
                 &[source],
                 |_| &[0],
                 |_, out| {
-                    let mut command = python(&root, Some("tools/requirements-planner-snow.txt"));
+                    let mut command = python(&root, &["--locked", "--group", "planner-snow"]);
                     command.args(["-m", "tools.planner_snow", "--source", kind, &format!("--bounds={bbox}")]);
                     command.args(["--first-season", first, "--last-season", last, "--fetch"]).arg(out);
+                    command
+                },
+            )
+        }
+        "osm-trails" => {
+            let [bbox] = values(request, ["bbox"])?;
+            let bbox = parse_bbox(bbox)?;
+            capture(
+                store,
+                request,
+                &format!("bbox={bbox}"),
+                &[source],
+                |_| &[0],
+                |_, out| {
+                    let mut command = python(&root, &["--locked", "--group", "planner-snow"]);
+                    command.args(["-m", "tools.planner_snow", &format!("--bounds={bbox}"), "--fetch-trails"]).arg(out);
                     command
                 },
             )
@@ -72,7 +90,7 @@ pub fn run(store: &Store, request: &Request) -> Result<Snapshot, String> {
                 &[source],
                 |_| &[0],
                 |_, out| {
-                    let mut command = python(&root, Some("tools/requirements-planner-climate.txt"));
+                    let mut command = python(&root, &["--locked", "--group", "planner-climate"]);
                     command.args(["-m", "tools.planner_climate", &format!("--bounds={bbox}"), "--first-year", first]);
                     command.arg("--fetch").arg(out);
                     command
@@ -105,7 +123,7 @@ fn landmarks(store: &Store, request: &Request, root: &Path) -> Result<Snapshot, 
     let owners = [find("wikidata")?, find("wikipedia")?, find("commons")?];
     capture(store, request, &query, &owners, landmark_owners, |_, out| {
         // The capture needs no package beyond the standard library.
-        let mut command = python(root, None);
+        let mut command = python(root, &[]);
         command.arg(&tool);
         command.arg("--boundary").arg(&boundary).arg("--candidates").arg(&candidates).arg("--policy").arg(&policy);
         // A failed run keeps its directory, and each run asks once more for what failed before.
@@ -268,18 +286,17 @@ fn root() -> Result<PathBuf, String> {
     crate::find_root(&cwd).ok_or_else(|| "no data/sources.toml above the current directory".into())
 }
 
-/// `OBC_PYTHON`, or else Python with the packages of `requirements` (`uv run`), in the
-/// repository root.
-fn python(root: &Path, requirements: Option<&str>) -> Command {
-    let mut command = match (std::env::var_os("OBC_PYTHON"), requirements) {
+/// `OBC_PYTHON`, or else Python under `uv run` with the arguments `packages`, which name its
+/// packages, or `python3` without; in the repository root.
+fn python(root: &Path, packages: &[&str]) -> Command {
+    let mut command = match (std::env::var_os("OBC_PYTHON"), packages) {
         (Some(python), _) => Command::new(python),
-        (None, Some(requirements)) => {
+        (None, []) => Command::new("python3"),
+        (None, packages) => {
             let mut command = Command::new("uv");
-            // The pinned rasterio needs Python 3.12 or later.
-            command.args(["run", "--python", ">=3.12", "--with-requirements", requirements, "python"]);
+            command.arg("run").args(packages).arg("python");
             command
         }
-        (None, None) => Command::new("python3"),
     };
     command.current_dir(root);
     command

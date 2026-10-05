@@ -68,7 +68,7 @@ def publish(source, routing, output, cache=None):
     coverage = release["bounds"]
     def package(name, inputs, producer, build, bounds=coverage, paths=()):
         if producer in (partition_maps, joined_fonts):
-            paths = [*paths, maps.ROOT / "tools/requirements-planner-maps.txt"]
+            paths = [*paths, maps.ROOT / "uv.lock"]
         dependency_functions = {partition_maps: [blocks.map_tiles], partition_search: [blocks.search_lookup, blocks.search_shard],
                                 joined_fonts: [blocks.offline_fonts, blocks.glyph_ranges, blocks.label_texts],
                                 partition_routes: [blocks.route_tiles], partition_routing: []}

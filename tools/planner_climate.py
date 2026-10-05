@@ -1,6 +1,6 @@
 """Bake the planner climate layer of one region: `climate.pmtiles`, as `specs/planner-climate-tiles.md` defines it.
 
-    uv run --with-requirements tools/requirements-planner-climate.txt python -m tools.planner_climate REGION
+    uv run --locked --group planner-climate python -m tools.planner_climate REGION
 
 The source is ERA5-Land, read from the ECMWF ARCO geo-chunked Zarr stores with the CDS personal access
 token in `~/.cdsapirc`. The bake reads only the source chunks around the region and keeps them in
@@ -27,7 +27,7 @@ import urllib.request
 
 import numpy as np
 
-from . import data_registry, planner_maps as maps
+from . import data_registry, planner_maps as maps, step_request
 
 YEARS = 10
 WEEKS = 52
@@ -494,7 +494,7 @@ def bake(bounds, first_year, source, output, key=None):
 
     region = Region(bounds)
     weekly, monthly, rose = climate(region, first_year, source)
-    archive = tiles(region, planes(region, first_year, weekly, monthly, rose, orography(region, key)))
+    archive = tiles(region, planes(region, first_year, weekly, monthly, rose, orography(region, key, cache=source.cache)))
     west, south, east, north = bounds
     e7 = lambda value: round(value * 1e7)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -520,6 +520,18 @@ def bake(bounds, first_year, source, output, key=None):
             raise
     zooms = [tileid_to_zxy(tile_id)[0] for tile_id in archive]
     return {zoom: zooms.count(zoom) for zoom in LEVELS}
+
+
+def step():
+    """The `obc data` step `planner/climate`: `climate.pmtiles` from the source chunks and the
+    orography of the `era5-land` snapshot."""
+    request = step_request.read()
+    options = request["options"]
+    output = Path(request["output"])
+    cache = step_request.view(step_request.files(request, "era5-land"), output.with_name("era5-land"))
+    source = Source(final_hour(options["first_year"]), cache=cache)
+    counts = bake(options["bounds"], options["first_year"], source, output / "climate.pmtiles")
+    step_request.metrics(request, {"tiles": {str(zoom): count for zoom, count in counts.items()}})
 
 
 def main():
@@ -561,4 +573,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    step() if sys.argv[1:] == ["--step"] else main()

@@ -106,6 +106,7 @@ Each part of the id is lowercase kebab-case.
 | `polygon` | string | Only for `polygon`: an Osmosis `.poly` file, relative to the region file. The file must exist |
 | `union` | array of strings | Only for `union`: two or more region ids |
 | `countries` | array of strings | Optional: the ISO 3166-1 alpha-2 codes of the countries in the region, such as `DE` |
+| `time_zone` | string | Optional: the IANA time zone of the region, such as `Europe/Berlin` |
 
 A box has longitude in −180…180 and latitude in −90…90, with west < east and south < north.
 A box that crosses the antimeridian is refused. The order of the numbers is checked only
@@ -122,7 +123,7 @@ The bakes read this directory:
 | --- | --- |
 | `obc-bake` (device maps) | Every `geofabrik` region. `--regions DIR` reads another directory with this layout; `obc bake` passes the checkout's directory |
 | Planner bake | The `box` region with the id of the recipe in `tools/planner-regions/`: its `name` and its box |
-| `obc data`, product `planner` | The `geofabrik` region of the environment and its `countries` |
+| `obc data`, product `planner` | The `geofabrik` region of the environment, its `countries` and its `time_zone` |
 | `fixtures/build-map-package.sh` | The `box` regions of the fixtures |
 
 `tools/data_registry.py box ID [--lat-first]` prints the box of a `box` region and refuses
@@ -136,6 +137,9 @@ The options of the [planner layers](#planner) that are the same for each region.
 | --- | --- | --- |
 | `terrain.margin_m` | number | The terrain reaches at least this far around the region, in metres: the horizon of the sun layer |
 | `routing.profiles` | array of strings | The profiles of the routing package. The route catalog needs `touring`, `road`, `gravel`, `mtb` and `hiking` |
+| `climate.first_year` | integer | The first of the ten years of ERA5-Land that the climate layer reads |
+| `snow.seasons` | array of 2 integers | The first and the last season of HR-WSI Snow Phenology that the snow layer reads |
+| `sun.horizon_samples`, `sun.horizon_directions` | integer | The horizon profiles of the sun layer: [the sun archive](planner-sun-tiles.md) |
 
 ## State of a source
 
@@ -329,7 +333,9 @@ is the planet that is pinned. The fetch does not apply the diffs. A step does th
 `osm-replication` pin from that day.
 
 A `dtm` or `capture` fetch runs a program in the repository root, with the Python of `uv run
---python '>=3.12' --with-requirements <requirements> python` (`OBC_PYTHON` replaces that Python).
+<packages> python`: `--python '>=3.12' --with-requirements <file>` for a requirements file, and
+`--locked --group <group>` for a dependency group of `pyproject.toml` (`OBC_PYTHON` replaces that
+Python).
 The program writes each file of the request to a directory under `partial/`, and its progress to
 standard error. The store takes every file in that directory but hidden, `.part` and `.tmp`
 files. A failed run keeps the directory and writes no record; the next run of the same request,
@@ -339,16 +345,19 @@ directory>`, with the `fetch.url` of the source whose record takes the file. The
 every record that it adds to before it writes one. Each fetch takes the `NAME=VALUE` of its row,
 each once, and no other. A `capture` source without a row has no fetcher yet; the fetch fails.
 
-| Source | `NAME=VALUE` | Program | Requirements | Query |
+| Source | `NAME=VALUE` | Program | Packages | Query |
 | --- | --- | --- | --- | --- |
 | `dtm-*` | `bbox` | `host/obc-dem/reference/ingest.py fetch` | `tools/requirements-bake.txt` | `bbox=W,S,E,N` |
-| `modis-snow`, `hr-wsi` | `bbox`, `seasons=FIRST-LAST` | `tools/planner_snow.py --fetch` | `tools/requirements-planner-snow.txt` | `bbox=W,S,E,N&seasons=FIRST-LAST` |
-| `era5-land` | `bbox`, `first-year` | `tools/planner_climate.py --fetch` | `tools/requirements-planner-climate.txt` | `bbox=W,S,E,N&first-year=YEAR` |
+| `modis-snow`, `hr-wsi` | `bbox`, `seasons=FIRST-LAST` | `tools/planner_snow.py --fetch` | group `planner-snow` | `bbox=W,S,E,N&seasons=FIRST-LAST` |
+| `osm-trails` | `bbox` | `tools/planner_snow.py --fetch-trails` | group `planner-snow` | `bbox=W,S,E,N` |
+| `era5-land` | `bbox`, `first-year` | `tools/planner_climate.py --fetch` | group `planner-climate` | `bbox=W,S,E,N&first-year=YEAR` |
 | `wikidata`, `wikipedia`, `commons` | `boundary`, `candidates`, `select-with` | `tools/landmark_capture.py --retry-failed` | none (`python3`) | `recipe=` and 16 hex digits of the SHA-256 of the joined hex SHA-256 of the boundary, the candidates, `host/obc-pack/src/landmarks/policy.json`, `specs/content-languages.json` and `tools/landmark_capture.py` |
 
 - `bbox` is `WEST,SOUTH,EAST,NORTH` in degrees.
 - A snow file is the window of one source raster that covers `bbox`, one pixel wider on each
   side, in the grid of the source. A season starts on 1 September.
+- The `osm-trails` file is `trails.json`: the JSON answer of Overpass, as it is, to the query of
+  the ways with `highway=path` or `highway=track` that `bbox` touches.
 - An `era5-land` file is a source chunk of the ten years from `first-year`, or the orography.
 - `boundary` and `candidates` are the files of `landmark_capture.py`, and `select-with` is the
   `obc-bake` that selects the places. One run captures the three sources, and each record takes
@@ -620,8 +629,9 @@ then reads the newest version of that fetch in the store.
 
 The planner has steps for a `geofabrik` region that names its `countries`: its OSM is the
 extract of that one area. The bounds of the region are the box around its `.poly`. The
-environment pins `copernicus-glo-30`. The extract, the `.poly` and the GLO-30 tile list are at
-the version of the environment, or else the newest version in the store, as for `maps`. The
+environment pins `copernicus-glo-30`. Every other snapshot, such as the extract, the `.poly`
+and the GLO-30 tile list, is at the version of the environment, or else the newest version in the
+store, as for `maps`. The
 other options come from [`data/planner.toml`](#dataplannertoml). A GLO-30 input reads the tile
 of each 1° square that its box touches and that `copernicus-glo-30-tiles` names; a box at sea
 reads no snapshot. No layer reads a national terrain model yet.
@@ -631,6 +641,21 @@ reads no snapshot. No layer reads a national terrain model yet.
 | `planner/osm` | `geofabrik-extracts`, `area=<region id>` | `path`: `osm.pbf` | `osm.pbf`: the extract as it is. The engine step `pass` writes it, so its code is no file |
 | `planner/terrain` | The GLO-30 tiles of `bounds` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours, widened to `terrain.margin_m` around the bounds | `terrain.mbtiles`: lossless Terrarium WebP tiles of zooms 0 to 12, the bytes that `planner-dem` writes from the same tiles |
 | `planner/routing` | `planner/osm`, and the GLO-30 tiles of the bounds of the region | `region` (the last part of the region id), `bounds`, `profiles` and `countries`. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells, as `route-blocks` writes them; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
+| `planner/overlays` | `planner/routing` | None | `overlays.pmtiles`: the route networks and the access of `routing/overlays.sqlite`, as [the planner release](planner-release.md) defines it |
+| `planner/assets` | `protomaps-assets`, `tangrams-icons` | None | `assets/fonts/` and `assets/sprites/` of the assets archive; `assets/sprites/LICENSE.txt`: the MIT notice of `tangrams-icons` |
+| `planner/model` | `query-model` | None | `model/`: `model.int8.onnx`, `tokenizer.json` and `tokenizer_config.json` of the archive, and `labels.json`, the labels of the query schema |
+| `planner/climate` | `era5-land`, `bbox=<bounds>`, `first-year=<climate.first_year>` | `bounds`, `first_year` | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md) |
+| `planner/snow` | `hr-wsi`, `bbox=<bounds>`, `seasons=<snow.seasons>`; `osm-trails`, `bbox=<bounds>` | `bounds`, `seasons`, and `year`: the year of the `hr-wsi` version, which its credit names | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md) from HR-WSI. The metric `no_data_trail_share` is the share of the trail length with no data in every season |
+| `planner/sun` | `planner/terrain` | `bounds`, `time_zone` of the region, `distance_m` (`terrain.margin_m`), `horizon_samples` and `horizon_directions` | `sun.pmtiles`: [the sun archive](planner-sun-tiles.md). `terrain_sha256` is the SHA-256 of the PMTiles archive that the step converts from `terrain.mbtiles` |
+
+`climate`, `snow` and `sun` are optional layers: a step only when `layers` of the environment
+names it. The sun layer needs the `time_zone` of the region.
+
+A Python step runs `uv run --locked --offline --group <group> python <entry> --step` in the
+repository root, with the packages of a dependency group of `pyproject.toml`; `uv sync
+--all-groups` installs them on a machine. Its code is each Python file that it imports,
+`tools/step_request.py`, `pyproject.toml` and `uv.lock`, and `data/sources.toml` when it imports
+`tools/data_registry.py`.
 
 A grid cell is a zoom 9 Web Mercator tile that the bounds of the region overlap, clipped to the
 bounds, with the id `9-<x>-<y>`. The JSON objects that `planner/routing` writes have their keys in
@@ -2173,12 +2198,20 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "name": {
           "type": "string"
+        },
+        "time_zone": {
+          "description": "The IANA time zone of the region, such as `Europe/Berlin`.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "id",
         "name",
-        "countries"
+        "countries",
+        "time_zone"
       ],
       "type": "object"
     },
@@ -2281,12 +2314,20 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "name": {
           "type": "string"
+        },
+        "time_zone": {
+          "description": "The IANA time zone of the region, such as `Europe/Berlin`.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "id",
         "name",
         "countries",
+        "time_zone",
         "leaves",
         "bounds"
       ],

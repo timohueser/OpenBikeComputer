@@ -69,6 +69,8 @@ pub struct Region {
     pub area: Area,
     /// The ISO 3166-1 alpha-2 codes of its countries, such as `DE`. Empty when the file names none.
     pub countries: Vec<String>,
+    /// The IANA time zone of the region, such as `Europe/Berlin`.
+    pub time_zone: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -82,6 +84,7 @@ struct RegionFile {
     union: Option<Vec<String>>,
     #[serde(default)]
     countries: Vec<String>,
+    time_zone: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -119,7 +122,7 @@ pub fn parse_region(id: &str, text: &str) -> Result<Region, String> {
     {
         return Err(fail(format!("country `{code}` is not an ISO 3166-1 alpha-2 code, such as `DE`")));
     }
-    Ok(Region { id: id.into(), name: file.name, area, countries: file.countries })
+    Ok(Region { id: id.into(), name: file.name, area, countries: file.countries, time_zone: file.time_zone })
 }
 
 /// Every region, by id.

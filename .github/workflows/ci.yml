@@ -132,7 +132,10 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install Python test reporter
-        run: pip install -r tools/requirements-test.txt
+        # `--group` reads the dependency groups of pyproject.toml; pip has it from 25.1.
+        run: |
+          python -m pip install --upgrade "pip>=25.1"
+          pip install -r tools/requirements-test.txt --group planner-snow --group planner-sun
       - name: Test plan drift
         run: python3 tools/test_plan.py check
       - name: Repository tool unit tests
@@ -292,8 +295,12 @@ jobs:
             tools/requirements-test.txt
             tools/requirements-coverage.txt
             tools/requirements-bake.txt
+            pyproject.toml
       - name: Install Python test reporter
-        run: pip install -r tools/requirements-test.txt
+        # `--group` reads the dependency groups of pyproject.toml; pip has it from 25.1.
+        run: |
+          python -m pip install --upgrade "pip>=25.1"
+          pip install -r tools/requirements-test.txt --group planner-snow --group planner-sun
       - name: firmware resource/dependency tool unit tests
         id: python-firmware-tools
         run: |

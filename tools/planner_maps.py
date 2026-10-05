@@ -11,10 +11,13 @@ from pathlib import Path
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 import tomllib
 import zipfile
+
+from . import step_request
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "builder/app"
@@ -111,6 +114,17 @@ def install_assets(data, destination):
             raise ValueError(f"Map assets are missing {name}")
 
 
+def assets_step():
+    """The `obc data` step `planner/assets`: the fonts and sprites of the Protomaps assets, with the
+    MIT notice of the Mapzen icons beside the sprites."""
+    request = step_request.read()
+    (archive,) = step_request.files(request, "protomaps-assets").values()
+    (notice,) = step_request.files(request, "tangrams-icons").values()
+    output = Path(request["output"]) / "assets"
+    install_assets(archive.read_bytes(), output)
+    (output / "sprites/LICENSE.txt").write_bytes(notice.read_bytes())
+
+
 def verify_archive(pmtiles, path, tile_type, zoom):
     run(pmtiles, "verify", str(path))
     header = json.loads(run(pmtiles, "show", str(path), "--header-json",
@@ -126,19 +140,19 @@ def verify_archive(pmtiles, path, tile_type, zoom):
 
 
 def compact_archive(source, destination, region, terrain=False, recompress=True):
-    run("uv", "run", "--with-requirements", ROOT / "tools/requirements-planner-maps.txt",
+    run("uv", "run", "--locked", "--group", "planner-maps",
         "python", "-m", "tools.planner_map_archive", source, destination,
         "--bbox=" + ",".join(map(str, region)), *(["--terrain"] if terrain else []),
         *([] if recompress else ["--no-recompress"]), cwd=ROOT)
 
 
 def places_archive(pois, destination):
-    run("uv", "run", "--with-requirements", ROOT / "tools/requirements-planner-maps.txt",
+    run("uv", "run", "--locked", "--group", "planner-maps",
         "python", "-m", "tools.planner_places", pois, destination, cwd=ROOT)
 
 
 def overlays_archive(index, destination):
-    run("uv", "run", "--with-requirements", ROOT / "tools/requirements-planner-maps.txt",
+    run("uv", "run", "--locked", "--group", "planner-maps",
         "python", "-m", "tools.planner_overlays", index, destination, cwd=ROOT)
 
 
@@ -202,4 +216,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    assets_step() if sys.argv[1:] == ["--step"] else main()

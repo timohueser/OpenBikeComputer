@@ -23,3 +23,17 @@ profiles = [
   "touring/less-climbing",
   "touring/shorter",
 ]
+
+[climate]
+# The first of the ten years of ERA5-Land that the climate layer reads.
+first_year = 2016
+
+[snow]
+# The first and the last season of HR-WSI Snow Phenology, each from 1 September. The catalogue
+# has the seasons 2016 to 2024 over Baden-Württemberg.
+seasons = [2016, 2024]
+
+[sun]
+# The grid cells along each tile edge and the directions of a horizon profile: specs/planner-sun-tiles.md.
+horizon_samples = 32
+horizon_directions = 72

@@ -8,8 +8,9 @@ import json
 import math
 from pathlib import Path
 import sqlite3
+import sys
 
-from . import data_registry, planner_maps as maps, planner_mvt as mvt
+from . import data_registry, planner_maps as maps, planner_mvt as mvt, step_request
 
 LAYERS = ("cycling", "hiking", "mtb", "access", "routes")
 # The basemap's deepest zoom. The planner draws deeper zooms from these tiles.
@@ -199,6 +200,13 @@ def derive(index, destination):
     return {"tiles": len(tiles), "bytes": sum(map(len, tiles.values()))}
 
 
+def step():
+    """The `obc data` step `planner/overlays`: `overlays.pmtiles` from the overlay index of `planner/routing`."""
+    request = step_request.read()
+    index = Path(request["layers"]["planner/routing"]["routing/overlays.sqlite"])
+    step_request.metrics(request, derive(index, Path(request["output"]) / "overlays.pmtiles"))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("index", type=Path, help="routing/overlays.sqlite")
@@ -208,4 +216,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    step() if sys.argv[1:] == ["--step"] else main()

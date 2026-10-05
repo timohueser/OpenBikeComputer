@@ -84,10 +84,19 @@ triggers = ["builder/presets/**", "data/regions/**", "data/sources.toml"]
 name = "obc-data"
 triggers = ["data/**"]
 
-# Its tests plan the checked-in live environment.
+# Its tests plan the checked-in live environment, and run the Python steps and read their imports.
 [[package]]
 name = "obc-data-steps"
-triggers = ["data/**"]
+triggers = [
+  "data/**",
+  "pyproject.toml",
+  "uv.lock",
+  "tools/step_request.py",
+  "tools/data_registry.py",
+  "tools/planner_*.py",
+  "apps/planner-search/setup.py",
+  "apps/planner-search/query/*.py",
+]
 
 [[package]]
 name = "obc-skin-preview"
@@ -244,9 +253,7 @@ command = "mkdir -p .artifacts/coverage/repository-tools && rm -rf .artifacts/py
 jobs = ["guards", "selection"]
 triggers = [
   "tools/requirements-test.txt",
-  "tools/requirements-planner-maps.txt",
-  "tools/requirements-planner-snow.txt",
-  "tools/requirements-planner-sun.txt",
+  "pyproject.toml",
   "tools/*.py",
   "tools/**/*.py",
   "tools/planner-regions/**",
