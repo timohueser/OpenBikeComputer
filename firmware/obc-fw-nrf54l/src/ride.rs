@@ -1121,7 +1121,10 @@ pub(crate) async fn run_app(
             if crate::flat_store::take_route_storage_full() {
                 app.offer_route_cleanup(crate::flat_store::catalog_scope(flat).store);
             }
-            if let Some(effect) = exec.effects.catalog.take() {
+            if let Some(effect) = exec.effects.catalog.take().filter(|effect| {
+                !matches!(effect, obc_app::catalog_state::CatalogEffect::ReadCatalog { .. })
+                    || app.catalog_operation_current(effect.token())
+            }) {
                 use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
                 match effect {
                     CatalogEffect::ClearPersonalData { token, store } => {
@@ -1176,7 +1179,7 @@ pub(crate) async fn run_app(
                     }
                     // Rebuild the flat route, trip and ride identities and remap the app's held
                     // indices by durable object id.
-                    CatalogEffect::ReadCatalog { token } if app.catalog_operation_current(token) => {
+                    CatalogEffect::ReadCatalog { token } => {
                         let old_source = crate::flat_store::route_source_key();
                         let read = if crate::arena::catalog_available() {
                             app.begin_catalog_refresh();
@@ -1228,7 +1231,6 @@ pub(crate) async fn run_app(
                             );
                         }
                     }
-                    CatalogEffect::ReadCatalog { .. } => {}
                     // The rider's removal of a route, a ride, or one step of a trip cascade, on the
                     // answering writer path. The effect is namespace-free, so the store resolves the
                     // head at that id and reports whether it was there. A full request queue is not
