@@ -1,0 +1,4 @@
+name = "Baden-Württemberg and Switzerland"
+kind = "box"
+# west, south, east, north
+box = [5.95, 45.8, 10.5, 49.85]

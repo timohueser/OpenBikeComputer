@@ -12,7 +12,8 @@ Authenticate `gh` for the query model release. Set the R2 credential in
 pins the OSM extract, map, elevation, and data-layer inputs, and routing profiles.
 
 Map and search builders need Linux, Java 21, Maven, PostgreSQL 17,
-PostGIS 3, osm2pgsql 2, zstd, and `nominatim-db==5.3.2`.
+PostGIS 3, osm2pgsql 2, zstd, and `nominatim-db` as pinned in
+[`data/env/live.toml`](../../../../../data/env/live.toml).
 Add PostgreSQL's binaries to `PATH`. Run as a normal user.
 Allow temporary database space; builders use every core.
 

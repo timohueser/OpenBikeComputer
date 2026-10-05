@@ -172,9 +172,11 @@ def specifications(config, prepared=None):
     supplied = json.loads((prepared / "inputs.json").read_bytes()) if prepared else None
     if supplied and (supplied["osm_sha256"] != osm or supplied["bounds"] != bounds):
         raise ValueError("Prepared inputs do not match the region recipe")
-    add("source-basemap", source_basemap, {"osm": osm, "protomaps": sources.PROTOMAPS, "archive": sources.PROTO_SHA},
+    # A pin read from data/env/live.toml is in no hashed path, so it is an input of the component it changes.
+    add("source-basemap", source_basemap, {"osm": osm, "protomaps": sources.PROTOMAPS, "archive": sources.PROTO_SHA,
+                                           "planetiler": maps.PINS["planetiler"]},
         config.get("auxiliary", {}), functions=[sources.basemap, sources.download])
-    add("source-search", source_search, {"osm": osm, "nominatim": "5.3.2", "photon": sources.PHOTON_SHA},
+    add("source-search", source_search, {"osm": osm, "nominatim": sources.NOMINATIM, "photon": sources.PHOTON_SHA},
         functions=[sources.search_dump, sources.download])
     # Of the query contract, records.py reads only the data kinds.
     data_kinds = sorted(json.loads((SEARCH / "query/contract.json").read_bytes())["data"])
@@ -207,7 +209,8 @@ def specifications(config, prepared=None):
         if name in config:
             paths = [maps.ROOT / f"tools/planner_{name}.py", maps.ROOT / f"tools/requirements-planner-{name}.txt"]
             if name == "sun": paths.extend(maps.ROOT / path for path in ("tools/planner_sun_horizons.py", "tools/planner_map_archive.py"))
-            add(name, build_layer, {}, layer_options(config, name), dependencies=["terrain"] if name == "sun" else [], paths=paths)
+            inputs = {"hansen-gfc": maps.PINS["hansen-gfc"]} if name == "snow" else {}
+            add(name, build_layer, inputs, layer_options(config, name), dependencies=["terrain"] if name == "sun" else [], paths=paths)
     return result
 
 

@@ -1,0 +1,436 @@
+//! `data/sources.toml`, the pins of `data/env/live.toml`, and the state of each source.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::date;
+
+/// In the order `obc data sources` lists them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    /// An input that steps read.
+    Data,
+    /// A file that ships to users as it is.
+    Asset,
+    /// Code that steps run; nothing of it ships.
+    Tool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FetchKind {
+    Http,
+    Osm,
+    Geofabrik,
+    Glo30,
+    Dtm,
+    Capture,
+    Github,
+    /// A person orders or downloads the files.
+    ByHand,
+    /// A person installs it, or another source's build brings it.
+    Installed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fetch {
+    pub kind: FetchKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// How upstream names a version, and so what a pin of the source looks like.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VersionScheme {
+    /// `YYYY-MM-DD`: the only scheme that gives a pin an age.
+    Date,
+    Release,
+    Commit,
+    /// The SHA-256 of the file.
+    Digest,
+}
+
+/// How old a pin may get before the source is stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "RefreshRepr", into = "RefreshRepr")]
+pub enum Refresh {
+    Days(u16),
+    /// Never stale: a person moves the pin.
+    Manual,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(untagged)]
+enum RefreshRepr {
+    Days(i64),
+    Word(String),
+}
+
+impl TryFrom<RefreshRepr> for Refresh {
+    type Error = String;
+    fn try_from(repr: RefreshRepr) -> Result<Self, String> {
+        match repr {
+            RefreshRepr::Days(days @ (7 | 30 | 90 | 365)) => Ok(Refresh::Days(days as u16)),
+            RefreshRepr::Word(word) if word == "manual" => Ok(Refresh::Manual),
+            _ => Err("`refresh` is 7, 30, 90, 365 or \"manual\"".into()),
+        }
+    }
+}
+
+impl From<Refresh> for RefreshRepr {
+    fn from(refresh: Refresh) -> Self {
+        match refresh {
+            Refresh::Days(days) => RefreshRepr::Days(days.into()),
+            Refresh::Manual => RefreshRepr::Word("manual".into()),
+        }
+    }
+}
+
+impl std::fmt::Display for Refresh {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refresh::Days(days) => write!(f, "{days} d"),
+            Refresh::Manual => f.write_str("manual"),
+        }
+    }
+}
+
+/// What a fetch needs before upstream answers: environment variables, or a file.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Credential {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+}
+
+impl Credential {
+    /// Whether this machine has it: every variable set and not empty, and the file present.
+    pub fn present(&self) -> bool {
+        self.env.iter().all(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+            && self.file.as_deref().is_none_or(|file| expand_home(file).is_file())
+    }
+
+    fn describe(&self) -> String {
+        self.env.iter().cloned().chain(self.file.clone()).collect::<Vec<_>>().join(" and ")
+    }
+}
+
+fn expand_home(path: &str) -> PathBuf {
+    match (path.strip_prefix("~/"), std::env::var_os("HOME")) {
+        (Some(rest), Some(home)) => Path::new(&home).join(rest),
+        _ => PathBuf::from(path),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Source {
+    pub id: String,
+    pub kind: Kind,
+    /// An SPDX id or `LicenseRef-…`. Unset blocks a data source or an asset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub licence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub licence_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obligations: Option<String>,
+    pub fetch: Fetch,
+    /// Hosts the fetch reaches besides the host of `fetch.url`. `*.example.org` is any subdomain.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<String>,
+    pub version: VersionScheme,
+    pub refresh: Refresh,
+    pub redistribute: bool,
+    /// R2 keeps a copy, because upstream cannot give a version again.
+    #[serde(default)]
+    pub r2_copy: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<Credential>,
+}
+
+impl Source {
+    fn validate(&self) -> Result<(), String> {
+        let fail = |why: &str| Err(format!("source `{}`: {why}", self.id));
+        if !crate::is_kebab(&self.id) {
+            return fail("the id is not lowercase kebab-case");
+        }
+        if let Some(licence) = &self.licence {
+            if !is_licence_expression(licence) {
+                return fail("`licence` is an SPDX expression: ids or `LicenseRef-…` with AND, OR, WITH and ( )");
+            }
+        }
+        match (&self.fetch.url, self.fetch.kind) {
+            (None, FetchKind::Installed) => {}
+            (Some(_), FetchKind::Installed) => return fail("an `installed` fetch has no `url`"),
+            (None, _) => return fail("`fetch.url` is missing"),
+            (Some(url), _) if !url.starts_with("https://") => return fail("`fetch.url` is not https"),
+            _ => {}
+        }
+        let host = |h: &str| {
+            !h.is_empty() && h.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || ".-".contains(c))
+        };
+        if let Some(bad) = self.hosts.iter().find(|h| !host(h.strip_prefix("*.").unwrap_or(h))) {
+            return fail(&format!("`{bad}` in `hosts` is not a host name"));
+        }
+        if matches!(self.refresh, Refresh::Days(_)) && self.version != VersionScheme::Date {
+            return fail("a refresh in days needs `version = \"date\"`: only a date pin has an age");
+        }
+        if self.r2_copy && !self.redistribute {
+            return fail("`r2_copy` needs `redistribute`: R2 is public");
+        }
+        if let Some(credential) = &self.credential {
+            if credential.env.is_empty() == credential.file.is_none() {
+                return fail("a credential is `env` or `file`");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The SPDX expression grammar: `id [WITH id]`, `( expr )`, joined by `AND` or `OR`.
+fn is_licence_expression(text: &str) -> bool {
+    let spaced = text.replace('(', " ( ").replace(')', " ) ");
+    let tokens: Vec<&str> = spaced.split_whitespace().collect();
+    let mut at = 0;
+    expression(&tokens, &mut at) && at == tokens.len()
+}
+
+fn expression(tokens: &[&str], at: &mut usize) -> bool {
+    loop {
+        if !term(tokens, at) {
+            return false;
+        }
+        match tokens.get(*at) {
+            Some(&("AND" | "OR")) => *at += 1,
+            _ => return true,
+        }
+    }
+}
+
+fn term(tokens: &[&str], at: &mut usize) -> bool {
+    let id = |token: Option<&&str>| {
+        token.is_some_and(|t| {
+            !["AND", "OR", "WITH", "(", ")"].contains(t)
+                && t.chars().all(|c| c.is_ascii_alphanumeric() || "-.+".contains(c))
+        })
+    };
+    if tokens.get(*at) == Some(&"(") {
+        *at += 1;
+        let inner = expression(tokens, at) && tokens.get(*at) == Some(&")");
+        *at += 1;
+        return inner;
+    }
+    if !id(tokens.get(*at)) {
+        return false;
+    }
+    *at += 1;
+    if tokens.get(*at) == Some(&"WITH") {
+        *at += 1;
+        if !id(tokens.get(*at)) {
+            return false;
+        }
+        *at += 1;
+    }
+    true
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourcesFile {
+    source: Vec<Source>,
+}
+
+/// Parse and validate `data/sources.toml`.
+pub fn parse_sources(text: &str) -> Result<Vec<Source>, String> {
+    let file: SourcesFile = toml::from_str(text).map_err(|e| format!("data/sources.toml: {e}"))?;
+    let mut seen = BTreeSet::new();
+    for source in &file.source {
+        source.validate()?;
+        if !seen.insert(source.id.as_str()) {
+            return Err(format!("source `{}` is listed twice", source.id));
+        }
+    }
+    Ok(file.source)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnvFile {
+    #[serde(default)]
+    pins: BTreeMap<String, String>,
+}
+
+/// Parse the `[pins]` of an environment file: source id to version.
+pub fn parse_pins(text: &str, sources: &[Source]) -> Result<BTreeMap<String, String>, String> {
+    let file: EnvFile = toml::from_str(text).map_err(|e| e.to_string())?;
+    for (id, pin) in &file.pins {
+        let source = sources.iter().find(|s| &s.id == id).ok_or_else(|| format!("pin `{id}` names no source"))?;
+        if source.version == VersionScheme::Date && date::parse(pin).is_none() {
+            return Err(format!("pin `{id}` = `{pin}` is not a YYYY-MM-DD date"));
+        }
+    }
+    Ok(file.pins)
+}
+
+/// The sources and the live pins of the repository at `root`.
+pub struct Registry {
+    pub sources: Vec<Source>,
+    pub pins: BTreeMap<String, String>,
+}
+
+impl Registry {
+    pub fn load(root: &Path) -> Result<Self, String> {
+        let read = |path: &Path| std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()));
+        let sources = parse_sources(&read(&root.join("data/sources.toml"))?)?;
+        let pins = parse_pins(&read(&root.join("data/env/live.toml"))?, &sources)
+            .map_err(|e| format!("data/env/live.toml: {e}"))?;
+        Ok(Self { sources, pins })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum State {
+    Ok,
+    Stale,
+    Blocked,
+}
+
+impl std::fmt::Display for State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            State::Ok => "ok",
+            State::Stale => "stale",
+            State::Blocked => "blocked",
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Status {
+    pub state: State,
+    pub reason: Option<String>,
+    /// Days since the pin's date; only a date pin has one.
+    pub age_days: Option<i64>,
+}
+
+/// The state of `source` at `today`, from its pin, its policy, its licence and its credential.
+pub fn status(source: &Source, pin: Option<&str>, today: i64, credential_present: bool) -> Status {
+    let age_days = pin.filter(|_| source.version == VersionScheme::Date).and_then(date::parse).map(|day| today - day);
+    let (state, reason) = if source.kind != Kind::Tool && source.licence.is_none() {
+        (State::Blocked, Some("no licence recorded".to_string()))
+    } else if let Some(credential) = source.credential.as_ref().filter(|_| !credential_present) {
+        (State::Blocked, Some(format!("credential missing: {}", credential.describe())))
+    } else {
+        match (source.refresh, age_days) {
+            (Refresh::Days(max), Some(age)) if age > i64::from(max) => {
+                (State::Stale, Some(format!("{age} d > {max} d")))
+            }
+            _ => (State::Ok, None),
+        }
+    };
+    Status { state, reason, age_days }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OSM: &str = r#"
+        [[source]]
+        id = "osm"
+        kind = "data"
+        licence = "ODbL-1.0"
+        fetch = { kind = "osm", url = "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf" }
+        version = "date"
+        refresh = 7
+        redistribute = true
+    "#;
+
+    fn osm() -> Source {
+        parse_sources(OSM).unwrap().remove(0)
+    }
+
+    #[test]
+    fn an_unknown_field_is_rejected() {
+        let err = parse_sources(&format!("{OSM}licence_text = \"x\"\n")).unwrap_err();
+        assert!(err.contains("licence_text"), "{err}");
+    }
+
+    #[test]
+    fn a_refresh_in_days_needs_a_date_version_and_a_known_policy() {
+        let release = OSM.replace("version = \"date\"", "version = \"release\"");
+        assert!(parse_sources(&release).unwrap_err().contains("needs `version = \"date\"`"));
+        assert!(parse_sources(&OSM.replace("refresh = 7", "refresh = 14")).is_err());
+        assert!(parse_sources(&OSM.replace("refresh = 7", "refresh = \"manual\"")).is_ok());
+    }
+
+    #[test]
+    fn a_licence_is_an_spdx_expression() {
+        for good in [
+            "MIT",
+            "OFL-1.1 AND MIT",
+            "(MIT OR Apache-2.0) AND LicenseRef-x",
+            "GPL-2.0-only WITH Classpath-exception-2.0",
+        ] {
+            assert!(is_licence_expression(good), "{good}");
+        }
+        for bad in ["", "Open data", "MIT AND", "(MIT", "MIT)", "MIT WITH", "AND MIT", "MIT OR OR GPL-3.0-only"] {
+            assert!(!is_licence_expression(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_r2_copy_needs_redistribution() {
+        let text = OSM.replace("redistribute = true", "redistribute = false\nr2_copy = true");
+        assert!(parse_sources(&text).unwrap_err().contains("r2_copy"));
+    }
+
+    #[test]
+    fn a_pin_is_stale_when_older_than_its_policy() {
+        let today = date::parse("2024-01-10").unwrap();
+        let fresh = status(&osm(), Some("2024-01-03"), today, true);
+        assert_eq!((fresh.state, fresh.age_days), (State::Ok, Some(7)));
+        let old = status(&osm(), Some("2024-01-02"), today, true);
+        assert_eq!((old.state, old.reason.as_deref()), (State::Stale, Some("8 d > 7 d")));
+        let manual = Source { refresh: Refresh::Manual, ..osm() };
+        assert_eq!(status(&manual, Some("2020-01-01"), today, true).state, State::Ok);
+        assert_eq!(status(&osm(), None, today, true).state, State::Ok);
+    }
+
+    #[test]
+    fn a_missing_licence_or_credential_blocks() {
+        let today = date::parse("2024-01-10").unwrap();
+        let unlicensed = Source { licence: None, ..osm() };
+        assert_eq!(status(&unlicensed, Some("2024-01-09"), today, true).state, State::Blocked);
+        let tool = Source { kind: Kind::Tool, ..unlicensed };
+        assert_eq!(status(&tool, None, today, true).state, State::Ok);
+        let keyed = Source { credential: Some(Credential { env: vec!["KEY".into()], file: None }), ..osm() };
+        let blocked = status(&keyed, None, today, false);
+        assert_eq!((blocked.state, blocked.reason.as_deref()), (State::Blocked, Some("credential missing: KEY")));
+    }
+
+    #[test]
+    fn a_pin_names_a_source_and_a_date_source_pins_a_date() {
+        let sources = [osm()];
+        assert!(parse_pins("[pins]\nosm = \"2024-01-01\"\n", &sources).is_ok());
+        assert!(parse_pins("[pins]\nosm = \"latest\"\n", &sources).unwrap_err().contains("not a YYYY-MM-DD"));
+        assert!(parse_pins("[pins]\nland = \"2024-01-01\"\n", &sources).unwrap_err().contains("names no source"));
+    }
+
+    #[test]
+    fn the_checked_in_registry_loads() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let registry = Registry::load(&root).unwrap();
+        assert!(registry.sources.iter().any(|s| s.id == "osm-planet"));
+    }
+}

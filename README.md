@@ -151,16 +151,15 @@ over BLE and USB. The custom PCB and enclosure are still under development. KiCa
 | `companion-ios/` | SwiftUI companion app and shared iOS package |
 | `specs/` | Normative binary, wire, and vector contracts |
 | `fixtures/` | Scenario registry, source provenance, and fixture builders |
+| `data/` | External data sources with their licences, regions, and environment pins |
 | `docs/` | Public documentation, website, and project blog |
 | `hardware/` | KiCad schematics, PCB layouts, footprints, and component models |
 | `ops/` | Service configuration, probes, and runbooks |
 | `tools/` | The `obc` development command and repository tooling |
 
-The root Cargo workspace contains the shared `firmware/`, `host/`, and `apps/` crates. The nRF54L
-board image, bootloader, and Tauri desktop app use standalone Cargo roots so that their platform
-dependencies do not burden normal host builds. The
-[architecture guide](https://openbikecomputer.com/docs/software/architecture/) explains the boundaries
-and the shared render path.
+The root Cargo workspace holds the `firmware/`, `host/`, and `apps/` crates. The nRF54L board image,
+bootloader, and Tauri desktop app are standalone Cargo roots for their platform dependencies. The
+[architecture guide](https://openbikecomputer.com/docs/software/architecture/) explains the boundaries.
 
 ## Other open bike computers
 
@@ -183,6 +182,7 @@ Contributions are always welcome! This project is in the very early stages and m
 
 ## License
 
-Software is available under [GPL-3.0-only](LICENSE). Hardware design sources are available under
+Software is available under [GPL-3.0-only](LICENSE), except `host/obc-data`, which is MIT OR
+Apache-2.0 and depends on no GPL crate. Hardware design sources are available under
 [CERN-OHL-S-2.0](LICENSE.hardware). Third-party notices are listed in
 [`THIRD-PARTY.md`](THIRD-PARTY.md).

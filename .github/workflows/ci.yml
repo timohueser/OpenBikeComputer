@@ -129,6 +129,8 @@ jobs:
         run: python3 tools/check_one_home.py
       - name: Shared screen drawing helpers live in screen/vocab
         run: python3 tools/check_screen_vocabulary.py
+      - name: Every fetched host is a declared data source
+        run: python3 tools/check_data_sources.py
       - name: Prose budgets, published pages and links
         run: python3 tools/prose.py --check
       - name: Issue numbers and dates live in the pull request, not the tree
@@ -733,6 +735,9 @@ jobs:
       # one where a bad licence or a live advisory matters most.
       - name: cargo-deny (obc-desktop app)
         run: cargo deny --manifest-path apps/obc-desktop/Cargo.toml --all-features --config deny.toml check
+      # deny.toml skips the repository's own crates, so it cannot see obc-data reach one.
+      - name: obc-data depends on no GPL crate
+        run: python3 tools/check_obc_data_licence.py
       # deny.toml gates which licences may enter the tree; THIRD-PARTY.md is the *text* those
       # licences require us to hand over with a binary (#1149). Both belong to the same job:
       # the dependency bump that changes one changes the other, and a stale notice file is only

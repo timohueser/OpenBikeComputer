@@ -12,9 +12,11 @@ import tempfile
 from . import planner_maps as maps
 from .planner_runtime import digest, open_url
 
-PROTOMAPS = "42ffaaa4a85a41bfcb23e43cc0f5b492a5eca123"
+PROTOMAPS = maps.PINS["protomaps-basemaps"]
 PROTO_SHA = "f89ff8ee6aff13baf60c83b5e98d3811ddb946cc1089d437c435885395764696"
-PHOTON_URL = "https://github.com/komoot/photon/releases/download/1.3.0/photon-1.3.0.jar"
+PHOTON = maps.PINS["photon"]
+PHOTON_URL = f"https://github.com/komoot/photon/releases/download/{PHOTON}/photon-{PHOTON}.jar"
+NOMINATIM = maps.PINS["nominatim"]
 PHOTON_SHA = "a89707c0045e4807b2a1180e132e68e108d998709f48b6c94b98a6e281f571a5"
 
 
@@ -51,7 +53,7 @@ def basemap(osm, output, bounds, cache, auxiliary=None):
     maps.run("java", "-Xmx6g", "-jar", jar, "--download", f"--osm-path={osm}",
              f"--output={output}", "--bounds=" + ",".join(map(str, bounds)),
              "--maxzoom=14", f"--threads={os.cpu_count()}", cwd=source / "tiles")
-    return {"protomaps_commit": PROTOMAPS, "planetiler": "0.10.2",
+    return {"protomaps_commit": PROTOMAPS, "planetiler": maps.PINS["planetiler"],
             "auxiliary": {p.name: {"sha256": digest(p), "bytes": p.stat().st_size}
                           for p in sorted(directory.iterdir()) if p.is_file()}}
 
@@ -60,8 +62,8 @@ def search_dump(osm, output, cache, port=5434):
     if os.geteuid() == 0:
         raise ValueError("Run source preparation as a normal user. PostgreSQL cannot run as root.")
     version = subprocess.check_output(["nominatim", "--version"], text=True)
-    if "5.3.2" not in version:
-        raise ValueError("Install nominatim-db==5.3.2 in the build environment.")
+    if NOMINATIM not in version:
+        raise ValueError(f"Install nominatim-db=={NOMINATIM} in the build environment.")
     photon = download(PHOTON_URL, cache / "photon.jar", PHOTON_SHA)
     pg = Path(subprocess.check_output(["pg_config", "--bindir"], text=True).strip())
     maps.check_port(port)
@@ -107,5 +109,5 @@ def search_dump(osm, output, cache, port=5434):
         finally:
             # Not through maps.run: a stopping bake stops those processes, and PostgreSQL must still stop.
             subprocess.run([pg / "pg_ctl", "-D", database, "stop", "-m", "fast"], check=True)
-    return {"nominatim": "5.3.2", "photon": "1.3.0", "photon_sha256": PHOTON_SHA,
+    return {"nominatim": NOMINATIM, "photon": PHOTON, "photon_sha256": PHOTON_SHA,
             "dump_sha256": digest(output), "importance": "Nominatim default; no external Wikipedia ranks"}

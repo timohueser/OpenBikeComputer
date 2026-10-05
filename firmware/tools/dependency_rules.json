@@ -42,6 +42,7 @@
       "obc-bake",
       "obc-bench",
       "obc-companion-core",
+      "obc-data",
       "obc-dem",
       "obc-desktop",
       "obc-file-source",

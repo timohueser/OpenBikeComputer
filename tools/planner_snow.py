@@ -46,7 +46,7 @@ SOURCES = {
                           "attribution": f"© European Union, Copernicus Land Monitoring Service {dt.date.today().year}, "
                                          "European Environment Agency (EEA): HR-WSI Snow Phenology"},
 }
-CANOPY = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-v1.11/Hansen_GFC-2023-v1.11_treecover2000_{}.tif"
+CANOPY = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-{0}/Hansen_GFC-2023-{0}_treecover2000_{{}}.tif".format(maps.PINS["hansen-gfc"])
 # The owner chose 75 % canopy cover as "dense": below it, MODIS still sees the snow between the trees.
 DENSE_CANOPY_PERCENT = 75
 STAC = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
