@@ -11,12 +11,6 @@ export interface LodTier {
     // tier's finest on-screen scale; absent or 0 means off. Lines are never culled, and
     // the packer ignores it on the finest tier, which has no coarser fallback.
     min_area_px?: number;
-    // Simplify this tier's plain fills as one shared coverage rather than feature by
-    // feature, so a boundary two fills share is cut once and neighbours stay glued
-    // instead of tearing open into backdrop slivers, and min_area_px becomes an
-    // elimination threshold rather than a drop. Costs bake time; the shipped preset
-    // turns it on for its two coarsest tiers.
-    coverage_simplify?: boolean;
     // Drop lines shorter than this many kilometres, measured after same-class fragments
     // are stitched together, which needs `merge_lines`. It clears the junction stubs and
     // roundabout arms stitching could not absorb and keeps the long-distance skeleton.
@@ -131,7 +125,6 @@ export function normalizeConfig(raw: Record<string, unknown>): {
         max_mpp: i === 0 ? null : (l.max_mpp ?? null),
         simplify: l.simplify ?? 0,
         ...(l.min_area_px ? { min_area_px: l.min_area_px } : {}),
-        ...(l.coverage_simplify ? { coverage_simplify: true } : {}),
         ...(l.min_line_km ? { min_line_km: l.min_line_km } : {}),
     }));
     cfg.features = cfg.features ?? {};
@@ -172,9 +165,7 @@ export function buildConfigForSubmit(
             // Emit only a positive footprint floor; the finest tier's value is ignored by
             // the packer, so leaving it off keeps the submitted config clean.
             if (l.min_area_px && i < n - 1) tier.min_area_px = l.min_area_px;
-            // Same rule: emit the coverage pass only where it is on.
-            if (l.coverage_simplify) tier.coverage_simplify = true;
-            // Same rule again: a zero threshold is the off value.
+            // Same rule: a zero threshold is the off value.
             if (l.min_line_km) tier.min_line_km = l.min_line_km;
             return tier;
         }),
