@@ -103,8 +103,9 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | --- | --- |
 | `objects/<ab>/<sha256>` | One file, named by the lowercase hex SHA-256 of its bytes; `<ab>` is its first two characters. Read-only |
 | `snapshots/<source>/<version>.json` | The snapshot record of one source version |
+| `layers/<key>.json` | The receipt of the layer with that key, see [Layers](#layers) |
 | `upstream/<source>.json` | The last upstream check of a source: `checked` (seconds since 1970-01-01 UTC), `version` (a string, or `null` when the check failed) and `error` (only when it failed) |
-| `partial/` | Downloads that are not complete, and the validators that resume them |
+| `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write |
 | `locks/` | One lock file per key |
 
 Rules:
@@ -113,7 +114,8 @@ Rules:
   rename after the digest check.
 - A record goes to a temporary file in its directory and replaces the old record with one
   rename.
-- One process at a time downloads a URL, and one process at a time writes a snapshot record.
+- One process at a time downloads a URL, one process at a time writes a snapshot record, and one
+  process at a time builds a layer key.
 
 A snapshot record is a JSON object:
 
@@ -177,6 +179,99 @@ The store keeps its answer, or its failure, for one hour.
 | `github`, `release` | The GitHub API: the tag of the newest release that has the asset of the URL |
 | `http`, `geofabrik` or `glo30`, `date`, and a URL without `{name}` | `HEAD` of the URL; the `Last-Modified` day |
 | Every other source | None; the source cannot be checked |
+
+## Layers
+
+A step makes one layer from snapshots, the layers of other steps and options. The engine builds
+the steps in dependency order. It builds a step only when the store has no receipt for the key
+of the step, or when an object of that receipt is missing.
+
+A step declares:
+
+| Field | Meaning |
+| --- | --- |
+| `name` | The layer name: lowercase kebab-case segments joined by `/` |
+| `inputs` | Snapshots, as `source` and `version`, and the layers of other steps, by name |
+| `options` | A JSON object |
+| `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates |
+| `outputs` | Paths in the output directory. A path is a file, or a directory whose files are all part of the layer. The step must write each path and no other file |
+| `run` | A Rust function in the process, or a command: a program and its arguments |
+
+### Keys
+
+The digest of a list of files is the SHA-256 of the text that `sha256sum` writes for them: one
+line `<sha256>  <name>` with a final newline per file, in byte order of the names.
+
+- The digest of a snapshot input lists its files by `name`.
+- The digest of a layer lists its files by `path`.
+- The code hash lists the code files by their path relative to the repository root, with `/`.
+  A directory adds every file below it, but no entry whose name starts with `.` and no
+  `__pycache__`. A crate adds its `Cargo.toml`, `build.rs` and `src/`. Each path dependency
+  that is not a dev-dependency adds the same, and so do its own path dependencies, as
+  `cargo metadata --no-deps` lists them. A path dependency must be a workspace member.
+  `Cargo.lock` is code only when the step declares it.
+
+The key is the SHA-256 of this JSON object, with the keys of each object in byte order and no
+whitespace, as `json.dumps(spec, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`
+writes it:
+
+| Key | Value |
+| --- | --- |
+| `step` | The layer name |
+| `command` | The program and its arguments, or `null` for a Rust step |
+| `inputs` | One `{"kind", "name", "digest"}` per input, sorted by `kind`, then `name`. `kind` is `snapshot` or `layer`; `name` is the source id or the layer name |
+| `options` | The options |
+| `code` | The code hash |
+
+An input layer enters a key with its digest, not with its key. A rebuild that gives the same
+files gives the same digest, so the keys of the layers that read it do not change, and the
+engine reuses them. A snapshot version enters a key the same way, by the digest of its files.
+
+### The step contract
+
+A step gets a request. A command reads it as JSON on standard input; a Rust function gets the
+same fields.
+
+| Key | Value |
+| --- | --- |
+| `step` | The layer name |
+| `snapshots` | `{source: {file name: object path}}` |
+| `layers` | `{layer name: {path in the layer: object path}}` |
+| `options` | The options |
+| `output` | An empty directory. The layer is the files that the step writes in it |
+| `metrics` | A path. The step can write a JSON object there, for example the size of each section |
+
+A command starts in the repository root. Its standard output and standard error go to the
+standard error of the engine. Exit status 0 is success. The objects are read-only. While a step
+runs, `output` and `metrics` are in `partial/layer-<key>/`.
+
+### Offline
+
+Only fetchers use the network. On Linux, the engine starts a command in a new user namespace
+that maps the user to itself, and in a new network namespace. The loopback interface of that
+namespace is down, so each connection fails. When the kernel refuses the namespaces, the step
+fails; there is no override. Ubuntu refuses them by default:
+`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` permits them. On other systems, a
+command runs with the network. A Rust step gets no network client, and must not open a
+connection. A step that needs a package or a tool finds it installed, or reads it as a snapshot.
+
+### Receipt
+
+`layers/<key>.json` is the receipt of one layer, a JSON object:
+
+| Key | Meaning |
+| --- | --- |
+| `step`, `key`, `options`, `code`, `command` | As in the key |
+| `inputs` | As in the key; a snapshot also has `version` |
+| `digest` | The digest of `files` |
+| `files` | One item per file: `path` in the layer, `size` in bytes and `sha256`, sorted by `path` |
+| `built` | `YYYY-MM-DDTHH:MM:SSZ` |
+| `wall_ms` | The time from start to end, in milliseconds |
+| `cpu_ms` | User and system time in milliseconds of the command and the children it waited for (`wait4`). For a Rust step, of the whole process, so it is exact only while no other step runs. `null` when the system does not report it |
+| `peak_rss_bytes` | The peak resident set of the command or of a child it waited for. For a Rust step, the peak of the process when the step raised it, else `null` |
+| `bytes_in` | The size of the input files |
+| `bytes_out` | The size of `files` |
+| `metrics` | The JSON object the step wrote, or `{}` |
 
 ## Commands
 

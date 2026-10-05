@@ -266,6 +266,10 @@ jobs:
         with:
           path: ~/.cache/openbikecomputer/fixtures
           key: obc-fixtures-${{ hashFiles('fixtures/catalog.toml') }}
+      # An obc-data command step runs in its own user and network namespace, and its tests must
+      # not skip here. Ubuntu's AppArmor refuses unprivileged user namespaces by default.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # Each section is one step so it keeps its own step name and result artifact; the file
       # is the same one `obc check test` runs. Only the two nextest steps are instrumented:
       # their lcov is what the coverage ratchet reads, and the bench gate's release binary
