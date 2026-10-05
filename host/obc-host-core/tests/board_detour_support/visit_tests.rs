@@ -87,7 +87,7 @@ impl VisitHarness {
             if let Some(effect) = self.catalog.take() {
                 let outcome = match effect {
                     CatalogEffect::ReadCatalog { token } => {
-                        flat_store::load_routes(self.h.store, &mut self.h.app);
+                        flat_store::load_routes(self.h.store, &mut self.h.app, &mut ());
                         CatalogOutcome::CatalogRead {
                             token,
                             scope: Some(StoreRevision {
@@ -427,7 +427,7 @@ fn visit_return_uses_one_real_connector_and_keeps_original_tail() {
     put(h.h.store, ObjectKind::Route, &bytes, Some((id, revision)));
     h.h.original = Some(h.h.store.source(id, None).unwrap());
     flat_store::mount_sources(h.h.store, h.h.original.as_ref().unwrap(), h.h.map.as_ref().unwrap());
-    flat_store::load_routes(h.h.store, &mut h.h.app);
+    flat_store::load_routes(h.h.store, &mut h.h.app, &mut ());
     h.h.app.activate_route(0);
     h.pass();
     let map = flat_store::planner_map_key(h.h.store);
