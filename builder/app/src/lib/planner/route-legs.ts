@@ -47,6 +47,9 @@ function stitch(legs: Leg[], profile: string): EngineRoute {
     return route;
 }
 
+const legKeys = (points: Coordinate[], turnarounds: number[], profile: string) =>
+    points.slice(1).map((to, k) => JSON.stringify([profile, points[k], to, turnarounds.includes(k), turnarounds.includes(k + 1)]));
+
 /** Routed legs by profile, end points and turnarounds, so an edit requests only the legs that it changed. */
 export class LegCache {
     private legs = new Map<string, Leg>();
@@ -61,7 +64,7 @@ export class LegCache {
         const turn = (index: number) => turnarounds.includes(index);
         // A turnaround joins legs in either direction.
         const joins = (a: Leg | undefined, b: Leg | undefined, at: number) => !a || !b || a.package === b.package && (turn(at) || a.end === b.start);
-        const keys = points.slice(1).map((to, k) => JSON.stringify([profile, points[k], to, turn(k), turn(k + 1)]));
+        const keys = legKeys(points, turnarounds, profile);
         const legs = keys.map(key => whole ? undefined : this.legs.get(key));
         for (let k = 1; k < legs.length; k++) if (!joins(legs[k - 1], legs[k], k)) legs[k] = undefined;
         let first = legs.findIndex(leg => !leg);
@@ -93,6 +96,11 @@ export class LegCache {
         }
         this.keep(keys, legs as Leg[]);
         return stitch(legs as Leg[], profile);
+    }
+
+    /** Keeps the legs of `route`, the answer for `points` without turnarounds, so a run through those points needs no request. */
+    add(points: Coordinate[], route: EngineRoute): void {
+        this.keep(legKeys(points, [], route.profile), route.legs.map(leg => cut(route, leg)));
     }
 
     /** Keeps the legs of a route as the most recent. When the cache holds too many coordinates, the least recently used

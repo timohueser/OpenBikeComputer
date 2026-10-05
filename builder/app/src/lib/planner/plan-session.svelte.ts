@@ -75,6 +75,15 @@ export class PlanSession {
     /** The shown line belongs to an earlier trip. */
     readonly stale = $derived(this.shown.trip !== (this.preview?.trip ?? this.trip));
 
+    // The alternatives found for one trip, and by routing key the trips that it and its picks gave: the checked route and
+    // the shaping point that a corridor pick added.
+    private options = $state.raw<{ routes: EngineRoute[]; picks: Record<string, { id: string; via?: string }> } | null>(null);
+    /** The alternatives of the trip and the id of the checked one, when they are known. */
+    readonly alternatives = $derived.by(() => {
+        const pick = this.options?.picks[routingKey(this.trip)];
+        return pick && { routes: this.options!.routes, choice: pick.id };
+    });
+
     private readonly legs = new LegCache();
     private library?: PlanLibrary;
     // The calculation in flight, or the one that failed, so a label edit neither restarts nor clears it.
@@ -165,23 +174,33 @@ export class PlanSession {
 
     /** Requests the alternatives of the line when they are not known. Returns the cancel of that request. */
     findAlternatives(): (() => void) | undefined {
-        const trip = this.trip, line = this.line;
-        if (!line || line.alternativesReady) return;
+        const trip = this.trip, primary = this.line?.primary;
+        if (!primary || this.alternatives) return;
         const abort = new AbortController();
         this.alternativesStatus = 'Finding alternative routes…';
-        requestAlternatives(trip, line, abort.signal).then(alternatives => {
+        requestAlternatives(trip, primary, abort.signal).then(routes => {
             if (abort.signal.aborted) return;
-            this.remember(routingKey(trip), { ...line, alternatives, alternativesReady: true });
+            this.options = { routes, picks: { [routingKey(trip)]: { id: primary.id } } };
             this.alternativesStatus = '';
         }, error => { if (!abort.signal.aborted) this.alternativesStatus = error instanceof Error ? error.message : 'Alternatives unavailable.'; });
         return () => abort.abort();
     }
 
-    /** A corridor alternative becomes one shaping point at its `via`, and another profile becomes the preset. The route of
-     * the changed trip is then the alternative. */
-    pickAlternative(route: EngineRoute): void {
-        if (route.via) this.commit(insertPoint(this.trip, orderedRoutePoints(this.trip).at(-1)!.id, route.via));
-        else this.commit({ ...this.trip, preset: presetName(route.profile) });
+    /** Applies one of the alternatives to the trip they were found for: a corridor becomes one shaping point at its `via`,
+     * the profile of the route becomes the preset. The list stays, with the pick checked. A profile route keeps its legs,
+     * so its line needs no request. False when the route is already the checked one. */
+    pickAlternative(route: EngineRoute): boolean {
+        const options = this.options, current = options?.picks[routingKey(this.trip)];
+        if (!options || !current || current.id === route.id) return false;
+        const { trip } = this, via = current.via;
+        const found = via ? { ...trip, points: trip.points.filter(p => p.id !== via), routeOrder: trip.routeOrder.filter(id => id !== via) } : trip;
+        const preset = { ...found, preset: presetName(route.profile) };
+        const next = route.via ? insertPoint(preset, orderedRoutePoints(preset).at(-1)!.id, route.via) : preset;
+        if (!route.via) this.legs.add(orderedRoutePoints(next).map(p => p.coordinate), route);
+        const added = next.points.find(p => !found.points.some(q => q.id === p.id));
+        this.options = { ...options, picks: { ...options.picks, [routingKey(next)]: { id: route.id, via: added?.id } } };
+        this.commit(next);
+        return true;
     }
 
     retry(): void {
@@ -354,6 +373,7 @@ export class PlanSession {
         this.cancelPreview();
         this.plan = plan;
         this.last = null;
+        this.options = null;
         this.savedAt = plan.revision ? plan.updatedAt : null;
         this.saveError = '';
         this.show([plan.trip], 0);

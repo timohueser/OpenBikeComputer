@@ -46,12 +46,12 @@ describe('routing integration', () => {
         const line = await calculateLine(plan, new AbortController().signal, new LegCache());
         expect(fetch).toHaveBeenCalledTimes(1);
         expect(JSON.parse(fetch.mock.calls[0][1].body).alternatives).toBe(false);
-        expect(line.alternativesReady).toBe(false);
+        expect(line.primary?.geometry).toEqual(route.geometry);
         expect(line.edges).toEqual({ surfaces: ['Paved', 'Gravel'], pushing: [false, true] });
         expect(line.package).toBe('test');
         expect(JSON.parse(fetch.mock.calls[0][1].body).points).toEqual(plan.points.map(p => p.coordinate));
         fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ routes: [{ ...answer, id: 'shorter', reason: 'shorter' }] }) });
-        const alternatives = await requestAlternatives(plan, line, new AbortController().signal);
+        const alternatives = await requestAlternatives(plan, line.primary!, new AbortController().signal);
         const { alternatives: _primaryOnly, ...request } = JSON.parse(fetch.mock.calls[0][1].body);
         expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ ...request, alternatives_only: true });
         expect(alternatives.map(r => r.id)).toEqual(['primary', 'shorter']);

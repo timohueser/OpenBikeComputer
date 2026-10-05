@@ -68,7 +68,7 @@ describe('plan session', () => {
         expect(routes.fetch).toHaveBeenCalledTimes(requests);
     });
 
-    it('picks a corridor as one shaping point at its via, and another profile as the preset', async () => {
+    it('keeps the alternatives through picks: a corridor is one shaping point, a profile the preset, and its legs need no request', async () => {
         const via: Coordinate = [8.05, 48.02];
         const routes = service([alternative('corridor', 'corridor', 'touring', [[8, 48], via, [8.1, 48]], via),
             alternative('shorter', 'shorter', 'touring/shorter', [[8, 48], [8.1, 48]])]);
@@ -76,19 +76,28 @@ describe('plan session', () => {
         session.commit(plan);
         await vi.waitFor(() => expect(session.line).toBeDefined());
         session.findAlternatives();
-        await vi.waitFor(() => expect(session.line?.alternativesReady).toBe(true));
-        const [, corridor, shorter] = session.line!.alternatives;
-        expect(routes.bodies().at(-1)).toMatchObject({ points: [[8, 48], [8.1, 48]], alternatives_only: true });
-        session.pickAlternative(corridor);
-        expect(orderedRoutePoints(session.trip).map(p => [p.kind, p.coordinate])).toEqual([['start', [8, 48]], ['via', via], ['finish', [8.1, 48]]]);
-        await vi.waitFor(() => expect(session.line).toBeDefined());
-        expect(routes.bodies().at(-1)).toMatchObject({ points: [[8, 48], via, [8.1, 48]], profile: 'touring' });
-        session.undo();
-        expect(session.line?.alternatives.map(route => route.id)).toEqual(['primary', 'corridor', 'shorter']);
-        session.pickAlternative(shorter);
+        await vi.waitFor(() => expect(session.alternatives?.choice).toBe('primary'));
+        const [primary, corridor, shorter] = session.alternatives!.routes;
+        expect(routes.bodies().map(body => [body.points, body.alternatives_only])).toEqual([[[[8, 48], [8.1, 48]], undefined], [[[8, 48], [8.1, 48]], true]]);
+        const pick = async (route: typeof primary) => {
+            expect(session.pickAlternative(route)).toBe(true);
+            expect(session.alternatives?.choice).toBe(route.id);
+            await vi.waitFor(() => expect(session.line).toBeDefined());
+        };
+        await pick(shorter);
         expect(session.trip).toMatchObject({ preset: 'Shorter', points: plan.points });
-        await vi.waitFor(() => expect(session.line).toBeDefined());
-        expect(routes.bodies().at(-1)).toMatchObject({ points: [[8, 48], [8.1, 48]], profile: 'touring/shorter' });
+        expect(routes.fetch).toHaveBeenCalledTimes(2);
+        await pick(corridor);
+        expect(session.trip.preset).toBe('Balanced');
+        expect(orderedRoutePoints(session.trip).map(p => [p.kind, p.coordinate])).toEqual([['start', [8, 48]], ['via', via], ['finish', [8.1, 48]]]);
+        expect(routes.bodies().at(-1)).toMatchObject({ points: [[8, 48], via, [8.1, 48]], profile: 'touring' });
+        for (const route of [shorter, corridor, primary]) await pick(route);
+        expect(session.trip).toMatchObject({ preset: 'Balanced', points: plan.points });
+        expect(routes.fetch).toHaveBeenCalledTimes(3);
+        // The checked route adds no Undo step: one Undo returns to the corridor.
+        expect(session.pickAlternative(primary)).toBe(false);
+        expect(session.undo() && session.alternatives?.choice).toBe('corridor');
+        expect(routes.fetch).toHaveBeenCalledTimes(3);
     });
 
     it('saves the plan without its line and calculates the line again when the plan opens', async () => {

@@ -22,7 +22,7 @@ export function testLine(trip: Trip): RoutingLine {
     }
     const km = cumulative(coordinates);
     const stops = points.map((point, i) => ({ id: point.id, distance: km[ends[i]] }));
-    return { choiceId: 'test', profile: 'touring', coordinates, stops,
+    return { profile: 'touring', coordinates, stops,
         elevation: coordinates.map(() => null), elapsed: km.map(d => d * 240), seconds: km.at(-1)! * 240, edges: {},
-        alternatives: [], alternativesReady: true, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
+        unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
 }

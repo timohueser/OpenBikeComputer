@@ -66,17 +66,14 @@ export interface EngineRoute {
 }
 /** The calculated line of a plan. It is not part of the plan: the planner calculates it again from the plan's points. */
 export interface RoutingLine {
-    choiceId: string;
     coordinates: Coordinate[];
     elevation: (number | null)[];
     elapsed: number[];
     edges: Edges;
     stops: { id: string; distance: number }[];
     seconds: number;
-    /** The primary route, then with `alternativesReady` its alternatives. A line that is not one routed run through all
-     * points of its plan has no alternatives and is ready. */
-    alternatives: EngineRoute[];
-    alternativesReady: boolean;
+    /** The route of a line that is one routed run through all points of its plan; only such a line has alternatives. */
+    primary?: EngineRoute;
     profile: string;
     unknownSurfaceKm: number;
     pushingKm: number;
@@ -135,10 +132,10 @@ export async function requestShape(line: Coordinate[], profile: string): Promise
     return { points, turnarounds };
 }
 
-/** The primary route and the alternatives of a line whose alternatives are not ready. */
-export async function requestAlternatives(trip: Trip, line: RoutingLine, signal: AbortSignal): Promise<EngineRoute[]> {
+/** The primary route of the line of `trip`, then its alternatives. */
+export async function requestAlternatives(trip: Trip, primary: EngineRoute, signal: AbortSignal): Promise<EngineRoute[]> {
     const points = orderedRoutePoints(trip).map(point => point.coordinate);
-    return [...line.alternatives, ...await requestRoute(points, line.profile, signal, 'only')];
+    return [primary, ...await requestRoute(points, primary.profile, signal, 'only')];
 }
 
 export function profileId(trip: Trip): string {
@@ -162,8 +159,7 @@ export function routingKey(trip: Trip): string {
 export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCache): Promise<RoutingLine> {
     const points = orderedRoutePoints(trip);
     if (points.length < 2) throw new Error('Choose a start and finish to calculate a route.');
-    const result: RoutingLine = { choiceId: '', coordinates: [], elevation: [], elapsed: [], edges: {}, stops: [], seconds: 0,
-        alternatives: [], alternativesReady: true, profile: profileId(trip), unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
+    const result: RoutingLine = { coordinates: [], elevation: [], elapsed: [], edges: {}, stops: [], seconds: 0, profile: profileId(trip), unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
     // Seconds per kilometre on a manual leg or connector.
     const pace = 3600 / ridingProfiles[trip.bike ?? 'touring'].kmh;
     let distance = 0;
@@ -239,7 +235,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         const canOfferAlternatives = i === 1 && until === points.length - 1 && !turnarounds.length;
         const route = await legs.route(expanded, turnarounds, result.profile, signal);
         result.package = route.package;
-        if (canOfferAlternatives) { result.alternatives = [route]; result.choiceId = route.id; result.alternativesReady = false; }
+        if (canOfferAlternatives) result.primary = route;
         const start = append(route.geometry, route.elevation, route.elapsed, route.edges);
         const lengths = cumulative(route.geometry);
         result.unknownSurfaceKm += route.totals.surface_m[0] / 1000;

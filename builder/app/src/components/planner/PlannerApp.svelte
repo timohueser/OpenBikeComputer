@@ -80,8 +80,7 @@
     const visualRoute = $derived(shown.line);
     const routingStatus = $derived(!hasEndpoints ? 'Choose a start and finish' : session.routeError || 'Calculating route…');
     function pickRoute(route: EngineRoute) {
-        session.pickAlternative(route);
-        afterEdit('Route preference changed');
+        if (session.pickAlternative(route)) afterEdit('Route preference changed');
     }
     $effect(() => {
         if (fitPlan && currentRoute && map) {
@@ -94,7 +93,7 @@
         ? `${currentRoute.unknownSurfaceKm.toFixed(1)} km unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${currentRoute.pushingKm.toFixed(1)} km pushing` : ''}${currentRoute.unroutedKm ? ` · ${currentRoute.unroutedKm.toFixed(1)} km manual / access unverified` : ''}${currentRoute.unknownElevationKm ? ' · elevation incomplete' : ''}`
         : routingStatus);
     let list = $state<'plan' | 'ways'>('plan');
-    const needsAlternatives = $derived(!!session.line && !session.line.alternativesReady);
+    const needsAlternatives = $derived(!!session.line?.primary && !session.alternatives);
     // A label edit keeps the line, so it does not cancel the request.
     $effect(() => { if (list === 'ways' && !session.dragging && session.line) return untrack(() => session.findAlternatives()); });
     let searching = $state(false);
@@ -1027,12 +1026,12 @@
                 {#if !focusedDay && visualRoute}
                     <div class="list-switch">
                         <Segmented compact label="List" value={list} onChange={(value) => list = value}
-                            options={[{ value: 'plan', label: multi ? 'Days' : 'Route' }, { value: 'ways', label: currentRoute?.alternativesReady ? `Route options · ${currentRoute.alternatives.length}` : 'Route options' }]} />
+                            options={[{ value: 'plan', label: multi ? 'Days' : 'Route' }, { value: 'ways', label: session.alternatives ? `Route options · ${session.alternatives.routes.length}` : 'Route options' }]} />
                     </div>
                 {/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
                     {#if list === 'ways'}
-                        <WaysList status={needsAlternatives ? session.alternativesStatus || 'Open Route options to find alternatives.' : ''} routes={currentRoute?.alternatives ?? []} choiceId={currentRoute?.choiceId ?? ''} onPick={pickRoute} />
+                        <WaysList status={needsAlternatives ? session.alternativesStatus || 'Open Route options to find alternatives.' : ''} routes={session.alternatives?.routes ?? []} choiceId={session.alternatives?.choice ?? ''} onPick={pickRoute} />
                     {:else if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
                         <Itinerary
                             trip={shown.trip} line={visualRoute} {itinerary} {days} overnightNote={overnightContext ? overnightNote : ''} {theme} {expandedDay} {candidates} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
