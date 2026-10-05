@@ -234,7 +234,12 @@ of the checkout that it runs in, and the store:
   digest of all the files, or of one file, of a reached record of its source, and a layer input
   whose digest is the digest of a reached layer.
 
-Without `--apply`, the command lists what it deletes and changes nothing. With `--apply`, it
+Without `--apply`, the command lists what it deletes and what stays, and changes nothing. What
+stays is one entry for each reached snapshot record, with the reasons: `pin of ENV, …`,
+`newest of the source`, `newest of a request`. Then one entry for the reached layers of each step
+(`inputs kept`). Then one entry for each kind of root that names objects that no reached record
+or layer has: `pin`, `fixture`, `planner recipe` or `import record`. The size of an entry is the
+size of its files. With `--apply`, it
 takes the store lock alone, or refuses to start while a fetch, a build or an import holds it.
 Then it deletes each snapshot record and each object that is not reached, and lists them.
 Receipts, import records and upstream checks stay.
@@ -613,11 +618,12 @@ When more than one row applies, the first row gives the state. In JSON, a state 
 | Command | Output |
 | --- | --- |
 | `obc data [--json]` | In a terminal, and without `--json`: the TUI. Otherwise the output of `sources` |
-| `obc data sources [--json]` | Every source with licence, R2 copy, live pin, newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools |
+| `obc data sources [--check-now] [--json]` | Every source with licence, R2 copy, live pin, newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the live pin, or else the newest file upstream. Writes the store path of each file |
 | `obc data refresh SOURCE [NAME=VALUE…] [--env ENV] [--json]` | Fetches the newest upstream version, checked now, and writes it to `[pins]` of `data/env/ENV.toml` (default `live`). `ENV` is lowercase kebab-case. The edit keeps comments, line order and CRLF line ends. Writes the store path of each file. A version after the pin of a source whose `fetch.from` names `SOURCE` is refused before the fetch: refresh that source first |
+| `obc data policy SOURCE 7\|30\|90\|365\|manual [--json]` | Writes `refresh` of the source in `data/sources.toml`. The edit keeps comments and the other lines. A policy in days for a source without `version = "date"` is refused. Writes the source |
 | `obc data store import [--apply] [--json]` | The old cache directories, their files and sizes, and how much the store grows. `--apply` moves them into the store |
-| `obc data gc store [--apply] [--json]` | Its roots, the snapshot records and the objects that nothing reaches, and what stays. `--apply` deletes them and lists them |
+| `obc data gc store [--apply] [--json]` | Its roots, the snapshot records and the objects that nothing reaches, and what stays and why. `--apply` deletes them and lists them |
 | `obc data region [list] [--json]` | Every region with its name and definition |
 | `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
 | `obc data plan ENV [--only GROUP,…] [--json]` | What a build of the environment fetches and builds, in groups, with estimates. It fetches what a step list depends on, see [Products](#products) |
@@ -735,6 +741,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | --- | --- |
 | `sources` | `Sources` |
 | `fetch`, `refresh` | `Fetched` |
+| `policy` | `Source` |
 | `region`, `region list` | `RegionList` |
 | `region show` | `RegionDetail` |
 | `store import` | `ImportPlan` |
@@ -1488,6 +1495,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "minimum": 0,
           "type": "integer"
         },
+        "kept": {
+          "description": "What stays, and why.",
+          "items": {
+            "$ref": "#/$defs/Kept"
+          },
+          "type": "array"
+        },
         "objects": {
           "description": "SHA-256 and size of each object that nothing reaches.",
           "items": {
@@ -1522,6 +1536,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       },
       "required": [
+        "kept",
         "snapshots",
         "objects",
         "remove_bytes",
@@ -1621,6 +1636,34 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "kind",
         "name",
         "digest"
+      ],
+      "type": "object"
+    },
+    "Kept": {
+      "description": "A snapshot record, the layers of one step, or the objects that one kind of root names and no\nkept record or layer has.",
+      "properties": {
+        "because": {
+          "description": "`pin of ENV, …`, `newest of the source`, `newest of a request`, `inputs kept`, `pin`,\n`fixture`, `planner recipe` or `import record`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "bytes": {
+          "description": "The size of its files.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "entry": {
+          "description": "`source@version`, a step, or `N objects`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entry",
+        "bytes",
+        "because"
       ],
       "type": "object"
     },
@@ -2279,6 +2322,86 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "error",
         "users",
         "last_wall_ms"
+      ],
+      "type": "object"
+    },
+    "Source": {
+      "additionalProperties": false,
+      "properties": {
+        "attribution": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credential": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Credential"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fetch": {
+          "$ref": "#/$defs/Fetch"
+        },
+        "hosts": {
+          "description": "Hosts the fetch reaches besides the host of `fetch.url`. `*.example.org` is any subdomain.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "licence": {
+          "description": "An SPDX id or `LicenseRef-…`. Unset blocks a data source or an asset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "licence_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "obligations": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "r2_copy": {
+          "default": false,
+          "description": "R2 keeps a copy, because upstream cannot give a version again.",
+          "type": "boolean"
+        },
+        "redistribute": {
+          "type": "boolean"
+        },
+        "refresh": {
+          "$ref": "#/$defs/Refresh"
+        },
+        "version": {
+          "$ref": "#/$defs/VersionScheme"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "fetch",
+        "version",
+        "refresh",
+        "redistribute",
+        "r2_copy"
       ],
       "type": "object"
     },

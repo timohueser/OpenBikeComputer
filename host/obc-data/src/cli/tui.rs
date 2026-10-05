@@ -1,5 +1,6 @@
 //! The TUI of `obc data`. Each screen shows what a command writes with `--json`, and the bar
-//! names that command. The only change it makes is a `refresh`, through the same function.
+//! names that command. Each change goes through the function of its command: `refresh`, `policy`
+//! and `gc store --apply`.
 
 use std::io::Stdout;
 use std::path::Path;
@@ -18,27 +19,31 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
 use crate::engine::runs::{self, Details, Outcome, Summary};
-use crate::sources::{Kind, State};
-use crate::store::Store;
+use crate::sources::{Kind, Refresh, State, VersionScheme};
+use crate::store::{gc, Store};
 
 use super::runs_cli::{bytes, duration, mark, step_cells};
-use super::{refresh, registry, row_text, source_rows, widths, Error, SourceRow};
+use super::{clean, collect, policy, refresh, registry, row_text, source_rows, widths, Error, SourceRow};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
     Sources,
+    Store,
     Runs,
 }
 
-/// The key of a screen is its number among the five screens of the TUI; 1 Live, 2 Local and
-/// 4 Store are not built.
-const SCREENS: [(char, &str, Screen); 2] = [('3', "Sources", Screen::Sources), ('5', "Runs", Screen::Runs)];
+/// The key of a screen is its number among the five screens of the TUI; 1 Live and 2 Local are
+/// not built.
+const SCREENS: [(char, &str, Screen); 3] =
+    [('3', "Sources", Screen::Sources), ('4', "Store", Screen::Store), ('5', "Runs", Screen::Runs)];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Overlay {
     Help,
     Attribution,
     Pin,
+    Policy,
+    Clean,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,10 +52,14 @@ enum Action {
     NextScreen,
     Up,
     Down,
-    Pin,
-    Attribution,
+    Open(Overlay),
+    /// `enter` on a policy of Policy.
+    Choose,
     Refresh,
-    Help,
+    CheckNow,
+    /// The question before a clean.
+    Ask,
+    Clean,
     Close,
     Quit,
 }
@@ -62,6 +71,14 @@ enum Effect {
     Quit,
     /// `obc data refresh SOURCE`.
     Refresh(String),
+    /// `obc data policy SOURCE REFRESH`.
+    Policy(String, Refresh),
+    /// `obc data sources --check-now`.
+    CheckNow,
+    /// `obc data gc store`, for Clean.
+    PlanClean,
+    /// `obc data gc store --apply` of the plan that Clean shows.
+    Clean,
 }
 
 /// A key that works now, with its label and what it does when the bar shows it.
@@ -71,13 +88,16 @@ struct Binding {
     bar: Option<(&'static str, &'static str)>,
 }
 
-/// The keys that the bar shows on a screen with rows, besides `?`.
+/// The keys that the bar can show on a screen with rows, besides `?`.
 fn screen_keys(screen: Screen) -> &'static [(KeyCode, Action, &'static str, &'static str)] {
     match screen {
         Screen::Sources => &[
-            (KeyCode::Enter, Action::Pin, "enter", "pin"),
-            (KeyCode::Char('L'), Action::Attribution, "L", "attribution"),
+            (KeyCode::Enter, Action::Open(Overlay::Pin), "enter", "pin"),
+            (KeyCode::Char('e'), Action::Open(Overlay::Policy), "e", "policy"),
+            (KeyCode::Char('R'), Action::CheckNow, "R", "check upstream"),
+            (KeyCode::Char('L'), Action::Open(Overlay::Attribution), "L", "attribution"),
         ],
+        Screen::Store => &[(KeyCode::Char('c'), Action::Open(Overlay::Clean), "c", "clean")],
         Screen::Runs => &[],
     }
 }
@@ -93,13 +113,24 @@ struct App {
     screen: Screen,
     overlay: Option<Overlay>,
     sources: Vec<SourceRow>,
+    /// Sources shows a check of upstream from now, not from the last hour.
+    checked_now: bool,
+    /// The check of upstream runs.
+    checking: bool,
+    /// The plan of `gc store`, once Store has shown.
+    store: Option<gc::Plan>,
     /// Running runs first, then newest first.
     runs: Vec<Details>,
     source: usize,
+    kept: usize,
     run: usize,
     /// The first line that an overlay shows.
     scroll: usize,
-    /// The error of the last refresh.
+    /// The selected policy of Policy.
+    choice: usize,
+    /// Clean asks its question.
+    asking: bool,
+    /// The error of the last change.
     notice: Option<String>,
     /// Where the last frame drew each tab and row.
     hits: Vec<(Rect, Hit)>,
@@ -110,9 +141,19 @@ type Tui = Terminal<CrosstermBackend<Stdout>>;
 /// How often Runs reads the runs again while one runs.
 const TICK: Duration = Duration::from_secs(1);
 
+/// The plan before Store has one.
+static NO_PLAN: gc::Plan = gc::Plan {
+    kept: Vec::new(),
+    snapshots: Vec::new(),
+    objects: Vec::new(),
+    remove_bytes: 0,
+    keep_objects: 0,
+    keep_bytes: 0,
+};
+
 pub fn run(root: &Path) -> Result<(), Error> {
     let store = Store::open()?;
-    let mut app = App::new(source_rows(&registry(root)?)?, list_runs(&store)?);
+    let mut app = App::new(source_rows(&registry(root)?, false)?, list_runs(&store)?);
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         stop();
@@ -145,26 +186,65 @@ fn run_loop(root: &Path, store: &Store, app: &mut App, tui: &mut Tui) -> Result<
         if app.screen == Screen::Runs && (screen != Screen::Runs || (tick && running)) {
             app.runs = list_runs(store)?;
         }
+        if app.screen == Screen::Store && screen != Screen::Store && app.store.is_none() {
+            effect = Effect::PlanClean;
+        }
         if tick || app.screen != screen {
             read = Instant::now();
         }
-        match effect {
-            Effect::None => {}
+        let result = match effect {
+            Effect::None => continue,
             Effect::Quit => return Ok(()),
             Effect::Refresh(id) => {
                 // The fetch writes its progress to the terminal.
                 stop();
                 let result = refresh(root, &id, &[], "live", false);
-                app.notice = result.err().map(|e| e.message);
-                app.sources = source_rows(&registry(root)?)?;
                 *tui = start()?;
-                // Keys typed during the fetch are not for the TUI.
-                while event::poll(Duration::ZERO).map_err(io)? {
-                    event::read().map_err(io)?;
-                }
+                discard_keys()?;
+                let reloaded = app.reload(root, false);
+                result.and(reloaded)
             }
+            Effect::Policy(id, refresh) => {
+                let result = policy(root, &id, refresh).map(drop);
+                let reloaded = app.reload(root, false);
+                result.and(reloaded)
+            }
+            Effect::CheckNow => {
+                app.checking = true;
+                tui.draw(|frame| app.draw(frame)).map_err(io)?;
+                let result = app.reload(root, true);
+                app.checking = false;
+                discard_keys()?;
+                result
+            }
+            Effect::PlanClean => {
+                let result = collect(root, store).map(|plan| app.store = Some(plan));
+                if result.is_err() {
+                    app.overlay = None;
+                }
+                result
+            }
+            Effect::Clean => {
+                let result = clean(root, store, app.store.as_ref()).map(drop);
+                match collect(root, store) {
+                    Ok(plan) => app.store = Some(plan),
+                    Err(error) => app.notice = Some(error.message),
+                }
+                result
+            }
+        };
+        if let Err(error) = result {
+            app.notice = Some(error.message);
         }
     }
+}
+
+/// Drop the keys typed while the TUI waited: they are not for what it shows now.
+fn discard_keys() -> Result<(), Error> {
+    while event::poll(Duration::ZERO).map_err(|e| e.to_string())? {
+        event::read().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn start() -> Result<Tui, Error> {
@@ -188,22 +268,49 @@ fn list_runs(store: &Store) -> Result<Vec<Details>, Error> {
 
 impl App {
     fn new(sources: Vec<SourceRow>, runs: Vec<Details>) -> Self {
-        let (screen, overlay, notice, hits) = (Screen::Sources, None, None, Vec::new());
-        Self { screen, overlay, sources, runs, source: 0, run: 0, scroll: 0, notice, hits }
+        Self {
+            screen: Screen::Sources,
+            overlay: None,
+            sources,
+            checked_now: false,
+            checking: false,
+            store: None,
+            runs,
+            source: 0,
+            kept: 0,
+            run: 0,
+            scroll: 0,
+            choice: 0,
+            asking: false,
+            notice: None,
+            hits: Vec::new(),
+        }
+    }
+
+    /// Read the sources again; with `check_now`, after a check of upstream now.
+    fn reload(&mut self, root: &Path, check_now: bool) -> Result<(), Error> {
+        self.sources = source_rows(&registry(root)?, check_now)?;
+        self.checked_now = check_now;
+        Ok(())
     }
 
     fn rows(&self) -> usize {
         match self.screen {
             Screen::Sources => self.sources.len(),
+            Screen::Store => {
+                self.store.as_ref().map_or(0, |plan| plan.kept.len() + usize::from(!plan.objects.is_empty()))
+            }
             Screen::Runs => self.runs.len(),
         }
     }
 
-    /// The selected row, or the scroll of an overlay.
+    /// The selected row, the choice of an overlay, or the scroll of an overlay.
     fn selected(&mut self) -> &mut usize {
         match (self.overlay, self.screen) {
+            (Some(Overlay::Policy), _) => &mut self.choice,
             (Some(_), _) => &mut self.scroll,
             (None, Screen::Sources) => &mut self.source,
+            (None, Screen::Store) => &mut self.kept,
             (None, Screen::Runs) => &mut self.run,
         }
     }
@@ -216,6 +323,25 @@ impl App {
     fn newer(&self) -> Option<&str> {
         let row = self.sources.get(self.source)?;
         row.upstream.as_deref().filter(|&upstream| row.pin.as_deref() != Some(upstream))
+    }
+
+    /// Whether `enter` in Policy chooses another policy.
+    fn chooses(&self) -> bool {
+        let row = self.sources.get(self.source);
+        self.overlay == Some(Overlay::Policy) && row.is_some_and(|row| Refresh::ALL[self.choice] != row.source.refresh)
+    }
+
+    /// Whether a key of the screen does something for the selected row.
+    fn works(&self, action: Action) -> bool {
+        match action {
+            Action::Open(Overlay::Policy) => {
+                self.sources.get(self.source).is_some_and(|row| row.source.version == VersionScheme::Date)
+            }
+            Action::Open(Overlay::Clean) => {
+                self.store.as_ref().is_some_and(|plan| !plan.snapshots.is_empty() || !plan.objects.is_empty())
+            }
+            _ => true,
+        }
     }
 
     fn bindings(&self) -> Vec<Binding> {
@@ -232,19 +358,25 @@ impl App {
                 if overlay == Overlay::Pin && self.newer().is_some() {
                     keys.push(bar(KeyCode::Enter, Action::Refresh, "enter", "refresh"));
                 }
-                keys.push(bar(KeyCode::Esc, Action::Close, "esc", "close"));
+                if self.chooses() {
+                    keys.push(bar(KeyCode::Enter, Action::Choose, "enter", "choose"));
+                }
+                if overlay == Overlay::Clean && self.works(Action::Open(Overlay::Clean)) {
+                    keys.push(match self.asking {
+                        false => bar(KeyCode::Char('a'), Action::Ask, "a", "clean"),
+                        true => bar(KeyCode::Char('y'), Action::Clean, "y", "clean"),
+                    });
+                }
+                keys.push(bar(KeyCode::Esc, Action::Close, "esc", if self.asking { "cancel" } else { "close" }));
             }
             None => {
                 keys.extend(SCREENS.iter().map(|&(key, _, screen)| hidden(KeyCode::Char(key), Action::Show(screen))));
                 keys.push(hidden(KeyCode::Tab, Action::NextScreen));
                 if self.rows() > 0 {
-                    keys.extend(
-                        screen_keys(self.screen)
-                            .iter()
-                            .map(|&(key, action, label, does)| bar(key, action, label, does)),
-                    );
+                    let works = screen_keys(self.screen).iter().filter(|&&(_, action, _, _)| self.works(action));
+                    keys.extend(works.map(|&(key, action, label, does)| bar(key, action, label, does)));
                 }
-                keys.push(bar(KeyCode::Char('?'), Action::Help, "?", "help"));
+                keys.push(bar(KeyCode::Char('?'), Action::Open(Overlay::Help), "?", "help"));
             }
         }
         keys.push(hidden(KeyCode::Char('q'), Action::Quit));
@@ -260,8 +392,12 @@ impl App {
     }
 
     fn act(&mut self, action: Action) -> Effect {
-        // The drawing stops the scroll of an overlay at its end.
-        let last = if self.overlay.is_some() { usize::MAX } else { self.rows().saturating_sub(1) };
+        let last = match self.overlay {
+            Some(Overlay::Policy) => Refresh::ALL.len() - 1,
+            // The drawing stops the scroll of an overlay at its end.
+            Some(_) => usize::MAX,
+            None => self.rows().saturating_sub(1),
+        };
         match action {
             Action::Show(screen) => self.screen = screen,
             Action::NextScreen => {
@@ -270,14 +406,30 @@ impl App {
             }
             Action::Up => *self.selected() = self.selected().saturating_sub(1),
             Action::Down => *self.selected() = (*self.selected() + 1).min(last),
-            Action::Pin => (self.overlay, self.scroll) = (Some(Overlay::Pin), 0),
-            Action::Attribution => (self.overlay, self.scroll) = (Some(Overlay::Attribution), 0),
-            Action::Help => (self.overlay, self.scroll) = (Some(Overlay::Help), 0),
-            Action::Close => self.overlay = None,
+            Action::Open(overlay) => {
+                (self.overlay, self.scroll, self.asking) = (Some(overlay), 0, false);
+                let current = self.sources.get(self.source).map(|row| row.source.refresh);
+                self.choice = Refresh::ALL.iter().position(|&r| Some(r) == current).unwrap_or(0);
+                if overlay == Overlay::Clean {
+                    return Effect::PlanClean;
+                }
+            }
+            Action::Choose => {
+                self.overlay = None;
+                return Effect::Policy(self.sources[self.source].source.id.clone(), Refresh::ALL[self.choice]);
+            }
             Action::Refresh => {
                 self.overlay = None;
                 return Effect::Refresh(self.sources[self.source].source.id.clone());
             }
+            Action::CheckNow => return Effect::CheckNow,
+            Action::Ask => self.asking = true,
+            Action::Clean => {
+                (self.overlay, self.asking) = (None, false);
+                return Effect::Clean;
+            }
+            Action::Close if self.asking => self.asking = false,
+            Action::Close => self.overlay = None,
             Action::Quit => return Effect::Quit,
         }
         Effect::None
@@ -304,12 +456,19 @@ impl App {
 
     /// The command that shows the same, or does the same.
     fn command(&self) -> String {
+        let id = self.sources.get(self.source).map_or("", |row| row.source.id.as_str());
         match (self.overlay, self.screen) {
             (Some(Overlay::Help), _) => "obc data --help".into(),
-            (Some(Overlay::Pin), _) if self.newer().is_some() => {
-                format!("obc data refresh {}", self.sources[self.source].source.id)
-            }
-            (Some(_), _) => "obc data sources --json".into(),
+            (Some(Overlay::Attribution), _) => "obc data sources --json".into(),
+            (Some(Overlay::Pin), _) if self.newer().is_some() => format!("obc data refresh {id}"),
+            (Some(Overlay::Pin), _) => "obc data sources --json".into(),
+            (Some(Overlay::Policy), _) => match Refresh::ALL[self.choice] {
+                Refresh::Days(days) => format!("obc data policy {id} {days}"),
+                Refresh::Manual => format!("obc data policy {id} manual"),
+            },
+            (Some(Overlay::Clean), _) if self.asking => "obc data gc store --apply".into(),
+            (Some(Overlay::Clean), _) | (None, Screen::Store) => "obc data gc store".into(),
+            (None, Screen::Sources) if self.checked_now => "obc data sources --check-now".into(),
             (None, Screen::Sources) => "obc data sources".into(),
             (None, Screen::Runs) => self.run_id().map_or("obc data runs".into(), |id| format!("obc data runs {id}")),
         }
@@ -332,6 +491,7 @@ impl App {
         let body = Rect { y: body.y + 1, height: body.height.saturating_sub(1), ..body };
         match self.screen {
             Screen::Sources => self.draw_sources(frame, body),
+            Screen::Store => self.draw_store(frame, body),
             Screen::Runs => self.draw_runs(frame, body),
         }
         self.draw_bar(frame, bar);
@@ -363,6 +523,29 @@ impl App {
             }
         }
         self.draw_lines(frame, area, Line::from(row_text(&table[0], &widths)), lines, &at, end);
+    }
+
+    fn draw_store(&mut self, frame: &mut Frame, area: Rect) {
+        let mut table = vec![["ENTRY", "SIZE", "KEPT BECAUSE"].map(String::from).to_vec()];
+        let plan = self.store.as_ref().unwrap_or(&NO_PLAN);
+        table
+            .extend(plan.kept.iter().map(|kept| vec![kept.entry.clone(), bytes(kept.bytes), kept.because.join(" · ")]));
+        let unused = !plan.objects.is_empty();
+        if unused {
+            let objects = gc::objects_text(plan.objects.len() as u64);
+            table.push(vec![objects, bytes(plan.remove_bytes), "unused".into()]);
+        }
+        let widths = widths(&table);
+        let mut lines: Vec<Line> = table[1..].iter().map(|cells| Line::from(row_text(cells, &widths))).collect();
+        if unused {
+            let last = lines.len() - 1;
+            lines[last] = lines[last].clone().yellow();
+        }
+        if let Some(line) = lines.get_mut(self.kept) {
+            *line = line.clone().reversed();
+        }
+        let at: Vec<usize> = (0..lines.len()).collect();
+        self.draw_lines(frame, area, Line::from(row_text(&table[0], &widths)), lines, &at, self.kept);
     }
 
     fn draw_runs(&mut self, frame: &mut Frame, area: Rect) {
@@ -403,6 +586,10 @@ impl App {
     }
 
     fn draw_bar(&self, frame: &mut Frame, area: Rect) {
+        if self.checking {
+            frame.render_widget(Line::from("checking upstream…"), area);
+            return;
+        }
         let mut spans = Vec::new();
         for (label, does) in self.bindings().iter().filter_map(|binding| binding.bar) {
             spans.extend([Span::from(label).bold(), Span::from(format!(" {does}   "))]);
@@ -419,13 +606,13 @@ impl App {
     }
 
     fn draw_overlay(&mut self, frame: &mut Frame, body: Rect, overlay: Overlay) {
+        let id = self.sources.get(self.source).map_or("", |row| row.source.id.as_str());
         let (title, lines) = match overlay {
             Overlay::Help => (" HELP ".to_string(), help()),
             Overlay::Attribution => (" ATTRIBUTION ".into(), attribution(&self.sources)),
-            Overlay::Pin => {
-                let row = &self.sources[self.source];
-                (format!(" PIN · {} ", row.source.id), pin(row, self.newer()))
-            }
+            Overlay::Pin => (format!(" PIN · {id} "), pin(&self.sources[self.source], self.newer())),
+            Overlay::Policy => (format!(" POLICY · {id} "), self.policy_lines()),
+            Overlay::Clean => (" CLEAN ".into(), self.clean_lines()),
         };
         let width = body.width * 4 / 5;
         let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false }).block(Block::bordered().title(title));
@@ -435,6 +622,41 @@ impl App {
         self.scroll = self.scroll.min(height.saturating_sub(area.height as usize));
         frame.render_widget(Clear, area);
         frame.render_widget(paragraph.scroll((self.scroll as u16, 0)), area);
+    }
+
+    fn policy_lines(&self) -> Vec<Line<'static>> {
+        let current = self.sources[self.source].source.refresh;
+        let lines = Refresh::ALL.iter().enumerate().map(|(i, &refresh)| {
+            let mark = if refresh == current { "●" } else { " " };
+            let line = Line::from(format!("{mark} {refresh}"));
+            if i == self.choice {
+                line.reversed()
+            } else {
+                line
+            }
+        });
+        lines.collect()
+    }
+
+    fn clean_lines(&self) -> Vec<Line<'static>> {
+        let plan = self.store.as_ref().unwrap_or(&NO_PLAN);
+        if plan.snapshots.is_empty() && plan.objects.is_empty() {
+            return vec![Line::from("nothing to clean")];
+        }
+        let mut lines: Vec<Line> =
+            plan.snapshots.iter().map(|snapshot| Line::from(format!("snapshot {snapshot}"))).collect();
+        let objects = gc::objects_text(plan.objects.len() as u64);
+        lines.push(Line::from(format!("{objects}  {}", bytes(plan.remove_bytes))));
+        if self.asking {
+            let records = match plan.snapshots.len() {
+                1 => "1 record".to_string(),
+                records => format!("{records} records"),
+            };
+            let what = if plan.objects.is_empty() { records } else { bytes(plan.remove_bytes) };
+            let question = format!("Remove {what} from the store?");
+            lines.extend([Line::default(), Line::from(question).bold()]);
+        }
+        lines
     }
 }
 
@@ -549,6 +771,8 @@ fn help() -> Vec<Line<'static>> {
         }
     }
     lines.push(line("Pin", "enter refresh".into()));
+    lines.push(line("Policy", "enter choose".into()));
+    lines.push(line("Clean", "a clean, then y".into()));
     lines
 }
 
@@ -560,6 +784,7 @@ mod tests {
     use super::*;
     use crate::cli::Stored;
     use crate::sources::parse_sources;
+    use crate::store::gc::Kept;
 
     const SOURCES: &str = r#"
         [[source]]
@@ -605,20 +830,38 @@ mod tests {
             fetches: Vec::new(),
             steps: Vec::new(),
         };
-        App::new(sources.collect(), vec![run("2024-01-10-120000"), run("2024-01-09-120000")])
+        let mut app = App::new(sources.collect(), vec![run("2024-01-10-120000"), run("2024-01-09-120000")]);
+        app.store = Some(gc::Plan {
+            kept: vec![Kept { entry: "osm@2024-01-02".into(), bytes: 1_000_000, because: vec!["pin of live".into()] }],
+            snapshots: vec!["osm@2023-12-01".into()],
+            objects: vec![("ab".repeat(32), 1_000_000)],
+            remove_bytes: 1_000_000,
+            ..gc::Plan::default()
+        });
+        app
     }
 
-    fn view(app: &App) -> (Screen, Option<Overlay>, usize, usize) {
-        (app.screen, app.overlay, app.source, app.run)
+    fn view(app: &App) -> (Screen, Option<Overlay>, [usize; 4], bool) {
+        (app.screen, app.overlay, [app.source, app.kept, app.run, app.choice], app.asking)
+    }
+
+    fn opened(overlay: Overlay, source: usize, choice: usize) -> App {
+        let mut app = App { source, ..app() };
+        app.act(Action::Open(overlay));
+        App { choice, ..app }
     }
 
     #[test]
     fn no_key_does_two_things_and_each_key_in_the_bar_acts() {
-        let mut states = vec![app(), App::new(Vec::new(), Vec::new())];
-        for overlay in [Overlay::Help, Overlay::Attribution, Overlay::Pin] {
-            states.push(App { overlay: Some(overlay), ..app() });
+        let mut states = vec![app(), App::new(Vec::new(), Vec::new()), App { source: 1, ..app() }];
+        for overlay in [Overlay::Help, Overlay::Attribution, Overlay::Pin, Overlay::Policy, Overlay::Clean] {
+            states.push(opened(overlay, 0, 0));
+            states.push(opened(overlay, 1, 1));
         }
-        states.push(App { overlay: Some(Overlay::Pin), source: 1, ..app() });
+        states.push(App { asking: true, ..opened(Overlay::Clean, 0, 0) });
+        states.push(App { store: Some(gc::Plan::default()), ..opened(Overlay::Clean, 0, 0) });
+        states.push(App { screen: Screen::Store, ..app() });
+        states.push(App { screen: Screen::Store, store: Some(gc::Plan::default()), ..app() });
         states.push(App { screen: Screen::Runs, ..app() });
         for app in states {
             let keys = app.bindings();
@@ -635,11 +878,44 @@ mod tests {
 
     #[test]
     fn enter_on_a_newer_upstream_version_refreshes_the_source() {
-        let mut app = App { overlay: Some(Overlay::Pin), ..app() };
+        let mut app = opened(Overlay::Pin, 0, 0);
         assert_eq!(app.command(), "obc data refresh osm");
         assert_eq!(app.key(KeyCode::Enter), Effect::Refresh("osm".into()));
-        let mut tool = App { overlay: Some(Overlay::Pin), source: 1, ..app };
+        let mut tool = opened(Overlay::Pin, 1, 0);
         assert_eq!(tool.key(KeyCode::Enter), Effect::None);
+    }
+
+    #[test]
+    fn enter_in_policy_sets_another_policy_of_a_date_source() {
+        let mut app = app();
+        assert_eq!(app.key(KeyCode::Char('e')), Effect::None);
+        assert_eq!((app.overlay, app.choice), (Some(Overlay::Policy), 0));
+        app.key(KeyCode::Down);
+        assert_eq!(app.command(), "obc data policy osm 30");
+        assert_eq!(app.key(KeyCode::Enter), Effect::Policy("osm".into(), Refresh::Days(30)));
+        let mut tool = App { source: 1, ..app };
+        tool.key(KeyCode::Char('e'));
+        assert_eq!(tool.overlay, None, "a release pin has no age");
+    }
+
+    #[test]
+    fn a_clean_needs_a_then_y() {
+        let mut app = App { screen: Screen::Store, ..app() };
+        assert_eq!(app.key(KeyCode::Char('c')), Effect::PlanClean, "the plan of now");
+        assert_eq!((app.overlay, app.command().as_str()), (Some(Overlay::Clean), "obc data gc store"));
+        for key in [KeyCode::Enter, KeyCode::Char('y')] {
+            assert_eq!(app.key(key), Effect::None);
+        }
+        app.key(KeyCode::Char('a'));
+        assert_eq!(app.command(), "obc data gc store --apply");
+        app.key(KeyCode::Esc);
+        assert_eq!((app.overlay, app.asking), (Some(Overlay::Clean), false));
+        app.key(KeyCode::Char('a'));
+        assert_eq!(app.key(KeyCode::Char('y')), Effect::Clean);
+        assert_eq!(app.overlay, None);
+        let mut empty = App { store: Some(gc::Plan::default()), ..app };
+        empty.act(Action::Open(Overlay::Clean));
+        assert_eq!(empty.key(KeyCode::Char('a')), Effect::None, "an empty plan has nothing to clean");
     }
 
     #[test]
@@ -652,10 +928,10 @@ mod tests {
             app.click(area.x, area.y)
         };
         assert_eq!(click(&mut app, Hit::Row(1)), Effect::None);
-        assert_eq!(view(&app), (Screen::Sources, None, 1, 0));
+        assert_eq!(view(&app), (Screen::Sources, None, [1, 0, 0, 0], false));
         assert_eq!(click(&mut app, Hit::Row(1)), Effect::None);
         assert_eq!(app.overlay, Some(Overlay::Pin));
-        click(&mut app, Hit::Screen(Screen::Runs));
-        assert_eq!((app.screen, app.overlay), (Screen::Runs, None));
+        click(&mut app, Hit::Screen(Screen::Store));
+        assert_eq!((app.screen, app.overlay), (Screen::Store, None));
     }
 }

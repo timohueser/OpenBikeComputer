@@ -1,7 +1,7 @@
 //! `obc data gc store`: delete the objects and the snapshot records that no environment, pin or
 //! fixture reaches. Receipts and import records stay: they are history.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -15,10 +15,10 @@ use crate::engine::{self, InputKind};
 /// What the repository pins.
 #[derive(Debug, Default)]
 pub struct Roots {
-    /// `(source, version)` from `[pins]` of every `data/env/*.toml`.
-    pub pins: BTreeSet<(String, String)>,
-    /// Each SHA-256 that a pin, a fixture or a planner region recipe names.
-    pub sha256s: BTreeSet<String>,
+    /// `(source, version)` from `[pins]` of every `data/env/*.toml`, with the environments.
+    pub pins: BTreeMap<(String, String), Vec<String>>,
+    /// Each SHA-256 that a pin, a fixture or a planner region recipe names, with which of them.
+    pub sha256s: BTreeMap<String, &'static str>,
 }
 
 impl Roots {
@@ -29,31 +29,43 @@ impl Roots {
         for path in files(&root.join("data/env"), &["toml"])? {
             let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             let table: toml::Table = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+            let env = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
             for (source, version) in table.get("pins").and_then(|pins| pins.as_table()).into_iter().flatten() {
                 let version =
                     version.as_str().ok_or_else(|| format!("{}: pin {source} is not text", path.display()))?;
-                roots.sha256s.extend(sha256s(version));
-                roots.pins.insert((source.clone(), version.to_string()));
+                roots.name(sha256s(version), "pin");
+                roots.pins.entry((source.clone(), version.to_string())).or_default().push(env.clone());
             }
         }
-        let mut pinned = vec![root.join("fixtures/catalog.toml")];
-        pinned.extend(files(&root.join("fixtures/sources"), &["json", "toml"])?);
-        pinned.extend(files(&root.join("tools/planner-regions"), &["json"])?);
-        for path in pinned {
+        let fixtures = files(&root.join("fixtures/sources"), &["json", "toml"])?;
+        let recipes = files(&root.join("tools/planner-regions"), &["json"])?;
+        let mut named = vec![(root.join("fixtures/catalog.toml"), "fixture")];
+        named.extend(fixtures.into_iter().map(|path| (path, "fixture")));
+        named.extend(recipes.into_iter().map(|path| (path, "planner recipe")));
+        for (path, why) in named {
             match fs::read_to_string(&path) {
-                Ok(text) => roots.sha256s.extend(sha256s(&text)),
+                Ok(text) => roots.name(sha256s(&text), why),
                 Err(e) if e.kind() == ErrorKind::NotFound => {}
                 Err(e) => return Err(format!("{}: {e}", path.display())),
             }
         }
         Ok(roots)
     }
+
+    /// Record `why` for each SHA-256 that no other root named first.
+    fn name(&mut self, sha256s: impl Iterator<Item = String>, why: &'static str) {
+        sha256s.for_each(|sha256| {
+            self.sha256s.entry(sha256).or_insert(why);
+        });
+    }
 }
 
 /// What `gc store` deletes, or deleted, and what stays.
-#[derive(Debug, Default, Serialize, JsonSchema)]
+#[derive(Debug, Default, Clone, Serialize, JsonSchema)]
 #[schemars(rename = "GcPlan")]
 pub struct Plan {
+    /// What stays, and why.
+    pub kept: Vec<Kept>,
     /// `source@version` of each snapshot record that nothing reaches.
     pub snapshots: Vec<String>,
     /// SHA-256 and size of each object that nothing reaches.
@@ -65,16 +77,34 @@ pub struct Plan {
     pub keep_bytes: u64,
 }
 
+/// A snapshot record, the layers of one step, or the objects that one kind of root names and no
+/// kept record or layer has.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct Kept {
+    /// `source@version`, a step, or `N objects`.
+    pub entry: String,
+    /// The size of its files.
+    pub bytes: u64,
+    /// `pin of ENV, …`, `newest of the source`, `newest of a request`, `inputs kept`, `pin`,
+    /// `fixture`, `planner recipe` or `import record`.
+    pub because: Vec<String>,
+}
+
 /// What a collection deletes. A snapshot record is reached when a pin names it, or when it is the
 /// newest record of its source or of a request. An object is reached when a pin, a fixture, a planner recipe or an
 /// import record names it, or a reached record or layer has it. A layer is reached when each input
 /// is: a snapshot input whose digest is of all the files, or of one file, of a reached record of
 /// its source, and a layer input whose digest is of a reached layer.
 pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
-    let mut reached: HashSet<String> = roots.sha256s.iter().cloned().collect();
+    let mut named = roots.sha256s.clone();
     for path in files(&store.root().join("imports"), &["jsonl"])? {
-        reached.extend(sha256s(&fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?));
+        let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        sha256s(&text).for_each(|sha256| {
+            named.entry(sha256).or_insert("import record");
+        });
     }
+    // The objects of the kept records and layers.
+    let mut reached = HashSet::new();
     let mut snapshot_digests = HashSet::new();
     let mut plan = Plan::default();
     let mut snapshots = Vec::new();
@@ -112,10 +142,16 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     for snapshot in &snapshots {
         let (source, version) = (&snapshot.source, &snapshot.version);
         let key = (source.clone(), version.clone());
-        if !roots.pins.contains(&key) && !kept.contains(&key) && retrieved(snapshot) < newest[source.as_str()] {
+        let pinned = roots.pins.get(&key).map(|envs| format!("pin of {}", envs.join(", ")));
+        let newest_of_source = (retrieved(snapshot) >= newest[source.as_str()]).then(|| "newest of the source".into());
+        let newest_of_request = kept.contains(&key).then(|| "newest of a request".into());
+        let because: Vec<String> = [pinned, newest_of_source, newest_of_request].into_iter().flatten().collect();
+        if because.is_empty() {
             plan.snapshots.push(format!("{source}@{version}"));
             continue;
         }
+        let bytes = snapshot.files.iter().map(|file| file.size).sum();
+        plan.kept.push(Kept { entry: format!("{source}@{version}"), bytes, because });
         let files = || snapshot.files.iter().map(|file| (file.name.as_str(), file.sha256.as_str()));
         snapshot_digests.insert((source.clone(), engine::digest(files())));
         snapshot_digests.extend(files().map(|file| (source.clone(), engine::digest([file]))));
@@ -126,6 +162,7 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
         receipts.extend(store.layer(&key)?);
     }
     let mut layer_digests = HashSet::new();
+    let mut steps = BTreeMap::<&str, u64>::new();
     loop {
         let before = layer_digests.len();
         for receipt in &receipts {
@@ -135,16 +172,28 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
             });
             if inputs_reached && layer_digests.insert(receipt.digest.clone()) {
                 reached.extend(receipt.files.iter().map(|file| file.sha256.clone()));
+                *steps.entry(&receipt.step).or_default() += receipt.files.iter().map(|file| file.size).sum::<u64>();
             }
         }
         if layer_digests.len() == before {
             break;
         }
     }
+    plan.kept.sort_by(|a, b| a.entry.cmp(&b.entry));
+    let inputs_kept =
+        |(step, bytes): (&str, u64)| Kept { entry: step.into(), bytes, because: vec!["inputs kept".into()] };
+    plan.kept.extend(steps.into_iter().map(inputs_kept));
+    // The number and size of the objects that only a root of each kind keeps.
+    let mut only_named = BTreeMap::<&str, (u64, u64)>::new();
     for prefix in names(&store.root().join("objects"), "")? {
         for sha256 in names(&store.root().join("objects").join(prefix), "")? {
             let size = fs::metadata(store.object(&sha256)).map_err(|e| format!("object {sha256}: {e}"))?.len();
-            if reached.contains(&sha256) {
+            let root = named.get(sha256.as_str()).filter(|_| !reached.contains(&sha256));
+            if let Some(why) = root {
+                let (objects, bytes) = only_named.entry(why).or_default();
+                (*objects, *bytes) = (*objects + 1, *bytes + size);
+            }
+            if reached.contains(&sha256) || root.is_some() {
                 plan.keep_objects += 1;
                 plan.keep_bytes += size;
             } else {
@@ -153,18 +202,25 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
             }
         }
     }
+    for (why, (objects, bytes)) in only_named {
+        plan.kept.push(Kept { entry: objects_text(objects), bytes, because: vec![why.into()] });
+    }
     plan.objects.sort();
     plan.snapshots.sort();
     Ok(plan)
 }
 
 /// Delete what nothing reaches, and say what. `None`, and nothing deleted, while a fetch, a build or
-/// an import holds the store.
-pub fn apply(store: &Store, roots: &Roots) -> Result<Option<Plan>, String> {
+/// an import holds the store. With `confirmed`, a plan that removes anything else deletes nothing.
+pub fn apply(store: &Store, roots: &Roots, confirmed: Option<&Plan>) -> Result<Option<Plan>, String> {
     let Some(_alone) = store.try_alone()? else {
         return Ok(None);
     };
     let plan = plan(store, roots)?;
+    if confirmed.is_some_and(|confirmed| (&confirmed.snapshots, &confirmed.objects) != (&plan.snapshots, &plan.objects))
+    {
+        return Err("the store changed after the plan; nothing was deleted".into());
+    }
     for snapshot in &plan.snapshots {
         let (source, version) = snapshot.split_once('@').expect("source@version");
         let _lock = store.lock(&format!("snapshot-{source}@{version}"))?;
@@ -174,6 +230,11 @@ pub fn apply(store: &Store, roots: &Roots) -> Result<Option<Plan>, String> {
         remove(&store.object(sha256))?;
     }
     Ok(Some(plan))
+}
+
+/// `1 object`, `2 objects`.
+pub fn objects_text(objects: u64) -> String {
+    format!("{objects} object{}", if objects == 1 { "" } else { "s" })
 }
 
 fn remove(path: &Path) -> Result<(), String> {
@@ -378,15 +439,35 @@ mod tests {
             .collect();
         removed.sort();
         assert_eq!(plan.objects, removed);
+        let kept: Vec<String> = plan.kept.iter().map(|k| format!("{}: {}", k.entry, k.because.join(" · "))).collect();
+        assert_eq!(
+            kept,
+            [
+                "extract@2026-09-20: newest of a request",
+                "extract@2026-09-30: newest of the source · newest of a request",
+                "land@2026-09-01: pin of live · newest of the source",
+                "osm@release/1: pin of local · newest of the source",
+                "cells: inputs kept",
+                "joined: inputs kept",
+                "one: inputs kept",
+                "1 object: fixture",
+                "1 object: import record",
+                "1 object: pin",
+            ]
+        );
         assert_eq!(
             plan.keep_objects, 11,
             "pinned files, the newest of each source and request, the digest pin, the fixture, an import and three layers"
         );
 
         let using = store.using().unwrap();
-        assert!(apply(&store, &roots).unwrap().is_none(), "a running fetch stops a collection");
+        assert!(apply(&store, &roots, None).unwrap().is_none(), "a running fetch stops a collection");
         drop(using);
-        assert_eq!(apply(&store, &roots).unwrap().unwrap().objects, plan.objects, "it deletes what the plan names");
+        let older = Plan { objects: plan.objects[1..].to_vec(), ..plan.clone() };
+        assert!(apply(&store, &roots, Some(&older)).is_err(), "a plan that is not the plan of now deletes nothing");
+        assert!(store.snapshot("land", "2026-08-01").unwrap().is_some());
+        let applied = apply(&store, &roots, Some(&plan)).unwrap().unwrap();
+        assert_eq!(applied.objects, plan.objects, "it deletes what the plan names");
         assert!(store.snapshot("land", "2026-08-01").unwrap().is_none());
         assert!(store.object(&sha256_hex(b"land b")).is_file(), "a file of the pinned record stays");
         assert!(!store.object(&sha256_hex(b"stale")).exists());
