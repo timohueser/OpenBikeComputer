@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use super::{order, prepare, reusable, select, selection, Codes, Input, Receipt, Selection, Step};
-use crate::store::Store;
+use crate::store::{sorted, Store};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -55,15 +55,6 @@ pub struct Estimate {
     pub wall_ms: u64,
     pub bytes_out: u64,
     pub peak_rss_bytes: Option<u64>,
-}
-
-/// The sums of the known estimates of a plan. An equal fetch in two groups counts once.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Totals {
-    pub wall_ms: u64,
-    pub download_bytes: u64,
-    pub bytes_out: u64,
 }
 
 /// What building `steps` needs: a fetch for each snapshot input whose files the store lacks, and a
@@ -130,24 +121,13 @@ impl Plan {
         self.groups.iter().flat_map(|group| &group.builds)
     }
 
-    /// Each fetch once.
-    pub fn fetches(&self) -> Vec<&Fetch> {
-        let mut fetches: Vec<&Fetch> = Vec::new();
+    /// One fetch per version and params, with the files of every group that needs it.
+    pub fn fetches(&self) -> Vec<Fetch> {
+        let mut fetches = Vec::new();
         for fetch in self.groups.iter().flat_map(|group| &group.fetches) {
-            if !fetches.contains(&fetch) {
-                fetches.push(fetch);
-            }
+            add_fetch(&mut fetches, fetch);
         }
         fetches
-    }
-
-    pub fn totals(&self) -> Totals {
-        let estimates: Vec<Estimate> = self.builds().filter_map(|build| build.estimate).collect();
-        Totals {
-            wall_ms: estimates.iter().map(|estimate| estimate.wall_ms).sum(),
-            download_bytes: self.fetches().iter().filter_map(|fetch| fetch.bytes).sum(),
-            bytes_out: estimates.iter().map(|estimate| estimate.bytes_out).sum(),
-        }
     }
 }
 
@@ -177,20 +157,25 @@ fn missing(store: &Store, step: &Step) -> Result<Vec<Fetch>, String> {
     Ok(fetches)
 }
 
-/// Add `fetch` to `fetches`, joined with a fetch of the same version and params.
+/// Add `fetch` to `fetches`, joined with a fetch of the same version and params. A join that
+/// adds files has no known size.
 fn add_fetch(fetches: &mut Vec<Fetch>, fetch: &Fetch) {
     let same = |known: &&mut Fetch| {
-        (&known.source, &known.version, &known.params) == (&fetch.source, &fetch.version, &fetch.params)
+        (&known.source, &known.version, sorted(&known.params)) == (&fetch.source, &fetch.version, sorted(&fetch.params))
     };
     let Some(known) = fetches.iter_mut().find(same) else {
         fetches.push(fetch.clone());
         return;
     };
+    let before = known.files.clone();
     if known.files.is_empty() || fetch.files.is_empty() {
         known.files.clear();
     } else {
         let names: BTreeSet<String> = known.files.drain(..).chain(fetch.files.iter().cloned()).collect();
         known.files = names.into_iter().collect();
+    }
+    if known.files != before || known.files != fetch.files {
+        known.bytes = None;
     }
 }
 
@@ -203,7 +188,9 @@ fn fetch_bytes(store: &Store, fetch: &Fetch) -> Result<Option<u64>, String> {
         versions.map(|version| (version, fetch.files.clone())).collect()
     } else {
         let requests = store.requests(&fetch.source, &fetch.params)?;
-        requests.into_iter().map(|request| (request.version, request.files)).collect()
+        // A fetch that gave no file sizes nothing.
+        let requests = requests.into_iter().filter(|request| !request.files.is_empty());
+        requests.map(|request| (request.version, request.files)).collect()
     };
     candidates.sort_by(|a, b| (a.0 == fetch.version, &a.0).cmp(&(b.0 == fetch.version, &b.0)));
     for (version, names) in candidates.iter().rev() {
@@ -287,13 +274,13 @@ mod tests {
         assert_eq!(plan.groups[1].builds[0].key, None);
         assert_eq!(plan.groups[1].builds[0].estimate.map(|estimate| estimate.bytes_out), Some(5));
 
-        // Two groups can need the same fetch; it counts once.
+        // Two groups can need the same fetch.
         let mut both = steps("2");
         both[2].inputs = vec![snapshot("head", "2", &["head.txt"])];
         let plan = fixture.plan(&both).unwrap();
         assert_eq!(outline(&plan), [chain, ("test/lower", vec!["test/lower"])]);
-        assert_eq!((&plan.groups[0].fetches, &plan.groups[1].fetches), (&vec![fetch.clone()], &vec![fetch]));
-        assert_eq!(plan.totals().download_bytes, 5);
+        assert_eq!((&plan.groups[0].fetches, &plan.groups[1].fetches), (&vec![fetch.clone()], &vec![fetch.clone()]));
+        assert_eq!(plan.fetches(), [fetch], "a run fetches it once");
     }
 
     #[test]

@@ -143,7 +143,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `snapshots/<source>/<version>.json` | The snapshot record of one source version |
 | `layers/<key>.json` | The receipt of the layer with that key, see [Layers](#layers) |
 | `code/<hash>.json` | The code files of a code hash: `{path: sha256}`. A run writes it for each step that it reads or builds |
-| `requests/<source>/<sha256>.json` | The files that a fetch with `NAME=VALUE` gave: `version`, `params` and `files` (names). The name is the SHA-256 of the compact JSON `[version, params]` |
+| `requests/<source>/<sha256>.json` | The files that a fetch with `NAME=VALUE` gave: `version`, `params` and `files` (names). The name is the SHA-256 of the compact JSON `[version, params]`, with `params` sorted. A record with no files selects no file |
 | `runs/<id>.jsonl` | The events of one run, see [Runs](#runs) |
 | `upstream/<source>.json` | The last upstream check of a source: `checked` (seconds since 1970-01-01 UTC), `version` (a string, or `null` when the check failed) and `error` (only when it failed) |
 | `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write |
@@ -396,7 +396,7 @@ A step that needs a package or a tool finds it installed, or reads it as a snaps
 | `built` | `YYYY-MM-DDTHH:MM:SSZ` |
 | `wall_ms` | The time from start to end, in milliseconds |
 | `cpu_ms` | User and system time in milliseconds of the command and the children it waited for (`wait4`). For a Rust step, of the whole process, so it is exact only while no other step runs. `null` when the system does not report it |
-| `peak_rss_bytes` | The peak resident set of the command or of a child it waited for. For a Rust step, the peak of the process when the step raised it, else `null` |
+| `peak_rss_bytes` | The peak resident set of the command or of a child it waited for. For a Rust step, the peak of the whole process so far |
 | `bytes_in` | The size of the input files |
 | `bytes_out` | The size of `files` |
 | `metrics` | The JSON object the step wrote, or `{}` |
@@ -429,8 +429,8 @@ The estimate of a build is `wall_ms`, `bytes_out` and `peak_rss_bytes` of the ne
 step, or `null` when the store has none. The `bytes` of a fetch is the size of its files in the
 record of the version. When that record does not list them all, it is the size in the record of
 another version that lists them all, the last in byte order. Without `files`, the files are those
-that a fetch with the same `params` gave, or else every file. Otherwise `bytes` is `null`. The
-totals of a plan count an equal fetch in two groups once.
+that a fetch with the same `params` gave, or else every file. Otherwise `bytes` is `null`. A run
+fetches a version with the same `params` once, with the files of every group that needs it.
 
 ### Runs
 
@@ -452,17 +452,18 @@ with "the plan is outdated; plan again".
 
 The id of a run is its start time in UTC, `YYYY-MM-DD-HHMMSS`, with `-2`, `-3` and so on when
 another run has that id. The process that holds the lock `run-<id>` is the process that runs the
-run. A run without a `finished` event whose lock is free has failed. `--detach` starts a child
-process that creates the run and gives its id back.
+run. A run without a `finished` event whose lock is free has failed. A command that gets
+`--detach` must start a child process that creates the run and gives its id back; no command has
+`--detach` yet.
 
 `runs/<id>.jsonl` has one JSON object per line. The key `event` gives its kind:
 
 | `event` | Keys |
 | --- | --- |
 | `started` | `command`, and `at` (`YYYY-MM-DDTHH:MM:SSZ`) |
-| `fetch_started` | `source` and `version` |
-| `fetch_finished` | `source`, `version`, `bytes` (the size of the files that the fetch gave, downloaded or found in the store) and `wall_ms` |
-| `fetch_failed` | `source`, `version` and `error` |
+| `fetch_started` | `source`, `version` and `params` |
+| `fetch_finished` | `source`, `version`, `params`, `bytes` (the size of the files that the fetch gave, downloaded or found in the store) and `wall_ms` |
+| `fetch_failed` | `source`, `version`, `params` and `error` |
 | `step_started` | `step` |
 | `step_finished` | `step`, `reused` and `receipt` |
 | `step_failed` | `step` and `error` |
@@ -471,15 +472,15 @@ process that creates the run and gives its id back.
 ### State of a layer
 
 The engine computes the state of each layer when it is asked, and stores nothing. It compares
-the step with the layer that live has: its receipt, and the version of each source that it was
-built from. Apply gives them from the live manifests. The state of a source is as in
+the step with the layer that live has: its receipt, and the version and `params` of each source
+that it was built from. Apply gives them from the live manifests. The state of a source is as in
 [State of a source](#state-of-a-source).
 
 | State | When | Reason |
 | --- | --- | --- |
 | `not applied` | Live has no layer of the step | `missing in live` |
 | `not applied` | The options are not the options of the live layer | `options` |
-| `not applied` | The step reads a version of a source that the live layer was not built from, or the store has the files that it reads and their digest is not the one that the live layer read | `SOURCE@VERSION not in live`, and ` (not fetched)` when the store does not have the files |
+| `not applied` | The step reads a source that the live layer read, with another version or other `params` (in any order), or the store has the files that it reads and their digest is not the one that the live layer read | `SOURCE@VERSION not in live`, and ` (not fetched)` when the store does not have the files |
 | `code changed` | The inputs (kind and name), the command or the outputs are not those of the live layer | `inputs`, `command` or `outputs` |
 | `code changed` | The code hash is not the one of the live layer | The first code file that changed, and `and N more`. The declared code when the store has no `code/<hash>.json` of the live layer |
 | `input changed` | A layer that the step reads is `not applied`, `code changed` or `input changed`, or its live layer is not the one that the live layer of the step read | The name of that layer |
@@ -522,7 +523,8 @@ When more than one row applies, the first row gives the state. In JSON, a state 
   layers that it reused). A run file that cannot be read is listed as `failed`, or `running`
   while its lock is held.
 - `runs RUN`: the item of the run, and `error`, `fetches` and `steps`, in the order they
-  started. Each fetch has `source`, `version`, `bytes`, `wall_ms` and `error`. Each step has `step`, `reused`, `receipt` (`null` while it runs or when it failed), `error`,
+  started. Each fetch has `source`, `version`, `params`, `bytes`, `wall_ms` and `error`. Each
+  step has `step`, `reused`, `receipt` (`null` while it runs or when it failed), `error`,
   `users` (the steps of the run that read its layer) and `last_wall_ms` (its `wall_ms` in the
   newest earlier run that built it, or `null`).
 - `runs RUN --follow`: one event per line, as in `runs/<id>.jsonl`.

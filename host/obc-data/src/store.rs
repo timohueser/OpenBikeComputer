@@ -189,8 +189,9 @@ impl Store {
         self.root.join("runs").join(format!("{id}.jsonl"))
     }
 
+    /// The path of a request record. The order of the params does not matter.
     fn request_path(&self, source: &str, version: &str, params: &[(String, String)]) -> PathBuf {
-        let id = serde_json::to_vec(&(version, params)).expect("strings serialize");
+        let id = serde_json::to_vec(&(version, sorted(params))).expect("strings serialize");
         self.root.join("requests").join(source).join(format!("{}.json", sha256_hex(&id)))
     }
 
@@ -208,12 +209,18 @@ impl Store {
     /// Every record of a fetch of `source` with `params`, in any version.
     pub fn requests(&self, source: &str, params: &[(String, String)]) -> Result<Vec<Requested>, String> {
         let records: Vec<Requested> = read_records(&self.root.join("requests").join(source))?;
-        Ok(records.into_iter().filter(|record| record.params == params).collect())
+        Ok(records.into_iter().filter(|record| sorted(&record.params) == sorted(params)).collect())
     }
 
     pub fn put_requested(&self, source: &str, record: &Requested) -> Result<(), String> {
         write_record(&self.request_path(source, &record.version, &record.params), record)
     }
+}
+
+pub fn sorted(params: &[(String, String)]) -> Vec<(String, String)> {
+    let mut params = params.to_vec();
+    params.sort();
+    params
 }
 
 /// The files that a fetch with `params` gave: what a snapshot input with these params reads.
@@ -366,6 +373,19 @@ pub(crate) mod tests {
         }
         assert_eq!(objects[0], objects[1], "the same bytes are one object");
         assert!(fs::metadata(&objects[0]).unwrap().permissions().readonly());
+    }
+
+    #[test]
+    fn a_request_record_does_not_depend_on_the_order_of_its_params() {
+        let scratch = Scratch::new("requested");
+        let store = Store::at(&scratch.0);
+        let pair = |name: &str, value: &str| (name.to_string(), value.to_string());
+        let files = vec!["a.tif".to_string()];
+        let record = Requested { version: "v1".into(), params: vec![pair("tile", "a"), pair("bbox", "1")], files };
+        store.put_requested("land", &record).unwrap();
+        let swapped = [pair("bbox", "1"), pair("tile", "a")];
+        assert_eq!(store.requested("land", "v1", &swapped).unwrap(), Some(record.files.clone()));
+        assert_eq!(store.requests("land", &swapped).unwrap(), [record]);
     }
 
     #[test]

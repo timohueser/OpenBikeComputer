@@ -71,7 +71,7 @@ fn show(run: &Details, json: bool) -> Result<(), Failure> {
                 (None, None) => "running".into(),
             };
             table.push(vec![
-                format!("{}@{}", fetch.source, fetch.version),
+                fetched(&fetch.source, &fetch.version, &fetch.params),
                 took,
                 fetch.bytes.map_or("—".into(), bytes),
             ]);
@@ -136,11 +136,15 @@ fn follow(store: &Store, id: &str, json: bool) -> Result<(), Failure> {
                     format!("{step} built in {}, {}", duration(receipt.wall_ms), bytes(receipt.bytes_out))
                 }
                 Event::StepFailed { step, error } => format!("{step} failed: {error}"),
-                Event::FetchStarted { source, version } => format!("{source}@{version} fetch started"),
-                Event::FetchFinished { source, version, bytes: size, wall_ms } => {
-                    format!("{source}@{version} fetched in {}, {}", duration(*wall_ms), bytes(*size))
+                Event::FetchStarted { source, version, params } => {
+                    format!("{} fetch started", fetched(source, version, params))
                 }
-                Event::FetchFailed { source, version, error } => format!("{source}@{version} fetch failed: {error}"),
+                Event::FetchFinished { source, version, params, bytes: size, wall_ms } => {
+                    format!("{} fetched in {}, {}", fetched(source, version, params), duration(*wall_ms), bytes(*size))
+                }
+                Event::FetchFailed { source, version, params, error } => {
+                    format!("{} fetch failed: {error}", fetched(source, version, params))
+                }
                 Event::Finished { ok: true, wall_ms, .. } => format!("finished in {}", duration(*wall_ms)),
                 Event::Finished { error, .. } =>
                     format!("failed: {}", error.as_deref().unwrap_or("no reason recorded")),
@@ -152,6 +156,12 @@ fn follow(store: &Store, id: &str, json: bool) -> Result<(), Failure> {
         return Err(format!("run {id} failed").into());
     }
     Ok(())
+}
+
+/// `SOURCE@VERSION NAME=VALUE…`
+fn fetched(source: &str, version: &str, params: &[(String, String)]) -> String {
+    let params = params.iter().map(|(name, value)| format!(" {name}={value}"));
+    format!("{source}@{version}{}", params.collect::<String>())
 }
 
 fn mark(outcome: Outcome) -> &'static str {

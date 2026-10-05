@@ -270,6 +270,8 @@ fn selection(
     let names = match params {
         [] => files.to_vec(),
         params => match store.requested(source, version, params)? {
+            // A fetch that gave no file: no names here must not select every file.
+            Some(names) if names.is_empty() => return Ok(Selection::Present(Vec::new())),
             Some(names) => names,
             None => return Ok(Selection::Lacks(Vec::new())),
         },

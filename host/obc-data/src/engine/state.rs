@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{digest, order, selection, Code, Codes, Input, InputKind, Receipt, Selection, Step};
 use crate::sources::{State, Status};
-use crate::store::Store;
+use crate::store::{sorted, Store};
 
 /// What the state of a layer depends on besides the steps and the store.
 pub struct Environment {
@@ -20,8 +20,14 @@ pub struct Environment {
 /// A layer that live has.
 pub struct Live {
     pub receipt: Receipt,
-    /// The version of each source that it was built from: receipts hold digests, not versions.
-    pub versions: BTreeMap<String, String>,
+    /// What it read of each source: receipts hold digests, not versions and params.
+    pub snapshots: BTreeMap<String, LiveSnapshot>,
+}
+
+pub struct LiveSnapshot {
+    pub version: String,
+    /// The `NAME=VALUE` of the fetch, in any order.
+    pub params: Vec<(String, String)>,
 }
 
 /// A layer with its state, what it reads, its code and the layers that read it.
@@ -94,7 +100,7 @@ fn judge(
     states: &HashMap<&str, State>,
 ) -> Result<(State, Option<String>), String> {
     let found = |state, reason: String| Ok((state, Some(reason)));
-    let Some(Live { receipt: live, versions }) = environment.live.get(&step.name) else {
+    let Some(Live { receipt: live, snapshots }) = environment.live.get(&step.name) else {
         return found(State::NotApplied, "missing in live".into());
     };
     let read = |kind, name: &str| live.inputs.iter().find(|input| input.kind == kind && input.name == name);
@@ -104,13 +110,15 @@ fn judge(
     }
     for input in &step.inputs {
         let Input::Snapshot { source, version, params, files } = input else { continue };
+        // A source that live did not read is a new input: the inputs below differ.
+        let Some(read_live) = snapshots.get(source) else { continue };
         let digest = match selection(store, source, version, params, files)? {
             Selection::Present(files) => {
                 Some(digest(files.iter().map(|file| (file.name.as_str(), file.sha256.as_str()))))
             }
             Selection::Lacks(_) => None,
         };
-        let other = versions.get(source) != Some(version);
+        let other = &read_live.version != version || sorted(&read_live.params) != sorted(params);
         let other_files = digest
             .as_ref()
             .is_some_and(|digest| read(InputKind::Snapshot, source).is_some_and(|input| &input.digest != digest));
@@ -188,17 +196,19 @@ mod tests {
     fn live(fixture: &Fixture) -> Environment {
         let steps = pipeline();
         let built = fixture.build(&steps).unwrap();
-        let versions = |name: &str| {
+        let snapshots = |name: &str| {
             let step = steps.iter().find(|step| step.name == name).unwrap();
-            let versions = step.inputs.iter().filter_map(|input| match input {
-                Input::Snapshot { source, version, .. } => Some((source.clone(), version.clone())),
+            let snapshots = step.inputs.iter().filter_map(|input| match input {
+                Input::Snapshot { source, version, params, .. } => {
+                    Some((source.clone(), LiveSnapshot { version: version.clone(), params: params.clone() }))
+                }
                 Input::Layer(_) => None,
             });
-            versions.collect()
+            snapshots.collect()
         };
         let live = built.into_iter().map(|built| {
             let name = built.receipt.step.clone();
-            (name.clone(), Live { receipt: built.receipt, versions: versions(&name) })
+            (name.clone(), Live { receipt: built.receipt, snapshots: snapshots(&name) })
         });
         Environment { sources: BTreeMap::new(), live: live.collect() }
     }
@@ -258,15 +268,32 @@ mod tests {
             ])
         );
 
-        // The environment pins a version that live was not built from: fetched, and not fetched.
         fixture.fetched_version("head", "2", "head.txt", b"head 2\n");
-        for (version, reason) in [("2", "head@2 not in live"), ("3", "head@3 not in live (not fetched)")] {
+        // The environment pins a version or params that live was not built from.
+        let tile = Input::Snapshot {
+            source: "head".into(),
+            version: "1".into(),
+            params: vec![("tile".into(), "c".into())],
+            files: Vec::new(),
+        };
+        let cases = [
+            (snapshot("head", "2", &["head.txt"]), "head@2 not in live"),
+            (snapshot("head", "3", &["head.txt"]), "head@3 not in live (not fetched)"),
+            (tile, "head@1 not in live (not fetched)"),
+        ];
+        for (input, reason) in cases {
             let mut steps = pipeline();
-            steps[2].inputs = vec![snapshot("head", version, &["head.txt"])];
+            steps[2].inputs = vec![input];
             let layers = state(&fixture.store, &fixture.root(), &steps, &environment).unwrap();
             assert_eq!((layers[0].state, layers[0].reason.as_deref()), (State::NotApplied, Some(reason)));
             assert_eq!((layers[1].state, layers[1].reason.as_deref()), (State::InputChanged, Some("test/upper")));
         }
+
+        // A snapshot that live did not read is a new input.
+        let mut steps = pipeline();
+        steps[2].inputs.push(snapshot("tail", "1", &[]));
+        let layers = state(&fixture.store, &fixture.root(), &steps, &environment).unwrap();
+        assert_eq!((layers[0].state, layers[0].reason.as_deref()), (State::CodeChanged, Some("inputs")));
 
         let layers = state(&fixture.store, &fixture.root(), &pipeline(), &environment).unwrap();
         let (upper, join) = (&layers[0], &layers[1]);

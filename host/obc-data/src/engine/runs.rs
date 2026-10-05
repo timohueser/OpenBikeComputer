@@ -69,10 +69,12 @@ pub enum Event {
     FetchStarted {
         source: String,
         version: String,
+        params: Vec<(String, String)>,
     },
     FetchFinished {
         source: String,
         version: String,
+        params: Vec<(String, String)>,
         /// The size of the files that the fetch gave, downloaded or found in the store.
         bytes: u64,
         wall_ms: u64,
@@ -80,6 +82,7 @@ pub enum Event {
     FetchFailed {
         source: String,
         version: String,
+        params: Vec<(String, String)>,
         error: String,
     },
     StepStarted {
@@ -273,8 +276,12 @@ impl Run {
 
     fn fetch(&mut self, context: &Context, plan: &Plan) -> Result<(), String> {
         for planned in plan.fetches() {
-            let (source, version) = (planned.source.clone(), planned.version.clone());
-            self.record(&Event::FetchStarted { source: source.clone(), version: version.clone() })?;
+            let (source, version, params) = (planned.source.clone(), planned.version.clone(), planned.params.clone());
+            self.record(&Event::FetchStarted {
+                source: source.clone(),
+                version: version.clone(),
+                params: params.clone(),
+            })?;
             let start = Instant::now();
             let fetched = context
                 .sources
@@ -282,22 +289,19 @@ impl Run {
                 .find(|known| known.id == source)
                 .ok_or_else(|| format!("no source `{source}` in data/sources.toml"))
                 .and_then(|known| {
-                    let request = fetch::Request {
-                        source: known,
-                        version: Some(version.clone()),
-                        params: planned.params.clone(),
-                    };
+                    let request =
+                        fetch::Request { source: known, version: Some(version.clone()), params: params.clone() };
                     fetch::fetch(context.store, context.http, &request)
                 });
             match fetched {
                 Ok(snapshot) => {
                     let bytes = snapshot.files.iter().map(|file| file.size).sum();
                     let wall_ms = start.elapsed().as_millis() as u64;
-                    self.record(&Event::FetchFinished { source, version, bytes, wall_ms })?;
+                    self.record(&Event::FetchFinished { source, version, params, bytes, wall_ms })?;
                 }
                 Err(error) => {
                     let failed = format!("fetch {source}@{version}: {error}");
-                    self.record(&Event::FetchFailed { source, version, error })?;
+                    self.record(&Event::FetchFailed { source, version, params, error })?;
                     return Err(failed);
                 }
             }
@@ -381,6 +385,7 @@ pub struct Details {
 pub struct RunFetch {
     pub source: String,
     pub version: String,
+    pub params: Vec<(String, String)>,
     /// `None` while it runs, and when it failed.
     pub bytes: Option<u64>,
     pub wall_ms: Option<u64>,
@@ -502,10 +507,11 @@ fn read_run(store: &Store, id: String) -> Result<Details, String> {
         return Ok(run);
     };
     (run.summary.command, run.summary.started) = (command.clone(), at.clone());
-    let fetch = |fetches: &mut Vec<RunFetch>, source: &str, version: &str| -> usize {
-        fetches.iter().position(|fetch| fetch.source == source && fetch.version == version).unwrap_or_else(|| {
-            let (source, version) = (source.into(), version.into());
-            fetches.push(RunFetch { source, version, bytes: None, wall_ms: None, error: None });
+    // A version fetched with two sets of params is two fetches.
+    let fetch = |fetches: &mut Vec<RunFetch>, source: String, version: String, params: Vec<(String, String)>| {
+        let same = |fetch: &RunFetch| (&fetch.source, &fetch.version, &fetch.params) == (&source, &version, &params);
+        fetches.iter().position(same).unwrap_or_else(|| {
+            fetches.push(RunFetch { source, version, params, bytes: None, wall_ms: None, error: None });
             fetches.len() - 1
         })
     };
@@ -526,16 +532,16 @@ fn read_run(store: &Store, id: String) -> Result<Details, String> {
     for event in events {
         match event {
             Event::Started { .. } => {}
-            Event::FetchStarted { source, version } => {
-                fetch(&mut run.fetches, &source, &version);
+            Event::FetchStarted { source, version, params } => {
+                fetch(&mut run.fetches, source, version, params);
             }
-            Event::FetchFinished { source, version, bytes, wall_ms } => {
+            Event::FetchFinished { source, version, params, bytes, wall_ms } => {
                 run.summary.bytes_fetched += bytes;
-                let i = fetch(&mut run.fetches, &source, &version);
+                let i = fetch(&mut run.fetches, source, version, params);
                 (run.fetches[i].bytes, run.fetches[i].wall_ms) = (Some(bytes), Some(wall_ms));
             }
-            Event::FetchFailed { source, version, error } => {
-                let i = fetch(&mut run.fetches, &source, &version);
+            Event::FetchFailed { source, version, params, error } => {
+                let i = fetch(&mut run.fetches, source, version, params);
                 run.fetches[i].error = Some(error);
             }
             Event::StepStarted { step: name } => {
@@ -600,6 +606,7 @@ mod tests {
     use crate::engine::plan::Estimate;
     use crate::engine::tests::{fixture, pipeline, snapshot, step, steps_crate, summary, write, JOIN};
     use crate::engine::{Code, Input, Request};
+    use crate::store::Requested;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Each event as `event` or `event step`.
@@ -611,7 +618,7 @@ mod tests {
                 Event::StepStarted { step } | Event::StepFinished { step, .. } | Event::StepFailed { step, .. } => {
                     format!("{} {step}", name(event))
                 }
-                Event::FetchStarted { source, version } | Event::FetchFinished { source, version, .. } => {
+                Event::FetchStarted { source, version, .. } | Event::FetchFinished { source, version, .. } => {
                     format!("{} {source}@{version}", name(event))
                 }
                 _ => name(event),
@@ -782,7 +789,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
             params: vec![("tile".into(), "a".into())],
             files: Vec::new(),
         };
-        let steps = [step("test/copy", vec![tile], steps_crate(), "copy.bin", StepRun::Rust(first_file))];
+        let mut steps = [step("test/copy", vec![tile], steps_crate(), "copy.bin", StepRun::Rust(first_file))];
         let plan = fixture.plan(&steps).unwrap();
         let fetch = &plan.groups[0].fetches[0];
         assert_eq!(
@@ -822,6 +829,14 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
         assert_eq!(runs[0].bytes_fetched, 6);
         assert_eq!(fixture.plan(&steps).unwrap().groups, [], "the store knows the files of the params");
         assert_eq!(log.lock().unwrap().len(), 1);
+
+        // A fetch that gave no file: its input reads no file, not every file of the version.
+        let none = Requested { version: "v1".into(), params: vec![("tile".into(), "z".into())], files: Vec::new() };
+        fixture.store.put_requested("land", &none).unwrap();
+        let Input::Snapshot { params, .. } = &mut steps[0].inputs[0] else { unreachable!() };
+        *params = none.params.clone();
+        let plan = fixture.plan(&steps).unwrap();
+        assert_eq!((plan.groups[0].fetches.len(), plan.groups[0].builds[0].key.is_some()), (0, true));
     }
 
     fn sha256_of(bytes: &[u8]) -> String {
