@@ -388,10 +388,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     root = test_plan.repository_root().resolve()
     try:
-        graph, _document, units = test_plan.load(root)
+        graph, document, units = test_plan.load(root)
         committed, deleted = test_plan.git_changed_paths(root, args.base, "HEAD")
         changed = sorted(set(committed) | set(test_plan.working_tree_paths(root)))
-        selection = test_plan.select(units, graph, changed, deleted=deleted, base=args.base)
+        definitions = test_plan.changed_suite_ids(root, args.base, document) if "testing/suites.toml" in changed else ()
+        selection = test_plan.select(units, graph, changed, deleted=deleted, changed_suites=definitions, base=args.base)
         # An unowned path selects nothing, so the plan would otherwise report a quiet all-clear.
         for error in selection.errors:
             print(f"selection error: {error}", file=sys.stderr)
