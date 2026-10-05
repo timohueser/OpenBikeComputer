@@ -9,7 +9,7 @@ use obc_formats::io::SliceSource;
 use obc_ports::{Fix, RideClock, Sensors};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader};
 use obc_render::text::{text_width, Font};
-use obc_route::{RouteIndex, RouteReader, RouteSummary, MAX_POINTS_PER_CHUNK};
+use obc_route::{RouteIndex, RouteReader, RouteSummary};
 
 use crate::harness::support::{build_min_obcm, wpts_from_obcr, Buf, OnceFix, VecSink};
 use crate::screen::map::chip_band_box;
@@ -54,8 +54,7 @@ fn chip_per_waypoint(obcr: &[u8]) -> Vec<(String, Buf)> {
     let mut seen: Vec<(String, Buf)> = Vec::new();
     let mut at = 0u32;
     for chunk in 0..index.chunks().len() {
-        let mut points = heapless::Vec::<_, MAX_POINTS_PER_CHUNK>::new();
-        route.decode_chunk(chunk, &mut points).expect("the chunk decodes");
+        let points: Vec<_> = route.with_chunk(chunk, |points| points.collect()).expect("the chunk decodes");
         for point in &points {
             at += 1;
             app.tick(

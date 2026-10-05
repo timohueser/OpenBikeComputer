@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use super::{Snapshot, Store};
+use super::{read_records, sorted, Requested, Snapshot, Store};
 use crate::engine::{self, InputKind};
 
 /// What the repository pins.
@@ -84,9 +84,30 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
         let entry = newest.entry(&snapshot.source).or_default();
         *entry = (*entry).clone().max(retrieved(snapshot));
     }
+    // The same for each request: a fetch of one Geofabrik area on an older day is the newest
+    // file of that area.
+    let mut kept: HashSet<(String, String)> = HashSet::new();
+    for source in names(&store.root().join("requests"), "")? {
+        let requests: Vec<Requested> = read_records(&store.root().join("requests").join(&source))?;
+        // Params, then the latest retrieval and its version.
+        let mut newest_of = HashMap::<_, (Option<String>, String)>::new();
+        for request in requests {
+            let Some(snapshot) = snapshots.iter().find(|s| s.source == source && s.version == request.version) else {
+                continue;
+            };
+            let files = snapshot.files.iter().filter(|file| request.files.contains(&file.name));
+            let day = files.map(|file| file.retrieved.clone()).max();
+            let entry = newest_of.entry(sorted(&request.params)).or_insert((None, String::new()));
+            if day > entry.0 {
+                *entry = (day, request.version);
+            }
+        }
+        kept.extend(newest_of.into_values().map(|(_, version)| (source.clone(), version)));
+    }
     for snapshot in &snapshots {
         let (source, version) = (&snapshot.source, &snapshot.version);
-        if !roots.pins.contains(&(source.clone(), version.clone())) && retrieved(snapshot) < newest[source.as_str()] {
+        let key = (source.clone(), version.clone());
+        if !roots.pins.contains(&key) && !kept.contains(&key) && retrieved(snapshot) < newest[source.as_str()] {
             plan.snapshots.push(format!("{source}@{version}"));
             continue;
         }
@@ -240,7 +261,7 @@ mod tests {
     use super::*;
     use crate::engine::{InputRecord, LayerFile, Receipt};
     use crate::store::tests::Scratch;
-    use crate::store::{sha256_hex, write_atomic, FileRecord, Snapshot};
+    use crate::store::{sha256_hex, write_atomic, FileRecord, Requested, Snapshot};
 
     fn object(store: &Store, bytes: &[u8]) -> String {
         let sha256 = sha256_hex(bytes);
@@ -318,6 +339,13 @@ mod tests {
         // No pin names `extract`: its newest record stays.
         snapshot(&store, "extract", "2026-08-01", "2026-08-01", &[("a.pbf", b"extract old")]);
         snapshot(&store, "extract", "2026-09-30", "2026-09-30", &[("a.pbf", b"extract new")]);
+        // Area `b` was last fetched on an older day than area `a`.
+        snapshot(&store, "extract", "2026-09-20", "2026-09-20", &[("b.pbf", b"extract b")]);
+        for (version, area) in [("2026-09-30", "a"), ("2026-09-20", "b"), ("2026-08-01", "a")] {
+            let params = vec![("area".to_string(), area.to_string())];
+            let files = vec![format!("{area}.pbf")];
+            store.put_requested("extract", &Requested { version: version.into(), params, files }).unwrap();
+        }
         object(&store, b"digest pin");
         object(&store, b"fixture");
         object(&store, b"imported, unused");
@@ -346,8 +374,8 @@ mod tests {
         removed.sort();
         assert_eq!(plan.objects, removed);
         assert_eq!(
-            plan.keep_objects, 10,
-            "pinned and newest files, the digest pin, the fixture, an import and three layers"
+            plan.keep_objects, 11,
+            "pinned files, the newest of each source and request, the digest pin, the fixture, an import and three layers"
         );
 
         let using = store.using().unwrap();

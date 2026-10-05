@@ -196,10 +196,14 @@ and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` da
   system of the store, it hashes the file in place and renames it into `objects/`, or deletes it
   when the object exists. On another file system, it copies the file to `partial/import-<pid>`,
   hashes the copy, makes it an object and deletes the file. A file that changed stays where it is.
-  The import starts by deleting the copies that a stopped import left.
-- After each file, the import adds one line to its import record and writes it to the disk.
-  Then it deletes each directory that is empty. What it did not move stays, and the command lists
-  it. An import that stops keeps its record; the next import moves the rest.
+  When it changed after the rename, it goes back to its path, or, when a new file has that path,
+  beside it as `<name>.changed-<pid>`. The import starts by deleting the copies that a stopped
+  import left.
+- Before a file moves, the import adds its line to the import record and writes it to the disk.
+  A line of a file that then stays is only one more root of a collection. After the files, the
+  import deletes each directory that is empty, and a symbolic link whose target it deleted. What
+  it did not move stays, and the command lists it. An import that stops keeps its record; the next
+  import moves the rest.
 - A process that writes a file after the last check can change an object. Stop the bakes, the
   planner and every fetch before `--apply`.
 
@@ -212,7 +216,8 @@ of the checkout that it runs in, and the store:
 - A snapshot record is reached when `[pins]` of a `data/env/*.toml` file names its source and
   version. The newest record of each source, by the latest `retrieved` of its files, is also
   reached: a bake without a pin reads it, and a source whose upstream gives only its newest file
-  cannot give it again.
+  cannot give it again. So is the newest version of each request record (`requests/`), by the
+  latest `retrieved` of its files, such as the extract of each Geofabrik area.
 - An object is reached when a reached snapshot record or a reached layer has it, or when its
   SHA-256 is in a pin, `fixtures/catalog.toml`, a JSON or TOML file below `fixtures/sources/`, a
   planner region recipe in `tools/planner-regions/`, or an import record. Deleting an import

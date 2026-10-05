@@ -88,24 +88,36 @@ pub fn apply(store: &Store, dirs: &[PathBuf]) -> Result<Plan, String> {
         let (mut dir_plan, files) = scan(dir, &store_root)?;
         dir_plan.bytes = 0;
         for (path, relative) in files {
-            let Some((sha256, size, new)) = move_in(store, &store_root, &path)? else {
-                dir_plan.files -= 1;
-                dir_plan.left.push(path);
-                continue;
+            // The line is on the disk before the file moves. A line of a file that then stays is
+            // only one more root of a collection.
+            let mut write_line = |sha256: &str, size: u64| -> Result<(), String> {
+                let record = match &mut record {
+                    Some(record) => record,
+                    None => record.insert(open_record(store, &name)?),
+                };
+                let line =
+                    ImportedFile { dir: dir_plan.dir.clone(), path: relative.clone(), size, sha256: sha256.into() };
+                let mut text = serde_json::to_string(&line).map_err(|e| e.to_string())?;
+                text.push('\n');
+                record.write_all(text.as_bytes()).and_then(|()| record.sync_data()).map_err(|e| e.to_string())
             };
-            let record = match &mut record {
-                Some(record) => record,
-                None => record.insert(open_record(store, &name)?),
-            };
-            let line = ImportedFile { dir: dir_plan.dir.clone(), path: relative, size, sha256 };
-            let mut text = serde_json::to_string(&line).map_err(|e| e.to_string())?;
-            text.push('\n');
-            record.write_all(text.as_bytes()).and_then(|()| record.sync_data()).map_err(|e| e.to_string())?;
-            dir_plan.bytes += size;
-            plan.new_bytes += if new { size } else { 0 };
+            match move_in(store, &store_root, &path, &mut write_line)? {
+                Moved::Yes { size, new } => {
+                    dir_plan.bytes += size;
+                    plan.new_bytes += if new { size } else { 0 };
+                }
+                Moved::No(stays) => {
+                    dir_plan.files -= 1;
+                    dir_plan.left.push(stays);
+                }
+            }
         }
         if dir_plan.present {
             remove_empty(&dir_plan.dir, &store_root)?;
+            // A directory reached through a symbolic link: the link goes with its target.
+            if !dir_plan.dir.exists() && fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()) {
+                fs::remove_file(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            }
         }
         plan.bytes += dir_plan.bytes;
         plan.dirs.push(dir_plan);
@@ -148,35 +160,61 @@ fn stat(path: &Path) -> Result<(u64, SystemTime), String> {
     Ok((metadata.len(), metadata.modified().map_err(|e| format!("{}: {e}", path.display()))?))
 }
 
-/// Make `file` an object: its SHA-256, its size, and `true` when the object is new. `None` when
-/// the file changed while it was read; it then stays where it is.
+enum Moved {
+    /// The size, and whether the object is new.
+    Yes { size: u64, new: bool },
+    /// The file changed while it was read; this path holds it now.
+    No(PathBuf),
+}
+
+/// Make `file` an object, and call `record` with its SHA-256 and size before it moves. A file that
+/// changes while it is read stays where it is.
 ///
 /// On the file system of the store the file is hashed where it is and renamed into the objects,
 /// so no byte is copied. On another file system it is copied into `partial/`, and the copy is
 /// hashed. A process that still writes the file after the last check can change an object, so
 /// the bakes, the planner and every fetch stop before an import.
-fn move_in(store: &Store, store_root: &Path, file: &Path) -> Result<Option<(String, u64, bool)>, String> {
+fn move_in(
+    store: &Store,
+    store_root: &Path,
+    file: &Path,
+    record: &mut dyn FnMut(&str, u64) -> Result<(), String>,
+) -> Result<Moved, String> {
     let before = stat(file)?;
+    let rename = |from: &Path, to: &Path| {
+        fs::rename(from, to).map_err(|e| format!("{} -> {}: {e}", from.display(), to.display()))
+    };
     if same_file_system(file, store_root)? {
         let (sha256, size) = hash_file(file)?;
         if stat(file)? != before {
-            return Ok(None);
+            return Ok(Moved::No(file.to_path_buf()));
         }
+        record(&sha256, size)?;
         let object = store.object(&sha256);
         if object.is_file() {
             fs::remove_file(file).map_err(|e| format!("{}: {e}", file.display()))?;
-            return Ok(Some((sha256, size, false)));
+            return Ok(Moved::Yes { size, new: false });
         }
         create_parent(&object)?;
-        fs::rename(file, &object).map_err(|e| format!("{} -> {}: {e}", file.display(), object.display()))?;
+        rename(file, &object)?;
         if stat(&object)? != before {
-            fs::rename(&object, file).map_err(|e| format!("{} -> {}: {e}", object.display(), file.display()))?;
-            return Ok(None);
+            // Its bytes are not its name, so it is no object. A new file at the old path stays,
+            // and this one goes beside it.
+            let back = match fs::symlink_metadata(file) {
+                Err(e) if e.kind() == ErrorKind::NotFound => file.to_path_buf(),
+                _ => file.with_file_name(format!(
+                    "{}.changed-{}",
+                    file.file_name().unwrap_or_default().to_string_lossy(),
+                    std::process::id()
+                )),
+            };
+            rename(&object, &back)?;
+            return Ok(Moved::No(back));
         }
         let mut permissions = fs::metadata(&object).map_err(|e| format!("{}: {e}", object.display()))?.permissions();
         permissions.set_readonly(true);
         fs::set_permissions(&object, permissions).map_err(|e| format!("{}: {e}", object.display()))?;
-        return Ok(Some((sha256, size, true)));
+        return Ok(Moved::Yes { size, new: true });
     }
     let part = store.partial(&format!("import-{}", std::process::id()));
     create_parent(&part)?;
@@ -184,12 +222,13 @@ fn move_in(store: &Store, store_root: &Path, file: &Path) -> Result<Option<(Stri
     let (sha256, size) = hash_file(&part)?;
     if stat(file)? != before || size != before.0 {
         let _ = fs::remove_file(&part);
-        return Ok(None);
+        return Ok(Moved::No(file.to_path_buf()));
     }
     let new = !store.object(&sha256).is_file();
     store.insert(&part, &sha256)?;
+    record(&sha256, size)?;
     fs::remove_file(file).map_err(|e| format!("{}: {e}", file.display()))?;
-    Ok(Some((sha256, size, new)))
+    Ok(Moved::Yes { size, new })
 }
 
 #[cfg(unix)]
@@ -362,9 +401,17 @@ mod tests {
         write(&home.join(".cache/openbikecomputer/fixtures/a.tar.gz"), b"fixture");
         let store = Store::at(home.join(".cache/openbikecomputer/store"));
 
+        let elsewhere = scratch.0.join("elsewhere/obcm");
+        write(&elsewhere.join("land/a.zip"), b"land");
+        std::os::unix::fs::symlink(&elsewhere, home.join(".cache/obcm")).unwrap();
+
         apply(&store, &old_dirs(&home)).unwrap();
         assert!(store.object(&sha256_hex(b"fixture")).is_file());
-        assert_eq!(record(&store).len(), 1);
+        assert!(
+            !elsewhere.exists() && fs::symlink_metadata(home.join(".cache/obcm")).is_err(),
+            "the link goes with its target"
+        );
+        assert_eq!(record(&store).len(), 2);
         assert!(!real.join(".cache/openbikecomputer/fixtures").exists());
     }
 }
