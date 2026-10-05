@@ -435,14 +435,22 @@ mod tests {
 
         let mut state = 0x51f1_5e1du32;
         for case in 0..1_000 {
-            let len = 3 + (state as usize % 29);
+            let len = if case % 100 == 0 { MAX_SCREEN_POINTS } else { 3 + (state as usize % 29) };
             let mut points: std::vec::Vec<Point> = std::vec::Vec::with_capacity(len);
             let mut packed: std::vec::Vec<ScreenPoint> = std::vec::Vec::with_capacity(len);
             for _ in 0..len {
                 state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                let x = (state as i32).rem_euclid(96) - 16;
+                let x = if case % 11 == 0 {
+                    (state as i32).rem_euclid(65536) - 32768
+                } else {
+                    (state as i32).rem_euclid(96) - 16
+                };
                 state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                let y = (state as i32).rem_euclid(96) - 16;
+                let y = if case % 11 == 0 {
+                    (state as i32).rem_euclid(65536) - 32768
+                } else {
+                    (state as i32).rem_euclid(96) - 16
+                };
                 points.push(Point::new(x, y));
                 packed.push(ScreenPoint::checked((x, y)).unwrap());
             }
@@ -452,9 +460,45 @@ mod tests {
             actual.set_allow_overdraw(true);
             let mut xs: Vec<f32, MAX_CROSSINGS> = Vec::new();
             let mut edges: Vec<PackedEdge, MAX_SCREEN_POINTS> = Vec::new();
-            fill_polygon(&mut expected, &points, &[len as u16], BinaryColor::On, 64, 64, &mut xs);
-            fill_polygon_edges(&mut actual, &packed, &[len as u16], BinaryColor::On, (64, 64), &mut edges, &mut xs);
+            let rings: std::vec::Vec<u16> = if case % 3 == 0 && len >= 6 {
+                std::vec![(len / 2) as u16, (len - len / 2) as u16]
+            } else {
+                std::vec![len as u16]
+            };
+            fill_polygon(&mut expected, &points, &rings, BinaryColor::On, 64, 64, &mut xs);
+            fill_polygon_edges(&mut actual, &packed, &rings, BinaryColor::On, (64, 64), &mut edges, &mut xs);
             assert_eq!(actual, expected, "scan conversion drift in case {case}");
+        }
+    }
+
+    #[test]
+    fn packed_rectangles_keep_clipping_holes_and_collapsed_widths() {
+        use embedded_graphics::{mock_display::MockDisplay, pixelcolor::BinaryColor, prelude::*};
+        for (left, right) in [(-20, 90), (3, 3), (-30, -20), (64, 65)] {
+            for hole in [false, true] {
+                let mut points = std::vec![
+                    Point::new(left, -30),
+                    Point::new(right, -30),
+                    Point::new(right, 100),
+                    Point::new(left, 100)
+                ];
+                let mut rings = std::vec![4u16];
+                if hole {
+                    points.extend([Point::new(12, 12), Point::new(44, 12), Point::new(44, 44), Point::new(12, 44)]);
+                    rings.push(4);
+                }
+                let packed: std::vec::Vec<_> =
+                    points.iter().map(|p| ScreenPoint::checked((p.x, p.y)).unwrap()).collect();
+                let mut expected = MockDisplay::<BinaryColor>::new();
+                let mut actual = MockDisplay::<BinaryColor>::new();
+                expected.set_allow_overdraw(true);
+                actual.set_allow_overdraw(true);
+                let mut xs = Vec::new();
+                let mut edges = Vec::new();
+                fill_polygon(&mut expected, &points, &rings, BinaryColor::On, 64, 64, &mut xs);
+                fill_polygon_edges(&mut actual, &packed, &rings, BinaryColor::On, (64, 64), &mut edges, &mut xs);
+                assert_eq!(actual, expected);
+            }
         }
     }
 
@@ -537,46 +581,6 @@ mod tests {
         // Base-band rows have just two crossings → filled edge to edge.
         for y in HBASE..HBOTTOM {
             assert_eq!(target.rows[y as usize], W as u32, "base row {y} should fill the full width");
-        }
-    }
-}
-
-#[cfg(test)]
-#[path = "legacy/fill.rs"]
-mod legacy;
-
-#[cfg(test)]
-mod differential {
-    use super::*;
-    use embedded_graphics::{mock_display::MockDisplay, pixelcolor::BinaryColor};
-
-    #[test]
-    fn crossings_match_legacy_for_holes_degenerate_and_saturated_rows() {
-        let mut seed = 0x2987_18abu32;
-        for case in 0..512 {
-            let count: usize = if case % 31 == 0 { 2048 } else { 8 + case % 53 };
-            let mut points = Vec::<ScreenPoint, MAX_SCREEN_POINTS>::new();
-            for i in 0..count {
-                seed ^= seed << 13;
-                seed ^= seed >> 17;
-                seed ^= seed << 5;
-                let p = if count == 2048 {
-                    ((i % 127) as i32 - 32, if i % 2 == 0 { -20 } else { 90 })
-                } else {
-                    ((seed & 127) as i32 - 32, ((seed >> 7) & 127) as i32 - 32)
-                };
-                points.push(ScreenPoint::checked(p).unwrap()).unwrap();
-            }
-            let rings = [count / 2, count - count / 2];
-            let mut before = MockDisplay::<BinaryColor>::new();
-            let mut after = MockDisplay::<BinaryColor>::new();
-            before.set_allow_overdraw(true);
-            after.set_allow_overdraw(true);
-            let mut edges = Vec::new();
-            let mut xs = Vec::new();
-            legacy::fill_polygon_edges(&mut before, &points, &rings, BinaryColor::On, (64, 64), &mut edges, &mut xs);
-            fill_polygon_edges(&mut after, &points, &rings, BinaryColor::On, (64, 64), &mut edges, &mut xs);
-            assert_eq!(before, after, "case {case}");
         }
     }
 }
