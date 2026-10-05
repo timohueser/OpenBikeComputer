@@ -52,35 +52,19 @@ cargo run --release -p route-engine --example query -- /data/freiburg < request.
 | `answer` | The wire answer of [the route API](../../specs/route-api.md) |
 | `directory` | Native packed storage and `open` |
 
-The primary route minimizes the selected metric over retained attachments.
-The snap radius is 250 m. A point with no road that near uses the nearest
-road within 1 km (`snap::REACH_M`). Snapping retains up to eight roads within
-3 m of the nearest distance, among the roads whose snap bit the package sets:
-roads the profile can use in a large strongly connected part of its graph
-(`route-build`'s `connectivity`). A leg that cannot connect is `NoPath`; there
-is no retry with other roads. The route answer reports truncation only. A shape
-point keeps its direction between legs. Only an explicit `turnarounds` entry
-permits reversal there. Prepared access and turn rules apply.
+The [route API](../../specs/route-api.md) defines snapping, direction continuity,
+alternatives, pace, and request limits. Snapping uses only roads permitted by the
+prepared profile. A disconnected leg returns `NoPath`; it does not retry other roads.
+Missing terrain stays unknown and uses level slope for moving time.
 
-Alternatives use prepared goals and bounded corridor probes. They must pass a
-base-cost cap and a material benefit or separation test. A corridor route must
-not go out and back along a road. Discovery is not exhaustive. Corridor probes
-currently apply to two-point requests. All routes of a request share its query
-budget. Cancellation or a limit stops the discovery, and the answer keeps the
-routes found before it. An empty alternative set is valid. The primary route
-remains first, except with `alternatives_only`, which leaves it out.
+Alternative discovery is bounded, not exhaustive. All routes share one query budget.
+Cancellation or a limit keeps the routes already found; no alternatives is a valid
+answer. Corridor probes apply to two-point requests. Optional landmarks guide the
+same search without changing its result.
 
-Optional landmark columns guide every search of a profile that has them. They
-load with the profile's costs. The same search applies with or without them.
-
-Pace changes moving seconds, not costs or geometry. Keep learned personal pace
-on the rider's device. The engine accepts a time multiplier but does not learn
-from or store rides. Missing terrain stays unknown. Moving time uses a level
-slope where terrain is missing. No result is an arrival clock time.
-
-Keep day ends, manual lines, imported lines, versions, and undo outside this
-crate. Preserve a chosen result instead of recalculating it when the itinerary
-changes. Use `elapsed` for time at positions along the geometry.
+Keep itinerary state and learned pace outside this crate. Preserve a chosen route when
+the itinerary changes. Use `elapsed` for moving time along its geometry; it is not an
+arrival clock time.
 
 ## Bounds and checks
 

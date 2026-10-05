@@ -13,9 +13,8 @@ The screen drawings below are schematics. They explain behavior. They are not pi
 
 ## Screen model
 
-Each screen is one variant of a `Screen` enum and owns its state by value. One table declares every
-variant with its capabilities, and generates the enum, the dispatch, and the capability data. A
-capability is a cross-cutting fact the row states once, so nothing else matches on the variant:
+Each `Screen` variant owns its state by value. One table generates the enum, dispatch,
+and capabilities. Shared behavior reads those capabilities rather than matching variants:
 
 | Capability | What it decides |
 | --- | --- |
@@ -114,20 +113,9 @@ A screen handles one gesture, returns a transition, and draws the current frame.
 <figcaption>Input handling uses mutable <code>Ctx</code>. Drawing uses read-only <code>Render</code> data and borrowed render resources.</figcaption>
 </figure>
 
-Input receives a mutable context; drawing receives a read-only one. A screen therefore cannot change
-state while it draws. `Canvas` implements `Surface` and `RenderFrame` derefs to `Render`, so the
-host's generics stop at the dispatch:
-
-```rust
-fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition
-
-// The `screens!` dispatch, generic over the host's draw target and its color policy.
-fn draw<D, F>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, '_>)
-where D: DrawTarget, F: Fn(u16) -> D::Color
-
-// What a screen module writes. The `RenderFrame` form stays with the map draws and their callers.
-fn draw(&self, cv: &mut impl Surface, rx: &mut Render)
-```
+Input can change state; drawing receives read-only state and borrowed resources.
+The [`screen` module](src:firmware/obc-app/src/screen/mod.rs) owns the interfaces
+and dispatch. Host drawing generics stop at that boundary.
 
 ## Navigation
 
@@ -183,9 +171,8 @@ the stack without it.</figcaption>
 | `Root(screen)` | Keep Home and add one screen. |
 | `Home` | Remove all screens above Home. |
 
-Any stack change cancels an incomplete hold, so a hold cannot finish on a screen that did not start
-it. Each screen owns its own Back policy: Back can leave an editor, cancel work, move to a sibling
-view, or pop.
+Stack changes cancel incomplete holds. Each screen defines Back: leave an editor,
+cancel work, change riding view, or pop.
 
 ## Input
 
@@ -243,20 +230,17 @@ view, or pop.
 | `Back` | Back release within 200 ms |
 | `BackHold` | Back held for 500 ms |
 
-A release between the tap window and the hold threshold emits nothing, which is how a rider cancels
-a hold. A hold fires at the threshold, not on release, so the rider feels the moment it commits.
+Release between the tap and hold thresholds cancels the hold. A hold fires at its
+threshold, so the rider feels when it commits.
 
-`BackHold` is the global escape. The application answers it above the screen stack, so it never
-reaches a screen: it closes any drawer and opens the main menu from anywhere, and returns to a menu
-already on the stack instead of adding a second one. Four states refuse it, because the rider must
-finish them first: first-use setup, a blocking card, the recovered-ride card, and a confirmed
-shutdown.
+The application handles `BackHold` above the stack. It closes the drawer and opens
+or reuses the main menu. First-use setup, blocking cards, the recovered-ride card,
+and confirmed shutdown refuse it until the rider finishes them.
 
 ### Chords
 
-Two buttons pressed within 100 ms of each other are one chord, not two gestures. The recognizer
-reports the chord above the screen stack and emits nothing for the two buttons, and the chord stays
-latched until both are up.
+Buttons pressed within 100 ms form a chord. It consumes both individual gestures
+and stays latched until both buttons are released.
 
 | Chord | Meaning |
 | --- | --- |
@@ -266,44 +250,33 @@ latched until both are up.
 | Up + Down | Reserved |
 | Select + Back | Reserved |
 
-A reserved chord is recognized and does nothing, so a squeeze never becomes two unrelated actions.
-Because a chord can start with a direction button, the first step of Up or Down waits for the chord
-window; a release inside the window steps at once, so a tap does not feel slower.
+Reserved chords consume both presses. The first Up or Down step waits for the chord
+window; an earlier release steps immediately to keep taps responsive.
 
 ## Drawers
 
-A drawer is a sheet drawn over the current screen. There are two, and only one can be open: the
-second chord replaces the sheet instead of stacking another.
+Drawers are sheets over the current screen. Opening one replaces the other.
 
-The **universal quick drawer** comes down from the top with the device-wide controls: brightness,
-the Bluetooth radio, the central settings, and power. A platform with no controllable backlight
-does not show brightness.
+The **universal quick drawer** descends with brightness, Bluetooth, settings, and
+power. Brightness appears only on platforms with a controllable backlight.
 
-The **contextual drawer** comes up from the bottom with the current screen's secondary actions. A
-screen does not build a drawer: it declares a static table of rows, and one generic drawer supplies
-the cursor, the transitions, and the drawing. A screen with no table gets no sheet.
+The **contextual drawer** rises with the screen's secondary actions. A shared drawer
+handles input and drawing from a static row table. Without a table, no sheet opens.
 
-The four riding views offer the same four actions in the same order: Up ahead, Detour, POIs, and
-Routes. A row that cannot act now is drawn recessed and does nothing. A row that acts replaces the
-sheet with its screen, so one Back returns to the riding view the rider squeezed from.
+Riding views list Up ahead, Detour, POIs, and Routes in that order. Unavailable rows
+are recessed and inactive. An action replaces the sheet; Back returns to the riding view.
 
-A row can hold a **value** instead of a screen: it states the value under its label and slides
-the sheet to a small editor, a track with a notch per choice and a tick under the committed one.
-The bike type is such a row, with four fixed choices. A row can also be a **switch** that flips in
-place.
+A **value** row opens an editor with a notch per choice and a committed-value tick.
+Bike type has four choices. A **switch** row flips in place.
 
-A setting that belongs to one screen lives on that screen's sheet, and a build check fails when a
-sheet row and a settings page bind the same setting. Brightness and the Bluetooth radio, the quick
-drawer's shortcuts, and the bike type, also on the Ride page, are the recorded exceptions.
+Screen-specific settings belong in that screen's drawer. A build check rejects
+duplicate settings bindings, except brightness, Bluetooth, and bike type.
 
-The screen under a drawer is **frozen**: the drawer states its own facts for repaint, so a moving
-map under a sheet causes no work. Whether the screen below is **dimmed** is a property of that
-screen. A map is not dimmed, because drawing it again is a whole map render and the map reads well
-under the sheet. Menus are dimmed, because drawing them again is nearly free and the recess helps
-the sheet read as being in front.
+The screen under a drawer is frozen. Only the drawer's facts trigger repaint.
+Menus dim to separate the sheet from its base. Maps remain undimmed to avoid
+an expensive redraw.
 
-Nothing lands on top of a drawer. A card that arrives while a sheet is open takes the sheet with
-it, so dismissing the card returns the rider to the screen they were on.
+An incoming card closes the drawer. Dismissing it returns to the underlying screen.
 
 ### What the map drawer controls
 
@@ -313,10 +286,9 @@ source coordinates as the map rotates, and a group appears only at scales where 
 instead of crowd. Placement takes the nearest unobstructed icon from each enabled group in turn, so
 one dense category cannot take the screen from the others.
 
-Settlement names are always drawn; there is no switch. Each class of place shows its names inside
-one band of scales: a name appears when the place roughly fits the screen, and goes when the place
-is one dot among many, or when the rider is inside it and the name would only cover the roads.
-Names keep clear of each other and of the chrome the frame actually draws.
+Settlement names have no switch. Each class appears within a scale band, when the
+place roughly fits the screen. Names disappear when too small or large to help,
+and avoid each other and visible chrome.
 
 ### Detour
 
@@ -368,9 +340,8 @@ position on the route.
 <figcaption>The rider selects a rejoin point, reviews the result, and commits the new route.</figcaption>
 </figure>
 
-Up and Down move the rejoin point along the route ahead. The plan shows the difference in distance
-and climb against the stretch it replaces, and the rider commits it or leaves it. A commit keeps
-the completed geometry, splices in the detour, and continues from the rejoin point.
+Up and Down move the rejoin point ahead. Review compares distance and climb with
+the replaced stretch. Committing preserves completed geometry and inserts the detour.
 
 ## Hold to confirm
 
@@ -467,56 +438,49 @@ Delete lives on one row. A hold anywhere else deletes nothing.
 
 ## Ride Assistant
 
-Holding **Up + Select** opens Ride Assistant over the riding view. The pages that were open go, and
-a search or an unanswered detour on them stops. Back returns to the riding view. Ride Assistant
-answers four questions from installed offline data: find a place, what is next on the route, nearby
-landmarks, and easier routes. There is no network in any of them.
+Hold **Up + Select** to open Ride Assistant over the riding view. It closes previous
+pages and cancels their searches or pending detours. Back returns to the ride.
+Find a place, What is next, Nearby landmarks, and Easier routes use installed offline data.
 
 ### Find a place
 
-Find combines places near the rider with places along the next part of the route, and alternates
-the two sources so that neither crowds out the other. It plans the legs to each candidate and back,
-and shows their measured cost; the complete route is composed when the rider opens a result. The
-drawer sets how many results to calculate, and four is the default.
+Find alternates nearby places with places along the next route stretch. It calculates
+outward and return legs, then composes the full route when a result opens.
+The drawer sets the result count; the default is four.
 
 Places known to be closed now are hidden, which the rider can turn off for every category at once.
 A place with unknown hours stays in the list and is never labelled open. Opening hours are
 information: they never block a preview, and the device reports the status now, not a guess at the
 status on arrival.
 
-With an accepted route, a choice is a **visit**: the route to the place, the return, and the rest
-of the original journey. The review compares the whole visit, return included, with the remaining
-route, so the added cost is the true cost of stopping. Without a route, the same choice is a direct
-destination. Accepting starts recording if no ride is open; browsing changes nothing.
+With a route, review compares the **visit**, return and remaining journey against
+the original remainder. Without a route, the place is a direct destination.
+Acceptance starts recording if needed; browsing changes nothing.
 
 A place is routable only where the map gives it a mapped approach. A straight-line distance never
 promises a rideable connection.
 
 ### What is next
 
-The overview freezes one window of the route, 5 km or 10 km, and shows what is in it: the ascent
-and descent, the next climb, the next waypoint, and the next water and shop. Explore ahead opens
-the full timeline for that window, filtered from the drawer. The window is frozen so the figures do
-not move while the rider reads them; a hold refreshes it.
+The overview freezes a 5 km or 10 km window: ascent, descent, next climb, waypoint,
+water, and shop. Explore ahead opens its timeline with drawer filters.
+Hold to refresh; figures stay fixed while the rider reads.
 
 ### Nearby landmarks
 
-Landmarks answers what a place is. It keeps a page of the nearest sites, with the map and the card
-stable while the rider moves the selection. Select opens short text pages and, where the map has
-one, a photo. **Down + Back** opens the sources, because credits must travel with the content. A
-closed site stays readable and can still be visited: a rider can look at a castle from outside it.
+Landmarks keeps a stable page of nearby sites. Select opens text and an available
+photo. **Down + Back** opens sources, so credits travel with content.
+Closed sites stay readable and visitable from outside.
 
 ### Easier routes
 
-Easier routes compares the rest of the journey against three goals: less climbing, a smoother
-surface, and a shorter distance. Each goal is one bounded search under the rider's own bike
-profile, not a claim that the router found the best route in the world. A choice appears only when
-it improves its goal and the cost it adds stays within a bound.
+Easier routes runs bounded searches for less climbing, smoother surfaces, and shorter
+distance under the rider's bike profile. Results must improve their goal within an
+added-cost bound; discovery is not exhaustive.
 
-The camera stays fixed while the rider compares the current route with the proposal, and Select
-opens a current-and-new table. **Use this route** accepts it through the normal acceptance, and
-recording continues. A shorter route does not claim a shorter time: the device has no arrival model
-to support that.
+The comparison camera stays fixed. Select opens a current-and-new table.
+**Use this route** accepts it and keeps recording. Shorter distance does not promise
+shorter time; the device has no arrival model.
 
 ## POI browser
 
@@ -702,16 +666,14 @@ route is old. See [ride reconciliation](../companion-link/#reconciliation).
 
 ## Repaint policy
 
-The application renders on demand. A static screen with no input, no new data, and no timer does
-not render at all.
+Rendering is on demand. A static screen with no input, data change, or timer stays idle.
 
 ### The render key
 
-Each screen declares which facts its drawing reads. Each frame reads those facts before and after
-its work, and a change requests a repaint. The rule is per screen: a new heart-rate reading
-repaints the grid that shows it and just the map's effort band. Some changes cannot move a key, such as
-a selection a screen keeps to itself, and they request their repaint directly. Drawing too often is
-safe; drawing too rarely is a defect.
+Each screen declares its drawing facts. Frame work compares them before and after,
+then repaints changed regions. A new heart rate updates its grid and map effort band.
+Local state, such as a selection, requests repaint directly. Extra repaint is safe;
+missing repaint is a defect.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -980,12 +942,11 @@ the distance a rider actually has to ride.
 <figcaption>The Up-ahead view merges two sorted sources without copying rows.</figcaption>
 </figure>
 
-One pass through the corridor of a place is one row, at the nearest point of that pass, so a bend
-in the road does not add rows. Leaving and returning is a later encounter.
+Each corridor pass adds one row at its nearest point. Leaving and returning adds
+another encounter; a road bend does not.
 
-A cursor the rider set counts only against the list they set it in: while the list shows something
-else, the cursor is the first row still ahead. Without that rule a rider who scrolls and then
-filters lands on the last match instead of the nearest one.
+A saved cursor applies only to its list. Changing filters selects the first row
+still ahead, so a previous scroll cannot skip nearer matches.
 
 ## Main rider flow
 
@@ -1062,10 +1023,9 @@ Each shared mechanism has one owner, one module per concept under `screen/vocab/
 | `sheet` | The drawer sheets' shared motion and marks. |
 | `spinner` | The compass needle a working screen waits behind. |
 
-A name that does not fit its field is cut with two dots. One name per frame scrolls instead: the
-highlighted list row, a detail title, the selected peak in Peak View. Every font is monospace, so a
-scroll step is a different substring and needs no new primitive. The riding view's waypoint tile
-scrolls once when the name changes and then rests, so nothing moves while the rider rides.
+Long names end in two dots. One selected name per frame can scroll: a list row,
+detail title, or Peak View peak. Monospace fonts scroll by substring.
+The riding waypoint tile scrolls once per name change, then rests.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">

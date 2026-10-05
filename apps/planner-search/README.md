@@ -48,34 +48,24 @@ its filtered records.
 
 One process serves the one region that `OBC_SEARCH_REGIONS` names.
 
-## Boundaries
+## Runtime and data limits
 
-- `query/runtime.py` runs the pinned int8 mmBERT model. `query/decode.py` validates its
-  word labels. The model receives only the sentence and never creates place results.
-- `query/schema.py` writes `query/contract.json`, the query language that validation, the
-  resolver, the web planner and the iOS app read.
-- `web/engine.mjs` retrieves names and addresses with SQLite name, FTS5, and trigram
-  indexes. Business matches use text and proximity. Geographic prominence is bounded.
-- `resolver.mjs` applies the decoded request to the current view, route, days, and places.
-  Explicit words override pointing. Pointing overrides the map view.
-- `federation.mjs` runs each query in the search cells it touches and merges the rows by
-  its declared order and limit. `cells.mjs` and the [native provider](native/README.md)
-  open the cells.
-- `runtime.mjs` supplies the database, parser, and calendar adapters. `server.mjs`
-  serves JSON. The native provider uses the same runtime.
-  Edited requests bypass inference. The client discards stale responses.
-- `server.mjs` exits with status 1 when the query runtime stops or hangs. Its supervisor,
-  such as systemd, restarts it.
-- Plan edits, such as a new route or a reversed route, return changes. The planner applies
-  them and routes the changed plan with its own routing service. Search never calls it.
+[`query/`](query/README.md) parses sentences with the pinned int8 model.
+[`query/contract.json`](query/contract.json) defines the decoded request.
+[`validation.mjs`](validation.mjs) checks its plan context. The resolver applies it to the view, route, days, and places. Explicit words override
+pointing; pointing overrides the view. Edited requests bypass inference.
 
-The request context accepts cumulative `plan.km` and `plan.hours` arrays aligned with
-coordinates, and `plan.segments`: runs of one stretch `kind` from `from` to `to` km, with
-`ascent` (m) and `gradient` (%) for height runs.
-Without `plan.km`, search measures the line. The UI supplies riding time only when every
-leg is routed, and segments from its routed line. Without segments, stretch queries
-report missing data.
-Split and join keep the line. They require unpinned nights and no rest days.
+[`runtime.mjs`](runtime.mjs) is shared by the server and the
+[native provider](native/README.md). It retrieves mapped places from SQLite and merges
+results across search cells. Search returns plan edits; the client applies them and
+calls its routing service. Search does not call routing.
+
+The server exits with status 1 if inference stops or hangs. Run it under a supervisor
+such as systemd. Clients must discard stale responses.
+
+Supply riding time only when every leg is routed. Stretch queries need routed segments.
+Without cumulative distances, search measures the line. Split and join require
+unpinned nights and no rest days; they preserve the line.
 
 Opening filters use mapped `opening_hours`, each place's country holidays, and the
 region time zone. Unknown hours are excluded and counted.
