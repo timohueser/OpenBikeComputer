@@ -169,9 +169,10 @@ final class OBCNativeMapView: MLNMapView {
         sources["basemap"]?["url"] = release.basemap.absoluteString
         // A release without a land cover credit drops that part of the credit line.
         let landcover = release.landcover_attribution.map { ($0, "__LANDCOVER_ATTRIBUTION__") } ?? ("", " · __LANDCOVER_ATTRIBUTION__")
-        sources["basemap"]?["attribution"] = (sources["basemap"]?["attribution"] as? String)?
+        let credit = (sources["basemap"]?["attribution"] as? String)?
             .replacingOccurrences(of: "__ATTRIBUTION__", with: release.attribution ?? "")
             .replacingOccurrences(of: landcover.1, with: landcover.0)
+        sources["basemap"]?["attribution"] = credit
         sources["terrain"]?["tiles"] = [release.terrain]
         if release.isLocal {
             sources["terrain"]?.removeValue(forKey: "tiles")
