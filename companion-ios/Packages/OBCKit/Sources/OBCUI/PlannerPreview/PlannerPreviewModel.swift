@@ -691,6 +691,11 @@ public final class PlannerPreviewModel {
         case .reverse:
             guard hasRoute else { return }
             edit {
+                // A marker's leg now ends at the point that started it; a loop's start ends the closing leg.
+                let route = $0.route.map(\.id)
+                for index in $0.markers.indices {
+                    if let end = route.dropFirst().lastIndex(of: $0.markers[index].legEnd ?? "") { $0.markers[index].legEnd = route[end - 1] }
+                }
                 $0.points = $0.loop ? Array($0.points.prefix(1) + $0.points.dropFirst().reversed()) : $0.points.reversed()
                 $0.legs = Dictionary(uniqueKeysWithValues: $0.legs.map { id, leg in
                     (LegID(from: id.to, to: id.from), PlannerPreviewLeg(mode: leg.mode, drawn: leg.drawn?.reversed()))

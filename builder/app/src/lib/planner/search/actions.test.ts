@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { addRestDay, emptyTrip, pinNight, planView, type RoutePoint, type Trip } from '../editor';
+import { addRestDay, dayStops, emptyTrip, pinNight, planView, type RoutePoint, type Trip } from '../editor';
+import { importedTrip } from '../gpx-import';
 import { isTrip } from '../trip-validation';
 import { coordinateAt, type Coordinate } from '../geo';
 import { testLine, testTrip } from '../../../../test-support/planner/trip';
@@ -90,6 +91,18 @@ describe('query edits', () => {
         expect(next.trip.loop).toBe(true);
         expect(next.trip.points.map(p => [p.id, p.kind, p.leg])).toEqual([['home', 'start', 'drawn'], ['b', 'waypoint', 'straight'], ['a', 'waypoint', 'straight']]);
         expect(view(next).coordinates).toEqual([...line.coordinates].reverse());
+        const marked = { ...plan, points: [...plan.points, point('m', 'marker', [8.1, 48.05], { legEnd: 'home' })] };
+        const reversed = await applyQueryChanges(marked, await refresh(marked), [{op:'reverse'}], refresh);
+        expect(reversed.trip.points.find(p => p.id === 'm')?.legEnd).toBe('b');
+    });
+    it('keeps each marker in its own day when an out-and-back is reversed', async () => {
+        const out: Coordinate[] = [[7.6, 47.5], [7.62, 47.5]], spot: Coordinate = [7.61, 47.5];
+        const trip = importedTrip({}, [{ name: 'out', line: out, waypoints: [{ label: 'Out', coordinate: spot }] },
+            { name: 'back', line: out.slice().reverse(), waypoints: [{ label: 'Back', coordinate: spot }] }]);
+        const days = ({ trip, line }: { trip: Trip; line?: RoutingLine }) => view({ trip, line }).days.map(day => dayStops(trip, line, day).map(stop => stop.point.label));
+        const line = await refresh(trip);
+        expect(days({ trip, line })).toEqual([['Out'], ['Back']]);
+        expect(days(await applyQueryChanges(trip, line, [{op:'reverse'}], refresh))).toEqual([['Back'], ['Out']]);
     });
     it('refreshes live geometry between edits and preserves the original on a routing failure', async () => {
         const base = testTrip(), inner: Coordinate[] = [[7.7, 47.4], [7.5, 47.1]];

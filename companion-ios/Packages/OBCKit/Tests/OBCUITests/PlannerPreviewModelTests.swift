@@ -352,6 +352,20 @@ struct PlannerPreviewModelTests {
         #expect(model.exportPlan() == plan)
     }
 
+    @Test func aReverseMovesEachMarkerToTheLegItNowLiesOn() {
+        let at = { (lon: Double) in Coordinate(latitude: 47.9, longitude: lon) }
+        let plan = PlannerPlan(points: [
+            PlanPoint(id: "start", label: "Home", coordinate: at(7.8), kind: .start),
+            PlanPoint(id: "night-1", label: "Turn", coordinate: at(7.9), kind: .night, night: 1),
+            PlanPoint(id: "finish", label: "Home", coordinate: at(7.8001), kind: .finish),
+            PlanPoint(id: "out", label: "Out", coordinate: at(7.85), kind: .marker, legEnd: "night-1"),
+            PlanPoint(id: "back", label: "Back", coordinate: at(7.85), kind: .marker, legEnd: "finish"),
+        ], mode: .trip, routeOrder: ["night-1"])
+        let model = PlannerPreviewModel(plan: plan, service: PlannerTestSource())
+        model.apply(.reverse)
+        #expect(model.exportPlan().markers.map(\.legEnd) == ["start", "night-1"])
+    }
+
     @Test func onlyTheActivitiesOfTheReleaseAreOffered() async {
         let model = PlannerPreviewModel(sample: true, service: PlannerTestSource())
         #expect(model.activities == RouteActivity.allCases)
