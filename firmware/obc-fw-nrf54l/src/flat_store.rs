@@ -1894,8 +1894,7 @@ pub(crate) fn load_metadata(
     store: &FlatStore<FlatCard>,
     app: &mut obc_app::App,
 ) -> Result<(), obc_app::metadata::MetadataError> {
-    obc_storage::flat::metadata::read_rows(store, |row| app.set_ride_archive_proof(row.id.0, row.timestamp))
-        .map_err(metadata_error)?;
+    load_archive_proofs(store, app)?;
     let mut records = obc_formats::trip_progress::Records::new();
     obc_storage::flat::metadata::read_progress(store, |record| {
         let _ = records.push(record);
@@ -1904,6 +1903,24 @@ pub(crate) fn load_metadata(
     app.set_trip_progress(records);
     let join = day_join(store, app);
     app.set_day_join(join);
+    Ok(())
+}
+
+#[inline(never)]
+fn load_archive_proofs(
+    store: &FlatStore<FlatCard>,
+    app: &mut obc_app::App,
+) -> Result<(), obc_app::metadata::MetadataError> {
+    let mut proofs: heapless::Vec<(u64, u32), { obc_app::UI_RIDES_CAP }> = heapless::Vec::new();
+    obc_storage::flat::metadata::read_rows(store, |row| {
+        if app.rides().iter().any(|ride| ride.id == row.id.0) {
+            let _ = proofs.push((row.id.0, row.timestamp));
+        }
+    })
+    .map_err(metadata_error)?;
+    for (id, timestamp) in proofs {
+        app.set_ride_archive_proof(id, timestamp);
+    }
     Ok(())
 }
 
