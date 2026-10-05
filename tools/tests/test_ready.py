@@ -209,7 +209,7 @@ class ReadyPlanTests(unittest.TestCase):
         # Each row is a form a suite command can take. A separator the lexer does not cut out
         # of its neighbour would hide the executable behind it, which is how a build slips in.
         for command, free in (
-            ("python3 tools/check_one_home.py", True),
+            ("python3 tools/check_card_scheduler.py", True),
             ("mkdir -p .artifacts && rm -rf .artifacts/x && python3 -m unittest discover", True),
             ("PYTHONPATH=. python3 -m pytest builder/tests/", True),
             ("python3 a.py; cargo build --release", False),

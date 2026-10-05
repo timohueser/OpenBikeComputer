@@ -332,7 +332,7 @@ jobs:
   guards:
     runs-on: ubuntu-latest
     steps:
-      - run: python3 tools/check_one_home.py
+      - run: python3 tools/check_card_scheduler.py
   test:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'test')
@@ -593,7 +593,6 @@ class ShippedPlanTests(unittest.TestCase):
                 "ci.data-sources-guard",
                 "ci.fixture-policy",
                 "ci.ios-host-portability",
-                "ci.one-home-guard",
                 "ci.prose",
                 "ci.screen-vocabulary-guard",
                 "python.repository-tools",

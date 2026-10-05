@@ -96,7 +96,8 @@ const fn info(label: Msg, i: Info) -> Row {
     Row { label, item: Item::Info(i) }
 }
 
-pub(crate) static HUB: Menu = Menu {
+crate::screen::context_drawer::row_tables! { Menu;
+pub(crate) static HUB = Menu {
     title: Msg::SettingsTitle,
     rows: &[
         door(Msg::SettingsRide, Door::Ride),
@@ -108,7 +109,7 @@ pub(crate) static HUB: Menu = Menu {
     ],
 };
 
-pub(crate) static RIDE: Menu = Menu {
+pub(crate) static RIDE = Menu {
     title: Msg::RideTitle,
     rows: &[
         door(Msg::RideFields, Door::StatFields),
@@ -121,7 +122,7 @@ pub(crate) static RIDE: Menu = Menu {
     ],
 };
 
-pub(crate) static DISPLAY: Menu = Menu {
+pub(crate) static DISPLAY = Menu {
     title: Msg::DisplayTitle,
     rows: &[
         value(Msg::DisplayBrightness, ContextValue::Brightness),
@@ -130,12 +131,12 @@ pub(crate) static DISPLAY: Menu = Menu {
     ],
 };
 
-pub(crate) static SOUND: Menu = Menu {
+pub(crate) static SOUND = Menu {
     title: Msg::SoundTitle,
     rows: &[value(Msg::SoundLevel, ContextValue::Sound), toggle(Msg::SoundKeyTones, ContextToggle::KeyTones)],
 };
 
-pub(crate) static CONNECTIONS: Menu = Menu {
+pub(crate) static CONNECTIONS = Menu {
     title: Msg::ConnectionsTitle,
     // The sensors above the phone: they are the rows a rider comes back to.
     rows: &[
@@ -147,12 +148,12 @@ pub(crate) static CONNECTIONS: Menu = Menu {
     ],
 };
 
-pub(crate) static POWER: Menu = Menu {
+pub(crate) static POWER = Menu {
     title: Msg::PowerTitle,
     rows: &[value(Msg::PowerGpsFix, ContextValue::FixInterval), toggle(Msg::PowerPowerSave, ContextToggle::PowerSaver)],
 };
 
-pub(crate) static SYSTEM: Menu = Menu {
+pub(crate) static SYSTEM = Menu {
     title: Msg::SystemTitle,
     rows: &[
         value(Msg::SystemUnits, ContextValue::Units),
@@ -164,7 +165,7 @@ pub(crate) static SYSTEM: Menu = Menu {
     ],
 };
 
-pub(crate) static DATETIME: Menu = Menu {
+pub(crate) static DATETIME = Menu {
     title: Msg::DatetimeTitle,
     rows: &[
         info(Msg::DatetimeGpsFix, Info::GpsFix),
@@ -173,7 +174,7 @@ pub(crate) static DATETIME: Menu = Menu {
     ],
 };
 
-pub(crate) static FIRMWARE: Menu = Menu {
+pub(crate) static FIRMWARE = Menu {
     title: Msg::FirmwareTitle,
     rows: &[
         act(Msg::FirmwareInstallUpdate, Act::InstallUpdate),
@@ -182,6 +183,8 @@ pub(crate) static FIRMWARE: Menu = Menu {
         info(Msg::FirmwareCardFree, Info::CardFree),
     ],
 };
+
+}
 
 impl Item {
     /// Whether the row is on the page at all. The phone's Forget row is drawn only while there is a
@@ -507,6 +510,33 @@ mod tests {
         ContextFacts { state, navigation: &IDLE, settings, recording: false }
     }
 
+    #[test]
+    fn settings_rows_do_not_repeat_context_controls() {
+        use crate::screen::context_drawer::{ContextAction, TABLES as CONTEXT_TABLES};
+
+        for menu in TABLES {
+            for row in menu.rows {
+                for context in CONTEXT_TABLES.iter().flat_map(|menu| menu.rows) {
+                    assert_ne!(
+                        row.label as usize, context.label as usize,
+                        "a context label also appears on a settings page"
+                    );
+                    match (row.item, context.action) {
+                        // Both surfaces open the same rider-selected bike profile editor.
+                        (Item::Value(ContextValue::BikeProfile), ContextAction::Edit(ContextValue::BikeProfile)) => {}
+                        (Item::Value(value), ContextAction::Edit(context_value)) => {
+                            assert_ne!(value, context_value, "a value has a context and a settings home");
+                        }
+                        (Item::Toggle(toggle), ContextAction::Toggle(context_toggle)) => {
+                            assert_ne!(toggle, context_toggle, "a switch has a context and a settings home");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
     /// The Reset door hides while a ride records, because the setup it opens has no way back to
     /// the ride. The cursor wraps from the first row onto the last one shown.
     #[test]
@@ -546,7 +576,7 @@ mod tests {
         run(&mut hub, &mut st, &mut s, Gesture::Step(2));
         assert!(matches!(run(&mut hub, &mut st, &mut s, Gesture::Press), Transition::Push(Screen::Sound(_))));
 
-        for menu in [&HUB, &RIDE, &DISPLAY, &SOUND, &CONNECTIONS, &POWER, &SYSTEM, &DATETIME, &FIRMWARE] {
+        for menu in TABLES {
             assert!(menu.rows.len() <= 8, "a page's rows fit the draw's window vectors");
             assert!(menu.rows.iter().any(|r| r.item.selectable()), "a page has a row to land on");
         }
@@ -628,7 +658,7 @@ mod tests {
         use obc_render::text::{text_width, Font};
         let area_w = 240 - 2 * rows::ROW_X;
         for lang in Language::ALL {
-            for menu in [&HUB, &RIDE, &DISPLAY, &SOUND, &CONNECTIONS, &POWER, &SYSTEM, &DATETIME, &FIRMWARE] {
+            for menu in TABLES {
                 for row in menu.rows {
                     let label = t(row.label, lang);
                     assert!(
