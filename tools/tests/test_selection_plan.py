@@ -591,7 +591,6 @@ class ShippedPlanTests(unittest.TestCase):
         self.assertEqual(
             missing,
             [
-                "ci.card-scheduler-guard",
                 "ci.data-sources-guard",
                 "ci.fixture-policy",
                 "ci.ios-host-portability",

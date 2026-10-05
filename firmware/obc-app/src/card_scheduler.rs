@@ -3,6 +3,15 @@ use crate::dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport};
 use crate::screen::{self, MapTransfer, Screen, Stack};
 use crate::Alerts;
 
+/// Only the scheduler constructs cards whose delivery it owns.
+#[derive(Debug)]
+pub(crate) struct CardPermit(());
+
+const PERMIT: CardPermit = CardPermit(());
+
+#[cfg(test)]
+pub(crate) const TEST_PERMIT: CardPermit = PERMIT;
+
 /// One committed route upload, as the pass's fact stage posts it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UploadEvent {
@@ -411,7 +420,7 @@ impl CardScheduler {
             if card.passkey() == passkey {
                 return false;
             }
-            *card = screen::PasskeyScreen::new(passkey);
+            *card = screen::PasskeyScreen::new(PERMIT, passkey);
             return true;
         }
         if let Some(i) = find(stack, CardKind::Upload) {
@@ -419,7 +428,7 @@ impl CardScheduler {
                 let _ = stack.remove(i);
             }
         }
-        land(stack, None, Screen::Passkey(screen::PasskeyScreen::new(passkey)))
+        land(stack, None, Screen::Passkey(screen::PasskeyScreen::new(PERMIT, passkey)))
     }
 
     /// Map transfer. Conflict: the open card is rewritten in place, never stacked. An unchanged
@@ -446,7 +455,7 @@ impl CardScheduler {
             None if self.map_transfer_delivered => false,
             None => {
                 self.map_transfer_delivered =
-                    land(stack, None, Screen::MapTransfer(screen::MapTransferScreen::new(state)));
+                    land(stack, None, Screen::MapTransfer(screen::MapTransferScreen::new(PERMIT, state)));
                 self.map_transfer_delivered
             }
         }
@@ -465,13 +474,13 @@ impl CardScheduler {
             DfuLanding::Scanned(result) => {
                 let Some(i) = find(stack, CardKind::DfuCheck) else { return false };
                 let card = match result {
-                    Ok(report) => Screen::DfuConfirm(screen::DfuConfirmScreen::new(report)),
-                    Err(e) => Screen::DfuError(screen::DfuErrorScreen::new(e)),
+                    Ok(report) => Screen::DfuConfirm(screen::DfuConfirmScreen::new(PERMIT, report)),
+                    Err(e) => Screen::DfuError(screen::DfuErrorScreen::new(PERMIT, e)),
                 };
                 (Some(i), card)
             }
             DfuLanding::InstallBegan => {
-                (find(stack, CardKind::DfuProgress), Screen::DfuInstalling(screen::DfuInstallingScreen::new()))
+                (find(stack, CardKind::DfuProgress), Screen::DfuInstalling(screen::DfuInstallingScreen::new(PERMIT)))
             }
             // Whichever install wait sits lower: the spinner, or the terminal card that already
             // replaced it.
@@ -480,7 +489,7 @@ impl CardScheduler {
                     .iter()
                     .position(|s| matches!(kind_of(s), Some(CardKind::DfuProgress | CardKind::DfuInstalling)));
                 let Some(i) = wait else { return false };
-                (Some(i), Screen::DfuError(screen::DfuErrorScreen::new_install(reason)))
+                (Some(i), Screen::DfuError(screen::DfuErrorScreen::new_install(PERMIT, reason)))
             }
         };
         if land(stack, at, screen) {
@@ -507,11 +516,11 @@ impl CardScheduler {
             PendingUpload::Route(ev) => {
                 let Some(i) = ctx.catalogs.route_index_of(ev.id) else { return false };
                 if ev.active_replace {
-                    Screen::RouteUpdated(screen::RouteUpdatedScreen::new(i, ctx.now_ms))
+                    Screen::RouteUpdated(screen::RouteUpdatedScreen::new(PERMIT, i, ctx.now_ms))
                 } else if ctx.tracking {
-                    Screen::RouteSwap(screen::RouteSwapScreen::received(i, ctx.now_ms))
+                    Screen::RouteSwap(screen::RouteSwapScreen::received(PERMIT, i, ctx.now_ms))
                 } else {
-                    Screen::RouteReceived(screen::RouteReceivedScreen::new(i, ctx.now_ms, ev.elevation))
+                    Screen::RouteReceived(screen::RouteReceivedScreen::new(PERMIT, i, ctx.now_ms, ev.elevation))
                 }
             }
             // The trip card is the same whether idle or tracking, because a trip is a folder and
@@ -520,7 +529,7 @@ impl CardScheduler {
                 if !ctx.catalogs.trips().iter().any(|t| t.id == id) {
                     return false;
                 }
-                Screen::TripReceived(screen::TripReceivedScreen::new(id, ctx.now_ms))
+                Screen::TripReceived(screen::TripReceivedScreen::new(PERMIT, id, ctx.now_ms))
             }
         };
         let at = find(stack, CardKind::Upload);
@@ -547,7 +556,7 @@ impl CardScheduler {
             }
             // A full stack leaves the alerts pending rather than marking them shown for a card that
             // never opened — they would otherwise never surface again this boot.
-            None if !land(stack, None, Screen::Warning(screen::WarningScreen::new(fresh))) => return false,
+            None if !land(stack, None, Screen::Warning(screen::WarningScreen::new(PERMIT, fresh))) => return false,
             None => {}
         }
         self.warned.raise(fresh);
@@ -563,8 +572,10 @@ impl CardScheduler {
         }
         let Some(result) = self.update.as_ref() else { return false };
         let card = match result {
-            BootUpdate::Confirmed(version) => Screen::DfuUpdated(screen::DfuUpdatedScreen::new(version)),
-            BootUpdate::Failed(why, staged) => Screen::DfuFailed(screen::DfuFailedScreen::new(*why, staged.as_deref())),
+            BootUpdate::Confirmed(version) => Screen::DfuUpdated(screen::DfuUpdatedScreen::new(PERMIT, version)),
+            BootUpdate::Failed(why, staged) => {
+                Screen::DfuFailed(screen::DfuFailedScreen::new(PERMIT, *why, staged.as_deref()))
+            }
         };
         if !land(stack, None, card) {
             return false; // no room: the verdict keeps its slot and shows on a later pass
@@ -582,7 +593,7 @@ impl CardScheduler {
         if self.arrival_delivered {
             return false;
         }
-        self.arrival_delivered = land(stack, None, Screen::Arrival(screen::ArrivalScreen::new(view)));
+        self.arrival_delivered = land(stack, None, Screen::Arrival(screen::ArrivalScreen::new(PERMIT, view)));
         self.arrival_delivered
     }
 }
@@ -680,6 +691,7 @@ impl CardScheduler {
 
 #[cfg(test)]
 mod tests {
+    use super::PERMIT;
     use super::{BootUpdate, DfuLanding};
     use crate::screen::{MapTransfer, MAX_DEPTH};
     use crate::{Alert, Alerts};
@@ -800,7 +812,7 @@ mod tests {
 
         // A failure past the terminal-frame swap lands the error card on the installing card.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let _ = app.ui.stack.push(Screen::DfuInstalling(crate::screen::DfuInstallingScreen::new()));
+        let _ = app.ui.stack.push(Screen::DfuInstalling(crate::screen::DfuInstallingScreen::new(PERMIT)));
         app.post_dfu_landing(DfuLanding::InstallFailed(DfuInstallError::SnapshotFailed));
         match app.top_screen() {
             Screen::DfuError(e) => assert_eq!(e.reason(), DfuErrorReason::Install(DfuInstallError::SnapshotFailed)),
