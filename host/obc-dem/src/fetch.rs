@@ -110,13 +110,14 @@ pub fn fetch_tiles(
 /// Fetch one tile into the store at its live pin, or else at its newest version, and link it as
 /// `path`.
 fn link(tile: &TileId, path: &Path) -> Result<Fetched, String> {
+    // The square has no tile, which is a fact about the world rather than a failure: the fetch
+    // gives no file, or answers 404 when no version names it.
     let fetched = match obc_data::fetch::live(SOURCE, None, vec![("tile".into(), tile.stem())]) {
         Ok(fetched) => fetched,
-        // The square has no tile, which is a fact about the world rather than a failure.
         Err(obc_data::fetch::LiveError::NotFound(_)) => return Ok(Fetched::Absent),
         Err(error) => return Err(error.into()),
     };
-    let object = &fetched.paths[0];
+    let Some(object) = fetched.paths.first() else { return Ok(Fetched::Absent) };
     // A hard link costs no space; another file system needs a copy.
     if std::fs::hard_link(object, path).is_err() {
         std::fs::copy(object, path).map_err(|e| format!("{} -> {}: {e}", object.display(), path.display()))?;
