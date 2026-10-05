@@ -806,6 +806,21 @@ pub(crate) mod tests {
         assert!(fetch(&store, &quick(), &gone).unwrap_err().contains("first of each month"));
     }
 
+    /// The device maps ask only for tiles that the GLO-30 tile list names, so a 404 is an error.
+    #[test]
+    fn a_glo30_tile_that_answers_404_fails_the_fetch() {
+        let (url, _) = serve(|_, headers| match header(headers, ":path").unwrap_or_default() {
+            "/N43E007.tif" => whole(b"land"),
+            _ => not_found(),
+        });
+        let scratch = Scratch::new("glo30-404");
+        let store = Store::at(&scratch.0);
+        let glo30 = located(FetchKind::Glo30, &url.replace("data/file.bin", "{tile}.tif"));
+        let params = vec![("tile".to_string(), "N43E007".to_string()), ("tile".to_string(), "N43E008".to_string())];
+        let request = Request { source: &glo30, version: Some("2026-10-05".into()), params };
+        assert!(http::not_found(&fetch(&store, &quick(), &request).unwrap_err()));
+    }
+
     /// Only a request that gets no connection is unreachable; an answer, also a 500, is not.
     #[test]
     fn only_no_connection_is_unreachable() {

@@ -214,6 +214,25 @@ pub fn cell_lift(
     }
 }
 
+/// One terrain cell as a catalog publishes it: the surface block over `mosaic`, raised by the crest
+/// lifts of `reference`, or `None` when the cell has no height at all; and the lift it used.
+///
+/// `obc-bake terrain` and the terrain step of `obc data` both bake a published cell here, so the two
+/// write the same bytes for the same tiles.
+pub fn published_cell(
+    mosaic: &DemMosaic,
+    ci: u32,
+    cj: u32,
+    posting_log2: u8,
+    cell_log2: u8,
+    reference: Option<&ReferenceArchive>,
+) -> Result<(Option<Vec<u8>>, CellLift), String> {
+    let lift = cell_lift(mosaic, ci, cj, posting_log2, cell_log2, reference)?;
+    let height = lifted_sampler(mosaic, lift.map.as_ref());
+    let block = crate::surface::bake_cell(ci, cj, posting_log2, cell_log2, height)?;
+    Ok((block, lift))
+}
+
 /// Fold one cell's lift outcome into the run's report: its tally, its attribution and the tiles the
 /// archive owed it. Attribution comes from the map, so a cell that moved no sample credits nothing.
 fn record(report: &mut BakeReport, lift: &CellLift) {

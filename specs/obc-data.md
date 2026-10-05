@@ -395,8 +395,11 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   and so does a repository root that is not a git checkout. A crate adds its `Cargo.toml`, `build.rs`
   and `src/` the same way. Each path dependency that is not a dev-dependency adds the same,
   and so do its own path dependencies, as `cargo metadata --no-deps` lists them. A path
-  dependency must be a workspace member. A `.rs` file of a crate also adds each file that it
-  names in `include_str!`, `include_bytes!`, `include!` or `#[path = "…"]`, and an added `.rs`
+  dependency must be a workspace member. The walk stops at the engine crate `obc-data`: the
+  engine only selects inputs, and what it selects is in the input digests. A crate that the
+  walk reaches through another crate is still code. A step whose bytes use `obc_data::sources`,
+  such as an attribution, declares `data/sources.toml` in its code paths. A `.rs` file of a
+  crate also adds each file that it names in `include_str!`, `include_bytes!`, `include!` or `#[path = "…"]`, and an added `.rs`
   file adds its own. The name is a string literal, normal or raw, relative to the file, or a
   `concat!` of string literals, relative to the file or after `env!("CARGO_MANIFEST_DIR")`.
   These are not code unless the step declares them: a name that a literal with an escape, a
@@ -550,7 +553,7 @@ run. A run without a `finished` event whose lock is free has failed. A command t
 
 ### Products
 
-A product is a set of steps that makes one release, such as `planner` or `device-maps`. The
+A product is a set of steps that makes one release, such as `planner` or `maps`. The
 `obc data` binary (`host/obc-data-steps`, GPL-3.0-only) gives the list of products to the
 commands of `host/obc-data`. The `obc-data-plumbing` binary of `host/obc-data` has the same
 commands without products, for scripts that fetch or use R2. Each layer name of a product starts
@@ -575,6 +578,23 @@ its own `--only` selects. It refuses the file, with exit status 3, before it fet
 
 When the store has the layer of every step of a product after the run, `build` writes the
 release of that product.
+
+#### `maps`
+
+The device maps have layers per leaf: a cell of size `2^23` µdeg of the OBCA grid that the
+outline of the region touches. The outline of a `box` region is its box; the outline of a
+`geofabrik` region is its `.poly` from `geofabrik-poly`, `area=<region id>`. The product has no
+steps for a `polygon` region yet. The environment pins `copernicus-glo-30`.
+
+A file that the step list reads, such as a `.poly` or the GLO-30 tile list, is at the version
+of the environment. Without one, the product names a fetch of the newest version upstream, and
+then reads the newest version of that fetch in the store.
+
+| Layer | Reads | Options | Files |
+| --- | --- | --- | --- |
+| `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13); `terrain/empty.json`: the ids of the cells without a height |
+
+`<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id.
 
 ### Releases
 

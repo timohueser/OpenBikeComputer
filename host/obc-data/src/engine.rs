@@ -52,9 +52,10 @@ pub enum Input {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Code {
-    /// Files and directories, relative to the repository root.
+    /// Files and directories, relative to the repository root. A step whose bytes use
+    /// `obc_data::sources`, such as an attribution, declares `data/sources.toml` here.
     pub paths: Vec<String>,
-    /// Workspace crates; each brings its path dependencies.
+    /// Workspace crates; each brings its path dependencies. The walk stops at `obc-data`.
     pub crates: Vec<String>,
 }
 
@@ -877,6 +878,19 @@ mod x;
         write(&scratch.0.join("gen/deep.bin"), "2\n");
         assert_ne!(hash(&[]), changed, "a file that a module file includes is code");
         assert_ne!(hash(&["Cargo.lock"]), hash(&[]));
+    }
+
+    #[test]
+    fn the_engine_is_no_code_of_a_step() {
+        let scratch = Scratch::new("engine-not-code");
+        repository(
+            &scratch.0,
+            &[("steps", "[dependencies]\nobc-data = { path = \"../obc-data\" }\n"), ("obc-data", "")],
+        );
+        let code = Code { paths: Vec::new(), crates: vec!["steps".into()] };
+        let before = code_hash(&scratch.0, &code).unwrap();
+        write(&scratch.0.join("obc-data/src/lib.rs"), "pub fn select() {}\n");
+        assert_eq!(code_hash(&scratch.0, &code).unwrap(), before);
     }
 
     #[test]

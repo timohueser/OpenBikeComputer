@@ -3541,7 +3541,13 @@ dependencies = [
 name = "obc-data-steps"
 version = "0.1.0"
 dependencies = [
+ "obc-bake",
  "obc-data",
+ "obc-dem",
+ "obc-elevation",
+ "obc-fixtures",
+ "obc-formats",
+ "obc-pack",
  "serde_json",
 ]
 

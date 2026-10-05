@@ -155,8 +155,8 @@ struct Dependency {
     path: Option<PathBuf>,
 }
 
-/// The directories of `crates` and of their normal and build path dependencies, from
-/// `cargo metadata` of the workspace at `root`.
+/// The directories of `crates` and of their normal and build path dependencies, but `obc-data`,
+/// from `cargo metadata` of the workspace at `root`.
 fn crate_dirs(root: &Path, crates: &[String]) -> Result<BTreeSet<PathBuf>, String> {
     if crates.is_empty() {
         return Ok(BTreeSet::new());
@@ -186,12 +186,14 @@ fn crate_dirs(root: &Path, crates: &[String]) -> Result<BTreeSet<PathBuf>, Strin
     }
     let mut dirs = BTreeSet::new();
     while let Some(next) = pending.pop() {
-        if !dirs.insert(next.clone()) {
-            continue;
-        }
         let package = packages.get(&next).ok_or_else(|| {
             format!("the path dependency {} is not in the workspace; declare its files instead", next.display())
         })?;
+        // The engine only selects and passes the inputs of a step: what it selects reaches the
+        // key through the input digests, so its own code is no code of a step.
+        if package.name == env!("CARGO_PKG_NAME") || !dirs.insert(next.clone()) {
+            continue;
+        }
         for dependency in &package.dependencies {
             if let Some(path) = dependency.path.as_deref().filter(|_| dependency.kind.as_deref() != Some("dev")) {
                 pending.push(path.canonicalize().map_err(|e| format!("{}: {e}", path.display()))?);

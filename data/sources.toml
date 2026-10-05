@@ -107,6 +107,17 @@ version = "date"
 refresh = "manual"
 redistribute = false
 
+# The names of the `copernicus-glo-30` tiles. A square without a tile is sea.
+[[source]]
+id = "copernicus-glo-30-tiles"
+kind = "data"
+licence = "LicenseRef-Copernicus-DEM"
+licence_url = "https://spacedata.copernicus.eu/collections/copernicus-digital-elevation-model"
+fetch = { kind = "http", url = "https://copernicus-dem-30m.s3.amazonaws.com/tileList.txt" }
+version = "date"
+refresh = "manual"
+redistribute = false
+
 [[source]]
 id = "mapzen-terrain-tiles"
 kind = "data"
