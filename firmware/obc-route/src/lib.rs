@@ -23,6 +23,7 @@ pub mod attribution;
 mod cache;
 pub mod climb;
 pub mod climb_profile;
+mod compose;
 pub mod convert;
 pub mod corridor;
 pub mod easier;

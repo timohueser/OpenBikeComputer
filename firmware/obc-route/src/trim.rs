@@ -1,5 +1,6 @@
 //! Resumable first-contact trim. Each step visits at most one source chunk.
-use crate::convert::{ObcrEmitter, WpPlace};
+use crate::compose::{Compose, Part, Seam, Segment, Source};
+use crate::convert::{ObcrWriter, WpPlace};
 use crate::geo::{inflated_bbox, project_to_segment};
 use crate::reader::{RouteReader, MAX_WAYPOINTS};
 use heapless::Vec;
@@ -114,7 +115,7 @@ pub struct Trimmer {
     arc: f32,
     trim_index: usize,
     rejoin_m: u32,
-    emitter: ObcrEmitter,
+    compose: Compose,
 }
 
 impl Trimmer {
@@ -137,7 +138,7 @@ impl Trimmer {
             arc: 0.0,
             trim_index: 0,
             rejoin_m: target_m,
-            emitter: ObcrEmitter::empty(),
+            compose: Compose::empty(),
         }
     }
 
@@ -253,39 +254,33 @@ impl Trimmer {
                 if detour.visit_descriptor()?.is_some() {
                     return Err(Error::BadOffset);
                 }
-                ObcrEmitter::begin(sink)?;
-                self.emitter.set_attribution_map(detour.attribution_map()?);
-                self.emitter.set_bike_type(detour.bike_type());
-                self.emitter.set_flags(
+                ObcrWriter::begin(sink)?;
+                self.compose.writer.set_attribution_map(detour.attribution_map()?);
+                self.compose.writer.set_bike_type(detour.bike_type());
+                self.compose.writer.set_flags(
                     (if detour.has_unresolved_avoidance() { obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE } else { 0 })
                         | if detour.is_assistant_candidate() { obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE } else { 0 },
                 );
                 if self.has_elevation {
-                    self.emitter.keep_elevation_detail(ELE_DEADBAND_M as i16);
+                    self.compose.writer.keep_elevation_detail(ELE_DEADBAND_M as i16);
                 }
-                self.chunk = 0;
-                self.distinct = 0;
+                self.compose.plan(&[Part {
+                    source: Source::Leg,
+                    segment: Segment::Prefix { through: self.trim_index },
+                    seam: Seam::ChunkAnchor,
+                    chunk: 0,
+                }])?;
                 self.phase = Phase::Emit;
             }
             Phase::Emit => {
-                let k = self.chunk;
-                detour.with_chunk(k, |points| {
-                    self.chunk += 1;
-                    for p in points.skip(usize::from(k > 0)) {
-                        self.emitter.set_surface(p.surface);
-                        self.emitter.set_elevation_incomplete(p.elevation_incomplete);
-                        self.emitter.push_retained(sink, p.lon, p.lat, p.ele)?;
-                        if self.distinct == self.trim_index {
-                            self.phase = Phase::Finish;
-                            break;
-                        }
-                        self.distinct += 1;
-                    }
-                    Ok(())
-                })??;
+                let step = self.compose.step(detour, sink)?;
+                if !step.more {
+                    self.phase = Phase::Finish;
+                }
             }
             Phase::Finish => {
-                let stats = self.emitter.finish(sink, detour.name(), &mut Vec::<WpPlace, MAX_WAYPOINTS>::new())?;
+                let stats =
+                    self.compose.writer.finish(sink, detour.name(), &mut Vec::<WpPlace, MAX_WAYPOINTS>::new())?;
                 return Ok(TrimStep::Done(Some(TrimOutcome {
                     rejoin_m: self.rejoin_m,
                     detour_len_m: stats.total_distance_m,

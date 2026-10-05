@@ -435,9 +435,7 @@ fn spliced_road() -> (Vec<u8>, obc_route::RouteStats, u32) {
     let det = RouteReader::new(&didx, &dsrc);
 
     let mut sink = VecSink::default();
-    let stats =
-        splice_detour(Leg::Detour, &orig, &det, 600, 2_800, dstats.total_distance_m, dstats.has_elevation, &mut sink)
-            .unwrap();
+    let stats = splice_detour(Leg::Detour, &orig, &det, 600, 2_800, &mut sink).unwrap();
     (sink.buf, stats, dstats.total_distance_m)
 }
 
@@ -561,7 +559,7 @@ fn splice_head_length_equals_split_progress() {
 
 #[test]
 fn splice_self_input_is_previous_output() {
-    let (first, _, detour_len) = spliced_road();
+    let (first, _, _) = spliced_road();
     let bytes = map_with(&road_graph(true, false));
     let (_, detour) = detour_over(&bytes, &road_route_obcr(), 600, 2_800);
 
@@ -573,7 +571,7 @@ fn splice_self_input_is_previous_output() {
     let det = RouteReader::new(&didx, &dsrc);
 
     let mut sink = VecSink::default();
-    let stats = splice_detour(Leg::Detour, &orig, &det, 700, 2_900, detour_len, false, &mut sink).unwrap();
+    let stats = splice_detour(Leg::Detour, &orig, &det, 700, 2_900, &mut sink).unwrap();
     let src = SliceSource(&sink.buf[..]);
     let idx = RouteIndex::read(&src).expect("a re-spliced route still parses");
     assert_eq!(idx.name(), "Detour · Road trip", "no stacked name prefixes");
@@ -603,7 +601,7 @@ fn a_nearest_point_approach_keeps_only_the_tail_and_its_waypoints() {
     let leg_index = RouteIndex::read(&leg_source).unwrap();
     let leg = RouteReader::new(&leg_index, &leg_source);
     let mut sink = VecSink::default();
-    splice_detour(Leg::Approach, &route, &leg, join_m, join_m, leg.total_distance_m, true, &mut sink).unwrap();
+    splice_detour(Leg::Approach, &route, &leg, join_m, join_m, &mut sink).unwrap();
     let source = SliceSource(&sink.buf);
     let index = RouteIndex::read(&source).unwrap();
     let result = RouteReader::new(&index, &source);
@@ -652,7 +650,7 @@ fn an_approach_splice_is_the_leg_then_the_whole_route() {
         "an approach is not trimmed"
     );
     let mut sink = VecSink::default();
-    let stats = splice_detour(Leg::Approach, &orig, &det, 0, 0, leg_m, true, &mut sink).unwrap();
+    let stats = splice_detour(Leg::Approach, &orig, &det, 0, 0, &mut sink).unwrap();
 
     let src = SliceSource(&sink.buf[..]);
     let idx = RouteIndex::read(&src).unwrap();
@@ -722,7 +720,7 @@ fn a_rest_splice_is_the_rest_of_the_day_then_the_next_day_without_the_spur() {
     let (rest, next) = (RouteReader::new(&idx2, &src2), RouteReader::new(&idx3, &src3));
     let mut sink = VecSink::default();
     let leg = Leg::Rest { from_m, to_m: leave_m };
-    let stats = splice_detour(leg, &next, &rest, 0, join_m, 0, true, &mut sink).unwrap();
+    let stats = splice_detour(leg, &next, &rest, 0, join_m, &mut sink).unwrap();
 
     let src = SliceSource(&sink.buf[..]);
     let idx = RouteIndex::read(&src).unwrap();
@@ -759,14 +757,7 @@ fn trim_run(
     (out, sink.buf)
 }
 
-fn spliced_total(
-    orig_obcr: &[u8],
-    detour_obcr: &[u8],
-    split_m: u32,
-    rejoin_m: u32,
-    detour_len_m: u32,
-    detour_has_elevation: bool,
-) -> u32 {
+fn spliced_total(orig_obcr: &[u8], detour_obcr: &[u8], split_m: u32, rejoin_m: u32) -> u32 {
     let osrc = SliceSource(orig_obcr);
     let oidx = RouteIndex::read(&osrc).unwrap();
     let orig = RouteReader::new(&oidx, &osrc);
@@ -774,9 +765,7 @@ fn spliced_total(
     let didx = RouteIndex::read(&dsrc).unwrap();
     let det = RouteReader::new(&didx, &dsrc);
     let mut sink = VecSink::default();
-    splice_detour(Leg::Detour, &orig, &det, split_m, rejoin_m, detour_len_m, detour_has_elevation, &mut sink)
-        .unwrap()
-        .total_distance_m
+    splice_detour(Leg::Detour, &orig, &det, split_m, rejoin_m, &mut sink).unwrap().total_distance_m
 }
 
 /// With connectors only at the road's ends, a plan to a mid-route rejoin must overshoot to road12
@@ -822,8 +811,8 @@ fn trim_rejoins_at_first_tail_contact_and_removes_the_retrace() {
         assert!(!descends_tail, "no trimmed point rides the tail between node9 and node12 ({}, {})", p.lon, p.lat);
     }
 
-    let untrimmed_total = spliced_total(&obcr, &detour, 0, target, dstats.total_distance_m, dstats.has_elevation);
-    let trimmed_total = spliced_total(&obcr, &trimmed, 0, out.rejoin_m, out.detour_len_m, dstats.has_elevation);
+    let untrimmed_total = spliced_total(&obcr, &detour, 0, target);
+    let trimmed_total = spliced_total(&obcr, &trimmed, 0, out.rejoin_m);
     assert!(
         untrimmed_total >= trimmed_total + 1_000,
         "the trimmed splice drops ≥1 km (untrimmed {untrimmed_total}, trimmed {trimmed_total})"
@@ -909,8 +898,7 @@ fn splice_span_at_route_end() {
     let det = RouteReader::new(&didx, &dsrc);
 
     let mut sink = VecSink::default();
-    splice_detour(Leg::Detour, &orig, &det, 600, total, dstats.total_distance_m, dstats.has_elevation, &mut sink)
-        .unwrap();
+    splice_detour(Leg::Detour, &orig, &det, 600, total, &mut sink).unwrap();
     let src = SliceSource(&sink.buf[..]);
     let idx = RouteIndex::read(&src).unwrap();
     let pts = route_points(&sink.buf);
@@ -1119,17 +1107,7 @@ fn spliced_span(
     let det = RouteReader::new(&didx, &dsrc);
 
     let mut sink = VecSink::default();
-    let stats = splice_detour(
-        Leg::Detour,
-        &orig,
-        &det,
-        split_m,
-        rejoin_m,
-        dstats.total_distance_m,
-        dstats.has_elevation,
-        &mut sink,
-    )
-    .unwrap();
+    let stats = splice_detour(Leg::Detour, &orig, &det, split_m, rejoin_m, &mut sink).unwrap();
     (sink.buf, stats, dstats)
 }
 

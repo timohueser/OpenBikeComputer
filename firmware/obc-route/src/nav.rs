@@ -1,7 +1,7 @@
 //! On-device point-to-point routing over the OBCM nav graph.
 //!
 //! [`plan_route`] runs weighted A\* from the rider fix to a goal and writes the result as a
-//! complete OBCR through the shared [`ObcrEmitter`]. `no_std`, identical on device and sim.
+//! complete OBCR through the shared [`ObcrWriter`]. `no_std`, identical on device and sim.
 //!
 //! Every buffer is caller-owned ([`NavScratch`] plus the reader's [`NavTileCache`]): a large local
 //! here overflows the device stack. A settle is one quadtree descent to the node's coordinate, so
@@ -31,7 +31,7 @@
 
 use heapless::Vec;
 
-use crate::convert::{ObcrEmitter, RouteStats, WpPlace};
+use crate::convert::{ObcrWriter, RouteStats, WpPlace};
 use crate::corridor::Corridor;
 use crate::reader::MAX_WAYPOINTS;
 use obc_elevation::{ElevationSource, ELE_DEADBAND_M};
@@ -496,7 +496,7 @@ enum PhaseState {
 /// writes a complete OBCR named `name` to the step's `sink`, one bounded unit of work per
 /// [`step`](NavPlanner::step).
 ///
-/// The planner holds the phase, the cursors and the [`ObcrEmitter`], which must survive across emit
+/// The planner holds the phase, the cursors and the [`ObcrWriter`], which must survive across emit
 /// steps. The emitter is about 9 kB by value, so a `NavPlanner` must be a caller-owned object and
 /// not a stack local.
 ///
@@ -539,7 +539,7 @@ pub struct NavPlanner {
     total_m: u32,
     last: Option<(i32, i32)>,
     /// Initialized with the planner; its stream starts only after the search succeeds.
-    em: ObcrEmitter,
+    em: ObcrWriter,
     emit_started: bool,
     /// The detour blacklist, `Some` only for [`new_detour`](Self::new_detour) plans. It is read on
     /// every settle, so it lives here rather than in a step frame.
@@ -637,7 +637,7 @@ impl NavPlanner {
             core::ptr::addr_of_mut!((*slot).map_source).write(None);
             core::ptr::addr_of_mut!((*slot).unresolved_avoidance).write(false);
             core::ptr::addr_of_mut!((*slot).assistant_candidate).write(false);
-            ObcrEmitter::init_in_place(core::ptr::addr_of_mut!((*slot).em));
+            ObcrWriter::init_in_place(core::ptr::addr_of_mut!((*slot).em));
             let Self {
                 phase: _,
                 from: _,
@@ -1002,7 +1002,7 @@ impl NavPlanner {
         elev: &mut dyn ElevationSource,
         sink: &mut dyn ByteSink,
     ) -> Result<bool, NavError> {
-        ObcrEmitter::begin(sink).map_err(|_| NavError::NoPath)?;
+        ObcrWriter::begin(sink).map_err(|_| NavError::NoPath)?;
         let em = &mut self.em;
         em.set_attribution_map(self.map_source);
         em.set_bike_type(self.bike);
@@ -1163,7 +1163,7 @@ impl NavPlanner {
 /// [`NavPlanner::emit_hop`]'s frame, which already carries the polyline closure.
 #[inline(never)]
 fn fill_segment(
-    em: &mut ObcrEmitter,
+    em: &mut ObcrWriter,
     sink: &mut dyn ByteSink,
     elev: &mut dyn ElevationSource,
     ele: &mut EleFill,

@@ -494,6 +494,7 @@ fn a_measured_trial_is_its_stored_copy() {
         slot.assume_init()
     };
     builder.prepare_easier(&original).unwrap();
+    builder.enable_checksum().unwrap();
     let (mut measure, mut hills) = (Measure::new(), Hills);
     let mut tee = Tee(VecSink::default(), MeasureSink::new(&mut measure, &mut hills));
     builder.begin(&mut tee).unwrap();
@@ -513,7 +514,10 @@ fn a_measured_trial_is_its_stored_copy() {
     assert!(stats.chunk_count > 1 && stats.waypoint_count == 2);
     let (_, costs) = Costs::candidate(&SliceSource(&stored.buf), [0, stats.total_distance_m], &mut Hills).unwrap();
     assert!(costs.ascent_m > 0 && costs.distance_m > 0);
-    assert_eq!(measure.finish(&mut Hills).unwrap(), (costs, obc_crc::crc32(&stored.buf)));
+    assert_eq!(
+        measure.finish(&mut Hills, stats, builder.checksum().unwrap()).unwrap(),
+        (costs, obc_crc::crc32(&stored.buf))
+    );
 }
 
 #[test]

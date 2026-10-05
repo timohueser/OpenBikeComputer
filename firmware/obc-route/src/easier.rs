@@ -143,9 +143,7 @@ pub struct Measure {
     points: u32,
     previous: Option<(i32, i32, i16)>,
     written: u32,
-    crc: obc_crc::Crc32,
-    /// The stored checksum, point count and distance, known once the header is patched.
-    patched: Option<(u32, u32, u32)>,
+    sealed: bool,
 }
 impl Measure {
     pub fn new() -> Self {
@@ -155,8 +153,7 @@ impl Measure {
             points: 0,
             previous: None,
             written: 0,
-            crc: obc_crc::Crc32::new(),
-            patched: None,
+            sealed: false,
         }
     }
     fn push(&mut self, p: RoutePoint, elev: &mut dyn ElevationSource) {
@@ -178,12 +175,16 @@ impl Measure {
     }
     /// The costs and the CRC-32 the store computes over the stored copy, once a [`MeasureSink`]
     /// has taken the complete stream.
-    pub fn finish(self, elev: &mut dyn ElevationSource) -> Result<(Costs, u32), Error> {
-        let (crc, points, total_m) = self.patched.ok_or(Error::BadOffset)?;
-        if points != self.points {
+    pub fn finish(
+        self,
+        elev: &mut dyn ElevationSource,
+        stats: crate::RouteStats,
+        crc: u32,
+    ) -> Result<(Costs, u32), Error> {
+        if !self.sealed || stats.point_count != self.points {
             return Err(Error::BadOffset);
         }
-        Ok((self.costs(total_m, elev)?, crc))
+        Ok((self.costs(stats.total_distance_m, elev)?, crc))
     }
 }
 impl Default for Measure {
@@ -192,8 +193,7 @@ impl Default for Measure {
     }
 }
 
-/// A sink that keeps no bytes. It decodes each chunk body as the store would read it back, and
-/// folds every byte into the stored copy's checksum.
+/// A sink that keeps no bytes. It measures each quantized chunk as the store reads it back.
 pub struct MeasureSink<'a> {
     measure: &'a mut Measure,
     elev: &'a mut dyn ElevationSource,
@@ -213,9 +213,8 @@ impl ByteSink for MeasureSink<'_> {
         if bytes.iter().take(header).any(|&b| b != 0) {
             return Err(Error::BadOffset);
         }
-        m.crc.update(bytes);
         m.written = u32::try_from(bytes.len()).ok().and_then(|n| m.written.checked_add(n)).ok_or(Error::TooLarge)?;
-        m.patched = None;
+        m.sealed = false;
         self.appended += bytes.len();
         Ok(())
     }
@@ -244,19 +243,7 @@ impl ByteSink for MeasureSink<'_> {
         if offset != 0 || header.len() != HEADER_FULL_LEN || m.written < HEADER_FULL_LEN as u32 {
             return Err(Error::BadOffset);
         }
-        // CRC-32 is affine: the stored checksum is the streamed one plus the header's own term,
-        // which is the header followed by zeros for the rest of the stream, from a zero register.
-        let mut term = obc_crc::Crc32::from_checksum(u32::MAX);
-        term.update(header);
-        let mut rest = (m.written - HEADER_FULL_LEN as u32) as usize;
-        while rest > 0 {
-            let n = rest.min(64);
-            term.update(&[0; 64][..n]);
-            rest -= n;
-        }
-        let crc = m.crc.finalize() ^ term.finalize() ^ u32::MAX;
-        let at = |i: usize| u32::from_le_bytes([header[i], header[i + 1], header[i + 2], header[i + 3]]);
-        m.patched = Some((crc, at(32), at(36)));
+        m.sealed = true;
         Ok(())
     }
 }

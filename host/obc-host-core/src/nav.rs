@@ -141,11 +141,6 @@ pub struct DetourReady {
     progress_m: u32,
     rejoin_m: u32,
     leg: obc_route::Leg,
-    /// The plan's own [`RouteStats::has_elevation`](obc_route::RouteStats) — did the mounted
-    /// terrain answer for this detour? Carried (never re-derived from the bytes: `0 m` is a real
-    /// height) so the splice knows whether the leg's stored heights are sampled terrain to keep or
-    /// the `0` placeholder to replace.
-    has_elevation: bool,
 }
 
 /// The rest of the day before a trip day, ready to splice in front of it. `request` names the day's
@@ -166,7 +161,6 @@ pub fn rest_ready(
         progress_m: 0,
         rejoin_m: request.target_m,
         leg: request.leg,
-        has_elevation: true,
     })
 }
 
@@ -295,14 +289,7 @@ pub fn plan_detour_preview(
                 ));
             }
             eprintln!("detour plan: ok len={detour_len_m} m (Δ {:+} m)", preview.cost_delta_m);
-            let ready = DetourReady {
-                bytes,
-                detour_len_m,
-                progress_m: plan.progress_m,
-                rejoin_m,
-                leg: plan.leg,
-                has_elevation: stats.has_elevation,
-            };
+            let ready = DetourReady { bytes, detour_len_m, progress_m: plan.progress_m, rejoin_m, leg: plan.leg };
             (Some(ready), Ok(preview))
         }
         Err(e) => {
@@ -337,17 +324,8 @@ pub fn commit_detour(
             let det_src = obc_formats::io::SliceSource(&ready.bytes);
             let det_idx = obc_route::RouteIndex::read(&det_src).map_err(|_| NavigatorError::Store)?;
             let det = obc_route::RouteReader::new(&det_idx, &det_src);
-            obc_route::splice_detour(
-                ready.leg,
-                orig,
-                &det,
-                ready.progress_m,
-                ready.rejoin_m,
-                ready.detour_len_m,
-                ready.has_elevation,
-                &mut sink,
-            )
-            .map_err(|_| NavigatorError::Store)?;
+            obc_route::splice_detour(ready.leg, orig, &det, ready.progress_m, ready.rejoin_m, &mut sink)
+                .map_err(|_| NavigatorError::Store)?;
         }
         let publication = store.publish_nav_route(sink.bytes()).ok_or(NavigatorError::Store)?;
         app.set_routes_with_ids(store.catalog(), store.ids());
@@ -425,7 +403,6 @@ mod tests {
             progress_m: 0,
             rejoin_m: index.total_distance_m,
             leg: obc_route::Leg::Detour,
-            has_elevation: true,
         };
         let mut app = obc_app::App::new(obc_app::AppState::new(0, 0, 1.0));
         app.set_routes_with_ids(routes.catalog(), routes.ids());
