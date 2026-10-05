@@ -454,8 +454,12 @@ def package_build_input(path: str, package: Package) -> bool:
         return False
     relative = path[len(prefix):]
     parts = Path(relative).parts
-    return "tests" not in parts and parts[-1] != "tests.rs" and relative != "src/main.rs" and not relative.endswith(".md") and not relative.startswith(
-        ("tests/", "examples/", "benches/", "src/bin/")
+    return (
+        "tests" not in parts
+        and parts[-1] != "tests.rs"
+        and relative != "src/main.rs"
+        and not relative.endswith(".md")
+        and not relative.startswith(("examples/", "benches/", "src/bin/"))
     )
 
 def is_policy_path(path: str) -> bool:
