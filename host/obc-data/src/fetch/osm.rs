@@ -1,6 +1,8 @@
 //! OSM files named by the day of their data: the daily replication diffs and the dated Geofabrik
 //! extracts.
 
+use std::collections::BTreeMap;
+
 use super::http::Http;
 use super::upstream;
 use super::{check_version, expand, files, get, record, Request};
@@ -8,9 +10,28 @@ use crate::date;
 use crate::sources::Source;
 use crate::store::{FileRecord, Snapshot, Store};
 
-/// The daily diffs of version `E` from `from=B`: one diff for each day after `B` up to `E`, in
-/// order. Each diff has the URL of its sequence, so the record of `E` can hold the diffs of any
-/// start. A step applies them to the planet of `B` with `osmium apply-changes`; the fetch does not.
+/// `params` with `from=` the pin in `pins` of the source that `fetch.from` names. An explicit
+/// `from=` must be that pin, unless `pins` has none.
+pub fn with_base(
+    source: &Source,
+    pins: &BTreeMap<String, String>,
+    mut params: Vec<(String, String)>,
+) -> Result<Vec<(String, String)>, String> {
+    let Some((base, pin)) = source.fetch.from.as_ref().and_then(|id| Some((id, pins.get(id)?))) else {
+        return Ok(params);
+    };
+    match params.iter().find(|(name, _)| name == "from") {
+        None => params.push(("from".into(), pin.clone())),
+        Some((_, value)) if value == pin => {}
+        Some((_, value)) => return Err(format!("source `{}`: from={value} is not the `{base}` pin {pin}", source.id)),
+    }
+    Ok(params)
+}
+
+/// The daily diffs of version `E` from `from=B`: the diff and the `state.txt` of each sequence
+/// after the sequence of `B` up to the sequence of `E`, and the `state.txt` of `B`. The states
+/// name the day of each sequence, so a record of any `E` serves any start. A step applies the
+/// diffs to the planet of `B` with `osmium apply-changes`; the fetch does not.
 pub fn replication(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
     let source = request.source;
     let directory = source.fetch.url.as_deref().unwrap_or_default();
@@ -23,8 +44,9 @@ pub fn replication(store: &Store, http: &Http, request: &Request) -> Result<Snap
     };
     let Some(from) = from else {
         return Err(format!(
-            "source `{}` takes from=YYYY-MM-DD, the day of the base planet, and no other NAME=VALUE",
-            source.id
+            "source `{}` takes from=YYYY-MM-DD, the `{}` pin, and no other NAME=VALUE",
+            source.id,
+            source.fetch.from.as_deref().unwrap_or_default()
         ));
     };
     let version = match &request.version {
@@ -36,66 +58,75 @@ pub fn replication(store: &Store, http: &Http, request: &Request) -> Result<Snap
     };
     check_version(source, &version)?;
     let day = date::parse(&version).unwrap_or_default();
-    let Ok(days) = u64::try_from(day - from) else {
+    if from > day {
         return Err(format!("source `{}`: from={} is after the version {version}", source.id, date::format(from)));
-    };
-    if let Some(files) = stored(store, source, &version, days)? {
-        return Ok(Snapshot { source: source.id.clone(), version, files });
     }
-    // The sequences are known before a diff downloads, so a day without a diff fails at once.
-    let (newest, newest_day) = state(http, &format!("{directory}state.txt"))?;
-    if day > newest_day {
-        return Err(format!("source `{}`: the newest daily diff is of {}", source.id, date::format(newest_day)));
-    }
-    let first = sequence(http, directory, (newest, newest_day), from)?;
-    let last = sequence(http, directory, (newest, newest_day), day)?;
-    if last.checked_sub(first) != Some(days) {
-        return Err(format!(
-            "source `{}`: the daily diffs {first} to {last} are not one per day from {} to {version}",
-            source.id,
-            date::format(from)
-        ));
-    }
-    // A diff never changes, so a diff in the record of another version needs no download.
-    let known: Vec<FileRecord> = store.snapshots(&source.id)?.into_iter().flat_map(|snapshot| snapshot.files).collect();
-    let mut files = Vec::new();
-    // Newest first: the record of `E` then always has the diff of `E`, which `stored` relies on.
-    for sequence in (first + 1..=last).rev() {
-        let url = format!("{directory}{}.osc.gz", path(sequence));
-        let file = match known.iter().find(|file| file.url == url && store.object(&file.sha256).is_file()) {
+    // A diff and its state never change, so a file in the record of any version serves this one.
+    let known: Vec<FileRecord> = store
+        .snapshots(&source.id)?
+        .into_iter()
+        .flat_map(|snapshot| snapshot.files)
+        .filter(|file| store.object(&file.sha256).is_file())
+        .collect();
+    let file = |url: &str| -> Result<FileRecord, String> {
+        match known.iter().find(|file| file.url == url) {
             Some(file) => {
                 record(store, &source.id, &version, std::slice::from_ref(file))?;
-                file.clone()
+                Ok(file.clone())
             }
-            None => get(store, http, source, Some(&version), &url, false, None)?,
-        };
-        files.push(file);
+            None => get(store, http, source, Some(&version), url, false, None),
+        }
+    };
+    let url = |sequence: u64, suffix: &str| format!("{directory}{}{suffix}", path(sequence));
+    let sequences = match stored(store, directory, &known, from, day) {
+        Some(sequences) => sequences,
+        None => {
+            // The sequences are known before a diff downloads, so a day without a diff fails at once.
+            let (newest, newest_day) = state(http, &format!("{directory}state.txt"))?;
+            if day > newest_day {
+                return Err(format!(
+                    "source `{}`: the newest daily diff is of {}",
+                    source.id,
+                    date::format(newest_day)
+                ));
+            }
+            let day_of = |sequence| {
+                let state = file(&url(sequence, ".state.txt"))?;
+                let text = std::fs::read_to_string(store.object(&state.sha256)).map_err(|e| e.to_string())?;
+                Ok(parse_state(&text, &state.url)?.1)
+            };
+            let first = sequence(directory, (newest, newest_day), from, day_of)?;
+            first..=sequence(directory, (newest, newest_day), day, day_of)?
+        }
+    };
+    let mut files = vec![file(&url(*sequences.start(), ".state.txt"))?];
+    for sequence in sequences.start() + 1..=*sequences.end() {
+        files.push(file(&url(sequence, ".osc.gz"))?);
+        files.push(file(&url(sequence, ".state.txt"))?);
     }
-    files.reverse();
     Ok(Snapshot { source: source.id.clone(), version, files })
 }
 
-/// The diffs of the last `days` days up to `version`, when its record has each of them. The
-/// newest sequence in the record is the diff of `version`. A fetch records a diff only after it
-/// found one diff per day back to its start, so the sequences before it are the days before.
-fn stored(store: &Store, source: &Source, version: &str, days: u64) -> Result<Option<Vec<FileRecord>>, String> {
-    if days == 0 {
-        return Ok(Some(Vec::new()));
-    }
-    let Some(snapshot) = store.snapshot(&source.id, version)? else { return Ok(None) };
-    let directory = source.fetch.url.as_deref().unwrap_or_default();
-    let sequence = |file: &FileRecord| {
-        let path = file.url.strip_prefix(directory)?.strip_suffix(".osc.gz")?;
-        path.replace('/', "").parse::<u64>().ok()
-    };
-    let Some(last) = snapshot.files.iter().filter_map(sequence).max() else { return Ok(None) };
-    let Some(first) = (last + 1).checked_sub(days) else { return Ok(None) };
-    Ok((first..=last)
-        .map(|sequence| {
-            let file = snapshot.file(&format!("{directory}{}.osc.gz", path(sequence)))?;
-            store.object(&file.sha256).is_file().then(|| file.clone())
-        })
-        .collect())
+/// The sequences of `from` and `day` from the states in `known`, when `known` has the diff and
+/// the state of every sequence between them.
+fn stored(
+    store: &Store,
+    directory: &str,
+    known: &[FileRecord],
+    from: i64,
+    day: i64,
+) -> Option<std::ops::RangeInclusive<u64>> {
+    let days: Vec<(u64, i64)> = known
+        .iter()
+        .filter(|file| file.url.starts_with(directory) && file.url.ends_with(".state.txt"))
+        .filter_map(|file| parse_state(&std::fs::read_to_string(store.object(&file.sha256)).ok()?, &file.url).ok())
+        .collect();
+    let sequence = |of: i64| days.iter().find(|(_, got)| *got == of).map(|(sequence, _)| *sequence);
+    let (first, last) = (sequence(from)?, sequence(day)?);
+    let has = |url: String| known.iter().any(|file| file.url == url);
+    (first + 1..=last)
+        .all(|s| has(format!("{directory}{}.osc.gz", path(s))) && has(format!("{directory}{}.state.txt", path(s))))
+        .then_some(first..=last)
 }
 
 /// A dated Geofabrik extract. Without a version, the day of the data in the replication state of
@@ -134,13 +165,18 @@ fn hint(error: String) -> String {
 /// The sequence of the daily diff of `day`. It follows from the newest sequence when the
 /// replication has one diff per day; when its state names another day, the difference moves it
 /// once more.
-fn sequence(http: &Http, replication: &str, (newest, newest_day): (u64, i64), day: i64) -> Result<u64, String> {
+fn sequence(
+    replication: &str,
+    (newest, newest_day): (u64, i64),
+    day: i64,
+    day_of: impl Fn(u64) -> Result<i64, String>,
+) -> Result<u64, String> {
     let mut guess = newest as i64 - (newest_day - day);
     for _ in 0..2 {
         if guess < 0 {
             break;
         }
-        let (_, got) = state(http, &format!("{replication}{}.state.txt", path(guess as u64)))?;
+        let got = day_of(guess as u64)?;
         if got == day {
             return Ok(guess as u64);
         }
@@ -151,7 +187,10 @@ fn sequence(http: &Http, replication: &str, (newest, newest_day): (u64, i64), da
 
 /// The sequence number and the day of an Osmosis replication `state.txt`.
 pub(super) fn state(http: &Http, url: &str) -> Result<(u64, i64), String> {
-    let text = http.text(url, "text/plain")?;
+    parse_state(&http.text(url, "text/plain")?, url)
+}
+
+fn parse_state(text: &str, url: &str) -> Result<(u64, i64), String> {
     let value = |key: &str| text.lines().find_map(|line| line.strip_prefix(key)?.strip_prefix('='));
     let sequence = value("sequenceNumber").and_then(|n| n.trim().parse().ok());
     let day = value("timestamp").and_then(|t| t.get(..10)).and_then(date::parse);

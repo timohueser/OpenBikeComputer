@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{check_version, record, Request};
+use super::{check_version, file_name, record, Request};
 use crate::date;
 use crate::store::{self, FileRecord, Snapshot, Store};
 
@@ -83,9 +83,10 @@ pub fn capture(
         let relative: Vec<_> = relative.map(|part| part.as_os_str().to_string_lossy()).collect();
         let (sha256, size) = store::hash_file(&path)?;
         store.insert(&path, &sha256)?;
+        let url = format!("{prefix}{}", relative.join("/"));
         files.push(FileRecord {
-            name: relative.last().map(|name| name.to_string()).unwrap_or_default(),
-            url: format!("{prefix}{}", relative.join("/")),
+            name: file_name(source, Some(&version), &url),
+            url,
             size,
             sha256,
             retrieved: date::timestamp(date::now()),
