@@ -1,7 +1,7 @@
 //! Bounded, opening-aware place pages over the existing POI quadtrees.
 
 use super::poi::{decode_poi_name, PoiCatEntry};
-use super::{Reader, BRANCH_BIT, EMPTY_LEAF};
+use super::{QuadCursor, QuadStep, Reader};
 use crate::corridor::{project_onto_chunk, PathProjection};
 use crate::hours::OpeningStatus;
 use crate::{CorridorPoi, Error, Poi, PoiCategorySet, RoutePath};
@@ -49,22 +49,6 @@ pub enum PlaceWindow {
     Corridor { from_m: u32, to_m: u32, half_width_m: u16 },
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Branch {
-    index: [u8; 4],
-    quadrant: u8,
-}
-
-impl Branch {
-    fn new(index: u32, quadrant: u8) -> Self {
-        Self { index: index.to_le_bytes(), quadrant }
-    }
-
-    fn index(self) -> u32 {
-        u32::from_le_bytes(self.index)
-    }
-}
-
 /// A suspended POI record and its nearest point; geometry and POI bytes stay in their sources.
 #[derive(Debug, Default)]
 struct EncounterScan {
@@ -92,7 +76,7 @@ pub struct PlaceQuery {
     /// The current route chunk's search box, clipped to the window; `None` until the chunk is read.
     route_search: Option<BBox>,
     encounter: EncounterScan,
-    stack: Vec<Branch, 33>,
+    cursor: QuadCursor,
     leaf: Option<u32>,
     started: bool,
     more: bool,
@@ -115,7 +99,7 @@ impl PlaceQuery {
             route_chunk: 0,
             route_search: None,
             encounter: EncounterScan::default(),
-            stack: Vec::new(),
+            cursor: QuadCursor::default(),
             leaf: None,
             started: false,
             more: false,
@@ -142,7 +126,7 @@ impl PlaceQuery {
 
     pub fn cancel(&mut self) {
         self.progress = QueryProgress::Unavailable;
-        self.stack.clear();
+        self.cursor.clear();
         self.leaf = None;
     }
 
@@ -164,7 +148,7 @@ impl PlaceQuery {
         self.route_chunk = 0;
         self.route_search = None;
         self.encounter = EncounterScan::default();
-        self.stack.clear();
+        self.cursor.clear();
         self.leaf = None;
         self.started = false;
         self.more = false;
@@ -275,43 +259,24 @@ impl PlaceQuery {
             return Ok(());
         };
         if !self.started {
-            self.stack.push(Branch::new(0, 4)).map_err(|_| Error::BadOffset)?;
+            self.cursor.reset();
             self.started = true;
         }
         if let Some(leaf) = self.leaf {
             if self.read_leaf(reader, entry, leaf, route, out)? {
                 self.leaf = None;
                 self.encounter = EncounterScan::default();
-                self.next_node();
             }
             return Ok(());
         }
-        let Some(top) = self.stack.last() else {
-            self.next_category();
-            return Ok(());
-        };
-        let index = top.index() as usize;
-        if index >= entry.node_count {
-            return Err(Error::BadOffset);
-        }
-        let bbox = self.node_bbox(reader.bbox);
-        if !bbox.intersects(&search) {
-            self.next_node();
-            return Ok(());
-        }
-        let value = reader.read_node(entry, index).map_err(Error::from)?;
-        if value & BRANCH_BIT == 0 {
-            if value == EMPTY_LEAF {
-                self.next_node();
-            } else {
-                self.leaf = Some(value);
-            }
-        } else {
-            let child = value & !BRANCH_BIT;
-            if child <= index as u32 || child as usize + 3 >= entry.node_count {
-                return Err(Error::BadOffset);
-            }
-            self.stack.push(Branch::new(child, 0)).map_err(|_| Error::BadOffset)?;
+        match self
+            .cursor
+            .step(reader.bbox, &search, entry.node_count, |index| reader.read_node(entry, index))
+            .map_err(|e| Error::from(e.error))?
+        {
+            QuadStep::Leaf(chunk, _) => self.leaf = Some(chunk),
+            QuadStep::Done => self.next_category(),
+            QuadStep::Pending => {}
         }
         Ok(())
     }
@@ -319,39 +284,11 @@ impl PlaceQuery {
     fn next_category(&mut self) {
         self.category += 1;
         self.started = false;
-        self.stack.clear();
+        self.cursor.clear();
     }
     fn finish(&mut self) {
         self.progress = QueryProgress::Ready { more: self.more, coverage_complete: self.coverage_complete };
     }
-    fn next_node(&mut self) {
-        while let Some(mut node) = self.stack.pop() {
-            if node.quadrant < 3 {
-                node.index = (node.index() + 1).to_le_bytes();
-                node.quadrant += 1;
-                let _ = self.stack.push(node);
-                break;
-            }
-        }
-    }
-    fn node_bbox(&self, mut bbox: BBox) -> BBox {
-        for node in self.stack.iter().skip(1) {
-            let lon = (i64::from(bbox.min_lon) + i64::from(bbox.max_lon)).div_euclid(2) as i32;
-            let lat = (i64::from(bbox.min_lat) + i64::from(bbox.max_lat)).div_euclid(2) as i32;
-            if node.quadrant & 1 == 0 {
-                bbox.max_lon = lon;
-            } else {
-                bbox.min_lon = lon;
-            }
-            if node.quadrant < 2 {
-                bbox.min_lat = lat;
-            } else {
-                bbox.max_lat = lat;
-            }
-        }
-        bbox
-    }
-
     fn read_leaf<const N: usize>(
         &mut self,
         reader: &Reader,

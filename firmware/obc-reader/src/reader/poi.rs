@@ -236,7 +236,7 @@ impl<'a> Reader<'a> {
         // instead.
         let records_per_chunk = chunk_size / POI_RECORD_LEN;
         let mut read_error = None;
-        self.walk_leaves(entry, 0, self.bbox, search, 0, &mut |cid, _node| {
+        self.walk_leaves(entry, search, |cid, _node| {
             if read_error.is_some() {
                 return;
             }

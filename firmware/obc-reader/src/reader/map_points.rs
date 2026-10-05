@@ -1,12 +1,11 @@
 //! Resumable viewport walk. One step reads one index node or at most 512 record bytes.
-use super::{MapPoint, Reader};
+use super::{MapPoint, QuadCursor, QuadStep, Reader};
 use crate::{Error, PoiCategory, PoiCategorySet};
-use heapless::Vec;
 use obc_formats::{
     io::{rd_i32, rd_u16},
     obcm::{
-        poi_directory_category_of, PoiMetadata, BRANCH_BIT, EMPTY_LEAF, POI_RECORD_LEN, SUMMIT_CATEGORY_ID,
-        SUMMIT_ELEVATION_UNKNOWN, SUMMIT_SUBTYPE_ID,
+        poi_directory_category_of, PoiMetadata, POI_RECORD_LEN, SUMMIT_CATEGORY_ID, SUMMIT_ELEVATION_UNKNOWN,
+        SUMMIT_SUBTYPE_ID,
     },
 };
 use obc_map_scene::BBox;
@@ -17,13 +16,22 @@ pub struct MapPointQuery {
     categories: PoiCategorySet,
     summits: bool,
     category: usize,
-    stack: Vec<(u32, u8), 33>,
+    cursor: QuadCursor,
     started: bool,
     leaf: Option<(u32, usize)>,
 }
 impl MapPointQuery {
     pub fn new(generation: u32, bounds: BBox, categories: PoiCategorySet, summits: bool) -> Self {
-        Self { generation, bounds, categories, summits, category: 0, stack: Vec::new(), started: false, leaf: None }
+        Self {
+            generation,
+            bounds,
+            categories,
+            summits,
+            category: 0,
+            cursor: QuadCursor::default(),
+            started: false,
+            leaf: None,
+        }
     }
     /// Returns true when complete. A failed query must be discarded by its owner.
     pub fn step(&mut self, reader: &Reader, mut visit: impl FnMut(MapPoint)) -> Result<bool, Error> {
@@ -84,65 +92,27 @@ impl MapPointQuery {
             }
             if ended {
                 self.leaf = None;
-                self.next_node();
             } else {
                 self.leaf = Some((leaf, cursor + take));
             }
             return Ok(false);
         }
         if !self.started {
-            self.stack.push((0, 4)).map_err(|_| Error::BadOffset)?;
+            self.cursor.reset();
             self.started = true;
         }
-        let Some(&(index, _)) = self.stack.last() else {
-            self.category += 1;
-            self.started = false;
-            return Ok(false);
-        };
-        if index as usize >= entry.node_count {
-            return Err(Error::BadOffset);
-        }
-        let mut bbox = reader.bbox;
-        for &(_, quadrant) in self.stack.iter().skip(1) {
-            let lon = (i64::from(bbox.min_lon) + i64::from(bbox.max_lon)).div_euclid(2) as i32;
-            let lat = (i64::from(bbox.min_lat) + i64::from(bbox.max_lat)).div_euclid(2) as i32;
-            if quadrant & 1 == 0 {
-                bbox.max_lon = lon;
-            } else {
-                bbox.min_lon = lon;
+        match self
+            .cursor
+            .step(reader.bbox, &self.bounds, entry.node_count, |index| reader.read_node(entry, index))
+            .map_err(|e| Error::from(e.error))?
+        {
+            QuadStep::Leaf(chunk, _) => self.leaf = Some((chunk, 0)),
+            QuadStep::Done => {
+                self.category += 1;
+                self.started = false;
             }
-            if quadrant < 2 {
-                bbox.min_lat = lat;
-            } else {
-                bbox.max_lat = lat;
-            }
-        }
-        if !bbox.intersects(&self.bounds) {
-            self.next_node();
-            return Ok(false);
-        }
-        let value = reader.read_node(entry, index as usize).map_err(Error::from)?;
-        if value & BRANCH_BIT == 0 {
-            if value == EMPTY_LEAF {
-                self.next_node();
-            } else {
-                self.leaf = Some((value, 0));
-            }
-        } else {
-            let child = value & !BRANCH_BIT;
-            if child <= index || child as usize + 3 >= entry.node_count {
-                return Err(Error::BadOffset);
-            }
-            self.stack.push((child, 0)).map_err(|_| Error::BadOffset)?;
+            QuadStep::Pending => {}
         }
         Ok(false)
-    }
-    fn next_node(&mut self) {
-        while let Some((index, quadrant)) = self.stack.pop() {
-            if quadrant < 3 {
-                let _ = self.stack.push((index + 1, quadrant + 1));
-                break;
-            }
-        }
     }
 }

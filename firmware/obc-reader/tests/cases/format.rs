@@ -653,8 +653,6 @@ fn walk_terminates_on_back_referencing_branch() {
 
 #[test]
 fn walk_caps_depth_on_forward_chain() {
-    // A forward-only NW-chain far deeper than the depth cap, so the back-reference guard never
-    // fires. Without the cap the walk would reach the leaf; with it, no chunk is reported.
     const LEVELS: usize = 50; // comfortably past the ~32 cap
     let chunk = seal(pack_line(1, 0, 0, &[(1, 1)]), CS);
     let bytes = build_file(
@@ -668,8 +666,8 @@ fn walk_caps_depth_on_forward_chain() {
     let r = Reader::new(&src, &tables, &cache);
 
     let mut seen = 0;
-    r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1).unwrap();
-    assert_eq!(seen, 0, "the depth cap must prune the over-cap leaf before it is reached");
+    assert_eq!(r.for_each_chunk(0, &r.bbox, |_cid, _node| seen += 1), Err(obc_reader::MapReadError::Malformed));
+    assert_eq!(seen, 0);
 }
 
 #[test]
