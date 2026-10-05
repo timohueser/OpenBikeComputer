@@ -6,10 +6,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ureq::ResponseExt;
-
 use crate::date;
-use crate::store::{self, Store};
+use crate::store::{self, Lock, Store};
 
 /// What a download must be.
 #[derive(Default)]
@@ -25,18 +23,14 @@ pub struct Downloaded {
     pub object: PathBuf,
     pub sha256: String,
     pub size: u64,
-    /// The `Last-Modified` day of the response, or today when it has none.
-    pub modified: String,
 }
 
-/// The answer to a HEAD request, after redirects.
-pub struct Head {
-    pub url: String,
-    pub modified: Option<String>,
-}
-
-/// Tries of one download: the first, and three retries.
+/// Failed tries in a row before a download gives up. A try that adds bytes resets the count.
 const ATTEMPTS: u32 = 4;
+/// The longest time one try receives a body: a stalled transfer fails, and the next try resumes it.
+const BODY: Duration = Duration::from_secs(15 * 60);
+/// The longest time a HEAD request or a small document may take.
+const SMALL: Duration = Duration::from_secs(15);
 
 pub struct Http {
     agent: ureq::Agent,
@@ -60,52 +54,72 @@ impl Http {
             .user_agent(concat!("OpenBikeComputer obc-data/", env!("CARGO_PKG_VERSION")))
             .timeout_connect(Some(Duration::from_secs(30)))
             .timeout_recv_response(Some(Duration::from_secs(60)))
+            .timeout_recv_body(Some(BODY))
             .build();
         Self { agent: config.into(), backoff }
     }
 
-    pub fn head(&self, url: &str) -> Result<Head, String> {
-        let response = self.agent.head(url).call().map_err(|e| format!("HEAD {url}: {e}"))?;
+    /// The `Last-Modified` day of `url`, after redirects.
+    pub fn modified(&self, url: &str) -> Result<Option<String>, String> {
+        let request = self.agent.head(url).config().timeout_global(Some(SMALL)).build();
+        let response = request.call().map_err(|e| format!("HEAD {url}: {e}"))?;
         if !response.status().is_success() {
             return Err(format!("HEAD {url}: HTTP {}", response.status().as_u16()));
         }
-        let modified = header(&response, "last-modified").and_then(|value| date::from_http(&value));
-        Ok(Head { url: response.get_uri().to_string(), modified })
+        Ok(header(&response, "last-modified").and_then(|value| date::from_http(&value)))
+    }
+
+    /// Where `url` redirects to, from one HEAD request.
+    pub fn location(&self, url: &str) -> Result<String, String> {
+        let request = self.agent.head(url).config().timeout_global(Some(SMALL)).max_redirects(0).build();
+        let response = request.call().map_err(|e| format!("HEAD {url}: {e}"))?;
+        header(&response, "location").ok_or_else(|| format!("HEAD {url}: HTTP {} and no redirect", response.status()))
     }
 
     /// A small document, such as an index or an API answer.
     pub fn text(&self, url: &str, accept: &str) -> Result<String, String> {
-        let mut response =
-            self.agent.get(url).header("accept", accept).call().map_err(|e| format!("GET {url}: {e}"))?;
+        let request = self.agent.get(url).header("accept", accept).config().timeout_global(Some(SMALL)).build();
+        let mut response = request.call().map_err(|e| format!("GET {url}: {e}"))?;
         if !response.status().is_success() {
             return Err(format!("GET {url}: HTTP {}", response.status().as_u16()));
         }
         response.body_mut().read_to_string().map_err(|e| format!("GET {url}: {e}"))
     }
 
-    /// Download `url` into the store. A failed attempt keeps its `.part` file, so the next attempt,
-    /// or the next run, asks only for the rest. A digest mismatch removes it.
+    /// The lock that a download of `url` needs. One process at a time downloads a URL.
+    pub fn lock(store: &Store, url: &str) -> Result<Lock, String> {
+        store.lock(&format!("download-{}", key(url)))
+    }
+
+    /// Download `url` into the store; the caller holds [`Http::lock`]. A failed try keeps its
+    /// `.part` file, so the next try, or the next run, asks only for the rest. A digest mismatch
+    /// removes it.
     pub fn download(&self, store: &Store, url: &str, expect: &Expect) -> Result<Downloaded, String> {
-        let key = &store::sha256_hex(url.as_bytes())[..32];
-        let _lock = store.lock(&format!("download-{key}"))?;
-        let part = store.partial(&format!("{key}.part"));
-        let validator = store.partial(&format!("{key}.validator"));
-        let mut modified = Err(String::new());
-        for attempt in 0..ATTEMPTS {
-            if attempt > 0 {
-                eprintln!("obc data: {} — retrying", modified.as_ref().unwrap_err());
-                std::thread::sleep(self.backoff * 2u32.pow(attempt - 1));
-            }
+        if let Some(object) = expect.sha256.map(|sha256| store.object(sha256)).filter(|object| object.is_file()) {
+            let size = fs::metadata(&object).map_err(|e| format!("{}: {e}", object.display()))?.len();
+            return Ok(Downloaded { object, sha256: expect.sha256.unwrap_or_default().into(), size });
+        }
+        let part = store.partial(&format!("{}.part", key(url)));
+        let validator = store.partial(&format!("{}.validator", key(url)));
+        let partial = part.parent().unwrap_or(store.root());
+        fs::create_dir_all(partial).map_err(|e| format!("{}: {e}", partial.display()))?;
+        let length = |path: &Path| fs::metadata(path).map_or(0, |metadata| metadata.len());
+        let mut failures = 0;
+        loop {
+            let before = length(&part);
             match self.attempt(url, &part, &validator, expect) {
-                Ok(day) => {
-                    modified = Ok(day);
-                    break;
-                }
-                Err(Failure::Retry(why)) => modified = Err(why),
+                Ok(()) => break,
                 Err(Failure::Final(why)) => return Err(why),
+                Err(Failure::Retry(why)) => {
+                    failures = if length(&part) > before { 1 } else { failures + 1 };
+                    if failures == ATTEMPTS {
+                        return Err(why);
+                    }
+                    eprintln!("obc data: {why} — retrying");
+                    std::thread::sleep(self.backoff * 2u32.pow(failures - 1));
+                }
             }
         }
-        let modified = modified?;
         let _ = fs::remove_file(&validator);
         let (sha256, size) = store::hash_file(&part)?;
         if let Some(want) = expect.sha256.filter(|want| *want != sha256) {
@@ -113,10 +127,10 @@ impl Http {
             return Err(format!("{url}: the SHA-256 is {sha256}, not {want}"));
         }
         let object = store.insert(&part, &sha256)?;
-        Ok(Downloaded { object, sha256, size, modified })
+        Ok(Downloaded { object, sha256, size })
     }
 
-    fn attempt(&self, url: &str, part: &Path, validator: &Path, expect: &Expect) -> Result<String, Failure> {
+    fn attempt(&self, url: &str, part: &Path, validator: &Path, expect: &Expect) -> Result<(), Failure> {
         let have = fs::metadata(part).map_or(0, |metadata| metadata.len());
         let saved = fs::read_to_string(validator).ok();
         // Without a validator or a digest, nothing would tell a changed file from the rest of the old one.
@@ -131,23 +145,33 @@ impl Http {
         }
         let mut response = request.call().map_err(|e| Failure::Retry(format!("GET {url}: {e}")))?;
         let status = response.status().as_u16();
-        let modified = header(&response, "last-modified")
-            .and_then(|value| date::from_http(&value))
-            .unwrap_or_else(|| date::format(date::today()));
-        let (append, total): (bool, Option<u64>) = match status {
+        let modified_by = |response: &ureq::http::Response<_>| {
+            let modified = header(response, "last-modified").and_then(|value| date::from_http(&value));
+            let modified = modified.unwrap_or_else(|| date::format(date::today()));
+            match expect.modified_by.filter(|by| modified.as_str() > *by) {
+                Some(by) => Err(Failure::Final(format!("{url} changed on {modified}, after the version {by}"))),
+                None => Ok(()),
+            }
+        };
+        let range = header(&response, "content-range").unwrap_or_default();
+        let total = range.rsplit_once('/').and_then(|(_, total)| total.parse::<u64>().ok());
+        let (append, total) = match status {
             206 if resume => {
-                let range = header(&response, "content-range").unwrap_or_default();
-                let (start, total) = range.strip_prefix("bytes ").and_then(|r| r.split_once('-')).unzip();
-                if start != Some(have.to_string().as_str()) {
+                let start = range.strip_prefix("bytes ").and_then(|r| r.split_once('-')).map(|(start, _)| start);
+                let changed = matches!((&saved, strong(&response)), (Some(saved), Some(now)) if *saved != now);
+                if start != Some(have.to_string().as_str()) || changed {
                     let _ = fs::remove_file(part);
                     return Err(Failure::Retry(format!("GET {url}: answered `{range}` to a resume at {have}")));
                 }
-                (true, total.and_then(|t| t.split_once('/')).and_then(|(_, t)| t.parse().ok()))
+                modified_by(&response)?;
+                (true, total)
             }
             200 => {
-                let content_length = header(&response, "content-length").and_then(|v| v.parse().ok());
-                (false, content_length)
+                modified_by(&response)?;
+                (false, header(&response, "content-length").and_then(|v| v.parse().ok()))
             }
+            // `bytes */T`: the part already holds all T bytes.
+            416 if resume && total == Some(have) => return modified_by(&response),
             416 => {
                 let _ = fs::remove_file(part);
                 return Err(Failure::Retry(format!("GET {url}: HTTP 416 to a resume at {have}")));
@@ -155,17 +179,14 @@ impl Http {
             408 | 429 | 500..=599 => return Err(Failure::Retry(format!("GET {url}: HTTP {status}"))),
             _ => return Err(Failure::Final(format!("GET {url}: HTTP {status}"))),
         };
-        if let Some(by) = expect.modified_by.filter(|by| modified.as_str() > *by) {
-            return Err(Failure::Final(format!("{url} changed on {modified}, after the version {by}")));
-        }
+        let file = OpenOptions::new().create(true).write(true).append(append).truncate(!append).open(part);
+        let mut file = file.map_err(|e| Failure::Final(format!("{}: {e}", part.display())))?;
         if !append {
-            match header(&response, "etag").or_else(|| header(&response, "last-modified")) {
+            match strong(&response) {
                 Some(value) => store::write_atomic(validator, value.as_bytes()).map_err(Failure::Final)?,
                 None => drop(fs::remove_file(validator)),
             }
         }
-        let file = OpenOptions::new().create(true).write(true).append(append).truncate(!append).open(part);
-        let mut file = file.map_err(|e| Failure::Final(format!("{}: {e}", part.display())))?;
         let mut reader = response.body_mut().as_reader();
         let mut buffer = vec![0; 1 << 16];
         loop {
@@ -181,7 +202,7 @@ impl Http {
             Some(total) if total != length => {
                 Err(Failure::Retry(format!("GET {url}: the connection closed at {length} of {total} bytes")))
             }
-            _ => Ok(modified),
+            _ => Ok(()),
         }
     }
 }
@@ -190,6 +211,16 @@ impl Default for Http {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The name of the files that a download of `url` keeps in `partial/`.
+fn key(url: &str) -> String {
+    store::sha256_hex(url.as_bytes())[..32].to_string()
+}
+
+/// A validator that can guard a range: a strong `ETag`, or else `Last-Modified`.
+fn strong<B>(response: &ureq::http::Response<B>) -> Option<String> {
+    header(response, "etag").filter(|etag| !etag.starts_with("W/")).or_else(|| header(response, "last-modified"))
 }
 
 fn header<B>(response: &ureq::http::Response<B>, name: &str) -> Option<String> {

@@ -99,7 +99,7 @@ licence_url = "https://spacedata.copernicus.eu/collections/copernicus-digital-el
 attribution = "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved"
 obligations = "Credit on every product derived from the dataset"
 fetch = { kind = "glo30", url = "https://copernicus-dem-30m.s3.amazonaws.com/{tile}/{tile}.tif" }
-version = "release"
+version = "date"
 refresh = "manual"
 redistribute = false
 
@@ -501,7 +501,7 @@ licence_url = "https://www.naturalearthdata.com/about/terms-of-use/"
 attribution = "Natural Earth"
 obligations = "none"
 fetch = { kind = "http", url = "https://naciscdn.org/naturalearth/packages/natural_earth_vector.gpkg.zip" }
-version = "release"
+version = "digest"
 refresh = "manual"
 redistribute = true
 
@@ -512,7 +512,7 @@ licence = "CC-BY-4.0"
 licence_url = "https://daylightmap.org/2023/10/11/landcover.html"
 attribution = "ESA WorldCover"
 fetch = { kind = "http", url = "https://r2-public.protomaps.com/datasets/daylight-landcover.gpkg" }
-version = "release"
+version = "digest"
 refresh = "manual"
 redistribute = true
 

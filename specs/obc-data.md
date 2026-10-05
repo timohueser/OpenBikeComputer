@@ -88,10 +88,12 @@ unions. A union that contains itself, or names a region that does not exist, is 
 | State | When |
 | --- | --- |
 | `blocked` | A `data` or `asset` source has no `licence`, or its credential is not on this machine |
-| `stale` | The pin is a date, `refresh` is in days, the pin is older than `refresh`, and the newest upstream version is later than the pin or is not known |
+| `stale` | The pin is a date, `refresh` is in days, the pin is older than `refresh`, and the newest upstream version is later than the pin |
 | `ok` | Otherwise. A source with no pin, or with `refresh = "manual"`, is never stale |
 
-The age of a pin is the number of days from its date to today (UTC).
+The age of a pin is the number of days from its date to today (UTC). When a pin is older than
+`refresh` and the newest upstream version is not known, the state is `ok` and the reason says
+`upstream unknown`, and whether the source cannot be checked or the check failed.
 
 ## Store
 
@@ -101,7 +103,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | --- | --- |
 | `objects/<ab>/<sha256>` | One file, named by the lowercase hex SHA-256 of its bytes; `<ab>` is its first two characters. Read-only |
 | `snapshots/<source>/<version>.json` | The snapshot record of one source version |
-| `upstream/<source>.json` | The last upstream check of a source: `checked` (seconds since 1970-01-01 UTC) and `version` (a string or `null`) |
+| `upstream/<source>.json` | The last upstream check of a source: `checked` (seconds since 1970-01-01 UTC), `version` (a string, or `null` when the check failed) and `error` (only when it failed) |
 | `partial/` | Downloads that are not complete, and the validators that resume them |
 | `locks/` | One lock file per key |
 
@@ -122,32 +124,40 @@ A snapshot record is a JSON object:
 | `files` | One item per file: `name` (the last segment of the URL), `url`, `size` in bytes, `sha256` and `retrieved` (`YYYY-MM-DDTHH:MM:SSZ`) |
 
 A version is one or more segments joined by `/`. A segment has letters, digits, `.`, `_`, `+`
-and `-`, and does not start with `.`.
+and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` date, and a
+`digest` version is 64 lowercase hex digits.
 
 ## Fetch
 
 A fetch fills each `{name}` of `fetch.url`: `{version}` from the version, and each other name
 from a `NAME=VALUE` argument. A name can have more than one value; then the fetch gets one file
 for each value. A file that the snapshot record of the version has, and whose object exists,
-comes from the store with no request.
+comes from the store with no request. The fetch records each file when its download is complete,
+so a fetch that fails keeps the files before the failure. A record that has the URL with another
+SHA-256 fails the fetch.
 
 Which version a fetch gets:
 
-- A URL with `{version}` gives the version that it names. A `release` or `commit` source whose
-  URL has no `{version}` needs a version, and the record keeps the version as given.
-- A URL without `{version}` gives only the newest file upstream. For a `date` source, the
-  version is the latest `Last-Modified` day of the files. A given date version accepts a file
-  that changed on or before that day; a later file fails the fetch before its body is read.
-  A response without `Last-Modified` counts as changed today.
+- A URL with `{version}` gives the version that it names.
+- A URL without `{version}` gives only the newest file upstream. For a `date` source without a
+  version, one `HEAD` request for each URL gives the latest `Last-Modified` day, and that day is
+  the version. A date version accepts a file that changed on or before that day; a later file
+  fails the fetch before its body is read. A response without `Last-Modified` counts as changed
+  today.
+- A `release` or `commit` version of a URL without `{version}` is only a name. The fetch accepts
+  it only when the record of the version has the URL, and so pins its bytes.
 - For a `digest` source, the version is the SHA-256 of its one file.
 
-A download tries four times, and waits 2, 4 and 8 seconds between the tries. It retries a
-connection error, a cut-off body, a refused resume and HTTP 408, 429 and 5xx. It keeps the bytes it has in
-`partial/`. The next try, or the next fetch, asks for the rest with `Range` and `If-Range`,
-with the `ETag` or else the `Last-Modified` of the first response. A server that sends the
-whole file again restarts the file. A file with no validator resumes only when its digest is
-known. The digest check compares the SHA-256 with the `digest` version, or with the record of
-the version. A file that fails it is deleted.
+A download stops after four failed tries in a row, and waits 2, 4 and 8 seconds between them. A
+try that adds bytes resets the count. A try receives its body for at most 15 minutes, so a
+stalled transfer becomes a retry. It retries a connection error, a cut-off or stalled body, a
+refused resume and HTTP 408, 429 and 5xx. It keeps the bytes it has in `partial/`. The next
+try, or the next fetch, asks for the rest with `Range` and `If-Range`, with the strong `ETag`
+or else the `Last-Modified` of the first response. A `206` answer with another validator, or a
+whole file, restarts the file. A `416` answer whose `Content-Range` is the size of the part
+means the part is complete. A file with no validator resumes only when its digest is known.
+The digest check compares the SHA-256 with the `digest` version, or with the record of the
+version. A file that fails it is deleted.
 
 | `fetch.kind` | Fetcher |
 | --- | --- |
@@ -155,17 +165,17 @@ the version. A file that fails it is deleted.
 | `osm`, `dtm`, `capture` | None yet; the fetch fails |
 | `by-hand`, `installed` | None; the fetch fails |
 
-The upstream check finds the newest version of a source with at most one request. Its result
-stays valid for one hour.
+The upstream check finds the newest version of a source with one request, which has 15 seconds.
+The store keeps its answer, or its failure, for one hour.
 
 | Source | Check |
 | --- | --- |
-| `osm` | `HEAD` of the URL; the day in the `planet-YYMMDD` file name that it redirects to |
+| `osm` | `HEAD` of the URL, not following the redirect; the day in the `planet-YYMMDD` file name of its `Location` |
 | `capture` | Today, with no request: a query service answers with current data |
 | `github`, `commit` | The GitHub API: the newest commit of the default branch |
 | `github`, `release` | The GitHub API: the tag of the newest release that has the asset of the URL |
 | `http`, `geofabrik` or `glo30`, `date`, and a URL without `{name}` | `HEAD` of the URL; the `Last-Modified` day |
-| Every other source | None; the newest version is not known |
+| Every other source | None; the source cannot be checked |
 
 ## Commands
 
@@ -173,7 +183,7 @@ stays valid for one hour.
 | --- | --- |
 | `obc data sources [--json]` | Every source with licence, R2 copy, live pin, newest upstream version, age, policy and state. Rows are in kind order: data, then assets, then tools |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the live pin, or else the newest file upstream. Writes the store path of each file |
-| `obc data refresh SOURCE [NAME=VALUE…] [--env ENV] [--json]` | Fetches the newest upstream version, checked now, and writes it to `[pins]` of `data/env/ENV.toml` (default `live`). Writes the store path of each file |
+| `obc data refresh SOURCE [NAME=VALUE…] [--env ENV] [--json]` | Fetches the newest upstream version, checked now, and writes it to `[pins]` of `data/env/ENV.toml` (default `live`). `ENV` is lowercase kebab-case. The edit keeps comments, line order and CRLF line ends. Writes the store path of each file |
 | `obc data region [list] [--json]` | Every region with its name and definition |
 | `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
 
@@ -181,7 +191,7 @@ stays valid for one hour.
 
 - `sources`: `{"sources": [...]}`. Each item has the keys of its `[[source]]` table, and
   `pin`, `upstream` (the newest upstream version, or `null`), `age_days`, `state` and `reason`
-  (`null` when the state is `ok`).
+  (`null` when there is nothing to say).
 - `fetch` and `refresh`: the snapshot, `{"source": ..., "version": ..., "files": [...]}`, with
   the requested files only. Each file has the keys of the record and `path`, its object.
 - `region list`: `{"regions": [...]}`. Each item has `id`, `name`, `kind` and the key its
@@ -191,4 +201,5 @@ stays valid for one hour.
 
 A command that fails writes the reason to standard error. The exit status is 0 when the command
 succeeds, 1 when a file under `data/` is not valid or a fetch fails, and 2 for a usage error,
-which includes an unknown region id, an unknown source id and a missing environment file.
+which includes an unknown region id, an unknown source id and a missing or invalid environment
+name.

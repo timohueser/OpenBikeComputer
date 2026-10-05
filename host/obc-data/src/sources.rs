@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::date;
+use crate::fetch::upstream::Upstream;
 
 /// In the order `obc data sources` lists them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
@@ -328,7 +329,10 @@ pub struct Status {
 pub fn set_pin(text: &str, id: &str, version: &str) -> String {
     let pin = format!("{id} = \"{version}\"");
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    match lines.iter().position(|line| line.trim() == "[pins]") {
+    let header = |line: &str| {
+        line.trim().strip_prefix("[pins]").is_some_and(|rest| rest.trim().is_empty() || rest.trim().starts_with('#'))
+    };
+    match lines.iter().position(|line| header(line)) {
         None => lines.extend([String::new(), "[pins]".into(), pin]),
         Some(table) => {
             let end = lines[table + 1..]
@@ -345,18 +349,13 @@ pub fn set_pin(text: &str, id: &str, version: &str) -> String {
             }
         }
     }
-    lines.join("\n") + "\n"
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    lines.join(newline) + newline
 }
 
 /// The state of `source` at `today`, from its pin, the newest upstream version, its policy, its
-/// licence and its credential. An unknown upstream version may be newer.
-pub fn status(
-    source: &Source,
-    pin: Option<&str>,
-    upstream: Option<&str>,
-    today: i64,
-    credential_present: bool,
-) -> Status {
+/// licence and its credential. A pin is stale only when upstream has a newer version.
+pub fn status(source: &Source, pin: Option<&str>, upstream: &Upstream, today: i64, credential_present: bool) -> Status {
     let age_days = pin.filter(|_| source.version == VersionScheme::Date).and_then(date::parse).map(|day| today - day);
     let (state, reason) = if source.kind != Kind::Tool && source.licence.is_none() {
         (State::Blocked, Some("no licence recorded".to_string()))
@@ -364,10 +363,18 @@ pub fn status(
         (State::Blocked, Some(format!("credential missing: {}", credential.describe())))
     } else {
         match (source.refresh, age_days) {
-            (Refresh::Days(max), Some(age)) if age > i64::from(max) && upstream.is_none_or(|u| Some(u) > pin) => {
-                let newer = upstream.map_or("upstream not checked".into(), |u| format!("upstream {u}"));
-                (State::Stale, Some(format!("{age} d > {max} d, {newer}")))
-            }
+            (Refresh::Days(max), Some(age)) if age > i64::from(max) => match upstream {
+                Upstream::Newest(newest) if Some(newest.as_str()) > pin => {
+                    (State::Stale, Some(format!("{age} d > {max} d, upstream {newest}")))
+                }
+                Upstream::Newest(_) => (State::Ok, None),
+                Upstream::CannotCheck => {
+                    (State::Ok, Some(format!("{age} d > {max} d, upstream unknown: it cannot be checked")))
+                }
+                Upstream::Failed(_) => {
+                    (State::Ok, Some(format!("{age} d > {max} d, upstream unknown: the check failed")))
+                }
+            },
             _ => (State::Ok, None),
         }
     };
@@ -431,27 +438,32 @@ mod tests {
     #[test]
     fn a_pin_is_stale_when_older_than_its_policy_and_upstream_is_newer() {
         let today = date::parse("2024-01-10").unwrap();
-        let fresh = status(&osm(), Some("2024-01-03"), Some("2024-01-09"), today, true);
+        let newer = Upstream::Newest("2024-01-09".into());
+        let fresh = status(&osm(), Some("2024-01-03"), &newer, today, true);
         assert_eq!((fresh.state, fresh.age_days), (State::Ok, Some(7)));
-        let old = status(&osm(), Some("2024-01-02"), Some("2024-01-09"), today, true);
+        let old = status(&osm(), Some("2024-01-02"), &newer, today, true);
         assert_eq!((old.state, old.reason.as_deref()), (State::Stale, Some("8 d > 7 d, upstream 2024-01-09")));
-        let unchecked = status(&osm(), Some("2024-01-02"), None, today, true);
-        assert_eq!(unchecked.reason.as_deref(), Some("8 d > 7 d, upstream not checked"));
-        assert_eq!(status(&osm(), Some("2024-01-02"), Some("2024-01-02"), today, true).state, State::Ok);
+        let failed = status(&osm(), Some("2024-01-02"), &Upstream::Failed("offline".into()), today, true);
+        assert_eq!(
+            (failed.state, failed.reason.as_deref()),
+            (State::Ok, Some("8 d > 7 d, upstream unknown: the check failed"))
+        );
+        let same = Upstream::Newest("2024-01-02".into());
+        assert_eq!(status(&osm(), Some("2024-01-02"), &same, today, true).state, State::Ok);
         let manual = Source { refresh: Refresh::Manual, ..osm() };
-        assert_eq!(status(&manual, Some("2020-01-01"), None, today, true).state, State::Ok);
-        assert_eq!(status(&osm(), None, None, today, true).state, State::Ok);
+        assert_eq!(status(&manual, Some("2020-01-01"), &newer, today, true).state, State::Ok);
+        assert_eq!(status(&osm(), None, &newer, today, true).state, State::Ok);
     }
 
     #[test]
     fn a_missing_licence_or_credential_blocks() {
         let today = date::parse("2024-01-10").unwrap();
         let unlicensed = Source { licence: None, ..osm() };
-        assert_eq!(status(&unlicensed, Some("2024-01-09"), None, today, true).state, State::Blocked);
+        assert_eq!(status(&unlicensed, Some("2024-01-09"), &Upstream::CannotCheck, today, true).state, State::Blocked);
         let tool = Source { kind: Kind::Tool, ..unlicensed };
-        assert_eq!(status(&tool, None, None, today, true).state, State::Ok);
+        assert_eq!(status(&tool, None, &Upstream::CannotCheck, today, true).state, State::Ok);
         let keyed = Source { credential: Some(Credential { env: vec!["KEY".into()], file: None }), ..osm() };
-        let blocked = status(&keyed, None, None, today, false);
+        let blocked = status(&keyed, None, &Upstream::CannotCheck, today, false);
         assert_eq!((blocked.state, blocked.reason.as_deref()), (State::Blocked, Some("credential missing: KEY")));
     }
 
@@ -471,6 +483,8 @@ mod tests {
         let added = set_pin(text, "qrank", "2024-02-01");
         assert!(added.contains("land = \"2024-01-01\"\nqrank = \"2024-02-01\"\n\n[other]"), "{added}");
         assert_eq!(set_pin("# empty\n", "osm", "2024-02-01"), "# empty\n\n[pins]\nosm = \"2024-02-01\"\n");
+        let windows = "[pins] # live\r\nosm = \"2024-01-01\"\r\n";
+        assert_eq!(set_pin(windows, "osm", "2024-02-01"), "[pins] # live\r\nosm = \"2024-02-01\"\r\n");
     }
 
     #[test]

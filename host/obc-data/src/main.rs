@@ -8,7 +8,8 @@ use clap::{Parser, Subcommand};
 use serde::Serialize;
 
 use obc_data::fetch::http::Http;
-use obc_data::fetch::{self, upstream, Request};
+use obc_data::fetch::upstream::{self, Upstream};
+use obc_data::fetch::{self, Request};
 use obc_data::regions::{Area, Bbox, Region, Regions};
 use obc_data::sources::{self, Kind, Registry, Source, State, VersionScheme};
 use obc_data::store::{self, FileRecord, Snapshot, Store};
@@ -141,10 +142,13 @@ fn parse_params(params: &[String]) -> Result<Vec<(String, String)>, Failure> {
 fn refresh(root: &Path, id: &str, params: &[String], env: &str, json: bool) -> Result<(), Failure> {
     let registry = Registry::load(root)?;
     let source = find(&registry, id)?;
+    if !obc_data::is_kebab(env) {
+        return Err(usage(&format!("`{env}` is not an environment name")));
+    }
     let path = root.join("data/env").join(format!("{env}.toml"));
     let text = std::fs::read_to_string(&path).map_err(|e| usage(&format!("{}: {e}", path.display())))?;
     let (store, http) = (Store::open()?, Http::new());
-    let version = upstream::newest(&store, &http, source, 0);
+    let version = upstream::newest(&store, &http, source, 0).version().map(str::to_string);
     let named = source.fetch.url.as_deref().is_some_and(|url| url.contains("{version}"));
     if version.is_none() && (named || matches!(source.version, VersionScheme::Release | VersionScheme::Commit)) {
         return Err(format!("the newest version of `{id}` is not known: fetch {id}@VERSION and pin it by hand").into());
@@ -184,7 +188,7 @@ struct SourceRow<'a> {
     #[serde(flatten)]
     source: &'a Source,
     pin: Option<&'a str>,
-    upstream: Option<String>,
+    upstream: Option<&'a str>,
     age_days: Option<i64>,
     state: State,
     reason: Option<String>,
@@ -195,21 +199,28 @@ fn print_sources(registry: &Registry, json: bool) -> Result<(), Failure> {
     let mut sorted: Vec<&Source> = registry.sources.iter().collect();
     sorted.sort_by_key(|source| source.kind);
     let (store, http) = (Store::open()?, Http::new());
-    let newest: Vec<Option<String>> = std::thread::scope(|scope| {
+    let newest: Vec<Upstream> = std::thread::scope(|scope| {
         let checks: Vec<_> = sorted
             .iter()
             .map(|source| scope.spawn(|| upstream::newest(&store, &http, source, upstream::CACHE)))
             .collect();
-        checks.into_iter().map(|check| check.join().unwrap_or(None)).collect()
+        checks.into_iter().map(|check| check.join().unwrap_or(Upstream::Failed("panicked".into()))).collect()
     });
     let rows: Vec<SourceRow> = sorted
         .into_iter()
-        .zip(newest)
+        .zip(&newest)
         .map(|(source, upstream)| {
             let pin = registry.pins.get(&source.id).map(String::as_str);
             let present = source.credential.as_ref().is_none_or(|c| c.present());
-            let status = sources::status(source, pin, upstream.as_deref(), today, present);
-            SourceRow { source, pin, upstream, age_days: status.age_days, state: status.state, reason: status.reason }
+            let status = sources::status(source, pin, upstream, today, present);
+            SourceRow {
+                source,
+                pin,
+                upstream: upstream.version(),
+                age_days: status.age_days,
+                state: status.state,
+                reason: status.reason,
+            }
         })
         .collect();
     if json {
@@ -245,7 +256,7 @@ fn print_sources(registry: &Registry, json: bool) -> Result<(), Failure> {
             licence,
             if s.r2_copy { "yes" } else { "no" }.into(),
             short(row.pin),
-            short(row.upstream.as_deref()),
+            short(row.upstream),
             row.age_days.map_or("—".into(), |age| format!("{age} d")),
             s.refresh.to_string(),
             state,
