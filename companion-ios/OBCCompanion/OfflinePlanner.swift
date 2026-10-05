@@ -33,7 +33,7 @@ actor OfflinePlanner {
             manifest: directory.appending(path: "release.json"),
             overlays: directory.appending(path: "maps/overlays.json"),
             routes: directory.appending(path: "routes/tiles").absoluteString + "/{cell}.json",
-            offlineCells: blocks.cells.map(\.id))
+            offlineCells: blocks.cells.map(\.id), attribution: manifest.attribution)
         let runtime = OfflinePlanner(directory: directory, scripts: scripts, blocks: blocks)
         return PlannerService(release: release) { try await runtime.respond($0) }
     }
@@ -69,6 +69,7 @@ actor OfflinePlanner {
 private struct OfflineManifest: Decodable {
     let offline: OfflineBlocks
     let terrain_attribution: String?
+    let attribution: String?
 }
 private struct OfflineBlocks: Decodable {
     struct Cell: Decodable {

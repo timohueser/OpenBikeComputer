@@ -163,10 +163,14 @@ def build_model(stage):
 
 def credits(*ids):
     """The registry credits a component writes. data/sources.toml is in no hashed path, so they are its inputs."""
-    return {"credits": {id: [data_registry.SOURCES[id]["attribution"], data_registry.SOURCES[id].get("licence")] for id in ids}}
+    return {"credits": {id: data_registry.SOURCES[id]["attribution"] for id in ids}}
 
 
-LAYER_CREDITS = {"climate": ["era5-land"], "snow": ["modis-snow", "hansen-gfc", "hr-wsi"]}
+def layer_credits(config, name):
+    """The sources whose credit a data layer writes: the snow layer credits its chosen source only."""
+    if name == "snow":
+        return ["modis-snow", "hansen-gfc"] if config["snow"]["source"] == "nasa-modis" else ["hr-wsi"]
+    return ["era5-land"] if name == "climate" else []
 
 
 def specifications(config, prepared=None):
@@ -209,7 +213,7 @@ def specifications(config, prepared=None):
     routing_paths = components.rust_sources("host/route-build")
     add("routing", build_routing, {"osm": osm, "elevation": elevation, **credits("osm-planet", "copernicus-glo-30")}, {"region": config["region"], "access": config["access"], "countries": config["countries"], "profiles": config["profiles"]}, paths=routing_paths,
         functions=[terrain_inputs])
-    add("overlays", build_overlays, {}, dependencies=["routing"], paths=[maps.ROOT / path for path in
+    add("overlays", build_overlays, credits("osm-planet"), dependencies=["routing"], paths=[maps.ROOT / path for path in
         ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_overlays.py", "tools/requirements-planner-maps.txt")])
     add("assets", build_assets, {"assets": maps.ASSETS_URL, "license": maps.SPRITES_LICENSE_URL}, paths=[maps.ROOT / "tools/planner_maps.py"])
     add("model", build_model, {}, paths=[SEARCH / "setup.py", SEARCH / "query/artifacts.py", SEARCH / "query/schema.py"])
@@ -218,7 +222,7 @@ def specifications(config, prepared=None):
             paths = [maps.ROOT / f"tools/planner_{name}.py", maps.ROOT / f"tools/requirements-planner-{name}.txt"]
             if name == "sun": paths.extend(maps.ROOT / path for path in ("tools/planner_sun_horizons.py", "tools/planner_map_archive.py"))
             inputs = {"hansen-gfc": maps.PINS["hansen-gfc"]} if name == "snow" else {}
-            if name in LAYER_CREDITS: inputs.update(credits(*LAYER_CREDITS[name]))
+            inputs.update(credits(*layer_credits(config, name)))
             add(name, build_layer, inputs, layer_options(config, name), dependencies=["terrain"] if name == "sun" else [], paths=paths)
     return result
 

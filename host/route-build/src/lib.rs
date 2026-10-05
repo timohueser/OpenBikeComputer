@@ -53,16 +53,6 @@ impl Graph {
     }
 }
 
-/// The OSM credit and licence a routing package names: `<attribution>; <licence>` of `osm-planet`.
-pub fn osm_credit() -> String {
-    let osm = obc_data::sources::embedded("osm-planet");
-    format!(
-        "{}; {}",
-        obc_data::sources::attribution(&osm.id),
-        osm.licence.as_deref().expect("osm-planet has a licence")
-    )
-}
-
 /// Writes a closed regional package with all legal transitions and complete road geometry.
 /// The caller publishes the manifest only after all objects have been written.
 pub fn prepare(
@@ -98,7 +88,7 @@ pub fn prepare(
         region,
         bounds,
         source_sha256,
-        attribution: osm_credit(),
+        attribution: obc_data::sources::attribution("osm-planet").into(),
         warnings: graph.warnings.clone(),
         roads,
         graph: route_engine::base::write_topology(roads, &edges, &mut write)?,

@@ -16,8 +16,10 @@
     import type { Bounds, CatalogRecord, RouteShape, RouteSort } from '../../lib/planner/signed-routes';
     import type { BikeType } from '../../lib/planner/riding-profiles';
 
-    let { finder, activity, theme = 'light', current = null, placeName, findPlaces, onClose, onPlan }: {
+    let { finder, activity, theme = 'light', current = null, placeName, findPlaces, onClose, onPlan, attribution }: {
         finder: RouteFinder;
+        /** The map data credit of the release. */
+        attribution: string;
         activity: BikeType;
         theme?: 'light' | 'dark';
         /** The plan that the view hides, for the line that leads back to it. */
@@ -288,7 +290,7 @@
                         <button type="button" class="more" onclick={() => finder.shown += 20}>Show 20 more</button>
                     {/if}
                 {/if}
-                <p class="attribution">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a> · ODbL</p>
+                <p class="attribution">{attribution}</p>
             </div>
         </div>
     {/if}
@@ -366,7 +368,7 @@
     .note { margin: 4px 0 10px; font-size: 13px; line-height: 1.45; color: var(--ink-soft); }
     .note.empty { color: var(--ink); }
     .attribution { margin: 16px 0 0; font-size: 11px; color: var(--ink-soft); }
-    .attribution a, .operator a { color: var(--link); text-underline-offset: 3px; }
+    .operator a { color: var(--link); text-underline-offset: 3px; }
     .detail { padding: 0 16px 16px; }
     .back-line { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; margin: 0 0 8px -4px; padding: 0 6px 0 4px; border-radius: 6px; color: var(--ink-soft); font-size: 13px; }
     .head { display: flex; gap: 12px; align-items: flex-start; }

@@ -77,7 +77,7 @@ triggers = ["fixtures/catalog.toml"]
 # skin-preview fixture no longer matches it; obc-bake also reads data/regions/. No Cargo edge carries that.
 [[package]]
 name = "obc-bake"
-triggers = ["builder/presets/**", "data/regions/**"]
+triggers = ["builder/presets/**", "data/regions/**", "data/sources.toml"]
 
 # Its tests load the checked-in registry and regions; no Cargo edge carries that.
 [[package]]
@@ -92,9 +92,14 @@ triggers = ["builder/presets/**"]
 name = "obc-bench"
 triggers = ["host/obc-bench/golden.txt"]
 
+# Both write credits from data/sources.toml, which obc-data embeds without a Cargo edge to it.
 [[package]]
 name = "obc-pack"
-triggers = ["builder/presets/**"]
+triggers = ["builder/presets/**", "data/sources.toml"]
+
+[[package]]
+name = "route-build"
+triggers = ["data/sources.toml"]
 
 # Both read the checked-in assembly fixture, so a change under `fixtures/` reaches them.
 [[package]]
@@ -186,6 +191,8 @@ triggers = [
   "specs/vectors/**",
   "host/obc-flat-device/**",
   "apps/planner-search/query/contract.json",
+  # The bundle notice is compared with the OSM credit.
+  "data/sources.toml",
 ]
 
 # The whole app is the subject, the bridge fixture is the input, and the shared catalog
@@ -247,6 +254,9 @@ triggers = [
   "data/env/live.toml",
   "data/sources.toml",
   "data/regions/**",
+  # The footers that test_data_registry.py compares with the registry.
+  "docs/templates/*.html",
+  "builder/app/src/App.svelte",
   "testing/*.toml",
   "docs/testing.md",
   ".github/workflows/**",
@@ -280,7 +290,7 @@ id = "python.dem-reference"
 route = "ordinary"
 command = "rm -rf .artifacts/python/dem-reference && python3 -m xmlrunner discover -s host/obc-dem/reference/tests -v -o .artifacts/python/dem-reference"
 jobs = ["test"]
-triggers = ["host/obc-dem/reference/**", "tools/requirements-bake.txt"]
+triggers = ["host/obc-dem/reference/**", "tools/requirements-bake.txt", "data/sources.toml", "tools/data_registry.py"]
 
 [[suite]]
 id = "python.builder"
@@ -485,7 +495,7 @@ route = "ordinary"
 command = "tools/licenses/gen-third-party.sh --check"
 jobs = ["deny"]
 foundation = true
-triggers = ["Cargo.lock", "apps/route-server/Cargo.toml", "host/route-engine/Cargo.toml", "builder/app/package-lock.json", "about.toml", "THIRD-PARTY.md", "tools/licenses/**"]
+triggers = ["Cargo.lock", "apps/route-server/Cargo.toml", "host/route-engine/Cargo.toml", "builder/app/package-lock.json", "about.toml", "THIRD-PARTY.md", "tools/licenses/**", "data/sources.toml", "tools/data_registry.py"]
 
 [[suite]]
 id = "ci.obc-data-licence"

@@ -5,6 +5,7 @@
   "places": "https://tiles.test/places.json",
   "overlays": "https://tiles.test/overlays.json",
   "terrain": "https://tiles.test/terrain/{z}/{x}/{y}.webp",
+  "attribution": "Map test data",
   "terrain_attribution": "Terrain test data",
   "glyphs": "https://tiles.test/fonts/{fontstack}/{range}.pbf",
   "sprites": "https://tiles.test/sprites",

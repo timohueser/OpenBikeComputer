@@ -8,6 +8,7 @@ export const testConfig: PlannerConfig = {
     places: 'https://tiles.test/places.json',
     overlays: 'https://tiles.test/overlays.json',
     terrain: 'https://tiles.test/terrain/{z}/{x}/{y}.webp',
+    attribution: 'Test map data',
     terrain_attribution: 'Test terrain',
     glyphs: 'https://tiles.test/fonts/{fontstack}/{range}.pbf',
     sprites: 'https://tiles.test/sprites',

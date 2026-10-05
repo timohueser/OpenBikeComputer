@@ -7,8 +7,12 @@ import shutil
 import sqlite3
 import tempfile
 
-from . import planner_cleanup as cleanup, planner_maps as maps, r2
+from . import data_registry, planner_cleanup as cleanup, planner_maps as maps, r2
 from .planner_runtime import DATA_LAYERS, digest, encoded, public_metadata, read_url, release, storage_files
+
+
+# The sources whose credit the planner map shows: the OSM data and the land cover of the basemap.
+MAP_SOURCES = ("osm-planet", "daylight-landcover")
 
 
 def search_metadata(database, full=False):
@@ -102,7 +106,7 @@ def seal(data, region, device_catalog, provenance):
         files[database.relative_to(data).as_posix()] = {"bytes": database.stat().st_size, "sha256": digest(database)}
     document = {"format": 1, "region": region, "bounds": routing["bounds"], "osm_sha256": osm,
                 "routing_package": digest(data / "routing/manifest.json"), "profiles": sorted(routing["metrics"]),
-                "attribution": routing["attribution"], "terrain_attribution": map_manifest["terrain_attribution"],
+                "attribution": data_registry.credits(*MAP_SOURCES), "terrain_attribution": map_manifest["terrain_attribution"],
                 "terrain_bounds": map_manifest["terrain_bounds"], "sources": provenance,
                 "device_catalog_source": device_catalog, "files": files,
                 "probe": provenance["probe"],

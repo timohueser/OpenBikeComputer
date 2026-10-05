@@ -607,8 +607,7 @@ fn terrain_doc(revision: u32, dataset_version: &str) -> TerrainDoc {
         posting_log2: TERRAIN_POSTING_LOG2,
         cell_log2: TERRAIN_CELL_LOG2,
         revision,
-        // The credit comes from `obc-dem`'s own `const` and is never retyped, here or anywhere:
-        // this assertion is why the bakery reaches for the library rather than a CLI.
+        // The credit comes from data/sources.toml and is never retyped, here or anywhere.
         attribution: obc_data::sources::attribution("copernicus-glo-30").into(),
         // The run fills this from the cutter's own archive, so what a caller passes is ignored.
         references: Vec::new(),
@@ -789,7 +788,7 @@ fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
     assert_eq!(
         terrain.attribution,
         obc_data::sources::attribution("copernicus-glo-30"),
-        "§13.5: the credit comes from obc-elevation's const"
+        "§13.5: the credit comes from data/sources.toml"
     );
     // The reference models the cells' crest lifts came from travel with the map, per cell in the
     // sidecar and once in the block. The wording is the archive's, not this crate's.

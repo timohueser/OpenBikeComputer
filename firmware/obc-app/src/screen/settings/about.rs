@@ -24,7 +24,8 @@ const START_PAD: i32 = 16;
 /// Room under the last line. A Label cell is 24 px, which is 2 px more than [`PITCH`].
 const BOTTOM_PAD: i32 = 14;
 /// The OSMF requested credit, pre-wrapped. Legal formulas are not translated. A test compares the
-/// first two lines with the `osm-planet` credit in data/sources.toml.
+/// credit and the licence with the `osm-planet` entry of data/sources.toml; the link is the OSMF
+/// copyright page, which the registry does not hold.
 const OSM_LINES: &[&str] =
     &["\u{00a9} OpenStreetMap", "contributors", "Open Database", "License (ODbL)", "openstreetmap", ".org/copyright"];
 
@@ -161,9 +162,13 @@ mod tests {
 
     #[test]
     fn the_credits_are_the_registry_wording() {
-        use obc_data::sources::attribution;
+        use obc_data::sources::{attribution, embedded};
         assert_eq!(COPERNICUS_LINES.join(" "), attribution("copernicus-glo-30"));
-        assert_eq!(OSM_LINES[..2].join(" "), attribution("osm-planet"));
+        let osm = OSM_LINES.join(" ");
+        assert!(osm.starts_with(&format!("{} ", attribution("osm-planet"))), "{osm}");
+        // `ODbL-1.0` is the SPDX id; the glass names the licence and its short name.
+        let licence = embedded("osm-planet").licence.as_deref().unwrap().split('-').next().unwrap();
+        assert!(osm.contains(&format!("Open Database License ({licence})")), "{osm}");
     }
 
     #[test]

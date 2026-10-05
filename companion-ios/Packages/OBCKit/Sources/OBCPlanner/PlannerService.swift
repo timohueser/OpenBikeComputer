@@ -10,6 +10,8 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
     public let sprites: String
     public let terrain: String
     public let terrain_attribution: String
+    /// The map data credit of the release, from data/sources.toml. Nil for a release without one.
+    public let attribution: String?
     public let search: URL
     public let routing: URL
     public let manifest: URL
@@ -22,11 +24,11 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
 
     public init(id: String, region: String, bounds: [Double], basemap: URL, glyphs: String,
                 sprites: String, terrain: String, terrain_attribution: String, search: URL, routing: URL, manifest: URL,
-                overlays: URL, routes: String? = nil, offlineCells: [String]? = nil) {
+                overlays: URL, routes: String? = nil, offlineCells: [String]? = nil, attribution: String? = nil) {
         self.id = id; self.region = region; self.bounds = bounds; self.basemap = basemap
         self.glyphs = glyphs; self.sprites = sprites; self.terrain = terrain
         self.terrain_attribution = terrain_attribution; self.search = search; self.routing = routing; self.manifest = manifest
-        self.overlays = overlays; self.routes = routes; self.offlineCells = offlineCells
+        self.overlays = overlays; self.routes = routes; self.offlineCells = offlineCells; self.attribution = attribution
     }
 
     public var isLocal: Bool { manifest.isFileURL }

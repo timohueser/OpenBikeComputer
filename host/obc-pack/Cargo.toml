@@ -31,12 +31,6 @@ obc-map-scene = { path = "../../firmware/obc-map-scene" }
 obc-elevation = { path = "../../firmware/obc-elevation" }
 # The data registry: the credits the catalog and the contour log carry come from data/sources.toml.
 obc-data = { path = "../obc-data" }
-# The Copernicus credit and the dataset name, for the contours this crate traces out of
-# GLO-30-derived terrain (#1094): the licence obligation travels with the data and the wording has
-# exactly one copy in the repo. Two `&str` consts and nothing else — `default-features = false`
-# leaves the GeoTIFF decoder and the HTTP client out, because rasters are `obc-dem`'s business, one
-# step earlier in the pipeline.
-obc-dem = { path = "../obc-dem", default-features = false }
 # `preserve_order` is load-bearing: the config assigns style IDs 1-based in
 # config.json document order, so the parsed map must keep insertion order.
 serde = { version = "1", features = ["derive"] }
@@ -101,3 +95,6 @@ boon = "0.6"
 # spec-fixture crate, so the test input is written from OBCT_Spec.md's field tables rather than by
 # the reader that has to parse it back.
 obc-vectors = { path = "../obc-vectors" }
+# The surface converter a catalog test reads a terrain cell back with. `default-features = false`
+# leaves the GeoTIFF decoder and the HTTP client out.
+obc-dem = { path = "../obc-dem", default-features = false }

@@ -16,7 +16,7 @@ from urllib.request import urlopen
 
 if not __package__:  # `obc planner` runs this file as a script.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools import planner_bake, planner_cleanup, planner_deploy, planner_maps as maps, planner_prepare, r2
+from tools import data_registry, planner_bake, planner_cleanup, planner_deploy, planner_maps as maps, planner_prepare, r2
 from tools import planner_release as releases
 from tools.planner_runtime import DATA_LAYERS
 from tools.planner_components import Cache
@@ -88,7 +88,7 @@ def preview_config(args, manifest):
     return {"name": args.name, "region": args.region, "bounds": manifest["bounds"],
             "basemap": f"pmtiles://{files}/basemap.pmtiles", "places": files + "/places.pmtiles",
             "overlays": files + "/overlays.pmtiles", "terrain": "/tiles/terrain/{z}/{x}/{y}.webp",
-            "terrain_attribution": manifest["terrain_attribution"],
+            "attribution": data_registry.credits(*releases.MAP_SOURCES), "terrain_attribution": manifest["terrain_attribution"],
             # Without its archive, the planner offers no such data layer.
             "layers": {layer: f"{files}/{layer}.pmtiles" for layer in DATA_LAYERS if f"{layer}.pmtiles" in manifest["files"]},
             "glyphs": files + "/assets/fonts/{fontstack}/{range}.pbf", "sprites": files + "/assets/sprites/v4",
