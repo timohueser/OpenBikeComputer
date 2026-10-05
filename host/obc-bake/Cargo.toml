@@ -23,8 +23,8 @@ obc-map-scene = { path = "../../firmware/obc-map-scene" }
 # The normative OBCM version the bake and the published-catalog guard compare against, and the
 # OBCT facts the terrain stage validates a pairing with.
 obc-formats = { path = "../../firmware/obc-formats" }
-# The data registry: the regions a bake reads and the credits a catalog carries. A GPL crate may
-# depend on this MIT crate; the reverse is refused.
+# The data registry and the one R2 client: the regions a bake reads, the credits a catalog carries,
+# and `obc bake publish --target r2`. A GPL crate may depend on this MIT crate; never the reverse.
 obc-data = { path = "../obc-data" }
 # The terrain stage (#1071) drives `obc-dem` as a library rather than as a subprocess: `bake_cell`
 # is already a pure function of (mosaic, cell) and `write_cell_file` already writes the one
@@ -48,10 +48,6 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 heapless = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-# The curated region list is TOML, not JSON, for one reason: it is the file whose
-# *comments* are the deliverable — why a region is on the shelf, and why its
-# neighbour is not. Everything else the bakery reads or writes stays JSON.
-toml = "0.9"
 # Content hashes: the idempotency key over the extract, and the artifact digests the
 # sidecar records. Same implementation the catalog generator publishes with.
 sha2 = "0.11"
