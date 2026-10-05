@@ -37,7 +37,7 @@ pub enum Code {
     /// A fetch or an upstream check failed.
     FetchFailed,
     /// A credential is missing: a fetch failed without the credential of its source, or the R2
-    /// variables are not set.
+    /// variables are not set. Or `build` has no product that suits the environment.
     Blocked,
     /// R2 or rclone failed, or refused a key.
     R2Failed,
@@ -74,7 +74,10 @@ impl Code {
             Code::NotConfirmed => "Nothing changed. Run the command again when you want the change.",
             Code::InvalidData => "Correct the file that the message names. `specs/obc-data.md` gives its format.",
             Code::FetchFailed => "Run the command again. A download continues where it stopped.",
-            Code::Blocked => "Set the credential that the message or `obc data sources` names, then run again.",
+            Code::Blocked => {
+                "Set the credential that the message or `obc data sources` names, or correct what the message \
+                 says a product needs, then run again."
+            }
             Code::R2Failed => "Check the key, the `OBC_R2_*` variables and that rclone is on PATH, then run again.",
             Code::VerifyFailed => "Upload the file again.",
             Code::RunFailed => "`obc data runs RUN` shows the step that failed and its error.",

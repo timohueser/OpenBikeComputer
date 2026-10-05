@@ -1,0 +1,25 @@
+# The options of the planner layers that are the same for each region: specs/obc-data.md, `planner`.
+
+[terrain]
+# The sun layer reads the horizon this far around the region, so the terrain covers it.
+margin_m = 30000
+
+[routing]
+# The profiles of the routing package. The route catalog needs touring, road, gravel, mtb and hiking.
+profiles = [
+  "gravel",
+  "gravel/less-climbing",
+  "gravel/shorter",
+  "hiking",
+  "hiking/less-climbing",
+  "hiking/shorter",
+  "mtb",
+  "mtb/less-climbing",
+  "mtb/shorter",
+  "road",
+  "road/less-climbing",
+  "road/shorter",
+  "touring",
+  "touring/less-climbing",
+  "touring/shorter",
+]

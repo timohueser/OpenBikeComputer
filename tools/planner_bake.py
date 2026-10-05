@@ -100,8 +100,8 @@ def terrain_inputs(args, config, bounds=None):
 
 def build_terrain(stage, args, config):
     maps.run("cargo", "build", "--locked", "--release", "-p", "obc-dem", cwd=maps.ROOT)
-    maps.run("cargo", "build", "--locked", "--release", "-p", "route-build",
-             "--bin", "planner-dem", "--features", "route-build/planner-dem", cwd=maps.ROOT)
+    maps.run("cargo", "build", "--locked", "--release", "-p", "obc-dem",
+             "--bin", "planner-dem", "--features", "obc-dem/terrarium", cwd=maps.ROOT)
     bounds = terrain_coverage(config)
     reference = terrain_inputs(args, config, bounds)
     maps.run(maps.ROOT / "target/release/planner-dem", "--dem", args.dem_dir, *reference,
@@ -118,8 +118,7 @@ def build_terrain(stage, args, config):
 
 
 def build_routing(stage, osm, args, config):
-    maps.run("cargo", "build", "--locked", "--release", "-p", "route-build", "-p", "obc-dem",
-             "--features", "route-build/planner-dem", cwd=maps.ROOT)
+    maps.run("cargo", "build", "--locked", "--release", "-p", "route-build", "-p", "obc-dem", cwd=maps.ROOT)
     reference = terrain_inputs(args, config)
     routing = stage / "routing"
     maps.run(maps.ROOT / "target/release/route-build", osm(), "--output", routing, "--region", config["region"],
@@ -195,11 +194,10 @@ def specifications(config, prepared=None):
     map_requirements = maps.ROOT / "tools/requirements-planner-maps.txt"
     add("places", build_places, {}, dependencies=["pois"], paths=[maps.ROOT / path for path in
         ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_places.py", "tools/requirements-planner-maps.txt", "builder/app/src/lib/planner/poi-kinds.json")])
-    rust_manifests = [maps.ROOT / path for path in ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "host/route-build/Cargo.toml", "host/route-engine/Cargo.toml", "host/obc-dem/Cargo.toml"]]
-    elevation_paths = [*components.rust_sources("host/obc-dem"), maps.ROOT / "host/route-build/src/obc_terrain.rs"]
+    rust_manifests = [maps.ROOT / path for path in ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "host/obc-dem/Cargo.toml"]]
+    elevation_paths = components.rust_sources("host/obc-dem")
     elevation = {"sources": config["terrain"], "producer": components.implementation(paths=elevation_paths)}
-    terrain_paths = [*rust_manifests, *elevation_paths, map_requirements, maps.ROOT / "tools/planner_map_archive.py",
-                     *[maps.ROOT / path for path in ["host/route-build/src/obc_terrain.rs", "host/route-build/src/bin/planner-dem.rs", "host/route-engine/src/model.rs"]]]
+    terrain_paths = [*rust_manifests, *elevation_paths, map_requirements, maps.ROOT / "tools/planner_map_archive.py"]
     add("terrain", build_terrain, {"elevation": elevation, **credits("copernicus-glo-30")}, {"terrain_bounds": terrain_coverage(config)}, paths=terrain_paths,
         functions=[terrain_inputs, terrain_coverage, maps.compact_archive, maps.verify_archive])
     routing_paths = components.rust_sources("host/route-build")

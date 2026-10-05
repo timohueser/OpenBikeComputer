@@ -52,6 +52,15 @@ pub struct EnvPlan {
     /// The groups that `--only` selected, or none for every group.
     pub only: Vec<String>,
     pub groups: Vec<Group>,
+    /// The products that give no steps for the environment. The others plan without them.
+    pub blocked: Vec<BlockedProduct>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BlockedProduct {
+    pub product: String,
+    pub reason: String,
 }
 
 /// What a build did.
@@ -63,6 +72,8 @@ pub struct Built {
     pub layers: Vec<BuiltLayer>,
     /// The release of each product whose every layer is built.
     pub releases: Vec<BuiltRelease>,
+    /// The products that give no steps for the environment; nothing of them is built.
+    pub blocked: Vec<BlockedProduct>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -82,13 +93,16 @@ pub struct BuiltRelease {
 pub fn plan(root: &Path, products: &[&dyn Product], args: PlanArgs, json: bool) -> Result<(), Error> {
     let (store, http) = (Store::open()?, Http::new());
     let loaded = load(root, &args.env)?;
-    let (_, plan) = planned(root, &store, products, &loaded, fetcher(&store, &http, &loaded.sources))?;
-    let plan = env_plan(&loaded.env, &args.only, select(&plan, &args.only)?);
+    let (_, plan, blocked) = planned(root, &store, products, &loaded, fetcher(&store, &http, &loaded.sources))?;
+    let plan = env_plan(&loaded.env, &args.only, select(&plan, &args.only)?, blocked);
     if json {
         return print_json(&plan);
     }
     let layers = if plan.layers.is_empty() { "—".into() } else { plan.layers.join(", ") };
     println!("PLAN {} · region {} · layers {layers}", plan.env, plan.region);
+    for blocked in &plan.blocked {
+        println!("blocked {}: {}", blocked.product, blocked.reason);
+    }
     if plan.groups.is_empty() {
         println!("The store has every layer.");
         return Ok(());
@@ -122,6 +136,9 @@ pub fn build(root: &Path, products: &[&dyn Product], args: BuildArgs, json: bool
     for release in &built.releases {
         println!("release {}  {}", &release.id[..8], release.product);
     }
+    for blocked in &built.blocked {
+        println!("blocked {}: {}", blocked.product, blocked.reason);
+    }
     Ok(())
 }
 
@@ -134,7 +151,7 @@ fn run_build(
 ) -> Result<Built, Error> {
     let loaded = load(root, &args.env)?;
     let saved = args.plan.as_deref().map(|file| read_plan(file, &loaded.env).map(|plan| (file, plan))).transpose()?;
-    let (steps, now) = match &saved {
+    let (steps, now, blocked) = match &saved {
         None => planned(root, store, products, &loaded, fetcher(store, http, &loaded.sources))?,
         // `plan` fetched what each step list reads: a step list that needs a fetch now is new.
         Some((file, _)) => planned(root, store, products, &loaded, |_| Err(outdated(file)))?,
@@ -143,13 +160,17 @@ fn run_build(
         None => select(&now, &args.only)?,
         Some((file, saved)) => {
             let groups = Plan { groups: saved.groups };
-            if !select(&now, &saved.only).is_ok_and(|now| now.same_work(&groups)) {
+            if saved.blocked != blocked || !select(&now, &saved.only).is_ok_and(|now| now.same_work(&groups)) {
                 return Err(outdated(file));
             }
             select(&groups, &args.only)?
         }
     };
-    let mut built = Built { run: None, layers: Vec::new(), releases: Vec::new() };
+    if !products.is_empty() && blocked.len() == products.len() {
+        let reasons = blocked.iter().map(|b| format!("product `{}`: {}", b.product, b.reason)).collect::<Vec<_>>();
+        return Err(Code::Blocked.error(reasons.join("; ")));
+    }
+    let mut built = Built { run: None, layers: Vec::new(), releases: Vec::new(), blocked };
     if !wanted.groups.is_empty() {
         let mut run = Run::create(store, &format!("build {}", loaded.env.name))?;
         let id = run.id().to_string();
@@ -164,7 +185,7 @@ fn run_build(
             .collect();
         built.run = Some(id);
     }
-    for product in products {
+    for product in products.iter().filter(|product| !built.blocked.iter().any(|b| b.product == product.name())) {
         if let Some(release) = release::release(store, root, product.name(), &steps)? {
             built.releases.push(BuiltRelease { product: product.name().into(), id: release.write(store)? });
         }
@@ -188,9 +209,9 @@ fn outdated(file: &Path) -> Error {
     Code::PlanOutdated.error(format!("{} is not the plan of now", file.display()))
 }
 
-fn env_plan(env: &Env, only: &[String], plan: Plan) -> EnvPlan {
+fn env_plan(env: &Env, only: &[String], plan: Plan, blocked: Vec<BlockedProduct>) -> EnvPlan {
     let (env, region, layers) = (env.name.clone(), env.region.clone(), env.layers.clone());
-    EnvPlan { env, region, layers, only: only.to_vec(), groups: plan.groups }
+    EnvPlan { env, region, layers, only: only.to_vec(), groups: plan.groups, blocked }
 }
 
 fn select(plan: &Plan, only: &[String]) -> Result<Plan, Error> {
@@ -217,17 +238,17 @@ pub(super) fn load(root: &Path, name: &str) -> Result<Loaded, Error> {
     Ok(Loaded { env, sources: registry.sources, regions })
 }
 
-/// The steps of every product, and the plan of all of them.
+/// The steps of every product, the plan of all of them, and the products without steps.
 fn planned(
     root: &Path,
     store: &Store,
     products: &[&dyn Product],
     loaded: &Loaded,
     fetch: impl FnMut(&Wanted) -> Result<(), Error>,
-) -> Result<(Vec<Step>, Plan), Error> {
-    let steps = steps(products, &loaded.env, &loaded.regions, store, fetch)?;
+) -> Result<(Vec<Step>, Plan, Vec<BlockedProduct>), Error> {
+    let (steps, blocked) = steps(products, &loaded.env, &loaded.regions, store, fetch)?;
     let plan = plan::plan(store, root, &steps)?;
-    Ok((steps, plan))
+    Ok((steps, plan, blocked))
 }
 
 /// Fetch what a product names, with the code of a failed fetch: `fetch_failed` or `blocked`.
@@ -252,21 +273,24 @@ fn product_bug(name: &str, message: String) -> Error {
     Code::Failed.error(message).fix(fix)
 }
 
-/// The steps of every product. A product whose step list reads snapshots that the store lacks
-/// gets them fetched, and is asked once more.
+/// The steps of every product, and the products that give `Unplanned::Invalid`. A product whose
+/// step list reads snapshots that the store lacks gets them fetched, and is asked once more.
 pub(super) fn steps(
     products: &[&dyn Product],
     env: &Env,
     regions: &Regions,
     store: &Store,
     mut fetch: impl FnMut(&Wanted) -> Result<(), Error>,
-) -> Result<Vec<Step>, Error> {
+) -> Result<(Vec<Step>, Vec<BlockedProduct>), Error> {
     check_layers(products, env)?;
-    let mut all = Vec::new();
+    let (mut all, mut blocked) = (Vec::new(), Vec::new());
     for product in products {
-        all.extend(product_steps(*product, env, regions, store, &mut fetch)?);
+        match product_steps(*product, env, regions, store, &mut fetch)? {
+            Ok(steps) => all.extend(steps),
+            Err(reason) => blocked.push(BlockedProduct { product: product.name().into(), reason }),
+        }
     }
-    Ok(all)
+    Ok((all, blocked))
 }
 
 /// Refuse an optional layer of `env` that no product has.
@@ -279,14 +303,15 @@ pub(super) fn check_layers(products: &[&dyn Product], env: &Env) -> Result<(), E
     Ok(())
 }
 
-/// The steps of one product, after the fetches that its step list needs.
+/// The steps of one product, after the fetches that its step list needs. `Ok(Err(reason))` when
+/// the product is blocked (`Unplanned::Invalid`).
 pub(super) fn product_steps(
     product: &dyn Product,
     env: &Env,
     regions: &Regions,
     store: &Store,
     fetch: &mut impl FnMut(&Wanted) -> Result<(), Error>,
-) -> Result<Vec<Step>, Error> {
+) -> Result<Result<Vec<Step>, String>, Error> {
     let name = product.name();
     let mut listed = product.steps(env, regions, store);
     if let Err(Unplanned::NeedsFetch(fetches)) = &listed {
@@ -305,12 +330,13 @@ pub(super) fn product_steps(
                 format!("product `{name}` still needs {} after the fetch", wanted.join(", ")),
             ));
         }
-        Err(Unplanned::Invalid(e)) => return Err(Code::InvalidData.error(format!("product `{name}`: {e}"))),
+        Err(Unplanned::Invalid(reason)) => return Ok(Err(reason)),
+        Err(Unplanned::Failed(e)) => return Err(Code::Failed.error(format!("product `{name}`: {e}"))),
     };
     if let Some(step) = steps.iter().find(|step| !step.name.starts_with(&format!("{name}/"))) {
         return Err(product_bug(name, format!("step `{}` of product `{name}` is not named `{name}/…`", step.name)));
     }
-    Ok(steps)
+    Ok(Ok(steps))
 }
 
 #[cfg(test)]
@@ -335,7 +361,7 @@ mod tests {
         }
 
         fn steps(&self, _: &Env, _: &Regions, store: &Store) -> Result<Vec<Step>, Unplanned> {
-            match snapshot_files(store, "index", "1", &[], &[]).map_err(Unplanned::Invalid)? {
+            match snapshot_files(store, "index", "1", &[], &[]).map_err(Unplanned::Failed)? {
                 Some(_) => Ok(pipeline()),
                 None => Err(Unplanned::NeedsFetch(vec![Wanted {
                     source: "index".into(),
@@ -361,9 +387,9 @@ mod tests {
             fetches.set(fetches.get() + 1);
             Ok(())
         };
-        let listed = steps(&[&Indexed], &env(&["extra"]), &regions, &fixture.store, fetch).unwrap();
+        let (listed, _) = steps(&[&Indexed], &env(&["extra"]), &regions, &fixture.store, fetch).unwrap();
         assert_eq!((listed.len(), fetches.get()), (3, 1));
-        let listed = steps(&[&Indexed], &env(&[]), &regions, &fixture.store, |_| unreachable!()).unwrap();
+        let (listed, _) = steps(&[&Indexed], &env(&[]), &regions, &fixture.store, |_| unreachable!()).unwrap();
         assert_eq!(listed.len(), 3, "the store has it now");
 
         let err = steps(&[&Indexed], &env(&[]), &regions, &empty.store, |_| Ok(())).err().unwrap();
@@ -387,7 +413,7 @@ mod tests {
 
         fn steps(&self, env: &Env, _: &Regions, store: &Store) -> Result<Vec<Step>, Unplanned> {
             let area = [("area".to_string(), "europe/monaco".to_string())];
-            match crate::product::read(env, store, "land", &area).map_err(Unplanned::Invalid)? {
+            match crate::product::read(env, store, "land", &area).map_err(Unplanned::Failed)? {
                 Ok(_) => Ok(Vec::new()),
                 Err(wanted) => Err(Unplanned::NeedsFetch(vec![wanted])),
             }
@@ -419,8 +445,8 @@ mod tests {
         fixture.fetched("index", "index.txt", b"index\n");
         let http = Http::new();
         let loaded = load(&root, "live").unwrap();
-        let (_, plan) = planned(&root, &fixture.store, &[&Indexed], &loaded, |_| unreachable!()).unwrap();
-        let saved = env_plan(&loaded.env, &[], plan);
+        let (_, plan, blocked) = planned(&root, &fixture.store, &[&Indexed], &loaded, |_| unreachable!()).unwrap();
+        let saved = env_plan(&loaded.env, &[], plan, blocked);
         let file = root.join("plan.json");
         let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: Some(file.clone()) };
         let refused = |saved: &EnvPlan, why: &str| {
@@ -443,5 +469,42 @@ mod tests {
         let steps: Vec<&str> = built.layers.iter().map(|layer| layer.step.as_str()).collect();
         assert_eq!(steps, ["test/upper", "test/join", "test/count"]);
         assert!(fixture.store.release("test", &built.releases[0].id).is_file());
+    }
+
+    /// A product that the environment does not suit.
+    struct Refused;
+
+    impl Product for Refused {
+        fn name(&self) -> &'static str {
+            "other"
+        }
+
+        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<Vec<Step>, Unplanned> {
+            Err(Unplanned::Invalid("no box region".into()))
+        }
+    }
+
+    #[test]
+    fn a_product_without_steps_is_blocked_and_the_others_plan_and_build() {
+        let fixture = fixture("cli-blocked");
+        let root = fixture.root();
+        write(&root.join("data/sources.toml"), include_str!("../../../../data/sources.toml"));
+        write(&root.join("data/regions/monaco.toml"), "name = \"Monaco\"\nkind = \"geofabrik\"\n");
+        write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
+        fixture.fetched("index", "index.txt", b"index\n");
+        let (http, products): (_, [&dyn Product; 2]) = (Http::new(), [&Indexed, &Refused]);
+        let loaded = load(&root, "live").unwrap();
+        let (_, plan, blocked) = planned(&root, &fixture.store, &products, &loaded, |_| unreachable!()).unwrap();
+        assert_eq!(blocked, [BlockedProduct { product: "other".into(), reason: "no box region".into() }]);
+        assert_eq!(plan.groups.len(), 1, "the test product plans");
+
+        let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: None };
+        let built = run_build(&root, &fixture.store, &http, &products, &args).unwrap();
+        assert_eq!((built.layers.len(), built.releases.len(), &built.blocked), (3, 1, &blocked));
+        assert_eq!(built.releases[0].product, "test", "a blocked product has no release");
+        let again = run_build(&root, &fixture.store, &http, &products, &args).unwrap();
+        assert_eq!((again.run, again.releases[0].id == built.releases[0].id), (None, true), "up to date");
+        let err = run_build(&root, &fixture.store, &http, &[&Refused], &args).unwrap_err();
+        assert_eq!((err.code.exit(), err.message.as_str()), (4, "product `other`: no box region"), "no product suits");
     }
 }

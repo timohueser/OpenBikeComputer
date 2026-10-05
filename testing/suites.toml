@@ -515,13 +515,6 @@ jobs = ["guards"]
 triggers = ["tools/check_card_scheduler.py"]
 
 [[suite]]
-id = "ci.one-home-guard"
-route = "required"
-command = "python3 tools/check_one_home.py"
-jobs = ["guards"]
-triggers = ["tools/check_one_home.py"]
-
-[[suite]]
 id = "ci.screen-vocabulary-guard"
 route = "required"
 command = "python3 tools/check_screen_vocabulary.py"

@@ -67,8 +67,18 @@ pub struct Code {
     pub crates: Vec<String>,
 }
 
+impl Code {
+    /// The code files: path relative to `root`, with `/`, to SHA-256.
+    pub fn files(&self, root: &Path) -> Result<BTreeMap<String, String>, String> {
+        code::files(root, self)
+    }
+}
+
 pub enum Run {
-    /// A function in this process. Its code must declare the crate of the function.
+    /// A function in this process. Its code must declare the crate of the function. One binary
+    /// links every product, so Cargo unifies their features: a step crate enables every feature
+    /// its bytes depend on itself, or makes its bytes independent of it (structs, or sorted keys
+    /// for JSON objects).
     Rust(fn(&Request) -> Result<(), String>),
     /// A program and its arguments, started in the repository root with the request as JSON on
     /// standard input. No argument names a path outside the repository root.
@@ -388,6 +398,23 @@ pub fn view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), String>
         symlink(object, &link).map_err(|e| format!("{}: {e}", link.display()))?;
     }
     Ok(())
+}
+
+/// A step whose layer is the one file of its snapshot inputs, as it is, at the path of the option
+/// `path`: a layer that other steps read, whatever gives its bytes. It only passes an input on, so,
+/// like the rest of the engine, it is no code of a step. Its step declares the crate `obc-data`,
+/// which adds no file.
+pub fn pass(request: &Request) -> Result<(), String> {
+    let path = request.options["path"].as_str().ok_or("option `path` is not a string")?;
+    let files: Vec<&PathBuf> = request.snapshots.values().flat_map(BTreeMap::values).collect();
+    let [file] = files[..] else {
+        return Err(format!("the step reads {} files, not one", files.len()));
+    };
+    let output = request.output.join(path);
+    // The output is the same object as the input, so a link saves a copy.
+    fs::hard_link(file, &output)
+        .or_else(|_| fs::copy(file, &output).map(drop))
+        .map_err(|e| format!("{}: {e}", output.display()))
 }
 
 #[cfg(unix)]

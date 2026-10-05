@@ -120,7 +120,10 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
     let (members, routes) = memberships(&osm.relations);
     for (id, properties) in &routes {
         transaction
-            .execute("INSERT INTO routes VALUES (?,?)", params![id, serde_json::to_string(properties).map_err(text)?])
+            .execute(
+                "INSERT INTO routes VALUES (?,?)",
+                params![id, serde_json::to_string(&crate::sort_keys(properties.clone())).map_err(text)?],
+            )
             .map_err(text)?;
     }
     let mut attributes = HashMap::new();
@@ -213,7 +216,7 @@ fn insert(
     let mut shared = properties.as_object().ok_or("Invalid overlay properties")?.clone();
     shared.remove("way");
     shared.remove("kind");
-    let encoded = serde_json::to_string(&shared).map_err(text)?;
+    let encoded = serde_json::to_string(&crate::sort_keys(Value::Object(shared))).map_err(text)?;
     let attribute = if let Some(id) = attributes.get(&encoded) {
         *id
     } else {

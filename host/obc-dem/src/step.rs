@@ -1,5 +1,8 @@
-//! The terrain step of `obc data`: the published terrain cells of one leaf, from the GLO-30 tiles
-//! of its request. `obc-bake terrain` writes the same `.obcd` bytes from the same tiles.
+//! The terrain steps of `obc data`: the published terrain cells of one leaf, from the GLO-30 tiles
+//! of its request, which `obc-bake terrain` writes the same; and the terrain of the planner maps.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use obc_data::engine::Request;
 use serde_json::Value;
@@ -52,4 +55,32 @@ pub fn terrain(request: &Request) -> Result<(), String> {
     let path = dir.join("empty.json");
     std::fs::write(&path, serde_json::to_string(&empty).expect("strings serialize"))
         .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The terrain of the planner maps. The option `bounds` is `[west, south, east, north]` in
+/// degrees. The layer is `terrain.mbtiles`: the bytes that `planner-dem` writes from the same
+/// GLO-30 tiles without a reference archive.
+#[cfg(feature = "terrarium")]
+pub fn planner_terrain(request: &Request) -> Result<(), String> {
+    let bounds = bounds(&request.options)?;
+    let mut terrain = crate::planner::Terrain::open(&glo30(request, bounds), None, bounds)?;
+    let text = bounds.map(|value| value.to_string()).join(",");
+    crate::terrarium::write(&mut terrain, bounds, &text, &request.output.join("terrain.mbtiles"))
+}
+
+/// The option `bounds`: `[west, south, east, north]` in degrees.
+pub fn bounds(options: &Value) -> Result<[f64; 4], String> {
+    let values = options["bounds"].as_array().map(|values| values.iter().filter_map(Value::as_f64).collect::<Vec<_>>());
+    values
+        .and_then(|values| values.try_into().ok())
+        .ok_or_else(|| "option `bounds` is not [west, south, east, north]".into())
+}
+
+/// The GLO-30 files of the request, in the order of [`crate::planner::tiles`] of `bounds`.
+pub fn glo30(request: &Request, bounds: [f64; 4]) -> Vec<PathBuf> {
+    let files = request.snapshots.get(GLO30).into_iter().flatten();
+    let files: BTreeMap<&str, &PathBuf> =
+        files.map(|(name, path)| (name.rsplit('/').next().unwrap_or(name), path)).collect();
+    let tiles = crate::planner::tiles(bounds);
+    tiles.iter().filter_map(|tile| files.get(tile.file_name().as_str()).map(|path| path.to_path_buf())).collect()
 }
