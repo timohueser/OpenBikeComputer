@@ -595,7 +595,6 @@ class ShippedPlanTests(unittest.TestCase):
                 "ci.fixture-policy",
                 "ci.ios-host-portability",
                 "ci.prose",
-                "ci.screen-vocabulary-guard",
                 "python.repository-tools",
             ],
         )
