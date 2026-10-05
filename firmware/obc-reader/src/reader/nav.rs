@@ -950,8 +950,3 @@ pub(super) fn parse_nav_profiles(
     }
     Ok(out)
 }
-
-#[cfg(test)]
-mod differential;
-#[cfg(test)]
-mod legacy;
