@@ -39,3 +39,22 @@ test('cell queries preserve global limits, spelling, addresses and duplicate own
     for(const fixture of [reference,...parts]){fixture.db.close();fixture.conn.close();}
   }
 });
+
+test('a bounded query skips cells outside its bounds and keeps a cell that touches them',()=>{
+  const near=database(),far=database();
+  let cells;
+  try {
+    near.conn.exec('DELETE FROM place_records WHERE lon>10');
+    far.conn.exec('DELETE FROM place_records WHERE lon<10');
+    near.conn.prepare("INSERT INTO metadata VALUES ('bounds',?)").run(JSON.stringify([7.8,47.9,7.85,48.1]));
+    far.conn.prepare("INSERT INTO metadata VALUES ('bounds',?)").run(JSON.stringify([11,48,12,49]));
+    cells=openCells([near.file,far.file]);
+    const sources=cells.rows({sql:'SELECT p.source FROM {c}.place_records p',bounds:[7.85,47.98,7.9,48]}).map(row=>row.source);
+    assert.ok(sources.includes('n1'),'n1 lies on the east edge of the near cell');
+    assert.ok(!sources.includes('r5'),'the far cell is skipped');
+    assert.ok(cells.rows({sql:'SELECT p.source FROM {c}.place_records p',bounds:[11.5,48.1,11.6,48.2]}).every(row=>row.source!=='n1'));
+  } finally {
+    cells?.close();
+    for(const fixture of [near,far]){fixture.db.close();fixture.conn.close();}
+  }
+});

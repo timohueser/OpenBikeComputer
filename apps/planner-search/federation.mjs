@@ -1,16 +1,17 @@
 const overlaps = (a, b) => !a || !b || a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 const typeOrder = value => value === null || value === undefined ? 0 : typeof value === 'number' ? 1 : 2;
-// SQLite order: NULL, numbers, text. Text keys are ASCII, so code-unit order equals BINARY order.
+// SQLite order: NULL, numbers, text. UTF-16 code-unit order equals BINARY order below U+E000.
 const compare = (a, b) => typeOrder(a) - typeOrder(b) || (a < b ? -1 : a > b ? 1 : 0);
 
 /**
  * Search cells keep their own indexes. `groups()` lists the attached cell schemas of each
  * connection, and `run(group, sql, params)` returns the rows of one statement on it.
  *
- * A cell query names cell tables as `{c}.table` and may declare `order` (result columns,
- * a leading `-` sorts descending), `limit` and `bounds` (cells outside are skipped). Each
- * cell applies the order and limit; the merge applies them again, so the limit is global.
- * Result columns that start with `_` only order the merge. Rows with an `id` are one place.
+ * A cell query selects rows, never aggregates, and names cell tables as `{c}.table`. It may
+ * declare `order` (result columns, a leading `-` sorts descending), `limit` and `bounds`
+ * (cells outside are skipped). Each cell applies the order and limit; the merge applies them
+ * again, so the limit is global. Result columns that start with `_` only order the merge.
+ * Rows with an `id` are one place; other rows are one when their columns are equal.
  */
 export function federate({groups, run}) {
   const layout = groups().map((names, group) => names.map(name => ({name, group})));
@@ -25,16 +26,6 @@ export function federate({groups, run}) {
   // The region metadata is what every cell shares.
   const metadata = Object.fromEntries(Object.entries(first).filter(([key, value]) =>
     cells.every(cell => JSON.stringify(cell.metadata[key]) === JSON.stringify(value))));
-
-  // One region lexicon keeps spelling corrections and their ranks independent of the cells.
-  run(0, 'CREATE TABLE main.lexicon(term TEXT UNIQUE)', []);
-  run(0, "CREATE VIRTUAL TABLE main.fuzzy USING fts5(term,content='lexicon',detail=none,tokenize='trigram')", []);
-  for (const cell of cells) {
-    const terms = run(cell.group, `SELECT term FROM ${cell.name}.lexicon`, []).map(row => row.term);
-    run(0, 'INSERT OR IGNORE INTO main.lexicon(term) SELECT value FROM json_each(?)', [JSON.stringify(terms)]);
-  }
-  run(0, "INSERT INTO main.fuzzy(fuzzy) VALUES('rebuild')", []);
-  run(0, "INSERT INTO main.fuzzy(fuzzy) VALUES('optimize')", []);
 
   function rows({sql, params = [], order = [], limit, bounds}) {
     if (!sql.includes('{c}.')) throw new Error('A cell query names its tables as {c}.table.');
@@ -80,7 +71,7 @@ export function federate({groups, run}) {
     return ids.flatMap(id => records.get(id) ?? []);
   }
 
-  return {metadata, rows, places, lexicon: (sql, params = []) => run(0, sql, params)};
+  return {metadata, rows, places};
 }
 
 /** A native adapter exchanges JSON text: `run` replies `{"rows":[...]}` or `{"error":"..."}`. */

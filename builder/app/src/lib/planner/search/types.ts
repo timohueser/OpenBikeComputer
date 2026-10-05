@@ -43,7 +43,7 @@ export interface SearchAnswer {
     type: 'places' | 'change' | 'stretches' | 'unresolved'; request: QueryRequest;
     results?: SearchPlace[]; changes?: QueryChange[]; description?: string;
     stretches?: { from: number; to: number; label: string; coordinates: Coordinate[] }[];
-    hasMore?: boolean; canRetry?: boolean; area?: string; note?: string; notice?: string; region?: string;
+    hasMore?: boolean; canRetry?: boolean; area?: string; note?: string; notice?: string;
 }
 export type SearchState = { loading: boolean; error: string; answer: SearchAnswer | null };
 export async function placeDetails(source: string, coordinate: Coordinate, signal: AbortSignal): Promise<SearchPlace | undefined> {

@@ -16,8 +16,10 @@ export function openRegion(data,region) {
     if(grid.cells.some(c=>JSON.stringify(c.files)!==JSON.stringify(componentFiles(c.id))))throw new Error('Invalid search grid files.');
     files=grid.cells.flatMap(c=>c.files);
   } else {
-    files=['pois','addresses'].map(component=>`${component}/${region}.sqlite`).filter(name=>existsSync(path.join(data,name)));
-    if(!files.length)files=[`${region}.sqlite`].filter(name=>existsSync(path.join(data,name)));
+    const split=['pois','addresses'].map(component=>`${component}/${region}.sqlite`);
+    const found=split.filter(name=>existsSync(path.join(data,name)));
+    if(found.length&&found.length<split.length)throw new Error(`Missing search component: ${split.find(name=>!found.includes(name))}`);
+    files=found.length?found:[`${region}.sqlite`].filter(name=>existsSync(path.join(data,name)));
     if(!files.length)return null;
   }
   files=files.map(name=>path.join(data,name));

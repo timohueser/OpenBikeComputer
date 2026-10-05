@@ -92,18 +92,12 @@ final class PlannerSearchConnection {
     }
 
     private var jsonQueries: [String: String] = [:]
-    /// SQLite encodes the result rows. A statement without result columns returns no rows.
     func json(_ sql: String, _ values: [Any]) throws -> String {
         let query: String
         if let existing = jsonQueries[sql] {
             query = existing
         } else {
-            let names = try columns(sql)
-            if names.isEmpty {
-                _ = try rows(sql, values)
-                return "{\"rows\":[]}"
-            }
-            let fields = names.map {
+            let fields = try columns(sql).map {
                 "'" + $0.replacingOccurrences(of: "'", with: "''") + "',r.\"" + $0.replacingOccurrences(of: "\"", with: "\"\"")
                     + "\""
             }.joined(separator: ",")

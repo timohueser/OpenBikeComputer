@@ -165,10 +165,11 @@ export function named(db,q,view) {
     if(grams.length) {
       // Trigrams retrieve candidates only; edit distance decides whether a correction is allowed.
       const lengths=[...new Set(parts.flatMap(p=>Array.from({length:2*editBudget(p.term)+1},(_,i)=>p.term.length-editBudget(p.term)+i)))];
-      const terms=lengths.length?db.lexicon(`SELECT l.term, ${grams.map(()=>'(instr(l.term,?)>0)').join('+')} hits
-        FROM fuzzy JOIN lexicon l ON l.rowid=fuzzy.rowid WHERE fuzzy MATCH ?
-        AND length(l.term) IN (${lengths.map(()=>'?').join(',')}) ORDER BY hits DESC,rank LIMIT 256`,
-        [...grams,grams.map(t=>`"${t}"`).join(' OR '),...lengths]):[];
+      // No index statistics order the terms, so the cell layout cannot change the candidates.
+      const terms=lengths.length?db.rows({sql:`SELECT l.term,${grams.map(()=>'(instr(l.term,?)>0)').join('+')} AS hits,
+        length(l.term) AS _length FROM {c}.fuzzy JOIN {c}.lexicon l ON l.rowid=fuzzy.rowid WHERE fuzzy MATCH ?
+        AND length(l.term) IN (${lengths.map(()=>'?').join(',')})`,
+        params:[...grams,grams.map(t=>`"${t}"`).join(' OR '),...lengths],order:['-hits','_length','term'],limit:256}):[];
       const corrections=[];
       for(const c of terms)for(const part of parts) {
         const budget=editBudget(part.term);
