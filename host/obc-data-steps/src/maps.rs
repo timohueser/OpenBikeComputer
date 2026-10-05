@@ -82,14 +82,15 @@ pub(crate) fn outlines(
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<Vec<Coverage>>, Unplanned> {
     let mut outlines = Some(Vec::new());
-    for id in regions.leaves(&env.region).map_err(Unplanned::Invalid)? {
+    for id in regions.leaves(&env.region).map_err(Unplanned::Failed)? {
         let poly = match &regions.get(id).expect("a leaf region exists").area {
             Area::Box { bbox } => Some(box_poly(bbox)),
             Area::Geofabrik => text(env, store, POLY, &[("area".to_string(), id.to_string())], wanted)?,
             Area::Polygon { .. } => return Err(invalid(format!("region `{id}`: the device maps read no polygon yet"))),
             Area::Union { .. } => unreachable!("a leaf region is not a union"),
         };
-        let outline = poly.map(|poly| Coverage::parse_poly(&poly).map_err(|e| invalid(format!("{id}.poly: {e}"))));
+        let outline =
+            poly.map(|poly| Coverage::parse_poly(&poly).map_err(|e| Unplanned::Failed(format!("{id}.poly: {e}"))));
         match (outline.transpose()?, &mut outlines) {
             (Some(outline), Some(outlines)) => outlines.push(outline),
             _ => outlines = None,
@@ -107,7 +108,7 @@ pub(crate) fn text(
     params: &[(String, String)],
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<String>, Unplanned> {
-    let files = match read(env, store, source, params).map_err(Unplanned::Invalid)? {
+    let files = match read(env, store, source, params).map_err(Unplanned::Failed)? {
         Ok(files) => files,
         Err(fetch) => {
             wanted.push(fetch);
@@ -115,9 +116,10 @@ pub(crate) fn text(
         }
     };
     let [path] = files.values().collect::<Vec<_>>()[..] else {
-        return Err(invalid(format!("a fetch of {source} with {params:?} gives {} files, not one", files.len())));
+        let count = files.len();
+        return Err(Unplanned::Failed(format!("a fetch of {source} with {params:?} gives {count} files, not one")));
     };
-    std::fs::read_to_string(path).map(Some).map_err(|e| invalid(format!("{}: {e}", path.display())))
+    std::fs::read_to_string(path).map(Some).map_err(|e| Unplanned::Failed(format!("{}: {e}", path.display())))
 }
 
 pub(crate) fn invalid(message: String) -> Unplanned {

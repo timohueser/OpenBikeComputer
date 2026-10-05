@@ -46,8 +46,9 @@ impl Product for Planner {
 
     fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<Vec<Step>, Unplanned> {
         let config: Config = toml::from_str(include_str!("../../../data/planner.toml"))
-            .map_err(|e| invalid(format!("data/planner.toml: {e}")))?;
-        let region = regions.get(&env.region).ok_or_else(|| invalid(format!("no region `{}`", env.region)))?;
+            .map_err(|e| Unplanned::Failed(format!("data/planner.toml: {e}")))?;
+        let region =
+            regions.get(&env.region).ok_or_else(|| Unplanned::Failed(format!("no region `{}`", env.region)))?;
         if region.area != Area::Geofabrik {
             return Err(invalid(format!(
                 "region `{}`: the planner reads the OSM of one Geofabrik area only",
@@ -64,7 +65,7 @@ impl Product for Planner {
         let tile_list = text(env, store, TILE_LIST, &[], &mut wanted)?;
         let area = vec![("area".to_string(), region.id.clone())];
         let extract =
-            version(env, store, EXTRACTS, &area).map_err(Unplanned::Invalid)?.map_err(|fetch| wanted.push(fetch));
+            version(env, store, EXTRACTS, &area).map_err(Unplanned::Failed)?.map_err(|fetch| wanted.push(fetch));
         let (Some(outlines), Some(tile_list), Ok(extract)) = (outlines, tile_list, extract) else {
             return Err(Unplanned::NeedsFetch(wanted));
         };

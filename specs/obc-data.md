@@ -582,8 +582,9 @@ names fetches the second time, or a step name without `<product>/`, fails the co
 `failed` and a fix that points at the code of the product. A product that has no steps for the
 environment, such as for a kind of region that it does not read, is blocked: `plan` lists it in
 `blocked` with the reason, and the other products plan without it. `build` builds the groups of
-the other products and writes no release of a blocked product. When nothing else builds, `build`
-fails with `blocked`.
+the other products and writes no release of a blocked product. When no product suits the
+environment, `build` fails with `blocked`. An error of the store, a file or the data of a fetch
+in a step list fails the command with `failed`.
 
 `plan ENV` plans the steps of every product together. `--json` writes the plan with `env`,
 `region` and `layers` of the environment, and `only`, the groups that `--only` selected or `[]`
@@ -783,7 +784,7 @@ another command must run first. | Correct the command. `obc data --help` lists t
 | `invalid_data` | 1 | A file under `data/` is not valid. | Correct the file that the message names. `specs/obc-data.md` gives its format. |
 | `fetch_failed` | 1 | A fetch or an upstream check failed. | Run the command again. A download continues where it stopped. |
 | `blocked` | 4 | A credential is missing: a fetch failed without the credential of its source, or the R2
-variables are not set. | Set the credential that the message or `obc data sources` names, then run again. |
+variables are not set. Or `build` has no product that suits the environment. | Set the credential that the message or `obc data sources` names, or correct what the message says a product needs, then run again. |
 | `r2_failed` | 1 | R2 or rclone failed, or refused a key. | Check the key, the `OBC_R2_*` variables and that rclone is on PATH, then run again. |
 | `verify_failed` | 5 | After an upload, the object in the bucket is not the file. | Upload the file again. |
 | `run_failed` | 1 | A run failed: the build, or the run that `runs RUN --follow` shows. | `obc data runs RUN` shows the step that failed and its error. |
@@ -967,7 +968,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "blocked",
-          "description": "A credential is missing: a fetch failed without the credential of its source, or the R2\nvariables are not set.",
+          "description": "A credential is missing: a fetch failed without the credential of its source, or the R2\nvariables are not set. Or `build` has no product that suits the environment.",
           "type": "string"
         },
         {

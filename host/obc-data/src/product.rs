@@ -29,8 +29,11 @@ pub trait Product {
 pub enum Unplanned {
     /// The step list reads these snapshots. `obc data` fetches them and asks once more.
     NeedsFetch(Vec<Wanted>),
-    /// The environment does not give what the product needs, such as a pin.
+    /// The product does not suit the environment, such as a kind of region that it does not read,
+    /// or a pin that it needs. `obc data` reports the product as blocked and plans the others.
     Invalid(String),
+    /// The store, a file or the data of a fetch failed. The command fails.
+    Failed(String),
 }
 
 /// A fetch that a step list needs.

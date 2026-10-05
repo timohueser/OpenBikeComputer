@@ -166,10 +166,9 @@ fn run_build(
             select(&groups, &args.only)?
         }
     };
-    if wanted.groups.is_empty() && !blocked.is_empty() {
+    if !products.is_empty() && blocked.len() == products.len() {
         let reasons = blocked.iter().map(|b| format!("product `{}`: {}", b.product, b.reason)).collect::<Vec<_>>();
-        let fix = "Correct what the message names; the other products build without it.";
-        return Err(Code::Blocked.error(reasons.join("; ")).fix(fix));
+        return Err(Code::Blocked.error(reasons.join("; ")));
     }
     let mut built = Built { run: None, layers: Vec::new(), releases: Vec::new(), blocked };
     if !wanted.groups.is_empty() {
@@ -312,6 +311,7 @@ fn steps(
                 blocked.push(BlockedProduct { product: name.into(), reason });
                 continue;
             }
+            Err(Unplanned::Failed(e)) => return Err(Code::Failed.error(format!("product `{name}`: {e}"))),
         };
         if let Some(step) = steps.iter().find(|step| !step.name.starts_with(&format!("{name}/"))) {
             return Err(product_bug(name, format!("step `{}` of product `{name}` is not named `{name}/…`", step.name)));
@@ -343,7 +343,7 @@ mod tests {
         }
 
         fn steps(&self, _: &Env, _: &Regions, store: &Store) -> Result<Vec<Step>, Unplanned> {
-            match snapshot_files(store, "index", "1", &[], &[]).map_err(Unplanned::Invalid)? {
+            match snapshot_files(store, "index", "1", &[], &[]).map_err(Unplanned::Failed)? {
                 Some(_) => Ok(pipeline()),
                 None => Err(Unplanned::NeedsFetch(vec![Wanted {
                     source: "index".into(),
@@ -395,7 +395,7 @@ mod tests {
 
         fn steps(&self, env: &Env, _: &Regions, store: &Store) -> Result<Vec<Step>, Unplanned> {
             let area = [("area".to_string(), "europe/monaco".to_string())];
-            match crate::product::read(env, store, "land", &area).map_err(Unplanned::Invalid)? {
+            match crate::product::read(env, store, "land", &area).map_err(Unplanned::Failed)? {
                 Ok(_) => Ok(Vec::new()),
                 Err(wanted) => Err(Unplanned::NeedsFetch(vec![wanted])),
             }
@@ -482,13 +482,11 @@ mod tests {
 
         let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: None };
         let built = run_build(&root, &fixture.store, &http, &products, &args).unwrap();
-        assert_eq!((built.layers.len(), built.releases.len(), built.blocked), (3, 1, blocked));
+        assert_eq!((built.layers.len(), built.releases.len(), &built.blocked), (3, 1, &blocked));
         assert_eq!(built.releases[0].product, "test", "a blocked product has no release");
-        let err = run_build(&root, &fixture.store, &http, &products, &args).unwrap_err();
-        assert_eq!(
-            (err.code.exit(), err.message.as_str()),
-            (4, "product `other`: no box region"),
-            "nothing else builds"
-        );
+        let again = run_build(&root, &fixture.store, &http, &products, &args).unwrap();
+        assert_eq!((again.run, again.releases[0].id == built.releases[0].id), (None, true), "up to date");
+        let err = run_build(&root, &fixture.store, &http, &[&Refused], &args).unwrap_err();
+        assert_eq!((err.code.exit(), err.message.as_str()), (4, "product `other`: no box region"), "no product suits");
     }
 }
