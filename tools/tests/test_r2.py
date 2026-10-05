@@ -122,8 +122,8 @@ class Rm(unittest.TestCase):
         command, rest = args[0], [arg for arg in args[1:] if arg != "--json"]
 
         def rows(keys):
-            return json.dumps({"objects": [{"key": key, "bytes": self.bucket[key],
-                                            "modified": "2026-09-01T10:11:12Z"} for key in keys]})
+            return json.dumps({"bucket": "r2 bucket maps", "objects": [
+                {"key": key, "bytes": self.bucket[key], "modified": "2026-09-01T10:11:12Z"} for key in keys]})
 
         if command == "list":
             return rows(key for key in sorted(self.bucket) if key.startswith(f"{rest[0]}/"))
@@ -163,6 +163,7 @@ class Rm(unittest.TestCase):
         self.assertEqual(self.rm(STRAY), 0)
         printed = self.printed.getvalue()
         self.assertIn(STRAY, printed)
+        self.assertIn("r2 bucket maps: 1 object(s)", printed)  # the bucket the owner confirms
         self.assertIn("17", printed)                     # the size, from the listing
         self.assertIn("2026-09-01T10:11:12Z", printed)   # and the last-modified
         self.assertIn(f'--confirm "{r2.confirmation([STRAY])}"', printed)
@@ -194,17 +195,20 @@ class Rm(unittest.TestCase):
 
     # ── what the catalogue protects ─────────────────────────────────────────
 
-    def test_the_catalogue_root_the_log_and_the_archive_index_refuse(self):
-        self.bucket[r2.REMOVAL_LOG] = 40
+    def test_the_catalogue_root_and_the_archive_index_refuse(self):
         for key, word in ((f"{PREFIX}/catalog.json", "catalogue root"),
                           (f"{PREFIX}/LICENSE.txt", "catalogue root"),
                           (f"{PREFIX}/regions/europe.json", "catalogue root"),
-                          (r2.REMOVAL_LOG, "removal history"),
                           (ARCHIVE_INDEX, "reference archive index")):
             with self.subTest(key=key):
                 self.assertEqual(self.rm(key), 1)
                 self.assertIn(word, self.printed.getvalue())
                 self.assertEqual(self.deleted(), [])
+
+    def test_the_removal_log_is_never_deleted(self):
+        self.bucket[r2.REMOVAL_LOG] = 40
+        self.assertEqual(self.rm(r2.REMOVAL_LOG, "--i-mean-it", r2.REMOVAL_LOG), 1)
+        self.assertEqual(self.calls, [])
 
     def test_an_object_the_root_names_by_absolute_url_is_protected(self):
         """The real root names its band indexes by URL, never by bucket key."""

@@ -161,16 +161,16 @@ def r2_client(args: list[str], capture: bool = False) -> str:
         raise Refuse(f"obc data r2 {args[0]} failed with status {exc.returncode}") from exc
 
 
-def objects(args: list[str]) -> list[dict]:
-    """The objects that `obc data r2 list|stat … --json` names."""
+def listing(args: list[str]) -> dict:
+    """What `obc data r2 list|stat … --json` prints: the bucket, and the objects it holds."""
 
-    return json.loads(r2_client([*args, "--json"], capture=True))["objects"]
+    return json.loads(r2_client([*args, "--json"], capture=True))
 
 
 def fetch_present(key: str, into: Path) -> Path | None:
     """One object out of the bucket, or None when the bucket does not hold it."""
 
-    if not objects(["stat", key]):
+    if not listing(["stat", key])["objects"]:
         return None
     r2_client(["get", key, str(into)])
     return into
@@ -194,13 +194,16 @@ def fetch_optional(remote: Remote, key: str, into: Path) -> Path | None:
 def listed_under(prefix: str) -> list[str]:
     """Every object key under one prefix, from the live listing."""
 
-    return sorted(row["key"] for row in objects(["list", prefix]))
+    return sorted(row["key"] for row in listing(["list", prefix])["objects"])
 
 
-def live_facts(keys: list[str]) -> dict[str, Target]:
-    """Size and last-modified for exactly these keys. A key absent from R2 is absent here."""
+def live_facts(keys: list[str]) -> tuple[str, dict[str, Target]]:
+    """The bucket, and size and last-modified for exactly these keys. A key absent from R2 is
+    absent here."""
 
-    return {row["key"]: Target(row["key"], row["bytes"], row["modified"]) for row in objects(["stat", *keys])}
+    found = listing(["stat", *keys])
+    return found["bucket"], {row["key"]: Target(row["key"], row["bytes"], row["modified"])
+                             for row in found["objects"]}
 
 
 def checked_prefix(text: str) -> str:
@@ -311,8 +314,6 @@ def inside_catalog(key: str) -> str | None:
 def protection(key: str, named: set[str]) -> str | None:
     """Why this key needs `--i-mean-it`, or None if nothing downstream depends on it."""
 
-    if key == REMOVAL_LOG:
-        return "the bucket's removal history; nothing else records what went and why"
     if key == f"{archive_prefix()}/index.json":
         return "the reference archive index; a tile it does not name is not in the archive"
     if key in named:
@@ -384,6 +385,8 @@ def resolve(args) -> list[str]:
     keys = sorted({key.strip("/") for key in args.key})
     if not all(keys):
         raise Refuse("an empty key is the bucket root, which is never a target")
+    if REMOVAL_LOG in keys:
+        raise Refuse(f"{REMOVAL_LOG} is the bucket's removal history; nothing deletes it")
     return keys
 
 
@@ -434,7 +437,7 @@ def command_rm(args) -> int:
         if len(keys) > RM_CAP:
             raise Refuse(f"{len(keys)} objects is over the {RM_CAP} one `rm` takes; name a "
                          "narrower prefix, or publish the tree again instead of deleting")
-        found = live_facts(keys)
+        bucket, found = live_facts(keys)
         missing = [key for key in keys if key not in found]
         if missing:
             raise Refuse(f"the bucket does not hold {', '.join(missing[:5])}; nothing was "
@@ -446,7 +449,7 @@ def command_rm(args) -> int:
         named = named_objects(staging) if catalogued and not args.no_catalog else set()
         blocked = {key: why for key in keys if (why := protection(key, named))}
 
-        print(f"{len(keys)} object(s) to delete — key, bytes, modified")
+        print(f"{bucket}: {len(keys)} object(s) to delete — key, bytes, modified")
         for target in targets:
             print(f"  {target.key}  {target.bytes}  {target.modified}")
         for key, why in blocked.items():

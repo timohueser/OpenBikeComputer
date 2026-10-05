@@ -444,7 +444,7 @@ impl ObjectStore for R2Store {
             content_type: Some(object.content_type()),
             immutable: false,
         };
-        self.bucket.put(&object.path, &self.key(&object.key), &upload)
+        self.bucket.put(&object.path, &self.key(&object.key), &upload).map(drop)
     }
 
     fn head(&self, key: &str) -> Result<Option<u64>, String> {

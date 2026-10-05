@@ -600,7 +600,6 @@ def command_publish(catalog: Catalog, _store: Store, args: argparse.Namespace) -
     prefix = urlparse(catalog.base_url).path.strip("/")
     key = "/".join(part for part in (prefix, package["archive"]) if part)
     print(f"uploading {args.package} -> {key}", file=sys.stderr)
-    # The R2 client reads the `OBC_FIXTURE_R2_*` credential and verifies the upload.
     result = subprocess.run(
         [
             "cargo", "run", "--quiet", "--locked", "--manifest-path", str(repo_root() / "Cargo.toml"),

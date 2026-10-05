@@ -116,9 +116,11 @@ unknown region id.
 
 ## R2 client
 
-All reads and writes of the old publish and delete commands go through one R2 client in
-`host/obc-data`. rclone moves the bytes. `obc data r2` is plumbing for scripts: the old Python
-commands and the bake recipes call it. It does not change the state of a release.
+The R2 client in `host/obc-data` reaches the bucket for `obc bake publish --target r2`,
+`obc bake clean-r2`, `obc r2 rm`, `obc fixtures publish` and the firmware publish workflow.
+rclone moves the bytes. The planner publish, deploy and finalize, and the reference archive
+ingest, still use the remote of `tools/r2.py`. `obc data r2` is plumbing for scripts: those
+commands call it. It does not change the state of a release.
 
 ### Credentials
 
@@ -127,7 +129,7 @@ commands and the bake recipes call it. It does not change the state of a release
 | `OBC_R2_BUCKET`, `OBC_R2_ACCESS_KEY_ID`, `OBC_R2_SECRET_ACCESS_KEY` | The bucket and its key |
 | `OBC_R2_ACCOUNT_ID` | The Cloudflare account; the endpoint is `https://<id>.r2.cloudflarestorage.com` |
 | `OBC_R2_ENDPOINT` | Another endpoint; replaces the one from `OBC_R2_ACCOUNT_ID` |
-| `OBC_R2_LOCAL_DIR` | A local directory that replaces the bucket. Tests use it |
+| `OBC_R2_LOCAL_DIR` | A local directory that replaces the bucket. Tests use it. When it is set, it must not be empty, and `OBC_R2_BUCKET` must not be set |
 
 `--fixtures` reads the same variables with the prefix `OBC_FIXTURE_R2_` instead. A credential
 goes to rclone only in its environment, never in an argument or a file.
@@ -136,27 +138,34 @@ goes to rclone only in its environment, never in an argument or a file.
 
 | Command | Does |
 | --- | --- |
-| `obc data r2 list PREFIX [--json]` | Lists every object under `PREFIX` |
+| `obc data r2 list PREFIX [--json]` | Lists every object under the folder `PREFIX`. A `PREFIX` that names an object is refused |
 | `obc data r2 stat KEY... [--json]` | Lists the objects of the keys that the bucket holds; a missing key is not an error |
 | `obc data r2 get KEY FILE` | Downloads one object |
 | `obc data r2 put FILE KEY [--cache-control V] [--content-type V] [--immutable]` | Uploads with `--checksum` and the headers given, then verifies |
 | `obc data r2 delete (KEY... \| --prefix P) --reason TEXT [--yes]` | Deletes, see below |
 
-`--json` writes `{"objects": [{"key", "bytes", "modified"}]}`. `modified` is the upload time.
+`--json` writes `{"bucket": TEXT, "objects": [{"key", "bytes", "modified"}]}`. `bucket` names
+the bucket or the local directory, never a credential. `modified` is the upload time.
 
 Rules:
 
-- A key or a prefix is never empty and has no empty, `.` or `..` part. The bucket root is never
-  a target.
+- A key or a prefix is never empty, has no empty, `.` or `..` part, and has no control
+  character. The bucket root is never a target.
 - Verify passes when the object has the size of the file, and the same MD5 when both sides
   report one.
-- `--immutable`: when the key holds an object, the upload stops. It passes when the object has
-  the same bytes and fails when it does not. The object is never replaced.
-- `delete` refuses a key that the bucket does not hold, and then deletes nothing. It prints the
-  plan: each object with its size and upload time. Then it asks in the terminal. Without a
-  terminal it needs `--yes`; without `--yes` it exits 2 and changes nothing.
+- `--immutable`: when the key holds an object, nothing is uploaded and the object is never
+  replaced. The command passes only when the object has the size and the MD5 of the file. It
+  fails when they differ, and when the bucket reports no MD5 for the object.
+- `delete --prefix P` resolves `P` to its keys first. Then explicit keys and a prefix have the
+  same rules: a key that the bucket does not hold is refused, `removed.jsonl` is refused, and
+  then nothing is deleted.
+- `delete` prints the plan: the bucket, and each object with its size and upload time. Then it
+  asks in the terminal. Without a terminal it needs `--yes`; without `--yes` it exits 2 and
+  changes nothing.
 - `delete` appends one line per object to `removed.jsonl` at the bucket root before it deletes:
-  `{"by": USER, "bytes": N, "key": KEY, "reason": TEXT, "removed": "YYYY-MM-DDTHH:MM:SSZ"}`.
+  `{"by": USER, "bytes": N, "key": KEY, "reason": TEXT, "removed": "YYYY-MM-DDTHH:MM:SSZ"}`,
+  with non-ASCII characters as `\uXXXX` escapes. When the delete fails, the error names the
+  keys that the bucket still holds.
 
 The exit status is 0 on success, 1 when R2 or rclone fails or the person answers no, and 2 for a
 usage error or a delete without consent.

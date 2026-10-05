@@ -56,6 +56,23 @@ pub struct Upload<'a> {
     pub immutable: bool,
 }
 
+/// What an upload did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Put {
+    Uploaded,
+    /// An immutable key already held the same bytes; nothing moved.
+    AlreadyThere,
+}
+
+/// How an object compares with a local file.
+enum Comparison {
+    Absent,
+    Same,
+    /// The sizes match, but one side reports no MD5.
+    Unproven,
+    Differs(String),
+}
+
 /// A bucket on R2, or a local directory that stands in for one.
 pub struct Bucket {
     root: String,
@@ -67,22 +84,32 @@ pub struct Bucket {
 impl Bucket {
     /// The bucket that the environment names, or the name of the variable that is missing.
     ///
-    /// `<PREFIX>_LOCAL_DIR` replaces the bucket with a local directory, for tests.
+    /// `<PREFIX>_LOCAL_DIR` replaces the bucket with a local directory, for tests. Once it is
+    /// present, nothing falls through to R2: an empty value, or one beside `<PREFIX>_BUCKET`, is
+    /// an error.
     pub fn from_env(credentials: Credentials) -> Result<Self, String> {
-        Self::from_vars(credentials, |name| std::env::var(name).ok().filter(|value| !value.is_empty()))
+        Self::from_vars(credentials, |name| std::env::var(name).ok())
     }
 
     fn from_vars(credentials: Credentials, var: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let prefix = credentials.prefix();
-        if let Some(dir) = var(&format!("{prefix}_LOCAL_DIR")) {
+        let set = |name: &str| var(name).filter(|value| !value.is_empty());
+        let local = format!("{prefix}_LOCAL_DIR");
+        if let Some(dir) = var(&local) {
+            if dir.is_empty() {
+                return Err(format!("{local} is empty; name a directory, or unset it to use R2"));
+            }
+            if set(&format!("{prefix}_BUCKET")).is_some() {
+                return Err(format!("{local} and {prefix}_BUCKET are both set; unset one"));
+            }
             return Ok(Self::local(Path::new(&dir)));
         }
         let need = |suffix: &str| {
             let name = format!("{prefix}_{suffix}");
-            var(&name).ok_or_else(|| format!("{name} is not set; tools/obc.local or the environment holds it"))
+            set(&name).ok_or_else(|| format!("{name} is not set; tools/obc.local or the environment holds it"))
         };
         let bucket = need("BUCKET")?;
-        let endpoint = match var(&format!("{prefix}_ENDPOINT")) {
+        let endpoint = match set(&format!("{prefix}_ENDPOINT")) {
             Some(endpoint) => endpoint,
             None => format!("https://{}.r2.cloudflarestorage.com", need("ACCOUNT_ID")?),
         };
@@ -120,9 +147,12 @@ impl Bucket {
         &self.describe
     }
 
-    /// Every object under `prefix`.
+    /// Every object under the folder `prefix`. A prefix that names an object is refused.
     pub fn list(&self, prefix: &str) -> Result<Vec<Object>, String> {
         check_key(prefix)?;
+        if self.stat(&[prefix.to_string()])?.contains_key(prefix) {
+            return Err(format!("{prefix} names an object, not a folder; name it as a key"));
+        }
         let rows = self.lsjson(format!("{}/{prefix}", self.root), &[])?;
         rows.into_iter().map(|row| row.object(&format!("{prefix}/"))).collect()
     }
@@ -140,33 +170,65 @@ impl Bucket {
     }
 
     /// Upload `file` to `key`. rclone skips an object that already holds the same checksum.
-    pub fn put(&self, file: &Path, key: &str, upload: &Upload) -> Result<(), String> {
+    pub fn put(&self, file: &Path, key: &str, upload: &Upload) -> Result<Put, String> {
         check_key(key)?;
-        if upload.immutable && !self.stat(&[key.to_string()])?.is_empty() {
-            return self.verify(file, key).map_err(|e| format!("{e}; the object is immutable, so it is not replaced"));
+        if upload.immutable {
+            let rule = "the object is immutable, so it is not replaced";
+            match self.compare(file, key)? {
+                Comparison::Absent => {}
+                Comparison::Same => return Ok(Put::AlreadyThere),
+                Comparison::Differs(why) => return Err(format!("{why}; {rule}")),
+                Comparison::Unproven => {
+                    return Err(format!("{key}: the bucket reports no MD5, so equal bytes cannot be proven; {rule}"))
+                }
+            }
         }
-        self.checked(&put_args(file, &self.path(key), upload)).map(drop)
+        self.checked(&put_args(&absolute(file)?, &self.path(key), upload))?;
+        Ok(Put::Uploaded)
     }
 
     /// Prove that `key` holds the bytes of `file`: the same size, and the same MD5 when both
     /// sides know it.
     pub fn verify(&self, file: &Path, key: &str) -> Result<(), String> {
-        let local = std::path::absolute(file).map_err(|e| format!("{}: {e}", file.display()))?;
-        let rows = self.lsjson(local.display().to_string(), &["--hash", "--hash-type", "MD5"])?;
+        match self.compare(file, key)? {
+            Comparison::Same | Comparison::Unproven => Ok(()),
+            Comparison::Absent => Err(format!("{key}: not in {}", self.describe)),
+            Comparison::Differs(why) => Err(why),
+        }
+    }
+
+    fn compare(&self, file: &Path, key: &str) -> Result<Comparison, String> {
+        let rows = self.lsjson(absolute(file)?.display().to_string(), &["--hash", "--hash-type", "MD5"])?;
         let (want, want_md5) = single(rows).ok_or_else(|| format!("{}: not a file", file.display()))?;
-        let (have, have_md5) = self
-            .stat_rows(&[key.to_string()], true)?
-            .remove(key)
-            .ok_or_else(|| format!("{key}: not in {}", self.describe))?;
+        let Some((have, have_md5)) = self.stat_rows(&[key.to_string()], true)?.remove(key) else {
+            return Ok(Comparison::Absent);
+        };
         if have.bytes != want.bytes {
-            return Err(format!("{key}: holds {} bytes, but {} has {}", have.bytes, file.display(), want.bytes));
+            let why = format!("{key}: holds {} bytes, but {} has {}", have.bytes, file.display(), want.bytes);
+            return Ok(Comparison::Differs(why));
         }
-        if let (Some(have_md5), Some(want_md5)) = (have_md5, want_md5) {
-            if have_md5 != want_md5 {
-                return Err(format!("{key}: MD5 {have_md5} differs from {} ({want_md5})", file.display()));
+        Ok(match (have_md5, want_md5) {
+            (Some(have_md5), Some(want_md5)) if have_md5 != want_md5 => {
+                Comparison::Differs(format!("{key}: MD5 {have_md5} differs from {} ({want_md5})", file.display()))
             }
+            (Some(_), Some(_)) => Comparison::Same,
+            _ => Comparison::Unproven,
+        })
+    }
+
+    /// The objects of `keys`, for a delete. A key that the bucket does not hold is refused, and
+    /// so is [`REMOVAL_LOG`].
+    pub fn plan_delete(&self, keys: &[String]) -> Result<Vec<Object>, String> {
+        if keys.is_empty() {
+            return Err("that names no object in the bucket".into());
         }
-        Ok(())
+        refuse_removal_log(keys.iter().map(String::as_str))?;
+        let found = self.stat(keys)?;
+        let missing: Vec<&str> = keys.iter().filter(|key| !found.contains_key(*key)).map(String::as_str).collect();
+        if !missing.is_empty() {
+            return Err(format!("{} does not hold {}", self.describe, missing.join(", ")));
+        }
+        Ok(found.into_values().collect())
     }
 
     /// Delete `objects`. The removal log goes first: a line for a delete that then fails is a
@@ -175,6 +237,7 @@ impl Bucket {
         if objects.is_empty() {
             return Err("no object to delete".into());
         }
+        refuse_removal_log(objects.iter().map(|object| object.key.as_str()))?;
         for object in objects {
             check_key(&object.key)?;
         }
@@ -193,8 +256,14 @@ impl Bucket {
         let list = scratch.0.join("delete.txt");
         let keys: String = objects.iter().map(|object| format!("{}\n", object.key)).collect();
         std::fs::write(&list, keys).map_err(|e| format!("{}: {e}", list.display()))?;
-        self.checked(&["delete".into(), self.root.clone(), "--files-from-raw".into(), list.display().to_string()])
-            .map(drop)
+        let args = ["delete".into(), self.root.clone(), "--files-from-raw".into(), list.display().to_string()];
+        if let Err(error) = self.checked(&args) {
+            let keys: Vec<String> = objects.iter().map(|object| object.key.clone()).collect();
+            let remain =
+                self.stat(&keys).map_or("unknown".into(), |found| found.into_keys().collect::<Vec<_>>().join(" "));
+            return Err(format!("{error}; still in the bucket: {remain}"));
+        }
+        Ok(())
     }
 
     fn path(&self, key: &str) -> String {
@@ -266,9 +335,22 @@ impl Bucket {
     }
 }
 
-/// A key or a prefix inside the bucket: never the root, and no empty, `.` or `..` part.
+fn refuse_removal_log<'a>(mut keys: impl Iterator<Item = &'a str>) -> Result<(), String> {
+    if keys.any(|key| key == REMOVAL_LOG) {
+        return Err(format!("{REMOVAL_LOG} is the removal history; the client never deletes it"));
+    }
+    Ok(())
+}
+
+/// A local path as rclone must see it: absolute, so that a `:` in it never reads as a remote.
+fn absolute(file: &Path) -> Result<PathBuf, String> {
+    std::path::absolute(file).map_err(|e| format!("{}: {e}", file.display()))
+}
+
+/// A key or a prefix inside the bucket: never the root, no empty, `.` or `..` part, and no
+/// control character, because rclone reads key lists one line per key.
 fn check_key(key: &str) -> Result<(), String> {
-    if key.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+    if key.chars().any(char::is_control) || key.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
         return Err(format!("{key:?} does not name an object or folder inside the bucket"));
     }
     Ok(())
@@ -311,9 +393,14 @@ fn single(rows: Vec<Row>) -> Option<(Object, Option<String>)> {
 }
 
 /// The lines that a delete appends to [`REMOVAL_LOG`]: who removed each object, when, its size
-/// and why. The layout is that of Python's `json.dumps(sort_keys=True)`.
+/// and why. The layout is that of Python's `json.dumps(sort_keys=True)`, ASCII escapes included.
 fn removal_lines(objects: &[Object], reason: &str, by: &str, when: &str) -> String {
-    let text = |value: &str| serde_json::Value::from(value).to_string();
+    let text = |value: &str| {
+        let json = serde_json::Value::from(value).to_string();
+        json.encode_utf16()
+            .map(|u| if u < 0x80 { char::from(u as u8).to_string() } else { format!("\\u{u:04x}") })
+            .collect::<String>()
+    };
     objects
         .iter()
         .map(|object| {
@@ -395,6 +482,17 @@ mod tests {
     }
 
     #[test]
+    fn a_present_local_dir_never_falls_through_to_r2() {
+        let r2 = [("OBC_R2_ACCOUNT_ID", "acct"), ("OBC_R2_ACCESS_KEY_ID", "abc"), ("OBC_R2_SECRET_ACCESS_KEY", "s")];
+        let local = Bucket::from_vars(Credentials::Main, vars(&[("OBC_R2_LOCAL_DIR", "/tmp/bucket")])).unwrap();
+        assert_eq!(local.describe(), "local directory /tmp/bucket");
+        let empty = Bucket::from_vars(Credentials::Main, vars(&[r2[0], r2[1], r2[2], ("OBC_R2_LOCAL_DIR", "")]));
+        assert!(empty.err().unwrap().contains("OBC_R2_LOCAL_DIR is empty"));
+        let both = vars(&[r2[0], r2[1], r2[2], ("OBC_R2_LOCAL_DIR", "/tmp/b"), ("OBC_R2_BUCKET", "maps")]);
+        assert!(Bucket::from_vars(Credentials::Main, both).err().unwrap().contains("both set"));
+    }
+
+    #[test]
     fn upload_sets_checksum_and_cache_headers() {
         let upload = Upload {
             cache_control: Some("public, max-age=31536000, immutable"),
@@ -420,15 +518,15 @@ mod tests {
     fn the_removal_log_keeps_the_python_layout() {
         let object = Object { key: "uploads/a.obcm".into(), bytes: 17, modified: String::new() };
         assert_eq!(
-            removal_lines(&[object], "a stray \"upload\"", "rider", "2026-01-02T03:04:05Z"),
-            "{\"by\": \"rider\", \"bytes\": 17, \"key\": \"uploads/a.obcm\", \"reason\": \"a stray \\\"upload\\\"\", \
-             \"removed\": \"2026-01-02T03:04:05Z\"}\n"
+            removal_lines(&[object], "a stray \"upload\" by Zoë 🚲", "rider", "2026-01-02T03:04:05Z"),
+            "{\"by\": \"rider\", \"bytes\": 17, \"key\": \"uploads/a.obcm\", \"reason\": \"a stray \\\"upload\\\" by \
+             Zo\\u00eb \\ud83d\\udeb2\", \"removed\": \"2026-01-02T03:04:05Z\"}\n"
         );
     }
 
     #[test]
     fn the_bucket_root_is_never_a_key() {
-        for key in ["", "/", "a//b", "./a", "a/..", "/a"] {
+        for key in ["", "/", "a//b", "./a", "a/..", "/a", "a\nb", "a\tb"] {
             assert!(check_key(key).is_err(), "{key:?}");
         }
         assert!(check_key("cell-catalog/cells").is_ok());

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use clap::{Args, Subcommand};
 use serde::Serialize;
 
-use obc_data::r2::{Bucket, Credentials, Object, Upload, REMOVAL_LOG};
+use obc_data::r2::{Bucket, Credentials, Object, Put, Upload, REMOVAL_LOG};
 
 use crate::{cells, print_json, print_table, Failure};
 
@@ -67,15 +67,21 @@ enum Action {
 pub fn run(r2: R2) -> Result<(), Failure> {
     let bucket = Bucket::from_env(if r2.fixtures { Credentials::Fixtures } else { Credentials::Main })?;
     match r2.action {
-        Action::List { prefix, json } => print_objects(&bucket.list(&prefix)?, json),
-        Action::Stat { keys, json } => print_objects(&bucket.stat(&keys)?.into_values().collect::<Vec<_>>(), json),
+        Action::List { prefix, json } => print_objects(&bucket, &bucket.list(&prefix)?, json),
+        Action::Stat { keys, json } => {
+            print_objects(&bucket, &bucket.stat(&keys)?.into_values().collect::<Vec<_>>(), json)
+        }
         Action::Get { key, file } => Ok(bucket.get(&key, &file)?),
         Action::Put { file, key, cache_control, content_type, immutable } => {
             let upload =
                 Upload { cache_control: cache_control.as_deref(), content_type: content_type.as_deref(), immutable };
-            bucket.put(&file, &key, &upload)?;
-            bucket.verify(&file, &key)?;
-            println!("{key}: uploaded and verified");
+            match bucket.put(&file, &key, &upload)? {
+                Put::Uploaded => {
+                    bucket.verify(&file, &key)?;
+                    println!("{key}: uploaded and verified");
+                }
+                Put::AlreadyThere => println!("{key}: already holds these bytes; nothing uploaded"),
+            }
             Ok(())
         }
         Action::Delete { keys, prefix, reason, yes } => delete(&bucket, keys, prefix, &reason, yes),
@@ -86,25 +92,14 @@ fn delete(bucket: &Bucket, keys: Vec<String>, prefix: Option<String>, reason: &s
     if reason.trim().is_empty() {
         return Err(Failure { status: 2, message: format!("--reason is empty; {REMOVAL_LOG} keeps why objects go") });
     }
-    let objects = match prefix {
-        Some(prefix) => bucket.list(&prefix)?,
-        None => {
-            let found = bucket.stat(&keys)?;
-            let missing: Vec<&str> = keys.iter().filter(|key| !found.contains_key(*key)).map(String::as_str).collect();
-            if !missing.is_empty() {
-                return Err(
-                    format!("{} does not hold {}; nothing was deleted", bucket.describe(), missing.join(", ")).into()
-                );
-            }
-            found.into_values().collect()
-        }
+    let keys = match prefix {
+        Some(prefix) => bucket.list(&prefix)?.into_iter().map(|object| object.key).collect(),
+        None => keys,
     };
-    if objects.is_empty() {
-        return Err("that names no object in the bucket; nothing was deleted".into());
-    }
+    let objects = bucket.plan_delete(&keys).map_err(|e| format!("{e}; nothing was deleted"))?;
     let bytes: u64 = objects.iter().map(|object| object.bytes).sum();
-    println!("{}: {} object(s), {bytes} bytes to delete", bucket.describe(), objects.len());
-    print_objects(&objects, false)?;
+    println!("{} object(s), {bytes} bytes to delete", objects.len());
+    print_objects(bucket, &objects, false)?;
     if !yes {
         if !std::io::stdin().is_terminal() {
             return Err(Failure { status: 2, message: "without a terminal, pass --yes; nothing was deleted".into() });
@@ -122,14 +117,16 @@ fn delete(bucket: &Bucket, keys: Vec<String>, prefix: Option<String>, reason: &s
     Ok(())
 }
 
-fn print_objects(objects: &[Object], json: bool) -> Result<(), Failure> {
+fn print_objects(bucket: &Bucket, objects: &[Object], json: bool) -> Result<(), Failure> {
     if json {
         #[derive(Serialize)]
         struct Listing<'a> {
+            bucket: &'a str,
             objects: &'a [Object],
         }
-        return print_json(&Listing { objects });
+        return print_json(&Listing { bucket: bucket.describe(), objects });
     }
+    println!("{}", bucket.describe());
     let mut table = vec![cells(["KEY", "BYTES", "MODIFIED"])];
     table.extend(objects.iter().map(|o| vec![o.key.clone(), o.bytes.to_string(), o.modified.clone()]));
     print_table(&table);

@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use obc_data::r2::{Bucket, Upload, REMOVAL_LOG};
+use obc_data::r2::{Bucket, Put, Upload, REMOVAL_LOG};
 
 struct Temp(PathBuf);
 
@@ -33,7 +33,7 @@ impl Drop for Temp {
 }
 
 fn put(bucket: &Bucket, file: &Path, key: &str) {
-    bucket.put(file, key, &Upload::default()).unwrap();
+    assert_eq!(bucket.put(file, key, &Upload::default()).unwrap(), Put::Uploaded);
 }
 
 #[test]
@@ -53,7 +53,7 @@ fn verify_detects_a_mismatch_and_an_immutable_key_keeps_its_bytes() {
 
     let immutable = Upload { immutable: true, ..Upload::default() };
     assert!(bucket.put(&same_size, "cells/a.obcm", &immutable).unwrap_err().contains("immutable"));
-    bucket.put(&original, "cells/a.obcm", &immutable).unwrap();
+    assert_eq!(bucket.put(&original, "cells/a.obcm", &immutable).unwrap(), Put::AlreadyThere);
     assert_eq!(std::fs::read(temp.bucket().join("cells/a.obcm")).unwrap(), b"cell bytes");
 }
 
@@ -100,9 +100,15 @@ fn delete_with_yes_appends_to_the_removal_log_then_deletes() {
     put(&bucket, &temp.file("keep", b"keep"), "uploads/keep.obcm");
     put(&bucket, &temp.file("log", b"{\"key\": \"uploads/old.obcm\"}\n"), REMOVAL_LOG);
 
-    let missing = obc_data_r2(&temp, &["delete", "uploads/stray.obcm", "uploads/gone", "--reason", "x", "--yes"]);
-    assert_eq!(missing.status.code(), Some(1));
-    assert!(temp.bucket().join("uploads/stray.obcm").exists(), "a key the bucket lacks deletes nothing");
+    for refused in [
+        &["delete", "uploads/stray.obcm", "uploads/gone", "--reason", "x", "--yes"][..],
+        &["delete", "uploads/stray.obcm", REMOVAL_LOG, "--reason", "x", "--yes"],
+        &["delete", "--prefix", "uploads/stray.obcm", "--reason", "x", "--yes"],
+    ] {
+        assert_eq!(obc_data_r2(&temp, refused).status.code(), Some(1), "{refused:?}");
+        assert!(temp.bucket().join("uploads/stray.obcm").exists(), "{refused:?} deletes nothing");
+        assert!(temp.bucket().join(REMOVAL_LOG).exists());
+    }
 
     let out = obc_data_r2(&temp, &["delete", "uploads/stray.obcm", "--reason", "a stray upload", "--yes"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));

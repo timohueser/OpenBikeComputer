@@ -300,8 +300,8 @@ inspect *args:
 # back the confirmation that plan printed — a count and a digest of the whole key list —
 # so neither a stale command line nor a bucket that moved under it deletes anything.
 # The catalogue root, any object the live catalogue names (cells included, through their
-# band indexes), the reference index and `removed.jsonl` each need `--i-mean-it <key>` on
-# top. A catalogue this cannot read is a refusal. Every removal is appended to
+# band indexes) and the reference index each need `--i-mean-it <key>` on top; nothing
+# deletes `removed.jsonl`. A catalogue this cannot read is a refusal. Every removal is appended to
 # `removed.jsonl` at the bucket root.
 # Delete objects from the R2 maps bucket, with a plan first. Args: rm <KEY>… | rm --prefix P
 [group('maps')]

@@ -15,10 +15,11 @@ def command(*args):
 
 
 def r2_put(path, key, *options):
-    """Upload one file through the R2 client of host/obc-data, which also verifies it."""
-    root = Path(__file__).resolve().parents[3]
-    subprocess.run(["cargo", "run", "--quiet", "--locked", "--manifest-path", str(root / "Cargo.toml"),
-                    "-p", "obc-data", "--", "r2", "put", *options, str(path), key], check=True)
+    """Upload one file through the R2 client of host/obc-data, which also verifies it.
+
+    The workflow builds the client in a step without secrets; this step only runs the binary."""
+    client = Path(__file__).resolve().parents[3] / "target" / "debug" / "obc-data"
+    subprocess.run([str(client), "r2", "put", *options, str(path), key], check=True)
 
 
 def release_notes(candidate, repo):
