@@ -455,7 +455,8 @@ def package_build_input(path: str, package: Package) -> bool:
     if not path.startswith(prefix):
         return False
     relative = path[len(prefix):]
-    return relative != "src/main.rs" and not relative.endswith(".md") and not relative.startswith(
+    parts = Path(relative).parts
+    return "tests" not in parts and parts[-1] != "tests.rs" and relative != "src/main.rs" and not relative.endswith(".md") and not relative.startswith(
         ("tests/", "examples/", "benches/", "src/bin/")
     )
 

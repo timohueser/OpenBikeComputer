@@ -508,6 +508,7 @@ class ShippedPlanTests(unittest.TestCase):
             "apps/route-server/tests/http.rs", "host/route-engine/README.md",
             "apps/planner-search/server.mjs", "apps/planner-search/tests/native.test.mjs",
             "apps/planner-search/query/train.py", "firmware/obc-crc/tests/crc.rs",
+            "apps/obc-ios-host/src/tests.rs", "host/obc-host-core/src/flat_routes/tests.rs",
         ]
         for path in unrelated:
             with self.subTest(path=path):
