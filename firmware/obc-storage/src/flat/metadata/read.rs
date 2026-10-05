@@ -94,23 +94,8 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
         store: &FlatStore<D>,
         mut reader: Option<&mut Self>,
     ) -> Result<[bool; MAX_RIDES], Error> {
-        let mut keep = [false; MAX_RIDES];
         let rows = reader.as_ref().map_or(0, |r| r.layout.rows);
-        let mut i = 0;
-        let mut row = if rows != 0 { Some(reader.as_mut().unwrap().row(0)?) } else { None };
-        for entry in store.entries() {
-            while row.is_some_and(|row| row.id < entry.id) {
-                i += 1;
-                row = if i < rows { Some(reader.as_mut().unwrap().row(i)?) } else { None };
-            }
-            if let Some(row) = row {
-                keep[i] |= row.matches(entry);
-            }
-        }
-        if !store.entries_ok() {
-            return Err(Error::Store(StoreError::Media));
-        }
-        Ok(keep)
+        scan_rows(store, rows, &mut |i| reader.as_mut().unwrap().row(i), None).map(|(keep, _)| keep)
     }
 
     #[inline(never)]

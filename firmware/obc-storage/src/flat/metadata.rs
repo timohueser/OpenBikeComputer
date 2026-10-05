@@ -222,12 +222,21 @@ impl<'a> Image<'a> {
         self.buffer[10..12].copy_from_slice(&(count as u16).to_le_bytes());
     }
 
+    fn matching_rows<D: BlockDevice>(
+        &self,
+        store: &FlatStore<D>,
+        target: Option<&EntryMeta>,
+    ) -> Result<([bool; MAX_RIDES], bool), Error> {
+        let rows = self.bytes()[HEADER_LEN..self.rows_end()].as_chunks::<ROW_LEN>().0;
+        scan_rows(store, rows.len(), &mut |i| Ok(Row::from_bytes(&rows[i])), target)
+    }
+
     /// Remove stale rows only after a complete, successful catalog scan.
     pub fn reconcile<D: BlockDevice>(&mut self, store: &FlatStore<D>) -> Result<bool, Error> {
         if self.store_id() != store.store_id() {
             return Err(Error::WrongStore);
         }
-        let (keep, _) = scan_rows(store, self, None)?;
+        let (keep, _) = self.matching_rows(store, None)?;
         let old_len = self.len;
         let rows_end = self.rows_end();
         let mut dest = HEADER_LEN;
@@ -248,25 +257,21 @@ impl<'a> Image<'a> {
 #[inline(never)]
 fn scan_rows<D: BlockDevice>(
     store: &FlatStore<D>,
-    image: &Image<'_>,
+    rows: usize,
+    read: &mut dyn FnMut(usize) -> Result<Row, Error>,
     target: Option<&EntryMeta>,
 ) -> Result<([bool; MAX_RIDES], bool), Error> {
     let mut found = [false; MAX_RIDES];
     let mut present = false;
-    let rows = image.bytes()[HEADER_LEN..image.rows_end()].as_chunks::<ROW_LEN>().0;
     let mut i = 0;
+    let mut row = if rows != 0 { Some(read(0)?) } else { None };
     for entry in store.entries() {
-        while i < rows.len() && u64::from_le_bytes(rows[i][..8].try_into().unwrap()) < entry.id.0 {
+        while row.is_some_and(|row| row.id < entry.id) {
             i += 1;
+            row = if i < rows { Some(read(i)?) } else { None };
         }
-        if i < rows.len() {
-            let bytes = &rows[i];
-            let matched = entry.kind == ObjectKind::Ride
-                && entry.flags == EntryFlags::NONE
-                && u64::from_le_bytes(bytes[..8].try_into().unwrap()) == entry.id.0
-                && u64::from_le_bytes(bytes[8..16].try_into().unwrap()) == entry.revision.0
-                && u64::from_le_bytes(bytes[16..24].try_into().unwrap()) == entry.payload_len
-                && u32::from_le_bytes(bytes[24..28].try_into().unwrap()) == entry.payload_crc;
+        if let Some(row) = row {
+            let matched = row.matches(entry);
             found[i] |= matched;
             present |= matched && target == Some(&entry);
         }
@@ -320,7 +325,7 @@ fn publish_image<D: BlockDevice>(
     if singleton(store)? != head {
         return Err(Error::Stale);
     }
-    let (found, target_present) = scan_rows(store, image, target.as_ref())?;
+    let (found, target_present) = image.matching_rows(store, target.as_ref())?;
     if found.iter().take(image.rows().count()).any(|&v| !v) || (target.is_some() && !target_present) {
         return Err(Error::Stale);
     }
