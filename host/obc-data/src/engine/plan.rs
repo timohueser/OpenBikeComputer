@@ -6,7 +6,7 @@ use std::path::Path;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{order, prepare, reusable, select, selection, Codes, Input, Receipt, Selection, Step};
+use super::{order, prepare, recipe, reusable, select, selection, Codes, Input, Receipt, Selection, Step};
 use crate::store::{sorted, Store};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -24,8 +24,6 @@ pub struct Plan {
 pub struct Group {
     /// The step of its first build. It names the group only in the plan that it comes from.
     pub id: String,
-    /// Why a run cannot build it on this machine: a tool that a build runs is not on PATH.
-    pub blocked: Option<String>,
     pub fetches: Vec<Fetch>,
     /// In dependency order.
     pub builds: Vec<Build>,
@@ -50,6 +48,8 @@ pub struct Fetch {
 #[schemars(rename = "PlanBuild")]
 pub struct Build {
     pub step: String,
+    /// The key of the step without the digests of its inputs.
+    pub recipe: String,
     /// `None` until the layers and snapshots that it reads are in the store.
     pub key: Option<String>,
     pub estimate: Option<Estimate>,
@@ -63,28 +63,54 @@ pub struct Estimate {
     pub peak_rss_bytes: Option<u64>,
 }
 
+/// A step in dependency order, with what the store has for it.
+pub(super) struct Walked<'a> {
+    pub step: &'a Step,
+    /// The code hash.
+    pub code: String,
+    /// The snapshot inputs whose files the store lacks.
+    pub fetches: Vec<Fetch>,
+    /// `None` until the store has every snapshot and layer that the step reads.
+    pub key: Option<String>,
+    /// The layer of `key` in the store, with all of its objects.
+    pub stored: Option<Receipt>,
+}
+
+/// Each step in dependency order, with its key and its stored layer. `plan` and
+/// `release::release` reuse the same layers.
+pub(super) fn walk<'a>(store: &Store, root: &Path, steps: &'a [Step]) -> Result<Vec<Walked<'a>>, String> {
+    let mut codes = Codes::default();
+    let mut reused: HashMap<&str, Receipt> = HashMap::new();
+    let mut walked = Vec::new();
+    for step in order(steps)? {
+        let named = |e: String| format!("step `{}`: {e}", step.name);
+        let code = codes.get(root, &step.code).map_err(named)?.0.clone();
+        let fetches = missing(store, step)?;
+        let (mut key, mut stored) = (None, None);
+        if fetches.is_empty() && step.layers().all(|name| reused.contains_key(name)) {
+            let (receipt, _) = prepare(store, step, &reused, &code).map_err(named)?;
+            stored = reusable(store, &receipt.key)?;
+            if let Some(stored) = &stored {
+                reused.insert(&step.name, stored.clone());
+            }
+            key = Some(receipt.key);
+        }
+        walked.push(Walked { step, code, fetches, key, stored });
+    }
+    Ok(walked)
+}
+
 /// What building `steps` needs: a fetch for each snapshot input whose files the store lacks, and a
 /// build for each layer whose key has no layer in the store, or whose key waits for a fetch or
 /// another build.
 pub fn plan(store: &Store, root: &Path, steps: &[Step]) -> Result<Plan, String> {
     let receipts = store.layers()?;
-    let mut codes = Codes::default();
-    let mut reused: HashMap<&str, Receipt> = HashMap::new();
     let mut builds: Vec<(&Step, Build, Vec<Fetch>)> = Vec::new();
-    for step in order(steps)? {
-        let fetches = missing(store, step)?;
-        let waits = step.layers().any(|name| !reused.contains_key(name));
-        let mut key = None;
-        if fetches.is_empty() && !waits {
-            let (receipt, _) = prepare(store, step, &reused, &codes.get(root, &step.code)?.0)
-                .map_err(|e| format!("step `{}`: {e}", step.name))?;
-            if let Some(stored) = reusable(store, &receipt.key)? {
-                reused.insert(&step.name, stored);
-                continue;
-            }
-            key = Some(receipt.key);
+    for Walked { step, code, fetches, key, stored } in walk(store, root, steps)? {
+        if stored.is_none() {
+            let (recipe, estimate) = (recipe(step, &code), estimate(&receipts, step));
+            builds.push((step, Build { step: step.name.clone(), recipe, key, estimate }, fetches));
         }
-        builds.push((step, Build { step: step.name.clone(), key, estimate: estimate(&receipts, step) }, fetches));
     }
 
     // A build joins the builds whose layers it reads.
@@ -98,15 +124,12 @@ pub fn plan(store: &Store, root: &Path, steps: &[Step]) -> Result<Plan, String> 
     }
     let mut groups: Vec<Group> = Vec::new();
     let mut group_of: HashMap<usize, usize> = HashMap::new();
-    for (i, (step, build, fetches)) in builds.iter().enumerate() {
+    for (i, (_, build, fetches)) in builds.iter().enumerate() {
         let g = *group_of.entry(find(&mut parent, i)).or_insert_with(|| {
-            groups.push(Group { id: build.step.clone(), blocked: None, fetches: Vec::new(), builds: Vec::new() });
+            groups.push(Group { id: build.step.clone(), fetches: Vec::new(), builds: Vec::new() });
             groups.len() - 1
         });
         groups[g].builds.push(build.clone());
-        if let Some(tool) = step.tools.iter().find(|tool| !on_path(tool)) {
-            groups[g].blocked.get_or_insert(format!("{tool} is not on PATH"));
-        }
         for fetch in fetches {
             add_fetch(&mut groups[g].fetches, fetch);
         }
@@ -117,26 +140,9 @@ pub fn plan(store: &Store, root: &Path, steps: &[Step]) -> Result<Plan, String> 
     Ok(Plan { groups })
 }
 
-/// Whether a directory of PATH has an executable file named `tool`.
-fn on_path(tool: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else { return false };
-    std::env::split_paths(&path).any(|dir| executable(&dir.join(tool)))
-}
-
-#[cfg(unix)]
-fn executable(file: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    file.metadata().is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-}
-
-#[cfg(not(unix))]
-fn executable(file: &Path) -> bool {
-    file.with_extension("exe").is_file()
-}
-
 impl Plan {
     /// Whether a run of `self` does the same work as a run of `other`: the same groups, fetches,
-    /// keys and blocks. Estimates and fetch sizes may differ.
+    /// recipes and keys. Estimates and fetch sizes may differ.
     pub fn same_work(&self, other: &Plan) -> bool {
         let work = |plan: &Plan| {
             let mut plan = plan.clone();
@@ -282,20 +288,6 @@ mod tests {
     fn outline<'a>(plan: &'a Plan) -> Vec<(&'a str, Vec<&'a str>)> {
         let outline = |group: &'a Group| (group.id.as_str(), group.builds.iter().map(|b| b.step.as_str()).collect());
         plan.groups.iter().map(outline).collect()
-    }
-
-    #[test]
-    fn a_tool_that_is_not_on_path_blocks_its_group_and_is_not_in_the_key() {
-        let fixture = fixture("plan-tool");
-        let before = fixture.plan(&steps("1")).unwrap();
-        let mut tooled = steps("1");
-        tooled[1].tools = vec!["obc-no-such-tool".into()];
-        let plan = fixture.plan(&tooled).unwrap();
-        let blocked: Vec<Option<&str>> = plan.groups.iter().map(|group| group.blocked.as_deref()).collect();
-        assert_eq!(blocked, [Some("obc-no-such-tool is not on PATH"), None]);
-        assert!(!plan.same_work(&before), "a block is work");
-        let keys = |plan: &Plan| plan.builds().map(|build| build.key.clone()).collect::<Vec<_>>();
-        assert_eq!(keys(&plan), keys(&before));
     }
 
     #[test]

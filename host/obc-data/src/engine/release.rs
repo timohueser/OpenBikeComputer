@@ -2,14 +2,15 @@
 //! manifest, and the manifest holds no cost of a build, so two machines that build the same
 //! layers give the same id.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{order, prepare, reusable, sorted, Codes, Input, InputRecord, LayerFile, Receipt, Step};
-use crate::store::{sha256_hex, write_atomic, Store};
+use super::plan::walk;
+use super::{sorted, Input, InputRecord, LayerFile, Receipt, Step};
+use crate::store::{self, sha256_hex, write_atomic, Store};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -40,7 +41,7 @@ pub struct Layer {
 #[serde(deny_unknown_fields)]
 pub struct SnapshotRead {
     pub version: String,
-    /// The `NAME=VALUE` of the fetch, in any order.
+    /// The `NAME=VALUE` of the fetch, sorted.
     pub params: Vec<(String, String)>,
 }
 
@@ -49,7 +50,7 @@ impl Layer {
     pub fn new(receipt: &Receipt, step: &Step) -> Self {
         let snapshots = step.inputs.iter().filter_map(|input| match input {
             Input::Snapshot { source, version, params, .. } => {
-                Some((source.clone(), SnapshotRead { version: version.clone(), params: params.clone() }))
+                Some((source.clone(), SnapshotRead { version: version.clone(), params: store::sorted(params) }))
             }
             Input::Layer(_) => None,
         });
@@ -105,23 +106,10 @@ impl Release {
 /// layer of another product.
 pub fn release(store: &Store, root: &Path, product: &str, steps: &[Step]) -> Result<Option<Release>, String> {
     let prefix = format!("{product}/");
-    let mut codes = Codes::default();
-    let mut built: HashMap<&str, Receipt> = HashMap::new();
-    for step in order(steps)? {
-        if !step.layers().all(|name| built.contains_key(name)) {
-            continue;
-        }
-        let code = &codes.get(root, &step.code).map_err(|e| format!("step `{}`: {e}", step.name))?.0;
-        // A step that cannot be prepared, such as one whose snapshot is not fetched, is not built.
-        let Ok((receipt, _)) = prepare(store, step, &built, code) else { continue };
-        if let Some(stored) = reusable(store, &receipt.key)? {
-            built.insert(&step.name, stored);
-        }
-    }
     let mut layers = Vec::new();
-    for step in steps.iter().filter(|step| step.name.starts_with(&prefix)) {
-        let Some(receipt) = built.get(step.name.as_str()) else { return Ok(None) };
-        layers.push(Layer::new(receipt, step));
+    for walked in walk(store, root, steps)?.iter().filter(|walked| walked.step.name.starts_with(&prefix)) {
+        let Some(receipt) = &walked.stored else { return Ok(None) };
+        layers.push(Layer::new(receipt, walked.step));
     }
     layers.sort_by(|a, b| a.step.cmp(&b.step));
     Ok(Some(Release { product: product.into(), layers }))

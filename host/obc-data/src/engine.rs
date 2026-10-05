@@ -31,8 +31,6 @@ pub struct Step {
     pub code: Code,
     /// Paths in the output directory: a file, or a directory whose every file is part of the layer.
     pub outputs: Vec<String>,
-    /// The ids of the `kind = "tool"` sources that the step runs from PATH. They are not in the key.
-    pub tools: Vec<String>,
     pub run: Run,
 }
 
@@ -162,6 +160,34 @@ pub fn key(receipt: &Receipt) -> String {
         "options": receipt.options,
         "code": receipt.code,
         "outputs": receipt.outputs,
+    });
+    sha256_hex(&serde_json::to_vec(&sorted(spec)).expect("JSON values serialize"))
+}
+
+/// The recipe of a step with code hash `code`: its key without the digests of its inputs. A plan
+/// holds it for each build, also for one whose key waits for a fetch or another build.
+pub fn recipe(step: &Step, code: &str) -> String {
+    let mut inputs: Vec<Value> = step
+        .inputs
+        .iter()
+        .map(|input| match input {
+            Input::Snapshot { source, version, params, files } => {
+                let mut files = files.clone();
+                files.sort();
+                let params = crate::store::sorted(params);
+                serde_json::json!({"kind": InputKind::Snapshot, "name": source, "version": version, "params": params, "files": files})
+            }
+            Input::Layer(name) => serde_json::json!({"kind": InputKind::Layer, "name": name}),
+        })
+        .collect();
+    inputs.sort_by_key(|input| input.to_string());
+    let spec = serde_json::json!({
+        "step": step.name,
+        "command": step.command(),
+        "inputs": inputs,
+        "options": step.options,
+        "code": code,
+        "outputs": step.sorted_outputs(),
     });
     sha256_hex(&serde_json::to_vec(&sorted(spec)).expect("JSON values serialize"))
 }
@@ -677,15 +703,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     }
 
     pub(crate) fn step(name: &str, inputs: Vec<Input>, code: Code, output: &str, run: Run) -> Step {
-        Step {
-            name: name.into(),
-            inputs,
-            options: json!({}),
-            code,
-            outputs: vec![output.into()],
-            tools: Vec::new(),
-            run,
-        }
+        Step { name: name.into(), inputs, options: json!({}), code, outputs: vec![output.into()], run }
     }
 
     pub(crate) fn steps_crate() -> Code {

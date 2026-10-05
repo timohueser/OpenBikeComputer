@@ -75,7 +75,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 store_path() { # store_path SOURCE [NAME=VALUE...]: the store path of the source's one file
-    (cd "$REPO_ROOT" && cargo run --quiet --locked -p obc-data-steps -- fetch "$@")
+    (cd "$REPO_ROOT" && cargo run --quiet --locked -p obc-data -- fetch "$@")
 }
 
 repack() { # repack <name> <source_pbf> <bbox> [terrain_obcd]

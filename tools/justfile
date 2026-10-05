@@ -429,7 +429,7 @@ bake *args:
         }
         # The catalog prefix only: the bucket also holds the terrain reference archive
         # (host/obc-dem/reference), which is days of ingest and no part of a bake.
-        client=(cargo run --quiet --locked --manifest-path "$OBC_ROOT/Cargo.toml" -p obc-data-steps -- r2)
+        client=(cargo run --quiet --locked --manifest-path "$OBC_ROOT/Cargo.toml" -p obc-data -- r2)
         _say "checking live catalog before cleanup: $prefix/catalog.json"
         [[ -n "$("${client[@]}" stat "$prefix/catalog.json" --json | grep '"key"')" ]] || {
           _err "catalog is not readable at the configured prefix; refusing to purge it"

@@ -1,8 +1,9 @@
 //! The R2 client against rclone's `local` backend: a temporary directory stands in for the bucket.
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
-use obc_data::r2::{Bucket, Put, Upload};
+use obc_data::r2::{Bucket, Put, Upload, REMOVAL_LOG};
 
 struct Temp(PathBuf);
 
@@ -66,4 +67,74 @@ fn stat_tells_an_absent_object_from_an_empty_one() {
     assert_eq!(found.keys().collect::<Vec<_>>(), ["cells/empty.obcm"]);
     assert_eq!(found["cells/empty.obcm"].bytes, 0);
     assert!(bucket.list("nothing/here").unwrap().is_empty());
+}
+
+fn obc_data_r2(temp: &Temp, args: &[&str]) -> std::process::Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_obc-data-plumbing"));
+    // A credential from tools/obc.local must neither reach the child nor clash with the local bucket.
+    for (name, _) in std::env::vars_os() {
+        let text = name.to_string_lossy();
+        if text.starts_with("OBC_R2_") || text.starts_with("OBC_FIXTURE_R2_") {
+            command.env_remove(&name);
+        }
+    }
+    command.arg("r2").args(args).env("OBC_R2_LOCAL_DIR", temp.bucket()).stdin(Stdio::null()).output().unwrap()
+}
+
+#[test]
+fn delete_without_a_terminal_needs_yes_and_changes_nothing() {
+    let temp = Temp::new("refuse");
+    let bucket = Bucket::local(&temp.bucket());
+    put(&bucket, &temp.file("stray", b"stray"), "uploads/stray.obcm");
+
+    let out = obc_data_r2(&temp, &["delete", "uploads/stray.obcm", "--reason", "a stray upload"]);
+    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("uploads/stray.obcm"), "the plan is shown");
+
+    // With `--json`, standard output is only the error, also for an argument that clap refuses.
+    for (args, code) in [
+        (&["delete", "uploads/stray.obcm", "--reason", "a stray upload", "--json"][..], "no_terminal"),
+        (&["delete", "uploads/stray.obcm", "--json"], "usage"),
+    ] {
+        let out = obc_data_r2(&temp, args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        let error: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(error["error"]["code"], code, "{error}");
+        assert!(!error["error"]["message"].as_str().unwrap().is_empty() && error["error"]["fix"].is_string());
+    }
+    assert!(temp.bucket().join("uploads/stray.obcm").exists());
+    assert!(!temp.bucket().join(REMOVAL_LOG).exists());
+}
+
+#[test]
+fn delete_with_yes_appends_to_the_removal_log_then_deletes() {
+    let temp = Temp::new("delete");
+    let bucket = Bucket::local(&temp.bucket());
+    put(&bucket, &temp.file("stray", b"stray"), "uploads/stray.obcm");
+    put(&bucket, &temp.file("keep", b"keep"), "uploads/keep.obcm");
+    put(&bucket, &temp.file("log", b"{\"key\": \"uploads/old.obcm\"}\n"), REMOVAL_LOG);
+
+    for refused in [
+        &["delete", "uploads/stray.obcm", "uploads/gone", "--reason", "x", "--yes"][..],
+        &["delete", "uploads/stray.obcm", REMOVAL_LOG, "--reason", "x", "--yes"],
+        &["delete", "--prefix", "uploads/stray.obcm", "--reason", "x", "--yes"],
+    ] {
+        assert_eq!(obc_data_r2(&temp, refused).status.code(), Some(1), "{refused:?}");
+        assert!(temp.bucket().join("uploads/stray.obcm").exists(), "{refused:?} deletes nothing");
+        assert!(temp.bucket().join(REMOVAL_LOG).exists());
+    }
+
+    let out = obc_data_r2(&temp, &["delete", "uploads/stray.obcm", "--reason", "a stray upload", "--yes"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!temp.bucket().join("uploads/stray.obcm").exists());
+    assert!(temp.bucket().join("uploads/keep.obcm").exists());
+
+    let log = std::fs::read_to_string(temp.bucket().join(REMOVAL_LOG)).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(lines[0], "{\"key\": \"uploads/old.obcm\"}", "the history is appended to");
+    let record: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+    assert_eq!(record["key"], "uploads/stray.obcm");
+    assert_eq!(record["bytes"], 5);
+    assert_eq!(record["reason"], "a stray upload");
+    assert!(record["removed"].as_str().unwrap().ends_with('Z') && record["by"].is_string());
 }
