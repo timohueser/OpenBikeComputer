@@ -556,8 +556,19 @@ impl ContextMenu {
     }
 }
 
+macro_rules! row_tables {
+    ($table:ty; $($(#[$attr:meta])* $vis:vis static $name:ident = $value:expr;)+) => {
+        $($(#[$attr])* $vis static $name: $table = $value;)+
+        #[cfg(test)]
+        pub(super) const TABLES: &[&$table] = &[$(&$name),+];
+    };
+}
+
+pub(super) use row_tables;
+
+row_tables! { ContextMenu;
 /// The ride context: the secondary actions the four riding views share.
-pub static RIDE: ContextMenu = ContextMenu {
+pub static RIDE = ContextMenu {
     rows: &[
         ContextRow { label: Msg::AssistantTitle, action: ContextAction::Assistant },
         ContextRow { label: Msg::RideContextDetour, action: ContextAction::Detour },
@@ -568,7 +579,7 @@ pub static RIDE: ContextMenu = ContextMenu {
 /// The map context: the ride's secondary actions, in the order every riding view offers them, plus
 /// the one row only the Map has a referent for. Its first rows are [`RIDE`]'s, pinned equal by
 /// test, so a rider reaches the same actions by the same steps from either screen.
-pub static MAP: ContextMenu = ContextMenu {
+pub static MAP = ContextMenu {
     rows: &[
         ContextRow { label: Msg::AssistantTitle, action: ContextAction::Assistant },
         ContextRow { label: Msg::RideContextDetour, action: ContextAction::Detour },
@@ -577,7 +588,7 @@ pub static MAP: ContextMenu = ContextMenu {
     ],
 };
 
-pub static FIND_PLACE: ContextMenu = ContextMenu {
+pub static FIND_PLACE = ContextMenu {
     rows: &[
         ContextRow { label: Msg::FindContextHideClosed, action: ContextAction::Toggle(ContextToggle::FindHideClosed) },
         ContextRow { label: Msg::FindContextResults, action: ContextAction::Edit(ContextValue::FindResults) },
@@ -586,7 +597,7 @@ pub static FIND_PLACE: ContextMenu = ContextMenu {
 
 /// The map display sheet: the switches that change nothing but what the Map draws, and the only
 /// home any of them has.
-pub static MAP_DISPLAY: ContextMenu = ContextMenu {
+pub static MAP_DISPLAY = ContextMenu {
     rows: &[
         ContextRow { label: Msg::MapContextClock, action: ContextAction::Toggle(ContextToggle::MapClock) },
         ContextRow { label: Msg::MapContextScaleBar, action: ContextAction::Toggle(ContextToggle::MapScaleBar) },
@@ -595,7 +606,7 @@ pub static MAP_DISPLAY: ContextMenu = ContextMenu {
     ],
 };
 
-pub static MAP_ICONS: ContextMenu = ContextMenu {
+pub static MAP_ICONS = ContextMenu {
     rows: &[
         ContextRow { label: Msg::MenuPeaks, action: ContextAction::Toggle(ContextToggle::MapPeaks) },
         ContextRow { label: Msg::MapContextLandmarks, action: ContextAction::Toggle(ContextToggle::MapLandmarks) },
@@ -604,7 +615,7 @@ pub static MAP_ICONS: ContextMenu = ContextMenu {
     ],
 };
 
-pub static MAP_POI_CATEGORIES: ContextMenu = ContextMenu {
+pub static MAP_POI_CATEGORIES = ContextMenu {
     rows: &[
         ContextRow {
             label: Msg::PoiCatWater,
@@ -637,15 +648,15 @@ pub static MAP_POI_CATEGORIES: ContextMenu = ContextMenu {
     ],
 };
 
-pub(crate) static ASSISTANT_RESUME: ContextMenu =
+pub(crate) static ASSISTANT_RESUME =
     ContextMenu { rows: &[ContextRow { label: Msg::AssistantResumeRoute, action: ContextAction::ResumeJourney }] };
 
-pub static ASSISTANT_VISIT: ContextMenu =
+pub static ASSISTANT_VISIT =
     ContextMenu { rows: &[ContextRow { label: Msg::AssistantCurrentVisit, action: ContextAction::CurrentVisit }] };
 
 /// The Up-ahead context: the two controls that scope the timeline, and the only home either of
 /// them has.
-pub static UP_AHEAD: ContextMenu = ContextMenu {
+pub static UP_AHEAD = ContextMenu {
     rows: &[
         ContextRow { label: Msg::RideContextFilter, action: ContextAction::Edit(ContextValue::UpAheadFilter) },
         ContextRow { label: Msg::RideContextSources, action: ContextAction::Edit(ContextValue::UpAheadSource) },
@@ -655,9 +666,13 @@ pub static UP_AHEAD: ContextMenu = ContextMenu {
 /// The route-plan context: the profile the on-device planner will weight edges by, offered on the
 /// card that is about to ask for a plan. One row, because `NavPlanner::new` takes the profile and
 /// nothing else, so a second "route options" row would be a label bound to nothing.
-pub static ROUTE_PLAN: ContextMenu = ContextMenu {
+pub static ROUTE_PLAN = ContextMenu {
     rows: &[ContextRow { label: Msg::RouteContextBikeType, action: ContextAction::Edit(ContextValue::BikeProfile) }],
 };
+
+pub static LANDMARK_CONTENT =
+    ContextMenu { rows: &[ContextRow { label: Msg::RideContextSources, action: ContextAction::LandmarkSources }] };
+}
 
 /// The sheet's two pages. The value being edited is the selected row's, so the page needs no
 /// payload, which is why the render key's `page` byte says everything about where the rider is.
@@ -1047,9 +1062,6 @@ impl ContextDrawerScreen {
     }
 }
 
-pub static LANDMARK_CONTENT: ContextMenu =
-    ContextMenu { rows: &[ContextRow { label: Msg::RideContextSources, action: ContextAction::LandmarkSources }] };
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1241,9 +1253,7 @@ mod tests {
     /// Every declared table is a sheet, not a page, and fits the key's availability mask.
     #[test]
     fn pinned_by_the_row_tables() {
-        let declared: &[&ContextMenu] =
-            &[&RIDE, &MAP, &MAP_DISPLAY, &MAP_ICONS, &MAP_POI_CATEGORIES, &UP_AHEAD, &ROUTE_PLAN, &FIND_PLACE];
-        for menu in declared {
+        for menu in TABLES {
             assert!(menu.rows.len() <= MAX_ROWS, "{} rows outgrow the sheet", menu.rows.len());
             for selected in 0..menu.rows.len() as u8 {
                 let h = menu.root_height(selected, Language::En);

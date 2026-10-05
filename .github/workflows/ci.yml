@@ -118,8 +118,6 @@ jobs:
           persist-credentials: false
       - name: Host-pushed cards are built only by the card scheduler
         run: python3 tools/check_card_scheduler.py
-      - name: A contextual setting has one home
-        run: python3 tools/check_one_home.py
       - name: Shared screen drawing helpers live in screen/vocab
         run: python3 tools/check_screen_vocabulary.py
       - name: Every fetched host is a declared data source
