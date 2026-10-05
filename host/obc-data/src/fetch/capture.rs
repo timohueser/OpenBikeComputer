@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{check_version, record, Request};
+use super::{check_version, file_name, record, Request};
 use crate::date;
 use crate::sources::{Registry, Source};
 use crate::store::{self, FileRecord, Snapshot, Store};
@@ -179,9 +179,10 @@ pub fn capture(
         let index = owner(&relative);
         let (sha256, size) = store::hash_file(&path)?;
         store.insert(&path, &sha256)?;
+        let url = format!("{}{relative}", prefix(sources[index]));
         files[index].push(FileRecord {
-            name: relative.rsplit('/').next().unwrap_or_default().to_string(),
-            url: format!("{}{relative}", prefix(sources[index])),
+            name: file_name(sources[index], Some(&version), &url),
+            url,
             size,
             sha256,
             retrieved: date::timestamp(date::now()),

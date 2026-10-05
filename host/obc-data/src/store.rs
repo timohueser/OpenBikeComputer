@@ -20,7 +20,8 @@ pub struct Snapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileRecord {
-    /// The last segment of `url`: the name a step gives the file when it needs one.
+    /// The part of `url` that names the file within its source, unique in a record: the name a
+    /// step gives the file when it needs one.
     pub name: String,
     pub url: String,
     pub size: u64,

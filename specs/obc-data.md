@@ -18,7 +18,7 @@ One `[[source]]` table per source.
 | `licence_url` | string | no | Where the licence text is |
 | `attribution` | string | no | The credit text, as the product must show it |
 | `obligations` | string | no | What the licence asks for, in words; `none` when it asks for nothing |
-| `fetch` | table | yes | `kind` and `url`, see below |
+| `fetch` | table | yes | `kind`, `url`, and for `osm` only `from`: the id of the source whose pin is the base day. See below |
 | `hosts` | array of strings | no | Hosts the fetch reaches besides the host of `fetch.url`: lowercase letters, digits, `.` and `-`. `*.domain` is any subdomain |
 | `version` | string | yes | How upstream names a version: `date`, `release`, `commit` or `digest` |
 | `refresh` | integer or string | yes | `7`, `30`, `90` or `365` days, or `"manual"` |
@@ -53,6 +53,7 @@ Rules:
 - `refresh` in days needs `version = "date"`, because only a date pin has an age.
 - `r2_copy = true` needs `redistribute = true`, because R2 is public.
 - A credential has `env` or `file`, not both.
+- An `osm` fetch has `from`, and `from` names a source. No other fetch has `from`.
 
 ### `data/env/<environment>.toml`
 
@@ -89,7 +90,7 @@ unions. A union that contains itself, or names a region that does not exist, is 
 | State | When |
 | --- | --- |
 | `blocked` | A `data` or `asset` source has no `licence`, or its credential is not on this machine |
-| `stale` | The pin is a date, `refresh` is in days, the pin is older than `refresh`, and the newest upstream version is later than the pin |
+| `stale` | The pin is a date, `refresh` is in days, the pin is older than `refresh`, and the newest upstream version is later than the pin. Or the pin is before the pin of the source that `fetch.from` names |
 | `ok` | Otherwise. A source with no pin, or with `refresh = "manual"`, is never stale |
 
 The age of a pin is the number of days from its date to today (UTC). When a pin is older than
@@ -122,7 +123,14 @@ A snapshot record is a JSON object:
 | --- | --- |
 | `source` | The source id |
 | `version` | The version, as a pin names it |
-| `files` | One item per file: `name` (the last segment of the URL), `url`, `size` in bytes, `sha256` and `retrieved` (`YYYY-MM-DDTHH:MM:SSZ`) |
+| `files` | One item per file: `name`, `url`, `size` in bytes, `sha256` and `retrieved` (`YYYY-MM-DDTHH:MM:SSZ`) |
+
+The `name` of a file is the part of its URL that identifies it in the source. For an `osm`,
+`dtm` or `capture` fetch, it is the URL after `fetch.url`, such as `000/005/130.osc.gz` or
+`#bbox=W,S,E,N/sub/a.tif`. For a URL template, it is the URL from the segment of the first
+`{name}` other than `{version}` and `{yymmdd}`, such as `europe/monaco-261003.osm.pbf`; without
+such a `{name}`, it is the last segment. A record that has a name with other bytes fails the
+fetch.
 
 A version is one or more segments joined by `/`. A segment has letters, digits, `.`, `_`, `+`
 and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` date, and a
@@ -178,21 +186,21 @@ day, an `http` URL with `{yymmdd}`. `osm-replication` is the daily diffs. Both p
 the bytes of the OSM data.
 
 An `osm` URL is an Osmosis replication directory that ends with `/`, such as
-`<server>/replication/day/`. A fetch of version `E` takes `from=B`, the `osm-planet` pin, and no
-other `NAME=VALUE`. `B` is on or before `E`. The snapshot is one diff for each day after `B` up to
-`E`, in order; for `B` = `E` it has no files.
+`<server>/replication/day/`. A fetch of version `E` takes `from=B` and no other `NAME=VALUE`.
+Without `from=`, `B` is the pin of the `fetch.from` source in the environment; an explicit
+`from=` must be that pin, unless the environment has none. `B` is on or before `E`. The sequence
+of a day is the diff whose `state.txt` has the `timestamp` of that day. The snapshot is the
+`state.txt` of the sequence of `B`, and the diff and the `state.txt` of each sequence after it up
+to the sequence of `E`, in order.
 
-- The sequence of a day is the diff whose `state.txt` has the `timestamp` of that day. The fetch
-  finds the sequence of `B` and of `E`: first the sequence of the newest `state.txt` less the days
-  between, then, when the `timestamp` of that sequence is another day, moved by the difference
-  once.
-- The fetch fails before a diff downloads when `E` is after the newest diff, when it finds no
-  sequence of `B` or `E`, or when the diffs are not one per day.
-- A diff has the URL of its sequence, so the record of `E` can hold the diffs of any start. The
-  record of `E` always has the diff of `E`. When it has the diffs of each day after `B`, the
-  fetch makes no request.
-- A diff never changes. A diff in the record of another version comes from the store, so a fetch
-  of a later `E` from the same `B` downloads only the new days.
+- When the store has the diff and the `state.txt` of each of these sequences, in the record of
+  any version, the fetch makes no request. The stored states name the day of each sequence.
+- Else the fetch reads the newest `state.txt` first, and fails when `E` is after its day. Then it
+  finds the sequence of `B` and of `E`: the newest sequence less the days between, then, when
+  the `timestamp` of that sequence is another day, moved by the difference once. It fails before
+  a diff downloads when it finds no sequence of `B` or `E`.
+- A diff and its state never change. A file in the record of another version comes from the
+  store, so a fetch of a later `E` from the same `B` downloads only the new days.
 
 A late or missing weekly planet does not block a version of `osm-replication`, because its base
 is the planet that is pinned. The fetch does not apply the diffs. A step does that with
@@ -248,7 +256,7 @@ The store keeps its answer, or its failure, for one hour.
 | --- | --- |
 | `obc data sources [--json]` | Every source with licence, R2 copy, live pin, newest upstream version, age, policy and state. Rows are in kind order: data, then assets, then tools |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the live pin, or else the newest file upstream. Writes the store path of each file |
-| `obc data refresh SOURCE [NAME=VALUE…] [--env ENV] [--json]` | Fetches the newest upstream version, checked now, and writes it to `[pins]` of `data/env/ENV.toml` (default `live`). `ENV` is lowercase kebab-case. The edit keeps comments, line order and CRLF line ends. Writes the store path of each file |
+| `obc data refresh SOURCE [NAME=VALUE…] [--env ENV] [--json]` | Fetches the newest upstream version, checked now, and writes it to `[pins]` of `data/env/ENV.toml` (default `live`). `ENV` is lowercase kebab-case. The edit keeps comments, line order and CRLF line ends. Writes the store path of each file. A version after the pin of a source whose `fetch.from` names `SOURCE` is refused before the fetch: refresh that source first |
 | `obc data region [list] [--json]` | Every region with its name and definition |
 | `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
 

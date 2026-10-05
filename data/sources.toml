@@ -17,7 +17,7 @@ version = "date"
 refresh = 90
 redistribute = true
 
-# The daily diffs after the `osm-planet` pin: fetch with from=<the osm-planet pin>.
+# The daily diffs after the `osm-planet` pin of the environment.
 [[source]]
 id = "osm-replication"
 kind = "data"
@@ -25,7 +25,7 @@ licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
 attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
-fetch = { kind = "osm", url = "https://planet.openstreetmap.org/replication/day/" }
+fetch = { kind = "osm", url = "https://planet.openstreetmap.org/replication/day/", from = "osm-planet" }
 version = "date"
 refresh = 7
 redistribute = true
