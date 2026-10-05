@@ -32,11 +32,9 @@ use crate::util::{human_bytes, write_json};
 /// thousand. Every shipped band divides this size exactly.
 pub const SOURCE_LEAF_LOG2: u32 = 23;
 const SHARD_STATE_VERSION: u32 = 1;
-const PLANET_FILE: &str = "planet-latest.osm.pbf";
 const SHARD_HALO_UDEG: i64 = 1;
 const PLANET_STATUS_FILE: &str = ".planet-bake/status.json";
-/// `osmium apply-changes` holds the diffs of one pass in memory, and a daily diff of the planet
-/// takes about a gigabyte there.
+/// One week of daily diffs: `osmium apply-changes` holds the diffs of one pass in memory.
 const DIFFS_PER_PASS: usize = 7;
 
 #[derive(Debug, Clone)]
@@ -58,8 +56,28 @@ pub struct Replication {
     pub diffs: usize,
 }
 
-/// The planet of `--all`: the PBF that `spec` names, as the file or its directory, or else the
-/// `osm-planet` pin from the store with the `osm-replication` diffs applied.
+/// Fail before any download when the planet of `--all` comes from the store and `osm-planet` has
+/// no pin.
+pub fn check_pinned(spec: Option<&str>) -> Result<(), String> {
+    if spec.is_some() || obc_data::sources::Registry::live()?.pins.contains_key("osm-planet") {
+        return Ok(());
+    }
+    Err("`osm-planet` has no pin in data/env/live.toml: pin it with `obc data refresh osm-planet --env live`".into())
+}
+
+/// The lock of `<cache>/planet`. A run holds it while it updates and reads the planet there, so a
+/// second run waits instead of deleting a file in use.
+pub fn lock_cache(cache: &Path) -> Result<std::fs::File, String> {
+    std::fs::create_dir_all(cache).map_err(|e| format!("{}: {e}", cache.display()))?;
+    let path = cache.join("planet.lock");
+    let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path);
+    let file = file.map_err(|e| format!("{}: {e}", path.display()))?;
+    file.lock().map_err(|e| format!("lock {}: {e}", path.display()))?;
+    Ok(file)
+}
+
+/// The planet of `--all`: the PBF file that `spec` names, or else the `osm-planet` pin from the
+/// store with the `osm-replication` diffs applied. The caller holds [`lock_cache`].
 pub fn resolve_planet(
     spec: Option<&str>,
     cache: &Path,
@@ -67,7 +85,12 @@ pub fn resolve_planet(
     progress: &Progress,
 ) -> Result<PlanetInput, String> {
     let (path, snapshot, replication) = match spec {
-        None => from_store(cache, osmium, progress)?,
+        None => {
+            let planet = obc_data::fetch::live("osm-planet", None, Vec::new())?;
+            let from = planet.snapshot.version.clone();
+            let diffs = obc_data::fetch::live("osm-replication", None, vec![("from".into(), from.clone())])?;
+            update(&planet.paths[0], &from, &diffs, &cache.join("planet"), osmium, progress)?
+        }
         Some(spec) if spec.starts_with("http://") || spec.starts_with("https://") => {
             return Err(format!(
                 "--source {spec}: the planet comes from the store, as `osm-planet` and `osm-replication` in \
@@ -75,8 +98,7 @@ pub fn resolve_planet(
             ))
         }
         Some(spec) => {
-            let candidate = PathBuf::from(spec.strip_prefix("file://").unwrap_or(spec));
-            let path = if candidate.is_dir() { candidate.join(PLANET_FILE) } else { candidate };
+            let path = PathBuf::from(spec.strip_prefix("file://").unwrap_or(spec));
             if !path.is_file() {
                 return Err(format!("planet source {} is not a file", path.display()));
             }
@@ -91,45 +113,84 @@ pub fn resolve_planet(
     Ok(PlanetInput { path, bytes, sha256, snapshot, replication })
 }
 
-/// The planet of the `osm-planet` pin with the diffs from that day applied. The result stays in
-/// `<cache>/planet` for the next run with the same two versions.
-fn from_store(
-    cache: &Path,
+/// `planet`, the planet of the day `from`, with the diffs of `replication` applied, as
+/// `<dir>/planet-<from>+<to>.osm.pbf`. An earlier result from the same planet is the start, so
+/// only the newer diffs apply. Every other file in `dir` goes, because a planet is about 80 GB.
+fn update(
+    planet: &Path,
+    from: &str,
+    replication: &obc_data::fetch::Fetched,
+    dir: &Path,
     osmium: &OsmiumRunner,
     progress: &Progress,
 ) -> Result<(PathBuf, String, Option<Replication>), String> {
-    let planet = obc_data::fetch::live("osm-planet", None, Vec::new()).map_err(|error| {
-        format!("the planet of `--all` is the `osm-planet` pin of data/env/live.toml: {}", String::from(error))
-    })?;
-    let from = planet.snapshot.version.clone();
-    let replication = obc_data::fetch::live("osm-replication", None, vec![("from".into(), from.clone())])?;
-    let diffs: Vec<&Path> = replication
-        .snapshot
-        .files
-        .iter()
-        .zip(&replication.paths)
-        .filter(|(file, _)| file.name.ends_with(".osc.gz"))
-        .map(|(_, path)| path.as_path())
-        .collect();
-    if diffs.is_empty() {
-        return Ok((planet.paths[0].clone(), from, None));
-    }
-    let to = replication.snapshot.version;
-    let dir = cache.join("planet");
-    let path = dir.join(format!("planet-{from}+{to}.osm.pbf"));
-    if path.is_file() {
-        progress.log(format!("Reusing the planet of {from} with the diffs up to {to}"));
-    } else {
-        osmium.apply_changes(&planet.paths[0], &diffs, &path, progress)?;
-        // A planet is about 80 GB, so only the newest stays.
-        for entry in std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-            let old = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
-            if old != path {
-                let _ = std::fs::remove_file(&old);
-            }
+    // The record is the state that the diffs start from, then the diff and the state of each day.
+    let (mut start, mut diffs, mut diff) = (None, Vec::new(), None);
+    for (file, path) in replication.snapshot.files.iter().zip(&replication.paths) {
+        if file.name.ends_with(".osc.gz") {
+            diff = Some(path.as_path());
+            continue;
+        }
+        let timestamp = state_timestamp(path)?;
+        match diff.take() {
+            Some(diff) => diffs.push((diff, timestamp[..10].to_string())),
+            None => start = Some(timestamp),
         }
     }
-    Ok((path, to.clone(), Some(Replication { from, to, diffs: diffs.len() })))
+    if diffs.is_empty() {
+        return Ok((planet.to_path_buf(), from.to_string(), None));
+    }
+    let start = start.ok_or("the `osm-replication` record has no state that its diffs start from")?;
+    let end = osmium.replication_timestamp(planet)?;
+    if end < start {
+        return Err(format!(
+            "invalid data: the `osm-planet` planet of {from} ends at {end}, but the `osm-replication` diffs \
+             start at {start}, so the changes between are missing. Pin a planet that ends at or after the \
+             start of its daily diff: `obc data refresh osm-planet --env live`"
+        ));
+    }
+    let to = replication.snapshot.version.clone();
+    let path = dir.join(format!("planet-{from}+{to}.osm.pbf"));
+    let applied = Replication { from: from.to_string(), to: to.clone(), diffs: diffs.len() };
+    if path.is_file() {
+        progress.log(format!("Reusing the planet of {from} with the diffs up to {to}"));
+        return Ok((path, to, Some(applied)));
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        files.push(entry.map_err(|e| format!("{}: {e}", dir.display()))?.path());
+    }
+    let prefix = format!("planet-{from}+");
+    let day_of = |path: &Path| {
+        let name = path.file_name()?.to_str()?;
+        name.strip_prefix(&prefix)?.strip_suffix(".osm.pbf").filter(|day| *day < to.as_str()).map(str::to_string)
+    };
+    let earlier = files.iter().filter_map(|path| Some((day_of(path)?, path))).max();
+    // Stale `.part` files and every result that is not the start go before the first pass.
+    for file in &files {
+        if earlier.as_ref().is_none_or(|(_, kept)| file != *kept) {
+            std::fs::remove_file(file).map_err(|e| format!("{}: {e}", file.display()))?;
+        }
+    }
+    let (base, owned, day) = match &earlier {
+        Some((day, path)) => (path.as_path(), true, day.as_str()),
+        None => (planet, false, ""),
+    };
+    let newer: Vec<&Path> = diffs.iter().filter(|(_, of)| of.as_str() > day).map(|(diff, _)| *diff).collect();
+    if owned {
+        progress.log(format!("Updating the planet of {from} with the diffs up to {day}"));
+    }
+    osmium.apply_changes(base, owned, &newer, &path, progress)?;
+    Ok((path, to, Some(applied)))
+}
+
+/// The `timestamp` of an Osmosis replication `state.txt`, which escapes each `:`.
+fn state_timestamp(path: &Path) -> Result<String, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let timestamp = text.lines().find_map(|line| line.strip_prefix("timestamp="));
+    let timestamp = timestamp.map(|t| t.trim().replace('\\', "")).filter(|t| t.len() >= 10);
+    timestamp.ok_or_else(|| format!("{}: a replication state with no timestamp", path.display()))
 }
 
 fn local_snapshot(path: &Path) -> Result<String, String> {
@@ -337,35 +398,66 @@ impl ShardRunner for OsmiumRunner {
 
 impl OsmiumRunner {
     /// Write `base` with `diffs` applied to `out`, in passes of [`DIFFS_PER_PASS`] diffs. A pass
-    /// writes a `.part` file, so `out` exists only when it is whole.
-    pub fn apply_changes(&self, base: &Path, diffs: &[&Path], out: &Path, progress: &Progress) -> Result<(), String> {
-        let dir = out.parent().ok_or_else(|| format!("{} has no parent directory", out.display()))?;
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        let mut input = base.to_path_buf();
-        for (pass, batch) in diffs.chunks(DIFFS_PER_PASS).enumerate() {
-            progress.check()?;
-            let first = pass * DIFFS_PER_PASS + 1;
-            progress.log(format!("Applying daily diffs {first}–{} of {}", first + batch.len() - 1, diffs.len()));
+    /// writes a `.part` file, so `out` exists only when it is whole. With `delete_base`, `base`
+    /// goes when the first pass is done.
+    pub fn apply_changes(
+        &self,
+        base: &Path,
+        delete_base: bool,
+        diffs: &[&Path],
+        out: &Path,
+        progress: &Progress,
+    ) -> Result<(), String> {
+        let part = |pass: usize| {
             let mut name = out.file_name().unwrap_or_default().to_os_string();
             name.push(format!(".{}.part", pass % 2));
-            let output = out.with_file_name(name);
-            let status = Command::new(&self.binary)
-                .args(["apply-changes", "-F", "pbf", "--change-file-format", "osc.gz", "-f", "pbf", "--overwrite"])
-                .arg("-o")
-                .arg(&output)
-                .arg(&input)
-                .args(batch)
-                .status()
-                .map_err(|e| format!("run {} apply-changes: {e}", self.binary.display()))?;
-            if !status.success() {
-                return Err(format!("{} apply-changes failed with {status}", self.binary.display()));
+            out.with_file_name(name)
+        };
+        let passes = || -> Result<(), String> {
+            let mut input = base.to_path_buf();
+            for (pass, batch) in diffs.chunks(DIFFS_PER_PASS).enumerate() {
+                progress.check()?;
+                let first = pass * DIFFS_PER_PASS + 1;
+                progress.log(format!("Applying daily diffs {first}–{} of {}", first + batch.len() - 1, diffs.len()));
+                let output = part(pass);
+                let status = Command::new(&self.binary)
+                    .args(["apply-changes", "-F", "pbf", "--change-file-format", "osc.gz", "-f", "pbf"])
+                    .args(["--fsync", "--overwrite", "-o"])
+                    .arg(&output)
+                    .arg(&input)
+                    .args(batch)
+                    .status()
+                    .map_err(|e| format!("run {} apply-changes: {e}", self.binary.display()))?;
+                if !status.success() {
+                    return Err(format!("{} apply-changes failed with {status}", self.binary.display()));
+                }
+                if input != base || delete_base {
+                    std::fs::remove_file(&input).map_err(|e| format!("{}: {e}", input.display()))?;
+                }
+                input = output;
             }
-            if input != base {
-                let _ = std::fs::remove_file(&input);
-            }
-            input = output;
+            std::fs::rename(&input, out).map_err(|e| format!("install {}: {e}", out.display()))
+        };
+        let result = passes();
+        if result.is_err() {
+            let _ = std::fs::remove_file(part(0));
+            let _ = std::fs::remove_file(part(1));
         }
-        std::fs::rename(&input, out).map_err(|e| format!("install {}: {e}", out.display()))
+        result
+    }
+
+    /// The `osmosis_replication_timestamp` in the header of a PBF: the time its data ends.
+    fn replication_timestamp(&self, path: &Path) -> Result<String, String> {
+        let output = Command::new(&self.binary)
+            .args(["fileinfo", "-F", "pbf", "-g", "header.option.osmosis_replication_timestamp"])
+            .arg(path)
+            .output()
+            .map_err(|e| format!("run {} fileinfo: {e}", self.binary.display()))?;
+        let timestamp = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !output.status.success() || timestamp.is_empty() {
+            return Err(format!("{}: no osmosis_replication_timestamp in its header", path.display()));
+        }
+        Ok(timestamp)
     }
 }
 
@@ -1338,8 +1430,9 @@ mod tests {
         std::fs::rename(dir.join("diff.osc.gz"), dir.join("diff")).unwrap();
         let diff = dir.join("diff");
         let diffs = vec![diff.as_path(); DIFFS_PER_PASS + 1];
+        std::fs::create_dir(dir.join("planet")).unwrap();
         let out = dir.join("planet/applied.osm.pbf");
-        runner.apply_changes(&dir.join("base"), &diffs, &out, &Progress::silent()).unwrap();
+        runner.apply_changes(&dir.join("base"), false, &diffs, &out, &Progress::silent()).unwrap();
 
         let opl = |path: &Path| {
             let output =
@@ -1350,6 +1443,103 @@ mod tests {
         let left: Vec<_> =
             std::fs::read_dir(dir.join("planet")).unwrap().map(|entry| entry.unwrap().file_name()).collect();
         assert_eq!(left, ["applied.osm.pbf"], "no pass leaves a part file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_replication_state_gives_its_timestamp_without_the_escapes() {
+        let path = std::env::temp_dir().join(format!("obc-state-{}.txt", std::process::id()));
+        std::fs::write(
+            &path,
+            "#Mon Oct 05 00:18:17 UTC 2026\nsequenceNumber=5136\ntimestamp=2026-10-05T00\\:00\\:00Z\n",
+        )
+        .unwrap();
+        assert_eq!(state_timestamp(&path).unwrap(), "2026-10-05T00:00:00Z");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn installed_osmium_updates_an_earlier_result_with_only_the_newer_diffs() {
+        let runner = OsmiumRunner::default();
+        if runner.check().is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("obc-osmium-update-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let osmium = |args: &[&str]| {
+            assert!(Command::new(&runner.binary).args(args).current_dir(&dir).status().unwrap().success())
+        };
+        let tiny = repo("builder/tests/corpus/data/tiny.osm.pbf");
+        let tiny = tiny.to_str().unwrap();
+        for (planet, end) in [("planet", "2026-08-01T00:00:04Z"), ("early", "2026-07-31T23:00:00Z")] {
+            let header = format!("--output-header=osmosis_replication_timestamp={end}");
+            osmium(&["cat", tiny, "-f", "pbf", "-o", planet, &header]);
+        }
+        // Each day deletes one more node.
+        let days: [&[&str]; 3] = [&["n1", "n2", "n3", "n4", "n5"], &["n1", "n2", "n3", "n4"], &["n1", "n2", "n3"]];
+        let mut previous = tiny.to_string();
+        let mut files = vec![("state0".to_string(), "timestamp=2026-08-01T00\\:00\\:00Z\n".to_string())];
+        for (day, ids) in days.iter().enumerate() {
+            let kept = format!("kept{}.osm.pbf", day + 1);
+            osmium(&[&["getid", tiny], *ids, &["-o", &kept]].concat());
+            osmium(&["derive-changes", &previous, &kept, "-o", &format!("diff{}.osc.gz", day + 1)]);
+            files.push((format!("diff{}.osc.gz", day + 1), String::new()));
+            files.push((format!("state{}", day + 1), format!("timestamp=2026-08-0{}T00\\:00\\:00Z\n", day + 2)));
+            previous = kept;
+        }
+        for (name, text) in &files {
+            if !text.is_empty() {
+                std::fs::write(dir.join(name), text).unwrap();
+            }
+        }
+        let fetched = |to: &str, count: usize| obc_data::fetch::Fetched {
+            snapshot: obc_data::store::Snapshot {
+                source: "osm-replication".into(),
+                version: to.into(),
+                files: files[..count]
+                    .iter()
+                    .map(|(name, _)| obc_data::store::FileRecord {
+                        name: name.clone(),
+                        url: name.clone(),
+                        size: 0,
+                        sha256: String::new(),
+                        retrieved: String::new(),
+                    })
+                    .collect(),
+            },
+            paths: files[..count].iter().map(|(name, _)| dir.join(name)).collect(),
+        };
+        let opl = |path: &Path| {
+            let output =
+                Command::new(&runner.binary).args(["cat", "-F", "pbf", "-f", "opl"]).arg(path).output().unwrap();
+            String::from_utf8(output.stdout).unwrap()
+        };
+        let cache = dir.join("cache");
+        let silent = Progress::silent();
+
+        let (first, to, _) =
+            update(&dir.join("planet"), "2026-08-01", &fetched("2026-08-03", 5), &cache, &runner, &silent).unwrap();
+        assert_eq!(
+            (first.file_name().unwrap(), to.as_str()),
+            ("planet-2026-08-01+2026-08-03.osm.pbf".as_ref(), "2026-08-03")
+        );
+        assert_eq!(opl(&first), opl(&dir.join("kept2.osm.pbf")));
+
+        // The earlier result is the start: the diffs it holds are not read again.
+        std::fs::remove_file(dir.join("diff1.osc.gz")).unwrap();
+        std::fs::remove_file(dir.join("diff2.osc.gz")).unwrap();
+        std::fs::write(cache.join("stale.part"), "").unwrap();
+        let (second, _, applied) =
+            update(&dir.join("planet"), "2026-08-01", &fetched("2026-08-04", 7), &cache, &runner, &silent).unwrap();
+        assert_eq!(opl(&second), opl(&dir.join("kept3.osm.pbf")));
+        assert_eq!(applied.unwrap().diffs, 3);
+        let left: Vec<_> = std::fs::read_dir(&cache).unwrap().map(|entry| entry.unwrap().path()).collect();
+        assert_eq!(left, [second], "the earlier result and the stale part file are gone");
+
+        let error = update(&dir.join("early"), "2026-08-01", &fetched("2026-08-04", 7), &cache, &runner, &silent)
+            .expect_err("a planet that ends before the first diff starts leaves a gap");
+        assert!(error.contains("invalid data") && error.contains("obc data refresh osm-planet"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
