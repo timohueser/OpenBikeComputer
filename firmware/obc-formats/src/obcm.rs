@@ -1,9 +1,11 @@
 //! OBCM map-format constants from `OBCM_Spec.md`.
 
-use crate::io::{rd_u16, validate_prefix, DecodeError};
+use crate::io::{validate_prefix, DecodeError};
 
 pub mod landmarks;
+mod nav;
 pub mod peaks;
+pub use nav::{NavEdgeRecord, NavNeighbor, NavNodeRecord, NavVertices};
 
 pub const MAGIC: [u8; 4] = *b"OBCM";
 pub const VERSION: u8 = 19;
@@ -291,34 +293,12 @@ pub const fn nav_edge_id_ordinal(id: u32) -> u32 {
 
 /// One step of the edge-resolve walk: the length of the record at byte position `p` of a 512-byte
 /// chunk, or `None` to refuse.
-///
-/// Two lines are load-bearing. `NAV_CHUNK_SIZE - p` appears nowhere, because that subtraction
-/// wraps once a corrupt `Pt Count` pushes `p` past the chunk, so every bound is additive on `p`.
-/// And `len` is evaluated in 32 bits, not in `Pt Count`'s `u16`, where the largest admitted `n`
-/// wraps to `3` and the walk advances into the middle of a record.
 #[inline]
 pub fn nav_edge_step(chunk: &[u8], p: usize) -> Option<usize> {
     if chunk.len() < NAV_CHUNK_SIZE {
         return None;
     }
-    if p.checked_add(NAV_EDGE_MIN_LEN)? > NAV_CHUNK_SIZE {
-        return None;
-    }
-    let n = rd_u16(chunk, p + 4);
-    if n == NAV_EDGE_PT_COUNT_SENTINEL {
-        return None;
-    }
-    let n = n & NAV_EDGE_POINT_COUNT_MASK;
-    if n < 2 {
-        return None;
-    }
-    // 32-bit evaluation; `n - 1` cannot underflow behind the `n < 2` refusal.
-    let len = NAV_EDGE_FIXED_LEN as u32 + 4 * (n as u32 - 1);
-    let len = len as usize;
-    if p.checked_add(len)? > NAV_CHUNK_SIZE {
-        return None;
-    }
-    Some(len)
+    Some(NavEdgeRecord::parse(chunk.get(p..NAV_CHUNK_SIZE)?)?.bytes().len())
 }
 
 /// Resolve `ordinal` to the record's byte range within its chunk, walking from the chunk's first

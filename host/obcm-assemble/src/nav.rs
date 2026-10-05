@@ -15,15 +15,17 @@
 //! The passes run in order and each one depends on the last: read the node set (off each cell's
 //! chunk run, which visits every stored record exactly once), unify seam nodes, deduplicate, prune
 //! islands, renumber, lay the edge pool out, rebuild the node quadtree.
+#[cfg(test)]
+use obc_formats::obcm::{NAV_EDGE_FIXED_LEN, NAV_NEIGHBOR_ASCENT_OFF};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
 use obc_formats::obcm::{
-    nav_edge_id, nav_edge_id_chunk, nav_edge_id_ordinal, nav_edge_record_range, nav_index_padding, CHUNK_END,
-    NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_EDGE_MAX_CHUNKS, NAV_EDGE_MAX_RECORDS_PER_CHUNK,
-    NAV_MAX_DEGREE, NAV_NEIGHBOR_ASCENT_OFF, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_SNAP_ANCHOR_GAP_M,
-    NAV_SNAP_EDGE_MIN_M, NAV_SNAP_RECORD_LEN,
+    nav_edge_id, nav_edge_id_chunk, nav_edge_id_ordinal, nav_edge_record_range, nav_index_padding, NavEdgeRecord,
+    NavNodeRecord, CHUNK_END, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_MAX_CHUNKS, NAV_EDGE_MAX_RECORDS_PER_CHUNK,
+    NAV_MAX_DEGREE, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_SNAP_ANCHOR_GAP_M, NAV_SNAP_EDGE_MIN_M,
+    NAV_SNAP_RECORD_LEN,
 };
 use obc_map_scene::ground_dist_m;
 
@@ -332,7 +334,7 @@ fn pool_ref(r: &[u8; POOL_REC]) -> EdgeRef {
 /// the junction's own, and looking it up would need the whole-map node array this pass removes.
 ///
 /// `seq` fits a `u32` by construction: the pool is refused past 4 GiB, an edge record is at least
-/// [`NAV_EDGE_FIXED_LEN`] bytes, and the walk writes at most two entries per edge.
+/// [`obc_formats::obcm::NAV_EDGE_FIXED_LEN`] bytes, and the walk writes at most two entries per edge.
 const ADJ_REC: usize = 37;
 
 #[allow(clippy::too_many_arguments)]
@@ -729,13 +731,10 @@ pub(crate) fn merge_profiled(
                 if degree == CHUNK_END {
                     break; // the padding sentinel
                 }
-                let rec_len = NAV_NODE_FIXED_LEN + degree as usize * NAV_NEIGHBOR_LEN;
-                if at + rec_len > chunk.len() {
-                    return Err(Error::Format(format!("cell {}: nav record straddles chunk {k}", cell.id)));
-                }
-                let lat = i32::from_le_bytes(chunk[at..at + 4].try_into().expect("4 bytes"));
-                let lon = i32::from_le_bytes(chunk[at + 4..at + 8].try_into().expect("4 bytes"));
-                let id = u32::from_le_bytes(chunk[at + 8..at + 12].try_into().expect("4 bytes"));
+                let record = NavNodeRecord::parse(&chunk[at..])
+                    .ok_or_else(|| Error::Format(format!("cell {}: nav record straddles chunk {k}", cell.id)))?;
+                let rec_len = record.bytes().len();
+                let (lat, lon, id) = (record.lat, record.lon, record.id);
                 stats.cell_nodes += 1;
                 let mut mint = || {
                     let id = id_count;
@@ -782,16 +781,10 @@ pub(crate) fn merge_profiled(
         let mut cell_edges: IdMap<u32, usize> = IdMap::default();
         let mut pending: Vec<MergedEdge> = Vec::new();
         for &(own_node, lat, lon, at) in &records {
-            let degree = chunks[at + 12] as usize;
-            for n in 0..degree {
-                let e = &chunks[at + NAV_NODE_FIXED_LEN + n * NAV_NEIGHBOR_LEN..][..NAV_NEIGHBOR_LEN];
-                let nbr_id = u32::from_le_bytes(e[0..4].try_into().expect("4 bytes"));
-                let edge_id = u32::from_le_bytes(e[8..12].try_into().expect("4 bytes"));
-                let cost_m = u16::from_le_bytes(e[12..14].try_into().expect("2 bytes")) as u32;
-                let way_kind = e[14];
-                let ascent_m = u16::from_le_bytes(
-                    e[NAV_NEIGHBOR_ASCENT_OFF..NAV_NEIGHBOR_ASCENT_OFF + 2].try_into().expect("2 bytes"),
-                );
+            let record = NavNodeRecord::parse(&chunks[at..]).expect("validated node record");
+            for neighbor in record.neighbors() {
+                let (nbr_id, edge_id, cost_m, way_kind, ascent_m) =
+                    (neighbor.id, neighbor.edge_id, neighbor.cost_m, neighbor.way_kind, neighbor.ascent_m);
                 // The second sighting carries the other direction's ascent, which nothing else in
                 // the file states, so it is read rather than skipped.
                 if let Some(&index) = cell_edges.get(&edge_id) {
@@ -814,8 +807,7 @@ pub(crate) fn merge_profiled(
                 let (rec_at, rec) = edge_record(&pool, edge_id, cell)?;
                 // The record's anchor is endpoint `a`'s coordinate, so keep the orientation the
                 // record itself states.
-                let anchor_lat = i32::from_le_bytes(rec[7..11].try_into().expect("4 bytes"));
-                let anchor_lon = i32::from_le_bytes(rec[11..15].try_into().expect("4 bytes"));
+                let (anchor_lon, anchor_lat) = NavEdgeRecord::parse(rec).expect("validated edge record").anchor();
                 let own_is_anchor = (anchor_lat, anchor_lon) == (lat, lon);
                 let (a, b) = if own_is_anchor { (a, b) } else { (b, a) };
                 let hash = fnv(rec);
@@ -1155,29 +1147,10 @@ fn append_snap_anchors(
     anchors: &mut SpillWriter<'_, ANCHOR_REC>,
     ord: &mut u32,
 ) -> Result<usize> {
-    if record.len() < NAV_EDGE_FIXED_LEN {
-        return Err(Error::Format("a merged edge record is shorter than the §8.4 fixed header".into()));
-    }
-    let point_count = (u16::from_le_bytes(record[4..6].try_into().expect("2 bytes")) & 0x7fff) as usize;
-    let expected = NAV_EDGE_FIXED_LEN + point_count.saturating_sub(1) * 4;
-    if point_count < 2 || expected != record.len() {
-        return Err(Error::Format(format!(
-            "a merged edge record declares {point_count} points but occupies {} byte(s)",
-            record.len()
-        )));
-    }
-
-    let mut polyline: Vec<(i32, i32)> = Vec::with_capacity(point_count);
-    let mut lat = i32::from_le_bytes(record[7..11].try_into().expect("4 bytes"));
-    let mut lon = i32::from_le_bytes(record[11..15].try_into().expect("4 bytes"));
-    polyline.push((lon, lat));
-    let mut at = NAV_EDGE_FIXED_LEN;
-    for _ in 1..point_count {
-        lat += i16::from_le_bytes(record[at..at + 2].try_into().expect("2 bytes")) as i32;
-        lon += i16::from_le_bytes(record[at + 2..at + 4].try_into().expect("2 bytes")) as i32;
-        polyline.push((lon, lat));
-        at += 4;
-    }
+    let edge = NavEdgeRecord::parse(record)
+        .filter(|edge| edge.bytes().len() == record.len())
+        .ok_or_else(|| Error::Format("a merged edge record has invalid length or point count".into()))?;
+    let polyline: Vec<_> = edge.vertices().collect();
     let lengths: Vec<f32> = polyline.windows(2).map(|w| ground_dist_m(w[0], w[1])).collect();
     let length: f32 = lengths.iter().sum();
     if length <= NAV_SNAP_EDGE_MIN_M as f32 {
