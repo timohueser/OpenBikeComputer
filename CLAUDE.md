@@ -44,8 +44,8 @@ and test them from their own directories. The nearest README has the surface's s
 - `obc suites check` after changing test sources, suite commands, workflows or test policy.
   [docs/testing.md](docs/testing.md) explains the plan documents.
 - `cargo fmt --all` for the workspace, and `cargo fmt` in each standalone Cargo root.
-- Report the exact checks you ran and the ones you left out. `obc clean` removes stale state;
-  read its dry run before `--apply`.
+- Report exact checks run and left out. `obc clean` removes old test scratch; read its dry run
+  before `--apply`.
 
 ## How reviews work
 
