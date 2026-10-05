@@ -12,9 +12,9 @@ target/release/address-bake REGION.osm.pbf --output addresses.jsonl.zst --defaul
 Run the policy export with the Python environment that contains Nominatim.
 It exports country ranks and postcode formats from the installed distribution.
 The country grid is the static ODbL dataset from the Nominatim distribution.
-The baker reads its country polygons without a database. Without the grid,
-every record uses `--default-country`. Use that mode only for an extract inside
-one country. Country configuration does not establish worldwide output parity.
+Current OSM country boundaries take precedence over the grid. Missing coverage
+uses `--default-country`. A house takes its country from its parent street or
+place. Country configuration does not establish worldwide output parity.
 
 Build an address package with the existing search builder:
 
