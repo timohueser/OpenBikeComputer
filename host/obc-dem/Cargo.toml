@@ -21,7 +21,7 @@ dem = ["geotiff", "fetch"]
 geotiff = ["dep:tiff", "dep:serde_json"]
 fetch = ["dep:obc-data"]
 # The terrain of the planner maps: Terrarium WebP tiles in MBTiles.
-planner = ["dem", "dep:image", "dep:rusqlite"]
+terrarium = ["dem", "dep:image", "dep:rusqlite"]
 external-fixtures = []
 
 [[bin]]
@@ -32,7 +32,7 @@ required-features = ["dem"]
 [[bin]]
 name = "planner-dem"
 path = "src/bin/planner-dem.rs"
-required-features = ["planner"]
+required-features = ["terrarium"]
 
 [dependencies]
 # The OBCT byte authority: magic, header offsets, sentinels, and the layout arithmetic that turns a
@@ -74,4 +74,4 @@ required-features = ["external-fixtures"]
 
 [[test]]
 name = "planner_terrain"
-required-features = ["external-fixtures", "planner"]
+required-features = ["external-fixtures", "terrarium"]

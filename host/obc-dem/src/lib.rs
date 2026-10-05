@@ -70,7 +70,7 @@ pub mod reference;
 pub mod step;
 pub mod surface;
 /// The planner map terrain writer. Its own feature, because only it needs a WebP encoder and SQLite.
-#[cfg(feature = "planner")]
+#[cfg(feature = "terrarium")]
 pub mod terrarium;
 
 /// A geographic box in integer microdegrees — the unit every OBC coordinate is in, so the box that

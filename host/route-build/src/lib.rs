@@ -53,6 +53,21 @@ impl Graph {
     }
 }
 
+/// `value` with the keys of each object in byte order: the bytes of the JSON that this crate writes
+/// are the same in a binary where another crate enables `serde_json/preserve_order`.
+pub fn sort_keys(value: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<_> = map.into_iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            Value::Object(entries.into_iter().map(|(key, value)| (key, sort_keys(value))).collect())
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(sort_keys).collect()),
+        value => value,
+    }
+}
+
 /// Writes a closed regional package with all legal transitions and complete road geometry.
 /// The caller publishes the manifest only after all objects have been written.
 pub fn prepare(

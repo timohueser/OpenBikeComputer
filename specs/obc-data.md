@@ -134,7 +134,7 @@ The options of the [planner layers](#planner) that are the same for each region.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `routing.access` | string | The country whose access defaults the OSM import applies. The importer knows `DE` only |
+| `terrain.margin_m` | number | The terrain reaches at least this far around the region, in metres: the horizon of the sun layer |
 | `routing.profiles` | array of strings | The profiles of the routing package. The route catalog needs `touring`, `road`, `gravel`, `mtb` and `hiking` |
 
 ## State of a source
@@ -393,6 +393,10 @@ A step declares:
 | `outputs` | Paths in the output directory. A path is a file, or a directory whose files are all part of the layer. The step must write each path and no other file. A symbolic link fails the step |
 | `run` | A Rust function in the process, or a command: a program and its arguments. No argument names a path outside the repository root: no argument is an absolute path, contains `=/` or has a `..` segment between `/` and `=` |
 
+One binary links the Rust steps of every product, so Cargo unifies their features. A step crate
+enables every feature its bytes depend on itself, or makes its bytes independent of it (structs,
+or sorted keys for JSON objects).
+
 ### Keys
 
 The digest of a list of files is the SHA-256 of the text that `sha256sum` writes for them: one
@@ -575,14 +579,18 @@ depends on a snapshot that the store does not have, such as the `.poly` of a reg
 names those fetches instead. `plan` and `build` fetch them and then ask the product once more. A
 fetch that fails, fails the command with its own code, `fetch_failed` or `blocked`. A product that
 names fetches the second time, or a step name without `<product>/`, fails the command with
-`failed` and a fix that points at the code of the product.
+`failed` and a fix that points at the code of the product. A product that has no steps for the
+environment, such as for a kind of region that it does not read, is blocked: `plan` lists it in
+`blocked` with the reason, and the other products plan without it. `build` builds the groups of
+the other products and writes no release of a blocked product. When nothing else builds, `build`
+fails with `blocked`.
 
 `plan ENV` plans the steps of every product together. `--json` writes the plan with `env`,
 `region` and `layers` of the environment, and `only`, the groups that `--only` selected or `[]`
 for every group. `build ENV --plan FILE` builds the groups of that file, or those of them that
 its own `--only` selects. It refuses the file, with exit status 3, before it fetches or builds:
 
-- when `env`, `region` or `layers` differ from the environment;
+- when `env`, `region`, `layers` or `blocked` differ from the environment and its products;
 - when a product names a fetch: `plan` fetched what each step list reads;
 - when the groups that `only` selects in the plan of now differ from the groups of the file,
   apart from `estimate` and `bytes`.
@@ -620,12 +628,12 @@ reads no snapshot. No layer reads a national terrain model yet.
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
 | `planner/osm` | `geofabrik-extracts`, `area=<region id>` | `path`: `osm.pbf` | `osm.pbf`: the extract as it is. The engine step `pass` writes it, so its code is no file |
-| `planner/terrain` | The GLO-30 tiles of `bounds` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch, and of their neighbours | `terrain.mbtiles`: lossless Terrarium WebP tiles of zooms 0 to 12, the bytes that `planner-dem` writes from the same tiles |
-| `planner/routing` | `planner/osm`, and the GLO-30 tiles of the bounds of the region | `region`, `access`, `bounds`, `profiles` and `countries` | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells, as `route-blocks` writes them; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell |
+| `planner/terrain` | The GLO-30 tiles of `bounds` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours, widened to `terrain.margin_m` around the bounds | `terrain.mbtiles`: lossless Terrarium WebP tiles of zooms 0 to 12, the bytes that `planner-dem` writes from the same tiles |
+| `planner/routing` | `planner/osm`, and the GLO-30 tiles of the bounds of the region | `region` (the last part of the region id), `bounds`, `profiles` and `countries`. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells, as `route-blocks` writes them; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
 
 A grid cell is a zoom 9 Web Mercator tile that the bounds of the region overlap, clipped to the
 bounds, with the id `9-<x>-<y>`. The JSON objects that `planner/routing` writes have their keys in
-byte order, so the bytes do not depend on the features of `serde_json` in the binary.
+byte order.
 
 ### Releases
 
@@ -838,9 +846,32 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "BlockedProduct": {
+      "additionalProperties": false,
+      "properties": {
+        "product": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "product",
+        "reason"
+      ],
+      "type": "object"
+    },
     "Built": {
       "description": "What a build did.",
       "properties": {
+        "blocked": {
+          "description": "The products that give no steps for the environment; nothing of them is built.",
+          "items": {
+            "$ref": "#/$defs/BlockedProduct"
+          },
+          "type": "array"
+        },
         "layers": {
           "description": "The layers of the run, in dependency order.",
           "items": {
@@ -866,7 +897,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "run",
         "layers",
-        "releases"
+        "releases",
+        "blocked"
       ],
       "type": "object"
     },
@@ -1075,6 +1107,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "additionalProperties": false,
       "description": "What a build of an environment would fetch and build.",
       "properties": {
+        "blocked": {
+          "description": "The products that give no steps for the environment. The others plan without them.",
+          "items": {
+            "$ref": "#/$defs/BlockedProduct"
+          },
+          "type": "array"
+        },
         "env": {
           "type": "string"
         },
@@ -1106,7 +1145,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "region",
         "layers",
         "only",
-        "groups"
+        "groups",
+        "blocked"
       ],
       "type": "object"
     },

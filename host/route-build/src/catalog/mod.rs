@@ -258,9 +258,8 @@ pub fn write(directory: &Path, osm: Data, france: bool) -> Result<Report, String
     let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
     let workers = cpus.min(ROUTERS_MEMORY.saturating_sub(shared) / (routing.router_bytes() + SEARCH_BYTES)).max(1);
     let (records, report) = catalog(&routing, osm, france, workers)?;
-    // Sorted keys: a binary that links a crate with `serde_json/preserve_order` writes the same bytes.
-    let bytes = serde_json::to_vec(&obc_data::engine::sorted(json!({"format": 1, "routes": records})))
-        .map_err(|e| e.to_string())?;
+    let bytes =
+        serde_json::to_vec(&crate::sort_keys(json!({"format": 1, "routes": records}))).map_err(|e| e.to_string())?;
     std::fs::write(directory.join(FILE), bytes).map_err(|e| e.to_string())?;
     Ok(Report { seconds: started.elapsed().as_secs_f64(), ..report })
 }

@@ -306,7 +306,7 @@ pub fn publish(
     std::fs::write(root.join("blocks.json"), serde_json::to_vec(&full.manifest)?)?;
     std::fs::write(
         root.join("catalog.json"),
-        serde_json::to_vec(&obc_data::engine::sorted(serde_json::json!({"format":2,
+        serde_json::to_vec(&crate::sort_keys(serde_json::json!({"format":2,
         "source":input.identity(), "cells":catalog})))?,
     )?;
     eprintln!("Published {} packs in {:.2}s", full.manifest.archives.len(), started.elapsed().as_secs_f64());

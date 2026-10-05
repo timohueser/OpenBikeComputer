@@ -20,7 +20,7 @@ obc-data = { path = "../obc-data" }
 obc-bake = { path = "../obc-bake" }
 obc-pack = { path = "../obc-pack" }
 # The terrain steps.
-obc-dem = { path = "../obc-dem", features = ["planner"] }
+obc-dem = { path = "../obc-dem", features = ["terrarium"] }
 # The planner routing step.
 route-build = { path = "../route-build" }
 serde = { version = "1", features = ["derive"] }

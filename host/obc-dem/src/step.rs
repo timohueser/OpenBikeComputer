@@ -60,7 +60,7 @@ pub fn terrain(request: &Request) -> Result<(), String> {
 /// The terrain of the planner maps. The option `bounds` is `[west, south, east, north]` in
 /// degrees. The layer is `terrain.mbtiles`: the bytes that `planner-dem` writes from the same
 /// GLO-30 tiles without a reference archive.
-#[cfg(feature = "planner")]
+#[cfg(feature = "terrarium")]
 pub fn planner_terrain(request: &Request) -> Result<(), String> {
     let bounds = bounds(&request.options)?;
     let mut terrain = crate::planner::Terrain::open(&glo30(request, bounds), None, bounds)?;

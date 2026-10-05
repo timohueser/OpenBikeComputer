@@ -67,7 +67,10 @@ impl Code {
 }
 
 pub enum Run {
-    /// A function in this process. Its code must declare the crate of the function.
+    /// A function in this process. Its code must declare the crate of the function. One binary
+    /// links every product, so Cargo unifies their features: a step crate enables every feature
+    /// its bytes depend on itself, or makes its bytes independent of it (structs, or sorted keys
+    /// for JSON objects).
     Rust(fn(&Request) -> Result<(), String>),
     /// A program and its arguments, started in the repository root with the request as JSON on
     /// standard input. No argument names a path outside the repository root.

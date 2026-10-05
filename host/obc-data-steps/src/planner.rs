@@ -21,13 +21,19 @@ const EXTRACTS: &str = "geofabrik-extracts";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
+    terrain: Terrain,
     routing: Routing,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Terrain {
+    margin_m: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Routing {
-    access: String,
     profiles: Vec<String>,
 }
 
@@ -65,7 +71,7 @@ impl Product for Planner {
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
         let (west, south, east, north) = outlines[0].bbox();
         let bounds = [west, south, east, north].map(|udeg| udeg as f64 / 1e6);
-        let coverage = terrain_bounds(bounds);
+        let coverage = terrain_bounds(bounds, config.terrain.margin_m);
         let osm = Step {
             name: "planner/osm".into(),
             inputs: vec![Input::Snapshot {
@@ -91,8 +97,8 @@ impl Product for Planner {
             name: "planner/routing".into(),
             inputs: std::iter::once(Input::Layer(osm.name.clone())).chain(tiles(bounds, &land, glo30)).collect(),
             options: json!({
-                "region": region.id,
-                "access": config.routing.access,
+                // The last part of the id: the old planner names its files after it.
+                "region": region.id.rsplit('/').next(),
                 "bounds": bounds,
                 "profiles": config.routing.profiles,
                 "countries": region.countries,
@@ -118,8 +124,21 @@ fn tiles(bounds: [f64; 4], land: &HashSet<&str>, glo30: &str) -> Vec<Input> {
 }
 
 /// The terrain of the maps around `bounds`: the zoom 10 tiles that it touches and their
-/// neighbours, because the contours of a tile read a 3 × 3 tile neighbourhood.
-fn terrain_bounds([west, south, east, north]: [f64; 4]) -> [f64; 4] {
+/// neighbours, because the contours of a tile read a 3 × 3 tile neighbourhood; and at least
+/// `margin_m` metres around `bounds`.
+fn terrain_bounds([west, south, east, north]: [f64; 4], margin_m: f64) -> [f64; 4] {
+    let latitude = margin_m / 110_000.0;
+    let longitude = latitude / south.abs().max(north.abs()).to_radians().cos();
+    let tiles = zoom_10_neighbourhood([west, south, east, north]);
+    [
+        tiles[0].min(west - longitude),
+        tiles[1].min(south - latitude),
+        tiles[2].max(east + longitude),
+        tiles[3].max(north + latitude),
+    ]
+}
+
+fn zoom_10_neighbourhood([west, south, east, north]: [f64; 4]) -> [f64; 4] {
     const ZOOM: u32 = 10;
     let last = (1 << ZOOM) - 1;
     let ((left, top), (right, bottom)) = (mercator(west, north, ZOOM), mercator(east, south, ZOOM));
@@ -191,8 +210,8 @@ mod tests {
         let [osm, terrain, routing] = &steps[..] else { panic!("three steps") };
         let Input::Snapshot { source, version, params, .. } = &osm.inputs[0] else { panic!("not a snapshot") };
         assert_eq!((source.as_str(), version.as_str(), params), (EXTRACTS, "2026-10-02", &area));
-        // The zoom 10 tiles around the bounds and their neighbours, as `tools/planner_maps.py` gives them.
-        assert_eq!(terrain.options["bounds"], json!([7.3828125, 47.754097979680026, 8.4375, 48.45835188280866]));
+        // `terrain_coverage` of `tools/planner_bake.py` with a sun layer of 30 km.
+        assert_eq!(terrain.options["bounds"], json!([7.382257389170511, 47.71727272727273, 8.4375, 48.45835188280866]));
         assert_eq!(
             tiles(&terrain.inputs[0]),
             ["N47_00_E007", "N48_00_E007"],
@@ -201,7 +220,12 @@ mod tests {
         assert!(matches!(&routing.inputs[0], Input::Layer(name) if name == "planner/osm"));
         assert_eq!(tiles(&routing.inputs[1]), ["N47_00_E007", "N48_00_E007"]);
         assert_eq!(routing.options["bounds"], json!([7.79, 47.99, 7.82, 48.02]));
-        assert_eq!(routing.options["countries"], json!(["DE"]));
+        assert_eq!((&routing.options["region"], &routing.options["countries"]), (&json!("test"), &json!(["DE"])));
+        // About Baden-Württemberg, and the box of the old planner recipe.
+        let old = [7.03125, 47.04018214480666, 10.922533154247459, 50.07272727272727];
+        assert_eq!(terrain_bounds([7.5, 47.5, 10.5, 49.8], 30_000.0), old);
+        let old = [5.2734375, 45.33670190996811, 10.922970099182649, 50.28933925329178];
+        assert_eq!(terrain_bounds([5.95, 45.8, 10.5, 49.85], 30_000.0), old);
 
         for region in ["boxed", "no-countries"] {
             let result = Planner.steps(&env(region), &regions(), &store(&temp, &["2026-10-01"]));
