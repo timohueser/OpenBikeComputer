@@ -1643,8 +1643,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "A snapshot record, the layers of one step, or the objects that one kind of root names and no\nkept record or layer has.",
       "properties": {
         "because": {
-          "description": "`pin of ENV, …`, `newest of the source`, `newest of a request`, `inputs kept`, `pin`,\n`fixture`, `planner recipe` or `import record`, joined by ` · `.",
-          "type": "string"
+          "description": "`pin of ENV, …`, `newest of the source`, `newest of a request`, `inputs kept`, `pin`,\n`fixture`, `planner recipe` or `import record`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "bytes": {
           "description": "The size of its files.",

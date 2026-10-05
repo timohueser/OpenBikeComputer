@@ -446,7 +446,12 @@ pub fn set_refresh(text: &str, id: &str, refresh: Refresh) -> Result<String, Str
     let end = lines[at..].iter().position(header).map_or(lines.len(), |i| at + i);
     let key = |line: &String| line.split_once('=').is_some_and(|(key, _)| key.trim() == "refresh");
     let line = (start..end).find(|&i| key(&lines[i])).ok_or_else(|| format!("source `{id}` has no `refresh`"))?;
-    lines[line] = format!("refresh = {}", toml::Value::try_from(refresh).map_err(|e| e.to_string())?);
+    let (key, old) = lines[line].split_once('=').expect("a key line has `=`");
+    // The value is a number or "manual", so a `#` starts the comment.
+    let value = old.split('#').next().unwrap_or_default();
+    let (space, tail) = (&value[..value.len() - value.trim_start().len()], &old[value.trim_end().len()..]);
+    let refresh = toml::Value::try_from(refresh).map_err(|e| e.to_string())?;
+    lines[line] = format!("{key}={space}{refresh}{tail}");
     Ok(join(text, lines))
 }
 
@@ -633,10 +638,10 @@ mod tests {
 
     #[test]
     fn a_policy_is_replaced_in_its_source_only() {
-        let land = OSM.replace("\"osm\"", "\"land\"");
+        let land = OSM.replace("\"osm\"", "\"land\"").replace("refresh = 7", "refresh = 7  # weekly");
         let text = format!("# sources\n{OSM}{land}");
         let edited = set_refresh(&text, "land", Refresh::Manual).unwrap();
-        let manual = land.replace("        refresh = 7", "refresh = \"manual\"");
+        let manual = land.replace("refresh = 7  # weekly", "refresh = \"manual\"  # weekly");
         assert_eq!(edited, format!("# sources\n{OSM}{manual}\n"));
         assert_eq!(parse_sources(&edited).unwrap()[1].refresh, Refresh::Manual);
         assert_eq!(set_refresh(&text, "qrank", Refresh::Manual).unwrap_err(), "no source `qrank`");

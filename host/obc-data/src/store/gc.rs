@@ -79,15 +79,15 @@ pub struct Plan {
 
 /// A snapshot record, the layers of one step, or the objects that one kind of root names and no
 /// kept record or layer has.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Kept {
     /// `source@version`, a step, or `N objects`.
     pub entry: String,
     /// The size of its files.
     pub bytes: u64,
     /// `pin of ENV, …`, `newest of the source`, `newest of a request`, `inputs kept`, `pin`,
-    /// `fixture`, `planner recipe` or `import record`, joined by ` · `.
-    pub because: String,
+    /// `fixture`, `planner recipe` or `import record`.
+    pub because: Vec<String>,
 }
 
 /// What a collection deletes. A snapshot record is reached when a pin names it, or when it is the
@@ -151,7 +151,7 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
             continue;
         }
         let bytes = snapshot.files.iter().map(|file| file.size).sum();
-        plan.kept.push(Kept { entry: format!("{source}@{version}"), bytes, because: because.join(" · ") });
+        plan.kept.push(Kept { entry: format!("{source}@{version}"), bytes, because });
         let files = || snapshot.files.iter().map(|file| (file.name.as_str(), file.sha256.as_str()));
         snapshot_digests.insert((source.clone(), engine::digest(files())));
         snapshot_digests.extend(files().map(|file| (source.clone(), engine::digest([file]))));
@@ -180,7 +180,8 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
         }
     }
     plan.kept.sort_by(|a, b| a.entry.cmp(&b.entry));
-    let inputs_kept = |(step, bytes): (&str, u64)| Kept { entry: step.into(), bytes, because: "inputs kept".into() };
+    let inputs_kept =
+        |(step, bytes): (&str, u64)| Kept { entry: step.into(), bytes, because: vec!["inputs kept".into()] };
     plan.kept.extend(steps.into_iter().map(inputs_kept));
     // The number and size of the objects that only a root of each kind keeps.
     let mut only_named = BTreeMap::<&str, (u64, u64)>::new();
@@ -202,7 +203,7 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
         }
     }
     for (why, (objects, bytes)) in only_named {
-        plan.kept.push(Kept { entry: objects_text(objects), bytes, because: why.into() });
+        plan.kept.push(Kept { entry: objects_text(objects), bytes, because: vec![why.into()] });
     }
     plan.objects.sort();
     plan.snapshots.sort();
@@ -210,12 +211,16 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
 }
 
 /// Delete what nothing reaches, and say what. `None`, and nothing deleted, while a fetch, a build or
-/// an import holds the store.
-pub fn apply(store: &Store, roots: &Roots) -> Result<Option<Plan>, String> {
+/// an import holds the store. With `confirmed`, a plan that removes anything else deletes nothing.
+pub fn apply(store: &Store, roots: &Roots, confirmed: Option<&Plan>) -> Result<Option<Plan>, String> {
     let Some(_alone) = store.try_alone()? else {
         return Ok(None);
     };
     let plan = plan(store, roots)?;
+    if confirmed.is_some_and(|confirmed| (&confirmed.snapshots, &confirmed.objects) != (&plan.snapshots, &plan.objects))
+    {
+        return Err("the store changed after the plan; nothing was deleted".into());
+    }
     for snapshot in &plan.snapshots {
         let (source, version) = snapshot.split_once('@').expect("source@version");
         let _lock = store.lock(&format!("snapshot-{source}@{version}"))?;
@@ -434,20 +439,20 @@ mod tests {
             .collect();
         removed.sort();
         assert_eq!(plan.objects, removed);
-        let kept: Vec<(&str, &str)> = plan.kept.iter().map(|k| (k.entry.as_str(), k.because.as_str())).collect();
+        let kept: Vec<String> = plan.kept.iter().map(|k| format!("{}: {}", k.entry, k.because.join(" · "))).collect();
         assert_eq!(
             kept,
             [
-                ("extract@2026-09-20", "newest of a request"),
-                ("extract@2026-09-30", "newest of the source · newest of a request"),
-                ("land@2026-09-01", "pin of live · newest of the source"),
-                ("osm@release/1", "pin of local · newest of the source"),
-                ("cells", "inputs kept"),
-                ("joined", "inputs kept"),
-                ("one", "inputs kept"),
-                ("1 object", "fixture"),
-                ("1 object", "import record"),
-                ("1 object", "pin"),
+                "extract@2026-09-20: newest of a request",
+                "extract@2026-09-30: newest of the source · newest of a request",
+                "land@2026-09-01: pin of live · newest of the source",
+                "osm@release/1: pin of local · newest of the source",
+                "cells: inputs kept",
+                "joined: inputs kept",
+                "one: inputs kept",
+                "1 object: fixture",
+                "1 object: import record",
+                "1 object: pin",
             ]
         );
         assert_eq!(
@@ -456,9 +461,13 @@ mod tests {
         );
 
         let using = store.using().unwrap();
-        assert!(apply(&store, &roots).unwrap().is_none(), "a running fetch stops a collection");
+        assert!(apply(&store, &roots, None).unwrap().is_none(), "a running fetch stops a collection");
         drop(using);
-        assert_eq!(apply(&store, &roots).unwrap().unwrap().objects, plan.objects, "it deletes what the plan names");
+        let older = Plan { objects: plan.objects[1..].to_vec(), ..plan.clone() };
+        assert!(apply(&store, &roots, Some(&older)).is_err(), "a plan that is not the plan of now deletes nothing");
+        assert!(store.snapshot("land", "2026-08-01").unwrap().is_some());
+        let applied = apply(&store, &roots, Some(&plan)).unwrap().unwrap();
+        assert_eq!(applied.objects, plan.objects, "it deletes what the plan names");
         assert!(store.snapshot("land", "2026-08-01").unwrap().is_none());
         assert!(store.object(&sha256_hex(b"land b")).is_file(), "a file of the pinned record stays");
         assert!(!store.object(&sha256_hex(b"stale")).exists());

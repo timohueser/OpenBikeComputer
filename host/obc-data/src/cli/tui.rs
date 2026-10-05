@@ -23,7 +23,7 @@ use crate::sources::{Kind, Refresh, State, VersionScheme};
 use crate::store::{gc, Store};
 
 use super::runs_cli::{bytes, duration, mark, step_cells};
-use super::{collect, policy, refresh, registry, row_text, source_rows, widths, Error, SourceRow};
+use super::{clean, collect, policy, refresh, registry, row_text, source_rows, widths, Error, SourceRow};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -75,7 +75,9 @@ enum Effect {
     Policy(String, Refresh),
     /// `obc data sources --check-now`.
     CheckNow,
-    /// `obc data gc store --apply`.
+    /// `obc data gc store`, for Clean.
+    PlanClean,
+    /// `obc data gc store --apply` of the plan that Clean shows.
     Clean,
 }
 
@@ -113,7 +115,10 @@ struct App {
     sources: Vec<SourceRow>,
     /// Sources shows a check of upstream from now, not from the last hour.
     checked_now: bool,
-    store: gc::Plan,
+    /// The check of upstream runs.
+    checking: bool,
+    /// The plan of `gc store`, once Store has shown.
+    store: Option<gc::Plan>,
     /// Running runs first, then newest first.
     runs: Vec<Details>,
     source: usize,
@@ -171,13 +176,12 @@ fn run_loop(root: &Path, store: &Store, app: &mut App, tui: &mut Tui) -> Result<
         if app.screen == Screen::Runs && (screen != Screen::Runs || (tick && running)) {
             app.runs = list_runs(store)?;
         }
-        if app.screen == Screen::Store && screen != Screen::Store {
-            app.store = collect(root, store, false)?;
+        if app.screen == Screen::Store && screen != Screen::Store && app.store.is_none() {
+            effect = Effect::PlanClean;
         }
         if tick || app.screen != screen {
             read = Instant::now();
         }
-        let check_now = effect == Effect::CheckNow;
         let result = match effect {
             Effect::None => continue,
             Effect::Quit => return Ok(()),
@@ -186,24 +190,51 @@ fn run_loop(root: &Path, store: &Store, app: &mut App, tui: &mut Tui) -> Result<
                 stop();
                 let result = refresh(root, &id, &[], "live", false);
                 *tui = start()?;
-                // Keys typed during the fetch are not for the TUI.
-                while event::poll(Duration::ZERO).map_err(io)? {
-                    event::read().map_err(io)?;
+                discard_keys()?;
+                let reloaded = app.reload(root, false);
+                result.and(reloaded)
+            }
+            Effect::Policy(id, refresh) => {
+                let result = policy(root, &id, refresh).map(drop);
+                let reloaded = app.reload(root, false);
+                result.and(reloaded)
+            }
+            Effect::CheckNow => {
+                app.checking = true;
+                tui.draw(|frame| app.draw(frame)).map_err(io)?;
+                let result = app.reload(root, true);
+                app.checking = false;
+                discard_keys()?;
+                result
+            }
+            Effect::PlanClean => {
+                let result = collect(root, store).map(|plan| app.store = Some(plan));
+                if result.is_err() {
+                    app.overlay = None;
                 }
                 result
             }
-            Effect::Policy(id, refresh) => policy(root, &id, refresh).map(drop),
-            Effect::CheckNow => Ok(()),
             Effect::Clean => {
-                let result = collect(root, store, true).map(drop);
-                app.store = collect(root, store, false)?;
+                let result = clean(root, store, app.store.as_ref()).map(drop);
+                match collect(root, store) {
+                    Ok(plan) => app.store = Some(plan),
+                    Err(error) => app.notice = Some(error.message),
+                }
                 result
             }
         };
-        app.notice = result.err().map(|e| e.message);
-        app.checked_now |= check_now;
-        app.sources = source_rows(&registry(root)?, check_now)?;
+        if let Err(error) = result {
+            app.notice = Some(error.message);
+        }
     }
+}
+
+/// Drop the keys typed while the TUI waited: they are not for what it shows now.
+fn discard_keys() -> Result<(), Error> {
+    while event::poll(Duration::ZERO).map_err(|e| e.to_string())? {
+        event::read().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn start() -> Result<Tui, Error> {
@@ -232,7 +263,8 @@ impl App {
             overlay: None,
             sources,
             checked_now: false,
-            store: gc::Plan::default(),
+            checking: false,
+            store: None,
             runs,
             source: 0,
             kept: 0,
@@ -245,10 +277,19 @@ impl App {
         }
     }
 
+    /// Read the sources again; with `check_now`, after a check of upstream now.
+    fn reload(&mut self, root: &Path, check_now: bool) -> Result<(), Error> {
+        self.sources = source_rows(&registry(root)?, check_now)?;
+        self.checked_now = check_now;
+        Ok(())
+    }
+
     fn rows(&self) -> usize {
         match self.screen {
             Screen::Sources => self.sources.len(),
-            Screen::Store => self.store.kept.len() + usize::from(!self.store.objects.is_empty()),
+            Screen::Store => {
+                self.store.as_ref().map_or(0, |plan| plan.kept.len() + usize::from(!plan.objects.is_empty()))
+            }
             Screen::Runs => self.runs.len(),
         }
     }
@@ -286,7 +327,9 @@ impl App {
             Action::Open(Overlay::Policy) => {
                 self.sources.get(self.source).is_some_and(|row| row.source.version == VersionScheme::Date)
             }
-            Action::Open(Overlay::Clean) => !self.store.snapshots.is_empty() || !self.store.objects.is_empty(),
+            Action::Open(Overlay::Clean) => {
+                self.store.as_ref().is_some_and(|plan| !plan.snapshots.is_empty() || !plan.objects.is_empty())
+            }
             _ => true,
         }
     }
@@ -356,6 +399,9 @@ impl App {
                 (self.overlay, self.scroll, self.asking) = (Some(overlay), 0, false);
                 let current = self.sources.get(self.source).map(|row| row.source.refresh);
                 self.choice = Refresh::ALL.iter().position(|&r| Some(r) == current).unwrap_or(0);
+                if overlay == Overlay::Clean {
+                    return Effect::PlanClean;
+                }
             }
             Action::Choose => {
                 self.overlay = None;
@@ -470,13 +516,13 @@ impl App {
 
     fn draw_store(&mut self, frame: &mut Frame, area: Rect) {
         let mut table = vec![["ENTRY", "SIZE", "KEPT BECAUSE"].map(String::from).to_vec()];
-        table.extend(
-            self.store.kept.iter().map(|kept| vec![kept.entry.clone(), bytes(kept.bytes), kept.because.clone()]),
-        );
-        let unused = !self.store.objects.is_empty();
+        let plan = self.store.clone().unwrap_or_default();
+        table
+            .extend(plan.kept.iter().map(|kept| vec![kept.entry.clone(), bytes(kept.bytes), kept.because.join(" · ")]));
+        let unused = !plan.objects.is_empty();
         if unused {
-            let objects = gc::objects_text(self.store.objects.len() as u64);
-            table.push(vec![objects, bytes(self.store.remove_bytes), "unused".into()]);
+            let objects = gc::objects_text(plan.objects.len() as u64);
+            table.push(vec![objects, bytes(plan.remove_bytes), "unused".into()]);
         }
         let widths = widths(&table);
         let mut lines: Vec<Line> = table[1..].iter().map(|cells| Line::from(row_text(cells, &widths))).collect();
@@ -529,6 +575,10 @@ impl App {
     }
 
     fn draw_bar(&self, frame: &mut Frame, area: Rect) {
+        if self.checking {
+            frame.render_widget(Line::from("checking upstream…"), area);
+            return;
+        }
         let mut spans = Vec::new();
         for (label, does) in self.bindings().iter().filter_map(|binding| binding.bar) {
             spans.extend([Span::from(label).bold(), Span::from(format!(" {does}   "))]);
@@ -578,13 +628,18 @@ impl App {
     }
 
     fn clean_lines(&self) -> Vec<Line<'static>> {
-        let plan = &self.store;
+        let plan = self.store.clone().unwrap_or_default();
         let mut lines: Vec<Line> =
             plan.snapshots.iter().map(|snapshot| Line::from(format!("snapshot {snapshot}"))).collect();
         let objects = gc::objects_text(plan.objects.len() as u64);
         lines.push(Line::from(format!("{objects}  {}", bytes(plan.remove_bytes))));
         if self.asking {
-            let question = format!("Remove {} from the store?", bytes(plan.remove_bytes));
+            let records = match plan.snapshots.len() {
+                1 => "1 record".to_string(),
+                records => format!("{records} records"),
+            };
+            let what = if plan.objects.is_empty() { records } else { bytes(plan.remove_bytes) };
+            let question = format!("Remove {what} from the store?");
             lines.extend([Line::default(), Line::from(question).bold()]);
         }
         lines
@@ -762,13 +817,13 @@ mod tests {
             steps: Vec::new(),
         };
         let mut app = App::new(sources.collect(), vec![run("2024-01-10-120000"), run("2024-01-09-120000")]);
-        app.store = gc::Plan {
-            kept: vec![Kept { entry: "osm@2024-01-02".into(), bytes: 1_000_000, because: "pin of live".into() }],
+        app.store = Some(gc::Plan {
+            kept: vec![Kept { entry: "osm@2024-01-02".into(), bytes: 1_000_000, because: vec!["pin of live".into()] }],
             snapshots: vec!["osm@2023-12-01".into()],
             objects: vec![("ab".repeat(32), 1_000_000)],
             remove_bytes: 1_000_000,
             ..gc::Plan::default()
-        };
+        });
         app
     }
 
@@ -791,7 +846,7 @@ mod tests {
         }
         states.push(App { asking: true, ..opened(Overlay::Clean, 0, 0) });
         states.push(App { screen: Screen::Store, ..app() });
-        states.push(App { screen: Screen::Store, store: gc::Plan::default(), ..app() });
+        states.push(App { screen: Screen::Store, store: Some(gc::Plan::default()), ..app() });
         states.push(App { screen: Screen::Runs, ..app() });
         for app in states {
             let keys = app.bindings();
@@ -831,7 +886,7 @@ mod tests {
     #[test]
     fn a_clean_needs_a_then_y() {
         let mut app = App { screen: Screen::Store, ..app() };
-        app.key(KeyCode::Char('c'));
+        assert_eq!(app.key(KeyCode::Char('c')), Effect::PlanClean, "the plan of now");
         assert_eq!((app.overlay, app.command().as_str()), (Some(Overlay::Clean), "obc data gc store"));
         for key in [KeyCode::Enter, KeyCode::Char('y')] {
             assert_eq!(app.key(key), Effect::None);

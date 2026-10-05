@@ -212,22 +212,25 @@ fn store_import(apply: bool, json: bool) -> Result<(), Error> {
     Ok(())
 }
 
-/// The plan of `gc store`, or, with `apply`, what it deleted.
-fn collect(root: &Path, store: &Store, apply: bool) -> Result<gc::Plan, Error> {
+/// The plan of `gc store`.
+fn collect(root: &Path, store: &Store) -> Result<gc::Plan, Error> {
     let roots = gc::Roots::from_repo(root).map_err(|e| Code::InvalidData.error(e))?;
-    Ok(match apply {
-        false => gc::plan(store, &roots)?,
-        true => gc::apply(store, &roots)?.ok_or_else(|| {
-            Code::Usage
-                .error("a fetch, a build or an import uses the store; nothing was deleted")
-                .fix("Run `obc data gc store --apply` again when the fetch, the build or the import ends.")
-        })?,
+    Ok(gc::plan(store, &roots)?)
+}
+
+/// `gc store --apply`: what it deleted. With `confirmed`, only when that is still the plan.
+fn clean(root: &Path, store: &Store, confirmed: Option<&gc::Plan>) -> Result<gc::Plan, Error> {
+    let roots = gc::Roots::from_repo(root).map_err(|e| Code::InvalidData.error(e))?;
+    gc::apply(store, &roots, confirmed)?.ok_or_else(|| {
+        Code::Usage
+            .error("a fetch, a build or an import uses the store; nothing was deleted")
+            .fix("Run `obc data gc store --apply` again when the fetch, the build or the import ends.")
     })
 }
 
 fn gc_store(root: &Path, apply: bool, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
-    let plan = collect(root, &store, apply)?;
+    let plan = if apply { clean(root, &store, None)? } else { collect(root, &store)? };
     if json {
         return print_json(&plan);
     }
@@ -240,7 +243,8 @@ fn gc_store(root: &Path, apply: bool, json: bool) -> Result<(), Error> {
     plan.objects.iter().for_each(|(sha256, size)| println!("  object {sha256}  {}", bytes(*size)));
     println!("  {} objects that nothing reaches, {}", plan.objects.len(), bytes(plan.remove_bytes));
     println!("KEEP {} objects, {}", plan.keep_objects, bytes(plan.keep_bytes));
-    let kept = plan.kept.iter().map(|kept| vec![format!("  {}", kept.entry), bytes(kept.bytes), kept.because.clone()]);
+    let kept =
+        plan.kept.iter().map(|kept| vec![format!("  {}", kept.entry), bytes(kept.bytes), kept.because.join(" · ")]);
     print_table(&kept.collect::<Vec<_>>());
     if !apply {
         println!("`--apply` deletes them. It refuses to start while a fetch, a build or an import runs.");
@@ -332,8 +336,7 @@ fn policy(root: &Path, id: &str, refresh: Refresh) -> Result<Source, Error> {
     find(&registry(root)?, id)?;
     let path = root.join("data/sources.toml");
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let text = sources::set_refresh(&text, id, refresh)
-        .map_err(|e| Code::InvalidData.error(format!("{}: {e}", path.display())))?;
+    let text = sources::set_refresh(&text, id, refresh).map_err(|e| Code::Usage.error(e))?;
     let edited = sources::parse_sources(&text)
         .map_err(|e| Code::Usage.error(e).fix(format!("Choose `manual`: `obc data policy {id} manual`.")))?;
     store::write_atomic(&path, text.as_bytes())?;
