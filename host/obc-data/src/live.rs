@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::engine::release::{Layer, Release};
 use crate::env::LiveVersions;
@@ -180,6 +180,41 @@ impl Live {
         prefixes
     }
 
+    /// The keys that an apply which makes `next` live removes: those that live uses and `next`
+    /// does not, and with a `check`, the leftovers and the files of each release that goes, but no
+    /// key that R2 lacks.
+    pub fn removed(&self, next: &Live, check: Option<&Check>) -> Vec<Removal> {
+        let kept = next.expected();
+        let mut removed: BTreeMap<String, Option<u64>> =
+            self.expected().into_iter().filter(|(key, _)| !kept.contains_key(key)).collect();
+        if let Some(check) = check {
+            for drift in check.drift.iter().filter(|drift| drift.found.is_none()) {
+                removed.remove(&drift.key);
+            }
+            let stays = next.folders();
+            let named = check.named.iter().filter(|object| !stays.iter().any(|f| object.key.starts_with(f)));
+            let listed = check.leftovers.iter().chain(named);
+            removed.extend(listed.map(|object| (object.key.clone(), Some(object.bytes))));
+        }
+        removed.into_iter().map(|(key, bytes)| Removal { key, bytes }).collect()
+    }
+
+    /// The layers of the live releases whose files `keys` hold.
+    pub fn owners(&self, keys: &[String]) -> BTreeSet<String> {
+        let mut owners = BTreeSet::new();
+        for (prefix, _, release) in self.releases() {
+            let holds = |sha256: &str| keys.contains(&format!("{prefix}/objects/{sha256}"));
+            let layers = release.layers.iter().filter(|layer| layer.files.iter().any(|file| holds(&file.sha256)));
+            owners.extend(layers.map(|layer| layer.step.clone()));
+        }
+        owners
+    }
+
+    /// The folder of the files that a client finds by name, of each live release.
+    fn folders(&self) -> Vec<String> {
+        self.releases().map(|(prefix, id, _)| format!("{prefix}/releases/{id}/")).collect()
+    }
+
     /// What a listing of the owned prefixes shows against live.
     pub fn check(&self, remote: &Remote) -> Result<Check, String> {
         let mut listed = BTreeMap::new();
@@ -196,10 +231,10 @@ impl Live {
             })
         });
         let drift = drift.collect();
-        let named: Vec<String> = self.releases().map(|(prefix, id, _)| format!("{prefix}/releases/{id}/")).collect();
-        let used = |key: &str| expected.contains_key(key) || named.iter().any(|n| key.starts_with(n));
-        let leftovers = listed.into_values().filter(|object| !used(&object.key));
-        Ok(Check { prefixes: self.prefixes(), drift, leftovers: leftovers.collect() })
+        let folders = self.folders();
+        let unused = listed.into_values().filter(|object| !expected.contains_key(&object.key));
+        let (named, leftovers) = unused.partition(|object| folders.iter().any(|f| object.key.starts_with(f)));
+        Ok(Check { prefixes: self.prefixes(), drift, named, leftovers })
     }
 }
 
@@ -210,6 +245,8 @@ pub struct Check {
     pub prefixes: Vec<String>,
     /// The keys that live uses and that R2 lacks, or holds with another size.
     pub drift: Vec<Drift>,
+    /// The files that a client finds by name, of the live releases.
+    pub named: Vec<Object>,
     /// The keys under the prefixes that no live release uses.
     pub leftovers: Vec<Object>,
 }
@@ -221,6 +258,14 @@ pub struct Drift {
     pub expected: Option<u64>,
     /// The size on R2; `None` when R2 lacks the key.
     pub found: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Removal {
+    pub key: String,
+    /// `None` for the record of an input copy, whose size is not known before a listing.
+    pub bytes: Option<u64>,
 }
 
 fn record_key(source: &str, version: &str) -> String {
@@ -329,7 +374,7 @@ pub(crate) mod tests {
             files: vec![file],
             snapshots: [("land".to_string(), read)].into(),
         };
-        Release { product: "test".into(), layers: vec![layer] }
+        Release { product: "test".into(), region: "monaco".into(), optional: Vec::new(), layers: vec![layer] }
     }
 
     /// A bucket in which `release` is live, with its objects and its input copy.

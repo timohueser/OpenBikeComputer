@@ -97,46 +97,17 @@ fn judge(
         return found(State::NotApplied, "options".into());
     }
     for input in &step.inputs {
-        let Input::Snapshot { source, version, params, files } = input else { continue };
+        let Input::Snapshot { source, version, .. } = input else { continue };
         // A source that live did not read is a new input: the inputs below differ.
-        let Some(read_live) = live.snapshots.get(source) else { continue };
-        let digest = match selection(store, source, version, params, files)? {
-            Selection::Present(files) => {
-                Some(digest(files.iter().map(|file| (file.name.as_str(), file.sha256.as_str()))))
-            }
-            Selection::Lacks(_) => None,
-        };
-        let other = &read_live.version != version || sorted(&read_live.params) != sorted(params);
-        let other_files = digest
-            .as_ref()
-            .is_some_and(|digest| read(InputKind::Snapshot, source).is_some_and(|input| &input.digest != digest));
-        if other || other_files {
-            let fetched = if digest.is_some() { "" } else { " (not fetched)" };
+        if let Some((true, fetched)) = other_read(store, live, input)? {
+            let fetched = if fetched { "" } else { " (not fetched)" };
             return found(State::NotApplied, format!("{source}@{version} not in live{fetched}"));
         }
     }
-
-    let declared: BTreeSet<(InputKind, &str)> = step
-        .inputs
-        .iter()
-        .map(|input| match input {
-            Input::Snapshot { source, .. } => (InputKind::Snapshot, source.as_str()),
-            Input::Layer(name) => (InputKind::Layer, name.as_str()),
-        })
-        .collect();
-    let built: BTreeSet<(InputKind, &str)> =
-        live.inputs.iter().map(|input| (input.kind, input.name.as_str())).collect();
-    if declared != built {
-        return found(State::CodeChanged, "inputs".into());
-    }
-    if live.command != step.command() {
-        return found(State::CodeChanged, "command".into());
-    }
-    if live.outputs != step.sorted_outputs() {
-        return found(State::CodeChanged, "outputs".into());
-    }
-    if live.code != code_hash {
-        return found(State::CodeChanged, changed_code(store, &live.code, files, &step.code)?);
+    match code_differs(step, code_hash, live) {
+        Some("code") => return found(State::CodeChanged, changed_code(store, &live.code, files, &step.code)?),
+        Some(what) => return found(State::CodeChanged, what.into()),
+        None => {}
     }
 
     for name in step.layers() {
@@ -158,6 +129,48 @@ fn judge(
         }
     }
     Ok((State::Ok, None))
+}
+
+/// Whether the live layer read the snapshot input with another version, other `params` (in any
+/// order) or, when the store has the files that it reads, other files; and whether the store has
+/// them. `None` for a layer input, or a source that the live layer did not read.
+pub(super) fn other_read(store: &Store, live: &Layer, input: &Input) -> Result<Option<(bool, bool)>, String> {
+    let Input::Snapshot { source, version, params, files } = input else { return Ok(None) };
+    let Some(read) = live.snapshots.get(source) else { return Ok(None) };
+    let digest = match selection(store, source, version, params, files)? {
+        Selection::Present(files) => Some(digest(files.iter().map(|file| (file.name.as_str(), file.sha256.as_str())))),
+        Selection::Lacks(_) => None,
+    };
+    let other = &read.version != version || sorted(&read.params) != sorted(params);
+    let recorded = live.inputs.iter().find(|input| input.kind == InputKind::Snapshot && &input.name == source);
+    let other_files = digest.as_ref().is_some_and(|digest| recorded.is_some_and(|input| &input.digest != digest));
+    Ok(Some((other || other_files, digest.is_some())))
+}
+
+/// What of the code of `step` is not that of its live layer: `inputs` (kind and name), `command`,
+/// `outputs` or `code` (the code hash).
+pub(super) fn code_differs(step: &Step, code_hash: &str, live: &Layer) -> Option<&'static str> {
+    let declared: BTreeSet<(InputKind, &str)> = step
+        .inputs
+        .iter()
+        .map(|input| match input {
+            Input::Snapshot { source, .. } => (InputKind::Snapshot, source.as_str()),
+            Input::Layer(name) => (InputKind::Layer, name.as_str()),
+        })
+        .collect();
+    let built: BTreeSet<(InputKind, &str)> =
+        live.inputs.iter().map(|input| (input.kind, input.name.as_str())).collect();
+    if declared != built {
+        Some("inputs")
+    } else if live.command != step.command() {
+        Some("command")
+    } else if live.outputs != step.sorted_outputs() {
+        Some("outputs")
+    } else if live.code != code_hash {
+        Some("code")
+    } else {
+        None
+    }
 }
 
 /// The code files that differ from the code that built the live layer: the first, and how many

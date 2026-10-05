@@ -19,7 +19,6 @@ use clap::{Parser, Subcommand};
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::env::LiveVersions;
 use crate::fetch::http::Http;
 use crate::fetch::upstream::{self, Upstream};
 use crate::fetch::{self, Request};
@@ -218,11 +217,6 @@ fn remote() -> Result<Remote, Error> {
 /// What is live now.
 fn read_live(remote: &Remote, registry: &Registry, products: &[&dyn Product], store: &Store) -> Result<Live, Error> {
     Live::read(remote, products, &registry.sources, store).map_err(|e| Code::R2Failed.error(e))
-}
-
-/// The versions of each fetch that the live releases read.
-fn live_versions(root: &Path, products: &[&dyn Product], store: &Store) -> Result<LiveVersions, Error> {
-    Ok(read_live(&remote()?, &registry(root)?, products, store)?.versions())
 }
 
 /// The LIVE column of the sources: source id to the versions that the live releases read. It
@@ -474,22 +468,13 @@ fn source_rows(
     let mut sorted: Vec<&Source> = registry.sources.iter().collect();
     sorted.sort_by_key(|source| source.kind);
     let (store, http) = (Store::open()?, Http::new());
-    let newest: Vec<Upstream> = std::thread::scope(|scope| {
-        let checks: Vec<_> =
-            sorted.iter().map(|source| scope.spawn(|| upstream::newest(&store, &http, source, max_age))).collect();
-        checks.into_iter().map(|check| check.join().unwrap_or(Upstream::Failed("panicked".into()))).collect()
-    });
+    let newest = upstreams(&store, &http, &sorted, max_age);
     sorted
         .into_iter()
         .zip(&newest)
         .map(|(source, upstream)| {
             let versions = |id: &str| live.and_then(|live| live.get(id)).cloned().unwrap_or_default();
-            // The state reads the first version in order: for a date, the oldest.
-            let version = versions(&source.id).into_iter().next();
-            let base = source.fetch.from.as_deref().and_then(|from| versions(from).into_iter().next());
-            let (version, base) = (version.as_deref(), base.as_deref());
-            let present = source.credential.as_ref().is_none_or(|c| c.present());
-            let status = sources::status(source, version, base, upstream, today, present);
+            let status = source_status(source, live, upstream, today);
             let mut snapshots = store.snapshots(&source.id)?;
             // `retrieved` is `YYYY-MM-DDTHH:MM:SSZ`, so it sorts as text.
             snapshots.sort_by_cached_key(|s| std::cmp::Reverse(s.files.iter().map(|f| f.retrieved.clone()).max()));
@@ -508,6 +493,47 @@ fn source_rows(
             })
         })
         .collect()
+}
+
+/// The newest upstream version of each of `sources`, from checks at most `max_age` seconds old.
+fn upstreams(store: &Store, http: &Http, sources: &[&Source], max_age: u64) -> Vec<Upstream> {
+    std::thread::scope(|scope| {
+        let checks: Vec<_> =
+            sources.iter().map(|source| scope.spawn(|| upstream::newest(store, http, source, max_age))).collect();
+        checks.into_iter().map(|check| check.join().unwrap_or(Upstream::Failed("panicked".into()))).collect()
+    })
+}
+
+/// The state of `source`, with `live` the versions that the live releases read of each source.
+fn source_status(
+    source: &Source,
+    live: Option<&BTreeMap<String, Vec<String>>>,
+    upstream: &Upstream,
+    today: i64,
+) -> sources::Status {
+    let first = |id: &str| live.and_then(|live| live.get(id)).and_then(|versions| versions.first()).map(String::as_str);
+    // The state reads the first version in order: for a date, the oldest.
+    let base = source.fetch.from.as_deref().and_then(first);
+    let present = source.credential.as_ref().is_none_or(|c| c.present());
+    sources::status(source, first(&source.id), base, upstream, today, present)
+}
+
+/// Each stale source that live reads, with its newest upstream version when a check knows it: a
+/// plan of live moves it there.
+fn stale(
+    store: &Store,
+    http: &Http,
+    sources: &[Source],
+    live: &BTreeMap<String, Vec<String>>,
+) -> BTreeMap<String, Option<String>> {
+    let read: Vec<&Source> = sources.iter().filter(|source| live.contains_key(&source.id)).collect();
+    let today = crate::date::today();
+    let newest = upstreams(store, http, &read, upstream::CACHE);
+    let stale = read
+        .into_iter()
+        .zip(newest)
+        .filter(|(source, upstream)| source_status(source, Some(live), upstream, today).state == State::Stale);
+    stale.map(|(source, upstream)| (source.id.clone(), upstream.version().map(str::to_string))).collect()
 }
 
 fn print_sources(root: &Path, products: &[&dyn Product], check_now: bool, json: bool) -> Result<(), Error> {

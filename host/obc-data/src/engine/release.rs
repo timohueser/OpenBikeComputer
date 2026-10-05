@@ -1,8 +1,8 @@
-//! A release: the layers of one product in a small manifest. Its id is the SHA-256 of the
-//! manifest, and the manifest holds no cost of a build, so two machines that build the same
+//! A release: the layers of one product for a region in a small manifest. Its id is the SHA-256
+//! of the manifest, and the manifest holds no cost of a build, so two machines that build the same
 //! layers give the same id.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,10 @@ use crate::store::{self, sha256_hex, write_atomic, Store};
 #[serde(deny_unknown_fields)]
 pub struct Release {
     pub product: String,
+    /// The region of the environment that the release was built for.
+    pub region: String,
+    /// The optional layers of the product that the environment switched on, sorted.
+    pub optional: Vec<String>,
     /// Sorted by `step`.
     pub layers: Vec<Layer>,
 }
@@ -70,6 +74,26 @@ impl Layer {
 }
 
 impl Release {
+    /// The release that a plan of `live` gives: the layers of `live` that `new` does not replace
+    /// and that `dropped` does not name, and `new`.
+    pub fn compose(
+        product: &str,
+        region: &str,
+        optional: &[String],
+        live: Option<&Release>,
+        new: Vec<Layer>,
+        dropped: &BTreeSet<String>,
+    ) -> Release {
+        let replaced = |layer: &&Layer| new.iter().any(|n| n.step == layer.step) || dropped.contains(&layer.step);
+        let kept: Vec<Layer> =
+            live.into_iter().flat_map(|live| &live.layers).filter(|layer| !replaced(layer)).cloned().collect();
+        let mut layers: Vec<Layer> = kept.into_iter().chain(new).collect();
+        layers.sort_by(|a, b| a.step.cmp(&b.step));
+        let mut optional = optional.to_vec();
+        optional.sort();
+        Release { product: product.into(), region: region.into(), optional, layers }
+    }
+
     /// The manifest as compact JSON with the keys of each object in byte order.
     pub(crate) fn canonical(&self) -> Vec<u8> {
         let value = serde_json::to_value(self).expect("a release serializes");
@@ -101,18 +125,38 @@ impl Release {
     }
 }
 
-/// The release of `product` when the store has the layer of each of its steps, the steps whose
-/// name starts with `<product>/`. `steps` are the steps of every product: a layer can read the
-/// layer of another product.
-pub fn release(store: &Store, root: &Path, product: &str, steps: &[Step]) -> Result<Option<Release>, String> {
+/// The layer that the store has for each step that `names` names, by step. `steps` are the steps of
+/// every product: a layer can read the layer of another product.
+pub fn stored(
+    store: &Store,
+    root: &Path,
+    steps: &[Step],
+    names: &BTreeSet<&str>,
+) -> Result<BTreeMap<String, Layer>, String> {
+    let walked = walk(store, root, steps)?;
+    let named = walked.iter().filter(|walked| names.contains(walked.step.name.as_str()));
+    let layers = named.filter_map(|walked| walked.stored.as_ref().map(|receipt| Layer::new(receipt, walked.step)));
+    Ok(layers.map(|layer| (layer.step.clone(), layer)).collect())
+}
+
+/// The release of `product` for `region` when the store has the layer of each of its steps, the
+/// steps whose name starts with `<product>/`.
+pub fn release(
+    store: &Store,
+    root: &Path,
+    product: &str,
+    region: &str,
+    optional: &[String],
+    steps: &[Step],
+) -> Result<Option<Release>, String> {
     let prefix = format!("{product}/");
-    let mut layers = Vec::new();
-    for walked in walk(store, root, steps)?.iter().filter(|walked| walked.step.name.starts_with(&prefix)) {
-        let Some(receipt) = &walked.stored else { return Ok(None) };
-        layers.push(Layer::new(receipt, walked.step));
+    let names: BTreeSet<&str> =
+        steps.iter().map(|step| step.name.as_str()).filter(|n| n.starts_with(&prefix)).collect();
+    let layers = stored(store, root, steps, &names)?;
+    if layers.len() < names.len() {
+        return Ok(None);
     }
-    layers.sort_by(|a, b| a.step.cmp(&b.step));
-    Ok(Some(Release { product: product.into(), layers }))
+    Ok(Some(Release::compose(product, region, optional, None, layers.into_values().collect(), &BTreeSet::new())))
 }
 
 #[cfg(test)]
@@ -124,12 +168,16 @@ mod tests {
     #[test]
     fn two_stores_that_build_the_same_layers_give_the_same_release() {
         let (one, two) = (fixture("release-one"), fixture("release-two"));
-        assert_eq!(release(&one.store, &one.root(), "test", &pipeline()).unwrap(), None, "nothing is built");
+        assert_eq!(
+            release(&one.store, &one.root(), "test", "monaco", &[], &pipeline()).unwrap(),
+            None,
+            "nothing is built"
+        );
 
         let built = one.build(&pipeline()).unwrap();
         two.build(&pipeline()).unwrap();
-        let first = release(&one.store, &one.root(), "test", &pipeline()).unwrap().unwrap();
-        let second = release(&two.store, &two.root(), "test", &pipeline()).unwrap().unwrap();
+        let first = release(&one.store, &one.root(), "test", "monaco", &[], &pipeline()).unwrap().unwrap();
+        let second = release(&two.store, &two.root(), "test", "monaco", &[], &pipeline()).unwrap().unwrap();
         assert_eq!(first.id(), second.id(), "the cost of a build is not in a release");
 
         let steps: Vec<&str> = first.layers.iter().map(|layer| layer.step.as_str()).collect();
@@ -145,8 +193,14 @@ mod tests {
         assert_eq!(hash_file(&one.store.release("test", &id)).unwrap().0, id, "the file is canonical");
         assert_eq!(Release::read(&one.store, "test", &id).unwrap(), first);
 
+        let join = Layer { key: "another".into(), ..first.layers[1].clone() };
+        let dropped = BTreeSet::from(["test/count".to_string()]);
+        let next = Release::compose("test", "andorra", &[], Some(&first), vec![join.clone()], &dropped);
+        assert_eq!(next.layers, [join, first.layers[2].clone()], "the new layer, and the live layer that stays");
+        assert_eq!(next.region, "andorra");
+
         write(&one.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
-        let changed = release(&one.store, &one.root(), "test", &pipeline()).unwrap();
+        let changed = release(&one.store, &one.root(), "test", "monaco", &[], &pipeline()).unwrap();
         assert_eq!(changed, None, "a step whose layer the store lacks");
     }
 }

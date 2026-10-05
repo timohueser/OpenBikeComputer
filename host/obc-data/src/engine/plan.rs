@@ -15,18 +15,45 @@ pub struct Plan {
     pub groups: Vec<Group>,
 }
 
-/// One change: builds that read each other's layers, and the fetches that they need. A group
-/// never needs a build of another group, so each can be selected alone. Two groups can need the
-/// same fetch.
+/// One change, and the fetches and builds that it needs. Without live, a group is builds that read
+/// each other's layers: it never needs a build of another group. Against live, a group is one
+/// cause, and two groups can need the same build. Either way, each can be selected alone, and two
+/// groups can need the same fetch.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "PlanGroup")]
 pub struct Group {
-    /// The step of its first build. It names the group only in the plan that it comes from.
+    /// It names the group only in the plan that it comes from.
     pub id: String,
+    /// Why live changes; `None` without live.
+    pub cause: Option<Cause>,
+    /// The layers that a release takes new, in dependency order: those that the cause changes,
+    /// and the changed layers that they read.
+    pub layers: Vec<String>,
+    /// The live layers that the release no longer has.
+    pub drops: Vec<String>,
     pub fetches: Vec<Fetch>,
     /// In dependency order.
     pub builds: Vec<Build>,
+}
+
+/// Why a group changes live.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "PlanCause")]
+pub enum Cause {
+    /// The environment names another region than a live release, or a product has nothing live.
+    Region,
+    /// The environment switches on other optional layers than a live release has.
+    Layers,
+    /// A `--move`, or a stale source: the layers read `to`, not the versions that live reads.
+    Move { source: String, from: Vec<String>, to: String },
+    /// The code that the steps declare is not the code of their live layers, or it gives other
+    /// options or inputs. A layer that live has and the steps do not make has no code.
+    Code { paths: Vec<String>, crates: Vec<String> },
+    /// The keys of live that R2 lacks, or holds with another size. Its builds make the unchanged
+    /// layers of those keys that the store lacks.
+    Repair { keys: Vec<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -105,13 +132,9 @@ pub(super) fn walk<'a>(store: &Store, root: &Path, steps: &'a [Step]) -> Result<
 /// another build.
 pub fn plan(store: &Store, root: &Path, steps: &[Step]) -> Result<Plan, String> {
     let receipts = store.layers()?;
-    let mut builds: Vec<(&Step, Build, Vec<Fetch>)> = Vec::new();
-    for Walked { step, code, fetches, key, stored } in walk(store, root, steps)? {
-        if stored.is_none() {
-            let (recipe, estimate) = (recipe(step, &code), estimate(&receipts, step));
-            builds.push((step, Build { step: step.name.clone(), recipe, key, estimate }, fetches));
-        }
-    }
+    let walked = walk(store, root, steps)?;
+    let builds: Vec<(&Step, Build, &Vec<Fetch>)> =
+        walked.iter().filter_map(|walked| Some((walked.step, build(walked, &receipts)?, &walked.fetches))).collect();
 
     // A build joins the builds whose layers it reads.
     let index: HashMap<&str, usize> =
@@ -126,18 +149,40 @@ pub fn plan(store: &Store, root: &Path, steps: &[Step]) -> Result<Plan, String> 
     let mut group_of: HashMap<usize, usize> = HashMap::new();
     for (i, (_, build, fetches)) in builds.iter().enumerate() {
         let g = *group_of.entry(find(&mut parent, i)).or_insert_with(|| {
-            groups.push(Group { id: build.step.clone(), fetches: Vec::new(), builds: Vec::new() });
+            groups.push(Group::new(build.step.clone(), None));
             groups.len() - 1
         });
         groups[g].builds.push(build.clone());
-        for fetch in fetches {
+        for fetch in fetches.iter() {
             add_fetch(&mut groups[g].fetches, fetch);
         }
     }
+    sized(store, groups)
+}
+
+/// The build of a walked step, when the store lacks its layer.
+pub(super) fn build(walked: &Walked, receipts: &[Receipt]) -> Option<Build> {
+    let Walked { step, code, key, stored, .. } = walked;
+    stored.is_none().then(|| Build {
+        step: step.name.clone(),
+        recipe: recipe(step, code),
+        key: key.clone(),
+        estimate: estimate(receipts, step),
+    })
+}
+
+/// The plan of `groups`, with the size of each fetch.
+pub(super) fn sized(store: &Store, mut groups: Vec<Group>) -> Result<Plan, String> {
     for fetch in groups.iter_mut().flat_map(|group| &mut group.fetches) {
         fetch.bytes = fetch_bytes(store, fetch)?;
     }
     Ok(Plan { groups })
+}
+
+impl Group {
+    pub(super) fn new(id: String, cause: Option<Cause>) -> Group {
+        Group { id, cause, layers: Vec::new(), drops: Vec::new(), fetches: Vec::new(), builds: Vec::new() }
+    }
 }
 
 impl Plan {
@@ -205,7 +250,7 @@ fn missing(store: &Store, step: &Step) -> Result<Vec<Fetch>, String> {
 
 /// Add `fetch` to `fetches`, joined with a fetch of the same version and params. A join that
 /// adds files has no known size.
-fn add_fetch(fetches: &mut Vec<Fetch>, fetch: &Fetch) {
+pub(super) fn add_fetch(fetches: &mut Vec<Fetch>, fetch: &Fetch) {
     let same = |known: &&mut Fetch| {
         (&known.source, &known.version, sorted(&known.params)) == (&fetch.source, &fetch.version, sorted(&fetch.params))
     };
