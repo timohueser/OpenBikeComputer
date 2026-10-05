@@ -1,20 +1,18 @@
-import { BASEMAP_URL, GLYPHS_URL, SPRITES_URL } from "../planner/map-data";
+import type { PlannerConfig } from "../planner/config";
 
-export interface BasemapConfig {
-    basemap: string;
-    glyphs: string;
-    sprites: string;
-}
+export type BasemapConfig = Pick<PlannerConfig, "basemap" | "glyphs" | "sprites">;
 
-/** Local planner previews use build settings; ordinary builds use the active release. */
+/** The basemap of the planner config that this build carries, else of the live catalogue's active release. */
 export async function basemapConfig(): Promise<BasemapConfig> {
-    if (import.meta.env.VITE_PLANNER_TILEJSON_URL || import.meta.env.VITE_PLANNER_PMTILES_URL) {
-        return { basemap: BASEMAP_URL, glyphs: GLYPHS_URL, sprites: SPRITES_URL };
+    let active;
+    if (import.meta.env.VITE_PLANNER_CONFIG) {
+        active = JSON.parse(import.meta.env.VITE_PLANNER_CONFIG);
+    } else {
+        const response = await fetch("https://maps.openbikecomputer.com/planner/catalog.json");
+        if (!response.ok) throw new Error(`Basemap catalog: HTTP ${response.status}`);
+        active = (await response.json()).active;
     }
-    const response = await fetch("https://maps.openbikecomputer.com/planner/catalog.json");
-    if (!response.ok) throw new Error(`Basemap catalog: HTTP ${response.status}`);
-    const { active } = await response.json();
-    if (![active?.basemap, active?.glyphs, active?.sprites].every((value) => typeof value === "string" && value.startsWith("https://"))) {
+    if (![active?.basemap, active?.glyphs, active?.sprites].every((value) => typeof value === "string" && /^[a-z]+:\/\//.test(value))) {
         throw new Error("Basemap catalog has no active map endpoints.");
     }
     return { basemap: active.basemap, glyphs: active.glyphs, sprites: active.sprites };

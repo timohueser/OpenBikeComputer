@@ -101,10 +101,11 @@ The tile API serves `/releases/ID/basemap.json`, vector tiles at
 `/releases/ID/basemap/Z/X/Y.mvt`, `/releases/ID/places.json`, places tiles at
 `/releases/ID/places/Z/X/Y.mvt`, `/releases/ID/overlays.json`, overlay tiles at
 `/releases/ID/overlays/Z/X/Y.mvt`, Terrarium tiles at
-`/releases/ID/terrain/Z/X/Y.webp`, and, for a release with snow,
-`/releases/ID/snow.json` and snow tiles at `/releases/ID/snow/Z/X/Y`. It serves
+`/releases/ID/terrain/Z/X/Y.webp`, and, for each data layer of the release,
+`/releases/ID/LAYER.json` and its tiles at `/releases/ID/LAYER/Z/X/Y`. It serves
 route catalog cells at `/releases/ID/routes/tiles/9-X-Y.json`. Each
-TileJSON holds its archive metadata. Snow tiles keep their gzip encoding. An absent tile returns 204. The raw archives
+TileJSON holds its archive metadata. Data layer tiles that are not MVT or WebP keep their
+gzip encoding. An absent tile returns 204. The raw archives
 remain downloadable from R2.
 
 Routing and search APIs have the prefix `/planner-api/releases/ID/`. The final
@@ -138,8 +139,9 @@ cell selection and download manifests.
 
 `planner/catalog.json` has `format: 1`, `active`, and `previous`.
 `active` contains the release `id`, manifest URL, region, bounds, attribution,
-device catalogue URL, map asset URLs, tile URLs, and routing and search API
-prefixes. `snow` is the snow TileJSON URL, only for a release with snow.
+terrain attribution, device catalogue URL, map asset URLs, tile URLs, and routing
+and search API prefixes. `name` is the region name of the recipe. `layers` maps
+the name of each data layer of the release to its TileJSON URL.
 `routes` is the route catalog cell URL template on the tile API origin,
 `/releases/ID/routes/tiles/{cell}.json`, where `{cell}` is a cell ID `9-X-Y`.
 Its `slot` is `0` or `1`. `previous` has the same shape or is `null`.
@@ -147,8 +149,8 @@ Its `slot` is `0` or `1`. `previous` has the same shape or is `null`.
 The publisher uploads and verifies all release files before the manifest.
 The deployer verifies public services before changing the catalogue. The
 catalogue cache lifetime is 30 seconds. Immutable objects have a one-year
-cache lifetime. A site build reads one active catalogue entry and uses it for every planner
-endpoint and the map builder's device catalogue.
+cache lifetime. A site build carries one active catalogue entry, unchanged, as the
+configuration of the web planner, and uses its device catalogue for the map builder.
 
 Finalization verifies the live services and site against `active`. It stops
 the other VPS slot, removes its Caddy route, and deletes every other release

@@ -9,7 +9,7 @@ from urllib.error import HTTPError
 from urllib.request import Request
 from urllib.parse import urlsplit
 
-from . import planner_maps as maps, planner_offline as offline, planner_release as releases, r2
+from . import planner_maps as maps, planner_offline as offline, planner_prepare, planner_release as releases, r2
 from .planner_runtime import DATA_LAYERS, encoded, open_url, read_url
 
 RELEASES = "/opt/obc-planner/releases"
@@ -65,7 +65,10 @@ def deploy(args):
     if args.api_url != "https://releases.openbikecomputer.com":
         raise ValueError("Configure the Caddy API virtual host before changing --api-url")
     identity, document = releases.grid_release(args.data_dir)
-    active = releases.endpoints(identity, document, args.public_url, args.tiles_url, args.api_url)
+    recipe = planner_prepare.recipe(args.recipe)
+    if recipe["region"] != document["region"]:
+        raise ValueError(f"Pass --region {document['region']} or its --recipe for this release")
+    active = releases.endpoints(identity, document, recipe["name"], args.public_url, args.tiles_url, args.api_url)
     if read_url(active["manifest"]) != document:
         raise ValueError("Publish this release before deployment")
     try:
@@ -212,8 +215,8 @@ def verify_services(active, document, origin):
     if not read_url(active["places"]).get("tiles"): raise ValueError("Rider places are absent")
     if read_url(active["overlays"]).get("routing_package") != document["routing_package"]:
         raise ValueError("Overlay tiles use another routing package")
-    for layer, key in DATA_LAYERS.items():
-        if layer in active and not read_url(active[layer]).get(key): raise ValueError(f"Data layer {layer} is absent")
+    for layer, url in active["layers"].items():
+        if not read_url(url).get(DATA_LAYERS[layer]): raise ValueError(f"Data layer {layer} is absent")
     probe = document["probe"]
     x, y = map(int, maps.mercator(*probe["points"][0], 12))
     for url in [tilejson["tiles"][0].replace("{z}", "12").replace("{x}", str(x)).replace("{y}", str(y)),

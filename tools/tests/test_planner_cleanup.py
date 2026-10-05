@@ -81,9 +81,9 @@ class CleanupTests(unittest.TestCase):
                     with self.assertRaises(ValueError): cleanup.plan(self.remote, current)
                 self.rows, self.raw = old_rows, old_raw
 
-    def test_site_must_reference_active_endpoints(self):
+    def test_site_must_carry_the_active_release(self):
         for active in [True, False]:
-            code = "\n".join(self.active[key] for key in ["basemap", "places", "overlays", "terrain", "routing", "search"]) if active else "old release"
+            code = json.dumps(json.dumps(self.active)) if active else "old release"
             with patch.object(cleanup, "open_url", side_effect=[
                     BytesIO(b'<script type="module" src="./assets/planner.js"></script>'), BytesIO(code.encode())]):
                 if active: cleanup.verify_site(self.active, "https://site.example")

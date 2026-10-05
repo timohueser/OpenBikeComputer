@@ -1,0 +1,5 @@
+{
+  "basemap": "https://basemap.test/basemap.json",
+  "glyphs": "https://basemap.test/fonts/{fontstack}/{range}.pbf",
+  "sprites": "https://basemap.test/sprites"
+}

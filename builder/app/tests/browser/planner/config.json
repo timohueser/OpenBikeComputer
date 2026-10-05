@@ -1,0 +1,14 @@
+{
+  "name": "Baden-Württemberg",
+  "bounds": [7.45, 47.5, 10.5, 49.85],
+  "basemap": "https://tiles.test/basemap.json",
+  "places": "https://tiles.test/places.json",
+  "overlays": "https://tiles.test/overlays.json",
+  "terrain": "https://tiles.test/terrain/{z}/{x}/{y}.webp",
+  "terrain_attribution": "Terrain test data",
+  "glyphs": "https://tiles.test/fonts/{fontstack}/{range}.pbf",
+  "sprites": "https://tiles.test/sprites",
+  "routing": "https://api.test/routing",
+  "search": "https://api.test/search",
+  "layers": { "snow": "https://tiles.test/snow.json", "climate": "https://tiles.test/climate.json" }
+}

@@ -12,6 +12,7 @@ import type { RoutingLine } from '../../lib/planner/routing';
 
 import { routeService } from '../../../test-support/planner/route-service';
 import { testTrip } from '../../../test-support/planner/trip';
+import { testConfig } from '../../../test-support/planner/config';
 vi.mock('./PlannerMap.svelte', async () => ({ default: (await import('../../../test-support/planner/MapStub.svelte')).default }));
 vi.mock('../../lib/planner/place-index', async original => ({ ...await original<object>(), corridorPlaces: vi.fn() }));
 
@@ -58,7 +59,7 @@ beforeEach(() => {
     stored.set('trip', JSON.stringify(trip));
     vi.spyOn(routing, 'calculateLine').mockResolvedValue(line);
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
-        if (!_url.includes('planner-search')) throw new Error('Routing service offline');
+        if (!_url.startsWith(testConfig.search)) throw new Error('Routing service offline');
         const input = JSON.parse(String(init.body));
         return {ok:true,json:async () => ({type:'places',request:input.request ?? {type:'places',what:['campsite']},results:[{source:tilePlace.id,name:tilePlace.label,kind:'campsite',lon:tilePlace.coordinate[0],lat:tilePlace.coordinate[1],precision:'place',distance:0}]})};
     }));

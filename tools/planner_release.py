@@ -112,17 +112,17 @@ def seal(data, region, device_catalog, provenance):
     return release(data)
 
 
-def endpoints(identity, document, public, tiles, api):
-    """The catalogue entry of a grid release."""
+def endpoints(identity, document, name, public, tiles, api):
+    """The catalogue entry of a grid release, which is also the planner config of the site build."""
     tile_prefix = f"{tiles}/releases/{identity}"
     service = f"{api}/planner-api/releases/{identity}"
     return {"id": identity, "manifest": f"{public}/planner/releases/{identity}/release.json", "region": document["region"],
-            "device_catalog": tile_prefix + "/device/catalog.json", "routing": service + "/routing",
+            "name": name, "device_catalog": tile_prefix + "/device/catalog.json", "routing": service + "/routing",
             "search": service + "/search", "basemap": tile_prefix + "/basemap.json", "places": tile_prefix + "/places.json",
             "overlays": tile_prefix + "/overlays.json",
             "attribution": document["attribution"],
             "terrain": tile_prefix + "/terrain/{z}/{x}/{y}.webp",
-            **{layer: f"{tile_prefix}/{layer}.json" for layer in DATA_LAYERS if f"maps/{layer}.json" in document["files"]},
+            "layers": {layer: f"{tile_prefix}/{layer}.json" for layer in DATA_LAYERS if f"maps/{layer}.json" in document["files"]},
             "glyphs": tile_prefix + "/maps/assets/fonts/{fontstack}/{range}.pbf",
             "sprites": tile_prefix + "/maps/assets/sprites/v4", "bounds": document["bounds"],
             "terrain_attribution": document["terrain_attribution"],
@@ -183,24 +183,13 @@ def publish(args):
     print(f"Published {args.public_url}/planner/releases/{identity}/release.json")
 
 
-def vite_environment(active):
-    values = {"VITE_PLANNER_TILEJSON_URL": active["basemap"], "VITE_PLANNER_PLACES_URL": active["places"],
-              "VITE_PLANNER_OVERLAYS_URL": active["overlays"],
-              "VITE_PLANNER_DEM_URL": active["terrain"],
-              **{f"VITE_PLANNER_{layer.upper()}_URL": active.get(layer, "") for layer in DATA_LAYERS},
-              "VITE_PLANNER_ROUTING_URL": active["routing"], "VITE_PLANNER_SEARCH_URL": active["search"],
-              "VITE_PLANNER_ROUTES_URL": active.get("routes", ""),
-              "VITE_PLANNER_GLYPHS_URL": active["glyphs"], "VITE_PLANNER_SPRITES_URL": active["sprites"],
-              "VITE_PLANNER_MAP_BOUNDS": ",".join(map(str, active["bounds"])),
-              "VITE_PLANNER_TERRAIN_ATTRIBUTION": active["terrain_attribution"],
-              "VITE_PLANNER_SEARCH_REGIONS": active["region"], "VITE_CATALOG_URL": active["device_catalog"]}
-    if any("\n" in value or "\r" in value for value in values.values()):
-        raise ValueError("Invalid planner configuration")
-    return values
-
-
 def site_config(catalog_url, destination):
+    """Write the build settings of the site: the active catalogue entry as the planner config, and its device catalogue."""
     catalog = read_url(catalog_url)
     if catalog["format"] != 1:
         raise ValueError("Unsupported planner catalogue")
-    destination.write_text("".join(f"{key}={value}\n" for key, value in vite_environment(catalog["active"]).items()))
+    active = catalog["active"]
+    # Each value is one line of the environment file; ASCII JSON escapes every line break.
+    if any(c in active["device_catalog"] for c in "\r\n"):
+        raise ValueError("Invalid planner configuration")
+    destination.write_text(f"VITE_PLANNER_CONFIG={json.dumps(active)}\nVITE_CATALOG_URL={active['device_catalog']}\n")

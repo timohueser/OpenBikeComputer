@@ -30,6 +30,8 @@ def recipe(path):
             not isinstance(profile, str) or not re.fullmatch(r"(?:touring|road|gravel|mtb|hiking)(?:/(?:shorter|less-climbing))?", profile)
             for profile in profiles) or len(profiles) != len(set(profiles)):
         raise ValueError("Choose unique routing profile IDs in the recipe")
+    if not isinstance(document.get("name"), str) or not document["name"].strip():
+        raise ValueError("Name the region in the recipe")
     return document
 
 

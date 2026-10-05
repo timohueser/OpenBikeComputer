@@ -15,8 +15,6 @@ import threading
 import time
 import zipfile
 
-from .planner_runtime import DATA_LAYERS
-
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "builder/app"
 # Child processes start in their own session, so an interrupt reaches only this process. A caller that
@@ -162,36 +160,6 @@ def check_bundle(folder, full=False):
                 if hashlib.file_digest(stream, "sha256").hexdigest() != item["sha256"]:
                     raise ValueError(f"Map checksum mismatch: {name}")
     return manifest
-
-
-def preview(args, folder):
-    manifest = check_bundle(folder)
-    tile_origin = f"http://127.0.0.1:{args.tile_port}"
-    base = "/@fs" + str(folder.resolve())
-    env = {
-        **os.environ,
-        "OBC_PLANNER_MAPS_DIR": str(folder.resolve()),
-        "OBC_PLANNER_TILES_URL": tile_origin,
-        "OBC_PLANNER_ROUTING_URL": args.routing,
-        "VITE_PLANNER_ROUTING_URL": "/routing",
-        "VITE_PLANNER_PMTILES_URL": base + "/basemap.pmtiles",
-        "VITE_PLANNER_PLACES_URL": base + "/places.pmtiles",
-        "VITE_PLANNER_OVERLAYS_URL": base + "/overlays.pmtiles",
-        # Without its archive, the planner offers no such data layer.
-        **{f"VITE_PLANNER_{layer.upper()}_URL": f"{base}/{layer}.pmtiles" if f"{layer}.pmtiles" in manifest["files"] else ""
-           for layer in DATA_LAYERS},
-        "VITE_PLANNER_DEM_URL": "/tiles/terrain/{z}/{x}/{y}.webp",
-        "VITE_PLANNER_GLYPHS_URL": base + "/assets/fonts/{fontstack}/{range}.pbf",
-        "VITE_PLANNER_SPRITES_URL": base + "/assets/sprites/v4",
-        "VITE_PLANNER_MAP_BOUNDS": ",".join(map(str, manifest["bounds"])),
-    }
-    commands = [
-        ([args.pmtiles, "serve", str(folder), "--interface=127.0.0.1",
-          f"--port={args.tile_port}", f"--public-url={tile_origin}"], ROOT),
-        (["npm", "run", "dev", "--", "--mode", "web", "--host", "127.0.0.1",
-          "--port", str(args.port), "--strictPort"], APP),
-    ]
-    return commands, env
 
 
 def supervise(commands, env, ready=None):

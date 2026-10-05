@@ -1,6 +1,6 @@
 import type { Map } from 'maplibre-gl';
 import SunInspect from '../../../components/planner/SunInspect.svelte';
-import { TERRAIN_URL } from '../map-data';
+import { config } from '../map-data';
 import { SunClient } from './sun-client';
 import { clock, OUTSIDE, TERRAIN_MAP_ZOOM, type SunMeta } from './sun';
 import type { Coordinate } from '../map-types';
@@ -47,7 +47,7 @@ class SunLayer implements DataLayer<Samples> {
         paint: { 'raster-resampling': 'nearest' },
         report: error => { this.error = error ? error instanceof Error ? error.message : 'Sunlight could not load. Toggle the layer to retry.' : ''; },
     });
-    constructor(url: string) { this.client = new SunClient(url, TERRAIN_URL); }
+    constructor(url: string) { this.client = new SunClient(url, config.terrain); }
     get source() { return this.meta ? `${this.meta.attribution} · terrain shadows within ${this.meta.distance_m / 1000} km` : ''; }
     private minute() { const [h, m] = this.time.value.split(':').map(Number); return h * 60 + m; }
     sampleKey(date: string) { return `${date}/${this.time.value}`; }
