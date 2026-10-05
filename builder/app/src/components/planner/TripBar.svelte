@@ -31,7 +31,8 @@
     const title = $derived(name || planTitle(trip));
     // The profiles of the routing region; until they arrive, every activity and preset shows.
     let profiles = $state<string[]>();
-    const activities = $derived(Object.entries(ridingProfiles).filter(([value]) => servedPresets(value as BikeType, profiles).length));
+    // An activity that the region does not serve stays listed while the plan uses it.
+    const activities = $derived(Object.entries(ridingProfiles).filter(([value]) => value === bike || servedPresets(value as BikeType, profiles).length));
 
     onMount(() => { regionProfiles().then(found => profiles = found, () => {}); });
 </script>
