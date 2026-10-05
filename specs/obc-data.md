@@ -535,7 +535,7 @@ it comes from. A plan of `live` has one group per cause instead: see
 | --- | --- |
 | `id` | The step of the first build of the group, in dependency order |
 | `cause` | `null`. A plan of `live` gives the cause |
-| `layers`, `drops` | `[]`. A plan of `live` gives the layers that the cause changes |
+| `layers`, `drops` | `[]`. A plan of `live` gives the layers that the cause changes, as `builds` gives them |
 | `fetches` | One per version and `params`: `source`, `version`, `params` (`[[NAME, VALUE], …]`), `files` and `bytes`. `files` are the names of the files that the store lacks. `[]` means that the store cannot name them, and the fetch gets every file that it gives |
 | `builds` | In dependency order: `step`, `recipe` (see [Keys](#keys)), `key` (`null` while the step waits for a fetch or another build) and `estimate` |
 
@@ -562,21 +562,20 @@ or when live does not have it. The plan has one group per cause. A layer can hav
 | `repair` | `repair` | None. `keys` are the keys of live that R2 lacks or holds with another size, as `status --check` finds them |
 
 A layer that reads a changed layer has its causes too. `layers` of a group are the layers that its
-cause changes and the changed layers that they read, at any depth, in dependency order: a build
-reads a layer as it is now, so the release takes those too. `drops` are the live layers of a
-product that no step makes now. Their cause is the edit of the product, or else `code`. The
-`fetches` and `builds` of a group make its `layers` and the layers that they read, when the store
-lacks them. Those of `repair` make the unchanged layers of its keys that the store lacks. Groups
-come in the order of the table. Two groups can need the same build.
+cause changes, in dependency order, each with its `recipe` and `key` as in `builds`. `drops` are
+the live layers of a product that no step makes now. Their cause is the edit of the product, or
+else `code`. The `fetches` and `builds` of a group make its `layers` and the layers that they
+read, when the store lacks them. Those of `repair` make the unchanged layers of its keys that the
+store lacks. Groups come in the order of the table. Two groups can need the same build.
 
-`--only GROUP,…` selects groups by their `id`. The groups of the edits stay, because a plan cannot
-leave an edit out: `obc data undo live` removes the edit. A move that `--only` does not select does
-not move: the steps read the version of live.
+A plan of `live` takes every group: git holds what live contains, so an edit or a change of the
+code cannot stay out. `--only move:SOURCE,…` selects the moves: a move that it does not select
+does not move, and the steps read the version of live. An explicit `--move` that `--only` leaves
+out gives a warning. Another `id` in `--only` is a usage error.
 
-The release of a product after the selected groups is its live release with the layers of the
-groups in place of its live layers, without the `drops`, and with the `region` and the `optional`
-layers of the environment (`Release::compose`). A product that no group or edit changes keeps its
-release.
+The release of a product after a plan is its live release with the `layers` of the groups in place
+of its live layers, without the `drops`, and with the `region` and the `optional` layers of the
+environment (`Release::compose`). A product that no group or edit changes keeps its release.
 
 ### Runs
 
@@ -638,7 +637,7 @@ one function (`obc_data::product::version`), in this order:
 A plan or a build of `live` without `--plan` also moves each stale source that live reads (see
 [State of a source](#state-of-a-source)) to the newest upstream version of the check of the last
 hour, as `--move SOURCE@VERSION` does. Each source is one group, `move:SOURCE`. A stale source that
-no step list reads does not move.
+no step list reads, and a `manual` source, do not move this way.
 
 A source with `refresh = "manual"` moves only with `--move`: step 4 does not fetch it, and the
 command fails with `blocked` and the fix `Plan with --move SOURCE@VERSION`. Before the first apply,
@@ -679,18 +678,20 @@ of `live` also has:
 - `edits`: per product, `region` with `from` (the region of the live release, or `null` when
   nothing is live) and `to`, and `layers` with the optional layers that the environment switches
   `on` and `off`.
-- `remove`: the keys, with `bytes`, that an apply of the groups removes from R2: the keys that live
-  uses and the releases after the groups do not use, and the leftovers. A layer that the store
-  lacks counts with all the objects of its live layer, because its new objects are not known yet;
-  an apply keeps an object that a new release uses. A key that R2 lacks is not in it.
+- `remove`: the keys, with `bytes`, that an apply of the plan removes from R2: each key of the
+  listing of the owned prefixes, or without a listing each key that live uses, that the releases
+  after the plan do not use. Those are the keys of their layers and input copies, the pointers and
+  the files under `<prefix>/releases/<id>/`. A layer that the store lacks counts with all the
+  objects of its live layer, because its new objects are not known yet; an apply keeps an object
+  that a new release uses.
 - `listed`: whether the plan listed R2. A listing needs the bucket. Without it, the plan has no
-  `repair` group, and `remove` lacks the leftovers and the files of `<prefix>/releases/<id>/`.
+  `repair` group, `remove` lacks the leftovers, and `bytes` is `null` for a record.
 
 Another environment has `[]` for `live`, `edits` and `remove`, and `false` for `listed`.
 
-`build ENV --plan FILE` builds the groups of that file, or those of them that its own `--only`
-selects; it takes no `--move`. Its step lists read the `versions` of the file and no other
-version, and it moves the sources of `moves`. A version that the store lacks is fetched; when that
+`build ENV --plan FILE` builds the groups of that file; it takes no `--only` and no `--move`. Its
+step lists read the `versions` of the file and no other version, and it moves the sources of
+`moves`. A version that the store lacks is fetched; when that
 fetch fails, the command fails with its code, and a fix that says to plan again when the fetch
 gives none. It refuses the file, with exit status 3, before it builds:
 
@@ -698,7 +699,9 @@ gives none. It refuses the file, with exit status 3, before it builds:
   products and live now;
 - when a step list reads a fetch that `versions` does not name;
 - when the groups that `only` selects in the plan of now differ from the groups of the file,
-  apart from `estimate` and `bytes`.
+  apart from `estimate` and `bytes`. Against live, the groups must change the same layers, by
+  recipe, with the same causes and drops, whatever the store has: a second build of one plan does
+  the same work.
 
 When the store has the layer of every step of a product after the run, `build` writes the
 release of that product. A build of `live` writes the release of each product that its groups or
@@ -825,7 +828,7 @@ the product.
 - drift: a key of a live release or of its input copies that R2 does not have, or has with
   another size. Pointers and records of input copies have no expected size.
 - leftovers: a key under the owned prefixes that no live release uses. The files of
-  `<prefix>/releases/<id>/` of a live release are never leftovers: `named` lists them.
+  `<prefix>/releases/<id>/` of a live release are never leftovers.
 
 Exit status 1 of `status --check` is drift or leftovers, or a failure of R2. With `--json`, the
 first writes the status, and the second writes an error.
@@ -846,7 +849,7 @@ first writes the status, and the second writes an error.
 | `obc data region [list] [--json]` | Every region with its name and definition |
 | `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
 | `obc data plan ENV [--only GROUP,…] [--move SOURCE[@VERSION]]… [--json]` | What a build of the environment fetches and builds, in groups, with estimates. It fetches what a step list depends on, see [Products](#products). `--move` is in [Versions](#versions). For `live`: the groups of [Changes of live](#changes-of-live), the edits, and what an apply removes from R2 |
-| `obc data build ENV [--only GROUP,…] [--plan FILE \| --move SOURCE[@VERSION]…] [--json]` | Fetches and builds the groups into the store, and writes the release of each product whose every layer is built; for `live`, of each product that the groups or edits change. It uploads nothing |
+| `obc data build ENV [--plan FILE \| [--only GROUP,…] [--move SOURCE[@VERSION]]…] [--json]` | Fetches and builds the groups into the store, and writes the release of each product whose every layer is built; for `live`, of each product that the groups or edits change. It uploads nothing |
 | `obc data runs [--json]` | Every run in the store, newest first: id, command, outcome, time, and the size of its fetches and of the layers that it built |
 | `obc data runs RUN [--json]` | One run, its fetches, and its steps: time, change since the last run that built the step, peak RAM, output, inputs, code hash and users |
 | `obc data runs RUN --follow [--json]` | The events of the run, and each new event until the run ends |
@@ -1174,13 +1177,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
-        "named": {
-          "description": "The files that a client finds by name, of the live releases.",
-          "items": {
-            "$ref": "#/$defs/Object"
-          },
-          "type": "array"
-        },
         "prefixes": {
           "description": "The prefixes that were listed.",
           "items": {
@@ -1192,7 +1188,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "prefixes",
         "drift",
-        "named",
         "leftovers"
       ],
       "type": "object"
@@ -2578,7 +2573,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "PlanGroup": {
       "additionalProperties": false,
-      "description": "One change, and the fetches and builds that it needs. Without live, a group is builds that read\neach other's layers: it never needs a build of another group. Against live, a group is one\ncause, and two groups can need the same build. Either way, each can be selected alone, and two\ngroups can need the same fetch.",
+      "description": "One change, and the fetches and builds that it needs. Without live, a group is builds that read\neach other's layers: it never needs a build of another group, so each can be selected alone.\nAgainst live, a group is one cause, and two groups can need the same build. Two groups can need\nthe same fetch.",
       "properties": {
         "builds": {
           "description": "In dependency order.",
@@ -2616,9 +2611,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         "layers": {
-          "description": "The layers that a release takes new, in dependency order: those that the cause changes,\nand the changed layers that they read.",
+          "description": "The layers that the cause changes, in dependency order, each with its recipe and key as in\n`builds`.",
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/PlanBuild"
           },
           "type": "array"
         }

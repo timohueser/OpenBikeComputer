@@ -518,15 +518,16 @@ fn source_status(
     sources::status(source, first(&source.id), base, upstream, today, present)
 }
 
-/// Each stale source that live reads, with its newest upstream version when a check knows it: a
-/// plan of live moves it there.
+/// Each stale source that live reads and that is not manual, with its newest upstream version when
+/// a check knows it: a plan of live moves it there.
 fn stale(
     store: &Store,
     http: &Http,
     sources: &[Source],
     live: &BTreeMap<String, Vec<String>>,
 ) -> BTreeMap<String, Option<String>> {
-    let read: Vec<&Source> = sources.iter().filter(|source| live.contains_key(&source.id)).collect();
+    let moves = |source: &&Source| live.contains_key(&source.id) && source.refresh != Refresh::Manual;
+    let read: Vec<&Source> = sources.iter().filter(moves).collect();
     let today = crate::date::today();
     let newest = upstreams(store, http, &read, upstream::CACHE);
     let stale = read

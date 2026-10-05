@@ -180,23 +180,16 @@ impl Live {
         prefixes
     }
 
-    /// The keys that an apply which makes `next` live removes: those that live uses and `next`
-    /// does not, and with a `check`, the leftovers and the files of each release that goes, but no
-    /// key that R2 lacks.
-    pub fn removed(&self, next: &Live, check: Option<&Check>) -> Vec<Removal> {
-        let kept = next.expected();
-        let mut removed: BTreeMap<String, Option<u64>> =
-            self.expected().into_iter().filter(|(key, _)| !kept.contains_key(key)).collect();
-        if let Some(check) = check {
-            for drift in check.drift.iter().filter(|drift| drift.found.is_none()) {
-                removed.remove(&drift.key);
-            }
-            let stays = next.folders();
-            let named = check.named.iter().filter(|object| !stays.iter().any(|f| object.key.starts_with(f)));
-            let listed = check.leftovers.iter().chain(named);
-            removed.extend(listed.map(|object| (object.key.clone(), Some(object.bytes))));
-        }
-        removed.into_iter().map(|(key, bytes)| Removal { key, bytes }).collect()
+    /// The keys that an apply which makes `next` live removes: those of `listed`, the objects of
+    /// a listing, or else those that live uses, that `next` does not use.
+    pub fn removed(&self, next: &Live, listed: Option<&[Object]>) -> Vec<Removal> {
+        let (kept, folders) = (next.expected(), next.folders());
+        let stays = |key: &str| kept.contains_key(key) || folders.iter().any(|folder| key.starts_with(folder));
+        let keys: BTreeMap<String, Option<u64>> = match listed {
+            Some(listed) => listed.iter().map(|object| (object.key.clone(), Some(object.bytes))).collect(),
+            None => self.expected().into_iter().collect(),
+        };
+        keys.into_iter().filter(|(key, _)| !stays(key)).map(|(key, bytes)| Removal { key, bytes }).collect()
     }
 
     /// The layers of the live releases whose files `keys` hold.
@@ -215,15 +208,18 @@ impl Live {
         self.releases().map(|(prefix, id, _)| format!("{prefix}/releases/{id}/")).collect()
     }
 
-    /// What a listing of the owned prefixes shows against live.
-    pub fn check(&self, remote: &Remote) -> Result<Check, String> {
-        let mut listed = BTreeMap::new();
-        for prefix in self.prefixes() {
-            listed.extend(remote.list(&prefix)?.into_iter().map(|object| (object.key.clone(), object)));
-        }
+    /// Every object under the prefixes that live owns.
+    pub fn list(&self, remote: &Remote) -> Result<Vec<Object>, String> {
+        let listed = self.prefixes().iter().map(|prefix| remote.list(prefix)).collect::<Result<Vec<_>, _>>()?;
+        Ok(listed.into_iter().flatten().collect())
+    }
+
+    /// What `listed`, a listing of the owned prefixes, shows against live.
+    pub fn check(&self, listed: &[Object]) -> Check {
+        let listed: BTreeMap<&str, &Object> = listed.iter().map(|object| (object.key.as_str(), object)).collect();
         let expected = self.expected();
         let drift = expected.iter().filter_map(|(key, &size)| {
-            let found = listed.get(key).map(|object| object.bytes);
+            let found = listed.get(key.as_str()).map(|object| object.bytes);
             (found.is_none() || size.is_some_and(|size| Some(size) != found)).then(|| Drift {
                 key: key.clone(),
                 expected: size,
@@ -232,9 +228,9 @@ impl Live {
         });
         let drift = drift.collect();
         let folders = self.folders();
-        let unused = listed.into_values().filter(|object| !expected.contains_key(&object.key));
-        let (named, leftovers) = unused.partition(|object| folders.iter().any(|f| object.key.starts_with(f)));
-        Ok(Check { prefixes: self.prefixes(), drift, named, leftovers })
+        let used = |key: &str| expected.contains_key(key) || folders.iter().any(|folder| key.starts_with(folder));
+        let leftovers = listed.into_values().filter(|object| !used(&object.key)).cloned();
+        Check { prefixes: self.prefixes(), drift, leftovers: leftovers.collect() }
     }
 }
 
@@ -245,8 +241,6 @@ pub struct Check {
     pub prefixes: Vec<String>,
     /// The keys that live uses and that R2 lacks, or holds with another size.
     pub drift: Vec<Drift>,
-    /// The files that a client finds by name, of the live releases.
-    pub named: Vec<Object>,
     /// The keys under the prefixes that no live release uses.
     pub leftovers: Vec<Object>,
 }
@@ -412,14 +406,15 @@ pub(crate) mod tests {
         let live = read();
         assert_eq!(live.products[0].release, Some((release.id(), release.clone())));
         assert!(store.release("test", &release.id()).is_file(), "the store keeps the manifest");
-        let check = live.check(&remote).unwrap();
+        let check = live.check(&live.list(&remote).unwrap());
         assert_eq!(check.prefixes, ["test-catalog", "inputs"]);
         assert_eq!((check.drift.len(), check.leftovers.len()), (0, 0), "{check:?}");
 
         let object = format!("inputs/objects/{}", sha256_hex(b"land"));
         std::fs::remove_file(dir.join(&object)).unwrap();
         write(&dir.join("test-catalog/objects/old"), "old");
-        let check = read().check(&remote).unwrap();
+        let live = read();
+        let check = live.check(&live.list(&remote).unwrap());
         assert_eq!(check.drift, [Drift { key: object, expected: Some(4), found: None }]);
         let leftovers: Vec<&str> = check.leftovers.iter().map(|object| object.key.as_str()).collect();
         assert_eq!(leftovers, ["test-catalog/objects/old"]);
@@ -478,14 +473,14 @@ pub(crate) mod tests {
 
         let live = Live::read(&remote, &[&Test, &Old], &sources, &store).unwrap();
         assert!(live.products[1].release.is_none(), "a pointer without `release` names nothing");
-        let check = live.check(&remote).unwrap();
+        let check = live.check(&live.list(&remote).unwrap());
         assert_eq!(check.prefixes, ["test-catalog", "inputs"], "only a live product owns its prefix");
         assert!(check.drift.is_empty() && check.leftovers.is_empty(), "{check:?}");
 
         write(&dir.join("test-catalog/catalog.json"), "{\"schema_version\": 3}");
         let live = Live::read(&remote, &[&Test, &Old], &sources, &store).unwrap();
         assert!(live.inputs.is_empty());
-        let check = live.check(&remote).unwrap();
+        let check = live.check(&live.list(&remote).unwrap());
         assert!(check.prefixes.is_empty() && check.leftovers.is_empty(), "nothing live owns nothing: {check:?}");
     }
 }

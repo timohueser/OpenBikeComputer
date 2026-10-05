@@ -16,9 +16,9 @@ pub struct Plan {
 }
 
 /// One change, and the fetches and builds that it needs. Without live, a group is builds that read
-/// each other's layers: it never needs a build of another group. Against live, a group is one
-/// cause, and two groups can need the same build. Either way, each can be selected alone, and two
-/// groups can need the same fetch.
+/// each other's layers: it never needs a build of another group, so each can be selected alone.
+/// Against live, a group is one cause, and two groups can need the same build. Two groups can need
+/// the same fetch.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "PlanGroup")]
@@ -27,9 +27,9 @@ pub struct Group {
     pub id: String,
     /// Why live changes; `None` without live.
     pub cause: Option<Cause>,
-    /// The layers that a release takes new, in dependency order: those that the cause changes,
-    /// and the changed layers that they read.
-    pub layers: Vec<String>,
+    /// The layers that the cause changes, in dependency order, each with its recipe and key as in
+    /// `builds`.
+    pub layers: Vec<Build>,
     /// The live layers that the release no longer has.
     pub drops: Vec<String>,
     pub fetches: Vec<Fetch>,
@@ -187,13 +187,18 @@ impl Group {
 
 impl Plan {
     /// Whether a run of `self` does the same work as a run of `other`: the same groups, fetches,
-    /// recipes and keys. Estimates and fetch sizes may differ.
+    /// recipes and keys. Estimates and fetch sizes may differ. A group against live does the same
+    /// work when it changes the same layers, by recipe, whatever the store has.
     pub fn same_work(&self, other: &Plan) -> bool {
         let work = |plan: &Plan| {
             let mut plan = plan.clone();
             for group in &mut plan.groups {
                 group.fetches.iter_mut().for_each(|fetch| fetch.bytes = None);
                 group.builds.iter_mut().for_each(|build| build.estimate = None);
+                if group.cause.is_some() {
+                    (group.fetches, group.builds) = (Vec::new(), Vec::new());
+                    group.layers.iter_mut().for_each(|layer| layer.key = None);
+                }
             }
             plan
         };

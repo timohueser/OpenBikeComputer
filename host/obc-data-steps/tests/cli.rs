@@ -94,11 +94,12 @@ fn a_plan_of_live_builds_the_layers_of_each_product_and_a_build_refuses_another_
     assert_eq!(plan["edits"], serde_json::json!([edit("maps"), edit("planner")]), "nothing is live");
     let ids: Vec<&str> = plan["groups"].as_array().unwrap().iter().map(|group| group["id"].as_str().unwrap()).collect();
     assert_eq!(ids, ["region"], "the region is the cause of every layer");
-    let layers = plan["groups"][0]["layers"].as_array().unwrap();
-    assert!(layers.contains(&"maps/terrain/0037-0032".into()) && layers.contains(&"planner/routing".into()));
+    let layers: Vec<&str> =
+        plan["groups"][0]["layers"].as_array().unwrap().iter().map(|layer| layer["step"].as_str().unwrap()).collect();
+    assert!(layers.contains(&"maps/terrain/0037-0032") && layers.contains(&"planner/routing"));
     assert_eq!(plan["groups"][0]["fetches"][0]["source"], "copernicus-glo-30");
 
-    plan["groups"][0]["layers"] = serde_json::json!(["planner/routing"]);
+    plan["groups"][0]["layers"] = serde_json::json!([]);
     let file = temp.0.join("plan.json");
     std::fs::write(&file, plan.to_string()).unwrap();
     let out = obc_data(&temp, &["build", "live", "--plan", file.to_str().unwrap(), "--json"]);

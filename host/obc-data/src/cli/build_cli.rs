@@ -28,7 +28,7 @@ use crate::store::Store;
 pub struct PlanArgs {
     /// The environment: `data/env/ENV.toml`.
     env: String,
-    /// Only these groups, by id. A plan of `live` keeps the groups of its edits.
+    /// Only these groups, by id. Against `live`, only these moves.
     #[arg(long, value_delimiter = ',')]
     only: Vec<String>,
     /// Read this version of a source instead of the version of live; without a version, the newest
@@ -41,8 +41,8 @@ pub struct PlanArgs {
 pub struct BuildArgs {
     /// The environment: `data/env/ENV.toml`.
     env: String,
-    /// Only these groups, by id. A build of `live` keeps the groups of its edits.
-    #[arg(long, value_delimiter = ',')]
+    /// Only these groups, by id. Against `live`, only these moves.
+    #[arg(long, value_delimiter = ',', conflicts_with = "plan")]
     only: Vec<String>,
     /// Build the groups of this output of `plan ENV --json`, with its versions. Exit status 3 when
     /// live or the plan of now differs.
@@ -248,32 +248,26 @@ fn run_build(
         Some((file, saved)) => (Basis::Saved(file, saved), &saved.only),
         None => (Basis::Moves(&args.moves), &args.only),
     };
-    let Planned { loaded, steps, plan: now, live } =
-        planned(root, store, http, remote, products, &args.env, only, basis)?;
-    let groups = match saved {
-        None => now.groups.clone(),
-        Some((file, saved)) => {
-            let unchanged = (&saved.env, &saved.region, &saved.layers, &saved.blocked, &saved.live, &saved.edits)
-                == (&now.env, &now.region, &now.layers, &now.blocked, &now.live, &now.edits);
-            let (saved_groups, now_groups) = (Plan { groups: saved.groups }, Plan { groups: now.groups.clone() });
-            if !unchanged || !now_groups.same_work(&saved_groups) {
-                return Err(outdated(file));
-            }
-            select(&saved_groups, &args.only, live.is_some())?.groups
+    let Planned { loaded, steps, plan, live } = planned(root, store, http, remote, products, &args.env, only, basis)?;
+    if let Some((file, saved)) = saved {
+        let unchanged = (&saved.env, &saved.region, &saved.layers, &saved.blocked, &saved.live, &saved.edits)
+            == (&plan.env, &plan.region, &plan.layers, &plan.blocked, &plan.live, &plan.edits);
+        if !unchanged || !(Plan { groups: plan.groups.clone() }).same_work(&Plan { groups: saved.groups }) {
+            return Err(outdated(file));
         }
-    };
-    let plan = EnvPlan { groups, ..now };
+    }
     if !products.is_empty() && plan.blocked.len() == products.len() {
         let reasons = plan.blocked.iter().map(|b| format!("product `{}`: {}", b.product, b.reason)).collect::<Vec<_>>();
         return Err(Code::Blocked.error(reasons.join("; ")));
     }
     let mut built = Built { run: None, layers: Vec::new(), releases: Vec::new(), blocked: plan.blocked.clone() };
-    if !plan.groups.is_empty() {
+    let work = Plan { groups: plan.groups.clone() };
+    if work.builds().next().is_some() || !work.fetches().is_empty() {
         let mut run = Run::create(store, &format!("build {}", loaded.env.name))?;
         let id = run.id().to_string();
         eprintln!("obc data: run {id}; `obc data runs {id} --follow` shows its events");
         let context = Context { store, root, sources: &loaded.sources, http, limits: Limits::machine() };
-        let result = run.build(&context, &steps, &Plan { groups: plan.groups.clone() });
+        let result = run.build(&context, &steps, &work);
         run.finish(result.as_ref().err().map(String::as_str))?;
         let layers = result.map_err(|e| Code::RunFailed.error(format!("run {id}: {e}")))?;
         built.layers = layers
@@ -316,15 +310,17 @@ fn outdated(file: &Path) -> Error {
     Code::PlanOutdated.error(format!("{} is not the plan of now", file.display()))
 }
 
-/// The groups that `only` names; against live also those of the edits, which a plan cannot leave
-/// out.
+/// The groups that `only` names. Against live, `only` names moves, and the plan keeps every group:
+/// a move that it does not name does not move, and the rest of live follows `data/` and the code.
 fn select(plan: &Plan, only: &[String], live: bool) -> Result<Plan, Error> {
     if only.is_empty() {
         return Ok(plan.clone());
     }
-    let edits = plan.groups.iter().filter(|group| live && matches!(group.cause, Some(Cause::Region | Cause::Layers)));
-    let ids: Vec<String> = only.iter().cloned().chain(edits.map(|group| group.id.clone())).collect();
-    plan.only(&ids).map_err(|e| Code::Usage.error(e))
+    if let Some(id) = only.iter().find(|id| live && !id.starts_with("move:")) {
+        return Err(Code::Usage.error(format!("`--only {id}`: against live, `--only` selects moves only")));
+    }
+    let selected = plan.only(only).map_err(|e| Code::Usage.error(e))?;
+    Ok(if live { plan.clone() } else { selected })
 }
 
 /// An environment, with the sources and the regions that it was read with.
@@ -397,6 +393,12 @@ fn planned(
                     }
                 }
                 if !only.is_empty() {
+                    let (stale, args) = (&env.stale, &env.moves);
+                    for source in args.keys().filter(|source| !stale.contains(*source)) {
+                        if !only.contains(&format!("move:{source}")) {
+                            eprintln!("obc data: `--only` leaves out `move:{source}`: `--move {source}` is dropped");
+                        }
+                    }
                     env.moves.retain(|source, _| only.contains(&format!("move:{source}")));
                 }
             }
@@ -433,15 +435,16 @@ fn planned(
         return Ok(Planned { loaded, steps, plan, live: None });
     };
     let edits = edits(products, env, &live, &blocked);
-    let check = match remote {
-        Some(remote @ Remote::Bucket(_)) => Some(live.check(remote).map_err(|e| Code::R2Failed.error(e))?),
+    let listed = match remote {
+        Some(remote @ Remote::Bucket(_)) => Some(live.list(remote).map_err(|e| Code::R2Failed.error(e))?),
         _ => None,
     };
+    let check = listed.as_deref().map(|listed| live.check(listed));
     let against = against(&live, env, &edits, &blocked, check.as_ref());
     let all = changes::changes(store, root, &steps, &against)?;
     let mut plan = env_plan(env, only, select(&all, only, true)?, blocked, Some((&live, edits)));
     let (next, _) = next(root, store, products, &live, &steps, &plan)?;
-    (plan.remove, plan.listed) = (live.removed(&next, check.as_ref()), check.is_some());
+    (plan.remove, plan.listed) = (live.removed(&next, listed.as_deref()), listed.is_some());
     Ok(Planned { loaded, steps, plan, live: Some(live) })
 }
 
@@ -581,7 +584,7 @@ fn next(
     steps: &[Step],
     plan: &EnvPlan,
 ) -> Result<(Live, Vec<String>), Error> {
-    let taken: BTreeSet<&str> = plan.groups.iter().flat_map(|group| &group.layers).map(String::as_str).collect();
+    let taken: BTreeSet<&str> = plan.groups.iter().flat_map(|group| &group.layers).map(|l| l.step.as_str()).collect();
     let stored = release::stored(store, root, steps, &taken)?;
     let missing: Vec<String> =
         taken.into_iter().filter(|name| !stored.contains_key(*name)).map(str::to_string).collect();
@@ -1148,16 +1151,16 @@ mod tests {
         (fixture, remote, release)
     }
 
-    fn live_plan(fixture: &Fixture, remote: &Remote, only: &[&str]) -> EnvPlan {
+    fn live_plan(fixture: &Fixture, remote: &Remote, only: &[&str]) -> Result<EnvPlan, Error> {
         let only: Vec<String> = only.iter().map(|id| id.to_string()).collect();
         let (root, http, moves) = (fixture.root(), Http::new(), Basis::Moves(&[]));
-        planned(&root, &fixture.store, &http, Some(remote), &[&Versioned], "live", &only, moves).unwrap().plan
+        Ok(planned(&root, &fixture.store, &http, Some(remote), &[&Versioned], "live", &only, moves)?.plan)
     }
 
     #[test]
     fn a_plan_of_live_has_one_group_per_cause_and_the_keys_that_an_apply_removes() {
         let (fixture, remote, release) = live("cli-live-plan");
-        let plan = live_plan(&fixture, &remote, &[]);
+        let plan = live_plan(&fixture, &remote, &[]).unwrap();
         assert_eq!(plan.live, [LiveRelease { product: "test".into(), release: Some(release.id()) }]);
         assert_eq!((plan.groups.len(), plan.edits.len(), plan.remove.len(), plan.listed), (0, 0, 0, true));
 
@@ -1171,36 +1174,35 @@ mod tests {
         std::fs::remove_file(bucket.join(&count)).unwrap();
         write(&bucket.join("test/objects/old"), "old");
 
-        let plan = live_plan(&fixture, &remote, &[]);
+        let plan = live_plan(&fixture, &remote, &[]).unwrap();
         let ids: Vec<&str> = plan.groups.iter().map(|group| group.id.as_str()).collect();
         assert_eq!(ids, ["move:head", "code:test/join", "repair"]);
         let (moved, code, repair) = (&plan.groups[0], &plan.groups[1], &plan.groups[2]);
         let to = "2020-02-01".to_string();
         let cause = Cause::Move { source: "head".into(), from: vec!["2020-01-01".into()], to: to.clone() };
         assert_eq!((moved.cause.as_ref(), &plan.moves), (Some(&cause), &BTreeMap::from([("head".into(), to)])));
-        let all = ["test/upper", "test/join", "test/count"];
-        assert_eq!((&moved.layers, moved.builds.len()), (&all.map(String::from).to_vec(), 3));
-        assert_eq!(code.layers, all, "join reads upper, which the move changes");
+        let steps = |group: &Group| group.layers.iter().map(|layer| layer.step.clone()).collect::<Vec<_>>();
+        assert_eq!((steps(moved).join(" "), moved.builds.len()), ("test/upper test/join test/count".into(), 3));
+        assert_eq!(steps(code), ["test/join", "test/count"]);
         assert_eq!(repair.cause, Some(Cause::Repair { keys: vec![count.clone()] }));
         assert!(repair.builds.is_empty(), "the groups make count again");
         let head = format!("inputs/objects/{}", crate::store::sha256_hex(b"head\n"));
         let manifest = format!("test/releases/{}.json", release.id());
         let records = "inputs/records/head/2020-01-01.json".to_string();
-        let mut every = vec![head, records, join.clone(), upper, "test/objects/old".into(), manifest.clone()];
+        let mut every = vec![head, records, join, upper, "test/objects/old".into(), manifest];
         every.sort();
         let removed = |plan: &EnvPlan| plan.remove.iter().map(|removal| removal.key.clone()).collect::<Vec<_>>();
         assert_eq!(removed(&plan), every, "not count, which R2 lacks");
 
-        let plan = live_plan(&fixture, &remote, &["code:test/join"]);
-        let ids: Vec<&str> = plan.groups.iter().map(|group| group.id.as_str()).collect();
-        assert_eq!((ids, plan.moves.len()), (vec!["code:test/join"], 0), "head stays where live reads it");
-        assert_eq!(plan.groups[0].layers, ["test/join", "test/count"]);
-        assert_eq!(removed(&plan), [join, "test/objects/old".into(), manifest]);
+        let err = live_plan(&fixture, &remote, &["code:test/join"]).unwrap_err();
+        assert_eq!(err.code, Code::Usage, "against live, --only selects moves only: {}", err.message);
+        let plan = live_plan(&fixture, &remote, &["move:head"]).unwrap();
+        assert_eq!((plan.groups.len(), plan.moves.len()), (3, 1), "every group, and the move");
 
         write(&fixture.root().join("data/regions/andorra.toml"), "name = \"Andorra\"\nkind = \"geofabrik\"\n");
         write(&fixture.root().join("data/env/live.toml"), "region = \"andorra\"\n");
         let edit = Edit::Region { product: "test".into(), from: Some("monaco".into()), to: "andorra".into() };
-        assert_eq!(live_plan(&fixture, &remote, &["repair"]).edits, [edit], "no layer reads the region");
+        assert_eq!(live_plan(&fixture, &remote, &[]).unwrap().edits, [edit], "no layer reads the region");
     }
 
     #[test]
@@ -1209,7 +1211,7 @@ mod tests {
         let root = fixture.root();
         write(&root.join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
         let file = root.join("plan.json");
-        write(&file, &serde_json::to_string(&live_plan(&fixture, &remote, &[])).unwrap());
+        write(&file, &serde_json::to_string(&live_plan(&fixture, &remote, &[]).unwrap()).unwrap());
         let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: Some(file), moves: Vec::new() };
         let build = || run_build(&root, &fixture.store, &Http::new(), Some(&remote), &[&Versioned], &args);
 
@@ -1219,6 +1221,8 @@ mod tests {
         let next = Release::read(&fixture.store, "test", &built.releases[0].id).unwrap();
         assert_eq!(next.layers[2], release.layers[2], "upper stays the live layer");
         assert_ne!(next.layers[1], release.layers[1]);
+        let again = build().unwrap();
+        assert_eq!((again.run, &again.releases[0].id), (None, &built.releases[0].id), "a retry of the same plan");
 
         publish(&fixture, &next);
         let err = build().unwrap_err();

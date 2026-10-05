@@ -4,10 +4,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
-use super::plan::{add_fetch, build, sized, walk, Cause, Group, Plan, Walked};
+use super::plan::{add_fetch, build, sized, walk, Build, Cause, Group, Plan, Walked};
 use super::release::Layer;
 use super::state::{code_differs, other_read};
-use super::{Input, Receipt, Step};
+use super::{recipe, Input, Receipt, Step};
 use crate::store::Store;
 
 /// What the steps are compared with.
@@ -91,7 +91,6 @@ pub fn changes(store: &Store, root: &Path, steps: &[Step], against: &Against) ->
     }
 
     let receipts = store.layers()?;
-    let changed = |name: &str| !causes[name].is_empty();
     let mut groups = Vec::new();
     for cause in layers.keys().chain(drops.keys()).collect::<BTreeSet<_>>() {
         let named = layers.get(cause).map_or(&[][..], Vec::as_slice);
@@ -104,11 +103,17 @@ pub fn changes(store: &Store, root: &Path, steps: &[Step], against: &Against) ->
             Cause::Code { .. } => format!("code:{}", named.first().or(dropped.first()).expect("a cause has a layer")),
             Cause::Repair { .. } => unreachable!("drift is no cause of a layer"),
         };
-        // A build reads its layers as they are now, so the release takes the changed ones too.
-        let taken = upward(&walked, named.iter().copied().collect(), changed);
-        let mut group = needs(&walked, &receipts, Group::new(id, Some(cause.clone())), &taken);
-        group.layers =
-            walked.iter().map(|w| &w.step.name).filter(|name| taken.contains(name.as_str())).cloned().collect();
+        let mut group =
+            needs(&walked, &receipts, Group::new(id, Some(cause.clone())), &named.iter().copied().collect());
+        let changed = walked.iter().filter(|w| named.contains(&w.step.name.as_str()));
+        group.layers = changed
+            .map(|w| Build {
+                step: w.step.name.clone(),
+                recipe: recipe(w.step, &w.code),
+                key: w.key.clone(),
+                estimate: None,
+            })
+            .collect();
         group.drops = dropped.iter().map(|name| name.to_string()).collect();
         groups.push(group);
     }
@@ -127,20 +132,15 @@ fn product(layer: &str) -> &str {
     layer.split('/').next().unwrap_or_default()
 }
 
-/// `names`, and each layer that one of them reads, at any depth, for which `follow` holds.
-fn upward<'a>(walked: &'a [Walked], mut names: BTreeSet<&'a str>, follow: impl Fn(&str) -> bool) -> BTreeSet<&'a str> {
+/// `group` with the fetches and builds of the layers `names`, and of the layers that they read at
+/// any depth, that the store lacks.
+fn needs<'a>(walked: &'a [Walked], receipts: &[Receipt], mut group: Group, names: &BTreeSet<&'a str>) -> Group {
+    let mut needed = names.clone();
     for Walked { step, .. } in walked.iter().rev() {
-        if names.contains(step.name.as_str()) {
-            names.extend(step.layers().filter(|name| follow(name)));
+        if needed.contains(step.name.as_str()) {
+            needed.extend(step.layers());
         }
     }
-    names
-}
-
-/// `group` with the fetches and builds of the layers `names`, and of the layers that they read,
-/// that the store lacks.
-fn needs(walked: &[Walked], receipts: &[Receipt], mut group: Group, names: &BTreeSet<&str>) -> Group {
-    let needed = upward(walked, names.clone(), |_| true);
     for walked in walked.iter().filter(|w| needed.contains(w.step.name.as_str())) {
         if let Some(build) = build(walked, receipts) {
             group.builds.push(build);
@@ -157,7 +157,8 @@ mod tests {
 
     /// The id, the layers and the drops of each group.
     fn outline(plan: Plan) -> Vec<(String, Vec<String>, Vec<String>)> {
-        plan.groups.into_iter().map(|group| (group.id, group.layers, group.drops)).collect()
+        let steps = |layers: Vec<Build>| layers.into_iter().map(|layer| layer.step).collect();
+        plan.groups.into_iter().map(|group| (group.id, steps(group.layers), group.drops)).collect()
     }
 
     fn names(names: &[&str]) -> Vec<String> {
