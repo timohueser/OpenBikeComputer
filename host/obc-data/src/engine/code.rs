@@ -13,20 +13,27 @@ use crate::store::hash_file;
 
 pub fn hash(root: &Path, code: &Code) -> Result<String, String> {
     let root = root.canonicalize().map_err(|e| format!("{}: {e}", root.display()))?;
-    let mut files = BTreeSet::new();
+    let mut pathspecs = Vec::new();
     for path in &code.paths {
-        let path = root.join(path);
-        if !path.exists() {
-            return Err(format!("the code path {} does not exist", path.display()));
+        if !root.join(path).exists() {
+            return Err(format!("the code path {path} does not exist in {}", root.display()));
         }
-        add(&path, &mut files)?;
+        pathspecs.push(PathBuf::from(path));
     }
-    for dir in crate_dirs(&root, &code.crates)? {
-        files.insert(dir.join("Cargo.toml"));
-        for path in [dir.join("build.rs"), dir.join("src")] {
-            if path.exists() {
-                add(&path, &mut files)?;
-            }
+    let crates = crate_dirs(&root, &code.crates)?;
+    for dir in &crates {
+        let dir = dir.strip_prefix(&root).map_err(|_| format!("{} is outside {}", dir.display(), root.display()))?;
+        pathspecs.extend(["Cargo.toml", "build.rs", "src"].map(|name| dir.join(name)));
+    }
+    let mut files = listed(&root, &pathspecs)?;
+    for dir in &crates {
+        let sources: Vec<_> = files
+            .iter()
+            .filter(|file| file.starts_with(dir) && file.extension() == Some("rs".as_ref()))
+            .cloned()
+            .collect();
+        for source in sources {
+            files.extend(included(&source, dir)?);
         }
     }
     let mut hashes = BTreeMap::new();
@@ -39,21 +46,58 @@ pub fn hash(root: &Path, code: &Code) -> Result<String, String> {
     Ok(digest(hashes.iter().map(|(path, sha256)| (path.as_str(), sha256.as_str()))))
 }
 
-/// `path`, or every file below it but entries whose names start with `.` and `__pycache__`.
-fn add(path: &Path, files: &mut BTreeSet<PathBuf>) -> Result<(), String> {
-    if !path.is_dir() {
-        files.insert(path.to_path_buf());
-        return Ok(());
+/// The files at or below `pathspecs` that git tracks or does not ignore.
+fn listed(root: &Path, pathspecs: &[PathBuf]) -> Result<BTreeSet<PathBuf>, String> {
+    if pathspecs.is_empty() {
+        return Ok(BTreeSet::new());
     }
-    for entry in fs::read_dir(path).map_err(|e| format!("{}: {e}", path.display()))? {
-        let entry = entry.map_err(|e| format!("{}: {e}", path.display()))?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if !name.starts_with('.') && name != "__pycache__" {
-            add(&entry.path(), files)?;
+    let output = Command::new("git")
+        .args(["--literal-pathspecs", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--"])
+        .args(pathspecs)
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("git ls-files: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("git ls-files: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    let paths = String::from_utf8(output.stdout).map_err(|_| "git ls-files: a path is not UTF-8")?;
+    // A tracked file that the worktree deleted is listed too.
+    Ok(paths
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(|path| root.join(path))
+        .filter(|path| path.is_file())
+        .collect())
+}
+
+/// The files that `source` names with a string literal in `include_str!`, `include_bytes!` or
+/// `include!`: relative to `source`, or after `concat!(env!("CARGO_MANIFEST_DIR"),`.
+fn included(source: &Path, manifest_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let text = fs::read_to_string(source).map_err(|e| format!("{}: {e}", source.display()))?;
+    let mut files = Vec::new();
+    for call in ["include_str!(", "include_bytes!(", "include!("] {
+        for (start, _) in text.match_indices(call) {
+            let rest = text[start + call.len()..].trim_start();
+            let (base, rest) = match rest.strip_prefix("concat!(") {
+                Some(rest) => {
+                    let rest = rest.trim_start().strip_prefix("env!(\"CARGO_MANIFEST_DIR\")");
+                    let Some(rest) = rest.and_then(|rest| rest.trim_start().strip_prefix(',')) else { continue };
+                    (manifest_dir, rest.trim_start())
+                }
+                None => (source.parent().unwrap_or(source), rest),
+            };
+            let literal = rest.strip_prefix('"').and_then(|rest| rest.split_once('"')).map(|(literal, _)| literal);
+            // A path that does not exist is not compiled in, for example one in a comment.
+            if let Some(path) =
+                literal.and_then(|literal| base.join(literal.trim_start_matches('/')).canonicalize().ok())
+            {
+                if path.is_file() {
+                    files.push(path);
+                }
+            }
         }
     }
-    Ok(())
+    Ok(files)
 }
 
 #[derive(Deserialize)]

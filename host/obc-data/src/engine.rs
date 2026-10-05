@@ -31,6 +31,8 @@ pub enum Input {
     Snapshot {
         source: String,
         version: String,
+        /// The names of the files the step reads, or none for every file.
+        files: Vec<String>,
     },
     /// The layer of another step.
     Layer(String),
@@ -47,10 +49,10 @@ pub struct Code {
 }
 
 pub enum Run {
-    /// A function in this process.
+    /// A function in this process. Its code must declare the crate of the function.
     Rust(fn(&Request) -> Result<(), String>),
     /// A program and its arguments, started in the repository root with the request as JSON on
-    /// standard input.
+    /// standard input. No argument is an absolute path.
     Command(Vec<String>),
 }
 
@@ -79,6 +81,8 @@ pub struct Receipt {
     pub options: Value,
     pub code: String,
     pub command: Option<Vec<String>>,
+    /// The declared outputs, sorted.
+    pub outputs: Vec<String>,
     /// The digest of `files`: what a step that reads this layer puts in its key.
     pub digest: String,
     pub files: Vec<LayerFile>,
@@ -98,8 +102,6 @@ pub struct InputRecord {
     pub kind: InputKind,
     /// The source id or the layer name.
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
     pub digest: String,
 }
 
@@ -159,6 +161,7 @@ pub fn key(receipt: &Receipt) -> String {
         "inputs": inputs,
         "options": receipt.options,
         "code": receipt.code,
+        "outputs": receipt.outputs,
     });
     sha256_hex(&serde_json::to_vec(&sorted(spec)).expect("JSON values serialize"))
 }
@@ -233,26 +236,33 @@ fn build_step(store: &Store, root: &Path, step: &Step, done: &HashMap<&str, Rece
     let mut inputs = Vec::new();
     let mut bytes_in = 0;
     for input in &step.inputs {
-        let (kind, name, version, files): (_, _, _, Vec<(String, String, u64)>) = match input {
-            Input::Snapshot { source, version } => {
+        let (kind, name, files): (_, _, Vec<(String, String, u64)>) = match input {
+            Input::Snapshot { source, version, files: selected } => {
                 let snapshot = store
                     .snapshot(source, version)?
                     .ok_or_else(|| format!("the store has no snapshot {source}@{version}; fetch it first"))?;
-                let files = snapshot.files.into_iter().map(|file| (file.name, file.sha256, file.size)).collect();
-                (InputKind::Snapshot, source, Some(version.clone()), files)
+                let files: Vec<_> = snapshot
+                    .files
+                    .into_iter()
+                    .filter(|file| selected.is_empty() || selected.contains(&file.name))
+                    .map(|file| (file.name, file.sha256, file.size))
+                    .collect();
+                if let Some(missing) = selected.iter().find(|name| !files.iter().any(|file| &file.0 == *name)) {
+                    return Err(format!("snapshot {source}@{version} has no file {missing}; fetch it first"));
+                }
+                (InputKind::Snapshot, source, files)
             }
             Input::Layer(name) => {
                 let files = done[name.as_str()].files.iter();
                 (
                     InputKind::Layer,
                     name,
-                    None,
                     files.map(|file| (file.path.clone(), file.sha256.clone(), file.size)).collect(),
                 )
             }
         };
         let digest = digest(files.iter().map(|(name, sha256, _)| (name.as_str(), sha256.as_str())));
-        let record = InputRecord { kind, name: name.clone(), version, digest };
+        let record = InputRecord { kind, name: name.clone(), digest };
         let mut paths = BTreeMap::new();
         for (name, sha256, size) in files {
             let object = store.object(&sha256);
@@ -274,6 +284,19 @@ fn build_step(store: &Store, root: &Path, step: &Step, done: &HashMap<&str, Rece
         inputs.push(record);
     }
     inputs.sort_by(|a, b| (a.kind, &a.name).cmp(&(b.kind, &b.name)));
+    match &step.run {
+        Run::Rust(_) if step.code.crates.is_empty() => {
+            return Err("a Rust step must declare the crate of its function in its code".into());
+        }
+        Run::Command(argv) => {
+            if let Some(path) = argv.iter().find(|arg| Path::new(arg).is_absolute()) {
+                return Err(format!("the command names the absolute path {path}, which differs between machines"));
+            }
+        }
+        Run::Rust(_) => {}
+    }
+    let mut outputs = step.outputs.clone();
+    outputs.sort();
 
     let mut receipt = Receipt {
         step: step.name.clone(),
@@ -285,6 +308,7 @@ fn build_step(store: &Store, root: &Path, step: &Step, done: &HashMap<&str, Rece
             Run::Rust(_) => None,
             Run::Command(argv) => Some(argv.clone()),
         },
+        outputs,
         digest: String::new(),
         files: Vec::new(),
         built: String::new(),
@@ -308,10 +332,20 @@ fn build_step(store: &Store, root: &Path, step: &Step, done: &HashMap<&str, Rece
     request.output = work.join("output");
     request.metrics = work.join("metrics.json");
     remove_dir(&work)?;
+    let result = run(store, root, step, &request, &mut receipt);
+    let removed = remove_dir(&work);
+    result?;
+    removed?;
+    store.put_layer(&receipt)?;
+    Ok(Built { receipt, reused: false })
+}
+
+/// Run the step, move its files into the objects, and record them, its metrics and its cost.
+fn run(store: &Store, root: &Path, step: &Step, request: &Request, receipt: &mut Receipt) -> Result<(), String> {
     fs::create_dir_all(&request.output).map_err(|e| format!("{}: {e}", request.output.display()))?;
     let usage = match &step.run {
-        Run::Rust(function) => process::in_process(|| function(&request)),
-        Run::Command(argv) => process::run(root, argv, &request),
+        Run::Rust(function) => process::in_process(|| function(request)),
+        Run::Command(argv) => process::run(root, argv, request),
     }?;
     receipt.files = collect(store, &request.output, &step.outputs)?;
     receipt.metrics = match fs::read_to_string(&request.metrics) {
@@ -319,15 +353,13 @@ fn build_step(store: &Store, root: &Path, step: &Step, done: &HashMap<&str, Rece
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
         Err(e) => return Err(format!("{}: {e}", request.metrics.display())),
     };
-    remove_dir(&work)?;
     receipt.digest = digest(receipt.files.iter().map(|file| (file.path.as_str(), file.sha256.as_str())));
     receipt.bytes_out = receipt.files.iter().map(|file| file.size).sum();
     receipt.built = date::timestamp(date::now());
     receipt.wall_ms = usage.wall_ms;
     receipt.cpu_ms = usage.cpu_ms;
     receipt.peak_rss_bytes = usage.peak_rss_bytes;
-    store.put_layer(&receipt)?;
-    Ok(Built { receipt, reused: false })
+    Ok(())
 }
 
 impl InputKind {
@@ -395,6 +427,7 @@ mod tests {
     use crate::store::tests::Scratch;
     use crate::store::{write_atomic, FileRecord, Snapshot};
     use serde_json::json;
+    use std::process::Command;
 
     const JOIN: &str = "import json, os, sys
 request = json.load(sys.stdin)
@@ -417,25 +450,54 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         fn build(&self, steps: &[Step]) -> Result<Vec<Built>, String> {
             build(&self.store, &self.root(), steps)
         }
+
+        /// Add a file to the record of `source@1`.
+        fn fetched(&self, source: &str, name: &str, bytes: &[u8]) {
+            let file = self.store.partial(name);
+            write_atomic(&file, bytes).unwrap();
+            let sha256 = sha256_hex(bytes);
+            self.store.insert(&file, &sha256).unwrap();
+            let url = format!("https://example.org/{name}");
+            let retrieved = "2026-10-05T00:00:00Z".into();
+            let mut snapshot = self.store.snapshot(source, "1").unwrap().unwrap_or_else(|| Snapshot {
+                source: source.into(),
+                version: "1".into(),
+                files: Vec::new(),
+            });
+            snapshot.files.push(FileRecord { name: name.into(), url, size: bytes.len() as u64, sha256, retrieved });
+            self.store.put_snapshot(&snapshot).unwrap();
+        }
     }
 
-    /// A store with the snapshots `head@1` and `tail@1`, and a repository with `join.py`.
+    fn write(path: &Path, text: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+
+    /// A git repository with a workspace of `crates`; each `(name, dependencies)`.
+    fn repository(root: &Path, crates: &[(&str, &str)]) {
+        let members: Vec<String> = crates.iter().map(|(name, _)| format!("{name:?}")).collect();
+        write(
+            &root.join("Cargo.toml"),
+            &format!("[workspace]\nmembers = [{}]\nresolver = \"2\"\n", members.join(", ")),
+        );
+        for (name, dependencies) in crates {
+            let package = format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+            write(&root.join(format!("{name}/Cargo.toml")), &(package + dependencies));
+            write(&root.join(format!("{name}/src/lib.rs")), "");
+        }
+        assert!(Command::new("git").args(["init", "-q"]).current_dir(root).status().unwrap().success());
+    }
+
+    /// A store with the snapshots `head@1` and `tail@1`, and a repository with `join.py` and the
+    /// crate `steps`.
     fn fixture(name: &str) -> Fixture {
         let scratch = Scratch::new(name);
         let store = Store::at(scratch.0.join("store"));
-        for (source, bytes) in [("head", b"head\n"), ("tail", b"tail\n")] {
-            let name = format!("{source}.txt");
-            let file = store.partial(&name);
-            write_atomic(&file, bytes).unwrap();
-            let sha256 = sha256_hex(bytes);
-            store.insert(&file, &sha256).unwrap();
-            let url = format!("https://example.org/{name}");
-            let retrieved = "2026-10-05T00:00:00Z".into();
-            let files = vec![FileRecord { name, url, size: bytes.len() as u64, sha256, retrieved }];
-            store.put_snapshot(&Snapshot { source: source.into(), version: "1".into(), files }).unwrap();
-        }
         let fixture = Fixture { scratch, store };
-        fs::create_dir_all(fixture.root()).unwrap();
+        fixture.fetched("head", "head.txt", b"head\n");
+        fixture.fetched("tail", "tail.txt", b"tail\n");
+        repository(&fixture.root(), &[("steps", "")]);
         fs::write(fixture.root().join("join.py"), JOIN).unwrap();
         fixture
     }
@@ -451,24 +513,35 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         fs::write(request.output.join("count/lines.txt"), text.lines().count().to_string()).map_err(|e| e.to_string())
     }
 
+    fn step(name: &str, inputs: Vec<Input>, code: Code, output: &str, run: Run) -> Step {
+        Step { name: name.into(), inputs, options: json!({}), code, outputs: vec![output.into()], run }
+    }
+
+    fn steps_crate() -> Code {
+        Code { paths: Vec::new(), crates: vec!["steps".into()] }
+    }
+
     /// Two fetched sources and three steps, the second a Python command. The last step is listed
-    /// first: the engine orders them.
+    /// first: the engine orders them. `test/upper` selects `head.txt`; `test/join` reads every file
+    /// of `tail@1`.
     fn pipeline() -> Vec<Step> {
-        let step = |name: &str, inputs, code, outputs: &str, run| Step {
-            name: name.into(),
-            inputs,
-            options: json!({}),
-            code,
-            outputs: vec![outputs.into()],
-            run,
+        let snapshot = |source: &str, files: &[&str]| Input::Snapshot {
+            source: source.into(),
+            version: "1".into(),
+            files: files.iter().map(|file| file.to_string()).collect(),
         };
-        let snapshot = |source: &str| Input::Snapshot { source: source.into(), version: "1".into() };
         let join = Code { paths: vec!["join.py".into()], crates: Vec::new() };
         let python = Run::Command(vec!["python3".into(), "join.py".into()]);
         vec![
-            step("test/count", vec![Input::Layer("test/join".into())], Code::default(), "count", Run::Rust(count)),
-            step("test/join", vec![Input::Layer("test/upper".into()), snapshot("tail")], join, "joined.txt", python),
-            step("test/upper", vec![snapshot("head")], Code::default(), "upper.txt", Run::Rust(upper)),
+            step("test/count", vec![Input::Layer("test/join".into())], steps_crate(), "count", Run::Rust(count)),
+            step(
+                "test/join",
+                vec![Input::Layer("test/upper".into()), snapshot("tail", &[])],
+                join,
+                "joined.txt",
+                python,
+            ),
+            step("test/upper", vec![snapshot("head", &["head.txt"])], steps_crate(), "upper.txt", Run::Rust(upper)),
         ]
     }
 
@@ -526,31 +599,74 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     }
 
     #[test]
-    fn a_crate_brings_its_path_dependencies_and_cargo_lock_only_when_declared() {
-        let scratch = Scratch::new("engine-crates");
-        let write = |path: &str, text: &str| {
-            let path = scratch.0.join(path);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, text).unwrap();
-        };
-        write("Cargo.toml", "[workspace]\nmembers = [\"app\", \"lib\", \"check\"]\nresolver = \"2\"\n");
-        let app = "[dependencies]\nlib = { path = \"../lib\" }\n[dev-dependencies]\ncheck = { path = \"../check\" }\n";
-        for (name, dependencies) in [("app", app), ("lib", ""), ("check", "")] {
-            let package = format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
-            write(&format!("{name}/Cargo.toml"), &(package + dependencies));
-            write(&format!("{name}/src/lib.rs"), "");
+    fn a_snapshot_input_keys_only_the_files_it_selects() {
+        let fixture = fixture("engine-select");
+        let first = keys(&fixture.build(&pipeline()).unwrap());
+        fixture.fetched("head", "other.txt", b"other\n");
+        assert_eq!(keys(&fixture.build(&pipeline()).unwrap()), first);
+
+        fixture.fetched("tail", "other.txt", b"other\n");
+        let built = fixture.build(&pipeline()).unwrap();
+        assert_eq!(summary(&built), [("test/upper", true), ("test/join", false), ("test/count", true)]);
+
+        let mut steps = pipeline();
+        steps[2].inputs = vec![Input::Snapshot { source: "head".into(), version: "1".into(), files: vec!["x".into()] }];
+        let err = fixture.build(&steps).err().unwrap();
+        assert!(err.contains("snapshot head@1 has no file x; fetch it first"), "{err}");
+    }
+
+    #[test]
+    fn a_step_that_breaks_its_contract_fails_and_leaves_no_receipt_and_no_work() {
+        fn nothing(_: &Request) -> Result<(), String> {
+            Ok(())
         }
+        fn extra(request: &Request) -> Result<(), String> {
+            upper(request)?;
+            fs::write(request.output.join("extra.txt"), "").map_err(|e| e.to_string())
+        }
+        #[cfg(unix)]
+        fn link(request: &Request) -> Result<(), String> {
+            std::os::unix::fs::symlink("/etc/hostname", request.output.join("upper.txt")).map_err(|e| e.to_string())
+        }
+        let fixture = fixture("engine-contract");
+        let head = || vec![Input::Snapshot { source: "head".into(), version: "1".into(), files: Vec::new() }];
+        let mut cases = vec![
+            (Run::Rust(nothing), steps_crate(), "did not write its output upper.txt"),
+            (Run::Rust(extra), steps_crate(), "wrote extra.txt, which is not one of its outputs"),
+            (Run::Rust(upper), Code::default(), "a Rust step must declare the crate"),
+            (Run::Command(vec!["/usr/bin/true".into()]), Code::default(), "absolute path /usr/bin/true"),
+        ];
+        #[cfg(unix)]
+        cases.push((Run::Rust(link), steps_crate(), "wrote upper.txt, which is not a file or a directory"));
+        for (run, code, expected) in cases {
+            let err = fixture.build(&[step("test/bad", head(), code, "upper.txt", run)]).err().unwrap();
+            assert!(err.contains(expected), "{err}");
+        }
+        assert!(!fixture.store.root().join("layers").exists());
+        let work = fs::read_dir(fixture.store.root().join("partial")).unwrap();
+        let work: Vec<_> = work.map(|entry| entry.unwrap().file_name()).collect();
+        assert!(work.iter().all(|name| !name.to_string_lossy().starts_with("layer-")), "{work:?}");
+    }
+
+    #[test]
+    fn a_crate_brings_its_path_dependencies_its_included_files_and_cargo_lock_only_when_declared() {
+        let scratch = Scratch::new("engine-crates");
+        let app = "[dependencies]\nlib = { path = \"../lib\" }\n[dev-dependencies]\ncheck = { path = \"../check\" }\n";
+        repository(&scratch.0, &[("app", app), ("lib", ""), ("check", "")]);
         let hash = |paths: &[&str]| {
             let code = Code { paths: paths.iter().map(|path| path.to_string()).collect(), crates: vec!["app".into()] };
             code::hash(&scratch.0, &code).unwrap()
         };
         let before = hash(&[]);
-        write("check/src/lib.rs", "pub fn helper() {}\n");
-        write("Cargo.lock", "version = 4\n");
+        write(&scratch.0.join("check/src/lib.rs"), "pub fn helper() {}\n");
+        write(&scratch.0.join("Cargo.lock"), "version = 4\n");
         assert_eq!(hash(&[]), before, "a dev-dependency and an undeclared Cargo.lock are not code");
-        write("lib/src/lib.rs", "pub fn step() {}\n");
+        write(&scratch.0.join("lib/src/lib.rs"), "pub const TABLE: &str = include_str!(\"../../table.txt\");\n");
+        write(&scratch.0.join("table.txt"), "1\n");
         let changed = hash(&[]);
         assert_ne!(changed, before);
-        assert_ne!(hash(&["Cargo.lock"]), changed);
+        write(&scratch.0.join("table.txt"), "2\n");
+        assert_ne!(hash(&[]), changed, "an included file is code");
+        assert_ne!(hash(&["Cargo.lock"]), hash(&[]));
     }
 }

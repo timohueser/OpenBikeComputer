@@ -117,9 +117,8 @@ fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, Stri
         };
         eprintln!("obc data: fetching {url}");
         let got = http.download(store, url, &expect)?;
-        let name = url.rsplit('/').next().unwrap_or_default().to_string();
         let file = FileRecord {
-            name,
+            name: file_name(template, request.version.as_deref(), url),
             url: url.clone(),
             size: got.size,
             sha256: got.sha256,
@@ -151,6 +150,18 @@ fn record(store: &Store, source: &str, version: &str, file: &FileRecord) -> Resu
             snapshot.files.push(file.clone());
             store.put_snapshot(&snapshot)
         }
+    }
+}
+
+/// The name of the file at `url` in its record: the URL from the segment where the first name
+/// other than `{version}` starts, so that two values give two names; else its last segment.
+fn file_name(template: &str, version: Option<&str>, url: &str) -> String {
+    match template.match_indices('{').find(|(at, _)| !template[*at..].starts_with("{version}")) {
+        Some((at, _)) => {
+            let prefix = &template[..template[..at].rfind('/').map_or(0, |slash| slash + 1)];
+            url[prefix.replace("{version}", version.unwrap_or_default()).len()..].to_string()
+        }
+        None => url.rsplit('/').next().unwrap_or_default().to_string(),
     }
 }
 
@@ -395,6 +406,11 @@ mod tests {
         assert_eq!(urls.unwrap(), ["https://h/a/a-v1.tif", "https://h/b/b-v1.tif"]);
         assert!(expand("https://h/{area}.poly", None, &[]).unwrap_err().contains("area=VALUE"));
         assert!(expand("https://h/x", None, &params(&[("tile", "a")])).unwrap_err().contains("names no placeholder"));
+
+        let name = |template: &str, url: &str| file_name(template, Some("v1"), url);
+        assert_eq!(name("https://h/{area}-latest.pbf", "https://h/us/georgia-latest.pbf"), "us/georgia-latest.pbf");
+        assert_eq!(name("https://h/{version}/{tile}.tif", "https://h/v1/a/b.tif"), "a/b.tif");
+        assert_eq!(name("https://h/{version}/x-{version}.jar", "https://h/v1/x-v1.jar"), "x-v1.jar");
     }
 
     fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
