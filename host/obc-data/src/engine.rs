@@ -40,7 +40,7 @@ pub enum Input {
 
 /// The code that makes a layer. When in doubt, declare more: too much costs a rebuild, too little
 /// gives stale data.
-#[derive(Default)]
+#[derive(Default, PartialEq, Eq, Hash)]
 pub struct Code {
     /// Files and directories, relative to the repository root.
     pub paths: Vec<String>,
@@ -52,7 +52,7 @@ pub enum Run {
     /// A function in this process. Its code must declare the crate of the function.
     Rust(fn(&Request) -> Result<(), String>),
     /// A program and its arguments, started in the repository root with the request as JSON on
-    /// standard input. No argument is an absolute path.
+    /// standard input. No argument names a path outside the repository root.
     Command(Vec<String>),
 }
 
@@ -130,9 +130,11 @@ pub struct Built {
 /// repository root: code paths are relative to it, and a command starts in it.
 pub fn build(store: &Store, root: &Path, steps: &[Step]) -> Result<Vec<Built>, String> {
     let mut done: HashMap<&str, Receipt> = HashMap::new();
+    let mut code_hashes = HashMap::new();
     let mut built = Vec::new();
     for step in order(steps)? {
-        let result = build_step(store, root, step, &done).map_err(|e| format!("step `{}`: {e}", step.name))?;
+        let result =
+            build_step(store, root, step, &done, &mut code_hashes).map_err(|e| format!("step `{}`: {e}", step.name))?;
         done.insert(&step.name, result.receipt.clone());
         built.push(result);
     }
@@ -221,7 +223,13 @@ impl Step {
     }
 }
 
-fn build_step(store: &Store, root: &Path, step: &Step, done: &HashMap<&str, Receipt>) -> Result<Built, String> {
+fn build_step<'a>(
+    store: &Store,
+    root: &Path,
+    step: &'a Step,
+    done: &HashMap<&str, Receipt>,
+    code_hashes: &mut HashMap<&'a Code, String>,
+) -> Result<Built, String> {
     if !step.options.is_object() {
         return Err("the options are not a JSON object".into());
     }
@@ -289,21 +297,29 @@ fn build_step(store: &Store, root: &Path, step: &Step, done: &HashMap<&str, Rece
             return Err("a Rust step must declare the crate of its function in its code".into());
         }
         Run::Command(argv) => {
-            if let Some(path) = argv.iter().find(|arg| Path::new(arg).is_absolute()) {
-                return Err(format!("the command names the absolute path {path}, which differs between machines"));
+            let outside = |arg: &&String| {
+                Path::new(arg).is_absolute() || arg.contains("=/") || arg.split(['/', '=']).any(|part| part == "..")
+            };
+            if let Some(arg) = argv.iter().find(outside) {
+                return Err(format!(
+                    "the argument {arg} names a path outside the repository, which differs between machines"
+                ));
             }
         }
         Run::Rust(_) => {}
     }
     let mut outputs = step.outputs.clone();
     outputs.sort();
+    if !code_hashes.contains_key(&step.code) {
+        code_hashes.insert(&step.code, code::hash(root, &step.code)?);
+    }
 
     let mut receipt = Receipt {
         step: step.name.clone(),
         key: String::new(),
         inputs,
         options: step.options.clone(),
-        code: code::hash(root, &step.code)?,
+        code: code_hashes[&step.code].clone(),
         command: match &step.run {
             Run::Rust(_) => None,
             Run::Command(argv) => Some(argv.clone()),
@@ -634,7 +650,9 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             (Run::Rust(nothing), steps_crate(), "did not write its output upper.txt"),
             (Run::Rust(extra), steps_crate(), "wrote extra.txt, which is not one of its outputs"),
             (Run::Rust(upper), Code::default(), "a Rust step must declare the crate"),
-            (Run::Command(vec!["/usr/bin/true".into()]), Code::default(), "absolute path /usr/bin/true"),
+            (Run::Command(vec!["/usr/bin/true".into()]), Code::default(), "argument /usr/bin/true names a path"),
+            (Run::Command(vec!["x".into(), "--in=/tmp".into()]), Code::default(), "argument --in=/tmp names a path"),
+            (Run::Command(vec!["x".into(), "a/../../b".into()]), Code::default(), "argument a/../../b names a path"),
         ];
         #[cfg(unix)]
         cases.push((Run::Rust(link), steps_crate(), "wrote upper.txt, which is not a file or a directory"));
@@ -661,12 +679,34 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         write(&scratch.0.join("check/src/lib.rs"), "pub fn helper() {}\n");
         write(&scratch.0.join("Cargo.lock"), "version = 4\n");
         assert_eq!(hash(&[]), before, "a dev-dependency and an undeclared Cargo.lock are not code");
-        write(&scratch.0.join("lib/src/lib.rs"), "pub const TABLE: &str = include_str!(\"../../table.txt\");\n");
+        let lib =
+            "pub const TABLE: &str = include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/../\", r\"table.txt\"));
+#[path = \"../../gen/x.rs\"]
+mod x;
+";
+        write(&scratch.0.join("lib/src/lib.rs"), lib);
+        write(&scratch.0.join("gen/x.rs"), "const DEEP: &[u8] = include_bytes!(r#\"deep.bin\"#);\n");
         write(&scratch.0.join("table.txt"), "1\n");
+        write(&scratch.0.join("gen/deep.bin"), "1\n");
         let changed = hash(&[]);
         assert_ne!(changed, before);
         write(&scratch.0.join("table.txt"), "2\n");
         assert_ne!(hash(&[]), changed, "an included file is code");
+        let changed = hash(&[]);
+        write(&scratch.0.join("gen/deep.bin"), "2\n");
+        assert_ne!(hash(&[]), changed, "a file that a module file includes is code");
         assert_ne!(hash(&["Cargo.lock"]), hash(&[]));
+    }
+
+    #[test]
+    fn a_code_path_that_git_does_not_list_fails() {
+        let scratch = Scratch::new("engine-ignored");
+        let code = Code { paths: vec!["ignored.txt".into()], crates: Vec::new() };
+        write(&scratch.0.join("ignored.txt"), "");
+        let err = code::hash(&scratch.0, &code).unwrap_err();
+        assert!(err.contains("obc data runs in a git checkout"), "{err}");
+        repository(&scratch.0, &[]);
+        write(&scratch.0.join(".gitignore"), "ignored.txt\n");
+        assert_eq!(code::hash(&scratch.0, &code).unwrap_err(), "ignored.txt is ignored by git");
     }
 }

@@ -123,11 +123,7 @@ A snapshot record is a JSON object:
 | --- | --- |
 | `source` | The source id |
 | `version` | The version, as a pin names it |
-| `files` | One item per file: `name`, `url`, `size` in bytes, `sha256` and `retrieved` (`YYYY-MM-DDTHH:MM:SSZ`) |
-
-The `name` of a file is its URL from the segment where the first `{name}` other than
-`{version}` starts, for example `europe/georgia-latest.osm.pbf`. Thus two values give two names.
-A URL with no such `{name}` gives its last segment.
+| `files` | One item per file: `name` (the last segment of the URL), `url`, `size` in bytes, `sha256` and `retrieved` (`YYYY-MM-DDTHH:MM:SSZ`) |
 
 A version is one or more segments joined by `/`. A segment has letters, digits, `.`, `_`, `+`
 and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` date, and a
@@ -199,7 +195,7 @@ A step declares:
 | `options` | A JSON object |
 | `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. A Rust step declares the crate of its function |
 | `outputs` | Paths in the output directory. A path is a file, or a directory whose files are all part of the layer. The step must write each path and no other file. A symbolic link fails the step |
-| `run` | A Rust function in the process, or a command: a program and its arguments. No argument is an absolute path |
+| `run` | A Rust function in the process, or a command: a program and its arguments. No argument names a path outside the repository root: no argument is an absolute path, contains `=/` or has a `..` segment between `/` and `=` |
 
 ### Keys
 
@@ -210,13 +206,17 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
 - The digest of a layer lists its files by `path`.
 - The code hash lists the code files by their path relative to the repository root, with `/`.
   A path adds the files that `git ls-files --cached --others --exclude-standard` lists for
-  it: the files that git tracks or does not ignore. A crate adds its `Cargo.toml`, `build.rs`
+  it: the files that git tracks or does not ignore. A path that lists no file fails the step,
+  and so does a repository root that is not a git checkout. A crate adds its `Cargo.toml`, `build.rs`
   and `src/` the same way. Each path dependency that is not a dev-dependency adds the same,
   and so do its own path dependencies, as `cargo metadata --no-deps` lists them. A path
   dependency must be a workspace member. A `.rs` file of a crate also adds each file that it
-  names with a string literal in `include_str!`, `include_bytes!` or `include!`, relative to
-  the file or after `concat!(env!("CARGO_MANIFEST_DIR"),`. A file that `build.rs` reads, and
-  `Cargo.lock`, are code only when the step declares them.
+  names in `include_str!`, `include_bytes!`, `include!` or `#[path = "…"]`, and an added `.rs`
+  file adds its own. The name is a string literal, normal or raw, relative to the file, or a
+  `concat!` of string literals, relative to the file or after `env!("CARGO_MANIFEST_DIR")`.
+  These are not code unless the step declares them: a name that a literal with an escape, a
+  constant or another macro gives; `#[path]` in an inline module; a file that `build.rs` reads;
+  and `Cargo.lock`.
 
 The key is the SHA-256 of this JSON object, as the compact output of `serde_json` with the keys
 of each object in byte order:
@@ -234,8 +234,9 @@ An input layer enters a key with its digest, not with its key. A rebuild that gi
 files gives the same digest, so the keys of the layers that read it do not change, and the
 engine reuses them. A snapshot version enters a key the same way, by the digest of its files.
 
-A key holds no version of an installed tool, such as the Python interpreter or Java. A Python
-step runs with `uv run --locked` and declares `uv.lock` as code. A Rust step runs the code of
+A key holds no version of an installed tool, such as the Python interpreter or Java. The first
+Python step that ships adds a `uv.lock`; from then on, a Python step runs with
+`uv run --locked` and declares `uv.lock` as code. A Rust step runs the code of
 the running binary, but its code hash comes from the files in the repository root. `obc data`
 runs with `cargo run` in the checkout that it reads, so the two are the same sources.
 

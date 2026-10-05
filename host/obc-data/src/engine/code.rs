@@ -26,14 +26,19 @@ pub fn hash(root: &Path, code: &Code) -> Result<String, String> {
         pathspecs.extend(["Cargo.toml", "build.rs", "src"].map(|name| dir.join(name)));
     }
     let mut files = listed(&root, &pathspecs)?;
+    if let Some(path) = code.paths.iter().find(|path| !files.iter().any(|file| file.starts_with(root.join(path)))) {
+        return Err(format!("{path} is ignored by git"));
+    }
+    let mut pending: Vec<(PathBuf, &Path)> = Vec::new();
     for dir in &crates {
-        let sources: Vec<_> = files
-            .iter()
-            .filter(|file| file.starts_with(dir) && file.extension() == Some("rs".as_ref()))
-            .cloned()
-            .collect();
-        for source in sources {
-            files.extend(included(&source, dir)?);
+        let sources = files.iter().filter(|file| file.starts_with(dir) && is_rust(file));
+        pending.extend(sources.map(|source| (source.clone(), dir.as_path())));
+    }
+    while let Some((source, dir)) = pending.pop() {
+        for file in included(&source, dir)? {
+            if files.insert(file.clone()) && is_rust(&file) {
+                pending.push((file, dir));
+            }
         }
     }
     let mut hashes = BTreeMap::new();
@@ -44,6 +49,10 @@ pub fn hash(root: &Path, code: &Code) -> Result<String, String> {
         hashes.insert(relative.replace('\\', "/"), hash_file(&file)?.0);
     }
     Ok(digest(hashes.iter().map(|(path, sha256)| (path.as_str(), sha256.as_str()))))
+}
+
+fn is_rust(file: &Path) -> bool {
+    file.extension() == Some("rs".as_ref())
 }
 
 /// The files at or below `pathspecs` that git tracks or does not ignore.
@@ -58,7 +67,11 @@ fn listed(root: &Path, pathspecs: &[PathBuf]) -> Result<BTreeSet<PathBuf>, Strin
         .output()
         .map_err(|e| format!("git ls-files: {e}"))?;
     if !output.status.success() {
-        return Err(format!("git ls-files: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("not a git repository") {
+            return Err(format!("obc data runs in a git checkout, and {} is not one", root.display()));
+        }
+        return Err(format!("git ls-files: {}", stderr.trim()));
     }
     let paths = String::from_utf8(output.stdout).map_err(|_| "git ls-files: a path is not UTF-8")?;
     // A tracked file that the worktree deleted is listed too.
@@ -70,34 +83,53 @@ fn listed(root: &Path, pathspecs: &[PathBuf]) -> Result<BTreeSet<PathBuf>, Strin
         .collect())
 }
 
-/// The files that `source` names with a string literal in `include_str!`, `include_bytes!` or
-/// `include!`: relative to `source`, or after `concat!(env!("CARGO_MANIFEST_DIR"),`.
+/// The files that the Rust file `source` names: the argument of `include_str!`, `include_bytes!`
+/// or `include!`, and the module file of `#[path = "…"]`.
 fn included(source: &Path, manifest_dir: &Path) -> Result<Vec<PathBuf>, String> {
     let text = fs::read_to_string(source).map_err(|e| format!("{}: {e}", source.display()))?;
-    let mut files = Vec::new();
+    let source_dir = source.parent().unwrap_or(source);
+    let mut paths = Vec::new();
     for call in ["include_str!(", "include_bytes!(", "include!("] {
         for (start, _) in text.match_indices(call) {
-            let rest = text[start + call.len()..].trim_start();
-            let (base, rest) = match rest.strip_prefix("concat!(") {
-                Some(rest) => {
-                    let rest = rest.trim_start().strip_prefix("env!(\"CARGO_MANIFEST_DIR\")");
-                    let Some(rest) = rest.and_then(|rest| rest.trim_start().strip_prefix(',')) else { continue };
-                    (manifest_dir, rest.trim_start())
-                }
-                None => (source.parent().unwrap_or(source), rest),
-            };
-            let literal = rest.strip_prefix('"').and_then(|rest| rest.split_once('"')).map(|(literal, _)| literal);
-            // A path that does not exist is not compiled in, for example one in a comment.
-            if let Some(path) =
-                literal.and_then(|literal| base.join(literal.trim_start_matches('/')).canonicalize().ok())
-            {
-                if path.is_file() {
-                    files.push(path);
-                }
-            }
+            paths.extend(include_path(&text[start + call.len()..], source_dir, manifest_dir));
         }
     }
-    Ok(files)
+    for (start, _) in text.match_indices("#[path") {
+        let rest = text[start + "#[path".len()..].trim_start().strip_prefix('=');
+        paths.extend(rest.and_then(|rest| literal(rest.trim_start())).map(|(path, _)| source_dir.join(path)));
+    }
+    // A path that does not exist is not compiled in, for example one in a comment.
+    Ok(paths.into_iter().filter_map(|path| path.canonicalize().ok()).filter(|path| path.is_file()).collect())
+}
+
+/// The path of an include argument: a string literal, or a `concat!` of string literals that
+/// may start with `env!("CARGO_MANIFEST_DIR")`.
+fn include_path(argument: &str, source_dir: &Path, manifest_dir: &Path) -> Option<PathBuf> {
+    let argument = argument.trim_start();
+    let Some(mut rest) = argument.strip_prefix("concat!(") else {
+        return literal(argument).map(|(path, _)| source_dir.join(path));
+    };
+    let mut base = source_dir;
+    if let Some(after) = rest.trim_start().strip_prefix("env!(\"CARGO_MANIFEST_DIR\")") {
+        base = manifest_dir;
+        rest = after.trim_start().strip_prefix(',')?;
+    }
+    let mut path = String::new();
+    while let Some((part, after)) = literal(rest.trim_start()) {
+        path.push_str(part);
+        rest = after.trim_start().strip_prefix(',').unwrap_or(after);
+    }
+    rest.trim_start().starts_with(')').then(|| base.join(path.trim_start_matches('/')))
+}
+
+/// The text of the string literal at the start of `text`, normal or raw, and the rest.
+fn literal(text: &str) -> Option<(&str, &str)> {
+    if let Some(rest) = text.strip_prefix('"') {
+        return rest.split_once('"');
+    }
+    let rest = text.strip_prefix('r')?;
+    let hashes = &rest[..rest.len() - rest.trim_start_matches('#').len()];
+    rest[hashes.len()..].strip_prefix('"')?.split_once(&format!("\"{hashes}"))
 }
 
 #[derive(Deserialize)]
