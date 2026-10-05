@@ -18,9 +18,8 @@
 
 use crate::climb::ClimbSeg;
 use crate::profile::fill_gaps;
-use crate::reader::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
-use heapless::Vec;
-use obc_map_scene::ground_dist_m;
+use crate::reader::RouteReader;
+use crate::walk::{column, walk};
 
 /// Columns in one climb's detail buffer, one elevation sample each. At `i16` per column this is
 /// ~400 B, a fixed cost whatever the climb's length, so a long pass and a short ramp get the same
@@ -70,16 +69,12 @@ impl ClimbProfile {
     /// Fill this profile in place for climb `seg`, reading only the chunks whose distance span
     /// overlaps it.
     ///
-    /// The sweep is [`elevation_profile`](crate::profile)'s, scoped to one climb: each overlapping
-    /// chunk re-anchors at its stored
-    /// [`cum_distance_m`](crate::ChunkMeta::cum_distance_m), so column placement matches the
-    /// format's metric. Empty columns are gap-filled and the endpoints are pinned to the seg's own
-    /// base and top.
+    /// The sweep is [`elevation_profile`](crate::profile)'s route walk, scoped to one climb, so
+    /// column placement matches the format's metric. Empty columns are gap-filled and the
+    /// endpoints are pinned to the seg's own base and top.
     pub fn fill(&mut self, reader: &RouteReader, seg: &ClimbSeg) {
-        let start = seg.start_m;
-        let end = seg.end_m;
+        let (start, end) = (seg.start_m, seg.end_m);
         let len = seg.len_m().max(1);
-
         self.start_m = start;
         self.len_m = len;
         self.base_ele_m = seg.base_ele_m;
@@ -87,50 +82,29 @@ impl ClimbProfile {
 
         // A climb with no decodable geometry falls through to a flat base line.
         self.cols = [EMPTY; COLS];
-        let last_col = COLS - 1;
-        let len_f = len as f64;
-
-        let mut buf: Vec<RoutePoint, MAX_POINTS_PER_CHUNK> = Vec::new();
-        let chunks = reader.chunks();
-        let n = chunks.len();
-        for k in 0..n {
-            // The last chunk runs to the route's total distance.
-            let chunk_start = chunks[k].cum_distance_m;
-            let chunk_end = if k + 1 < n { chunks[k + 1].cum_distance_m } else { reader.total_distance_m };
+        for (k, m) in reader.chunks().iter().enumerate() {
             // A chunk that only touches the climb at one distance carries no interior point of
             // it, and the endpoints are pinned to the seg anyway, so it is skipped.
-            if chunk_end <= start || chunk_start >= end {
+            if reader.chunk_end_m(k) <= start || m.cum_distance_m >= end {
                 continue;
             }
-
-            if reader.decode_chunk(k, &mut buf).is_err() {
-                continue;
-            }
-            // Re-anchor the running distance to this chunk's stored value, so placement cannot
-            // drift. `prev` resets per chunk; the seam point contributes zero.
-            let mut dist = chunk_start as f64;
-            let mut prev: Option<(i32, i32)> = None;
-            for p in &buf {
-                if let Some(pr) = prev {
-                    dist += ground_dist_m(pr, (p.lon, p.lat)) as f64;
+            let _ = reader.with_chunk(k, |points| {
+                for step in walk(m.cum_distance_m, points) {
+                    let d = step.along as u32;
+                    if (start..=end).contains(&d) {
+                        // A later point in the same column overwrites this one. Unlike the
+                        // whole-route profile this keeps a single sample, not a band: the screen
+                        // draws a line.
+                        self.cols[column((step.along - start as f64) / len as f64, COLS)] = step.p.ele;
+                    }
                 }
-                prev = Some((p.lon, p.lat));
-                let d = dist as u32;
-                if d < start || d > end {
-                    continue;
-                }
-                let within = (dist - start as f64) / len_f;
-                let col = ((within * last_col as f64) as usize).min(last_col);
-                // A later point in the same column overwrites this one. Unlike the whole-route
-                // profile this keeps a single sample, not a band: the screen draws a line.
-                self.cols[col] = p.ele;
-            }
+            });
         }
 
         // Pinned before the gap-fill, so the base and top read the seg's values even when no
         // point landed in either end column.
         self.cols[0] = seg.base_ele_m;
-        self.cols[last_col] = seg.top_ele_m;
+        self.cols[COLS - 1] = seg.top_ele_m;
         fill_gaps(&mut self.cols, seg.base_ele_m, |c| *c != EMPTY);
     }
 

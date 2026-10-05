@@ -3,8 +3,8 @@
 //!
 //! A planned route's elevation profile is known up front, so one load-time sweep turns "which
 //! climb am I on?" into the interval lookup [`Climbs::active_at`], which the ride loop can call
-//! per frame. It uses the same chunk decode, distance metric and [`DeadBand`] smoothing as
-//! [`elevation_profile`](crate::profile), then feeds the smoothed stream through the hysteresis
+//! per frame. It folds over the same route walk and [`DeadBand`] smoothing as
+//! [`elevation_profile`](crate::profile), feeding the smoothed stream through the hysteresis
 //! state machine [`segment_climbs`].
 //!
 //! A single grade threshold would split a real climb at every false flat and merge a
@@ -16,9 +16,8 @@
 
 use heapless::Vec;
 
-use crate::reader::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use crate::reader::{RoutePoint, RouteReader};
 use obc_elevation::DeadBand;
-use obc_map_scene::ground_dist_m;
 
 // The five consts below are the whole "what counts as a climb" policy. They stay plain module
 // consts: there is one policy for the device, and a config struct would invite per-call variation.
@@ -121,19 +120,11 @@ impl Climbs {
         if self.0.push(seg).is_ok() {
             return;
         }
-        let (min_i, min_gain) =
-            self.0.iter().enumerate().fold(
-                (0usize, u16::MAX),
-                |(bi, bg), (i, c)| {
-                    if c.gain_m < bg {
-                        (i, c.gain_m)
-                    } else {
-                        (bi, bg)
-                    }
-                },
-            );
-        if seg.gain_m > min_gain {
-            self.0[min_i] = seg;
+        let Some((smallest, gain_m)) = self.0.iter().map(|c| c.gain_m).enumerate().min_by_key(|&(_, g)| g) else {
+            return;
+        };
+        if seg.gain_m > gain_m {
+            self.0[smallest] = seg;
         }
     }
 
@@ -166,7 +157,7 @@ struct Candidate {
 }
 
 /// Fold an ordered `(distance, smoothed elevation)` stream into the route's kept climbs. This is
-/// the whole detection policy; [`RouteReader::detect_climbs`] only feeds it.
+/// the whole detection policy; [`RouteReader::detect_climbs`] only feeds it the route walk.
 ///
 /// A candidate closes when, measured from its running summit, the elevation drops more than
 /// [`MAX_DROP`] or more than [`MAX_FLAT`] meters pass without a new summit. It is then kept only
@@ -185,11 +176,27 @@ pub(crate) struct ClimbDetector {
     capped: bool,
     cand: Option<Candidate>,
     trough: Option<ElePt>,
+    /// Smooths a route walk's raw elevations for [`push_point`](Self::push_point), across chunk
+    /// seams too: a seam point compares equal to itself and books nothing.
+    smooth: DeadBand<f32>,
 }
 
 impl ClimbDetector {
     pub(crate) fn new() -> Self {
-        Self { climbs: Climbs::new(), capped: false, cand: None, trough: None }
+        Self { climbs: Climbs::new(), capped: false, cand: None, trough: None, smooth: DeadBand::new() }
+    }
+
+    /// Feed one point of the route walk. The segmenter reads the dead-band's reference, not the
+    /// raw sample, so noise below the band neither opens nor closes a climb.
+    pub(crate) fn push_point(&mut self, p: RoutePoint, dist_m: f64) {
+        let ele_m = if p.elevation().is_none() || p.elevation_incomplete {
+            self.smooth.pause();
+            f32::NAN
+        } else {
+            self.smooth.push(p.ele as f32);
+            self.smooth.smoothed().unwrap_or(p.ele as f32)
+        };
+        self.push(ElePt { dist_m, ele_m });
     }
 
     pub(crate) fn push(&mut self, p: ElePt) {
@@ -301,79 +308,13 @@ fn close_candidate(c: &Candidate) -> Option<ClimbSeg> {
 
 impl RouteReader<'_> {
     /// Detect the route's climbs in one streaming pass over the geometry. Each chunk is decoded
-    /// once, so cache the result on route load and do not call this per frame.
+    /// once, so cache the result on route load and do not call this per frame. A chunk that fails
+    /// to decode is left out.
     ///
     /// The distance metric and dead-band match the profile's ascent integrator, so the summed
     /// gains land near the header's `total_ascent_m`. They do not equal it: detection drops
     /// sub-threshold bumps and the descents between climbs.
     pub fn detect_climbs(&self) -> Climbs {
-        // The stream is lazy, so only the current chunk's points are ever buffered.
-        let stream = ClimbStream {
-            reader: self,
-            buf: Vec::new(),
-            chunk: 0,
-            in_chunk: 0,
-            prev: None,
-            dist: 0.0,
-            smooth: DeadBand::<f32>::new(),
-        };
-        segment_climbs(stream)
-    }
-}
-
-/// Turns [`RouteReader`]'s chunk sweep into the [`ElePt`] stream the segmenter consumes, one
-/// point at a time, so the whole route is never buffered.
-struct ClimbStream<'a, 'b> {
-    reader: &'b RouteReader<'a>,
-    buf: Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
-    /// The chunk loaded in `buf`, or the next one to load once `in_chunk` has consumed it.
-    chunk: usize,
-    in_chunk: usize,
-    /// The previous point, for the per-segment distance step.
-    prev: Option<(i32, i32)>,
-    /// Cumulative distance (m), re-anchored per chunk to that chunk's stored `cum_distance_m`, so
-    /// it cannot drift over a long route.
-    dist: f64,
-    /// Smooths across chunk seams too: a seam point compares equal to itself and books nothing.
-    smooth: DeadBand<f32>,
-}
-
-impl Iterator for ClimbStream<'_, '_> {
-    type Item = ElePt;
-
-    fn next(&mut self) -> Option<ElePt> {
-        loop {
-            // Refill when the current chunk is exhausted, skipping any that fails to decode.
-            if self.in_chunk >= self.buf.len() {
-                if self.chunk >= self.reader.chunks().len() {
-                    return None;
-                }
-                let k = self.chunk;
-                self.chunk += 1;
-                if self.reader.decode_chunk(k, &mut self.buf).is_err() || self.buf.is_empty() {
-                    continue;
-                }
-                // Re-anchor the running distance to this chunk's stored value. `prev` is reset
-                // so the seam segment is not measured twice.
-                self.dist = self.reader.chunks()[k].cum_distance_m as f64;
-                self.prev = None;
-                self.in_chunk = 0;
-            }
-
-            let p = self.buf[self.in_chunk];
-            self.in_chunk += 1;
-            if let Some(pr) = self.prev {
-                self.dist += ground_dist_m(pr, (p.lon, p.lat)) as f64;
-            }
-            self.prev = Some((p.lon, p.lat));
-            // The segmenter reads the dead-band's reference, not the raw sample, so noise below
-            // the band neither opens nor closes a climb.
-            if p.elevation().is_none() || p.elevation_incomplete {
-                self.smooth.pause();
-                return Some(ElePt { dist_m: self.dist, ele_m: f32::NAN });
-            }
-            self.smooth.push(p.ele as f32);
-            return Some(ElePt { dist_m: self.dist, ele_m: self.smooth.smoothed().unwrap_or(p.ele as f32) });
-        }
+        self.summaries(None, true).0
     }
 }

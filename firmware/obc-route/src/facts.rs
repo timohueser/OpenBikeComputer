@@ -1,5 +1,5 @@
 //! Measured facts for one exact route parse and a clipped interval of its stored geometry.
-use crate::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use crate::{RoutePoint, RouteReader};
 use heapless::Vec;
 use obc_elevation::DeadBand;
 use obc_formats::{io::Error, obcr::FACTS_POLICY};
@@ -65,12 +65,8 @@ impl RouteReader<'_> {
             return Err(Error::BadOffset);
         }
         let mut accumulator = FactsAccumulator::new(self.identity(), self.attribution_map()?, start_m, end_m);
-        let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
         for k in 0..self.chunks().len() {
-            self.decode_chunk(k, &mut buf)?;
-            for &p in buf.iter().skip(usize::from(k > 0)) {
-                accumulator.push(p, &mut grade);
-            }
+            self.with_chunk(k, |points| points.skip(usize::from(k > 0)).for_each(|p| accumulator.push(p, &mut grade)))?;
         }
         accumulator.finish(self.total_distance_m)
     }
@@ -96,18 +92,16 @@ impl RouteReader<'_> {
             accumulators.push(accumulator).map_err(|_| Error::BadOffset)?;
         }
         let farthest = ends.iter().max().map_or(0, |&end| end.min(self.total_distance_m));
-        let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
         for k in 0..self.chunks().len() {
             let Some(walked) = accumulators.first().map(|a| a.distance as u32) else { break };
             if walked >= farthest {
                 break;
             }
-            self.decode_chunk(k, &mut buf)?;
-            for &p in buf.iter().skip(usize::from(k > 0)) {
-                for accumulator in &mut accumulators {
-                    accumulator.push(p, &mut |_| {});
+            self.with_chunk(k, |points| {
+                for p in points.skip(usize::from(k > 0)) {
+                    accumulators.iter_mut().for_each(|accumulator| accumulator.push(p, &mut |_| {}));
                 }
-            }
+            })?;
         }
         Ok(accumulators.into_iter().map(|a| a.facts).collect())
     }
@@ -138,7 +132,9 @@ impl FactsAccumulator {
             band: DeadBand::new(),
         }
     }
-    pub(crate) fn push(&mut self, p: RoutePoint, grade: &mut impl FnMut(GradeSample)) {
+    // One shared copy: the visit costs walk three accumulators per point.
+    #[inline(never)]
+    pub(crate) fn push(&mut self, p: RoutePoint, grade: &mut dyn FnMut(GradeSample)) {
         let before_ascent = self.band.ascent() as u32;
         let before_descent = self.band.descent() as u32;
         let next_distance =

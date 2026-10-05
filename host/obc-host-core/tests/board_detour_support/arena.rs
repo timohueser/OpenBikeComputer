@@ -123,10 +123,9 @@ impl NavGuard {
         if self.preview_chunk == reader.chunks().len() {
             return Ok(true);
         }
-        let mut points = heapless::Vec::<_, { obc_route::MAX_POINTS_PER_CHUNK }>::new();
-        reader.decode_chunk(self.preview_chunk, &mut points)?;
         // These fixtures have one short chunk; rendering/sampling is not under test here.
-        let preview: Vec<_> = points.iter().map(|p| (p.lon, p.lat)).collect();
+        let preview: Vec<_> =
+            reader.with_chunk(self.preview_chunk, |points| points.map(|p| (p.lon, p.lat)).collect())?;
         app.set_detour_preview(&preview);
         self.preview_chunk += 1;
         Ok(false)
