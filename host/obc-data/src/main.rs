@@ -13,7 +13,7 @@ use obc_data::fetch::http::Http;
 use obc_data::fetch::upstream::{self, Upstream};
 use obc_data::fetch::{self, Request};
 use obc_data::regions::{Area, Bbox, Region, Regions};
-use obc_data::sources::{self, Kind, Registry, Source, State, VersionScheme};
+use obc_data::sources::{self, FetchKind, Kind, Registry, Source, State, VersionScheme};
 use obc_data::store::{self, FileRecord, Snapshot, Store};
 
 #[derive(Parser)]
@@ -157,8 +157,10 @@ fn refresh(root: &Path, id: &str, params: &[String], env: &str, json: bool) -> R
     let text = std::fs::read_to_string(&path).map_err(|e| usage(&format!("{}: {e}", path.display())))?;
     let (store, http) = (Store::open()?, Http::new());
     let version = upstream::newest(&store, &http, source, 0).version().map(str::to_string);
-    // Only `{version}`: for a URL with `{yymmdd}`, the fetcher of its kind finds the newest day.
-    let named = source.fetch.url.as_deref().is_some_and(|url| url.contains("{version}"));
+    // The `geofabrik` fetcher finds the newest day of a URL with `{yymmdd}` itself.
+    let named = source.fetch.url.as_deref().is_some_and(|url| {
+        url.contains("{version}") || (source.fetch.kind == FetchKind::Http && url.contains("{yymmdd}"))
+    });
     if version.is_none() && (named || matches!(source.version, VersionScheme::Release | VersionScheme::Commit)) {
         return Err(format!("the newest version of `{id}` is not known: fetch {id}@VERSION and pin it by hand").into());
     }

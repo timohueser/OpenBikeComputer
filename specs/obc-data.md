@@ -31,7 +31,7 @@ One `[[source]]` table per source.
 | Kind | Fetch |
 | --- | --- |
 | `http` | A file, or one file per tile |
-| `osm` | The OSM planet and its replication diffs |
+| `osm` | The daily OSM replication diffs |
 | `geofabrik` | A Geofabrik extract or `.poly` of an area |
 | `glo30` | Copernicus GLO-30 tiles |
 | `dtm` | A national terrain model service |
@@ -164,7 +164,7 @@ version. A file that fails it is deleted.
 | `fetch.kind` | Fetcher |
 | --- | --- |
 | `http`, `geofabrik`, `glo30`, `github` | One file per URL, as above |
-| `osm` | The planet and its daily diffs, see below |
+| `osm` | The daily diffs from a base day, see below |
 | `dtm` | A program writes the files, see below |
 | `capture` | None yet; the fetch fails |
 | `by-hand`, `installed` | None; the fetch fails |
@@ -173,14 +173,31 @@ A `geofabrik` URL with `{yymmdd}` names the day of the data of the extract. With
 fetch reads the day from the `timestamp` of `<area>-updates/state.txt`; for more than one area,
 it takes the earliest day.
 
-An `osm` URL is `<server>/pbf/…{yymmdd}…`. Planets are weekly, on Mondays. Version `V` of the
-planet is the planet of the Monday on or before `V`, then one diff of
-`<server>/replication/day/` for each later day up to `V`, in order. The fetch finds the sequence
-of the Monday and of `V`: first the newest sequence less the days between, then, when the
-`timestamp` of that `state.txt` is another day, moved by the difference once. It fails when it
-finds no sequence of the day, or when the diffs are not one per day. The record of `V` is complete when it has the planet and one diff for each day; then
-the fetch makes no request. The fetch does not apply the diffs: a step does that with
-`osmium apply-changes`.
+The OSM planet is two sources with date versions. `osm-planet` is the weekly planet file of one
+day, an `http` URL with `{yymmdd}`. `osm-replication` is the daily diffs. Both pins together fix
+the bytes of the OSM data.
+
+An `osm` URL is an Osmosis replication directory that ends with `/`, such as
+`<server>/replication/day/`. A fetch of version `E` takes `from=B`, the `osm-planet` pin, and no
+other `NAME=VALUE`. `B` is on or before `E`. The snapshot is one diff for each day after `B` up to
+`E`, in order; for `B` = `E` it has no files.
+
+- The sequence of a day is the diff whose `state.txt` has the `timestamp` of that day. The fetch
+  finds the sequence of `B` and of `E`: first the sequence of the newest `state.txt` less the days
+  between, then, when the `timestamp` of that sequence is another day, moved by the difference
+  once.
+- The fetch fails before a diff downloads when `E` is after the newest diff, when it finds no
+  sequence of `B` or `E`, or when the diffs are not one per day.
+- A diff has the URL of its sequence, so the record of `E` can hold the diffs of any start. The
+  record of `E` always has the diff of `E`. When it has the diffs of each day after `B`, the
+  fetch makes no request.
+- A diff never changes. A diff in the record of another version comes from the store, so a fetch
+  of a later `E` from the same `B` downloads only the new days.
+
+A late or missing weekly planet does not block a version of `osm-replication`, because its base
+is the planet that is pinned. The fetch does not apply the diffs. A step does that with
+`osmium apply-changes`: it reads the planet of the `osm-planet` pin and the diffs of the
+`osm-replication` pin from that day.
 
 A `dtm` fetch takes `bbox=WEST,SOUTH,EAST,NORTH` in degrees and no other `NAME=VALUE`. It runs
 `host/obc-dem/reference/ingest.py fetch` with `uv run --with-requirements
@@ -200,7 +217,8 @@ The store keeps its answer, or its failure, for one hour.
 
 | Source | Check |
 | --- | --- |
-| `osm` | `HEAD` of the URL with `latest` for `{yymmdd}`, not following the redirect; the day in the `planet-YYMMDD` file name of its `Location` |
+| `osm` | `GET` of `<fetch.url>state.txt`; the day of its `timestamp` |
+| `http`, and a URL whose only `{name}` is `{yymmdd}` | `HEAD` of the URL with `latest` for `{yymmdd}`, not following the redirect; the day in the file name of its `Location` |
 | `capture` | Today, with no request: a query service answers with current data |
 | `github`, `commit` | The GitHub API: the newest commit of the default branch |
 | `github`, `release` | The GitHub API: the tag of the newest release that has the asset of the URL |

@@ -13,8 +13,8 @@ use crate::store::{FileRecord, Snapshot, Store};
 
 pub struct Request<'a> {
     pub source: &'a Source,
-    /// `None` takes the newest version upstream has. A URL with `{version}` cannot give it; for a
-    /// URL with `{yymmdd}`, the fetcher of its kind finds the newest day.
+    /// `None` takes the newest version upstream has. A URL of the `http` fetcher with `{version}`
+    /// or `{yymmdd}` cannot give it; the `geofabrik` and `osm` fetchers find the newest day.
     pub version: Option<String>,
     /// A value for each `{name}` of the URL but `{version}` and `{yymmdd}`, or the `NAME=VALUE` of a
     /// program fetcher. A name may repeat: one file per value.
@@ -28,7 +28,7 @@ pub fn fetch(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, 
     match source.fetch.kind {
         FetchKind::Http | FetchKind::Glo30 | FetchKind::Github => files(store, http, request),
         FetchKind::Geofabrik => osm::extract(store, http, request),
-        FetchKind::Osm => osm::planet(store, http, request),
+        FetchKind::Osm => osm::replication(store, http, request),
         FetchKind::Dtm => capture::dtm(store, request),
         FetchKind::Capture => Err(format!("source `{}`: its kind of fetch has no fetcher yet", source.id)),
         FetchKind::ByHand => Err(format!(
@@ -443,39 +443,93 @@ mod tests {
         assert_eq!(expand("https://h/p-{yymmdd}.pbf", Some("2026-09-28"), &[]).unwrap(), ["https://h/p-260928.pbf"]);
     }
 
-    #[test]
-    fn a_planet_day_is_its_weekly_planet_and_the_daily_diffs_after_it() {
-        let state = |sequence: u32, day: &str| {
+    /// A replication directory at the test server, with the daily diff of each `(sequence, day)`.
+    /// Its `state.txt` is the last of them.
+    fn replication(diffs: &'static [(u32, &'static str)]) -> (Source, Log) {
+        let state = |&(sequence, day): &(u32, &str)| {
             whole(format!("sequenceNumber={sequence}\ntimestamp={day}T00\\:00\\:00Z\n").as_bytes())
         };
-        let (url, log) = serve(move |_, headers| match header(headers, ":path").unwrap_or_default() {
-            "/pbf/planet-260928.osm.pbf" => whole(b"planet"),
-            // 2026-10-01 has no diff, so the days before it are one sequence further back.
-            "/replication/day/state.txt" => state(5136, "2026-10-06"),
-            "/replication/day/000/005/128.state.txt" => state(5128, "2026-09-27"),
-            "/replication/day/000/005/129.state.txt" => state(5129, "2026-09-28"),
-            "/replication/day/000/005/130.state.txt" => state(5130, "2026-09-29"),
-            "/replication/day/000/005/131.state.txt" => state(5131, "2026-09-30"),
-            "/replication/day/000/005/132.state.txt" => state(5132, "2026-10-02"),
-            path @ ("/replication/day/000/005/130.osc.gz" | "/replication/day/000/005/131.osc.gz") => {
-                whole(path.as_bytes())
+        let (url, log) = serve(move |_, headers| {
+            let path = header(headers, ":path").unwrap_or_default();
+            if path == "/replication/day/state.txt" {
+                return state(diffs.last().unwrap());
             }
-            _ => not_found(),
+            for diff in diffs {
+                let stem = format!("/replication/day/000/005/{}", diff.0 - 5000);
+                if path == format!("{stem}.state.txt") {
+                    return state(diff);
+                }
+                if path == format!("{stem}.osc.gz") {
+                    return whole(path.as_bytes());
+                }
+            }
+            not_found()
         });
-        let scratch = Scratch::new("planet");
+        (located(FetchKind::Osm, &url.replace("data/file.bin", "replication/day/")), log)
+    }
+
+    fn from(day: &str) -> Vec<(String, String)> {
+        vec![("from".into(), day.into())]
+    }
+
+    #[test]
+    fn replication_is_the_daily_diffs_after_the_base_up_to_the_version() {
+        let (diffs, log) = replication(&[
+            (5128, "2026-09-27"),
+            (5129, "2026-09-28"),
+            (5130, "2026-09-29"),
+            (5131, "2026-09-30"),
+            (5132, "2026-10-01"),
+        ]);
+        let scratch = Scratch::new("replication");
         let store = Store::at(&scratch.0);
-        let planet = located(FetchKind::Osm, &url.replace("data/file.bin", "pbf/planet-{yymmdd}.osm.pbf"));
-        let wednesday = Request { source: &planet, version: Some("2026-09-30".into()), params: vec![] };
+        let wednesday = Request { source: &diffs, version: Some("2026-09-30".into()), params: from("2026-09-28") };
         let snapshot = fetch(&store, &quick(), &wednesday).unwrap();
         let names: Vec<_> = snapshot.files.iter().map(|file| file.name.as_str()).collect();
-        assert_eq!(names, ["planet-260928.osm.pbf", "130.osc.gz", "131.osc.gz"]);
-        assert_eq!(store.snapshot("land", "2026-09-28").unwrap().unwrap().files, snapshot.files[..1]);
+        assert_eq!(names, ["130.osc.gz", "131.osc.gz"]);
         let asked = log.lock().unwrap().len();
         assert_eq!(fetch(&store, &quick(), &wednesday).unwrap(), snapshot);
-        assert_eq!(log.lock().unwrap().len(), asked, "a complete record needs no request");
-        let thursday = Request { version: Some("2026-10-01".into()), ..wednesday };
-        let err = fetch(&store, &quick(), &thursday).unwrap_err();
+        let later = Request { params: from("2026-09-29"), ..wednesday };
+        assert_eq!(fetch(&store, &quick(), &later).unwrap().files, snapshot.files[1..]);
+        assert_eq!(log.lock().unwrap().len(), asked, "a record that has the diffs needs no request");
+        // A refresh keeps the base and downloads the diff of the new day only.
+        let refresh = Request { source: &diffs, version: None, params: from("2026-09-28") };
+        let refreshed = fetch(&store, &quick(), &refresh).unwrap();
+        assert_eq!(refreshed.version, "2026-10-01");
+        assert_eq!(refreshed.files[..2], snapshot.files);
+        let log = log.lock().unwrap();
+        let downloads: Vec<_> =
+            log[asked..].iter().filter_map(|h| header(h, ":path")).filter(|p| p.ends_with(".osc.gz")).collect();
+        assert_eq!(downloads, ["/replication/day/000/005/132.osc.gz"]);
+    }
+
+    #[test]
+    fn replication_needs_a_base_and_one_diff_per_day() {
+        // 2026-10-01 has no diff.
+        let (diffs, log) = replication(&[
+            (5128, "2026-09-27"),
+            (5129, "2026-09-28"),
+            (5130, "2026-09-29"),
+            (5131, "2026-09-30"),
+            (5132, "2026-10-02"),
+        ]);
+        let scratch = Scratch::new("gaps");
+        let store = Store::at(&scratch.0);
+        let fails = |version: &str, params: Vec<(String, String)>| {
+            let request = Request { source: &diffs, version: Some(version.into()), params };
+            fetch(&store, &quick(), &request).unwrap_err()
+        };
+        assert!(fails("2026-09-30", vec![]).contains("takes from=YYYY-MM-DD"));
+        assert!(fails("2026-09-30", from("2026-10-01")).contains("after the version"));
+        assert!(log.lock().unwrap().is_empty());
+        let err = fails("2026-10-02", from("2026-09-28"));
+        assert!(err.contains("5129 to 5132 are not one per day"), "{err}");
+        let err = fails("2026-10-01", from("2026-09-28"));
         assert!(err.contains("no daily diff of 2026-10-01"), "{err}");
+        let err = fails("2026-10-03", from("2026-09-28"));
+        assert!(err.contains("the newest daily diff is of 2026-10-02"), "{err}");
+        let log = log.lock().unwrap();
+        assert!(!log.iter().filter_map(|h| header(h, ":path")).any(|p| p.ends_with(".osc.gz")), "no diff downloads");
     }
 
     #[test]

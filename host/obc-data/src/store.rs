@@ -112,6 +112,24 @@ impl Store {
         }
     }
 
+    /// Every snapshot record of `source` whose version is one path segment.
+    pub fn snapshots(&self, source: &str) -> Result<Vec<Snapshot>, String> {
+        let dir = self.root.join("snapshots").join(source);
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(format!("{}: {e}", dir.display())),
+        };
+        let mut snapshots = Vec::new();
+        for entry in entries {
+            let name = entry.map_err(|e| format!("{}: {e}", dir.display()))?.file_name();
+            if let Some(version) = name.to_str().and_then(|name| name.strip_suffix(".json")) {
+                snapshots.extend(self.snapshot(source, version)?);
+            }
+        }
+        Ok(snapshots)
+    }
+
     pub fn put_snapshot(&self, snapshot: &Snapshot) -> Result<(), String> {
         let text = serde_json::to_string_pretty(snapshot).map_err(|e| e.to_string())?;
         write_atomic(&self.snapshot_path(&snapshot.source, &snapshot.version), text.as_bytes())

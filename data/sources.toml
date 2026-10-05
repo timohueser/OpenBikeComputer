@@ -10,7 +10,22 @@ licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
 attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
-fetch = { kind = "osm", url = "https://planet.openstreetmap.org/pbf/planet-{yymmdd}.osm.pbf" }
+fetch = { kind = "http", url = "https://planet.openstreetmap.org/pbf/planet-{yymmdd}.osm.pbf" }
+version = "date"
+# The diffs of `osm-replication` bring an old planet up to date, so a new planet of about 84 GB
+# is seldom worth its download.
+refresh = 90
+redistribute = true
+
+# The daily diffs after the `osm-planet` pin: fetch with from=<the osm-planet pin>.
+[[source]]
+id = "osm-replication"
+kind = "data"
+licence = "ODbL-1.0"
+licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
+attribution = "© OpenStreetMap contributors"
+obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
+fetch = { kind = "osm", url = "https://planet.openstreetmap.org/replication/day/" }
 version = "date"
 refresh = 7
 redistribute = true

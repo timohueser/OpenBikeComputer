@@ -1,79 +1,101 @@
-//! OSM files named by the day of their data: the weekly planet with the daily replication diffs
-//! after it, and the dated Geofabrik extracts.
+//! OSM files named by the day of their data: the daily replication diffs and the dated Geofabrik
+//! extracts.
 
 use super::http::Http;
 use super::upstream;
 use super::{check_version, expand, files, get, record, Request};
 use crate::date;
-use crate::store::{Snapshot, Store};
+use crate::sources::Source;
+use crate::store::{FileRecord, Snapshot, Store};
 
-/// The planet of version `V`: the weekly planet of the Monday on or before `V`, then one daily
-/// diff for each later day up to `V`, in order. A step applies the diffs with
-/// `osmium apply-changes`; the fetch does not.
-pub fn planet(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
+/// The daily diffs of version `E` from `from=B`: one diff for each day after `B` up to `E`, in
+/// order. Each diff has the URL of its sequence, so the record of `E` can hold the diffs of any
+/// start. A step applies them to the planet of `B` with `osmium apply-changes`; the fetch does not.
+pub fn replication(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
     let source = request.source;
-    let template = source.fetch.url.as_deref().unwrap_or_default();
-    let server = template.split_once("/pbf/").map(|(server, _)| server);
-    let Some(server) = server.filter(|_| template.contains("{yymmdd}")) else {
-        return Err(format!("source `{}`: an `osm` URL is <server>/pbf/…{{yymmdd}}…", source.id));
-    };
-    if !request.params.is_empty() {
-        return Err(format!("source `{}` takes no NAME=VALUE", source.id));
+    let directory = source.fetch.url.as_deref().unwrap_or_default();
+    if !directory.ends_with('/') || directory.contains('{') {
+        return Err(format!("source `{}`: an `osm` URL is a replication directory that ends with `/`", source.id));
     }
+    let from = match request.params.as_slice() {
+        [(name, value)] if name == "from" => date::parse(value),
+        _ => None,
+    };
+    let Some(from) = from else {
+        return Err(format!(
+            "source `{}` takes from=YYYY-MM-DD, the day of the base planet, and no other NAME=VALUE",
+            source.id
+        ));
+    };
     let version = match &request.version {
         Some(version) => version.clone(),
         None => upstream::newest(store, http, source, upstream::CACHE)
             .version()
-            .ok_or_else(|| format!("source `{}`: the newest planet is not known: give SOURCE@VERSION", source.id))?
+            .ok_or_else(|| format!("source `{}`: the newest daily diff is not known: give SOURCE@VERSION", source.id))?
             .to_string(),
     };
     check_version(source, &version)?;
     let day = date::parse(&version).unwrap_or_default();
-    // 1970-01-01 was a Thursday.
-    let monday = day - (day + 3).rem_euclid(7);
-    let weekly = date::format(monday);
-    let planet_url = expand(template, Some(&weekly), &[])?.remove(0);
-    let days = (day - monday) as u64;
-    let stored = store.snapshot(&source.id, &version)?.filter(|snapshot| {
-        snapshot.file(&planet_url).is_some()
-            && snapshot.files.len() as u64 == days + 1
-            && snapshot.files.iter().all(|file| store.object(&file.sha256).is_file())
-    });
-    if let Some(snapshot) = stored {
-        return Ok(snapshot);
+    let Ok(days) = u64::try_from(day - from) else {
+        return Err(format!("source `{}`: from={} is after the version {version}", source.id, date::format(from)));
+    };
+    if let Some(files) = stored(store, source, &version, days)? {
+        return Ok(Snapshot { source: source.id.clone(), version, files });
     }
-    // The diffs are known before the planet downloads, so a day without them fails at once.
-    let mut diffs = Vec::new();
-    let replication = format!("{server}/replication/day/");
-    if days > 0 {
-        let (newest, newest_day) = state(http, &format!("{replication}state.txt"))?;
-        if day > newest_day {
-            return Err(format!("source `{}`: the newest daily diff is of {}", source.id, date::format(newest_day)));
-        }
-        let first = sequence(http, &replication, (newest, newest_day), monday)?;
-        let last = sequence(http, &replication, (newest, newest_day), day)?;
-        if last.checked_sub(first) != Some(days) {
-            return Err(format!(
-                "source `{}`: the daily diffs {first} to {last} are not one per day from {weekly} to {version}",
-                source.id
-            ));
-        }
-        diffs = (first + 1..=last).map(|sequence| format!("{replication}{}.osc.gz", path(sequence))).collect();
+    // The sequences are known before a diff downloads, so a day without a diff fails at once.
+    let (newest, newest_day) = state(http, &format!("{directory}state.txt"))?;
+    if day > newest_day {
+        return Err(format!("source `{}`: the newest daily diff is of {}", source.id, date::format(newest_day)));
     }
-    let planet = get(store, http, source, Some(&weekly), &planet_url, false, None).map_err(|error| {
-        match error.ends_with("HTTP 404") {
-            true => format!("{error}: a planet appears some days after its Monday, and a week can be missing"),
-            false => error,
-        }
-    })?;
-    if days > 0 {
-        record(store, &source.id, &version, std::slice::from_ref(&planet))?;
+    let first = sequence(http, directory, (newest, newest_day), from)?;
+    let last = sequence(http, directory, (newest, newest_day), day)?;
+    if last.checked_sub(first) != Some(days) {
+        return Err(format!(
+            "source `{}`: the daily diffs {first} to {last} are not one per day from {} to {version}",
+            source.id,
+            date::format(from)
+        ));
     }
-    let mut files = vec![planet];
-    for url in &diffs {
-        files.push(get(store, http, source, Some(&version), url, false, None)?);
+    // A diff never changes, so a diff in the record of another version needs no download.
+    let known: Vec<FileRecord> = store.snapshots(&source.id)?.into_iter().flat_map(|snapshot| snapshot.files).collect();
+    let mut files = Vec::new();
+    // Newest first: the record of `E` then always has the diff of `E`, which `stored` relies on.
+    for sequence in (first + 1..=last).rev() {
+        let url = format!("{directory}{}.osc.gz", path(sequence));
+        let file = match known.iter().find(|file| file.url == url && store.object(&file.sha256).is_file()) {
+            Some(file) => {
+                record(store, &source.id, &version, std::slice::from_ref(file))?;
+                file.clone()
+            }
+            None => get(store, http, source, Some(&version), &url, false, None)?,
+        };
+        files.push(file);
     }
+    files.reverse();
     Ok(Snapshot { source: source.id.clone(), version, files })
+}
+
+/// The diffs of the last `days` days up to `version`, when its record has each of them. The
+/// newest sequence in the record is the diff of `version`. A fetch records a diff only after it
+/// found one diff per day back to its start, so the sequences before it are the days before.
+fn stored(store: &Store, source: &Source, version: &str, days: u64) -> Result<Option<Vec<FileRecord>>, String> {
+    if days == 0 {
+        return Ok(Some(Vec::new()));
+    }
+    let Some(snapshot) = store.snapshot(&source.id, version)? else { return Ok(None) };
+    let directory = source.fetch.url.as_deref().unwrap_or_default();
+    let sequence = |file: &FileRecord| {
+        let path = file.url.strip_prefix(directory)?.strip_suffix(".osc.gz")?;
+        path.replace('/', "").parse::<u64>().ok()
+    };
+    let Some(last) = snapshot.files.iter().filter_map(sequence).max() else { return Ok(None) };
+    let Some(first) = (last + 1).checked_sub(days) else { return Ok(None) };
+    Ok((first..=last)
+        .map(|sequence| {
+            let file = snapshot.file(&format!("{directory}{}.osc.gz", path(sequence)))?;
+            store.object(&file.sha256).is_file().then(|| file.clone())
+        })
+        .collect())
 }
 
 /// A dated Geofabrik extract. Without a version, the day of the data in the replication state of
@@ -128,7 +150,7 @@ fn sequence(http: &Http, replication: &str, (newest, newest_day): (u64, i64), da
 }
 
 /// The sequence number and the day of an Osmosis replication `state.txt`.
-fn state(http: &Http, url: &str) -> Result<(u64, i64), String> {
+pub(super) fn state(http: &Http, url: &str) -> Result<(u64, i64), String> {
     let text = http.text(url, "text/plain")?;
     let value = |key: &str| text.lines().find_map(|line| line.strip_prefix(key)?.strip_prefix('='));
     let sequence = value("sequenceNumber").and_then(|n| n.trim().parse().ok());
