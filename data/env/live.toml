@@ -1,5 +1,5 @@
 # The live environment. `[pins]` names the version of each source that live is built from.
-# The planner tools read these pins; no other file repeats them.
+# The planner tools read these pins. The digests that check the downloads stay next to that code.
 
 [pins]
 hansen-gfc = "v1.11"
