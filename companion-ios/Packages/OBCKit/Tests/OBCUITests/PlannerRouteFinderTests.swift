@@ -45,7 +45,7 @@ struct PlannerRouteFinderTests {
 
     private func finder(_ cells: Cells, offline: [String]? = nil) -> PlannerRouteFinder {
         let host = URL(string: "https://planner.test")!
-        let release = PlannerRelease(id: String(repeating: "b", count: 64), region: "test", bounds: [7.7, 47.5, 9.5, 48.5], basemap: host,
+        let release = PlannerRelease(id: String(repeating: "b", count: 64), region: "test", bounds: [7.7, 47.5, 9.5, 48.5], basemap: host, places: host,
                                      glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host,
                                      manifest: host, overlays: host, routes: "https://planner.test/routes/{cell}.json", offlineCells: offline)
         let finder = PlannerRouteFinder { RouteCatalog(release: $0) { try await cells.respond($0) } }

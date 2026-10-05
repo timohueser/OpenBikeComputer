@@ -90,7 +90,7 @@ class Downloads:
             files[name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "transport": transport}
             return files[name]["sha256"]
         package = metadata("routing/blocks.json", graph)
-        for kind, minzoom, maxzoom in (("basemap", 0, 14), ("overlays", 6, 14), ("terrain", 0, 12)):
+        for kind, minzoom, maxzoom in (("basemap", 0, 14), ("places", 11, 11), ("overlays", 6, 14), ("terrain", 0, 12)):
             metadata(f"maps/{kind}.json", {"tilejson": "3.0.0", "tiles": [
                 f"https://offline.openbikecomputer.invalid/{identity}/{kind}/{{z}}/{{x}}/{{y}}"],
                 "minzoom": minzoom, "maxzoom": maxzoom, "bounds": terrain if kind == "terrain" else geometry})

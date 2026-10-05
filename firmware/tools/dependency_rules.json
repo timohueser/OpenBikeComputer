@@ -52,6 +52,8 @@
       "obc-ios-host",
       "obc-mkimage",
       "obc-pack",
+      "obc-places",
+      "obc-search-bake",
       "obc-replay",
       "obc-sim",
       "obc-skin-preview",

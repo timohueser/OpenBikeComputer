@@ -56,8 +56,8 @@ pub struct Ingested {
 
 /// A pass-1 area relation awaiting member geometry (pass 2) and assembly.
 struct PendingRelation {
-    style_id: u8,
-    min_lod: usize,
+    style: Option<(u8, usize)>,
+    poi: Option<Poi>,
     /// Member way ids in member order. Roles are dropped — `build_area` classifies outer and inner
     /// by geometry.
     member_ways: Vec<i64>,
@@ -729,12 +729,25 @@ fn ingest_inner(
         if !complete {
             continue;
         }
-        for poly in assemble_multipolygon(&members) {
-            features.push(IngestFeature { style_id: pr.style_id, min_lod: pr.min_lod, geom: poly });
+        let polygons = assemble_multipolygon(&members);
+        if let Some(mut poi) = pr.poi.clone() {
+            if let Some((x, y)) = obc_places::area_center(polygons.iter().filter_map(|p| match p {
+                Geom::Polygon { exterior, .. } => Some(exterior.as_slice()),
+                _ => None,
+            })) {
+                poi.lon_udeg = poi::to_udeg(x);
+                poi.lat_udeg = poi::to_udeg(y);
+                poi_cands.push(poi);
+            }
+        }
+        if let Some((style_id, min_lod)) = pr.style {
+            for poly in polygons {
+                features.push(IngestFeature { style_id, min_lod, geom: poly });
+            }
         }
     }
 
-    // POIs: collapse OSM double-mapping, then log per-category counts.
+    // Deduplicate source identities before resolving approaches.
     let (mut pois, poi_dropped) = poi::dedupe(poi_cands);
     poi::resolve_approaches(&mut pois, &routable_ways, &config.routing.profiles);
     let mut landmark_links: Vec<_> =
@@ -998,17 +1011,38 @@ fn pending_relation(r: &osmpbf::Relation, config: &Config) -> Option<PendingRela
         Some("multipolygon") | Some("boundary") => {}
         _ => return None,
     }
-    // admin_level relations are line-only → no polygon.
-    if tags.contains_key("admin_level") {
+    let style = (!tags.contains_key("admin_level"))
+        .then(|| config.get_style(&tags))
+        .flatten()
+        .map(|style| (style.id, style.min_lod));
+    let poi = poi::classify(tags.iter().map(|(&k, &v)| (k, v)))
+        .filter(|p| p.subtype != obc_formats::obcm::SUMMIT_SUBTYPE_ID)
+        .map(|p| Poi {
+            metadata: obc_formats::obcm::PoiMetadata {
+                source: obc_formats::obcm::SourceId::osm(3, r.id() as u64),
+                approach: None,
+            },
+            access_nodes: Vec::new(),
+            wikidata: tags.get("wikidata").map(|v| (*v).into()),
+            wikipedia: tags.get("wikipedia").map(|v| (*v).into()),
+            subtype: p.subtype,
+            lon_udeg: 0,
+            lat_udeg: 0,
+            name: p.name,
+            from_node: false,
+            hours: p.raw_hours.and_then(hours::parse),
+            elevation_m: p.elevation_m,
+            population: p.population,
+        });
+    if style.is_none() && poi.is_none() {
         return None;
     }
-    let style = config.get_style(&tags)?;
     let member_ways: Vec<i64> =
         r.members().filter(|m| m.member_type == RelMemberType::Way).map(|m| m.member_id).collect();
     if member_ways.is_empty() {
         return None;
     }
-    Some(PendingRelation { style_id: style.id, min_lod: style.min_lod, member_ways })
+    Some(PendingRelation { style, poi, member_ways })
 }
 
 /// Collect a renderable area relation for pass-2 assembly. Roles are ignored; non-way members are
@@ -1039,7 +1073,7 @@ fn process_way(
     }
 
     // A closed way matching the POI table yields a POI at the ring centroid, independent of
-    // styling: a bare `shop=supermarket` outline has no style at all. Relations are out of scope.
+    // styling: a bare `shop=supermarket` outline has no style at all.
     if is_closed || tags.contains_key("wikidata") || tags.contains_key("wikipedia") {
         if let Some(poi::Classification { subtype, name, raw_hours, elevation_m, population }) =
             poi::classify_linked(tags.iter().map(|(&k, &v)| (k, v)))

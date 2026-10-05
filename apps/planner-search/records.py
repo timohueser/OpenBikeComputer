@@ -2,6 +2,8 @@
 import json
 from pathlib import Path
 
+RIDER_KINDS = {kind for category in json.loads((Path(__file__).resolve().parents[2] /
+    'builder/app/src/lib/planner/poi-kinds.json').read_text()).values() for kind in category['kinds']}
 
 def values(d, keys):
     out = []
@@ -57,5 +59,5 @@ def has_poi(p):
     if not usable(p):
         return False
     kind, ns = category(p), names(p.get('name', {}))
-    return kind != 'street' and (bool(ns) or kind in SERVICES) and not (
+    return kind != 'street' and (bool(ns) or kind in SERVICES | RIDER_KINDS) and not (
         p['osm_key'] == 'building' and p.get('housenumber') and not ns)

@@ -425,7 +425,8 @@ struct PlannerPreviewMap: UIViewRepresentable {
                    let kind = feature.attributes["kind"] as? String {
                     let name = feature.attributes["name:en"] as? String ?? feature.attributes["name"] as? String
                         ?? NativePlaceKind.entries[kind]?.label ?? "Place"
-                    let coordinate = Coordinate(latitude: feature.coordinate.latitude, longitude: feature.coordinate.longitude)
+                    let coordinate = Coordinate(latitude: (feature.attributes["lat"] as? String).flatMap(Double.init) ?? feature.coordinate.latitude,
+                                                longitude: (feature.attributes["lon"] as? String).flatMap(Double.init) ?? feature.coordinate.longitude)
                     let id = NativePlaceKind.source(for: feature.identifier) ?? "\(kind)-\(coordinate.latitude)-\(coordinate.longitude)"
                     self.parent.onPlace(.init(id: id, name: name, coordinate: coordinate, kind: NativePlaceKind.kind(for: kind),
                                               hours: feature.attributes["opening_hours"] as? String,

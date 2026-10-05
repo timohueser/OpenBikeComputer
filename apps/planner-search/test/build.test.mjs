@@ -131,3 +131,36 @@ for component,output in outputs.items():
     assert.throws(()=>openRegion(directory,'test'),/one OSM source/);
   } finally {installed?.db.close();grid?.db.close();rmSync(directory,{recursive:true,force:true})}
 });
+
+test('street representatives, aliases and extents do not depend on source record order',()=>{
+  const directory=mkdtempSync(join(tmpdir(),'obc-street-groups-'));
+  const connections=[];
+  try {
+    execFileSync('python3',['-c',`import sys
+sys.path.insert(0,sys.argv[1])
+from pathlib import Path
+from writer import Writer
+common={'object_type':'W','country_code':'de','address':{'city':'Testville','street':'Main Street'},'osm_key':'highway','osm_value':'residential','address_type':'street'}
+records=[
+ {**common,'object_id':20,'centroid':[8.02,48.01],'name':{'name':'Main Street','alt_name':'Main Road'}},
+ {**common,'object_id':10,'centroid':[8,48],'name':{'name':'Main Street','name:de':'Hauptstraße'}},
+ {**common,'object_type':'N','object_id':1,'osm_key':'building','osm_value':'yes','address_type':'house','centroid':[8.01,48.02],'housenumber':'12'}]
+for name,rows in [('forward',records),('reverse',list(reversed(records)))]:
+ writer=Writer(name,Path(sys.argv[2]),'addresses')
+ for row in rows: writer.add(row)
+ writer.finish({'bounds':[7,47,9,49]})
+`,new URL('..',import.meta.url).pathname,directory]);
+    const read=name=>{
+      const conn=new DatabaseSync(join(directory,`${name}.sqlite`),{readOnly:true});connections.push(conn);
+      return conn.prepare('SELECT source,name,aliases,lon,lat,city,postcode,west,south,east,north FROM places').all().map(r=>({...r}));
+    };
+    const forward=read('forward');
+    assert.deepEqual(forward,read('reverse'));
+    assert.equal(forward.length,1);
+    assert.equal(forward[0].aliases,'Hauptstraße;Main Road;Main Street');
+    assert.equal(forward[0].lon,8);
+    assert.equal(forward[0].lat,48);
+    assert.equal(forward[0].east,8.02);
+    assert.equal(forward[0].north,48.02);
+  } finally {for(const c of connections)c.close();rmSync(directory,{recursive:true,force:true})}
+});
