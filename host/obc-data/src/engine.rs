@@ -47,10 +47,10 @@ pub struct Code {
 }
 
 pub enum Run {
-    /// A function in this process. It gets no network client.
+    /// A function in this process.
     Rust(fn(&Request) -> Result<(), String>),
-    /// A program and its arguments, started offline in the repository root with the request as
-    /// JSON on standard input.
+    /// A program and its arguments, started in the repository root with the request as JSON on
+    /// standard input.
     Command(Vec<String>),
 }
 
@@ -419,14 +419,8 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         }
     }
 
-    /// A store with the snapshots `head@1` and `tail@1`, and a repository with `join.py`. `None`
-    /// when this machine cannot run a command step offline.
-    fn fixture(name: &str) -> Option<Fixture> {
-        if !process::offline_allowed() {
-            assert!(std::env::var_os("CI").is_none(), "CI must allow the user namespaces a command step runs in");
-            eprintln!("skipped: this machine forbids the user namespaces a command step runs in");
-            return None;
-        }
+    /// A store with the snapshots `head@1` and `tail@1`, and a repository with `join.py`.
+    fn fixture(name: &str) -> Fixture {
         let scratch = Scratch::new(name);
         let store = Store::at(scratch.0.join("store"));
         for (source, bytes) in [("head", b"head\n"), ("tail", b"tail\n")] {
@@ -443,7 +437,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         let fixture = Fixture { scratch, store };
         fs::create_dir_all(fixture.root()).unwrap();
         fs::write(fixture.root().join("join.py"), JOIN).unwrap();
-        Some(fixture)
+        fixture
     }
 
     fn upper(request: &Request) -> Result<(), String> {
@@ -488,7 +482,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
 
     #[test]
     fn a_pipeline_builds_then_reuses_and_records_receipts() {
-        let Some(fixture) = fixture("engine-pipeline") else { return };
+        let fixture = fixture("engine-pipeline");
         let first = fixture.build(&pipeline()).unwrap();
         assert_eq!(summary(&first), [("test/upper", false), ("test/join", false), ("test/count", false)]);
 
@@ -515,7 +509,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
 
     #[test]
     fn a_code_change_rebuilds_its_layer_and_stops_where_the_bytes_are_the_same() {
-        let Some(fixture) = fixture("engine-code") else { return };
+        let fixture = fixture("engine-code");
         let first = keys(&fixture.build(&pipeline()).unwrap());
 
         fs::write(fixture.root().join("join.py"), format!("# The same bytes.\n{JOIN}")).unwrap();
@@ -558,26 +552,5 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         let changed = hash(&[]);
         assert_ne!(changed, before);
         assert_ne!(hash(&["Cargo.lock"]), changed);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_command_step_cannot_open_a_connection() {
-        let Some(fixture) = fixture("engine-offline") else { return };
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let connect = "import json, socket, sys\n\
-                       port = json.load(sys.stdin)['options']['port']\n\
-                       socket.create_connection(('127.0.0.1', port), timeout=5)\n";
-        fs::write(fixture.root().join("connect.py"), connect).unwrap();
-        let step = Step {
-            name: "test/online".into(),
-            inputs: Vec::new(),
-            options: json!({"port": listener.local_addr().unwrap().port()}),
-            code: Code { paths: vec!["connect.py".into()], crates: Vec::new() },
-            outputs: Vec::new(),
-            run: Run::Command(vec!["python3".into(), "connect.py".into()]),
-        };
-        let error = fixture.build(&[step]).err().expect("the connection fails, and so the step");
-        assert!(error.contains("`python3 connect.py` failed"), "{error}");
     }
 }

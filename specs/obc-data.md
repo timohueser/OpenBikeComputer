@@ -247,13 +247,9 @@ runs, `output` and `metrics` are in `partial/layer-<key>/`.
 
 ### Offline
 
-Only fetchers use the network. On Linux, the engine starts a command in a new user namespace
-that maps the user to itself, and in a new network namespace. The loopback interface of that
-namespace is down, so each connection fails. When the kernel refuses the namespaces, the step
-fails; there is no override. Ubuntu refuses them by default:
-`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` permits them. On other systems, a
-command runs with the network. A Rust step gets no network client, and must not open a
-connection. A step that needs a package or a tool finds it installed, or reads it as a snapshot.
+A step reads only its inputs: the snapshots, the layers and the options in its request. A step
+does not use the network; fetchers are the only network users. The engine does not enforce this.
+A step that needs a package or a tool finds it installed, or reads it as a snapshot.
 
 ### Receipt
 

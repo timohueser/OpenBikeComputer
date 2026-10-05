@@ -1,4 +1,4 @@
-//! Running a step, offline, and measuring what it cost.
+//! Running a step and measuring what it cost.
 
 use std::io::{ErrorKind, Write};
 use std::path::Path;
@@ -33,12 +33,8 @@ pub fn run(root: &Path, argv: &[String], request: &Request) -> Result<Usage, Str
     let (program, args) = argv.split_first().ok_or("the command is empty")?;
     let mut command = Command::new(program);
     command.args(args).current_dir(root).stdin(Stdio::piped()).stdout(std::io::stderr());
-    offline(&mut command);
     let start = Instant::now();
-    let mut child = command.spawn().map_err(|e| match e.kind() {
-        ErrorKind::NotFound => format!("cannot start `{program}`: {e}"),
-        _ => format!("cannot start `{program}` offline: {e}{OFFLINE_HINT}"),
-    })?;
+    let mut child = command.spawn().map_err(|e| format!("cannot start `{program}`: {e}"))?;
     let json = serde_json::to_vec(request).map_err(|e| e.to_string())?;
     // A step that does not read its request closes the pipe; its exit status tells the rest.
     let unwritten = match child.stdin.take().map(|mut stdin| stdin.write_all(&json)) {
@@ -53,68 +49,6 @@ pub fn run(root: &Path, argv: &[String], request: &Request) -> Result<Usage, Str
         return Err(format!("cannot write the request to `{program}`: {e}"));
     }
     Ok(Usage { wall_ms: start.elapsed().as_millis() as u64, cpu_ms, peak_rss_bytes })
-}
-
-#[cfg(target_os = "linux")]
-const OFFLINE_HINT: &str = ". A command step runs in its own user and network namespace; on Ubuntu, \
-     `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` allows them";
-#[cfg(not(target_os = "linux"))]
-const OFFLINE_HINT: &str = "";
-
-/// Start the command in a new user namespace that maps the user to itself, and a new network
-/// namespace whose one interface, loopback, is down: every connection fails. When the kernel
-/// refuses, the spawn fails.
-#[cfg(target_os = "linux")]
-fn offline(command: &mut Command) {
-    use std::ffi::CStr;
-    use std::os::unix::process::CommandExt;
-
-    // The child runs this between fork and exec, so it allocates nothing.
-    fn write(path: &CStr, bytes: &[u8]) -> std::io::Result<()> {
-        // SAFETY: `path` is a C string, and `bytes` lives for the call.
-        let written = unsafe {
-            let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
-            if fd < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            let written = libc::write(fd, bytes.as_ptr().cast(), bytes.len());
-            libc::close(fd);
-            written
-        };
-        if written == bytes.len() as isize {
-            Ok(())
-        } else {
-            Err(std::io::Error::last_os_error())
-        }
-    }
-
-    // SAFETY: getuid and getgid cannot fail.
-    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
-    let uid_map = format!("{uid} {uid} 1");
-    let gid_map = format!("{gid} {gid} 1");
-    let isolate = move || {
-        // SAFETY: unshare changes only the namespaces of this child.
-        if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET) } != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        write(c"/proc/self/setgroups", b"deny")?;
-        write(c"/proc/self/uid_map", uid_map.as_bytes())?;
-        write(c"/proc/self/gid_map", gid_map.as_bytes())
-    };
-    // SAFETY: `isolate` makes only async-signal-safe calls and allocates nothing.
-    unsafe { command.pre_exec(isolate) };
-}
-
-/// Only Linux isolates a command step; elsewhere it runs with the network.
-#[cfg(not(target_os = "linux"))]
-fn offline(_: &mut Command) {}
-
-/// Whether this machine can start a command step offline.
-#[cfg(test)]
-pub fn offline_allowed() -> bool {
-    let mut command = Command::new("true");
-    offline(&mut command);
-    command.status().is_ok_and(|status| status.success())
 }
 
 #[cfg(unix)]
