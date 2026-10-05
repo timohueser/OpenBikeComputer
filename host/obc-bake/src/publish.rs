@@ -13,16 +13,8 @@
 //!
 //! [`ObjectStore`] has two implementations. [`DirStore`] copies into a local directory: it is the
 //! dry-run target, the test target, and a real one, since a tree published to a directory can be
-//! served by any static host — so no test in this crate needs a credential. [`RcloneStore`] shells
-//! out to `rclone`, which is the deliberate choice over an S3 SDK: the Rust S3 crates that avoid an
-//! async runtime pull either a C crypto stack or a second HTTP+XML+time dependency set, for a job
-//! that is "PUT about 120 objects, some of them gigabytes", while rclone already does multipart,
-//! retries, resume, checksum-skip and bandwidth limits. The cost is an external binary on the
-//! publishing box.
-//!
-//! Credentials never appear in a config file, in a log line, or in argv: the remote is defined by
-//! `RCLONE_CONFIG_*` variables in the child process's environment, so nothing secret is visible to
-//! `ps` and there is no connection-string parser to mis-split an `https://` endpoint.
+//! served by any static host — so no test in this crate needs a credential. [`R2Store`] uploads
+//! through the R2 client of `obc-data`, the one place that builds the rclone remote.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -417,184 +409,53 @@ impl ObjectStore for DirStore {
     }
 }
 
-/// Publish to S3-compatible object storage through `rclone`.
-///
-/// The remote is defined entirely by `RCLONE_CONFIG_OBCR2_*` environment variables on the child
-/// process — an ephemeral remote named `obcr2` that exists only for that invocation. Nothing is
-/// written to disk, and nothing secret rides the argument list. Both halves matter: argv is
-/// `ps`-visible to every process on the box, and rclone's connection-string parser splits on `:`,
-/// so an unquoted `endpoint=https://…` reaches rclone as endpoint `https`.
-///
-/// ```text
-/// OBC_R2_ACCOUNT_ID       Cloudflare account id (builds the endpoint)
-/// OBC_R2_BUCKET           bucket name
-/// OBC_R2_PREFIX           optional key prefix inside the bucket
-/// OBC_R2_ACCESS_KEY_ID    R2 API token id
-/// OBC_R2_SECRET_ACCESS_KEY
-/// OBC_R2_ENDPOINT         optional, overrides the derived endpoint (an S3 test double)
-/// ```
-pub struct RcloneStore {
-    bucket: String,
+/// Publish to R2 through the `obc-data` R2 client, under `OBC_R2_PREFIX` in the bucket.
+pub struct R2Store {
+    bucket: obc_data::r2::Bucket,
     prefix: String,
-    /// Not a credential — it names the account, not a key — so `describe` shows it.
-    endpoint: String,
-    /// The child's `RCLONE_CONFIG_OBCR2_*` remote definition. The secret lives here and nowhere
-    /// else.
-    envs: Vec<(&'static str, String)>,
-    /// The binary to spawn — always plain `rclone`, resolved on `PATH`, in production. It is a
-    /// field only so the absent-vs-empty test can point it at a stub that answers the way one real
-    /// rclone does; nothing reads it from the environment.
-    program: PathBuf,
 }
 
-/// The ephemeral remote's name — matches the `RCLONE_CONFIG_OBCR2_*` variables.
-const RCLONE_REMOTE: &str = "obcr2";
-
-impl RcloneStore {
-    /// Build the store from the environment, or say exactly which variable is missing.
+impl R2Store {
+    /// The bucket from the `OBC_R2_*` environment, or the name of the variable that is missing.
     pub fn from_env() -> Result<Self, String> {
-        let var = |name: &str| std::env::var(name).map_err(|_| format!("{name} is not set"));
-        let bucket = var("OBC_R2_BUCKET")?;
-        let access = var("OBC_R2_ACCESS_KEY_ID")?;
-        let secret = var("OBC_R2_SECRET_ACCESS_KEY")?;
-        let endpoint = match std::env::var("OBC_R2_ENDPOINT") {
-            Ok(e) => e,
-            Err(_) => format!("https://{}.r2.cloudflarestorage.com", var("OBC_R2_ACCOUNT_ID")?),
-        };
+        let bucket = obc_data::r2::Bucket::from_env(obc_data::r2::Credentials::Main)?;
         let prefix = std::env::var("OBC_R2_PREFIX").unwrap_or_default().trim_matches('/').to_string();
-        let envs = vec![
-            ("RCLONE_CONFIG_OBCR2_TYPE", "s3".to_string()),
-            ("RCLONE_CONFIG_OBCR2_PROVIDER", "Cloudflare".to_string()),
-            ("RCLONE_CONFIG_OBCR2_REGION", "auto".to_string()),
-            ("RCLONE_CONFIG_OBCR2_ENDPOINT", endpoint.clone()),
-            ("RCLONE_CONFIG_OBCR2_ACCESS_KEY_ID", access),
-            ("RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY", secret),
-            ("RCLONE_CONFIG_OBCR2_NO_CHECK_BUCKET", "true".to_string()),
-        ];
-        Ok(Self { bucket, prefix, endpoint, envs, program: PathBuf::from("rclone") })
+        Ok(Self { bucket, prefix })
     }
 
-    fn target(&self, key: &str) -> String {
+    fn key(&self, key: &str) -> String {
         if self.prefix.is_empty() {
-            format!("{RCLONE_REMOTE}:{}/{key}", self.bucket)
+            key.to_string()
         } else {
-            format!("{RCLONE_REMOTE}:{}/{}/{key}", self.bucket, self.prefix)
-        }
-    }
-
-    fn run(&self, args: &[String]) -> Result<std::process::Output, String> {
-        std::process::Command::new(&self.program)
-            .envs(self.envs.iter().map(|(k, v)| (*k, v.as_str())))
-            .args(args)
-            .output()
-            .map_err(|e| format!("rclone: {e} — the publish step needs rclone on PATH (https://rclone.org/install/)"))
-    }
-
-    /// Defensive backstop: the secret is not in argv, so rclone's output should never contain it —
-    /// but if a future rclone echoes its environment into an error, it must not reach a log through
-    /// us.
-    fn redact(&self, text: &str) -> String {
-        let secret = self
-            .envs
-            .iter()
-            .find(|(k, _)| k.ends_with("_SECRET_ACCESS_KEY"))
-            .map(|(_, v)| v.as_str())
-            .filter(|s| !s.is_empty());
-        match secret {
-            Some(s) => text.replace(s, "***"),
-            None => text.to_string(),
+            format!("{}/{key}", self.prefix)
         }
     }
 }
 
-impl ObjectStore for RcloneStore {
+impl ObjectStore for R2Store {
     fn describe(&self) -> String {
-        let where_ = if self.prefix.is_empty() { String::new() } else { format!("/{}", self.prefix) };
-        format!("r2 bucket {}{where_} via {}", self.bucket, self.endpoint)
+        let where_ = if self.prefix.is_empty() { String::new() } else { format!(" under {}/", self.prefix) };
+        format!("{}{where_}", self.bucket.describe())
     }
 
     fn put(&self, object: &PlannedObject) -> Result<(), String> {
-        // `copyto` with `--checksum` skips an object whose remote hash already matches.
-        // Digest-addressed keys make this especially cheap: an unchanged planet cell already exists
-        // at exactly its final immutable name.
-        let args = vec![
-            "copyto".to_string(),
-            "--checksum".to_string(),
-            "--s3-no-check-bucket".to_string(),
-            "--header-upload".to_string(),
-            format!("Cache-Control: {}", object.cache_control()),
-            "--header-upload".to_string(),
-            format!("Content-Type: {}", object.content_type()),
-            object.path.to_string_lossy().into_owned(),
-            self.target(&object.key),
-        ];
-        let out = self.run(&args)?;
-        if !out.status.success() {
-            return Err(self.redact(&String::from_utf8_lossy(&out.stderr)));
-        }
-        Ok(())
+        let upload = obc_data::r2::Upload {
+            cache_control: Some(object.cache_control()),
+            content_type: Some(object.content_type()),
+            immutable: false,
+        };
+        self.bucket.put(&object.path, &self.key(&object.key), &upload).map(drop)
     }
 
     fn head(&self, key: &str) -> Result<Option<u64>, String> {
-        let args = vec!["size".to_string(), "--json".to_string(), self.target(key)];
-        let out = self.run(&args)?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            // "directory not found" contains it too — one check covers both.
-            if stderr.contains("not found") {
-                return Ok(None);
-            }
-            return Err(self.redact(&stderr));
-        }
-        size_json_len(key, &out.stdout)
+        let key = self.key(key);
+        Ok(self.bucket.stat(std::slice::from_ref(&key))?.remove(&key).map(|object| object.bytes))
     }
-}
-
-/// The `count`/`bytes` reading of one `rclone size --json` document, split out from
-/// [`RcloneStore::head`] so the absent-vs-empty distinction is testable against the exact bytes a
-/// real rclone printed, with no process to spawn.
-fn size_json_len(key: &str, stdout: &[u8]) -> Result<Option<u64>, String> {
-    let json: serde_json::Value =
-        serde_json::from_slice(stdout).map_err(|e| format!("{key}: rclone size --json: {e}"))?;
-    let Some(count) = json.get("count").and_then(serde_json::Value::as_i64) else {
-        return Err(format!(
-            "{key}: `rclone size --json` printed no `count` field ({}) — that field is how an absent object is told \
-             from a zero-byte one, and every rclone with `--json` prints it",
-            String::from_utf8_lossy(stdout).trim()
-        ));
-    };
-    if count <= 0 {
-        return Ok(None);
-    }
-    // Present, so a length it cannot state is a real failure and not an absence. `None` here
-    // licenses nothing less than refusing the publish.
-    json.get("bytes")
-        .and_then(serde_json::Value::as_i64)
-        .and_then(|b| u64::try_from(b).ok())
-        .map(Some)
-        .ok_or_else(|| format!("{key}: `rclone size --json` counted {count} object(s) but printed no usable `bytes`"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A store as `from_env` would build it, without touching the process environment, which is
-    /// process-global while the test runner is parallel.
-    fn r2_store(endpoint: &str, secret: &str) -> RcloneStore {
-        RcloneStore {
-            bucket: "obc-maps".into(),
-            prefix: String::new(),
-            endpoint: endpoint.into(),
-            envs: vec![
-                ("RCLONE_CONFIG_OBCR2_TYPE", "s3".into()),
-                ("RCLONE_CONFIG_OBCR2_ENDPOINT", endpoint.into()),
-                ("RCLONE_CONFIG_OBCR2_ACCESS_KEY_ID", "abc".into()),
-                ("RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY", secret.into()),
-            ],
-            program: PathBuf::from("rclone"),
-        }
-    }
 
     struct RecordingStore {
         events: std::cell::RefCell<Vec<String>>,
@@ -669,31 +530,6 @@ mod tests {
     }
 
     #[test]
-    fn the_endpoint_rides_the_environment_whole() {
-        // An `https://…` endpoint in a connection string is split at the colon by rclone's parser
-        // and arrives as endpoint `https`. As an environment value there is no parser, so assert it
-        // is carried verbatim, scheme and all.
-        let store = r2_store("https://acct.r2.cloudflarestorage.com", "hunter2");
-        let endpoint = store.envs.iter().find(|(k, _)| *k == "RCLONE_CONFIG_OBCR2_ENDPOINT").map(|(_, v)| v.as_str());
-        assert_eq!(endpoint, Some("https://acct.r2.cloudflarestorage.com"));
-    }
-
-    #[test]
-    fn no_credential_reaches_argv_or_a_log() {
-        let store = r2_store("https://acct.r2.cloudflarestorage.com", "hunter2");
-        // The target — the only store-derived string that becomes an argument — names the ephemeral
-        // remote, never a credential.
-        assert_eq!(store.target("cells/fine/1204/1052.obcm"), "obcr2:obc-maps/cells/fine/1204/1052.obcm");
-        // `describe` is printed by the CLI; it carries the bucket and endpoint,
-        // and neither key.
-        assert!(!store.describe().contains("hunter2"), "{}", store.describe());
-        assert!(!store.describe().contains("abc"), "{}", store.describe());
-        // And the backstop: a secret echoed back by a future rclone dies here.
-        let redacted = store.redact("Failed to copy: secret_access_key=hunter2: 403");
-        assert!(!redacted.contains("hunter2"), "{redacted}");
-    }
-
-    #[test]
     fn cache_policy_follows_the_spec() {
         let manifest =
             PlannedObject { key: "catalog.json".into(), path: PathBuf::new(), bytes: 0, kind: ObjectKind::Manifest };
@@ -723,61 +559,5 @@ mod tests {
         assert_eq!(preview.content_type(), "image/png");
         assert!(preview.cache_control().contains("max-age=31536000"));
         assert!(preview.cache_control().contains("immutable"));
-    }
-
-    #[test]
-    fn count_not_bytes_tells_an_absent_object_from_an_empty_one() {
-        let key = "cells/fine/1204/1052.obcm";
-        // Observed from rclone on a key that does not exist: exit 0, no stderr.
-        assert_eq!(size_json_len(key, br#"{"count":0,"bytes":0,"sizeless":0}"#), Ok(None));
-        assert_eq!(size_json_len(key, br#"{"count":1,"bytes":0,"sizeless":0}"#), Ok(Some(0)));
-        assert_eq!(size_json_len(key, br#"{"count":1,"bytes":8321,"sizeless":0}"#), Ok(Some(8321)));
-
-        // An rclone that prints no `count` cannot answer the question, so it says so rather than
-        // guessing an absence.
-        let e = size_json_len(key, br#"{"bytes":0}"#).expect_err("no count is not an absence");
-        assert!(e.contains("`count`"), "{e}");
-        let e = size_json_len(key, b"").expect_err("empty stdout is not an absence");
-        assert!(e.contains("rclone size --json"), "{e}");
-    }
-
-    /// End to end through the real `head`, against a stub that answers the way rclone does for a
-    /// missing key: silently, exit 0, `"count":0`. The verify loop before the catalog swap is the
-    /// only reader of this, and it must see `None` — not fetchable after upload — rather than a
-    /// phantom 0-byte object.
-    #[cfg(unix)]
-    #[test]
-    fn a_missing_object_heads_as_absent_not_as_zero_bytes() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let root = std::env::temp_dir().join(format!("obc-bake-rclone-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("obc-maps/cells")).expect("fixture tree");
-        std::fs::write(root.join("obc-maps/cells/present.obcm"), vec![0u8; 8321]).expect("object");
-        std::fs::write(root.join("obc-maps/cells/empty.obcm"), b"").expect("zero-byte object");
-
-        let stub = root.join("rclone-stub.sh");
-        std::fs::write(
-            &stub,
-            format!(
-                "#!/bin/sh\nroot='{}'\nfor target in \"$@\"; do :; done\npath=\"$root/${{target#obcr2:}}\"\n\
-                 if [ -f \"$path\" ]; then printf '{{\"count\":1,\"bytes\":%s,\"sizeless\":0}}\\n' \
-                 \"$(wc -c < \"$path\" | tr -d ' ')\"; else printf '{{\"count\":0,\"bytes\":0,\"sizeless\":0}}\\n'; fi\nexit 0\n",
-                root.display()
-            ),
-        )
-        .expect("stub");
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("stub +x");
-
-        let mut store = r2_store("stub", "hunter2");
-        store.program = stub;
-
-        assert_eq!(store.head("cells/present.obcm").expect("head"), Some(8321));
-        assert_eq!(store.head("cells/empty.obcm").expect("head empty"), Some(0));
-        // Answering `Some(0)` here fails the publish with a length mismatch and tells the operator
-        // the wrong thing.
-        assert_eq!(store.head("cells/never-uploaded.obcm").expect("head absent"), None);
-
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

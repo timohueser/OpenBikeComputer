@@ -3180,6 +3180,7 @@ dependencies = [
  "embedded-graphics",
  "heapless 0.8.0",
  "image",
+ "obc-data",
  "obc-dem",
  "obc-elevation",
  "obc-file-source",

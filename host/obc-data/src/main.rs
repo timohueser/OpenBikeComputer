@@ -1,6 +1,8 @@
 //! `obc data`: read the sources and the regions, and fetch sources into the store. Read commands
 //! change nothing in `data/`.
 
+mod r2_cli;
+
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -54,6 +56,8 @@ enum Command {
         #[arg(long, global = true)]
         json: bool,
     },
+    /// Plumbing for scripts: list, read, upload and delete objects in an R2 bucket.
+    R2(r2_cli::R2),
 }
 
 #[derive(Subcommand)]
@@ -94,12 +98,10 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<(), Failure> {
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let root = obc_data::find_root(&cwd).ok_or("no data/sources.toml above the current directory")?;
     match cli.command {
-        Command::Sources { json } => print_sources(&Registry::load(&root)?, json),
+        Command::Sources { json } => print_sources(&Registry::load(&root()?)?, json),
         Command::Fetch { target, params, json } => {
-            let registry = Registry::load(&root)?;
+            let registry = Registry::load(&root()?)?;
             let (id, version) = match target.split_once('@') {
                 Some((id, version)) => (id, Some(version.to_string())),
                 None => (target.as_str(), None),
@@ -110,15 +112,21 @@ fn run(cli: Cli) -> Result<(), Failure> {
             let request = Request { source, version, params: parse_params(&params)? };
             print_snapshot(&store, &fetch::fetch(&store, &Http::new(), &request)?, json)
         }
-        Command::Refresh { source, params, env, json } => refresh(&root, &source, &params, &env, json),
+        Command::Refresh { source, params, env, json } => refresh(&root()?, &source, &params, &env, json),
         Command::Region { action, json } => {
-            let regions = Regions::load(&root)?;
+            let regions = Regions::load(&root()?)?;
             match action {
                 None | Some(RegionAction::List) => print_regions(&regions, json),
                 Some(RegionAction::Show { id }) => print_region(&regions, &id, json),
             }
         }
+        Command::R2(r2) => r2_cli::run(r2),
     }
+}
+
+fn root() -> Result<std::path::PathBuf, Failure> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    Ok(obc_data::find_root(&cwd).ok_or("no data/sources.toml above the current directory")?)
 }
 
 fn usage(message: &str) -> Failure {
