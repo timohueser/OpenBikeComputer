@@ -38,9 +38,11 @@ struct Cached {
 
 /// The one request that finds the newest version.
 enum Check<'a> {
-    /// The URL with `latest` for `{yymmdd}`: `planet-latest.osm.pbf` redirects to
-    /// `planet-YYMMDD.osm.pbf`, named by the day of its data.
-    PlanetRedirect(String),
+    /// The URL with `latest` for `{yymmdd}` redirects to the file of the newest day, such as
+    /// `planet-latest.osm.pbf` to `planet-YYMMDD.osm.pbf`. It holds the URL and the template.
+    LatestRedirect(String, &'a str),
+    /// The `state.txt` of a replication directory names the day of its newest diff.
+    ReplicationState(String),
     LastModified(&'a str),
     /// The newest commit of the default branch, from the API URL of the repository.
     GithubCommit(String),
@@ -75,7 +77,10 @@ pub fn newest(store: &Store, http: &Http, source: &Source, max_age: u64) -> Upst
 fn plan(source: &Source) -> Result<Check<'_>, Upstream> {
     let Some(url) = source.fetch.url.as_deref() else { return Err(Upstream::CannotCheck) };
     match source.fetch.kind {
-        FetchKind::Osm => Ok(Check::PlanetRedirect(url.replace("{yymmdd}", "latest"))),
+        FetchKind::Osm => Ok(Check::ReplicationState(format!("{url}state.txt"))),
+        FetchKind::Http if url.contains("{yymmdd}") && !url.replace("{yymmdd}", "").contains('{') => {
+            Ok(Check::LatestRedirect(url.replace("{yymmdd}", "latest"), url))
+        }
         // A query service answers with today's data.
         FetchKind::Capture => Err(Upstream::Newest(date::format(date::today()))),
         FetchKind::Github => {
@@ -102,13 +107,17 @@ fn plan(source: &Source) -> Result<Check<'_>, Upstream> {
 
 fn run(http: &Http, check: &Check) -> Result<String, String> {
     match check {
-        Check::PlanetRedirect(url) => {
+        Check::LatestRedirect(url, template) => {
             let target = http.location(url)?;
-            let digits = target.rsplit_once("planet-").and_then(|(_, rest)| rest.get(..6));
-            let digits = digits.filter(|d| d.bytes().all(|b| b.is_ascii_digit()));
+            let name = template.rsplit('/').next().unwrap_or_default();
+            let (prefix, suffix) = name.split_once("{yymmdd}").unwrap_or_default();
+            let got = target.rsplit('/').next().unwrap_or_default();
+            let digits = got.strip_prefix(prefix).and_then(|rest| rest.strip_suffix(suffix));
+            let digits = digits.filter(|d| d.len() == 6 && d.bytes().all(|b| b.is_ascii_digit()));
             let day = digits.map(|d| format!("20{}-{}-{}", &d[..2], &d[2..4], &d[4..]));
             day.filter(|day| date::parse(day).is_some()).ok_or_else(|| format!("{target} names no day"))
         }
+        Check::ReplicationState(url) => Ok(date::format(super::osm::state(http, url)?.1)),
         Check::LastModified(url) => http.modified(url)?.ok_or_else(|| format!("{url} has no Last-Modified")),
         Check::GithubCommit(api) => {
             let sha = http.text(&format!("{api}/commits/HEAD"), "application/vnd.github.sha")?;
