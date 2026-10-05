@@ -101,6 +101,20 @@ fn script(old: bool, cut: Option<(usize, When)>) -> Outcome {
         census(&reopened, |row| rows.push(format!("{row:?}"))).map_err(|e| format!("{e:?}"))
     };
     results.push(format!("{result:?}:{rows:?}"));
+    let mut progress = Vec::new();
+    let result = if old {
+        legacy::read_progress(&reopened, |record| progress.push(record)).map_err(|e| format!("{e:?}"))
+    } else {
+        read_progress(&reopened, |record| progress.push(record)).map_err(|e| format!("{e:?}"))
+    };
+    results.push(format!("{result:?}:{progress:?}"));
+    let mut retained = Vec::new();
+    let result = if old {
+        legacy::read_rows(&reopened, |row| retained.push(format!("{row:?}"))).map_err(|e| format!("{e:?}"))
+    } else {
+        read_rows(&reopened, |row| retained.push(format!("{row:?}"))).map_err(|e| format!("{e:?}"))
+    };
+    results.push(format!("{result:?}:{retained:?}"));
     Outcome { results, image, writes }
 }
 

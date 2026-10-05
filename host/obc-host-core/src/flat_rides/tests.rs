@@ -149,17 +149,29 @@ fn retained_recording_and_replaced_heads_cannot_inherit_proof_or_be_recorded_int
     assert!(rides.refresh_metadata().is_err());
 }
 
-/// The stamp a trusted clock will write onto an existing proof. No executor writes it yet, so the
-/// test seeds it through the substrate the writer will use.
+/// Seed a nonzero archive proof timestamp in the stored metadata payload.
 fn stamp_proof(owner: &HostStore, utc: u32) {
     let owner = owner.0.lock().unwrap();
     let store = owner.ready().unwrap();
-    let mut bytes = [0; metadata::MAX_LEN];
-    let mut writer = metadata::Metadata::new(store);
-    let mut image = writer.load(store, &mut bytes).unwrap();
-    let row = metadata::Row { timestamp: utc, ..image.rows().next().unwrap() };
-    image.set(row).unwrap();
-    writer.replace(store, &mut image, None).unwrap();
+    let head = store.entries().find(|entry| entry.kind == obc_storage::flat::ObjectKind::Metadata).unwrap();
+    let mut bytes = vec![0; head.payload_len as usize];
+    let handle = store.open(head.id, Some(head.revision)).unwrap();
+    assert_eq!(store.read(&handle, 0, &mut bytes).unwrap(), bytes.len());
+    store.close(handle);
+    bytes[metadata::HEADER_LEN + 28..metadata::HEADER_LEN + 32].copy_from_slice(&utc.to_le_bytes());
+    let mut allocation = store.allocate(bytes.len() as u64).unwrap();
+    store.write(&mut allocation, &bytes).unwrap();
+    let meta = obc_storage::flat::EntryMeta {
+        revision: obc_storage::flat::Revision(head.revision.0 + 1),
+        payload_crc: obc_crc::crc32(&bytes),
+        ..head
+    };
+    store
+        .commit(&[
+            Mutation::Remove { id: head.id, revision: head.revision },
+            Mutation::Put { meta, source: PutSource::Fresh(allocation) },
+        ])
+        .unwrap();
 }
 
 #[test]
