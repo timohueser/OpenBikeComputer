@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import preset from "../../../../presets/schema.json";
 import { buildConfigForSubmit, normalizeConfig, type SchemaEnvelope } from "./model";
 
 const sampleConfig = {
@@ -241,3 +242,17 @@ describe("buildConfigForSubmit", () => {
         );
     });
 });
+
+describe("shipped preset round trip", () => {
+    it("keeps every tier setting and the top-level options the packer reads", () => {
+        const { config, disabled } = normalizeConfig(preset as unknown as Record<string, unknown>);
+        const out: Record<string, unknown> = { ...buildConfigForSubmit(config, disabled, null).config };
+        const expected: Record<string, unknown> = { ...preset };
+        for (const key of ["_meta", "features"]) {
+            delete out[key];
+            delete expected[key];
+        }
+        expect(out).toEqual(expected);
+    });
+});
+
