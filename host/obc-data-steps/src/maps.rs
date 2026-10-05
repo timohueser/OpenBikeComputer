@@ -125,7 +125,7 @@ fn map_cells(band: &Band, leaf: LeafId, cells: &[CellId], land_polygons: &str, r
     let osm = Input::Layer { name: "maps/osm".into(), files: vec![obc_bake::step::leaf_pbf(leaf)] };
     let mut inputs = vec![osm, land_polygons];
     if reads_terrain {
-        inputs.push(Input::Layer { name: leaf_layer("maps/terrain", leaf), files: Vec::new() });
+        inputs.push(Input::layer(leaf_layer("maps/terrain", leaf)));
     }
     Step {
         name: leaf_layer(&format!("maps/{}", band.id), leaf),

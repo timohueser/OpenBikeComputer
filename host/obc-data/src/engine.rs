@@ -48,6 +48,13 @@ pub enum Input {
     Layer { name: String, files: Vec<String> },
 }
 
+impl Input {
+    /// Every file of the layer `name`.
+    pub fn layer(name: impl Into<String>) -> Self {
+        Input::Layer { name: name.into(), files: Vec::new() }
+    }
+}
+
 /// The code that makes a layer. When in doubt, declare more: too much costs a rebuild, too little
 /// gives stale data.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -115,6 +122,10 @@ pub struct InputRecord {
     /// The source id or the layer name.
     pub name: String,
     pub digest: String,
+    /// The paths that a layer input selects, sorted, or none for every file. Not in the key: the
+    /// digest names the paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, JsonSchema)]
@@ -358,7 +369,7 @@ fn select_layer<'a>(files: &'a [LayerFile], selected: &'a [String]) -> (Vec<&'a 
 }
 
 /// The digest of the files of a layer that `selected` names: what a step that reads them keys.
-fn layer_digest(files: &[LayerFile], selected: &[String]) -> String {
+pub(crate) fn layer_digest(files: &[LayerFile], selected: &[String]) -> String {
     digest(select_layer(files, selected).0.into_iter().map(|file| (file.path.as_str(), file.sha256.as_str())))
 }
 
@@ -411,7 +422,7 @@ fn prepare(
     let mut inputs = Vec::new();
     let mut bytes_in = 0;
     for input in &step.inputs {
-        let (kind, name, files): (_, _, Vec<(String, String, u64)>) = match input {
+        let (kind, name, selected, files): (_, _, _, Vec<(String, String, u64)>) = match input {
             Input::Snapshot { source, version, params, files: selected } => {
                 let files = match selection(store, source, version, params, selected)? {
                     Selection::Present(files) => files,
@@ -423,7 +434,7 @@ fn prepare(
                     }
                 };
                 let files = files.into_iter().map(|file| (file.name, file.sha256, file.size));
-                (InputKind::Snapshot, source, files.collect())
+                (InputKind::Snapshot, source, Vec::new(), files.collect())
             }
             Input::Layer { name, files: selected } => {
                 let (files, missing) = select_layer(&layers[name.as_str()].files, selected);
@@ -431,11 +442,13 @@ fn prepare(
                     return Err(format!("layer `{name}` has no file {path}"));
                 }
                 let files = files.into_iter().map(|file| (file.path.clone(), file.sha256.clone(), file.size));
-                (InputKind::Layer, name, files.collect())
+                let mut selected = selected.clone();
+                selected.sort();
+                (InputKind::Layer, name, selected, files.collect())
             }
         };
         let digest = digest(files.iter().map(|(name, sha256, _)| (name.as_str(), sha256.as_str())));
-        let record = InputRecord { kind, name: name.clone(), digest };
+        let record = InputRecord { kind, name: name.clone(), digest, files: selected };
         let mut paths = BTreeMap::new();
         for (name, sha256, size) in files {
             let object = store.object(&sha256);
@@ -738,10 +751,6 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         }
     }
 
-    pub(crate) fn layer(name: &str, files: &[&str]) -> Input {
-        Input::Layer { name: name.into(), files: files.iter().map(|file| file.to_string()).collect() }
-    }
-
     /// Two fetched sources and three steps, the second a Python command. The last step is listed
     /// first: the engine orders them. `test/upper` selects `head.txt`; `test/join` reads every file
     /// of `tail@1`.
@@ -749,8 +758,8 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         let join = Code { paths: vec!["join.py".into()], crates: Vec::new() };
         let python = Run::Command(vec!["python3".into(), "join.py".into()]);
         vec![
-            step("test/count", vec![layer("test/join", &[])], steps_crate(), "count", Run::Rust(count)),
-            step("test/join", vec![layer("test/upper", &[]), snapshot("tail", "1", &[])], join, "joined.txt", python),
+            step("test/count", vec![Input::layer("test/join")], steps_crate(), "count", Run::Rust(count)),
+            step("test/join", vec![Input::layer("test/upper"), snapshot("tail", "1", &[])], join, "joined.txt", python),
             step(
                 "test/upper",
                 vec![snapshot("head", "1", &["head.txt"])],
@@ -847,7 +856,13 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         let steps = |file: &str| {
             vec![
                 step("test/leaves", vec![snapshot("head", "1", &[])], steps_crate(), "leaves", Run::Rust(split)),
-                step("test/one", vec![layer("test/leaves", &[file])], steps_crate(), "one.txt", Run::Rust(one)),
+                step(
+                    "test/one",
+                    vec![Input::Layer { name: "test/leaves".into(), files: vec![file.into()] }],
+                    steps_crate(),
+                    "one.txt",
+                    Run::Rust(one),
+                ),
             ]
         };
         let fixture = fixture("engine-layer-files");
