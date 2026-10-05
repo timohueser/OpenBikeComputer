@@ -136,35 +136,74 @@ pub(crate) const fn copy_w(w: i32) -> i32 {
     w - 12
 }
 
-/// Greedy word wrap over the monospace cell, one call of `emit` per line. The budget counts
-/// characters, not bytes: the face renders every char of its repertoire in one cell, so a byte
-/// count breaks the accented languages early. A single word wider than the budget breaks after
-/// its last slash that fits, else its last hyphen, else its last dot, else at the budget.
-pub(crate) fn wrap(text: &str, width_px: i32, font: Font, mut emit: impl FnMut(&str)) {
-    let budget = (width_px / font.char_width() as i32).max(1) as usize;
-    let mut line: heapless::String<64> = heapless::String::new();
-    for mut word in text.split(' ') {
-        while let Some((limit, _)) = word.char_indices().nth(budget) {
-            let cut = ['/', '-', '.'].iter().find_map(|&c| word[..limit].rfind(c)).map_or(limit, |at| at + 1);
-            if !line.is_empty() {
-                emit(&line);
-                line.clear();
-            }
-            emit(&word[..cut]);
-            word = &word[cut..];
+/// Greedy word wrap over the monospace cell. The budget counts characters, not bytes.
+/// A wide word breaks after its last slash that fits, else its last hyphen, else its last dot.
+/// Each line borrows the cursor until the next call.
+pub(crate) struct WrappedLines<'a> {
+    words: core::str::Split<'a, char>,
+    word: Option<&'a str>,
+    budget: usize,
+    line: heapless::String<64>,
+}
+
+impl<'a> WrappedLines<'a> {
+    pub(crate) fn new(text: &'a str, width_px: i32, font: Font) -> Self {
+        Self {
+            words: text.split(' '),
+            word: None,
+            budget: (width_px / font.char_width() as i32).max(1) as usize,
+            line: heapless::String::new(),
         }
-        let used = line.chars().count();
-        if used != 0 && used + 1 + word.chars().count() > budget {
-            emit(&line);
-            line.clear();
-        }
-        if !line.is_empty() {
-            let _ = line.push(' ');
-        }
-        let _ = line.push_str(word);
     }
-    if !line.is_empty() {
-        emit(&line);
+
+    #[inline(never)]
+    pub(crate) fn next(&mut self) -> Option<&str> {
+        self.line.clear();
+        let mut used = 0;
+        loop {
+            if self.word.is_none() {
+                self.word = self.words.next();
+            }
+            let Some(word) = self.word else {
+                if self.line.is_empty() {
+                    return None;
+                }
+                return Some(&self.line);
+            };
+            let mut count = 0;
+            let (mut slash, mut hyphen, mut dot) = (None, None, None);
+            let mut cut = None;
+            for (at, c) in word.char_indices() {
+                if count == self.budget {
+                    cut = Some(slash.or(hyphen).or(dot).map_or(at, |at| at + 1));
+                    break;
+                }
+                match c {
+                    '/' => slash = Some(at),
+                    '-' => hyphen = Some(at),
+                    '.' => dot = Some(at),
+                    _ => {}
+                }
+                count += 1;
+            }
+            if let Some(cut) = cut {
+                if !self.line.is_empty() {
+                    return Some(&self.line);
+                }
+                self.word = Some(&word[cut..]);
+                return Some(&word[..cut]);
+            }
+            if used != 0 && used + 1 + count > self.budget {
+                return Some(&self.line);
+            }
+            if !self.line.is_empty() && self.line.push(' ').is_ok() {
+                used += 1;
+            }
+            if self.line.push_str(word).is_ok() {
+                used += count;
+            }
+            self.word = None;
+        }
     }
 }
 
@@ -197,10 +236,11 @@ pub(crate) fn wrapped_aligned(
 ) -> i32 {
     let lh = wrapped_line_pitch(font);
     let mut y = top_y;
-    wrap(text, width_px, font, |line| {
+    let mut lines = WrappedLines::new(text, width_px, font);
+    while let Some(line) = lines.next() {
         cv.text(line, Point::new(x, y), font, align, color);
         y += lh;
-    });
+    }
     y
 }
 
@@ -278,7 +318,10 @@ mod tests {
         let copy = "Réessayez plus tôt"; // 18 chars, 20 bytes
         let lines = |width_px| {
             let mut n = 0;
-            wrap(copy, width_px, Font::Label, |_| n += 1);
+            let mut lines = WrappedLines::new(copy, width_px, Font::Label);
+            while lines.next().is_some() {
+                n += 1;
+            }
             n
         };
         assert_eq!(lines(18 * Font::Label.char_width() as i32), 1);
@@ -289,10 +332,23 @@ mod tests {
     fn a_word_wider_than_the_budget_breaks_after_a_slash_hyphen_or_dot_or_at_the_budget() {
         let mut lines = std::vec::Vec::new();
         let copy = "2019-07-30-Dunlough Castle 12345678901234567890";
-        wrap(copy, 18 * Font::Label.char_width() as i32, Font::Label, |line| {
-            lines.push(std::string::String::from(line))
-        });
+        let mut wrapped = WrappedLines::new(copy, 18 * Font::Label.char_width() as i32, Font::Label);
+        while let Some(line) = wrapped.next() {
+            lines.push(std::string::String::from(line));
+        }
         assert_eq!(lines, ["2019-07-30-", "Dunlough Castle", "123456789012345678", "90"]);
+    }
+
+    #[test]
+    fn wrapped_lines_preserve_spaces_and_unicode_buffer_limits() {
+        let copy = std::format!("  a {} b  ", "é".repeat(32));
+        let mut lines = WrappedLines::new(&copy, 80 * Font::Label.char_width() as i32, Font::Label);
+        assert_eq!(lines.next(), Some("a  b  "));
+        assert_eq!(lines.next(), None);
+        let mut lines = WrappedLines::new("é/a-b.c🙂", 6 * Font::Label.char_width() as i32, Font::Label);
+        assert_eq!(lines.next(), Some("é/"));
+        assert_eq!(lines.next(), Some("a-b.c🙂"));
+        assert_eq!(lines.next(), None);
     }
 
     #[test]
