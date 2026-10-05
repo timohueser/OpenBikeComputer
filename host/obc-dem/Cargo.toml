@@ -20,12 +20,19 @@ default = ["dem"]
 dem = ["geotiff", "fetch"]
 geotiff = ["dep:tiff", "dep:serde_json"]
 fetch = ["dep:obc-data"]
+# The terrain of the planner maps: Terrarium WebP tiles in MBTiles.
+terrarium = ["dem", "dep:image", "dep:rusqlite"]
 external-fixtures = []
 
 [[bin]]
 name = "obc-dem"
 path = "src/main.rs"
 required-features = ["dem"]
+
+[[bin]]
+name = "planner-dem"
+path = "src/bin/planner-dem.rs"
+required-features = ["terrarium"]
 
 [dependencies]
 # The OBCT byte authority: magic, header offsets, sentinels, and the layout arithmetic that turns a
@@ -52,6 +59,8 @@ serde_json = { version = "1", optional = true }
 # `fetch` only: the store and its fetcher for the tiles. The binary also prints the Copernicus
 # credit from data/sources.toml.
 obc-data = { path = "../obc-data", optional = true }
+image = { version = "0.25", default-features = false, features = ["webp"], optional = true }
+rusqlite = { version = "0.38", features = ["bundled"], optional = true }
 
 [dev-dependencies]
 # Digest pins on fixture output — the "same inputs ⇒ byte-identical cells" contract, checked rather
@@ -62,3 +71,7 @@ obc-fixtures = { path = "../obc-fixtures" }
 [[test]]
 name = "assets"
 required-features = ["external-fixtures"]
+
+[[test]]
+name = "planner_terrain"
+required-features = ["external-fixtures", "terrarium"]

@@ -112,8 +112,8 @@ struct App {
     screen: Screen,
     overlay: Option<Overlay>,
     sources: Vec<SourceRow>,
-    /// Source id to a version that the live releases read; `None` when R2 could not be read.
-    live: Option<std::collections::BTreeMap<String, String>>,
+    /// Source id to the versions that the live releases read; `None` when R2 could not be read.
+    live: Option<std::collections::BTreeMap<String, Vec<String>>>,
     /// Sources shows a check of upstream from now, not from the last hour.
     checked_now: bool,
     /// The check of upstream runs.
@@ -766,8 +766,7 @@ mod tests {
 
     fn app() -> App {
         let sources = parse_sources(SOURCES).unwrap().into_iter().map(|source| SourceRow {
-            live: Some(if source.kind == Kind::Tool { "0.10.2" } else { "2024-01-02" }.into()),
-            live_unknown: false,
+            live: Some(vec![if source.kind == Kind::Tool { "0.10.2" } else { "2024-01-02" }.into()]),
             upstream: (source.kind == Kind::Data).then(|| "2024-01-09".into()),
             age_days: None,
             state: State::Ok,

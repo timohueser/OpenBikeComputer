@@ -6,15 +6,6 @@ publish = false
 default-run = "route-build"
 license = "GPL-3.0-only"
 
-[features]
-obc-terrain = ["dep:obc-dem"]
-planner-dem = ["obc-terrain", "dep:image"]
-
-[[bin]]
-name = "planner-dem"
-path = "src/bin/planner-dem.rs"
-required-features = ["planner-dem"]
-
 [dependencies]
 route-engine = { path = "../route-engine" }
 osmpbfreader = "0.19"
@@ -25,5 +16,5 @@ sha2 = "0.10"
 clap = { version = "4", features = ["derive"] }
 # The credits the routing and terrain packages carry come from data/sources.toml.
 obc-data = { path = "../obc-data" }
-obc-dem = { path = "../obc-dem", default-features = false, features = ["geotiff"], optional = true }
-image = { version = "0.25", default-features = false, features = ["webp"], optional = true }
+# The heights of the roads, and the planner routing step of `obc data`.
+obc-dem = { path = "../obc-dem", default-features = false, features = ["geotiff", "fetch"] }

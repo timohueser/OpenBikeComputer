@@ -79,21 +79,22 @@ fn terrain((i, j): (i64, i64), cells: &[CellId], land: &HashSet<&str>, glo30: &s
 
 /// The outline of each region that `env.region` resolves to, or `None` while the store lacks the
 /// `.poly` of a Geofabrik area; then `wanted` has its fetch.
-fn outlines(
+pub(crate) fn outlines(
     env: &Env,
     regions: &Regions,
     store: &Store,
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<Vec<Coverage>>, Unplanned> {
     let mut outlines = Some(Vec::new());
-    for id in regions.leaves(&env.region).map_err(Unplanned::Invalid)? {
+    for id in regions.leaves(&env.region).map_err(Unplanned::Failed)? {
         let poly = match &regions.get(id).expect("a leaf region exists").area {
             Area::Box { bbox } => Some(box_poly(bbox)),
             Area::Geofabrik => text(env, store, POLY, &[("area".to_string(), id.to_string())], wanted)?,
             Area::Polygon { .. } => return Err(invalid(format!("region `{id}`: the device maps read no polygon yet"))),
             Area::Union { .. } => unreachable!("a leaf region is not a union"),
         };
-        let outline = poly.map(|poly| Coverage::parse_poly(&poly).map_err(|e| invalid(format!("{id}.poly: {e}"))));
+        let outline =
+            poly.map(|poly| Coverage::parse_poly(&poly).map_err(|e| Unplanned::Failed(format!("{id}.poly: {e}"))));
         match (outline.transpose()?, &mut outlines) {
             (Some(outline), Some(outlines)) => outlines.push(outline),
             _ => outlines = None,
@@ -104,14 +105,14 @@ fn outlines(
 
 /// The text of the one file that a fetch of `source` with `params` gives, or `None` while the
 /// store lacks it; then `wanted` has its fetch.
-fn text(
+pub(crate) fn text(
     env: &Env,
     store: &Store,
     source: &str,
     params: &[(String, String)],
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<String>, Unplanned> {
-    let files = match read(env, store, source, params).map_err(Unplanned::Invalid)? {
+    let files = match read(env, store, source, params).map_err(Unplanned::Failed)? {
         Ok(files) => files,
         Err(fetch) => {
             wanted.push(fetch);
@@ -119,12 +120,13 @@ fn text(
         }
     };
     let [path] = files.values().collect::<Vec<_>>()[..] else {
-        return Err(invalid(format!("a fetch of {source} with {params:?} gives {} files, not one", files.len())));
+        let count = files.len();
+        return Err(Unplanned::Failed(format!("a fetch of {source} with {params:?} gives {count} files, not one")));
     };
-    std::fs::read_to_string(path).map(Some).map_err(|e| invalid(format!("{}: {e}", path.display())))
+    std::fs::read_to_string(path).map(Some).map_err(|e| Unplanned::Failed(format!("{}: {e}", path.display())))
 }
 
-fn invalid(message: String) -> Unplanned {
+pub(crate) fn invalid(message: String) -> Unplanned {
     Unplanned::Invalid(message)
 }
 
@@ -135,7 +137,7 @@ pub fn box_poly(bbox: &Bbox) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::{Path, PathBuf};
 
     use obc_data::engine::plan::{plan, Plan};
@@ -146,7 +148,7 @@ mod tests {
 
     use super::*;
 
-    struct Temp(PathBuf);
+    pub(crate) struct Temp(pub(crate) PathBuf);
 
     impl Drop for Temp {
         fn drop(&mut self) {
@@ -154,25 +156,33 @@ mod tests {
         }
     }
 
-    fn temp(name: &str) -> Temp {
+    pub(crate) fn temp(name: &str) -> Temp {
         Temp(std::env::temp_dir().join(format!("obc-data-steps-{name}-{}", std::process::id())))
     }
 
-    fn root() -> PathBuf {
+    pub(crate) fn root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
     }
 
     /// The Grimsel box of `data/regions/`, which the leaf edge at 8.388608° cuts in two.
     fn grimsel(glo30: &str) -> (Env, Regions) {
-        let live =
-            BTreeMap::from([((GLO30.into(), Vec::new()), glo30.into()), ((TILE_LIST.into(), Vec::new()), "1".into())]);
+        let live = BTreeMap::from([
+            ((GLO30.into(), Vec::new()), [glo30.to_string()].into()),
+            ((TILE_LIST.into(), Vec::new()), ["1".to_string()].into()),
+        ]);
         let env = Env { name: "test".into(), region: "grimsel".into(), live, ..Env::default() };
         (env, Regions::load(&root()).unwrap())
     }
 
     /// Add the files `(name, text)` to the record of `source@version`, as a fetch with `params`
     /// gives them.
-    fn fetched(store: &Store, source: &str, version: &str, params: &[(String, String)], files: &[(String, String)]) {
+    pub(crate) fn fetched(
+        store: &Store,
+        source: &str,
+        version: &str,
+        params: &[(String, String)],
+        files: &[(String, String)],
+    ) {
         let mut snapshot = store.snapshot(source, version).unwrap().unwrap_or_else(|| Snapshot {
             source: source.into(),
             version: version.into(),

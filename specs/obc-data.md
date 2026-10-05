@@ -105,6 +105,7 @@ Each part of the id is lowercase kebab-case.
 | `box` | array of 4 numbers | Only for `box`: west, south, east, north in degrees, longitude first |
 | `polygon` | string | Only for `polygon`: an Osmosis `.poly` file, relative to the region file. The file must exist |
 | `union` | array of strings | Only for `union`: two or more region ids |
+| `countries` | array of strings | Optional: the ISO 3166-1 alpha-2 codes of the countries in the region, such as `DE` |
 
 A box has longitude in −180…180 and latitude in −90…90, with west < east and south < north.
 A box that crosses the antimeridian is refused. The order of the numbers is checked only
@@ -121,10 +122,20 @@ The bakes read this directory:
 | --- | --- |
 | `obc-bake` (device maps) | Every `geofabrik` region. `--regions DIR` reads another directory with this layout; `obc bake` passes the checkout's directory |
 | Planner bake | The `box` region with the id of the recipe in `tools/planner-regions/`: its `name` and its box |
+| `obc data`, product `planner` | The `geofabrik` region of the environment and its `countries` |
 | `fixtures/build-map-package.sh` | The `box` regions of the fixtures |
 
 `tools/data_registry.py box ID [--lat-first]` prints the box of a `box` region and refuses
 every other kind, so Python and shell never resolve a union or a Geofabrik area.
+
+### `data/planner.toml`
+
+The options of the [planner layers](#planner) that are the same for each region.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `terrain.margin_m` | number | The terrain reaches at least this far around the region, in metres: the horizon of the sun layer |
+| `routing.profiles` | array of strings | The profiles of the routing package. The route catalog needs `touring`, `road`, `gravel`, `mtb` and `hiking` |
 
 ## State of a source
 
@@ -133,7 +144,7 @@ every other kind, so Python and shell never resolve a union or a Geofabrik area.
 | State | When |
 | --- | --- |
 | `blocked` | A `data` or `asset` source has no `licence`, or its credential is not on this machine |
-| `stale` | The live version is a date, `refresh` is in days, the live version is older than `refresh`, and the newest upstream version is later than the live version. Or the live version is before the live version of the source that `fetch.from` names |
+| `stale` | The live version, the first in order when live reads more (for a date, the oldest), is a date, `refresh` is in days, the live version is older than `refresh`, and the newest upstream version is later than the live version. Or the live version is before the live version of the source that `fetch.from` names |
 | `ok` | Otherwise. A source that live does not read is never stale, and a source with `refresh = "manual"` is never stale by age |
 
 The live version of a source is the version that the live releases read, see [Live](#live). Its
@@ -318,9 +329,8 @@ to the sequence of `E`, in order.
   store, so a fetch of a later `E` from the same `B` downloads only the new days.
 
 A late or missing weekly planet does not block a version of `osm-replication`, because its base
-is the `osm-planet` version that a step reads. The fetch does not apply the diffs. A step does
-that with `osmium apply-changes`: it reads the planet of its `osm-planet` version and the diffs of
-its `osm-replication` version from that day.
+is a version of `osm-planet`. The fetch does not apply the diffs. No product reads the two
+sources: `obc data fetch` gets them, and `osm-planet` gives the OSM credit.
 
 A `dtm` or `capture` fetch runs a program in the repository root, with the Python of `uv run
 --python '>=3.12' --with-requirements <requirements> python` (`OBC_PYTHON` replaces that Python).
@@ -386,6 +396,10 @@ A step declares:
 | `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. A Rust step declares the crate of its function |
 | `outputs` | Paths in the output directory. A path is a file, or a directory whose files are all part of the layer. The step must write each path and no other file. A symbolic link fails the step |
 | `run` | A Rust function in the process, or a command: a program and its arguments. No argument names a path outside the repository root: no argument is an absolute path, contains `=/` or has a `..` segment between `/` and `=` |
+
+One binary links the Rust steps of every product, so Cargo unifies their features. A step crate
+enables every feature its bytes depend on itself, or makes its bytes independent of it (structs,
+or sorted keys for JSON objects).
 
 ### Keys
 
@@ -563,11 +577,13 @@ one function (`obc_data::product::version`), in this order:
 
 1. `--move SOURCE@VERSION` of the plan or the build. `--move SOURCE` without a version is the
    newest version upstream. A `--move` of a source that no step list reads is refused.
-2. For the environment `live`, the version that the live releases read for the fetch. For a fetch
-   that they do not read, the version that they read for every fetch of the source, when it is one
-   version. When two live layers read one fetch at two versions, the command fails with `blocked`:
-   no order of versions chooses, so `--move SOURCE@VERSION` must. Another environment has no live
-   release.
+2. For the environment `live`, the version that the live releases read for the fetch. A fetch
+   without `NAME=VALUE`s of a source that live reads only with them, such as the GLO-30 tiles that
+   one version names, reads the version of all of them. A fetch with `NAME=VALUE`s that live does
+   not read, such as the extract of a new region, goes on to step 3. When the live layers read one
+   fetch at two versions, no order of versions chooses: a step list that reads it without a
+   `--move` fails the command with `blocked` and the fix `Plan with --move SOURCE@VERSION`, and
+   `status` shows the source as blocked. Another environment has no live release.
 3. The newest version of the fetch in the store.
 4. The newest version upstream: the product names the fetch, and `plan` or `build` fetches it. A
    source whose URL needs a `NAME=VALUE`, such as the GLO-30 tiles, has no one newest version: a
@@ -594,18 +610,23 @@ depends on a snapshot that the store does not have, such as the `.poly` of a reg
 names those fetches instead. `plan` and `build` fetch them and then ask the product once more. A
 fetch that fails, fails the command with its own code, `fetch_failed` or `blocked`. A product that
 names fetches the second time, or a step name without `<product>/`, fails the command with
-`failed` and a fix that points at the code of the product.
+`failed` and a fix that points at the code of the product. A product that has no steps for the
+environment, such as for a kind of region that it does not read, is blocked: `plan` lists it in
+`blocked` with the reason, and the other products plan without it. `build` builds the groups of
+the other products and writes no release of a blocked product. When no product suits the
+environment, `build` fails with `blocked`. An error of the store, a file or the data of a fetch
+in a step list fails the command with `failed`.
 
 `plan ENV` plans the steps of every product together. `--json` writes the plan with `env`,
 `region` and `layers` of the environment, `moves`, the version of each `--move` (a `--move SOURCE`
 has the version that its fetch gave), `versions`, the version of each fetch that the step lists
 read, and `only`, the groups that `--only` selected or `[]` for every group. `build ENV --plan
 FILE` builds the groups of that file, or those of them that its own `--only` selects; it takes no
-`--move`. Its step lists read the `versions` of the file and no other version. A version that the
-store lacks is fetched; when that fetch fails, the command fails with its code and the fix says to
-plan again. It refuses the file, with exit status 3, before it builds:
+`--move` and does not read live. Its step lists read the `versions` of the file and no other
+version. A version that the store lacks is fetched; when that fetch fails, the command fails with
+its code, and a fix that says to plan again when the fetch gives none. It refuses the file, with exit status 3, before it builds:
 
-- when `env`, `region` or `layers` differ from the environment;
+- when `env`, `region`, `layers` or `blocked` differ from the environment and its products;
 - when a step list reads a fetch that `versions` does not name;
 - when the groups that `only` selects in the plan of now differ from the groups of the file,
   apart from `estimate` and `bytes`.
@@ -629,6 +650,26 @@ are `manual`.
 | `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13); `terrain/empty.json`: the ids of the cells without a height |
 
 `<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id.
+
+#### `planner`
+
+The planner has steps for a `geofabrik` region that names its `countries`: its OSM is the
+extract of that one area. The bounds of the region are the box around its `.poly`. The
+environment pins `copernicus-glo-30`. The extract, the `.poly` and the GLO-30 tile list are at
+the version of the environment, or else the newest version in the store, as for `maps`. The
+other options come from [`data/planner.toml`](#dataplannertoml). A GLO-30 input reads the tile
+of each 1° square that its box touches and that `copernicus-glo-30-tiles` names; a box at sea
+reads no snapshot. No layer reads a national terrain model yet.
+
+| Layer | Reads | Options | Files |
+| --- | --- | --- | --- |
+| `planner/osm` | `geofabrik-extracts`, `area=<region id>` | `path`: `osm.pbf` | `osm.pbf`: the extract as it is. The engine step `pass` writes it, so its code is no file |
+| `planner/terrain` | The GLO-30 tiles of `bounds` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours, widened to `terrain.margin_m` around the bounds | `terrain.mbtiles`: lossless Terrarium WebP tiles of zooms 0 to 12, the bytes that `planner-dem` writes from the same tiles |
+| `planner/routing` | `planner/osm`, and the GLO-30 tiles of the bounds of the region | `region` (the last part of the region id), `bounds`, `profiles` and `countries`. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells, as `route-blocks` writes them; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
+
+A grid cell is a zoom 9 Web Mercator tile that the bounds of the region overlap, clipped to the
+bounds, with the id `9-<x>-<y>`. The JSON objects that `planner/routing` writes have their keys in
+byte order.
 
 ### Releases
 
@@ -707,7 +748,7 @@ first writes the status, and the second writes an error.
 | --- | --- |
 | `obc data [--json]` | In a terminal, and without `--json`: the TUI. Otherwise the output of `status` |
 | `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live) and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, old cache directories that `clean` imports, and with `--check` drift and leftovers. When a fetch that the step list of a product needs fails, the layer states of that product are unknown (`layers` is `null`), and attention gives the error. `--check` adds the listing of [Live](#live) and exits with 1 when it finds drift or leftovers. Without the bucket, `--check` exits with 4 before it reads anything |
-| `obc data sources [--check-now] [--json]` | Every source with licence, R2 copy, live version (`—` when live does not read it; `?` with one warning when R2 cannot be read; the oldest when live reads more), newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
+| `obc data sources [--check-now] [--json]` | Every source with licence, R2 copy, live versions (`—` when live does not read the source; `?` with one warning when R2 cannot be read, and then `live` is `null` and `live_unknown` is `true` in the JSON), newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
 | `obc data policy SOURCE 7\|30\|90\|365\|manual [--json]` | Writes `refresh` of the source in `data/sources.toml`. The edit keeps comments and the other lines. A policy in days for a source without `version = "date"` is refused. Writes the source |
 | `obc data region ENV ID [--json]` | Writes `region` of `data/env/ENV.toml`. Writes the environment |
@@ -818,7 +859,7 @@ another command must run first. | Correct the command. `obc data --help` lists t
 | `invalid_data` | 1 | A file under `data/` is not valid. | Correct the file that the message names. `specs/obc-data.md` gives its format. |
 | `fetch_failed` | 1 | A fetch or an upstream check failed. | Run the command again. A download continues where it stopped. |
 | `blocked` | 4 | A credential is missing: a fetch failed without the credential of its source, or the R2
-variables are not set. | Set the credential that the message or `obc data sources` names, then run again. |
+variables are not set. Or `build` has no product that suits the environment. | Set the credential that the message or `obc data sources` names, or correct what the message says a product needs, then run again. |
 | `r2_failed` | 1 | R2 or rclone failed, or refused a key. | Check the key, the `OBC_R2_*` variables and that rclone is on PATH, then run again. |
 | `verify_failed` | 5 | After an upload, the object in the bucket is not the file. | Upload the file again. |
 | `run_failed` | 1 | A run failed: the build, or the run that `runs RUN --follow` shows. | `obc data runs RUN` shows the step that failed and its error. |
@@ -937,9 +978,32 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "BlockedProduct": {
+      "additionalProperties": false,
+      "properties": {
+        "product": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "product",
+        "reason"
+      ],
+      "type": "object"
+    },
     "Built": {
       "description": "What a build did.",
       "properties": {
+        "blocked": {
+          "description": "The products that give no steps for the environment; nothing of them is built.",
+          "items": {
+            "$ref": "#/$defs/BlockedProduct"
+          },
+          "type": "array"
+        },
         "layers": {
           "description": "The layers of the run, in dependency order.",
           "items": {
@@ -965,7 +1029,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "run",
         "layers",
-        "releases"
+        "releases",
+        "blocked"
       ],
       "type": "object"
     },
@@ -1084,7 +1149,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "blocked",
-          "description": "A credential is missing: a fetch failed without the credential of its source, or the R2\nvariables are not set.",
+          "description": "A credential is missing: a fetch failed without the credential of its source, or the R2\nvariables are not set. Or `build` has no product that suits the environment.",
           "type": "string"
         },
         {
@@ -1278,6 +1343,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "additionalProperties": false,
       "description": "What a build of an environment would fetch and build.",
       "properties": {
+        "blocked": {
+          "description": "The products that give no steps for the environment. The others plan without them.",
+          "items": {
+            "$ref": "#/$defs/BlockedProduct"
+          },
+          "type": "array"
+        },
         "env": {
           "type": "string"
         },
@@ -1325,7 +1397,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "moves",
         "versions",
         "only",
-        "groups"
+        "groups",
+        "blocked"
       ],
       "type": "object"
     },
@@ -2418,6 +2491,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ],
       "properties": {
+        "countries": {
+          "description": "The ISO 3166-1 alpha-2 codes of its countries, such as `DE`. Empty when the file names none.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "id": {
           "type": "string"
         },
@@ -2427,7 +2507,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       },
       "required": [
         "id",
-        "name"
+        "name",
+        "countries"
       ],
       "type": "object"
     },
@@ -2511,6 +2592,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ],
           "description": "Its box, when every part is a box."
         },
+        "countries": {
+          "description": "The ISO 3166-1 alpha-2 codes of its countries, such as `DE`. Empty when the file names none.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "id": {
           "type": "string"
         },
@@ -2528,6 +2616,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "id",
         "name",
+        "countries",
         "leaves",
         "bounds"
       ],
@@ -2810,9 +2899,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         },
         "live": {
-          "description": "The version that the live releases read.",
+          "description": "The versions that the live releases read, in order; `null` when R2 could not be read.",
+          "items": {
+            "type": "string"
+          },
           "type": [
-            "string",
+            "array",
             "null"
           ]
         },
@@ -2879,6 +2971,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "Sources": {
       "properties": {
+        "live_unknown": {
+          "description": "R2 could not be read: `live` of each source is `null`.",
+          "type": "boolean"
+        },
         "sources": {
           "items": {
             "$ref": "#/$defs/SourceRow"
@@ -2887,6 +2983,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       },
       "required": [
+        "live_unknown",
         "sources"
       ],
       "type": "object"

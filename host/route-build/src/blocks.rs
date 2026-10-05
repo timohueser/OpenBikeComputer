@@ -1,12 +1,15 @@
 //! Publication selects original pages. It does not change cost or geometry encodings.
 use route_engine::{
     blocks::Manifest,
+    directory::{Directory, Writer},
     model::Road,
-    package::{Package, Source},
+    package::{digest, Package, Source},
     table::{self, Table},
     Error,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+use std::time::Instant;
 type Result<T> = std::result::Result<T, Error>;
 
 pub struct Selection {
@@ -184,4 +187,128 @@ fn intersects_cell(key: &str, size: f64, bounds: [f64; 4]) -> Result<bool> {
         && (x as f64 + 1.0) * size >= bounds[0]
         && y as f64 * size <= bounds[3]
         && (y as f64 + 1.0) * size >= bounds[1])
+}
+
+fn pack(source: &Directory, root: &Path, keys: &[String]) -> std::result::Result<String, Box<dyn std::error::Error>> {
+    let id = digest(keys.join("").as_bytes());
+    let directory = root.join("packs").join(&id);
+    std::fs::create_dir_all(&directory)?;
+    let mut writer = Writer::create(&directory)?;
+    for key in keys {
+        writer.write(&source.read(key)?)?;
+    }
+    writer.finish()?;
+    Ok(id)
+}
+
+/// Write the routing blocks of the grid `cells` (an id and its bounds, inside the coverage of
+/// the package `source`) to `root`: shared page packs, a manifest per cell, `blocks.json` and
+/// `catalog.json`.
+pub fn publish(
+    source: &Path,
+    cells: &[(String, [f64; 4])],
+    root: &Path,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let started = Instant::now();
+    if cells.is_empty() {
+        return Err("The grid has no cells".into());
+    }
+    let input = Directory::open(source)?;
+    let bounds = input.manifest().bounds;
+    let full_roads: Vec<_> = (0..input.manifest().roads).collect();
+    let mut full = prepare(&input, bounds, &full_roads)?;
+    drop(full_roads);
+    let mut selections: Vec<(String, Selection, [f64; 4])> = Vec::new();
+    for (id, cell) in cells {
+        if id.is_empty()
+            || !id.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+            || selections.iter().any(|(old, _, _)| old == id)
+        {
+            return Err("Invalid or duplicate grid cell identity".into());
+        }
+        let cell = *cell;
+        if cell.iter().any(|v| !v.is_finite())
+            || cell[0] >= cell[2]
+            || cell[1] >= cell[3]
+            || cell[0] < bounds[0]
+            || cell[1] < bounds[1]
+            || cell[2] > bounds[2]
+            || cell[3] > bounds[3]
+        {
+            return Err("Grid cell is outside source coverage".into());
+        }
+        eprintln!("Selecting routing cell {}", id);
+        let roads = roads(&input, cell)?;
+        if !roads.is_empty() {
+            let mut geometry = cell;
+            for &id in &roads {
+                for point in input.road(id)?.shape {
+                    let lon = point.lon as f64 * 1e-6;
+                    let lat = point.lat as f64 * 1e-6;
+                    geometry[0] = geometry[0].min(lon);
+                    geometry[1] = geometry[1].min(lat);
+                    geometry[2] = geometry[2].max(lon);
+                    geometry[3] = geometry[3].max(lat);
+                }
+            }
+            selections.push((id.clone(), prepare(&input, cell, &roads)?, geometry));
+        }
+    }
+    // Each page has one owner pack, shared by exactly the cells that need it.
+    let mut consumers: BTreeMap<String, Vec<usize>> =
+        full.objects.iter().map(|key| (key.clone(), Vec::new())).collect();
+    for (cell, (_, selection, _)) in selections.iter().enumerate() {
+        for key in &selection.objects {
+            consumers.entry(key.clone()).or_default().push(cell);
+        }
+    }
+    let mut groups = BTreeMap::<Vec<usize>, Vec<String>>::new();
+    for (key, cells) in consumers {
+        groups.entry(cells).or_default().push(key);
+    }
+    let source = Directory::source(source)?;
+    let mut catalog = Vec::new();
+    for (cells, mut keys) in groups {
+        source.order_for_verify(&mut keys)?;
+        let mut pending = Vec::new();
+        let mut bytes = 0;
+        for key in keys {
+            let length = source.read(&key)?.len();
+            if !pending.is_empty() && bytes + length > 16 * 1024 * 1024 {
+                let id = pack(&source, root, &pending)?;
+                for &cell in &cells {
+                    selections[cell].1.manifest.archives.push(id.clone());
+                }
+                full.manifest.archives.push(id);
+                pending.clear();
+                bytes = 0;
+            }
+            pending.push(key);
+            bytes += length;
+        }
+        if !pending.is_empty() {
+            let id = pack(&source, root, &pending)?;
+            for &cell in &cells {
+                selections[cell].1.manifest.archives.push(id.clone());
+            }
+            full.manifest.archives.push(id);
+        }
+    }
+    std::fs::create_dir_all(root.join("cells"))?;
+    for (id, mut selection, geometry) in selections {
+        selection.manifest.archives.sort();
+        let filename = format!("cells/{id}.json");
+        std::fs::write(root.join(&filename), serde_json::to_vec(&selection.manifest)?)?;
+        catalog.push(serde_json::json!({"id":id, "bounds":selection.manifest.data.bounds,
+            "manifest":filename, "adjacency":selection.adjacency, "geometry_bounds":geometry}));
+    }
+    full.manifest.archives.sort();
+    std::fs::write(root.join("blocks.json"), serde_json::to_vec(&full.manifest)?)?;
+    std::fs::write(
+        root.join("catalog.json"),
+        serde_json::to_vec(&crate::sort_keys(serde_json::json!({"format":2,
+        "source":input.identity(), "cells":catalog})))?,
+    )?;
+    eprintln!("Published {} packs in {:.2}s", full.manifest.archives.len(), started.elapsed().as_secs_f64());
+    Ok(())
 }

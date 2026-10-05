@@ -19,14 +19,19 @@ obc-data = { path = "../obc-data" }
 # The step list of the device maps: the outline of a region and its cells.
 obc-bake = { path = "../obc-bake" }
 obc-pack = { path = "../obc-pack" }
-# The terrain step.
-obc-dem = { path = "../obc-dem" }
+# The terrain steps.
+obc-dem = { path = "../obc-dem", features = ["terrarium"] }
+# The planner routing step.
+route-build = { path = "../route-build" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.9"
 
 [dev-dependencies]
 obc-elevation = { path = "../../firmware/obc-elevation" }
 obc-fixtures = { path = "../obc-fixtures" }
 obc-formats = { path = "../../firmware/obc-formats" }
+route-engine = { path = "../route-engine" }
 
 [[test]]
 name = "terrain_fixture"

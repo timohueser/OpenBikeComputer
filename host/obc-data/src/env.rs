@@ -13,6 +13,9 @@ use crate::store::sorted;
 
 /// The version of each fetch: a source id with its `NAME=VALUE`s, sorted.
 pub type Versions = BTreeMap<(String, Vec<(String, String)>), String>;
+/// The versions of each fetch that the live layers read. Two versions of one fetch conflict: only a
+/// `--move` chooses between them.
+pub type LiveVersions = BTreeMap<(String, Vec<(String, String)>), BTreeSet<String>>;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Env {
@@ -21,8 +24,8 @@ pub struct Env {
     pub region: String,
     /// The optional layers that are on.
     pub layers: Vec<String>,
-    /// The version of each fetch that the live releases read; empty without a live release.
-    pub live: Versions,
+    /// The versions of each fetch that the live releases read; empty without a live release.
+    pub live: LiveVersions,
     /// Source id to the version of a `--move SOURCE@VERSION`. `None` for `--move SOURCE`: the
     /// newest upstream version, until a fetch names it.
     pub moves: BTreeMap<String, Option<String>>,
@@ -31,6 +34,8 @@ pub struct Env {
     pub planned: Option<Versions>,
     /// Each version that `product::version` gave: what a plan records.
     pub read: RefCell<Versions>,
+    /// The sources whose live versions conflict, and that a step list read without a `--move`.
+    pub refused: RefCell<BTreeSet<String>>,
 }
 
 #[derive(Deserialize)]
@@ -78,23 +83,33 @@ impl Env {
     }
 
     /// The version of the fetch of `source` with `params` that a plan names: that of the saved
-    /// plan; or else its `--move`; or else the version that live reads for these params, or for
-    /// every params of the source when live reads one version of it. `product::version` decides
-    /// for a fetch that this does not name.
-    pub fn version(&self, source: &str, params: &[(String, String)]) -> Option<&str> {
+    /// plan; or else its `--move`; or else the version that live reads. Without params, a source
+    /// that live reads per params gives the version of all of them, such as the GLO-30 tiles that
+    /// one version names. `product::version` decides for a fetch that this does not name. `Err`
+    /// when live reads it at more versions.
+    pub fn version(&self, source: &str, params: &[(String, String)]) -> Result<Option<&str>, String> {
         let fetch = (source.to_string(), sorted(params));
         if let Some(planned) = &self.planned {
-            return planned.get(&fetch).map(String::as_str);
+            return Ok(planned.get(&fetch).map(String::as_str));
         }
         if let Some(moved) = self.moves.get(source) {
-            return moved.as_deref();
+            return Ok(moved.as_deref());
         }
-        if let Some(version) = self.live.get(&fetch) {
-            return Some(version);
+        let versions: BTreeSet<&str> = match self.live.get(&fetch) {
+            Some(read) => read.iter().map(String::as_str).collect(),
+            None if params.is_empty() => {
+                let reads = self.live.iter().filter(|((id, _), _)| id == source).flat_map(|(_, read)| read);
+                reads.map(String::as_str).collect()
+            }
+            None => BTreeSet::new(),
+        };
+        match versions.len() {
+            0 | 1 => Ok(versions.first().copied()),
+            _ => {
+                let versions = versions.into_iter().collect::<Vec<_>>().join(" and ");
+                Err(format!("the live layers read `{source}` {params:?} at {versions}"))
+            }
         }
-        let mut read = self.live.iter().filter(|((id, _), _)| id == source).map(|(_, version)| version.as_str());
-        let first = read.next()?;
-        read.all(|version| version == first).then_some(first)
     }
 
     /// Whether a plan moves `source` to its newest upstream version.
@@ -166,25 +181,26 @@ mod tests {
     fn a_saved_plan_then_a_move_then_live_names_the_version_of_a_fetch() {
         let area = |area: &str| vec![("area".to_string(), area.to_string())];
         let mut env = Env::default();
-        env.live.insert(("osm".into(), Vec::new()), "2026-09-01".into());
-        env.live.insert(("land".into(), Vec::new()), "2026-09-01".into());
-        env.live.insert(("extract".into(), area("a")), "2026-09-01".into());
-        env.live.insert(("extract".into(), area("b")), "2026-09-02".into());
-        env.live.insert(("tile".into(), area("a")), "1".into());
+        let mut live = |source: &str, params: Vec<(String, String)>, versions: &[&str]| {
+            env.live.insert((source.into(), params), versions.iter().map(|v| v.to_string()).collect());
+        };
+        live("osm", Vec::new(), &["2026-09-01"]);
+        live("land", Vec::new(), &["2026-09-01", "2026-09-02"]);
+        live("extract", area("a"), &["2026-09-01"]);
+        live("tile", area("a"), &["1"]);
         env.moves.insert("osm".into(), Some("2026-10-01".into()));
-        env.moves.insert("land".into(), None);
-        let version = |source, params: &[(String, String)]| env.version(source, params).map(str::to_string);
-        assert_eq!(
-            (version("osm", &[]), version("land", &[]), version("qrank", &[])),
-            (Some("2026-10-01".into()), None, None)
-        );
-        assert_eq!(version("extract", &area("b")).as_deref(), Some("2026-09-02"), "per params");
-        assert_eq!(version("extract", &area("c")), None, "live reads two versions of the source");
-        assert_eq!(version("tile", &[]).as_deref(), Some("1"), "live reads one version of the source");
-        assert!(env.moves_to_newest("land") && !env.moves_to_newest("osm") && !env.moves_to_newest("qrank"));
+        let version = |source, params: &[(String, String)]| env.version(source, params).map(|v| v.map(str::to_string));
+        assert_eq!(version("osm", &[]), Ok(Some("2026-10-01".into())), "a move first");
+        assert_eq!(version("extract", &area("a")), Ok(Some("2026-09-01".into())), "per params");
+        assert_eq!(version("extract", &area("c")), Ok(None), "a new area is not read by live");
+        assert_eq!(version("tile", &[]), Ok(Some("1".into())), "without params, the one version of live");
+        assert!(version("land", &[]).unwrap_err().contains("2026-09-01 and 2026-09-02"), "a conflict");
 
+        env.moves.insert("land".into(), None);
+        assert_eq!(env.version("land", &[]), Ok(None), "a move chooses");
+        assert!(env.moves_to_newest("land") && !env.moves_to_newest("osm") && !env.moves_to_newest("qrank"));
         env.planned = Some(Versions::from([(("land".into(), Vec::new()), "2026-09-15".into())]));
-        assert_eq!((env.version("land", &[]), env.version("osm", &[])), (Some("2026-09-15"), None), "only the plan");
+        assert_eq!((env.version("land", &[]), env.version("osm", &[])), (Ok(Some("2026-09-15")), Ok(None)));
     }
 
     #[test]

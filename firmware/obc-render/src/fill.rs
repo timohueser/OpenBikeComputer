@@ -90,7 +90,7 @@ pub(crate) fn fill_polygon_edges<D, L>(
         if saturated || xs.len() < 2 {
             continue;
         }
-        xs.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        xs.sort_unstable_by(crate::sort::crossings);
         let mut k = 0;
         while k + 1 < xs.len() {
             fill_span(target, xs[k], xs[k + 1], y, w, color);
@@ -207,7 +207,7 @@ pub(crate) fn fill_polygon<D, L>(
         if saturated || xs.len() < 2 {
             continue;
         }
-        xs.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        xs.sort_unstable_by(crate::sort::crossings);
         let mut k = 0;
         while k + 1 < xs.len() {
             // Spans round outward, per [`fill_span`]. A feature clipped across a chunk boundary
@@ -328,7 +328,7 @@ where
             // A rounded quad presenting 3 or 4 crossings on this row is non-convex, so mirror
             // `fill_polygon` exactly and the specialized filler can never diverge from it.
             let s = &mut xs4[..n];
-            s.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+            s.sort_unstable_by(crate::sort::crossings);
             let mut k = 0;
             while k + 1 < n {
                 fill_span(target, s[k], s[k + 1], y, w, color);

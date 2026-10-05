@@ -12,12 +12,11 @@ attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
 fetch = { kind = "http", url = "https://planet.openstreetmap.org/pbf/planet-{yymmdd}.osm.pbf" }
 version = "date"
-# The diffs of `osm-replication` bring an old planet up to date, so a new planet of about 84 GB
-# is seldom worth its download.
+# A planet is about 84 GB, so a new one is seldom worth its download.
 refresh = 90
 redistribute = true
 
-# The daily diffs after the `osm-planet` version that a step reads.
+# The daily diffs after a version of `osm-planet`.
 [[source]]
 id = "osm-replication"
 kind = "data"

@@ -34,9 +34,11 @@ pub trait Product {
 pub enum Unplanned {
     /// The step list reads these snapshots. `obc data` fetches them and asks once more.
     NeedsFetch(Vec<Wanted>),
-    /// The environment does not give what the product needs, such as a region of a kind that it
-    /// does not read.
+    /// The product does not suit the environment, such as a kind of region that it does not read.
+    /// `obc data` reports the product as blocked and plans the others.
     Invalid(String),
+    /// The store, a file or the data of a fetch failed. The command fails.
+    Failed(String),
 }
 
 /// A fetch that a step list needs.
@@ -53,14 +55,18 @@ pub struct Wanted {
 /// version of that fetch in the store. `Err(Wanted)` names a fetch of the newest version upstream:
 /// for a `--move SOURCE`, while the store has no fetch of it, or when a saved plan lacks it. Every
 /// step list gets its versions here, so one function decides where they come from, and `env`
-/// records each version that it gives.
+/// records each version that it gives. `Err` for a fetch that live reads at more versions and
+/// that no `--move` names.
 pub fn version(
     env: &Env,
     store: &Store,
     source: &str,
     params: &[(String, String)],
 ) -> Result<Result<String, Wanted>, String> {
-    let named = env.version(source, params).map(str::to_string);
+    let named = env.version(source, params).inspect_err(|_| {
+        env.refused.borrow_mut().insert(source.into());
+    })?;
+    let named = named.map(str::to_string);
     let version = match &named {
         Some(version) => Some(version.clone()),
         None if env.planned.is_some() || env.moves_to_newest(source) => None,
@@ -81,11 +87,11 @@ pub fn read(
     source: &str,
     params: &[(String, String)],
 ) -> Result<Result<BTreeMap<String, PathBuf>, Wanted>, String> {
-    let named = env.version(source, params).map(str::to_string);
-    let wanted = || Wanted { source: source.into(), version: named, params: params.to_vec() };
     let version = match version(env, store, source, params)? {
         Ok(version) => version,
         Err(wanted) => return Ok(Err(wanted)),
     };
+    let named = env.version(source, params)?.map(str::to_string);
+    let wanted = || Wanted { source: source.into(), version: named, params: params.to_vec() };
     Ok(snapshot_files(store, source, &version, params, &[])?.ok_or_else(wanted))
 }

@@ -19,7 +19,7 @@ use clap::{Parser, Subcommand};
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::env::Versions;
+use crate::env::LiveVersions;
 use crate::fetch::http::Http;
 use crate::fetch::upstream::{self, Upstream};
 use crate::fetch::{self, Request};
@@ -220,14 +220,14 @@ fn read_live(remote: &Remote, registry: &Registry, products: &[&dyn Product], st
     Live::read(remote, products, &registry.sources, store).map_err(|e| Code::R2Failed.error(e))
 }
 
-/// The version of each fetch that the live releases read.
-fn live_versions(root: &Path, products: &[&dyn Product], store: &Store) -> Result<Versions, Error> {
-    read_live(&remote()?, &registry(root)?, products, store)?.versions().map_err(|e| Code::Blocked.error(e))
+/// The versions of each fetch that the live releases read.
+fn live_versions(root: &Path, products: &[&dyn Product], store: &Store) -> Result<LiveVersions, Error> {
+    Ok(read_live(&remote()?, &registry(root)?, products, store)?.versions())
 }
 
-/// The LIVE column of the sources: source id to a version that the live releases read. It reads
-/// only the pointers and the manifests.
-fn live_column(products: &[&dyn Product], store: &Store) -> Result<BTreeMap<String, String>, Error> {
+/// The LIVE column of the sources: source id to the versions that the live releases read. It
+/// reads only the pointers and the manifests.
+fn live_column(products: &[&dyn Product], store: &Store) -> Result<BTreeMap<String, Vec<String>>, Error> {
     let live = Live::read(&remote()?, products, &[], store).map_err(|e| Code::R2Failed.error(e))?;
     Ok(live.by_source())
 }
@@ -404,6 +404,8 @@ fn print_snapshot(store: &Store, snapshot: &Snapshot, json: bool) -> Result<(), 
 
 #[derive(Serialize, JsonSchema)]
 struct Sources<'a> {
+    /// R2 could not be read: `live` of each source is `null`.
+    live_unknown: bool,
     sources: &'a [SourceRow],
 }
 
@@ -412,11 +414,8 @@ struct Sources<'a> {
 struct SourceRow {
     #[serde(flatten)]
     source: Source,
-    /// The version that the live releases read.
-    live: Option<String>,
-    /// R2 could not be read, so `live` is not known.
-    #[serde(skip)]
-    live_unknown: bool,
+    /// The versions that the live releases read, in order; `null` when R2 could not be read.
+    live: Option<Vec<String>>,
     /// The newest upstream version.
     upstream: Option<String>,
     age_days: Option<i64>,
@@ -451,7 +450,11 @@ impl SourceRow {
             s.id.clone(),
             s.licence.clone().unwrap_or_else(|| none.into()),
             if s.r2_copy { "yes" } else { "no" }.into(),
-            if self.live_unknown { "?".into() } else { self.short(self.live.as_deref()) },
+            match &self.live {
+                None => "?".into(),
+                Some(live) if live.is_empty() => "—".into(),
+                Some(live) => live.iter().map(|version| self.short(Some(version))).collect::<Vec<_>>().join(", "),
+            },
             self.age_days.map_or("—".into(), |age| format!("{age} d")),
             s.refresh.to_string(),
             self.state.to_string(),
@@ -459,11 +462,11 @@ impl SourceRow {
     }
 }
 
-/// Every source in kind order, with `live`, the version that the live releases read, and its state
+/// Every source in kind order, with `live`, the versions that the live releases read, and its state
 /// from the newest upstream version.
 fn source_rows(
     registry: &Registry,
-    live: Option<&BTreeMap<String, String>>,
+    live: Option<&BTreeMap<String, Vec<String>>>,
     check_now: bool,
 ) -> Result<Vec<SourceRow>, Error> {
     let max_age = if check_now { 0 } else { upstream::CACHE };
@@ -480,8 +483,11 @@ fn source_rows(
         .into_iter()
         .zip(&newest)
         .map(|(source, upstream)| {
-            let version = live.and_then(|live| live.get(&source.id)).map(String::as_str);
-            let base = source.fetch.from.as_ref().and_then(|from| live?.get(from)).map(String::as_str);
+            let versions = |id: &str| live.and_then(|live| live.get(id)).cloned().unwrap_or_default();
+            // The state reads the first version in order: for a date, the oldest.
+            let version = versions(&source.id).into_iter().next();
+            let base = source.fetch.from.as_deref().and_then(|from| versions(from).into_iter().next());
+            let (version, base) = (version.as_deref(), base.as_deref());
             let present = source.credential.as_ref().is_none_or(|c| c.present());
             let status = sources::status(source, version, base, upstream, today, present);
             let mut snapshots = store.snapshots(&source.id)?;
@@ -493,8 +499,7 @@ fn source_rows(
                 .collect();
             Ok(SourceRow {
                 source: source.clone(),
-                live: version.map(str::to_string),
-                live_unknown: live.is_none(),
+                live: live.map(|_| versions(&source.id)),
                 upstream: upstream.version().map(str::to_string),
                 age_days: status.age_days,
                 state: status.state,
@@ -509,7 +514,7 @@ fn print_sources(root: &Path, products: &[&dyn Product], check_now: bool, json: 
     let live = live_column(products, &Store::open()?).inspect_err(|e| eprintln!("obc data: {}", live_unknown(e)));
     let rows = source_rows(&registry(root)?, live.as_ref().ok(), check_now)?;
     if json {
-        return print_json(&Sources { sources: &rows });
+        return print_json(&Sources { live_unknown: live.is_err(), sources: &rows });
     }
     let mut table = vec![cells(["SOURCE", "LICENCE", "R2 COPY", "LIVE", "UPSTREAM", "AGE", "POLICY", "STATE"])];
     let mut tools = false;

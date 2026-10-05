@@ -420,14 +420,16 @@ fn run_planet_bake(
     };
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
     let progress = obc_pack::progress::Progress::stdout();
-    // Fail before the planet is read when Osmium, which shards the planet, is unavailable. Tests inject the runner at the library boundary; the CLI uses the real executable.
+    // Fail before the planet is read when Osmium, which shards it, is unavailable. Tests inject the
+    // runner at the library boundary; the CLI uses the real executable.
     let runner = obc_bake::planet::OsmiumRunner::default();
     runner.check()?;
-    let input = obc_bake::planet::resolve_planet(flags.get("source"), &progress)?;
+    let source = flags.get("source").ok_or("`--all` needs a planet PBF file: give --source FILE")?;
     let polygons = obc_bake::source::GeofabrikExtracts;
     let region_presets = obc_bake::planet::resolve_region_presets(&regions, &polygons, &bands, &progress)?;
     // Held until the bake has read the planet: the sharder below reads it too.
     let _planet = obc_bake::planet::lock_cache(&cache, &progress)?;
+    let input = obc_bake::planet::resolve_planet(source, &progress)?;
     let shards = obc_bake::planet::PlanetSharder { input: &input, cache: &cache, runner: &runner }.run(&progress)?;
     let cutter = obc_bake::cells::ObcCutter {
         no_land: flags.has("no-land"),

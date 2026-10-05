@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::engine::release::{Layer, Release};
-use crate::env::Versions;
+use crate::env::LiveVersions;
 use crate::fetch::http::{self, Http};
 use crate::product::Product;
 use crate::r2::{Bucket, Credentials, Object};
@@ -130,29 +130,24 @@ impl Live {
         reads.map(|(source, read)| (source.clone(), read.version.clone())).collect()
     }
 
-    /// The version of each fetch that the live layers read. Two layers that read one fetch at two
-    /// versions are refused: no order of versions can choose between them.
-    pub fn versions(&self) -> Result<Versions, String> {
-        let mut versions = Versions::new();
+    /// The versions of each fetch that the live layers read. Two layers can read one fetch at two
+    /// versions: no order of versions chooses, so they stay for a `--move` to resolve.
+    pub fn versions(&self) -> LiveVersions {
+        let mut versions = LiveVersions::new();
         let layers = self.releases().flat_map(|(_, _, release)| &release.layers);
         for (source, read) in layers.flat_map(|layer| &layer.snapshots) {
-            let fetch = (source.clone(), read.params.clone());
-            if let Some(other) = versions.insert(fetch, read.version.clone()).filter(|other| *other != read.version) {
-                return Err(format!(
-                    "the live layers read `{source}` {:?} at two versions, {other} and {}: plan with \
-                     `--move {source}@VERSION` to read one",
-                    read.params, read.version
-                ));
-            }
+            versions.entry((source.clone(), read.params.clone())).or_default().insert(read.version.clone());
         }
-        Ok(versions)
+        versions
     }
 
-    /// Source id to a version that the live layers read, for a table. Of a source that they read
-    /// at more versions, the first in order: for a date, the oldest.
-    pub fn by_source(&self) -> BTreeMap<String, String> {
-        // A later entry of `collect` replaces an earlier one, so the first in order stays.
-        self.snapshots().into_iter().rev().collect()
+    /// Source id to every version that the live layers read of it, in order.
+    pub fn by_source(&self) -> BTreeMap<String, Vec<String>> {
+        let mut sources: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (source, version) in self.snapshots() {
+            sources.entry(source).or_default().push(version);
+        }
+        sources
     }
 
     /// The keys that live uses, with their size: `None` for a pointer, which changes, and for a
@@ -386,7 +381,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn live_reads_one_version_of_each_fetch() {
+    fn live_reads_the_versions_of_each_fetch() {
         let reading = |version: &str, params: &[(&str, &str)]| {
             let mut release = release(b"layer");
             let read = release.layers[0].snapshots.get_mut("land").unwrap();
@@ -404,12 +399,13 @@ pub(crate) mod tests {
         };
         let (a, b) = ([("area", "a")], [("area", "b")]);
         let areas = live(vec![reading("2026-10-02", &a), reading("2026-10-01", &b), reading("2026-10-02", &a)]);
-        let versions = areas.versions().unwrap();
-        assert_eq!(versions.values().collect::<Vec<_>>(), ["2026-10-02", "2026-10-01"], "one per params");
-        assert_eq!(areas.by_source()["land"], "2026-10-01", "the table shows the oldest day");
+        let versions: Vec<Vec<String>> =
+            areas.versions().into_values().map(|read| read.into_iter().collect()).collect();
+        assert_eq!(versions, [["2026-10-02"], ["2026-10-01"]], "one per params");
+        assert_eq!(areas.by_source()["land"], ["2026-10-01", "2026-10-02"], "every version");
 
-        let err = live(vec![reading("0.9.0", &[]), reading("0.10.2", &[])]).versions().unwrap_err();
-        assert!(err.contains("0.9.0") && err.contains("--move land@VERSION"), "{err}");
+        let conflict = live(vec![reading("0.9.0", &[]), reading("0.10.2", &[])]).versions();
+        assert_eq!(conflict[&("land".to_string(), Vec::new())].len(), 2, "a conflict stays");
     }
 
     /// A product whose pointer an older publish wrote, without `release`.

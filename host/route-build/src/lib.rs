@@ -3,14 +3,14 @@ pub mod blocks;
 pub mod catalog;
 pub mod connectivity;
 pub mod cost;
+pub mod grid;
 pub mod landmarks;
 pub mod layout;
-#[cfg(feature = "obc-terrain")]
-pub mod obc_terrain;
 pub mod osm;
 pub mod overlays;
 mod road_bike;
 pub mod source;
+pub mod step;
 pub mod terrain;
 
 use base::Dictionary;
@@ -50,6 +50,21 @@ impl Graph {
     pub fn permits_turn(&self, from: u32, to: u32, walking: bool) -> bool {
         let forbidden = if walking { &self.forbidden_foot } else { &self.forbidden };
         forbidden.binary_search(&(from, to)).is_err()
+    }
+}
+
+/// `value` with the keys of each object in byte order: the bytes of the JSON that this crate writes
+/// are the same in a binary where another crate enables `serde_json/preserve_order`.
+pub fn sort_keys(value: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<_> = map.into_iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            Value::Object(entries.into_iter().map(|(key, value)| (key, sort_keys(value))).collect())
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(sort_keys).collect()),
+        value => value,
     }
 }
 

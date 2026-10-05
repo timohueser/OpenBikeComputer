@@ -58,10 +58,8 @@ pub fn lock_cache(cache: &Path, progress: &Progress) -> Result<std::fs::File, St
     Ok(file)
 }
 
-/// The planet of `--all`: the PBF file that `spec` names. Without one, `--all` fails before any
-/// download.
-pub fn resolve_planet(spec: Option<&str>, progress: &Progress) -> Result<PlanetInput, String> {
-    let spec = spec.ok_or("`--all` needs a planet PBF file: pass it with --source")?;
+/// The planet of `--all`: the PBF file that `spec` names.
+pub fn resolve_planet(spec: &str, progress: &Progress) -> Result<PlanetInput, String> {
     if spec.starts_with("http://") || spec.starts_with("https://") {
         return Err(format!("--source {spec}: --source takes a planet PBF file"));
     }

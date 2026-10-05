@@ -1,7 +1,7 @@
 //! `obc data status`: what is live, the state of its layers, and what needs attention. `--check`
 //! also lists the prefixes that live owns on R2.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -104,7 +104,7 @@ pub fn status(root: &Path, products: &[&dyn Product], check: bool, json: bool) -
         return Err(error);
     }
     let live = read_live(&remote, &registry, products, &store)?;
-    loaded.env.live = live.versions().map_err(|e| Code::Blocked.error(e))?;
+    loaded.env.live = live.versions();
     let rows = source_rows(&registry, Some(&live.by_source()), false)?;
     let statuses = rows.iter().map(|row| {
         let status = sources::Status { state: row.state, reason: row.reason.clone(), age_days: row.age_days };
@@ -137,6 +137,15 @@ pub fn status(root: &Path, products: &[&dyn Product], check: bool, json: bool) -
         let reason = row.reason.clone().unwrap_or_default();
         attention.push(Attention { kind, about: row.source.id.clone(), reason });
     }
+    let mut conflicts: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for ((source, _), read) in loaded.env.live.iter().filter(|(_, read)| read.len() > 1) {
+        conflicts.entry(source).or_default().extend(read.iter().map(String::as_str));
+    }
+    for (source, versions) in conflicts {
+        let versions = versions.into_iter().collect::<Vec<_>>().join(" and ");
+        let reason = format!("live reads one fetch of it at {versions}: plan with `--move {source}@VERSION`");
+        attention.push(Attention { kind: AttentionKind::Blocked, about: source.into(), reason });
+    }
     for dir in import::plan(&store, &old_dirs()?)?.dirs.into_iter().filter(|dir| dir.files > 0) {
         let reason =
             format!("{} files, {}; `obc data clean --apply` moves them into the store", dir.files, bytes(dir.bytes));
@@ -165,9 +174,9 @@ pub fn status(root: &Path, products: &[&dyn Product], check: bool, json: bool) -
     Ok(if problems { ExitCode::FAILURE } else { ExitCode::SUCCESS })
 }
 
-/// The state of each layer of `live`, by product. `Err` with the reason for a product when a
-/// fetch that its step list needs fails, or when it reads a layer of such a product: the rest of
-/// `status` does not need its steps.
+/// The state of each layer of `live`, by product. `Err` with the reason for a product that is
+/// blocked, whose step list needs a fetch that fails, or that reads a layer of such a product: the
+/// rest of `status` does not need its steps.
 fn layer_states(
     root: &Path,
     store: &Store,
@@ -181,9 +190,12 @@ fn layer_states(
     let (mut listed, mut found) = (Vec::new(), BTreeMap::new());
     for product in products {
         match product_steps(*product, env, regions, store, &mut fetch) {
-            Ok(steps) => {
+            Ok(Ok(steps)) => {
                 found.insert(product.name().to_string(), Ok(Vec::new()));
                 listed.push((product.name().to_string(), steps));
+            }
+            Ok(Err(reason)) => {
+                found.insert(product.name().to_string(), Err(reason));
             }
             Err(e) if matches!(e.code, Code::FetchFailed | Code::Blocked) => {
                 let reason = format!("a fetch that the step list needs failed: {}", e.message);

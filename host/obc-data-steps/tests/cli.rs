@@ -52,19 +52,20 @@ fn fetched(store: &Store, source: &str, version: &str, params: Vec<(String, Stri
     }
 }
 
-/// The store of `temp`, with what the step list of live reads, so the plan needs no network: the
-/// `.poly` of the live region is a box around Freiburg.
+/// The store of `temp`, with what the step lists of live read, so the plan needs no network: the
+/// `.poly` of the live region is a box around Freiburg, and its extract is a stand-in.
 fn with_live_outline(temp: &Temp) {
     let store = Store::at(temp.0.join("store"));
     let poly = "box\n1\n   7.77 47.97\n   7.93 47.97\n   7.93 48.14\n   7.77 48.14\n   7.77 47.97\nEND\nEND\n";
     let area = vec![("area".into(), "europe/germany/baden-wuerttemberg".into())];
-    fetched(&store, "geofabrik-poly", "2026-10-05", area, "europe/germany/baden-wuerttemberg.poly", poly);
+    fetched(&store, "geofabrik-poly", "2026-10-05", area.clone(), "europe/germany/baden-wuerttemberg.poly", poly);
+    fetched(&store, "geofabrik-extracts", "2026-10-05", area, "europe/germany/baden-wuerttemberg.osm.pbf", "osm");
     let tiles = "Copernicus_DSM_COG_10_N47_00_E007_00_DEM\nCopernicus_DSM_COG_10_N48_00_E007_00_DEM\n";
     fetched(&store, "copernicus-glo-30-tiles", "2022-05-09", Vec::new(), "tileList.txt", tiles);
 }
 
 #[test]
-fn a_plan_of_live_builds_the_terrain_of_each_leaf_and_a_build_refuses_another_plan() {
+fn a_plan_of_live_builds_the_layers_of_each_product_and_a_build_refuses_another_plan() {
     let temp = Temp::new("plan");
     with_live_outline(&temp);
     let out = obc_data(&temp, &["plan", "live", "--json"]);
@@ -78,7 +79,7 @@ fn a_plan_of_live_builds_the_terrain_of_each_leaf_and_a_build_refuses_another_pl
     assert_eq!(plan["env"], "live");
     assert_eq!(plan["moves"], serde_json::json!({"copernicus-glo-30": "2022-05-09"}));
     let ids: Vec<&str> = plan["groups"].as_array().unwrap().iter().map(|group| group["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["maps/terrain/0037-0032"]);
+    assert_eq!(ids, ["maps/terrain/0037-0032", "planner/osm", "planner/terrain"]);
     assert_eq!(plan["groups"][0]["fetches"][0]["source"], "copernicus-glo-30");
 
     plan["groups"] = serde_json::json!([{"id": "planner/routing", "fetches": [], "builds": []}]);
