@@ -9,7 +9,7 @@ mod process;
 pub mod runs;
 pub mod state;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -36,7 +36,9 @@ pub enum Input {
     Snapshot {
         source: String,
         version: String,
-        /// The names of the files the step reads, or none for every file.
+        /// The `NAME=VALUE` of the fetch. The step reads the files that this fetch gives.
+        params: Vec<(String, String)>,
+        /// Without params: the names of the files the step reads, or none for every file.
         files: Vec<String>,
     },
     /// The layer of another step.
@@ -188,6 +190,13 @@ fn order(steps: &[Step]) -> Result<Vec<&Step>, String> {
         if let Some(name) = step.layers().find(|name| !names.contains(name)) {
             return Err(format!("step `{}` reads the layer `{name}`, which no step makes", step.name));
         }
+        let both = |input: &Input| matches!(input, Input::Snapshot { params, files, .. } if !params.is_empty() && !files.is_empty());
+        if step.inputs.iter().any(both) {
+            return Err(format!(
+                "step `{}`: a snapshot input selects its files by params or by name, not both",
+                step.name
+            ));
+        }
     }
     let mut ordered = Vec::new();
     let mut placed = HashSet::new();
@@ -242,6 +251,41 @@ impl<'a> Codes<'a> {
     }
 }
 
+/// What the store has of a snapshot input.
+enum Selection {
+    /// The files that the input reads, each with its object.
+    Present(Vec<FileRecord>),
+    /// The names of the files that the store lacks. None when the store cannot name them: it has
+    /// no record of the version, or no record of a fetch with the params.
+    Lacks(Vec<String>),
+}
+
+fn selection(
+    store: &Store,
+    source: &str,
+    version: &str,
+    params: &[(String, String)],
+    files: &[String],
+) -> Result<Selection, String> {
+    let names = match params {
+        [] => files.to_vec(),
+        params => match store.requested(source, version, params)? {
+            Some(names) => names,
+            None => return Ok(Selection::Lacks(Vec::new())),
+        },
+    };
+    let Some(snapshot) = store.snapshot(source, version)? else {
+        return Ok(Selection::Lacks(names));
+    };
+    let (files, missing) = select(&snapshot, &names);
+    let absent = files.iter().filter(|file| !store.object(&file.sha256).is_file()).map(|file| file.name.as_str());
+    let lacks: BTreeSet<&str> = missing.into_iter().chain(absent).collect();
+    if lacks.is_empty() {
+        return Ok(Selection::Present(files.into_iter().cloned().collect()));
+    }
+    Ok(Selection::Lacks(lacks.into_iter().map(str::to_string).collect()))
+}
+
 /// The files of `snapshot` that `selected` names, or all of them when it names none, and the
 /// selected names that the snapshot lacks.
 fn select<'a>(snapshot: &'a Snapshot, selected: &'a [String]) -> (Vec<&'a FileRecord>, Vec<&'a str>) {
@@ -273,15 +317,17 @@ fn prepare(
     let mut bytes_in = 0;
     for input in &step.inputs {
         let (kind, name, files): (_, _, Vec<(String, String, u64)>) = match input {
-            Input::Snapshot { source, version, files: selected } => {
-                let snapshot = store
-                    .snapshot(source, version)?
-                    .ok_or_else(|| format!("the store has no snapshot {source}@{version}; fetch it first"))?;
-                let (files, missing) = select(&snapshot, selected);
-                if let Some(missing) = missing.first() {
-                    return Err(format!("snapshot {source}@{version} has no file {missing}; fetch it first"));
-                }
-                let files = files.into_iter().map(|file| (file.name.clone(), file.sha256.clone(), file.size));
+            Input::Snapshot { source, version, params, files: selected } => {
+                let files = match selection(store, source, version, params, selected)? {
+                    Selection::Present(files) => files,
+                    Selection::Lacks(names) => {
+                        return Err(match names.first() {
+                            Some(name) => format!("snapshot {source}@{version} has no file {name}; fetch it first"),
+                            None => format!("the store has no snapshot {source}@{version}; fetch it first"),
+                        })
+                    }
+                };
+                let files = files.into_iter().map(|file| (file.name, file.sha256, file.size));
                 (InputKind::Snapshot, source, files.collect())
             }
             Input::Layer(name) => {
@@ -507,7 +553,9 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             limits: runs::Limits,
         ) -> Result<Vec<Built>, String> {
             let mut run = runs::Run::create(&self.store, "build test")?;
-            let built = run.build(&self.store, &self.root(), steps, plan, limits);
+            let (root, http) = (self.root(), crate::fetch::http::Http::new());
+            let context = runs::Context { store: &self.store, root: &root, sources: &[], http: &http, limits };
+            let built = run.build(&context, steps, plan);
             run.finish(built.as_ref().err().map(String::as_str))?;
             built
         }
@@ -590,6 +638,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         Input::Snapshot {
             source: source.into(),
             version: version.into(),
+            params: Vec::new(),
             files: files.iter().map(|file| file.to_string()).collect(),
         }
     }
@@ -681,8 +730,10 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
 
         let mut steps = pipeline();
         steps[2].inputs = vec![snapshot("head", "1", &["x"])];
+        let fetches = &fixture.plan(&steps).unwrap().groups[0].fetches;
+        assert_eq!(fetches[0].files, ["x"], "a missing file is a fetch");
         let err = fixture.build(&steps).err().unwrap();
-        assert!(err.contains("snapshot head@1 has no file x; fetch it first"), "{err}");
+        assert_eq!(err, "fetch head@1: no source `head` in data/sources.toml");
     }
 
     #[test]

@@ -24,6 +24,7 @@ pub fn run(args: Runs) -> Result<(), Failure> {
     let Some(id) = args.run else {
         return list(&runs::list(&store)?, args.json);
     };
+    runs::check_id(&id).map_err(|e| usage(&e))?;
     if !store.run(&id).is_file() {
         return Err(usage(&format!("no run `{id}`")));
     }
@@ -41,10 +42,11 @@ fn list(runs: &[Summary], json: bool) -> Result<(), Failure> {
         }
         return print_json(&Listing { runs });
     }
-    let mut table = vec![cells(["RUN", "COMMAND", "", "TOOK", "BUILT"])];
+    let mut table = vec![cells(["RUN", "COMMAND", "", "TOOK", "FETCHED", "BUILT"])];
     for run in runs {
         let took = run.wall_ms.map_or("—".into(), duration);
-        table.push(vec![run.id.clone(), run.command.clone(), mark(run.outcome).into(), took, bytes(run.bytes_built)]);
+        let (command, mark) = (run.command.clone(), mark(run.outcome).into());
+        table.push(vec![run.id.clone(), command, mark, took, bytes(run.bytes_fetched), bytes(run.bytes_built)]);
     }
     print_table(&table);
     Ok(())
@@ -59,6 +61,22 @@ fn show(run: &Details, json: bool) -> Result<(), Failure> {
     println!("{}  {}  {}  {took}", summary.id, summary.command, mark(summary.outcome));
     if let Some(error) = &run.error {
         println!("{error}");
+    }
+    if !run.fetches.is_empty() {
+        let mut table = vec![cells(["FETCH", "TOOK", "SIZE"])];
+        for fetch in &run.fetches {
+            let took = match (&fetch.error, fetch.wall_ms) {
+                (Some(error), _) => format!("✗ {error}"),
+                (None, Some(wall_ms)) => duration(wall_ms),
+                (None, None) => "running".into(),
+            };
+            table.push(vec![
+                format!("{}@{}", fetch.source, fetch.version),
+                took,
+                fetch.bytes.map_or("—".into(), bytes),
+            ]);
+        }
+        print_table(&table);
     }
     let mut table = vec![cells(["STEP", "TOOK", "Δ LAST RUN", "PEAK RAM", "OUTPUT", "READS", "CODE", "USED BY"])];
     for step in &run.steps {
@@ -92,7 +110,9 @@ fn show(run: &Details, json: bool) -> Result<(), Failure> {
             step.users.join(", "),
         ]);
     }
-    print_table(&table);
+    if !run.steps.is_empty() {
+        print_table(&table);
+    }
     Ok(())
 }
 
@@ -116,8 +136,11 @@ fn follow(store: &Store, id: &str, json: bool) -> Result<(), Failure> {
                     format!("{step} built in {}, {}", duration(receipt.wall_ms), bytes(receipt.bytes_out))
                 }
                 Event::StepFailed { step, error } => format!("{step} failed: {error}"),
-                Event::Switched(switch) => format!("switched {} to {}", switch.pointer, switch.release),
-                Event::Removed(removal) => format!("removed {}, {}", removal.object, bytes(removal.bytes)),
+                Event::FetchStarted { source, version } => format!("{source}@{version} fetch started"),
+                Event::FetchFinished { source, version, bytes: size, wall_ms } => {
+                    format!("{source}@{version} fetched in {}, {}", duration(*wall_ms), bytes(*size))
+                }
+                Event::FetchFailed { source, version, error } => format!("{source}@{version} fetch failed: {error}"),
                 Event::Finished { ok: true, wall_ms, .. } => format!("finished in {}", duration(*wall_ms)),
                 Event::Finished { error, .. } =>
                     format!("failed: {}", error.as_deref().unwrap_or("no reason recorded")),

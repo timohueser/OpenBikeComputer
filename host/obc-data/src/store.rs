@@ -188,6 +188,42 @@ impl Store {
     pub fn run(&self, id: &str) -> PathBuf {
         self.root.join("runs").join(format!("{id}.jsonl"))
     }
+
+    fn request_path(&self, source: &str, version: &str, params: &[(String, String)]) -> PathBuf {
+        let id = serde_json::to_vec(&(version, params)).expect("strings serialize");
+        self.root.join("requests").join(source).join(format!("{}.json", sha256_hex(&id)))
+    }
+
+    /// The names of the files that a fetch of `source@version` with `params` gave.
+    pub fn requested(
+        &self,
+        source: &str,
+        version: &str,
+        params: &[(String, String)],
+    ) -> Result<Option<Vec<String>>, String> {
+        let record: Option<Requested> = read_record(&self.request_path(source, version, params))?;
+        Ok(record.map(|record| record.files))
+    }
+
+    /// Every record of a fetch of `source` with `params`, in any version.
+    pub fn requests(&self, source: &str, params: &[(String, String)]) -> Result<Vec<Requested>, String> {
+        let records: Vec<Requested> = read_records(&self.root.join("requests").join(source))?;
+        Ok(records.into_iter().filter(|record| record.params == params).collect())
+    }
+
+    pub fn put_requested(&self, source: &str, record: &Requested) -> Result<(), String> {
+        write_record(&self.request_path(source, &record.version, &record.params), record)
+    }
+}
+
+/// The files that a fetch with `params` gave: what a snapshot input with these params reads.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Requested {
+    pub version: String,
+    pub params: Vec<(String, String)>,
+    /// File names in the snapshot record of the version.
+    pub files: Vec<String>,
 }
 
 fn read_record<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {

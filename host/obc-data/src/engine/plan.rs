@@ -5,7 +5,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use super::{order, prepare, reusable, select, Codes, Input, Receipt, Step};
+use super::{order, prepare, reusable, select, selection, Codes, Input, Receipt, Selection, Step};
 use crate::store::Store;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -14,31 +14,29 @@ pub struct Plan {
     pub groups: Vec<Group>,
 }
 
-/// One change. A group never needs the work of another group, so each can be selected alone.
+/// One change: builds that read each other's layers, and the fetches that they need. A group
+/// never needs a build of another group, so each can be selected alone. Two groups can need the
+/// same fetch.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Group {
-    /// The first layer that it builds: the name that `--only` selects.
+    /// The step of its first build. It names the group only in the plan that it comes from.
     pub id: String,
     pub fetches: Vec<Fetch>,
     /// In dependency order.
     pub builds: Vec<Build>,
-    /// Apply fills the uploads, switches and removals; the engine leaves them empty.
-    pub uploads: Vec<Upload>,
-    pub switches: Vec<Switch>,
-    pub removals: Vec<Removal>,
 }
 
-/// Files of a snapshot that the store lacks.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fetch {
     pub source: String,
     pub version: String,
-    /// The file names, or none for every file of the version.
+    pub params: Vec<(String, String)>,
+    /// The names of the files that the store lacks, or none when the store cannot name them: then
+    /// the fetch gets every file that it gives.
     pub files: Vec<String>,
-    /// The size of these files in the store's record of the version, or else in the newest other
-    /// version that has them all.
+    /// The size of these files in a snapshot record of the source, or `None`.
     pub bytes: Option<u64>,
 }
 
@@ -48,7 +46,6 @@ pub struct Build {
     pub step: String,
     /// `None` until the layers and snapshots that it reads are in the store.
     pub key: Option<String>,
-    /// From the newest receipt of the step.
     pub estimate: Option<Estimate>,
 }
 
@@ -60,39 +57,20 @@ pub struct Estimate {
     pub peak_rss_bytes: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+/// The sums of the known estimates of a plan. An equal fetch in two groups counts once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Upload {
-    pub object: String,
-    pub bytes: u64,
+pub struct Totals {
+    pub wall_ms: u64,
+    pub download_bytes: u64,
+    pub bytes_out: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Switch {
-    pub pointer: String,
-    pub release: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Removal {
-    pub object: String,
-    pub bytes: u64,
-}
-
-/// What building `steps` needs: a fetch for each snapshot file that the store lacks, and a build
-/// for each layer whose key has no receipt, or whose key waits for a fetch or another build.
+/// What building `steps` needs: a fetch for each snapshot input whose files the store lacks, and a
+/// build for each layer whose key has no layer in the store, or whose key waits for a fetch or
+/// another build.
 pub fn plan(store: &Store, root: &Path, steps: &[Step]) -> Result<Plan, String> {
-    let mut newest: HashMap<String, Receipt> = HashMap::new();
-    for receipt in store.layers()? {
-        match newest.get(&receipt.step) {
-            Some(known) if known.built >= receipt.built => {}
-            _ => {
-                newest.insert(receipt.step.clone(), receipt);
-            }
-        }
-    }
+    let receipts = store.layers()?;
     let mut codes = Codes::default();
     let mut reused: HashMap<&str, Receipt> = HashMap::new();
     let mut builds: Vec<(&Step, Build, Vec<Fetch>)> = Vec::new();
@@ -109,40 +87,23 @@ pub fn plan(store: &Store, root: &Path, steps: &[Step]) -> Result<Plan, String> 
             }
             key = Some(receipt.key);
         }
-        let estimate = newest.get(&step.name).map(|receipt| Estimate {
-            wall_ms: receipt.wall_ms,
-            bytes_out: receipt.bytes_out,
-            peak_rss_bytes: receipt.peak_rss_bytes,
-        });
-        builds.push((step, Build { step: step.name.clone(), key, estimate }, fetches));
+        builds.push((step, Build { step: step.name.clone(), key, estimate: estimate(&receipts, step) }, fetches));
     }
 
-    // A build joins the builds whose layers it reads, and the builds that fetch the same version.
+    // A build joins the builds whose layers it reads.
     let index: HashMap<&str, usize> =
         builds.iter().enumerate().map(|(i, (step, ..))| (step.name.as_str(), i)).collect();
     let mut parent: Vec<usize> = (0..builds.len()).collect();
-    let mut fetched: HashMap<(&str, &str), usize> = HashMap::new();
-    for (i, (step, _, fetches)) in builds.iter().enumerate() {
+    for (i, (step, ..)) in builds.iter().enumerate() {
         for j in step.layers().filter_map(|name| index.get(name)) {
             union(&mut parent, i, *j);
-        }
-        for fetch in fetches {
-            let j = *fetched.entry((&fetch.source, &fetch.version)).or_insert(i);
-            union(&mut parent, i, j);
         }
     }
     let mut groups: Vec<Group> = Vec::new();
     let mut group_of: HashMap<usize, usize> = HashMap::new();
     for (i, (_, build, fetches)) in builds.iter().enumerate() {
         let g = *group_of.entry(find(&mut parent, i)).or_insert_with(|| {
-            groups.push(Group {
-                id: build.step.clone(),
-                fetches: Vec::new(),
-                builds: Vec::new(),
-                uploads: Vec::new(),
-                switches: Vec::new(),
-                removals: Vec::new(),
-            });
+            groups.push(Group { id: build.step.clone(), fetches: Vec::new(), builds: Vec::new() });
             groups.len() - 1
         });
         groups[g].builds.push(build.clone());
@@ -168,35 +129,60 @@ impl Plan {
     pub fn builds(&self) -> impl Iterator<Item = &Build> {
         self.groups.iter().flat_map(|group| &group.builds)
     }
+
+    /// Each fetch once.
+    pub fn fetches(&self) -> Vec<&Fetch> {
+        let mut fetches: Vec<&Fetch> = Vec::new();
+        for fetch in self.groups.iter().flat_map(|group| &group.fetches) {
+            if !fetches.contains(&fetch) {
+                fetches.push(fetch);
+            }
+        }
+        fetches
+    }
+
+    pub fn totals(&self) -> Totals {
+        let estimates: Vec<Estimate> = self.builds().filter_map(|build| build.estimate).collect();
+        Totals {
+            wall_ms: estimates.iter().map(|estimate| estimate.wall_ms).sum(),
+            download_bytes: self.fetches().iter().filter_map(|fetch| fetch.bytes).sum(),
+            bytes_out: estimates.iter().map(|estimate| estimate.bytes_out).sum(),
+        }
+    }
 }
 
-/// The snapshot files that `step` reads and the store lacks: no record, no such file, or no object.
+/// From the newest receipt of the step with the same options, or else the newest of the step.
+fn estimate(receipts: &[Receipt], step: &Step) -> Option<Estimate> {
+    let newest = |same_options: bool| {
+        let receipts = receipts.iter().filter(|r| r.step == step.name && (!same_options || r.options == step.options));
+        receipts.max_by(|a, b| a.built.cmp(&b.built))
+    };
+    newest(true).or_else(|| newest(false)).map(|receipt| Estimate {
+        wall_ms: receipt.wall_ms,
+        bytes_out: receipt.bytes_out,
+        peak_rss_bytes: receipt.peak_rss_bytes,
+    })
+}
+
+/// The snapshot inputs of `step` whose files the store lacks.
 fn missing(store: &Store, step: &Step) -> Result<Vec<Fetch>, String> {
     let mut fetches = Vec::new();
     for input in &step.inputs {
-        let Input::Snapshot { source, version, files: selected } = input else { continue };
-        let files = match store.snapshot(source, version)? {
-            None => selected.clone(),
-            Some(snapshot) => {
-                let (files, missing) = select(&snapshot, selected);
-                let absent =
-                    files.iter().filter(|file| !store.object(&file.sha256).is_file()).map(|file| file.name.as_str());
-                let names: BTreeSet<&str> = missing.into_iter().chain(absent).collect();
-                if names.is_empty() {
-                    continue;
-                }
-                names.into_iter().map(str::to_string).collect()
-            }
-        };
-        fetches.push(Fetch { source: source.clone(), version: version.clone(), files, bytes: None });
+        let Input::Snapshot { source, version, params, files } = input else { continue };
+        if let Selection::Lacks(files) = selection(store, source, version, params, files)? {
+            let (source, version, params) = (source.clone(), version.clone(), params.clone());
+            fetches.push(Fetch { source, version, params, files, bytes: None });
+        }
     }
     Ok(fetches)
 }
 
-/// Add `fetch` to `fetches`, joined with a fetch of the same version.
+/// Add `fetch` to `fetches`, joined with a fetch of the same version and params.
 fn add_fetch(fetches: &mut Vec<Fetch>, fetch: &Fetch) {
-    let Some(known) = fetches.iter_mut().find(|known| known.source == fetch.source && known.version == fetch.version)
-    else {
+    let same = |known: &&mut Fetch| {
+        (&known.source, &known.version, &known.params) == (&fetch.source, &fetch.version, &fetch.params)
+    };
+    let Some(known) = fetches.iter_mut().find(same) else {
         fetches.push(fetch.clone());
         return;
     };
@@ -208,11 +194,21 @@ fn add_fetch(fetches: &mut Vec<Fetch>, fetch: &Fetch) {
     }
 }
 
+/// The size of the files of `fetch` in the record of its version, or else in the record of the
+/// last other version in byte order that has them all. Without names, the files are those of a
+/// fetch with the same params, or every file.
 fn fetch_bytes(store: &Store, fetch: &Fetch) -> Result<Option<u64>, String> {
-    let mut snapshots = store.snapshots(&fetch.source)?;
-    snapshots.sort_by(|a, b| (a.version == fetch.version, &a.version).cmp(&(b.version == fetch.version, &b.version)));
-    for snapshot in snapshots.iter().rev() {
-        let (files, missing) = select(snapshot, &fetch.files);
+    let mut candidates: Vec<(String, Vec<String>)> = if fetch.params.is_empty() || !fetch.files.is_empty() {
+        let versions = store.snapshots(&fetch.source)?.into_iter().map(|snapshot| snapshot.version);
+        versions.map(|version| (version, fetch.files.clone())).collect()
+    } else {
+        let requests = store.requests(&fetch.source, &fetch.params)?;
+        requests.into_iter().map(|request| (request.version, request.files)).collect()
+    };
+    candidates.sort_by(|a, b| (a.0 == fetch.version, &a.0).cmp(&(b.0 == fetch.version, &b.0)));
+    for (version, names) in candidates.iter().rev() {
+        let Some(snapshot) = store.snapshot(&fetch.source, version)? else { continue };
+        let (files, missing) = select(&snapshot, names);
         if missing.is_empty() && !files.is_empty() {
             return Ok(Some(files.iter().map(|file| file.size).sum()));
         }
@@ -279,18 +275,43 @@ mod tests {
         // A version that the store lacks: a fetch, sized from the version that the store has, and a
         // build that the earlier receipt estimates.
         let plan = fixture.plan(&steps("2")).unwrap();
-        assert_eq!(outline(&plan), [chain, ("test/lower", vec!["test/lower"])]);
-        let fetch =
-            Fetch { source: "head".into(), version: "2".into(), files: vec!["head.txt".into()], bytes: Some(5) };
+        assert_eq!(outline(&plan), [chain.clone(), ("test/lower", vec!["test/lower"])]);
+        let fetch = Fetch {
+            source: "head".into(),
+            version: "2".into(),
+            params: Vec::new(),
+            files: vec!["head.txt".into()],
+            bytes: Some(5),
+        };
         assert_eq!(plan.groups[1].fetches, std::slice::from_ref(&fetch));
         assert_eq!(plan.groups[1].builds[0].key, None);
         assert_eq!(plan.groups[1].builds[0].estimate.map(|estimate| estimate.bytes_out), Some(5));
 
-        // Two builds that need the same fetch are one change.
+        // Two groups can need the same fetch; it counts once.
         let mut both = steps("2");
         both[2].inputs = vec![snapshot("head", "2", &["head.txt"])];
         let plan = fixture.plan(&both).unwrap();
-        assert_eq!(outline(&plan), [("test/upper", vec!["test/upper", "test/lower", "test/join", "test/count"])]);
-        assert_eq!(plan.groups[0].fetches, [fetch]);
+        assert_eq!(outline(&plan), [chain, ("test/lower", vec!["test/lower"])]);
+        assert_eq!((&plan.groups[0].fetches, &plan.groups[1].fetches), (&vec![fetch.clone()], &vec![fetch]));
+        assert_eq!(plan.totals().download_bytes, 5);
+    }
+
+    #[test]
+    fn an_estimate_comes_from_the_newest_receipt_with_the_same_options() {
+        let fixture = fixture("plan-estimate");
+        let built = fixture.build(&steps("1")).unwrap();
+        let lower = built.into_iter().find(|built| built.receipt.step == "test/lower").unwrap().receipt;
+        let receipt = |size: u64, built: &str, wall_ms| Receipt {
+            options: serde_json::json!({ "size": size }),
+            built: built.into(),
+            wall_ms,
+            ..lower.clone()
+        };
+        let receipts = [receipt(1, "2026-10-01T00:00:00Z", 1000), receipt(2, "2026-10-02T00:00:00Z", 2000)];
+        let mut step = steps("1").remove(3);
+        step.options = serde_json::json!({ "size": 1 });
+        assert_eq!(estimate(&receipts, &step).map(|e| e.wall_ms), Some(1000), "the same options, though older");
+        step.options = serde_json::json!({ "size": 3 });
+        assert_eq!(estimate(&receipts, &step).map(|e| e.wall_ms), Some(2000), "else the newest of the step");
     }
 }

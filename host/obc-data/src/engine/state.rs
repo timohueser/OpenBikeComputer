@@ -5,7 +5,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use super::{digest, order, select, Code, Codes, Input, InputKind, Receipt, Step};
+use super::{digest, order, selection, Code, Codes, Input, InputKind, Receipt, Selection, Step};
 use crate::sources::{State, Status};
 use crate::store::Store;
 
@@ -13,8 +13,15 @@ use crate::store::Store;
 pub struct Environment {
     /// The status of each source, from `sources::status`.
     pub sources: BTreeMap<String, Status>,
-    /// The receipt of each layer that live has. Apply reads them from the live manifests.
-    pub live: BTreeMap<String, Receipt>,
+    /// Each layer that live has. Apply reads them from the live manifests.
+    pub live: BTreeMap<String, Live>,
+}
+
+/// A layer that live has.
+pub struct Live {
+    pub receipt: Receipt,
+    /// The version of each source that it was built from: receipts hold digests, not versions.
+    pub versions: BTreeMap<String, String>,
 }
 
 /// A layer with its state, what it reads, its code and the layers that read it.
@@ -68,7 +75,7 @@ pub fn state(store: &Store, root: &Path, steps: &[Step], environment: &Environme
             layer: step.name.clone(),
             state,
             reason,
-            live: environment.live.get(&step.name).map(|receipt| receipt.key.clone()),
+            live: environment.live.get(&step.name).map(|live| live.receipt.key.clone()),
             reads: reads.collect(),
             code: step.code.clone(),
             code_hash: code_hash.clone(),
@@ -87,7 +94,7 @@ fn judge(
     states: &HashMap<&str, State>,
 ) -> Result<(State, Option<String>), String> {
     let found = |state, reason: String| Ok((state, Some(reason)));
-    let Some(live) = environment.live.get(&step.name) else {
+    let Some(Live { receipt: live, versions }) = environment.live.get(&step.name) else {
         return found(State::NotApplied, "missing in live".into());
     };
     let read = |kind, name: &str| live.inputs.iter().find(|input| input.kind == kind && input.name == name);
@@ -96,13 +103,20 @@ fn judge(
         return found(State::NotApplied, "options".into());
     }
     for input in &step.inputs {
-        let Input::Snapshot { source, version, files: selected } = input else { continue };
-        // A snapshot that the store lacks has no digest yet; its fetch is in the plan.
-        let Some(snapshot) = store.snapshot(source, version)? else { continue };
-        let (selected, missing) = select(&snapshot, selected);
-        let wanted = digest(selected.iter().map(|file| (file.name.as_str(), file.sha256.as_str())));
-        if missing.is_empty() && read(InputKind::Snapshot, source).is_some_and(|input| input.digest != wanted) {
-            return found(State::NotApplied, format!("{source}@{version}"));
+        let Input::Snapshot { source, version, params, files } = input else { continue };
+        let digest = match selection(store, source, version, params, files)? {
+            Selection::Present(files) => {
+                Some(digest(files.iter().map(|file| (file.name.as_str(), file.sha256.as_str()))))
+            }
+            Selection::Lacks(_) => None,
+        };
+        let other = versions.get(source) != Some(version);
+        let other_files = digest
+            .as_ref()
+            .is_some_and(|digest| read(InputKind::Snapshot, source).is_some_and(|input| &input.digest != digest));
+        if other || other_files {
+            let fetched = if digest.is_some() { "" } else { " (not fetched)" };
+            return found(State::NotApplied, format!("{source}@{version} not in live{fetched}"));
         }
     }
 
@@ -131,7 +145,7 @@ fn judge(
 
     for name in step.layers() {
         let rebuilds = matches!(states[name], State::NotApplied | State::CodeChanged | State::InputChanged);
-        let rebuilt = environment.live.get(name).map(|layer| &layer.digest)
+        let rebuilt = environment.live.get(name).map(|layer| &layer.receipt.digest)
             != read(InputKind::Layer, name).map(|input| &input.digest);
         if rebuilds || rebuilt {
             return found(State::InputChanged, name.into());
@@ -170,11 +184,23 @@ mod tests {
     use super::*;
     use crate::engine::tests::{fixture, pipeline, snapshot, write, Fixture, JOIN};
 
-    /// Build the test pipeline, and make its layers live.
+    /// Build the test pipeline, and make its layers live with the versions that they read.
     fn live(fixture: &Fixture) -> Environment {
-        let built = fixture.build(&pipeline()).unwrap();
-        let live = built.into_iter().map(|built| (built.receipt.step.clone(), built.receipt)).collect();
-        Environment { sources: BTreeMap::new(), live }
+        let steps = pipeline();
+        let built = fixture.build(&steps).unwrap();
+        let versions = |name: &str| {
+            let step = steps.iter().find(|step| step.name == name).unwrap();
+            let versions = step.inputs.iter().filter_map(|input| match input {
+                Input::Snapshot { source, version, .. } => Some((source.clone(), version.clone())),
+                Input::Layer(_) => None,
+            });
+            versions.collect()
+        };
+        let live = built.into_iter().map(|built| {
+            let name = built.receipt.step.clone();
+            (name.clone(), Live { receipt: built.receipt, versions: versions(&name) })
+        });
+        Environment { sources: BTreeMap::new(), live: live.collect() }
     }
 
     fn states(fixture: &Fixture, steps: &[Step], environment: &Environment) -> Vec<(String, State, Option<String>)> {
@@ -232,17 +258,20 @@ mod tests {
             ])
         );
 
-        // The environment pins a version that live was not built from.
+        // The environment pins a version that live was not built from: fetched, and not fetched.
         fixture.fetched_version("head", "2", "head.txt", b"head 2\n");
-        let mut steps = pipeline();
-        steps[2].inputs = vec![snapshot("head", "2", &["head.txt"])];
-        let layers = state(&fixture.store, &fixture.root(), &steps, &environment).unwrap();
-        let upper = &layers[0];
-        assert_eq!((upper.state, upper.reason.as_deref()), (State::NotApplied, Some("head@2")));
+        for (version, reason) in [("2", "head@2 not in live"), ("3", "head@3 not in live (not fetched)")] {
+            let mut steps = pipeline();
+            steps[2].inputs = vec![snapshot("head", version, &["head.txt"])];
+            let layers = state(&fixture.store, &fixture.root(), &steps, &environment).unwrap();
+            assert_eq!((layers[0].state, layers[0].reason.as_deref()), (State::NotApplied, Some(reason)));
+            assert_eq!((layers[1].state, layers[1].reason.as_deref()), (State::InputChanged, Some("test/upper")));
+        }
+
+        let layers = state(&fixture.store, &fixture.root(), &pipeline(), &environment).unwrap();
+        let (upper, join) = (&layers[0], &layers[1]);
         assert_eq!(upper.users, ["test/join"]);
-        assert_eq!(upper.live, Some(environment.live["test/upper"].key.clone()));
-        let join = &layers[1];
-        assert_eq!((join.state, join.reason.as_deref()), (State::InputChanged, Some("test/upper")));
+        assert_eq!(upper.live, Some(environment.live["test/upper"].receipt.key.clone()));
         let reads: Vec<(InputKind, &str, Option<&str>)> =
             join.reads.iter().map(|read| (read.kind, read.name.as_str(), read.version.as_deref())).collect();
         assert_eq!(reads, [(InputKind::Layer, "test/upper", None), (InputKind::Snapshot, "tail", Some("1"))]);
