@@ -182,7 +182,7 @@ def specifications(config, prepared=None):
     add("source-basemap", source_basemap, {"osm": osm, "protomaps": sources.PROTOMAPS, "archive": sources.PROTO_SHA,
                                            "planetiler": maps.PINS["planetiler"]},
         config.get("auxiliary", {}), functions=[sources.basemap, sources.download])
-    add("source-search", source_search, {"osm": osm, "country_data": sources.COUNTRY_DATA_SHA, "country_data_version": sources.COUNTRY_DATA_VERSION}, {"country": config["countries"][0]},
+    add("source-search", source_search, {"osm": osm, "country_data": sources.COUNTRY_DATA_SHA, "country_data_version": maps.PINS["nominatim-country-data"]}, {"country": config["countries"][0]},
         paths=[*components.rust_sources("host/obc-search-bake"), maps.ROOT / "host/obc-search-bake/policy.py"], functions=[sources.search_dump, sources.download])
     data_kinds = sorted(json.loads((SEARCH / "query/contract.json").read_bytes())["data"])
     add("source-records", source_records, {"data_kinds": data_kinds}, dependencies=["source-search"],

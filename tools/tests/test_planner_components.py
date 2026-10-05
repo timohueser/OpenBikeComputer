@@ -105,7 +105,8 @@ class ComponentTests(unittest.TestCase):
     def test_a_pin_from_live_toml_changes_the_key_of_the_component_it_feeds(self):
         config = preparation.recipe(bake.maps.ROOT / "tools/planner-regions/baden-wuerttemberg-switzerland.json")
         original = bake.specifications(config)
-        cases = {"planetiler": {"source-basemap", "basemap", "places"}, "hansen-gfc": {"snow"}}
+        cases = {"planetiler": {"source-basemap", "basemap"},
+                 "nominatim-country-data": {"source-search", "source-records", "pois", "addresses", "places"}, "hansen-gfc": {"snow"}}
         for pin, expected in cases.items():
             with self.subTest(pin=pin), patch.dict(bake.maps.PINS, {pin: "bumped"}):
                 changed = bake.specifications(config)

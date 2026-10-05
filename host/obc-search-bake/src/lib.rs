@@ -138,6 +138,7 @@ pub fn bake(
                 }
             }
         }
+        eprintln!("Wrote {count} address records; write POIs and localities");
         let mut emitted = std::collections::BTreeSet::new();
         for (i, f) in input.features.iter().enumerate() {
             if let Some(record) = places::record(f, i, &index) {

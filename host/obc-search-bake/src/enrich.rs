@@ -549,7 +549,9 @@ impl<'a> Index<'a> {
                 .filter(|s| !s.is_empty())
                 .unwrap_or(item.name());
             a.entry(key.into()).or_insert_with(|| name.into());
-            for (tag, name) in item.tags.iter().filter(|(k, _)| k.starts_with("name:")) {
+            // These are the localized context fields consumed by the search writer.
+            // Place records retain their complete name and alias tags separately.
+            for (tag, name) in item.tags.iter().filter(|(k, _)| matches!(k.as_str(), "name:de" | "name:en")) {
                 let lang = tag.strip_prefix("name:").unwrap();
                 a.entry(format!("{key}:{lang}")).or_insert_with(|| name.to_string());
             }

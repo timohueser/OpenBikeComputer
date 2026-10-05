@@ -7,13 +7,13 @@ import shutil
 import tarfile
 import tempfile
 
-from . import planner_maps as maps
+from . import data_registry, planner_maps as maps
 from .planner_runtime import digest, open_url
 
 PROTOMAPS = maps.PINS["protomaps-basemaps"]
 PROTO_SHA = "f89ff8ee6aff13baf60c83b5e98d3811ddb946cc1089d437c435885395764696"
 COUNTRY_DATA_VERSION = maps.PINS["nominatim-country-data"]
-COUNTRY_DATA_URL = f"https://files.pythonhosted.org/packages/fc/9e/3f6a9706fdf54241e3adfffcb80f6fdba6d439c7506564cdc0f1b91bc5aa/nominatim_db-{COUNTRY_DATA_VERSION}-py3-none-any.whl"
+COUNTRY_DATA_URL = data_registry.SOURCES["nominatim-country-data"]["fetch"]["url"].format(version=COUNTRY_DATA_VERSION)
 COUNTRY_DATA_SHA = "c5e1c4bd27f52a48843a5fe204a1a7b5f4d4d2911880e65721b4c900b13227e5"
 
 
