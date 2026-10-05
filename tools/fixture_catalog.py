@@ -109,8 +109,8 @@ FEATURE_TYPES = {
     4: "highway.path",
 }
 
-# Where this catalog is published on the server, and what the browser suite builds
-# `VITE_CATALOG_URL` from.
+# Where this catalog is published on the server, and what the browser suite sets
+# `VITE_CATALOG_URL` to.
 PREFIX = "/catalog"
 REGION_ID = "bridge-fixture"
 REGION_NAME = "Bridge Fixture"

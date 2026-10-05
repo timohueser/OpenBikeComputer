@@ -2,6 +2,7 @@ import { presetSuffix, ridingProfiles } from './riding-profiles';
 import { orderedRoutePoints, type DrawnCoordinate, type Trip } from './editor';
 import { cumulative, firstIndex, type Coordinate } from './geo';
 import { config } from './map-data';
+import { releaseFetch } from './release';
 import { decodeRoutes } from './route-answer';
 import type { LegCache } from './route-legs';
 
@@ -93,7 +94,7 @@ async function post(path: keyof typeof timeoutMs, body: unknown, signal?: AbortS
     const timeout = AbortSignal.timeout(timeoutMs[path]);
     let response: Response | undefined, data: { code?: string; message?: string } | undefined;
     try {
-        response = await fetch(`${config.routing}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        response = await releaseFetch(`${config.routing}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
             signal: signal ? AbortSignal.any([signal, timeout]) : timeout, body: JSON.stringify(body) });
         data = await response.json();
     } catch (error) {
@@ -112,7 +113,7 @@ let region: Promise<string[]> | undefined;
 /** The profile IDs that the routing region serves (`GET /v1/region`), asked once a page; a failed request is asked again. */
 export function regionProfiles(): Promise<string[]> {
     return region ??= (async () => {
-        const response = await fetch(`${config.routing}/v1/region`, { signal: AbortSignal.timeout(timeoutMs['/v1/route']) });
+        const response = await releaseFetch(`${config.routing}/v1/region`, { signal: AbortSignal.timeout(timeoutMs['/v1/route']) });
         const profiles = (await response.json() as { profiles?: unknown } | null)?.profiles;
         if (!response.ok || !Array.isArray(profiles) || !profiles.every(p => typeof p === 'string')) throw new Error('The routing service returned an invalid region.');
         return profiles;

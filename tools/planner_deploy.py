@@ -127,7 +127,7 @@ systemctl reload caddy
     active["slot"] = target
     activate(args.public_url, {"format": 1, "active": active,
                                "previous": old if old and old["id"] != identity else current["previous"]})
-    print(f"Rollout is incomplete. After Deploy site succeeds, run: obc planner finalize --host {host} --apply")
+    print(f"Rollout is incomplete. Run: obc planner finalize --host {host} --apply")
 
 
 def install(host, data, document, base):
