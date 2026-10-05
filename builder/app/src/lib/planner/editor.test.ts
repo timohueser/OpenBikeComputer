@@ -327,6 +327,24 @@ describe('legs', () => {
         expect(view(visit).total).toBeCloseTo(view(kept).total, 1);
         const back = replacePoint(visit, undefined, 'spring', { ...marker, drawn: undefined });
         expect([back.routeOrder, orderedRoutePoints(back).map(p => p.id)]).toEqual([[], ['start', 'finish']]);
+        expect(back.points.find(p => p.id === 'spring')?.legEnd).toBe('finish');
+    });
+
+    it('shows a marker on the pass of its own leg where the route rides a road twice, also after a night joins that leg', () => {
+        const [start, finish] = testTrip().points;
+        const turn: RoutePoint = { id: 'night-1', kind: 'night', night: 1, label: 'Turn', coordinate: [7.6, 47.16] };
+        const trip: Trip = { ...testTrip(), days: 2, target: 2, routeOrder: ['night-1'], points: [start, turn, { ...finish, coordinate: [7.601, 47.56] }] };
+        // On the outward pass, 8 m from the way back.
+        const spring: RoutePoint = { id: 'spring', kind: 'marker', label: 'Spring', coordinate: [7.6, 47.2] };
+        const dayOf = (plan: Trip) => view(plan).days.findIndex(day => dayStops(plan, testLine(plan), day).some(stop => stop.point.id === 'spring')) + 1;
+        expect(dayOf({ ...trip, points: [...trip.points, spring] })).toBe(1);
+        const placed = addPointNear(trip, testLine(trip), { ...spring, coordinate: [7.6009, 47.2] });
+        expect(placed.points.at(-1)?.legEnd).toBe('finish');
+        const anchored = { ...trip, points: [...trip.points, { ...spring, legEnd: 'finish' }] };
+        expect(dayOf(anchored)).toBe(2);
+        const split = pin(anchored, 2, [7.6009, 47.3], 'Hut');
+        expect(orderedRoutePoints(split).map(p => p.id)).toEqual(['start', 'night-1', 'night-2', 'finish']);
+        expect(dayOf(split)).toBe(2);
     });
 
     it('gives a point added on a drawn line with elevations the elevation of the line there', () => {

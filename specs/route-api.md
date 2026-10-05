@@ -3,7 +3,8 @@
 `POST /v1/route` on the [route service](../apps/route-server/README.md) calculates
 routes. `POST /v1/shape` finds the plan points of a route that follows a line. The
 native provider answers both with the same code (`planner_router_call` with the call
-`route` or `shape`). Request and answer bodies are UTF-8 JSON.
+`route` or `shape`). `GET /v1/region` describes the routing package. Request and
+answer bodies are UTF-8 JSON.
 
 ## Request
 
@@ -165,6 +166,23 @@ itself. A hairpin bend is not a turnaround.
 
 One shape request uses one profile and at most 200 route calculations. Each has
 the limits of a route request. The deadline is 30 s.
+
+## Region
+
+`GET /v1/region` answers with these fields:
+
+| Field | Value |
+| --- | --- |
+| `package` | Routing package identity |
+| `region` | Region ID |
+| `bounds` | `[west, south, east, north]` in degrees |
+| `profiles` | The profile IDs that requests can use |
+| `attribution` | Data credits |
+| `warnings` | Strings that name known limits of the package data |
+
+A profile ID is an activity, such as `touring`, or an activity, `/` and a variant:
+`touring/shorter` or `touring/less-climbing`. The web planner offers the presets of
+the profiles that the region serves.
 
 ## Errors
 

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { addRestDay, emptyTrip, planView, type RoutePoint, type Trip } from '../editor';
+import { addRestDay, dayStops, emptyTrip, pinNight, planView, type RoutePoint, type Trip } from '../editor';
+import { importedTrip } from '../gpx-import';
+import { isTrip } from '../trip-validation';
 import { coordinateAt, type Coordinate } from '../geo';
 import { testLine, testTrip } from '../../../../test-support/planner/trip';
 import { calculateLine, type RoutingLine } from '../routing';
@@ -58,6 +60,14 @@ describe('query edits', () => {
         expect(next.line).toBe(line);
         await expect(applyQueryChanges(trip, line, [{op:'end_day',day:2,point:{coordinate:[8,48],label:'Inn'}}])).rejects.toThrow('riding day');
     });
+    it('ends a day at a kilometre instead of its pinned night, which leaves the route', async () => {
+        vi.stubGlobal('fetch', vi.fn(routeService()));
+        const pinned = pinNight(testTrip(), testLine(testTrip()), 1, coordinateAt(testLine(testTrip()).coordinates, .4), 'Camp');
+        const line = await refresh(pinned), km = view({ trip: pinned, line }).total * .3;
+        const next = await applyQueryChanges(pinned, line, [{ op:'end_day', day:1, point:{coordinate:coordinateAt(line.coordinates,.3),label:'km mark',along:km} }], refresh);
+        expect([next.trip.points.map(p => p.id), next.trip.routeOrder, isTrip(next.trip)]).toEqual([['start', 'finish'], [], true]);
+        expect(next.trip.splits?.[1]).toBeCloseTo(.3);
+    });
     it('reverses the point order, routes routed legs again and keeps drawn legs and nights', async () => {
         const fetch = vi.fn(routeService());
         vi.stubGlobal('fetch', fetch);
@@ -81,6 +91,18 @@ describe('query edits', () => {
         expect(next.trip.loop).toBe(true);
         expect(next.trip.points.map(p => [p.id, p.kind, p.leg])).toEqual([['home', 'start', 'drawn'], ['b', 'waypoint', 'straight'], ['a', 'waypoint', 'straight']]);
         expect(view(next).coordinates).toEqual([...line.coordinates].reverse());
+        const marked = { ...plan, points: [...plan.points, point('m', 'marker', [8.1, 48.05], { legEnd: 'home' })] };
+        const reversed = await applyQueryChanges(marked, await refresh(marked), [{op:'reverse'}], refresh);
+        expect(reversed.trip.points.find(p => p.id === 'm')?.legEnd).toBe('b');
+    });
+    it('keeps each marker in its own day when an out-and-back is reversed', async () => {
+        const out: Coordinate[] = [[7.6, 47.5], [7.62, 47.5]], spot: Coordinate = [7.61, 47.5];
+        const trip = importedTrip({}, [{ name: 'out', line: out, waypoints: [{ label: 'Out', coordinate: spot }] },
+            { name: 'back', line: out.slice().reverse(), waypoints: [{ label: 'Back', coordinate: spot }] }]);
+        const days = ({ trip, line }: { trip: Trip; line?: RoutingLine }) => view({ trip, line }).days.map(day => dayStops(trip, line, day).map(stop => stop.point.label));
+        const line = await refresh(trip);
+        expect(days({ trip, line })).toEqual([['Out'], ['Back']]);
+        expect(days(await applyQueryChanges(trip, line, [{op:'reverse'}], refresh))).toEqual([['Back'], ['Out']]);
     });
     it('refreshes live geometry between edits and preserves the original on a routing failure', async () => {
         const base = testTrip(), inner: Coordinate[] = [[7.7, 47.4], [7.5, 47.1]];

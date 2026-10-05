@@ -1,7 +1,7 @@
 import { movingSecondsAt, type RoutingLine } from './routing';
 import { profileAscent, profileDescent } from './profile-data';
 import { ridingProfiles } from './riding-profiles';
-import { cumulative, nearestOnLine, nearestProgress, type Coordinate } from './geo';
+import { cumulative, firstIndex, nearestOnLine, nearestProgress, segmentDistances, type Coordinate } from './geo';
 import type { PlaceCategory } from './poi-kinds';
 
 /** A vertex of a drawn leg; a third number is its elevation in metres. */
@@ -30,6 +30,9 @@ export interface RoutePoint {
     turnaround?: true;
     /** A line about the place, such as a route file's waypoint description. */
     note?: string;
+    /** The route point that ends the leg a marker belongs to. Where the route passes the marker more than once, the pass
+     * nearest that leg shows it. */
+    legEnd?: string;
 }
 export type Place = RoutePoint & {
     category: PlaceCategory;
@@ -329,14 +332,40 @@ function transferKm(stops: Stop[], from: number, to: number): number {
 
 /** Stops inside a day in route order, with kilometres from the day start. */
 export function dayStops(trip: Trip, line: RoutingLine | undefined, day: Pick<Day, 'from' | 'to'>): { point: RoutePoint; km: number }[] {
-    const { coordinates, stops } = planView(trip, line);
+    const layout = planView(trip, line), { stops } = layout;
     const total = stops.at(-1)?.distance ?? 0;
-    const markers = trip.points.filter(p => p.kind === 'marker').map(point => ({ point, distance: nearestProgress(coordinates, point.coordinate) * total }));
+    const markers = trip.points.filter(p => p.kind === 'marker').map(point => ({ point, distance: markerKm(layout, point) }));
     return [...stops.filter(stop => ['pass', 'waypoint', 'detour'].includes(stop.point.kind)), ...markers]
         // The first day also holds what lies at the start.
         .filter(stop => (stop.distance > day.from * total || !day.from) && stop.distance <= day.to * total)
         .sort((a, b) => a.distance - b.distance)
         .map(stop => ({ point: stop.point, km: stop.distance - day.from * total }));
+}
+
+/** A pass of the line at most this much farther from a marker than the nearest pass is a near pass (`specs/planner-plan.md`).
+ * Chosen: an out-and-back can ride the two sides of a river or of a dual carriageway. */
+const passKm = .1;
+
+// Kilometres along the line to a marker. Of the passes about as near as the nearest one, the pass whose leg is nearest in
+// route order to the marker's own leg wins, so a marker stays in its own day where the route passes it twice.
+function markerKm({ coordinates, stops }: Layout, marker: RoutePoint): number {
+    const passes = segmentDistances(coordinates, marker.coordinate), lengths = cumulative(coordinates);
+    if (!passes.length) return 0;
+    const own = stops.findIndex((stop, i) => i > 0 && stop.point.id === marker.legEnd);
+    const nearest = passes.reduce((km, pass) => Math.min(km, pass.km), Infinity);
+    const leg = (i: number) => Math.max(1, firstIndex(stops.length, k => stops[k].distance >= (lengths[i] + lengths[i + 1]) / 2));
+    let best = 0, rank = Infinity;
+    passes.forEach((pass, i) => {
+        if (pass.km > nearest + passKm) return;
+        const r = own > 0 ? Math.abs(leg(i) - own) : 0;
+        if (r < rank || (r === rank && pass.km < passes[best].km)) { best = i; rank = r; }
+    });
+    return lengths[best] + (lengths[best + 1] - lengths[best]) * passes[best].t;
+}
+
+/** A marker with the leg nearest to it on the line; without the line, a marker has no leg. */
+export function anchorMarker(trip: Trip, line: RoutingLine | undefined, marker: RoutePoint): RoutePoint {
+    return { ...marker, legEnd: line && orderedRoutePoints(trip).length > 1 ? nearestLegEnd(trip, line, marker.coordinate) : undefined };
 }
 
 /** Moves a provisional day end along the route, keeping a day of at least 1 km on both sides. */
@@ -443,22 +472,26 @@ export function pinNight(trip: Trip, line: RoutingLine | undefined, night: numbe
 /** A clicked point extends a single route at its end. On a trip it joins its nearest leg, so it stays in the day it lies in. */
 export function addClickedPoint(trip: Trip, line: RoutingLine | undefined, point: RoutePoint): Trip {
     if (trip.mode !== 'route') return addPointNear(trip, line, point);
-    return point.kind === 'marker' ? { ...trip, points: [...trip.points, point] } : intoLeg(trip, point, orderedRoutePoints(trip).at(-1)!.id);
+    return point.kind === 'marker' ? addPointNear(trip, line, point) : intoLeg(trip, point, orderedRoutePoints(trip).at(-1)!.id);
 }
 
 /** Adds a point in the leg nearest to it; the other points keep their order. */
 export function addPointNear(trip: Trip, line: RoutingLine | undefined, point: RoutePoint): Trip {
-    if (point.kind === 'marker') return { ...trip, points: [...trip.points, point] };
+    if (point.kind === 'marker') return { ...trip, points: [...trip.points, anchorMarker(trip, line, point)] };
     return intoLeg(trip, point, nearestLegEnd(trip, line, point.coordinate));
 }
 
 /** Replaces point `id` with `point`, which can have another kind and ID. A marker that becomes a route point joins its
- * nearest leg; a route point that becomes a marker leaves the route. */
+ * nearest leg; a route point that becomes a marker leaves the route, and it and the markers of its leg join the next leg. */
 export function replacePoint(trip: Trip, line: RoutingLine | undefined, id: string, point: RoutePoint): Trip {
     const old = trip.points.find(p => p.id === id);
-    if (old?.kind === 'marker' && point.kind !== 'marker') return addPointNear({ ...trip, points: trip.points.filter(p => p !== old) }, line, point);
-    const order = trip.routeOrder.map(other => other === id ? point.id : other);
-    return { ...trip, points: trip.points.map(p => p.id === id ? point : p), routeOrder: point.kind === 'marker' ? order.filter(other => other !== point.id) : order };
+    if (old?.kind === 'marker') return point.kind === 'marker' ? { ...trip, points: trip.points.map(p => p === old ? point : p) }
+        : addPointNear({ ...trip, points: trip.points.filter(p => p !== old) }, line, { ...point, legEnd: undefined });
+    const route = orderedRoutePoints(trip), order = trip.routeOrder.map(other => other === id ? point.id : other);
+    const legEnd = point.kind === 'marker' ? route[route.findIndex(p => p.id === id) + 1]?.id : point.id;
+    const placed = point.kind === 'marker' ? { ...point, legEnd } : point;
+    return { ...trip, points: trip.points.map(p => p.id === id ? placed : p.legEnd === id ? { ...p, legEnd } : p),
+        routeOrder: point.kind === 'marker' ? order.filter(other => other !== point.id) : order };
 }
 
 /** Inserts a shaping point into the leg that ends at `legEndId`. */

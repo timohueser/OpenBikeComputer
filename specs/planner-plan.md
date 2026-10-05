@@ -33,7 +33,8 @@ Required fields are `points`, `routeOrder`, `days`, `budget`, `target`, and `lim
 | `limit` | Finite non-negative number |
 | `mode` | Optional `route` or `trip` |
 | `name` | Optional signed-route name |
-| `bike`, `preset` | Optional activity and preset from the planner profile list |
+| `bike` | Optional activity: `road`, `gravel`, `touring`, `mtb` or `hiking` |
+| `preset` | Optional preset: `Balanced`, `Shorter` or `Less climbing` |
 | `startDate` | Optional valid calendar date in `YYYY-MM-DD` form |
 | `loop` | Optional `true`; the start also ends the route |
 | `restAfter` | Optional array of riding-day numbers from 1 to `days` |
@@ -53,6 +54,12 @@ third finite number, the elevation in metres. A transfer leg is a straight
 line that the rider does not ride, such as a train. It adds no ridden distance or time. Optional `turnaround`
 is `true` when the point turns the route back. Any point can have an optional string `note`, such as the
 description of a route file's waypoint.
+
+A marker can have a string `legEnd`: the ID of the route point that ends the leg the marker belongs
+to. In a loop, the start ends the closing leg. The route can pass a marker more than once. A pass at
+most 100 m farther from the marker than the nearest pass is a near pass. The planner shows the
+marker on the near pass whose leg is nearest, in route order, to the leg that ends at `legEnd`.
+Without `legEnd`, or when no leg ends at it, the planner shows the marker on the nearest pass.
 
 A night has integer `night` from 1 to `days - 1` and ID `night-N`, where `N` is
 that number. Night numbers are unique. Markers do not count as route points.

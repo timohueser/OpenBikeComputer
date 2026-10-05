@@ -17,6 +17,7 @@
     const selected = $derived(options.findIndex(option => option.value === value));
 
     function show() {
+        if (!options.length) return;
         active = Math.max(0, selected);
         prefix = '';
         open = true;
@@ -24,7 +25,7 @@
 
     function choose(index: number) {
         open = false;
-        if (options[index].value !== value) onChange(options[index].value);
+        if (options[index] && options[index].value !== value) onChange(options[index].value);
     }
 
     function keydown(event: KeyboardEvent) {

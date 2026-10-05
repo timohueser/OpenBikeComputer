@@ -16,7 +16,8 @@ extension PlannerPlan {
               let finishIndex = points.firstIndex(where: { $0.kind == .finish }) else { return nil }
         var points = points, order = routePoints.dropFirst().map(\.id)
         let night = points.filter { $0.kind == .night }.count + 1
-        let end = points[finishIndex].coordinate
+        let end = points[finishIndex].coordinate, finish = points[finishIndex].id
+        for index in points.indices where points[index].legEnd == finish { points[index].legEnd = "night-\(night)" }
         points[finishIndex].kind = .night
         points[finishIndex].night = night
         points[finishIndex].id = "night-\(night)"
@@ -32,7 +33,7 @@ extension PlannerPlan {
                                 leg: .drawn, drawn: Self.drawnLeg(from: here, along: day)))
         points += waypoints.enumerated().map { index, waypoint in
             PlanPoint(id: "day-\(night + 1)-waypoint-\(index + 1)", label: waypoint.name, coordinate: waypoint.coordinate,
-                      kind: .marker, placeKind: waypoint.category?.placeKind, note: waypoint.note)
+                      kind: .marker, placeKind: waypoint.category?.placeKind, note: waypoint.note, legEnd: "finish")
         }
         var plan = self
         plan.points = points

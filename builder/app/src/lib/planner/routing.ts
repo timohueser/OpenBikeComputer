@@ -107,6 +107,18 @@ async function post(path: keyof typeof timeoutMs, body: unknown, signal?: AbortS
     return data;
 }
 
+let region: Promise<string[]> | undefined;
+
+/** The profile IDs that the routing region serves (`GET /v1/region`), asked once a page; a failed request is asked again. */
+export function regionProfiles(): Promise<string[]> {
+    return region ??= (async () => {
+        const response = await fetch(`${endpoint}/v1/region`, { signal: AbortSignal.timeout(timeoutMs['/v1/route']) });
+        const profiles = (await response.json() as { profiles?: unknown } | null)?.profiles;
+        if (!response.ok || !Array.isArray(profiles) || !profiles.every(p => typeof p === 'string')) throw new Error('The routing service returned an invalid region.');
+        return profiles;
+    })().catch(error => { region = undefined; throw error; });
+}
+
 /** With `'only'`, the answer leaves out the primary route and can be empty. */
 export async function requestRoute(points: Coordinate[], profile: string, signal: AbortSignal, alternatives: boolean | 'only' = false, turnarounds: number[] = [],
     pins: { start_position?: string; end_position?: string } = {}): Promise<EngineRoute[]> {

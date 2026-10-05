@@ -118,7 +118,7 @@ struct PlannerPreviewModelTests {
         await model.calculateRoute()
         let initial = model.routePoints
         model.addPoint(cafe, kind: .marker)
-        #expect(model.routePoints == initial && model.markers.count == 1)
+        #expect(model.routePoints == initial && model.markers.map(\.legEnd) == ["titisee"])
         model.setPointKind(id: cafe.id, kind: .shape)
         await model.calculateRoute()
         let shaped = model.routePoints
@@ -345,11 +345,25 @@ struct PlannerPreviewModelTests {
             PlanPoint(id: "w", label: "Fountain", coordinate: at(8.0), kind: .waypoint, placeKind: "water"),
             PlanPoint(id: "night-2", label: "Hut", coordinate: at(8.05), kind: .night, night: 2),
             PlanPoint(id: "finish", label: "Titisee", coordinate: at(8.15), kind: .finish),
-            PlanPoint(id: "m", label: "View", coordinate: at(8.1), kind: .marker),
+            PlanPoint(id: "m", label: "View", coordinate: at(8.1), kind: .marker, legEnd: "finish"),
         ], mode: .trip, bike: "road", preset: "Shorter", routeOrder: ["night-1", "v", "w", "night-2"])
         let model = PlannerPreviewModel(plan: plan, service: PlannerTestSource())
         #expect(model.dayCount == 3 && model.activity == .road && model.preset == .shorter)
         #expect(model.exportPlan() == plan)
+    }
+
+    @Test func aReverseMovesEachMarkerToTheLegItNowLiesOn() {
+        let at = { (lon: Double) in Coordinate(latitude: 47.9, longitude: lon) }
+        let plan = PlannerPlan(points: [
+            PlanPoint(id: "start", label: "Home", coordinate: at(7.8), kind: .start),
+            PlanPoint(id: "night-1", label: "Turn", coordinate: at(7.9), kind: .night, night: 1),
+            PlanPoint(id: "finish", label: "Home", coordinate: at(7.8001), kind: .finish),
+            PlanPoint(id: "out", label: "Out", coordinate: at(7.85), kind: .marker, legEnd: "night-1"),
+            PlanPoint(id: "back", label: "Back", coordinate: at(7.85), kind: .marker, legEnd: "finish"),
+        ], mode: .trip, routeOrder: ["night-1"])
+        let model = PlannerPreviewModel(plan: plan, service: PlannerTestSource())
+        model.apply(.reverse)
+        #expect(model.exportPlan().markers.map(\.legEnd) == ["start", "night-1"])
     }
 
     @Test func onlyTheActivitiesOfTheReleaseAreOffered() async {

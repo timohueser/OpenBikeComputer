@@ -25,8 +25,9 @@ vi.mock('../../lib/planner/library', async original => ({
         async active() {
             const value: unknown = JSON.parse(stored.get('trip') ?? 'null'), trip = isTrip(value) ? value : undefined;
             if (!trip && stored.has('trip')) throw new Error('Saved plan is invalid. Open another plan or import a backup.');
-            return trip ? { ...newPlan(trip), revision: 1, versions: savedPlan?.versions ?? [] } : undefined;
+            return trip ? { ...newPlan(trip), revision: 1 } : undefined;
         }
+        async versions() { return []; }
         async save(plan: Plan) {
             stored.set('trip', JSON.stringify(plan.trip));
             savedPlan = { ...plan, revision: plan.revision + 1 };
@@ -72,6 +73,9 @@ afterEach(async () => {
     vi.unstubAllGlobals();
     document.body.replaceChildren();
 });
+
+/** The JSON bodies that the page posted, in order; a GET such as the routing region has none. */
+const bodies = () => vi.mocked(fetch).mock.calls.flatMap(([, init]) => init?.body ? [JSON.parse(String(init.body))] : []);
 
 function button(label: string, scope: ParentNode = document) {
     const found = [...scope.querySelectorAll('button')].find(button => (button.getAttribute('aria-label') ?? button.textContent?.trim()) === label);
@@ -185,7 +189,7 @@ describe('planner app transitions', () => {
     it('runs an open search again after a plan edit', async () => {
         await startApp(); await tick();
         await search('campsites');
-        const sent = () => vi.mocked(fetch).mock.calls.map(([, init]) => JSON.parse(String(init?.body))).filter(body => body.q === 'campsites');
+        const sent = () => bodies().filter(body => body.q === 'campsites');
         const before = sent().length;
         button('Map point: Basel').click(); await tick();
         button('Remove point').click(); await tick();
@@ -196,7 +200,7 @@ describe('planner app transitions', () => {
     it('sends no overnight query when the map pans', async () => {
         stored.set('trip', JSON.stringify({ ...JSON.parse(stored.get('trip')!), mode: 'trip' }));
         await startApp(); await tick();
-        const overnight = () => vi.mocked(fetch).mock.calls.filter(([, init]) => JSON.parse(String(init?.body)).q === 'sleep').length;
+        const overnight = () => bodies().filter(body => body.q === 'sleep').length;
         button('Open day 1: Basel to Overnight to choose').click(); await tick();
         await vi.waitFor(() => expect(overnight()).toBe(1));
         button('Pan map').click(); await tick();
@@ -219,8 +223,7 @@ describe('planner app transitions', () => {
         expect(row.classList.contains('highlighted')).toBe(false);
         pin.click(); await tick();
         await search('Döner');
-        const request = vi.mocked(fetch).mock.calls.find(([, init]) => JSON.parse(String(init?.body)).q === 'Döner');
-        expect(JSON.parse(String(request?.[1]?.body)).pointing).toBeUndefined();
+        expect(bodies().find(body => body.q === 'Döner').pointing).toBeUndefined();
         expect(document.querySelector('.meaning')?.textContent).toContain('In this map view');
     });
     it.each(['route', 'trip'] as const)('creates and clears a %s without routing incomplete drafts', async mode => {
@@ -309,8 +312,7 @@ describe('planner app transitions', () => {
         await startApp();
         await tick();
         await search('campsites');
-        const request = vi.mocked(fetch).mock.calls.find(([, init]) => JSON.parse(String(init?.body)).q === 'campsites');
-        const plan = JSON.parse(String(request?.[1]?.body)).plan;
+        const plan = bodies().find(body => body.q === 'campsites').plan;
         expect(plan.hours).toHaveLength(plan.coordinates.length);
         expect(plan.hours.at(-1)).toBeGreaterThan(0);
         const row = [...document.querySelectorAll<HTMLButtonElement>('.results button')].find(button => button.textContent?.includes(tilePlace.label))!;

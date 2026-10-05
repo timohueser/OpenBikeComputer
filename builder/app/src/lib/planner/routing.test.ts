@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calculateLine, profileId, requestAlternatives, requestRoute, routingKey, movingSecondsAt, type RouteTotals } from './routing';
+import { calculateLine, profileId, regionProfiles, requestAlternatives, requestRoute, routingKey, movingSecondsAt, type RouteTotals } from './routing';
 import { LegCache } from './route-legs';
 import { routeService } from '../../../test-support/planner/route-service';
 import { decodeRoutes, type AnswerRoute } from './route-answer';
-import { ridingProfiles, presetName, type BikeType } from './riding-profiles';
+import { presetName, presetNames, servedPresets, type BikeType } from './riding-profiles';
 import { surfaceRuns, surfaceWindow } from './surface-data';
 import { planView, removeRoutePoint, setEndpoint, type RoutePoint, type Trip } from './editor';
 import { cumulative, type Coordinate } from './geo';
@@ -29,14 +29,13 @@ function trip(): Trip {
 }
 afterEach(() => vi.unstubAllGlobals());
 describe('routing integration', () => {
-    it('round-trips every rider-visible preset through the routing API identifier', () => {
-        for (const [bike, profile] of Object.entries(ridingProfiles)) {
-            for (const preset of profile.presets) {
-                const id = profileId({ ...trip(), bike: bike as BikeType, preset });
-                expect(id.split('/')[0]).toBe(bike);
-                expect(presetName(id)).toBe(preset);
-            }
-        }
+    it('offers the presets of the profiles that the region serves, each with its own profile ID', async () => {
+        const profiles = ['gravel', 'gravel/shorter', 'hiking/less-climbing'];
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ package: 'test', profiles }) }));
+        const served = await regionProfiles();
+        expect([servedPresets('gravel', served), servedPresets('hiking', served), servedPresets('road', served), servedPresets('road', undefined)])
+            .toEqual([['Balanced', 'Shorter'], ['Less climbing'], [], presetNames]);
+        for (const id of profiles) expect(profileId({ ...trip(), bike: id.split('/')[0] as BikeType, preset: presetName(id) })).toBe(id);
         expect(profileId({ ...trip(), bike: 'road', preset: 'Quieter' })).toBe('road');
     });
     it('keeps directed shaping context in one request and preserves unknown elevation', async () => {

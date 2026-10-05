@@ -4,8 +4,12 @@
     import type { Plan } from '../../lib/planner/library';
     import Icon from './PlannerIcon.svelte';
 
-    let { plans, activeId, busy, error, gpxNames, onClose, onOpen, onRename, onDuplicate, onDelete, onDownload, onImport, onGpx }: {
-        plans: Plan[]; activeId: string; busy: boolean; error: string;
+    let { plans, unreadable, onDeleteUnreadable, activeId, busy, error, gpxNames, onClose, onOpen, onRename, onDuplicate, onDelete, onDownload, onImport, onGpx }: {
+        plans: Plan[];
+        /** Saved records that are not valid plans and are not listed. */
+        unreadable: number;
+        onDeleteUnreadable: () => void;
+        activeId: string; busy: boolean; error: string;
         /** The GPX files that wait for a choice, in day order. */
         gpxNames: string[] | null;
         onClose: () => void; onOpen: (plan: Plan) => void; onRename: (plan: Plan, name: string) => Promise<unknown>;
@@ -62,6 +66,10 @@
     }} />
     <button type="button" class="planner-action" disabled={busy} onclick={() => picker.click()}>Import plan or GPX</button>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
+    {#if unreadable}
+        <p class="error">{unreadable === 1 ? '1 saved plan cannot be read. It is not in the list.' : `${unreadable} saved plans cannot be read. They are not in the list.`}
+            <button type="button" class="planner-action quiet" disabled={busy} onclick={onDeleteUnreadable}>Delete {unreadable === 1 ? 'it' : 'them'}</button></p>
+    {/if}
     {#if gpxNames}
         <section class="gpx" aria-label="Import GPX">
             {#if gpxNames.length > 1}

@@ -14,7 +14,7 @@ struct PlannerPlanTests {
                       placeKind: "camping", leg: .drawn, drawn: [RoutePoint(coordinate: at(8.05, 46.51), elevationMeters: 612), RoutePoint(coordinate: at(8.07, 46.52))]),
             PlanPoint(id: "v", label: "Shaping point", coordinate: at(8.2), kind: .via, turnaround: true),
             PlanPoint(id: "finish", label: "Sion", coordinate: at(8.3), kind: .finish, leg: .transfer),
-            PlanPoint(id: "m", label: "View", coordinate: at(8.15, 46.6), kind: .marker, note: "Best at dusk"),
+            PlanPoint(id: "m", label: "View", coordinate: at(8.15, 46.6), kind: .marker, note: "Best at dusk", legEnd: "v"),
         ], mode: .route, bike: "gravel", preset: "Balanced", routeOrder: ["night-1", "v"])
 
         let json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(plan)) as? [String: Any])
@@ -28,6 +28,7 @@ struct PlannerPlanTests {
         #expect(points[1]["drawn"] as? [[Double]] == [[8.05, 46.51, 612], [8.07, 46.52]] && points[1]["placeKind"] as? String == "camping")
         #expect(points[2]["kind"] as? String == "via" && points[2]["turnaround"] as? Bool == true)
         #expect(points[3]["leg"] as? String == "transfer" && points[4]["note"] as? String == "Best at dusk" && points[0]["note"] == nil)
+        #expect(points[4]["legEnd"] as? String == "v" && points[0]["legEnd"] == nil)
 
         let decoded = try JSONDecoder().decode(PlannerPlan.self, from: JSONEncoder().encode(plan))
         #expect(decoded == plan)
@@ -80,11 +81,12 @@ struct PlannerPlanTests {
     }
 
     /// Imported files as days: a day that starts at the night before continues from it, a day that starts
-    /// far away gets a transfer leg, and shaping points and markers stay.
+    /// far away gets a transfer leg, and shaping points and markers stay, each marker on its own day's leg.
     @Test func importedDaysJoinAtTheirNightsWithATransferAcrossAGap() throws {
         let line = { (from: Double, to: Double) in stride(from: from, through: to, by: 0.005).map { RoutePoint(coordinate: self.at($0)) } }
-        let spring = Waypoint(index: 0, name: "Spring", distanceAlongMeters: 0, coordinate: at(8.03, 46.51), category: .water)
+        let spring = Waypoint(index: 0, name: "Spring", distanceAlongMeters: 0, coordinate: at(8.035, 46.51), category: .water)
         let shaped = try #require(PlannerPlan.shaped([at(8.02), at(8.03), at(8.04)], turnarounds: [1], waypoints: [spring]))
+        #expect(shaped.markers.map(\.legEnd) == ["finish"])
         let days = [try #require(PlannerPlan.keptLine(line(8.0, 8.02))), shaped, try #require(PlannerPlan.keptLine(line(8.10, 8.12)))]
 
         let plan = try #require(PlannerPlan.trip(days: days))
@@ -93,6 +95,7 @@ struct PlannerPlanTests {
         #expect(route.map(\.id) == ["start", "night-1", route[2].id, "night-2", "day-3", "finish"] && route[2].turnaround == true)
         #expect(route.map(\.leg) == [nil, .drawn, nil, nil, .transfer, .drawn])
         #expect(plan.markers.map(\.label) == ["Spring"] && plan.markers.map(\.placeKind) == ["water"])
+        #expect(plan.markers.map(\.legEnd) == ["night-2"])
     }
 
     /// One remaining day is still a trip; more days than a plan holds are no trip.

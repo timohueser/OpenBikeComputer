@@ -75,10 +75,13 @@ export async function applyQueryChanges(
       if (n >= planView(trip, line).days.length)
         throw new Error('The last day ends at the finish.');
       if (p.along !== undefined) {
-        trip = {
+        // A pinned night of that day leaves the route, so the split uses the line without it.
+        const pinned = `night-${n}`;
+        trip = await refresh({
           ...trip,
-          points: trip.points.filter((p) => p.kind !== 'night' || p.night !== n),
-        };
+          points: trip.points.filter((p) => p.id !== pinned),
+          routeOrder: trip.routeOrder.filter((id) => id !== pinned),
+        });
         trip = setSplit(trip, line, n, p.along / total);
         if (Math.abs((trip.splits?.[n] ?? -1) - p.along / total) > 1e-6)
           throw new Error(
@@ -128,8 +131,15 @@ export async function applyQueryChanges(
         );
       // A point holds the leg that ends at it, so each leg moves to the point it now ends at.
       // A loop keeps its start, which lists last again and holds the closing leg.
-      const order = orderedRoutePoints(trip).reverse();
+      const before = orderedRoutePoints(trip), order = before.slice().reverse();
       const kept = trip.loop ? order.slice(0, -1) : order;
+      // Pinning finds a night by its id `night-N`.
+      const renamed = (p: RoutePoint) => (p.night ? `night-${trip.days - p.night}` : p.id);
+      // A marker's leg now ends at the point that started it.
+      const legEnd = (marker: RoutePoint) => {
+        const end = before.findIndex((p, i) => i > 0 && p.id === marker.legEnd);
+        return end > 0 ? renamed(before[end - 1]) : marker.legEnd;
+      };
       const legInto = (i: number) => ({
         leg: order[i - 1].leg,
         drawn: order[i - 1].drawn?.slice().reverse(),
@@ -138,12 +148,14 @@ export async function applyQueryChanges(
         ...p,
         ...(i ? legInto(i) : trip.loop ? legInto(order.length - 1) : { leg: undefined, drawn: undefined }),
         kind: i === 0 ? 'start' : !trip.loop && i === kept.length - 1 ? 'finish' : p.kind,
-        // Pinning finds a night by its id `night-N`.
-        ...(p.night ? { id: `night-${trip.days - p.night}`, night: trip.days - p.night } : {}),
+        ...(p.night ? { id: renamed(p), night: trip.days - p.night } : {}),
       }));
       trip = {
         ...trip,
-        points: [...points, ...trip.points.filter((p) => p.kind === 'marker')],
+        points: [
+          ...points,
+          ...trip.points.filter((p) => p.kind === 'marker').map((p) => ({ ...p, legEnd: legEnd(p) })),
+        ],
         routeOrder: points.slice(1, trip.loop ? undefined : -1).map((p) => p.id),
         splits: Object.fromEntries(
           Object.entries(trip.splits ?? {}).map(([n, p]) => [

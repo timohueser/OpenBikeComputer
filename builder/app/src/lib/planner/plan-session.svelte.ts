@@ -1,5 +1,5 @@
 import { SvelteMap } from 'svelte/reactivity';
-import { emptyTrip, hasEndpoints, insertPoint, orderedRoutePoints, pinNight, planTitle, routeLegsAround, type RoutePoint, type Trip } from './editor';
+import { anchorMarker, emptyTrip, hasEndpoints, insertPoint, orderedRoutePoints, pinNight, planTitle, routeLegsAround, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
 import { importedTrip, planOnRoads, readTracks, type ImportedLine } from './gpx-import';
 import { downloadPlan, importPlan, newPlan, PlanLibrary, type Plan } from './library';
@@ -14,6 +14,7 @@ import { isTrip } from './trip-validation';
 import { versionSummary, type Version } from './versions';
 
 type Routed = { trip: Trip; line?: RoutingLine };
+type Created = { plan: Plan; versions?: Version[] };
 type PlaceName = (coordinate: Coordinate) => string | undefined;
 
 const historyLimit = 50;
@@ -25,11 +26,13 @@ function storageError(error: unknown): string {
     return error instanceof Error ? error.message : 'Could not save in this browser. Download your plan and try again.';
 }
 
-// A moved night keeps its number. Moving a point routes its drawn legs again.
+// A moved night keeps its number, and a moved marker takes the leg nearest to it. Moving a point routes its drawn legs again.
 function movedPoint(trip: Trip, line: RoutingLine | undefined, id: string, coordinate: Coordinate): Trip {
     const point = trip.points.find(p => p.id === id);
-    if (point?.kind === 'night') return routeLegsAround(pinNight(trip, line, point.night!, coordinate, point.label), id);
-    return routeLegsAround({ ...trip, points: trip.points.map(p => p.id === id ? { ...p, coordinate, label: p.autoLabel ? coordinateName(coordinate) : p.label } : p) }, id);
+    if (!point) return trip;
+    if (point.kind === 'night') return routeLegsAround(pinNight(trip, line, point.night!, coordinate, point.label), id);
+    const moved = { ...point, coordinate, label: point.autoLabel ? coordinateName(coordinate) : point.label };
+    return routeLegsAround({ ...trip, points: trip.points.map(p => p !== point ? p : p.kind === 'marker' ? anchorMarker(trip, line, moved) : moved) }, id);
 }
 
 /**
@@ -37,8 +40,10 @@ function movedPoint(trip: Trip, line: RoutingLine | undefined, id: string, coord
  * page shows it and calls its commands. A change of the points starts the calculation of the new line.
  */
 export class PlanSession {
-    /** The saved record of the trip: its id, name, revision and versions. */
+    /** The saved record of the trip: its id, name and revision. */
     plan = $state.raw<Plan>(newPlan(emptyTrip()));
+    /** The saved versions of the plan, newest first. */
+    versions = $state.raw<Version[]>([]);
     /** The library has opened, or failed to open. */
     ready = $state(false);
     /** A library action or a version save runs. */
@@ -46,6 +51,8 @@ export class PlanSession {
     savedAt = $state<number | null>(null);
     saveError = $state('');
     plans = $state.raw<Plan[]>([]);
+    /** Records of the library that are not valid plans; `plans` leaves them out. */
+    unreadable = $state(0);
     libraryError = $state('');
     /** GPX files read and waiting for the rider to keep their lines or plan them on roads. */
     gpxLines = $state.raw<ImportedLine[] | null>(null);
@@ -105,7 +112,10 @@ export class PlanSession {
         try {
             this.library = new PlanLibrary(factory);
             const plan = await this.library.active();
-            if (plan && !this.closed) this.install(plan);
+            if (plan) {
+                const versions = await this.library.versions(plan.id);
+                if (!this.closed) this.install(plan, versions);
+            }
         } catch (error) { this.saveError = storageError(error); }
         finally { this.ready = true; }
     }
@@ -207,16 +217,18 @@ export class PlanSession {
         this.route(true);
     }
 
-    /** Saves the trip. Writes run in order. A failed write shows its error until a later write succeeds. */
-    save(): Promise<void> {
+    /** Saves the trip, and `versions` when given. Writes run in order. A failed write shows its error until a later write
+     * succeeds. */
+    save(versions?: Version[]): Promise<void> {
         if (!this.ready) return Promise.resolve();
         const plan = this.plan = this.snapshot();
         if (!plan.trip.points.length && !plan.revision) return Promise.resolve();
         const library = this.library;
-        this.lastSave = library ? library.save(plan).then(async saved => {
+        this.lastSave = library ? library.save(plan, versions).then(async saved => {
             await library.activate(saved.id);
             if (this.plan.id !== saved.id) return;
             this.plan = { ...this.plan, revision: saved.revision };
+            if (versions) this.versions = versions;
             this.savedAt = saved.updatedAt;
             this.saveError = '';
             this.plans = this.plans.map(p => p.id === saved.id ? saved : p);
@@ -228,23 +240,21 @@ export class PlanSession {
 
     /** Saves the versions of the plan; a failed save keeps the versions it had. */
     async saveVersions(versions: Version[]): Promise<void> {
-        const before = this.plan.versions;
         this.busy = true;
-        this.plan = { ...this.plan, versions };
-        try { await this.save(); }
-        catch (error) { this.plan = { ...this.plan, versions: before }; throw error; }
+        try { await this.save(versions); }
         finally { this.idle(); }
     }
 
-    /** Downloads a plan of the library; the open plan with its latest edits. */
-    download(plan: Plan = this.plan): void {
-        downloadPlan(plan.id === this.plan.id ? this.snapshot() : plan);
+    /** Downloads a plan of the library; the open plan with its latest edits, also when the library fails. */
+    async download(plan: Plan = this.plan): Promise<void> {
+        if (plan.id === this.plan.id) downloadPlan(this.snapshot(), this.versions);
+        else await this.act(async library => downloadPlan(plan, await library.versions(plan.id)));
     }
 
     listPlans(): Promise<boolean> {
         return this.act(async library => {
             await this.lastSave.catch(() => {});
-            this.plans = await library.list();
+            await this.list(library);
         });
     }
 
@@ -254,8 +264,9 @@ export class PlanSession {
             try { await this.lastSave; } catch { if (!discard()) return false; }
             const latest = await library.get(plan.id);
             if (!latest) throw new Error('This plan was deleted. Reopen My plans.');
+            const versions = await library.versions(latest.id);
             await library.activate(latest.id);
-            this.install(latest);
+            this.install(latest, versions);
         });
     }
 
@@ -265,13 +276,22 @@ export class PlanSession {
             const active = plan.id === this.plan.id;
             const saved = await library.save({ ...(active ? this.snapshot() : plan), name, updatedAt: Date.now() });
             if (active) this.plan = { ...this.plan, name, revision: saved.revision };
-            this.plans = await library.list();
+            await this.list(library);
         });
     }
 
     duplicate(plan: Plan): Promise<boolean> {
-        const source = plan.id === this.plan.id ? this.snapshot() : plan;
-        return this.create(() => newPlan(source.trip, `${source.name || planTitle(source.trip)} (copy)`, source.versions));
+        const open = plan.id === this.plan.id, source = open ? this.snapshot() : plan;
+        return this.create(async library => ({ plan: newPlan(source.trip, `${source.name || planTitle(source.trip)} (copy)`),
+            versions: open ? this.versions : await library.versions(plan.id) }));
+    }
+
+    /** Deletes the records of the library that are not valid plans. */
+    removeUnreadable(): Promise<boolean> {
+        return this.act(async library => {
+            await library.removeUnreadable();
+            await this.list(library);
+        });
     }
 
     /** Deletes a plan; deleting the open plan opens a new empty one. */
@@ -280,8 +300,8 @@ export class PlanSession {
             await this.lastSave.catch(() => {});
             const active = plan.id === this.plan.id;
             await library.remove(active ? this.plan : plan);
-            if (active) this.install(newPlan(emptyTrip(this.trip.mode)));
-            this.plans = await library.list();
+            if (active) this.install(newPlan(emptyTrip(this.trip.mode)), []);
+            await this.list(library);
         });
     }
 
@@ -309,14 +329,14 @@ export class PlanSession {
             const planned = roads ? await planOnRoads(lines, line => requestShape(line, profileId(this.trip))) : { lines, failed: [] };
             const trip = importedTrip(this.trip, planned.lines);
             failed = planned.failed;
-            return newPlan({ ...trip, points: trip.points.map(p => p.kind === 'via' || p.kind === 'marker' ? p : { ...p, label: placeName(p.coordinate) ?? p.label }) }, lines[0].name);
+            return { plan: newPlan({ ...trip, points: trip.points.map(p => p.kind === 'via' || p.kind === 'marker' ? p : { ...p, label: placeName(p.coordinate) ?? p.label }) }, lines[0].name) };
         });
         return done ? failed : undefined;
     }
 
     async planSignedRoute(route: CatalogRecord, plan: RoutePlan, placeName: PlaceName): Promise<boolean> {
         const trip = planTrip(routeBase(route, this.trip), plan, route.loop);
-        const done = await this.create(() => newPlan({ ...trip, points: trip.points.map(p => p.kind === 'start' || p.kind === 'finish' ? { ...p, label: placeName(p.coordinate) ?? p.label } : p) }));
+        const done = await this.create(() => ({ plan: newPlan({ ...trip, points: trip.points.map(p => p.kind === 'start' || p.kind === 'finish' ? { ...p, label: placeName(p.coordinate) ?? p.label } : p) }) }));
         if (!done) this.saveError = this.libraryError;
         return done;
     }
@@ -326,7 +346,7 @@ export class PlanSession {
         const done = await this.act(async library => {
             await this.lastSave;
             await library.activate(null);
-            this.install(newPlan({ ...emptyTrip(this.trip.mode), bike: this.trip.bike, preset: this.trip.preset }));
+            this.install(newPlan({ ...emptyTrip(this.trip.mode), bike: this.trip.bike, preset: this.trip.preset }), []);
         });
         if (!done) this.saveError = this.libraryError;
         return done;
@@ -358,20 +378,25 @@ export class PlanSession {
         if (this.unsaved) { this.unsaved = false; this.autosave(); }
     }
 
-    private create(make: () => Plan | Promise<Plan>): Promise<boolean> {
+    private create(make: (library: PlanLibrary) => Created | Promise<Created>): Promise<boolean> {
         return this.act(async library => {
-            const plan = await make();
+            const { plan, versions = [] } = await make(library);
             await this.lastSave;
-            const saved = await library.save(plan);
+            const saved = await library.save(plan, versions);
             await library.activate(saved.id);
-            this.install(saved);
-            this.plans = await library.list();
+            this.install(saved, versions);
+            await this.list(library);
         });
     }
 
-    private install(plan: Plan): void {
+    private async list(library: PlanLibrary): Promise<void> {
+        ({ plans: this.plans, unreadable: this.unreadable } = await library.list());
+    }
+
+    private install(plan: Plan, versions: Version[]): void {
         this.cancelPreview();
         this.plan = plan;
+        this.versions = versions;
         this.last = null;
         this.options = null;
         this.savedAt = plan.revision ? plan.updatedAt : null;
