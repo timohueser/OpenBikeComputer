@@ -25,8 +25,9 @@ vi.mock('../../lib/planner/library', async original => ({
         async active() {
             const value: unknown = JSON.parse(stored.get('trip') ?? 'null'), trip = isTrip(value) ? value : undefined;
             if (!trip && stored.has('trip')) throw new Error('Saved plan is invalid. Open another plan or import a backup.');
-            return trip ? { ...newPlan(trip), revision: 1, versions: savedPlan?.versions ?? [] } : undefined;
+            return trip ? { ...newPlan(trip), revision: 1 } : undefined;
         }
+        async versions() { return []; }
         async save(plan: Plan) {
             stored.set('trip', JSON.stringify(plan.trip));
             savedPlan = { ...plan, revision: plan.revision + 1 };

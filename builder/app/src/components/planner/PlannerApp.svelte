@@ -958,14 +958,14 @@
     </header>
     {#key planId}
     <TripBar
-        {trip} line={session.line} name={session.plan.name} versions={session.plan.versions} ready={session.ready && !session.busy} canUndo={session.canUndo} canRedo={session.canRedo} draftSavedAt={session.savedAt} draftError={session.saveError}
+        {trip} line={session.line} name={session.plan.name} versions={session.versions} ready={session.ready && !session.busy} canUndo={session.canUndo} canRedo={session.canRedo} draftSavedAt={session.savedAt} draftError={session.saveError}
         onNew={newPlan} onChange={changeTrip} onUndo={undo} onRedo={redo} onRestore={restoreVersion}
         onVersions={changeVersions} onLibrary={openLibrary}
     />
     {/key}
     <main aria-busy={!session.ready}>
         {#if libraryOpen}
-            <LibraryPanel plans={session.plans} activeId={planId} busy={session.busy} error={session.libraryError}
+            <LibraryPanel plans={session.plans} unreadable={session.unreadable} activeId={planId} busy={session.busy} error={session.libraryError}
                 onClose={() => libraryOpen = false} onOpen={openPlan} onRename={(plan, name) => session.rename(plan, name)} onDuplicate={plan => session.duplicate(plan)}
                 onDelete={deletePlan} onImport={importFiles} gpxNames={session.gpxLines?.map(line => line.name) ?? null}
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />

@@ -73,7 +73,7 @@ describe('GPX import', () => {
         const markers = [{ kind: 'marker', label: 'Spring & bench', coordinate: [7.61, 47.501], note: 'Cold water' }, { kind: 'marker', label: 'Marker', coordinate: [7.62, 47.499] }];
         expect(trip.points.filter(p => p.kind === 'marker')).toMatchObject(markers);
         expect(trip.points.at(-1)).not.toHaveProperty('note');
-        expect(importPlan(exportPlan(newPlan(trip, 'ride'))).trip.points.filter(p => p.kind === 'marker')).toMatchObject(markers);
+        expect(importPlan(exportPlan(newPlan(trip, 'ride'), [])).plan.trip.points.filter(p => p.kind === 'marker')).toMatchObject(markers);
     });
 
     it('rejects more files than a trip has days', () => {
