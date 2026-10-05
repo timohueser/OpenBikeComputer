@@ -207,9 +207,6 @@ struct LodDocument {
     min_area_px: Option<f64>,
     #[serde(default = "default_false_document")]
     #[schemars(default = "default_false_document")]
-    coverage_simplify: Option<bool>,
-    #[serde(default = "default_false_document")]
-    #[schemars(default = "default_false_document")]
     semantic_coverage: Option<bool>,
     #[serde(default = "default_zero_f64_document")]
     #[schemars(default = "default_zero_f64_document")]
@@ -286,7 +283,6 @@ fn default_lods_document() -> Option<Vec<LodDocument>> {
         line_simplify: None,
         merge_line_trails: Some(false),
         min_area_px: Some(0.0),
-        coverage_simplify: Some(false),
         semantic_coverage: Some(false),
         min_line_km: Some(0.0),
     }])
@@ -614,12 +610,6 @@ pub struct Lod {
     /// `max_mpp` — is dropped from this tier. Lines are never culled, and the finest tier is never
     /// culled because it has no finer fallback. See [`crate::geom::footprint_below`].
     pub min_area_px: f64,
-    /// Simplify this tier's plain fills as one polygonal coverage instead of feature by feature
-    /// ([`crate::coverage`]), which also turns [`Lod::min_area_px`] from a drop into an elimination:
-    /// a face under it joins its longest neighbour rather than leaving a hole in the tiling. Every
-    /// boundary two fills share is cut once, so neighbouring classes stay glued at any `simplify_m`.
-    /// Only polygons whose style carries no `color2` take part.
-    pub coverage_simplify: bool,
     /// Replace classified thematic fills with the fixed semantic-grid generalisation. The algorithm
     /// has intentionally fixed cartographic constants; this flag selects it and exposes no second
     /// set of simplification knobs.
@@ -768,7 +758,6 @@ impl Config {
                 line_simplify_m: 0.0,
                 merge_line_trails: false,
                 min_area_px: 0.0,
-                coverage_simplify: false,
                 semantic_coverage: false,
                 min_line_km: 0.0,
             }],
@@ -784,11 +773,6 @@ impl Config {
         let chunk_size = document.chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE);
         let merge_fills = document.merge_fills.unwrap_or(false);
         let merge_lines = document.merge_lines.unwrap_or(false);
-        if let Some(i) = lods.iter().position(|lod| lod.coverage_simplify && lod.semantic_coverage) {
-            return Err(format!(
-                "config lods[{i}]: coverage_simplify and semantic_coverage are alternative polygon pipelines"
-            ));
-        }
         if lods.iter().any(|lod| lod.semantic_coverage && lod.max_mpp.is_none())
             && !lods.iter().any(|lod| lod.semantic_coverage && lod.max_mpp.is_some())
         {
@@ -969,7 +953,6 @@ impl LodDocument {
             line_simplify_m,
             merge_line_trails: self.merge_line_trails.unwrap_or(false),
             min_area_px,
-            coverage_simplify: self.coverage_simplify.unwrap_or(false),
             semantic_coverage,
             min_line_km,
         })
@@ -1120,20 +1103,9 @@ fn annotate_definitions(defs: &mut Map<String, Value>) {
             .into(),
     );
     lod_props["min_area_px"]["description"] = Value::String(
-        "Drop polygons below this many square pixels; 0 means no culling. Ignored on the finest tier. On a \
-         coverage_simplify tier it is an *elimination* threshold instead: a face this small is absorbed into the \
-         neighbour it shares the longest boundary with, so the ground stays covered."
-            .into(),
+        "Drop polygons below this many square pixels; 0 means no culling. Ignored on the finest tier.".into(),
     );
     lod_props["min_area_px"]["minimum"] = Value::from(0.0);
-    lod_props["coverage_simplify"]["description"] = Value::String(
-        "Simplify this tier's plain fills (polygons with no color2) as one shared coverage rather than feature by \
-         feature, so a boundary two fills share is simplified once and neighbours stay glued instead of tearing open \
-         into backdrop slivers. Also turns min_area_px from a drop into an elimination: a face under it joins its \
-         largest neighbour rather than leaving a hole. Costs bake time; false (the default) packs byte-identically \
-         to before."
-            .into(),
-    );
     lod_props["semantic_coverage"]["description"] = Value::String(
         "Replace the tier's classified land-cover fills with the approved 2-pixel semantic grid: localized class \
          weight is conserved, shared boundaries are smoothed at bake time, and water is handled by a separate \
@@ -1479,7 +1451,6 @@ mod tests {
         );
         assert!(cfg.lods[..=8].iter().all(|lod| lod.semantic_coverage));
         assert!(cfg.lods[9..].iter().all(|lod| !lod.semantic_coverage));
-        assert!(cfg.lods.iter().all(|lod| !lod.coverage_simplify));
         assert!(cfg.lods[..2].iter().all(|lod| lod.min_line_km == 1.0));
         assert!(cfg.lods[2..].iter().all(|lod| lod.min_line_km == 0.0));
         assert_eq!((cfg.lods[0].line_simplify_m, cfg.lods[1].line_simplify_m), (1400.0, 1400.0));
@@ -1622,26 +1593,7 @@ mod tests {
         assert_eq!((cfg.marker_color, cfg.chunk_size), (DEFAULT_MARKER_COLOR, DEFAULT_CHUNK_SIZE));
         assert_eq!(cfg.lods.len(), 1);
         assert_eq!((cfg.lods[0].max_mpp, cfg.lods[0].simplify_m, cfg.lods[0].min_area_px), (None, 0.0, 0.0));
-        assert!(!cfg.lods[0].coverage_simplify, "the coverage pass is opt-in per tier");
         assert!(!cfg.merge_fills && !cfg.merge_lines);
-    }
-
-    /// The per-tier `coverage_simplify` knob: absent and `null` are both off, `true` reaches the
-    /// parsed ladder, and the schema's advertised default is the parser's.
-    #[test]
-    fn lod_coverage_simplify_defaults_off_and_parses() {
-        let ladder = |json: &str| Config::parse(json).expect("ladder parses").lods;
-        assert!(!ladder(r#"{"lods":[{"simplify":10}]}"#)[0].coverage_simplify, "absent ⇒ off");
-        assert!(!ladder(r#"{"lods":[{"simplify":10,"coverage_simplify":null}]}"#)[0].coverage_simplify, "null ⇒ off");
-        let mixed = ladder(r#"{"lods":[{"simplify":200,"coverage_simplify":true},{"max_mpp":30,"simplify":10}]}"#);
-        assert!(mixed[0].coverage_simplify, "on for the coarse tier");
-        assert!(!mixed[1].coverage_simplify, "and off for the next one — it is per tier, not global");
-        assert!(
-            Config::parse(r#"{"lods":[{"coverage_simplify":"yes"}]}"#).is_err(),
-            "a non-boolean must error rather than read as true"
-        );
-        let lod_props = &embedded_schema()["$defs"]["lod"]["properties"];
-        assert_eq!(lod_props["coverage_simplify"]["default"], Value::Bool(false), "the editor must not offer it on");
     }
 
     #[test]
@@ -1784,10 +1736,6 @@ mod tests {
 
     #[test]
     fn semantic_and_trail_modes_reject_ambiguous_or_inert_configurations() {
-        assert!(Config::parse(
-            r#"{"lods":[{"max_mpp":100,"simplify":100,"semantic_coverage":true,"coverage_simplify":true}]}"#
-        )
-        .is_err());
         assert!(Config::parse(r#"{"lods":[{"simplify":100,"semantic_coverage":true}]}"#).is_err());
         assert!(Config::parse(r#"{"lods":[{"merge_line_trails":true}]}"#).is_err());
         assert!(Config::parse(r#"{"merge_lines":true,"lods":[{"merge_line_trails":true}]}"#).is_ok());

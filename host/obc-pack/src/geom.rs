@@ -117,29 +117,6 @@ fn ring_area_deg2(ring: &[(f64, f64)]) -> f64 {
     (a * 0.5).abs()
 }
 
-/// A geometry's projected area in square pixels at `mpp` — what [`footprint_below`] compares
-/// against a threshold, exposed for the callers that need the number rather than the verdict. Lines
-/// and empties have no area; a `Multi` sums its parts. Mid-latitude foreshortening, so a face and a
-/// whole feature are measured on the same scale.
-pub fn footprint_area_px(g: &Geom, mpp: f64) -> f64 {
-    if mpp <= 0.0 || g.is_empty() {
-        return 0.0;
-    }
-    match g {
-        Geom::Empty | Geom::Line(_) => 0.0,
-        Geom::Multi(parts) => parts.iter().map(|p| footprint_area_px(p, mpp)).sum(),
-        Geom::Polygon { exterior, interiors } => {
-            let (_, miny, _, maxy) = g.bounds();
-            let (lon_ppd, lat_ppd) = px_per_deg(0.5 * (miny + maxy), mpp);
-            let mut area = ring_area_deg2(exterior);
-            for hole in interiors {
-                area -= ring_area_deg2(hole);
-            }
-            area.max(0.0) * lon_ppd * lat_ppd
-        }
-    }
-}
-
 /// Minimum-area cull for a coarse LOD: `true` when a polygon feature's projected area (exterior
 /// minus holes) is below `min_area_px` square pixels at `mpp`, so this tier should drop it.
 ///
