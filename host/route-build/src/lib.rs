@@ -88,7 +88,7 @@ pub fn prepare(
         region,
         bounds,
         source_sha256,
-        attribution: "© OpenStreetMap contributors; ODbL 1.0".into(),
+        attribution: obc_data::sources::attribution("osm-planet").into(),
         warnings: graph.warnings.clone(),
         roads,
         graph: route_engine::base::write_topology(roads, &edges, &mut write)?,

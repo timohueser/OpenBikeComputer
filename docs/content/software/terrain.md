@@ -212,21 +212,18 @@ and [OBCC section 13](src:specs/OBCC_Spec.md) for the catalog contract.
 
 ## Attribution
 
-The data requires this attribution:
-
-> produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved
-
-The text is stored once, in
-[`COPERNICUS_ATTRIBUTION`](src:host/obc-dem/src/lib.rs), and the bakery copies it into the catalog
-terrain block, so every consumer reads it from the catalog and none of them hard-codes it. A map
-with terrain-derived contours needs it too.
+The data requires an exact attribution. The text is stored once, as the `copernicus-glo-30`
+entry of the [source registry](src:data/sources.toml), and the bakery copies it into the catalog
+terrain block, so every consumer reads it from the catalog and none of them hard-codes it. The
+device About page is the one exception: it shows the text pre-wrapped, and a test compares it with
+the registry. A map with terrain-derived contours needs the attribution too.
 
 A map with [crest lifts](#crest-lifts) also carries the attribution of each finer model it used.
 The catalog lists those models with their required credit and license, copied from the reference
 archive that holds the wording. A consumer that shows one shows all of them. The map builder shows
 them on the map summary card.
 
-Map data remains © OpenStreetMap contributors.
+Map data carries the OpenStreetMap credit of the same registry.
 
 ## Implementation
 

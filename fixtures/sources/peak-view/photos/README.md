@@ -73,10 +73,9 @@ stripped in transit, so neither the lens nor the capture time is in the files.
 ## Licences and attribution
 
 - **Photographs**: © Timo Hüser, CC BY 4.0.
-- **`engelberg.obcd`**, Copernicus DEM GLO-30: produced using Copernicus WorldDEM-30 © DLR e.V.
-  2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the
-  European Union and ESA; all rights reserved.
-- **`engelberg.obcd`** crest lifts, swissALTI3D 2 m: © swisstopo. Open data, attribution required.
+- **`engelberg.obcd`**, Copernicus DEM GLO-30: the `copernicus-glo-30` credit of
+  [`data/sources.toml`](../../../../data/sources.toml).
+- **`engelberg.obcd`** crest lifts, swissALTI3D 2 m: the `dtm-ch` credit of the same file.
   Vertical datum LN02/LHN95.
 - **`photos/<name>.json`**: project-authored, GPL-3.0-only, derived from the photographs and from
   the two elevation sources above.

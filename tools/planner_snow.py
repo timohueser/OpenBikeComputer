@@ -31,20 +31,18 @@ import urllib.request
 
 import numpy as np
 
-from . import planner_maps as maps
+from . import data_registry, planner_maps as maps
 
 NO_SNOW, FULL, NO_DATA = 253, 254, 255
 LAST_STEP = 182
 TILE = 256
-RECIPES = maps.ROOT / "tools/planner-regions"
 # `canopy`: MODIS sees the canopy, not the snow under it. The Copernicus input corrects for trees.
 # `smooth`: 20 m day values are noisy, so the lower zooms smooth them before they blend.
 SOURCES = {
     "nasa-modis": {"resolution_m": 500, "canopy": True, "smooth": False,
-                   "attribution": "NASA MODIS snow cover MOD10A1/MYD10A1 (NSIDC); tree canopy: Hansen/UMD/Google/USGS/NASA"},
+                   "attribution": f"{data_registry.attribution('modis-snow')}; tree canopy: {data_registry.attribution('hansen-gfc')}"},
     "copernicus-hr-wsi": {"resolution_m": 20, "canopy": False, "smooth": True,
-                          "attribution": f"© European Union, Copernicus Land Monitoring Service {dt.date.today().year}, "
-                                         "European Environment Agency (EEA): HR-WSI Snow Phenology"},
+                          "attribution": data_registry.attribution("hr-wsi", year=dt.date.today().year)},
 }
 CANOPY = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-{0}/Hansen_GFC-2023-{0}_treecover2000_{{}}.tif".format(maps.PINS["hansen-gfc"])
 # The owner chose 75 % canopy cover as "dense": below it, MODIS still sees the snow between the trees.
@@ -535,15 +533,15 @@ def copernicus_planes(files, bounds, seasons):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("region", help="region name: the recipe in tools/planner-regions and the default output folder")
-    parser.add_argument("--bounds", type=maps.bounds, help="west,south,east,north instead of the recipe bounds")
+    parser.add_argument("region", help="region id: a box region in data/regions/ and the default output folder")
+    parser.add_argument("--bounds", type=maps.bounds, help="west,south,east,north instead of the box of the region in data/regions/")
     parser.add_argument("--output", type=Path, help="default: ~/.cache/obc/planner/REGION/maps/snow.pmtiles")
     parser.add_argument("--source", choices=SOURCES, default="nasa-modis")
     parser.add_argument("--first-season", type=int, default=2000, help="the first NASA season")
     parser.add_argument("--last-season", type=int, default=2024, help="the last NASA season (2024 ends in June 2025)")
     parser.add_argument("--trails", action="store_true", help="report the share of OSM path and track length with no data in every season")
     args = parser.parse_args()
-    bounds = args.bounds or json.loads((RECIPES / f"{args.region}.json").read_text())["bounds"]
+    bounds = args.bounds or data_registry.region_box(args.region)
     output = args.output or Path.home() / ".cache/obc/planner" / args.region / "maps/snow.pmtiles"
     start = time.monotonic()
     if args.source == "copernicus-hr-wsi":

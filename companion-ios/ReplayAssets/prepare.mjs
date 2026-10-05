@@ -22,7 +22,8 @@ for (const name of ['poi-kinds', 'map-style']) {
   }).outputText);
 }
 // OBCNativeMapView replaces these placeholders and sets the terrain bounds of the release.
-const config = { basemap: '__BASEMAP__', glyphs: '__GLYPHS__', sprites: '__SPRITES__', terrain_attribution: '__TERRAIN_ATTRIBUTION__' };
+const config = { basemap: '__BASEMAP__', glyphs: '__GLYPHS__', sprites: '__SPRITES__', terrain_attribution: '__TERRAIN_ATTRIBUTION__',
+  attribution: '__ATTRIBUTION__', landcover_attribution: '__LANDCOVER_ATTRIBUTION__' };
 const { mapStyle } = await import(new URL('map-style.mjs', cache).href);
 const { poiKinds } = await import(new URL('poi-kinds.mjs', cache).href);
 const maps = new URL('../Packages/OBCKit/Sources/OBCUI/Resources/Map/', import.meta.url);

@@ -1,7 +1,6 @@
 {
   "format": 1,
   "region": "colorado-front-range",
-  "name": "Colorado Front Range",
   "access": "DE",
   "countries": [
     "US"
@@ -23,12 +22,6 @@
     "touring",
     "touring/less-climbing",
     "touring/shorter"
-  ],
-  "bounds": [
-    -105.95,
-    39.95,
-    -105.45,
-    40.45
   ],
   "osm": {
     "url": "https://maps.openbikecomputer.com/planner/sources/e7f7277d3b1aad23e98f15eeba3731081c16f983831b5cf05ac4e3c8740c8669.osm.pbf",

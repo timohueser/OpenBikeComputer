@@ -65,9 +65,5 @@ stays centred in the requested crop while the viewport stays inside the file hea
 
 ## Attribution
 
-Anything derived from `teningen-preview.obcd` must carry *"produced using Copernicus WorldDEM-30
-© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by
-the European Union and ESA; all rights reserved"*. The string lives once, in
-`obc_elevation::COPERNICUS_ATTRIBUTION`.
-
-OSM data is under ODbL-1.0, © OpenStreetMap contributors.
+Anything derived from `teningen-preview.obcd` must carry the `copernicus-glo-30` credit, and OSM
+data the `osm-planet` credit. Both live once, in [`data/sources.toml`](../../../data/sources.toml).

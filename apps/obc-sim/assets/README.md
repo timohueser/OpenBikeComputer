@@ -36,7 +36,5 @@ Check with `obc test -p obc-web-demo`, and build the landing page with
 
 ## Attribution
 
-OSM data is under ODbL-1.0, © OpenStreetMap contributors.
-
-Terrain is produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and
-Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved.
+OSM data carries the `osm-planet` credit and terrain the `copernicus-glo-30` credit. Both live
+once, in [`data/sources.toml`](../../../data/sources.toml).

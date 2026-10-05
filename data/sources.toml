@@ -10,7 +10,22 @@ licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
 attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
-fetch = { kind = "osm", url = "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf" }
+fetch = { kind = "http", url = "https://planet.openstreetmap.org/pbf/planet-{yymmdd}.osm.pbf" }
+version = "date"
+# The diffs of `osm-replication` bring an old planet up to date, so a new planet of about 84 GB
+# is seldom worth its download.
+refresh = 90
+redistribute = true
+
+# The daily diffs after the `osm-planet` pin of the environment.
+[[source]]
+id = "osm-replication"
+kind = "data"
+licence = "ODbL-1.0"
+licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
+attribution = "© OpenStreetMap contributors"
+obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
+fetch = { kind = "osm", url = "https://planet.openstreetmap.org/replication/day/", from = "osm-planet" }
 version = "date"
 refresh = 7
 redistribute = true
@@ -22,7 +37,7 @@ licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
 attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
-fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}-latest.osm.pbf" }
+fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}-{yymmdd}.osm.pbf" }
 version = "date"
 refresh = 7
 redistribute = true
@@ -459,7 +474,7 @@ id = "modis-snow"
 kind = "data"
 licence = "LicenseRef-NASA-EOSDIS"
 licence_url = "https://nsidc.org/data/mod10a1/versions/61"
-attribution = "MODIS MOD10A1 v061, Hall & Riggs, NASA NSIDC DAAC, doi:10.5067/MODIS/MOD10A1.061"
+attribution = "MODIS MOD10A1/MYD10A1 v061, Hall & Riggs, NASA NSIDC DAAC, doi:10.5067/MODIS/MOD10A1.061, doi:10.5067/MODIS/MYD10A1.061"
 obligations = "Cite the dataset"
 fetch = { kind = "capture", url = "https://planetarycomputer.microsoft.com/api/stac/v1/search" }
 version = "date"

@@ -100,8 +100,9 @@ def bake(region: str, work: Path, store: Store, bin_dir: Path, landmarks: Path |
     epoch = datetime.fromisoformat(source_timestamp.replace("Z", "+00:00")).timestamp()
     os.utime(pbf, (epoch, epoch))
     (local_source / (prefix + ".poly")).write_text(region + " validation crop\n1\n" + "".join(f" {lon} {lat}\n" for lon, lat in polygon) + "END\nEND\n")
-    regions = work / "regions.toml"
-    regions.write_text(f'[[regions]]\nid = "{region_id}"\nname = "{region} validation crop"\n')
+    regions = work / "regions"
+    (regions / region_id).parent.mkdir(parents=True)
+    (regions / f"{region_id}.toml").write_text(f'name = "{region} validation crop"\nkind = "geofabrik"\n')
     if landmarks is None and region == "meiringen":
         landmarks = store.package_root("assistant-switzerland-content") / "content.json"
     if landmarks is None:

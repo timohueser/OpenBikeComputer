@@ -127,12 +127,16 @@ impl Regions {
 
     /// Read `data/regions/` below `root`.
     pub fn load(root: &Path) -> Result<Self, String> {
-        let dir = root.join("data/regions");
+        Self::load_dir(&root.join("data/regions"))
+    }
+
+    /// Read a directory laid out like `data/regions/`.
+    pub fn load_dir(dir: &Path) -> Result<Self, String> {
         let mut files = Vec::new();
-        collect(&dir, &mut files)?;
+        collect(dir, &mut files)?;
         let mut list = Vec::new();
         for path in files {
-            let relative = path.strip_prefix(&dir).expect("collected below dir").with_extension("");
+            let relative = path.strip_prefix(dir).expect("collected below dir").with_extension("");
             let id = relative.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
             let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             let region = parse_region(&id, &text)?;

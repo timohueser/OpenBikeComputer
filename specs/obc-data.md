@@ -18,7 +18,7 @@ One `[[source]]` table per source.
 | `licence_url` | string | no | Where the licence text is |
 | `attribution` | string | no | The credit text, as the product must show it |
 | `obligations` | string | no | What the licence asks for, in words; `none` when it asks for nothing |
-| `fetch` | table | yes | `kind` and `url`, see below |
+| `fetch` | table | yes | `kind`, `url`, and for `osm` only `from`: the id of the source whose pin is the base day. See below |
 | `hosts` | array of strings | no | Hosts the fetch reaches besides the host of `fetch.url`: lowercase letters, digits, `.` and `-`. `*.domain` is any subdomain |
 | `version` | string | yes | How upstream names a version: `date`, `release`, `commit` or `digest` |
 | `refresh` | integer or string | yes | `7`, `30`, `90` or `365` days, or `"manual"` |
@@ -31,7 +31,7 @@ One `[[source]]` table per source.
 | Kind | Fetch |
 | --- | --- |
 | `http` | A file, or one file per tile |
-| `osm` | The OSM planet and its replication diffs |
+| `osm` | The daily OSM replication diffs |
 | `geofabrik` | A Geofabrik extract or `.poly` of an area |
 | `glo30` | Copernicus GLO-30 tiles |
 | `dtm` | A national terrain model service |
@@ -41,7 +41,8 @@ One `[[source]]` table per source.
 | `installed` | A person installs it, or another source's build brings it. It has no `url` |
 
 `fetch.url` is an `https://` URL template. `{name}` stands for a value the fetcher fills:
-`{version}` is the pin, `{area}` a Geofabrik area, `{tile}` a tile name. In `attribution`,
+`{version}` is the pin, `{yymmdd}` a date pin as `YYMMDD`, `{area}` a Geofabrik area, `{tile}` a
+tile name. In `attribution`,
 `{year}` and `{month}` are the year and month of the data, which the step that writes the
 credit fills.
 
@@ -52,6 +53,32 @@ Rules:
 - `refresh` in days needs `version = "date"`, because only a date pin has an age.
 - `r2_copy = true` needs `redistribute = true`, because R2 is public.
 - A credential has `env` or `file`, not both.
+- An `osm` fetch has `from`, and `from` names a source. No other fetch has `from`.
+
+`attribution` is the one copy of a credit. Every product that carries a credit takes it from
+here:
+
+| Product | Credit |
+| --- | --- |
+| Device-map catalog `source` and `LICENSE.txt` | `attribution`, `licence` and `licence_url` of `osm-planet` |
+| Device-map catalog `terrain.attribution` | The source whose id is the terrain `dataset_id` |
+| Device-map catalog `landmarks.attribution` | `wikipedia`, then `commons` |
+| Planner release `attribution`, routing package, search, route overlays | `osm-planet` |
+| Planner release `landcover_attribution` | `daylight-landcover`; the basemaps show it after `attribution` |
+| Planner `terrain_attribution` | `copernicus-glo-30`, after the reference models |
+| Planner climate and snow layers | `era5-land`; `modis-snow` and `hansen-gfc`, or `hr-wsi` |
+| Reference archive manifests | `dtm-<key>` for the national model with that key |
+
+A credit that a rider reads is the `attribution` text. An SPDX `licence` id goes only into a
+field for programs, such as the catalog `license`.
+
+Rust code reads the file that the build embeds (`obc_data::sources::attribution`). Python
+reads it through `tools/data_registry.py`, and shell through
+`tools/data_registry.py attribution ID`. The web bundle notice reads it at build time through
+`builder/app/vite/third-party-licenses.ts`. The web planner, the map builder and the iOS planner show the
+planner release `attribution`. Text that no step can generate keeps a copy, and a test
+compares the copy with this file: the device About page, and the footers of the site, the
+docs and the map builder.
 
 ### `data/env/<environment>.toml`
 
@@ -81,6 +108,17 @@ A `geofabrik` region is the Geofabrik area whose path is the region id, for exam
 `europe/germany/baden-wuerttemberg`. A union resolves to the regions in it that are not
 unions. A union that contains itself, or names a region that does not exist, is refused.
 
+The bakes read this directory:
+
+| Reader | Regions |
+| --- | --- |
+| `obc-bake` (device maps) | Every `geofabrik` region. `--regions DIR` reads another directory with this layout; `obc bake` passes the checkout's directory |
+| Planner bake | The `box` region with the id of the recipe in `tools/planner-regions/`: its `name` and its box |
+| `fixtures/build-map-package.sh` | The `box` regions of the fixtures |
+
+`tools/data_registry.py box ID [--lat-first]` prints the box of a `box` region and refuses
+every other kind, so Python and shell never resolve a union or a Geofabrik area.
+
 ## State of a source
 
 `obc data sources` computes the state of each source when it runs. It stores nothing.
@@ -88,8 +126,8 @@ unions. A union that contains itself, or names a region that does not exist, is 
 | State | When |
 | --- | --- |
 | `blocked` | A `data` or `asset` source has no `licence`, or its credential is not on this machine |
-| `stale` | The pin is a date, `refresh` is in days, the pin is older than `refresh`, and the newest upstream version is later than the pin |
-| `ok` | Otherwise. A source with no pin, or with `refresh = "manual"`, is never stale |
+| `stale` | The pin is a date, `refresh` is in days, the pin is older than `refresh`, and the newest upstream version is later than the pin. Or the pin is before the pin of the source that `fetch.from` names |
+| `ok` | Otherwise. A source with no pin is never stale, and a source with `refresh = "manual"` is never stale by age |
 
 The age of a pin is the number of days from its date to today (UTC). When a pin is older than
 `refresh` and the newest upstream version is not known, the state is `ok` and the reason says
@@ -125,7 +163,14 @@ A snapshot record is a JSON object:
 | --- | --- |
 | `source` | The source id |
 | `version` | The version, as a pin names it |
-| `files` | One item per file: `name` (the last segment of the URL), `url`, `size` in bytes, `sha256` and `retrieved` (`YYYY-MM-DDTHH:MM:SSZ`) |
+| `files` | One item per file: `name`, `url`, `size` in bytes, `sha256` and `retrieved` (`YYYY-MM-DDTHH:MM:SSZ`) |
+
+The `name` of a file is the part of its URL that identifies it in the source. For an `osm`,
+`dtm` or `capture` fetch, it is the URL after `fetch.url`, such as `000/005/130.osc.gz` or
+`#bbox=W,S,E,N/sub/a.tif`. For a URL template, it is the URL from the segment of the first
+`{name}` other than `{version}` and `{yymmdd}`, such as `europe/monaco-261003.osm.pbf`; without
+such a `{name}`, it is the last segment. A name is unique in a record: a file whose name the
+record has for another URL fails the fetch.
 
 A version is one or more segments joined by `/`. A segment has letters, digits, `.`, `_`, `+`
 and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` date, and a
@@ -133,8 +178,8 @@ and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` da
 
 ## Fetch
 
-A fetch fills each `{name}` of `fetch.url`: `{version}` from the version, and each other name
-from a `NAME=VALUE` argument. A name can have more than one value; then the fetch gets one file
+A fetch fills each `{name}` of `fetch.url`: `{version}` and `{yymmdd}` from the version, and each
+other name from a `NAME=VALUE` argument. A name can have more than one value; then the fetch gets one file
 for each value. A file that the snapshot record of the version has, and whose object exists,
 comes from the store with no request. The fetch records each file when its download is complete,
 so a fetch that fails keeps the files before the failure. A record that has the URL with another
@@ -142,8 +187,8 @@ SHA-256 fails the fetch.
 
 Which version a fetch gets:
 
-- A URL with `{version}` gives the version that it names.
-- A URL without `{version}` gives only the newest file upstream. For a `date` source without a
+- A URL with `{version}` or `{yymmdd}` gives the version that it names.
+- A URL without them gives only the newest file upstream. For a `date` source without a
   version, a `HEAD` request for each URL, with one retry, gives the latest `Last-Modified` day,
   and that day is the version. A date version accepts a file that changed on or before that day; a later file
   fails the fetch before its body is read. A response without `Last-Modified` counts as changed
@@ -167,15 +212,63 @@ version. A file that fails it is deleted.
 | `fetch.kind` | Fetcher |
 | --- | --- |
 | `http`, `geofabrik`, `glo30`, `github` | One file per URL, as above |
-| `osm`, `dtm`, `capture` | None yet; the fetch fails |
+| `osm` | The daily diffs from a base day, see below |
+| `dtm` | A program writes the files, see below |
+| `capture` | None yet; the fetch fails |
 | `by-hand`, `installed` | None; the fetch fails |
+
+A `geofabrik` URL with `{yymmdd}` names the day of the data of the extract. Without a version, the
+fetch reads the day from the `timestamp` of `<area>-updates/state.txt`; for more than one area,
+it takes the earliest day.
+
+The OSM planet is two sources with date versions. `osm-planet` is the weekly planet file of one
+day, an `http` URL with `{yymmdd}`. `osm-replication` is the daily diffs. Both pins together fix
+the bytes of the OSM data.
+
+An `osm` URL is an Osmosis replication directory that ends with `/`, such as
+`<server>/replication/day/`. A fetch of version `E` takes `from=B` and no other `NAME=VALUE`.
+Without `from=`, `B` is the pin of the `fetch.from` source: the live pin for `fetch`, the
+`--env` pin for `refresh`. An explicit `from=` must be that pin, unless there is none. `B` is on or before `E`. The sequence
+of a day is the one diff whose `state.txt` has the `timestamp` of that day; a day with two
+diffs has no sequence. The snapshot is the
+`state.txt` of the sequence of `B`, and the diff and the `state.txt` of each sequence after it up
+to the sequence of `E`, in order.
+
+- When the store has the diff and the `state.txt` of each of these sequences, in the record of
+  any version, the fetch makes no request. The stored states name the day of each sequence.
+- Else the fetch reads the newest `state.txt` first, and fails when `E` is after its day. Then it
+  finds the sequence of `B` and of `E`: the newest sequence less the days between, then, when
+  the `timestamp` of that sequence is another day, moved by the difference once, and the states
+  of the sequences next to it. It fails before a diff downloads when it finds no sequence of `B`
+  or `E`. These reads record nothing.
+- A diff and its state never change. A file in the record of another version comes from the
+  store, so a fetch of a later `E` from the same `B` downloads only the new days.
+
+A late or missing weekly planet does not block a version of `osm-replication`, because its base
+is the planet that is pinned. The fetch does not apply the diffs. A step does that with
+`osmium apply-changes`: it reads the planet of the `osm-planet` pin and the diffs of the
+`osm-replication` pin from that day.
+
+A `dtm` fetch takes `bbox=WEST,SOUTH,EAST,NORTH` in degrees and no other `NAME=VALUE`. It runs
+`host/obc-dem/reference/ingest.py fetch` with `uv run --with-requirements
+tools/requirements-bake.txt python` (`OBC_PYTHON` replaces that Python), with the directories
+`--work` and `--out` under `partial/`. The program writes each file of the request to
+`--out`, and its progress to standard error. The store takes every file in `--out`. A failed run
+keeps `--work` and records nothing; the next run of the same request, also on a later day,
+reuses it. In the record, the `url` of a file is `<fetch.url>#bbox=W,S,E,N/<path in --out>`.
+
+- The version is the day of the fetch, because the service answers with current data. Another
+  day comes only from the store.
+- A source with a `credential` that is not on this machine fails before the program runs, and
+  the error names the variables or the file.
 
 The upstream check finds the newest version of a source with one request, which has 15 seconds.
 The store keeps its answer, or its failure, for one hour.
 
 | Source | Check |
 | --- | --- |
-| `osm` | `HEAD` of the URL, not following the redirect; the day in the `planet-YYMMDD` file name of its `Location` |
+| `osm` | `GET` of `<fetch.url>state.txt`; the day of its `timestamp` |
+| `http`, and a URL whose only `{name}` is `{yymmdd}` | `HEAD` of the URL with `latest` for `{yymmdd}`, not following the redirect; the day in the file name of its `Location` |
 | `capture` | Today, with no request: a query service answers with current data |
 | `github`, `commit` | The GitHub API: the newest commit of the default branch |
 | `github`, `release` | The GitHub API: the tag of the newest release that has the asset of the URL |
@@ -374,7 +467,7 @@ When more than one row applies, the first row gives the state. In JSON, a state 
 | --- | --- |
 | `obc data sources [--json]` | Every source with licence, R2 copy, live pin, newest upstream version, age, policy and state. Rows are in kind order: data, then assets, then tools |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the live pin, or else the newest file upstream. Writes the store path of each file |
-| `obc data refresh SOURCE [NAME=VALUE…] [--env ENV] [--json]` | Fetches the newest upstream version, checked now, and writes it to `[pins]` of `data/env/ENV.toml` (default `live`). `ENV` is lowercase kebab-case. The edit keeps comments, line order and CRLF line ends. Writes the store path of each file |
+| `obc data refresh SOURCE [NAME=VALUE…] [--env ENV] [--json]` | Fetches the newest upstream version, checked now, and writes it to `[pins]` of `data/env/ENV.toml` (default `live`). `ENV` is lowercase kebab-case. The edit keeps comments, line order and CRLF line ends. Writes the store path of each file. A version after the pin of a source whose `fetch.from` names `SOURCE` is refused before the fetch: refresh that source first |
 | `obc data region [list] [--json]` | Every region with its name and definition |
 | `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
 | `obc data runs [--json]` | Every run in the store, newest first: id, command, outcome, time and the size of the layers that it built |

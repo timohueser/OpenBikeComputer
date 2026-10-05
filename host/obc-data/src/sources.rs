@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +43,9 @@ pub struct Fetch {
     pub kind: FetchKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Only for `osm`: the source whose pin is the base day, `from=`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
 }
 
 /// How upstream names a version, and so what a pin of the source looks like.
@@ -118,7 +122,7 @@ impl Credential {
             && self.file.as_deref().is_none_or(|file| expand_home(file).is_file())
     }
 
-    fn describe(&self) -> String {
+    pub fn describe(&self) -> String {
         self.env.iter().cloned().chain(self.file.clone()).collect::<Vec<_>>().join(" and ")
     }
 }
@@ -175,6 +179,9 @@ impl Source {
             (None, _) => return fail("`fetch.url` is missing"),
             (Some(url), _) if !url.starts_with("https://") => return fail("`fetch.url` is not https"),
             _ => {}
+        }
+        if (self.fetch.kind == FetchKind::Osm) != self.fetch.from.is_some() {
+            return fail("an `osm` fetch, and only an `osm` fetch, names the source of its base day in `fetch.from`");
         }
         let host = |h: &str| {
             !h.is_empty() && h.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || ".-".contains(c))
@@ -260,6 +267,10 @@ pub fn parse_sources(text: &str) -> Result<Vec<Source>, String> {
             return Err(format!("source `{}` is listed twice", source.id));
         }
     }
+    let from = |source: &&Source| source.fetch.from.as_deref().is_some_and(|id| !seen.contains(id));
+    if let Some(source) = file.source.iter().find(from) {
+        return Err(format!("source `{}`: `fetch.from` names no source", source.id));
+    }
     Ok(file.source)
 }
 
@@ -296,6 +307,20 @@ impl Registry {
             .map_err(|e| format!("data/env/live.toml: {e}"))?;
         Ok(Self { sources, pins })
     }
+}
+
+/// A source of the `data/sources.toml` that this build embeds. A product that carries a credit
+/// takes it here, so the text has one home. Ids are constants in code: an unknown id panics.
+pub fn embedded(id: &str) -> &'static Source {
+    static SOURCES: LazyLock<Vec<Source>> = LazyLock::new(|| {
+        parse_sources(include_str!("../../../data/sources.toml")).expect("data/sources.toml is valid")
+    });
+    SOURCES.iter().find(|s| s.id == id).unwrap_or_else(|| panic!("no source `{id}` in data/sources.toml"))
+}
+
+/// The credit of an embedded source, as the product must show it.
+pub fn attribution(id: &str) -> &'static str {
+    embedded(id).attribution.as_deref().unwrap_or_else(|| panic!("source `{id}` has no attribution"))
 }
 
 /// The state of a source or a layer. A source is only ok, stale or blocked.
@@ -361,13 +386,24 @@ pub fn set_pin(text: &str, id: &str, version: &str) -> String {
 }
 
 /// The state of `source` at `today`, from its pin, the newest upstream version, its policy, its
-/// licence and its credential. A pin is stale only when upstream has a newer version.
-pub fn status(source: &Source, pin: Option<&str>, upstream: &Upstream, today: i64, credential_present: bool) -> Status {
+/// licence and its credential. A pin is stale when upstream has a newer version, or when it is
+/// before `base`, the pin of the source that `fetch.from` names.
+pub fn status(
+    source: &Source,
+    pin: Option<&str>,
+    base: Option<&str>,
+    upstream: &Upstream,
+    today: i64,
+    credential_present: bool,
+) -> Status {
     let age_days = pin.filter(|_| source.version == VersionScheme::Date).and_then(date::parse).map(|day| today - day);
     let (state, reason) = if source.kind != Kind::Tool && source.licence.is_none() {
         (State::Blocked, Some("no licence recorded".to_string()))
     } else if let Some(credential) = source.credential.as_ref().filter(|_| !credential_present) {
         (State::Blocked, Some(format!("credential missing: {}", credential.describe())))
+    } else if let Some(base) = base.filter(|&base| pin.is_some_and(|pin| pin < base)) {
+        let from = source.fetch.from.as_deref().unwrap_or_default();
+        (State::Stale, Some(format!("before the `{from}` pin {base}")))
     } else {
         match (source.refresh, age_days) {
             (Refresh::Days(max), Some(age)) if age > i64::from(max) => match upstream {
@@ -397,7 +433,7 @@ mod tests {
         id = "osm"
         kind = "data"
         licence = "ODbL-1.0"
-        fetch = { kind = "osm", url = "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf" }
+        fetch = { kind = "http", url = "https://planet.openstreetmap.org/pbf/planet-{yymmdd}.osm.pbf" }
         version = "date"
         refresh = 7
         redistribute = true
@@ -446,31 +482,61 @@ mod tests {
     fn a_pin_is_stale_when_older_than_its_policy_and_upstream_is_newer() {
         let today = date::parse("2024-01-10").unwrap();
         let newer = Upstream::Newest("2024-01-09".into());
-        let fresh = status(&osm(), Some("2024-01-03"), &newer, today, true);
+        let fresh = status(&osm(), Some("2024-01-03"), None, &newer, today, true);
         assert_eq!((fresh.state, fresh.age_days), (State::Ok, Some(7)));
-        let old = status(&osm(), Some("2024-01-02"), &newer, today, true);
+        let old = status(&osm(), Some("2024-01-02"), None, &newer, today, true);
         assert_eq!((old.state, old.reason.as_deref()), (State::Stale, Some("8 d > 7 d, upstream 2024-01-09")));
-        let failed = status(&osm(), Some("2024-01-02"), &Upstream::Failed("offline".into()), today, true);
+        let failed = status(&osm(), Some("2024-01-02"), None, &Upstream::Failed("offline".into()), today, true);
         assert_eq!(
             (failed.state, failed.reason.as_deref()),
             (State::Ok, Some("8 d > 7 d, upstream unknown: the check failed"))
         );
         let same = Upstream::Newest("2024-01-02".into());
-        assert_eq!(status(&osm(), Some("2024-01-02"), &same, today, true).state, State::Ok);
+        assert_eq!(status(&osm(), Some("2024-01-02"), None, &same, today, true).state, State::Ok);
         let manual = Source { refresh: Refresh::Manual, ..osm() };
-        assert_eq!(status(&manual, Some("2020-01-01"), &newer, today, true).state, State::Ok);
-        assert_eq!(status(&osm(), None, &newer, today, true).state, State::Ok);
+        assert_eq!(status(&manual, Some("2020-01-01"), None, &newer, today, true).state, State::Ok);
+        assert_eq!(status(&osm(), None, None, &newer, today, true).state, State::Ok);
+        let replication = Source { fetch: Fetch { from: Some("osm-planet".into()), ..osm().fetch }, ..osm() };
+        let behind = status(&replication, Some("2024-01-08"), Some("2024-01-09"), &same, today, true);
+        assert_eq!(
+            (behind.state, behind.reason.as_deref()),
+            (State::Stale, Some("before the `osm-planet` pin 2024-01-09"))
+        );
+        assert_eq!(status(&replication, Some("2024-01-09"), Some("2024-01-09"), &same, today, true).state, State::Ok);
+    }
+
+    #[test]
+    fn an_osm_fetch_names_the_source_of_its_base() {
+        let diffs = |from: &str| {
+            let fetch = format!("fetch = {{ kind = \"osm\", url = \"https://h/day/\"{from} }}");
+            let diffs = OSM.replace("id = \"osm\"", "id = \"diffs\"");
+            format!(
+                "{OSM}{}",
+                diffs
+                    .lines()
+                    .map(|l| if l.trim().starts_with("fetch") { fetch.as_str() } else { l })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        };
+        assert!(parse_sources(&diffs(", from = \"osm\"")).is_ok());
+        assert!(parse_sources(&diffs("")).unwrap_err().contains("fetch.from"));
+        assert!(parse_sources(&diffs(", from = \"land\"")).unwrap_err().contains("names no source"));
+        assert!(parse_sources(&OSM.replace(".pbf\"", ".pbf\", from = \"osm\"")).unwrap_err().contains("fetch.from"));
     }
 
     #[test]
     fn a_missing_licence_or_credential_blocks() {
         let today = date::parse("2024-01-10").unwrap();
         let unlicensed = Source { licence: None, ..osm() };
-        assert_eq!(status(&unlicensed, Some("2024-01-09"), &Upstream::CannotCheck, today, true).state, State::Blocked);
+        assert_eq!(
+            status(&unlicensed, Some("2024-01-09"), None, &Upstream::CannotCheck, today, true).state,
+            State::Blocked
+        );
         let tool = Source { kind: Kind::Tool, ..unlicensed };
-        assert_eq!(status(&tool, None, &Upstream::CannotCheck, today, true).state, State::Ok);
+        assert_eq!(status(&tool, None, None, &Upstream::CannotCheck, today, true).state, State::Ok);
         let keyed = Source { credential: Some(Credential { env: vec!["KEY".into()], file: None }), ..osm() };
-        let blocked = status(&keyed, None, &Upstream::CannotCheck, today, false);
+        let blocked = status(&keyed, None, None, &Upstream::CannotCheck, today, false);
         assert_eq!((blocked.state, blocked.reason.as_deref()), (State::Blocked, Some("credential missing: KEY")));
     }
 
@@ -499,5 +565,6 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let registry = Registry::load(&root).unwrap();
         assert!(registry.sources.iter().any(|s| s.id == "osm-planet"));
+        assert_eq!(embedded("osm-planet"), registry.sources.iter().find(|s| s.id == "osm-planet").unwrap());
     }
 }

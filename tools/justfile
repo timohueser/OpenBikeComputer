@@ -334,7 +334,7 @@ planner *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/planner.py" "$@"
 
-# Bake the published cell catalog. `obc bake` processes every regions.toml entry;
+# Bake the published cell catalog. `obc bake` processes every Geofabrik region in data/regions/;
 # positional ids narrow it (`obc bake europe/austria --force`). Output goes to
 # $OBC_BAKE_TREE (default ~/obc-bake). `verify` and `publish` use that same tree
 # automatically, while an explicit tree remains available as their first argument:
@@ -372,6 +372,9 @@ bake *args:
     if [[ -n "${OBC_REFERENCE_ARCHIVE:-}" ]]; then
       case " $* " in *" --reference "*) ;; *) reference=(--reference "$OBC_REFERENCE_ARCHIVE") ;; esac
     fi
+    # The region files of this checkout, wherever the command runs. A `--regions` on the command
+    # line comes later, and obc-bake takes the last one.
+    regions=(--regions "$OBC_ROOT/data/regions")
     case "${1:-}" in
       verify)
         shift
@@ -444,19 +447,22 @@ bake *args:
         # tree as `bake`, deliberately a separate command: it needs DEM tiles and no OSM
         # extract, and it must never be a step of a schema re-bake.
         shift
-        _run "$bin" terrain --out "$tree" ${reference[@]+"${reference[@]}"} "$@"
+        _run "$bin" terrain --out "$tree" "${regions[@]}" ${reference[@]+"${reference[@]}"} "$@"
         _say "bake tree: $tree — now re-bake the cells so their ascents match: obc bake" ;;
       landmarks)
         # The landmark artifact class, on its own revision track. Capture reads live Wikidata,
         # Wikipedia and Commons — the one non-reproducible step of any bake — and is resumable, so
         # an interrupted country is continued by repeating the command.
         shift
-        _run "$bin" landmarks --out "$tree" "$@"
+        _run "$bin" landmarks --out "$tree" "${regions[@]}" "$@"
         _say "bake tree: $tree — landmark artifacts under $tree/landmarks" ;;
-      regions|check-obcm-version|help|-h|--help)
+      regions)
+        shift
+        _run "$bin" regions "${regions[@]}" "$@" ;;
+      check-obcm-version|help|-h|--help)
         _run "$bin" "$@" ;;
       *)
-        _run "$bin" bake --out "$tree" ${reference[@]+"${reference[@]}"} "$@"
+        _run "$bin" bake --out "$tree" "${regions[@]}" ${reference[@]+"${reference[@]}"} "$@"
         _say "bake tree: $tree — verify with: obc bake verify" ;;
     esac
 

@@ -25,7 +25,8 @@ pub struct Snapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileRecord {
-    /// The last segment of `url`: the name a step gives the file when it needs one.
+    /// The part of `url` that names the file within its source, unique in a record: the name a
+    /// step gives the file when it needs one.
     pub name: String,
     pub url: String,
     pub size: u64,
@@ -126,13 +127,26 @@ impl Store {
         read_record(&self.snapshot_path(source, version))
     }
 
-    pub fn put_snapshot(&self, snapshot: &Snapshot) -> Result<(), String> {
-        write_record(&self.snapshot_path(&snapshot.source, &snapshot.version), snapshot)
+    /// Every snapshot record of `source` whose version is one path segment.
+    pub fn snapshots(&self, source: &str) -> Result<Vec<Snapshot>, String> {
+        let dir = self.root.join("snapshots").join(source);
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(format!("{}: {e}", dir.display())),
+        };
+        let mut snapshots = Vec::new();
+        for entry in entries {
+            let name = entry.map_err(|e| format!("{}: {e}", dir.display()))?.file_name();
+            if let Some(version) = name.to_str().and_then(|name| name.strip_suffix(".json")) {
+                snapshots.extend(self.snapshot(source, version)?);
+            }
+        }
+        Ok(snapshots)
     }
 
-    /// Every snapshot of `source` in the store.
-    pub fn snapshots(&self, source: &str) -> Result<Vec<Snapshot>, String> {
-        read_records(&self.root.join("snapshots").join(source))
+    pub fn put_snapshot(&self, snapshot: &Snapshot) -> Result<(), String> {
+        write_record(&self.snapshot_path(&snapshot.source, &snapshot.version), snapshot)
     }
 
     fn layer_path(&self, key: &str) -> PathBuf {

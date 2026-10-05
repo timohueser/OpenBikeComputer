@@ -12,9 +12,9 @@ use serde::Serialize;
 
 use obc_data::fetch::http::Http;
 use obc_data::fetch::upstream::{self, Upstream};
-use obc_data::fetch::{self, Request};
+use obc_data::fetch::{self, osm, Request};
 use obc_data::regions::{Area, Bbox, Region, Regions};
-use obc_data::sources::{self, Kind, Registry, Source, State, VersionScheme};
+use obc_data::sources::{self, FetchKind, Kind, Registry, Source, State, VersionScheme};
 use obc_data::store::{self, FileRecord, Snapshot, Store};
 
 #[derive(Parser)]
@@ -112,7 +112,8 @@ fn run(cli: Cli) -> Result<(), Failure> {
             let source = find(&registry, id)?;
             let version = version.or_else(|| registry.pins.get(id).cloned());
             let store = Store::open()?;
-            let request = Request { source, version, params: parse_params(&params)? };
+            let params = osm::with_base(source, &registry.pins, parse_params(&params)?)?;
+            let request = Request { source, version, params };
             print_snapshot(&store, &fetch::fetch(&store, &Http::new(), &request)?, json)
         }
         Command::Refresh { source, params, env, json } => refresh(&root()?, &source, &params, &env, json),
@@ -159,13 +160,26 @@ fn refresh(root: &Path, id: &str, params: &[String], env: &str, json: bool) -> R
     }
     let path = root.join("data/env").join(format!("{env}.toml"));
     let text = std::fs::read_to_string(&path).map_err(|e| usage(&format!("{}: {e}", path.display())))?;
+    let pins = sources::parse_pins(&text, &registry.sources).map_err(|e| format!("{}: {e}", path.display()))?;
+    let params = osm::with_base(source, &pins, parse_params(params)?)?;
     let (store, http) = (Store::open()?, Http::new());
     let version = upstream::newest(&store, &http, source, 0).version().map(str::to_string);
-    let named = source.fetch.url.as_deref().is_some_and(|url| url.contains("{version}"));
+    // The `geofabrik` fetcher finds the newest day of a URL with `{yymmdd}` itself.
+    let named = source.fetch.url.as_deref().is_some_and(|url| {
+        url.contains("{version}") || (source.fetch.kind == FetchKind::Http && url.contains("{yymmdd}"))
+    });
     if version.is_none() && (named || matches!(source.version, VersionScheme::Release | VersionScheme::Commit)) {
         return Err(format!("the newest version of `{id}` is not known: fetch {id}@VERSION and pin it by hand").into());
     }
-    let snapshot = fetch::fetch(&store, &http, &Request { source, version, params: parse_params(params)? })?;
+    // The diffs of a source that starts at this pin end at its own pin, so they cannot start after it.
+    if let Some(version) = &version {
+        let starts_here = registry.sources.iter().filter(|s| s.fetch.from.as_deref() == Some(id));
+        let mut pinned = starts_here.filter_map(|s| Some((&s.id, pins.get(&s.id)?)));
+        if let Some((diffs, pin)) = pinned.find(|(_, pin)| version > *pin) {
+            return Err(format!("`{id}` {version} is after the `{diffs}` pin {pin}: refresh {diffs} first").into());
+        }
+    }
+    let snapshot = fetch::fetch(&store, &http, &Request { source, version, params })?;
     let text = sources::set_pin(&text, id, &snapshot.version);
     sources::parse_pins(&text, &registry.sources).map_err(|e| format!("{}: {e}", path.display()))?;
     store::write_atomic(&path, text.as_bytes())?;
@@ -223,8 +237,9 @@ fn print_sources(registry: &Registry, json: bool) -> Result<(), Failure> {
         .zip(&newest)
         .map(|(source, upstream)| {
             let pin = registry.pins.get(&source.id).map(String::as_str);
+            let base = source.fetch.from.as_ref().and_then(|from| registry.pins.get(from)).map(String::as_str);
             let present = source.credential.as_ref().is_none_or(|c| c.present());
-            let status = sources::status(source, pin, upstream, today, present);
+            let status = sources::status(source, pin, base, upstream, today, present);
             SourceRow {
                 source,
                 pin,

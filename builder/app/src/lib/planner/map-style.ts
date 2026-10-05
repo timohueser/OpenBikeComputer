@@ -7,10 +7,12 @@ import type { PlannerConfig } from "./config";
 /** The Terrarium terrain tiles: their pixel size and deepest zoom. */
 export const DEM_TILE = 512, DEM_MAX_ZOOM = 12;
 
-const basemapSource = (url: string) => ({
+/** The credits are the release's: the OSM data, then the basemap's land cover. Protomaps draws the style. */
+const basemapSource = (config: BasemapConfig) => ({
     type: "vector",
-    url,
-    attribution: '<a href="https://openstreetmap.org/copyright">© OpenStreetMap contributors</a> · <a href="https://protomaps.com">Protomaps</a>',
+    url: config.basemap,
+    attribution: [`<a href="https://www.openstreetmap.org/copyright">${config.attribution}</a>`, config.landcover_attribution,
+        '<a href="https://protomaps.com">Protomaps</a>'].filter(Boolean).join(" · "),
 } as const);
 
 type Tier = "ground" | "zone" | "detail" | "structure";
@@ -158,7 +160,7 @@ export function basemapStyle(theme: "light" | "dark", config: BasemapConfig): St
         version: 8,
         glyphs: config.glyphs,
         sprite: `${config.sprites}/${theme}`,
-        sources: { basemap: basemapSource(config.basemap) },
+        sources: { basemap: basemapSource(config) },
         layers: baseLayers(theme === "dark").filter((layer) => layer.id !== "pois"),
     };
 }
@@ -236,7 +238,7 @@ export function mapStyle(theme: "light" | "dark", config: PlannerConfig, demUrl:
         glyphs: config.glyphs,
         sprite: `${config.sprites}/${theme}`,
         sources: {
-            basemap: basemapSource(config.basemap),
+            basemap: basemapSource(config),
             terrain: { type: "raster-dem", tiles: [demUrl], bounds: config.bounds, tileSize: DEM_TILE, encoding: "terrarium", maxzoom: DEM_MAX_ZOOM, attribution: config.terrain_attribution },
             contours: { type: "vector", tiles: [contourUrl], bounds: config.bounds, maxzoom: 15, attribution: config.terrain_attribution },
         },

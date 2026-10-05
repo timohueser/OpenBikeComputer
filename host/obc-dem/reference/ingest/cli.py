@@ -17,6 +17,7 @@ source pixel wide survives the 7 m step, and writes whole tiles.
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -101,6 +102,30 @@ def command_ingest(args) -> int:
         raise Refuse("no rasters cover that box")
     ingest_rasters(rasters, source, root)
     return finish(root, source)
+
+
+def command_fetch(args) -> int:
+    """Fetch the rasters of a box into `--out`, for `obc data fetch`; the ingest runs later.
+
+    Each raster moves to `--out` at its path under `--work`, with its `.prj` when it has one.
+    `--work` keeps what the adapter downloaded, so a run that failed reuses it.
+    """
+
+    bbox = parse_bbox(args.bbox)
+    check_world(bbox, "--bbox")
+    source = registered(args.source)
+    source.require_credential()
+    work, out = Path(args.work), Path(args.out)
+    rasters = source.fetch(bbox, work)
+    if not rasters:
+        raise Refuse("no rasters cover that box")
+    for raster in rasters:
+        for path in (raster, raster.with_suffix(".prj")):
+            if path.is_file():
+                target = out / path.relative_to(work)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(path, target)
+    return 0
 
 
 def ingest_per_tile(bbox, source, root: Path, work: Path) -> None:
@@ -351,6 +376,13 @@ def main(argv=None) -> int:
              "stopped run (a country-scale box)")
     for_source("wizard", "walk the account and download steps of a source behind a login",
                command_wizard)
+
+    fetch = commands.add_parser("fetch", help="fetch the rasters of a box into --out, for obc data fetch")
+    fetch.add_argument("source", help=f"source key: {', '.join(sorted(SOURCES))}")
+    fetch.add_argument("--bbox", required=True, help="min_lon,min_lat,max_lon,max_lat")
+    fetch.add_argument("--work", required=True, help="where the adapter keeps its downloads")
+    fetch.add_argument("--out", required=True, help="where the rasters go")
+    fetch.set_defaults(run=command_fetch)
 
     with_archive("index", "rebuild index.json from the source manifests").set_defaults(run=command_index)
     with_archive("check", "hold every tile against the contract").set_defaults(run=command_check)

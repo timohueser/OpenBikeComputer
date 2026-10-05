@@ -16,6 +16,8 @@ describe('planner config', () => {
             const style = mapStyle(theme, testConfig, 'dem://tiles', 'contours://tiles');
             expect(validateStyleMin(style)).toEqual([]);
             expect(style.sources.basemap).toHaveProperty('url', testConfig.basemap);
+            expect((style.sources.basemap as { attribution: string }).attribution).toContain(testConfig.attribution);
+            expect((style.sources.basemap as { attribution: string }).attribution).toContain(testConfig.landcover_attribution);
             expect(style.glyphs).toBe(testConfig.glyphs);
             expect(style.sprite).toBe(`${testConfig.sprites}/${theme}`);
             for (const source of ['terrain', 'contours']) {
