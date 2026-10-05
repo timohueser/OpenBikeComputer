@@ -955,3 +955,10 @@ mod tests {
         assert_eq!(inner.stats().sd_reads, before.sd_reads + 1, "post-clear index read must re-read");
     }
 }
+
+#[cfg(test)]
+mod differential;
+#[cfg(test)]
+mod proof_map_points;
+#[cfg(test)]
+mod proof_places;
