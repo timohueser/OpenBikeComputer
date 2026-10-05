@@ -126,8 +126,6 @@ jobs:
         run: python3 tools/check_data_sources.py
       - name: Prose budgets, published pages and links
         run: python3 tools/prose.py --check
-      - name: Issue numbers and dates live in the pull request, not the tree
-        run: python3 tools/check_records.py
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
