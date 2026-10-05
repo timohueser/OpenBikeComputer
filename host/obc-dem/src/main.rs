@@ -68,8 +68,8 @@ usage:
                      tile at a time and reads each pixel once. The reference
                      keeps its own attribution.
 
-`fetch` downloads Copernicus GLO-30 tiles from the AWS Open Data mirror; `bake`
-never touches the network.";
+`fetch` links Copernicus GLO-30 tiles from the store, which `obc data` fills;
+`bake` never touches the network.";
 
 fn surface(args: &[String]) -> Result<(), String> {
     let (mut input, mut output) = (None::<String>, None::<String>);
@@ -114,7 +114,7 @@ fn fetch(args: &[String]) -> Result<(), String> {
 
     let paths = fetch_tiles(bbox, &out, |tile, outcome| match outcome {
         Fetched::Cached => println!("  {} (cached)", tile.file_name()),
-        Fetched::Downloaded(len) => println!("  {} ({:.1} MB)", tile.file_name(), *len as f64 / 1e6),
+        Fetched::Stored(len) => println!("  {} ({:.1} MB)", tile.file_name(), *len as f64 / 1e6),
         Fetched::Absent => println!("  {} — no object on the mirror (ocean or outside coverage)", tile.file_name()),
     })?;
     println!("{} tile(s) in {}", paths.len(), out.display());

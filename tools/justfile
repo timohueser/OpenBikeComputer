@@ -317,7 +317,7 @@ r2 *args:
 # `obc data region [list|show ID]` lists the regions. `obc data fetch` puts a source version in
 # the store; `obc data refresh` also pins it. Every command takes `--json`. Read commands
 # change nothing.
-# Data sources, regions and the store. Args: sources | region [list|show ID] | fetch SOURCE[@VERSION] | refresh SOURCE [--env ENV] [--json]
+# Data sources, regions and the store. Args: sources | region [list|show ID] | fetch SOURCE[@VERSION] | refresh SOURCE [--env ENV] | store import [--apply] | gc store [--apply] [--json]
 [group('maps')]
 data *args:
     #!/usr/bin/env bash

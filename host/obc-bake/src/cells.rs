@@ -78,6 +78,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use obc_pack::catalog::CellSource;
@@ -143,7 +144,15 @@ pub trait CellCutter: Sync {
 pub struct ObcCutter {
     /// Skip land generation, a ~950 MB dataset a real bake wants and no test does.
     pub no_land: bool,
+    /// The land polygons from the store, fetched when the first cell needs them.
+    pub land: OnceLock<Result<PathBuf, String>>,
     pub chunk_size: Option<usize>,
+}
+
+/// The `land-polygons` zip of the store: at its live pin, or else the newest one upstream.
+fn land_polygons() -> Result<PathBuf, String> {
+    let fetched = obc_data::fetch::live("land-polygons", None, Vec::new())?;
+    fetched.paths.into_iter().next().ok_or_else(|| "the land-polygons snapshot has no file".into())
 }
 
 impl CellCutter for ObcCutter {
@@ -161,6 +170,9 @@ impl CellCutter for ObcCutter {
     ) -> Result<CutSummary, String> {
         let mut opts = opts.clone();
         opts.no_land = self.no_land;
+        if !self.no_land {
+            opts.land = Some(self.land.get_or_init(land_polygons).clone()?);
+        }
         opts.chunk_size = self.chunk_size;
         match obc_pack::cut::cut(pbfs, config, out_dir, &opts, progress) {
             Ok(s) => Ok(s),
@@ -701,6 +713,7 @@ impl CellBakery<'_> {
                 .collect(),
             chunk_size: None,
             no_land: false,
+            land: None,
             // The terrain already published in this tree, or nothing. A tree with no terrain bakes
             // `Ascent M = 0` throughout, which is a decode-valid map.
             terrain: self.opts.terrain.as_ref().map(|t| t.dir.clone()),
@@ -1267,12 +1280,7 @@ mod tests {
         let sliver = CellId::parse("18/183/36").unwrap();
         let parent = Resolved {
             region: Region { id: "europe/germany".into(), name: "Germany".into() },
-            extract: Some(Extract {
-                path: "de.osm.pbf".into(),
-                snapshot: "2026-08-01".into(),
-                bytes: 1,
-                downloaded: false,
-            }),
+            extract: Some(Extract { path: "de.osm.pbf".into(), snapshot: "2026-08-01".into(), bytes: 1 }),
             extract_sha: Some("0".repeat(64)),
             poly: poly.to_string(),
             coverage: coverage(),
@@ -1311,12 +1319,7 @@ mod tests {
         let far = CellId::parse("18/204/38").unwrap();
         let resolved = vec![Resolved {
             region: Region { id: "europe/germany".into(), name: "Germany".into() },
-            extract: Some(Extract {
-                path: "de.osm.pbf".into(),
-                snapshot: "2026-08-01".into(),
-                bytes: 1,
-                downloaded: false,
-            }),
+            extract: Some(Extract { path: "de.osm.pbf".into(), snapshot: "2026-08-01".into(), bytes: 1 }),
             extract_sha: Some("0".repeat(64)),
             poly: poly.to_string(),
             coverage,

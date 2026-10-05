@@ -149,8 +149,8 @@ pub fn extract(store: &Store, http: &Http, request: &Request) -> Result<Snapshot
     if !template.contains("-{yymmdd}.osm.pbf") {
         return files(store, http, request);
     }
-    let version = match &request.version {
-        Some(version) => version.clone(),
+    let day = match &request.version {
+        Some(_) => None,
         None => {
             let states = template.replace("-{yymmdd}.osm.pbf", "-updates/state.txt");
             // Geofabrik makes every area each day, so the earliest of the newest days has every extract.
@@ -158,11 +158,21 @@ pub fn extract(store: &Store, http: &Http, request: &Request) -> Result<Snapshot
             for url in expand(&states, None, &request.params)? {
                 day = day.min(state(http, &url).map_err(hint)?.1);
             }
-            date::format(day)
+            Some(day)
         }
     };
-    let request = Request { source: request.source, version: Some(version), params: request.params.clone() };
-    files(store, http, &request).map_err(hint)
+    let at =
+        |version: String| Request { source: request.source, version: Some(version), params: request.params.clone() };
+    match day {
+        None => files(store, http, &at(request.version.clone().unwrap_or_default())).map_err(hint),
+        // The dated file of the newest day can come after its `state.txt`; the day before is there.
+        Some(day) => match files(store, http, &at(date::format(day))) {
+            Err(error) if super::http::not_found(&error) => {
+                files(store, http, &at(date::format(day - 1))).map_err(hint)
+            }
+            result => result.map_err(hint),
+        },
+    }
 }
 
 fn hint(error: String) -> String {

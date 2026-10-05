@@ -24,22 +24,10 @@ impl Region {
         self.id.split('/').collect()
     }
 
-    /// The extract URL under `base`, which is Geofabrik in production and a local directory or
-    /// `file://` root in tests.
-    pub fn extract_url(&self, base: &str) -> String {
-        format!("{}/{}-latest.osm.pbf", base.trim_end_matches('/'), self.id)
-    }
-
-    /// Cache filename for the downloaded extract: the id flattened, so `europe/germany/bayern` and
-    /// a hypothetical `europe/bayern` cannot collide.
+    /// The file name of the extract in a flat directory of extracts: the id flattened, so
+    /// `europe/germany/bayern` and a hypothetical `europe/bayern` cannot collide.
     pub fn cache_name(&self) -> String {
         format!("{}-latest.osm.pbf", self.id.replace('/', "_"))
-    }
-
-    /// The region's Osmosis polygon under `base` — Geofabrik serves it beside the extract, at the
-    /// same path with a `.poly` extension.
-    pub fn poly_url(&self, base: &str) -> String {
-        format!("{}/{}.poly", base.trim_end_matches('/'), self.id)
     }
 
     /// Cache filename for that polygon, flattened like [`Region::cache_name`].
@@ -100,12 +88,8 @@ mod tests {
     }
 
     #[test]
-    fn an_extract_url_is_the_id_plus_latest() {
+    fn a_flat_extract_name_is_the_flattened_id_plus_latest() {
         let r = Region { id: "europe/germany/bayern".into(), name: "Bayern".into() };
-        assert_eq!(
-            r.extract_url("https://download.geofabrik.de/"),
-            "https://download.geofabrik.de/europe/germany/bayern-latest.osm.pbf"
-        );
         assert_eq!(r.cache_name(), "europe_germany_bayern-latest.osm.pbf");
     }
 }

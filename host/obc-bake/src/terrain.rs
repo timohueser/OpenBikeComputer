@@ -1024,10 +1024,7 @@ mod tests {
 
     /// A source that is never fetched from: every test here stops at the key.
     fn extracts() -> crate::source::GeofabrikExtracts {
-        crate::source::GeofabrikExtracts::new(
-            crate::source::GeofabrikExtracts::DEFAULT_BASE_URL,
-            Path::new("/nonexistent"),
-        )
+        crate::source::GeofabrikExtracts
     }
 
     fn bakery<'a>(

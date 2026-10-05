@@ -6,9 +6,11 @@ pub mod http;
 pub mod osm;
 pub mod upstream;
 
+use std::path::PathBuf;
+
 use self::http::{Expect, Http};
 use crate::date;
-use crate::sources::{FetchKind, Source, VersionScheme};
+use crate::sources::{FetchKind, Registry, Source, VersionScheme};
 use crate::store::{FileRecord, Requested, Snapshot, Store};
 
 pub struct Request<'a> {
@@ -25,6 +27,7 @@ pub struct Request<'a> {
 /// holds the requested files, in the order of the request. A request with `params` is recorded,
 /// so a step input with the same params knows its files without the network.
 pub fn fetch(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
+    let _using = store.using()?;
     let snapshot = fetch_files(store, http, request)?;
     if !request.params.is_empty() {
         let files = snapshot.files.iter().map(|file| file.name.clone()).collect();
@@ -49,6 +52,94 @@ fn fetch_files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot
         )),
         FetchKind::Installed => Err(format!("source `{}` is installed, not fetched", source.id)),
     }
+}
+
+/// Fetch the source `id` of the repository above the current directory, or else above the running
+/// program: at `version`, or else at its live pin, or else at the newest version upstream. Each
+/// file comes with its object. This is `obc data fetch` for code that links the library.
+///
+/// Without a version or a pin, when the request for the newest version upstream gets no connection
+/// or times out, the newest version in the store that has the requested files serves, with a
+/// warning, so a bake works offline. Every other error stays an error.
+pub fn live(id: &str, version: Option<&str>, params: Vec<(String, String)>) -> Result<Fetched, LiveError> {
+    let starts = [std::env::current_dir().ok(), std::env::current_exe().ok()];
+    let root = starts.into_iter().flatten().find_map(|start| crate::find_root(&start));
+    let root = root.ok_or("no data/sources.toml above the current directory or the program")?;
+    let registry = Registry::load(&root)?;
+    let source = registry.sources.iter().find(|s| s.id == id).ok_or_else(|| format!("no source `{id}`"))?;
+    let version = version.map(str::to_string).or_else(|| registry.pins.get(id).cloned());
+    let params = osm::with_base(source, &registry.pins, params)?;
+    let store = Store::open()?;
+    let unpinned = version.is_none();
+    let snapshot = match fetch(&store, &Http::new(), &Request { source, version, params: params.clone() }) {
+        Ok(snapshot) => snapshot,
+        Err(error) if http::not_found(&error) => return Err(LiveError::NotFound(error)),
+        Err(error) if unpinned && http::unreachable(&error) => match newest_stored(&store, id, &params)? {
+            Some(snapshot) => {
+                eprintln!("obc data: {error}; using `{id}` {} from the store", snapshot.version);
+                snapshot
+            }
+            None => return Err(LiveError::Failed(error)),
+        },
+        Err(error) => return Err(LiveError::Failed(error)),
+    };
+    let paths = snapshot.files.iter().map(|file| store.object(&file.sha256)).collect();
+    Ok(Fetched { snapshot, paths })
+}
+
+/// Why [`live`] failed.
+#[derive(Debug)]
+pub enum LiveError {
+    /// Upstream answered 404: it has no such file, such as a GLO-30 tile at sea.
+    NotFound(String),
+    Failed(String),
+}
+
+impl From<String> for LiveError {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
+}
+
+impl From<&str> for LiveError {
+    fn from(error: &str) -> Self {
+        Self::Failed(error.into())
+    }
+}
+
+impl From<LiveError> for String {
+    fn from(error: LiveError) -> Self {
+        match error {
+            LiveError::NotFound(error) | LiveError::Failed(error) => error,
+        }
+    }
+}
+
+/// The newest record of `source` in the store, by retrieval, with every requested file and its
+/// object: the files that a fetch with `params` recorded, or every file without `params`.
+fn newest_stored(store: &Store, source: &str, params: &[(String, String)]) -> Result<Option<Snapshot>, String> {
+    let mut found: Vec<Snapshot> = Vec::new();
+    if params.is_empty() {
+        found.extend(store.snapshots(source)?);
+    } else {
+        for request in store.requests(source, params)? {
+            let Some(mut snapshot) = store.snapshot(source, &request.version)? else { continue };
+            let files = request.files.iter().map(|name| snapshot.files.iter().find(|file| &file.name == name).cloned());
+            let Some(files) = files.collect::<Option<Vec<_>>>() else { continue };
+            snapshot.files = files;
+            found.push(snapshot);
+        }
+    }
+    found.retain(|snapshot| {
+        !snapshot.files.is_empty() && snapshot.files.iter().all(|f| store.object(&f.sha256).is_file())
+    });
+    Ok(found.into_iter().max_by_key(|snapshot| snapshot.files.iter().map(|file| file.retrieved.clone()).max()))
+}
+
+/// A snapshot with the object of each file, in the order of its files.
+pub struct Fetched {
+    pub snapshot: Snapshot,
+    pub paths: Vec<PathBuf>,
 }
 
 /// Whether `version` has the form of the source's version scheme. Every version also names a
@@ -94,8 +185,12 @@ fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, Stri
     let version = match &request.version {
         None if source.version == VersionScheme::Date => {
             // One retry, as a HEAD is cheap and a failure stops the whole fetch.
-            let days: Result<Vec<_>, _> =
-                urls.iter().map(|url| http.modified(url).or_else(|_| http.modified(url))).collect();
+            let days: Result<Vec<_>, _> = urls
+                .iter()
+                .map(|url| {
+                    http.modified(url).or_else(|e| if http::not_found(&e) { Err(e) } else { http.modified(url) })
+                })
+                .collect();
             Some(
                 days?
                     .into_iter()
@@ -712,6 +807,40 @@ pub(crate) mod tests {
         assert_eq!(log.lock().unwrap().len(), 2);
         let gone = Request { source: &extracts, version: Some("2026-08-15".into()), params: area };
         assert!(fetch(&store, &quick(), &gone).unwrap_err().contains("first of each month"));
+    }
+
+    /// Only a request that gets no connection is unreachable; an answer, also a 500, is not.
+    #[test]
+    fn only_no_connection_is_unreachable() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/x", closed.local_addr().unwrap());
+        drop(closed);
+        assert!(http::unreachable(&quick().modified(&url).unwrap_err()));
+        let (url, _) = serve(|_, _| Reply { status: 500, headers: vec![], body: vec![], length: 0 });
+        let error = quick().modified(&url).unwrap_err();
+        assert!(!http::unreachable(&error) && !http::not_found(&error), "{error}");
+    }
+
+    /// The dated file of the newest day can come after its `state.txt`. Offline, the newest stored
+    /// file of the request serves.
+    #[test]
+    fn a_new_day_without_its_extract_takes_the_day_before() {
+        let (url, _) = serve(|_, headers| match header(headers, ":path").unwrap_or_default() {
+            "/europe/monaco-updates/state.txt" => whole(b"sequenceNumber=4929\ntimestamp=2026-10-04T20\\:20\\:50Z\n"),
+            "/europe/monaco-261003.osm.pbf" => whole(b"monaco"),
+            _ => not_found(),
+        });
+        let scratch = Scratch::new("geofabrik-day-before");
+        let store = Store::at(&scratch.0);
+        let extracts = located(FetchKind::Geofabrik, &url.replace("data/file.bin", "{area}-{yymmdd}.osm.pbf"));
+        let area = vec![("area".to_string(), "europe/monaco".to_string())];
+        let newest = Request { source: &extracts, version: None, params: area.clone() };
+        assert_eq!(fetch(&store, &quick(), &newest).unwrap().version, "2026-10-03");
+
+        let stored = newest_stored(&store, "land", &area).unwrap().unwrap();
+        assert_eq!((stored.version.as_str(), stored.files.len()), ("2026-10-03", 1));
+        let other = vec![("area".to_string(), "europe/andorra".to_string())];
+        assert!(newest_stored(&store, "land", &other).unwrap().is_none(), "another request has no stored file");
     }
 
     #[cfg(unix)]
