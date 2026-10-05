@@ -158,7 +158,7 @@ over BLE and USB. The custom PCB and enclosure are still under development. KiCa
 | `tools/` | The `obc` development command and repository tooling |
 
 The root Cargo workspace holds the `firmware/`, `host/`, and `apps/` crates. The nRF54L board image,
-bootloader, and Tauri desktop app are standalone Cargo roots for their platform dependencies. The
+bootloader, Tauri desktop app, and sensor simulator are standalone Cargo roots. The
 [architecture guide](https://openbikecomputer.com/docs/software/architecture/) explains the boundaries.
 
 ## Other open bike computers

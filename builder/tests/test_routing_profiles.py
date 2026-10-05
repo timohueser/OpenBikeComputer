@@ -1,7 +1,7 @@
 """Routing-profile round-trips through the web builder's pack path (N6).
 
-These tests exercise the same `obc-pack` binary the builder API shells out to
-(``builder/server/jobs.py``): a config carrying custom ``routing.profiles``
+These tests exercise the same `obc-pack` binary the builder dev server shells out
+to (``builder/server/schema_preview.py``): a config carrying custom ``routing.profiles``
 is packed over the tiny corpus fixture, and the resulting §8.6 profile-table
 bytes are compared against independently quantized expectations. A sub-1.0
 multiplier must be rejected with the packer's admissibility error — the same

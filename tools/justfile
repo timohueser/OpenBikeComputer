@@ -572,15 +572,6 @@ ios-host *args:
     cd "$OBC_ROOT"
     _run "$OBC_TOOLS/build-ios-host.sh" "$@"
 
-# Pack the companion core as target/OBCCompanionCore.xcframework, in release. Args: [RUST_TARGET]... (default: all three slices)
-[group('ios')]
-companion-core *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{lib}}"; obc_init
-    cd "$OBC_ROOT"
-    _run "$OBC_TOOLS/build-companion-core.sh" "$@"
-
 # DEVICE is a `devicectl` name or identifier; it defaults to the only paired phone.
 # Build the OBCDevice app (the firmware on a phone) and install and launch it on a paired iPhone. Args: [DEVICE]
 [group('ios')]
@@ -605,7 +596,6 @@ ios-companion *args:
     source "{{lib}}"; obc_init
     (( $# <= 1 )) || { _err "usage: obc ios-companion [DEVICE]"; exit 1; }
     device="$(ios_phone "${1:-}")"
-    _run "$OBC_TOOLS/build-companion-core.sh" aarch64-apple-ios
     ios_install OBCCompanion Release com.openbikecomputer.companion "$device"
 
 # What governs these files: contracts, guards, suites, coverage, frames, budgets. Args: PATH...
@@ -625,15 +615,6 @@ prose *args:
     source "{{lib}}"; obc_init
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/prose.py" "$@"
-
-# Regenerate CHANGELOG.md from merged pull requests. Args: [--check|--update]
-[group('docs')]
-changelog *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{lib}}"; obc_init
-    cd "$OBC_ROOT"
-    _run python3 "$OBC_TOOLS/changelog.py" "${@:---update}"
 
 # Inspect documentation ownership or review source-related prose. Args: [status|check|review]
 [group('docs')]
@@ -887,6 +868,11 @@ check *args:
       step "bootloader clippy (rtt)"       cargo clippy --locked --features rtt -- -D warnings
       step "bootloader build (release)"    cargo build --release --locked
       popd >/dev/null
+      pushd "$OBC_ROOT/firmware/obc-sensor-sim" >/dev/null
+      step "sensor sim tests and device build" bash check.sh
+      step "sensor sim clippy (host)"      cargo clippy --locked --lib --tests -- -D warnings
+      step "sensor sim clippy (device)"    cargo clippy --locked --features device --bin obc-sensor-sim --target thumbv8m.main-none-eabihf -- -D warnings
+      popd >/dev/null
     fi
     if want frontend; then
       if command -v npm >/dev/null 2>&1; then
@@ -908,6 +894,7 @@ check *args:
         step "deny (workspace)"    cargo deny --manifest-path "$OBC_ROOT/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
         step "deny (board crate)"  cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
         step "deny (bootloader)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-boot/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
+        step "deny (sensor sim)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-sensor-sim/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
         step "deny (desktop app)"  cargo deny --manifest-path "$OBC_ROOT/apps/obc-desktop/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
       else _warn "skip deny — cargo-deny not installed (cargo install cargo-deny)"; SKIPPED+=("deny"); fi
     fi

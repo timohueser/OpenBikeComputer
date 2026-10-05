@@ -53,7 +53,7 @@ To package completed work without a re-bake:
 ```sh
 python3 fixtures/build-assistant-package.py west-cork \
   --assembled-map PATH/west-cork.obcm \
-  --provenance fixtures/sources/ride-assistant/west-cork-v18.json
+  --provenance fixtures/sources/ride-assistant/west-cork-v19.json
 ```
 
 The Swiss recipe gives the full pinned national PBF to the baker and selects the cells that
