@@ -40,6 +40,8 @@ actor OfflinePlanner {
         let release = PlannerRelease(id: map.id, region: map.region, bounds: map.bounds,
             basemap: blocks == nil ? URL(string: "pmtiles://" + directory.appending(path: "maps/basemap.pmtiles").absoluteString)!
                 : directory.appending(path: "maps/basemap.json"),
+            places: blocks == nil ? URL(string: "pmtiles://" + directory.appending(path: "maps/places.pmtiles").absoluteString)!
+                : directory.appending(path: "maps/places.json"),
             glyphs: assets + "/fonts/{fontstack}/{range}.pbf", sprites: assets + "/sprites/v4",
             terrain: blocks == nil ? "pmtiles://" + directory.appending(path: "maps/terrain.pmtiles").absoluteString
                 : directory.appending(path: "maps/terrain.json").absoluteString,

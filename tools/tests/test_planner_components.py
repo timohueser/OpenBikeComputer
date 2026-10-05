@@ -80,11 +80,13 @@ class ComponentTests(unittest.TestCase):
         digest = components.digest
         cases = {
             "tools/planner_places.py": {"places"},
-            "builder/app/src/lib/planner/poi-kinds.json": {"places"},
+            "builder/app/src/lib/planner/poi-kinds.json": {"source-records", "pois", "addresses", "places"},
             "tools/planner_overlays.py": {"overlays"},
             "tools/planner_map_archive.py": {"terrain", "sun"},
             "firmware/obc-elevation/src/grid.rs": {"terrain", "routing", "overlays", "sun"},
-            "firmware/obc-formats/Cargo.toml": {"terrain", "routing", "overlays", "sun"},
+            "firmware/obc-formats/Cargo.toml": {"terrain", "routing", "overlays", "sun", "source-search", "source-records", "pois", "addresses", "places"},
+            "host/obc-places/src/lib.rs": {"source-search", "source-records", "pois", "addresses", "places"},
+            "host/obc-search-bake/src/places.rs": {"source-search", "source-records", "pois", "addresses", "places"},
             "tools/planner_sun_horizons.py": {"sun"},
         }
         for filename, expected in cases.items():
@@ -194,15 +196,15 @@ class ComponentTests(unittest.TestCase):
         with patch.object(components, "implementation", side_effect=poi_change):
             changed = bake.specifications(config)
         self.assertNotEqual(changed["pois"], original["pois"])
-        for name in set(original) - {"pois"}: self.assertEqual(changed[name], original[name], name)
+        for name in set(original) - {"pois", "places"}: self.assertEqual(changed[name], original[name], name)
         previous = {name: {"spec": spec} for name, spec in original.items()}
         selected, active = components.plan(changed, ["pois"], previous)
-        self.assertEqual(active, {"pois", "source-records", "source-search"})
+        self.assertEqual(active, {"pois", "places", "source-records", "source-search"})
         self.assertEqual(selected["addresses"], original["addresses"])
         _, routing = components.plan(changed, ["routing"], previous)
         self.assertEqual(routing, {"routing", "overlays"})
         _, basemap = components.plan(changed, ["basemap"], previous)
-        self.assertEqual(basemap, {"basemap", "places", "source-basemap"})
+        self.assertEqual(basemap, {"basemap", "source-basemap"})
         with tempfile.TemporaryDirectory() as temporary:
             cache = components.Cache(Path(temporary))
             for spec in original.values():
@@ -211,7 +213,9 @@ class ComponentTests(unittest.TestCase):
             def build_pois(stage, records, config, component):
                 self.assertEqual(component, "pois")
                 (stage / "new-pois").write_bytes(b"metadata")
-            with patch.object(bake, "build_search", side_effect=build_pois) as build, patch.object(bake.maps, "run") as run:
+            with patch.object(bake, "build_search", side_effect=build_pois) as build, \
+                    patch.object(bake, "build_places", side_effect=lambda stage, *_: (stage / "places").write_bytes(b"places")), \
+                    patch.object(bake.maps, "run") as run:
                 bake.execute(args, config, cache, selected, active)
                 self.assertEqual(build.call_count, 1)
                 run.assert_not_called()

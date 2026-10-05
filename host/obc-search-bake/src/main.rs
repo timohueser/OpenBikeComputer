@@ -1,11 +1,8 @@
-#[path = "../address_bake/mod.rs"]
-mod address_bake;
-
 use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(about = "Experimental OSM address enrichment; emits the planner's Photon record format")]
+#[command(about = "Build planner addresses, POIs and localities from OSM")]
 struct Args {
     osm: PathBuf,
     #[arg(long)]
@@ -16,12 +13,12 @@ struct Args {
     /// Nominatim's static OSM country grid (country_osm_grid.sql.gz). No database is needed.
     #[arg(long)]
     country_grid: Option<PathBuf>,
-    /// Country policy exported by address_bake/policy.py.
+    /// Country policy exported by obc-search-bake/policy.py.
     #[arg(long)]
     policy: PathBuf,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    address_bake::bake(&args.osm, &args.output, &args.default_country, args.country_grid.as_deref(), &args.policy)
+    obc_search_bake::bake(&args.osm, &args.output, &args.default_country, args.country_grid.as_deref(), &args.policy)
 }

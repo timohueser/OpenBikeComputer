@@ -8,7 +8,7 @@ describe('OSM place identities', () => {
         for (const [type, letter] of [[1,'n'],[2,'w'],[3,'r']] as const) {
             const id = type * 2 ** 44 + 123;
             expect(osmSource(id)).toBe(`${letter}123`);
-            expect(poiPlace(id, 'camp_site', 'Camp', [8,48])?.id).toBe(`${letter}123`);
+            expect(poiPlace(id, 'campsite', 'Camp', [8,48])?.id).toBe(`${letter}123`);
         }
         expect(osmSource('n123')).toBe('n123');
         expect(osmSource(123)).toBeUndefined();

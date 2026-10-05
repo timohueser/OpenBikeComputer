@@ -167,6 +167,7 @@ final class OBCNativeMapView: MLNMapView {
         data["sprite"] = release.sprites + (dark ? "/dark" : "/light")
         var sources = data["sources"] as! [String: [String: Any]]
         sources["basemap"]?["url"] = release.basemap.absoluteString
+        sources["places"]?["url"] = release.places.absoluteString
         sources["terrain"]?["tiles"] = [release.terrain]
         if release.isLocal {
             sources["terrain"]?.removeValue(forKey: "tiles")

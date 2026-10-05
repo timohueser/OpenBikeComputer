@@ -4,9 +4,10 @@ export {norm,editDistance} from './text.mjs';
 
 export const DEFAULT_VIEW = [7.77, 47.965, 7.96, 48.06];
 export const GROUPS = {
-  water: ['drinking_water', 'water_point', 'spring', 'fountain'],
-  sleep: ['campsite', 'hotel', 'hostel', 'guest_house', 'hut', 'shelter'],
-  lodging: ['hotel', 'hostel', 'guest_house', 'motel', 'hut'],
+  water: ['drinking_water', 'water_point', 'water_tap', 'spring', 'fountain'],
+  sleep: ['campsite', 'caravan_site', 'hotel', 'hostel', 'guest_house', 'motel', 'chalet', 'hut', 'shelter'],
+  lodging: ['hotel', 'hostel', 'guest_house', 'motel', 'chalet', 'hut'],
+  campsite: ['campsite', 'caravan_site'],
   resupply: ['supermarket', 'convenience', 'bakery', 'butcher', 'marketplace'],
   food: ['restaurant', 'cafe', 'fast_food', 'bar', 'ice_cream'],
   bike: ['bike_shop', 'repair_station'],

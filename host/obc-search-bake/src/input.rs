@@ -72,37 +72,38 @@ impl Feature {
 
 pub fn poi(tags: &Tags) -> bool {
     let named = tags.keys().any(|k| k.as_str() == "name" || k.starts_with("name:"));
-    tags.iter().any(|(key, value)| match (key.as_str(), value.as_str()) {
-        (_, "no") => false,
-        ("amenity", "parking_space" | "parking_entrance" | "waste_disposal" | "hunting_stand") => false,
-        (
-            "highway",
-            "turning_circle" | "mini_roundabout" | "noexit" | "crossing" | "give_way" | "stop" | "turning_loop"
-            | "passing_place",
-        ) => false,
-        ("highway", "street_lamp" | "traffic_signals") => named,
-        ("emergency", "yes" | "fire_hydrant")
-        | ("healthcare" | "historic" | "military" | "tourism", "yes")
-        | ("aerialway", "pylon") => false,
-        ("tourism", "information") => !tags.contains_key("information"),
-        ("information", "yes" | "route_marker" | "trail_blaze") => false,
-        ("information", _) => tags.get("tourism").is_some_and(|v| v == "information"),
-        ("leisure", "nature_reserve" | "swimming_pool" | "garden" | "common") => named,
-        (
-            "railway",
-            "rail" | "abandoned" | "disused" | "razed" | "level_crossing" | "switch" | "signal" | "buffer_stop",
-        ) => false,
-        ("railway" | "building" | "natural" | "waterway", _) => named,
-        (
-            "amenity" | "shop" | "tourism" | "craft" | "office" | "emergency" | "historic" | "leisure" | "club"
-            | "military" | "healthcare" | "aerialway" | "aeroway" | "highway" | "place" | "mountain_pass",
-            _,
-        ) => true,
-        ("man_made", "pier" | "tower" | "bridge" | "water_tower" | "lighthouse" | "watermill" | "tunnel") => true,
-        ("man_made", "works" | "dyke" | "adit") => named,
-        ("addr:housename", name) => !name.trim().is_empty(),
-        _ => false,
-    })
+    obc_places::classify(tags.iter().map(|(k, v)| (k.as_str(), v.as_str()))).is_some()
+        || tags.iter().any(|(key, value)| match (key.as_str(), value.as_str()) {
+            (_, "no") => false,
+            ("amenity", "parking_space" | "parking_entrance" | "waste_disposal" | "hunting_stand") => false,
+            (
+                "highway",
+                "turning_circle" | "mini_roundabout" | "noexit" | "crossing" | "give_way" | "stop" | "turning_loop"
+                | "passing_place",
+            ) => false,
+            ("highway", "street_lamp" | "traffic_signals") => named,
+            ("emergency", "yes" | "fire_hydrant")
+            | ("healthcare" | "historic" | "military" | "tourism", "yes")
+            | ("aerialway", "pylon") => false,
+            ("tourism", "information") => !tags.contains_key("information"),
+            ("information", "yes" | "route_marker" | "trail_blaze") => false,
+            ("information", _) => tags.get("tourism").is_some_and(|v| v == "information"),
+            ("leisure", "nature_reserve" | "swimming_pool" | "garden" | "common") => named,
+            (
+                "railway",
+                "rail" | "abandoned" | "disused" | "razed" | "level_crossing" | "switch" | "signal" | "buffer_stop",
+            ) => false,
+            ("railway" | "building" | "natural" | "waterway", _) => named,
+            (
+                "amenity" | "shop" | "tourism" | "craft" | "office" | "emergency" | "historic" | "leisure" | "club"
+                | "military" | "healthcare" | "aerialway" | "aeroway" | "highway" | "place" | "mountain_pass",
+                _,
+            ) => true,
+            ("man_made", "pier" | "tower" | "bridge" | "water_tower" | "lighthouse" | "watermill" | "tunnel") => true,
+            ("man_made", "works" | "dyke" | "adit") => named,
+            ("addr:housename", name) => !name.trim().is_empty(),
+            _ => false,
+        })
 }
 
 fn wanted(tags: &Tags) -> bool {
@@ -127,7 +128,9 @@ fn address_tags(mut tags: Tags) -> Tags {
     tags.into_inner()
         .into_iter()
         .filter(|(k, _)| {
-            k.starts_with("addr:")
+            k.starts_with("contact:")
+                || k.starts_with("description")
+                || k.starts_with("addr:")
                 || k.starts_with("name:")
                 || matches!(
                     k.as_str(),
@@ -163,6 +166,21 @@ fn address_tags(mut tags: Tags) -> Tags {
                         | "tourism"
                         | "office"
                         | "craft"
+                        | "railway"
+                        | "emergency"
+                        | "healthcare"
+                        | "club"
+                        | "military"
+                        | "aerialway"
+                        | "aeroway"
+                        | "man_made"
+                        | "information"
+                        | "opening_hours"
+                        | "website"
+                        | "phone"
+                        | "cuisine"
+                        | "population"
+                        | "ele"
                 )
         })
         .collect()
@@ -343,7 +361,8 @@ pub fn read(path: &Path) -> Result<Input, Box<dyn std::error::Error>> {
         .features
         .iter()
         .map(|f| {
-            f.address_tags()
+            f.tags.contains_key("_poi")
+                || f.address_tags()
                 || f.road()
                 || !f.tag("place").is_empty()
                 || !f.tag("boundary").is_empty()

@@ -242,7 +242,7 @@ private actor RecordingSource: PlannerDataSource {
         calls.append("release")
         let url = URL(string: "https://planner.test/")!
         return PlannerRelease(id: id, region: "test", bounds: bounds,
-            basemap: local ? URL(string: "pmtiles://file:///map.pmtiles")! : url,
+            basemap: local ? URL(string: "pmtiles://file:///map.pmtiles")! : url, places: url,
             glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: url, routing: url, manifest: url)
     }
     func route(points: [Coordinate], turnarounds: [Int], activity: RouteActivity, preference: RoutePreference, release: PlannerRelease) throws -> PlannedPath {

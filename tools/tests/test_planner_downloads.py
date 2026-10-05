@@ -24,7 +24,7 @@ class PlannerDownloads(unittest.TestCase):
         for name, data in {"routing/packs/" + "c" * 64 + "/pages.bin": b"abcdef",
                            "routing/packs/" + "c" * 64 + "/pages.idx": b"index", "search/left.sqlite": b"left places",
                            "search/right.sqlite": b"right places", "maps/tiles/basemap/0-0-0.pmtiles": b"tiles",
-                           "offline/fonts/Sans.pbf": b"glyphs"}.items():
+                           "maps/tiles/places/0-0-0.pmtiles": b"places", "offline/fonts/Sans.pbf": b"glyphs"}.items():
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
@@ -45,7 +45,9 @@ class PlannerDownloads(unittest.TestCase):
             "routing_source": "b" * 64, "files": files,
             "shared": {f"maps/assets/fonts/Sans/{name}.pbf": "offline/fonts/Sans.pbf" for name in ("0-255", "256-511")},
             "map_blocks": [{"kind": "basemap", "tile": [0,0,0], "bounds": [-180,-85,180,85],
-                            "files": ["maps/tiles/basemap/0-0-0.pmtiles"]}], "cells": cells}
+                            "files": ["maps/tiles/basemap/0-0-0.pmtiles"]},
+                           {"kind": "places", "tile": [0,0,0], "bounds": [-180,-85,180,85],
+                            "files": ["maps/tiles/places/0-0-0.pmtiles"]}], "cells": cells}
         (self.source / "catalog.json").write_bytes(runtime.encoded(publication))
         self.service = downloads.Downloads(self.source, self.root / "cache", 1000000)
 
@@ -63,6 +65,8 @@ class PlannerDownloads(unittest.TestCase):
         bundle = json.loads((directory / "bundle.json").read_bytes())
         self.assertEqual(manifest["bounds"], [7, 47, 8, 49])
         self.assertIn("search/left.sqlite", bundle["files"])
+        self.assertIn("maps/tiles/places/0-0-0.pmtiles", bundle["files"])
+        self.assertIn("maps/places.json", bundle["files"])
         self.assertNotIn("search/right.sqlite", bundle["files"])
         fonts = [bundle["files"][f"maps/assets/fonts/Sans/{name}.pbf"] for name in ("0-255", "256-511")]
         self.assertEqual(fonts, [self.service.publication["files"]["offline/fonts/Sans.pbf"]] * 2)

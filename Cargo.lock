@@ -3545,6 +3545,7 @@ dependencies = [
  "obc-fixtures",
  "obc-formats",
  "obc-map-scene",
+ "obc-places",
  "obc-reader",
  "obc-render",
  "obc-tree-walk",
@@ -3565,6 +3566,13 @@ dependencies = [
  "url",
  "zip",
  "zlib-rs",
+]
+
+[[package]]
+name = "obc-places"
+version = "0.1.0"
+dependencies = [
+ "obc-formats",
 ]
 
 [[package]]
@@ -3638,6 +3646,25 @@ dependencies = [
  "obc-ports",
  "obc-reader",
  "obcm-testkit",
+]
+
+[[package]]
+name = "obc-search-bake"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "flate2",
+ "geo",
+ "obc-pack",
+ "obc-places",
+ "osmpbfreader",
+ "regex",
+ "rstar",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "unicode-normalization",
+ "zstd",
 ]
 
 [[package]]
@@ -4829,19 +4856,13 @@ name = "route-build"
 version = "0.1.0"
 dependencies = [
  "clap",
- "flate2",
- "geo",
  "image",
  "obc-dem",
  "osmpbfreader",
- "regex",
  "route-engine",
- "rstar",
  "rusqlite",
  "serde_json",
  "sha2 0.10.9",
- "unicode-normalization",
- "zstd",
 ]
 
 [[package]]

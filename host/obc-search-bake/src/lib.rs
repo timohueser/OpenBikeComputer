@@ -4,6 +4,7 @@ mod enrich;
 mod geometry;
 mod input;
 mod interpolation;
+mod places;
 mod policy;
 mod postcodes;
 
@@ -12,7 +13,7 @@ use osmpbfreader::OsmId;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::File,
     io::{BufWriter, Read, Write},
     path::Path,
     time::Instant,
@@ -63,13 +64,11 @@ pub fn bake(
     eprintln!("Resolved country polygons; build address indexes");
     let index = Index::new(&input, &countries, &policy);
     eprintln!("Write address records");
-    let raw = OpenOptions::new().write(true).create_new(true).open(output)?;
-    let result = (|| -> Result<usize, Box<dyn std::error::Error>> {
-        let mut stream = zstd::stream::Encoder::new(BufWriter::new(raw), 3)?;
+    let count = write_dump(output, |mut stream| {
         serde_json::to_writer(
             &mut stream,
             &json!({"type":"NominatimDumpFile","content":{
-                "generator":"obc-address-bake","experimental":true,"scope":"addresses","osm_sha256":osm_hash,"data_timestamp":null,
+                "generator":"obc-search-bake","scope":"all","osm_sha256":osm_hash,"data_timestamp":null,
                 "default_country":country,"country_grid_sha256":grid_hash,"policy_sha256":policy_hash
             }}),
         )?;
@@ -111,7 +110,7 @@ pub fn bake(
             let mut record = json!({"object_type":object_type,"object_id":object_id,"osm_key":if f.road() { "highway" } else { "building" },
                 "osm_value":if f.road() { f.tag("highway") } else { "yes" },"address_type":if f.road() { "street" } else { "house" },
                 "country_code":country,"centroid":[p.x(),p.y()],"bbox":[extent.lower()[0],extent.lower()[1],extent.upper()[0],extent.upper()[1]],
-                "name":name,"address":a,"postcode":a.get("postcode").map(|s| s.as_str()).unwrap_or(""),"importance":0.05});
+                "name":if f.road() { json!(name) } else { json!({}) },"address":a,"postcode":a.get("postcode").map(|s| s.as_str()).unwrap_or(""),"importance":0.05});
             if houses.is_empty() {
                 serde_json::to_writer(&mut stream, &json!({"type":"Place","content":[record]}))?;
                 writeln!(stream)?;
@@ -139,20 +138,65 @@ pub fn bake(
                 }
             }
         }
-        stream.finish()?.flush()?;
+        let mut emitted = std::collections::BTreeSet::new();
+        for (i, f) in input.features.iter().enumerate() {
+            if let Some(record) = places::record(f, i, &index) {
+                if emitted.insert(f.source) {
+                    serde_json::to_writer(&mut stream, &json!({"type":"Place","content":[record]}))?;
+                    writeln!(stream)?;
+                    count += 1;
+                }
+            }
+        }
         Ok(count)
-    })();
-    match result {
-        Ok(count) => {
-            println!(
-                "{}",
-                json!({"records":count,"seconds":start.elapsed().as_secs_f64(),"osm_sha256":osm_hash,"incomplete_geometries":input.incomplete_geometries})
-            );
-            Ok(())
-        }
-        Err(e) => {
-            fs::remove_file(output)?;
-            Err(e)
-        }
+    })?;
+    println!(
+        "{}",
+        json!({"records":count,"seconds":start.elapsed().as_secs_f64(),"osm_sha256":osm_hash,"incomplete_geometries":input.incomplete_geometries})
+    );
+    Ok(())
+}
+
+fn write_dump(
+    output: &Path,
+    write: impl FnOnce(&mut dyn Write) -> Result<usize, Box<dyn std::error::Error>>,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let parent = output.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    let mut stream = zstd::stream::Encoder::new(BufWriter::new(temporary.as_file_mut()), 3)?;
+    let count = write(&mut stream)?;
+    stream.finish()?.flush()?;
+    temporary.as_file().sync_all()?;
+    temporary.persist_noclobber(output)?;
+    Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_is_complete_before_publication_and_never_overwrites_a_previous_bake() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("addresses.jsonl.zst");
+        assert!(write_dump(&output, |stream| {
+            stream.write_all(b"partial")?;
+            Err("input failed".into())
+        })
+        .is_err());
+        assert!(!output.exists());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        write_dump(&output, |stream| {
+            assert!(!output.exists());
+            stream.write_all(b"complete")?;
+            Ok(1)
+        })
+        .unwrap();
+        assert!(write_dump(&output, |stream| {
+            stream.write_all(b"replacement")?;
+            Ok(1)
+        })
+        .is_err());
+        assert_eq!(zstd::decode_all(File::open(&output).unwrap()).unwrap(), b"complete");
     }
 }

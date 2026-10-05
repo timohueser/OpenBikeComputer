@@ -123,3 +123,15 @@ test('literal names and bilingual categories keep an explicit locality without t
   assert.equal(inn.results[0].name, 'Berggasthaus Kandelhof');
   assert.equal(inn.notice, '');
 });
+
+test('category searches include the shared device service subtypes', async () => {
+  const {db,conn}=database([
+    ['n90','Tap','water_tap',7.85,47.99,'Freiburg',.1],
+    ['n91','Caravan','caravan_site',7.85,47.99,'Freiburg',.1],
+    ['n92','Motel','motel',7.85,47.99,'Freiburg',.1],
+  ]);
+  assert.ok((await answerQuery(db,{...input,q:'water'},never)).results.some(p=>p.source==='n90'));
+  assert.ok((await answerQuery(db,{...input,q:'camping'},never)).results.some(p=>p.source==='n91'));
+  assert.ok((await answerQuery(db,{...input,q:'accommodation'},never)).results.some(p=>p.source==='n92'));
+  conn.close();
+});

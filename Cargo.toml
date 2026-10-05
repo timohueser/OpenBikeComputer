@@ -30,6 +30,8 @@ members = [
     "host/obc-flat-device",
     "host/obc-fixtures",
     "host/obc-pack",
+    "host/obc-places",
+    "host/obc-search-bake",
     "host/obc-bake",
     "host/obc-dem",
     "host/obc-mkimage",

@@ -6,6 +6,7 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
     public let region: String
     public let bounds: [Double]
     public let basemap: URL
+    public let places: URL
     public let glyphs: String
     public let sprites: String
     public let terrain: String
@@ -20,10 +21,10 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
     /// The cell IDs of an offline grid selection. Only routes wholly inside them are listed.
     public let offlineCells: [String]?
 
-    public init(id: String, region: String, bounds: [Double], basemap: URL, glyphs: String,
+    public init(id: String, region: String, bounds: [Double], basemap: URL, places: URL, glyphs: String,
                 sprites: String, terrain: String, terrain_attribution: String, search: URL, routing: URL, manifest: URL,
                 overlays: URL? = nil, routes: String? = nil, offlineCells: [String]? = nil) {
-        self.id = id; self.region = region; self.bounds = bounds; self.basemap = basemap
+        self.id = id; self.region = region; self.bounds = bounds; self.basemap = basemap; self.places = places
         self.glyphs = glyphs; self.sprites = sprites; self.terrain = terrain
         self.terrain_attribution = terrain_attribution; self.search = search; self.routing = routing; self.manifest = manifest
         self.overlays = overlays; self.routes = routes; self.offlineCells = offlineCells
@@ -210,7 +211,7 @@ public actor PlannerService: PlannerDataSource {
             guard catalog.format == 1, r.id.count == 64, r.id.allSatisfy({ $0.isHexDigit && $0.isASCII }), r.bounds.count == 4,
                   r.bounds.allSatisfy(\.isFinite), r.bounds[0] < r.bounds[2], r.bounds[1] < r.bounds[3],
                   r.bounds[0] >= -180, r.bounds[2] <= 180, r.bounds[1] >= -90, r.bounds[3] <= 90,
-                  r.basemap.scheme == "https", r.routing.scheme == "https", r.manifest.scheme == "https", r.search.scheme == "https",
+                  r.basemap.scheme == "https", r.places.scheme == "https", r.routing.scheme == "https", r.manifest.scheme == "https", r.search.scheme == "https",
                   r.overlays.map({ $0.scheme == "https" }) ?? true,
                   r.routes.map({ $0.hasPrefix("https://") && $0.contains("{cell}") }) ?? true,
                   [r.glyphs, r.sprites, r.terrain].allSatisfy({ $0.hasPrefix("https://") })

@@ -38,7 +38,7 @@ struct PlannerServiceTests {
     /// The route is the straight line through the request points. A leg position names its point.
     private func lineService(_ sent: Bodies) -> (PlannerService, PlannerRelease) {
         let host = URL(string: "https://planner.test")!
-        let release = PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: [7, 47, 9, 49], basemap: host,
+        let release = PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: [7, 47, 9, 49], basemap: host, places: host,
                                      glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host,
                                      manifest: host.appending(path: "manifest.json"))
         let service = PlannerService(release: release) { request in
@@ -160,7 +160,7 @@ struct PlannerServiceTests {
     @Test(arguments: [(200, nil), (422, PlannerFailure.lineNotReproducible), (422, .lineTooLong)])
     func shapesALineInOneRequest(_ status: Int, _ failure: PlannerFailure?) async throws {
         let host = URL(string: "https://planner.test")!
-        let release = PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: [7, 47, 9, 49], basemap: host,
+        let release = PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: [7, 47, 9, 49], basemap: host, places: host,
                                      glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host, manifest: host)
         let sent = Bodies()
         let service = PlannerService(release: release) { request in
@@ -183,7 +183,7 @@ struct PlannerServiceTests {
     /// A line over the service's 200 km cap fails before any request.
     @Test func aTooLongLineFailsWithoutARequest() async throws {
         let host = URL(string: "https://planner.test")!
-        let release = PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: [7, 47, 9, 49], basemap: host,
+        let release = PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: [7, 47, 9, 49], basemap: host, places: host,
                                      glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host, manifest: host)
         let sent = Bodies()
         let service = PlannerService(release: release) { request in
@@ -222,7 +222,7 @@ private final class StubHTTP: URLProtocol, @unchecked Sendable {
             let kind = components.queryItems!.first!.value!
             let suffix = "?route=" + kind.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
             let release: [String: Any] = ["id": String(repeating: "a", count: 64), "region": "test", "bounds": [7, 47, 9, 49],
-                "basemap": host + "/basemap.json", "glyphs": host + "/fonts/{fontstack}/{range}.pbf", "sprites": host + "/sprites", "terrain": host + "/{z}/{x}/{y}.webp", "terrain_attribution": "Terrain", "search": host + "/search", "routing": host + "/" + kind, "manifest": host + "/manifest.json" + suffix]
+                "basemap": host + "/basemap.json", "places": host + "/places.json", "glyphs": host + "/fonts/{fontstack}/{range}.pbf", "sprites": host + "/sprites", "terrain": host + "/{z}/{x}/{y}.webp", "terrain_attribution": "Terrain", "search": host + "/search", "routing": host + "/" + kind, "manifest": host + "/manifest.json" + suffix]
             data = try! JSONSerialization.data(withJSONObject: ["format": 1, "active": release])
         } else if url.lastPathComponent == "manifest.json" {
             data = try! JSONSerialization.data(withJSONObject: ["routing_package": packageID, "profiles": ["gravel", "gravel/shorter"]])

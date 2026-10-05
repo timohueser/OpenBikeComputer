@@ -21,7 +21,7 @@ for (const name of ['poi-kinds', 'map-style']) {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
   }).outputText);
 }
-await writeFile(new URL('obc-map-data.mjs', cache), `export const BASEMAP_URL='__BASEMAP__',GLYPHS_URL='__GLYPHS__',SPRITES_URL='__SPRITES__',MAP_BOUNDS=null,TERRAIN_ATTRIBUTION='__TERRAIN_ATTRIBUTION__';`);
+await writeFile(new URL('obc-map-data.mjs', cache), `export const BASEMAP_URL='__BASEMAP__',PLACES_URL='__PLACES__.json',GLYPHS_URL='__GLYPHS__',SPRITES_URL='__SPRITES__',MAP_BOUNDS=null,TERRAIN_ATTRIBUTION='__TERRAIN_ATTRIBUTION__';`);
 const { mapStyle } = await import(new URL('map-style.mjs', cache).href);
 const { poiKinds } = await import(new URL('poi-kinds.mjs', cache).href);
 const maps = new URL('../Packages/OBCKit/Sources/OBCUI/Resources/Map/', import.meta.url);
@@ -45,7 +45,7 @@ for (const theme of ['light', 'dark']) {
       layout: { 'symbol-placement': 'line', 'symbol-spacing': 350, 'text-field': ['get','ref'],
         'text-font': ['Noto Sans Medium'], 'text-size': 11, 'text-offset': [0,0.8] },
       paint: { 'text-color': color, 'text-halo-color': theme === 'dark' ? '#181d19' : '#ffffff', 'text-halo-width': 2 } });
-  style.layers.push({ id: 'planner-poi-highlight', type: 'circle', source: 'basemap', 'source-layer': 'pois', minzoom: 13,
+  style.layers.push({ id: 'planner-poi-highlight', type: 'circle', source: 'places', 'source-layer': 'pois', minzoom: 13,
     filter: ['in', ['get','kind'], ['literal',[]]],
     paint: { 'circle-radius': 19, 'circle-color': 'transparent', 'circle-stroke-color': '#e1ac42', 'circle-stroke-width': 3 } });
   style.sources['highlighted-places'] = { type: 'geojson', data: { type: 'FeatureCollection', features: [] } };

@@ -112,8 +112,8 @@ def prepare(source, destination, bounds, region, progress=lambda step, message: 
         envelope = [min(bounds[0], geometry[0]), min(bounds[1], geometry[1]),
                     max(bounds[2], geometry[2]), max(bounds[3], geometry[3])]
         (stage / "maps").mkdir()
-        for step, name in enumerate(("basemap", "terrain"), 1):
-            progress(step, "Preparing map tiles" if name == "basemap" else "Preparing terrain")
+        for step, name in ((1, "basemap"), (1, "places"), (2, "terrain")):
+            progress(step, "Preparing terrain" if name == "terrain" else "Preparing map tiles")
             maps.compact_archive(source / "maps" / f"{name}.pmtiles", stage / "maps" / f"{name}.pmtiles",
                                  envelope, terrain=name == "terrain", recompress=False)
         for name in ("maps/assets", "search/model", "device"):

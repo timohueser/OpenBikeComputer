@@ -119,9 +119,10 @@ def glyph_ranges(source):
     """Return the indices (code point // 256) of the glyph ranges that labels and route references use."""
     from pmtiles.reader import MmapSource, all_tiles
     texts = set()
-    with (source / "maps/basemap.pmtiles").open("rb") as file:
-        for _, tile in all_tiles(MmapSource(file)):
-            texts.update(label_texts(gzip.decompress(tile) if tile[:2] == b"\x1f\x8b" else tile))
+    for name in ("basemap", "places"):
+        with (source / "maps" / f"{name}.pmtiles").open("rb") as file:
+            for _, tile in all_tiles(MmapSource(file)):
+                texts.update(label_texts(gzip.decompress(tile) if tile[:2] == b"\x1f\x8b" else tile))
     with closing(sqlite3.connect(f"{(source / 'routing/overlays.sqlite').resolve().as_uri()}?mode=ro", uri=True)) as db:
         texts.update(ref for (ref,) in db.execute("SELECT json_extract(properties, '$.ref') FROM attributes "
                                                   "UNION SELECT json_extract(properties, '$.ref') FROM routes") if ref)

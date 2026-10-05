@@ -9,6 +9,7 @@ description = "OBCM map packer (OSM .osm.pbf -> .obcm)"
 external-fixtures = []
 
 [dependencies]
+obc-places = { path = "../obc-places" }
 # Normative OBCM constants and primitive codecs shared with every producer/consumer.
 obc-formats = { path = "../../firmware/obc-formats" }
 # The one file adapter onto that crate's read seam — `--terrain` opens its containers through it.

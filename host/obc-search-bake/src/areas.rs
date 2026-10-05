@@ -116,7 +116,7 @@ impl Area {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::address_bake::geometry::coordinates;
+    use crate::geometry::coordinates;
     #[test]
     fn edge_index_matches_geometry_with_holes_touching_edges_and_disjoint_parts() {
         let p = Polygon::new(

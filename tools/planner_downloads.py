@@ -92,11 +92,11 @@ class Downloads:
             return files[name]["sha256"]
         package = metadata("routing/blocks.json", graph)
         metadata("routing/layers.json", [c["id"] for c in cells])
-        for kind in ("basemap", "terrain"):
+        for kind in ("basemap", "places", "terrain"):
             metadata(f"maps/{kind}.json", {"tilejson": "3.0.0", "tiles": [
                 f"https://offline.openbikecomputer.invalid/{identity}/{kind}/{{z}}/{{x}}/{{y}}"],
-                "minzoom": 0, "maxzoom": 14 if kind == "basemap" else 12,
-                "bounds": geometry if kind == "basemap" else terrain})
+                "minzoom": 11 if kind == "places" else 0, "maxzoom": {"basemap": 14, "places": 11, "terrain": 12}[kind],
+                "bounds": terrain if kind == "terrain" else geometry})
         release = {**self.manifest, "format": 1, "region": graph["data"]["region"], "bounds": actual,
                    "routing_package": package, "source_files": {}, "terrain_bounds": terrain,
                    "offline": {"format": 2, "id": identity, "zoom": publication["zoom"], "map_zoom": publication["map_zoom"],

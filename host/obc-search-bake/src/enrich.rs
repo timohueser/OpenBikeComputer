@@ -54,6 +54,7 @@ pub struct Index<'a> {
     named_places: BTreeMap<String, RTree<Entry>>,
     sources: BTreeMap<OsmId, usize>,
     linked: BTreeMap<usize, usize>,
+    place_boundaries: BTreeMap<usize, usize>,
     postcodes: super::postcodes::Postcodes,
     area_postcodes: Vec<Option<String>>,
     road_contexts: BTreeMap<usize, Address>,
@@ -271,6 +272,7 @@ impl<'a> Index<'a> {
             named_roads,
             named_places: named_places.into_iter().map(|(name, entries)| (name, RTree::bulk_load(entries))).collect(),
             sources,
+            place_boundaries: linked.iter().map(|(&boundary, &place)| (place, boundary)).collect(),
             linked,
             postcodes: super::postcodes::Postcodes::new(input, countries, policy),
             area_postcodes: vec![None; input.features.len()],
@@ -298,6 +300,22 @@ impl<'a> Index<'a> {
 
     pub fn center(&self, i: usize) -> Point {
         self.centers[i]
+    }
+
+    pub fn linked_place(&self, i: usize) -> Option<&super::input::Feature> {
+        self.linked.get(&i).map(|&j| &self.input.features[j])
+    }
+
+    pub fn place_boundary(&self, i: usize) -> Option<&super::input::Feature> {
+        self.place_boundaries.get(&i).map(|&j| &self.input.features[j])
+    }
+
+    pub fn address_type(&self, i: usize) -> &'static str {
+        part(self.ranks[i].1)
+    }
+
+    pub fn search_rank(&self, i: usize) -> u8 {
+        self.ranks[i].0
     }
 
     pub fn tags(&self, i: usize) -> &Tags {

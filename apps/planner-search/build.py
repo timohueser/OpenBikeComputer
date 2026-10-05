@@ -1,4 +1,4 @@
-"""Build searchable regional SQLite files from a Photon/Nominatim JSON dump."""
+"""Build searchable regional SQLite files from a enriched OSM search dump."""
 import argparse
 import io
 import time
@@ -23,7 +23,7 @@ def main():
     ap.add_argument('--region', default='all')
     ap.add_argument('--bounds', help='West,south,east,north for one regional package')
     ap.add_argument('--countries', default='de', help='Comma-separated country codes')
-    ap.add_argument('--osm-sha256', help='Identity of the OSM input used by Nominatim')
+    ap.add_argument('--osm-sha256', help='Identity of the OSM input used by the search baker')
     args = ap.parse_args()
     if not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', args.region):
         ap.error('Invalid region ID')
@@ -41,7 +41,7 @@ def main():
     start = time.monotonic()
     n = 0
     outlines = []
-    meta = {'schema': 4, 'source': args.dump.name, 'attribution': '© OpenStreetMap contributors, ODbL 1.0; prepared by Nominatim / Photon'}
+    meta = {'schema': 4, 'source': args.dump.name, 'attribution': '© OpenStreetMap contributors, ODbL 1.0'}
     if bounds:
         meta.update(bounds=bounds, countries=countries)
     if args.osm_sha256:
@@ -55,6 +55,10 @@ def main():
                 source_hash = obj['content'].get('osm_sha256')
                 if source_hash and args.osm_sha256 and source_hash != args.osm_sha256:
                     ap.error('Source and requested OSM snapshot differ')
+                if source_hash:
+                    if not re.fullmatch(r'[a-f0-9]{64}', source_hash):
+                        ap.error('Invalid source OSM digest')
+                    meta['osm_sha256'] = source_hash
                 if obj['content'].get('scope') == 'addresses' and args.component != 'addresses':
                     ap.error('This source contains addresses only; use --component addresses')
                 if generator != 'photon':

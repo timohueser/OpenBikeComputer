@@ -1,5 +1,5 @@
 import type { Place } from '../editor';
-import type { PlaceCategory } from '../poi-kinds';
+import { poiKinds, type PlaceCategory } from '../poi-kinds';
 import type { QueryPoint, Where, QueryRequest, SearchPlace } from './types';
 export const kindLabel = (kind: string) => kind.replaceAll('_', ' ');
 export const kindGroups: Record<PlaceCategory, string[]> = {
@@ -13,7 +13,7 @@ export const kindGroups: Record<PlaceCategory, string[]> = {
 };
 export const allKinds = [...new Set([...Object.values(kindGroups).flat().filter(k => !['water_point','clinic','shop','pub','pizza','kebab'].includes(k)), 'atm', 'town'])];
 export function category(kind: string): PlaceCategory {
-    return (Object.entries(kindGroups).find(([, kinds]) => kinds.includes(kind))?.[0] ?? 'viewpoint') as PlaceCategory;
+    return poiKinds[kind]?.category ?? (Object.entries(kindGroups).find(([, kinds]) => kinds.includes(kind))?.[0] ?? 'viewpoint') as PlaceCategory;
 }
 export function asPlace(p: SearchPlace): Place {
     return { id: p.source, placeKind: p.kind, label: p.name, kind: 'place', category: category(p.kind), coordinate: [p.lon, p.lat], progress: 0,

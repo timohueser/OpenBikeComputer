@@ -3,7 +3,7 @@ use super::{
     input::Input,
 };
 use flate2::read::GzDecoder;
-use geo::{Area, BoundingRect, Geometry, Intersects, Point, Polygon};
+use geo::{Area, BoundingRect, Geometry, Point, Polygon};
 use rstar::RTree;
 use std::{
     fs::File,
@@ -21,6 +21,7 @@ struct Country {
 pub struct Countries {
     entries: Vec<Country>,
     tree: RTree<Entry>,
+    prepared: Vec<super::areas::Area>,
 }
 
 // The static country grid is data. Parse its EWKB rows without executing SQL.
@@ -158,18 +159,23 @@ impl Countries {
                 });
             }
         }
+        Ok(Self::new(entries))
+    }
+
+    fn new(entries: Vec<Country>) -> Self {
         let tree = RTree::bulk_load(
             entries.iter().enumerate().map(|(index, c)| Entry { index, envelope: envelope(&c.geometry) }).collect(),
         );
-        Ok(Self { entries, tree })
+        let prepared = entries.iter().map(|c| super::areas::Area::new(&c.geometry)).collect();
+        Self { entries, tree, prepared }
     }
 
     pub fn at(&self, p: Point) -> Option<&str> {
         let matches: Vec<_> = self
             .tree
             .locate_in_envelope_intersecting(&super::geometry::expanded(p, 0.))
+            .filter(|e| self.prepared[e.index].contains(p))
             .map(|e| &self.entries[e.index])
-            .filter(|c| c.geometry.intersects(&p))
             .collect();
         let current: std::collections::BTreeSet<_> =
             matches.iter().filter(|c| c.current).map(|c| c.code.as_str()).collect();
@@ -188,6 +194,7 @@ impl Countries {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use geo::Intersects;
     #[test]
     fn current_country_boundaries_precede_the_fallback_grid() {
         let geometry: Geometry =
@@ -196,10 +203,7 @@ mod tests {
             Country { code: "old".into(), area: 0.5, geometry: geometry.clone(), current: false },
             Country { code: "new".into(), area: 1., geometry: geometry.clone(), current: true },
         ];
-        let tree = RTree::bulk_load(
-            entries.iter().enumerate().map(|(index, c)| Entry { index, envelope: envelope(&c.geometry) }).collect(),
-        );
-        let countries = Countries { entries, tree };
+        let countries = Countries::new(entries);
         assert_eq!(countries.at(Point::new(0.5, 0.5)), Some("new"));
         assert_eq!(countries.at(Point::new(2., 2.)), None);
     }
