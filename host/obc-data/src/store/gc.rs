@@ -1,14 +1,14 @@
 //! `obc data gc store`: delete the objects and the snapshot records that no environment, pin or
 //! fixture reaches. Receipts and import records stay: they are history.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use super::Store;
+use super::{Snapshot, Store};
 use crate::engine::{self, InputKind};
 
 /// What the repository pins.
@@ -60,20 +60,36 @@ pub struct Plan {
     pub keep_bytes: u64,
 }
 
-/// What a collection deletes. An object is reached when a pin names it, a pinned snapshot record
-/// has it, or a reached layer has it. A layer is reached when each input is: a snapshot input
-/// whose digest is of all the files, or of one file, of a pinned record of its source, and a layer
-/// input whose digest is of a reached layer.
+/// What a collection deletes. A snapshot record is reached when a pin names it, or when it is the
+/// newest record of its source. An object is reached when a pin, a fixture, a planner recipe or an
+/// import record names it, or a reached record or layer has it. A layer is reached when each input
+/// is: a snapshot input whose digest is of all the files, or of one file, of a reached record of
+/// its source, and a layer input whose digest is of a reached layer.
 pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     let mut reached: HashSet<String> = roots.sha256s.iter().cloned().collect();
+    for path in files(&store.root().join("imports"), &["jsonl"])? {
+        reached.extend(sha256s(&fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?));
+    }
     let mut snapshot_digests = HashSet::new();
     let mut plan = Plan::default();
+    let mut snapshots = Vec::new();
     for (source, version) in records(store)? {
-        if !roots.pins.contains(&(source.clone(), version.clone())) {
+        snapshots.extend(store.snapshot(&source, &version)?);
+    }
+    // The newest record of a source is what a bake without a pin reads, and what a source whose
+    // upstream serves only its newest file cannot give again.
+    let retrieved = |snapshot: &Snapshot| snapshot.files.iter().map(|file| file.retrieved.clone()).max();
+    let mut newest: HashMap<&str, Option<String>> = HashMap::new();
+    for snapshot in &snapshots {
+        let entry = newest.entry(&snapshot.source).or_default();
+        *entry = (*entry).clone().max(retrieved(snapshot));
+    }
+    for snapshot in &snapshots {
+        let (source, version) = (&snapshot.source, &snapshot.version);
+        if !roots.pins.contains(&(source.clone(), version.clone())) && retrieved(snapshot) < newest[source.as_str()] {
             plan.snapshots.push(format!("{source}@{version}"));
             continue;
         }
-        let Some(snapshot) = store.snapshot(&source, &version)? else { continue };
         let files = || snapshot.files.iter().map(|file| (file.name.as_str(), file.sha256.as_str()));
         snapshot_digests.insert((source.clone(), engine::digest(files())));
         snapshot_digests.extend(files().map(|file| (source.clone(), engine::digest([file]))));
@@ -116,8 +132,13 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     Ok(plan)
 }
 
-/// Delete what `plan` names.
-pub fn apply(store: &Store, plan: &Plan) -> Result<(), String> {
+/// Delete what nothing reaches, and say what. It refuses to start while a fetch, a build or an
+/// import holds the store.
+pub fn apply(store: &Store, roots: &Roots) -> Result<Plan, String> {
+    let Some(_alone) = store.try_alone()? else {
+        return Err("a fetch, a build or an import uses the store; collect when it ends".into());
+    };
+    let plan = plan(store, roots)?;
     for snapshot in &plan.snapshots {
         let (source, version) = snapshot.split_once('@').expect("source@version");
         let _lock = store.lock(&format!("snapshot-{source}@{version}"))?;
@@ -126,7 +147,7 @@ pub fn apply(store: &Store, plan: &Plan) -> Result<(), String> {
     for (sha256, _) in &plan.objects {
         remove(&store.object(sha256))?;
     }
-    Ok(())
+    Ok(plan)
 }
 
 fn remove(path: &Path) -> Result<(), String> {
@@ -229,7 +250,8 @@ mod tests {
         sha256
     }
 
-    fn snapshot(store: &Store, source: &str, version: &str, files: &[(&str, &[u8])]) {
+    /// A record of `files`, retrieved on `day`.
+    fn snapshot(store: &Store, source: &str, version: &str, day: &str, files: &[(&str, &[u8])]) {
         let files = files
             .iter()
             .map(|(name, bytes)| FileRecord {
@@ -237,7 +259,7 @@ mod tests {
                 url: format!("https://example.org/{name}"),
                 size: bytes.len() as u64,
                 sha256: object(store, bytes),
-                retrieved: "2026-10-05T00:00:00Z".into(),
+                retrieved: format!("{day}T00:00:00Z"),
             })
             .collect();
         store.put_snapshot(&Snapshot { source: source.into(), version: version.into(), files }).unwrap();
@@ -289,12 +311,22 @@ mod tests {
         write("fixtures/catalog.toml", format!("[packages.a]\nsha256 = \"{fixture}\"\n"));
         let roots = Roots::from_repo(&repo).unwrap();
 
-        snapshot(&store, "land", "2026-09-01", &[("a.zip", b"land new"), ("b.zip", b"land b")]);
-        snapshot(&store, "land", "2026-08-01", &[("a.zip", b"land old"), ("b.zip", b"land b")]);
-        snapshot(&store, "osm", "release/1", &[("planet.pbf", b"planet")]);
+        // The pinned record of `land` is older than the other one.
+        snapshot(&store, "land", "2026-09-01", "2026-09-01", &[("a.zip", b"land new"), ("b.zip", b"land b")]);
+        snapshot(&store, "land", "2026-08-01", "2026-08-01", &[("a.zip", b"land old"), ("b.zip", b"land b")]);
+        snapshot(&store, "osm", "release/1", "2026-10-05", &[("planet.pbf", b"planet")]);
+        // No pin names `extract`: its newest record stays.
+        snapshot(&store, "extract", "2026-08-01", "2026-08-01", &[("a.pbf", b"extract old")]);
+        snapshot(&store, "extract", "2026-09-30", "2026-09-30", &[("a.pbf", b"extract new")]);
         object(&store, b"digest pin");
         object(&store, b"fixture");
         object(&store, b"imported, unused");
+        object(&store, b"imported, kept");
+        let line = format!(
+            "{{\"dir\":\"/old\",\"path\":\"a\",\"size\":14,\"sha256\":\"{}\"}}\n",
+            sha256_hex(b"imported, kept")
+        );
+        write_atomic(&store.root().join("imports/20261005T000000Z.jsonl"), line.as_bytes()).unwrap();
         let land = store.snapshot("land", "2026-09-01").unwrap().unwrap();
         let whole = engine::digest(land.files.iter().map(|f| (f.name.as_str(), f.sha256.as_str())));
         let one = engine::digest([("a.zip", land.files[0].sha256.as_str())]);
@@ -306,16 +338,22 @@ mod tests {
         layer(&store, "on-stale", vec![input(InputKind::Layer, "stale", stale)], b"on stale");
 
         let plan = plan(&store, &roots).unwrap();
-        assert_eq!(plan.snapshots, ["land@2026-08-01"]);
-        let mut removed: Vec<_> = [&b"land old"[..], b"imported, unused", b"stale", b"on stale"]
+        assert_eq!(plan.snapshots, ["extract@2026-08-01", "land@2026-08-01"]);
+        let mut removed: Vec<_> = [&b"land old"[..], b"extract old", b"imported, unused", b"stale", b"on stale"]
             .iter()
             .map(|bytes| (sha256_hex(bytes), bytes.len() as u64))
             .collect();
         removed.sort();
         assert_eq!(plan.objects, removed);
-        assert_eq!(plan.keep_objects, 8, "pinned files, the digest pin, the fixture and three layers");
+        assert_eq!(
+            plan.keep_objects, 10,
+            "pinned and newest files, the digest pin, the fixture, an import and three layers"
+        );
 
-        apply(&store, &plan).unwrap();
+        let using = store.using().unwrap();
+        assert!(apply(&store, &roots).unwrap_err().contains("uses the store"), "a running fetch stops a collection");
+        drop(using);
+        assert_eq!(apply(&store, &roots).unwrap().objects, plan.objects, "it deletes what the plan names");
         assert!(store.snapshot("land", "2026-08-01").unwrap().is_none());
         assert!(store.object(&sha256_hex(b"land b")).is_file(), "a file of the pinned record stays");
         assert!(!store.object(&sha256_hex(b"stale")).exists());

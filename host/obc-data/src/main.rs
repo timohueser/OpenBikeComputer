@@ -1,7 +1,8 @@
-//! `obc data`: read the sources and the regions, and fetch sources into the store. Read commands
-//! change nothing in `data/`.
+//! `obc data`: read the sources and the regions, fetch sources into the store, and show runs. Read
+//! commands change nothing in `data/`.
 
 mod r2_cli;
+mod runs_cli;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -56,6 +57,8 @@ enum Command {
         #[arg(long, global = true)]
         json: bool,
     },
+    /// The runs in the store, newest first; with RUN, its steps.
+    Runs(runs_cli::Runs),
     /// The local store.
     Store {
         #[command(subcommand)]
@@ -146,6 +149,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 Some(RegionAction::Show { id }) => print_region(&regions, &id, json),
             }
         }
+        Command::Runs(runs) => runs_cli::run(runs),
         Command::Store { action: StoreAction::Import { apply, json } } => store_import(apply, json),
         Command::Gc { what: GcWhat::Store { apply, json } } => gc_store(&root()?, apply, json),
         Command::R2(r2) => r2_cli::run(r2),
@@ -159,39 +163,48 @@ fn store_import(apply: bool, json: bool) -> Result<(), Failure> {
     if json {
         return print_json(&plan);
     }
+    let home = std::fs::canonicalize(&home).unwrap_or_else(|_| home.into());
+    let short =
+        |dir: &Path| dir.strip_prefix(&home).map_or(dir.display().to_string(), |dir| format!("~/{}", dir.display()));
     println!("{} INTO {}", if apply { "MOVED" } else { "MOVE" }, store.root().display());
     let mut table = Vec::new();
     for dir in &plan.dirs {
         let size = if dir.present { format!("{} files", dir.files) } else { "not present".into() };
-        let short =
-            dir.dir.strip_prefix(&home).map_or(dir.dir.display().to_string(), |dir| format!("~/{}", dir.display()));
-        table.push(vec![format!("  {short}"), size, bytes(dir.bytes)]);
+        table.push(vec![format!("  {}", short(&dir.dir)), size, bytes(dir.bytes)]);
     }
     print_table(&table);
     println!("{} in; duplicates are kept once; the store grows by {}.", bytes(plan.bytes), bytes(plan.new_bytes));
+    let left: Vec<_> = plan.dirs.iter().flat_map(|dir| &dir.left).collect();
+    if !left.is_empty() {
+        println!("{}", if apply { "THESE STAY:" } else { "THESE STAY AFTER --apply:" });
+        left.iter().for_each(|path| println!("  {}", short(path)));
+    }
     if !apply {
         println!(
-            "`--apply` moves the files and deletes the directories. The older bake tools then fetch and build again."
+            "`--apply` moves the files and deletes the directories that are then empty. Stop the bakes, the planner"
         );
+        println!("and every fetch first. The older bake tools then fetch and build again.");
     }
     Ok(())
 }
 
 fn gc_store(root: &Path, apply: bool, json: bool) -> Result<(), Failure> {
-    let store = Store::open()?;
-    let plan = gc::plan(&store, &gc::Roots::from_repo(root)?)?;
-    if apply {
-        gc::apply(&store, &plan)?;
-    }
+    let (store, roots) = (Store::open()?, gc::Roots::from_repo(root)?);
+    let plan = if apply { gc::apply(&store, &roots)? } else { gc::plan(&store, &roots)? };
     if json {
         return print_json(&plan);
     }
+    println!(
+        "Roots: the pins of {}/data/env/*.toml, its fixtures and planner recipes, the import records, and the newest record of each source.",
+        root.display()
+    );
     println!("{} {}", if apply { "REMOVED FROM" } else { "REMOVE FROM" }, store.root().display());
     plan.snapshots.iter().for_each(|snapshot| println!("  snapshot {snapshot}"));
+    plan.objects.iter().for_each(|(sha256, size)| println!("  object {sha256}  {}", bytes(*size)));
     println!("  {} objects that nothing reaches, {}", plan.objects.len(), bytes(plan.remove_bytes));
     println!("KEEP {} objects, {}", plan.keep_objects, bytes(plan.keep_bytes));
     if !apply {
-        println!("`--apply` deletes them.");
+        println!("`--apply` deletes them. It refuses to start while a fetch, a build or an import runs.");
     }
     Ok(())
 }

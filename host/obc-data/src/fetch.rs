@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use self::http::{Expect, Http};
 use crate::date;
 use crate::sources::{FetchKind, Registry, Source, VersionScheme};
-use crate::store::{FileRecord, Snapshot, Store};
+use crate::store::{FileRecord, Requested, Snapshot, Store};
 
 pub struct Request<'a> {
     pub source: &'a Source,
@@ -24,8 +24,20 @@ pub struct Request<'a> {
 }
 
 /// Fetch the files of `request` into the store, or find them there. The snapshot that comes back
-/// holds the requested files, in the order of the request.
+/// holds the requested files, in the order of the request. A request with `params` is recorded,
+/// so a step input with the same params knows its files without the network.
 pub fn fetch(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
+    let _using = store.using()?;
+    let snapshot = fetch_files(store, http, request)?;
+    if !request.params.is_empty() {
+        let files = snapshot.files.iter().map(|file| file.name.clone()).collect();
+        let record = Requested { version: snapshot.version.clone(), params: request.params.clone(), files };
+        store.put_requested(&snapshot.source, &record)?;
+    }
+    Ok(snapshot)
+}
+
+fn fetch_files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
     let source = request.source;
     match source.fetch.kind {
         FetchKind::Http | FetchKind::Glo30 | FetchKind::Github => files(store, http, request),
@@ -279,7 +291,7 @@ fn expand(template: &str, version: Option<&str>, params: &[(String, String)]) ->
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::fetch::upstream::Upstream;
     use crate::sources::parse_sources;
@@ -291,11 +303,11 @@ mod tests {
     use std::time::Duration;
 
     /// The headers of each request the test server saw, in order.
-    type Log = Arc<Mutex<Vec<Vec<(String, String)>>>>;
+    pub(crate) type Log = Arc<Mutex<Vec<Vec<(String, String)>>>>;
 
     /// What the test server answers: the status, the headers, the body it sends, and a
     /// `Content-Length` that may promise more than it sends.
-    struct Reply {
+    pub(crate) struct Reply {
         status: u16,
         headers: Vec<(&'static str, String)>,
         body: Vec<u8>,
@@ -304,7 +316,7 @@ mod tests {
 
     /// An HTTP/1.1 server on 127.0.0.1 that logs the headers of each request and answers with
     /// `reply`. It runs until the test process ends.
-    fn serve(reply: impl Fn(usize, &[(String, String)]) -> Reply + Send + 'static) -> (String, Log) {
+    pub(crate) fn serve(reply: impl Fn(usize, &[(String, String)]) -> Reply + Send + 'static) -> (String, Log) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/data/file.bin", listener.local_addr().unwrap());
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -344,12 +356,12 @@ mod tests {
         (url, log)
     }
 
-    fn whole(body: &[u8]) -> Reply {
+    pub(crate) fn whole(body: &[u8]) -> Reply {
         let headers = vec![("ETag", "\"v1\"".to_string()), ("Last-Modified", "Mon, 05 Oct 2026 03:43:59 GMT".into())];
         Reply { status: 200, headers, body: body.to_vec(), length: body.len() }
     }
 
-    fn source(url: &str, version: &str) -> Source {
+    pub(crate) fn source(url: &str, version: &str) -> Source {
         let text = format!(
             "[[source]]\nid = \"land\"\nkind = \"data\"\nfetch = {{ kind = \"http\", url = \"https://example.org/x\" }}\n\
              version = \"{version}\"\nrefresh = \"manual\"\nredistribute = true\n"
@@ -374,7 +386,7 @@ mod tests {
         headers.iter().find(|(n, _)| n == name).map(|(_, value)| value.as_str())
     }
 
-    fn quick() -> Http {
+    pub(crate) fn quick() -> Http {
         Http::with_backoff(Duration::ZERO)
     }
 
