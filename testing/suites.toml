@@ -556,6 +556,9 @@ triggers = [
   "tools/build-planner-ios.sh",
   "apps/planner-native/*.swift",
   "apps/planner-search/**",
+  # The project step runs apps/planner-search/native-build.mjs, which loads the notice module.
+  "builder/app/vite/**",
+  "data/sources.toml",
   "host/route-engine/**",
   "apps/route-server/**",
   "host/route-build/**",
@@ -579,6 +582,9 @@ triggers = [
   "tools/build-planner-ios.sh",
   "apps/planner-native/*.swift",
   "apps/planner-search/**",
+  # The project step runs apps/planner-search/native-build.mjs, which loads the notice module.
+  "builder/app/vite/**",
+  "data/sources.toml",
   "host/route-engine/**",
   "apps/route-server/**",
   "host/route-build/**",

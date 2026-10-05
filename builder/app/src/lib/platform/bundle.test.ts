@@ -8,7 +8,7 @@
 
 import { build } from "vite";
 import { describe, expect, it } from "vitest";
-import { registryAttribution } from "../../../vite/registry";
+import { registryAttribution } from "../../../vite/third-party-licenses";
 
 /** The slice of Rollup's single-input result the four blocks read — per chunk
  *  `{ fileName, isEntry, modules, code }`, per asset `{ fileName, source }`.
