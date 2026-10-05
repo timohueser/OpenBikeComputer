@@ -41,7 +41,8 @@ One `[[source]]` table per source.
 | `installed` | A person installs it, or another source's build brings it. It has no `url` |
 
 `fetch.url` is an `https://` URL template. `{name}` stands for a value the fetcher fills:
-`{version}` is the pin, `{area}` a Geofabrik area, `{tile}` a tile name. In `attribution`,
+`{version}` is the pin, `{yymmdd}` a date pin as `YYMMDD`, `{area}` a Geofabrik area, `{tile}` a
+tile name. In `attribution`,
 `{year}` and `{month}` are the year and month of the data, which the step that writes the
 credit fills.
 
@@ -129,8 +130,8 @@ and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` da
 
 ## Fetch
 
-A fetch fills each `{name}` of `fetch.url`: `{version}` from the version, and each other name
-from a `NAME=VALUE` argument. A name can have more than one value; then the fetch gets one file
+A fetch fills each `{name}` of `fetch.url`: `{version}` and `{yymmdd}` from the version, and each
+other name from a `NAME=VALUE` argument. A name can have more than one value; then the fetch gets one file
 for each value. A file that the snapshot record of the version has, and whose object exists,
 comes from the store with no request. The fetch records each file when its download is complete,
 so a fetch that fails keeps the files before the failure. A record that has the URL with another
@@ -138,8 +139,8 @@ SHA-256 fails the fetch.
 
 Which version a fetch gets:
 
-- A URL with `{version}` gives the version that it names.
-- A URL without `{version}` gives only the newest file upstream. For a `date` source without a
+- A URL with `{version}` or `{yymmdd}` gives the version that it names.
+- A URL without them gives only the newest file upstream. For a `date` source without a
   version, a `HEAD` request for each URL, with one retry, gives the latest `Last-Modified` day,
   and that day is the version. A date version accepts a file that changed on or before that day; a later file
   fails the fetch before its body is read. A response without `Last-Modified` counts as changed
@@ -163,15 +164,42 @@ version. A file that fails it is deleted.
 | `fetch.kind` | Fetcher |
 | --- | --- |
 | `http`, `geofabrik`, `glo30`, `github` | One file per URL, as above |
-| `osm`, `dtm`, `capture` | None yet; the fetch fails |
+| `osm` | The planet and its daily diffs, see below |
+| `dtm` | A program writes the files, see below |
+| `capture` | None yet; the fetch fails |
 | `by-hand`, `installed` | None; the fetch fails |
+
+A `geofabrik` URL with `{yymmdd}` names the day of the data of the extract. Without a version, the
+fetch reads the day from the `timestamp` of `<area>-updates/state.txt`; for more than one area,
+it takes the earliest day.
+
+An `osm` URL is `<server>/pbf/…{yymmdd}…`. Planets are weekly, on Mondays. Version `V` of the
+planet is the planet of the Monday on or before `V`, then one diff of
+`<server>/replication/day/` for each later day up to `V`, in order. The diff of a day has the
+sequence number of the newest diff, less the days between the two. The fetch reads the
+`state.txt` of the first and the last sequence, and fails when its `timestamp` is not the
+expected day. The record of `V` is complete when it has the planet and one diff for each day; then
+the fetch makes no request. The fetch does not apply the diffs: a step does that with
+`osmium apply-changes`.
+
+A `dtm` fetch takes `bbox=WEST,SOUTH,EAST,NORTH` in degrees and no other `NAME=VALUE`. It runs
+`python3 host/obc-dem/reference/ingest.py fetch` (`OBC_PYTHON` replaces `python3`) with the
+directories `--work` and `--out` under `partial/`. The program writes each file of the request to
+`--out`, and its progress to standard error. The store takes every file in `--out`. A failed run
+keeps `--work` and records nothing. In the record, the `url` of a file is
+`<fetch.url>#bbox=W,S,E,N/<path in --out>`.
+
+- The version is the day of the fetch, because the service answers with current data. Another
+  day comes only from the store.
+- A source with a `credential` that is not on this machine fails before the program runs, and
+  the error names the variables or the file.
 
 The upstream check finds the newest version of a source with one request, which has 15 seconds.
 The store keeps its answer, or its failure, for one hour.
 
 | Source | Check |
 | --- | --- |
-| `osm` | `HEAD` of the URL, not following the redirect; the day in the `planet-YYMMDD` file name of its `Location` |
+| `osm` | `HEAD` of the URL with `latest` for `{yymmdd}`, not following the redirect; the day in the `planet-YYMMDD` file name of its `Location` |
 | `capture` | Today, with no request: a query service answers with current data |
 | `github`, `commit` | The GitHub API: the newest commit of the default branch |
 | `github`, `release` | The GitHub API: the tag of the newest release that has the asset of the URL |

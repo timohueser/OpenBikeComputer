@@ -10,7 +10,7 @@ licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
 attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
-fetch = { kind = "osm", url = "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf" }
+fetch = { kind = "osm", url = "https://planet.openstreetmap.org/pbf/planet-{yymmdd}.osm.pbf" }
 version = "date"
 refresh = 7
 redistribute = true
@@ -22,7 +22,7 @@ licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
 attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
-fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}-latest.osm.pbf" }
+fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}-{yymmdd}.osm.pbf" }
 version = "date"
 refresh = 7
 redistribute = true

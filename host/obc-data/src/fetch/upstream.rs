@@ -38,8 +38,9 @@ struct Cached {
 
 /// The one request that finds the newest version.
 enum Check<'a> {
-    /// `planet-latest.osm.pbf` redirects to `planet-YYMMDD.osm.pbf`, named by the day of its data.
-    PlanetRedirect(&'a str),
+    /// The URL with `latest` for `{yymmdd}`: `planet-latest.osm.pbf` redirects to
+    /// `planet-YYMMDD.osm.pbf`, named by the day of its data.
+    PlanetRedirect(String),
     LastModified(&'a str),
     /// The newest commit of the default branch, from the API URL of the repository.
     GithubCommit(String),
@@ -74,7 +75,7 @@ pub fn newest(store: &Store, http: &Http, source: &Source, max_age: u64) -> Upst
 fn plan(source: &Source) -> Result<Check<'_>, Upstream> {
     let Some(url) = source.fetch.url.as_deref() else { return Err(Upstream::CannotCheck) };
     match source.fetch.kind {
-        FetchKind::Osm => Ok(Check::PlanetRedirect(url)),
+        FetchKind::Osm => Ok(Check::PlanetRedirect(url.replace("{yymmdd}", "latest"))),
         // A query service answers with today's data.
         FetchKind::Capture => Err(Upstream::Newest(date::format(date::today()))),
         FetchKind::Github => {

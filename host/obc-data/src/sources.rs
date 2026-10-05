@@ -118,7 +118,7 @@ impl Credential {
             && self.file.as_deref().is_none_or(|file| expand_home(file).is_file())
     }
 
-    fn describe(&self) -> String {
+    pub fn describe(&self) -> String {
         self.env.iter().cloned().chain(self.file.clone()).collect::<Vec<_>>().join(" and ")
     }
 }
