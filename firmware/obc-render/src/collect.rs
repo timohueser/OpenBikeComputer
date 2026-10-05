@@ -1255,3 +1255,48 @@ mod heap_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "legacy/collect.rs"]
+mod legacy;
+
+#[cfg(test)]
+mod differential {
+    use super::*;
+
+    #[test]
+    fn retained_geometry_matches_legacy_for_rotated_and_clipped_rings() {
+        let mut seed = 0x1278_91abu32;
+        for case in 0..1024 {
+            let viewport = Viewport::new_rotated(64.0, 64.0, 17, -29, 0.125, case as f32 * 0.013);
+            let mut points: Vec<(i32, i32), 64> = Vec::new();
+            for _ in 0..8 + case % 49 {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                points.push(((seed & 2047) as i32 - 1024, ((seed >> 11) & 2047) as i32 - 1024)).unwrap();
+            }
+            let rings = [points.len() / 2, points.len() - points.len() / 2];
+            for polygon in [false, true] {
+                let mut before = Vec::<ScreenPoint, MAX_FRAME_POINTS>::new();
+                let mut after = Vec::<ScreenPoint, MAX_FRAME_POINTS>::new();
+                let mut before_rings = Vec::<u16, MAX_FRAME_RINGS>::new();
+                let mut after_rings = Vec::<u16, MAX_FRAME_RINGS>::new();
+                let (old, new) = if polygon {
+                    (
+                        legacy::append_visible_polygon(&viewport, &points, &rings, 12, &mut before, &mut before_rings),
+                        append_visible_polygon(&viewport, &points, &rings, 12, &mut after, &mut after_rings),
+                    )
+                } else {
+                    (
+                        legacy::append_visible_line(&viewport, &points, &rings, &mut before, &mut before_rings),
+                        append_visible_line(&viewport, &points, &rings, &mut after, &mut after_rings),
+                    )
+                };
+                assert_eq!(old, new, "case {case}");
+                assert_eq!(before, after, "case {case}");
+                assert_eq!(before_rings, after_rings, "case {case}");
+            }
+        }
+    }
+}

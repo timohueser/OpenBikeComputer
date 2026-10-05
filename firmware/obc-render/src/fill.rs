@@ -455,3 +455,43 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "legacy/fill.rs"]
+mod legacy;
+
+#[cfg(test)]
+mod differential {
+    use super::*;
+    use embedded_graphics::{mock_display::MockDisplay, pixelcolor::BinaryColor};
+
+    #[test]
+    fn crossings_match_legacy_for_holes_degenerate_and_saturated_rows() {
+        let mut seed = 0x2987_18abu32;
+        for case in 0..512 {
+            let count: usize = if case % 31 == 0 { 2048 } else { 8 + case % 53 };
+            let mut points = Vec::<ScreenPoint, MAX_SCREEN_POINTS>::new();
+            for i in 0..count {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                let p = if count == 2048 {
+                    ((i % 127) as i32 - 32, if i % 2 == 0 { -20 } else { 90 })
+                } else {
+                    ((seed & 127) as i32 - 32, ((seed >> 7) & 127) as i32 - 32)
+                };
+                points.push(ScreenPoint::checked(p).unwrap()).unwrap();
+            }
+            let rings = [count / 2, count - count / 2];
+            let mut before = MockDisplay::<BinaryColor>::new();
+            let mut after = MockDisplay::<BinaryColor>::new();
+            before.set_allow_overdraw(true);
+            after.set_allow_overdraw(true);
+            let mut edges = Vec::new();
+            let mut xs = Vec::new();
+            legacy::fill_polygon_edges(&mut before, &points, &rings, BinaryColor::On, (64, 64), &mut edges, &mut xs);
+            fill_polygon_edges(&mut after, &points, &rings, BinaryColor::On, (64, 64), &mut edges, &mut xs);
+            assert_eq!(before, after, "case {case}");
+        }
+    }
+}
