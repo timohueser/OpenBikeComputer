@@ -30,7 +30,7 @@ pub fn fetch(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, 
         FetchKind::Geofabrik => osm::extract(store, http, request),
         FetchKind::Osm => osm::planet(store, http, request),
         FetchKind::Dtm => capture::dtm(store, request),
-        FetchKind::Capture => Err(format!("source `{}`: its kind of fetch has no fetcher yet", source.id)),
+        FetchKind::Capture => capture::run(store, request),
         FetchKind::ByHand => Err(format!(
             "source `{}`: a person downloads it from {}",
             source.id,
@@ -503,50 +503,64 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_capture_is_stored_and_another_day_comes_only_from_the_store() {
+    fn a_capture_is_split_into_records_and_another_day_comes_only_from_the_store() {
         let scratch = Scratch::new("capture");
         let store = Store::at(&scratch.0);
-        let dtm = located(FetchKind::Dtm, "https://example.org/wcs");
-        let today = Request { source: &dtm, version: None, params: vec![] };
-        let script = |script: &'static str| {
-            move |work: &std::path::Path, out: &std::path::Path| {
+        let land = located(FetchKind::Capture, "https://example.org/land");
+        let mut sea = land.clone();
+        (sea.id, sea.fetch.url) = ("sea".into(), Some("https://example.org/sea".into()));
+        let sources = [&land, &sea];
+        let owner = |path: &str| usize::from(path.starts_with("articles/"));
+        let today = Request { source: &land, version: None, params: vec![] };
+        let run = |request: &Request, script: &'static str| {
+            capture::capture(&store, request, "q=1", &sources, owner, move |work, out| {
                 let mut command = std::process::Command::new("sh");
                 command.args(["-c", script, "sh"]).arg(work).arg(out);
                 command
-            }
+            })
         };
-        let err = capture::capture(&store, &today, "bbox=1,2,3,4", script("echo partial > \"$2/a.tif\"; exit 3"))
-            .unwrap_err();
+        let err = run(&today, "echo part > \"$1/a.zip\"; exit 3").unwrap_err();
         assert!(err.contains("failed"), "{err}");
         let version = date::format(date::today());
         assert_eq!(store.snapshot("land", &version).unwrap(), None, "a failed run records nothing");
-        let writes = "mkdir \"$2/sub\" && echo raster > \"$2/sub/a.tif\" && echo crs > \"$2/sub/a.prj\" && echo zip > \"$1/a.zip\"";
-        let snapshot = capture::capture(&store, &today, "bbox=1,2,3,4", script(writes)).unwrap();
+        // The next run finds what the failed one kept.
+        let writes = "test -f \"$1/a.zip\" && mkdir \"$2/sub\" \"$2/articles\" && echo raster > \"$2/sub/a.tif\" \
+                      && echo crs > \"$2/sub/a.prj\" && echo text > \"$2/articles/x.json\"";
+        let snapshot = run(&today, writes).unwrap();
         let urls: Vec<_> = snapshot.files.iter().map(|file| file.url.as_str()).collect();
-        assert_eq!(
-            urls,
-            ["https://example.org/wcs#bbox=1,2,3,4/sub/a.prj", "https://example.org/wcs#bbox=1,2,3,4/sub/a.tif"]
-        );
+        assert_eq!(urls, ["https://example.org/land#q=1/sub/a.prj", "https://example.org/land#q=1/sub/a.tif"]);
         assert_eq!(snapshot.files[1].sha256, sha256_hex(b"raster\n"));
         assert!(store.object(&snapshot.files[1].sha256).is_file());
-        assert!(!store.root().join("partial").read_dir().unwrap().any(|entry| entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with("capture-")));
-        assert_eq!(capture::capture(&store, &today, "bbox=1,2,3,4", script("exit 1")).unwrap(), snapshot);
+        let staging = store.root().join("partial").read_dir().unwrap();
+        assert!(!staging.into_iter().any(|entry| entry.unwrap().file_name().to_string_lossy().starts_with("capture-")));
+        let article = Request { source: &sea, version: None, params: vec![] };
+        let articles = run(&article, "exit 1").unwrap();
+        assert_eq!(articles.files[0].url, "https://example.org/sea#q=1/articles/x.json");
+        assert_eq!(run(&today, "exit 1").unwrap(), snapshot);
         let pinned = Request { version: Some(version), ..today };
-        assert_eq!(capture::capture(&store, &pinned, "bbox=1,2,3,4", script("exit 1")).unwrap(), snapshot);
+        assert_eq!(run(&pinned, "exit 1").unwrap(), snapshot);
         let yesterday = Request { version: Some(date::format(date::today() - 1)), ..pinned };
-        let err = capture::capture(&store, &yesterday, "bbox=1,2,3,4", script("exit 1")).unwrap_err();
-        assert!(err.contains("today's data"), "{err}");
-        let keyed = Source {
-            credential: Some(crate::sources::Credential { env: vec!["OBC_TEST_NO_SUCH_KEY".into()], file: None }),
-            ..dtm.clone()
-        };
-        let blocked = Request { source: &keyed, version: None, params: vec![] };
-        let err = capture::capture(&store, &blocked, "bbox=5,6,7,8", script("exit 1")).unwrap_err();
-        assert!(err.contains("credential missing: OBC_TEST_NO_SUCH_KEY"), "{err}");
+        assert!(run(&yesterday, "exit 1").unwrap_err().contains("today's data"));
+    }
+
+    #[test]
+    fn a_capture_names_its_parameters_and_its_missing_credential() {
+        let scratch = Scratch::new("credential");
+        let store = Store::at(&scratch.0);
+        let mut era5 = located(FetchKind::Capture, "https://example.org/era5");
+        era5.id = "era5-land".into();
+        era5.credential =
+            Some(crate::sources::Credential { env: vec![], file: Some("~/.obc-test-no-such-key".into()) });
+        let params = |pairs: &[(&str, &str)]| pairs.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
+        let request = |params| Request { source: &era5, version: None, params };
+        let err = fetch(&store, &quick(), &request(params(&[("bbox", "7.6,47.9,8.0,48.1")]))).unwrap_err();
+        assert!(err.contains("takes bbox=… first-year=…"), "{err}");
+        let err =
+            fetch(&store, &quick(), &request(params(&[("bbox", "8,48,7,49"), ("first-year", "2015")]))).unwrap_err();
+        assert!(err.contains("west < east"), "{err}");
+        let good = params(&[("first-year", "2015"), ("bbox", "7.6,47.9,8.0,48.1")]);
+        let err = fetch(&store, &quick(), &request(good)).unwrap_err();
+        assert!(err.contains("blocked: credential missing: ~/.obc-test-no-such-key"), "{err}");
     }
 
     fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {

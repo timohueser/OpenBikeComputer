@@ -370,12 +370,12 @@ class Source:
                 for variable, chunks in self.digests.items()}
 
 
-def orography(region, key=None):
+def orography(region, key=None, cache=CACHE):
     """ERA5-Land orography in metres (rows, cols)."""
     import h5py
 
     url, checksum = OROGRAPHY
-    path = CACHE / Path(url).name
+    path = cache / Path(url).name
     if not path.exists():
         if key is None:
             raise ValueError("ERA5-Land orography is not in the cache")
@@ -390,12 +390,26 @@ def orography(region, key=None):
     return z[region.rows][:, (region.cols + GRID_COLS // 2) % GRID_COLS] / GRAVITY
 
 
-def climate(region, first_year, source, workers=8):
-    """Weekly fields, monthly mean temperatures and the wind rose over the padded region grid."""
-    start, end, times, spatial = chunk_plan(region, first_year)
+def download(region, first_year, source, workers=8):
+    """Make every source chunk of the bake a path in the cache of `source`."""
+    _, _, times, spatial = chunk_plan(region, first_year)
     names = [(variable, f"{t}.{y}.{x}") for y, x in spatial for variable in SOURCE for t in times]
     with ThreadPoolExecutor(workers) as pool:
         list(pool.map(lambda name: source.path(*name), names))
+
+
+def fetch_sources(bounds, first_year, out):
+    """Download the source chunks and the orography of a bake to `out`, for `obc data fetch`."""
+    key, region = token(), Region(bounds)
+    final_hour = hour(dt.date(first_year + YEARS, 1, 1)) + FINAL_AFTER_DAYS * 24
+    download(region, first_year, Source(final_hour, key, cache=out))
+    orography(region, key, cache=out)
+
+
+def climate(region, first_year, source, workers=8):
+    """Weekly fields, monthly mean temperatures and the wind rose over the padded region grid."""
+    start, end, times, spatial = chunk_plan(region, first_year)
+    download(region, first_year, source, workers)
     shape = (len(region.rows), len(region.cols))
     weekly = {name: np.full((YEARS, WEEKS, *shape), np.nan) for name in WEEKLY}
     monthly = {name: np.full((12, *shape), np.nan) for name in ("tmax", "tmin")}
@@ -505,17 +519,23 @@ def bake(bounds, first_year, source, output, key=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("region", help="region name: the recipe in tools/planner-regions and the default output folder")
+    parser.add_argument("region", nargs="?", help="region name: the recipe in tools/planner-regions and the default output folder")
     parser.add_argument("--bounds", type=maps.bounds, help="west,south,east,north instead of the recipe bounds")
     parser.add_argument("--first-year", type=int, help="the first of the ten years; default: the recipe's `climate.first_year`")
     parser.add_argument("--output", type=Path, help="default: ~/.cache/obc/planner/REGION/maps/climate.pmtiles")
     parser.add_argument("--check", action="store_true", help="bake from the cache only and compare with the output")
+    parser.add_argument("--fetch", type=Path, help="only download the source chunks and the orography to this directory")
     args = parser.parse_args()
+    if not args.region and not args.bounds:
+        parser.error("give a region or --bounds")
     recipe = json.loads((RECIPES / f"{args.region}.json").read_text()) if (RECIPES / f"{args.region}.json").exists() else {}
     bounds = args.bounds or recipe["bounds"]
     first_year = args.first_year or recipe.get("climate", {}).get("first_year")
     if first_year is None:
         parser.error("Pin the first year with --first-year or the recipe field `climate.first_year`")
+    if args.fetch:
+        fetch_sources(bounds, first_year, args.fetch)
+        return
     output = args.output or Path.home() / ".cache/obc/planner" / args.region / "maps/climate.pmtiles"
     final_hour = hour(dt.date(first_year + YEARS, 1, 1)) + FINAL_AFTER_DAYS * 24
     start = time.monotonic()

@@ -533,17 +533,78 @@ def copernicus_planes(files, bounds, seasons):
     return np.stack(planes), grid
 
 
+def subset(path, bounds, out):
+    """Write the window of raster `path` that covers `bounds`, one pixel wider on each side, to `out`.
+
+    The file keeps the name of the source file. A file whose raster misses the bounds writes nothing.
+    """
+    import rasterio
+    from rasterio.warp import transform_bounds
+    from rasterio.windows import Window, from_bounds
+
+    target = out / Path(urllib.parse.urlsplit(path).path).name
+    if target.exists():
+        return
+    with rasterio.open(path) as src:
+        window = from_bounds(*transform_bounds("EPSG:4326", src.crs, *bounds, densify_pts=100), src.transform)
+        # Rounded first: a bound on a pixel edge comes back a hair off it.
+        col, row = round(window.col_off, 6), round(window.row_off, 6)
+        left, top = math.floor(col) - 1, math.floor(row) - 1
+        right, bottom = math.ceil(round(col + window.width, 6)) + 1, math.ceil(round(row + window.height, 6)) + 1
+        left, top, right, bottom = max(left, 0), max(top, 0), min(right, src.width), min(bottom, src.height)
+        if left >= right or top >= bottom:
+            return
+        window = Window(left, top, right - left, bottom - top)
+        profile = {key: value for key, value in src.profile.items() if key not in ("blockxsize", "blockysize", "tiled")}
+        profile.update(driver="GTiff", width=window.width, height=window.height, transform=src.window_transform(window),
+                       compress="deflate")
+        data = src.read(window=window)
+    part = target.with_name(target.name + ".part")
+    with rasterio.open(part, "w", **profile) as dst:
+        dst.write(data)
+    os.replace(part, target)
+
+
+def fetch(source, bounds, first_season, last_season, out):
+    """Write the window of every source file of the seasons to `out`, for `obc data fetch`."""
+    out.mkdir(parents=True, exist_ok=True)
+    if source == "copernicus-hr-wsi":
+        cdse_credentials()
+        files = copernicus_files(bounds)
+        paths = {path for season in range(first_season, last_season + 1)
+                 for layer in files.get(season, {}).values() for path in layer}
+        with ThreadPoolExecutor(4) as pool:
+            list(pool.map(lambda path: subset(path, bounds, out), paths))
+        return
+    os.environ.update(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
+                      GDAL_HTTP_MAX_RETRY="5", GDAL_HTTP_RETRY_DELAY="2", VSI_CACHE="FALSE")
+    # One season at a time: a read token lasts about an hour.
+    for season in range(first_season, last_season + 1):
+        items = modis_items(bounds, dt.date(season, 9, 1), dt.date(season + 1, 8, 31))
+        # The search can list a file twice, and two writers of one file collide.
+        hrefs = {urllib.parse.urlsplit(href).path: href for files in items.values() for *_, href in files}
+        with ThreadPoolExecutor(24) as pool:
+            list(pool.map(lambda href: subset(href, bounds, out), hrefs.values()))
+        print(f"Season {season}/{(season + 1) % 100:02d}: {len(hrefs)} files", file=sys.stderr, flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("region", help="region name: the recipe in tools/planner-regions and the default output folder")
+    parser.add_argument("region", nargs="?", help="region name: the recipe in tools/planner-regions and the default output folder")
     parser.add_argument("--bounds", type=maps.bounds, help="west,south,east,north instead of the recipe bounds")
     parser.add_argument("--output", type=Path, help="default: ~/.cache/obc/planner/REGION/maps/snow.pmtiles")
     parser.add_argument("--source", choices=SOURCES, default="nasa-modis")
     parser.add_argument("--first-season", type=int, default=2000, help="the first NASA season")
     parser.add_argument("--last-season", type=int, default=2024, help="the last NASA season (2024 ends in June 2025)")
     parser.add_argument("--trails", action="store_true", help="report the share of OSM path and track length with no data in every season")
+    parser.add_argument("--fetch", type=Path, help="only write the source windows of the seasons to this directory")
     args = parser.parse_args()
+    if not args.region and not args.bounds:
+        parser.error("give a region or --bounds")
     bounds = args.bounds or json.loads((RECIPES / f"{args.region}.json").read_text())["bounds"]
+    if args.fetch:
+        fetch(args.source, bounds, args.first_season, args.last_season, args.fetch)
+        return
     output = args.output or Path.home() / ".cache/obc/planner" / args.region / "maps/snow.pmtiles"
     start = time.monotonic()
     if args.source == "copernicus-hr-wsi":

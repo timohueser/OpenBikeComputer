@@ -159,5 +159,25 @@ class CopernicusTest(unittest.TestCase):
         self.assertTrue((planes[1] == snow.NO_DATA).all())
 
 
+class FetchTest(unittest.TestCase):
+    def test_a_subset_is_the_window_of_the_bounds_one_pixel_wider(self):
+        import rasterio
+
+        values = np.arange(100 * 100, dtype=np.uint16).reshape(100, 100)
+        with tempfile.TemporaryDirectory() as directory:
+            source, out = Path(directory) / "day.tif", Path(directory) / "out"
+            out.mkdir()
+            profile = {"driver": "GTiff", "width": 100, "height": 100, "count": 1, "dtype": "uint16",
+                       "crs": "EPSG:4326", "transform": Affine(0.01, 0, 7, 0, -0.01, 48)}
+            with rasterio.open(source, "w", **profile) as dst:
+                dst.write(values, 1)
+            snow.subset(str(source), [7.2, 47.2, 7.4, 47.4], out)
+            snow.subset(str(source), [9.0, 47.2, 9.4, 47.4], out)
+            self.assertEqual([path.name for path in out.iterdir()], ["day.tif"])
+            with rasterio.open(out / "day.tif") as src:
+                self.assertEqual(src.transform, Affine(0.01, 0, 7.19, 0, -0.01, 47.41))
+                self.assertTrue((src.read(1) == values[59:81, 19:41]).all())
+
+
 if __name__ == "__main__":
     unittest.main()
