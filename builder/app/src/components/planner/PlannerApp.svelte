@@ -965,7 +965,7 @@
     {/key}
     <main aria-busy={!session.ready}>
         {#if libraryOpen}
-            <LibraryPanel plans={session.plans} unreadable={session.unreadable} activeId={planId} busy={session.busy} error={session.libraryError}
+            <LibraryPanel plans={session.plans} unreadable={session.unreadable} onDeleteUnreadable={() => { if (window.confirm('Delete the saved plans that cannot be read? This cannot be undone.')) void session.removeUnreadable(); }} activeId={planId} busy={session.busy} error={session.libraryError}
                 onClose={() => libraryOpen = false} onOpen={openPlan} onRename={(plan, name) => session.rename(plan, name)} onDuplicate={plan => session.duplicate(plan)}
                 onDelete={deletePlan} onImport={importFiles} gpxNames={session.gpxLines?.map(line => line.name) ?? null}
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />

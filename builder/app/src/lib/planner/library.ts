@@ -22,6 +22,11 @@ function isPlan(value: unknown): value is Plan {
         && Number.isFinite(plan.updatedAt) && typeof plan.summary === 'string' && isTrip(plan.trip);
 }
 
+// Only the fields of a plan: a record of a version 1 library also holds its versions, which a save must not write back.
+function fields({ id, revision, name, updatedAt, summary, trip }: Plan): Plan {
+    return { id, revision, name, updatedAt, summary, trip };
+}
+
 function isVersion(value: unknown): value is Version {
     const v = value as Partial<Version> | null;
     return !!v && isTrip(v.trip) && typeof v.id === 'string' && !!v.id && typeof v.at === 'string' && Number.isFinite(Date.parse(v.at))
@@ -41,11 +46,9 @@ export class PlanLibrary {
             const request = this.factory.open('obc-planner-plans', 2);
             request.onupgradeneeded = () => {
                 const db = request.result;
-                // Pre-release: an older library is dropped, not migrated.
-                for (const store of Array.from(db.objectStoreNames)) db.deleteObjectStore(store);
-                db.createObjectStore('plans', { keyPath: 'id' });
-                db.createObjectStore('versions');
-                db.createObjectStore('state');
+                // A version 1 library keeps its plans; the versions inside their records are lost.
+                if (!db.objectStoreNames.contains('plans')) db.createObjectStore('plans', { keyPath: 'id' });
+                for (const store of ['versions', 'state']) if (!db.objectStoreNames.contains(store)) db.createObjectStore(store);
             };
             request.onsuccess = () => {
                 const db = request.result;
@@ -71,7 +74,7 @@ export class PlanLibrary {
     async list(): Promise<{ plans: Plan[]; unreadable: number }> {
         await this.pending;
         const records = await this.read('plans') as unknown[];
-        const plans = records.filter(isPlan).sort((a, b) => b.updatedAt - a.updatedAt);
+        const plans = records.filter(isPlan).map(fields).sort((a, b) => b.updatedAt - a.updatedAt);
         return { plans, unreadable: records.length - plans.length };
     }
 
@@ -92,7 +95,7 @@ export class PlanLibrary {
         if (plan === undefined) return undefined;
         if (!isPlan(plan)) throw new Error('Saved plan is invalid. Open another plan or import a backup.');
         this.revisions.set(id, plan.revision);
-        return plan;
+        return fields(plan);
     }
 
     private enqueue<T>(work: () => Promise<T>): Promise<T> {
@@ -158,6 +161,25 @@ export class PlanLibrary {
                 active.onsuccess = () => { if (active.result === plan.id) tx.objectStore('state').delete('active'); };
                 tx.oncomplete = () => resolve();
                 tx.onabort = () => reject(conflict ? new Error('This plan changed. Reopen My plans before deleting it.') : tx.error);
+            });
+        });
+    }
+
+    /** Deletes the records that are not valid plans, with their versions. */
+    removeUnreadable(): Promise<void> {
+        return this.enqueue(async () => {
+            const db = await this.open();
+            await new Promise<void>((resolve, reject) => {
+                const tx = db.transaction(['plans', 'versions'], 'readwrite');
+                const cursor = tx.objectStore('plans').openCursor();
+                cursor.onsuccess = () => {
+                    const record = cursor.result;
+                    if (!record) return;
+                    if (!isPlan(record.value)) { record.delete(); tx.objectStore('versions').delete(record.primaryKey); }
+                    record.continue();
+                };
+                tx.oncomplete = () => resolve();
+                tx.onabort = () => reject(tx.error);
             });
         });
     }

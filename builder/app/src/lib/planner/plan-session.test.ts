@@ -4,6 +4,7 @@ import { emptyTrip, orderedRoutePoints, type RoutePoint, type Trip } from './edi
 import type { Coordinate } from './geo';
 import { PlanLibrary } from './library';
 import { PlanSession } from './plan-session.svelte';
+import { newVersion } from './versions';
 import type { AnswerRoute } from './route-answer';
 import { routeService } from '../../../test-support/planner/route-service';
 
@@ -98,6 +99,20 @@ describe('plan session', () => {
         expect(session.pickAlternative(primary)).toBe(false);
         expect(session.undo() && session.alternatives?.choice).toBe('corridor');
         expect(routes.fetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('duplicates a plan that is not open with the versions saved for it', async () => {
+        service();
+        const session = new PlanSession();
+        await session.start(new IDBFactory());
+        session.commit(plan);
+        await session.saveVersions([newVersion(plan, undefined, 'Valley')]);
+        const first = session.plan;
+        expect(await session.newPlan()).toBe(true);
+        expect(session.versions).toEqual([]);
+        expect(await session.duplicate(first)).toBe(true);
+        expect([session.plan.id === first.id, session.versions.map(v => v.name)]).toEqual([false, ['Valley']]);
+        session.close();
     });
 
     it('saves the plan without its line and calculates the line again when the plan opens', async () => {

@@ -5,6 +5,19 @@ import { PlanLibrary, exportPlan, importPlan, newPlan } from './library';
 import { newVersion } from './versions';
 import { testTrip } from '../../../test-support/planner/trip';
 
+/** Runs `work` on the plans store of the library database, outside `PlanLibrary`. */
+async function rawPlans(factory: IDBFactory, work: (plans: IDBObjectStore) => IDBRequest | void, version?: number): Promise<unknown> {
+    const db = await new Promise<IDBDatabase>(resolve => {
+        const request = factory.open('obc-planner-plans', version);
+        request.onupgradeneeded = () => { request.result.createObjectStore('plans', { keyPath: 'id' }); request.result.createObjectStore('state'); };
+        request.onsuccess = () => resolve(request.result);
+    });
+    const tx = db.transaction('plans', 'readwrite'), request = work(tx.objectStore('plans'));
+    await new Promise(resolve => tx.oncomplete = resolve);
+    db.close();
+    return request?.result;
+}
+
 describe('local plan library', () => {
     it('keeps independent plans and their versions, resumes the active one and removes its pointer on deletion', async () => {
         const factory = new IDBFactory();
@@ -29,19 +42,32 @@ describe('local plan library', () => {
         await reopened.close();
     });
 
-    it('lists only valid plans and counts the others', async () => {
+    it('lists only valid plans, counts the others and deletes them on request', async () => {
         const factory = new IDBFactory();
         const store = new PlanLibrary(factory);
         const valid = await store.save(newPlan(testTrip(), 'Valid'));
-        const broken = await store.save(newPlan(testTrip(), 'Broken'));
+        const broken = await store.save(newPlan(testTrip(), 'Broken'), [newVersion(testTrip(), undefined)]);
         await store.close();
-        const db = await new Promise<IDBDatabase>(resolve => { const request = factory.open('obc-planner-plans'); request.onsuccess = () => resolve(request.result); });
-        await new Promise(resolve => { const tx = db.transaction('plans', 'readwrite'); tx.objectStore('plans').put({ ...broken, trip: {} }); tx.oncomplete = resolve; });
-        db.close();
+        await rawPlans(factory, plans => { plans.put({ ...broken, trip: {} }); });
         const reopened = new PlanLibrary(factory);
         expect(await reopened.list()).toEqual({ plans: [valid], unreadable: 1 });
         await expect(reopened.get(broken.id)).rejects.toThrow('invalid');
+        await reopened.removeUnreadable();
+        expect(await reopened.list()).toEqual({ plans: [valid], unreadable: 0 });
+        expect(await reopened.versions(broken.id)).toEqual([]);
         await reopened.close();
+    });
+
+    it('keeps the plans of a version 1 library and saves them without the versions they held', async () => {
+        const factory = new IDBFactory();
+        const old = { ...newPlan(testTrip(), 'Old'), revision: 1, versions: [newVersion(testTrip(), undefined, 'Inside')] };
+        await rawPlans(factory, plans => { plans.put(old); }, 1);
+        const store = new PlanLibrary(factory);
+        const [listed] = (await store.list()).plans;
+        expect(listed).toEqual({ id: old.id, revision: 1, name: 'Old', updatedAt: old.updatedAt, summary: old.summary, trip: old.trip });
+        await store.save({ ...listed, name: 'Kept' });
+        await store.close();
+        expect(await rawPlans(factory, plans => plans.get(old.id))).not.toHaveProperty('versions');
     });
 
     it('orders rapid edits and refuses unseen edits or deletion from another tab', async () => {

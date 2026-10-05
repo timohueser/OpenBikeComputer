@@ -286,6 +286,14 @@ export class PlanSession {
             versions: open ? this.versions : await library.versions(plan.id) }));
     }
 
+    /** Deletes the records of the library that are not valid plans. */
+    removeUnreadable(): Promise<boolean> {
+        return this.act(async library => {
+            await library.removeUnreadable();
+            await this.list(library);
+        });
+    }
+
     /** Deletes a plan; deleting the open plan opens a new empty one. */
     remove(plan: Plan): Promise<boolean> {
         return this.act(async library => {
