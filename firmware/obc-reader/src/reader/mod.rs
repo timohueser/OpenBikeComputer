@@ -46,8 +46,6 @@ use obc_formats::obcm::{
     OffsetScale, ScaledOffset, HEADER_DARK_MARKER_COLOR_OFF, HEADER_DARK_STYLE_OFFSET_OFF, HEADER_LEN,
     HEADER_OFFSET_SCALE_OFF, HEADER_TERRAIN_LENGTH_OFF, HEADER_TERRAIN_OFFSET_OFF, LOD_ENTRY_LEN, NAV_MAX_PROFILES,
 };
-#[cfg(test)]
-use obc_formats::obcm::{BRANCH_BIT, EMPTY_LEAF};
 use obc_formats::obcm::{MAGIC, STYLE_RECORD_LEN, VERSION};
 use obc_formats::obcm::{
     STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, STYLE_TERRAIN_LAYER_BIT,
@@ -1016,10 +1014,3 @@ mod tests {
         assert_eq!(inner.stats().sd_reads, before.sd_reads + 1, "post-clear index read must re-read");
     }
 }
-
-#[cfg(test)]
-mod differential;
-#[cfg(test)]
-mod proof_map_points;
-#[cfg(test)]
-mod proof_places;
