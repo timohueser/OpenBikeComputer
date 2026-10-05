@@ -10,7 +10,7 @@ pub fn tag<'a>(tags: &'a Tags, key: &str) -> &'a str {
     tags.get(key).map(String::as_str).unwrap_or("")
 }
 
-pub fn way(road: &Road, tags: &Tags, variant: RoadBike, pushing: bool) -> Option<CostBasis> {
+pub fn way(road: &Road, tags: &Tags, country: Country, variant: RoadBike, pushing: bool) -> Option<CostBasis> {
     let highway = tag(tags, "highway");
     let ferry = tag(tags, "route") == "ferry";
     if matches!(highway, "motorway" | "motorway_link" | "construction" | "proposed" | "abandoned") {
@@ -45,7 +45,7 @@ pub fn way(road: &Road, tags: &Tags, variant: RoadBike, pushing: bool) -> Option
     let unpaved = !(paved || matches!(surface, "fine_gravel" | "cobblestone") || smoothness == "intermediate")
         && (explicit_unpaved || rough);
     let get = |key: &str| tags.get(key).map(String::as_str);
-    let cycleway = source::cycleway(get, road.reversed, Country::at(road.shape[0]).left_hand());
+    let cycleway = source::cycleway(get, road.reversed, country.left_hand());
     let designated = tag(tags, "bicycle") == "designated" || tag(tags, "bicycle_road") == "yes";
     let mut factor: f64 = match highway {
         "trunk" | "trunk_link" => 10.0,
@@ -165,6 +165,11 @@ pub fn way(road: &Road, tags: &Tags, variant: RoadBike, pushing: bool) -> Option
 mod tests {
     use super::*;
     use route_engine::model::{Point, Surface, BIKE, FOOT, PUSH};
+
+    /// Tests use the worldwide rules.
+    fn way(road: &Road, tags: &Tags, variant: RoadBike, pushing: bool) -> Option<CostBasis> {
+        super::way(road, tags, Country::default(), variant, pushing)
+    }
 
     fn road() -> Road {
         Road {

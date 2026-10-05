@@ -40,40 +40,64 @@ const DEFAULTS: &[(&str, &[(&str, u8)])] = &[
     ("US", &[("cycleway", ALL), ("pedestrian", ALL), ("bridleway", ALL)]),
 ];
 
-/// The countries tagged `driving_side=left` in the same JOSM boundaries.
+/// The `driving_side` tags of the same JOSM boundaries. A territory without one, such as
+/// Jersey, takes the side of its parent; the most specific tagged id wins.
 const LEFT_HAND: &[&str] = &[
     "AG", "AU", "BB", "BD", "BN", "BS", "BT", "BW", "CY", "DM", "FJ", "GB", "GD", "GY", "HK", "ID", "IE", "IN", "JM",
     "JP", "KE", "KI", "KN", "LC", "LK", "LS", "MO", "MT", "MU", "MV", "MW", "MY", "MZ", "NA", "NP", "NR", "NZ", "PG",
     "PK", "SB", "SC", "SG", "SR", "SZ", "TH", "TL", "TO", "TT", "TV", "TZ", "UG", "VC", "VI", "WS", "ZA", "ZM", "ZW",
 ];
+const RIGHT_HAND: &[&str] = &["GI", "IO"];
 
 static BOUNDARIES: LazyLock<CountryBoundaries> =
     LazyLock::new(|| CountryBoundaries::from_reader(BOUNDARIES_ODBL_360X180).expect("embedded country boundaries"));
 
-/// The country at a point. `None` outside every country keeps the worldwide rules.
+/// The country at a point. Outside every country, the worldwide rules apply.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Country(Option<&'static str>);
+pub struct Country {
+    code: Option<&'static str>,
+    left_hand: bool,
+}
 
 impl Country {
     pub fn at(point: Point) -> Self {
-        let position = LatLon::new(point.lat as f64 * 1e-6, point.lon as f64 * 1e-6).ok();
-        Country(position.and_then(|p| BOUNDARIES.ids(p).into_iter().find(|id| !id.contains('-'))))
+        let Ok(position) = LatLon::new(point.lat as f64 * 1e-6, point.lon as f64 * 1e-6) else {
+            return Self::default();
+        };
+        // The ids run from the most specific, such as `["JE", "GB"]` or `["GB-ENG", "GB"]`.
+        let ids = BOUNDARIES.ids(position);
+        let side = |id: &&str| {
+            if LEFT_HAND.contains(id) {
+                Some(true)
+            } else {
+                RIGHT_HAND.contains(id).then_some(false)
+            }
+        };
+        Country {
+            code: ids.iter().copied().find(|id| !id.contains('-')),
+            left_hand: ids.iter().find_map(side).unwrap_or(false),
+        }
+    }
+
+    /// The country of a way: that of its first node with a known point.
+    pub fn of_way(nodes: &[i64], point: impl Fn(i64) -> Option<Point>) -> Self {
+        nodes.iter().find_map(|&id| point(id)).map_or_else(Self::default, Self::at)
     }
 
     /// The default modes of `highway` where this country differs from the worldwide table.
     pub fn defaults(self, highway: &str) -> Option<u8> {
-        let (_, classes) = DEFAULTS.iter().find(|(code, _)| Some(*code) == self.0)?;
+        let (_, classes) = DEFAULTS.iter().find(|(code, _)| Some(*code) == self.code)?;
         let class = highway.strip_suffix("_link").unwrap_or(highway);
         classes.iter().find(|(name, _)| *name == class).map(|(_, modes)| *modes)
     }
 
     pub fn left_hand(self) -> bool {
-        self.0.is_some_and(|code| LEFT_HAND.contains(&code))
+        self.left_hand
     }
 
     #[cfg(test)]
     pub fn of(code: &'static str) -> Self {
-        Country(Some(code))
+        Country { code: Some(code), left_hand: LEFT_HAND.contains(&code) }
     }
 }
 
@@ -95,5 +119,7 @@ mod tests {
         assert_eq!(of("CH").defaults("trunk_link"), Some(0));
         assert_eq!(of("DE").defaults("trunk"), None);
         assert!(of("GB").left_hand() && !of("DE").left_hand() && !Country::default().left_hand());
+        // Jersey drives on the left like the United Kingdom; Gibraltar drives on the right.
+        assert!(at(49.21, -2.13).left_hand() && !at(36.14, -5.35).left_hand());
     }
 }

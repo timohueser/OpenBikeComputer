@@ -2,7 +2,6 @@
 //! SQLite layout of `specs/planner-release.md`.
 mod access;
 
-use crate::country::Country;
 use crate::source::{Data, Id, Relation, Tags};
 use rusqlite::{params, Connection, Transaction};
 use serde_json::{json, Value};
@@ -126,9 +125,7 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
     }
     let mut attributes = HashMap::new();
     for way in osm.ways.values() {
-        let country =
-            way.nodes.iter().find_map(|id| osm.nodes.get(id)).map_or_else(Country::default, |n| Country::at(n.point));
-        let access = access::feature(way, country);
+        let access = access::feature(way, osm.country(way));
         let memberships = members.get(&way.id).map_or(&[][..], Vec::as_slice);
         if access.is_none() && memberships.is_empty() {
             continue;

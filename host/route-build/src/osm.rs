@@ -260,7 +260,11 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4]) -> Result<Graph, String> {
                     }
                     let nodes: Vec<_> = nodes.into_iter().map(|n| n.0).collect();
                     preserved.ways.insert(id.0, source::Way { id: id.0, nodes: nodes.clone(), tags: copy_tags(&tags) });
-                    highways.push((id.0, nodes, tags));
+                    // The country changes the modes of a road class, never whether it is one.
+                    let known = source::highway_access(tag(&tags, "highway").unwrap_or(""), Country::default());
+                    if known.is_some() || tags.contains("route", "ferry") {
+                        highways.push((id.0, nodes, tags));
+                    }
                 }
                 OsmObj::Relation(relation) => {
                     relations.entry(relation.id.0).or_insert(relation);
@@ -306,9 +310,7 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4]) -> Result<Graph, String> {
     counts.insert("outside bounds or missing referenced nodes", needed.len() - nodes.len());
     let mut ways = HashMap::new();
     for (id, way_nodes, tags) in highways {
-        // A way takes the country of its first retained node.
-        let country =
-            way_nodes.iter().find_map(|id| nodes.get(id)).map_or_else(Country::default, |n| Country::at(n.point));
+        let country = Country::of_way(&way_nodes, |id| nodes.get(&id).map(|node| node.point));
         if let Some(attributes) = attributes(&tags, country, &mut counts) {
             ways.insert(id, RawWay { id, nodes: way_nodes, attributes, tags });
         }

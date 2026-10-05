@@ -335,6 +335,12 @@ pub struct Data {
     pub relations: BTreeMap<i64, Relation>,
 }
 
+impl Data {
+    pub fn country(&self, way: &Way) -> Country {
+        Country::of_way(&way.nodes, |id| self.nodes.get(&id).map(|node| node.point))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

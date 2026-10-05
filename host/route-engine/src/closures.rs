@@ -27,7 +27,7 @@ pub enum Kind {
     Seasonal,
     /// Any other conditional restriction, such as `wet` or `Mo-Fr 07:00-19:00`.
     Conditional,
-    /// An access value that the router does not know.
+    /// An access value or a barrier that the router does not know, or a reversible one-way.
     Unclear,
 }
 
@@ -42,7 +42,7 @@ impl Kind {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Closure {
     pub kind: Kind,
-    /// The OSM condition, or the OSM access value for the other kinds.
+    /// The OSM condition, or the OSM access value or tag for the other kinds.
     pub condition: String,
 }
 
