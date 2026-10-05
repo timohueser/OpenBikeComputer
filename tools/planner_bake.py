@@ -44,12 +44,12 @@ def source_search(stage, osm, cache, config):
 
 
 def source_records(stage, search):
-    maps.run("uv", "run", "--no-project", "--with-requirements", SEARCH / "requirements-build.txt", "python", SEARCH / "split.py",
+    maps.run("uv", "run", "--locked", "--group", "planner-search", "python", SEARCH / "split.py",
              search / "search.jsonl.zst", stage, cwd=maps.ROOT)
 
 
 def build_search(stage, records, config, component):
-    maps.run("uv", "run", "--no-project", "--with-requirements", SEARCH / "requirements-build.txt", "python", SEARCH / "build.py",
+    maps.run("uv", "run", "--locked", "--group", "planner-search", "python", SEARCH / "build.py",
              records / f"{component}.jsonl.zst", "--component", component, "--output", stage,
              "--region", config["region"], "--bounds", ",".join(map(str, config["bounds"])),
              "--countries", ",".join(config["countries"]), "--osm-sha256", config["osm"]["sha256"],
@@ -182,11 +182,11 @@ def specifications(config, prepared=None):
                                            "planetiler": sources.VERSIONS["planetiler"]},
         config.get("auxiliary", {}), functions=[sources.basemap, sources.download])
     add("source-search", source_search, {"osm": osm, "country_data": sources.COUNTRY_DATA_SHA, "country_data_version": sources.VERSIONS["nominatim-country-data"]}, {"country": config["countries"][0]},
-        paths=[*components.rust_sources("host/obc-search-bake"), maps.ROOT / "host/obc-search-bake/policy.py"], functions=[sources.search_dump, sources.download])
+        paths=[*components.rust_sources("host/obc-search-bake"), maps.ROOT / "host/obc-search-bake/policy.py", maps.ROOT / "uv.lock"], functions=[sources.search_dump, sources.download])
     data_kinds = sorted(json.loads((SEARCH / "query/contract.json").read_bytes())["data"])
     add("source-records", source_records, {"data_kinds": data_kinds}, dependencies=["source-search"],
-        paths=[SEARCH / "split.py", SEARCH / "records.py", SEARCH / "requirements-build.txt", maps.ROOT / "builder/app/src/lib/planner/poi-kinds.json"])
-    common = [SEARCH / path for path in ["build.py", "writer.py", "records.py", "storage.py", "index.py", "schema.sql", "indexes.sql", "web/address-terms.json", "requirements-build.txt"]]
+        paths=[SEARCH / "split.py", SEARCH / "records.py", maps.ROOT / "uv.lock", maps.ROOT / "builder/app/src/lib/planner/poi-kinds.json"])
+    common = [SEARCH / path for path in ["build.py", "writer.py", "records.py", "storage.py", "index.py", "schema.sql", "indexes.sql", "web/address-terms.json"]] + [maps.ROOT / "uv.lock"]
     for component in ["pois", "addresses"]:
         add(component, build_search, {"osm": osm, **credits("osm-planet")}, {"region": config["region"], "countries": config["countries"],
             "time_zone": config["time_zone"], "component": component, "schema": 5},

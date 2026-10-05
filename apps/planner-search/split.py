@@ -4,6 +4,7 @@ from contextlib import ExitStack
 import io
 import json
 from pathlib import Path
+import sys
 
 from records import has_addresses, has_poi
 
@@ -46,9 +47,23 @@ def split(source, destination):
         raise
 
 
-if __name__ == '__main__':
+def step():
+    """The `obc data` step `planner/search/records`: the records of `planner/search/dump`."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from tools import step_request
+
+    request = step_request.read()
+    dump = Path(request['layers']['planner/search/dump']['search.jsonl.zst'])
+    step_request.metrics(request, split(dump, Path(request['output'])))
+
+
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source', type=Path)
     parser.add_argument('destination', type=Path)
     args = parser.parse_args()
     print(json.dumps(split(args.source, args.destination)))
+
+
+if __name__ == '__main__':
+    step() if sys.argv[1:] == ['--step'] else main()

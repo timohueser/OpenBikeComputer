@@ -95,8 +95,13 @@ triggers = [
   "tools/step_request.py",
   "tools/data_registry.py",
   "tools/planner_*.py",
-  "apps/planner-search/setup.py",
+  "apps/planner-search/*.py",
+  "apps/planner-search/*.sql",
+  "apps/planner-search/web/address-terms.json",
   "apps/planner-search/query/*.py",
+  "apps/planner-search/query/contract.json",
+  "host/obc-search-bake/policy.py",
+  "builder/app/src/lib/planner/poi-kinds.json",
 ]
 
 [[package]]
@@ -250,7 +255,7 @@ triggers = [
 [[suite]]
 id = "python.repository-tools"
 route = "required"
-command = "mkdir -p .artifacts/coverage/repository-tools && rm -rf .artifacts/python/repository-tools && python3 -m coverage run --data-file=.artifacts/coverage/repository-tools/.coverage --source=tools -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools"
+command = "rm -rf .artifacts/python/repository-tools && python3 -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools"
 jobs = ["guards", "selection"]
 triggers = [
   "tools/requirements-test.txt",
@@ -279,7 +284,7 @@ triggers = [
 [[suite]]
 id = "python.firmware-tools"
 route = "ordinary"
-command = "mkdir -p .artifacts/coverage/firmware-tools && rm -rf .artifacts/python/firmware-tools && python3 -m coverage run --data-file=.artifacts/coverage/firmware-tools/.coverage --source=firmware/tools -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools"
+command = "rm -rf .artifacts/python/firmware-tools && python3 -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools"
 jobs = ["test"]
 triggers = [
   "tools/requirements-test.txt",
@@ -302,7 +307,7 @@ triggers = ["host/obc-dem/reference/**", "tools/requirements-bake.txt", "data/so
 [[suite]]
 id = "python.builder"
 route = "ordinary"
-command = "rm -f .artifacts/python/builder.xml && PYTHONPATH=. python3 -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml --cov=builder/server --cov-report=lcov:.artifacts/coverage/builder/lcov.info --cov-report=term"
+command = "rm -f .artifacts/python/builder.xml && PYTHONPATH=. python3 -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml"
 jobs = ["builder-python"]
 fixtures = ["builder-corpus"]
 triggers = [

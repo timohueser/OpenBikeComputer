@@ -23,16 +23,22 @@ obc-pack = { path = "../obc-pack" }
 obc-dem = { path = "../obc-dem", features = ["terrarium"] }
 # The planner routing step.
 route-build = { path = "../route-build" }
+# The planner search dump step.
+obc-search-bake = { path = "../obc-search-bake" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
 
 [dev-dependencies]
+# A stand-in for the Nominatim archive in the planner build test.
+flate2 = "1"
 obc-elevation = { path = "../../firmware/obc-elevation" }
 obc-fixtures = { path = "../obc-fixtures" }
 obc-formats = { path = "../../firmware/obc-formats" }
 route-engine = { path = "../route-engine" }
-# The land polygons of the map-cell fixture: a zip that the test writes.
+# Reads the search databases of the planner build test.
+rusqlite = { version = "0.38", features = ["bundled"] }
+# The land polygons of the map-cell fixture and the Nominatim stand-in: zips that the tests write.
 zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 
 [[test]]

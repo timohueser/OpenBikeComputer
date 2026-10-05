@@ -3,7 +3,7 @@
 
 An index tells you what rules exist. That is not the question anyone has. The question,
 before changing a file, is which of them reach *it* — and the answer already exists,
-scattered across `testing/suites.toml`, `testing/coverage-policy.toml`,
+scattered across `testing/suites.toml`,
 `firmware/tools/dependency_rules.json`, `firmware/ui-frames.toml` and the guards
 themselves. Nothing had joined them.
 
@@ -88,27 +88,6 @@ def suites(path: str, package: str | None) -> list[tuple[str, str]]:
     return found
 
 
-def coverage(path: str) -> list[str]:
-    data = tomllib.loads((ROOT / "testing/coverage-policy.toml").read_text())
-    lines = []
-    for rule in data.get("exclude", []):
-        if matches(path, rule["path"]):
-            lines.append(f"excluded from coverage — {rule['evidence']}")
-    for component in data.get("component", []):
-        if not any(matches(path, g) for g in component.get("include", [])):
-            continue
-        skipped = next(
-            (r for r in component.get("exclude", []) if matches(path, r["path"])), None
-        )
-        if skipped:
-            lines.append(f"component {component['id']}: excluded — {skipped['evidence']}")
-        else:
-            lines.append(
-                f"component {component['id']} ({component.get('enforcement', '?')})"
-            )
-    return lines
-
-
 def layering(package: str | None) -> list[str]:
     if not package:
         return []
@@ -175,7 +154,6 @@ def describe(path: str) -> None:
     sections = [
         ("contracts", specs_for(name, path)),
         ("layering", layering(name)),
-        ("coverage", coverage(path)),
         ("ui frames", frames(path)),
         ("prose", prose(path)),
     ]

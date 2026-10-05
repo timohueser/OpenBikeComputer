@@ -1,6 +1,7 @@
 """Build searchable regional SQLite files from a enriched OSM search dump."""
 import argparse
 import io
+import sqlite3
 import sys
 import time
 import re
@@ -10,15 +11,9 @@ from zoneinfo import ZoneInfo
 from writer import Writer
 
 ROOT = Path(__file__).parent
-sys.path.insert(0, str(ROOT.parents[1] / "tools"))
-from data_registry import attribution  # noqa: E402
 
 
 def main():
-    import orjson
-    import zstandard
-    from shapely.geometry import mapping, shape
-
     ap = argparse.ArgumentParser()
     ap.add_argument('dump', type=Path)
     ap.add_argument('--component', choices=['all', 'pois', 'addresses'], default='all')
@@ -40,36 +35,54 @@ def main():
     countries = args.countries.lower().split(',')
     if args.osm_sha256 and not re.fullmatch(r'[a-f0-9]{64}', args.osm_sha256):
         ap.error('Invalid OSM digest')
-    args.output.mkdir(parents=True, exist_ok=True)
-    regions = ['germany', 'baden-wuerttemberg'] if args.region == 'all' else [args.region]
-    writers = {name: Writer(name, args.output, args.component) for name in regions}
+    # A step gets its credit in its options, so only this command line reads the registry.
+    sys.path.insert(0, str(ROOT.parents[1] / "tools"))
+    from data_registry import attribution
+
+    try:
+        build(args.dump, args.dump.name, args.output, args.component, args.region, bounds, countries,
+              args.time_zone, attribution("osm-planet"), args.osm_sha256, args.limit)
+    except ValueError as error:
+        ap.error(str(error))
+
+
+def build(dump, source, output, component, region, bounds, countries, time_zone, credit, osm_sha256=None, limit=0):
+    """Write the search databases of `component` from the dump `dump`, whose name in their metadata
+    is `source`. `credit` is the attribution of the OSM data."""
+    import orjson
+    import zstandard
+    from shapely.geometry import mapping, shape
+
+    output.mkdir(parents=True, exist_ok=True)
+    regions = ['germany', 'baden-wuerttemberg'] if region == 'all' else [region]
+    writers = {name: Writer(name, output, component) for name in regions}
     start = time.monotonic()
     n = 0
     outlines = []
-    meta = {'source': args.dump.name, 'time_zone': args.time_zone.key,
-            'attribution': attribution("osm-planet")}
+    meta = {'source': source, 'time_zone': time_zone.key, 'attribution': credit}
     if bounds:
         meta.update(bounds=bounds, countries=countries)
-    if args.osm_sha256:
-        meta['osm_sha256'] = args.osm_sha256
-    with args.dump.open('rb') as raw, zstandard.ZstdDecompressor().stream_reader(raw) as stream:
+    if osm_sha256:
+        meta['osm_sha256'] = osm_sha256
+    with dump.open('rb') as raw, zstandard.ZstdDecompressor().stream_reader(raw) as stream:
         for line in io.BufferedReader(stream):
             obj = orjson.loads(line)
             if obj['type'] == 'NominatimDumpFile':
-                meta['timestamp'] = obj['content']['data_timestamp']
                 generator = obj['content'].get('generator', 'photon')
                 source_hash = obj['content'].get('osm_sha256')
-                if source_hash and args.osm_sha256 and source_hash != args.osm_sha256:
-                    ap.error('Source and requested OSM snapshot differ')
+                if source_hash and osm_sha256 and source_hash != osm_sha256:
+                    raise ValueError('Source and requested OSM snapshot differ')
                 if source_hash:
                     if not re.fullmatch(r'[a-f0-9]{64}', source_hash):
-                        ap.error('Invalid source OSM digest')
+                        raise ValueError('Invalid source OSM digest')
                     meta['osm_sha256'] = source_hash
-                if obj['content'].get('scope') == 'addresses' and args.component != 'addresses':
-                    ap.error('This source contains addresses only; use --component addresses')
+                # After the digest: the order of the metadata rows is the same with or without `osm_sha256`.
+                meta['timestamp'] = obj['content']['data_timestamp']
+                if obj['content'].get('scope') == 'addresses' and component != 'addresses':
+                    raise ValueError('This source contains addresses only; use --component addresses')
                 if generator != 'photon':
                     meta['source_generator'] = generator
-                    meta['attribution'] = f'{attribution("osm-planet")}; prepared by {generator}'
+                    meta['attribution'] = f'{credit}; prepared by {generator}'
             if obj['type'] != 'Place':
                 continue
             for p in obj['content']:
@@ -82,7 +95,7 @@ def main():
                             or (max(extent[0], extent[2]) >= bounds[0] and max(extent[1], extent[3]) >= bounds[1]
                                 and min(extent[0], extent[2]) <= bounds[2] and min(extent[1], extent[3]) <= bounds[3])):
                         continue
-                    writers[args.region].add(p)
+                    writers[region].add(p)
                 elif 'germany' in writers:
                     writers['germany'].add(p)
                 state = p.get('address', {}).get('state', '')
@@ -97,15 +110,35 @@ def main():
                     for w in writers.values():
                         w.db.commit()
                     print(f'{n:,} records, {time.monotonic()-start:.0f}s', flush=True)
-                if args.limit and n >= args.limit:
+                if limit and n >= limit:
                     break
-            if args.limit and n >= args.limit:
+            if limit and n >= limit:
                 break
-    (args.output / 'regions.geojson').write_bytes(orjson.dumps({'type':'FeatureCollection','features':outlines}))
+    (output / 'regions.geojson').write_bytes(orjson.dumps({'type':'FeatureCollection','features':outlines}))
     for w in writers.values():
         w.finish(meta)
     print(f'Complete: {n:,} records, {time.monotonic()-start:.0f}s', flush=True)
 
 
+def step():
+    """The `obc data` step `planner/search/<component>`: `<component>/<region>.sqlite` from the
+    records of `planner/search/records`."""
+    sys.path.insert(0, str(ROOT.parents[1]))
+    from tools import step_request
+
+    request = step_request.read()
+    options = request['options']
+    component = options['component']
+    name = f'{component}.jsonl.zst'
+    dump = Path(request['layers']['planner/search/records'][name])
+    output = Path(request['output']) / component
+    build(dump, name, output, component, options['region'], options['bounds'],
+          [country.lower() for country in options['countries']], ZoneInfo(options['time_zone']),
+          options['attribution'])
+    (output / 'regions.geojson').unlink()
+    # The key holds no SQLite version, so the metrics record it.
+    step_request.metrics(request, {'sqlite': sqlite3.sqlite_version})
+
+
 if __name__ == '__main__':
-    main()
+    step() if sys.argv[1:] == ['--step'] else main()

@@ -29,8 +29,8 @@ Build packages in a fresh directory. An interrupted build has no completion meta
 Build independent components from one verified enriched dump:
 
 ```sh
-uv run --with-requirements apps/planner-search/requirements-build.txt python apps/planner-search/split.py SOURCE.jsonl.zst /tmp/search-records
-uv run --with-requirements apps/planner-search/requirements-build.txt python apps/planner-search/build.py /tmp/search-records/pois.jsonl.zst --component pois --output DATA/pois --region REGION --bounds=WEST,SOUTH,EAST,NORTH --countries=de,ch --osm-sha256=SHA256 --time-zone=Europe/Berlin
+uv run --locked --group planner-search python apps/planner-search/split.py SOURCE.jsonl.zst /tmp/search-records
+uv run --locked --group planner-search python apps/planner-search/build.py /tmp/search-records/pois.jsonl.zst --component pois --output DATA/pois --region REGION --bounds=WEST,SOUTH,EAST,NORTH --countries=de,ch --osm-sha256=SHA256 --time-zone=Europe/Berlin
 ```
 
 Use `addresses.jsonl.zst`, `--component addresses`, and `DATA/addresses` for

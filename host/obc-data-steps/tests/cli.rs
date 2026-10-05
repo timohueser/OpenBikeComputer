@@ -80,6 +80,7 @@ fn a_plan_of_live_builds_the_layers_of_each_product_and_a_build_refuses_another_
         ("protomaps-assets", "028c18f713baecad011301ff7a69acc39bcc2ae7"),
         ("tangrams-icons", "92510779634f4a006c61ea70e50cb8c52c765a81"),
         ("query-model", "spike/query-parser-v2"),
+        ("nominatim-country-data", "5.3.2"),
     ];
     let mut args = vec!["plan".to_string(), "live".into(), "--json".into()];
     args.extend(moves.iter().flat_map(|(source, version)| ["--move".into(), format!("{source}@{version}")]));

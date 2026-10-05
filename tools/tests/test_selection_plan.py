@@ -547,7 +547,7 @@ class ShippedPlanTests(unittest.TestCase):
 
     def test_the_snapshot_sweep_requires_its_own_rendering_inputs(self) -> None:
         cases = [
-            ("testing/coverage-policy.toml", False),
+            (".config/nextest.toml", False),
             (".github/workflows/ci.yml", False),
             ("firmware/obc-render/src/stroke.rs", True),
             ("firmware/ui-snapshots.sha256", True),

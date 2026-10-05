@@ -888,9 +888,8 @@ check *args:
     if (( ${#FAILED[@]} )); then _err "failed:  ${FAILED[*]}"; exit 1; fi
     _ok "all run gates passed"
 
-# Dry-run by default. Common forms: `obc clean`, `obc clean --apply`,
-# `obc clean --include-builds --days 14 --apply`.
-# Inventory and safely remove stale worktrees, build outputs, and OBC test scratch. Args: [--apply] [--include-builds] [--days N]
+# Dry-run by default: `obc clean`, then `obc clean --days 14 --apply`.
+# Remove old OBC test scratch under the system temp directory. Args: [--apply] [--days N]
 [group('build')]
 clean *args:
     #!/usr/bin/env bash
