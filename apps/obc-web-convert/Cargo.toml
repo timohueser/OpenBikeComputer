@@ -18,8 +18,6 @@ obc-route = { path = "../../firmware/obc-route" }
 # The byte-I/O seam (`ByteSource`/`ByteSink`/`Error`) and the recorded-track record width — the
 # byte authority, imported directly rather than through the route algorithms.
 obc-formats = { path = "../../firmware/obc-formats" }
-# `RouteReader::decode_chunk` fills a fixed-capacity buffer; the version tracks obc-route's.
-heapless = "0.8"
 
 [dev-dependencies]
 # `TrackPoint` — tests hand-encode ride samples to drive the finished-ride → GPX path.

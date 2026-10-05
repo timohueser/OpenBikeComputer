@@ -29,7 +29,7 @@
         "app": 58448,
         "map_cache": 37084,
         "map_tables": 7528,
-        "route_cache": 9260,
+        "route_cache": 5396,
         "route_index": 12400,
         "arena_total": 131072,
         "arena_usb": 131072,
@@ -59,6 +59,12 @@
         "flat_route_read": 48,
         "flat_engine": 768,
         "ble_v4_adapter": 763
+      },
+      "_route_walk_allocation_measurement": {
+        "source_commit": "c5dbd82a",
+        "build": "resource-report head build of c5dbd82a on x86_64-unknown-linux-gnu, rustc 1.99.0, xPack riscv-none-elf-gcc 13.2.0-2",
+        "changes": "RouteCache slots keep a chunk's validated 7-byte records instead of decoded points: route_cache 9260 -> 5396 B, linked resident 311,472 B, inside the resident band.",
+        "verification": "The shipping build of the same commit passed the board guards: residual main stack 47,952 B, deep-ride margin 16,612 B, image 1,959,832 B."
       },
       "_paired_map_styles_allocation_measurement": {
         "source_commit": "49bc0e29a",

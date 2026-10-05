@@ -5,9 +5,7 @@
 use obc_elevation::{TerrainReader, TileCache};
 use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_formats::{ride::FOOTER_LEN as RIDE_FOOTER_LEN, track::RECORD_LEN as TRACK_RECORD_LEN};
-use obc_route::{
-    for_each_waypoint, track_to_gpx, BikeType, RouteIndex, RouteObjectInfo, RouteReader, MAX_POINTS_PER_CHUNK,
-};
+use obc_route::{for_each_waypoint, track_to_gpx, BikeType, RouteIndex, RouteObjectInfo, RouteReader};
 use obc_vectors::{
     all, crc32, dir, ride_v6, terrain_coord, terrain_height, terrain_shard, TERRAIN_CELL_LOG2, TERRAIN_CELL_MIN_I,
     TERRAIN_CELL_MIN_J, TERRAIN_COLS, TERRAIN_NODATA_AT, TERRAIN_POSTING_LOG2, TERRAIN_ROWS, TRACK_NAME, TRIP_DAYS,
@@ -113,11 +111,9 @@ fn route_vectors_load_and_ride_identically() {
     assert_eq!(idx_w.chunks().len(), idx_p.chunks().len());
 
     let (r_w, r_p) = (RouteReader::new(&idx_w, &src_w), RouteReader::new(&idx_p, &src_p));
-    let mut a = heapless::Vec::<_, MAX_POINTS_PER_CHUNK>::new();
-    let mut b = heapless::Vec::<_, MAX_POINTS_PER_CHUNK>::new();
     for k in 0..idx_w.chunks().len() {
-        r_w.decode_chunk(k, &mut a).unwrap();
-        r_p.decode_chunk(k, &mut b).unwrap();
+        let a: Vec<_> = r_w.with_chunk(k, |points| points.collect()).unwrap();
+        let b: Vec<_> = r_p.with_chunk(k, |points| points.collect()).unwrap();
         assert_eq!(a, b, "chunk {k} diverged");
     }
 
