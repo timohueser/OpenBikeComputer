@@ -58,14 +58,14 @@
    "category": "hotel",
    "data": [
     "campsite",
+    "caravan_site",
     "shelter",
+    "chalet",
     "hotel",
     "hostel",
     "guest_house",
     "motel",
-    "hut",
-    "caravan_site",
-    "chalet"
+    "hut"
    ]
   },
   "campsite": {
@@ -87,12 +87,12 @@
    "parent": "sleep",
    "category": "hotel",
    "data": [
+    "chalet",
     "hotel",
     "hostel",
     "guest_house",
     "motel",
-    "hut",
-    "chalet"
+    "hut"
    ]
   },
   "hotel": {
@@ -493,7 +493,9 @@
   "spring": "spring",
   "water_tap": "water_tap",
   "campsite": "campsite",
+  "caravan_site": "campsite",
   "shelter": "shelter",
+  "chalet": "lodging",
   "hotel": "hotel",
   "hostel": "hostel",
   "guest_house": "guest_house",
@@ -542,9 +544,7 @@
   "city": "town",
   "town": "town",
   "village": "town",
-  "hamlet": "town",
-  "caravan_site": "campsite",
-  "chalet": "lodging"
+  "hamlet": "town"
  },
  "categories": {
   "water": [

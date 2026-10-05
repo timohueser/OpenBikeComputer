@@ -76,7 +76,9 @@ fn surface_point(poly: &Polygon) -> Option<(Point, f64)> {
         }
     }
     xs.sort_by(f64::total_cmp);
-    xs.chunks_exact(2)
+    xs.as_chunks::<2>()
+        .0
+        .iter()
         .map(|x| (Point::new((x[0] + x[1]) / 2., y), x[1] - x[0]))
         .reduce(widest)
         .or_else(|| poly.interior_point().map(|p| (p, 0.)))

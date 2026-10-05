@@ -40,7 +40,8 @@ fn kind(f: &Feature) -> Option<(&str, &str)> {
 }
 
 pub fn record(f: &Feature, i: usize, index: &Index<'_>) -> Option<Value> {
-    if f.road() || f.tags.contains_key("_interpolation_range") {
+    let shared = obc_places::classify(f.tags.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    if (f.road() && shared.is_none()) || f.tags.contains_key("_interpolation_range") {
         return None;
     }
     let (key, value) = kind(f)?;
@@ -51,7 +52,6 @@ pub fn record(f: &Feature, i: usize, index: &Index<'_>) -> Option<Value> {
     if !f.tags.contains_key("_poi") && f.name().is_empty() {
         return None;
     }
-    let shared = obc_places::classify(f.tags.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     if shared.is_some_and(|k| k.value == "peak") && !matches!(f.source, OsmId::Node(_)) {
         return None;
     }
@@ -61,6 +61,13 @@ pub fn record(f: &Feature, i: usize, index: &Index<'_>) -> Option<Value> {
     let point = match (&f.source, &f.geometry) {
         (OsmId::Way(_), Geometry::Polygon(p)) if shared.is_some() => {
             let coords: Vec<_> = p.exterior().0.iter().map(|c| (c.x, c.y)).collect();
+            let (x, y) = obc_places::ring_centroid(&coords);
+            geo::Point::new(x, y)
+        }
+        (OsmId::Way(_), Geometry::LineString(line))
+            if shared.is_some() && line.0.len() >= 4 && line.0.first() == line.0.last() =>
+        {
+            let coords: Vec<_> = line.0.iter().map(|c| (c.x, c.y)).collect();
             let (x, y) = obc_places::ring_centroid(&coords);
             geo::Point::new(x, y)
         }

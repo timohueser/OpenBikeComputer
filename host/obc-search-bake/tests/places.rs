@@ -58,6 +58,7 @@ fn device_and_search_keep_the_same_shared_places_and_search_metadata() {
             .collect();
         assert_eq!(actual, expected, "{}", source.display());
         if n == 1 {
+            assert!(actual.contains_key("w13"));
             assert!(actual.contains_key("r20"));
             assert!(!actual.contains_key("r21"));
             let bakery = records.iter().find(|p| p["object_id"] == 2).unwrap();

@@ -12,6 +12,7 @@
   <way id="10"><nd ref="3"/><nd ref="4"/><nd ref="5"/><nd ref="6"/><nd ref="3"/><tag k="tourism" v="hotel"/><tag k="name" v="Inn"/></way>
   <way id="11"><nd ref="3"/><nd ref="4"/><nd ref="5"/></way>
   <way id="12"><nd ref="5"/><nd ref="6"/><nd ref="3"/></way>
+  <way id="13"><nd ref="3"/><nd ref="4"/><nd ref="5"/><nd ref="6"/><nd ref="3"/><tag k="highway" v="pedestrian"/><tag k="amenity" v="marketplace"/><tag k="name" v="Market Square"/></way>
   <relation id="20"><member type="way" ref="11" role="outer"/><member type="way" ref="12" role="outer"/><tag k="type" v="multipolygon"/><tag k="tourism" v="camp_site"/><tag k="name" v="Camp"/></relation>
   <relation id="21"><member type="way" ref="11" role="outer"/><member type="way" ref="99" role="outer"/><tag k="type" v="multipolygon"/><tag k="shop" v="supermarket"/><tag k="name" v="Incomplete"/></relation>
   <relation id="22"><member type="way" ref="11" role="outer"/><member type="way" ref="12" role="outer"/><member type="node" ref="7" role="admin_centre"/><tag k="type" v="boundary"/><tag k="boundary" v="administrative"/><tag k="admin_level" v="8"/><tag k="name" v="Testdorf"/><tag k="name:en" v="Test Village"/></relation>
