@@ -1,10 +1,12 @@
 //! `obc data`: read the sources and the regions, fetch sources into the store, and show runs. Read
-//! commands change nothing in `data/`.
+//! commands change nothing in `data/`. Without a command, a terminal gets the TUI.
 
 mod api;
 mod r2_cli;
 mod runs_cli;
+mod tui;
 
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -26,8 +28,9 @@ struct Cli {
     /// Write JSON to standard output, also when the command fails.
     #[arg(long, global = true)]
     json: bool,
+    /// Without a command: the TUI in a terminal, else what `sources` writes.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -89,7 +92,12 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<(), Error> {
     let json = cli.json;
-    match cli.command {
+    let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let Some(command) = cli.command else {
+        let root = root()?;
+        return if terminal && !json { tui::run(&root) } else { print_sources(&registry(&root)?, json) };
+    };
+    match command {
         Command::Sources => print_sources(&registry(&root()?)?, json),
         Command::Fetch { target, params } => {
             let registry = registry(&root()?)?;
@@ -217,23 +225,49 @@ fn print_snapshot(store: &Store, snapshot: &Snapshot, json: bool) -> Result<(), 
 
 #[derive(Serialize, JsonSchema)]
 struct Sources<'a> {
-    sources: &'a [SourceRow<'a>],
+    sources: &'a [SourceRow],
 }
 
-/// A source of `data/sources.toml` with its live pin and its state.
-#[derive(Serialize, JsonSchema)]
-struct SourceRow<'a> {
+/// A source of `data/sources.toml` with its live pin, its snapshots and its state.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+struct SourceRow {
     #[serde(flatten)]
-    source: &'a Source,
-    pin: Option<&'a str>,
+    source: Source,
+    pin: Option<String>,
     /// The newest upstream version.
-    upstream: Option<&'a str>,
+    upstream: Option<String>,
     age_days: Option<i64>,
     state: State,
     reason: Option<String>,
+    /// The versions in the local store, newest first.
+    snapshots: Vec<Stored>,
 }
 
-fn print_sources(registry: &Registry, json: bool) -> Result<(), Error> {
+/// A version of a source in the local store.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+struct Stored {
+    version: String,
+    /// The size of its files.
+    bytes: u64,
+}
+
+impl SourceRow {
+    /// The pin or another version, short enough for a table.
+    fn short(&self, version: Option<&str>) -> String {
+        version.map_or("—".into(), |version| match self.source.version {
+            VersionScheme::Commit | VersionScheme::Digest => version.chars().take(12).collect(),
+            _ => version.to_string(),
+        })
+    }
+
+    fn licence(&self) -> String {
+        let none = if self.source.kind == Kind::Tool { "—" } else { "not recorded" };
+        self.source.licence.clone().unwrap_or_else(|| none.into())
+    }
+}
+
+/// Every source in kind order, with its state from the newest upstream version.
+fn source_rows(registry: &Registry) -> Result<Vec<SourceRow>, Error> {
     let today = obc_data::date::today();
     let mut sorted: Vec<&Source> = registry.sources.iter().collect();
     sorted.sort_by_key(|source| source.kind);
@@ -245,7 +279,7 @@ fn print_sources(registry: &Registry, json: bool) -> Result<(), Error> {
             .collect();
         checks.into_iter().map(|check| check.join().unwrap_or(Upstream::Failed("panicked".into()))).collect()
     });
-    let rows: Vec<SourceRow> = sorted
+    sorted
         .into_iter()
         .zip(&newest)
         .map(|(source, upstream)| {
@@ -253,46 +287,49 @@ fn print_sources(registry: &Registry, json: bool) -> Result<(), Error> {
             let base = source.fetch.from.as_ref().and_then(|from| registry.pins.get(from)).map(String::as_str);
             let present = source.credential.as_ref().is_none_or(|c| c.present());
             let status = sources::status(source, pin, base, upstream, today, present);
-            SourceRow {
-                source,
-                pin,
-                upstream: upstream.version(),
+            let mut snapshots: Vec<Stored> = store
+                .snapshots(&source.id)?
+                .into_iter()
+                .map(|s| Stored { bytes: s.files.iter().map(|f| f.size).sum(), version: s.version })
+                .collect();
+            snapshots.sort_by(|a, b| b.version.cmp(&a.version));
+            Ok(SourceRow {
+                source: source.clone(),
+                pin: pin.map(str::to_string),
+                upstream: upstream.version().map(str::to_string),
                 age_days: status.age_days,
                 state: status.state,
                 reason: status.reason,
-            }
+                snapshots,
+            })
         })
-        .collect();
+        .collect()
+}
+
+fn print_sources(registry: &Registry, json: bool) -> Result<(), Error> {
+    let rows = source_rows(registry)?;
     if json {
         return print_json(&Sources { sources: &rows });
     }
     let mut table = vec![cells(["SOURCE", "LICENCE", "R2 COPY", "LIVE PIN", "UPSTREAM", "AGE", "POLICY", "STATE"])];
     let mut tools = false;
     for row in &rows {
-        let s = row.source;
+        let s = &row.source;
         if s.kind == Kind::Tool && !tools {
             tools = true;
             table.push(vec![String::new()]);
             table.push(vec!["tools".into()]);
         }
-        let short = |version: Option<&str>| {
-            version.map_or("—".into(), |version| match s.version {
-                VersionScheme::Commit | VersionScheme::Digest => version.chars().take(12).collect(),
-                _ => version.to_string(),
-            })
-        };
-        let licence =
-            s.licence.clone().unwrap_or_else(|| if s.kind == Kind::Tool { "—" } else { "not recorded" }.into());
         let state = match &row.reason {
             Some(reason) => format!("{}: {reason}", row.state),
             None => row.state.to_string(),
         };
         table.push(vec![
             s.id.clone(),
-            licence,
+            row.licence(),
             if s.r2_copy { "yes" } else { "no" }.into(),
-            short(row.pin),
-            short(row.upstream),
+            row.short(row.pin.as_deref()),
+            row.short(row.upstream.as_deref()),
             row.age_days.map_or("—".into(), |age| format!("{age} d")),
             s.refresh.to_string(),
             state,
@@ -367,22 +404,27 @@ fn print_table(rows: &[Vec<String>]) {
     print!("{}", table(rows));
 }
 
-fn table(rows: &[Vec<String>]) -> String {
+/// The width of each column: its widest cell. A row of one cell is a heading and has no columns.
+fn widths(rows: &[Vec<String>]) -> Vec<usize> {
     let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
-    let widths: Vec<usize> = (0..columns)
+    (0..columns)
         .map(|i| {
             rows.iter().filter(|r| r.len() > 1).filter_map(|r| r.get(i)).map(|c| c.chars().count()).max().unwrap_or(0)
         })
+        .collect()
+}
+
+fn table(rows: &[Vec<String>]) -> String {
+    let widths = widths(rows);
+    rows.iter().map(|row| row_text(row, &widths) + "\n").collect()
+}
+
+/// Each cell but the last padded to its column, two spaces apart.
+fn row_text(row: &[String], widths: &[usize]) -> String {
+    let cells: Vec<String> = row
+        .iter()
+        .enumerate()
+        .map(|(i, cell)| if i + 1 == row.len() { cell.clone() } else { format!("{cell:<w$}", w = widths[i]) })
         .collect();
-    let mut text = String::new();
-    for row in rows {
-        let line: Vec<String> = row
-            .iter()
-            .enumerate()
-            .map(|(i, cell)| if i + 1 == row.len() { cell.clone() } else { format!("{cell:<w$}", w = widths[i]) })
-            .collect();
-        text += &line.join("  ");
-        text.push('\n');
-    }
-    text
+    cells.join("  ")
 }
