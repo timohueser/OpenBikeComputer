@@ -25,7 +25,7 @@ describe('place contacts', () => {
     it('only accepts details for the selected OSM identity', async () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ok:true,json:async () => ({results:[{source:'n2'}]})}));
         try {
-            expect(await placeDetails('n1',[8,48],'test',new AbortController().signal)).toBeUndefined();
+            expect(await placeDetails('n1',[8,48],new AbortController().signal)).toBeUndefined();
         } finally { vi.unstubAllGlobals(); }
     });
 });

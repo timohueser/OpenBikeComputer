@@ -1,16 +1,25 @@
 import {DatabaseSync} from 'node:sqlite';
+import {mkdtempSync,readFileSync,rmSync} from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {norm} from '../web/engine.mjs';
 import {streetNorm,compact} from '../web/text.mjs';
-import {readFileSync} from 'node:fs';
-export function database(extra = [], file = ':memory:') {
+import {openCells} from '../cells.mjs';
+
+const root=mkdtempSync(path.join(os.tmpdir(),'planner-search-'));
+process.on('exit',()=>rmSync(root,{recursive:true,force:true}));
+let files=0;
+// One search cell file; `conn` writes it and `db` reads it through the cell federation.
+export function database(extra = []) {
+const file=path.join(root,`${files++}.sqlite`);
 const conn=new DatabaseSync(file);
+conn.exec('PRAGMA synchronous=OFF; BEGIN');
 conn.exec(readFileSync(new URL('../schema.sql',import.meta.url),'utf8'));
 conn.exec(`CREATE TABLE names(term TEXT,place_id INTEGER,PRIMARY KEY(term,place_id)) WITHOUT ROWID;
   CREATE TABLE compact_names(term TEXT,place_id INTEGER,PRIMARY KEY(term,place_id)) WITHOUT ROWID;
   CREATE TABLE lexicon(term TEXT);
   CREATE VIRTUAL TABLE terms USING fts5(name,context,content='',detail=column,prefix='3');
   CREATE VIRTUAL TABLE fuzzy USING fts5(term,content='lexicon',detail=none,tokenize='trigram');`);
-const db={all:(sql,params=[])=>conn.prepare(sql).all(...params)};
 const records=[
   ['n1','Bäckerei Müller','bakery',7.85,47.99,'Freiburg',.1],
   ['n2','Brotzeit','bakery',7.86,47.99,'Freiburg',.1],
@@ -55,6 +64,10 @@ conn.exec("INSERT INTO lexicon SELECT DISTINCT term FROM compact_names; INSERT I
 conn.exec("INSERT INTO addresses VALUES (10,'12',7.851,47.991,'w123')");
 conn.exec("INSERT INTO addresses VALUES (14,'10',7.854,48.01,'w14'),(14,'10',7.854,48.03,'w141'),(15,'10',11.57,48.13,'w15')");
 conn.exec(readFileSync(new URL('../indexes.sql',import.meta.url),'utf8'));
+const metadata=conn.prepare('INSERT INTO metadata VALUES (?,?)');
+for(const [key,value] of Object.entries({schema:5,time_zone:'Europe/Berlin',attribution:['OSM contributors']}))
+  metadata.run(key,JSON.stringify(value));
+conn.exec('COMMIT');
 
-return {db,conn,records};
+return {db:openCells([file]),conn,records,file};
 }

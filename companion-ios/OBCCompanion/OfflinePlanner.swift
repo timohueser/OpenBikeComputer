@@ -4,14 +4,13 @@ import OBCPlanner
 /// Adapts an installed grid selection to the same client contract as the online planner.
 actor OfflinePlanner {
     private let directory: URL
-    private let map: OfflineMap
     private let scripts: URL
     private let blocks: OfflineBlocks
     private var router: RouteProvider?
     private var search: PlannerSearchRuntime?
 
-    private init(map: OfflineMap, directory: URL, scripts: URL, blocks: OfflineBlocks) {
-        self.map = map; self.directory = directory; self.scripts = scripts; self.blocks = blocks
+    private init(directory: URL, scripts: URL, blocks: OfflineBlocks) {
+        self.directory = directory; self.scripts = scripts; self.blocks = blocks
     }
 
     static func open(map: OfflineMap, directory: URL,
@@ -35,7 +34,7 @@ actor OfflinePlanner {
             overlays: directory.appending(path: "maps/overlays.json"),
             routes: directory.appending(path: "routes/tiles").absoluteString + "/{cell}.json",
             offlineCells: blocks.cells.map(\.id))
-        let runtime = OfflinePlanner(map: map, directory: directory, scripts: scripts, blocks: blocks)
+        let runtime = OfflinePlanner(directory: directory, scripts: scripts, blocks: blocks)
         return PlannerService(release: release) { try await runtime.respond($0) }
     }
 
@@ -52,17 +51,10 @@ actor OfflinePlanner {
             if search == nil {
                 let names = blocks.cells.flatMap { $0.files.filter { $0.hasPrefix("search/") && $0.hasSuffix(".sqlite") } }
                 guard !names.isEmpty else { throw PlannerFailure.invalidData }
-                let databases = Array(Set(names)).sorted().map { directory.appending(path: $0) }
-                var bounds: [URL: [Double]] = [:]
-                for cell in blocks.cells {
-                    for name in cell.files where name.hasPrefix("search/") && name.hasSuffix(".sqlite") {
-                        bounds[directory.appending(path: name)] = cell.bounds
-                    }
-                }
-                search = try PlannerSearchRuntime(databases: databases, bounds: bounds,
-                    scripts: scripts, region: map.region)
+                search = try PlannerSearchRuntime(databases: Array(Set(names)).sorted().map { directory.appending(path: $0) },
+                    scripts: scripts)
             }
-            response = (200, try search!.request("query", body: request.httpBody ?? Data()))
+            response = (200, try search!.query(request.httpBody ?? Data()))
         default: throw PlannerFailure.invalidData
         }
         try Task.checkCancellation()

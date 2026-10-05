@@ -39,11 +39,6 @@ export function validateInput(input) {
   )
     fail();
   if (
-    input.region !== undefined &&
-    (typeof input.region !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(input.region))
-  )
-    fail();
-  if (
     input.startDate !== undefined &&
     (!/^\d{4}-\d{2}-\d{2}$/.test(input.startDate) ||
       !Number.isFinite(Date.parse(input.startDate)) ||

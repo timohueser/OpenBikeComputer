@@ -197,10 +197,9 @@ def verify_services(active, document, origin):
             if response.headers.get("Access-Control-Allow-Origin") not in {origin, "*"}:
                 raise ValueError("Service CORS is absent")
             return json.load(response)
-    answer = post(active["search"] + "/query", {"q": probe["query"], "region": document["region"], "view": probe["view"]})
+    answer = post(active["search"] + "/query", {"q": probe["query"], "view": probe["view"]})
     if not answer.get("results"): raise ValueError("Place search has no regional results")
-    answer = post(active["search"] + "/query", {"q": "show " + probe["query"], "submitted": True,
-                  "region": document["region"], "view": probe["view"]})
+    answer = post(active["search"] + "/query", {"q": "show " + probe["query"], "view": probe["view"]})
     if not answer.get("results") or answer.get("canRetry") or answer.get("parserMs", 0) <= 0:
         raise ValueError("Smart search did not run model inference")
     route = post(active["routing"] + "/v1/route", {"points": probe["points"], "profile": "touring"})

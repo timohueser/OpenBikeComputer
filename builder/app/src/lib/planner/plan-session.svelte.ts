@@ -161,10 +161,10 @@ export class PlanSession {
     }
 
     /** Names a visit whose label is still its coordinate after the nearest address. A name is metadata: no Undo step. */
-    async nameVisit(point: RoutePoint, region: string): Promise<void> {
+    async nameVisit(point: RoutePoint): Promise<void> {
         if (!point.autoLabel || !['waypoint', 'detour'].includes(point.kind) || point.label !== coordinateName(point.coordinate)) return;
         const coordinate: Coordinate = [...point.coordinate];
-        const label = await visitName(coordinate, region);
+        const label = await visitName(coordinate);
         const current = this.trip.points.find(p => p.id === point.id);
         if (!label || this.closed || !current?.autoLabel || current.coordinate[0] !== coordinate[0] || current.coordinate[1] !== coordinate[1]) return;
         const named = { ...this.trip, points: this.trip.points.map(p => p.id === point.id ? { ...p, label } : p) };

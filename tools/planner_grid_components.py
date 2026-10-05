@@ -138,8 +138,6 @@ def publish(source, routing, output, cache=None):
             "bounds": release["terrain_bounds"] if kind == "terrain" else coverage})
 
     search_inputs = {component: source / "search" / component / f"{release['region']}.sqlite" for component in ("pois", "addresses")}
-    split = any(path.exists() for path in search_inputs.values())
-    if not split: search_inputs = {"all": source / "search" / f"{release['region']}.sqlite"}
     from .planner_release import search_metadata
     meta = {component: search_metadata(path) for component, path in search_inputs.items()}
     lookups = {}
@@ -161,7 +159,7 @@ def publish(source, routing, output, cache=None):
         name, bounds = cell["id"], cell["bounds"]
         cell_files = []
         for component, database in search_inputs.items():
-            filename = f"search/tiles/{component}/{name}.sqlite" if split else f"search/tiles/{name}.sqlite"
+            filename = f"search/tiles/{component}/{name}.sqlite"
             relative = database.relative_to(source).as_posix()
             package(f"grid-search-{component}-{name}", {"source": release["files"][relative]}, partition_search,
                 lambda stage, database=database, filename=filename, component=component: partition_search(stage, database, lookups[component], filename, bounds, meta[component]),
@@ -169,8 +167,7 @@ def publish(source, routing, output, cache=None):
             cell_files.append(filename)
         geographic.append({**cell, "routing": routing_cells.get(name), "files": [*cell_files, f"routes/tiles/{name}.json"]})
         grid_cells.append({**cell, "files": [filename.removeprefix("search/") for filename in cell_files]})
-    metadata(f"search/{release['region']}.grid.json", {"format": 3 if split else 2, "metadata": search_meta,
-             "cells": grid_cells if split else selection})
+    metadata(f"search/{release['region']}.grid.json", {"format": 3, "metadata": search_meta, "cells": grid_cells})
     remaining = {name: entry for name, entry in release["files"].items() if name.startswith(("search/model/", "device/"))}
     package("grid-model-device", remaining, copy_files, lambda stage: copy_files(stage, remaining))
     catalog = {"format": 3, "source": identity, "release": {key: value for key, value in release.items() if key not in {"files", "source_files"}},

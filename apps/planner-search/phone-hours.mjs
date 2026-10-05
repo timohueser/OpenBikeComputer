@@ -12,7 +12,7 @@ const dates = [
   '2026-10-25T00:59:00Z','2026-10-25T01:00:00Z','2026-06-21T03:00:00Z','2026-07-30T10:00:00Z',
 ];
 
-export function run(_all,digest,hours=openingHours('Europe/Berlin')) {
+export function run(_native,digest,hours=openingHours('Europe/Berlin')) {
   const samples = [];
   for (const schedule of schedules) {
     const place = {lat:48.13,lon:7.81,region:'Baden-Württemberg',country:'de',opening_hours:schedule};

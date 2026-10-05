@@ -187,4 +187,5 @@ Split search grids use `format: 3`. Their `metadata` describes the complete
 region. Each cell has `id`, `bounds`, and `files`. File names are relative to
 `search/`: `tiles/pois/CELL.sqlite` and `tiles/addresses/CELL.sqlite`.
 Both components are present. Offline catalogue cell files use release-relative
-paths. Consumers validate component ownership, source identity, and coverage.
+paths. Consumers require one schema and OSM snapshot in all cells, and select cells
+by the bounds in each cell's metadata.
