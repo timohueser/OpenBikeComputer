@@ -1,7 +1,8 @@
-//! `obc data`: read the sources and the regions, and fetch sources into the store. Read commands
-//! change nothing in `data/`.
+//! `obc data`: read the sources and the regions, fetch sources into the store, and show runs. Read
+//! commands change nothing in `data/`.
 
 mod r2_cli;
+mod runs_cli;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -56,6 +57,8 @@ enum Command {
         #[arg(long, global = true)]
         json: bool,
     },
+    /// The runs in the store, newest first; with RUN, its steps.
+    Runs(runs_cli::Runs),
     /// The local store.
     Store {
         #[command(subcommand)]
@@ -153,6 +156,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 Some(RegionAction::Show { id }) => print_region(&regions, &id, json),
             }
         }
+        Command::Runs(runs) => runs_cli::run(runs),
         Command::Store { action: StoreAction::Import { apply, json } } => store_import(apply, json),
         Command::Gc { what: GcWhat::Store { apply, json } } => gc_store(&root()?, apply, json),
         Command::R2(r2) => r2_cli::run(r2),

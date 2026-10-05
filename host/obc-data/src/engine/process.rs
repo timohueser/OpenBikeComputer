@@ -14,7 +14,7 @@ pub struct Usage {
 }
 
 /// Run a step in this process. Its CPU time is the time of the whole process, so it is exact only
-/// while no other step runs. Its peak is known only when it raised the peak of the process.
+/// while no other step runs. Its peak is the peak of the whole process so far.
 pub fn in_process(step: impl FnOnce() -> Result<(), String>) -> Result<Usage, String> {
     let start = Instant::now();
     let before = own_usage();
@@ -23,7 +23,7 @@ pub fn in_process(step: impl FnOnce() -> Result<(), String>) -> Result<Usage, St
     Ok(Usage {
         wall_ms: start.elapsed().as_millis() as u64,
         cpu_ms: before.zip(after).map(|(before, after)| after.0.saturating_sub(before.0)),
-        peak_rss_bytes: before.zip(after).and_then(|(before, after)| (after.1 > before.1).then_some(after.1)),
+        peak_rss_bytes: after.map(|after| after.1),
     })
 }
 
