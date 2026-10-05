@@ -34,7 +34,7 @@ def before_publish(remote, identity):
         active = active_id(current)
     rows = json.loads(r2.run_rclone(["lsjson", remote.path + "/planner/releases", "--dirs-only"], remote.env, capture=True))
     if any(row["Path"].rstrip("/") not in {active, identity} for row in rows):
-        raise ValueError("Finish the active deployment with obc planner finalize --apply before publishing another release.")
+        raise ValueError("Finish the active deployment with obc planner finalize --host HOST --apply before publishing another release.")
 
 
 class Modules(HTMLParser):
@@ -131,7 +131,8 @@ def finalize(args):
     document, stale = plan(remote, current)
     active = current["active"]
     print(f"Keep planner release {active['id']} in slot {deploy.slot(active)}.")
-    print(f"Stop slot {1 - active['slot']} on {host} and remove its release directories.")
+    print(f"Stop slot {1 - active['slot']} on {host}, remove slot-{1 - active['slot']}.caddy, and delete every directory "
+          f"in {deploy.RELEASES} except {active['id']}.")
     print(f"Remove {len(stale)} inactive planner objects, {sum(item.bytes for item in stale) / 1e9:.2f} GB.")
     print("Device cells and terrain reference objects stay outside this cleanup.")
     if not args.apply:
