@@ -62,6 +62,8 @@ public struct PlannerPreviewPoint: Identifiable, Equatable, Sendable {
     public var kind: PlannerPreviewPointKind
     /// The route turns back here on purpose, as a signed route's plan says.
     public var turnaround = false
+    /// A marker's leg: the ID of the route point that ends it (`legEnd` in `specs/planner-plan.md`).
+    public var legEnd: String?
 
     public init(place: PlannerPreviewPlace, kind: PlannerPreviewPointKind = .visit, id: String? = nil) {
         self.id = id ?? place.id; self.place = place; self.kind = kind
@@ -387,7 +389,8 @@ public final class PlannerPreviewModel {
                              leg: leg.flatMap { $0.mode == .routed ? nil : $0.mode }, drawn: leg?.drawn, turnaround: point.turnaround,
                              note: point.place.note)
         } + markers.map { PlanPoint(id: ids[$0.id]!, label: $0.place.name, coordinate: $0.place.coordinate, kind: .marker,
-                                    placeKind: $0.place.kind == .town ? nil : $0.place.kind.rawValue, note: $0.place.note) }
+                                    placeKind: $0.place.kind == .town ? nil : $0.place.kind.rawValue, note: $0.place.note,
+                                    legEnd: $0.legEnd.flatMap { ids[$0] }) }
         return PlannerPlan(points: planned, mode: isTrip || !nightIDs.isEmpty ? .trip : .route, name: state.name, bike: activity.rawValue, preset: preset.title,
                            loop: isLoop, routeOrder: route.dropFirst().dropLast().map { ids[$0.id]! })
     }
@@ -442,6 +445,13 @@ public final class PlannerPreviewModel {
     /// Makes the plan one day again.
     public func clearNights() { edit { $0.nights = [] } }
 
+    /// The route point that ends the leg nearest `coordinate` on the planned line; nil without a line.
+    private func legEnd(near coordinate: Coordinate) -> String? {
+        guard !legRanges.isEmpty else { return nil }
+        let route = state.route
+        return route[min(rideOrderIndex(of: coordinate), route.count - 1)].id
+    }
+
     /// Where a new point at `coordinate` goes in ride order: before the first route point after it
     /// on the line, else before the finish.
     private func rideOrderIndex(of coordinate: Coordinate) -> Int {
@@ -466,9 +476,10 @@ public final class PlannerPreviewModel {
 
     public func addPoint(_ place: PlannerPreviewPlace, kind: PlannerPreviewPointKind = .visit) {
         guard !(points + markers).contains(where: { $0.place.id == place.id }) else { return }
+        let anchor = kind == .marker ? legEnd(near: place.coordinate) : nil
         edit {
-            let point = Self.newPoint(place, kind: kind, in: $0)
-            if kind == .marker { $0.markers.append(point) }
+            var point = Self.newPoint(place, kind: kind, in: $0)
+            if kind == .marker { point.legEnd = anchor; $0.markers.append(point) }
             else { $0.points.insert(point, at: $0.stopEnd) }
         }
     }
@@ -477,19 +488,24 @@ public final class PlannerPreviewModel {
     }
     public func replacePoint(id: String, with place: PlannerPreviewPlace) {
         guard !(points + markers).contains(where: { $0.place.id == place.id }) else { return }
+        let anchor = legEnd(near: place.coordinate)
         edit {
             if let index = $0.points.firstIndex(where: { $0.id == id }) { $0.points[index].place = place }
-            if let index = $0.markers.firstIndex(where: { $0.id == id }) { $0.markers[index].place = place }
+            if let index = $0.markers.firstIndex(where: { $0.id == id }) { $0.markers[index].place = place; $0.markers[index].legEnd = anchor }
         }
     }
+    /// A route point that becomes a marker belongs to the leg it joins, which ends at the next route point.
     public func setPointKind(id: String, kind: PlannerPreviewPointKind) {
         guard var point = (points + markers).first(where: { $0.id == id }), point.kind != kind else { return }
         point.kind = kind
         edit { next in
             if let index = next.points.firstIndex(where: { $0.id == id }) {
+                let route = next.route
+                point.legEnd = kind == .marker && index + 1 < route.count ? route[index + 1].id : nil
                 if kind == .marker { next.points.remove(at: index); next.markers.append(point) }
                 else { next.points[index] = point }
             } else {
+                point.legEnd = nil
                 next.markers.removeAll { $0.id == id }
                 next.points.insert(point, at: next.stopEnd)
             }
@@ -603,8 +619,11 @@ public final class PlannerPreviewModel {
             return point
         }
         state.markers = plan.markers.map {
-            .init(place: .init(id: $0.id, name: $0.label, coordinate: $0.coordinate,
-                               kind: PlannerPreviewPlace.Kind(rawValue: $0.placeKind ?? "") ?? .town, note: $0.note), kind: .marker)
+            var marker = PlannerPreviewPoint(place: .init(id: $0.id, name: $0.label, coordinate: $0.coordinate,
+                                                          kind: PlannerPreviewPlace.Kind(rawValue: $0.placeKind ?? "") ?? .town, note: $0.note),
+                                             kind: .marker)
+            marker.legEnd = $0.legEnd
+            return marker
         }
         state.nights = Set(route.filter { $0.kind == .night }.map(\.id))
         state.loop = plan.isLoop && route.count > 1

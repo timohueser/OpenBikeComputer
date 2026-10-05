@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applyBudget, orderedRoutePoints, planView, type DrawnCoordinate } from './editor';
+import { applyBudget, dayStops, orderedRoutePoints, planView, type DrawnCoordinate } from './editor';
 import { cumulative, kilometres, type Coordinate } from './geo';
 import { profileAscent } from './profile-data';
 import { importedTrip, planOnRoads, readTracks } from './gpx-import';
@@ -74,6 +74,17 @@ describe('GPX import', () => {
         expect(trip.points.filter(p => p.kind === 'marker')).toMatchObject(markers);
         expect(trip.points.at(-1)).not.toHaveProperty('note');
         expect(importPlan(exportPlan(newPlan(trip, 'ride'), [])).plan.trip.points.filter(p => p.kind === 'marker')).toMatchObject(markers);
+    });
+
+    it('keeps a waypoint in the day of its file where the trip rides back on the same road', async () => {
+        const out = track([7.6, 47.5], 20);
+        const lines = readTracks([{ name: 'out.gpx', text: gpx(out) },
+            { name: 'back.gpx', text: gpx(out.slice().reverse(), undefined, '<wpt lat="47.5" lon="7.605"><name>Spring</name></wpt>') }]);
+        const trip = importedTrip({}, lines);
+        const line = await calculateLine(trip, new AbortController().signal, new LegCache());
+        const days = planView(trip, line).days;
+        expect(days.map(day => dayStops(trip, line, day).map(stop => stop.point.label))).toEqual([[], ['Spring']]);
+        expect(dayStops(trip, line, days[1])[0].km).toBeCloseTo(kilometres(out.at(-1)!, [7.605, 47.5]), 6);
     });
 
     it('rejects more files than a trip has days', () => {

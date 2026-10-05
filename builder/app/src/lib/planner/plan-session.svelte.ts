@@ -1,5 +1,5 @@
 import { SvelteMap } from 'svelte/reactivity';
-import { emptyTrip, hasEndpoints, insertPoint, orderedRoutePoints, pinNight, planTitle, routeLegsAround, type RoutePoint, type Trip } from './editor';
+import { anchorMarker, emptyTrip, hasEndpoints, insertPoint, orderedRoutePoints, pinNight, planTitle, routeLegsAround, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
 import { importedTrip, planOnRoads, readTracks, type ImportedLine } from './gpx-import';
 import { downloadPlan, importPlan, newPlan, PlanLibrary, type Plan } from './library';
@@ -26,11 +26,13 @@ function storageError(error: unknown): string {
     return error instanceof Error ? error.message : 'Could not save in this browser. Download your plan and try again.';
 }
 
-// A moved night keeps its number. Moving a point routes its drawn legs again.
+// A moved night keeps its number, and a moved marker takes the leg nearest to it. Moving a point routes its drawn legs again.
 function movedPoint(trip: Trip, line: RoutingLine | undefined, id: string, coordinate: Coordinate): Trip {
     const point = trip.points.find(p => p.id === id);
-    if (point?.kind === 'night') return routeLegsAround(pinNight(trip, line, point.night!, coordinate, point.label), id);
-    return routeLegsAround({ ...trip, points: trip.points.map(p => p.id === id ? { ...p, coordinate, label: p.autoLabel ? coordinateName(coordinate) : p.label } : p) }, id);
+    if (!point) return trip;
+    if (point.kind === 'night') return routeLegsAround(pinNight(trip, line, point.night!, coordinate, point.label), id);
+    const moved = { ...point, coordinate, label: point.autoLabel ? coordinateName(coordinate) : point.label };
+    return routeLegsAround({ ...trip, points: trip.points.map(p => p !== point ? p : p.kind === 'marker' ? anchorMarker(trip, line, moved) : moved) }, id);
 }
 
 /**

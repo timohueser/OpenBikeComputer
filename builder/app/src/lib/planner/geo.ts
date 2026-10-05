@@ -91,6 +91,17 @@ export function nearestOnLine(line: readonly Point[], point: Point): { index: nu
     return { index, t, at: [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t] };
 }
 
+/** The distance in km from `point` to each segment of `line`, by the segment's first vertex, and the fraction along the
+ * segment of the position nearest the point. */
+export function segmentDistances(line: readonly Point[], point: Point): { t: number; km: number }[] {
+    const kx = kmPerDegree * Math.cos(point[1] * RAD);
+    return line.slice(1).map((b, i) => {
+        const a = line[i];
+        const { t, squared } = project((a[0] - point[0]) * kx, (a[1] - point[1]) * kmPerDegree, (b[0] - a[0]) * kx, (b[1] - a[1]) * kmPerDegree);
+        return { t, km: Math.sqrt(squared) };
+    });
+}
+
 /** Progress from 0 to 1 along the line to the position nearest `point`. On a line without length every position is the middle. */
 export function nearestProgress(coordinates: Coordinate[], point: Point): number {
     const lengths = cumulative(coordinates), total = lengths.at(-1);

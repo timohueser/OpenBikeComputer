@@ -64,18 +64,21 @@ public struct PlanPoint: Codable, Equatable, Sendable {
     public var turnaround: Bool?
     /// A line about the place, such as a route file's waypoint description.
     public var note: String?
+    /// The ID of the route point that ends a marker's leg. Where the route passes the marker more than
+    /// once, the pass nearest that leg shows it.
+    public var legEnd: String?
 
     public init(id: String, label: String, coordinate: Coordinate, kind: Kind, night: Int? = nil,
                 placeKind: String? = nil, leg: Leg? = nil, drawn: [RoutePoint]? = nil, turnaround: Bool = false,
-                note: String? = nil) {
+                note: String? = nil, legEnd: String? = nil) {
         self.id = id; self.label = label; self.coordinate = coordinate; self.kind = kind
         self.night = night; self.placeKind = placeKind; self.leg = leg; self.drawn = drawn
         self.turnaround = turnaround ? true : nil
-        self.note = note
+        self.note = note; self.legEnd = legEnd
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, label, coordinate, kind, night, placeKind, leg, drawn, turnaround, note
+        case id, label, coordinate, kind, night, placeKind, leg, drawn, turnaround, note, legEnd
     }
 
     // Coordinates are `[longitude, latitude]`; a drawn vertex can add its elevation in metres.
@@ -100,6 +103,7 @@ public struct PlanPoint: Codable, Equatable, Sendable {
         }
         turnaround = try c.decodeIfPresent(Bool.self, forKey: .turnaround) == true ? true : nil
         note = try c.decodeIfPresent(String.self, forKey: .note)
+        legEnd = try c.decodeIfPresent(String.self, forKey: .legEnd)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -115,6 +119,7 @@ public struct PlanPoint: Codable, Equatable, Sendable {
                               forKey: .drawn)
         try c.encodeIfPresent(turnaround, forKey: .turnaround)
         try c.encodeIfPresent(note, forKey: .note)
+        try c.encodeIfPresent(legEnd, forKey: .legEnd)
     }
 }
 
@@ -133,15 +138,22 @@ extension PlannerPlan {
             PlanPoint(id: "start", label: startName, coordinate: first, kind: .start),
             PlanPoint(id: "finish", label: finishName, coordinate: last, kind: .finish,
                       leg: .drawn, drawn: drawnLeg(from: first, along: line)),
-        ] + markers(waypoints), mode: .route, routeOrder: [])
+        ] + markers(waypoints) { _ in "finish" }, mode: .route, routeOrder: [])
     }
 
-    /// Route waypoints as markers.
-    static func markers(_ waypoints: [Waypoint]) -> [PlanPoint] {
+    /// Route waypoints as markers; `legEnd` names the leg of each.
+    static func markers(_ waypoints: [Waypoint], legEnd: (Coordinate) -> String?) -> [PlanPoint] {
         waypoints.enumerated().map { index, waypoint in
             PlanPoint(id: "waypoint-\(index + 1)", label: waypoint.name, coordinate: waypoint.coordinate,
-                      kind: .marker, placeKind: waypoint.category?.placeKind, note: waypoint.note)
+                      kind: .marker, placeKind: waypoint.category?.placeKind, note: waypoint.note, legEnd: legEnd(waypoint.coordinate))
         }
+    }
+
+    /// The ID of the point that ends the leg of `route` whose straight line passes nearest `coordinate`.
+    static func nearestLegEnd(_ route: [PlanPoint], to coordinate: Coordinate) -> String {
+        let line = MeasuredLine(coordinates: route.map(\.coordinate))
+        let along = line.project(coordinate, near: line.length / 2, window: line.length)
+        return route[max(1, line.vertices.firstIndex { $0.distance >= along } ?? route.count - 1)].id
     }
 
     /// A trip kept as it is: one drawn leg per day, a night at each day end, and a transfer leg
@@ -215,7 +227,8 @@ extension PlannerPlan {
                       label: index == 0 ? "Start" : index == last ? "Finish" : "Shaping point", coordinate: points[index],
                       kind: index == 0 ? .start : index == last ? .finish : .via, turnaround: turnarounds.contains(index))
         }
-        return PlannerPlan(points: route + markers(waypoints), mode: .route, routeOrder: route.dropFirst().dropLast().map(\.id))
+        return PlannerPlan(points: route + markers(waypoints) { nearestLegEnd(route, to: $0) }, mode: .route,
+                           routeOrder: route.dropFirst().dropLast().map(\.id))
     }
 
     /// The most days a plan has, as `specs/planner-plan.md` caps `days`.
@@ -229,7 +242,7 @@ extension PlannerPlan {
         var points: [PlanPoint] = [], markers: [PlanPoint] = []
         for (day, plan) in days.enumerated() {
             var route = plan.routePoints
-            guard route.count > 1 else { return nil }
+            guard route.count > 1, let end = route.last?.id else { return nil }
             if let night = points.last {
                 if route[0].coordinate.distance(to: night.coordinate) > Trip.transferMinMeters {
                     route[0].id = "day-\(day + 1)"; route[0].label = "Start of day \(day + 1)"
@@ -248,6 +261,7 @@ extension PlannerPlan {
             markers += plan.markers.map { marker in
                 var marker = marker
                 marker.id = "d\(day + 1)-\(marker.id)"
+                if marker.legEnd == end { marker.legEnd = route[route.count - 1].id }
                 return marker
             }
         }

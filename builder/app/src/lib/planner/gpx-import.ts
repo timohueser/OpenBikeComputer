@@ -1,6 +1,6 @@
 import { readGpx } from '../coverage/gpx';
 import { emptyTrip, maxRidingDays, type DrawnCoordinate, type RoutePoint, type Trip } from './editor';
-import { kilometres, simplify, type Coordinate } from './geo';
+import { kilometres, nearestOnLine, simplify, type Coordinate } from './geo';
 import type { Shape } from './routing';
 
 /** One imported file: its name, its simplified line with the file's elevations, its waypoints and, when planned on roads,
@@ -47,20 +47,22 @@ export async function planOnRoads(lines: ImportedLine[], shape: (line: Coordinat
  * One file is a route; several are a trip with one day per file and a night at each day end. A kept line is one drawn
  * leg that repeats its ends, so their elevations stay; a day that continues from the previous day end also repeats that
  * end. A shaped line is routed through its shape points. A day that starts more than 200 m from the previous day end
- * starts with a transfer; a nearer day continues from that day end. The files' waypoints are markers, never route points.
+ * starts with a transfer; a nearer day continues from that day end. The files' waypoints are markers, never route points;
+ * each belongs to the leg of its own day whose straight line passes nearest it.
  */
 export function importedTrip(base: Pick<Trip, 'bike' | 'preset'>, lines: ImportedLine[]): Trip {
-    const points: RoutePoint[] = [];
+    const points: RoutePoint[] = [], markers: RoutePoint[] = [];
     const add = (kind: RoutePoint['kind'], coordinate: Coordinate, extra: Partial<RoutePoint> = {}) =>
         points.push({ id: crypto.randomUUID(), kind, label: kind === 'start' ? 'Start' : kind === 'finish' ? 'Finish' : kind === 'night' ? 'Overnight spot' : 'Shaping point',
             coordinate, ...extra });
-    lines.forEach(({ line, shape }, day) => {
+    lines.forEach(({ line, shape, waypoints }, day) => {
         const before = points.at(-1);
         const previous = lines[day - 1]?.line.at(-1);
         const [first, final] = [line[0], line.at(-1)!].map((c): Coordinate => [c[0], c[1]]);
         const joined = !!before && kilometres(before.coordinate, first) <= transferMinKm;
         if (!before) add('start', first);
         else if (!joined) add('via', first, { leg: 'transfer' });
+        const from = points.length - 1;
         const stops = shape?.points ?? [first, final];
         for (let i = 1; i < stops.length; i++) {
             const last = i === stops.length - 1;
@@ -71,9 +73,10 @@ export function importedTrip(base: Pick<Trip, 'bike' | 'preset'>, lines: Importe
                 ...shape ? {} : { leg: 'drawn' as const, drawn: joined && !lines[day - 1].shape ? [previous!, ...line] : line },
             });
         }
+        const legs = points.slice(from);
+        for (const { label, coordinate, note } of waypoints) markers.push({ id: crypto.randomUUID(), kind: 'marker', label, coordinate,
+            ...note ? { note } : {}, legEnd: legs[nearestOnLine(legs.map(p => p.coordinate), coordinate).index + 1].id });
     });
-    const markers = lines.flatMap(({ waypoints }) => waypoints.map(({ label, coordinate, note }): RoutePoint =>
-        ({ id: crypto.randomUUID(), kind: 'marker', label, coordinate, ...note ? { note } : {} })));
     const days = lines.length > 1 ? lines.length : undefined;
     return { ...emptyTrip(days ? 'trip' : 'route'), bike: base.bike, preset: base.preset, points: [...points, ...markers],
         routeOrder: points.slice(1, -1).map(point => point.id), ...days ? { days, target: days } : {} };
