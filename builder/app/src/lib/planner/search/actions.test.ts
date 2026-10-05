@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { addRestDay, emptyTrip, planView, type RoutePoint, type Trip } from '../editor';
+import { addRestDay, emptyTrip, pinNight, planView, type RoutePoint, type Trip } from '../editor';
+import { isTrip } from '../trip-validation';
 import { coordinateAt, type Coordinate } from '../geo';
 import { testLine, testTrip } from '../../../../test-support/planner/trip';
 import { calculateLine, type RoutingLine } from '../routing';
@@ -57,6 +58,14 @@ describe('query edits', () => {
         expect(next.trip.splits?.[2]).toBeCloseTo(.7);
         expect(next.line).toBe(line);
         await expect(applyQueryChanges(trip, line, [{op:'end_day',day:2,point:{coordinate:[8,48],label:'Inn'}}])).rejects.toThrow('riding day');
+    });
+    it('ends a day at a kilometre instead of its pinned night, which leaves the route', async () => {
+        vi.stubGlobal('fetch', vi.fn(routeService()));
+        const pinned = pinNight(testTrip(), testLine(testTrip()), 1, coordinateAt(testLine(testTrip()).coordinates, .4), 'Camp');
+        const line = await refresh(pinned), km = view({ trip: pinned, line }).total * .3;
+        const next = await applyQueryChanges(pinned, line, [{ op:'end_day', day:1, point:{coordinate:coordinateAt(line.coordinates,.3),label:'km mark',along:km} }], refresh);
+        expect([next.trip.points.map(p => p.id), next.trip.routeOrder, isTrip(next.trip)]).toEqual([['start', 'finish'], [], true]);
+        expect(next.trip.splits?.[1]).toBeCloseTo(.3);
     });
     it('reverses the point order, routes routed legs again and keeps drawn legs and nights', async () => {
         const fetch = vi.fn(routeService());

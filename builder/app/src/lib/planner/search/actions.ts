@@ -75,10 +75,13 @@ export async function applyQueryChanges(
       if (n >= planView(trip, line).days.length)
         throw new Error('The last day ends at the finish.');
       if (p.along !== undefined) {
-        trip = {
+        // A pinned night of that day leaves the route, so the split uses the line without it.
+        const pinned = `night-${n}`;
+        trip = await refresh({
           ...trip,
-          points: trip.points.filter((p) => p.kind !== 'night' || p.night !== n),
-        };
+          points: trip.points.filter((p) => p.id !== pinned),
+          routeOrder: trip.routeOrder.filter((id) => id !== pinned),
+        });
         trip = setSplit(trip, line, n, p.along / total);
         if (Math.abs((trip.splits?.[n] ?? -1) - p.along / total) > 1e-6)
           throw new Error(
