@@ -551,7 +551,8 @@ When more than one row applies, the first row gives the state. In JSON, a state 
 
 | Command | Output |
 | --- | --- |
-| `obc data sources [--json]` | Every source with licence, R2 copy, live pin, newest upstream version, age, policy and state. Rows are in kind order: data, then assets, then tools |
+| `obc data [--json]` | In a terminal, and without `--json`: the TUI. Otherwise the output of `sources` |
+| `obc data sources [--json]` | Every source with licence, R2 copy, live pin, newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the live pin, or else the newest file upstream. Writes the store path of each file |
 | `obc data refresh SOURCE [NAME=VALUE…] [--env ENV] [--json]` | Fetches the newest upstream version, checked now, and writes it to `[pins]` of `data/env/ENV.toml` (default `live`). `ENV` is lowercase kebab-case. The edit keeps comments, line order and CRLF line ends. Writes the store path of each file. A version after the pin of a source whose `fetch.from` names `SOURCE` is refused before the fetch: refresh that source first |
 | `obc data store import [--apply] [--json]` | The old cache directories, their files and sizes, and how much the store grows. `--apply` moves them into the store |
@@ -1960,7 +1961,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "SourceRow": {
-      "description": "A source of `data/sources.toml` with its live pin and its state.",
+      "description": "A source of `data/sources.toml` with its live pin, its snapshots and its state.",
       "properties": {
         "age_days": {
           "format": "int64",
@@ -2043,6 +2044,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "refresh": {
           "$ref": "#/$defs/Refresh"
         },
+        "snapshots": {
+          "description": "The versions in the local store, the one fetched last first.",
+          "items": {
+            "$ref": "#/$defs/Stored"
+          },
+          "type": "array"
+        },
         "state": {
           "$ref": "#/$defs/State"
         },
@@ -2069,7 +2077,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "upstream",
         "age_days",
         "state",
-        "reason"
+        "reason",
+        "snapshots"
       ],
       "type": "object"
     },
@@ -2098,6 +2107,25 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "blocked"
       ],
       "type": "string"
+    },
+    "Stored": {
+      "description": "A version of a source in the local store.",
+      "properties": {
+        "bytes": {
+          "description": "The size of its files.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "bytes"
+      ],
+      "type": "object"
     },
     "Summary": {
       "additionalProperties": false,
