@@ -172,7 +172,7 @@ release. Use them for a hosted build with the configured API origin.
 | `VITE_PLANNER_ROUTING_URL` | Routing API prefix |
 | `VITE_PLANNER_SEARCH_URL` | Search API prefix |
 | `VITE_PLANNER_ROUTES_URL` | Route catalog: a cell template with `{cell}`, or the region file, if any |
-| `VITE_PLANNER_SEARCH_REGIONS` | Comma-separated region IDs |
+| `VITE_PLANNER_SEARCH_REGIONS` | Region ID that names the map when `VITE_PLANNER_REGION_NAME` is unset |
 | `VITE_PLANNER_DEM_URL` | Terrarium WebP XYZ template |
 | `VITE_PLANNER_TERRAIN_ATTRIBUTION` | Elevation source credits |
 | `VITE_PLANNER_GLYPHS_URL` | Font template |

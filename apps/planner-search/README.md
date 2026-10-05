@@ -21,9 +21,7 @@ npm run dev --prefix apps/planner-search
 
 Setup verifies the source and model hashes before use. It builds both SQLite packages
 from the prepared [Photon Germany dump](https://download1.graphhopper.com/public/europe/germany/).
-This preview does not install Photon or OpenSearch. The common-source release pipeline
-builds a private Nominatim database and exports it with Photon. See the planner README.
-Neither build tool runs as a public service.
+Release builds use a private Nominatim database and its Photon export; see the planner README.
 To use existing packages, omit `--build-data`. An interrupted build has no completion
 metadata. Build into a fresh directory with `build.py SOURCE --output DIRECTORY`.
 
@@ -41,8 +39,7 @@ uv run --with-requirements apps/planner-search/requirements-build.txt python app
 Use `addresses.jsonl.zst`, `--component addresses`, and `DATA/addresses` for
 addresses. The service opens both directories from `OBC_SEARCH_DATA=DATA`.
 The split runs once per source identity. A POI transform update reads only
-its filtered records. Addresses own streets and houses; POIs own places and
-localities. Both retain their indexes and source context.
+its filtered records.
 
 For local map tiles, place `basemap.pmtiles` and `places.pmtiles` in `builder/app/public/data/planner/`:
 
@@ -60,10 +57,11 @@ those sources are unavailable.
 | `OBC_SEARCH_PYTHON` | This folder's `.venv/bin/python` |
 | `OBC_SEARCH_PORT` | `8780` |
 | `OBC_PLANNER_PORT` | `4184` |
-| `OBC_SEARCH_REGIONS` | `germany,baden-wuerttemberg` |
+| `OBC_SEARCH_REGIONS` | `baden-wuerttemberg` |
 | `OBC_SEARCH_ORIGINS` | Loopback origins only when unset |
 
-The combined development command passes `OBC_SEARCH_PORT` to the Vite proxy.
+One process serves the one region that `OBC_SEARCH_REGIONS` names. The combined
+development command passes `OBC_SEARCH_PORT` to the Vite proxy.
 
 ## Boundaries
 
@@ -75,8 +73,11 @@ The combined development command passes `OBC_SEARCH_PORT` to the Vite proxy.
   indexes. Business matches use text and proximity. Geographic prominence is bounded.
 - `resolver.mjs` applies the decoded request to the current view, route, days, and places.
   Explicit words override pointing. Pointing overrides the map view.
-- `runtime.mjs` supplies local database, parser, and calendar adapters. `server.mjs`
-  serves JSON. The [native provider](native/README.md) uses the same runtime.
+- `federation.mjs` runs each query in the search cells it touches and merges the rows by
+  its declared order and limit. `cells.mjs` and the [native provider](native/README.md)
+  open the cells.
+- `runtime.mjs` supplies the database, parser, and calendar adapters. `server.mjs`
+  serves JSON. The native provider uses the same runtime.
   Edited requests bypass inference. The client discards stale responses.
 - `server.mjs` exits with status 1 when the query runtime stops or hangs. Its supervisor,
   such as systemd, restarts it.
@@ -98,9 +99,9 @@ remain unknown. No filter predicts arrival time. Distances from the route are ge
 not routed detours. Place gaps depend on map completeness. Search does not interpolate
 house numbers. A missing number returns a clearly labelled street location.
 
-`POST /api/planner-search/reverse` accepts `region` and `[longitude, latitude]` in
-`coordinate`. It returns `label` for the nearest mapped house within 100 metres,
-or `null`. Search packages use schema 5. Rebuild with `build.py` after a schema change.
+`POST /api/planner-search/reverse` accepts `[longitude, latitude]` in `coordinate`.
+It returns `label` for the nearest mapped house within 100 metres, or `null`.
+Search packages use schema 5. Rebuild with `build.py` after a schema change.
 
 ## Checks
 
