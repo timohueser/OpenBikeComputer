@@ -30,7 +30,7 @@ _obc_tasks() {
     local scope=(); [[ "${OBC_COMPLETE_ALL:-}" == 1 ]] && scope=(--all)
     python3 "$t/tasks.py" --justfile "$t/justfile" --names "${scope[@]}" 2>/dev/null && return
   fi
-  echo "fixtures sim board flash flash-boot uart debug rtt pack bake web site desktop docs build test fmt licenses bench check check-device clean doctor setup"
+  echo "fixtures sim board flash flash-boot uart debug rtt pack bake web site desktop build test fmt licenses bench check check-device clean doctor setup"
 }
 
 _obc_fixture_ids() {
@@ -109,8 +109,6 @@ _obc() {
       (( idx == 0 )) && _obc_reply < <(compgen -W "check write" -- "$cur") ;;
     desktop)
       _obc_reply < <(compgen -W "dev build" -- "$cur") ;;
-    docs)
-      (( idx == 0 )) && _obc_reply < <(compgen -W "status check" -- "$cur") ;;
     board)
       (( idx == 0 )) && _obc_reply < <(compgen -W "doctor run download attach reset" -- "$cur") ;;
     flash-boot)

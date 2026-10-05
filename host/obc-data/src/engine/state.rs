@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use super::release::Layer;
-use super::{digest, order, selection, Code, Codes, Input, InputKind, Selection, Step};
+use super::{digest, layer_digest, order, selection, Code, Codes, Input, InputKind, Selection, Step};
 use crate::sources::{State, Status};
 use crate::store::{sorted, Store};
 
@@ -63,7 +63,7 @@ pub fn state(store: &Store, root: &Path, steps: &[Step], environment: &Environme
             Input::Snapshot { source, version, .. } => {
                 Read { kind: InputKind::Snapshot, name: source.clone(), version: Some(version.clone()) }
             }
-            Input::Layer(name) => Read { kind: InputKind::Layer, name: name.clone(), version: None },
+            Input::Layer { name, .. } => Read { kind: InputKind::Layer, name: name.clone(), version: None },
         });
         layers.push(LayerState {
             layer: step.name.clone(),
@@ -121,7 +121,7 @@ fn judge(
         .iter()
         .map(|input| match input {
             Input::Snapshot { source, .. } => (InputKind::Snapshot, source.as_str()),
-            Input::Layer(name) => (InputKind::Layer, name.as_str()),
+            Input::Layer { name, .. } => (InputKind::Layer, name.as_str()),
         })
         .collect();
     let built: BTreeSet<(InputKind, &str)> =
@@ -139,10 +139,11 @@ fn judge(
         return found(State::CodeChanged, changed_code(store, &live.code, files, &step.code)?);
     }
 
-    for name in step.layers() {
-        let rebuilds = matches!(states[name], State::NotApplied | State::CodeChanged | State::InputChanged);
-        let rebuilt = environment.live.get(name).map(|layer| &layer.digest)
-            != read(InputKind::Layer, name).map(|input| &input.digest);
+    for input in &step.inputs {
+        let Input::Layer { name, files } = input else { continue };
+        let rebuilds = matches!(states[name.as_str()], State::NotApplied | State::CodeChanged | State::InputChanged);
+        let rebuilt = environment.live.get(name).map(|layer| layer_digest(&layer.files, files))
+            != read(InputKind::Layer, name).map(|input| input.digest.clone());
         if rebuilds || rebuilt {
             return found(State::InputChanged, name.into());
         }

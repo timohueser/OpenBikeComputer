@@ -46,7 +46,6 @@ pub fn fingerprint(paths: &[PathBuf]) -> Result<String, String> {
     hash.update(include_bytes!("landmarks/credit.rs"));
     hash.update(include_bytes!("../../../firmware/obc-formats/src/obcm/landmarks.rs"));
     hash.update(include_bytes!("../../../firmware/obc-formats/src/articles.rs"));
-    hash.update(include_bytes!("../../../Cargo.lock"));
     Ok(hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
 }
 

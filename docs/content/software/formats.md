@@ -1,7 +1,6 @@
 ---
 title: Data formats
 description: The binary map, route, ride, terrain, catalog, and map-assembly formats.
-copy: ai
 ---
 
 # Data formats

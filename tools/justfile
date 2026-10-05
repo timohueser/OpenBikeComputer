@@ -599,18 +599,6 @@ prose *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/prose.py" "$@"
 
-# Inspect documentation ownership or review source-related prose. Args: [status|check|review]
-[group('docs')]
-docs *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{lib}}"; obc_init
-    cd "$OBC_ROOT"
-    if [[ "${1:-}" == review ]]; then shift; _run python3 "$OBC_TOOLS/docs_review.py" "$@"
-    elif (( $# )); then _run python3 "$OBC_TOOLS/docs_copy.py" "$@"
-    else _run python3 "$OBC_TOOLS/docs_copy.py" status
-    fi
-
 # Serve the static hosted tier — the no-backend site (phase C of #894), as deployed.
 # Builds and serves it on :4173. Args: [PORT]. It reads the device catalogue of the
 # active planner release, as deployed; OBC_CATALOG_URL=… points it at another one.

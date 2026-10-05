@@ -34,7 +34,7 @@ use sha2::{Digest, Sha256};
 
 use obc_formats::obcm::VERSION as OBCM_VERSION;
 
-use crate::config::Config;
+use crate::config::{Config, ContourClass};
 use crate::grid::{
     cells_intersecting, on_grid_boundary, segment_crossing, Axis, Band, BandTable, CellId, UBox, GRID_ORIGIN,
 };
@@ -235,13 +235,13 @@ fn run(
     // Contours are generated once over the whole extract and then cut like any other feature, for
     // the same reason land is: a cell's geometry must not depend on which cell asked for it. This
     // opens the terrain set a second time, which costs a header read and a directory validation per
-    // container, and only when contours are on.
-    let contour_terrain = match (&opts.terrain, config.contours.enabled) {
-        (Some(path), true) => Some(TerrainSet::open(path)?),
-        _ => None,
-    };
-    crate::contour::add_contours(&mut ingested, config, extract, contour_terrain.as_ref(), progress)?;
-    progress.check()?;
+    // container, and only when a band of the run has contours: a run whose bands hold no contour
+    // level traces none and has nothing to warn about.
+    if selected_bands(opts).any(|band| has_contours(config, band)) {
+        let contour_terrain = opts.terrain.as_deref().map(TerrainSet::open).transpose()?;
+        crate::contour::add_contours(&mut ingested, config, extract, contour_terrain.as_ref(), progress)?;
+        progress.check()?;
+    }
     cut_ingested(&ingested, &ways, config, out_dir, opts, progress)
 }
 
@@ -290,21 +290,16 @@ pub fn cut_ingested(
     // Opened once for the whole run and shared by every cell: validating a hundred containers per
     // cell would dominate a cut. `sampler_for` is the per-cell part.
     let terrain_set = match &opts.terrain {
-        None => None,
-        Some(path) => Some(TerrainSet::open(path)?),
+        Some(path) if selected_bands(opts).any(|band| reads_terrain(config, band)) => Some(TerrainSet::open(path)?),
+        _ => None,
     };
     let styles = config.styles();
     let semantic_scheme = config.semantic_scheme();
     // Build the same finer-to-coarser semantic ladder as the monolithic packer before it is clipped
     // into canonical cells. Fine-only and network-only jobs skip this expensive pass, since neither
     // selected band can consume its output.
-    let needs_semantic = opts
-        .bands
-        .bands
-        .iter()
-        .filter(|band| opts.only_bands.is_empty() || opts.only_bands.contains(&band.id))
-        .flat_map(|band| band.lods.iter())
-        .any(|&lod| config.lods[lod].semantic_coverage);
+    let needs_semantic =
+        selected_bands(opts).flat_map(|band| band.lods.iter()).any(|&lod| config.lods[lod].semantic_coverage);
     let semantic_levels = if needs_semantic {
         build_semantic_levels(&ing.features, &config.lods, &semantic_scheme, extract, progress)?
     } else {
@@ -312,11 +307,7 @@ pub fn cut_ingested(
     };
     let mut artifacts: Vec<CellArtifact> = Vec::new();
 
-    let bands: Vec<_> = opts
-        .bands
-        .bands
-        .iter()
-        .filter(|band| opts.only_bands.is_empty() || opts.only_bands.contains(&band.id))
+    let bands: Vec<_> = selected_bands(opts)
         .map(|band| (band, select_cells(band, extract, &opts.select)))
         .filter(|(_, cells)| !cells.is_empty())
         .collect();
@@ -351,6 +342,7 @@ pub fn cut_ingested(
             .collect();
         merged_sets.retain(|key, _| last_band[key] > index);
         let nav_cut = if band.has_nav() { Some(prepare_nav(ways, band.cell_log2, progress)?) } else { None };
+        let band_terrain = terrain_set.as_ref().filter(|_| reads_terrain(config, band));
         let poi_cells = if band.has_poi() { bucket_pois(&ing.pois, band.cell_log2) } else { HashMap::new() };
         progress.check()?;
 
@@ -374,7 +366,7 @@ pub fn cut_ingested(
                 // an `ElevationSource` is `&mut` by design (it caches tiles), so it cannot be shared
                 // across rayon workers. A cell outside the supplied terrain gets an empty sampler,
                 // which answers `None` everywhere.
-                let mut sampler = match &terrain_set {
+                let mut sampler = match band_terrain {
                     None => None,
                     Some(set) => Some(set.sampler_for(Some(cell.square()))?),
                 };
@@ -435,6 +427,24 @@ pub fn cut_ingested(
         format!("Wrote {} cell(s), {} bytes ({} partial)", summary.cells.len(), summary.bytes, summary.partial),
     );
     Ok(summary)
+}
+
+/// The bands of the run: the table's, or those of [`CutOptions::only_bands`].
+fn selected_bands(opts: &CutOptions) -> impl Iterator<Item = &Band> {
+    opts.bands.bands.iter().filter(|band| opts.only_bands.is_empty() || opts.only_bands.contains(&band.id))
+}
+
+/// Whether the levels of `band` hold contours.
+fn has_contours(config: &Config, band: &Band) -> bool {
+    let classes = [ContourClass::Major, ContourClass::Index];
+    let min_lod = classes.into_iter().filter_map(|class| config.contour_style(class)).map(|style| style.min_lod).min();
+    config.contours.enabled && min_lod.is_some_and(|min| band.lods.iter().any(|&lod| lod >= min))
+}
+
+/// Whether the cells of `band` read terrain: for the contours of its levels, or for the ascent of
+/// its nav graph and the heights of its summits.
+pub fn reads_terrain(config: &Config, band: &Band) -> bool {
+    has_contours(config, band) || band.has_nav() || band.has_poi()
 }
 
 /// The cells of one band this run must emit: the explicit selection filtered to the band's size, or

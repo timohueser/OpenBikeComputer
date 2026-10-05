@@ -102,7 +102,8 @@ pub struct Kept {
 /// fixture, a planner recipe or an import record names it, or a
 /// reached record or layer has it. A layer is reached when each input
 /// is: a snapshot input whose digest is of all the files, or of one file, of a reached record of
-/// its source, and a layer input whose digest is of a reached layer.
+/// its source, and a layer input whose digest is of the files that it selects (all when it names
+/// none) of a reached layer of its step.
 pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     let mut named = roots.sha256s.clone();
     for path in files(&store.root().join("imports"), &["jsonl"])? {
@@ -169,21 +170,26 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     for key in names(&store.root().join("layers"), "json")? {
         receipts.extend(store.layer(&key)?);
     }
-    let mut layer_digests = HashSet::new();
+    let mut keys = HashSet::new();
+    // The reached layers of each step.
+    let mut layers = HashMap::<&str, Vec<&engine::Receipt>>::new();
     let mut steps = BTreeMap::<&str, u64>::new();
     loop {
-        let before = layer_digests.len();
+        let before = keys.len();
         for receipt in &receipts {
             let inputs_reached = receipt.inputs.iter().all(|input| match input.kind {
                 InputKind::Snapshot => snapshot_digests.contains(&(input.name.clone(), input.digest.clone())),
-                InputKind::Layer => layer_digests.contains(&input.digest),
+                InputKind::Layer => layers.get(input.name.as_str()).is_some_and(|layers| {
+                    layers.iter().any(|layer| engine::layer_digest(&layer.files, &input.files) == input.digest)
+                }),
             });
-            if inputs_reached && layer_digests.insert(receipt.digest.clone()) {
+            if inputs_reached && keys.insert(receipt.key.as_str()) {
+                layers.entry(&receipt.step).or_default().push(receipt);
                 reached.extend(receipt.files.iter().map(|file| file.sha256.clone()));
                 *steps.entry(&receipt.step).or_default() += receipt.files.iter().map(|file| file.size).sum::<u64>();
             }
         }
-        if layer_digests.len() == before {
+        if keys.len() == before {
             break;
         }
     }
@@ -361,9 +367,20 @@ mod tests {
 
     /// A layer with one file, `bytes`, that reads `inputs`; its digest.
     fn layer(store: &Store, key: &str, inputs: Vec<InputRecord>, bytes: &[u8]) -> String {
-        let sha256 = object(store, bytes);
-        let digest = engine::digest([("out", sha256.as_str())]);
-        let files = vec![LayerFile { path: "out".into(), size: bytes.len() as u64, sha256 }];
+        layer_of(store, key, inputs, &[("out", bytes)])
+    }
+
+    /// A layer of `files`, `(path, bytes)`, that reads `inputs`; its digest.
+    fn layer_of(store: &Store, key: &str, inputs: Vec<InputRecord>, files: &[(&str, &[u8])]) -> String {
+        let files: Vec<LayerFile> = files
+            .iter()
+            .map(|(path, bytes)| LayerFile {
+                path: path.to_string(),
+                size: bytes.len() as u64,
+                sha256: object(store, bytes),
+            })
+            .collect();
+        let digest = engine::digest(files.iter().map(|file| (file.path.as_str(), file.sha256.as_str())));
         let receipt = Receipt {
             step: key.into(),
             key: key.into(),
@@ -371,7 +388,7 @@ mod tests {
             options: serde_json::json!({}),
             code: String::new(),
             command: None,
-            outputs: vec!["out".into()],
+            outputs: files.iter().map(|file| file.path.clone()).collect(),
             digest: digest.clone(),
             files,
             built: "2026-10-05T00:00:00Z".into(),
@@ -387,7 +404,7 @@ mod tests {
     }
 
     fn input(kind: InputKind, name: &str, digest: String) -> InputRecord {
-        InputRecord { kind, name: name.into(), digest }
+        InputRecord { kind, name: name.into(), digest, files: Vec::new() }
     }
 
     #[test]
@@ -471,6 +488,24 @@ mod tests {
         assert!(store.layer("stale").unwrap().is_some(), "a receipt is history and stays");
         let again = super::plan(&store, &roots).unwrap();
         assert!(again.snapshots.is_empty() && again.objects.is_empty());
+    }
+
+    #[test]
+    fn a_layer_input_that_selects_files_reaches_the_layer_that_has_them() {
+        let scratch = Scratch::new("gc-select");
+        let (repo, store) = (scratch.0.join("repo"), Store::at(scratch.0.join("store")));
+        fs::create_dir_all(&repo).unwrap();
+        snapshot(&store, "osm", "1", "2026-10-05", &[("planet.pbf", b"planet")]);
+        let planet = engine::digest([("planet.pbf", sha256_hex(b"planet").as_str())]);
+        let leaves = [("osm/a.pbf", &b"leaf a"[..]), ("osm/b.pbf", b"leaf b")];
+        layer_of(&store, "leaves", vec![input(InputKind::Snapshot, "osm", planet)], &leaves);
+        let a = engine::digest([("osm/a.pbf", sha256_hex(b"leaf a").as_str())]);
+        let mut selects = input(InputKind::Layer, "leaves", a);
+        selects.files = vec!["osm/a.pbf".into()];
+        layer(&store, "cells", vec![selects], b"cells a");
+
+        let plan = plan(&store, &Roots::from_repo(&repo).unwrap()).unwrap();
+        assert!(plan.objects.is_empty(), "the layer that reads one leaf is reached: {:?}", plan.objects);
     }
 
     #[test]
