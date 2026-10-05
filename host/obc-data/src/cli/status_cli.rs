@@ -162,9 +162,9 @@ pub fn status(root: &Path, products: &[&dyn Product], check: bool, json: bool) -
     Ok(if problems { ExitCode::FAILURE } else { ExitCode::SUCCESS })
 }
 
-/// The state of each layer of `live`, by product. `Err` with the reason for a product when a
-/// fetch that its step list needs fails, or when it reads a layer of such a product: the rest of
-/// `status` does not need its steps.
+/// The state of each layer of `live`, by product. `Err` with the reason for a product that is
+/// blocked, whose step list needs a fetch that fails, or that reads a layer of such a product: the
+/// rest of `status` does not need its steps.
 fn layer_states(
     root: &Path,
     store: &Store,
@@ -177,9 +177,12 @@ fn layer_states(
     let (mut listed, mut found) = (Vec::new(), BTreeMap::new());
     for product in products {
         match product_steps(*product, &loaded.env, &loaded.regions, store, &mut fetch) {
-            Ok(steps) => {
+            Ok(Ok(steps)) => {
                 found.insert(product.name().to_string(), Ok(Vec::new()));
                 listed.push((product.name().to_string(), steps));
+            }
+            Ok(Err(reason)) => {
+                found.insert(product.name().to_string(), Err(reason));
             }
             Err(e) if matches!(e.code, Code::FetchFailed | Code::Blocked) => {
                 let reason = format!("a fetch that the step list needs failed: {}", e.message);

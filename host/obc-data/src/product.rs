@@ -34,8 +34,11 @@ pub trait Product {
 pub enum Unplanned {
     /// The step list reads these snapshots. `obc data` fetches them and asks once more.
     NeedsFetch(Vec<Wanted>),
-    /// The environment does not give what the product needs, such as a pin.
+    /// The product does not suit the environment, such as a kind of region that it does not read,
+    /// or a pin that it needs. `obc data` reports the product as blocked and plans the others.
     Invalid(String),
+    /// The store, a file or the data of a fetch failed. The command fails.
+    Failed(String),
 }
 
 /// A fetch that a step list needs.
@@ -47,24 +50,37 @@ pub struct Wanted {
     pub params: Vec<(String, String)>,
 }
 
-/// The files of the fetch of `source` with `params` that a step list reads: at the version of
-/// `env`, or else at the newest version of that fetch in the store. `Err(Wanted)` while the store
-/// lacks them.
-pub fn read(
+/// The version of the fetch of `source` with `params` that a step list reads: the version of
+/// `env`, or else the newest version of that fetch in the store. `Err(Wanted)` while the store has
+/// no fetch of it.
+pub fn version(
     env: &Env,
     store: &Store,
     source: &str,
     params: &[(String, String)],
-) -> Result<Result<BTreeMap<String, PathBuf>, Wanted>, String> {
+) -> Result<Result<String, Wanted>, String> {
     let pinned = env.version(source).map(str::to_string);
     let version = match &pinned {
         Some(version) => Some(version.clone()),
         None if params.is_empty() => store.snapshots(source)?.into_iter().map(|snapshot| snapshot.version).max(),
         None => store.requests(source, params)?.into_iter().map(|request| request.version).max(),
     };
-    let files = match &version {
-        Some(version) => snapshot_files(store, source, version, params, &[])?,
-        None => None,
+    Ok(version.ok_or(Wanted { source: source.into(), version: pinned, params: params.to_vec() }))
+}
+
+/// The files of the fetch of `source` with `params` that a step list reads, at its [`version`].
+/// `Err(Wanted)` while the store lacks them.
+pub fn read(
+    env: &Env,
+    store: &Store,
+    source: &str,
+    params: &[(String, String)],
+) -> Result<Result<BTreeMap<String, PathBuf>, Wanted>, String> {
+    let wanted =
+        || Wanted { source: source.into(), version: env.version(source).map(str::to_string), params: params.to_vec() };
+    let version = match version(env, store, source, params)? {
+        Ok(version) => version,
+        Err(wanted) => return Ok(Err(wanted)),
     };
-    Ok(files.ok_or(Wanted { source: source.into(), version: pinned, params: params.to_vec() }))
+    Ok(snapshot_files(store, source, &version, params, &[])?.ok_or_else(wanted))
 }

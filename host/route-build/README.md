@@ -45,12 +45,11 @@ options before the import.
 
 ## Terrain
 
-The base crate accepts a height callback through `terrain::apply`. It has no
-terrain provider dependency. The optional `obc-terrain` adapter uses the OBC
-bare-earth archive and local Copernicus GeoTIFFs:
+`terrain::apply` takes a height callback. The command reads heights from the
+OBC bare-earth archive and local Copernicus GeoTIFFs through `obc-dem`:
 
 ```sh
-cargo run --release -p route-build --features obc-terrain -- \
+cargo run --release -p route-build -- \
   /data/freiburg-regbez.osm.pbf --output /data/routes/freiburg \
   --region freiburg --country DE --bounds 7.5,47.7,8.5,48.4 --profiles all \
   --reference /data/obc-reference --dem /data/copernicus

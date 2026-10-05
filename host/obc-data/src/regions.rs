@@ -67,6 +67,8 @@ pub struct Region {
     pub name: String,
     #[serde(flatten)]
     pub area: Area,
+    /// The ISO 3166-1 alpha-2 codes of its countries, such as `DE`. Empty when the file names none.
+    pub countries: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -78,6 +80,8 @@ struct RegionFile {
     bbox: Option<[f64; 4]>,
     polygon: Option<String>,
     union: Option<Vec<String>>,
+    #[serde(default)]
+    countries: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -110,7 +114,12 @@ pub fn parse_region(id: &str, text: &str) -> Result<Region, String> {
             ))
         }
     };
-    Ok(Region { id: id.into(), name: file.name, area })
+    if let Some(code) =
+        file.countries.iter().find(|code| code.len() != 2 || !code.bytes().all(|b| b.is_ascii_uppercase()))
+    {
+        return Err(fail(format!("country `{code}` is not an ISO 3166-1 alpha-2 code, such as `DE`")));
+    }
+    Ok(Region { id: id.into(), name: file.name, area, countries: file.countries })
 }
 
 /// Every region, by id.
@@ -250,6 +259,10 @@ mod tests {
             .contains("bounds"));
         assert!(parse_region("x", "name = \"x\"\nkind = \"box\"\n").is_err());
         assert!(parse_region("Europe/x", "name = \"x\"\nkind = \"geofabrik\"\n").is_err());
+        let countries =
+            |list: &str| parse_region("x", &format!("name = \"x\"\nkind = \"geofabrik\"\ncountries = {list}\n"));
+        assert_eq!(countries("[\"DE\", \"CH\"]").unwrap().countries, ["DE", "CH"]);
+        assert!(countries("[\"de\"]").unwrap_err().contains("alpha-2"));
     }
 
     #[test]

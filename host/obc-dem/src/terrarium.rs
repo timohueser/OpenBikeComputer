@@ -1,51 +1,37 @@
-use clap::Parser;
+//! The terrain of the planner maps: lossless Terrarium WebP tiles of zooms 0 to 12 in MBTiles.
+
+use std::f64::consts::PI;
+use std::path::Path;
+
 use image::{codecs::webp::WebPEncoder, ExtendedColorType};
-use route_build::obc_terrain::Terrain;
-use route_engine::model::Point;
 use rusqlite::{params, Connection};
-use std::{f64::consts::PI, path::PathBuf};
+
+use crate::planner::Terrain;
 
 const SIZE: u32 = 512;
-
-#[derive(Parser)]
-#[command(about = "Bake lossless Terrarium MBTiles from the routing terrain sources")]
-struct Args {
-    #[arg(long)]
-    dem: PathBuf,
-    #[arg(long)]
-    reference: Option<PathBuf>,
-    #[arg(long, allow_hyphen_values = true)]
-    bounds: String,
-    #[arg(long)]
-    output: PathBuf,
-}
 
 fn latitude(y: f64, n: f64) -> f64 {
     ((PI * (1.0 - 2.0 * y / n)).sinh().atan()).to_degrees()
 }
 
-fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
-    let bounds: [f64; 4] = args
-        .bounds
-        .split(',')
-        .map(str::parse)
-        .collect::<Result<Vec<f64>, _>>()?
-        .try_into()
-        .map_err(|_| "Provide west,south,east,north")?;
+/// Write the tiles of `bounds` (west, south, east, north in degrees) to the new file `output`.
+/// The metadata `bounds` is the text `bounds_text`.
+pub fn write(terrain: &mut Terrain, bounds: [f64; 4], bounds_text: &str, output: &Path) -> Result<(), String> {
     let [w, s, e, n] = bounds;
     if !bounds.iter().all(|v| v.is_finite()) || w < -180.0 || e > 180.0 || s < -85.0 || n > 85.0 || w >= e || s >= n {
         return Err("Invalid terrain bounds".into());
     }
-    if args.output.exists() {
+    if output.exists() {
         return Err("Output exists; choose a fresh path".into());
     }
-    let mut terrain = Terrain::open(Some(&args.dem), args.reference.as_deref(), bounds)?;
-    let db = Connection::open(&args.output)?;
+    let sql = |e: rusqlite::Error| e.to_string();
+    let db = Connection::open(output).map_err(sql)?;
     db.execute_batch(
         "PRAGMA journal_mode=OFF; CREATE TABLE metadata(name TEXT, value TEXT);
         CREATE TABLE tiles(zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB,
         PRIMARY KEY(zoom_level,tile_column,tile_row)); BEGIN;",
-    )?;
+    )
+    .map_err(sql)?;
     let row =
         |lat: f64, count: f64| (1.0 - (lat.to_radians().tan() + 1.0 / lat.to_radians().cos()).ln() / PI) / 2.0 * count;
     for z in 0..=12 {
@@ -67,11 +53,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     for px in 0..SIZE {
                         let lon =
                             ((f64::from(x) + (f64::from(px) + 0.5) / f64::from(SIZE)) / count * 360.0 - 180.0) * 1e6;
-                        let height = terrain.height(Point {
-                            lat,
-                            lon: lon.round() as i32,
-                            elevation: route_engine::model::NO_ELEVATION,
-                        })?;
+                        let height = terrain.height(lat, lon.round() as i32)?;
                         // Whole metres: relief and contours need no finer height, and lossless WebP compresses
                         // fewer distinct values better.
                         let value = height
@@ -89,33 +71,29 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if known {
                     let mut bytes = Vec::new();
-                    WebPEncoder::new_lossless(&mut bytes).encode(&rgba, SIZE, SIZE, ExtendedColorType::Rgba8)?;
-                    db.execute("INSERT INTO tiles VALUES (?1,?2,?3,?4)", params![z, x, (1u32 << z) - y - 1, bytes])?;
+                    WebPEncoder::new_lossless(&mut bytes)
+                        .encode(&rgba, SIZE, SIZE, ExtendedColorType::Rgba8)
+                        .map_err(|e| e.to_string())?;
+                    db.execute("INSERT INTO tiles VALUES (?1,?2,?3,?4)", params![z, x, (1u32 << z) - y - 1, bytes])
+                        .map_err(sql)?;
                 }
             }
         }
-        db.execute_batch("COMMIT; BEGIN;")?;
+        db.execute_batch("COMMIT; BEGIN;").map_err(sql)?;
         eprintln!("Terrain zoom {z} complete");
     }
+    let identities = serde_json::to_string(&terrain.identities).expect("strings serialize");
     for (key, value) in [
         ("name", "OpenBikeComputer terrain".into()),
         ("format", "webp".into()),
         ("type", "baselayer".into()),
         ("minzoom", "0".into()),
         ("maxzoom", "12".into()),
-        ("bounds", args.bounds),
+        ("bounds", bounds_text.into()),
         ("attribution", terrain.attribution().join("; ")),
-        ("source_sha256", serde_json::to_string(&terrain.identities)?),
+        ("source_sha256", identities),
     ] {
-        db.execute("INSERT INTO metadata VALUES (?1,?2)", params![key, value])?;
+        db.execute("INSERT INTO metadata VALUES (?1,?2)", params![key, value]).map_err(sql)?;
     }
-    db.execute_batch("COMMIT;")?;
-    Ok(())
-}
-
-fn main() {
-    if let Err(error) = run(Args::parse()) {
-        eprintln!("{error}");
-        std::process::exit(1);
-    }
+    db.execute_batch("COMMIT;").map_err(sql)
 }

@@ -3548,17 +3548,23 @@ dependencies = [
  "obc-fixtures",
  "obc-formats",
  "obc-pack",
+ "route-build",
+ "route-engine",
+ "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
 name = "obc-dem"
 version = "0.1.0"
 dependencies = [
+ "image",
  "obc-data",
  "obc-elevation",
  "obc-fixtures",
  "obc-formats",
+ "rusqlite",
  "serde_json",
  "sha2 0.11.0",
  "tiff",
@@ -5141,7 +5147,6 @@ name = "route-build"
 version = "0.1.0"
 dependencies = [
  "clap",
- "image",
  "obc-data",
  "obc-dem",
  "osmpbfreader",
