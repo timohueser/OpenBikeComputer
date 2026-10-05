@@ -6,9 +6,11 @@ pub mod http;
 pub mod osm;
 pub mod upstream;
 
+use std::path::PathBuf;
+
 use self::http::{Expect, Http};
 use crate::date;
-use crate::sources::{FetchKind, Source, VersionScheme};
+use crate::sources::{FetchKind, Registry, Source, VersionScheme};
 use crate::store::{FileRecord, Snapshot, Store};
 
 pub struct Request<'a> {
@@ -38,6 +40,29 @@ pub fn fetch(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, 
         )),
         FetchKind::Installed => Err(format!("source `{}` is installed, not fetched", source.id)),
     }
+}
+
+/// Fetch the source `id` of the repository above the current directory, or else above the running
+/// program: at `version`, or else at its live pin, or else at the newest version upstream. Each
+/// file comes with its object. This is `obc data fetch` for code that links the library.
+pub fn live(id: &str, version: Option<&str>, params: Vec<(String, String)>) -> Result<Fetched, String> {
+    let starts = [std::env::current_dir().ok(), std::env::current_exe().ok()];
+    let root = starts.into_iter().flatten().find_map(|start| crate::find_root(&start));
+    let root = root.ok_or("no data/sources.toml above the current directory or the program")?;
+    let registry = Registry::load(&root)?;
+    let source = registry.sources.iter().find(|s| s.id == id).ok_or_else(|| format!("no source `{id}`"))?;
+    let version = version.map(str::to_string).or_else(|| registry.pins.get(id).cloned());
+    let params = osm::with_base(source, &registry.pins, params)?;
+    let store = Store::open()?;
+    let snapshot = fetch(&store, &Http::new(), &Request { source, version, params })?;
+    let paths = snapshot.files.iter().map(|file| store.object(&file.sha256)).collect();
+    Ok(Fetched { snapshot, paths })
+}
+
+/// A snapshot with the object of each file, in the order of its files.
+pub struct Fetched {
+    pub snapshot: Snapshot,
+    pub paths: Vec<PathBuf>,
 }
 
 /// Whether `version` has the form of the source's version scheme. Every version also names a

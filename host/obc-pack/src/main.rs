@@ -53,6 +53,7 @@ fn parse_args() -> Result<Args, String> {
                 opts.chunk_size = Some(it.next().and_then(|s| s.parse().ok()).ok_or("--chunk-size needs a number")?);
             }
             "--no-land" => opts.no_land = true,
+            "--land" => opts.land = Some(PathBuf::from(it.next().ok_or("--land needs the land polygons .zip")?)),
             "--terrain" => {
                 opts.terrain = Some(PathBuf::from(it.next().ok_or("--terrain needs a .obcd file or a directory")?));
             }
@@ -217,6 +218,7 @@ fn run_cells(args: &[String]) -> Result<(), String> {
                 opts.chunk_size = Some(next("--chunk-size")?.parse().map_err(|_| "--chunk-size needs a number")?);
             }
             "--no-land" => opts.no_land = true,
+            "--land" => opts.land = Some(PathBuf::from(next("--land")?)),
             "--terrain" => opts.terrain = Some(PathBuf::from(next("--terrain")?)),
             "--peaks" => opts.peaks.push(PathBuf::from(next("--peaks")?)),
             "--landmarks" => opts.landmarks.push(PathBuf::from(next("--landmarks")?)),

@@ -147,7 +147,7 @@ fn fetch_planet(
                     // snapshot-download behavior. Official planet files take the
                     // incremental path above and do not need this HEAD request.
                     if !force_fresh {
-                        let head = crate::source::head(url)?;
+                        let head = head(url)?;
                         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                         if meta.last_modified == head.last_modified
                             && ((head.content_length == 0 && size == meta.content_length)
@@ -162,7 +162,7 @@ fn fetch_planet(
         }
     }
 
-    let head = crate::source::head(url)?;
+    let head = head(url)?;
     progress.log(format!("Downloading planet source from {url}"));
     let mut last = 0u8;
     let bytes = obc_pack::net::download(url, &path, progress, |pct| {
@@ -1210,6 +1210,7 @@ impl PlanetBake<'_> {
             }],
             chunk_size: None,
             no_land: false,
+            land: None,
             // The terrain published in this tree, or nothing. A tree with no terrain writes
             // `Ascent M = 0`, which is a decode-valid map.
             terrain: self.opts.terrain.as_ref().map(|t| t.dir.clone()),
@@ -1425,11 +1426,68 @@ fn leaf_cells(id: LeafId, bands: &BandTable) -> BTreeMap<String, Vec<CellId>> {
         .collect()
 }
 
+struct Head {
+    last_modified: String,
+    content_length: u64,
+    snapshot: String,
+}
+
+/// One `HEAD` for the validators and the extract's date.
+///
+/// The snapshot date comes from `Last-Modified` rather than from the redirect target's filename:
+/// `-latest` for some regions redirects to a mirror that keeps no date in the name, and a
+/// `source_snapshot` guessed wrong is worse than a failed bake, because the manifest is trusted.
+fn head(url: &str) -> Result<Head, String> {
+    let resp = ureq::head(url).call().map_err(|e| format!("HEAD {url}: {e}"))?;
+    let get = |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
+    let last_modified = get("last-modified")
+        .ok_or_else(|| format!("{url}: no Last-Modified header — cannot date the extract, refusing to guess"))?;
+    let content_length: u64 = get("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let snapshot = http_date_to_iso(&last_modified)
+        .ok_or_else(|| format!("{url}: unparseable Last-Modified `{last_modified}`"))?;
+    Ok(Head { last_modified, content_length, snapshot })
+}
+
+/// `Tue, 28 Jul 2026 23:24:16 GMT` → `2026-07-28`.
+fn http_date_to_iso(value: &str) -> Option<String> {
+    let mut parts = value.split_whitespace();
+    let _weekday = parts.next()?;
+    let day: u32 = parts.next()?.parse().ok()?;
+    let month = match parts.next()? {
+        "Jan" => 1,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
+        _ => return None,
+    };
+    let year: u32 = parts.next()?.parse().ok()?;
+    let iso = format!("{year:04}-{month:02}-{day:02}");
+    obc_pack::catalog::validate_date(&iso).ok()?;
+    Some(iso)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::sync::Mutex;
+
+    #[test]
+    fn an_http_date_becomes_the_snapshot_date() {
+        assert_eq!(http_date_to_iso("Tue, 28 Jul 2026 23:24:16 GMT").as_deref(), Some("2026-07-28"));
+        assert_eq!(http_date_to_iso("Sun, 01 Feb 2026 00:00:00 GMT").as_deref(), Some("2026-02-01"));
+        // Rejected rather than silently turned into a plausible-looking date.
+        assert_eq!(http_date_to_iso("yesterday"), None);
+        assert_eq!(http_date_to_iso("Thu, 30 Feb 2026 00:00:00 GMT"), None);
+    }
 
     fn repo(path: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(path)
@@ -1813,7 +1871,7 @@ mod tests {
             logical_bbox: leaf_cell.square(),
         };
         let schema = test_schema(&dir);
-        let cutter = crate::cells::ObcCutter { no_land: true, chunk_size: None };
+        let cutter = crate::cells::ObcCutter { no_land: true, land: Default::default(), chunk_size: None };
         let run = || PlanetBake {
             input: &input,
             leaves: std::slice::from_ref(&leaf),
@@ -1943,7 +2001,7 @@ mod tests {
             replication: None,
         };
         let schema = crate::presets::load_schema(&repo("builder/presets")).unwrap();
-        let cutter = crate::cells::ObcCutter { no_land: true, chunk_size: None };
+        let cutter = crate::cells::ObcCutter { no_land: true, land: Default::default(), chunk_size: None };
         let error = PlanetBake {
             input: &input,
             leaves: &leaves,

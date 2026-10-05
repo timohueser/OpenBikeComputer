@@ -1,27 +1,23 @@
-//! Where an extract comes from, and how a cached one is known to still be current.
+//! Where an extract comes from.
 //!
-//! The bakery downloads whole-country `.osm.pbf` extracts — Germany alone is 4.8 GB — so
-//! re-fetching one costs more wall clock than packing several small regions. Two separate
+//! The bakery bakes whole-country `.osm.pbf` extracts — Germany alone is 4.8 GB. Two separate
 //! questions live here, and keeping them separate is the whole design:
 //!
-//! - Is the cached file still the current extract? Answered with HTTP validators, `Last-Modified`
-//!   and `Content-Length`, recorded beside the file. Being wrong only costs a re-download, so
-//!   metadata is enough.
+//! - Which extract is current? The store answers it: `obc_data` fetches the sources
+//!   `geofabrik-extracts` and `geofabrik-poly` at their live pins, or else at the newest day
+//!   Geofabrik has, and keeps each version once.
 //! - Did the input change since the last bake? Answered with the file's SHA-256, in the cell
-//!   bakery. That is the idempotency key and it is never a timestamp: a mirror that rewrites
-//!   `Last-Modified` without changing a byte must not trigger a twenty-hour re-bake, and a file
-//!   mutated in place must not be missed.
+//!   bakery. That is the idempotency key and it is never a date.
 //!
 //! [`Extract::snapshot`] sits deliberately on the far side of that line. It is a fact about the
-//! data that the manifest publishes, so it must not go stale, but it is derived from
-//! `Last-Modified`, so letting it force a re-pack would reintroduce the timestamp sensitivity
-//! above. The bakery keeps it out of the pack key and compares it separately.
+//! data that the manifest publishes, so it must not go stale, but letting it force a re-pack would
+//! reintroduce date sensitivity. The bakery keeps it out of the pack key and compares it separately.
 //!
 //! [`ExtractSource`] is a trait because the tests must not touch the network. [`LocalExtracts`]
 //! resolves the same regions against a directory or a `file://` URL, so every test in this crate
 //! runs offline against the tiny fixtures already in the repo.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use obc_pack::progress::Progress;
 
@@ -37,15 +33,13 @@ pub struct Extract {
     pub snapshot: String,
     /// Size in bytes.
     pub bytes: u64,
-    /// Whether this run had to download it: a summary line, not a decision input.
-    pub downloaded: bool,
 }
 
 /// Resolve a region to a local `.osm.pbf`.
 pub trait ExtractSource: Sync {
     /// Human-readable description of where extracts come from, for the run header.
     fn describe(&self) -> String;
-    /// Download or reuse the extract for `region`.
+    /// Fetch or reuse the extract for `region`.
     fn fetch(&self, region: &Region, progress: &Progress) -> Result<Extract, String>;
     /// The region's Osmosis polygon (`<id>.poly`), as text.
     ///
@@ -53,106 +47,32 @@ pub trait ExtractSource: Sync {
     /// two decisions a bbox cannot make: which cells a region selects, and whether a baked cell is
     /// canonical or `partial`. It is also the file the catalog's drawable region outline is reduced
     /// from, so both readings come from one download.
-    ///
-    /// Tens of kilobytes and unversioned by Geofabrik, so it is fetched fresh rather than
-    /// validator-cached, but written into the same cache directory, which is what lets an offline
-    /// re-bake work.
     fn fetch_poly(&self, region: &Region, progress: &Progress) -> Result<String, String>;
 }
 
-/// Geofabrik's public download server (or any mirror laid out the same way).
-pub struct GeofabrikExtracts {
-    base_url: String,
-    cache_dir: PathBuf,
-}
-
-/// What was recorded about a cached download, used only to decide whether to fetch it again. Never
-/// an input to the bake key.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct CachedMeta {
-    url: String,
-    last_modified: String,
-    content_length: u64,
-    snapshot: String,
-}
+/// Geofabrik's extracts and polygons, from the store.
+pub struct GeofabrikExtracts;
 
 impl GeofabrikExtracts {
-    pub const DEFAULT_BASE_URL: &'static str = "https://download.geofabrik.de";
-
-    pub fn new(base_url: impl Into<String>, cache_dir: impl Into<PathBuf>) -> Self {
-        Self { base_url: base_url.into(), cache_dir: cache_dir.into() }
-    }
-
-    fn meta_path(&self, region: &Region) -> PathBuf {
-        self.cache_dir.join(format!("{}.meta.json", region.cache_name()))
+    fn get(source: &str, region: &Region) -> Result<obc_data::fetch::Fetched, String> {
+        obc_data::fetch::live(source, None, vec![("area".into(), region.id.clone())])
     }
 }
 
 impl ExtractSource for GeofabrikExtracts {
     fn describe(&self) -> String {
-        format!("{} (cache {})", self.base_url, self.cache_dir.display())
+        "Geofabrik, through the store".into()
     }
 
-    fn fetch(&self, region: &Region, progress: &Progress) -> Result<Extract, String> {
-        let url = region.extract_url(&self.base_url);
-        let dest = self.cache_dir.join(region.cache_name());
-        let head = head(&url)?;
-        let meta_path = self.meta_path(region);
-
-        // Reuse only when the file is there and both validators still match what was recorded for
-        // it. A missing meta file means the file was hashed by someone else, so re-download rather
-        // than publish a snapshot date that cannot be substantiated.
-        if dest.is_file() {
-            if let Ok(text) = std::fs::read_to_string(&meta_path) {
-                if let Ok(meta) = serde_json::from_str::<CachedMeta>(&text) {
-                    let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-                    if meta.url == url
-                        && meta.last_modified == head.last_modified
-                        && meta.content_length == head.content_length
-                        && size == head.content_length
-                    {
-                        return Ok(Extract { path: dest, snapshot: meta.snapshot, bytes: size, downloaded: false });
-                    }
-                }
-            }
-        }
-
-        std::fs::create_dir_all(&self.cache_dir).map_err(|e| format!("{}: {e}", self.cache_dir.display()))?;
-        let bytes = obc_pack::net::download(&url, &dest, progress, |pct| {
-            if pct % 10 == 0 {
-                progress.log(format!("  {} extract {pct}%", region.id));
-            }
-        })?;
-        let meta = CachedMeta {
-            url,
-            last_modified: head.last_modified,
-            content_length: head.content_length,
-            snapshot: head.snapshot.clone(),
-        };
-        let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
-        std::fs::write(&meta_path, text).map_err(|e| format!("{}: {e}", meta_path.display()))?;
-        Ok(Extract { path: dest, snapshot: head.snapshot, bytes, downloaded: true })
+    fn fetch(&self, region: &Region, _progress: &Progress) -> Result<Extract, String> {
+        let fetched = Self::get("geofabrik-extracts", region)?;
+        let bytes = fetched.snapshot.files[0].size;
+        Ok(Extract { path: fetched.paths[0].clone(), snapshot: fetched.snapshot.version, bytes })
     }
 
-    fn fetch_poly(&self, region: &Region, progress: &Progress) -> Result<String, String> {
-        let url = region.poly_url(&self.base_url);
-        let cached = self.cache_dir.join(region.poly_cache_name());
-        match obc_pack::net::get_text(&url) {
-            Ok(text) => {
-                std::fs::create_dir_all(&self.cache_dir).map_err(|e| format!("{}: {e}", self.cache_dir.display()))?;
-                std::fs::write(&cached, &text).map_err(|e| format!("{}: {e}", cached.display()))?;
-                Ok(text)
-            }
-            // A cached copy is a better answer than a failed bake: the polygon changes about as
-            // often as a country's borders do.
-            Err(e) => match std::fs::read_to_string(&cached) {
-                Ok(text) => {
-                    progress.warn(format!("{}: {e} — using the cached {}", region.id, cached.display()));
-                    Ok(text)
-                }
-                Err(_) => Err(format!("{url}: {e}")),
-            },
-        }
+    fn fetch_poly(&self, region: &Region, _progress: &Progress) -> Result<String, String> {
+        let path = &Self::get("geofabrik-poly", region)?.paths[0];
+        std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
     }
 }
 
@@ -219,7 +139,7 @@ impl ExtractSource for LocalExtracts {
                 obc_pack::catalog::format_timestamp(secs)[..10].to_string()
             }
         };
-        Ok(Extract { path, snapshot, bytes: meta.len(), downloaded: false })
+        Ok(Extract { path, snapshot, bytes: meta.len() })
     }
 
     fn fetch_poly(&self, region: &Region, _progress: &Progress) -> Result<String, String> {
@@ -240,75 +160,22 @@ impl ExtractSource for LocalExtracts {
     }
 }
 
-/// Build the source a CLI `--source` spec asks for.
-pub fn from_spec(spec: &str, cache_dir: &Path) -> Box<dyn ExtractSource> {
-    if spec.starts_with("http://") || spec.starts_with("https://") {
-        Box::new(GeofabrikExtracts::new(spec, cache_dir))
-    } else {
-        Box::new(LocalExtracts::from_spec(spec))
+/// The source a CLI `--source` spec asks for: the store without one, else a directory or a
+/// `file://` URL of extracts.
+pub fn from_spec(spec: Option<&str>) -> Result<Box<dyn ExtractSource>, String> {
+    match spec {
+        None => Ok(Box::new(GeofabrikExtracts)),
+        Some(spec) if spec.starts_with("http://") || spec.starts_with("https://") => Err(format!(
+            "--source {spec}: Geofabrik comes from the store, as `geofabrik-extracts` in data/sources.toml; \
+             --source takes a directory of extracts"
+        )),
+        Some(spec) => Ok(Box::new(LocalExtracts::from_spec(spec))),
     }
-}
-
-pub(crate) struct Head {
-    pub(crate) last_modified: String,
-    pub(crate) content_length: u64,
-    pub(crate) snapshot: String,
-}
-
-/// One `HEAD` for the validators and the extract's date.
-///
-/// The snapshot date comes from `Last-Modified` rather than from the redirect target's filename:
-/// `-latest` for some regions redirects to a mirror that keeps no date in the name, and a
-/// `source_snapshot` guessed wrong is worse than a failed bake, because the manifest is trusted.
-pub(crate) fn head(url: &str) -> Result<Head, String> {
-    let resp = ureq::head(url).call().map_err(|e| format!("HEAD {url}: {e}"))?;
-    let get = |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
-    let last_modified = get("last-modified")
-        .ok_or_else(|| format!("{url}: no Last-Modified header — cannot date the extract, refusing to guess"))?;
-    let content_length: u64 = get("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
-    let snapshot = http_date_to_iso(&last_modified)
-        .ok_or_else(|| format!("{url}: unparseable Last-Modified `{last_modified}`"))?;
-    Ok(Head { last_modified, content_length, snapshot })
-}
-
-/// `Tue, 28 Jul 2026 23:24:16 GMT` → `2026-07-28`.
-fn http_date_to_iso(value: &str) -> Option<String> {
-    let mut parts = value.split_whitespace();
-    let _weekday = parts.next()?;
-    let day: u32 = parts.next()?.parse().ok()?;
-    let month = match parts.next()? {
-        "Jan" => 1,
-        "Feb" => 2,
-        "Mar" => 3,
-        "Apr" => 4,
-        "May" => 5,
-        "Jun" => 6,
-        "Jul" => 7,
-        "Aug" => 8,
-        "Sep" => 9,
-        "Oct" => 10,
-        "Nov" => 11,
-        "Dec" => 12,
-        _ => return None,
-    };
-    let year: u32 = parts.next()?.parse().ok()?;
-    let iso = format!("{year:04}-{month:02}-{day:02}");
-    obc_pack::catalog::validate_date(&iso).ok()?;
-    Some(iso)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn an_http_date_becomes_the_snapshot_date() {
-        assert_eq!(http_date_to_iso("Tue, 28 Jul 2026 23:24:16 GMT").as_deref(), Some("2026-07-28"));
-        assert_eq!(http_date_to_iso("Sun, 01 Feb 2026 00:00:00 GMT").as_deref(), Some("2026-02-01"));
-        // Rejected rather than silently turned into a plausible-looking date.
-        assert_eq!(http_date_to_iso("yesterday"), None);
-        assert_eq!(http_date_to_iso("Thu, 30 Feb 2026 00:00:00 GMT"), None);
-    }
 
     #[test]
     fn a_local_source_finds_both_layouts() {

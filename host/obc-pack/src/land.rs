@@ -79,9 +79,14 @@ fn reproject_geom(g: &mut Geom) {
 // --- Public entry ----------------------------------------------------------
 
 /// Land polygons for `bbox_deg = (min_lon, min_lat, max_lon, max_lat)`, clipped and
-/// reprojected to degrees. One [`Geom::Polygon`] per face.
-pub fn get_land_polygons(bbox_deg: (f64, f64, f64, f64), progress: &Progress) -> Result<Vec<Geom>, String> {
-    let shp = ensure_dataset(progress)?;
+/// reprojected to degrees. One [`Geom::Polygon`] per face. `zip` is the dataset a bake took from
+/// the store; without it the dataset is downloaded on first use.
+pub fn get_land_polygons(
+    bbox_deg: (f64, f64, f64, f64),
+    zip: Option<&Path>,
+    progress: &Progress,
+) -> Result<Vec<Geom>, String> {
+    let shp = ensure_dataset(&cache_dir()?, zip, progress)?;
     let (min_lon, min_lat, max_lon, max_lat) = bbox_deg;
     // EPSG:3857 has no finite representation at the poles. The source dataset itself ends at the
     // Web-Mercator limit, so the geographic overhang of the outermost cells is provably empty here.
@@ -359,8 +364,10 @@ pub(crate) fn cache_dir() -> Result<PathBuf, String> {
     Ok(PathBuf::from(home).join(".cache/obcm/land"))
 }
 
-/// Return the cached `land_polygons.shp`, downloading and extracting the dataset on first use
-/// (~950 MB). There is no freshness check: delete the cache directory to force a refresh.
+/// Return the `land_polygons.shp` in `cache`. A `zip` from the store unpacks into a directory named by
+/// its object, so another version unpacks again; without one, the dataset is downloaded and
+/// extracted on first use (~950 MB). There is no freshness check: delete the cache directory to
+/// force a refresh.
 ///
 /// Concurrency-safe: download and extract go to pid-suffixed temp paths, then the extracted
 /// directory is renamed into place. Two cold-cache packers racing each other both succeed, and the
@@ -368,8 +375,11 @@ pub(crate) fn cache_dir() -> Result<PathBuf, String> {
 ///
 /// Both steps run in process ([`crate::net`]), which a subprocess could not be: they are cancellable
 /// and report a percentage, and `unzip` is not a Windows program.
-fn ensure_dataset(progress: &Progress) -> Result<PathBuf, String> {
-    let dir = cache_dir()?;
+fn ensure_dataset(cache: &Path, zip: Option<&Path>, progress: &Progress) -> Result<PathBuf, String> {
+    let dir = match zip {
+        Some(zip) => cache.join(zip.file_name().ok_or_else(|| format!("{} is not a file", zip.display()))?),
+        None => cache.to_path_buf(),
+    };
     let dataset = dir.join("land-polygons-split-3857");
     let shp = dataset.join("land_polygons.shp");
     if shp.exists() {
@@ -377,27 +387,36 @@ fn ensure_dataset(progress: &Progress) -> Result<PathBuf, String> {
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let pid = std::process::id();
-    let zip = dir.join(format!("land-polygons-{pid}.zip"));
     let extract_dir = dir.join(format!("extract-{pid}"));
-    // Reported rather than printed: in a host with a log pane this is the one step that can stall a
-    // first build for minutes, and a silent app is indistinguishable from a hung one.
-    progress.warn(format!("Downloading land polygons (~950 MB, one-time) from {LAND_URL} ..."));
-    let mut last = 0u8;
-    let downloaded = net::download(LAND_URL, &zip, progress, |pct| {
-        // Every 5 %: a one-time 950 MB download over a slow link is minutes of silence otherwise,
-        // and per-percent lines would bury the build log.
-        if pct >= last + 5 || pct == 100 {
-            last = pct;
-            progress.warn(format!("  land polygons: {pct}%"));
+    let extracted = match zip {
+        Some(zip) => {
+            progress.warn("Extracting land polygons ...");
+            net::extract_zip(zip, &extract_dir, progress)
         }
-    });
-    if let Err(e) = downloaded {
-        let _ = std::fs::remove_file(&zip);
-        return Err(e);
-    }
-    progress.warn("Extracting land polygons ...");
-    let extracted = net::extract_zip(&zip, &extract_dir, progress);
-    let _ = std::fs::remove_file(&zip);
+        None => {
+            let zip = dir.join(format!("land-polygons-{pid}.zip"));
+            // Reported rather than printed: in a host with a log pane this is the one step that can
+            // stall a first build for minutes, and a silent app is indistinguishable from a hung one.
+            progress.warn(format!("Downloading land polygons (~950 MB, one-time) from {LAND_URL} ..."));
+            let mut last = 0u8;
+            let downloaded = net::download(LAND_URL, &zip, progress, |pct| {
+                // Every 5 %: a one-time 950 MB download over a slow link is minutes of silence
+                // otherwise, and per-percent lines would bury the build log.
+                if pct >= last + 5 || pct == 100 {
+                    last = pct;
+                    progress.warn(format!("  land polygons: {pct}%"));
+                }
+            });
+            if let Err(e) = downloaded {
+                let _ = std::fs::remove_file(&zip);
+                return Err(e);
+            }
+            progress.warn("Extracting land polygons ...");
+            let extracted = net::extract_zip(&zip, &extract_dir, progress);
+            let _ = std::fs::remove_file(&zip);
+            extracted
+        }
+    };
     if let Err(e) = extracted {
         let _ = std::fs::remove_dir_all(&extract_dir);
         return Err(e);
@@ -418,6 +437,28 @@ fn ensure_dataset(progress: &Progress) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A zip from the store unpacks beside the downloaded dataset, in a directory named by its
+    /// object, so another version unpacks again and nothing is downloaded.
+    #[test]
+    fn a_zip_from_the_store_unpacks_under_its_object_name() {
+        let dir = std::env::temp_dir().join(format!("obc-pack-land-zip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("objects")).unwrap();
+        let object = dir.join("objects/c4871013");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&object).unwrap());
+        let options: zip::write::FileOptions<'_, ()> = Default::default();
+        zip.start_file("land-polygons-split-3857/land_polygons.shp", options).unwrap();
+        std::io::Write::write_all(&mut zip, b"shapefile").unwrap();
+        zip.finish().unwrap();
+
+        let cache = dir.join("land");
+        let shp = ensure_dataset(&cache, Some(&object), &Progress::silent()).unwrap();
+        assert_eq!(shp, cache.join("c4871013/land-polygons-split-3857/land_polygons.shp"));
+        assert_eq!(std::fs::read(&shp).unwrap(), b"shapefile");
+        assert!(object.is_file(), "the store keeps its object");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn square(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Geom {
         Geom::Polygon {

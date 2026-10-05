@@ -42,8 +42,9 @@ usage:
         --base-url URL       catalog object base (default: /obc-bake while staging)
         --regions DIR        region files (default: data/regions/ of the repository)
         --presets-dir DIR    schema.json + skins/ (default: builder/presets)
-        --source SOURCE      Geofabrik base/directory, or planet PBF URL/file with --all
-        --cache DIR          extract download cache
+        --source SOURCE      directory of extracts (default: Geofabrik from the store), or planet
+                             PBF URL/file with --all
+        --cache DIR          planet, shards and DEM tile links
         --force              re-bake even when unchanged
         --no-land            skip land generation
         --chunk-size N       override schema chunk_size
@@ -90,8 +91,8 @@ usage:
         --regions DIR           region files (default: data/regions/ of the repository)
         --base-url URL          catalog object base
         --generated-at TS       pin the catalog's generated_at
-        --cache DIR             extract/poly download cache
-        --source SOURCE         Geofabrik base or directory (for the .poly files)
+        --cache DIR             DEM tile links
+        --source DIR            directory of .poly files (default: Geofabrik from the store)
         --force                 re-bake even when unchanged
 
   obc-bake landmarks [REGION…] [flags]
@@ -99,9 +100,9 @@ usage:
       band. Landmarks have their OWN revision track: this never re-bakes an OBCM
       cell, and a schema bump never re-compiles a landmark artifact.
         --out TREE           output tree (default: ./obc-bake)
-        --cache DIR          extract/poly download cache; also holds the raw captures
+        --cache DIR          the raw captures
         --regions DIR        region files (default: data/regions/ of the repository)
-        --source SOURCE      Geofabrik base or directory (for the .poly files)
+        --source DIR         directory of .poly files (default: Geofabrik from the store)
         --force              re-compile even when unchanged
         --no-capture         never call the capture tool; compile what the cache holds
 
@@ -300,8 +301,7 @@ fn run_cell_bake(
     };
 
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
-    let source_spec = flags.get("source").unwrap_or(obc_bake::source::GeofabrikExtracts::DEFAULT_BASE_URL);
-    let source = obc_bake::source::from_spec(source_spec, &cache);
+    let source = obc_bake::source::from_spec(flags.get("source"))?;
 
     // The terrain stage runs first, and automatically: contours are traced and the nav graph's
     // per-edge ascents integrated from whatever terrain is in the tree, so a bake without it
@@ -350,6 +350,7 @@ fn run_cell_bake(
 
     let cutter = obc_bake::cells::ObcCutter {
         no_land: flags.has("no-land"),
+        land: Default::default(),
         chunk_size: match flags.get("chunk-size") {
             Some(v) => Some(v.parse().map_err(|_| "--chunk-size needs a number".to_string())?),
             None => None,
@@ -429,13 +430,13 @@ fn run_planet_bake(
     if remote_source {
         updater.check()?;
     }
-    let polygons =
-        obc_bake::source::GeofabrikExtracts::new(obc_bake::source::GeofabrikExtracts::DEFAULT_BASE_URL, &cache);
+    let polygons = obc_bake::source::GeofabrikExtracts;
     let region_presets = obc_bake::planet::resolve_region_presets(&regions, &polygons, &bands, &progress)?;
     let input = obc_bake::planet::resolve_planet_with(source, &cache, &progress, &updater)?;
     let shards = obc_bake::planet::PlanetSharder { input: &input, cache: &cache, runner: &runner }.run(&progress)?;
     let cutter = obc_bake::cells::ObcCutter {
         no_land: flags.has("no-land"),
+        land: Default::default(),
         chunk_size: match flags.get("chunk-size") {
             Some(value) => Some(value.parse().map_err(|_| "--chunk-size needs a number".to_string())?),
             None => None,
@@ -501,7 +502,7 @@ fn ensure_dem_sources(
     let mut cached = 0usize;
     let paths = obc_dem::fetch::fetch_tiles(bbox, &dir, |tile, outcome| match outcome {
         obc_dem::fetch::Fetched::Cached => cached += 1,
-        obc_dem::fetch::Fetched::Downloaded(len) => {
+        obc_dem::fetch::Fetched::Stored(len) => {
             downloaded += len;
             println!("  {} ({:.1} MB)", tile.file_name(), *len as f64 / 1e6);
         }
@@ -588,8 +589,7 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
     };
 
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
-    let source_spec = flags.get("source").unwrap_or(obc_bake::source::GeofabrikExtracts::DEFAULT_BASE_URL);
-    let source = obc_bake::source::from_spec(source_spec, &cache);
+    let source = obc_bake::source::from_spec(flags.get("source"))?;
     // No --sources: fetch the curated coverage's GLO-30 tiles ourselves, exactly as `bake` does.
     let sources = match flags.get("sources") {
         Some(dir) => PathBuf::from(dir),
@@ -739,8 +739,8 @@ fn run_guard(args: &[String]) -> Result<(), String> {
     }
 }
 
-/// Same cache root the packer and the builder use, so a developer's already-downloaded extracts are
-/// reused.
+/// Where the planet, its shards, the DEM tile links and the raw landmark captures go. Downloads go
+/// to the store.
 fn default_cache_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("OBCM_CACHE_DIR") {
         return PathBuf::from(dir).join("geofabrik");
@@ -755,8 +755,7 @@ fn run_landmark_stage(args: &[String]) -> Result<(), String> {
     let regions = select_regions(obc_bake::regions::load(flags.get("regions").map(Path::new))?, &positional)?;
     let out = PathBuf::from(flags.get("out").unwrap_or("obc-bake"));
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
-    let source_spec = flags.get("source").unwrap_or(obc_bake::source::GeofabrikExtracts::DEFAULT_BASE_URL);
-    let source = obc_bake::source::from_spec(source_spec, &cache);
+    let source = obc_bake::source::from_spec(flags.get("source"))?;
     let no_capture = flags.has("no-capture");
     // Resolved even for a `--no-capture` run: a stage that cannot capture should say so at the
     // start, not after the first region turns out to need it.

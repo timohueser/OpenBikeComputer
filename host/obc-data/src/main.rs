@@ -133,17 +133,10 @@ fn run(cli: Cli) -> Result<(), Failure> {
     match cli.command {
         Command::Sources { json } => print_sources(&Registry::load(&root()?)?, json),
         Command::Fetch { target, params, json } => {
-            let registry = Registry::load(&root()?)?;
-            let (id, version) = match target.split_once('@') {
-                Some((id, version)) => (id, Some(version.to_string())),
-                None => (target.as_str(), None),
-            };
-            let source = find(&registry, id)?;
-            let version = version.or_else(|| registry.pins.get(id).cloned());
-            let store = Store::open()?;
-            let params = osm::with_base(source, &registry.pins, parse_params(&params)?)?;
-            let request = Request { source, version, params };
-            print_snapshot(&store, &fetch::fetch(&store, &Http::new(), &request)?, json)
+            let (id, version) = target.split_once('@').map_or((target.as_str(), None), |(id, v)| (id, Some(v)));
+            find(&Registry::load(&root()?)?, id)?;
+            let fetched = fetch::live(id, version, parse_params(&params)?)?;
+            print_snapshot(&fetched.snapshot, &fetched.paths, json)
         }
         Command::Refresh { source, params, env, json } => refresh(&root()?, &source, &params, &env, json),
         Command::Region { action, json } => {
@@ -265,11 +258,11 @@ fn refresh(root: &Path, id: &str, params: &[String], env: &str, json: bool) -> R
     sources::parse_pins(&text, &registry.sources).map_err(|e| format!("{}: {e}", path.display()))?;
     store::write_atomic(&path, text.as_bytes())?;
     eprintln!("obc data: pinned {id} = \"{}\" in data/env/{env}.toml", snapshot.version);
-    print_snapshot(&store, &snapshot, json)
+    let paths: Vec<_> = snapshot.files.iter().map(|file| store.object(&file.sha256)).collect();
+    print_snapshot(&snapshot, &paths, json)
 }
 
-fn print_snapshot(store: &Store, snapshot: &Snapshot, json: bool) -> Result<(), Failure> {
-    let paths: Vec<_> = snapshot.files.iter().map(|file| store.object(&file.sha256)).collect();
+fn print_snapshot(snapshot: &Snapshot, paths: &[std::path::PathBuf], json: bool) -> Result<(), Failure> {
     if json {
         #[derive(Serialize)]
         struct File<'a> {
@@ -283,7 +276,7 @@ fn print_snapshot(store: &Store, snapshot: &Snapshot, json: bool) -> Result<(), 
             version: &'a str,
             files: Vec<File<'a>>,
         }
-        let files = snapshot.files.iter().zip(&paths).map(|(file, path)| File { file, path }).collect();
+        let files = snapshot.files.iter().zip(paths).map(|(file, path)| File { file, path }).collect();
         return print_json(&Fetched { source: &snapshot.source, version: &snapshot.version, files });
     }
     paths.iter().for_each(|path| println!("{}", path.display()));
