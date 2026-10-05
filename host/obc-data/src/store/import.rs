@@ -3,13 +3,14 @@
 //! import record keeps the old path of each file.
 
 use std::collections::HashSet;
-use std::fs;
-use std::io::ErrorKind;
+use std::fs::{self, File, OpenOptions};
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use super::{hash_file, write_record, Store};
+use super::{create_parent, hash_file, Store};
 use crate::date;
 
 /// The cache directories of the older bake tools, relative to the home directory.
@@ -31,29 +32,16 @@ pub struct DirPlan {
     pub present: bool,
     pub files: u64,
     pub bytes: u64,
-    /// Symbolic links, which are not followed and are deleted with the directory.
-    pub links: u64,
+    /// What stays in the directory: symbolic links and other entries that are not regular files,
+    /// and after an import each file that changed while it was read.
+    pub left: Vec<PathBuf>,
 }
 
-/// One import run: for each directory, the old path of each file and its object.
-#[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ImportRecord {
-    /// `YYYY-MM-DDTHH:MM:SSZ`
-    pub imported: String,
-    pub dirs: Vec<ImportedDir>,
-}
-
-#[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ImportedDir {
-    pub dir: PathBuf,
-    pub files: Vec<ImportedFile>,
-}
-
+/// One line of an import record: one file, with its old place and its object.
 #[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImportedFile {
+    pub dir: PathBuf,
     /// The path below `dir`, with `/`.
     pub path: String,
     pub size: u64,
@@ -68,133 +56,224 @@ pub fn old_dirs(home: &Path) -> Vec<PathBuf> {
 /// What an import of `dirs` moves, and how much the store grows. It hashes every file and
 /// changes nothing.
 pub fn plan(store: &Store, dirs: &[PathBuf]) -> Result<Plan, String> {
-    run(store, dirs, false)
-}
-
-/// Move every file of `dirs` into the store, write the import record, and delete each
-/// directory. A directory that holds the store keeps the store.
-pub fn apply(store: &Store, dirs: &[PathBuf]) -> Result<Plan, String> {
-    run(store, dirs, true)
-}
-
-fn run(store: &Store, dirs: &[PathBuf], apply: bool) -> Result<Plan, String> {
-    let store_root = fs::canonicalize(store.root()).unwrap_or_else(|_| store.root().to_path_buf());
+    let store_root = store_root(store)?;
     let mut plan = Plan::default();
     let mut seen = HashSet::new();
-    let mut record = ImportRecord { imported: date::timestamp(date::now()), dirs: Vec::new() };
-    let result = (|| {
-        for dir in dirs {
-            let (files, links) = walk(dir, &store_root)?;
-            let mut dir_plan = DirPlan { dir: dir.clone(), present: dir.is_dir(), files: 0, bytes: 0, links };
-            // A failed import still records the files it moved.
-            record.dirs.push(ImportedDir { dir: dir.clone(), files: Vec::new() });
-            for (path, relative) in files {
-                let (sha256, size, new) = if apply {
-                    move_in(store, &path)?
-                } else {
-                    let (sha256, size) = hash_file(&path)?;
-                    let new = seen.insert(sha256.clone()) && !store.object(&sha256).is_file();
-                    (sha256, size, new)
-                };
-                if new {
-                    plan.new_bytes += size;
-                }
-                dir_plan.files += 1;
-                dir_plan.bytes += size;
-                if apply {
-                    let imported = &mut record.dirs.last_mut().expect("pushed above").files;
-                    imported.push(ImportedFile { path: relative, size, sha256 });
-                }
-            }
-            plan.bytes += dir_plan.bytes;
-            plan.dirs.push(dir_plan);
-            if apply {
-                remove_except(dir, &store_root)?;
+    for dir in dirs {
+        let (dir_plan, files) = scan(dir, &store_root)?;
+        for (path, _) in files {
+            let (sha256, size) = hash_file(&path)?;
+            if seen.insert(sha256.clone()) && !store.object(&sha256).is_file() {
+                plan.new_bytes += size;
             }
         }
-        Ok(())
-    })();
-    if apply && record.dirs.iter().any(|dir| !dir.files.is_empty()) {
-        let name = record.imported.replace([':', '-'], "");
-        write_record(&store.root().join("imports").join(format!("{name}.json")), &record)?;
+        plan.bytes += dir_plan.bytes;
+        plan.dirs.push(dir_plan);
     }
-    result.map(|()| plan)
+    Ok(plan)
 }
 
-/// Move `file` to a part file in the store, hash it there, and make it an object; `true` when the
-/// object is new. The digest is of the bytes in the store, so a file that changes during the import
-/// is still whole.
-fn move_in(store: &Store, file: &Path) -> Result<(String, u64, bool), String> {
+/// Move every regular file of `dirs` into the store, add a line for it to the import record, and
+/// then delete the directories that are empty. One import runs at a time; a run that stopped
+/// keeps its record, and the next run imports the rest.
+pub fn apply(store: &Store, dirs: &[PathBuf]) -> Result<Plan, String> {
+    let store_root = store_root(store)?;
+    let _alone = store.lock("import")?;
+    let _using = store.using()?;
+    clean_partials(store)?;
+    let name = date::timestamp(date::now()).replace([':', '-'], "");
+    let mut record: Option<File> = None;
+    let mut plan = Plan::default();
+    for dir in dirs {
+        let (mut dir_plan, files) = scan(dir, &store_root)?;
+        dir_plan.bytes = 0;
+        for (path, relative) in files {
+            let Some((sha256, size, new)) = move_in(store, &store_root, &path)? else {
+                dir_plan.files -= 1;
+                dir_plan.left.push(path);
+                continue;
+            };
+            let record = match &mut record {
+                Some(record) => record,
+                None => record.insert(open_record(store, &name)?),
+            };
+            let line = ImportedFile { dir: dir_plan.dir.clone(), path: relative, size, sha256 };
+            let mut text = serde_json::to_string(&line).map_err(|e| e.to_string())?;
+            text.push('\n');
+            record.write_all(text.as_bytes()).and_then(|()| record.sync_data()).map_err(|e| e.to_string())?;
+            dir_plan.bytes += size;
+            plan.new_bytes += if new { size } else { 0 };
+        }
+        if dir_plan.present {
+            remove_empty(&dir_plan.dir, &store_root)?;
+        }
+        plan.bytes += dir_plan.bytes;
+        plan.dirs.push(dir_plan);
+    }
+    Ok(plan)
+}
+
+/// The store root, which exists after this, without symbolic links.
+fn store_root(store: &Store) -> Result<PathBuf, String> {
+    let root = store.root();
+    fs::create_dir_all(root).map_err(|e| format!("{}: {e}", root.display()))?;
+    fs::canonicalize(root).map_err(|e| format!("{}: {e}", root.display()))
+}
+
+fn open_record(store: &Store, name: &str) -> Result<File, String> {
+    let path = store.root().join("imports").join(format!("{name}.jsonl"));
+    create_parent(&path)?;
+    OpenOptions::new().create(true).append(true).open(&path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Delete the copies that an import on another file system left when it stopped.
+fn clean_partials(store: &Store) -> Result<(), String> {
+    let dir = store.partial("");
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with("import-") {
+            fs::remove_file(entry.path()).map_err(|e| format!("{}: {e}", entry.path().display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// The size and the modification time: a file that a process still writes changes them.
+fn stat(path: &Path) -> Result<(u64, SystemTime), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok((metadata.len(), metadata.modified().map_err(|e| format!("{}: {e}", path.display()))?))
+}
+
+/// Make `file` an object: its SHA-256, its size, and `true` when the object is new. `None` when
+/// the file changed while it was read; it then stays where it is.
+///
+/// On the file system of the store the file is hashed where it is and renamed into the objects,
+/// so no byte is copied. On another file system it is copied into `partial/`, and the copy is
+/// hashed. A process that still writes the file after the last check can change an object, so
+/// the bakes, the planner and every fetch stop before an import.
+fn move_in(store: &Store, store_root: &Path, file: &Path) -> Result<Option<(String, u64, bool)>, String> {
+    let before = stat(file)?;
+    if same_file_system(file, store_root)? {
+        let (sha256, size) = hash_file(file)?;
+        if stat(file)? != before {
+            return Ok(None);
+        }
+        let object = store.object(&sha256);
+        if object.is_file() {
+            fs::remove_file(file).map_err(|e| format!("{}: {e}", file.display()))?;
+            return Ok(Some((sha256, size, false)));
+        }
+        create_parent(&object)?;
+        fs::rename(file, &object).map_err(|e| format!("{} -> {}: {e}", file.display(), object.display()))?;
+        if stat(&object)? != before {
+            fs::rename(&object, file).map_err(|e| format!("{} -> {}: {e}", object.display(), file.display()))?;
+            return Ok(None);
+        }
+        let mut permissions = fs::metadata(&object).map_err(|e| format!("{}: {e}", object.display()))?.permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&object, permissions).map_err(|e| format!("{}: {e}", object.display()))?;
+        return Ok(Some((sha256, size, true)));
+    }
     let part = store.partial(&format!("import-{}", std::process::id()));
-    super::create_parent(&part)?;
-    if let Err(error) = fs::rename(file, &part) {
-        // Another file system: copy, then delete the original.
-        fs::copy(file, &part).map_err(|e| format!("{}: {error}; copy: {e}", file.display()))?;
-        fs::remove_file(file).map_err(|e| format!("{}: {e}", file.display()))?;
-    }
+    create_parent(&part)?;
+    fs::copy(file, &part).map_err(|e| format!("{} -> {}: {e}", file.display(), part.display()))?;
     let (sha256, size) = hash_file(&part)?;
-    let existed = store.object(&sha256).is_file();
+    if stat(file)? != before || size != before.0 {
+        let _ = fs::remove_file(&part);
+        return Ok(None);
+    }
+    let new = !store.object(&sha256).is_file();
     store.insert(&part, &sha256)?;
-    Ok((sha256, size, !existed))
+    fs::remove_file(file).map_err(|e| format!("{}: {e}", file.display()))?;
+    Ok(Some((sha256, size, new)))
 }
 
-/// The regular files below `dir` with their paths relative to it, sorted, and the number of
-/// symbolic links. The store and everything below it are skipped.
-fn walk(dir: &Path, store_root: &Path) -> Result<(Vec<(PathBuf, String)>, u64), String> {
+#[cfg(unix)]
+fn same_file_system(file: &Path, store_root: &Path) -> Result<bool, String> {
+    use std::os::unix::fs::MetadataExt;
+    let device = |path: &Path| fs::metadata(path).map(|m| m.dev()).map_err(|e| format!("{}: {e}", path.display()));
+    Ok(device(file)? == device(store_root)?)
+}
+
+#[cfg(not(unix))]
+fn same_file_system(_: &Path, _: &Path) -> Result<bool, String> {
+    Ok(false)
+}
+
+/// The directory without symbolic links, its regular files with their paths below it, sorted,
+/// and what an import leaves in it. The store and everything below it are skipped; a directory
+/// inside the store is refused.
+fn scan(dir: &Path, store_root: &Path) -> Result<(DirPlan, Vec<(PathBuf, String)>), String> {
+    let dir = match fs::canonicalize(dir) {
+        Ok(dir) => dir,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            let plan = DirPlan { dir: dir.to_path_buf(), present: false, files: 0, bytes: 0, left: Vec::new() };
+            return Ok((plan, Vec::new()));
+        }
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+    };
+    if dir.starts_with(store_root) {
+        return Err(format!("{} is in the store {}", dir.display(), store_root.display()));
+    }
+    let mut plan = DirPlan { dir: dir.clone(), present: true, files: 0, bytes: 0, left: Vec::new() };
     let mut files = Vec::new();
-    let mut links = 0;
-    let mut pending = vec![dir.to_path_buf()];
+    let mut pending = vec![dir.clone()];
     while let Some(current) = pending.pop() {
-        if fs::canonicalize(&current).is_ok_and(|path| path == store_root) {
+        if current == store_root {
             continue;
         }
-        let entries = match fs::read_dir(&current) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == ErrorKind::NotFound && current == dir => continue,
-            Err(e) => return Err(format!("{}: {e}", current.display())),
-        };
-        for entry in entries {
+        for entry in fs::read_dir(&current).map_err(|e| format!("{}: {e}", current.display()))? {
             let entry = entry.map_err(|e| format!("{}: {e}", current.display()))?;
             let kind = entry.file_type().map_err(|e| format!("{}: {e}", entry.path().display()))?;
             let path = entry.path();
-            if kind.is_symlink() {
-                links += 1;
-            } else if kind.is_dir() {
+            if kind.is_dir() {
                 pending.push(path);
             } else if kind.is_file() {
-                let relative = path.strip_prefix(dir).expect("below dir").components();
+                let size = entry.metadata().map_err(|e| format!("{}: {e}", path.display()))?.len();
+                let relative = path.strip_prefix(&dir).expect("below dir").components();
                 let relative = relative.map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+                plan.files += 1;
+                plan.bytes += size;
                 files.push((path, relative));
+            } else {
+                plan.left.push(path);
             }
         }
     }
     files.sort_by(|a, b| a.1.cmp(&b.1));
-    Ok((files, links))
+    plan.left.sort();
+    Ok((plan, files))
 }
 
-/// Delete `dir` and what remains in it, but not the store.
-fn remove_except(dir: &Path, store_root: &Path) -> Result<(), String> {
-    let canonical = match fs::canonicalize(dir) {
-        Ok(path) => path,
-        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(format!("{}: {e}", dir.display())),
-    };
-    if !store_root.starts_with(&canonical) {
-        return fs::remove_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()));
-    }
-    if canonical == store_root {
+/// Delete each directory below `dir`, and `dir`, that is empty now; never the store or a
+/// directory above it.
+fn remove_empty(dir: &Path, store_root: &Path) -> Result<(), String> {
+    if store_root.starts_with(dir) && store_root != dir {
+        for entry in fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?.flatten() {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) && entry.path() != store_root {
+                remove_empty(&entry.path(), store_root)?;
+            }
+        }
         return Ok(());
     }
-    for entry in fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-        let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
-        let kind = fs::symlink_metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?.file_type();
-        if kind.is_dir() {
-            remove_except(&path, store_root)?;
-        } else {
-            fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if dir == store_root {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?.flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            remove_empty(&entry.path(), store_root)?;
         }
     }
-    Ok(())
+    match fs::remove_dir(dir) {
+        Ok(()) => Ok(()),
+        // Not empty: it holds what the import left.
+        Err(_) if fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some()) => Ok(()),
+        Err(e) => Err(format!("{}: {e}", dir.display())),
+    }
 }
 
 #[cfg(test)]
@@ -208,10 +287,17 @@ mod tests {
         fs::write(path, bytes).unwrap();
     }
 
+    fn record(store: &Store) -> Vec<ImportedFile> {
+        let records: Vec<_> = fs::read_dir(store.root().join("imports")).unwrap().flatten().collect();
+        assert_eq!(records.len(), 1);
+        let text = fs::read_to_string(records[0].path()).unwrap();
+        text.lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+    }
+
     #[test]
     fn an_import_moves_each_content_once_and_keeps_the_store() {
         let scratch = Scratch::new("import");
-        let home = &scratch.0;
+        let home = fs::canonicalize(&scratch.0).unwrap();
         // The store lives in one of the old directories, and already has one content.
         let store = Store::at(home.join(".cache/openbikecomputer/store"));
         let stored = store.partial("stored");
@@ -223,7 +309,7 @@ mod tests {
         write(&home.join("obc-bake/cells/1.obcm"), b"cell");
         #[cfg(unix)]
         std::os::unix::fs::symlink(home.join("obc-bake/cells/1.obcm"), home.join("obc-bake/latest")).unwrap();
-        let dirs = old_dirs(home);
+        let dirs = old_dirs(&home);
 
         let plan = plan(&store, &dirs).unwrap();
         assert_eq!(plan.dirs.iter().map(|dir| dir.files).collect::<Vec<_>>(), [1, 1, 1, 1, 0]);
@@ -240,18 +326,45 @@ mod tests {
         for bytes in [&b"monaco"[..], b"cell", b"in the store"] {
             assert!(store.object(&sha256_hex(bytes)).is_file());
         }
-        for dir in [".cache/obcm", ".cache/obc/planner", "obc-bake"] {
+        for dir in [".cache/obcm", ".cache/obc/planner"] {
             assert!(!home.join(dir).exists(), "{dir} is deleted");
+        }
+        #[cfg(unix)]
+        {
+            assert_eq!(applied.dirs[3].left, [home.join("obc-bake/latest")], "an import deletes only what it moved");
+            assert!(fs::symlink_metadata(home.join("obc-bake/latest")).is_ok());
+            assert!(!home.join("obc-bake/cells").exists(), "an empty directory is deleted");
         }
         assert!(!home.join(".cache/openbikecomputer/fixtures").exists());
         assert!(store.root().join("objects").is_dir(), "the store stays");
-        let records: Vec<_> = fs::read_dir(store.root().join("imports")).unwrap().flatten().collect();
-        assert_eq!(records.len(), 1);
-        let record: ImportRecord = serde_json::from_slice(&fs::read(records[0].path()).unwrap()).unwrap();
-        let bake = record.dirs.iter().find(|dir| dir.dir == home.join("obc-bake")).unwrap();
-        assert_eq!(bake.files, [ImportedFile { path: "cells/1.obcm".into(), size: 4, sha256: sha256_hex(b"cell") }]);
+        let cell = ImportedFile {
+            dir: home.join("obc-bake"),
+            path: "cells/1.obcm".into(),
+            size: 4,
+            sha256: sha256_hex(b"cell"),
+        };
+        assert!(record(&store).contains(&cell));
 
         let again = super::plan(&store, &dirs).unwrap();
         assert_eq!((again.bytes, again.new_bytes), (0, 0), "the store is not imported into itself");
+    }
+
+    /// A home behind a symbolic link, and a store that does not exist yet: the store is still
+    /// found inside the old directory and stays.
+    #[cfg(unix)]
+    #[test]
+    fn a_store_behind_a_symbolic_link_stays() {
+        let scratch = Scratch::new("import-link");
+        let real = scratch.0.join("real");
+        let home = scratch.0.join("home");
+        fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &home).unwrap();
+        write(&home.join(".cache/openbikecomputer/fixtures/a.tar.gz"), b"fixture");
+        let store = Store::at(home.join(".cache/openbikecomputer/store"));
+
+        apply(&store, &old_dirs(&home)).unwrap();
+        assert!(store.object(&sha256_hex(b"fixture")).is_file());
+        assert_eq!(record(&store).len(), 1);
+        assert!(!real.join(".cache/openbikecomputer/fixtures").exists());
     }
 }

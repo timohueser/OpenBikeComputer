@@ -25,6 +25,7 @@ pub struct Request<'a> {
 /// holds the requested files, in the order of the request. A request with `params` is recorded,
 /// so a step input with the same params knows its files without the network.
 pub fn fetch(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
+    let _using = store.using()?;
     let snapshot = fetch_files(store, http, request)?;
     if !request.params.is_empty() {
         let files = snapshot.files.iter().map(|file| file.name.clone()).collect();

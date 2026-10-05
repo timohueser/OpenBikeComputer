@@ -151,6 +151,7 @@ impl Run {
     /// finish. A later run reuses every layer that this one built.
     pub fn build(&mut self, context: &Context, steps: &[Step], plan: &Plan) -> Result<Vec<Built>, String> {
         let Context { store, root, limits, .. } = *context;
+        let _using = store.using()?;
         if limits.jobs == 0 {
             return Err("the limit of jobs is 0; it must be 1 or more".into());
         }
