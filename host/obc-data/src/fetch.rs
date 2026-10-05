@@ -705,6 +705,44 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn a_conflict_in_one_record_of_a_capture_writes_none() {
+        let scratch = Scratch::new("capture-conflict");
+        let store = Store::at(&scratch.0);
+        let land = located(FetchKind::Capture, "https://example.org/land");
+        let mut sea = land.clone();
+        (sea.id, sea.fetch.url) = ("sea".into(), Some("https://example.org/sea".into()));
+        let version = date::format(date::today());
+        let url = "https://example.org/sea#q=1/recipe.json".to_string();
+        let old = FileRecord {
+            name: "#q=1/recipe.json".into(),
+            url,
+            size: 1,
+            sha256: sha256_hex(b"other"),
+            retrieved: date::timestamp(date::now()),
+        };
+        let held = Snapshot { source: "sea".into(), version: version.clone(), files: vec![old] };
+        store.put_snapshot(&held).unwrap();
+        let today = Request { source: &land, version: None, params: vec![] };
+        let err = capture::capture(
+            &store,
+            &today,
+            "q=1",
+            &[&land, &sea],
+            |_| &[0, 1],
+            |_, out| {
+                let mut command = std::process::Command::new("sh");
+                command.args(["-c", "echo r > \"$1/recipe.json\"", "sh"]).arg(out);
+                command
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("sea@"), "{err}");
+        assert_eq!(store.snapshot("land", &version).unwrap(), None);
+        assert_eq!(store.snapshot("sea", &version).unwrap(), Some(held));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_capture_is_split_into_records_and_another_day_comes_only_from_the_store() {
         let scratch = Scratch::new("capture");
         let store = Store::at(&scratch.0);

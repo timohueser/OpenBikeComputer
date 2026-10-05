@@ -92,9 +92,11 @@ fn landmarks(store: &Store, request: &Request, root: &Path) -> Result<Snapshot, 
     let absolute = |path: &str| std::path::absolute(path).map_err(|e| format!("{path}: {e}"));
     let (boundary, candidates, compiler) = (absolute(boundary)?, absolute(candidates)?, absolute(compiler)?);
     let policy = root.join("host/obc-pack/src/landmarks/policy.json");
-    // The files of the tool's own recipe: it refuses another of them in the same directory.
+    // The inputs of the tool's own recipe, and the tool, whose constants are in it too: it refuses
+    // another recipe in the same directory.
+    let tool = root.join("tools/landmark_capture.py");
     let mut digests = String::new();
-    for file in [&boundary, &candidates, &policy, &root.join("specs/content-languages.json")] {
+    for file in [&boundary, &candidates, &policy, &root.join("specs/content-languages.json"), &tool] {
         digests += &store::hash_file(file)?.0;
     }
     let query = format!("recipe={}", &store::sha256_hex(digests.as_bytes())[..16]);
@@ -104,7 +106,7 @@ fn landmarks(store: &Store, request: &Request, root: &Path) -> Result<Snapshot, 
     capture(store, request, &query, &owners, landmark_owners, |_, out| {
         // The capture needs no package beyond the standard library.
         let mut command = python(root, None);
-        command.arg("tools/landmark_capture.py");
+        command.arg(&tool);
         command.arg("--boundary").arg(&boundary).arg("--candidates").arg(&candidates).arg("--policy").arg(&policy);
         // A failed run keeps its directory, and each run asks once more for what failed before.
         command.arg("--select-with").arg(&compiler).arg("--retry-failed").arg("--out").arg(out);

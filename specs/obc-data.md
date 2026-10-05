@@ -225,7 +225,7 @@ each once, and no other. A `capture` source without a row has no fetcher yet; th
 | `dtm-*` | `bbox` | `host/obc-dem/reference/ingest.py fetch` | `tools/requirements-bake.txt` | `bbox=W,S,E,N` |
 | `modis-snow`, `hr-wsi` | `bbox`, `seasons=FIRST-LAST` | `tools/planner_snow.py --fetch` | `tools/requirements-planner-snow.txt` | `bbox=W,S,E,N&seasons=FIRST-LAST` |
 | `era5-land` | `bbox`, `first-year` | `tools/planner_climate.py --fetch` | `tools/requirements-planner-climate.txt` | `bbox=W,S,E,N&first-year=YEAR` |
-| `wikidata`, `wikipedia`, `commons` | `boundary`, `candidates`, `select-with` | `tools/landmark_capture.py --retry-failed` | none (`python3`) | `recipe=` and 16 hex digits of the SHA-256 of the joined hex SHA-256 of the boundary, the candidates, `host/obc-pack/src/landmarks/policy.json` and `specs/content-languages.json` |
+| `wikidata`, `wikipedia`, `commons` | `boundary`, `candidates`, `select-with` | `tools/landmark_capture.py --retry-failed` | none (`python3`) | `recipe=` and 16 hex digits of the SHA-256 of the joined hex SHA-256 of the boundary, the candidates, `host/obc-pack/src/landmarks/policy.json`, `specs/content-languages.json` and `tools/landmark_capture.py` |
 
 - `bbox` is `WEST,SOUTH,EAST,NORTH` in degrees.
 - A snow file is the window of one source raster that covers `bbox`, one pixel wider on each
