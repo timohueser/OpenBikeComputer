@@ -38,6 +38,8 @@ const _: () = assert!(MAX_ROUTE_CHUNKS < u16::MAX as usize);
 /// Max points a single chunk may hold (bounds the per-chunk decode buffer).
 pub const MAX_POINTS_PER_CHUNK: usize = 256;
 
+type CoordinateVisitor<'a> = dyn FnMut(&[(i32, i32)]) + 'a;
+
 /// Position in microdegrees, elevation in meters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RoutePoint {
@@ -571,9 +573,13 @@ impl<'a> RouteReader<'a> {
     /// Stream only the polyline stretch in the inclusive interval `[start_m, end_m]`. Each
     /// callback slice is one clipped chunk, its first and last coordinates interpolated at the
     /// boundary. A chunk that fails to decode is skipped.
-    // Out of line, so only this coordinate scratch, not a chunk's records, is live under `visit`.
-    #[inline(never)]
     pub fn visit_points_between(&self, start_m: u32, end_m: u32, mut visit: impl FnMut(&[(i32, i32)])) {
+        self.walk_points_between(start_m, end_m, &mut visit);
+    }
+
+    // This shared frame keeps only coordinate scratch live under the caller's walk.
+    #[inline(never)]
+    fn walk_points_between(&self, start_m: u32, end_m: u32, visit: &mut CoordinateVisitor<'_>) {
         let lo = start_m.min(self.total_distance_m);
         let hi = end_m.min(self.total_distance_m);
         if lo >= hi {
