@@ -1,5 +1,5 @@
-//! The code hash of a step: the digest of the files it declares, and of the crates it declares
-//! with their path dependencies.
+//! The code of a step: the files it declares, and the files of the crates it declares with their
+//! path dependencies. The code hash is their digest.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
@@ -8,10 +8,11 @@ use std::process::Command;
 
 use serde::Deserialize;
 
-use super::{digest, Code};
+use super::Code;
 use crate::store::hash_file;
 
-pub fn hash(root: &Path, code: &Code) -> Result<String, String> {
+/// The code files: path relative to `root`, with `/`, to SHA-256.
+pub fn files(root: &Path, code: &Code) -> Result<BTreeMap<String, String>, String> {
     let root = root.canonicalize().map_err(|e| format!("{}: {e}", root.display()))?;
     let mut pathspecs = Vec::new();
     for path in &code.paths {
@@ -48,7 +49,11 @@ pub fn hash(root: &Path, code: &Code) -> Result<String, String> {
         let relative = relative.to_str().ok_or_else(|| format!("{} is not UTF-8", relative.display()))?;
         hashes.insert(relative.replace('\\', "/"), hash_file(&file)?.0);
     }
-    Ok(digest(hashes.iter().map(|(path, sha256)| (path.as_str(), sha256.as_str()))))
+    Ok(hashes)
+}
+
+pub fn hash(files: &BTreeMap<String, String>) -> String {
+    super::digest(files.iter().map(|(path, sha256)| (path.as_str(), sha256.as_str())))
 }
 
 fn is_rust(file: &Path) -> bool {

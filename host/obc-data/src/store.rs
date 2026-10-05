@@ -1,8 +1,9 @@
 //! The local store: read-only objects named by their SHA-256, the snapshot records that say
-//! which objects are which source version, and the receipts that say which objects are which
-//! layer. `specs/obc-data.md` describes the layout.
+//! which objects are which source version, the receipts that say which objects are which layer,
+//! and the events of each run. `specs/obc-data.md` describes the layout.
 
-use std::fs::{self, File, OpenOptions};
+use std::collections::BTreeMap;
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -93,14 +94,28 @@ impl Store {
 
     /// Wait for the lock of `key`, and hold it until the guard drops.
     pub fn lock(&self, key: &str) -> Result<Lock, String> {
+        let (file, path) = self.lock_file(key)?;
+        file.lock().map_err(|e| format!("lock {}: {e}", path.display()))?;
+        Ok(Lock(file))
+    }
+
+    /// The lock of `key`, or `None` when another holds it.
+    pub fn try_lock(&self, key: &str) -> Result<Option<Lock>, String> {
+        let (file, path) = self.lock_file(key)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(Lock(file))),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(e)) => Err(format!("lock {}: {e}", path.display())),
+        }
+    }
+
+    fn lock_file(&self, key: &str) -> Result<(File, PathBuf), String> {
         let name: String =
             key.chars().map(|c| if c.is_ascii_alphanumeric() || "@.-".contains(c) { c } else { '_' }).collect();
         let path = self.root.join("locks").join(format!("{name}.lock"));
         create_parent(&path)?;
         let file = OpenOptions::new().create(true).truncate(false).write(true).open(&path);
-        let file = file.map_err(|e| format!("{}: {e}", path.display()))?;
-        file.lock().map_err(|e| format!("lock {}: {e}", path.display()))?;
-        Ok(Lock(file))
+        Ok((file.map_err(|e| format!("{}: {e}", path.display()))?, path))
     }
 
     fn snapshot_path(&self, source: &str, version: &str) -> PathBuf {
@@ -115,6 +130,11 @@ impl Store {
         write_record(&self.snapshot_path(&snapshot.source, &snapshot.version), snapshot)
     }
 
+    /// Every snapshot of `source` in the store.
+    pub fn snapshots(&self, source: &str) -> Result<Vec<Snapshot>, String> {
+        read_records(&self.root.join("snapshots").join(source))
+    }
+
     fn layer_path(&self, key: &str) -> PathBuf {
         self.root.join("layers").join(format!("{key}.json"))
     }
@@ -127,6 +147,33 @@ impl Store {
     pub fn put_layer(&self, receipt: &Receipt) -> Result<(), String> {
         write_record(&self.layer_path(&receipt.key), receipt)
     }
+
+    /// Every receipt in the store.
+    pub fn layers(&self) -> Result<Vec<Receipt>, String> {
+        read_records(&self.root.join("layers"))
+    }
+
+    fn code_path(&self, hash: &str) -> PathBuf {
+        self.root.join("code").join(format!("{hash}.json"))
+    }
+
+    /// The code files of a code hash: path to SHA-256.
+    pub fn code(&self, hash: &str) -> Result<Option<BTreeMap<String, String>>, String> {
+        read_record(&self.code_path(hash))
+    }
+
+    pub fn put_code(&self, hash: &str, files: &BTreeMap<String, String>) -> Result<(), String> {
+        let path = self.code_path(hash);
+        if path.is_file() {
+            return Ok(());
+        }
+        write_record(&path, files)
+    }
+
+    /// The events of a run, one JSON object per line.
+    pub fn run(&self, id: &str) -> PathBuf {
+        self.root.join("runs").join(format!("{id}.jsonl"))
+    }
 }
 
 fn read_record<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
@@ -135,6 +182,23 @@ fn read_record<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("{}: {e}", path.display())),
     }
+}
+
+/// The records in `dir`, or none when it does not exist.
+fn read_records<T: DeserializeOwned>(dir: &Path) -> Result<Vec<T>, String> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+    };
+    let mut records = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
+        if path.extension() == Some("json".as_ref()) {
+            records.extend(read_record(&path)?);
+        }
+    }
+    Ok(records)
 }
 
 fn write_record(path: &Path, record: &impl Serialize) -> Result<(), String> {

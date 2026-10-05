@@ -298,11 +298,15 @@ impl Registry {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
+/// The state of a source or a layer. A source is only ok, stale or blocked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum State {
     Ok,
     Stale,
+    CodeChanged,
+    InputChanged,
+    NotApplied,
     Blocked,
 }
 
@@ -311,6 +315,9 @@ impl std::fmt::Display for State {
         f.write_str(match self {
             State::Ok => "ok",
             State::Stale => "stale",
+            State::CodeChanged => "code changed",
+            State::InputChanged => "input changed",
+            State::NotApplied => "not applied",
             State::Blocked => "blocked",
         })
     }

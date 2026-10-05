@@ -1,8 +1,13 @@
 //! The engine: it builds each layer from snapshots, other layers and options, and reuses a layer
-//! whose key the store has. `specs/obc-data.md` describes steps, keys and receipts.
+//! whose key the store has. A plan says what a run would fetch and build, a run builds it, and
+//! the state of each layer is computed when asked. `specs/obc-data.md` describes steps, keys,
+//! receipts, plans, runs and states.
 
 mod code;
+pub mod plan;
 mod process;
+pub mod runs;
+pub mod state;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -12,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::date;
-use crate::store::{hash_file, sha256_hex, Store};
+use crate::store::{hash_file, sha256_hex, FileRecord, Snapshot, Store};
 
 /// What a step reads, the code that makes its layer, and how it runs.
 pub struct Step {
@@ -40,7 +45,8 @@ pub enum Input {
 
 /// The code that makes a layer. When in doubt, declare more: too much costs a rebuild, too little
 /// gives stale data.
-#[derive(Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Code {
     /// Files and directories, relative to the repository root.
     pub paths: Vec<String>,
@@ -121,24 +127,10 @@ pub struct LayerFile {
     pub sha256: String,
 }
 
+#[derive(Debug)]
 pub struct Built {
     pub receipt: Receipt,
     pub reused: bool,
-}
-
-/// Build `steps` in dependency order, and reuse each layer whose key the store has. `root` is the
-/// repository root: code paths are relative to it, and a command starts in it.
-pub fn build(store: &Store, root: &Path, steps: &[Step]) -> Result<Vec<Built>, String> {
-    let mut done: HashMap<&str, Receipt> = HashMap::new();
-    let mut code_hashes = HashMap::new();
-    let mut built = Vec::new();
-    for step in order(steps)? {
-        let result =
-            build_step(store, root, step, &done, &mut code_hashes).map_err(|e| format!("step `{}`: {e}", step.name))?;
-        done.insert(&step.name, result.receipt.clone());
-        built.push(result);
-    }
-    Ok(built)
 }
 
 /// The SHA-256 of the lines that `sha256sum` writes for these files: `<sha256>  <name>`, sorted
@@ -221,15 +213,51 @@ impl Step {
             Input::Snapshot { .. } => None,
         })
     }
+
+    fn command(&self) -> Option<Vec<String>> {
+        match &self.run {
+            Run::Rust(_) => None,
+            Run::Command(argv) => Some(argv.clone()),
+        }
+    }
+
+    fn sorted_outputs(&self) -> Vec<String> {
+        let mut outputs = self.outputs.clone();
+        outputs.sort();
+        outputs
+    }
 }
 
-fn build_step<'a>(
+/// The code hash and the code files of each `Code`, computed once per value.
+#[derive(Default)]
+struct Codes<'a>(HashMap<&'a Code, (String, BTreeMap<String, String>)>);
+
+impl<'a> Codes<'a> {
+    fn get(&mut self, root: &Path, code: &'a Code) -> Result<&(String, BTreeMap<String, String>), String> {
+        if !self.0.contains_key(code) {
+            let files = code::files(root, code)?;
+            self.0.insert(code, (code::hash(&files), files));
+        }
+        Ok(&self.0[code])
+    }
+}
+
+/// The files of `snapshot` that `selected` names, or all of them when it names none, and the
+/// selected names that the snapshot lacks.
+fn select<'a>(snapshot: &'a Snapshot, selected: &'a [String]) -> (Vec<&'a FileRecord>, Vec<&'a str>) {
+    let files = snapshot.files.iter().filter(|file| selected.is_empty() || selected.contains(&file.name)).collect();
+    let missing = selected.iter().filter(|name| !snapshot.files.iter().any(|file| &file.name == *name));
+    (files, missing.map(String::as_str).collect())
+}
+
+/// The receipt of `step` before it runs, with its key, and its request. `layers` holds the
+/// receipts of the layers it reads; `code` is its code hash.
+fn prepare(
     store: &Store,
-    root: &Path,
-    step: &'a Step,
-    done: &HashMap<&str, Receipt>,
-    code_hashes: &mut HashMap<&'a Code, String>,
-) -> Result<Built, String> {
+    step: &Step,
+    layers: &HashMap<&str, Receipt>,
+    code: &str,
+) -> Result<(Receipt, Request), String> {
     if !step.options.is_object() {
         return Err("the options are not a JSON object".into());
     }
@@ -249,19 +277,15 @@ fn build_step<'a>(
                 let snapshot = store
                     .snapshot(source, version)?
                     .ok_or_else(|| format!("the store has no snapshot {source}@{version}; fetch it first"))?;
-                let files: Vec<_> = snapshot
-                    .files
-                    .into_iter()
-                    .filter(|file| selected.is_empty() || selected.contains(&file.name))
-                    .map(|file| (file.name, file.sha256, file.size))
-                    .collect();
-                if let Some(missing) = selected.iter().find(|name| !files.iter().any(|file| &file.0 == *name)) {
+                let (files, missing) = select(&snapshot, selected);
+                if let Some(missing) = missing.first() {
                     return Err(format!("snapshot {source}@{version} has no file {missing}; fetch it first"));
                 }
-                (InputKind::Snapshot, source, files)
+                let files = files.into_iter().map(|file| (file.name.clone(), file.sha256.clone(), file.size));
+                (InputKind::Snapshot, source, files.collect())
             }
             Input::Layer(name) => {
-                let files = done[name.as_str()].files.iter();
+                let files = layers[name.as_str()].files.iter();
                 (
                     InputKind::Layer,
                     name,
@@ -308,23 +332,14 @@ fn build_step<'a>(
         }
         Run::Rust(_) => {}
     }
-    let mut outputs = step.outputs.clone();
-    outputs.sort();
-    if !code_hashes.contains_key(&step.code) {
-        code_hashes.insert(&step.code, code::hash(root, &step.code)?);
-    }
-
     let mut receipt = Receipt {
         step: step.name.clone(),
         key: String::new(),
         inputs,
         options: step.options.clone(),
-        code: code_hashes[&step.code].clone(),
-        command: match &step.run {
-            Run::Rust(_) => None,
-            Run::Command(argv) => Some(argv.clone()),
-        },
-        outputs,
+        code: code.to_string(),
+        command: step.command(),
+        outputs: step.sorted_outputs(),
         digest: String::new(),
         files: Vec::new(),
         built: String::new(),
@@ -336,19 +351,32 @@ fn build_step<'a>(
         metrics: BTreeMap::new(),
     };
     receipt.key = key(&receipt);
+    Ok((receipt, request))
+}
 
+/// The receipt of the layer with `key` when the store has it and all of its objects.
+fn reusable(store: &Store, key: &str) -> Result<Option<Receipt>, String> {
+    let stored = store.layer(key)?;
+    Ok(stored.filter(|receipt| receipt.files.iter().all(|file| store.object(&file.sha256).is_file())))
+}
+
+/// Reuse the layer of the prepared key, or run the step and record its layer.
+fn build_step(
+    store: &Store,
+    root: &Path,
+    step: &Step,
+    mut receipt: Receipt,
+    mut request: Request,
+) -> Result<Built, String> {
     let _lock = store.lock(&format!("layer-{}", receipt.key))?;
-    if let Some(stored) = store.layer(&receipt.key)? {
-        if stored.files.iter().all(|file| store.object(&file.sha256).is_file()) {
-            return Ok(Built { receipt: stored, reused: true });
-        }
+    if let Some(stored) = reusable(store, &receipt.key)? {
+        return Ok(Built { receipt: stored, reused: true });
     }
-
     let work = store.partial(&format!("layer-{}", receipt.key));
     request.output = work.join("output");
     request.metrics = work.join("metrics.json");
     remove_dir(&work)?;
-    let result = run(store, root, step, &request, &mut receipt);
+    let result = execute(store, root, step, &request, &mut receipt);
     let removed = remove_dir(&work);
     result?;
     removed?;
@@ -357,7 +385,7 @@ fn build_step<'a>(
 }
 
 /// Run the step, move its files into the objects, and record them, its metrics and its cost.
-fn run(store: &Store, root: &Path, step: &Step, request: &Request, receipt: &mut Receipt) -> Result<(), String> {
+fn execute(store: &Store, root: &Path, step: &Step, request: &Request, receipt: &mut Receipt) -> Result<(), String> {
     fs::create_dir_all(&request.output).map_err(|e| format!("{}: {e}", request.output.display()))?;
     let usage = match &step.run {
         Run::Rust(function) => process::in_process(|| function(request)),
@@ -438,14 +466,14 @@ fn remove_dir(dir: &Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::store::tests::Scratch;
-    use crate::store::{write_atomic, FileRecord, Snapshot};
+    use crate::store::write_atomic;
     use serde_json::json;
     use std::process::Command;
 
-    const JOIN: &str = "import json, os, sys
+    pub(crate) const JOIN: &str = "import json, os, sys
 request = json.load(sys.stdin)
 upper = open(request['layers']['test/upper']['upper.txt']).read()
 tail = open(request['snapshots']['tail']['tail.txt']).read()
@@ -453,31 +481,52 @@ open(os.path.join(request['output'], 'joined.txt'), 'w').write(upper + tail)
 json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
 ";
 
-    struct Fixture {
-        scratch: Scratch,
-        store: Store,
+    pub(crate) struct Fixture {
+        pub(crate) scratch: Scratch,
+        pub(crate) store: Store,
     }
 
     impl Fixture {
-        fn root(&self) -> PathBuf {
+        pub(crate) fn root(&self) -> PathBuf {
             self.scratch.0.join("repository")
         }
 
-        fn build(&self, steps: &[Step]) -> Result<Vec<Built>, String> {
-            build(&self.store, &self.root(), steps)
+        pub(crate) fn plan(&self, steps: &[Step]) -> Result<plan::Plan, String> {
+            plan::plan(&self.store, &self.root(), steps)
+        }
+
+        /// Plan `steps`, and run the plan.
+        pub(crate) fn build(&self, steps: &[Step]) -> Result<Vec<Built>, String> {
+            self.run(steps, &self.plan(steps)?, runs::Limits::machine())
+        }
+
+        pub(crate) fn run(
+            &self,
+            steps: &[Step],
+            plan: &plan::Plan,
+            limits: runs::Limits,
+        ) -> Result<Vec<Built>, String> {
+            let mut run = runs::Run::create(&self.store, "build test")?;
+            let built = run.build(&self.store, &self.root(), steps, plan, limits);
+            run.finish(built.as_ref().err().map(String::as_str))?;
+            built
         }
 
         /// Add a file to the record of `source@1`.
-        fn fetched(&self, source: &str, name: &str, bytes: &[u8]) {
+        pub(crate) fn fetched(&self, source: &str, name: &str, bytes: &[u8]) {
+            self.fetched_version(source, "1", name, bytes);
+        }
+
+        pub(crate) fn fetched_version(&self, source: &str, version: &str, name: &str, bytes: &[u8]) {
             let file = self.store.partial(name);
             write_atomic(&file, bytes).unwrap();
             let sha256 = sha256_hex(bytes);
             self.store.insert(&file, &sha256).unwrap();
             let url = format!("https://example.org/{name}");
             let retrieved = "2026-10-05T00:00:00Z".into();
-            let mut snapshot = self.store.snapshot(source, "1").unwrap().unwrap_or_else(|| Snapshot {
+            let mut snapshot = self.store.snapshot(source, version).unwrap().unwrap_or_else(|| Snapshot {
                 source: source.into(),
-                version: "1".into(),
+                version: version.into(),
                 files: Vec::new(),
             });
             snapshot.files.push(FileRecord { name: name.into(), url, size: bytes.len() as u64, sha256, retrieved });
@@ -485,7 +534,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         }
     }
 
-    fn write(path: &Path, text: &str) {
+    pub(crate) fn write(path: &Path, text: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, text).unwrap();
     }
@@ -507,7 +556,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
 
     /// A store with the snapshots `head@1` and `tail@1`, and a repository with `join.py` and the
     /// crate `steps`.
-    fn fixture(name: &str) -> Fixture {
+    pub(crate) fn fixture(name: &str) -> Fixture {
         let scratch = Scratch::new(name);
         let store = Store::at(scratch.0.join("store"));
         let fixture = Fixture { scratch, store };
@@ -518,7 +567,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         fixture
     }
 
-    fn upper(request: &Request) -> Result<(), String> {
+    pub(crate) fn upper(request: &Request) -> Result<(), String> {
         let text = fs::read_to_string(&request.snapshots["head"]["head.txt"]).map_err(|e| e.to_string())?;
         fs::write(request.output.join("upper.txt"), text.to_uppercase()).map_err(|e| e.to_string())
     }
@@ -529,44 +578,53 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         fs::write(request.output.join("count/lines.txt"), text.lines().count().to_string()).map_err(|e| e.to_string())
     }
 
-    fn step(name: &str, inputs: Vec<Input>, code: Code, output: &str, run: Run) -> Step {
+    pub(crate) fn step(name: &str, inputs: Vec<Input>, code: Code, output: &str, run: Run) -> Step {
         Step { name: name.into(), inputs, options: json!({}), code, outputs: vec![output.into()], run }
     }
 
-    fn steps_crate() -> Code {
+    pub(crate) fn steps_crate() -> Code {
         Code { paths: Vec::new(), crates: vec!["steps".into()] }
+    }
+
+    pub(crate) fn snapshot(source: &str, version: &str, files: &[&str]) -> Input {
+        Input::Snapshot {
+            source: source.into(),
+            version: version.into(),
+            files: files.iter().map(|file| file.to_string()).collect(),
+        }
     }
 
     /// Two fetched sources and three steps, the second a Python command. The last step is listed
     /// first: the engine orders them. `test/upper` selects `head.txt`; `test/join` reads every file
     /// of `tail@1`.
-    fn pipeline() -> Vec<Step> {
-        let snapshot = |source: &str, files: &[&str]| Input::Snapshot {
-            source: source.into(),
-            version: "1".into(),
-            files: files.iter().map(|file| file.to_string()).collect(),
-        };
+    pub(crate) fn pipeline() -> Vec<Step> {
         let join = Code { paths: vec!["join.py".into()], crates: Vec::new() };
         let python = Run::Command(vec!["python3".into(), "join.py".into()]);
         vec![
             step("test/count", vec![Input::Layer("test/join".into())], steps_crate(), "count", Run::Rust(count)),
             step(
                 "test/join",
-                vec![Input::Layer("test/upper".into()), snapshot("tail", &[])],
+                vec![Input::Layer("test/upper".into()), snapshot("tail", "1", &[])],
                 join,
                 "joined.txt",
                 python,
             ),
-            step("test/upper", vec![snapshot("head", &["head.txt"])], steps_crate(), "upper.txt", Run::Rust(upper)),
+            step(
+                "test/upper",
+                vec![snapshot("head", "1", &["head.txt"])],
+                steps_crate(),
+                "upper.txt",
+                Run::Rust(upper),
+            ),
         ]
     }
 
-    fn summary(built: &[Built]) -> Vec<(&str, bool)> {
+    pub(crate) fn summary(built: &[Built]) -> Vec<(&str, bool)> {
         built.iter().map(|built| (built.receipt.step.as_str(), built.reused)).collect()
     }
 
-    fn keys(built: &[Built]) -> Vec<String> {
-        built.iter().map(|built| built.receipt.key.clone()).collect()
+    fn code_hash(root: &Path, code: &Code) -> Result<String, String> {
+        code::files(root, code).map(|files| code::hash(&files))
     }
 
     #[test]
@@ -590,43 +648,39 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         }
         assert_eq!(first[2].receipt.files[0].path, "count/lines.txt");
 
-        let second = fixture.build(&pipeline()).unwrap();
-        assert_eq!(summary(&second), [("test/upper", true), ("test/join", true), ("test/count", true)]);
-        let receipts = |built: &[Built]| built.iter().map(|built| built.receipt.clone()).collect::<Vec<_>>();
-        assert_eq!(receipts(&second), receipts(&first));
+        assert_eq!(fixture.plan(&pipeline()).unwrap().groups, [], "the store has every layer");
     }
 
     #[test]
     fn a_code_change_rebuilds_its_layer_and_stops_where_the_bytes_are_the_same() {
         let fixture = fixture("engine-code");
-        let first = keys(&fixture.build(&pipeline()).unwrap());
+        let first = fixture.build(&pipeline()).unwrap();
 
         fs::write(fixture.root().join("join.py"), format!("# The same bytes.\n{JOIN}")).unwrap();
-        let built = fixture.build(&pipeline()).unwrap();
-        assert_eq!(summary(&built), [("test/upper", true), ("test/join", false), ("test/count", true)]);
-        let second = keys(&built);
-        assert_eq!((first[0] == second[0], first[1] == second[1], first[2] == second[2]), (true, false, true));
+        let second = fixture.build(&pipeline()).unwrap();
+        assert_eq!(summary(&second), [("test/join", false), ("test/count", true)]);
+        assert_ne!(second[0].receipt.key, first[1].receipt.key);
+        assert_eq!(second[1].receipt, first[2].receipt);
 
         fs::write(fixture.root().join("join.py"), JOIN.replace("upper + tail", "tail + upper")).unwrap();
-        let built = fixture.build(&pipeline()).unwrap();
-        assert_eq!(summary(&built), [("test/upper", true), ("test/join", false), ("test/count", false)]);
-        let third = keys(&built);
-        assert_eq!((second[0] == third[0], second[1] == third[1], second[2] == third[2]), (true, false, false));
+        let third = fixture.build(&pipeline()).unwrap();
+        assert_eq!(summary(&third), [("test/join", false), ("test/count", false)]);
+        assert_ne!(third[1].receipt.key, second[1].receipt.key);
     }
 
     #[test]
     fn a_snapshot_input_keys_only_the_files_it_selects() {
         let fixture = fixture("engine-select");
-        let first = keys(&fixture.build(&pipeline()).unwrap());
+        fixture.build(&pipeline()).unwrap();
         fixture.fetched("head", "other.txt", b"other\n");
-        assert_eq!(keys(&fixture.build(&pipeline()).unwrap()), first);
+        assert_eq!(fixture.plan(&pipeline()).unwrap().groups, []);
 
         fixture.fetched("tail", "other.txt", b"other\n");
         let built = fixture.build(&pipeline()).unwrap();
-        assert_eq!(summary(&built), [("test/upper", true), ("test/join", false), ("test/count", true)]);
+        assert_eq!(summary(&built), [("test/join", false), ("test/count", true)]);
 
         let mut steps = pipeline();
-        steps[2].inputs = vec![Input::Snapshot { source: "head".into(), version: "1".into(), files: vec!["x".into()] }];
+        steps[2].inputs = vec![snapshot("head", "1", &["x"])];
         let err = fixture.build(&steps).err().unwrap();
         assert!(err.contains("snapshot head@1 has no file x; fetch it first"), "{err}");
     }
@@ -645,7 +699,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             std::os::unix::fs::symlink("/etc/hostname", request.output.join("upper.txt")).map_err(|e| e.to_string())
         }
         let fixture = fixture("engine-contract");
-        let head = || vec![Input::Snapshot { source: "head".into(), version: "1".into(), files: Vec::new() }];
+        let head = || vec![snapshot("head", "1", &[])];
         let mut cases = vec![
             (Run::Rust(nothing), steps_crate(), "did not write its output upper.txt"),
             (Run::Rust(extra), steps_crate(), "wrote extra.txt, which is not one of its outputs"),
@@ -673,7 +727,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         repository(&scratch.0, &[("app", app), ("lib", ""), ("check", "")]);
         let hash = |paths: &[&str]| {
             let code = Code { paths: paths.iter().map(|path| path.to_string()).collect(), crates: vec!["app".into()] };
-            code::hash(&scratch.0, &code).unwrap()
+            code_hash(&scratch.0, &code).unwrap()
         };
         let before = hash(&[]);
         write(&scratch.0.join("check/src/lib.rs"), "pub fn helper() {}\n");
@@ -703,10 +757,10 @@ mod x;
         let scratch = Scratch::new("engine-ignored");
         let code = Code { paths: vec!["ignored.txt".into()], crates: Vec::new() };
         write(&scratch.0.join("ignored.txt"), "");
-        let err = code::hash(&scratch.0, &code).unwrap_err();
+        let err = code_hash(&scratch.0, &code).unwrap_err();
         assert!(err.contains("obc data runs in a git checkout"), "{err}");
         repository(&scratch.0, &[]);
         write(&scratch.0.join(".gitignore"), "ignored.txt\n");
-        assert_eq!(code::hash(&scratch.0, &code).unwrap_err(), "ignored.txt is ignored by git");
+        assert_eq!(code_hash(&scratch.0, &code).unwrap_err(), "ignored.txt is ignored by git");
     }
 }
