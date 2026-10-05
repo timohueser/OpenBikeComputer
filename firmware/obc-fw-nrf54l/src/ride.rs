@@ -1176,7 +1176,7 @@ pub(crate) async fn run_app(
                     }
                     // Rebuild the flat route, trip and ride identities and remap the app's held
                     // indices by durable object id.
-                    CatalogEffect::ReadCatalog { token } if app.catalog_effect_current(&effect) => {
+                    CatalogEffect::ReadCatalog { token } if app.catalog_operation_current(token) => {
                         let old_source = crate::flat_store::route_source_key();
                         let read = if crate::arena::catalog_available() {
                             app.begin_catalog_refresh();
@@ -2619,7 +2619,7 @@ pub(crate) async fn run_app(
                     .effects
                     .catalog
                     .take_if(|effect| matches!(effect, obc_app::catalog_state::CatalogEffect::ReadCatalog { .. }))
-                    .filter(|effect| app.catalog_effect_current(effect));
+                    .filter(|effect| app.catalog_operation_current(effect.token()));
                 debug_assert!(
                     !exec.effects.has_pending(),
                     "every staged effect is served in this frame's store phase before the next plan lands"

@@ -11,8 +11,8 @@ use crate::App;
 use super::connections::Connections;
 use super::derived::{DerivedInputs, DerivedNeeds, DerivedTargets};
 use super::{
-    Capabilities, DeviceFacts, EffectSlots, ExternalFacts, OutcomeSlots, PlatformSupport, SlotFull, StoreRevision,
-    TransferState, UpdateResult,
+    Capabilities, CatalogTag, DeviceFacts, EffectSlots, ExternalFacts, OperationToken, OutcomeSlots, PlatformSupport,
+    SlotFull, StoreRevision, TransferState, UpdateResult,
 };
 
 /// The pass stages, in the order [`App::run_pass`] runs them. Each runs exactly once.
@@ -486,8 +486,8 @@ impl App {
     }
 
     /// Deferred work must still name the current catalog operation before it publishes.
-    pub fn catalog_effect_current(&self, effect: &crate::catalog_state::CatalogEffect) -> bool {
-        self.catalogs.accepts(effect.token())
+    pub fn catalog_operation_current(&self, token: OperationToken<CatalogTag>) -> bool {
+        self.catalogs.accepts(token)
     }
     fn stage_catalog(&mut self, effects: &mut EffectSlots) {
         self.pass.record(PassStage::Catalog);
