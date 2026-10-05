@@ -226,10 +226,7 @@ impl ByteSink for MeasureSink<'_> {
         }
         // Each chunk repeats the last point of the chunk before it.
         match m.previous {
-            None => m.push(
-                RoutePoint { lon: anchor.0, lat: anchor.1, ele: anchor.2, surface: 0, elevation_incomplete: false },
-                &mut **elev,
-            ),
+            None => m.push(crate::walk::anchor_point(anchor.0, anchor.1, anchor.2), &mut **elev),
             Some(previous) if previous == anchor => {}
             Some(_) => return Err(Error::BadOffset),
         }

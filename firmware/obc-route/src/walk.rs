@@ -20,7 +20,7 @@ pub(crate) struct Records {
 
 impl Records {
     pub(crate) fn new() -> Self {
-        Records { anchor: chunk_anchor(&ChunkMeta::EMPTY), point_count: 0, body: [0; BODY_CAP] }
+        Records { anchor: anchor_point(0, 0, 0), point_count: 0, body: [0; BODY_CAP] }
     }
 
     /// Read chunk `m` in place of the chunk held. On an error it holds no points.
@@ -51,7 +51,12 @@ impl Records {
 
 /// A chunk's first point. The format stores no surface for it.
 pub(crate) fn chunk_anchor(m: &ChunkMeta) -> RoutePoint {
-    RoutePoint { lon: m.anchor_lon, lat: m.anchor_lat, ele: m.anchor_ele, surface: 0, elevation_incomplete: false }
+    anchor_point(m.anchor_lon, m.anchor_lat, m.anchor_ele)
+}
+
+/// A chunk's anchor as a point. The format stores no surface or flags for the anchor.
+pub(crate) fn anchor_point(lon: i32, lat: i32, ele: i16) -> RoutePoint {
+    RoutePoint { lon, lat, ele, surface: 0, elevation_incomplete: false }
 }
 
 /// Whole records whose reserved flag bits are clear.
@@ -180,8 +185,9 @@ pub(crate) fn clip(
 /// whose ends are not both known, or whose elevation is incomplete.
 pub(crate) fn interpolate_point(a: RoutePoint, b: RoutePoint, t: f32) -> RoutePoint {
     RoutePoint {
-        lon: a.lon + libm::roundf((b.lon - a.lon) as f32 * t) as i32,
-        lat: a.lat + libm::roundf((b.lat - a.lat) as f32 * t) as i32,
+        // i64: a corrupt chunk can wrap a coordinate, and the difference must not overflow.
+        lon: a.lon.wrapping_add(libm::roundf((i64::from(b.lon) - i64::from(a.lon)) as f32 * t) as i32),
+        lat: a.lat.wrapping_add(libm::roundf((i64::from(b.lat) - i64::from(a.lat)) as f32 * t) as i32),
         ele: if t <= 0.0 {
             a.ele
         } else if t >= 1.0 {

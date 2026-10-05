@@ -39,7 +39,5 @@ mod transform;
 mod trip;
 #[path = "cases/visit.rs"]
 mod visit;
-#[path = "cases/walk_timing.rs"]
-mod walk_timing;
 #[path = "cases/waypoints.rs"]
 mod waypoints;

@@ -423,7 +423,7 @@ pub fn ride_track_into<const N: usize>(
             let hr = (rec[16] != HR_NONE).then_some(rec[16]);
             let power = u16::from_le_bytes([rec[18], rec[19]]);
             series.push(facts, done + i as u32, hr, (power != PWR_NONE).then_some(power));
-            if pick.next() {
+            if pick.keep_next() {
                 let _ = preview.push(p);
             }
             if let Some(pr) = prev {

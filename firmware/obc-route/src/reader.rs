@@ -82,20 +82,6 @@ pub struct ChunkMeta {
     pub byte_len: u32,
 }
 
-impl ChunkMeta {
-    pub(crate) const EMPTY: ChunkMeta = ChunkMeta {
-        bbox: BBox { min_lon: 0, min_lat: 0, max_lon: 0, max_lat: 0 },
-        anchor_lon: 0,
-        anchor_lat: 0,
-        anchor_ele: 0,
-        point_count: 0,
-        cum_distance_m: 0,
-        cum_ascent_m: 0,
-        byte_offset: 0,
-        byte_len: 0,
-    };
-}
-
 /// The route description for the Route menu. It reads from the header alone, so a catalog scan is
 /// one small read per file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -384,7 +370,7 @@ impl RouteIndex {
     /// Total segments, seams not counted twice. The last prefix excludes the last chunk, so that
     /// chunk's own count is added.
     #[inline]
-    pub(crate) fn segment_count(&self) -> u32 {
+    pub fn segment_count(&self) -> u32 {
         match (self.cum_seg.last(), self.index.last()) {
             (Some(before_last), Some(last)) => before_last + (last.point_count as u32).saturating_sub(1),
             _ => 0,

@@ -132,7 +132,7 @@ impl Default for RouteSpec<'_> {
 }
 
 /// Serialize `spec` into an in-memory `.obcr`, returning the bytes and each chunk's data-region
-/// byte extent. A chunk's body is `(point_count - 1)` fixed 6-byte delta records: the anchor lives
+/// byte extent. A chunk's body is `(point_count - 1)` fixed 7-byte delta records: the anchor lives
 /// in the chunk-meta, not the body, which is what `with_chunk` expects.
 pub fn build_obcr(spec: &RouteSpec) -> (Vec<u8>, Vec<ChunkExtent>) {
     let chunks = spec.chunks;

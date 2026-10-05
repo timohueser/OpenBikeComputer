@@ -8,7 +8,7 @@ use crate::reader::{RoutePoint, RouteReader};
 
 /// A uniform pick of `keep` of `count` items by ordinal: the j-th kept item is item
 /// `j * (count - 1) / (keep - 1)`, so the endpoints are exact and the rest an even stride.
-pub(crate) struct Pick {
+pub struct Pick {
     count: usize,
     keep: usize,
     seen: usize,
@@ -18,12 +18,12 @@ pub(crate) struct Pick {
 }
 
 impl Pick {
-    pub(crate) fn new(count: usize, limit: usize) -> Self {
+    pub fn new(count: usize, limit: usize) -> Self {
         Pick { count, keep: limit.min(count), seen: 0, kept: 0, at: 0 }
     }
 
     /// Whether the next item is kept.
-    pub(crate) fn next(&mut self) -> bool {
+    pub fn keep_next(&mut self) -> bool {
         let keep = self.kept < self.keep && self.seen == self.at;
         self.seen += 1;
         if keep {
@@ -54,7 +54,7 @@ impl RouteReader<'_> {
         for k in 0..self.chunks().len() {
             let _ = self.with_chunk(k, |points| {
                 points.skip(usize::from(k > 0)).for_each(|p| {
-                    if pick.next() {
+                    if pick.keep_next() {
                         let _ = out.push((p.lon, p.lat));
                     }
                 })
@@ -100,7 +100,7 @@ impl RouteReader<'_> {
         let mut pick = Pick::new(count, limit.min(N - shape.len() + usize::from(continues)));
         let mut first = continues;
         self.preview_span(lo, hi, |point| {
-            if pick.next() {
+            if pick.keep_next() {
                 // Both spans share the stop occurrence. Keep the first representation even when a
                 // chunk boundary quantizes the second span's start to another coordinate.
                 if !core::mem::take(&mut first) && shape.last() != Some(&point) {
