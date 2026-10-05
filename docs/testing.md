@@ -40,7 +40,7 @@ Selection is per suite, never per test function. A binary that mixes ordinary wo
 captured-fixture, live or manual work is split into separate units. Captured fixtures are ordinary
 work gated on `required-features = ["external-fixtures"]`; a missing package fails with the exact
 `obc fixtures sync` command. Physical procedures have no route; they live in their issue.
-`test-weekly.yml` names the two commands it runs each Monday; their suites are `manual`.
+Each Monday, `test-weekly.yml` runs manual iOS application tests and ordinary storage tests with default features.
 
 ## The plan documents
 
