@@ -47,6 +47,7 @@ class AggregateTests(unittest.TestCase):
         cases = [
             ("selected success", suite("rust.ok", True), needs(), "pass", True),
             ("selected failure", suite("rust.fail", True), needs(test="failure"), "fail", False),
+            ("selected abandoned", suite("rust.abandoned", True), needs(test="abandoned"), "fail", False),
             ("selected skipped", suite("rust.skip", True), needs(test="skipped"), "selected but not run", False),
             ("selected missing route", suite("missing", True, ()), needs(), "selected but not run", False),
             ("not selected skipped", suite("web.no", False, ("web",)), needs(web="skipped"), "not selected", True),
@@ -86,6 +87,15 @@ class AggregateTests(unittest.TestCase):
         result = evaluate(plan(suite("desktop.contract", True, ("desktop",))), job_results)
         self.assertEqual(result.suites[0].state, "blocked by an upstream failure")
         self.assertIn("wasm-bridges", result.suites[0].reason)
+
+    def test_unknown_terminal_results_fail_and_block_downstream_work(self):
+        for terminal in ("abandoned", "unknown"):
+            with self.subTest(result=terminal):
+                job_results = needs(wasm_bridges=terminal, desktop_frontend="skipped", desktop="skipped")
+                result = evaluate(plan(suite("desktop.contract", True, ("desktop",))), job_results)
+                self.assertEqual(result.suites[0].state, "blocked by an upstream failure")
+                self.assertIn("wasm-bridges", result.global_failures)
+                self.assertFalse(result.passed)
 
     def test_blocked_state_when_a_downstream_job_is_skipped(self):
         job_results = needs(desktop_frontend="failure", desktop="skipped")
