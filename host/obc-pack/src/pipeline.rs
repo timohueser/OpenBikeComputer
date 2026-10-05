@@ -39,6 +39,9 @@ pub struct PackOptions {
     pub chunk_size: Option<usize>,
     /// Skip land generation even when the config has a land style.
     pub no_land: bool,
+    /// The `land-polygons-split-3857.zip` of the store. Absent, the store fetches the source
+    /// `land-polygons` when a map needs land.
+    pub land: Option<PathBuf>,
     /// Print the classified POI list. It writes to stdout directly rather than through the progress
     /// sink, because a host with a log pane has no use for a few thousand POI lines.
     pub dump_pois: bool,
@@ -136,7 +139,7 @@ fn run(
     // Coastline base: clip the global land-polygon dataset to the bbox. Land stays in the working
     // set for semantic coverage; when it is the implicit backdrop, its complement is added as
     // explicit sea and land itself is stripped only after each LOD has been built.
-    add_land(&mut ingested, config, global_bbox, opts.no_land, progress)?;
+    add_land(&mut ingested, config, global_bbox, opts.no_land, opts.land.as_deref(), progress)?;
     progress.check()?;
 
     // Build and serialize the LOD pyramid in one streaming pass: each LOD's tree is built,
@@ -385,6 +388,7 @@ pub(crate) fn add_land(
     config: &Config,
     global_bbox: (i64, i64, i64, i64),
     no_land: bool,
+    land_zip: Option<&Path>,
     progress: &Progress,
 ) -> Result<(), String> {
     if no_land {
@@ -401,7 +405,7 @@ pub(crate) fn add_land(
         global_bbox.2 as f64 / 1e6,
         global_bbox.3 as f64 / 1e6,
     );
-    let land_polys = land::get_land_polygons(bbox_deg, progress)?;
+    let land_polys = land::get_land_polygons(bbox_deg, land_zip, progress)?;
     progress.check()?;
     let sea_polys =
         if implicit_land && sea_style.is_some() { land::sea_complement(bbox_deg, &land_polys)? } else { Vec::new() };

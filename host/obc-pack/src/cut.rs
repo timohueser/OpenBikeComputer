@@ -120,6 +120,9 @@ pub struct CutOptions {
     pub chunk_size: Option<usize>,
     /// Skip land generation even when the config has a land style.
     pub no_land: bool,
+    /// The `land-polygons-split-3857.zip` of the store. Absent, the store fetches the source
+    /// `land-polygons` when a map needs land.
+    pub land: Option<PathBuf>,
     /// Crop the sources to this box during ingest.
     pub bbox: Option<Bbox>,
     /// Baked OBCT terrain (a `.obcd` container or a directory of them) to integrate the
@@ -148,6 +151,7 @@ impl Default for CutOptions {
             sources: Vec::new(),
             chunk_size: None,
             no_land: false,
+            land: None,
             bbox: None,
             terrain: None,
             landmarks: Vec::new(),
@@ -228,7 +232,7 @@ fn run(
     progress.check()?;
     progress.stage(Phase::Bbox, "Calculating BBox...");
     let extract = opts.source_extent.unwrap_or_else(|| crate::pipeline::compute_bbox(&ingested));
-    crate::pipeline::add_land(&mut ingested, config, extract, opts.no_land, progress)?;
+    crate::pipeline::add_land(&mut ingested, config, extract, opts.no_land, opts.land.as_deref(), progress)?;
     progress.check()?;
     // Contours are generated once over the whole extract and then cut like any other feature, for
     // the same reason land is: a cell's geometry must not depend on which cell asked for it. This
