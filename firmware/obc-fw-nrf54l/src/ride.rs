@@ -123,13 +123,21 @@ fn note_catalog_uploads(app: &App, facts: &mut obc_app::device_core::ExternalFac
 }
 
 #[inline(never)]
-fn read_catalogs(
+async fn read_catalogs(
     flat: &'static obc_storage::flat::FlatStore<crate::flat_store::FlatCard>,
     app: &mut App,
     facts: &mut obc_app::device_core::ExternalFacts,
     #[cfg(has_nav)] nav: Option<&mut crate::arena::NavGuard>,
 ) -> Option<Result<obc_app::device_core::StoreRevision, obc_app::catalog_state::CatalogError>> {
     use obc_app::catalog_state::CatalogError;
+    if !crate::arena::catalog_available() {
+        return None;
+    }
+    app.begin_catalog_refresh();
+    // Only the guard is borrowed across this wait; the arena loan begins after it.
+    if let Err(error) = metadata_call(crate::flat_store::Request::ReconcileMetadata).await {
+        return Some(Err(catalog_metadata_error(error)));
+    }
     let start = crate::flat_store::catalog_scope(flat);
     let (routes_loaded, trips_loaded) = {
         let mut catalogs = crate::arena::claim_catalogs(
@@ -1181,21 +1189,14 @@ pub(crate) async fn run_app(
                     // indices by durable object id.
                     CatalogEffect::ReadCatalog { token } => {
                         let old_source = crate::flat_store::route_source_key();
-                        let read = if crate::arena::catalog_available() {
-                            app.begin_catalog_refresh();
-                            match metadata_call(crate::flat_store::Request::ReconcileMetadata).await {
-                                Ok(()) => read_catalogs(
-                                    flat,
-                                    app,
-                                    &mut exec.facts,
-                                    #[cfg(has_nav)]
-                                    nav_guard.as_mut(),
-                                ),
-                                Err(error) => Some(Err(catalog_metadata_error(error))),
-                            }
-                        } else {
-                            None
-                        };
+                        let read = read_catalogs(
+                            flat,
+                            app,
+                            &mut exec.facts,
+                            #[cfg(has_nav)]
+                            nav_guard.as_mut(),
+                        )
+                        .await;
                         if let Some(read) = read {
                             let active = app.active_route_index();
                             crate::flat_store::reconcile_route(
