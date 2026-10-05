@@ -37,24 +37,33 @@ fn obc_data(temp: &Temp, args: &[&str]) -> Output {
         .unwrap()
 }
 
-/// The store of `temp`, with the `.poly` of the live region as its fetch gives it: a box around
-/// Freiburg, so the plan needs no network.
+/// Record `text` as the file `name` of `source@version`, as a fetch with `params` gives it.
+fn fetched(store: &Store, source: &str, version: &str, params: Vec<(String, String)>, name: &str, text: &str) {
+    let (file, sha256) = (store.partial(name.rsplit('/').next().unwrap()), sha256_hex(text.as_bytes()));
+    write_atomic(&file, text.as_bytes()).unwrap();
+    store.insert(&file, &sha256).unwrap();
+    let (url, size) = (format!("https://example.org/{name}"), text.len() as u64);
+    let files = vec![FileRecord { name: name.into(), url, size, sha256, retrieved: String::new() }];
+    store.put_snapshot(&Snapshot { source: source.into(), version: version.into(), files }).unwrap();
+    if !params.is_empty() {
+        store.put_requested(source, &Requested { version: version.into(), params, files: vec![name.into()] }).unwrap();
+    }
+}
+
+/// The store of `temp`, with what the step list of live reads, so the plan needs no network: the
+/// `.poly` of the live region, unpinned, is a box around Freiburg.
 fn with_live_outline(temp: &Temp) {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let (sources, regions) = (Registry::load(&root).unwrap().sources, Regions::load(&root).unwrap());
-    let version = Env::load(&root, "live", &sources, &regions).unwrap().version("geofabrik-poly").unwrap().to_string();
+    let live = Env::load(&root, "live", &sources, &regions).unwrap();
+    assert_eq!(live.version("geofabrik-poly"), None);
     let store = Store::at(temp.0.join("store"));
     let poly = "box\n1\n   7.77 47.97\n   7.93 47.97\n   7.93 48.14\n   7.77 48.14\n   7.77 47.97\nEND\nEND\n";
-    let (file, sha256) = (store.partial("poly"), sha256_hex(poly.as_bytes()));
-    write_atomic(&file, poly.as_bytes()).unwrap();
-    store.insert(&file, &sha256).unwrap();
-    let (name, size) = ("europe/germany/baden-wuerttemberg.poly".to_string(), poly.len() as u64);
-    let url = format!("https://download.geofabrik.de/{name}");
-    let record = FileRecord { name: name.clone(), url, size, sha256, retrieved: String::new() };
-    let files = vec![record];
-    store.put_snapshot(&Snapshot { source: "geofabrik-poly".into(), version: version.clone(), files }).unwrap();
-    let params = vec![("area".into(), "europe/germany/baden-wuerttemberg".into())];
-    store.put_requested("geofabrik-poly", &Requested { version, params, files: vec![name] }).unwrap();
+    let area = vec![("area".into(), "europe/germany/baden-wuerttemberg".into())];
+    fetched(&store, "geofabrik-poly", "2026-10-05", area, "europe/germany/baden-wuerttemberg.poly", poly);
+    let tiles = "Copernicus_DSM_COG_10_N47_00_E007_00_DEM\nCopernicus_DSM_COG_10_N48_00_E007_00_DEM\n";
+    let version = live.version("copernicus-glo-30-tiles").unwrap();
+    fetched(&store, "copernicus-glo-30-tiles", version, Vec::new(), "tileList.txt", tiles);
 }
 
 #[test]

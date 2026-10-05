@@ -29,9 +29,9 @@ pub fn terrain(request: &Request) -> Result<(), String> {
     });
     let cells = cells.collect::<Option<Vec<_>>>().ok_or("a cell is not [ci, cj]")?;
 
-    let tiles = request.snapshots.get(GLO30).ok_or(format!("the request has no snapshot {GLO30}"))?;
+    // A leaf at sea reads no tile.
     let mut mosaic = DemMosaic::default();
-    for tile in tiles.values() {
+    for tile in request.snapshots.get(GLO30).into_iter().flat_map(|tiles| tiles.values()) {
         mosaic.push(DemTile::open(tile)?);
     }
 

@@ -10,8 +10,8 @@ use obc_data::env::Env;
 use obc_data::fetch::http::Http;
 use obc_data::product::Product;
 use obc_data::regions::{parse_region, Area, Regions};
-use obc_data::store::{hash_file, FileRecord, Requested, Snapshot, Store};
-use obc_data_steps::maps::{box_poly, Maps};
+use obc_data::store::{hash_file, write_atomic, FileRecord, Requested, Snapshot, Store};
+use obc_data_steps::maps::{box_poly, Maps, TILE_LIST};
 use obc_dem::bake::{V1_CELL_LOG2, V1_POSTING_LOG2};
 use obc_dem::step::GLO30;
 use obc_elevation::{TerrainReader, TileCache, DEFAULT_TILE_SLOTS};
@@ -46,6 +46,14 @@ fn store_with_tile(dir: &Path, tile: &Path) -> Store {
     store.put_snapshot(&Snapshot { source: GLO30.into(), version: PIN.into(), files: vec![file] }).unwrap();
     let requested = Requested { version: PIN.into(), params: vec![("tile".into(), STEM.into())], files: vec![name] };
     store.put_requested(GLO30, &requested).unwrap();
+
+    let list = store.partial("list");
+    write_atomic(&list, format!("{STEM}\n").as_bytes()).unwrap();
+    let (sha256, size) = hash_file(&list).unwrap();
+    store.insert(&list, &sha256).unwrap();
+    let url = "https://copernicus-dem-30m.s3.amazonaws.com/tileList.txt".into();
+    let file = FileRecord { name: "tileList.txt".into(), url, size, sha256, retrieved: String::new() };
+    store.put_snapshot(&Snapshot { source: TILE_LIST.into(), version: PIN.into(), files: vec![file] }).unwrap();
     store
 }
 
@@ -71,7 +79,7 @@ fn a_build_writes_the_terrain_cells_of_obc_bake_terrain_and_they_read_as_the_gri
     let region = parse_region("grimsel-east", REGION).unwrap();
     let Area::Box { bbox } = region.area else { unreachable!() };
     let regions = Regions::new(vec![region]).unwrap();
-    let pins = BTreeMap::from([(GLO30.to_string(), PIN.to_string())]);
+    let pins = BTreeMap::from([(GLO30.to_string(), PIN.to_string()), (TILE_LIST.to_string(), PIN.to_string())]);
     let env = Env { name: "test".into(), region: "grimsel-east".into(), layers: Vec::new(), pins };
     let built = layer(&store_with_tile(&temp.0, &tile), &root, &regions, &env);
 

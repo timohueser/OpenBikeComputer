@@ -52,9 +52,10 @@ pub enum Input {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Code {
-    /// Files and directories, relative to the repository root.
+    /// Files and directories, relative to the repository root. A step whose bytes use
+    /// `obc_data::sources`, such as an attribution, declares `data/sources.toml` here.
     pub paths: Vec<String>,
-    /// Workspace crates; each brings its path dependencies but `obc-data`.
+    /// Workspace crates; each brings its path dependencies. The walk stops at `obc-data`.
     pub crates: Vec<String>,
 }
 

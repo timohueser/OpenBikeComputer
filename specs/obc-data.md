@@ -280,10 +280,6 @@ version. A file that fails it is deleted.
 | `capture` | A program writes the files, see below |
 | `by-hand`, `installed` | None; the fetch fails |
 
-A `glo30` tile that answers 404 is at sea: the fetch gives no file for it, and its request record
-has only the other files. Without a version, a fetch whose every tile answers 404 fails, because
-no day names it.
-
 A `geofabrik` URL with `{yymmdd}` names the day of the data of the extract. Without a version, the
 fetch reads the day from the `timestamp` of `<area>-updates/state.txt`; for more than one area,
 it takes the earliest day.
@@ -394,9 +390,11 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   and so does a repository root that is not a git checkout. A crate adds its `Cargo.toml`, `build.rs`
   and `src/` the same way. Each path dependency that is not a dev-dependency adds the same,
   and so do its own path dependencies, as `cargo metadata --no-deps` lists them. A path
-  dependency must be a workspace member. The engine crate `obc-data` and its path dependencies
-  are never code: the engine only selects inputs, and what it selects is in the input digests. A `.rs` file of a crate also adds each file that it
-  names in `include_str!`, `include_bytes!`, `include!` or `#[path = "…"]`, and an added `.rs`
+  dependency must be a workspace member. The walk stops at the engine crate `obc-data`: the
+  engine only selects inputs, and what it selects is in the input digests. A crate that the
+  walk reaches through another crate is still code. A step whose bytes use `obc_data::sources`,
+  such as an attribution, declares `data/sources.toml` in its code paths. A `.rs` file of a
+  crate also adds each file that it names in `include_str!`, `include_bytes!`, `include!` or `#[path = "…"]`, and an added `.rs`
   file adds its own. The name is a string literal, normal or raw, relative to the file, or a
   `concat!` of string literals, relative to the file or after `env!("CARGO_MANIFEST_DIR")`.
   These are not code unless the step declares them: a name that a literal with an escape, a
@@ -581,12 +579,15 @@ release of that product.
 The device maps have layers per leaf: a cell of size `2^23` µdeg of the OBCA grid that the
 outline of the region touches. The outline of a `box` region is its box; the outline of a
 `geofabrik` region is its `.poly` from `geofabrik-poly`, `area=<region id>`. The product has no
-steps for a `polygon` region yet. The environment pins `copernicus-glo-30`, and `geofabrik-poly`
-when the region has a Geofabrik area.
+steps for a `polygon` region yet. The environment pins `copernicus-glo-30`.
+
+A file that the step list reads, such as a `.poly` or the GLO-30 tile list, is at the version
+of the environment. Without one, the product names a fetch of the newest version upstream, and
+then reads the newest version of that fetch in the store.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
-| `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the squares of its cells reach | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13); `terrain/empty.json`: the ids of the cells without a height |
+| `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13); `terrain/empty.json`: the ids of the cells without a height |
 
 `<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id.
 

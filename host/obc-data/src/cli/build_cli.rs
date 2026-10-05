@@ -9,13 +9,13 @@ use serde::{Deserialize, Serialize};
 
 use super::runs_cli::{bytes, duration};
 use super::{cells, fetched, print_json, print_table, registry, Code, Error};
-use crate::engine::plan::{self, Estimate, Fetch, Group, Plan};
+use crate::engine::plan::{self, Estimate, Group, Plan};
 use crate::engine::release;
 use crate::engine::runs::{Context, Limits, Run};
 use crate::engine::Step;
 use crate::env::Env;
 use crate::fetch::{self, http::Http, Request};
-use crate::product::{Product, Unplanned};
+use crate::product::{Product, Unplanned, Wanted};
 use crate::regions::Regions;
 use crate::sources::Source;
 use crate::store::Store;
@@ -223,7 +223,7 @@ fn planned(
     store: &Store,
     products: &[&dyn Product],
     loaded: &Loaded,
-    fetch: impl FnMut(&Fetch) -> Result<(), Error>,
+    fetch: impl FnMut(&Wanted) -> Result<(), Error>,
 ) -> Result<(Vec<Step>, Plan), Error> {
     let steps = steps(products, &loaded.env, &loaded.regions, store, fetch)?;
     let plan = plan::plan(store, root, &steps)?;
@@ -235,13 +235,13 @@ fn fetcher<'a>(
     store: &'a Store,
     http: &'a Http,
     sources: &'a [Source],
-) -> impl FnMut(&Fetch) -> Result<(), Error> + 'a {
+) -> impl FnMut(&Wanted) -> Result<(), Error> + 'a {
     move |wanted| {
         let source = sources
             .iter()
             .find(|source| source.id == wanted.source)
             .ok_or_else(|| Code::InvalidData.error(format!("no source `{}` in data/sources.toml", wanted.source)))?;
-        let request = Request { source, version: Some(wanted.version.clone()), params: wanted.params.clone() };
+        let request = Request { source, version: wanted.version.clone(), params: wanted.params.clone() };
         fetched(source, fetch::fetch(store, http, &request)).map(drop)
     }
 }
@@ -259,7 +259,7 @@ fn steps(
     env: &Env,
     regions: &Regions,
     store: &Store,
-    mut fetch: impl FnMut(&Fetch) -> Result<(), Error>,
+    mut fetch: impl FnMut(&Wanted) -> Result<(), Error>,
 ) -> Result<Vec<Step>, Error> {
     let offered = |layer: &&String| products.iter().any(|product| product.optional().contains(&layer.as_str()));
     if let Some(layer) = env.layers.iter().find(|layer| !offered(layer)) {
@@ -277,7 +277,10 @@ fn steps(
         let steps = match listed {
             Ok(steps) => steps,
             Err(Unplanned::NeedsFetch(fetches)) => {
-                let wanted = fetches.iter().map(|f| format!("{}@{}", f.source, f.version)).collect::<Vec<_>>();
+                let wanted = fetches
+                    .iter()
+                    .map(|f| format!("{}@{}", f.source, f.version.as_deref().unwrap_or("newest")))
+                    .collect::<Vec<_>>();
                 return Err(product_bug(
                     name,
                     format!("product `{name}` still needs {} after the fetch", wanted.join(", ")),
@@ -317,12 +320,10 @@ mod tests {
         fn steps(&self, _: &Env, _: &Regions, store: &Store) -> Result<Vec<Step>, Unplanned> {
             match snapshot_files(store, "index", "1", &[], &[]).map_err(Unplanned::Invalid)? {
                 Some(_) => Ok(pipeline()),
-                None => Err(Unplanned::NeedsFetch(vec![Fetch {
+                None => Err(Unplanned::NeedsFetch(vec![Wanted {
                     source: "index".into(),
-                    version: "1".into(),
+                    version: Some("1".into()),
                     params: Vec::new(),
-                    files: Vec::new(),
-                    bytes: None,
                 }])),
             }
         }
@@ -338,7 +339,7 @@ mod tests {
         let (fixture, empty) = (fixture("cli-two-stage"), fixture("cli-two-stage-empty"));
         let regions = Regions::new(Vec::new()).unwrap();
         let fetches = Cell::new(0);
-        let fetch = |wanted: &Fetch| {
+        let fetch = |wanted: &Wanted| {
             fixture.fetched(&wanted.source, "index.txt", b"index\n");
             fetches.set(fetches.get() + 1);
             Ok(())
@@ -351,12 +352,44 @@ mod tests {
         let err = steps(&[&Indexed], &env(&[]), &regions, &empty.store, |_| Ok(())).err().unwrap();
         assert_eq!(err.message, "product `test` still needs index@1 after the fetch");
         assert!(err.fix.contains("product `test`"), "a product bug points at its code: {}", err.fix);
-        let blocked = |_: &Fetch| Err(Code::Blocked.error("credential missing"));
+        let blocked = |_: &Wanted| Err(Code::Blocked.error("credential missing"));
         let err = steps(&[&Indexed], &env(&[]), &regions, &empty.store, blocked).err().unwrap();
         assert_eq!(err.code, Code::Blocked, "a failed fetch keeps its code");
         let err = steps(&[&Indexed], &env(&["snow"]), &regions, &fixture.store, |_| Ok(())).err().unwrap();
         let message = "data/env/live.toml: no product has the optional layer `snow`";
         assert_eq!((err.code, err.message.as_str()), (Code::InvalidData, message));
+    }
+
+    /// No steps, once the store has the outline of `area=europe/monaco`.
+    struct Outlined;
+
+    impl Product for Outlined {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+
+        fn steps(&self, env: &Env, _: &Regions, store: &Store) -> Result<Vec<Step>, Unplanned> {
+            let area = [("area".to_string(), "europe/monaco".to_string())];
+            match crate::product::read(env, store, "land", &area).map_err(Unplanned::Invalid)? {
+                Ok(_) => Ok(Vec::new()),
+                Err(wanted) => Err(Unplanned::NeedsFetch(vec![wanted])),
+            }
+        }
+    }
+
+    #[test]
+    fn an_unpinned_source_is_fetched_at_the_newest_version_and_then_read_from_the_store() {
+        use crate::fetch::tests::{quick, serve, source, whole};
+        let (url, log) = serve(|_, _| whole(b"outline"));
+        let fixture = fixture("cli-unpinned");
+        let land = source(&url.replace("data/file.bin", "{area}.poly"), "date");
+        let (regions, http) = (Regions::new(Vec::new()).unwrap(), quick());
+        let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&land));
+        steps(&[&Outlined], &env(&[]), &regions, &fixture.store, fetch).unwrap();
+        let requests = log.lock().unwrap().len();
+        assert_eq!(fixture.store.snapshots("land").unwrap()[0].version, "2026-10-05", "the Last-Modified day");
+        steps(&[&Outlined], &env(&[]), &regions, &fixture.store, |_| unreachable!()).unwrap();
+        assert_eq!(log.lock().unwrap().len(), requests, "the second ask reads the store");
     }
 
     #[test]

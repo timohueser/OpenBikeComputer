@@ -42,11 +42,10 @@ impl Env {
         Ok(Env { name: name.into(), region, layers: file.layers, pins: file.pins })
     }
 
-    /// The version of `source` that a step of the environment reads. Every step gets its versions
-    /// here, so one function decides where they come from.
-    pub fn version(&self, source: &str) -> Result<&str, String> {
-        let pin = self.pins.get(source).map(String::as_str);
-        pin.ok_or_else(|| format!("data/env/{}.toml pins no `{source}`", self.name))
+    /// The version of `source` that the environment names, or `None` for the newest. Every step
+    /// list gets its versions here, so one function decides where they come from.
+    pub fn version(&self, source: &str) -> Option<&str> {
+        self.pins.get(source).map(String::as_str)
     }
 }
 

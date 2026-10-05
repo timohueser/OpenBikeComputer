@@ -87,7 +87,7 @@ pub fn live(id: &str, version: Option<&str>, params: Vec<(String, String)>) -> R
 /// Why [`live`] failed.
 #[derive(Debug)]
 pub enum LiveError {
-    /// Upstream answered 404: it has no such file.
+    /// Upstream answered 404: it has no such file, such as a GLO-30 tile at sea.
     NotFound(String),
     Failed(String),
 }
@@ -178,35 +178,31 @@ fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, Stri
     if source.version == VersionScheme::Digest && urls.len() > 1 {
         return Err(format!("source `{}`: a digest version names one file", source.id));
     }
-    // A GLO-30 tile that answers 404 is sea: the fetch gives no file for it.
-    let sea = |error: &String| source.fetch.kind == FetchKind::Glo30 && http::not_found(error);
     // The day of the newest file names a date version, so a file already in the store needs no download.
     let version = match &request.version {
         None if source.version == VersionScheme::Date => {
-            let (mut days, mut absent) = (Vec::new(), None);
-            for url in &urls {
-                // One retry, as a HEAD is cheap and a failure stops the whole fetch.
-                match http.modified(url).or_else(|e| if http::not_found(&e) { Err(e) } else { http.modified(url) }) {
-                    Err(error) if sea(&error) => absent = Some(error),
-                    day => days.push(day?.unwrap_or_else(|| date::format(date::today()))),
-                }
-            }
-            match (days.into_iter().max(), absent) {
-                // Without a day, no version names the request.
-                (None, Some(error)) => return Err(error),
-                (day, _) => Some(day.unwrap_or_default()),
-            }
+            // One retry, as a HEAD is cheap and a failure stops the whole fetch.
+            let days: Result<Vec<_>, _> = urls
+                .iter()
+                .map(|url| {
+                    http.modified(url).or_else(|e| if http::not_found(&e) { Err(e) } else { http.modified(url) })
+                })
+                .collect();
+            Some(
+                days?
+                    .into_iter()
+                    .map(|day| day.unwrap_or_else(|| date::format(date::today())))
+                    .max()
+                    .unwrap_or_default(),
+            )
         }
         version => version.clone(),
     };
     let modified_by = version.as_deref().filter(|_| source.version == VersionScheme::Date && !named);
-    let mut files = Vec::new();
-    for url in &urls {
-        match get(store, http, source, version.as_deref(), url, only_a_name, modified_by) {
-            Err(error) if sea(&error) => {}
-            file => files.push(file?),
-        }
-    }
+    let files = urls
+        .iter()
+        .map(|url| get(store, http, source, version.as_deref(), url, only_a_name, modified_by))
+        .collect::<Result<Vec<_>, _>>()?;
     let version = version.unwrap_or_else(|| files[0].sha256.clone());
     Ok(Snapshot { source: source.id.clone(), version, files })
 }
@@ -810,29 +806,19 @@ pub(crate) mod tests {
         assert!(fetch(&store, &quick(), &gone).unwrap_err().contains("first of each month"));
     }
 
-    /// A GLO-30 tile at sea answers 404 and gives no file, so the tiles of a coastal leaf are one
-    /// fetch, and its step reads the tiles with land.
+    /// The device maps ask only for tiles that the GLO-30 tile list names, so a 404 is an error.
     #[test]
-    fn a_glo30_tile_at_sea_gives_no_file() {
+    fn a_glo30_tile_that_answers_404_fails_the_fetch() {
         let (url, _) = serve(|_, headers| match header(headers, ":path").unwrap_or_default() {
             "/N43E007.tif" => whole(b"land"),
             _ => not_found(),
         });
-        let scratch = Scratch::new("glo30-sea");
+        let scratch = Scratch::new("glo30-404");
         let store = Store::at(&scratch.0);
         let glo30 = located(FetchKind::Glo30, &url.replace("data/file.bin", "{tile}.tif"));
-        let tiles =
-            |names: &[&str]| names.iter().map(|name| ("tile".to_string(), name.to_string())).collect::<Vec<_>>();
-        let coast = tiles(&["N43E007", "N43E008"]);
-        let pinned = Request { source: &glo30, version: Some("2026-10-05".into()), params: coast.clone() };
-        assert_eq!(fetch(&store, &quick(), &pinned).unwrap().files[0].name, "N43E007.tif");
-        let read = crate::engine::snapshot_files(&store, "land", "2026-10-05", &coast, &[]).unwrap().unwrap();
-        assert_eq!(read.keys().collect::<Vec<_>>(), ["N43E007.tif"]);
-
-        let newest = Request { source: &glo30, version: None, params: coast };
-        assert_eq!(fetch(&store, &quick(), &newest).unwrap().version, "2026-10-05");
-        let sea = Request { source: &glo30, version: None, params: tiles(&["N43E008"]) };
-        assert!(http::not_found(&fetch(&store, &quick(), &sea).unwrap_err()), "no day names a sea tile");
+        let params = vec![("tile".to_string(), "N43E007".to_string()), ("tile".to_string(), "N43E008".to_string())];
+        let request = Request { source: &glo30, version: Some("2026-10-05".into()), params };
+        assert!(http::not_found(&fetch(&store, &quick(), &request).unwrap_err()));
     }
 
     /// Only a request that gets no connection is unreachable; an answer, also a 500, is not.
