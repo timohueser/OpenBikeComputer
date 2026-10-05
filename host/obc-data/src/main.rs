@@ -39,17 +39,36 @@ enum RegionAction {
     Show { id: String },
 }
 
+/// Why a command failed, and its exit status: 1 for a problem in the files, 2 for a usage error.
+struct Failure {
+    status: u8,
+    message: String,
+}
+
+impl From<String> for Failure {
+    fn from(message: String) -> Self {
+        Self { status: 1, message }
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
+
 fn main() -> ExitCode {
+    // clap exits with status 2 on a usage error.
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("obc data: {error}");
-            ExitCode::FAILURE
+        Err(failure) => {
+            eprintln!("obc data: {}", failure.message);
+            ExitCode::from(failure.status)
         }
     }
 }
 
-fn run(cli: Cli) -> Result<(), String> {
+fn run(cli: Cli) -> Result<(), Failure> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let root = obc_data::find_root(&cwd).ok_or("no data/sources.toml above the current directory")?;
     match cli.command {
@@ -74,11 +93,12 @@ struct SourceRow<'a> {
     reason: Option<String>,
 }
 
-fn print_sources(registry: &Registry, json: bool) -> Result<(), String> {
+fn print_sources(registry: &Registry, json: bool) -> Result<(), Failure> {
     let today = obc_data::date::today();
-    let rows: Vec<SourceRow> = registry
-        .sources
-        .iter()
+    let mut sorted: Vec<&Source> = registry.sources.iter().collect();
+    sorted.sort_by_key(|source| source.kind);
+    let rows: Vec<SourceRow> = sorted
+        .into_iter()
         .map(|source| {
             let pin = registry.pins.get(&source.id).map(String::as_str);
             let present = source.credential.as_ref().is_none_or(|c| c.present());
@@ -109,8 +129,8 @@ fn print_sources(registry: &Registry, json: bool) -> Result<(), String> {
         let licence =
             s.licence.clone().unwrap_or_else(|| if s.kind == Kind::Tool { "—" } else { "not recorded" }.into());
         let state = match &row.reason {
-            Some(reason) => format!("{}: {reason}", label(row.state)),
-            None => label(row.state).into(),
+            Some(reason) => format!("{}: {reason}", row.state),
+            None => row.state.to_string(),
         };
         table.push(vec![
             s.id.clone(),
@@ -126,14 +146,6 @@ fn print_sources(registry: &Registry, json: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn label(state: State) -> &'static str {
-    match state {
-        State::Ok => "ok",
-        State::Stale => "stale",
-        State::Blocked => "blocked",
-    }
-}
-
 fn definition(region: &Region) -> String {
     match &region.area {
         Area::Geofabrik => "geofabrik".into(),
@@ -143,7 +155,7 @@ fn definition(region: &Region) -> String {
     }
 }
 
-fn print_regions(regions: &Regions, json: bool) -> Result<(), String> {
+fn print_regions(regions: &Regions, json: bool) -> Result<(), Failure> {
     if json {
         #[derive(Serialize)]
         struct Listing<'a> {
@@ -165,8 +177,8 @@ struct RegionDetail<'a> {
     bounds: Option<Bbox>,
 }
 
-fn print_region(regions: &Regions, id: &str, json: bool) -> Result<(), String> {
-    let region = regions.get(id).ok_or_else(|| format!("no region `{id}`"))?;
+fn print_region(regions: &Regions, id: &str, json: bool) -> Result<(), Failure> {
+    let region = regions.get(id).ok_or_else(|| Failure { status: 2, message: format!("no region `{id}`") })?;
     let detail = RegionDetail { region, leaves: regions.leaves(id)?, bounds: regions.bounds(id) };
     if json {
         return print_json(&detail);
@@ -191,7 +203,7 @@ fn cells<const N: usize>(row: [&str; N]) -> Vec<String> {
     row.iter().map(|c| c.to_string()).collect()
 }
 
-fn print_json(value: &impl Serialize) -> Result<(), String> {
+fn print_json(value: &impl Serialize) -> Result<(), Failure> {
     println!("{}", serde_json::to_string_pretty(value).map_err(|e| e.to_string())?);
     Ok(())
 }

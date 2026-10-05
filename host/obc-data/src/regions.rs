@@ -226,14 +226,16 @@ mod tests {
     }
 
     #[test]
-    fn a_box_is_longitude_first() {
+    fn a_box_reads_west_south_east_north_and_refuses_out_of_range_or_inverted_edges() {
         let grimsel = boxed("grimsel", "[8.15, 46.48, 8.46, 46.72]");
         let bbox = Bbox { west: 8.15, south: 46.48, east: 8.46, north: 46.72 };
         assert_eq!(grimsel.area, Area::Box { bbox });
-        // Latitude first puts a longitude where a latitude must be.
-        let err =
-            parse_region("x", "name = \"x\"\nkind = \"box\"\nbox = [46.48, 108.15, 46.72, 108.46]\n").unwrap_err();
-        assert!(err.contains("longitude first"), "{err}");
+        for bad in
+            ["[8.0, 95.0, 9.0, 96.0]", "[9.0, 46.0, 8.0, 47.0]", "[8.0, 47.0, 9.0, 46.0]", "[170.0, 0.0, -170.0, 1.0]"]
+        {
+            let err = parse_region("x", &format!("name = \"x\"\nkind = \"box\"\nbox = {bad}\n")).unwrap_err();
+            assert!(err.contains("longitude first"), "{bad}: {err}");
+        }
     }
 
     #[test]

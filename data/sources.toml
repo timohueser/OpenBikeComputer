@@ -55,7 +55,7 @@ redistribute = true
 id = "land-polygons"
 kind = "data"
 licence = "ODbL-1.0"
-licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
+licence_url = "https://osmdata.openstreetmap.de/info/license.html"
 attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
 fetch = { kind = "http", url = "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip" }
@@ -68,7 +68,7 @@ r2_copy = true
 id = "water-polygons"
 kind = "data"
 licence = "ODbL-1.0"
-licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
+licence_url = "https://osmdata.openstreetmap.de/info/license.html"
 attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
 fetch = { kind = "http", url = "https://osmdata.openstreetmap.de/download/water-polygons-split-3857.zip" }
@@ -76,6 +76,18 @@ version = "date"
 refresh = 90
 redistribute = true
 r2_copy = true
+
+[[source]]
+id = "photon-dump"
+kind = "data"
+licence = "ODbL-1.0"
+licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
+attribution = "© OpenStreetMap contributors"
+obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
+fetch = { kind = "http", url = "https://download1.graphhopper.com/public/europe/germany/photon-dump-germany-release-{version}.jsonl.zst" }
+version = "release"
+refresh = "manual"
+redistribute = true
 
 # ── Terrain ──────────────────────────────────────────────────────────────────
 
@@ -445,49 +457,64 @@ redistribute = true
 [[source]]
 id = "modis-snow"
 kind = "data"
-attribution = "NASA MODIS snow cover MOD10A1/MYD10A1 (NSIDC)"
+licence = "LicenseRef-NASA-EOSDIS"
+licence_url = "https://nsidc.org/data/mod10a1/versions/61"
+attribution = "MODIS MOD10A1 v061, Hall & Riggs, NASA NSIDC DAAC, doi:10.5067/MODIS/MOD10A1.061"
+obligations = "Cite the dataset"
 fetch = { kind = "capture", url = "https://planetarycomputer.microsoft.com/api/stac/v1/search" }
 version = "date"
 refresh = 365
-redistribute = false
+redistribute = true
 
 [[source]]
 id = "hr-wsi"
 kind = "data"
+licence = "LicenseRef-Copernicus-CLMS"
+licence_url = "https://land.copernicus.eu/en/data-policy"
 attribution = "© European Union, Copernicus Land Monitoring Service {year}, European Environment Agency (EEA): HR-WSI Snow Phenology"
+obligations = "Credit the Copernicus Land Monitoring Service; state modifications"
 fetch = { kind = "capture", url = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products" }
 hosts = ["eodata.dataspace.copernicus.eu"]
 version = "date"
 refresh = 365
-redistribute = false
+redistribute = true
 credential = { file = "~/.config/openbikecomputer/cdse-s3.env" }
 
 [[source]]
 id = "hansen-gfc"
 kind = "data"
+licence = "CC-BY-4.0"
+licence_url = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-v1.11/download.html"
 attribution = "Hansen/UMD/Google/USGS/NASA"
 fetch = { kind = "http", url = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-{version}/Hansen_GFC-2023-{version}_treecover2000_{tile}.tif" }
 version = "release"
 refresh = "manual"
-redistribute = false
+redistribute = true
 
 # ── Planner basemap ──────────────────────────────────────────────────────────
 
 [[source]]
 id = "natural-earth"
 kind = "data"
+licence = "LicenseRef-public-domain"
+licence_url = "https://www.naturalearthdata.com/about/terms-of-use/"
+attribution = "Natural Earth"
+obligations = "none"
 fetch = { kind = "http", url = "https://naciscdn.org/naturalearth/packages/natural_earth_vector.gpkg.zip" }
 version = "release"
 refresh = "manual"
-redistribute = false
+redistribute = true
 
 [[source]]
 id = "daylight-landcover"
 kind = "data"
+licence = "CC-BY-4.0"
+licence_url = "https://daylightmap.org/2023/10/11/landcover.html"
+attribution = "ESA WorldCover"
 fetch = { kind = "http", url = "https://r2-public.protomaps.com/datasets/daylight-landcover.gpkg" }
 version = "release"
 refresh = "manual"
-redistribute = false
+redistribute = true
 
 [[source]]
 id = "qrank"
@@ -505,7 +532,7 @@ r2_copy = true
 id = "pgf-encoding"
 kind = "data"
 licence = "CC0-1.0"
-licence_url = "https://github.com/wipfli/pgf-encoding"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
 obligations = "none"
 fetch = { kind = "http", url = "https://wipfli.github.io/pgf-encoding/pgf-encoding.zip" }
 version = "digest"
@@ -514,14 +541,18 @@ redistribute = true
 
 # ── Assets that ship to users ────────────────────────────────────────────────
 
+# Fonts are OFL-1.1 (`fonts/OFL.txt` ships with them); sprites derive from the MIT Mapzen icons.
 [[source]]
 id = "protomaps-assets"
 kind = "asset"
+licence = "OFL-1.1 AND MIT"
+licence_url = "https://github.com/protomaps/basemaps-assets"
+obligations = "Keep the OFL text with the fonts and the MIT notice with the sprites"
 fetch = { kind = "github", url = "https://codeload.github.com/protomaps/basemaps-assets/zip/{version}" }
 hosts = ["raw.githubusercontent.com"]
 version = "commit"
 refresh = "manual"
-redistribute = false
+redistribute = true
 
 [[source]]
 id = "query-model"
@@ -538,6 +569,8 @@ redistribute = true
 [[source]]
 id = "planetiler"
 kind = "tool"
+licence = "Apache-2.0"
+licence_url = "https://github.com/onthegomap/planetiler"
 fetch = { kind = "installed" }
 version = "release"
 refresh = "manual"
@@ -546,6 +579,8 @@ redistribute = false
 [[source]]
 id = "protomaps-basemaps"
 kind = "tool"
+licence = "BSD-3-Clause"
+licence_url = "https://github.com/protomaps/basemaps"
 fetch = { kind = "github", url = "https://codeload.github.com/protomaps/basemaps/tar.gz/{version}" }
 version = "commit"
 refresh = "manual"
@@ -554,6 +589,8 @@ redistribute = false
 [[source]]
 id = "photon"
 kind = "tool"
+licence = "Apache-2.0"
+licence_url = "https://github.com/komoot/photon"
 fetch = { kind = "github", url = "https://github.com/komoot/photon/releases/download/{version}/photon-{version}.jar" }
 version = "release"
 refresh = "manual"
@@ -562,6 +599,8 @@ redistribute = false
 [[source]]
 id = "nominatim"
 kind = "tool"
+licence = "GPL-2.0-only AND GPL-3.0-or-later"
+licence_url = "https://github.com/osm-search/Nominatim"
 fetch = { kind = "installed" }
 version = "release"
 refresh = "manual"

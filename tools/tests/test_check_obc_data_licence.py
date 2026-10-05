@@ -26,6 +26,20 @@ def metadata(*deps):
 
 
 class LicenceGuardTests(unittest.TestCase):
+    def test_a_gpl_term_joined_by_and_is_copyleft(self):
+        self.assertTrue(guard.copyleft("(MIT OR Apache-2.0) AND GPL-3.0-only"))
+        self.assertTrue(guard.copyleft("GPL-2.0-only WITH Classpath-exception-2.0"))
+        self.assertFalse(guard.copyleft("MIT/Apache-2.0"))
+        self.assertFalse(guard.copyleft("(MIT AND GPL-3.0-only) OR Apache-2.0"))
+
+    def test_a_transitive_gpl_dependency_fails(self):
+        document = metadata(("glue", "MIT", REGISTRY, None))
+        document["packages"].append({"id": "readline", "name": "readline", "version": "1.0.0",
+                                     "license": "GPL-3.0-only", "source": REGISTRY})
+        document["resolve"]["nodes"][1]["deps"] = [{"pkg": "readline", "dep_kinds": [{"kind": None}]}]
+        document["resolve"]["nodes"].append({"id": "readline", "deps": []})
+        self.assertEqual(guard.violations(document), ["readline 1.0.0 is `GPL-3.0-only`"])
+
     def test_permissive_and_dual_licensed_dependencies_pass(self):
         found = guard.violations(metadata(("serde", "MIT OR Apache-2.0", REGISTRY, None),
                                           ("either", "MIT OR GPL-2.0", REGISTRY, "build")))

@@ -174,7 +174,7 @@ def specifications(config, prepared=None):
         raise ValueError("Prepared inputs do not match the region recipe")
     add("source-basemap", source_basemap, {"osm": osm, "protomaps": sources.PROTOMAPS, "archive": sources.PROTO_SHA},
         config.get("auxiliary", {}), functions=[sources.basemap, sources.download])
-    add("source-search", source_search, {"osm": osm, "nominatim": "5.3.2", "photon": sources.PHOTON_SHA},
+    add("source-search", source_search, {"osm": osm, "nominatim": sources.NOMINATIM, "photon": sources.PHOTON_SHA},
         functions=[sources.search_dump, sources.download])
     # Of the query contract, records.py reads only the data kinds.
     data_kinds = sorted(json.loads((SEARCH / "query/contract.json").read_bytes())["data"])

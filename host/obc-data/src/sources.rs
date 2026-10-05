@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::date;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+/// In the order `obc data sources` lists them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// An input that steps read.
@@ -163,12 +164,13 @@ impl Source {
             return fail("the id is not lowercase kebab-case");
         }
         if let Some(licence) = &self.licence {
-            if licence.is_empty() || !licence.chars().all(|c| c.is_ascii_alphanumeric() || "-.+".contains(c)) {
-                return fail("`licence` is an SPDX id or `LicenseRef-…`");
+            if !is_licence_expression(licence) {
+                return fail("`licence` is an SPDX expression: ids or `LicenseRef-…` with AND, OR, WITH and ( )");
             }
         }
         match (&self.fetch.url, self.fetch.kind) {
             (None, FetchKind::Installed) => {}
+            (Some(_), FetchKind::Installed) => return fail("an `installed` fetch has no `url`"),
             (None, _) => return fail("`fetch.url` is missing"),
             (Some(url), _) if !url.starts_with("https://") => return fail("`fetch.url` is not https"),
             _ => {}
@@ -192,6 +194,53 @@ impl Source {
         }
         Ok(())
     }
+}
+
+/// The SPDX expression grammar: `id [WITH id]`, `( expr )`, joined by `AND` or `OR`.
+fn is_licence_expression(text: &str) -> bool {
+    let spaced = text.replace('(', " ( ").replace(')', " ) ");
+    let tokens: Vec<&str> = spaced.split_whitespace().collect();
+    let mut at = 0;
+    expression(&tokens, &mut at) && at == tokens.len()
+}
+
+fn expression(tokens: &[&str], at: &mut usize) -> bool {
+    loop {
+        if !term(tokens, at) {
+            return false;
+        }
+        match tokens.get(*at) {
+            Some(&("AND" | "OR")) => *at += 1,
+            _ => return true,
+        }
+    }
+}
+
+fn term(tokens: &[&str], at: &mut usize) -> bool {
+    let id = |token: Option<&&str>| {
+        token.is_some_and(|t| {
+            !["AND", "OR", "WITH", "(", ")"].contains(t)
+                && t.chars().all(|c| c.is_ascii_alphanumeric() || "-.+".contains(c))
+        })
+    };
+    if tokens.get(*at) == Some(&"(") {
+        *at += 1;
+        let inner = expression(tokens, at) && tokens.get(*at) == Some(&")");
+        *at += 1;
+        return inner;
+    }
+    if !id(tokens.get(*at)) {
+        return false;
+    }
+    *at += 1;
+    if tokens.get(*at) == Some(&"WITH") {
+        *at += 1;
+        if !id(tokens.get(*at)) {
+            return false;
+        }
+        *at += 1;
+    }
+    true
 }
 
 #[derive(Deserialize)]
@@ -256,6 +305,16 @@ pub enum State {
     Blocked,
 }
 
+impl std::fmt::Display for State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            State::Ok => "ok",
+            State::Stale => "stale",
+            State::Blocked => "blocked",
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Status {
     pub state: State,
@@ -313,6 +372,21 @@ mod tests {
         assert!(parse_sources(&release).unwrap_err().contains("needs `version = \"date\"`"));
         assert!(parse_sources(&OSM.replace("refresh = 7", "refresh = 14")).is_err());
         assert!(parse_sources(&OSM.replace("refresh = 7", "refresh = \"manual\"")).is_ok());
+    }
+
+    #[test]
+    fn a_licence_is_an_spdx_expression() {
+        for good in [
+            "MIT",
+            "OFL-1.1 AND MIT",
+            "(MIT OR Apache-2.0) AND LicenseRef-x",
+            "GPL-2.0-only WITH Classpath-exception-2.0",
+        ] {
+            assert!(is_licence_expression(good), "{good}");
+        }
+        for bad in ["", "Open data", "MIT AND", "(MIT", "MIT)", "MIT WITH", "AND MIT", "MIT OR OR GPL-3.0-only"] {
+            assert!(!is_licence_expression(bad), "{bad}");
+        }
     }
 
     #[test]
