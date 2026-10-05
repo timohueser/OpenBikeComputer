@@ -1,0 +1,4 @@
+name = "Colorado Front Range"
+kind = "box"
+# west, south, east, north
+box = [-105.95, 39.95, -105.45, 40.45]

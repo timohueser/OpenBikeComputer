@@ -4,7 +4,7 @@
     let { label, value, options, onChange }: {
         label: string;
         value: string;
-        options: { value: string; label: string }[];
+        options: { value: string; label: string; icon?: string }[];
         onChange: (value: string) => void;
     } = $props();
 
@@ -17,6 +17,7 @@
     const selected = $derived(options.findIndex(option => option.value === value));
 
     function show() {
+        if (!options.length) return;
         active = Math.max(0, selected);
         prefix = '';
         open = true;
@@ -24,7 +25,7 @@
 
     function choose(index: number) {
         open = false;
-        if (options[index].value !== value) onChange(options[index].value);
+        if (options[index] && options[index].value !== value) onChange(options[index].value);
     }
 
     function keydown(event: KeyboardEvent) {
@@ -57,7 +58,7 @@
     <button type="button" class="trigger" role="combobox" aria-label={label} aria-expanded={open}
         aria-controls={`${id}-options`} aria-haspopup="listbox" aria-activedescendant={open ? `${id}-${active}` : undefined}
         onclick={() => open ? open = false : show()} onkeydown={keydown} onblur={() => open = false}>
-        <span>{options[selected]?.label ?? value}</span><Icon name="down" size={14} />
+        <span class="label">{#if options[selected]?.icon}<Icon name={options[selected].icon} size={20} />{/if}{options[selected]?.label ?? value}</span><Icon name="down" size={14} />
     </button>
     {#if open}
         <div class="options" id={`${id}-options`} role="listbox" aria-label={label}>
@@ -65,7 +66,7 @@
                 <button type="button" role="option" id={`${id}-${index}`} tabindex="-1" aria-selected={option.value === value}
                     class:active={index === active} onpointermove={() => active = index}
                     onmousedown={(event) => event.preventDefault()} onclick={() => choose(index)}>
-                    <span>{option.label}</span>
+                    <span class="label">{#if option.icon}<Icon name={option.icon} size={20} />{/if}{option.label}</span>
                     {#if option.value === value}<Icon name="check" size={15} />{/if}
                 </button>
             {/each}
@@ -74,6 +75,8 @@
 </div>
 
 <style>
+    .label { display: inline-flex; align-items: center; gap: 7px; }
+    .label :global(svg) { flex: none; }
     .selector { position: relative; flex: none; min-width: 0; }
     .selector.open { z-index: 40; }
     button { font: 600 13px var(--sans); color: var(--ink); cursor: pointer; }

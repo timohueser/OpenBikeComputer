@@ -9,7 +9,7 @@
             "guest_house": "Guest house",
             "motel": "Motel",
             "chalet": "Chalet",
-            "alpine_hut": "Alpine hut"
+            "hut": "Hut"
         }
     },
     "camp": {
@@ -17,7 +17,7 @@
         "plural": "Campsites",
         "icon": "M3 20 12 4l9 16H3Zm5 0 4-8 4 8",
         "kinds": {
-            "camp_site": "Campsite",
+            "campsite": "Campsite",
             "caravan_site": "Caravan site"
         }
     },
@@ -28,7 +28,9 @@
         "kinds": {
             "drinking_water": "Drinking water",
             "fountain": "Fountain",
-            "spring": "Spring"
+            "spring": "Spring",
+            "water_tap": "Water tap",
+            "water_point": "Water point"
         }
     },
     "shop": {
@@ -62,8 +64,8 @@
         "plural": "Bike",
         "icon": "M2.5 16a3.5 3.5 0 1 0 7 0 3.5 3.5 0 1 0-7 0m12 0a3.5 3.5 0 1 0 7 0 3.5 3.5 0 1 0-7 0M6 16l4-7h6l2 7m-8-7 3 7h2M8 6h3",
         "kinds": {
-            "bicycle": "Bike shop",
-            "bicycle_repair_station": "Repair station",
+            "bike_shop": "Bike shop",
+            "repair_station": "Repair station",
             "bicycle_rental": "Bike rental"
         }
     },
@@ -81,7 +83,6 @@
         "plural": "Stations",
         "icon": "M6 3h12v12H6V3Zm0 8h12M9 18l-2 3m8-3 2 3",
         "kinds": {
-            "station": "Station",
             "train_station": "Station",
             "bus_station": "Bus station"
         }
@@ -91,8 +92,7 @@
         "plural": "Shelters",
         "icon": "M2 12 12 4l10 8M5 10v10m14-10v10",
         "kinds": {
-            "shelter": "Shelter",
-            "wilderness_hut": "Wilderness hut"
+            "shelter": "Shelter"
         }
     },
     "rest": {
@@ -124,9 +124,8 @@
         "plural": "Peaks and passes",
         "icon": "M3 20 12 5l9 15H3Zm5.5-6 3.5-2 3.5 2",
         "kinds": {
-            "peak": "Peak",
-            "saddle": "Pass",
-            "mountain_pass": "Pass"
+            "summit": "Peak",
+            "pass": "Pass"
         }
     }
 }

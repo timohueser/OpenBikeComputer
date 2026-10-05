@@ -2,8 +2,7 @@ import Testing
 import Foundation
 @testable import OBCDomain
 
-/// The trip review: rides grouped by trip day, the ridden parts of the line, the totals, and the
-/// offer to even out the days after a day that ended far from its plan.
+/// The trip review: rides grouped by trip day, the ridden parts of the line, and the totals.
 struct TripReviewTests {
     /// Planar metres east and north of a fixed origin at 46.5° N.
     private func coordinate(_ x: Double, _ y: Double = 0) -> Coordinate {
@@ -147,50 +146,5 @@ struct TripReviewTests {
             trip: trip, rides: [ride("d1", day: 0, of: trip, km: 12), ride("d2", day: 1, of: trip, km: 9, hour: 24)],
             tracks: tracks))
         #expect(two.biggestDay == 0)
-    }
-
-    @Test
-    func anEarlyStopOffersToEvenOutTheDaysUpToTheNextTransfer() throws {
-        // Days 1–3 on one piece, then a train, then days 4–5.
-        let trip = trip([(0, 10), (10, 20), (20, 30), (31, 41), (41, 51)])
-        let tracks = [RideID("d1"): track(0, 4)]
-        let review = try #require(TripReview(trip: trip, rides: [ride("d1", day: 0, of: trip)], tracks: tracks))
-        let offer = try #require(review.rebalance)
-        #expect(offer.day == 0)
-        #expect(offer.ride == RideID("d1"))
-        #expect(offer.days == 1...2, "days after the train keep their plan")
-        #expect(abs(offer.fixedBefore - 4_000) < 1)
-        #expect(abs(offer.shortfall - 6_000) < 1)
-
-        // Riding on past the day end offers it too: the days after it are shorter.
-        let far = try #require(TripReview(
-            trip: trip, rides: [ride("d1", day: 0, of: trip)], tracks: [RideID("d1"): track(0, 16)]))
-        #expect(far.rebalance.map { $0.shortfall < 0 } == true)
-    }
-
-    @Test
-    func noOfferWhenTheDayEndedNearItsPlanOrNothingCanShare() {
-        let trip = trip([(0, 10), (10, 20), (20, 30), (31, 41)])
-        func offer(day: Int, to km: Double, earlier: [RideSummary] = []) -> RebalanceOffer? {
-            let start = trip.dayEnds[safe: day - 1]?.distance ?? 0
-            let rides = earlier + [ride("d", day: day, of: trip, hour: 100)]
-            return TripReview(trip: trip, rides: rides, tracks: [RideID("d"): track(start / 1_000, km)])?.rebalance
-        }
-        let limitKm = TripReview.rebalanceMinMeters / 1_000
-        #expect(offer(day: 0, to: 10 - limitKm + 0.5) == nil, "within the threshold")
-        #expect(offer(day: 1, to: 14) == nil, "one day left before the train")
-        #expect(offer(day: 2, to: 24) == nil, "the day ends at a transfer")
-        // An early day 1 is old news once day 2 is ridden to plan.
-        let early = ride("e", day: 0, of: trip, hour: 1)
-        #expect(offer(day: 0, to: 4) != nil)
-        #expect(TripReview(
-            trip: trip, rides: [early, ride("d", day: 1, of: trip, hour: 24)],
-            tracks: [RideID("e"): track(0, 4), RideID("d"): track(10, 20)])?.rebalance == nil)
-    }
-}
-
-extension Array {
-    fileprivate subscript(safe index: Int) -> Element? {
-        indices.contains(index) ? self[index] : nil
     }
 }

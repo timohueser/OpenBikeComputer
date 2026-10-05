@@ -1,10 +1,15 @@
 use crate::{
-    model::{Point, Road, NO_ELEVATION},
-    package::{Package, Source, CELL},
+    geometry,
+    model::{Point, Road},
+    package::CELL,
     Error, Result,
 };
-use serde::Serialize;
 use std::collections::BTreeSet;
+
+/// The snap radius for a point with no road within `Policy::radius_m`, and for a point whose
+/// nearest road no route reaches. The client shows the gap. Farther away, the nearest road is often
+/// on another ridge or across a valley.
+pub const REACH_M: f64 = 1_000.0;
 
 impl Default for Policy {
     fn default() -> Self {
@@ -12,39 +17,15 @@ impl Default for Policy {
     }
 }
 
-impl<S: Source> Package<S> {
-    pub fn snap(&mut self, point: Point, metric: &str, policy: Policy) -> Result<Candidates> {
-        self.metric(metric)?;
-        let mut roads = BTreeSet::<u32>::new();
-        for cell in cells(point, policy.radius_m).map_err(Error::InvalidRequest)? {
-            roads.extend(self.spatial_roads(cell)?);
-            if roads.len() > 100_000 {
-                return Err(Error::Limit);
-            }
-        }
-        candidates(
-            roads,
-            point,
-            policy,
-            |id| {
-                if self.allowed(metric, id)? {
-                    self.road(id).map(Some)
-                } else {
-                    Ok(None)
-                }
-            },
-        )
-    }
-}
-
+/// The candidates among `roads`. `project` gives the attachment to a road within `policy.radius_m`,
+/// or none for a road that is farther or that the profile cannot use.
 pub(crate) fn candidates(
     roads: impl IntoIterator<Item = u32>,
-    point: Point,
     policy: Policy,
-    mut road: impl FnMut(u32) -> Result<Option<Road>>,
+    mut project: impl FnMut(u32) -> Result<Option<Candidate>>,
 ) -> Result<Candidates> {
     if !policy.ambiguity_m.is_finite()
-        || !(0.0..=50.0).contains(&policy.ambiguity_m)
+        || !(0.0..=REACH_M).contains(&policy.ambiguity_m)
         || policy.max_candidates == 0
         || policy.max_candidates > 16
     {
@@ -52,61 +33,46 @@ pub(crate) fn candidates(
     }
     let mut found = Vec::new();
     for id in roads {
-        let Some(road) = road(id)? else { continue };
-        if let Some(candidate) = project(id, &road, point) {
-            if candidate.snap_distance_m <= policy.radius_m {
-                found.push(candidate);
-            }
-        }
+        found.extend(project(id)?);
     }
     found.sort_by(|a, b| a.snap_distance_m.total_cmp(&b.snap_distance_m).then(a.position.road.cmp(&b.position.road)));
-    let eligible_roads_in_radius = found.len();
-    let nearest_distance_m = found.first().map(|c| c.snap_distance_m);
-    if let Some(distance) = nearest_distance_m {
-        found.retain(|c| c.snap_distance_m <= distance + policy.ambiguity_m);
+    if let Some(nearest) = found.first().map(|c| c.snap_distance_m) {
+        found.retain(|c| c.snap_distance_m <= nearest + policy.ambiguity_m);
     }
-    let candidates_in_ambiguity_band = found.len();
     let truncated = found.len() > policy.max_candidates;
     found.truncate(policy.max_candidates);
-    Ok(Candidates {
-        policy,
-        nearest_distance_m,
-        eligible_roads_in_radius,
-        candidates_in_ambiguity_band,
-        truncated,
-        retained: found,
-    })
+    Ok(Candidates { truncated, retained: found })
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug)]
 pub struct Position {
     pub road: u32,
     /// Fraction of the directed polyline's geometric length, from zero to one.
     pub fraction: f64,
 }
+impl Position {
+    /// The opaque wire form. It keeps the exact fraction, so a pin matches only this position.
+    pub fn id(&self) -> String {
+        format!("{}:{}", self.road, self.fraction)
+    }
+}
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct Candidate {
     pub position: Position,
     pub projected: Point,
     pub snap_distance_m: f64,
-    pub segment: usize,
-    pub segment_fraction: f64,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug)]
 pub struct Policy {
     pub radius_m: f64,
     pub ambiguity_m: f64,
     pub max_candidates: usize,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct Candidates {
-    pub policy: Policy,
-    pub nearest_distance_m: Option<f64>,
-    pub eligible_roads_in_radius: usize,
-    pub candidates_in_ambiguity_band: usize,
     pub truncated: bool,
     pub retained: Vec<Candidate>,
 }
@@ -130,42 +96,28 @@ pub(crate) fn cells(point: Point, radius: f64) -> std::result::Result<BTreeSet<(
     Ok(result)
 }
 
-pub fn project(id: u32, road: &Road, point: Point) -> Option<Candidate> {
-    let lengths: Vec<_> = road.shape.windows(2).map(|p| p[0].distance(p[1])).collect();
-    let total: f64 = lengths.iter().sum();
+/// The attachment of `point` to road `id`, when the road is within `radius_m`.
+pub fn project(id: u32, road: &Road, point: Point, radius_m: f64) -> Option<Candidate> {
+    let mut nearest: Option<(usize, f64, f64)> = None;
+    for (segment, pair) in road.shape.windows(2).enumerate() {
+        let (t, distance) = geometry::project(point, pair[0], pair[1]);
+        if nearest.is_none_or(|(.., best)| distance < best) {
+            nearest = Some((segment, t, distance));
+        }
+    }
+    let (segment, t, _) = nearest?;
+    let (a, b) = (road.shape[segment], road.shape[segment + 1]);
+    let projected = geometry::lerp(a, b, t);
+    let snap_distance_m = point.distance(projected);
+    if snap_distance_m > radius_m {
+        return None;
+    }
+    let lengths = road.shape.windows(2).map(|p| p[0].distance(p[1]));
+    let before: f64 = lengths.clone().take(segment).sum();
+    let total: f64 = lengths.sum();
     if total <= 0.0 {
         return None;
     }
-    let scale = (point.lat as f64 * 1e-6).to_radians().cos();
-    let mut best: Option<Candidate> = None;
-    let mut before = 0.0;
-    for (segment, pair) in road.shape.windows(2).enumerate() {
-        let ax = (pair[0].lon as f64 - point.lon as f64) * scale;
-        let ay = pair[0].lat as f64 - point.lat as f64;
-        let dx = (pair[1].lon as f64 - pair[0].lon as f64) * scale;
-        let dy = pair[1].lat as f64 - pair[0].lat as f64;
-        let denominator = dx * dx + dy * dy;
-        let t = if denominator > 0.0 { (-(ax * dx + ay * dy) / denominator).clamp(0.0, 1.0) } else { 0.0 };
-        let projected = Point {
-            lat: (pair[0].lat as f64 + (pair[1].lat as f64 - pair[0].lat as f64) * t).round() as i32,
-            lon: (pair[0].lon as f64 + (pair[1].lon as f64 - pair[0].lon as f64) * t).round() as i32,
-            elevation: if pair.iter().any(|p| p.elevation == NO_ELEVATION) {
-                NO_ELEVATION
-            } else {
-                (pair[0].elevation as f64 + (pair[1].elevation as f64 - pair[0].elevation as f64) * t) as f32
-            },
-        };
-        let candidate = Candidate {
-            position: Position { road: id, fraction: ((before + lengths[segment] * t) / total).clamp(0.0, 1.0) },
-            projected,
-            snap_distance_m: point.distance(projected),
-            segment,
-            segment_fraction: t,
-        };
-        if best.as_ref().is_none_or(|b| candidate.snap_distance_m < b.snap_distance_m) {
-            best = Some(candidate);
-        }
-        before += lengths[segment];
-    }
-    best
+    let fraction = ((before + a.distance(b) * t) / total).clamp(0.0, 1.0);
+    Some(Candidate { position: Position { road: id, fraction }, projected, snap_distance_m })
 }

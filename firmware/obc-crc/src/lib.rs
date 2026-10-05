@@ -75,6 +75,7 @@ impl Crc32 {
     }
 
     /// Fold `bytes` into the running CRC.
+    #[inline(never)]
     pub fn update(&mut self, bytes: &[u8]) {
         let mut c = self.state;
         #[cfg(feature = "slice-by-8")]

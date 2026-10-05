@@ -4,16 +4,12 @@ from collections import OrderedDict
 from contextlib import closing
 import gzip
 import json
-import math
 from pathlib import Path, PurePosixPath
 import sqlite3
 import subprocess
 import sys
 
-try:
-    from . import planner_cutout, planner_offline, planner_runtime, planner_maps
-except ImportError:
-    import planner_cutout, planner_offline, planner_runtime, planner_maps
+from . import planner_runtime, planner_maps, planner_mvt as mvt
 
 ZOOM = 9
 MAP_ZOOM = 11
@@ -26,14 +22,7 @@ LABEL_KEYS ={"name", "name:en", "pgf:name", "name2", "pgf:name2", "name3", "pgf:
 
 def tile(lon, lat, zoom=ZOOM):
     n = 1 << zoom
-    return (min(n - 1, max(0, int((lon + 180) / 360 * n))),
-            min(n - 1, max(0, int((1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * n))))
-
-
-def box(z, x, y):
-    n = 1 << z
-    latitude = lambda row: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * row / n))))
-    return [x / n * 360 - 180, latitude(y + 1), (x + 1) / n * 360 - 180, latitude(y)]
+    return tuple(min(n - 1, max(0, int(value))) for value in planner_maps.mercator(lon, lat, zoom))
 
 
 def intersects(a, b):
@@ -45,13 +34,18 @@ def cells(bounds):
     right, bottom = tile(bounds[2], bounds[1])
     for x in range(left, right + 1):
         for y in range(top, bottom + 1):
-            b = box(ZOOM, x, y)
+            b = planner_maps.tile_bounds(ZOOM, x, y)
             clipped = [max(b[0], bounds[0]), max(b[1], bounds[1]), min(b[2], bounds[2]), min(b[3], bounds[3])]
             if clipped[0] < clipped[2] and clipped[1] < clipped[3]:
                 yield f"{ZOOM}-{x}-{y}", clipped
 
 
-def map_tiles(source, output):
+def map_kinds(maps):
+    """The tile archives of a map bundle; a data layer is present only when its recipe asks for it."""
+    return ["basemap", "places", "overlays", "terrain"] + [layer for layer in planner_runtime.DATA_LAYERS if (maps / f"{layer}.pmtiles").exists()]
+
+
+def map_tiles(source, output, kinds=None):
     from pmtiles.reader import Reader, MmapSource, all_tiles
     from pmtiles.tile import zxy_to_tileid
     from pmtiles.writer import Writer
@@ -59,7 +53,7 @@ def map_tiles(source, output):
     import tempfile
 
     output.mkdir(parents=True, exist_ok=True)
-    for kind in ("basemap", "places", "terrain"):
+    for kind in kinds or map_kinds(source):
         target = output / kind
         target.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".tiles-", dir=output) as temporary:
@@ -95,43 +89,17 @@ def map_tiles(source, output):
                 path.unlink()
 
 
-def varint(data, index):
-    value = shift = 0
-    while True:
-        byte = data[index]; index += 1
-        value |= (byte & 0x7F) << shift
-        if byte < 0x80: return value, index
-        shift += 7
-
-
-def protobuf(data):
-    """Yield the field numbers and values of one message; length-delimited values stay bytes."""
-    index = 0
-    while index < len(data):
-        key, index = varint(data, index)
-        if key & 7 == 0: value, index = varint(data, index)
-        elif key & 7 == 2:
-            size, index = varint(data, index)
-            value, index = data[index:index + size], index + size
-        elif key & 7 in (1, 5): value, index = None, index + (8 if key & 7 == 1 else 4)
-        else: raise ValueError("Unsupported protobuf field")
-        yield key >> 3, value
-
-
 def label_texts(tile):
     """Yield the distinct label strings of each layer of one vector tile."""
-    for field, layer in protobuf(tile):
+    for field, layer in mvt.fields(tile):
         if field != 3: continue
         keys, values, labels = [], [], set()
-        for field, value in protobuf(layer):
+        for field, value in mvt.fields(layer):
             if field == 3: keys.append(value.decode())
-            elif field == 4: values.append(next((text.decode() for number, text in protobuf(value) if number == 1), None))
+            elif field == 4: values.append(next((text.decode() for number, text in mvt.fields(value) if number == 1), None))
             elif field == 2:
-                for packed in (packed for number, packed in protobuf(value) if number == 2):
-                    index, tags = 0, []
-                    while index < len(packed):
-                        tag, index = varint(packed, index)
-                        tags.append(tag)
+                for packed in (packed for number, packed in mvt.fields(value) if number == 2):
+                    tags = mvt.packed(packed)
                     labels.update(zip(tags[::2], tags[1::2]))
         yield from {values[value] for key, value in labels if keys[key] in LABEL_KEYS and values[value]}
 
@@ -140,9 +108,10 @@ def glyph_ranges(source):
     """Return the indices (code point // 256) of the glyph ranges that labels and route references use."""
     from pmtiles.reader import MmapSource, all_tiles
     texts = set()
-    with (source / "maps/basemap.pmtiles").open("rb") as file:
-        for _, tile in all_tiles(MmapSource(file)):
-            texts.update(label_texts(gzip.decompress(tile) if tile[:2] == b"\x1f\x8b" else tile))
+    for name in ("basemap", "places"):
+        with (source / "maps" / f"{name}.pmtiles").open("rb") as file:
+            for _, tile in all_tiles(MmapSource(file)):
+                texts.update(label_texts(gzip.decompress(tile) if tile[:2] == b"\x1f\x8b" else tile))
     with closing(sqlite3.connect(f"{(source / 'routing/overlays.sqlite').resolve().as_uri()}?mode=ro", uri=True)) as db:
         texts.update(ref for (ref,) in db.execute("SELECT json_extract(properties, '$.ref') FROM attributes "
                                                   "UNION SELECT json_extract(properties, '$.ref') FROM routes") if ref)
@@ -171,6 +140,18 @@ def offline_fonts(source, release, work):
                                     if start(name) >> 8 in ranges))
         result[target] = names
     return result
+
+
+def route_tiles(catalog, names):
+    """Split a region route catalog into the documents of the grid cells `names`."""
+    document = json.loads(catalog.read_bytes())
+    if document["format"] != 1: raise ValueError("Unsupported route catalog")
+    tiles = {name: [] for name in names}
+    for record in sorted(document["routes"], key=lambda record: record["id"]):
+        # A cell outside the grid has no file.
+        for cell in record["cells"]:
+            if cell in tiles: tiles[cell].append(record)
+    return {name: {"format": 1, "routes": routes} for name, routes in tiles.items()}
 
 
 def search_lookup(source, output):
@@ -227,116 +208,23 @@ def search_shard(source, lookup, output, bounds, metadata):
         db.close(); raise
 
 
-def publish(source, routing, output):
-    identity, release = planner_runtime.release(source, include_sources=False)
-    if (output / "release.json").exists(): raise ValueError("Publication already exists")
-    output.mkdir(parents=True, exist_ok=True)
-    work = output / "building"
-    work.mkdir(exist_ok=True)
-    objects = output / "objects"
-    files = {}
-    def add(path, name):
-        entry = planner_offline.pack_file(path, objects)
-        files[name] = entry
-        return name
-    def metadata(name, value):
-        path = work / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(planner_runtime.encoded(value))
-        return add(path, name)
-    graph = json.loads((routing / "blocks.json").read_bytes())
-    if graph["source"] != release["routing_package"]: raise ValueError("Routing blocks use another release")
-    add(routing / "blocks.json", "routing/blocks.json")
-    print("Publishing routing page packs", flush=True)
-    for archive in graph["archives"]:
-        for filename in ("pages.bin", "pages.idx"):
-            add(routing / "packs" / archive / filename, f"routing/packs/{archive}/{filename}")
-    routing_index = json.loads((routing / "catalog.json").read_bytes())
-    routing_cells = {cell["id"]: cell for cell in routing_index["cells"]}
-    for cell_id, cell in routing_cells.items():
-        source_manifest = routing / cell["manifest"]
-        name = add(source_manifest, f"offline/routing-cells/{cell_id}.json")
-        cell["manifest"] = name.removeprefix("offline/")
-        cell["sha256"] = files[name]["sha256"]
-    shared = {name: add(source / name, name) for name in release["files"] if name.startswith("maps/assets/")}
-    print("Joining offline fonts", flush=True)
-    for path, names in offline_fonts(source, release, work).items():
-        shared.update(dict.fromkeys(names, add(path, f"offline/fonts/{path.name}")))
-    tiles = work / "tiles"
-    if not (work / "tiles.complete").exists():
-        if tiles.exists(): raise ValueError("Incomplete tile publication; use a fresh output directory")
-        print("Partitioning map tiles", flush=True)
-        map_tiles(source / "maps", tiles)
-        (work / "tiles.complete").touch()
-    map_blocks = []
-    for path in sorted(tiles.glob("*/*.pmtiles")):
-        z, x, y = map(int, path.stem.split("-"))
-        name = add(path, f"maps/tiles/{path.parent.name}/{path.name}")
-        # Offline planners read places from the basemap and search, so downloads carry no places packs.
-        if path.parent.name != "places":
-            map_blocks.append({"kind": path.parent.name, "tile": [z,x,y], "bounds": box(z, x, y), "files": [name]})
-    search = source / "search" / f"{release['region']}.sqlite"
-    lookup = work / "search-lookup.sqlite"
-    stage_sqlite(lookup, lambda path: search_lookup(search, path))
-    with closing(sqlite3.connect(search)) as db:
-        search_metadata = {k: json.loads(v) for k, v in db.execute("SELECT * FROM metadata")}
-    geographic = []
-    all_cells = list(cells(release["bounds"]))
-    for index, (name, bounds) in enumerate(all_cells):
-        print(f"Publishing places and overlays {index + 1}/{len(all_cells)} · {name}", flush=True)
-        places = work / "search" / f"{name}.sqlite"
-        stage_sqlite(places, lambda path: search_shard(search, lookup, path, bounds, search_metadata))
-        overlays = work / "overlays" / f"{name}.sqlite"
-        stage_sqlite(overlays, lambda path: planner_cutout.overlays(source / "routing/overlays.sqlite", path, bounds, bounds, release["routing_package"]))
-        geographic.append({"id": name, "bounds": bounds, "routing": routing_cells.get(name), "files": [add(places, f"search/tiles/{name}.sqlite"),
-            add(overlays, f"routing/layers/{name}.sqlite")]})
-    metadata(f"search/{release['region']}.grid.json", {"format": 2, "metadata": search_metadata,
-        "cells": [{"id": name, "bounds": bounds} for name, bounds in all_cells]})
-    metadata("routing/layers.json", [name for name, _ in all_cells])
-    from pmtiles.reader import Reader, MmapSource
-    for kind in ("basemap", "places", "terrain"):
-        with (source / "maps" / f"{kind}.pmtiles").open("rb") as stream:
-            reader = Reader(MmapSource(stream))
-            header, info = reader.header(), reader.metadata()
-        metadata(f"maps/{kind}.json", {**info, "tilejson": "3.0.0", "minzoom": header["min_zoom"],
-            "maxzoom": header["max_zoom"], "bounds": release["terrain_bounds"] if kind == "terrain" else release["bounds"]})
-    for name in release["files"]:
-        if name.startswith(("search/model/", "device/")): add(source / name, name)
-    catalog = {"format": 3, "source": identity, "release": {k:v for k,v in release.items() if k not in {"files", "source_files"}},
-        "routing_source": graph["source"], "map_blocks": map_blocks, "cells": geographic,
-        "shared": shared, "files": dict(files), "zoom": ZOOM, "map_zoom": MAP_ZOOM}
-    metadata("offline/catalog.json", catalog)
-    document = {**catalog["release"], "routing_package": files["routing/blocks.json"]["sha256"],
-        "source_files": {}, "grid": {"format": 2, "zoom": ZOOM, "map_zoom": MAP_ZOOM}, "files": files}
-    planner_offline.atomic_write(output / "release.json", planner_runtime.encoded(document))
-    return catalog
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--source-cache", type=Path, default=Path.home() / ".cache/obc/planner/sources")
     args = parser.parse_args()
     try:
-        prepare(args.source, args.output)
+        prepare(args.source, args.output, args.source_cache)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"planner grid: {error}\n")
 
 
-def prepare(source, output):
+def prepare(source, output, cache_root=None):
     """Build the canonical grid from one verified regional bake."""
-    _, document = planner_runtime.release(source, include_sources=False)
-    output.mkdir(parents=True, exist_ok=True)
-    if (output / "release.json").exists(): raise ValueError("Publication already exists")
-    work = output / "building"
-    work.mkdir(exist_ok=True)
-    selection = work / "cells.json"
-    selection.write_bytes(planner_runtime.encoded([{"id": name, "bounds": bounds} for name, bounds in cells(document["bounds"])]))
-    routing = work / "routing"
-    if not (routing / "catalog.json").exists():
-        planner_maps.run("cargo", "build", "--locked", "--release", "-p", "route-build", "--bin", "route-blocks", cwd=planner_maps.ROOT)
-        planner_maps.run(planner_maps.ROOT / "target/release/route-blocks", source / "routing", routing, "--cells", selection)
-    publish(source, routing, output)
+    from .planner_components import Cache
+    from .planner_grid_components import publish
+    publish(source, None, output, Cache(cache_root) if cache_root else None)
     identity, _ = planner_runtime.release(output, include_sources=False)
     print(f"Prepared grid release {identity}")
 

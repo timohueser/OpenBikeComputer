@@ -1,11 +1,18 @@
 <script lang="ts">
     import Icon from './PlannerIcon.svelte';
+    import LayerLegend from './LayerLegend.svelte';
     import Segmented from './Segmented.svelte';
     import { placeCategories, type PlaceCategory } from '../../lib/planner/poi-kinds';
     import { networkLevels, type OverlayOptions } from '../../lib/planner/route-overlays';
+    import type { DataLayer } from '../../lib/planner/layers/data-layer';
 
-    let { autoCenter = $bindable(false), hillshade = $bindable(), contours = $bindable(), hidden = $bindable(), highlighted = $bindable(), mapOverlays = $bindable(), theme = 'light' }: {
+    let { autoCenter = $bindable(false), hillshade = $bindable(), contours = $bindable(), hidden = $bindable(), highlighted = $bindable(), mapOverlays = $bindable(), dataLayers = [], shownLayer = $bindable(''), theme = 'light', walking = false }: {
         autoCenter?: boolean;
+        /** The data layers of the region; the map shows one or none. */
+        dataLayers?: DataLayer[];
+        /** The id of the shown data layer, or '' for none. */
+        shownLayer?: string;
+        walking?: boolean;
         hillshade: boolean;
         contours: boolean;
         /** Place categories the map leaves out. */
@@ -27,8 +34,10 @@
     let open = $state(false);
     let root: HTMLDivElement;
     const networks: { value: OverlayOptions['network']; label: string }[] = [
-        { value: 'none', label: 'Off' }, { value: 'cycling', label: 'Cycling' }, { value: 'hiking', label: 'Hiking' },
+        { value: 'none', label: 'Off' }, { value: 'cycling', label: 'Cycling' }, { value: 'hiking', label: 'Hiking' }, { value: 'mtb', label: 'MTB' },
     ];
+    const layerOptions = $derived([{ value: '', label: 'Off' }, ...dataLayers.map(layer => ({ value: layer.id, label: layer.label }))]);
+    const dataLayer = $derived(dataLayers.find(layer => layer.id === shownLayer));
 
     function show(category: PlaceCategory, shown: boolean) {
         hidden = shown ? hidden.filter(c => c !== category) : [...hidden, category];
@@ -72,9 +81,19 @@
             {/if}
                 <p>Right-click or long-press a route for details.</p>
             </section>
+            {#if dataLayers.length}<section class="access-section" aria-label="Data layers">
+                <h3>Data layers</h3>
+                <Segmented label="Data layer" options={layerOptions} value={shownLayer} onChange={id => shownLayer = id} />
+                {#if dataLayer}
+                    <div class="layer-legend"><LayerLegend columns legend={dataLayer.legend(theme)} label={`${dataLayer.label} colours`} /></div>
+                    <p>{dataLayer.error || (dataLayer.source ? `${dataLayer.source}. ${dataLayer.caveat}` : 'Loading…')}</p>
+                {:else}
+                    {#each dataLayers as layer (layer.id)}<p><strong>{layer.label}:</strong> {layer.description}</p>{/each}
+                {/if}
+            </section>{/if}
             <section class="access-section" aria-label="Access markings">
                 <label><input type="checkbox" bind:checked={mapOverlays.access} />Closures & access<span class="access-symbol" aria-hidden="true"><Icon path="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM7 12h10" size={17} /></span></label>
-                {#if mapOverlays.access}<p>Bike access: a walking symbol means dismount and push. Click access symbols for rules; closure reports are not live.</p>{/if}
+                {#if mapOverlays.access}<p>{walking ? 'Walking access.' : 'Bike access: a walking symbol means dismount and push.'} Click access symbols for rules; closure reports are not live.</p>{/if}
             </section>
             <section class="access-section" aria-label="Planning controls"><label><input type="checkbox" bind:checked={autoCenter} />Center on added points</label></section>
             <details>
@@ -166,6 +185,8 @@
     .sample { display: inline-block; flex: 0 0 14px; width: 14px; border-top: 3px solid currentColor; }
     .legend { display: grid; grid-template-columns: 1fr 1fr; column-gap: 8px; margin: 8px 0 0; font-size: 12px; color: var(--ink-soft); }
     .legend li { justify-content: flex-start; min-height: 22px; }
+    .layer-legend { margin: 8px 0 4px; }
+    .access-section h3 { margin: 4px 0 0; }
     p { margin: 2px 0 8px; font-size: 12px; line-height: 1.45; color: var(--ink-soft); }
     ul {
         margin: 0;

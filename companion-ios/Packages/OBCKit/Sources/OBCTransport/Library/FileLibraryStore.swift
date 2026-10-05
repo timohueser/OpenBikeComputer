@@ -521,6 +521,8 @@ private struct PlannedRouteFile: Codable {
     /// next upload.
     var uploadedCRC32: UInt32?
     var addedAt: Date
+    /// The planner plan, in the `specs/planner-plan.md` shape.
+    var plan: PlanDTO?
 
     init(_ record: PlannedRouteRecord) {
         version = 1
@@ -533,6 +535,7 @@ private struct PlannedRouteFile: Codable {
         deviceStoreID = record.deviceLink?.storeID
         uploadedCRC32 = record.uploadedCRC32
         addedAt = record.addedAt
+        plan = record.plan.map(PlanDTO.init)
     }
 
     func record(sourceFileData: Data) -> PlannedRouteRecord {
@@ -552,9 +555,20 @@ private struct PlannedRouteFile: Codable {
             sourceFileData: sourceFileData,
             deviceLink: link,
             uploadedCRC32: uploadedCRC32,
-            addedAt: addedAt
+            addedAt: addedAt,
+            plan: plan?.plan
         )
     }
+}
+
+/// A saved plan. One that no longer decodes, such as one in an older plan format, is dropped, so
+/// its route or trip still loads and opens as the kept line.
+private struct PlanDTO: Codable {
+    var plan: PlannerPlan?
+
+    init(_ plan: PlannerPlan) { self.plan = plan }
+    init(from decoder: Decoder) throws { plan = try? PlannerPlan(from: decoder) }
+    func encode(to encoder: Encoder) throws { try plan.encode(to: encoder) }
 }
 
 /// A trip: its line, its day ends and its device copies. Device links persist as a planned
@@ -574,9 +588,9 @@ private struct TripFile: Codable {
     var startName: String?
     var dayCopies: [DeviceCopyDTO?]
     var device: DeviceCopyDTO?
-    var uploadedKey: UInt64?
     var addedAt: Date
     var editedAt: Date
+    var plan: PlanDTO?
 
     init(_ trip: Trip) {
         version = FileLibraryStore.tripSchemaVersion
@@ -590,11 +604,11 @@ private struct TripFile: Codable {
         dayEnds = trip.dayEnds.map(DayEndDTO.init)
         waypoints = trip.waypoints.map(StopDTO.init)
         startName = trip.startName
-        uploadedKey = trip.uploadedKey
         dayCopies = trip.dayCopies.map { $0.map { DeviceCopyDTO(link: $0.link, crc32: $0.uploadedCRC32) } }
         device = trip.deviceLink.map { DeviceCopyDTO(link: $0, crc32: trip.uploadedCRC32) }
         addedAt = trip.addedAt
         editedAt = trip.editedAt
+        plan = trip.plan.map(PlanDTO.init)
     }
 
     var trip: Trip {
@@ -612,9 +626,9 @@ private struct TripFile: Codable {
             dayCopies: dayCopies.map { $0.map { TripDayCopy(link: $0.link, uploadedCRC32: $0.crc32) } },
             deviceLink: device?.link,
             uploadedCRC32: device?.crc32,
-            uploadedKey: uploadedKey,
             addedAt: addedAt,
-            editedAt: editedAt
+            editedAt: editedAt,
+            plan: plan?.plan
         )
     }
 }
@@ -625,8 +639,6 @@ private struct DayEndDTO: Codable {
     var name: String?
     var title: String?
     var distance: Double
-    var stop: StopDTO?
-    var stopRoute: StopRouteDTO?
     var transfer: String?
     var resumeName: String?
 
@@ -636,8 +648,6 @@ private struct DayEndDTO: Codable {
         name = end.name
         title = end.title
         distance = end.distance
-        stop = end.stop.map(StopDTO.init)
-        stopRoute = end.stopRoute.map(StopRouteDTO.init)
         transfer = end.transfer?.rawValue
         resumeName = end.resumeName
     }
@@ -645,33 +655,7 @@ private struct DayEndDTO: Codable {
     var domain: DayEnd {
         DayEnd(
             coordinate: Coordinate(latitude: lat, longitude: lon), name: name, title: title, distance: distance,
-            stop: stop?.domain, stopRoute: stopRoute?.domain,
             transfer: transfer.flatMap(TransferKind.init(rawValue:)), resumeName: resumeName)
-    }
-}
-
-/// An out and back keeps its spur in `toStop`; a via keeps both legs and where they meet the line.
-private struct StopRouteDTO: Codable {
-    var toStop: ImportedRouteDTO
-    var fromStop: ImportedRouteDTO?
-    var leave: Double?
-    var rejoin: Double?
-
-    init(_ route: StopRoute) {
-        switch route {
-        case .outAndBack(let spur):
-            toStop = ImportedRouteDTO(ImportedRoute(points: spur))
-        case .via(let to, let from, let leave, let rejoin):
-            toStop = ImportedRouteDTO(ImportedRoute(points: to))
-            fromStop = ImportedRouteDTO(ImportedRoute(points: from))
-            self.leave = leave
-            self.rejoin = rejoin
-        }
-    }
-
-    var domain: StopRoute {
-        guard let fromStop, let leave, let rejoin else { return .outAndBack(spur: toStop.domain.points) }
-        return .via(toStop: toStop.domain.points, fromStop: fromStop.domain.points, leave: leave, rejoin: rejoin)
     }
 }
 
@@ -679,21 +663,15 @@ private struct StopDTO: Codable {
     var name: String
     var lat: Double
     var lon: Double
-    var kind: String
-    var mapItemID: String?
 
     init(_ stop: Stop) {
         name = stop.name
         lat = stop.coordinate.latitude
         lon = stop.coordinate.longitude
-        kind = stop.kind.rawValue
-        mapItemID = stop.mapItemID
     }
 
     var domain: Stop {
-        Stop(
-            name: name, coordinate: Coordinate(latitude: lat, longitude: lon),
-            kind: Stop.Kind(rawValue: kind) ?? .place, mapItemID: mapItemID)
+        Stop(name: name, coordinate: Coordinate(latitude: lat, longitude: lon))
     }
 }
 

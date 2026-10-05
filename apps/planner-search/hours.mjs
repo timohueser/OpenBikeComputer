@@ -1,15 +1,18 @@
 import OpeningHours from 'opening_hours';
+import {calendarDate} from './calendar-date.mjs';
 
 const weekdays = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-export function openingState(place, filter, context, countryCode = 'de') {
+// The library selects holidays by country and state, and reads the position for sun times only as strings.
+const schedule = (place) => new OpeningHours(place.opening_hours, {
+  lat: String(place.lat), lon: String(place.lon),
+  address: { country_code: place.country, state: place.region },
+});
+
+export function openingState(place, filter, context) {
   if (!filter) return null;
   if (!place.opening_hours) return 'unknown';
   try {
-    const oh = new OpeningHours(place.opening_hours, {
-      lat: place.lat,
-      lon: place.lon,
-      address: { country_code: countryCode, state: place.region },
-    });
+    const oh = schedule(place);
     if (filter.now) {
       const date = new Date(context.now || Date.now());
       return oh.getUnknown(date)
@@ -47,14 +50,11 @@ export function openingState(place, filter, context, countryCode = 'de') {
 
 /** The status at search time, independent of a query's weekday or trip-date filter.
  *  `closesAt` is the local clock time of a closure within the next hour. */
-export function currentOpening(place, now = Date.now(), countryCode = 'de') {
+export function currentOpening(place, now = Date.now()) {
   if (!place.opening_hours) return undefined;
   const status = { state: 'unknown' };
   try {
-    const oh = new OpeningHours(place.opening_hours, {
-      lat: place.lat, lon: place.lon,
-      address: { country_code: countryCode, state: place.region },
-    });
+    const oh = schedule(place);
     const date = new Date(now);
     if (oh.getUnknown(date)) return status;
     status.state = oh.getState(date) ? 'open' : 'closed';
@@ -65,16 +65,18 @@ export function currentOpening(place, now = Date.now(), countryCode = 'de') {
   return status;
 }
 
-export function openingHours({countryCode, timeZone}) {
-  if (!/^[a-z]{2}$/.test(countryCode)) throw new Error('Supply the search country code.');
+/** Opening hours in the region's time zone, whatever the host's zone. */
+export function openingHours(timeZone) {
   if (typeof timeZone !== 'string' || !timeZone) throw new Error('Supply the search time zone.');
-  const zone = new Intl.DateTimeFormat('en', {timeZone}).resolvedOptions().timeZone;
-  const assertEnvironment = () => {
-    // The evaluator creates local Date values internally, including for DST and holidays.
-    if ((Date.timeZone ?? new Intl.DateTimeFormat('en').resolvedOptions().timeZone) !== zone)
-      throw new Error(`Opening hours require a calendar runtime in ${zone}.`);
+  const Regional = calendarDate(timeZone);
+  // The evaluator and its library read local fields through the global Date. Evaluation is
+  // synchronous, so the regional constructor replaces the global one only during a call.
+  // The library also logs each holiday gap, such as PH in Liechtenstein; the result is unknown.
+  const regional = (evaluate) => (...args) => {
+    const host = globalThis.Date, log = console.error;
+    globalThis.Date = Regional;
+    console.error = () => {};
+    try { return evaluate(...args); } finally { globalThis.Date = host; console.error = log; }
   };
-  return {countryCode,timeZone:zone,assertEnvironment,
-    openingState:(place,filter,context)=>openingState(place,filter,context,countryCode),
-    currentOpening:(place,now)=>currentOpening(place,now,countryCode)};
+  return { timeZone: Regional.timeZone, openingState: regional(openingState), currentOpening: regional(currentOpening) };
 }

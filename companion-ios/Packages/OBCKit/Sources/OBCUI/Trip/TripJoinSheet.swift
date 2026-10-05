@@ -64,6 +64,13 @@ public struct TripJoinSheet: View {
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
                     .accessibilityIdentifier("join.totals")
+                if order.count > PlannerPlan.maxDays {
+                    Text("A trip has at most \(PlannerPlan.maxDays) days.")
+                        .font(.footnote)
+                        .foregroundStyle(OBCTheme.secondary)
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
@@ -80,6 +87,7 @@ public struct TripJoinSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Make trip") { onMakeTrip(order) }
                         .fontWeight(.semibold)
+                        .disabled(order.count > PlannerPlan.maxDays)
                         .accessibilityIdentifier("join.makeTrip")
                 }
             }

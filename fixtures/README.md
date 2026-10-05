@@ -41,7 +41,7 @@ Python 3.11 or newer. No Python package dependencies.
 5. Run the registry tests, and `obc fixtures sync` and `verify` from an empty cache.
 
 `fixtures/build-map-package.sh` is the only supported way to build the registered map packages. It
-holds the canonical bboxes and source URLs and writes under `fixtures/build/`. Build Grimsel
+holds the canonical bboxes and source areas and writes under `fixtures/build/`. Build Grimsel
 terrain before its map, or use the `all` target.
 
 ## What belongs where

@@ -1,0 +1,4 @@
+# The planner snow bake (`tools/planner_snow.py`). rasterio brings its own GDAL wheel.
+-r requirements-planner-maps.txt
+rasterio==1.5.2
+numpy==2.5.3

@@ -1,11 +1,13 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import { thirdPartyLicenses } from "./vite/third-party-licenses";
+import { plannerConfig } from "./src/lib/planner/config";
+import { testConfig } from "./test-support/planner/config";
 
 // One frontend, three hosts. Which host `$host` resolves to is decided here, at
 // build time — a conditional alias, not a runtime `if` — so the two hosts you did not
-// build have no path into the module graph at all. That is what keeps the FastAPI
-// job-polling client out of the static web bundle, rather than trusting a bundler to
+// build have no path into the module graph at all. That is what keeps the dev
+// server's client out of the static web bundle, rather than trusting a bundler to
 // notice that a branch is unreachable. src/lib/platform/bundle.test.ts asserts it
 // against the real emitted chunks.
 const HOSTS = {
@@ -34,6 +36,9 @@ function hostFor(mode: string): HostName {
 
 export default defineConfig(({ mode }) => {
     const host = HOSTS[hostFor(mode)];
+    // A preview config that the planner cannot use fails the build. Without one, the planner reads the live catalogue.
+    const preview = loadEnv(mode, process.cwd(), "VITE_PLANNER_CONFIG").VITE_PLANNER_CONFIG;
+    if (mode === "planner" && preview) plannerConfig(JSON.parse(preview));
     return {
         // base "./" keeps every asset URL relative, so the built app works mounted at
         // "/" (local FastAPI) or under a sub-path (a future single-server deployment
@@ -71,7 +76,7 @@ export default defineConfig(({ mode }) => {
             // The product skin editor imports the bakery's canonical Teningen
             // OBCM from `host/obc-bake/assets`. Keep one fixture, and let the
             // dev server expose files only as far as this repository root.
-            fs: { allow: ["../..", ...(process.env.OBC_PLANNER_MAPS_DIR ? [process.env.OBC_PLANNER_MAPS_DIR] : [])] },
+            fs: { allow: ["../..", ...[process.env.OBC_PLANNER_MAPS_DIR, process.env.OBC_PLANNER_ROUTES_FILE].filter((path): path is string => Boolean(path))] },
             // Dev mode: `python -m builder.server --no-browser` on :8000 serves
             // the API; Vite proxies it (plain http-proxy streams SSE fine).
             proxy: {
@@ -83,6 +88,8 @@ export default defineConfig(({ mode }) => {
         },
         test: {
             environment: "node",
+            // Planner modules read their config on import, as in a planner build.
+            env: { VITE_PLANNER_CONFIG: JSON.stringify(testConfig) },
             // `test-support/` holds what no tier's build has as an input; its suites run here.
             include: ["src/**/*.test.ts", "test-support/**/*.test.ts"],
             coverage: {

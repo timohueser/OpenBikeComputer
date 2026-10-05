@@ -104,9 +104,8 @@ struct RouteDetailScreen: View {
     private let onRename: ((String) -> Void)?
     private let onRenameTap: (() -> Void)?
     private let onBikeTypeChange: ((BikeType) -> Void)?
-    /// Reverse the route, planned dressing only: it creates the flipped copy and navigates to it.
-    /// Nil on rides and imports.
-    private let onReverse: (() -> Void)?
+    /// Open the route in the planner, planned dressing only.
+    private let onEdit: (() -> Void)?
     private let onUploaded: ((DeviceObjectID?, UInt32) -> Void)?
     private let isRide: Bool
     /// Add to trip, planned only: the route becomes a day of the picked trip.
@@ -141,7 +140,7 @@ struct RouteDetailScreen: View {
         onRename: ((String) -> Void)? = nil,
         onRenameTap: (() -> Void)? = nil,
         onBikeTypeChange: ((BikeType) -> Void)? = nil,
-        onReverse: (() -> Void)? = nil,
+        onEdit: (() -> Void)? = nil,
         onUploaded: ((DeviceObjectID?, UInt32) -> Void)? = nil,
         tripPickerItems: [TripPickerItem] = [],
         onAddToTrip: ((TripSelection) -> Void)? = nil,
@@ -162,7 +161,7 @@ struct RouteDetailScreen: View {
         self.onRename = onRename
         self.onRenameTap = onRenameTap
         self.onBikeTypeChange = onBikeTypeChange
-        self.onReverse = onReverse
+        self.onEdit = onEdit
         self.onUploaded = onUploaded
         self.tripPickerItems = tripPickerItems
         self.onAddToTrip = onAddToTrip
@@ -218,9 +217,14 @@ struct RouteDetailScreen: View {
             if let rideShareMenu {
                 ToolbarItem(placement: .primaryAction) { rideShareMenu.photos(from: photos) }
             }
+            if let onEdit {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Edit", action: onEdit).accessibilityIdentifier("detail.edit")
+                }
+            }
             if let rideEditMenu {
                 ToolbarItem(placement: .primaryAction) { rideEditMenu.deleteAction(onDelete) }
-            } else if onAddToTrip != nil || onReverse != nil || onDelete != nil {
+            } else if onAddToTrip != nil || onDelete != nil {
                 ToolbarItem(placement: .primaryAction) { routeMenu }
             }
         }
@@ -247,15 +251,8 @@ struct RouteDetailScreen: View {
                 }
                 .accessibilityIdentifier("detail.addToTrip")
             }
-            if let onReverse {
-                // Reverse lands a copy; the original direction stays.
-                Button(action: onReverse) {
-                    Label("Create reversed copy", systemImage: "arrow.uturn.backward")
-                }
-                .accessibilityIdentifier("detail.reverse")
-            }
             if onDelete != nil {
-                if onAddToTrip != nil || onReverse != nil { Divider() }
+                if onAddToTrip != nil { Divider() }
                 Button(role: .destructive) { deleteShown = true } label: {
                     Label(isRide ? "Delete ride…" : "Delete route…", systemImage: "trash")
                 }
@@ -275,103 +272,5 @@ struct RouteDetailScreen: View {
             actionTitle: isRide ? "Delete ride" : "Delete route",
             onConfirm: { onDelete?() }
         )
-    }
-}
-
-/// Owns a stable model for the presented import cover. The three rows land the route: as a new
-/// route, as the last day of a trip, or as the first day of a new trip.
-struct ImportLandingHost: View {
-    @State private var model: RouteDetailModel
-    @State private var tripPickerShown = false
-    private let deviceName: String
-    private let noDevicePaired: Bool
-    /// The trips the route can join, most recently edited first.
-    private let trips: [TripPickerItem]
-    private let isOnboarding: Bool
-    private let onSave: (RouteDetail, TripSelection) -> Void
-    private let onPair: (RouteDetail) -> Void
-    private let onCancel: () -> Void
-
-    init(
-        transport: any DeviceTransport,
-        route: ImportedRoute,
-        fileName: String,
-        source: ImportSource,
-        bikeType: BikeType,
-        deviceName: String,
-        noDevicePaired: Bool,
-        trips: [TripPickerItem] = [],
-        isOnboarding: Bool = false,
-        // When this import replaces an existing route, the landing reuses its id, so New route
-        // updates that route in place instead of adding a duplicate.
-        replacing: PlannedRouteRecord? = nil,
-        onSave: @escaping (RouteDetail, TripSelection) -> Void,
-        onPair: @escaping (RouteDetail) -> Void,
-        onCancel: @escaping () -> Void
-    ) {
-        _model = State(initialValue: RouteDetailModel(
-            transport: transport,
-            dressing: .imported(route, fileName: fileName, source: source),
-            bikeType: bikeType,
-            importedRouteID: replacing?.id
-        ))
-        self.deviceName = deviceName
-        self.noDevicePaired = noDevicePaired
-        self.trips = trips
-        self.isOnboarding = isOnboarding
-        self.onSave = onSave
-        self.onPair = onPair
-        self.onCancel = onCancel
-    }
-
-    var body: some View {
-        ImportLandingView(
-            model: model,
-            deviceName: deviceName,
-            onCancel: onCancel,
-            noDevicePaired: noDevicePaired,
-            onPair: { onPair(model.makeDetail()) },
-            importAccessory: AnyView(rows)
-        )
-        .sheet(isPresented: $tripPickerShown) {
-            TripPickerSheet(title: "Add to trip", trips: trips, onPick: save)
-        }
-    }
-
-    /// The one save, then the two ways into a trip. Each choice says where the route lands.
-    private var rows: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Button(isOnboarding ? "Save and send to OBC" : "Save to Library") { save(.none) }
-                .buttonStyle(.obcPrimary)
-                .accessibilityIdentifier("import.newRoute")
-            if !isOnboarding {
-                OBCGroupedSection("Or put it in a trip") {
-                    if trips.count == 1, let trip = trips.first {
-                        OBCListRow(label: "Add to \(trip.name)", detail: "It becomes day \(trip.dayCount + 1).", showsChevron: true) {
-                            save(.existing(trip.id))
-                        }
-                        .accessibilityIdentifier("import.addToTrip")
-                    } else if trips.count > 1 {
-                        OBCListRow(label: "Add to a trip", detail: "It becomes the last day.", showsChevron: true) {
-                            tripPickerShown = true
-                        }
-                        .accessibilityIdentifier("import.addToTrip")
-                    }
-                    OBCListRow(
-                        label: "Start a new trip",
-                        detail: "Then split the route into days.",
-                        showsChevron: true,
-                        showsDivider: false
-                    ) {
-                        save(.new(model.name))
-                    }
-                    .accessibilityIdentifier("import.startTrip")
-                }
-            }
-        }
-    }
-
-    private func save(_ selection: TripSelection) {
-        onSave(model.makeDetail(), selection)
     }
 }

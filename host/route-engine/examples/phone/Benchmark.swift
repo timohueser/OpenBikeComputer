@@ -3,8 +3,6 @@ import SwiftUI
 
 @_silgen_name("planner_benchmark")
 func plannerBenchmark(_ root: UnsafePointer<CChar>, _ requests: UnsafePointer<CChar>, _ output: UnsafePointer<CChar>, _ retained: Int32) -> Int32
-@_silgen_name("planner_overlay_benchmark")
-func plannerOverlayBenchmark(_ root: UnsafePointer<CChar>, _ output: UnsafePointer<CChar>) -> Int32
 
 @main
 struct BenchmarkApp: App {
@@ -12,22 +10,12 @@ struct BenchmarkApp: App {
 
     var body: some Scene {
         WindowGroup {
-            if ProcessInfo.processInfo.arguments.contains("--maps") {
-                MapBenchmarkView(root: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]) {
-                    status = $0
-                    print($0)
-                    UIApplication.shared.isIdleTimerDisabled = false
-                }
-                .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
-                .overlay(alignment: .top) { Text(status).padding().background(.regularMaterial) }
-            } else {
-                Text(status).padding().task {
-                    UIApplication.shared.isIdleTimerDisabled = true
-                    let result = await Task.detached(priority: .userInitiated) { await run() }.value
-                    if !ProcessInfo.processInfo.arguments.contains("--hold") { UIApplication.shared.isIdleTimerDisabled = false }
-                    status = result
-                    print(result)
-                }
+            Text(status).padding().task {
+                UIApplication.shared.isIdleTimerDisabled = true
+                let result = await Task.detached(priority: .userInitiated) { run() }.value
+                if !ProcessInfo.processInfo.arguments.contains("--hold") { UIApplication.shared.isIdleTimerDisabled = false }
+                status = result
+                print(result)
             }
         }
     }
@@ -83,7 +71,7 @@ final class Meter: @unchecked Sendable {
     }
 }
 
-private func run() async -> String {
+private func run() -> String {
     let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     let monotonicStart = ProcessInfo.processInfo.systemUptime
     let meter = Meter()
@@ -92,32 +80,20 @@ private func run() async -> String {
     let package = arguments.firstIndex(of: "--package").flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil } ?? "routing"
     guard !package.hasPrefix("/"), !package.split(separator: "/").contains("..") else { return "Invalid package path" }
     let search = arguments.contains("--search")
-    let smart = arguments.contains("--smart")
     let hours = arguments.contains("--hours")
-    let parser = arguments.contains("--parser")
-    let install = arguments.contains("--install")
-    let overlays = arguments.contains("--overlays")
     let started = Date().ISO8601Format()
     let code: Int32
-    if smart || search || hours || parser || install {
-        let report = smart ? await runSmartBenchmark(root: root) : search || hours ? runSearchBenchmark(root: root.appendingPathComponent("search"), hoursOnly: hours)
-            : parser ? runParserBenchmark(root: root.appendingPathComponent("parser"))
-            : runPythonBenchmark(module: "phone_install_benchmark", root: root)
+    if search || hours {
+        let report = runSearchBenchmark(root: root.appendingPathComponent("search"), hoursOnly: hours)
         do {
             try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]).write(to: root.appendingPathComponent("result.json"), options: .atomic)
-            let correct = install ? report["active_release_verified"] as? Bool == true
-                : (report["mismatches"] as? [Any])?.isEmpty == true
-            code = report["error"] == nil && correct ? 0 : 1
+            code = report["error"] == nil && (report["mismatches"] as? [Any])?.isEmpty == true ? 0 : 1
         } catch { return "Could not write report: \(error.localizedDescription)" }
-    } else if overlays {
-        code = root.appendingPathComponent("overlays").path.withCString { directory in
-            root.appendingPathComponent("result.json").path.withCString { plannerOverlayBenchmark(directory, $0) }
-        }
     } else {
         code = root.appendingPathComponent(package).path.withCString { directory in
             root.appendingPathComponent("requests.json").path.withCString { requests in
                 root.appendingPathComponent("result.json").path.withCString { output in
-                    plannerBenchmark(directory, requests, output, (arguments.contains("--retained") ? 1 : 0) | (arguments.contains("--index-memory") ? 2 : 0))
+                    plannerBenchmark(directory, requests, output, arguments.contains("--retained") ? 1 : 0)
                 }
             }
         }
@@ -137,13 +113,10 @@ private func run() async -> String {
     metadata["exit_code"] = code
     metadata["build"] = "Release"
     metadata["started"] = started
-    metadata["workload"] = smart ? "smart_search" : search ? "search" : hours ? "hours" : parser ? "parser" : install ? "install" : overlays ? "overlays" : "routes"
+    metadata["workload"] = search ? "search" : hours ? "hours" : "routes"
     metadata["low_power_mode"] = ProcessInfo.processInfo.isLowPowerModeEnabled
     metadata["duration_ms"] = (ProcessInfo.processInfo.systemUptime - monotonicStart) * 1000
-    metadata["file_cache"] = smart ? "Uncontrolled OS cache; retained parser and SQLite connection for the complete corpus" : search || hours ? "Uncontrolled OS cache; one SQLite connection for the full corpus"
-        : parser ? "Uncontrolled OS cache; model hashes are verified before runtime initialization"
-        : install ? "Uncontrolled OS cache; source bundle is verified before installation"
-        : overlays ? "Uncontrolled OS cache; one SQLite connection for the complete query corpus"
+    metadata["file_cache"] = search || hours ? "Uncontrolled OS cache; one SQLite connection for the full corpus"
         : arguments.contains("--retained") ? "Uncontrolled OS cache; retained router with distinct request coordinates"
         : "Uncontrolled OS cache; each cold sample creates a new router"
     do {

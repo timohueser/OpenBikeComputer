@@ -1,6 +1,6 @@
 import XCTest
 
-/// TCX through the real decoder onto the import landing, the unsupported-file alert, and a share
+/// TCX through the real decoder onto the saved route, the unsupported-file alert, and a share
 /// arriving before pairing, where the route saves and the upload waits. The GPX walk lives in
 /// `RouteDetailTests`, and decoder logic is host-tested in `TCXRouteDecoderTests`.
 final class ImportTests: XCTestCase {
@@ -28,39 +28,40 @@ final class ImportTests: XCTestCase {
         add(attachment)
     }
 
+    /// Keep the file's line on the keep-or-plan choice.
+    @MainActor
+    private func keepTheLine(_ app: XCUIApplication) {
+        let keep = app.buttons["confirm.action.0"]
+        XCTAssertTrue(keep.waitForExistence(timeout: 10), "the keep-or-plan choice is missing")
+        keep.tap()
+    }
+
     // MARK: TCX import
 
-    /// A TCX course lands on the import screen through the real decoder: name, author banner, and
-    /// the course-point waypoints in ride order.
+    /// A TCX course saves through the real decoder and its route page opens: name, author line,
+    /// and the course-point waypoints in ride order. The route is in Planned.
     @MainActor
-    func testTCXImportLandsOnE1WithCourseWaypoints() {
+    func testTCXImportSavesAndOpensWithCourseWaypoints() {
         let app = launch(importSample: "tcx")
+        keepTheLine(app)
 
         XCTAssertTrue(app.staticTexts["Alpe d'Huez Climb"].waitForExistence(timeout: 10), "TCX course name missing")
         XCTAssertTrue(app.staticTexts["Imported from Garmin"].waitForExistence(timeout: 5),
-                      "TCX author banner missing")
+                      "TCX author line missing")
 
         let waypointsRow = app.buttons["detail.waypoints"]
         XCTAssertTrue(waypointsRow.waitForExistence(timeout: 5), "CoursePoint waypoints row missing")
-        snap(app, "E1-import-tcx")
+        snap(app, "E2-import-tcx")
 
         waypointsRow.tap()  // fold the dropdown out in place
         XCTAssertTrue(app.staticTexts["Turn 21"].waitForExistence(timeout: 5), "first course point missing")
         XCTAssertTrue(app.staticTexts["Summit"].exists, "last course point missing")
         snap(app, "W1-tcx-coursepoints")
-    }
 
-    /// Saving a TCX import lands it in Planned, like any other route file.
-    @MainActor
-    func testTCXImportSavesToPlanned() {
-        let app = launch(importSample: "tcx")
-
-        let save = app.buttons["import.newRoute"]
-        XCTAssertTrue(save.waitForExistence(timeout: 10))
-        save.tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Alpe d'Huez Climb"].waitForExistence(timeout: 5),
-                      "saved TCX route must land in the Planned list")
+                      "saved TCX route must be in the Planned list")
     }
 
     // MARK: Unsupported file
@@ -83,52 +84,20 @@ final class ImportTests: XCTestCase {
 
     // MARK: Import with no device paired
 
-    /// A share arriving before pairing presents the landing over the pairing intro with the
-    /// no-device framing: a banner, the New route row, Pair a device, and no Upload, because there
-    /// is nothing to upload to.
+    /// A share arriving before pairing asks keep-or-plan over the welcome screen and saves the
+    /// route there; the library has it.
     @MainActor
-    func testImportWithNoDeviceShowsH4Framing() {
+    func testImportWithNoDeviceSavesBeforePairing() {
         let app = launch(scenario: "noDevice", importSample: "gpx")
+        keepTheLine(app)
 
-        XCTAssertTrue(app.staticTexts["Schwarzwald Tour · Tag 2"].waitForExistence(timeout: 10), "E1 must present over D1")
-        // The banner renders its title and message as one combined text, so match by fragment.
-        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'No device paired yet'"))
-                          .firstMatch.waitForExistence(timeout: 5),
-                      "H4 banner missing")
-        XCTAssertTrue(app.buttons["import.newRoute"].exists)
-        XCTAssertTrue(app.buttons["detail.pairDevice"].exists)
-        XCTAssertFalse(app.buttons["detail.upload"].exists, "H4 must not offer Upload")
+        let browse = app.buttons["onboarding.browse"]
+        XCTAssertTrue(browse.waitForExistence(timeout: 5), "saving without a device must land back on the welcome screen")
         snap(app, "H4-import-no-device")
-
-        // Save returns to where the share interrupted: the pairing intro.
-        app.buttons["import.newRoute"].tap()
-        XCTAssertTrue(app.staticTexts["pair.introTitle"].firstMatch.waitForExistence(timeout: 5)
-                      || app.buttons["pair.start"].waitForExistence(timeout: 5),
-                      "saving without a device should land back on D1")
-    }
-
-    /// Pair a device keeps the route, saving it, and drops into the scan; after pairing completes
-    /// the imported route is in Planned.
-    @MainActor
-    func testH4PairADeviceSavesAndPairsThroughToThePlannedList() {
-        let app = launch(scenario: "noDevice", importSample: "gpx")
-
-        let pair = app.buttons["detail.pairDevice"]
-        XCTAssertTrue(pair.waitForExistence(timeout: 10))
-        pair.tap()
-
-        // The scan the button started; the mock finds the device.
-        let row = app.buttons["pair.deviceRow"]
-        XCTAssertTrue(row.waitForExistence(timeout: 15), "scan should surface the device row")
-        row.tap()
-
-        let goToRoutes = app.buttons["pair.goToRoutes"]
-        XCTAssertTrue(goToRoutes.waitForExistence(timeout: 10), "pairing should complete (D4)")
-        goToRoutes.tap()
+        browse.tap()
 
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Schwarzwald Tour · Tag 2"].waitForExistence(timeout: 10),
-                      "the H4-saved route must survive pairing + the device list load")
-        snap(app, "C1-after-h4-pairing")
+                      "the route saved before pairing must be in the library")
     }
 }

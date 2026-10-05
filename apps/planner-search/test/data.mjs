@@ -1,24 +1,22 @@
-import {DatabaseSync} from 'node:sqlite';
 import assert from 'node:assert/strict';
 import {search,DEFAULT_VIEW,distance} from '../web/engine.mjs';
 import {readFileSync} from 'node:fs';
 import {resolve} from '../resolver.mjs';
 import {lengths} from '../web/geography.mjs';
 import {compact} from '../web/text.mjs';
-import path from 'node:path';
+import {openRegion} from '../installation.mjs';
 
 const regions=(process.env.OBC_SEARCH_REGIONS || 'germany,baden-wuerttemberg').split(',');
 const dbs=Object.fromEntries(regions.map(name=>{
-  const conn=new DatabaseSync(path.join(process.env.OBC_SEARCH_DATA || 'data', `${name}.sqlite`),{readOnly:true});
-  conn.exec('PRAGMA cache_size=-32768; PRAGMA mmap_size=0;');
-  return [name,{conn,all:(sql,bind=[])=>conn.prepare(sql).all(...bind)}];
+  const installed=openRegion(process.env.OBC_SEARCH_DATA || 'data',name);
+  if(!installed)throw new Error(`Missing search data for ${name}.`);
+  return [name,installed.db];
 }));
 const habsburgerSources=new Set(['w154330310','n303825598','n801319951']);
 const habsburgerLocation=[7.85434,48.01003];
 const habsburgerAddress=p=>p.precision==='house'&&p.city==='Freiburg im Breisgau'
   &&habsburgerSources.has(p.source)&&distance([p.lon,p.lat],habsburgerLocation)<.02;
 const cases=[
-  {q:'bakery',check:r=>r.length>0&&r.every(p=>p.kind==='bakery'&&p.lon>=DEFAULT_VIEW[0]&&p.lon<=DEFAULT_VIEW[2])},
   {q:'Kandel',check:r=>r[0]?.kind==='summit'&&r.some(p=>p.source==='n1591343465'&&p.kind==='pass')&&r.filter(p=>p.kind==='street'&&p.name==='Kandel'&&p.distance<30).length===1},
   {q:'Feldberg',check:r=>r[0]?.source==='n26862857'&&r.some(p=>p.source==='r317609')},
   {q:'Feldberg (Schwarzwald)',check:r=>r[0]?.source==='r317609'},
@@ -40,9 +38,6 @@ const cases=[
   }})),
   {q:'Media Markt München',serverOnly:true,check:r=>r[0]?.city==='München'&&r[0]?.kind==='electronics'},
   {q:'Kaiser Joseph Straße 9999 Freiburg',check:r=>r[0]?.precision==='street'},
-  {q:'bakeries in Munich',serverOnly:true,request:{type:'places',what:['bakery'],where:{near:'Munich',in:true}},check:r=>r.length>0&&r.every(p=>p.city==='München')},
-  ...['pizza','Döner'].map(q=>({q,check:r=>r.length>0&&r.every(p=>['restaurant','fast_food','cafe','pub','bar'].includes(p.kind))&&r.some(p=>p.why.match.includes('OSM cuisine tag'))})),
-  {q:'Döner in Teningen',request:{type:'places',what:['kebab'],where:{near:'Teningen',in:true}},check:r=>r.length>0&&r.every(p=>p.city==='Teningen'&&(p.cuisine.includes('kebab')||/döner|kebap|kebab/i.test(p.name)))},
 ];
 const results=[];
 for(const [name,db]of Object.entries(dbs))for(const c of cases) {
@@ -60,10 +55,6 @@ for(let n=0;n<3;n++)for(const c of cases) {
   const r=search(primary,{...c,view:c.view||DEFAULT_VIEW});timing.push(r.elapsed);
 }
 timing.sort((a,b)=>a-b);
-const counts=Object.fromEntries(Object.entries(dbs).map(([name,db])=>[name,{
-  places:db.all('SELECT count(*) n FROM places')[0].n,
-  addresses:db.all('SELECT count(*) n FROM addresses')[0].n,
-}]));
 const xml=readFileSync(new URL('../../../fixtures/sources/route-import/komoot-schwarzwald.gpx',import.meta.url),'utf8');
 const line=[...xml.matchAll(/<trkpt lat="([^"]+)" lon="([^"]+)"/g)].map(m=>[Number(m[2]),Number(m[1])]),total=lengths(line).at(-1);
 const context={q:'hotels end of day 1',view:DEFAULT_VIEW,plan:{coordinates:line,points:[],days:[1,2,3].map(n=>({number:n,from:(n-1)*total/3,to:n*total/3}))}};
@@ -74,7 +65,7 @@ assert.ok(gap.stretches.length>0);assert.ok(gap.stretches.every(s=>s.from>=0&&s.
 const address=resolve(primary,{type:'route',from:{plan:'start'},to:{name:'Habsburgerstr. 10 Freiburg'}},context);
 const target=address.changes[0].points.at(-1);
 assert.ok(habsburgerSources.has(target.source)&&distance(target.coordinate,habsburgerLocation)<.02);
-assert.ok(primary.all("SELECT 1 FROM addresses WHERE source='w154330310' AND house='10'").length>0);
+assert.ok(primary.rows({sql:"SELECT 1 FROM {c}.addresses WHERE source='w154330310' AND house='10'",limit:1}).length>0);
 console.log('PASS real-data day scope, water gaps, and address route target');
-for(const db of Object.values(dbs))db.conn.close();
-console.log(JSON.stringify({counts,queries:results.length,medianMs:timing[Math.floor(timing.length/2)],p95Ms:timing[Math.ceil(timing.length*.95)-1]},null,2));
+for(const db of Object.values(dbs))db.close();
+console.log(JSON.stringify({queries:results.length,medianMs:timing[Math.floor(timing.length/2)],p95Ms:timing[Math.ceil(timing.length*.95)-1]},null,2));

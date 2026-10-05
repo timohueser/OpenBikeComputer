@@ -94,7 +94,7 @@
   ],
   "$defs": {
     "SourceEntry": {
-      "description": "§3.1's source declaration: what the cells derive from and what that obliges. The values are [`OSM_SOURCE`]'s constants rather than tree inputs, because the packer ingests exactly one dataset — the day a second source exists is the day this becomes data, not before (the OBCM v13 lesson). Consumers that describe the map data take these strings from the catalog rather than hard-coding them (§3.1).",
+      "description": "§3.1's source declaration: what the cells derive from and what that obliges. The credit and the licence come from the `osm-planet` entry of data/sources.toml rather than from tree inputs, because the packer ingests exactly one dataset. Consumers that describe the map data take these strings from the catalog rather than hard-coding them (§3.1).",
       "type": "object",
       "properties": {
         "dataset_id": {
@@ -898,7 +898,7 @@
       "type": "object",
       "properties": {
         "attribution": {
-          "description": "The class's required credit, verbatim, for the same reason the terrain block carries one: a consumer that shows landmark content reads the credit from the catalog rather than hard-coding it. The producer stamps `obc_pack::landmarks::ATTRIBUTION` here.",
+          "description": "The class's required credit, verbatim, for the same reason the terrain block carries one: a consumer that shows landmark content reads the credit from the catalog rather than hard-coding it. The producer stamps `obc_pack::landmarks::attribution()` here.",
           "type": "string"
         },
         "artifacts": {

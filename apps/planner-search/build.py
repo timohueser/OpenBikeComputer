@@ -1,137 +1,34 @@
-"""Build searchable regional SQLite files from a Photon/Nominatim JSON dump."""
+"""Build searchable regional SQLite files from a enriched OSM search dump."""
 import argparse
-import hashlib
 import io
+import sys
 import time
 import re
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
-import orjson
-import zstandard
-from shapely.geometry import mapping, shape
-from index import norm
-from storage import create, finish
+from writer import Writer
 
 ROOT = Path(__file__).parent
-
-
-def values(d, keys):
-    out = []
-    for k in keys:
-        v = d.get(k, '')
-        out.extend(v if isinstance(v, list) else [v])
-    return list(dict.fromkeys(str(v) for v in out if v))
-
-
-def names(d):
-    return values(d, ['name', 'name:de', 'name:en', 'name:fr', 'name:it', 'name:es',
-                      'name:nl', 'alt_name', 'loc_name', 'short_name', 'official_name', 'int_name'])
-
-
-def category(p):
-    k, v = p['osm_key'], p['osm_value']
-    if k == 'mountain_pass':
-        return 'pass'
-    if v == 'yes':
-        return k
-    if p.get('address_type') in ('city', 'town', 'village', 'hamlet', 'suburb', 'district', 'state', 'country'):
-        return p['address_type']
-    if k == 'boundary':
-        return 'locality'
-    if p.get('address_type') == 'street':
-        return 'street'
-    return {'peak': 'summit', 'saddle': 'pass', 'camp_site': 'campsite',
-            'alpine_hut': 'hut', 'wilderness_hut': 'hut', 'bicycle': 'bike_shop',
-            'bicycle_repair_station': 'repair_station', 'station': 'train_station',
-            'water': 'lake', 'doctors': 'doctor', 'charging_station': 'charging',
-            'ferry_terminal': 'ferry', 'public_bath': 'shower'}.get(v, v)
-
-
-class Writer:
-    def __init__(self, name, output):
-        self.path = output / f'{name}.sqlite'
-        self.db = create(self.path)
-        self.streets = {}
-        self.contexts = {}
-        self.next_id = 0
-
-    def place(self, source, name, aliases, kind, lon, lat, city, postcode, importance, bbox, region, context, cuisine='', opening_hours=''):
-        self.next_id += 1
-        key = (city, postcode, region, context)
-        context_id = self.contexts.get(key)
-        if context_id is None:
-            context_id = len(self.contexts) + 1
-            self.contexts[key] = context_id
-            self.db.execute('INSERT INTO place_contexts VALUES (?,?,?,?,?)', (context_id, *key))
-        self.db.execute('INSERT INTO place_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                        (self.next_id, source, name, None if aliases == name else aliases,
-                         kind, lon, lat, context_id, importance, *bbox, cuisine, opening_hours))
-        return self.next_id
-
-    def add(self, p):
-        # Photon derives postcode centroids from addresses without an OSM identity.
-        if p['osm_key'] == 'place' and p['osm_value'] == 'postcode' and not p.get('object_type'):
-            return
-        a = p.get('address', {})
-        ns = names(p.get('name', {}))
-        lon, lat = p['centroid']
-        region = a.get('state', '')
-        city = (values(a, ['city', 'town', 'village', 'county']) or [''])[0]
-        postcode = p.get('postcode', '')
-        country = 'Deutschland Germany' if p.get('country_code') == 'de' else ' '.join(values(a, ['country', 'country:en']))
-        context = ' '.join(values(a, ['city', 'city:de', 'city:en', 'district', 'locality',
-                                     'county', 'state', 'street']) + [postcode, country])
-        source = f"{p['object_type'].lower()}{p['object_id']}"
-        bbox = p.get('bbox', [lon, lat, lon, lat])
-        bbox = [min(bbox[0], bbox[2]), min(bbox[1], bbox[3]), max(bbox[0], bbox[2]), max(bbox[1], bbox[3])]
-        kind = category(p)
-        street = a.get('street', '')
-        house = p.get('housenumber', '')
-        if kind == 'street' and ns:
-            street = ns[0]
-        if street and (house or kind == 'street'):
-            key = (street, city, postcode, region)
-            sid = self.streets.get(key)
-            if sid is None:
-                stable = 's' + hashlib.sha1('|'.join(key).encode()).hexdigest()[:20]
-                aliases = ';'.join(ns) if kind == 'street' else street
-                sid = self.place(stable, street, aliases, 'street', lon, lat, city, postcode,
-                                 0.05, bbox, region, context)
-                self.streets[key] = sid
-            if house:
-                self.db.execute('INSERT INTO addresses VALUES (?,?,?,?,?)', (sid, norm(house), lon, lat, source))
-        if kind == 'street':
-            return
-        # Unnamed service features remain category-searchable.
-        services = {'bakery', 'supermarket', 'convenience', 'campsite', 'hotel', 'hostel', 'hut',
-                    'guest_house', 'drinking_water', 'water_point', 'spring', 'pharmacy',
-                    'bike_shop', 'repair_station', 'restaurant', 'cafe', 'shelter', 'toilets',
-                    'train_station', 'museum', 'viewpoint', 'pass', 'summit', 'fast_food',
-                    'water_tap', 'fountain', 'motel', 'butcher', 'marketplace', 'fuel',
-                    'bar', 'ice_cream', 'hospital', 'doctor', 'clinic', 'charging', 'shower',
-                    'laundry', 'atm', 'bus_stop', 'ferry', 'lake', 'beach', 'swimming_pool',
-                    'castle', 'church', 'monastery', 'ruins', 'waterfall', 'tower', 'bridge'}
-        if not ns and kind not in services:
-            return
-        if p['osm_key'] == 'building' and house and not ns:
-            return
-        self.place(source, ns[0] if ns else kind.replace('_', ' '), ';'.join(ns), kind,
-                   lon, lat, city, postcode, p.get('importance', 0) or 0, bbox, region, context,
-                   p.get('extra', {}).get('cuisine', ''), p.get('extra', {}).get('opening_hours', ''))
-
-    def finish(self, meta):
-        finish(self.db, self.path, meta)
+sys.path.insert(0, str(ROOT.parents[1] / "tools"))
+from data_registry import attribution  # noqa: E402
 
 
 def main():
+    import orjson
+    import zstandard
+    from shapely.geometry import mapping, shape
+
     ap = argparse.ArgumentParser()
     ap.add_argument('dump', type=Path)
+    ap.add_argument('--component', choices=['all', 'pois', 'addresses'], default='all')
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--output', type=Path, default=ROOT / 'data')
     ap.add_argument('--region', default='all')
     ap.add_argument('--bounds', help='West,south,east,north for one regional package')
     ap.add_argument('--countries', default='de', help='Comma-separated country codes')
-    ap.add_argument('--osm-sha256', help='Identity of the OSM input used by Nominatim')
+    ap.add_argument('--osm-sha256', help='Identity of the OSM input used by the search baker')
+    ap.add_argument('--time-zone', required=True, type=ZoneInfo, help='IANA time zone of the region calendar')
     args = ap.parse_args()
     if not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', args.region):
         ap.error('Invalid region ID')
@@ -145,11 +42,12 @@ def main():
         ap.error('Invalid OSM digest')
     args.output.mkdir(parents=True, exist_ok=True)
     regions = ['germany', 'baden-wuerttemberg'] if args.region == 'all' else [args.region]
-    writers = {name: Writer(name, args.output) for name in regions}
+    writers = {name: Writer(name, args.output, args.component) for name in regions}
     start = time.monotonic()
     n = 0
     outlines = []
-    meta = {'schema': 3, 'source': args.dump.name, 'attribution': '© OpenStreetMap contributors, ODbL 1.0; prepared by Nominatim / Photon'}
+    meta = {'source': args.dump.name, 'time_zone': args.time_zone.key,
+            'attribution': attribution("osm-planet")}
     if bounds:
         meta.update(bounds=bounds, countries=countries)
     if args.osm_sha256:
@@ -159,6 +57,19 @@ def main():
             obj = orjson.loads(line)
             if obj['type'] == 'NominatimDumpFile':
                 meta['timestamp'] = obj['content']['data_timestamp']
+                generator = obj['content'].get('generator', 'photon')
+                source_hash = obj['content'].get('osm_sha256')
+                if source_hash and args.osm_sha256 and source_hash != args.osm_sha256:
+                    ap.error('Source and requested OSM snapshot differ')
+                if source_hash:
+                    if not re.fullmatch(r'[a-f0-9]{64}', source_hash):
+                        ap.error('Invalid source OSM digest')
+                    meta['osm_sha256'] = source_hash
+                if obj['content'].get('scope') == 'addresses' and args.component != 'addresses':
+                    ap.error('This source contains addresses only; use --component addresses')
+                if generator != 'photon':
+                    meta['source_generator'] = generator
+                    meta['attribution'] = f'{attribution("osm-planet")}; prepared by {generator}'
             if obj['type'] != 'Place':
                 continue
             for p in obj['content']:

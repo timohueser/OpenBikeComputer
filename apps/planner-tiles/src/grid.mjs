@@ -1,17 +1,14 @@
 const metadata = new Map();
 export class MissingArchive extends Error {}
 
-async function readJSON(bucket, path, optional = false) {
+async function readJSON(bucket, path) {
   const cached = metadata.get(path);
   if (cached) {
     metadata.delete(path); metadata.set(path, cached);
     return cached;
   }
   const object = await bucket.get(path);
-  if (!object) {
-    if (optional) return null;
-    throw new MissingArchive();
-  }
+  if (!object) throw new MissingArchive();
   if (object.size > 1024) throw new Error('Invalid public object pointer');
   const value = await object.json();
   metadata.set(path, value);
@@ -20,8 +17,8 @@ async function readJSON(bucket, path, optional = false) {
 }
 
 export async function gridConfig(bucket, prefix) {
-  const grid = await readJSON(bucket, `${prefix}/public/grid.json`, true);
-  if (grid && (grid.format !== 2 || !Number.isInteger(grid.map_zoom) || grid.map_zoom < 9 || grid.map_zoom > 14)) {
+  const grid = await readJSON(bucket, `${prefix}/public/grid.json`);
+  if (grid.format !== 2 || !Number.isInteger(grid.map_zoom) || grid.map_zoom < 9 || grid.map_zoom > 14) {
     throw new Error('Invalid map grid');
   }
   return grid;
@@ -50,7 +47,7 @@ export function packName(name, tile, zoom) {
 }
 
 export function assetRoute(path) {
-  const match = /^\/releases\/([a-f0-9]{64})\/(device\/catalog\.json|maps\/assets\/(?:fonts\/[A-Za-z0-9 _,-]+\/[0-9]+-[0-9]+\.pbf|sprites\/v[0-9]+\/[a-z]+(?:@2x)?\.(?:json|png)))$/.exec(path);
+  const match = /^\/releases\/([a-f0-9]{64})\/(device\/catalog\.json|routes\/tiles\/9-[0-9]+-[0-9]+\.json|maps\/assets\/(?:fonts\/[A-Za-z0-9 _,-]+\/[0-9]+-[0-9]+\.pbf|sprites\/v[0-9]+\/[a-z]+(?:@2x)?\.(?:json|png)))$/.exec(path);
   if (!match) return null;
   return { release: match[1], file: match[2], type: match[2].endsWith('.json') ? 'application/json'
     : match[2].endsWith('.png') ? 'image/png' : 'application/x-protobuf' };

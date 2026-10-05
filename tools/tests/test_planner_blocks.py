@@ -1,4 +1,4 @@
-"""Offline selections carry one font file per stack with the glyph ranges the region's labels use."""
+"""Grid cells carry joined fonts and their route records."""
 
 import json
 from pathlib import Path
@@ -20,18 +20,19 @@ def field(number, payload):
     return varint(number << 3 | 2) + varint(len(payload)) + payload
 
 
-def release(source, name, kind="", ref=""):
+def release(source, name, kind="", ref="", poi=""):
     """Write a one-tile basemap with one feature and an overlay database with one route."""
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import write
     layer = (field(1, b"places") + field(2, field(2, bytes([0, 0, 1, 1]))) + field(3, b"name") + field(3, b"kind")
              + field(4, field(1, name.encode())) + field(4, field(1, kind.encode())))
     (source / "maps").mkdir()
-    with write(source / "maps/basemap.pmtiles") as writer:
-        writer.write_tile(zxy_to_tileid(0, 0, 0), field(3, layer))
-        writer.finalize({"tile_type": TileType.MVT, "tile_compression": Compression.NONE,
-                         "min_lon_e7": -1800000000, "min_lat_e7": -850000000, "max_lon_e7": 1800000000,
-                         "max_lat_e7": 850000000, "center_zoom": 0, "center_lon_e7": 0, "center_lat_e7": 0}, {})
+    for archive in ("basemap", "places"):
+        with write(source / f"maps/{archive}.pmtiles") as writer:
+            writer.write_tile(zxy_to_tileid(0, 0, 0), field(3, layer if archive == "basemap" else field(1, b"pois") + field(2, field(2, bytes([0, 0]))) + field(3, b"name") + field(4, field(1, poi.encode()))))
+            writer.finalize({"tile_type": TileType.MVT, "tile_compression": Compression.NONE,
+                             "min_lon_e7": -1800000000, "min_lat_e7": -850000000, "max_lon_e7": 1800000000,
+                             "max_lat_e7": 850000000, "center_zoom": 0, "center_lon_e7": 0, "center_lat_e7": 0}, {})
     (source / "routing").mkdir()
     db = sqlite3.connect(source / "routing/overlays.sqlite")
     db.executescript("CREATE TABLE attributes(id INTEGER PRIMARY KEY, properties TEXT NOT NULL);"
@@ -63,8 +64,26 @@ class OfflineFonts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary)
             # µ and ÿ upper-case to U+039C and U+0178; Persian letters shape into U+FB50-U+FEFF.
-            release(source, "µÿ چای")
+            release(source, "µÿ", poi="چای")
             self.assertEqual(blocks.glyph_ranges(source), {0, 1, 3, 6, 251, 252, 253, 254})
+
+
+class RouteTiles(unittest.TestCase):
+    def test_each_grid_cell_lists_the_records_that_touch_it_in_id_order(self):
+        stage = lambda id, cells: {"id": id, "kind": "hiking", "name": f"Stage {id}", "cells": cells,
+                                   "line_udeg": [8000000, 47900000, 1000, 0], "via": [], "parent": 10, "stage": id - 20}
+        long_route = {"id": 10, "kind": "hiking", "name": "Long", "cells": ["9-1-1", "9-1-2", "9-9-9"],
+                      "stages": [21, 22], "start_udeg": [8000000, 47900000]}
+        catalog = {"format": 1, "routes": [long_route, stage(21, ["9-1-1"]), stage(22, ["9-1-2", "9-9-9"]),
+                                           {**stage(5, ["9-1-2"]), "loop": True}]}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "region.json"
+            path.write_text(json.dumps(catalog))
+            tiles = blocks.route_tiles(path, ["9-1-1", "9-1-2", "9-2-1"])
+        ids = {name: [record["id"] for record in tile["routes"]] for name, tile in tiles.items()}
+        self.assertEqual(ids, {"9-1-1": [10, 21], "9-1-2": [5, 10, 22], "9-2-1": []})
+        self.assertEqual(tiles["9-1-2"]["routes"][1], long_route)
+        self.assertEqual({tile["format"] for tile in tiles.values()}, {1})
 
 
 if __name__ == "__main__":

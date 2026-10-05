@@ -36,25 +36,18 @@ struct TripLibraryStoreTests {
     func roundTripsTheWholeTrip(_ kind: StoreKind) {
         let store = makeStore(kind)
         var t = trip("t1")
-        let camp = Stop(
-            name: "Camp", coordinate: Coordinate(latitude: 46.501, longitude: 8.015), kind: .campsite, mapItemID: "I1")
-        let ended = t.endDay(0, at: t.place([camp])[0])
-        #expect(ended)
         t.namePlace(1, to: "Brig")
-        t.reverse()
         t.renameDay(0, to: "Andermatt")
-        t.uploadedKey = 42
         t.dayEnds[0].transfer = .ferry
-        t.dayEnds[0].stopRoute = .via(
-            toStop: file([8.012, 8.015]), fromStop: file([8.015, 8.018], ele: nil), leave: 900, rejoin: 2_300)
         t.startDay = CivilDay(daysSince1970: 20_725)
         let link = DeviceRouteLink(serial: "OBC-001", storeID: "000000000000000000000000a1b2c3d4", objectID: DeviceObjectID(5))
         t.deviceLink = link
         t.uploadedCRC32 = 0xDEAD_BEEF
         t.dayCopies = [nil, TripDayCopy(link: link, uploadedCRC32: 7)]
+        t.plan = PlannerPlan.keptLine(t)
+        #expect(t.plan != nil)
         store.saveTrip(t)
 
-        #expect(t.startName == "Brig")
         #expect(store.trips() == [t])
     }
 

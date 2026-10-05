@@ -5,7 +5,7 @@
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import type { Place } from '../../lib/planner/editor';
 
-    let { place, detail = '', day = null, selected = false, wrapDetail = false, onSelect }: {
+    let { place, detail = '', day = null, selected = false, wrapDetail = false, hovered = false, onHover, onSelect }: {
         place: Place;
         /** Extra facts after the kind, such as the km mark. */
         detail?: string;
@@ -13,11 +13,13 @@
         day?: { distance: number; ascent: number; over: boolean } | null;
         selected?: boolean;
         wrapDetail?: boolean;
+        hovered?: boolean;
+        onHover?: (id: string | null) => void;
         onSelect: (place: Place) => void;
     } = $props();
 </script>
 
-<button type="button" class="place-row" class:selected class:wrapDetail onclick={() => onSelect(place)}>
+<button type="button" class="place-row" class:selected class:wrapDetail class:hovered onmouseenter={() => onHover?.(place.id)} onmouseleave={() => onHover?.(null)} onfocus={() => onHover?.(place.id)} onblur={() => onHover?.(null)} onclick={() => onSelect(place)}>
     <span class="place-icon"><Icon path={placeCategories[place.category].icon} size={17} /></span>
     <span class="name">
         <strong>{place.label}</strong>
@@ -26,7 +28,7 @@
         {#if wrapDetail && place.hoursStatus}<OpeningStatus value={place.hoursStatus} />{/if}
     </span>
     {#if day}
-        <span class="figure" class:over={day.over}>{day.distance.toFixed(1)} km<small>↑ {day.ascent} m</small></span>
+        <span class="figure" class:over={day.over}>≈ {day.distance.toFixed(1)} km<small>↑ {day.ascent} m</small></span>
     {/if}
     <Icon name="chevron" size={13} />
 </button>
@@ -47,9 +49,11 @@
         cursor: pointer;
     }
     .place-row:hover,
-    .place-row.selected {
+    .place-row.selected,
+    .place-row.hovered {
         background: var(--parchment-2);
     }
+    .place-row:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
     .place-row > :global(svg) {
         flex: none;
         color: var(--ink-soft);

@@ -1,12 +1,11 @@
 import {
   search,
-  cuisineOf,
+  servesCuisine,
   distance,
   around,
-  routePosition,
+  routePositions,
   distinct,
   rank,
-  GROUPS,
   norm,
 } from './web/engine.mjs';
 import {
@@ -22,20 +21,18 @@ import {
   crossesView,
   kmQuantity,
 } from './web/geography.mjs';
-import { openingState } from './hours.mjs';
 import { routeResults } from './web/route-results.mjs';
+import contract from './query/contract.json' with { type: 'json' };
 
-const groups = {
-  ...GROUPS,
-  water: ['drinking_water', 'water_point', 'water_tap', 'spring', 'fountain'],
-  resupply: [...GROUPS.resupply, 'fuel'],
-  medical: ['hospital', 'doctor', 'clinic'],
-  bike: [...GROUPS.bike, 'charging'],
-  transport: ['train_station', 'bus_stop', 'ferry'],
-  swimming: ['lake', 'beach', 'swimming_pool'],
-  sight: [...GROUPS.sight, 'church', 'monastery', 'tower', 'bridge'],
-  town: ['city', 'town', 'village', 'hamlet'],
-};
+/** The kind whose places a cuisine kind filters, or the kind itself. */
+export const baseKind = (k) => (Object.hasOwn(contract.cuisines, k) ? contract.cuisines[k] : k);
+/** The search-data kinds of `what`. A cuisine kind finds places of its kind that serve it. */
+function placeKinds(what, cuisine) {
+  return {
+    kinds: [...new Set(what.flatMap((k) => contract.kinds[baseKind(k)].data))],
+    cuisine: cuisine || what.find((k) => baseKind(k) !== k),
+  };
+}
 const label = (value) => value.replaceAll('_', ' ');
 const pointResult = (coordinate, name, extra = {}) => ({
   coordinate,
@@ -67,7 +64,7 @@ export function resolvePoint(db, point, context, focus = centre(context.view)) {
   if (point.name) {
     const found = search(db, {
       q: point.name,
-      request: { type: 'place', name: point.name },
+      name: point.name,
       view: around(focus, 10),
     }).results;
     if (!found.length)
@@ -85,21 +82,13 @@ export function resolvePoint(db, point, context, focus = centre(context.view)) {
     });
   }
   if (point.kind) {
-    const found = findPlaces(
-      db,
-      {
-        type: 'places',
-        what: [point.kind],
-        radius: { value: 25, unit: 'km' },
-        where: { scope: 'here' },
-      },
-      { ...context, here: focus, pointing: undefined },
-    );
-    if (!found.results.length)
+    const { kinds, cuisine } = placeKinds([point.kind]);
+    const rows = categoryRows(db, kinds, around(focus, 25), focus, cuisine ? undefined : 1);
+    const p = cuisine ? rows.find((p) => servesCuisine(p, cuisine)) : rows[0];
+    if (!p || distance([p.lon, p.lat], focus) > 25)
       throw new Error(
         `No mapped ${label(point.kind)} within 25 km of this point.`,
       );
-    const p = found.results[0];
     return pointResult([p.lon, p.lat], p.name, {
       source: p.source,
       kind: p.kind,
@@ -192,7 +181,7 @@ function scope(db, request, context) {
           context,
           at(line, range[key === 'after' ? 0 : 1], ds),
         );
-        const position = routePosition(p.coordinate, line, ds);
+        const position = routePositions(line, ds)(p.coordinate);
         if (position.distance > 5)
           throw new Error(`“${p.label}” is more than 5 km from the route.`);
         range[key === 'after' ? 0 : 1] =
@@ -230,7 +219,8 @@ function scope(db, request, context) {
       area = `Within ${radial} km of ${points[0].label}`;
     } else {
       const route = lineOf(context),
-        positions = points.map((p) => routePosition(p.coordinate, route, ds));
+        position = routePositions(route, ds),
+        positions = points.map((p) => position(p.coordinate));
       if (positions.some((p) => p.distance > 5))
         throw new Error('Both points must be within 5 km of the route.');
       const nearRange = positions.map((p) => p.along).sort((a, b) => a - b);
@@ -246,20 +236,23 @@ function scope(db, request, context) {
   return { w, range, line, radial, focus, bounds, area, radius: radius ?? 1 };
 }
 
-function categoryRows(db, kinds, bounds, focus) {
+function categoryRows(db, kinds, bounds, focus, limit = 2001) {
   const x = focus[0],
     y = focus[1],
     cos = Math.cos((y * Math.PI) / 180) ** 2;
-  return db.all(
-    `SELECT p.* FROM spatial s JOIN places p ON p.id=s.id
+  return db.places([{
+    sql: `SELECT p.id,(p.lon-?)*(p.lon-?)*?+(p.lat-?)*(p.lat-?) AS _distance,p.source
+    FROM {c}.spatial s JOIN {c}.place_records p ON p.id=s.id
     WHERE s.east>=? AND s.north>=? AND s.west<=? AND s.south<=?
-    AND p.kind IN (${kinds.map(() => '?').join(',')})
-    ORDER BY (p.lon-?)*(p.lon-?)*?+(p.lat-?)*(p.lat-?) LIMIT 2001`,
-    [...bounds, ...kinds, x, x, cos, y, y],
-    {bounds},
-  );
+    AND p.kind IN (${kinds.map(() => '?').join(',')})`,
+    params: [x, x, cos, y, y, ...bounds, ...kinds],
+    order: ['_distance', 'source'],
+    limit,
+    bounds,
+  }]);
 }
-export function findPlaces(db, request, context) {
+// `all` adds every sorted match with its route position for internal callers.
+export function findPlaces(db, request, context, { all = false } = {}) {
   const where = request.where || context.pointing;
   if (where?.day === 'every' && where.part) {
     const days = context.plan?.days?.filter((d) => !d.rest) || [];
@@ -273,7 +266,8 @@ export function findPlaces(db, request, context) {
           open:
             request.open?.day === 'every' ? { day: d.number } : request.open,
         },
-        { ...context, all: true },
+        context,
+        { all: true },
       ),
     );
     const results = distinct(
@@ -290,15 +284,27 @@ export function findPlaces(db, request, context) {
       area: `Near every day ${where.part}`,
       note: [...new Set(answers.map((a) => a.note).filter(Boolean))].join(' '),
       truncated: answers.some((a) => a.truncated),
-      ...(context.all ? { all: results } : {}),
+      ...(all ? { all: results } : {}),
     };
   }
   const sc = scope(db, request, context),
-    kinds = [...new Set(request.what.flatMap((k) => groups[k] || [k]))];
+    { kinds, cuisine } = placeKinds(request.what, request.cuisine);
   if (request.open?.day)
     context = { ...context, openDate: dayDate(request.open.day, context) };
-  const found = new Map(),
-    ds = planKm(context);
+  const implicit =
+    (!request.where && !context.pointing) ||
+    (Object.keys(sc.w).length === 1 && sc.w.scope === 'view');
+  const alongRoute = sc.line || (
+    implicit &&
+    context.plan?.coordinates?.length > 1 &&
+    crossesView(context.plan.coordinates, context.view)
+  );
+  // A route position costs a search of the line, so only route scopes measure it.
+  const position =
+    (sc.range || alongRoute || all) && context.plan?.coordinates?.length > 1
+      ? routePositions(context.plan.coordinates, planKm(context))
+      : null;
+  const found = new Map();
   let truncated = false,
     unknown = 0;
   function collect(bounds) {
@@ -316,50 +322,32 @@ export function findPlaces(db, request, context) {
     unknown = 0;
     return [...found.values()].flatMap((p) => {
       const km = distance([p.lon, p.lat], sc.focus),
-        pos = sc.line ? routePosition([p.lon, p.lat], sc.line) : null;
+        pos = position?.([p.lon, p.lat]) ?? null;
       if (
         (sc.radial !== null && km > sc.radial) ||
-        (pos && pos.distance > sc.radius)
+        (sc.line &&
+          (pos.distance > sc.radius ||
+            pos.along < sc.range[0] - 1e-7 ||
+            pos.along > sc.range[1] + 1e-7))
       )
         return [];
-      if (request.cuisine) {
-        const tags = String(p.cuisine || '')
-            .split(';')
-            .map(norm),
-          name = norm(p.name + ' ' + p.aliases);
-        const ok =
-          tags.some((t) => cuisineOf(t) === request.cuisine) ||
-          (request.cuisine === 'pizza'
-            ? /\bpizz(?:a|eri)/
-            : /\b(?:doner|doener|kebab|kebap)/
-          ).test(name);
-        if (!ok) return [];
-      }
-      const opening = (context.openingState || openingState)(p, request.open, context);
+      if (cuisine && !servesCuisine(p, cuisine)) return [];
+      const opening = request.open ? context.openingState(p, request.open, context) : null;
       if (opening === 'unknown') unknown++;
       if (opening && opening !== 'open') return [];
-      const full =
-        context.plan?.coordinates?.length > 1
-          ? routePosition([p.lon, p.lat], context.plan.coordinates, ds)
-          : null;
-      if (
-        sc.line &&
-        sc.range &&
-        full &&
-        (full.along < sc.range[0] - 1e-7 || full.along > sc.range[1] + 1e-7)
-      )
-        return [];
       return [
         {
           ...p,
           distance: km,
-          position: full,
-          score: pos ? -pos.along : -km,
+          position: pos,
+          score: alongRoute ? -pos.along : -km,
           precision: 'place',
           opening,
           why: {
             category: p.kind,
-            order: pos ? 'Position along route' : 'Distance from search centre',
+            order: alongRoute
+              ? 'Spread along route, favouring nearby places'
+              : 'Distance from search centre',
           },
         },
       ];
@@ -368,9 +356,6 @@ export function findPlaces(db, request, context) {
   collect(sc.bounds);
   let results = filter();
   const notes = [];
-  const implicit =
-    (!request.where && !context.pointing) ||
-    (Object.keys(sc.w).length === 1 && sc.w.scope === 'view');
   if (!results.length && implicit && request.radius === undefined) {
     for (const km of [5, 15, 50]) {
       if (
@@ -388,18 +373,6 @@ export function findPlaces(db, request, context) {
         break;
       }
     }
-  }
-  const alongRoute = sc.line || (
-    implicit &&
-    context.plan?.coordinates?.length > 1 &&
-    crossesView(context.plan.coordinates, context.view)
-  );
-  if (alongRoute) {
-    results = results.map((p) => ({
-      ...p,
-      score: -p.position.along,
-      why: { ...p.why, order: 'Spread along route, favouring nearby places' },
-    }));
   }
   if (unknown)
     notes.push(
@@ -422,7 +395,7 @@ export function findPlaces(db, request, context) {
     area: sc.area,
     note: notes.join(' '),
     truncated,
-    ...(context.all ? { all: sorted } : {}),
+    ...(all ? { all: sorted } : {}),
   };
 }
 
@@ -434,7 +407,7 @@ export function resolve(db, request, context) {
       type: 'places',
       ...search(db, {
         q: context.q,
-        request: { type: 'place', name: request.name || context.q },
+        name: request.name || context.q,
         view,
         withinKm: request.near ? 5 : undefined,
         limit: context.limit,
@@ -448,6 +421,12 @@ export function resolve(db, request, context) {
     total = ds.at(-1);
   const changes = [];
   let description = '';
+  // The longest stretches first. Only the shown ones get coordinates: each slice reads the line.
+  const longest = (stretches, name) =>
+    stretches
+      .sort((a, b) => b.to - b.from - (a.to - a.from))
+      .slice(0, 20)
+      .map((s) => ({ ...s, label: name, coordinates: slice(line, s.from, s.to, ds) }));
   if (request.type === 'route') {
     const from = resolvePoint(
       db,
@@ -553,7 +532,7 @@ export function resolve(db, request, context) {
     const matched = request.point.name
       ? points.filter((p) => norm(p.label) === norm(request.point.name))
       : request.point.kind
-        ? points.filter((p) => p.placeKind === request.point.kind)
+        ? points.filter((p) => placeKinds([request.point.kind]).kinds.includes(p.placeKind))
         : points.filter(
             (p) =>
               distance(
@@ -611,15 +590,6 @@ export function resolve(db, request, context) {
     lineOf(context);
     changes.push({ op: 'reverse' });
     description = 'Reverse the route';
-  } else if (request.type === 'reroute') {
-    const sc = scope(db, request, context);
-    changes.push({
-      op: 'reroute',
-      range: sc.range || planRange(context),
-      bike: request.bike,
-      goal: request.goal,
-    });
-    description = `Re-route ${sc.area.toLowerCase()}`;
   } else if (request.type === 'stretches') {
     const sc = scope(db, request, context),
       range = sc.range || planRange(context);
@@ -633,7 +603,8 @@ export function resolve(db, request, context) {
           what: [request.what.slice(4)],
           where: request.where || { scope: 'route' },
         },
-        { ...context, all: true },
+        context,
+        { all: true },
       );
       if (found.truncated)
         throw new Error(
@@ -647,19 +618,13 @@ export function resolve(db, request, context) {
           .sort((a, b) => a - b),
         range[1],
       ];
-      const stretches = positions
+      const gaps = positions
         .slice(1)
-        .map((to, i) => ({
-          from: positions[i],
-          to,
-          label: `No mapped ${label(request.what.slice(4))}`,
-          coordinates: slice(line, positions[i], to, ds),
-        }))
-        .filter((s) => s.to - s.from >= (request.min?.value || 0))
-        .sort((a, b) => b.to - b.from - (a.to - a.from));
+        .map((to, i) => ({ from: positions[i], to }))
+        .filter((s) => s.to - s.from >= (request.min?.value || 0));
       return {
         type: 'stretches',
-        stretches: stretches.slice(0, 20),
+        stretches: longest(gaps, `No mapped ${label(request.what.slice(4))}`),
         area: sc.area,
         note: 'Gaps use mapped places within 1 km of the line. Missing map data can make a gap look longer.',
       };
@@ -669,7 +634,7 @@ export function resolve(db, request, context) {
       throw new Error(
         'This route has no verified surface, gradient or access data yet.',
       );
-    const stretches = segments
+    const found = segments
       .filter(
         (s) =>
           s.kind === request.what && s.to >= range[0] && s.from <= range[1],
@@ -687,13 +652,8 @@ export function resolve(db, request, context) {
             : request.min.unit === 'm'
               ? s.ascent
               : s.gradient) >= request.min.value,
-      )
-      .map((s) => ({
-        ...s,
-        label: label(request.what),
-        coordinates: slice(line, s.from, s.to, ds),
-      }));
-    return { type: 'stretches', stretches, area: sc.area };
+      );
+    return { type: 'stretches', stretches: longest(found, label(request.what)), area: sc.area };
   } else throw new Error('This request type is not supported.');
   return {
     type: 'change',

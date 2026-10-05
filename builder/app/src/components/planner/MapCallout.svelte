@@ -6,22 +6,28 @@
 </script>
 
 <script lang="ts">
-    import { onMount } from 'svelte';
+    import { onMount, type Snippet } from 'svelte';
     import Icon from './PlannerIcon.svelte';
     import PlaceRow from './PlaceRow.svelte';
     import OpeningHours from './OpeningHours.svelte';
     import { kindLabel } from '../../lib/planner/search/presentation';
+    import { websiteLink, phoneNumbers, phoneLink } from '../../lib/planner/contact-links';
     import Segmented from './Segmented.svelte';
     import { placeCategories } from '../../lib/planner/poi-kinds';
-    import { profileAscent } from '../../lib/planner/profile-data';
-    import { dayOverTarget, maxRidingDays, pinNight, tripDays, type Coordinate, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import { canMoveLoopStart, dayOverTarget, hasEndpoints as endpointsChosen, maxRidingDays, planView, provisionalDays, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import { nearestProgress, type Coordinate } from '../../lib/planner/geo';
+    import type { RoutingLine } from '../../lib/planner/routing';
 
     let {
-        kind, trip, days, dayLabels, night, point, place, coordinate, candidates, legMode,
-        onClose, onEndpoint, onAddHere, onLegMode, onInsert, onPick, onSelectPlace, onStay, onAddVisit, onRename, onKind, onRemove,
+        kind, trip, line, days, overnightNote = '', detailsError = '', dayLabels, night, point, place, coordinate, candidates, legMode,
+        onClose, onEndpoint, onRoutes, onAddHere, onLegMode, onInsert, onLoop, onLoopStart, onPick, onSelectPlace, onStay, onAddVisit, onRename, onKind, onRemove, children,
     }: {
+        overnightNote?: string;
+        detailsError?: string;
         kind: CalloutKind;
         trip: Trip;
+        /** The line of the trip, once it is calculated. */
+        line?: RoutingLine;
         days: Day[];
         /** Riding number → calendar number. */
         dayLabels: Record<number, number>;
@@ -34,10 +40,16 @@
         candidates: OvernightCandidate[];
         legMode: LegMode;
         onEndpoint?: (kind: 'start' | 'finish') => void;
+        /** "Signed routes from here" on a place or a map point. */
+        onRoutes?: () => void;
         onClose: () => void;
         onAddHere: (kind: EditableKind) => void;
         onLegMode: (mode: LegMode) => void;
         onInsert: () => void;
+        /** "Back to start" on the finish. */
+        onLoop?: () => void;
+        /** "Start the loop here" on the line of a loop. */
+        onLoopStart?: () => void;
         onPick: () => void;
         onSelectPlace: (place: Place) => void;
         onStay: (ridingDay: number) => void;
@@ -45,9 +57,13 @@
         onRename: (label: string) => void;
         onKind: (kind: EditableKind | 'detour') => void;
         onRemove: () => void;
+        /** Extra details below the callout actions, such as a data layer at this spot. */
+        children?: Snippet;
     } = $props();
 
-    const hasEndpoints = $derived(trip.points.some(p => p.kind === 'start') && trip.points.some(p => p.kind === 'finish'));
+    const hasEndpoints = $derived(endpointsChosen(trip));
+    const website = $derived(websiteLink(place?.website));
+    const phones = $derived(phoneNumbers(place?.phone));
     const multi = $derived(trip.mode !== 'route');
     const types = $derived(([
         { value: 'via', label: 'Shape', icon: 'route' },
@@ -59,6 +75,7 @@
         { value: 'routed', label: 'Follow roads' },
         { value: 'straight', label: 'Straight lines' },
         { value: 'drawn', label: 'Freehand' },
+        { value: 'transfer', label: 'Transfer (not ridden)' },
     ];
 
     let root: HTMLDivElement;
@@ -70,10 +87,9 @@
     const sleeps = $derived(hasEndpoints && days.length > 0 && multi);
     const preview = $derived.by(() => {
         if (!coordinate || sleepDay >= days.length) return null;
-        const day = tripDays(pinNight(trip, sleepDay, coordinate, 'Preview'))[sleepDay - 1];
-        const ascent = profileAscent(day.from, day.to, trip.routing);
-        const over = dayOverTarget(trip, day, ascent);
-        return { distance: day.distance, ascent, over: over.km > 0 || over.climb > 0 };
+        const day = provisionalDays(trip, line, sleepDay, nearestProgress(planView(trip, line).coordinates, coordinate))[sleepDay - 1];
+        const over = dayOverTarget(trip, day, day.ascent);
+        return { distance: day.distance, ascent: day.ascent, over: over.km > 0 || over.climb > 0 };
     });
 
     onMount(() => {
@@ -109,6 +125,9 @@
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div class="callout" bind:this={root} tabindex="-1" role="dialog" aria-label="Map details" onkeydown={key}>
     <button type="button" class="close" onclick={close} aria-label="Close"><Icon name="close" size={15} /></button>
+    {#snippet routes()}
+        {#if onRoutes}<button type="button" class="secondary" onclick={onRoutes}><Icon name="diamond" size={15} />Signed routes from here</button>{/if}
+    {/snippet}
     {#snippet endpoints()}
         {#if onEndpoint}<div class="add-types endpoints">
             <button type="button" onclick={() => onEndpoint?.('start')}><Icon name="pin" size={15} />Start here</button>
@@ -118,6 +137,7 @@
     {#if kind === 'add'}
         <h2>{hasEndpoints ? 'Add point here' : 'Plan from here'}</h2>
         {@render endpoints()}
+        {@render routes()}
         {#if hasEndpoints}
         <div class="add-types">
             {#each types.filter(type => type.value !== 'marker') as type (type.value)}
@@ -128,12 +148,17 @@
         {/if}
     {:else if kind === 'leg'}
         <h2>This leg</h2>
-        <Segmented label="Leg mode" options={legModes} value={legMode} onChange={onLegMode} />
+        <Segmented label="Leg mode" columns={2} options={legModes} value={legMode} onChange={onLegMode} />
         <p class="hint">Straight lines join shaping points without following roads.</p>
         <button type="button" class="secondary" onclick={onInsert}>Insert point here</button>
+        {#if canMoveLoopStart(trip)}
+            <button type="button" class="secondary" onclick={onLoopStart}>Start the loop here</button>
+            <p class="hint">The start moves to this point. The stops keep their order.</p>
+        {/if}
     {:else if kind === 'dayend'}
         <h2>Day {dayLabels[night]} ends here for now</h2>
-        <div class="column-head"><small>Day {dayLabels[night]} would be</small></div>
+        {#if overnightNote}<p class="hint" role="status">{overnightNote}</p>{/if}
+        {#if candidates.length}<div class="column-head"><small>Day {dayLabels[night]} would be</small></div>{/if}
         {#each candidates as candidate (candidate.place.id)}
             <PlaceRow place={candidate.place} day={candidateDay(candidate)} onSelect={onSelectPlace} />
         {/each}
@@ -147,8 +172,20 @@
             </div>
         </div>
         {#if place?.description && place.description !== placeCategories[place.category].label}<p class="place-note">{place.description}</p>{/if}
+        {#if website || place?.website || phones.length}
+            <div class="contacts">
+                {#if website}<a href={website} target="_blank" rel="noopener noreferrer">Website</a>
+                {:else if place?.website}<span>{place.website}</span>{/if}
+                {#each phones as phone}
+                    {@const link = phoneLink(phone)}
+                    {#if link}<a href={link}>{phone}</a>{:else}<span>{phone}</span>{/if}
+                {/each}
+            </div>
+        {/if}
+        {#if detailsError}<p class="hint" role="status">{detailsError}</p>{/if}
         {#if place && (place.openingHours || ['shop','food','pharmacy','hotel','bike'].includes(place.category))}<OpeningHours value={place.openingHours} />{/if}
         {#if place}{@render endpoints()}{/if}
+        {#if place}{@render routes()}{/if}
         {#if sleeps}
             <label class="field">End of day
                 <select bind:value={sleepDay}>
@@ -158,7 +195,7 @@
                 </select>
             </label>
             {#if preview}
-                <p class="predict">Day {dayLabels[sleepDay]} would be <strong class:over={preview.over}>{preview.distance.toFixed(1)} km ↑ {preview.ascent} m</strong></p>
+                <p class="predict">Day {dayLabels[sleepDay]} would be ≈ <strong class:over={preview.over}>{preview.distance.toFixed(1)} km ↑ {preview.ascent} m</strong></p>
             {/if}
             {#if sleepDay >= maxRidingDays}<p class="hint">A trip can have up to {maxRidingDays} riding days. Choose an earlier day for this overnight.</p>{/if}
             <button type="button" class="primary" disabled={sleepDay >= maxRidingDays} onclick={() => onStay(sleepDay)}>{days[sleepDay - 1]?.pinned ? 'Replace overnight' : 'Stay here'}<Icon name="check" size={15} /></button>
@@ -184,24 +221,23 @@
         {/if}
         {#if hasEndpoints && point.kind !== 'start' && point.kind !== 'finish'}
             <Segmented label="Point type" options={types} columns={types.length > 3 ? 2 : 0} value={point.kind === 'detour' ? 'waypoint' : point.kind as EditableKind} onChange={onKind} />
-            {#if point.kind === 'waypoint' || point.kind === 'detour'}
-                <div class="gap">
-                    <Segmented label="How the route reaches it" value={point.kind} onChange={onKind}
-                        options={[{ value: 'waypoint', label: 'Through' }, { value: 'detour', label: 'Out and back' }]} />
-                </div>
-            {/if}
+        {/if}
+        {#if point.kind === 'finish' && hasEndpoints}
+            <button type="button" class="secondary" onclick={onLoop}>Back to start</button>
+            <p class="hint">The route returns to the start, and this point becomes the last stop.</p>
         {/if}
         <button type="button" class="quiet" onclick={onRemove}><Icon name="trash" size={15} />Remove point</button>
     {/if}
+    {@render children?.()}
 </div>
 
 <style>
-    /* Never taller than the map it sits on; the content scrolls as a last resort. */
+    /* The map sets the free room; the content scrolls as a last resort. */
     .callout {
         position: relative;
         width: 340px;
-        max-width: calc(100vw - 48px);
-        max-height: calc(var(--map-height, 100vh) - 96px);
+        max-width: var(--callout-width);
+        max-height: var(--callout-room);
         overflow-y: auto;
         padding: 16px;
         color: var(--ink);
@@ -256,7 +292,11 @@
     .place-heading h2 { margin: 0 12px 5px 0; font-size: 17px; line-height: 1.3; overflow-wrap: anywhere; }
     .place-symbol { display: grid; place-items: center; width: 40px; height: 40px; flex: none; border-radius: 50%; color: var(--query-place); background: color-mix(in srgb, var(--query-place) 10%, var(--panel)); }
     .kind { margin: 0; color: var(--ink-soft); font-size: 13px; line-height: 1.45; }
-    .place-note { margin: 10px 0; color: var(--ink-soft); line-height: 1.45; }
+    .place-note { margin: 10px 0; color: var(--ink); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .contacts { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 12px 0; overflow-wrap: anywhere; }
+    .contacts a { color: var(--ink); text-underline-offset: 3px; padding: 4px 0; }
+    .contacts a:hover { color: var(--query-place); }
+    .contacts a:focus-visible { outline: 2px solid var(--query-place); outline-offset: 3px; border-radius: 2px; }
     .endpoints { margin-bottom: 12px; }
     .add-types {
         display: flex;
@@ -286,9 +326,6 @@
     }
     .quiet:hover {
         color: var(--ink);
-    }
-    .gap {
-        margin-top: 8px;
     }
     .rename {
         width: 100%;

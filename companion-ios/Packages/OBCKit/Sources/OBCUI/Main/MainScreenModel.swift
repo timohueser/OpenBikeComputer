@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import OBCDomain
+import OBCPlanner
 import OBCTransport
 
 @MainActor @Observable
@@ -121,10 +122,6 @@ public final class MainScreenModel {
     private let placeName: (@Sendable (Coordinate) async -> String?)?
     /// The trip reviews' place names, for the session.
     private let placeNameCache: PlaceNameCache?
-    /// Finds stops near trip lines for the session. Nil in tests and previews.
-    public let stopFinder: StopFinder?
-    /// Routes to stops off a trip line and across gaps. Nil in tests and previews.
-    private let legRouter: (any LegRouter)?
     /// The in-flight transfer ledger. Nil in tests and previews.
     @ObservationIgnored private let transferActivity: TransferActivity?
     /// Reconnect waits for the previous identity read to drain before starting another.
@@ -142,14 +139,10 @@ public final class MainScreenModel {
         nameReconciler: DeviceNameReconciler? = nil,
         transferActivity: TransferActivity? = nil,
         placeName: (@Sendable (Coordinate) async -> String?)? = nil,
-        stopSearch: (any StopSearch)? = nil,
-        legRouter: (any LegRouter)? = nil,
         now: @escaping () -> Date = Date.init
     ) {
         self.placeName = placeName
-        self.legRouter = legRouter
         placeNameCache = placeName.map(PlaceNameCache.init(lookup:))
-        self.stopFinder = stopSearch.map(StopFinder.init)
         self.transport = transport
         self.library = library
         self.lastBikeType = lastBikeType
@@ -668,7 +661,6 @@ public final class MainScreenModel {
             guard !present || crcMismatch else { continue }
             trip.deviceLink = nil
             trip.uploadedCRC32 = nil
-            trip.uploadedKey = nil
             library.saveTrip(trip)
         }
         adoptTripsByContent(scope: scope, catalog: catalog)
@@ -705,8 +697,6 @@ public final class MainScreenModel {
             // The entry's CRC is what the device holds, so the trip reads as out of date and
             // the next send replaces by id.
             trip.uploadedCRC32 = entry.crc32
-            // Both fingerprints the entry can match encode the trip's own key.
-            trip.uploadedKey = trip.key
             library.saveTrip(trip)
             claimed.insert(entry.id)
         }
@@ -774,21 +764,6 @@ public final class MainScreenModel {
         let scope = connectedScope
         let days = dayRoutes(of: trip)
         var steps: [TripUploadModel.QueueStep] = []
-        // A reversed trip has a new key. The device must not keep the old trip object, with the
-        // old key's progress, over day routes that already hold the new days, so it goes first.
-        if let link = trip.deviceLink, let scope = connectedScope, link.matches(scope),
-            let uploadedKey = trip.uploadedKey, uploadedKey != trip.key {
-            steps.append(.command(title: "Old trip details") { [weak self] in
-                guard let self else { return }
-                try await transport.deleteTrip(link.objectID)
-                guard var trip = self.trip(id) else { return }
-                trip.deviceLink = nil
-                trip.uploadedCRC32 = nil
-                trip.uploadedKey = nil
-                library.saveTrip(trip)
-                reloadTrips()
-            })
-        }
         for dayPlan in plan.days {
             let day = dayPlan.day
             let title = days[day].name
@@ -915,13 +890,11 @@ public final class MainScreenModel {
         if let scope = connectedScope, let objectID {
             trip.deviceLink = DeviceRouteLink(scope: scope, objectID: objectID)
             trip.uploadedCRC32 = crc32
-            trip.uploadedKey = trip.key
             // The transfer verified this CRC, so the badge proves before the next `listTrips()`.
             deviceTripCRCs[objectID] = crc32
         } else {
             trip.deviceLink = nil
             trip.uploadedCRC32 = nil
-            trip.uploadedKey = nil
         }
         library.saveTrip(trip)
         reloadTrips()
@@ -951,15 +924,6 @@ public final class MainScreenModel {
         saveEditedTrip(trip)
     }
 
-    /// Reverse the trip in place: the direction and the day order. It gets a new trip key, so
-    /// its device progress starts empty.
-    public func reverseTrip(_ id: TripID) {
-        guard var trip = trip(id) else { return }
-        tell(dropped: trip.reverse())
-        saveEditedTrip(trip)
-        nameDayEnds(id)
-    }
-
     /// Label the transfer after a day, or clear it. Phone-only: no upload carries it.
     public func setTripTransfer(_ id: TripID, day: Int, to kind: TransferKind?) {
         guard var trip = trip(id) else { return }
@@ -976,51 +940,50 @@ public final class MainScreenModel {
         return TripJournalModel(library: library, placeName: placeName)
     }
 
-    /// The stops of one day end, for the stops sheet. Nil for the last day, which ends at the line
-    /// end.
-    public func tripStops(_ id: TripID, day: Int, isOnline: Bool) -> TripStopsModel? {
-        guard let trip = trip(id), day >= 0, day < trip.dayCount - 1 else { return nil }
-        return TripStopsModel(trip: trip, day: day, finder: stopFinder, isOnline: isOnline) { [weak self] stop in
-            self?.endTripDay(id, day: day, at: stop)
-        }
+    /// The plan a trip opens with in the planner, under the trip's name and bike type. A trip
+    /// saved without a plan opens as its kept line. Nil for a trip of more than
+    /// ``PlannerPlan/maxDays`` days.
+    public func tripPlan(for id: TripID) -> PlannerPlan? {
+        guard let trip = trip(id), var plan = trip.plan ?? PlannerPlan.keptLine(trip) else { return nil }
+        plan.name = trip.name
+        if trip.plan == nil { plan.bike = RouteActivity(trip.bikeType).rawValue }
+        return plan
     }
 
-    /// Even out the days after `from` by riding time, snapped to the stops near the new ends:
-    /// the trip review's offer. The days before `from` and every day end at a transfer stay.
-    public func evenOutDays(_ id: TripID, from: Double) async {
+    /// Write a plan and the line planned from it into a trip. The id, key, name, dates, device
+    /// links and journal stay; the days and the line come from the plan.
+    public func saveTripChanges(_ id: TripID, plan: PlannerPlan, line: [RoutePoint], pointIndices: [Int]) {
         guard var trip = trip(id) else { return }
-        let before = trip.dayEnds.map(\.distance)
-        trip.evenOut(from: from, candidates: trip.place(trip.waypoints))
-        let ends = trip.dayEnds.dropLast().map(\.distance).filter { $0 > from }
-        let found = (try? await stopFinder?.stops(near: ends, on: trip.measuredLine)) ?? []
-        // A move that landed during the search wins: the offer was for the day ends before it.
-        // A place name written meanwhile does not count.
-        guard var current = self.trip(id), current.dayEnds.map(\.distance) == before else { return }
-        let candidates = current.place(current.waypoints) + zip(found, ends).flatMap { current.place($0, near: $1) }
-        current.evenOut(from: from, candidates: candidates)
-        saveEditedTrip(current)
+        trip.replacePlan(plan, line: line, pointIndices: pointIndices)
+        saveEditedTrip(trip)
         nameDayEnds(id)
     }
 
-    /// The day editor of a trip. Done writes the draft's days into the trip as it is then, so an
-    /// upload or a reconcile that ran meanwhile keeps its links.
-    public func dayEditor(_ id: TripID, isSplitMode: Bool) -> TripDayEditorModel? {
-        guard let trip = trip(id) else { return nil }
-        return TripDayEditorModel(
-            trip: trip, isSplitMode: isSplitMode, finder: stopFinder, router: legRouter, placeName: placeName
-        ) { [weak self] edited in
-            guard let self, var current = self.trip(id) else { return }
-            current.replaceDays(from: edited)
-            self.saveEditedTrip(current)
-            self.nameDayEnds(id)
-        }
+    /// A new trip from a plan and the line planned from it. Nil when the line is empty.
+    @discardableResult
+    public func createTrip(
+        name: String, plan: PlannerPlan, line: [RoutePoint], pointIndices: [Int], bikeType: BikeType
+    ) -> TripID? {
+        var trip = Trip(id: TripID(UUID().uuidString.lowercased()), name: name, bikeType: bikeType, addedAt: now())
+        trip.replacePlan(plan, line: line, pointIndices: pointIndices)
+        guard !trip.dayEnds.isEmpty else { return nil }
+        library.saveTrip(trip)
+        reloadTrips()
+        nameDayEnds(trip.id)
+        return trip.id
     }
 
-    /// End a day at a stop: the day end moves to the line point nearest the stop and takes its
-    /// name.
-    public func endTripDay(_ id: TripID, day: Int, at stop: PlacedStop) {
-        guard var trip = trip(id), trip.endDay(day, at: stop) else { return }
-        saveEditedTrip(trip)
+    /// A route whose plan now has nights becomes a trip of the same name: the route leaves the
+    /// library, and its device copy becomes the copy of day 1.
+    @discardableResult
+    public func replaceRouteWithTrip(
+        _ id: RouteID, plan: PlannerPlan, line: [RoutePoint], pointIndices: [Int], bikeType: BikeType
+    ) -> TripID? {
+        guard let record = plannedRecords[id],
+              let tripID = createTrip(name: record.summary.name, plan: plan, line: line, pointIndices: pointIndices, bikeType: bikeType)
+        else { return nil }
+        moveIntoTrip(record, tripID: tripID, day: 0)
+        return tripID
     }
 
     /// Set or clear the date of Day 1.
@@ -1070,21 +1033,23 @@ public final class MainScreenModel {
 
     /// The one join path: route files in ride order become one trip, one day per file, with
     /// the day ends on the file boundaries. A file shorter than a day adds nothing. Nil when no
-    /// file is a day.
+    /// file is a day. `plan` is the plan of the files that are days.
     @discardableResult
     public func createTrip(
         name: String, files: [[RoutePoint]], dayNames: [String?] = [], waypoints: [[Waypoint]] = [],
-        bikeType: BikeType? = nil
+        bikeType: BikeType? = nil, plan: PlannerPlan? = nil
     ) -> TripID? {
         let days = files.indices.filter { Trip.isDay(files[$0]) }
         guard !days.isEmpty else { return nil }
+        guard days.count <= PlannerPlan.maxDays else { tripNotice = Self.tooManyDays; return nil }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trip = Trip.joining(
+        var trip = Trip.joining(
             days.map { files[$0] }, names: days.map { $0 < dayNames.count ? dayNames[$0] : nil },
             waypoints: days.map { $0 < waypoints.count ? waypoints[$0] : [] },
             id: TripID(UUID().uuidString.lowercased()),
             name: trimmed.isEmpty ? "New trip" : trimmed,
             bikeType: bikeType ?? lastBikeType.value, now: now())
+        trip.plan = plan ?? PlannerPlan.keptLine(trip)
         library.saveTrip(trip)
         reloadTrips()
         nameDayEnds(trip.id)
@@ -1098,7 +1063,10 @@ public final class MainScreenModel {
         _ id: TripID, file: [RoutePoint], name: String? = nil, waypoints: [Waypoint] = []
     ) -> Bool {
         guard var trip = trip(id), Trip.isDay(file) else { return false }
+        guard trip.dayCount < PlannerPlan.maxDays else { tripNotice = Self.tooManyDays; return false }
+        let plan = trip.plan
         tell(dropped: trip.append(file, name: name, waypoints: waypoints))
+        trip.plan = plan?.appendingDay(file, name: name, waypoints: waypoints) ?? PlannerPlan.keptLine(trip)
         saveEditedTrip(trip)
         nameDayEnds(id)
         return true
@@ -1171,6 +1139,8 @@ public final class MainScreenModel {
             "Day end \u{201C}\(end.name ?? "unnamed")\u{201D} was removed. It is no longer on the line."
         }.joined(separator: " ")
     }
+
+    static let tooManyDays = "A trip has at most \(PlannerPlan.maxDays) days."
 
     /// Tell the rider that these routes are too short to be days and stay routes.
     public func noteTooShort(_ names: [String]) {
@@ -1388,40 +1358,40 @@ public final class MainScreenModel {
         tab = .planned
     }
 
-    /// Land an end-to-end flipped copy at the top of Planned and leave the original alone, so
-    /// the rider keeps both directions. The copy is a fresh library route: new id, no device
-    /// link, uploads like any other. Returns nil when the source route has gone.
-    @discardableResult
-    public func reverseRoute(_ id: RouteID) -> RouteID? {
-        guard let original = plannedRecords[id] else { return nil }
-        let reversedRoute = original.route.reversed()
-        // The header figures, as an import saves them.
-        let totals = RouteObjectCodec.totals(points: reversedRoute.points)
-        let distance = Double(totals?.distanceMeters ?? 0)
-        let climb = Double(totals?.ascentMeters ?? 0)
-        let name = RouteReversal.reversedName(original.summary.name)
-        let newID = RouteID("reversed-\(UUID().uuidString.lowercased())")
-        let summary = RouteSummary(
-            id: newID,
-            name: name,
-            distanceMeters: distance,
-            elevationGainMeters: climb,
-            estimatedDuration: original.bikeType.estimatedDuration(distanceMeters: distance, ascentMeters: climb),
-            pointCount: reversedRoute.points.count,
-            source: original.summary.source,
-            trackPreview: TrackPreview.normalizing(reversedRoute.points.map(\.coordinate))
-        )
-        // The source file is provenance only; nothing re-parses it to rebuild the geometry.
-        let record = PlannedRouteRecord(
-            summary: summary,
-            route: reversedRoute,
-            bikeType: original.bikeType,
-            sourceFileName: original.sourceFileName,
-            sourceFileData: original.sourceFileData,
-            addedAt: now()
-        )
-        addImportedRoute(record)
-        return newID
+    /// Replace a route's line and plan in place. The id, name, source file and device link stay, so
+    /// a copy on the device reads out of date until the next upload.
+    public func saveRouteChanges(_ id: RouteID, to edited: PlannedRouteRecord) {
+        guard let old = plannedRecords[id] else { return }
+        var record = edited
+        record.summary = RouteSummary(
+            id: id, name: old.summary.name, distanceMeters: edited.summary.distanceMeters,
+            elevationGainMeters: edited.summary.elevationGainMeters, estimatedDuration: edited.summary.estimatedDuration,
+            pointCount: edited.summary.pointCount, source: edited.summary.source, trackPreview: edited.summary.trackPreview)
+        record.sourceFileName = old.sourceFileName
+        record.sourceFileData = old.sourceFileData
+        record.deviceLink = old.deviceLink
+        record.uploadedCRC32 = old.uploadedCRC32
+        record.addedAt = old.addedAt
+        plannedRecords[id] = record
+        library.savePlannedRoute(record)
+        if let index = routes.firstIndex(where: { $0.id == id }) { routes[index] = record.summary }
+        routeEditCount += 1
+        refreshOnDeviceStates()
+        rebuildPlannedItems()
+    }
+
+    /// Counts the saved route changes, so a route page builds again on its new line.
+    public private(set) var routeEditCount = 0
+
+    /// The plan a saved route opens with in the planner, under the route's name and bike type. A
+    /// route saved without a plan opens as its kept line.
+    public func plannedPlan(for id: RouteID) -> PlannerPlan? {
+        guard let record = plannedRecords[id],
+            var plan = record.plan ?? PlannerPlan.keptLine(record.route.points, waypoints: record.route.waypoints)
+        else { return nil }
+        plan.name = record.summary.name
+        if record.plan == nil { plan.bike = RouteActivity(record.bikeType).rawValue }
+        return plan
     }
 
     /// A saved planned route whose name matches case-insensitively, so the import edge can

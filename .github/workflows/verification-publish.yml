@@ -24,8 +24,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Install distribution client
+      - name: Install rclone for the R2 client
         run: sudo apt-get update && sudo apt-get install -y rclone
+      # Built in a step without secrets; the publish step runs target/debug/obc-data-plumbing only.
+      - name: Build the R2 client
+        run: cargo build --quiet --locked -p obc-data
       - name: Validate evidence and promote exact candidate files
         id: publish
         env:

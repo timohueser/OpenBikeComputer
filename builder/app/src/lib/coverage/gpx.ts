@@ -2,7 +2,8 @@
 //
 // The corridor panel takes "a route" from two places — a `.gpx` upload and the routes
 // stored on a connected device — and both end as a named polyline in integer
-// microdegrees. This module is the upload half.
+// microdegrees. This module is the upload half. The web planner reads the same files
+// with `readGpx`, which keeps every point and reads the `<wpt>`s.
 //
 // It is a **string scanner, not an XML parser**, and that is a decision rather than a
 // shortcut. The only facts a corridor needs are the `lat`/`lon` attribute pairs of the
@@ -10,13 +11,19 @@
 // to a browser, putting the one piece of the corridor flow that is pure data juggling
 // out of reach of the unit suite.
 //
-// Points are **decimated** to a ceiling before they leave here. A recorded track can
+// `parseGpx` **decimates** points to a ceiling. A recorded track can
 // carry a point per second, and the corridor test is per segment per candidate cell. At
 // the grid's cell sizes, dropping intermediate points moves the corridor's edge by
 // metres. The ends are always kept.
 
 import type { LatLon } from "../catalog/corridor";
 import { M_PER_DEG } from "../catalog/corridor";
+
+/** One GPX point; `ele` is the `<ele>` height in metres, when the file has one. */
+export type GpxPoint = LatLon & { ele?: number };
+
+/** One `<wpt>` with its `<name>` and its `<desc>` (else `<cmt>`), when it has them. */
+export type GpxWaypoint = LatLon & { name?: string; note?: string };
 
 /** One route as the corridor panel lists it. */
 export interface GpxRoute {
@@ -52,22 +59,29 @@ function pointOf(tag: string): LatLon | null {
     return { lat: Math.round(latDeg * 1e6), lon: Math.round(lonDeg * 1e6) };
 }
 
-/** The first `<name>` inside the first `<trk>`/`<rte>`, else the file-level one. */
+const WPT = /<wpt\b([^>]*?)(?:\/>|>([\s\S]*?)<\/wpt\s*>)/g;
+
+/** The first non-empty `<tag>` text in `text`. GPX is XML, so the five predefined entities
+ *  are all that can appear un-escaped in it. */
+function firstText(text: string, tag = "name"): string | null {
+    const value = new RegExp(`<${tag}>\\s*([\\s\\S]*?)\\s*<\\/${tag}>`).exec(text)?.[1].trim();
+    if (!value) return null;
+    return value
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/&amp;/g, "&");
+}
+
+/** The first `<name>` inside the first `<trk>`/`<rte>`, else the file-level one. A
+ *  waypoint's name never names the route. */
 function nameOf(text: string): string | null {
     const scoped = /<(?:trk|rte)\b[^>]*>([\s\S]*?)<\/(?:trk|rte)>/.exec(text)?.[1];
-    for (const within of scoped === undefined ? [text] : [scoped, text]) {
-        const name = /<name>\s*([\s\S]*?)\s*<\/name>/.exec(within);
-        if (name && name[1].trim()) {
-            // GPX is XML, so the five predefined entities are all that can
-            // appear un-escaped in a name.
-            return name[1]
-                .trim()
-                .replace(/&lt;/g, "<")
-                .replace(/&gt;/g, ">")
-                .replace(/&quot;/g, '"')
-                .replace(/&apos;/g, "'")
-                .replace(/&amp;/g, "&");
-        }
+    const file = text.replace(WPT, "");
+    for (const within of scoped === undefined ? [file] : [scoped, file]) {
+        const name = firstText(within);
+        if (name) return name;
     }
     return null;
 }
@@ -97,7 +111,7 @@ function decimate(points: LatLon[], max: number): LatLon[] {
 }
 
 /**
- * One GPX body → one route.
+ * One GPX body → one named line with every point.
  *
  * One, deliberately: a corridor part buffers a single polyline, and a file whose tracks
  * are two different rides belongs in the panel as two files. Multiple `<trkseg>`s are
@@ -107,33 +121,43 @@ function decimate(points: LatLon[], max: number): LatLon[] {
  * @param fallbackName used when the file names nothing — the filename, usually.
  * @throws {GpxError} when no usable points survive.
  */
-export function parseGpx(text: string, fallbackName: string): GpxRoute {
-    const tags = text.match(/<(?:trkpt|rtept)\b[^>]*>/g) ?? [];
-    const trk: LatLon[] = [];
-    const rte: LatLon[] = [];
+export function readGpx(text: string, fallbackName: string): { name: string; points: GpxPoint[]; waypoints: GpxWaypoint[] } {
+    const elements = [...text.matchAll(/<(trkpt|rtept)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/\1\s*>)/g)];
+    const trk: GpxPoint[] = [];
+    const rte: GpxPoint[] = [];
     let malformed = 0;
-    for (const tag of tags) {
-        const p = pointOf(tag);
+    for (const [, kind, attributes, body] of elements) {
+        const p: GpxPoint | null = pointOf(attributes);
         if (!p) {
             malformed++;
             continue;
         }
-        (tag.startsWith("<trkpt") ? trk : rte).push(p);
+        const ele = Number(/<ele>\s*([^<\s][^<]*?)\s*<\/ele>/.exec(body ?? "")?.[1] ?? NaN);
+        if (Number.isFinite(ele)) p.ele = ele;
+        (kind === "trkpt" ? trk : rte).push(p);
     }
     const points = trk.length ? trk : rte;
     if (points.length < 2) {
         throw new GpxError(
-            tags.length === 0
+            elements.length === 0
                 ? "no track or route points found — is this a GPX file?"
                 : malformed > 0
-                  ? `no usable points — ${malformed} of ${tags.length} carried malformed coordinates`
+                  ? `no usable points — ${malformed} of ${elements.length} carried malformed coordinates`
                   : "the file has fewer than two points, which is not a route",
         );
     }
-    const decimated = decimate(points, MAX_ROUTE_POINTS);
-    return {
-        name: nameOf(text) ?? fallbackName,
-        points: decimated,
-        distanceKm: lengthKm(decimated),
-    };
+    // A waypoint with malformed coordinates is skipped; it never refuses the route.
+    const waypoints = [...text.matchAll(WPT)].flatMap(([, attributes, body]): GpxWaypoint[] => {
+        const p = pointOf(attributes);
+        const note = firstText(body ?? "", "desc") ?? firstText(body ?? "", "cmt");
+        return p ? [{ ...p, name: firstText(body ?? "") ?? undefined, ...(note ? { note } : {}) }] : [];
+    });
+    return { name: nameOf(text) ?? fallbackName, points, waypoints };
+}
+
+/** One GPX body → one corridor route, decimated to {@link MAX_ROUTE_POINTS}. */
+export function parseGpx(text: string, fallbackName: string): GpxRoute {
+    const { name, points } = readGpx(text, fallbackName);
+    const decimated = decimate(points.map(({ lat, lon }) => ({ lat, lon })), MAX_ROUTE_POINTS);
+    return { name, points: decimated, distanceKm: lengthKm(decimated) };
 }

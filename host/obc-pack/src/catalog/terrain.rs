@@ -35,9 +35,9 @@ pub(super) struct TerrainDoc {
     pub(super) cell_log2: u8,
     /// The terrain store's own revision. Nothing here is `schema_revision`.
     pub(super) revision: u32,
-    /// The source licence's required credit, verbatim. The bakery stamps
-    /// `obc_elevation::COPERNICUS_ATTRIBUTION` here; this crate never hard-codes it, because a
-    /// generic producer publishing another dataset owes a different notice.
+    /// The source licence's required credit, verbatim. The bakery stamps the `copernicus-glo-30`
+    /// credit of data/sources.toml here; this crate never hard-codes it, because a generic
+    /// producer publishing another dataset owes a different notice.
     pub(super) attribution: String,
     /// Every reference model the bake's archive can credit. The published block names the ones a
     /// cell actually used, since an archive holds sources whose tiles no published cell read.

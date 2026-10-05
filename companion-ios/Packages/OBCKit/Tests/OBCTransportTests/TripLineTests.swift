@@ -126,63 +126,6 @@ struct TripLineTests {
         #expect(trip.dayLines().map(\.points) == [first + second])
     }
 
-    // MARK: Reverse
-
-    /// Three days with named ends and a gap at the second day end.
-    private var threeDays: Trip {
-        var trip = join([
-            file([(0, 0), (2000, 0)]),
-            file([(2000, 0), (2000, 1500)]),
-            file([(2500, 1500), (4500, 1500)]),
-        ])
-        trip.namePlace(0, to: "Andermatt")
-        trip.namePlace(1, to: "Ulrichen")
-        trip.namePlace(2, to: "Brig")
-        trip.renameDay(0, to: "Furka")
-        trip.renameDay(1, to: "Grimsel")
-        trip.renameDay(2, to: "Rhone")
-        return trip
-    }
-
-    @Test
-    func reverseKeepsEveryDayEndAtItsPlace() {
-        let trip = threeDays
-        var reversed = trip
-        reversed.reverse()
-
-        #expect(reversed.dayCount == 3)
-        // Ulrichen ends at the gap: its day end moves across the gap, and the name stays with the place.
-        let across = trip.line[trip.pieceStarts[0]].coordinate
-        #expect(Array(reversed.dayEnds.prefix(2).map(\.coordinate)) == [across, trip.dayEnds[0].coordinate])
-        #expect(reversed.dayEnds.map(\.name) == [nil, "Andermatt", nil], "the old start had no name")
-        #expect(reversed.dayStart(1)?.name == "Ulrichen")
-        #expect(reversed.startName == "Brig")
-        #expect(reversed.dayEnds.map(\.title) == ["Rhone", "Grimsel", "Furka"], "each day keeps its own name")
-        #expect(reversed.dayEnds[2].coordinate == trip.line[0].coordinate)
-        #expect(reversed.key != trip.key)
-        // Each reversed day is an old day ridden backwards, in reverse day order.
-        let old = trip.dayLines().map(\.points).map { $0.map(\.coordinate) }
-        let new = reversed.dayLines().map(\.points).map { $0.map(\.coordinate) }
-        #expect(new == old.reversed().map { Array($0.reversed()) })
-    }
-
-    @Test
-    func reversingTwiceGivesBackTheLineThePlacesAndTheNames() {
-        var original = threeDays
-        original.startName = "Realp"
-        var trip = original
-        trip.reverse()
-        #expect(trip.dayEnds.last?.name == "Realp")
-        trip.reverse()
-        #expect(trip.line == original.line)
-        #expect(trip.pieceStarts == original.pieceStarts)
-        #expect(trip.dayEnds.map(\.name) == ["Andermatt", "Ulrichen", "Brig"])
-        #expect(trip.dayEnds.map(\.title) == ["Furka", "Grimsel", "Rhone"])
-        #expect(trip.startName == "Realp")
-        #expect(trip.dayEnds.map(\.coordinate) == original.dayEnds.map(\.coordinate))
-        #expect(distances(trip) == distances(original))
-    }
-
     @Test
     func aFileShorterThanADayChangesNothing() {
         var trip = join([file([(0, 0), (1000, 0)]), file([(1000, 0), (2000, 0)])])
@@ -207,20 +150,6 @@ struct TripLineTests {
 
         trip.reproject()
         #expect(distances(trip) == [1000, 3000, 4000], "a re-projection keeps each end on its leg")
-
-        trip.reverse()
-        #expect(distances(trip) == [1000, 3000, 4000])
         #expect(trip.dayLines().map(\.points).map { $0.count } == [11, 21, 11])
-    }
-
-    @Test
-    func aLoopKeepsItsLastDayEndAtTheLineEnd() {
-        var trip = join([file([(0, 0), (1000, 0), (1000, 1000)]), file([(1000, 1000), (0, 1000), (0, 0)])])
-        #expect(trip.line.first?.coordinate == trip.line.last?.coordinate)
-        #expect(distances(trip) == [2000, 4000])
-
-        trip.reverse()
-        #expect(distances(trip) == [2000, 4000])
-        #expect(trip.dayEnds[0].coordinate == coordinate(1000, 1000))
     }
 }

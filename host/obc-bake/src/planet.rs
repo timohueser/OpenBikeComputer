@@ -1,11 +1,11 @@
-//! Whole-planet source update and preparation for `obc bake --all`.
+//! Whole-planet source preparation for `obc bake --all`.
 //!
 //! The packer intentionally retains the styled content it is about to cut. A
 //! planet PBF therefore cannot be handed to it directly. This module uses Osmium's
 //! reference-complete `smart` extraction in a binary hierarchy and yields
-//! grid-aligned leaves; the bakery ingests one leaf at a time. On later runs the
-//! official Pyosmium client atomically advances the cached planet through its
-//! replication state, and only leaves whose canonical extracted bytes changed are
+//! grid-aligned leaves; the bakery ingests one leaf at a time. The planet is the
+//! `osm-planet` pin from the store with the daily diffs of `osm-replication`
+//! applied, and only leaves whose canonical extracted bytes changed are
 //! re-ingested.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -32,11 +32,10 @@ use crate::util::{human_bytes, write_json};
 /// thousand. Every shipped band divides this size exactly.
 pub const SOURCE_LEAF_LOG2: u32 = 23;
 const SHARD_STATE_VERSION: u32 = 1;
-const PLANET_URL: &str = "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf";
-const PLANET_FILE: &str = "planet-latest.osm.pbf";
 const SHARD_HALO_UDEG: i64 = 1;
 const PLANET_STATUS_FILE: &str = ".planet-bake/status.json";
-const MAX_REPLICATION_AGE_SECONDS: i64 = 90 * 24 * 60 * 60;
+/// One week of daily diffs: `osmium apply-changes` holds the diffs of one pass in memory.
+const DIFFS_PER_PASS: usize = 7;
 
 #[derive(Debug, Clone)]
 pub struct PlanetInput {
@@ -44,61 +43,73 @@ pub struct PlanetInput {
     pub bytes: u64,
     pub sha256: String,
     pub snapshot: String,
-    pub replication: Option<ReplicationUpdate>,
+    pub replication: Option<Replication>,
 }
 
+/// The daily diffs applied to the planet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ReplicationState {
-    #[serde(skip_serializing)]
-    pub base_url: String,
-    pub sequence: u64,
-    pub timestamp: String,
+pub struct Replication {
+    /// The `osm-planet` version, the day the diffs start at.
+    pub from: String,
+    /// The `osm-replication` version, the day of the last diff.
+    pub to: String,
+    pub diffs: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ReplicationUpdate {
-    pub from: ReplicationState,
-    pub to: ReplicationState,
-    pub batches: usize,
+/// Fail before any download when the planet of `--all` comes from the store and `osm-planet` has
+/// no pin.
+pub fn check_pinned(spec: Option<&str>) -> Result<(), String> {
+    if spec.is_some() || obc_data::sources::Registry::live()?.pins.contains_key("osm-planet") {
+        return Ok(());
+    }
+    Err("`osm-planet` has no pin in data/env/live.toml: pin it with `obc data refresh osm-planet --env live`".into())
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CachedPlanet {
-    url: String,
-    last_modified: String,
-    content_length: u64,
-    snapshot: String,
+/// The lock of `<cache>/planet`. A run holds it while it updates and reads the planet there, so a
+/// second run waits instead of deleting a file in use.
+pub fn lock_cache(cache: &Path, progress: &Progress) -> Result<std::fs::File, String> {
+    std::fs::create_dir_all(cache).map_err(|e| format!("{}: {e}", cache.display()))?;
+    let path = cache.join("planet.lock");
+    let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path);
+    let file = file.map_err(|e| format!("{}: {e}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => return Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => progress.log(format!("waiting for {}", path.display())),
+        Err(std::fs::TryLockError::Error(e)) => return Err(format!("lock {}: {e}", path.display())),
+    }
+    file.lock().map_err(|e| format!("lock {}: {e}", path.display()))?;
+    Ok(file)
 }
 
-/// Resolve the existing `--source` spelling for planet mode. A URL may name the PBF
-/// itself or a directory; a local value may name the file or its directory.
-///
-/// The updater is a parameter rather than a default so replication and its failure
-/// semantics can be proved without a network service or an 80 GB fixture; production
-/// hands in [`PyOsmiumUpdater`].
-pub fn resolve_planet_with(
+/// The planet of `--all`: the PBF file that `spec` names, or else the `osm-planet` pin from the
+/// store with the `osm-replication` diffs applied. The caller holds [`lock_cache`].
+pub fn resolve_planet(
     spec: Option<&str>,
     cache: &Path,
+    osmium: &OsmiumRunner,
     progress: &Progress,
-    updater: &dyn ReplicationUpdater,
 ) -> Result<PlanetInput, String> {
-    let spec = spec.unwrap_or(PLANET_URL);
-    let (path, snapshot, replication) = if spec.starts_with("http://") || spec.starts_with("https://") {
-        let url = if spec.ends_with(".osm.pbf") {
-            spec.to_string()
-        } else {
-            format!("{}/{}", spec.trim_end_matches('/'), PLANET_FILE)
-        };
-        fetch_planet(&url, cache, progress, updater)?
-    } else {
-        let candidate = PathBuf::from(spec.strip_prefix("file://").unwrap_or(spec));
-        let path = if candidate.is_dir() { candidate.join(PLANET_FILE) } else { candidate };
-        if !path.is_file() {
-            return Err(format!("planet source {} is not a file", path.display()));
+    let (path, snapshot, replication) = match spec {
+        None => {
+            let planet = obc_data::fetch::live("osm-planet", None, Vec::new())?;
+            let from = planet.snapshot.version.clone();
+            let diffs = obc_data::fetch::live("osm-replication", None, vec![("from".into(), from.clone())])?;
+            update(&planet.paths[0], &from, &diffs, &cache.join("planet"), osmium, progress)?
         }
-        let snapshot = local_snapshot(&path)?;
-        (path, snapshot, None)
+        Some(spec) if spec.starts_with("http://") || spec.starts_with("https://") => {
+            return Err(format!(
+                "--source {spec}: the planet comes from the store, as `osm-planet` and `osm-replication` in \
+                 data/sources.toml; --source takes a planet PBF file"
+            ))
+        }
+        Some(spec) => {
+            let path = PathBuf::from(spec.strip_prefix("file://").unwrap_or(spec));
+            if !path.is_file() {
+                return Err(format!("planet source {} is not a file", path.display()));
+            }
+            let snapshot = local_snapshot(&path)?;
+            (path, snapshot, None)
+        }
     };
 
     progress.log(format!("Hashing planet source {}...", path.display()));
@@ -107,257 +118,103 @@ pub fn resolve_planet_with(
     Ok(PlanetInput { path, bytes, sha256, snapshot, replication })
 }
 
-fn fetch_planet(
-    url: &str,
-    cache: &Path,
+/// `planet`, the planet of the day `from`, with the diffs of `replication` applied, as
+/// `<dir>/planet-<from>+<to>.osm.pbf`. An earlier result from the same planet is the start, so
+/// only the newer diffs apply. Every other file in `dir` goes, because a planet is about 80 GB.
+fn update(
+    planet: &Path,
+    from: &str,
+    replication: &obc_data::fetch::Fetched,
+    dir: &Path,
+    osmium: &OsmiumRunner,
     progress: &Progress,
-    updater: &dyn ReplicationUpdater,
-) -> Result<(PathBuf, String, Option<ReplicationUpdate>), String> {
-    let dir = cache.join("planet");
-    let path = dir.join(PLANET_FILE);
-    let meta_path = dir.join("planet.meta.json");
-    if path.is_file() {
-        if let Ok(text) = std::fs::read_to_string(&meta_path) {
-            if let Ok(meta) = serde_json::from_str::<CachedPlanet>(&text) {
-                if meta.url == url {
-                    let force_fresh = if let Some(state) = updater.state(&path)? {
-                        if replication_is_too_old(&state) {
-                            progress.log(format!(
-                                "Cached planet is older than 90 days ({}); downloading a fresh snapshot instead of \
-                                 replaying months of diffs",
-                                state.timestamp
-                            ));
-                            true
-                        } else {
-                            updater.check()?;
-                            let replication = advance_replication(&path, updater, progress)?;
-                            let snapshot = snapshot_from_replication(&replication.to.timestamp)?;
-                            let bytes = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?.len();
-                            write_json(
-                                &meta_path,
-                                &CachedPlanet { content_length: bytes, snapshot: snapshot.clone(), ..meta },
-                            )?;
-                            return Ok((path, snapshot, Some(replication)));
-                        }
-                    } else {
-                        false
-                    };
-
-                    // Old/custom PBFs without a replication header retain the
-                    // snapshot-download behavior. Official planet files take the
-                    // incremental path above and do not need this HEAD request.
-                    if !force_fresh {
-                        let head = crate::source::head(url)?;
-                        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                        if meta.last_modified == head.last_modified
-                            && ((head.content_length == 0 && size == meta.content_length)
-                                || (meta.content_length == head.content_length && size == head.content_length))
-                        {
-                            progress.log(format!("Reusing cached planet source {}", path.display()));
-                            return Ok((path, meta.snapshot, None));
-                        }
-                    }
-                }
-            }
+) -> Result<(PathBuf, String, Option<Replication>), String> {
+    // The record is the state that the diffs start from, then the diff and the state of each day.
+    let (mut start, mut diffs, mut diff) = (None, Vec::new(), None);
+    for (file, path) in replication.snapshot.files.iter().zip(&replication.paths) {
+        if file.name.ends_with(".osc.gz") {
+            diff = Some(path.as_path());
+            continue;
+        }
+        let timestamp = state_timestamp(path)?;
+        match diff.take() {
+            Some(diff) => diffs.push((diff, timestamp[..10].to_string())),
+            None => start = Some(timestamp),
         }
     }
-
-    let head = crate::source::head(url)?;
-    progress.log(format!("Downloading planet source from {url}"));
-    let mut last = 0u8;
-    let bytes = obc_pack::net::download(url, &path, progress, |pct| {
-        if pct >= last.saturating_add(1) || pct == 100 {
-            last = pct;
-            progress.log(format!("  planet download: {pct}%"));
-        }
-    })?;
-    if head.content_length != 0 && bytes != head.content_length {
-        let _ = std::fs::remove_file(&path);
-        return Err(format!(
-            "downloaded planet is {bytes} bytes but the server announced {} — removed the incomplete file",
-            head.content_length
-        ));
+    if diffs.is_empty() {
+        return Ok((planet.to_path_buf(), from.to_string(), None));
     }
-    let meta = CachedPlanet {
-        url: url.to_string(),
-        last_modified: head.last_modified,
-        content_length: bytes,
-        snapshot: head.snapshot.clone(),
+    let start = start.ok_or("the `osm-replication` record has no state that its diffs start from")?;
+    check_gap(from, &osmium.replication_timestamp(planet)?, &start)?;
+    let to = replication.snapshot.version.clone();
+    let path = dir.join(format!("planet-{from}+{to}.osm.pbf"));
+    let applied = Replication { from: from.to_string(), to: to.clone(), diffs: diffs.len() };
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        files.push(entry.map_err(|e| format!("{}: {e}", dir.display()))?.path());
+    }
+    let plan = plan(&files, from, &to, &diffs);
+    for file in &plan.stale {
+        std::fs::remove_file(file).map_err(|e| format!("{}: {e}", file.display()))?;
+    }
+    match plan.start {
+        Some((_, day)) if day == to => progress.log(format!("Reusing the planet of {from} with the diffs up to {to}")),
+        Some((base, day)) => {
+            progress.log(format!("Updating the planet of {from} with the diffs up to {day}"));
+            osmium.apply_changes(base, true, &plan.diffs, &path, progress)?;
+        }
+        None => osmium.apply_changes(planet, false, &plan.diffs, &path, progress)?,
+    }
+    Ok((path, to, Some(applied)))
+}
+
+/// Refuse a planet that ends, at `end`, before the state that the first diff starts from: the
+/// changes between would be missing. Overlap is fine, because a diff applies over newer data.
+fn check_gap(from: &str, end: &str, start: &str) -> Result<(), String> {
+    if end >= start {
+        return Ok(());
+    }
+    Err(format!(
+        "invalid data: the `osm-planet` planet of {from} ends at {end}, but the `osm-replication` diffs \
+         start at {start}, so the changes between are missing. Pin a planet that ends at or after the \
+         start of its daily diff: `obc data refresh osm-planet --env live`"
+    ))
+}
+
+/// What an update to `planet-<from>+<to>.osm.pbf` does with the `files` of its folder.
+#[derive(Debug, PartialEq, Eq)]
+struct Plan<'a> {
+    /// The newest result from the same planet up to `to`, and its day; `None` starts from the
+    /// planet. A start of the day `to` is the result itself.
+    start: Option<(&'a Path, &'a str)>,
+    /// The diffs after the day of the start.
+    diffs: Vec<&'a Path>,
+    /// Every other file: older or newer results, results of another planet and `.part` files.
+    stale: Vec<&'a Path>,
+}
+
+/// `diffs` holds each diff with the day of its state, in order.
+fn plan<'a>(files: &'a [PathBuf], from: &str, to: &str, diffs: &[(&'a Path, String)]) -> Plan<'a> {
+    let prefix = format!("planet-{from}+");
+    let day_of = |path: &'a Path| -> Option<&'a str> {
+        let day = path.file_name()?.to_str()?.strip_prefix(prefix.as_str())?.strip_suffix(".osm.pbf")?;
+        (day <= to).then_some(day)
     };
-    write_json(&meta_path, &meta)?;
-    Ok((path, head.snapshot, None))
+    let start = files.iter().filter_map(|path| Some((path.as_path(), day_of(path)?))).max_by_key(|(_, day)| *day);
+    let stale = files.iter().map(PathBuf::as_path).filter(|path| start.is_none_or(|(kept, _)| path != &kept)).collect();
+    let after = start.map_or("", |(_, day)| day);
+    let diffs = diffs.iter().filter(|(_, day)| day.as_str() > after).map(|(diff, _)| *diff).collect();
+    Plan { start, diffs, stale }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReplicationStep {
-    Current,
-    MoreAvailable,
-}
-
-/// The official updater is injectable because replication tests must stay fully
-/// offline and must be able to stop between batches deterministically.
-pub trait ReplicationUpdater: Sync {
-    fn check(&self) -> Result<(), String>;
-    fn state(&self, path: &Path) -> Result<Option<ReplicationState>, String>;
-    fn update_once(&self, path: &Path, progress: &Progress) -> Result<ReplicationStep, String>;
-}
-
-pub struct PyOsmiumUpdater {
-    binary: PathBuf,
-    osmium: PathBuf,
-}
-
-impl Default for PyOsmiumUpdater {
-    fn default() -> Self {
-        Self {
-            binary: std::env::var_os("OBC_PYOSMIUM_UP_TO_DATE")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("pyosmium-up-to-date")),
-            osmium: std::env::var_os("OBC_OSMIUM").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("osmium")),
-        }
-    }
-}
-
-impl ReplicationUpdater for PyOsmiumUpdater {
-    fn check(&self) -> Result<(), String> {
-        let out = Command::new(&self.binary).arg("--version").output().map_err(|error| {
-            format!(
-                "{} is required to update the cached planet for `obc bake --all`: {error}. Run `obc doctor \
-                 --install` and retry",
-                self.binary.display()
-            )
-        })?;
-        if !out.status.success() {
-            return Err(format!("{} --version failed with {}", self.binary.display(), out.status));
-        }
-        Ok(())
-    }
-
-    fn state(&self, path: &Path) -> Result<Option<ReplicationState>, String> {
-        let output = Command::new(&self.osmium).args(["fileinfo", "-j"]).arg(path).output().map_err(|e| {
-            format!("read replication header from {} with {}: {e}", path.display(), self.osmium.display())
-        })?;
-        if !output.status.success() {
-            return Err(format!(
-                "{} fileinfo failed for {} with {}",
-                self.osmium.display(),
-                path.display(),
-                output.status
-            ));
-        }
-        let json: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|e| {
-            format!("{} fileinfo returned invalid JSON for {}: {e}", self.osmium.display(), path.display())
-        })?;
-        let Some(options) = json.pointer("/header/option").and_then(serde_json::Value::as_object) else {
-            return Ok(None);
-        };
-        let get = |key: &str| options.get(key).and_then(serde_json::Value::as_str);
-        let (Some(base_url), Some(sequence), Some(timestamp)) = (
-            get("osmosis_replication_base_url"),
-            get("osmosis_replication_sequence_number"),
-            get("osmosis_replication_timestamp"),
-        ) else {
-            return Ok(None);
-        };
-        let sequence =
-            sequence.parse().map_err(|_| format!("{}: invalid replication sequence `{sequence}`", path.display()))?;
-        snapshot_from_replication(timestamp)?;
-        Ok(Some(ReplicationState { base_url: base_url.to_string(), sequence, timestamp: timestamp.to_string() }))
-    }
-
-    fn update_once(&self, path: &Path, progress: &Progress) -> Result<ReplicationStep, String> {
-        progress.check()?;
-        let tmpdir = path.parent().ok_or_else(|| format!("{} has no parent directory", path.display()))?;
-        let status = Command::new(&self.binary)
-            .args(["-vv", "--tmpdir"])
-            .arg(tmpdir)
-            .arg(path)
-            .status()
-            .map_err(|e| format!("run {}: {e}", self.binary.display()))?;
-        match status.code() {
-            Some(0) => Ok(ReplicationStep::Current),
-            Some(1) => Ok(ReplicationStep::MoreAvailable),
-            _ => Err(format!(
-                "{} failed with {status}; its atomic temporary output was not accepted. The previous cached planet \
-                 remains usable",
-                self.binary.display()
-            )),
-        }
-    }
-}
-
-fn advance_replication(
-    path: &Path,
-    updater: &dyn ReplicationUpdater,
-    progress: &Progress,
-) -> Result<ReplicationUpdate, String> {
-    let from =
-        updater.state(path)?.ok_or_else(|| format!("{} has no usable OSM replication header", path.display()))?;
-    let mut current = from.clone();
-    let mut batches = 0usize;
-    progress
-        .log(format!("Updating cached planet from replication sequence {} ({})", current.sequence, current.timestamp));
-    loop {
-        let step = updater.update_once(path, progress)?;
-        let after = updater
-            .state(path)?
-            .ok_or_else(|| format!("{} lost its OSM replication header after a successful update", path.display()))?;
-        if after.base_url != current.base_url {
-            return Err(format!(
-                "{} changed replication service from {} to {} — refusing an ambiguous source transition",
-                path.display(),
-                current.base_url,
-                after.base_url
-            ));
-        }
-        if after.sequence < current.sequence || after.timestamp < current.timestamp {
-            return Err(format!(
-                "{} replication state moved backwards from sequence {} ({}) to {} ({})",
-                path.display(),
-                current.sequence,
-                current.timestamp,
-                after.sequence,
-                after.timestamp
-            ));
-        }
-        if after.sequence > current.sequence {
-            batches += 1;
-            progress.log(format!("  replication batch {batches}: sequence {} ({})", after.sequence, after.timestamp));
-        } else if step == ReplicationStep::MoreAvailable {
-            return Err(format!(
-                "{} reported more replication data without advancing sequence {} — refusing an infinite retry loop",
-                path.display(),
-                current.sequence
-            ));
-        }
-        current = after;
-        if step == ReplicationStep::Current {
-            break;
-        }
-    }
-    if batches == 0 {
-        progress.log("  cached planet is already at the newest replication sequence");
-    } else {
-        progress.log(format!("  cached planet is current at sequence {}", current.sequence));
-    }
-    Ok(ReplicationUpdate { from, to: current, batches })
-}
-
-fn snapshot_from_replication(timestamp: &str) -> Result<String, String> {
-    let date = timestamp.get(..10).ok_or_else(|| format!("invalid OSM replication timestamp `{timestamp}`"))?;
-    obc_pack::catalog::validate_date(date)
-        .map_err(|e| format!("invalid OSM replication timestamp `{timestamp}`: {e}"))?;
-    Ok(date.to_string())
-}
-
-fn replication_is_too_old(state: &ReplicationState) -> bool {
-    let Ok(timestamp) = obc_pack::catalog::validate_timestamp(&state.timestamp) else {
-        return false;
-    };
-    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
-        return false;
-    };
-    (now.as_secs() as i64).saturating_sub(timestamp) > MAX_REPLICATION_AGE_SECONDS
+/// The `timestamp` of an Osmosis replication `state.txt`, which escapes each `:`.
+fn state_timestamp(path: &Path) -> Result<String, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let timestamp = text.lines().find_map(|line| line.strip_prefix("timestamp="));
+    let timestamp = timestamp.map(|t| t.trim().replace('\\', "")).filter(|t| t.len() >= 10);
+    timestamp.ok_or_else(|| format!("{}: a replication state with no timestamp", path.display()))
 }
 
 fn local_snapshot(path: &Path) -> Result<String, String> {
@@ -540,8 +397,9 @@ impl ShardRunner for OsmiumRunner {
             Config { extracts: requests.iter().map(|r| ConfigExtract { output: &r.output, bbox: r.bbox }).collect() };
         let config_path = output_dir.join("extracts.json");
         write_json(&config_path, &config)?;
+        // `-F pbf`: a planet from the store is an object without a file extension.
         let status = Command::new(&self.binary)
-            .args(["extract", "--config"])
+            .args(["extract", "-F", "pbf", "--config"])
             .arg(&config_path)
             .args(["--directory"])
             .arg(output_dir)
@@ -559,6 +417,71 @@ impl ShardRunner for OsmiumRunner {
             }
         }
         Ok(())
+    }
+}
+
+impl OsmiumRunner {
+    /// Write `base` with `diffs` applied to `out`, in passes of [`DIFFS_PER_PASS`] diffs. A pass
+    /// writes a `.part` file, so `out` exists only when it is whole. With `delete_base`, `base`
+    /// goes when the first pass is done.
+    pub fn apply_changes(
+        &self,
+        base: &Path,
+        delete_base: bool,
+        diffs: &[&Path],
+        out: &Path,
+        progress: &Progress,
+    ) -> Result<(), String> {
+        let part = |pass: usize| {
+            let mut name = out.file_name().unwrap_or_default().to_os_string();
+            name.push(format!(".{}.part", pass % 2));
+            out.with_file_name(name)
+        };
+        let passes = || -> Result<(), String> {
+            let mut input = base.to_path_buf();
+            for (pass, batch) in diffs.chunks(DIFFS_PER_PASS).enumerate() {
+                progress.check()?;
+                let first = pass * DIFFS_PER_PASS + 1;
+                progress.log(format!("Applying daily diffs {first}–{} of {}", first + batch.len() - 1, diffs.len()));
+                let output = part(pass);
+                let status = Command::new(&self.binary)
+                    .args(["apply-changes", "-F", "pbf", "--change-file-format", "osc.gz", "-f", "pbf"])
+                    .args(["--fsync", "--overwrite", "-o"])
+                    .arg(&output)
+                    .arg(&input)
+                    .args(batch)
+                    .status()
+                    .map_err(|e| format!("run {} apply-changes: {e}", self.binary.display()))?;
+                if !status.success() {
+                    return Err(format!("{} apply-changes failed with {status}", self.binary.display()));
+                }
+                if input != base || delete_base {
+                    std::fs::remove_file(&input).map_err(|e| format!("{}: {e}", input.display()))?;
+                }
+                input = output;
+            }
+            std::fs::rename(&input, out).map_err(|e| format!("install {}: {e}", out.display()))
+        };
+        let result = passes();
+        if result.is_err() {
+            let _ = std::fs::remove_file(part(0));
+            let _ = std::fs::remove_file(part(1));
+        }
+        result
+    }
+
+    /// The `osmosis_replication_timestamp` in the header of a PBF: the time its data ends.
+    fn replication_timestamp(&self, path: &Path) -> Result<String, String> {
+        let output = Command::new(&self.binary)
+            .args(["fileinfo", "-F", "pbf", "-g", "header.option.osmosis_replication_timestamp"])
+            .arg(path)
+            .output()
+            .map_err(|e| format!("run {} fileinfo: {e}", self.binary.display()))?;
+        let timestamp = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !output.status.success() || timestamp.is_empty() {
+            return Err(format!("{}: no osmosis_replication_timestamp in its header", path.display()));
+        }
+        Ok(timestamp)
     }
 }
 
@@ -806,7 +729,7 @@ pub struct PlanetRunSummary {
     pub source: PathBuf,
     pub source_snapshot: String,
     pub source_bytes: u64,
-    pub replication: Option<ReplicationUpdate>,
+    pub replication: Option<Replication>,
     pub leaves: usize,
     pub source_leaves_reused: usize,
     pub source_leaves_refreshed: usize,
@@ -875,12 +798,8 @@ impl PlanetRunSummary {
         if let Some(replication) = &self.replication {
             let _ = writeln!(
                 out,
-                "replication: {} ({}) → {} ({}), {} applied batch(es)",
-                replication.from.sequence,
-                replication.from.timestamp,
-                replication.to.sequence,
-                replication.to.timestamp,
-                replication.batches
+                "replication: {} → {}, {} daily diff(s) applied",
+                replication.from, replication.to, replication.diffs
             );
         }
         let _ = writeln!(
@@ -1210,6 +1129,7 @@ impl PlanetBake<'_> {
             }],
             chunk_size: None,
             no_land: false,
+            land: None,
             // The terrain published in this tree, or nothing. A tree with no terrain writes
             // `Ascent M = 0`, which is a decode-valid map.
             terrain: self.opts.terrain.as_ref().map(|t| t.dir.clone()),
@@ -1428,7 +1348,6 @@ fn leaf_cells(id: LeafId, bands: &BandTable) -> BTreeMap<String, Vec<CellId>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::VecDeque;
     use std::sync::Mutex;
 
     fn repo(path: &str) -> PathBuf {
@@ -1468,91 +1387,6 @@ mod tests {
                 stack.push(child);
             }
         }
-    }
-
-    fn replication_state(sequence: u64, hour: u64) -> ReplicationState {
-        ReplicationState {
-            base_url: "https://planet.openstreetmap.org/replication/hour/".into(),
-            sequence,
-            timestamp: format!("2026-08-01T{hour:02}:00:00Z"),
-        }
-    }
-
-    struct ScriptedUpdater {
-        state: Mutex<ReplicationState>,
-        steps: Mutex<VecDeque<Result<(ReplicationStep, ReplicationState), String>>>,
-    }
-
-    impl ReplicationUpdater for ScriptedUpdater {
-        fn check(&self) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn state(&self, _path: &Path) -> Result<Option<ReplicationState>, String> {
-            Ok(Some(self.state.lock().unwrap().clone()))
-        }
-
-        fn update_once(&self, _path: &Path, _progress: &Progress) -> Result<ReplicationStep, String> {
-            let (step, state) = self.steps.lock().unwrap().pop_front().expect("scripted replication step")?;
-            *self.state.lock().unwrap() = state;
-            Ok(step)
-        }
-    }
-
-    #[test]
-    fn replication_runs_bounded_batches_until_current_and_reports_the_range() {
-        let updater = ScriptedUpdater {
-            state: Mutex::new(replication_state(10, 10)),
-            steps: Mutex::new(VecDeque::from([
-                Ok((ReplicationStep::MoreAvailable, replication_state(11, 11))),
-                Ok((ReplicationStep::Current, replication_state(12, 12))),
-            ])),
-        };
-        let update = advance_replication(Path::new("planet.osm.pbf"), &updater, &Progress::silent()).unwrap();
-        assert_eq!(update.from, replication_state(10, 10));
-        assert_eq!(update.to, replication_state(12, 12));
-        assert_eq!(update.batches, 2);
-    }
-
-    #[test]
-    fn replication_failure_preserves_the_last_successful_state_for_resume() {
-        let updater = ScriptedUpdater {
-            state: Mutex::new(replication_state(10, 10)),
-            steps: Mutex::new(VecDeque::from([
-                Ok((ReplicationStep::MoreAvailable, replication_state(11, 11))),
-                Err("network stopped".into()),
-            ])),
-        };
-        let error = advance_replication(Path::new("planet.osm.pbf"), &updater, &Progress::silent())
-            .expect_err("the second batch fails");
-        assert!(error.contains("network stopped"), "{error}");
-        assert_eq!(*updater.state.lock().unwrap(), replication_state(11, 11));
-    }
-
-    #[test]
-    fn replication_refuses_a_more_available_loop_without_progress() {
-        let updater = ScriptedUpdater {
-            state: Mutex::new(replication_state(10, 10)),
-            steps: Mutex::new(VecDeque::from([Ok((ReplicationStep::MoreAvailable, replication_state(10, 10)))])),
-        };
-        let error = advance_replication(Path::new("planet.osm.pbf"), &updater, &Progress::silent())
-            .expect_err("a stuck updater must not loop forever");
-        assert!(error.contains("without advancing"), "{error}");
-    }
-
-    #[test]
-    fn replication_age_switches_very_old_sources_to_a_fresh_snapshot() {
-        let very_old = ReplicationState {
-            base_url: "https://planet.openstreetmap.org/replication/hour/".into(),
-            sequence: 1,
-            timestamp: "2000-01-01T00:00:00Z".into(),
-        };
-        assert!(replication_is_too_old(&very_old));
-
-        let future =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 + 24 * 60 * 60;
-        let current = ReplicationState { timestamp: obc_pack::catalog::format_timestamp(future), ..very_old };
-        assert!(!replication_is_too_old(&current));
     }
 
     struct FakeRunner {
@@ -1597,6 +1431,184 @@ mod tests {
         ];
         runner.split(&repo("builder/tests/corpus/data/tiny.osm.pbf"), &dir, &requests, &Progress::silent()).unwrap();
         assert!(requests.iter().all(|request| dir.join(&request.output).is_file()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn installed_osmium_applies_diffs_in_passes_to_an_object_without_an_extension() {
+        let runner = OsmiumRunner::default();
+        if runner.check().is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("obc-osmium-apply-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let osmium = |args: &[&str]| {
+            assert!(Command::new(&runner.binary).args(args).current_dir(&dir).status().unwrap().success())
+        };
+        let tiny = repo("builder/tests/corpus/data/tiny.osm.pbf");
+        std::fs::copy(&tiny, dir.join("base")).unwrap();
+        osmium(&["getid", tiny.to_str().unwrap(), "n1", "n2", "n3", "-o", "kept.osm.pbf"]);
+        osmium(&["derive-changes", tiny.to_str().unwrap(), "kept.osm.pbf", "-o", "diff.osc.gz"]);
+        // Store objects have no extension. Eight diffs take two passes.
+        std::fs::rename(dir.join("diff.osc.gz"), dir.join("diff")).unwrap();
+        let diff = dir.join("diff");
+        let diffs = vec![diff.as_path(); DIFFS_PER_PASS + 1];
+        std::fs::create_dir(dir.join("planet")).unwrap();
+        let out = dir.join("planet/applied.osm.pbf");
+        runner.apply_changes(&dir.join("base"), false, &diffs, &out, &Progress::silent()).unwrap();
+
+        let opl = |path: &Path| {
+            let output =
+                Command::new(&runner.binary).args(["cat", "-F", "pbf", "-f", "opl"]).arg(path).output().unwrap();
+            String::from_utf8(output.stdout).unwrap()
+        };
+        assert_eq!(opl(&out), opl(&dir.join("kept.osm.pbf")));
+        let left: Vec<_> =
+            std::fs::read_dir(dir.join("planet")).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+        assert_eq!(left, ["applied.osm.pbf"], "no pass leaves a part file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_update_starts_from_the_newest_result_of_the_same_planet() {
+        let files = |names: &[&str]| names.iter().map(|name| PathBuf::from("planet").join(name)).collect::<Vec<_>>();
+        let (d2, d3, d4) = (Path::new("d2"), Path::new("d3"), Path::new("d4"));
+        let diffs = [(d2, "2026-08-02".to_string()), (d3, "2026-08-03".into()), (d4, "2026-08-04".into())];
+        let path = |name: &str| PathBuf::from("planet").join(name);
+        let run = |names: &[&str], to: &str| {
+            let files = files(names);
+            // The record of `to` holds the diffs up to `to`.
+            let diffs: Vec<_> = diffs.iter().filter(|(_, day)| day.as_str() <= to).cloned().collect();
+            let plan = plan(&files, "2026-08-01", to, &diffs);
+            let start = plan.start.map(|(path, day)| (path.to_path_buf(), day.to_string()));
+            let stale: Vec<PathBuf> = plan.stale.iter().map(|path| path.to_path_buf()).collect();
+            (start, plan.diffs.clone().into_iter().map(Path::to_path_buf).collect::<Vec<_>>(), stale)
+        };
+
+        // No earlier result: every diff applies to the planet.
+        assert_eq!(run(&[], "2026-08-04"), (None, vec![d2.into(), d3.into(), d4.into()], vec![]));
+        // An earlier result is the start; only the newer diffs apply. A stale part, an older result
+        // and a result of another planet go.
+        let names =
+            ["planet-2026-08-01+2026-08-02.osm.pbf", "planet-2026-08-01+2026-08-03.osm.pbf", "x.osm.pbf.0.part"];
+        let other = "planet-2026-07-25+2026-08-03.osm.pbf";
+        assert_eq!(
+            run(&[names[0], names[1], names[2], other], "2026-08-04"),
+            (
+                Some((path(names[1]), "2026-08-03".into())),
+                vec![d4.into()],
+                vec![path(names[0]), path(names[2]), path(other)]
+            )
+        );
+        // The result of `to` is there: nothing applies.
+        assert_eq!(run(&[names[1]], "2026-08-03"), (Some((path(names[1]), "2026-08-03".into())), vec![], vec![]));
+        // The pin moved back: a newer result goes and the planet is the start.
+        assert_eq!(run(&[names[1]], "2026-08-02"), (None, vec![d2.into()], vec![path(names[1])]));
+    }
+
+    #[test]
+    fn a_planet_that_ends_before_the_first_diff_is_refused() {
+        assert!(check_gap("2026-09-28", "2026-09-28T00:00:04Z", "2026-09-28T00:00:00Z").is_ok());
+        assert!(check_gap("2026-09-28", "2026-09-28T00:00:00Z", "2026-09-28T00:00:00Z").is_ok());
+        let error = check_gap("2026-09-28", "2026-09-27T23:59:59Z", "2026-09-28T00:00:00Z").unwrap_err();
+        assert!(error.contains("invalid data") && error.contains("obc data refresh osm-planet"), "{error}");
+    }
+
+    #[test]
+    fn a_replication_state_gives_its_timestamp_without_the_escapes() {
+        let path = std::env::temp_dir().join(format!("obc-state-{}.txt", std::process::id()));
+        std::fs::write(
+            &path,
+            "#Mon Oct 05 00:18:17 UTC 2026\nsequenceNumber=5136\ntimestamp=2026-10-05T00\\:00\\:00Z\n",
+        )
+        .unwrap();
+        assert_eq!(state_timestamp(&path).unwrap(), "2026-10-05T00:00:00Z");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn installed_osmium_updates_an_earlier_result_with_only_the_newer_diffs() {
+        let runner = OsmiumRunner::default();
+        if runner.check().is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("obc-osmium-update-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let osmium = |args: &[&str]| {
+            assert!(Command::new(&runner.binary).args(args).current_dir(&dir).status().unwrap().success())
+        };
+        let tiny = repo("builder/tests/corpus/data/tiny.osm.pbf");
+        let tiny = tiny.to_str().unwrap();
+        for (planet, end) in [("planet", "2026-08-01T00:00:04Z"), ("early", "2026-07-31T23:00:00Z")] {
+            let header = format!("--output-header=osmosis_replication_timestamp={end}");
+            osmium(&["cat", tiny, "-f", "pbf", "-o", planet, &header]);
+        }
+        // Each day deletes one more node.
+        let days: [&[&str]; 3] = [&["n1", "n2", "n3", "n4", "n5"], &["n1", "n2", "n3", "n4"], &["n1", "n2", "n3"]];
+        let mut previous = tiny.to_string();
+        let mut files = vec![("state0".to_string(), "timestamp=2026-08-01T00\\:00\\:00Z\n".to_string())];
+        for (day, ids) in days.iter().enumerate() {
+            let kept = format!("kept{}.osm.pbf", day + 1);
+            osmium(&[&["getid", tiny], *ids, &["-o", &kept]].concat());
+            osmium(&["derive-changes", &previous, &kept, "-o", &format!("diff{}.osc.gz", day + 1)]);
+            files.push((format!("diff{}.osc.gz", day + 1), String::new()));
+            files.push((format!("state{}", day + 1), format!("timestamp=2026-08-0{}T00\\:00\\:00Z\n", day + 2)));
+            previous = kept;
+        }
+        for (name, text) in &files {
+            if !text.is_empty() {
+                std::fs::write(dir.join(name), text).unwrap();
+            }
+        }
+        let fetched = |to: &str, count: usize| obc_data::fetch::Fetched {
+            snapshot: obc_data::store::Snapshot {
+                source: "osm-replication".into(),
+                version: to.into(),
+                files: files[..count]
+                    .iter()
+                    .map(|(name, _)| obc_data::store::FileRecord {
+                        name: name.clone(),
+                        url: name.clone(),
+                        size: 0,
+                        sha256: String::new(),
+                        retrieved: String::new(),
+                    })
+                    .collect(),
+            },
+            paths: files[..count].iter().map(|(name, _)| dir.join(name)).collect(),
+        };
+        let opl = |path: &Path| {
+            let output =
+                Command::new(&runner.binary).args(["cat", "-F", "pbf", "-f", "opl"]).arg(path).output().unwrap();
+            String::from_utf8(output.stdout).unwrap()
+        };
+        let cache = dir.join("cache");
+        let silent = Progress::silent();
+
+        let (first, to, _) =
+            update(&dir.join("planet"), "2026-08-01", &fetched("2026-08-03", 5), &cache, &runner, &silent).unwrap();
+        assert_eq!(
+            (first.file_name().unwrap(), to.as_str()),
+            ("planet-2026-08-01+2026-08-03.osm.pbf".as_ref(), "2026-08-03")
+        );
+        assert_eq!(opl(&first), opl(&dir.join("kept2.osm.pbf")));
+
+        // The earlier result is the start: the diffs it holds are not read again.
+        std::fs::remove_file(dir.join("diff1.osc.gz")).unwrap();
+        std::fs::remove_file(dir.join("diff2.osc.gz")).unwrap();
+        std::fs::write(cache.join("stale.part"), "").unwrap();
+        let (second, _, applied) =
+            update(&dir.join("planet"), "2026-08-01", &fetched("2026-08-04", 7), &cache, &runner, &silent).unwrap();
+        assert_eq!(opl(&second), opl(&dir.join("kept3.osm.pbf")));
+        assert_eq!(applied.unwrap().diffs, 3);
+        let left: Vec<_> = std::fs::read_dir(&cache).unwrap().map(|entry| entry.unwrap().path()).collect();
+        assert_eq!(left, [second], "the earlier result and the stale part file are gone");
+
+        let error = update(&dir.join("early"), "2026-08-01", &fetched("2026-08-04", 7), &cache, &runner, &silent)
+            .expect_err("a planet that ends before the first diff starts leaves a gap");
+        assert!(error.contains("invalid data") && error.contains("obc data refresh osm-planet"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1813,7 +1825,7 @@ mod tests {
             logical_bbox: leaf_cell.square(),
         };
         let schema = test_schema(&dir);
-        let cutter = crate::cells::ObcCutter { no_land: true, chunk_size: None };
+        let cutter = crate::cells::ObcCutter { no_land: true, land: Default::default(), chunk_size: None };
         let run = || PlanetBake {
             input: &input,
             leaves: std::slice::from_ref(&leaf),
@@ -1943,7 +1955,7 @@ mod tests {
             replication: None,
         };
         let schema = crate::presets::load_schema(&repo("builder/presets")).unwrap();
-        let cutter = crate::cells::ObcCutter { no_land: true, chunk_size: None };
+        let cutter = crate::cells::ObcCutter { no_land: true, land: Default::default(), chunk_size: None };
         let error = PlanetBake {
             input: &input,
             leaves: &leaves,

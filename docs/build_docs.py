@@ -35,7 +35,6 @@ link resolves to a real page and heading id (the cross-page `#anchor` audit CI r
 import datetime
 import html
 import json
-import os
 import re
 import shutil
 import sys
@@ -589,21 +588,13 @@ def fill(template, repl):
     return template
 
 
-def builder_link(site_root):
-    """Use the deployed map path, or the standard sibling path in previews."""
-    path = os.environ.get("OBC_BUILDER_PATH", "builder/").strip()
-    if not path:
-        return ""
-    return '<a href="%s%s">Maps</a>' % (esc(site_root), esc(path))
-
-
 def site_head(site_root, crumb, nav_toggle=""):
     """Expand the shared topo + header partial (templates/_sitehead.html) — one copy
     of the markup, so a nav change can't drift between the docs and blog shells."""
     return fill(SITEHEAD_TEMPLATE.read_text(),
                 {"site_root": site_root, "crumb": crumb, "nav_toggle": nav_toggle,
-                 "builder_link": builder_link(site_root),
-                 "planner_link": ('<a href="%splan/">Route planner</a>' % esc(site_root)) if os.environ.get("OBC_PLANNER_CATALOG_URL") else "",
+                 "builder_link": '<a href="%sbuilder/">Maps</a>' % esc(site_root),
+                 "planner_link": '<a href="%splan/">Route planner</a>' % esc(site_root),
                  "docs_current": ' aria-current="page"' if crumb == "/ docs" else "",
                  "blog_current": ' aria-current="page"' if crumb == "/ log" else ""})
 

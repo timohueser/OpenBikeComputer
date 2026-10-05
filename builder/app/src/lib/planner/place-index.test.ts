@@ -1,9 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { corridorTiles, routeDistance } from './place-index';
-import type { Coordinate } from './editor';
+import { corridorTiles, osmSource, poiPlace } from './place-index';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
 
+describe('OSM place identities', () => {
+    it('keeps node, way and relation identities distinct for detail lookup', () => {
+        for (const [type, letter] of [[1,'n'],[2,'w'],[3,'r']] as const) {
+            const id = type * 2 ** 44 + 123;
+            expect(osmSource(id)).toBe(`${letter}123`);
+            expect(poiPlace(id, 'campsite', 'Camp', [8,48])?.id).toBe(`${letter}123`);
+        }
+        expect(osmSource('n123')).toBe('n123');
+        expect(osmSource(123)).toBeUndefined();
+        expect(osmSource(undefined)).toBeUndefined();
+    });
+});
 describe('hosted corridor places', () => {
     it('reads TileJSON and XYZ tiles without downloading an archive', async () => {
         const fetch = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ maxzoom: 11, tiles: ['https://tiles.example/places/{z}/{x}/{y}.mvt'] })))
@@ -24,21 +35,5 @@ describe('corridor tiles', () => {
 
     it('covers every tile along a line without gaps', () => {
         expect(corridorTiles([[7.4, 47.55], [7.8, 47.55]], 1, 12).sort()).toEqual([2132, 2133, 2134, 2135, 2136].map(x => `12/${x}/1431`));
-    });
-});
-
-// At 48° N, one kilometre is 0.00899° of latitude and 0.01344° of longitude.
-describe('route distance', () => {
-    const line = Array.from({ length: 100 }, (_, i): Coordinate => [8 + i / 99, 48]);
-    const distance = routeDistance(line, 5);
-
-    it('measures a place beside any part of the route and drops one beyond the corridor', () => {
-        expect(distance([8.9, 48 + 4 * .00899])).toBeCloseTo(4, 2);
-        expect(distance([8.9, 48 + 6 * .00899])).toBe(Infinity);
-    });
-
-    it('measures past the route end to the end point', () => {
-        expect(distance([9 + 4 * .01344, 48])).toBeCloseTo(4, 2);
-        expect(distance([9 + 6 * .01344, 48])).toBe(Infinity);
     });
 });

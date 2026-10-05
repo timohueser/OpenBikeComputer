@@ -1,0 +1,88 @@
+{
+  "format": 1,
+  "region": "colorado-front-range",
+  "access": "DE",
+  "countries": [
+    "US"
+  ],
+  "time_zone": "America/Denver",
+  "profiles": [
+    "gravel",
+    "gravel/less-climbing",
+    "gravel/shorter",
+    "hiking",
+    "hiking/less-climbing",
+    "hiking/shorter",
+    "mtb",
+    "mtb/less-climbing",
+    "mtb/shorter",
+    "road",
+    "road/less-climbing",
+    "road/shorter",
+    "touring",
+    "touring/less-climbing",
+    "touring/shorter"
+  ],
+  "osm": {
+    "url": "https://maps.openbikecomputer.com/planner/sources/e7f7277d3b1aad23e98f15eeba3731081c16f983831b5cf05ac4e3c8740c8669.osm.pbf",
+    "sha256": "e7f7277d3b1aad23e98f15eeba3731081c16f983831b5cf05ac4e3c8740c8669"
+  },
+  "auxiliary": {
+    "daylight-landcover.gpkg": {
+      "url": "https://maps.openbikecomputer.com/planner/sources/46536607dd51665fd2a8b0f2912084a5d95680f4f0f9a31873248d85fcebc199.daylight-landcover.gpkg",
+      "sha256": "46536607dd51665fd2a8b0f2912084a5d95680f4f0f9a31873248d85fcebc199"
+    },
+    "land-polygons-split-3857.zip": {
+      "url": "https://maps.openbikecomputer.com/planner/sources/c4871013f85c257afb44b0be65ab601c8850feeafb3c1f871beaf741d7b8d824.land-polygons-split-3857.zip",
+      "sha256": "c4871013f85c257afb44b0be65ab601c8850feeafb3c1f871beaf741d7b8d824"
+    },
+    "natural_earth_vector.gpkg.zip": {
+      "url": "https://maps.openbikecomputer.com/planner/sources/b9e2e7b3d5c2c59593f6eafc19be2ba87fb04788a90c57ccd6cf32a587b6ecc3.natural_earth_vector.gpkg.zip",
+      "sha256": "b9e2e7b3d5c2c59593f6eafc19be2ba87fb04788a90c57ccd6cf32a587b6ecc3"
+    },
+    "pgf-encoding.zip": {
+      "url": "https://maps.openbikecomputer.com/planner/sources/fd11be3e69ce7f221cf71c2549f35cdf50d6aa54937b2866fc03aa95e54031bb.pgf-encoding.zip",
+      "sha256": "fd11be3e69ce7f221cf71c2549f35cdf50d6aa54937b2866fc03aa95e54031bb"
+    },
+    "qrank.csv.gz": {
+      "url": "https://maps.openbikecomputer.com/planner/sources/daf93ed3eaeeb7d9d88237118db44e34880680921e5e8eb3353626e4e76ed4dd.qrank.csv.gz",
+      "sha256": "daf93ed3eaeeb7d9d88237118db44e34880680921e5e8eb3353626e4e76ed4dd"
+    },
+    "water-polygons-split-3857.zip": {
+      "url": "https://maps.openbikecomputer.com/planner/sources/0e6a980164667f6700b655b28c829905ad1604253fb70048a29a60b69a5ce653.water-polygons-split-3857.zip",
+      "sha256": "0e6a980164667f6700b655b28c829905ad1604253fb70048a29a60b69a5ce653"
+    }
+  },
+  "terrain": {
+    "dem": {
+      "Copernicus_DSM_COG_10_N39_00_W105_00_DEM.tif": "4256a1d54ab41ccfed43f276287d072f8f438d49bc2bbedd82f55b53f336f1f0",
+      "Copernicus_DSM_COG_10_N39_00_W106_00_DEM.tif": "773e9cc0d4efa268c7891c0c8512f957f3ae5b04e21b98be9b256f72a91ef537",
+      "Copernicus_DSM_COG_10_N39_00_W107_00_DEM.tif": "8191fd9d387ec8d00bad377a002c2ff88a20713472a560b5541ecdf5060e2d57",
+      "Copernicus_DSM_COG_10_N40_00_W105_00_DEM.tif": "fa4aa26b0302857fbbdef8e81fba74502b8458539c5699162e965377458ff378",
+      "Copernicus_DSM_COG_10_N40_00_W106_00_DEM.tif": "b4bea49affd8367775c47ee26df44f0651827d2d20209e0f4f70b6f07232c4fe",
+      "Copernicus_DSM_COG_10_N40_00_W107_00_DEM.tif": "4813c90c6d83a0e163076965017f6c35b5e5005d4474b4027fa7d44a5447e1b2"
+    }
+  },
+  "snow": {
+    "source": "nasa-modis"
+  },
+  "probe": {
+    "points": [
+      [
+        -105.5217,
+        40.3772
+      ],
+      [
+        -105.5195,
+        40.3765
+      ]
+    ],
+    "query": "hotel",
+    "view": [
+      -105.56,
+      40.35,
+      -105.48,
+      40.4
+    ]
+  }
+}

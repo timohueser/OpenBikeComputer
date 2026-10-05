@@ -32,11 +32,6 @@ public enum OBCFormat {
         return "\(meters < -50 ? "−" : "+")\(value) km"
     }
 
-    /// "on the line" or "430 m off the line": how far a stop is from a trip line.
-    public static func stopOffset(meters: Double, locale: Locale = .current) -> String {
-        meters <= Trip.onLineMeters ? "on the line" : "\(shortDistance(meters: meters, locale: locale)) off the line"
-    }
-
     /// "840 m ↑" or "1,240 m ↑": climb with grouping.
     public static func climb(meters: Double, locale: Locale = .current) -> String {
         let formatter = numberFormatter(locale: locale)

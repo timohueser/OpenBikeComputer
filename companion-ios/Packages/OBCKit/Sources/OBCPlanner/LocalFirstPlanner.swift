@@ -52,41 +52,52 @@ public actor LocalFirstPlanner: PlannerDataSource {
         }
     }
 
-    public func route(points: [Coordinate], bike: BikeType, preference: RoutePreference,
+    public func route(points: [Coordinate], turnarounds: [Int] = [], activity: RouteActivity, preference: RoutePreference,
                       release: PlannerRelease) async throws -> PlannedPath {
         guard (2...64).contains(points.count) else { throw PlannerFailure.invalidData }
         for map in try await installed() where points.allSatisfy({ covers(map.bounds, $0) }) {
             do {
                 let source = try await source(map), local = try await source.release()
-                return try await source.route(points: points, bike: bike, preference: preference, release: local)
+                return try await source.route(points: points, turnarounds: turnarounds, activity: activity, preference: preference, release: local)
             } catch { try cancellation(error) }
         }
         do {
             let remote = try await remoteRelease(release)
-            return try await online.route(points: points, bike: bike, preference: preference, release: remote)
+            return try await online.route(points: points, turnarounds: turnarounds, activity: activity, preference: preference, release: remote)
         } catch { throw try fallbackError(error) }
+    }
+
+    public func shape(line: [Coordinate], profile: String) async throws -> PlannedShape {
+        for map in try await installed() where line.allSatisfy({ covers(map.bounds, $0) }) {
+            do { return try await source(map).shape(line: line, profile: profile) }
+            catch { try cancellation(error) }
+        }
+        do { return try await online.shape(line: line, profile: profile) }
+        catch { throw try fallbackError(error) }
     }
 
     public func search(_ query: PlannerSearchQuery, release: PlannerRelease) async throws -> [PlannerPlace] {
         for map in try await installed() where coversSearch(map, query) {
             do {
                 let source = try await source(map), local = try await source.release()
-                return try await source.search(query, release: local)
+                var bounded = query
+                if query.source != nil, let view = query.view {
+                    bounded.view = [max(view[0], map.bounds[0]), max(view[1], map.bounds[1]),
+                                    min(view[2], map.bounds[2]), min(view[3], map.bounds[3])]
+                }
+                return try await source.search(bounded, release: local)
             } catch { try cancellation(error) }
         }
         do { return try await online.search(query, release: remoteRelease(release)) }
         catch { throw try fallbackError(error) }
     }
 
-    public func overlays(bounds: [Double], zoom: Double, network: String, release: PlannerRelease) async throws -> Data {
-        for map in try await installed() where map.contains(bounds) {
-            do {
-                let source = try await source(map), local = try await source.release()
-                return try await source.overlays(bounds: bounds, zoom: zoom, network: network, release: local)
-            } catch { try cancellation(error) }
+    public func profiles(release: PlannerRelease) async throws -> [String]? {
+        if release.isLocal, let map = try await installed().first(where: { $0.id == release.id }) {
+            let source = try await source(map)
+            return try await source.profiles(release: source.release())
         }
-        do { return try await online.overlays(bounds: bounds, zoom: zoom, network: network, release: remoteRelease(release)) }
-        catch { throw try fallbackError(error) }
+        return try await online.profiles(release: remoteRelease(release))
     }
 
     private func remoteRelease(_ release: PlannerRelease) async throws -> PlannerRelease {
@@ -107,6 +118,12 @@ public actor LocalFirstPlanner: PlannerDataSource {
     private func area(_ box: [Double]) -> Double { (box[2] - box[0]) * (box[3] - box[1]) }
     private func coversSearch(_ map: OfflineMap, _ query: PlannerSearchQuery) -> Bool {
         let view = query.view ?? map.bounds
+        if query.source != nil {
+            guard OfflineMap.valid(view) else { return false }
+            // Exact-source requests use the viewport centre as the selected POI's anchor.
+            return covers(map.bounds, Coordinate(latitude: (view[1] + view[3]) / 2,
+                                                 longitude: (view[0] + view[2]) / 2))
+        }
         guard map.contains(view), query.route.allSatisfy({ covers(map.bounds, $0) }) else { return false }
         guard !query.kinds.isEmpty else { return true }
         let box: [Double], radius: Double

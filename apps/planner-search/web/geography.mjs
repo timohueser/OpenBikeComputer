@@ -1,4 +1,4 @@
-import { distance, around, routePosition } from './engine.mjs';
+import { distance, around, routePositions } from './engine.mjs';
 
 export const centre = (b) => [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
 export function lengths(line) {
@@ -33,7 +33,7 @@ export function dayNumber(value, context) {
   if (!context.startDate)
     throw new Error('Set the trip start date to use today or tomorrow.');
   const today = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Europe/Berlin',
+    timeZone: context.timeZone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -82,7 +82,7 @@ export function alongRange(along, range, context) {
     along.ref === 'km' ? 0 : along.ref === 'end' ? range[1] : range[0];
   if (along.ref === 'here') {
     if (!context.here) throw new Error('Set your location to use “from here”.');
-    const pos = routePosition(context.here, line, ds);
+    const pos = routePositions(line, ds)(context.here);
     if (pos.distance > 1)
       throw new Error('Your location is more than 1 km from the route.');
     origin = pos.along;

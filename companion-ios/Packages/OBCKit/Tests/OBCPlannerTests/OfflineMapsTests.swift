@@ -106,26 +106,26 @@ struct OfflineMapsTests {
             try await planner.mapRelease(bounds: [10,50,11,51], allowNetwork: false)
         }
         let points = [Coordinate(latitude: 48, longitude: 8), Coordinate(latitude: 48.1, longitude: 8.1)]
-        _ = try await planner.route(points: points, bike: .gravel, preference: .balanced, release: release)
+        _ = try await planner.route(points: points, activity: .gravel, preference: .balanced, release: release)
         let results = try await planner.search(.init(text: "absent", view: [8,48,8.1,48.1]), release: release)
         #expect(results.isEmpty)
         #expect(await online.calls.isEmpty)
         #expect(await local.calls == ["release", "release", "release", "route", "release", "search"])
         let far = [points[0], Coordinate(latitude: 50, longitude: 10)]
-        _ = try await planner.route(points: far, bike: .gravel, preference: .balanced, release: release)
+        _ = try await planner.route(points: far, activity: .gravel, preference: .balanced, release: release)
         #expect(await online.calls == ["release", "route"])
         await online.fail(.unavailable)
         await #expect(throws: PlannerFailure.offlineUnavailable) {
-            try await planner.route(points: far, bike: .gravel, preference: .balanced, release: release)
+            try await planner.route(points: far, activity: .gravel, preference: .balanced, release: release)
         }
         await local.fail(.noRoad)
         await online.fail(nil)
-        _ = try await planner.route(points: points, bike: .gravel, preference: .balanced, release: release)
+        _ = try await planner.route(points: points, activity: .gravel, preference: .balanced, release: release)
         #expect(await online.calls.suffix(2) == ["release", "route"])
         await local.cancel()
         let before = await online.calls.count
         await #expect(throws: CancellationError.self) {
-            try await planner.route(points: points, bike: .gravel, preference: .balanced, release: release)
+            try await planner.route(points: points, activity: .gravel, preference: .balanced, release: release)
         }
         #expect(await online.calls.count == before)
     }
@@ -146,13 +146,31 @@ struct OfflineMapsTests {
         let planner = LocalFirstPlanner(store: store, online: online) { map, _ in map.id == first.map.id ? a : b }
         for (bounds, id) in [([7.2,47.2,7.8,47.8], "first"), ([9.2,49.2,9.8,49.8], "second"),
                              ([10.2,50.2,10.8,50.8], "online")] {
-            let selected = try await planner.mapRelease(bounds: bounds)
-            #expect(selected.id == id)
-            _ = try await planner.overlays(bounds: bounds, zoom: 10, network: "cycling", release: selected)
+            #expect(try await planner.mapRelease(bounds: bounds).id == id)
         }
-        #expect(await a.calls.contains("overlays"))
-        #expect(await b.calls.contains("overlays"))
-        #expect(await online.calls.contains("overlays"))
+    }
+
+    @Test func exactSourceDetailsStayOfflineAtCoverageEdges() async throws {
+        let root = temporary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (quote, bytes) = try fixture()
+        let store = OfflineMapStore(root: root)
+        try stage(quote, bytes: bytes, root: root)
+        try await store.install(quote, allowMobileData: false) { _, _, _ in }
+        let local = RecordingSource(local: true), online = RecordingSource(local: false)
+        let planner = LocalFirstPlanner(store: store, online: online) { _, _ in local }
+        let release = try await planner.release()
+        for view in [[8.985,47.99,9.005,48.01], [6.99,46.99,7.01,47.01]] {
+            var query = PlannerSearchQuery(text: "Place", view: view)
+            query.source = "n123"
+            _ = try await planner.search(query, release: release)
+        }
+        #expect(await online.calls.isEmpty)
+        #expect(await local.searchViews == [[8.985,47.99,9,48.01], [7,47,7.01,47.01]])
+        var outside = PlannerSearchQuery(text: "Place", view: [9.01,48,9.03,48.02])
+        outside.source = "n456"
+        _ = try await planner.search(outside, release: release)
+        #expect(await online.calls.last == "search")
     }
 
     @Test func searchRadiusMustFitInsideTheDownload() async throws {
@@ -204,6 +222,7 @@ private func stage(_ quote: OfflineDownloadQuote, bytes: Data, root: URL) throws
 
 private actor RecordingSource: PlannerDataSource {
     var calls: [String] = []
+    var searchViews: [[Double]] = []
     var failure: PlannerFailure?
     var cancelled = false
     let local: Bool
@@ -217,18 +236,19 @@ private actor RecordingSource: PlannerDataSource {
     func release() throws -> PlannerRelease {
         calls.append("release")
         let url = URL(string: "https://planner.test/")!
-        return PlannerRelease(id: id, region: "test", bounds: bounds,
-            basemap: local ? URL(string: "pmtiles://file:///map.pmtiles")! : url,
-            glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: url, routing: url, manifest: url)
+        return PlannerRelease(id: id, region: "test", bounds: bounds, basemap: url, places: url,
+            glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: url, routing: url,
+            manifest: local ? URL(fileURLWithPath: "/release.json") : url, overlays: url)
     }
-    func route(points: [Coordinate], bike: BikeType, preference: RoutePreference, release: PlannerRelease) throws -> PlannedPath {
+    func route(points: [Coordinate], turnarounds: [Int], activity: RouteActivity, preference: RoutePreference, release: PlannerRelease) throws -> PlannedPath {
         calls.append("route")
         if cancelled { throw CancellationError() }
         if let failure { throw failure }
         return PlannedPath(points: [], distance: 1, ascent: 0, seconds: 1, pointIndices: [], elapsed: [])
     }
-    func search(_ query: PlannerSearchQuery, release: PlannerRelease) -> [PlannerPlace] { calls.append("search"); return [] }
-    func overlays(bounds: [Double], zoom: Double, network: String, release: PlannerRelease) -> Data {
-        calls.append("overlays"); return Data()
+    func search(_ query: PlannerSearchQuery, release: PlannerRelease) -> [PlannerPlace] {
+        calls.append("search")
+        if let view = query.view { searchViews.append(view) }
+        return []
     }
 }

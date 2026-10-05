@@ -2,12 +2,19 @@
     import Icon from './PlannerIcon.svelte';
     import Select from './PlannerSelect.svelte';
     import VersionsMenu from './VersionsMenu.svelte';
-    import { ridingProfiles, type BikeType } from '../../lib/planner/riding-profiles';
-    import type { Trip } from '../../lib/planner/editor';
+    import { onMount } from 'svelte';
+    import { ridingProfiles, servedPresets, type BikeType } from '../../lib/planner/riding-profiles';
+    import { planTitle, type Trip } from '../../lib/planner/editor';
+    import { regionProfiles, type RoutingLine } from '../../lib/planner/routing';
     import type { Version } from '../../lib/planner/versions';
 
-    let { trip, canUndo, canRedo, draftSavedAt, draftError, onChange, onUndo, onRedo, onRestore, onSaved, onNew }: {
+    let { trip, line, name, versions, canUndo, canRedo, draftSavedAt, draftError, onChange, onUndo, onRedo, onRestore, onVersions, onNew, onLibrary, ready }: {
         trip: Trip;
+        line?: RoutingLine;
+        name: string;
+        versions: Version[];
+        ready: boolean;
+        onLibrary: () => void;
         canUndo: boolean;
         canRedo: boolean;
         draftSavedAt: number | null;
@@ -17,38 +24,43 @@
         onUndo: () => void;
         onRedo: () => void;
         onRestore: (trip: Trip, name: string) => void;
-        onSaved: (version: Version) => void;
+        onVersions: (versions: Version[]) => Promise<void>;
     } = $props();
 
     const bike = $derived(trip.bike ?? 'touring');
-    const start = $derived(trip.points.find(p => p.kind === 'start'));
-    const finish = $derived(trip.points.find(p => p.kind === 'finish'));
-    const title = $derived(start && finish ? `${start.label} → ${finish.label}` : start ? `From ${start.label}` : finish ? `To ${finish.label}` : 'New plan');
+    const title = $derived(name || planTitle(trip));
+    // The profiles of the routing region; until they arrive, every activity and preset shows.
+    let profiles = $state<string[]>();
+    // An activity that the region does not serve stays listed while the plan uses it.
+    const activities = $derived(Object.entries(ridingProfiles).filter(([value]) => value === bike || servedPresets(value as BikeType, profiles).length));
+
+    onMount(() => { regionProfiles().then(found => profiles = found, () => {}); });
 </script>
 
-<div class="trip-bar">
+<div class="trip-bar" inert={!ready}>
     <div class="trip-name">
         <h1>{title}</h1>
         <Select label="Plan type" value={trip.mode ?? 'trip'} options={[{ value: 'trip', label: 'Multi-day trip' }, { value: 'route', label: 'Route' }]}
             onChange={(mode) => onChange({ mode: mode as Trip['mode'] }, mode === 'route' ? 'Route' : 'Multi-day trip')} />
     </div>
     <div class="ride">
-        <div class="preference"><span>Bike</span>
-            <Select label="Bike" value={bike} options={Object.entries(ridingProfiles).map(([value, profile]) => ({ value, label: profile.label }))} onChange={(value) => {
+        <div class="preference"><span>Activity</span>
+            <Select label="Activity" value={bike} options={activities.map(([value, profile]) => ({ value, label: profile.label, icon: profile.icon }))} onChange={(value) => {
                 const next = value as BikeType;
-                onChange({ bike: next, preset: ridingProfiles[next].presets[0] }, 'Bike profile changed');
+                onChange({ bike: next, preset: servedPresets(next, profiles)[0] }, 'Bike profile changed');
             }} />
         </div>
         <div class="preference"><span>Preset</span>
-            <Select label="Preset" value={trip.preset ?? 'Balanced'} options={ridingProfiles[bike].presets.map(value => ({ value, label: value }))}
+            <Select label="Preset" value={trip.preset ?? 'Balanced'} options={servedPresets(bike, profiles).map(value => ({ value, label: value, icon: value === 'Less climbing' ? 'less-climbing' : value === 'Shorter' ? 'arrow' : 'sliders' }))}
                 onChange={(preset) => onChange({ preset }, 'Route preference changed')} />
         </div>
     </div>
     <div class="actions">
-        <button type="button" class="planner-action quiet" disabled={!trip.points.length} onclick={onNew}>New {trip.mode === 'route' ? 'route' : 'trip'}</button>
+        <button type="button" class="planner-action quiet" disabled={!ready || !trip.points.length} onclick={onNew}>New {trip.mode === 'route' ? 'route' : 'trip'}</button>
         <button type="button" class="icon" disabled={!canUndo} onclick={onUndo} aria-label="Undo" title="Undo"><Icon name="undo" /></button>
         <button type="button" class="icon" disabled={!canRedo} onclick={onRedo} aria-label="Redo" title="Redo"><Icon name="redo" /></button>
-        <VersionsMenu {trip} {draftSavedAt} {draftError} {onRestore} {onSaved} />
+        <button type="button" class="planner-action" disabled={!ready} onclick={onLibrary}>My plans</button>
+        <VersionsMenu {trip} {line} {versions} {draftSavedAt} {draftError} {onRestore} onChange={onVersions} />
     </div>
 </div>
 
@@ -92,8 +104,10 @@
     .actions {
         display: flex;
         align-items: center;
+        flex-wrap: wrap;
         gap: 4px;
     }
+    .actions :global(button) { white-space: nowrap; }
     .icon {
         display: grid;
         place-items: center;

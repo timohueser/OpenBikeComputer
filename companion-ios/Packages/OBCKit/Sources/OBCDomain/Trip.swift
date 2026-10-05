@@ -22,10 +22,6 @@ public struct DayEnd: Equatable, Sendable {
     /// Metres along the trip line. The stored value is the hint for the next projection, which
     /// keeps a day end on its own leg of an out-and-back or a loop.
     public var distance: Double
-    /// The stop the rider ended the day at. The day end sits on the line point nearest it.
-    public var stop: Stop?
-    /// How the day reaches a stop off the line. Nil ends the day on the line.
-    public var stopRoute: StopRoute?
     /// How the rider travels on from here when the next day starts elsewhere. Phone-only: the
     /// device knows a transfer by its geometry alone.
     public var transfer: TransferKind?
@@ -33,15 +29,13 @@ public struct DayEnd: Equatable, Sendable {
     public var resumeName: String?
 
     public init(
-        coordinate: Coordinate, name: String? = nil, title: String? = nil, distance: Double, stop: Stop? = nil,
-        stopRoute: StopRoute? = nil, transfer: TransferKind? = nil, resumeName: String? = nil
+        coordinate: Coordinate, name: String? = nil, title: String? = nil, distance: Double,
+        transfer: TransferKind? = nil, resumeName: String? = nil
     ) {
         self.coordinate = coordinate
         self.name = name
         self.title = title
         self.distance = distance
-        self.stop = stop
-        self.stopRoute = stopRoute
         self.transfer = transfer
         self.resumeName = resumeName
     }
@@ -69,13 +63,10 @@ public struct TripDayCopy: Equatable, Sendable {
 /// library record. The upload cuts the line into one route per day.
 ///
 /// The line is made of pieces, as ``MeasuredLine`` reads it. At a gap between two pieces the
-/// next day usually starts where the next piece starts; a gap inside a day is ridden straight
-/// (see ``TripGap``).
+/// next day usually starts where the next piece starts; a gap inside a day is ridden straight.
 public struct Trip: Identifiable, Equatable, Sendable {
     public var id: TripID
-    /// The key the device stores progress and rides under. A trip keeps it for life, and a
-    /// reverse gives the trip a new one, so the progress of the old direction never ticks days
-    /// of the new one.
+    /// The key the device stores progress and rides under. A trip keeps it for life.
     public internal(set) var key: UInt64
     public var name: String
     /// Written into every day route of an upload.
@@ -89,8 +80,7 @@ public struct Trip: Identifiable, Equatable, Sendable {
     public internal(set) var dayEnds: [DayEnd]
     /// The waypoints of the route files the line was joined from.
     public internal(set) var waypoints: [Stop]
-    /// The name of the place where the line starts. A reverse swaps it with the last day end's
-    /// name, so no name is lost.
+    /// The name of the place where the line starts.
     public internal(set) var startName: String?
     /// The device copy of each day route, by day index. A missing or nil entry has no copy.
     public var dayCopies: [TripDayCopy?]
@@ -99,14 +89,13 @@ public struct Trip: Identifiable, Equatable, Sendable {
     public var deviceLink: DeviceRouteLink?
     /// The CRC-32 of the trip object the device last committed. Nil reads as outdated.
     public var uploadedCRC32: UInt32?
-    /// The trip key of the trip object the device last committed. When it differs from ``key``,
-    /// the device holds progress for the old direction under that object.
-    public var uploadedKey: UInt64?
     /// When the trip entered the library, which is the newest-first list order.
     public var addedAt: Date
     /// When the rider last changed the trip. Import offers to add a file to the most recently
     /// edited trip.
     public var editedAt: Date
+    /// The planner plan the line was made from. Nil for a trip that was never planned.
+    public var plan: PlannerPlan?
 
     public init(
         id: TripID,
@@ -122,9 +111,9 @@ public struct Trip: Identifiable, Equatable, Sendable {
         dayCopies: [TripDayCopy?] = [],
         deviceLink: DeviceRouteLink? = nil,
         uploadedCRC32: UInt32? = nil,
-        uploadedKey: UInt64? = nil,
         addedAt: Date,
-        editedAt: Date? = nil
+        editedAt: Date? = nil,
+        plan: PlannerPlan? = nil
     ) {
         self.id = id
         self.key = max(key, 1)
@@ -139,9 +128,9 @@ public struct Trip: Identifiable, Equatable, Sendable {
         self.dayCopies = dayCopies
         self.deviceLink = deviceLink
         self.uploadedCRC32 = uploadedCRC32
-        self.uploadedKey = uploadedKey
         self.addedAt = addedAt
         self.editedAt = editedAt ?? addedAt
+        self.plan = plan
     }
 
     /// A fresh trip key. The device reads key 0 as "no trip".

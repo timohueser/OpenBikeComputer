@@ -11,12 +11,12 @@ export interface LodTier {
     // tier's finest on-screen scale; absent or 0 means off. Lines are never culled, and
     // the packer ignores it on the finest tier, which has no coarser fallback.
     min_area_px?: number;
-    // Simplify this tier's plain fills as one shared coverage rather than feature by
-    // feature, so a boundary two fills share is cut once and neighbours stay glued
-    // instead of tearing open into backdrop slivers, and min_area_px becomes an
-    // elimination threshold rather than a drop. Costs bake time; the shipped preset
-    // turns it on for its two coarsest tiers.
-    coverage_simplify?: boolean;
+    // Line tolerance in metres when it differs from `simplify`; absent means `simplify`.
+    line_simplify?: number;
+    // Continue solid, uncased lines through junctions as trails; fewer records per junction.
+    merge_line_trails?: boolean;
+    // Replace classified thematic fills with the packer's semantic-grid generalisation.
+    semantic_coverage?: boolean;
     // Drop lines shorter than this many kilometres, measured after same-class fragments
     // are stitched together, which needs `merge_lines`. It clears the junction stubs and
     // roundabout arms stitching could not absorb and keeps the long-distance skeleton.
@@ -73,6 +73,8 @@ export interface PackConfig {
     // reclaims a span and a ring per join. Solid lines are unchanged; dashed and cased
     // phase runs continuous.
     merge_lines?: boolean;
+    // Contour-line settings ride through untouched; the packer validates them.
+    contours?: unknown;
     // Bike-type routing profiles. Absent means the packer bakes in its four shipped
     // defaults; the profile editor materializes it on first edit.
     routing?: RoutingConfig;
@@ -131,7 +133,9 @@ export function normalizeConfig(raw: Record<string, unknown>): {
         max_mpp: i === 0 ? null : (l.max_mpp ?? null),
         simplify: l.simplify ?? 0,
         ...(l.min_area_px ? { min_area_px: l.min_area_px } : {}),
-        ...(l.coverage_simplify ? { coverage_simplify: true } : {}),
+        ...(l.line_simplify ? { line_simplify: l.line_simplify } : {}),
+        ...(l.merge_line_trails ? { merge_line_trails: true } : {}),
+        ...(l.semantic_coverage ? { semantic_coverage: true } : {}),
         ...(l.min_line_km ? { min_line_km: l.min_line_km } : {}),
     }));
     cfg.features = cfg.features ?? {};
@@ -172,9 +176,10 @@ export function buildConfigForSubmit(
             // Emit only a positive footprint floor; the finest tier's value is ignored by
             // the packer, so leaving it off keeps the submitted config clean.
             if (l.min_area_px && i < n - 1) tier.min_area_px = l.min_area_px;
-            // Same rule: emit the coverage pass only where it is on.
-            if (l.coverage_simplify) tier.coverage_simplify = true;
-            // Same rule again: a zero threshold is the off value.
+            // Same rule: zero and false are the off values.
+            if (l.line_simplify) tier.line_simplify = l.line_simplify;
+            if (l.merge_line_trails) tier.merge_line_trails = true;
+            if (l.semantic_coverage) tier.semantic_coverage = true;
             if (l.min_line_km) tier.min_line_km = l.min_line_km;
             return tier;
         }),
@@ -188,6 +193,7 @@ export function buildConfigForSubmit(
     // Routing profiles ride through untouched, validated by the packer. Absent means the
     // binary bakes in its four shipped defaults, so CLI parity holds.
     if (config.routing) out.routing = deepCopy(config.routing);
+    if (config.contours != null) out.contours = deepCopy(config.contours);
     for (const cat of Object.keys(config.features)) {
         for (const name of Object.keys(config.features[cat])) {
             if (disabledSet.has(`${cat}/${name}`)) continue;

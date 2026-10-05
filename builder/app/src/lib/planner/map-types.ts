@@ -24,5 +24,5 @@ export interface MapSegment {
     coordinates: Coordinate[];
     color: string;
     legEndId: string;
-    leg: "routed" | "straight" | "drawn";
+    leg: import("./editor").LegMode;
 }

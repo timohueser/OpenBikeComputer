@@ -8,7 +8,9 @@ import SwiftUI
 struct PlannerPreviewMapPin: Identifiable, Equatable {
     /// A `stop` sits on the route line, so it draws as a disc like the start; a `place` is a
     /// candidate off the line and hangs from a stem.
-    enum Kind: Equatable { case start, finish, stop, shape, marker, place }
+    /// `route` is the start of a signed route: numbered when it is listed, a dot otherwise.
+    /// `night` ends a day and shows the day's number.
+    enum Kind: Equatable { case start, finish, stop, shape, night(Int), marker, place, route(number: Int?, rank: Int) }
     let id: String
     let title: String
     let coordinate: Coordinate
@@ -16,10 +18,14 @@ struct PlannerPreviewMapPin: Identifiable, Equatable {
     var kind: Kind = .place
     var highlighted = false
     var isAmbient = false
+    /// A press and hold picks the pin up; the drop moves it.
+    var isDraggable = false
 }
 
 struct PlannerPreviewMap: UIViewRepresentable {
     let coordinates: [Coordinate]
+    /// The route measured with its transfer gaps, as the profile reads it.
+    var routeLine: MeasuredLine?
     let pins: [PlannerPreviewMapPin]
     let selectedID: String?
     let cursor: Coordinate?
@@ -27,6 +33,10 @@ struct PlannerPreviewMap: UIViewRepresentable {
     let fitRevision: Int
     let onSelect: (String, CGPoint) -> Void
     let onMapPoint: (Coordinate, CGPoint) -> Void
+    /// A tap near the route line, with the tap tolerance in metres. True when the line takes the tap.
+    var onLine: (Coordinate, _ tolerance: Double) -> Bool = { _, _ in false }
+    /// A draggable pin was dropped at a new place.
+    var onDrag: (String, Coordinate) -> Void = { _, _ in }
     var showCycling = false
     var showHiking = false
     var onVisibleMapRect: (MKMapRect) -> Void = { _ in }
@@ -37,7 +47,14 @@ struct PlannerPreviewMap: UIViewRepresentable {
     var hiddenCategories: Set<PlannerPreviewPlaceCategory> = []
     var highlightedCategories: Set<PlannerPreviewPlaceCategory> = []
     var onPlace: (PlannerPreviewPlace) -> Void = { _ in }
-    var onNetworkStatus: (String?) -> Void = { _ in }
+    var onLayerStatus: (String?) -> Void = { _ in }
+    /// Lines in place of the route line, such as the signed routes over the muted plan.
+    var strokes: [MapStroke]?
+    /// What a fit shows in place of the route and its pins.
+    var focus: [Coordinate]?
+    var namer: PlannerPlaceNamer?
+    /// The map has settled and drawn its tiles.
+    var onIdle: () -> Void = {}
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.obcIsOnline) private var online
     @Environment(\.obcOfflineMaps) private var offlineMaps
@@ -46,6 +63,7 @@ struct PlannerPreviewMap: UIViewRepresentable {
 
     func makeUIView(context: Context) -> OBCNativeMapView {
         let map = OBCNativeMapView()
+        namer?.map = map
         map.delegate = context.coordinator
         map.accessibilityIdentifier = "planner.map"
         map.onFirstLayout = { [weak map, weak coordinator = context.coordinator] in
@@ -65,9 +83,12 @@ struct PlannerPreviewMap: UIViewRepresentable {
         map.load(release: release, dark: colorScheme == .dark, online: online, source: source, revision: offlineMaps?.revision ?? 0)
         map.attributionButtonMargins = CGPoint(x: 8, y: bottomInset + 8)
         coordinator.updatePOIs(map)
-        if coordinator.coordinates != coordinates {
-            coordinator.coordinates = coordinates
-            coordinator.routeIndex = SegmentedLineOverlay(line: MeasuredLine(routePoints: coordinates.map { RoutePoint(coordinate: $0) }))
+        if coordinator.coordinates != coordinates || coordinator.strokes != strokes {
+            if coordinator.coordinates != coordinates {
+                coordinator.coordinates = coordinates
+                coordinator.routeIndex = SegmentedLineOverlay(line: routeLine ?? MeasuredLine(routePoints: coordinates.map { RoutePoint(coordinate: $0) }))
+            }
+            coordinator.strokes = strokes
             coordinator.drawRoute(map)
         }
         coordinator.updateNetworks(map)
@@ -104,7 +125,7 @@ struct PlannerPreviewMap: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ map: OBCNativeMapView, coordinator: Coordinator) {
-        coordinator.networks.stop(); coordinator.places.stop(); map.stop()
+        coordinator.places.stop(); map.stop()
     }
 
     final class PinAnnotation: MLNPointAnnotation {
@@ -121,6 +142,7 @@ struct PlannerPreviewMap: UIViewRepresentable {
     final class Coordinator: NSObject, @preconcurrency MLNMapViewDelegate, UIGestureRecognizerDelegate {
         var parent: PlannerPreviewMap
         var coordinates: [Coordinate] = []
+        var strokes: [MapStroke]?
         var routeIndex: SegmentedLineOverlay?
         var pins: [PlannerPreviewMapPin] = []
         var fitRevision: Int?
@@ -136,17 +158,13 @@ struct PlannerPreviewMap: UIViewRepresentable {
         private var reportedRange: ClosedRange<Double>?
         private var hasReportedRange = false
         private var reportedViewport: MKMapRect?
-        let networks = NativeViewportLayer(identifier: "networks")
         let places = NativeViewportLayer(identifier: "highlighted-places")
-        private var layerStatuses: [String: String] = [:]
         private var reportedLayerStatus: String?
 
-        private func reportLayerStatus(_ status: String?, layer: String) {
-            layerStatuses[layer] = status
-            let message = layerStatuses.keys.sorted().compactMap { layerStatuses[$0] }.first
-            guard message != reportedLayerStatus else { return }
-            reportedLayerStatus = message
-            parent.onNetworkStatus(message)
+        private func reportLayerStatus(_ status: String?) {
+            guard status != reportedLayerStatus else { return }
+            reportedLayerStatus = status
+            parent.onLayerStatus(status)
         }
 
         init(_ parent: PlannerPreviewMap) {
@@ -155,16 +173,17 @@ struct PlannerPreviewMap: UIViewRepresentable {
         }
 
         func fit(_ map: OBCNativeMapView, animated: Bool) {
-            let points = parent.coordinates + parent.pins.filter { !$0.isAmbient || $0.highlighted }.map(\.coordinate)
+            let points = parent.focus ?? (parent.coordinates + parent.pins.filter { !$0.isAmbient || $0.highlighted }.map(\.coordinate))
             map.fit(points, bottom: parent.bottomInset, animated: animated && !UIAccessibility.isReduceMotionEnabled)
         }
 
         func drawRoute(_ map: OBCNativeMapView, force: Bool = false) {
-            map.draw([MapStroke(coordinates: coordinates, color: OBCTheme.route, width: 3.5)], force: force)
+            map.draw(strokes ?? [MapStroke(coordinates: coordinates, color: OBCTheme.route, width: 3.5)], force: force)
         }
         func mapViewDidFinishLoadingMap(_ mapView: MLNMapView) {
             (mapView as? OBCNativeMapView)?.didFinishLoadingMap()
         }
+        func mapViewDidBecomeIdle(_ mapView: MLNMapView) { parent.onIdle() }
         func mapViewDidFailLoadingMap(_ mapView: MLNMapView, withError error: Error) {
             (mapView as? OBCNativeMapView)?.didFailLoadingMap()
         }
@@ -176,11 +195,9 @@ struct PlannerPreviewMap: UIViewRepresentable {
             updateNetworks(map)
         }
         func updateNetworks(_ map: OBCNativeMapView) {
-            networks.status = { [weak self] in self?.reportLayerStatus($0, layer: "networks") }
             let network = parent.showCycling ? "cycling" : parent.showHiking ? "hiking" : "none"
-            let source = parent.source
-            networks.update(map, key: network == "none" ? nil : network, release: map.selectedRelease, minimumZoom: 6) { bounds, zoom, release in
-                try await source.overlays(bounds: bounds, zoom: zoom, network: network, release: release)
+            for id in ["planner-networks", "planner-network-labels"] {
+                for kind in ["cycling", "hiking"] { map.style?.layer(withIdentifier: "\(id)-\(kind)")?.isVisible = kind == network }
             }
         }
         func updatePOIs(_ map: OBCNativeMapView) {
@@ -195,7 +212,7 @@ struct PlannerPreviewMap: UIViewRepresentable {
             }
             let source = parent.source
             let categories = highlighted.intersection(shown)
-            places.status = { [weak self] in self?.reportLayerStatus($0, layer: "places") }
+            places.status = { [weak self] in self?.reportLayerStatus($0) }
             places.update(map, key: categories.isEmpty ? nil : categories.sorted().joined(separator: ","),
                           release: map.selectedRelease, maximumZoom: 13) { bounds, _, release in
                 var query = PlannerSearchQuery(text: "places", view: bounds)
@@ -251,6 +268,12 @@ struct PlannerPreviewMap: UIViewRepresentable {
             view.annotation = annotation
             view.accessibilityLabel = pin.pin.title
             view.accessibilityIdentifier = "planner.pin.\(pin.pin.id)"
+            view.isDraggable = pin.pin.isDraggable
+            view.onDrop = { [weak self, weak map, weak view] center in
+                guard let self, let map, let view else { return }
+                let point = map.convert(center, toCoordinateFrom: view.superview)
+                self.parent.onDrag(pin.pin.id, Coordinate(latitude: point.latitude, longitude: point.longitude))
+            }
             style(view, pin: pin, traits: map.traitCollection)
             setVisibility(view, pin: pin, ambientVisible: showsAmbientPlaces(map))
             return view
@@ -259,6 +282,11 @@ struct PlannerPreviewMap: UIViewRepresentable {
         func style(_ view: PlannerPinView, pin: PinAnnotation, traits: UITraitCollection) {
             let selected = pin.pin.id == parent.selectedID
             let kind = pin.pin.kind
+            if case .route(let number, let rank) = kind {
+                view.centerOffset = .zero
+                view.image = Self.routeImage(number: number, rank: rank, selected: selected, traits: traits)
+                return
+            }
             let stemmed = kind == .marker || (kind == .place && !pin.pin.isAmbient)
             view.centerOffset = CGVector(dx: 0, dy: stemmed ? -12 : 0)
             view.image = UIGraphicsImageRenderer(size: CGSize(width: 44, height: 44)).image { _ in
@@ -290,6 +318,13 @@ struct PlannerPreviewMap: UIViewRepresentable {
                 surface.setFill(); shape.fill()
                 outline.setStroke(); shape.lineWidth = selected ? 2 : 1.5; shape.stroke()
                 guard kind != .shape else { return }
+                if case .night(let day) = kind {
+                    let text = NSAttributedString(string: "\(day)", attributes: [
+                        .font: UIFont.monospacedDigitSystemFont(ofSize: 13, weight: .bold), .foregroundColor: outline])
+                    let size = text.size()
+                    text.draw(at: CGPoint(x: 22 - size.width / 2, y: 22 - size.height / 2))
+                    return
+                }
                 let symbol = kind == .start ? "play.fill" : kind == .finish ? "flag.checkered" : pin.pin.symbol
                 let config = UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
                 let image = UIImage(systemName: symbol, withConfiguration: config)?.withTintColor(outline, renderingMode: .alwaysOriginal)
@@ -297,6 +332,25 @@ struct PlannerPreviewMap: UIViewRepresentable {
                 if let image {
                     image.draw(at: CGPoint(x: center.x - image.size.width / 2, y: center.y - image.size.height / 2))
                 }
+            }
+        }
+
+        /// A numbered disc in the network colour, or a small dot; magenta when selected.
+        static func routeImage(number: Int?, rank: Int, selected: Bool, traits: UITraitCollection) -> UIImage {
+            let color = selected ? UIColor(OBCTheme.route).resolvedColor(with: traits)
+                : PlannerPreviewNetworkStyle.color(rank: rank, traits: traits).withAlphaComponent(1)
+            let surface = UIColor(OBCTheme.surface).resolvedColor(with: traits)
+            let size: CGFloat = number == nil ? 14 : 28
+            return UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { _ in
+                let disc = UIBezierPath(ovalIn: CGRect(x: 1, y: 1, width: size - 2, height: size - 2))
+                (number == nil || selected ? color : surface).setFill(); disc.fill()
+                (number == nil ? surface : color).setStroke(); disc.lineWidth = number == nil ? 1.5 : 2; disc.stroke()
+                guard let number else { return }
+                let text = NSAttributedString(string: "\(number)", attributes: [
+                    .font: UIFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
+                    .foregroundColor: selected ? surface : UIColor(OBCTheme.ink).resolvedColor(with: traits)])
+                let bounds = text.size()
+                text.draw(at: CGPoint(x: (size - bounds.width) / 2, y: (size - bounds.height) / 2))
             }
         }
 
@@ -371,13 +425,20 @@ struct PlannerPreviewMap: UIViewRepresentable {
                    let kind = feature.attributes["kind"] as? String {
                     let name = feature.attributes["name:en"] as? String ?? feature.attributes["name"] as? String
                         ?? NativePlaceKind.entries[kind]?.label ?? "Place"
-                    let coordinate = Coordinate(latitude: feature.coordinate.latitude, longitude: feature.coordinate.longitude)
-                    let id = feature.identifier.map { String(describing: $0) } ?? "\(kind)-\(coordinate.latitude)-\(coordinate.longitude)"
+                    let coordinate = Coordinate(latitude: (feature.attributes["lat"] as? String).flatMap(Double.init) ?? feature.coordinate.latitude,
+                                                longitude: (feature.attributes["lon"] as? String).flatMap(Double.init) ?? feature.coordinate.longitude)
+                    let id = NativePlaceKind.source(for: feature.identifier) ?? "\(kind)-\(coordinate.latitude)-\(coordinate.longitude)"
                     self.parent.onPlace(.init(id: id, name: name, coordinate: coordinate, kind: NativePlaceKind.kind(for: kind),
-                                              hours: feature.attributes["opening_hours"] as? String))
+                                              hours: feature.attributes["opening_hours"] as? String,
+                                              website: feature.attributes["website"] as? String,
+                                              phone: feature.attributes["phone"] as? String,
+                                              description: feature.attributes["description"] as? String,
+                                              detailsLoaded: feature.attributes["description"] != nil))
                     return
                 }
-                self.parent.onMapPoint(Coordinate(latitude: point.latitude, longitude: point.longitude), location)
+                let coordinate = Coordinate(latitude: point.latitude, longitude: point.longitude)
+                if self.parent.onLine(coordinate, 22 * map.metersPerPoint(atLatitude: point.latitude)) { return }
+                self.parent.onMapPoint(coordinate, location)
             }
         }
 
@@ -398,12 +459,53 @@ struct PlannerPreviewMap: UIViewRepresentable {
     }
 }
 
+/// Names a point by the basemap place nearest to it, from the loaded tiles.
+@MainActor final class PlannerPlaceNamer {
+    weak var map: MLNMapView?
+
+    /// The nearest village, town or city within 5 km, from the loaded tiles and the shown labels.
+    func name(near coordinate: Coordinate) -> String? {
+        guard let map else { return nil }
+        let loaded = (map.style?.source(withIdentifier: "basemap") as? MLNVectorTileSource)?
+            .features(sourceLayerIdentifiers: ["places"], predicate: nil) ?? []
+        let kx = cos(coordinate.latitude * .pi / 180)
+        var best: (name: String, km: Double)?
+        for case let feature as MLNPointFeature in loaded + map.visibleFeatures(in: map.bounds, styleLayerIdentifiers: ["places_locality"]) {
+            guard feature.attributes["kind"] as? String == "locality", let name = feature.attributes["name"] as? String else { continue }
+            let dx = (feature.coordinate.longitude - coordinate.longitude) * kx, dy = feature.coordinate.latitude - coordinate.latitude
+            let km = (dx * dx + dy * dy).squareRoot() * 111.2
+            if km < 5, km < best?.km ?? .infinity { best = (name, km) }
+        }
+        return best?.name
+    }
+}
+
 final class PlannerPinView: MLNAnnotationView {
     private let drawing = UIImageView()
     var image: UIImage? {
         didSet { drawing.image = image; frame.size = image?.size ?? .zero; drawing.frame = bounds }
     }
+    /// The point under the dropped pin, in its superview's space.
+    var onDrop: ((CGPoint) -> Void)?
     override init(reuseIdentifier: String?) { super.init(reuseIdentifier: reuseIdentifier); addSubview(drawing) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        onDrop = nil
+        isDraggable = false
+    }
+
+    override func setDragState(_ dragState: MLNAnnotationViewDragState, animated: Bool) {
+        // Read before super: the drop resets the view to its annotation's old place.
+        let dropped = dragState == .ending ? CGPoint(x: center.x - centerOffset.dx, y: center.y - centerOffset.dy) : nil
+        super.setDragState(dragState, animated: animated)
+        switch dragState {
+        case .starting: UIImpactFeedbackGenerator(style: .medium).impactOccurred(); transform = CGAffineTransform(scaleX: 1.2, y: 1.2)
+        case .ending, .canceling, .none: transform = .identity
+        default: break
+        }
+        if let dropped { onDrop?(dropped) }
+    }
 }
 #endif

@@ -2,18 +2,18 @@ import { placeCategories, type PlaceCategory } from './poi-kinds';
 import { trailImage } from './trail-markers';
 
 const colors = {
-    light: { panel: '#ffffff', ring: '#676443', ink: '#1c1b14', peak: '#5c5a2e' },
-    dark: { panel: '#201f17', ring: '#aaa383', ink: '#f2efe3', peak: '#bdb47e' },
+    light: { panel: '#ffffff', ring: '#676443', ink: '#1c1b14' },
+    dark: { panel: '#201f17', ring: '#aaa383', ink: '#f2efe3' },
 };
 const ratio = 2;
 
-/** Draws place, landmark and access symbols on demand for the active theme. */
+/** Draws place and access symbols on demand for the active theme. */
 export function mapIcon(id: string): { image: ImageData; pixelRatio: number } | null {
     if (id.startsWith('trail:')) {
         const image = trailImage(id.slice(6));
         return image ? { image, pixelRatio: ratio } : null;
     }
-    const match = id.match(/^(?:poi-(\w+)|(landmark|access|conditional|push|no-bikes))-(light|dark)$/);
+    const match = id.match(/^(?:poi-(\w+)|(access|conditional|push|no-bikes))-(light|dark)$/);
     const category = match?.[1] as PlaceCategory | undefined;
     if (!match || (category && !placeCategories[category])) return null;
     const color = colors[match[3] as 'light' | 'dark'];
@@ -45,15 +45,6 @@ export function mapIcon(id: string): { image: ImageData; pixelRatio: number } | 
         context.strokeStyle = color.ring;
         context.stroke();
         glyph(context, placeCategories[category].icon, 4, 12, color.ink, 1.1);
-    } else {
-        const peak = new Path2D(placeCategories.peak.icon);
-        context.save();
-        context.translate(1, 1);
-        context.scale(18 / 24, 18 / 24);
-        context.fillStyle = color.panel;
-        context.fill(peak);
-        context.restore();
-        glyph(context, placeCategories.peak.icon, 1, 18, color.peak, 1.6);
     }
     return { image: context.getImageData(0, 0, canvas.width, canvas.height), pixelRatio: ratio };
 }

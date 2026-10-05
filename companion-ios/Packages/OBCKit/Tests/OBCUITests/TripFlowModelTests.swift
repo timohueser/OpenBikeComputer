@@ -47,46 +47,48 @@ struct TripFlowModelTests {
         #expect(model.plannedItems.map(\.id).contains("trip:\(id.rawValue)"))
     }
 
-    /// The trip review's offer evens out the days after where the ride ended: the day ends before
-    /// it stay, and the rest share the line.
+    /// A trip made or grown from routes carries a plan: a drawn leg per day, and a transfer leg
+    /// where a day starts away from where the last one ends.
     @Test
-    func evenOutDaysFromAPositionBalancesTheRest() async {
+    func tripsFromRoutesCarryAPlanThatGrowsWithThem() throws {
         let (model, _) = makeModel()
-        let points = stride(from: 0.0, through: 30_000, by: 100).map {
-            RoutePoint(coordinate: Coordinate(latitude: 46.5, longitude: 8 + $0 / (111_320 * cos(46.5 * Double.pi / 180))))
-        }
-        let id = model.createTrip(name: "Long", files: [points])!
-        let editor = model.dayEditor(id, isSplitMode: true)!
-        editor.setDayCount(3)
-        let first = editor.handles.markers[0].id
-        editor.handles.begin(first)
-        editor.handles.move(first, to: 12_000)
-        editor.handles.end()
-        editor.save()
-        #expect(abs(model.trip(id)!.dayEnds[0].distance - 12_000) < 1)
-
-        await model.evenOutDays(id, from: 12_000)
-        let ends = model.trip(id)!.dayEnds.map(\.distance)
-        #expect(abs(ends[0] - 12_000) < 1, "the day that ended early stays")
-        #expect(abs(ends[1] - 21_000) < 1, "the rest is shared equally")
-        #expect(ends.count == 3)
+        let days = model.tripDays(tripID).map(\.points)
+        let id = try #require(model.createTrip(name: "Planned", files: days))
+        let plan = try #require(model.trip(id)?.plan)
+        #expect(plan.days == 2 && plan.mode == .trip && plan.routePoints.last?.leg == .drawn)
+        #expect(model.appendToTrip(id, file: days[0]))
+        let grown = try #require(model.trip(id)?.plan)
+        #expect(grown.days == 3 && grown.routePoints.map(\.leg).suffix(2) == [.transfer, .drawn])
+        #expect(model.tripPlan(for: id)?.name == "Planned")
     }
 
-    /// Done writes the editor's day ends into the trip as it is then: a change that landed while
-    /// the editor was open stays.
     @Test
-    func dayEditorDoneKeepsChangesMadeMeanwhile() {
+    func aTripHasAtMostFourteenDays() throws {
         let (model, _) = makeModel()
-        let editor = model.dayEditor(tripID, isSplitMode: false)!
-        editor.splitDay(1)
-        model.renameTrip(tripID, to: "Renamed meanwhile")
-        model.setTripStartDay(tripID, to: CivilDay(daysSince1970: 20_000))
+        let day = try #require(model.tripDays(tripID).first?.points)
+        #expect(model.createTrip(name: "Long", files: Array(repeating: day, count: 15)) == nil)
+        #expect(model.tripNotice == "A trip has at most 14 days.")
+        let id = try #require(model.createTrip(name: "Full", files: Array(repeating: day, count: 14)))
+        model.tripNotice = nil
+        #expect(!model.appendToTrip(id, file: day) && model.trip(id)?.dayCount == 14)
+        #expect(model.tripNotice == "A trip has at most 14 days.")
+    }
 
-        editor.save()
-        let trip = model.trip(tripID)!
-        #expect(trip.dayCount == 3, "Done saved the new day end")
-        #expect(trip.name == "Renamed meanwhile")
-        #expect(trip.startDay == CivilDay(daysSince1970: 20_000))
+    /// A route whose plan gains a night becomes a trip of the same name, with the route's device
+    /// copy as the copy of day 1.
+    @Test
+    func aRouteWithNightsBecomesATrip() throws {
+        let (model, library) = makeModel()
+        let record = try #require(library.plannedRoutes().first { $0.id == kettle })
+        let line = record.route.points
+        var plan = try #require(PlannerPlan.keptLine(line))
+        plan = try #require(plan.appendingDay(line.reversed(), name: nil))
+        let id = try #require(model.replaceRouteWithTrip(
+            kettle, plan: plan, line: line + line.reversed(), pointIndices: [0, line.count - 1, 2 * line.count - 1], bikeType: .road))
+        let trip = try #require(model.trip(id))
+        #expect(trip.name == record.summary.name && trip.dayCount == 2 && trip.plan == plan)
+        #expect(!library.plannedRoutes().contains { $0.id == kettle })
+        #expect(trip.dayCopies.first??.link == record.deviceLink)
     }
 
     @Test
@@ -144,17 +146,6 @@ struct TripFlowModelTests {
         #expect(model.trip(tripID)?.dayCount == 2)
         #expect(library.plannedRoutes().contains { $0.id == RouteID("tiny") })
         #expect(model.tripNotice == "\u{201C}Tiny\u{201D} is too short to be a day. It stays a route.")
-    }
-
-    @Test
-    func reverseKeepsTheDaysAndMintsANewKey() {
-        let (model, library) = makeModel()
-        let before = model.trip(tripID)!
-        model.reverseTrip(tripID)
-        let after = library.trips().first { $0.id == tripID }!
-        #expect(after.key != before.key)
-        #expect(after.dayCount == before.dayCount)
-        #expect(after.line.first?.coordinate == before.line.last?.coordinate)
     }
 
     @Test

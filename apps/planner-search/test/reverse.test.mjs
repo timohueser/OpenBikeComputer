@@ -21,7 +21,7 @@ test('address cells preserve nearest houses across grid edges and signed coordin
   for (const [x,y] of [[7.85,48.03],[-7.85,-48.03],[0,0],[179.999,80],[-179.999,-80]])
     for (const dx of [-.0003,0,.0003]) for (const dy of [-.0003,0,.0003])
       insert.run(`${x},${y},${dx},${dy}`,x+dx,y+dy,`n${x},${y},${dx},${dy}`);
-  const addresses = db.all('SELECT * FROM addresses');
+  const addresses = conn.prepare('SELECT * FROM addresses').all();
   for (const address of addresses) for (const offset of [[0,0],[-.0002,.0002],[.0002,-.0002]]) {
     const point = [address.lon+offset[0],address.lat+offset[1]];
     const nearest = addresses.map(a=>({...a,distance:distance(point,[a.lon,a.lat])}))

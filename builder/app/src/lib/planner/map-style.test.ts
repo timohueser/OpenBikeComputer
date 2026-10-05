@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPropertyExpression, latest, type StylePropertySpecification } from '@maplibre/maplibre-gl-style-spec';
 import type { LayerSpecification } from 'maplibre-gl';
+import { testConfig } from '../../../test-support/planner/config';
 
 afterEach(() => {
-    vi.unstubAllGlobals();
     vi.resetModules();
 });
 
@@ -17,9 +17,8 @@ const tileKinds = [
 ];
 
 async function landLayers(theme: 'light' | 'dark') {
-    vi.stubGlobal('window', { location: { href: 'https://planner.example/plan/' } });
     const { mapStyle } = await import('./map-style');
-    const layers = mapStyle(theme, 'dem://tiles', 'contours://tiles').layers;
+    const layers = mapStyle(theme, testConfig, 'dem://tiles', 'contours://tiles').layers;
     const kinds = (layer: LayerSpecification) => ('filter' in layer ? (layer.filter as [string, unknown, [string, string[]]])[2][1] : []);
     return { layers, land: layers.filter((layer) => layer.id.startsWith('land-')), kinds };
 }
@@ -106,5 +105,15 @@ describe('planner label fonts', () => {
         }));
         expect([...fonts(9.9)]).toEqual(['Noto Sans Regular']);
         expect([...fonts(10)].sort()).toEqual(['Noto Sans Italic', 'Noto Sans Medium', 'Noto Sans Regular']);
+    });
+});
+
+
+describe('planner POI source', () => {
+    it('uses searchable places for every POI layer', async () => {
+        const { layers } = await landLayers('light');
+        const pois = layers.filter(layer => 'source-layer' in layer && layer['source-layer'] === 'pois');
+        expect(pois.map(layer => layer.id)).toEqual(['planner-pois', 'planner-poi-icons']);
+        for (const layer of pois) expect(layer).toHaveProperty('source', 'places');
     });
 });

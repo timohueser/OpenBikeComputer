@@ -9,6 +9,7 @@ description = "OBCM map packer (OSM .osm.pbf -> .obcm)"
 external-fixtures = []
 
 [dependencies]
+obc-places = { path = "../obc-places" }
 # Normative OBCM constants and primitive codecs shared with every producer/consumer.
 obc-formats = { path = "../../firmware/obc-formats" }
 # The one file adapter onto that crate's read seam — `--terrain` opens its containers through it.
@@ -29,12 +30,8 @@ obc-map-scene = { path = "../../firmware/obc-map-scene" }
 # runs, so a climb-aware route costs the number the rider is later shown. Never a DEM library —
 # rasters are `obc-dem`'s business, one step earlier in the pipeline.
 obc-elevation = { path = "../../firmware/obc-elevation" }
-# The Copernicus credit and the dataset name, for the contours this crate traces out of
-# GLO-30-derived terrain (#1094): the licence obligation travels with the data and the wording has
-# exactly one copy in the repo. Two `&str` consts and nothing else — `default-features = false`
-# leaves the GeoTIFF decoder and the HTTP client out, because rasters are `obc-dem`'s business, one
-# step earlier in the pipeline.
-obc-dem = { path = "../obc-dem", default-features = false }
+# The data registry: the credits the catalog and the contour log carry come from data/sources.toml.
+obc-data = { path = "../obc-data" }
 # `preserve_order` is load-bearing: the config assigns style IDs 1-based in
 # config.json document order, so the parsed map must keep insertion order.
 serde = { version = "1", features = ["derive"] }
@@ -65,11 +62,9 @@ rayon = "1"
 # `sha256` this crate publishes, so the digest is a contract, not a convenience —
 # use the reviewed implementation rather than hand-rolling one.
 sha2 = "0.11"
-# The land-polygon dataset, fetched and unpacked in process rather than by shelling
-# out to `curl` and `unzip` (#907 — Windows has neither as a given, and a
-# subprocess cannot be cancelled or report progress). `ureq` is blocking and
-# rustls-by-default, so no OpenSSL system dependency follows it onto macOS or
-# Windows; it is the same client the desktop app already used.
+# The live catalog that the bakery's version guard reads (`net::get_text`). `ureq` is
+# blocking and rustls-by-default, so no OpenSSL system dependency follows it onto macOS
+# or Windows.
 ureq = "3"
 # Reading one deflate archive. Default features are off on purpose: they would drag
 # in bzip2 and zstd, both C libraries, and the whole point of #907 is that libGEOS
@@ -99,3 +94,6 @@ boon = "0.6"
 # spec-fixture crate, so the test input is written from OBCT_Spec.md's field tables rather than by
 # the reader that has to parse it back.
 obc-vectors = { path = "../obc-vectors" }
+# The surface converter a catalog test reads a terrain cell back with. `default-features = false`
+# leaves the GeoTIFF decoder and the HTTP client out.
+obc-dem = { path = "../obc-dem", default-features = false }

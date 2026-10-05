@@ -6,17 +6,10 @@ import SwiftUI
 
 struct LineMarkerMapView: UIViewRepresentable {
     let model: LineMarkerEditorModel
-    let lineVersion: Int
     let markers: [LineMarker]
     let activeID: LineMarker.ID?
     let segmentColors: [Color]
     let dashedSegments: Set<Int>
-    let stops: [PlacedStop]
-    var branches: [LineBranch] = []
-    var oldSections: [ClosedRange<Double>] = []
-    var bottomInset: CGFloat = 0
-    var linksProfile = false
-    static let stopsSpanMeters = 40_000.0
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.obcPlannerSource) private var plannerSource
 
@@ -26,7 +19,7 @@ struct LineMarkerMapView: UIViewRepresentable {
         context.coordinator.map = map
         map.onFirstLayout = { [weak map, weak coordinator = context.coordinator] in
             guard let map, let coordinator else { return }
-            map.fit(coordinator.parent.model.line.vertices.map(\.coordinate), bottom: coordinator.parent.bottomInset)
+            map.fit(coordinator.parent.model.line.vertices.map(\.coordinate))
         }
         return map
     }
@@ -35,14 +28,8 @@ struct LineMarkerMapView: UIViewRepresentable {
         let c = context.coordinator
         c.parent = self
         map.load(dark: colorScheme == .dark, source: plannerSource)
-        if c.version != lineVersion {
-            c.release()
-            c.version = lineVersion
-            c.geometry = SegmentedLineOverlay(line: model.line)
-        }
         if activeID == nil { c.draw(map) }
         c.updatePins(map)
-        c.reportVisible()
     }
     static func dismantleUIView(_ map: OBCNativeMapView, coordinator: Coordinator) {
         coordinator.release()
@@ -52,19 +39,14 @@ struct LineMarkerMapView: UIViewRepresentable {
     @MainActor final class Coordinator: NSObject, @preconcurrency MLNMapViewDelegate {
         var parent: LineMarkerMapView
         weak var map: OBCNativeMapView?
-        var version = -1
-        var geometry: SegmentedLineOverlay?
-        private var pinState: [LineMarker] = []
-        private var stopState: [PlacedStop] = []
         private var drag: (annotation: MarkerAnnotation, id: LineMarker.ID?, offset: CGPoint, finger: CGPoint)?
-        private var visible: [ClosedRange<Double>] = []
         init(_ parent: LineMarkerMapView) { self.parent = parent }
 
         func draw(_ map: OBCNativeMapView, force: Bool = false) {
-            let line = parent.model.line, runs = parent.model.runs(splits: parent.markers.map(\.distance))
-            let bounds = [0] + runs.splits + [line.length]
+            let line = parent.model.line, colors = parent.segmentColors, dashed = parent.dashedSegments
+            let bounds = [0] + parent.markers.map(\.distance) + [line.length]
             var strokes: [MapStroke] = []
-            for index in runs.colors.indices {
+            for index in colors.indices {
                 let from = bounds[index], to = bounds[index + 1]
                 guard to > from else { continue }
                 let first = line.index(at: from), last = line.index(at: to)
@@ -72,16 +54,15 @@ struct LineMarkerMapView: UIViewRepresentable {
                 if first < last {
                     for i in (first + 1)...last {
                         if line.pieceStarts.contains(i) {
-                            strokes.append(MapStroke(coordinates: piece, color: runs.colors[index], cased: parent.model.cased && !runs.dashed.contains(index), dash: runs.dashed.contains(index) ? [2, 2.5] : []))
+                            strokes.append(MapStroke(coordinates: piece, color: colors[index], cased: parent.model.cased && !dashed.contains(index), dash: dashed.contains(index) ? [2, 2.5] : []))
                             piece = []
                         }
                         piece.append(line.vertices[i].coordinate)
                     }
                 }
                 piece.append(line.coordinate(at: to))
-                strokes.append(MapStroke(coordinates: piece, color: runs.colors[index], cased: parent.model.cased && !runs.dashed.contains(index), dash: runs.dashed.contains(index) ? [2, 2.5] : []))
+                strokes.append(MapStroke(coordinates: piece, color: colors[index], cased: parent.model.cased && !dashed.contains(index), dash: dashed.contains(index) ? [2, 2.5] : []))
             }
-            strokes += parent.branches.map { MapStroke(coordinates: $0.coordinates, color: $0.color, cased: false, dash: $0.isDashed ? [2, 2.5] : []) }
             map.draw(strokes, force: force)
         }
         func updatePins(_ map: OBCNativeMapView) {
@@ -96,13 +77,6 @@ struct LineMarkerMapView: UIViewRepresentable {
                     if let view = map.view(for: annotation) as? HandleView { configure(view, annotation: annotation) }
                 } else { map.addAnnotation(MarkerAnnotation(marker, coordinate: clLocation(parent.model.line.coordinate(at: marker.distance)))) }
             }
-            pinState = parent.markers
-            let span = map.metersPerPoint(atLatitude: map.centerCoordinate.latitude) * map.bounds.width
-            let stops = span < LineMarkerMapView.stopsSpanMeters ? parent.stops : []
-            guard stops != stopState else { return }
-            stopState = stops
-            map.removeAnnotations((map.annotations ?? []).filter { $0 is NativeStop })
-            map.addAnnotations(stops.map(NativeStop.init))
         }
         func mapViewDidFinishLoadingMap(_ mapView: MLNMapView) {
             (mapView as? OBCNativeMapView)?.didFinishLoadingMap()
@@ -115,30 +89,9 @@ struct LineMarkerMapView: UIViewRepresentable {
         }
         func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) {
             (mapView as? OBCNativeMapView)?.updateCoverageStatus()
-            if let map = mapView as? OBCNativeMapView { updatePins(map); reportVisible() }
-        }
-        func reportVisible() {
-            guard parent.linksProfile, let map, let geometry, map.bounds.height > parent.bottomInset else { return }
-            let topLeft = MKMapPoint(map.convert(CGPoint(x: 0, y: 0), toCoordinateFrom: map))
-            let bottomRight = MKMapPoint(map.convert(CGPoint(x: map.bounds.width, y: map.bounds.height - parent.bottomInset), toCoordinateFrom: map))
-            let rect = MKMapRect(x: min(topLeft.x, bottomRight.x), y: min(topLeft.y, bottomRight.y), width: abs(bottomRight.x - topLeft.x), height: abs(bottomRight.y - topLeft.y))
-            let result = geometry.pieces(in: rect)
-            guard visible != result.pieces else { return }
-            visible = result.pieces
-            parent.model.showVisible(result.pieces, centre: result.centre)
-            if map.metersPerPoint(atLatitude: map.centerCoordinate.latitude) * map.bounds.width < LineMarkerMapView.stopsSpanMeters,
-               let first = result.pieces.first, let last = result.pieces.last { parent.model.onCloseUp(first.lowerBound...last.upperBound) }
+            if let map = mapView as? OBCNativeMapView { updatePins(map) }
         }
         func mapView(_ mapView: MLNMapView, viewFor annotation: any MLNAnnotation) -> MLNAnnotationView? {
-            if let annotation = annotation as? NativeStop {
-                let view = MLNAnnotationView(reuseIdentifier: "stop")
-                let renderer = ImageRenderer(content: StopIcon(kind: annotation.placed.stop.kind, size: 18, isRound: true)
-                    .overlay(Circle().strokeBorder(OBCTheme.surface, lineWidth: 1.5)).frame(width: 20, height: 20))
-                renderer.scale = mapView.traitCollection.displayScale
-                view.frame.size = CGSize(width: 20, height: 20)
-                view.addSubview(UIImageView(image: renderer.uiImage))
-                return view
-            }
             guard let annotation = annotation as? MarkerAnnotation else { return nil }
             let view = HandleView(reuseIdentifier: "handle")
             view.annotation = annotation
@@ -148,36 +101,14 @@ struct LineMarkerMapView: UIViewRepresentable {
             configure(view, annotation: annotation)
             return view
         }
-        func mapView(_ mapView: MLNMapView, annotationCanShowCallout annotation: any MLNAnnotation) -> Bool { annotation is NativeStop }
-        func mapView(_ mapView: MLNMapView, rightCalloutAccessoryViewFor annotation: any MLNAnnotation) -> UIView? {
-            guard let stop = annotation as? NativeStop else { return nil }
-            let button = UIButton(type: .system)
-            guard let title = parent.model.stopActionTitle(stop.placed) else { return nil }
-            var configuration = UIButton.Configuration.filled()
-            configuration.title = title
-            configuration.baseBackgroundColor = UIColor(OBCTheme.tint)
-            configuration.baseForegroundColor = UIColor(OBCTheme.surface)
-            configuration.cornerStyle = .medium
-            configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
-            button.configuration = configuration
-            button.accessibilityIdentifier = "map.stopAction"
-            button.sizeToFit()
-            return button
-        }
-        func mapView(_ mapView: MLNMapView, annotation: any MLNAnnotation, calloutAccessoryControlTapped control: UIControl) {
-            guard let stop = annotation as? NativeStop else { return }
-            mapView.deselectAnnotation(stop, animated: true)
-            parent.model.onStopAction(stop.placed)
-        }
         private func configure(_ view: HandleView, annotation: MarkerAnnotation) {
-            view.isUserInteractionEnabled = !parent.linksProfile
             let active = parent.activeID == annotation.id
             view.host.rootView = AnyView(VStack(spacing: 4) {
-                if active && !parent.linksProfile { MarkerLabel(text: parent.model.label(for: annotation.id)).fixedSize() }
+                if active { MarkerLabel(text: parent.model.label(for: annotation.id)).fixedSize() }
                 MarkerHandleView(color: parent.model.color(endingAt: annotation.id), isActive: active,
                                  isFixed: parent.model.marker(annotation.id)?.isFixed ?? false)
             }.frame(width: 180, height: 64, alignment: .bottom))
-            view.setLifted(active && !parent.linksProfile)
+            view.setLifted(active)
         }
         private func touch(_ phase: HandleView.Phase, touch: UITouch, annotation: MarkerAnnotation) {
             guard let map else { return }
@@ -232,14 +163,6 @@ private final class MarkerAnnotation: MLNPointAnnotation {
     init(_ marker: LineMarker, coordinate: CLLocationCoordinate2D) {
         id = marker.id; distance = marker.distance
         super.init(); self.coordinate = coordinate; title = marker.name
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-}
-private final class NativeStop: MLNPointAnnotation {
-    let placed: PlacedStop
-    init(_ placed: PlacedStop) {
-        self.placed = placed; super.init(); coordinate = clLocation(placed.stop.coordinate); title = placed.stop.name
-        subtitle = "\(StopIcon.name(placed.stop.kind)) · \(OBCFormat.stopOffset(meters: placed.offset))"
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }

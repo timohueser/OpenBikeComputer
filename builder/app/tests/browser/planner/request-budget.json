@@ -7,7 +7,8 @@
     "glyphs": 2,
     "sprites": 5,
     "route": 17,
-    "overlays": 9,
+    "region": 4,
+    "overlays": 31,
     "query": 6,
     "reverse": 4
   }

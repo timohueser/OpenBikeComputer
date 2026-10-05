@@ -1,21 +1,20 @@
 # Route planner
 
 The public planner at `/plan/` uses one active release for maps, routing, and
-search. The map builder uses its device catalogue.
+search.
 
 ## Prepare and publish a region
 
 Run from the checkout. Install Rust, Node 24+, Python 3.12+, `uv`, `gh`, `rclone`,
 and the [PMTiles CLI](https://docs.protomaps.com/pmtiles/cli).
 Authenticate `gh` for the query model release. Set the R2 credential in
-`tools/obc.local`. The [region recipe](../../../../../tools/planner-regions/baden-wuerttemberg.json)
-pins the OSM extract, map inputs, elevation inputs, and routing profiles.
+`tools/obc.local`. The [region recipe](../../../../../tools/planner-regions/baden-wuerttemberg-switzerland.json)
+pins the OSM extract, map, elevation, and data-layer inputs, and routing profiles.
+Its name and box are in the [region file](../../../../../data/regions/baden-wuerttemberg-switzerland.toml)
+with the same id.
 
-Map and search builders need Linux, Java 21, Maven, PostgreSQL 17,
-PostGIS 3, osm2pgsql 2, zstd, and `nominatim-db==5.3.2`.
-Add PostgreSQL's binary directory to `PATH`. Run preparation as a normal user.
-Allow space for the temporary Nominatim database and Planetiler files.
-Builders use two threads. Allow several hours.
+The basemap builder needs Java 21 and Maven. The Rust search baker reads the same
+OSM snapshot as routing and maps. It needs no database import. Builders use every core.
 
 ```sh
 obc planner prepare --data-dir /srv/planner/bw-source --reference /srv/obc-reference
@@ -24,94 +23,85 @@ obc planner publish --data-dir /srv/planner/bw --apply
 obc planner deploy --data-dir /srv/planner/bw --host root@YOUR_VPS --apply
 ```
 
-`publish` and `deploy` show their action without `--apply`. Publication uploads
+`publish`, `deploy` and `finalize` show their action without `--apply`. Publication uploads
 files and verifies remote bytes. Deployment checks the routing
 package, model readiness, CORS, tiles, search, and a real route. It updates
-`planner/catalog.json` only after those checks pass. The
+`planner/catalog.json` only after these pass. The
 [release contract](../../../../../specs/planner-release.md) defines the files.
+Only grid releases go online.
 
-`grid` publishes into a new directory. It builds reusable cells from the verified
-regional bake. Do not run publications or deployments at the same time.
+`grid` builds reusable cells in a fresh directory. Publish and deploy one release
+at a time.
 
-`prepare` accepts `--osm PATH` for a local copy of the pinned extract. On macOS,
-use `--inputs DIRECTORY` to supply verified Linux builder outputs:
-`basemap.pmtiles`, `search.jsonl.zst`, and `inputs.json`. This manifest names the
-OSM hash, bounds, tool versions, and output hashes. Map preparation and routing
-still use the local elevation readers.
+`prepare` accepts `--osm PATH` for a local copy of the pinned extract.
+Use `--inputs DIRECTORY` to supply a prepared `basemap.pmtiles` and `inputs.json`.
+The manifest names the OSM hash, bounds, tool versions, and output hashes.
+Search always builds from the verified OSM input.
 
-The VPS needs Caddy, Python, Rust at `/root/.cargo/bin/cargo`, and Node 24+
-at `/usr/local/bin/node`. Its existing API virtual host is
-`releases.openbikecomputer.com`. Deployment installs routing, search, and offline selection services on loopback.
+The VPS needs Caddy, Python, `/root/.cargo/bin/cargo`, and Node 24+
+at `/usr/local/bin/node`. Services bind to loopback under
+`releases.openbikecomputer.com`.
 
 Deploy the [tile Worker](../../../../../apps/planner-tiles/README.md) first.
 
-Set the GitHub repository variable `OBC_PLANNER_CATALOG_URL` to
-`https://maps.openbikecomputer.com/planner/catalog.json`. Run **Deploy site**
-from `develop`. The workflow publishes `/plan/` and adds **Route planner** to
-site navigation. It uses the release's device catalogue for `/builder/`.
-After the workflow succeeds, finish the rollout:
+`/plan/` and `/builder/` read `planner/catalog.json` at page load, so a release
+needs no site build. Then finish the rollout:
 
 ```sh
-obc planner finalize
-obc planner finalize --apply
+obc planner finalize --host root@YOUR_VPS
+obc planner finalize --host root@YOUR_VPS --apply
 ```
 
-Finalization checks the live services and web planner before it removes inactive
-planner releases and unused source mirrors from R2. It keeps one regional dataset.
-It preserves device cell objects and terrain reference data. Publication refuses
-another release while an inactive dataset remains.
+Finalization checks the live services and the public catalogue. Then it stops the
+inactive VPS slot, removes its Caddy route and every other release directory, and
+removes inactive planner releases and unused source mirrors from R2. It keeps one
+regional dataset. It preserves device cell objects and terrain reference data.
+Publication refuses another release while an inactive dataset remains.
 
-## Replace or restore a release
+## Replace a release
 
-For a larger region, add a recipe with a new region ID, bounds, and pinned
-inputs. Build into a fresh data directory with `--recipe PATH`. Pass
+For a larger region, add a recipe with its ID, name, bounds, time zone, and
+pinned inputs. Build into a fresh data directory with `--recipe PATH`. Pass
 `--device-catalog URL` for that region's published device catalogue. Use the
-same three commands, then run **Deploy site** again.
+same three commands. `deploy` takes the region name from the recipe.
 
-To reduce an existing package without preparing its metrics again:
+For a component update, keep the recipe's pinned OSM snapshot and bounds:
 
 ```sh
-cargo run --release -p route-build --bin route-select -- \
-  /srv/planner/old/routing --output /srv/planner/new/routing \
-  --profiles touring,touring/shorter,touring/less-climbing,road,road/shorter,road/less-climbing,gravel,gravel/shorter,gravel/less-climbing,mtb,mtb/shorter,mtb/less-climbing,hiking,hiking/shorter,hiking/less-climbing
+obc planner plan --input-release /srv/planner/bw-source --component pois
+obc planner prepare --input-release /srv/planner/bw-source --component pois --data-dir /srv/planner/bw-source-next
+obc planner grid --input-release /srv/planner/bw-source-next --data-dir /srv/planner/bw-next
 ```
 
-Copy the unchanged `maps`, `search`, and `sources` directories into the new
-release directory. Set the recipe's `profiles` list to the same IDs. Run the
-three commands above with the new directory. Preparation checks the profile
-selection and builds a matching overlay index.
+Publish and deploy `bw-next`. Repeat `--component` for:
+`pois`, `addresses`, `basemap`, `places`, `terrain`, `routing`, `overlays`,
+`assets`, `model`, or data layers. Routing updates include overlays;
+POI updates include place tiles. Elevation changes select terrain,
+routing, and overlays. Tile encoding changes reuse routing.
 
-Routing currently supports German access defaults. Preparation refuses other
-countries. Add and verify their access rules before extending coverage.
+`plan` and `prepare --dry-run` read no large artifacts and download nothing.
+Updates need a modular regional release and its cache. Source refreshes keep
+one OSM snapshot. Preparation and grid publication share `--source-cache`
+(default `~/.cache/obc/planner/sources`). `obc planner inventory` reports
+component sizes and measured costs. Completed components and cells resume.
+
+POI transforms reuse addresses and unrelated grid objects. Search enrichment and
+routing construction remain regional. Remote releases can upload identical objects
+under distinct prefixes.
+
+Preparation accepts only `DE` access defaults. Add and verify other rules first.
 
 Each kind of change goes out in one way:
 
 - **Code only.** For a route server or planner-search change, deploy the same
   data directory again. `deploy` restarts the active slot in place. Open pages
   see a short outage. This is accepted during development.
-- **New data release.** `deploy` installs it into the other slot. The old slot
-  serves open pages until you remove it. Then run **Deploy site** and finalize.
+- **New data release.** `deploy` installs it into the other slot and switches the
+  download service to it. The old slot serves open pages until finalize stops
+  it. Then run finalize. To recover before finalize, deploy the previous release's
+  local data directory again.
 - **New catalogue field.** Deploy the release from the branch first. Merge the
-  branch second. **Deploy site** fails while the live catalogue does not have
-  the field.
-
-Before finalization, restore the previous release with:
-
-```sh
-obc planner rollback --apply
-```
-
-Then run **Deploy site** again and finalize. `rollback` and `site-config` need
-every catalogue field, so a rollback across a format change fails.
-
-`finalize` cleans R2 only. Remove the old VPS slot `N` and its release `OLD_ID`
-by hand:
-
-```sh
-ssh root@YOUR_VPS 'systemctl disable --now obc-planner-routing-N obc-planner-search-N'
-ssh root@YOUR_VPS 'rm /etc/caddy/planner/slot-N.caddy && caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy'
-ssh root@YOUR_VPS 'rm -rf /opt/obc-planner/releases/OLD_ID /etc/systemd/system/obc-planner-routing-N.service /etc/systemd/system/obc-planner-search-N.service && systemctl daemon-reload'
-```
+  branch second.
 
 ## Local preview
 
@@ -121,70 +111,52 @@ obc planner
 obc planner verify
 ```
 
-Open `http://127.0.0.1:4175/planner.html`. Setup downloads regional PMTiles,
-prepared Photon records, and the query model. It builds BW routing with all
-profiles. Normal launch has no downloads. Ctrl-C stops the local services.
-`verify` checks map hashes, SQLite integrity, and routing object closure.
+Open `http://127.0.0.1:4175/planner.html`. Setup runs `prepare` with the
+region recipe and `~/obc-reference`; run `prepare` directly for other inputs.
+Normal launch has no downloads. `verify` checks map hashes, SQLite integrity,
+and routing object closure.
+
+Seed the cache from Geofabrik extracts of one date:
+
+```sh
+osmium merge baden-wuerttemberg-latest.osm.pbf switzerland-latest.osm.pbf -o merged.osm.pbf
+mkdir -p ~/.cache/obc/planner/sources/downloads/auxiliary
+osmium extract -b 5.95,45.8,10.5,49.85 merged.osm.pbf -o ~/.cache/obc/planner/sources/downloads/SHA256.osm.pbf
+cp AUXILIARY_FILE ~/.cache/obc/planner/sources/downloads/auxiliary/NAME
+```
 
 | Setting | Default |
 | --- | --- |
-| `OBC_PLANNER_DATA` or `--data-dir` | `~/.cache/obc/planner/baden-wuerttemberg` |
-| `OBC_PLANNER_RELEASE` | `~/.cache/obc/planner/bw-online` |
+| `--region` | `baden-wuerttemberg-switzerland`; test regions `engadin`, `colorado-front-range` |
+| `--data-dir` | `OBC_PLANNER_DATA/REGION` for every command; `OBC_PLANNER_DATA` is `~/.cache/obc/planner` |
+| `--recipe` | The recipe of `--region` |
+| `--host` or `OBC_PLANNER_HOST` | VPS of `deploy` and `finalize` |
 | `--port` | Planner `4175` |
 | `--tile-port` | Terrain `8789` |
 | `--route-port` | Routing `8787` |
 | `--search-port` | Search `8786` |
-| `--reference` or `OBC_REFERENCE_ARCHIVE` | `~/obc-reference` if present |
-| `--dem-dir` | `~/.cache/obcm/dem` |
+| `--pmtiles` or `PMTILES` | `pmtiles` |
 
 ## Client configuration
 
-`obc planner site-config --output ENV_FILE` writes these settings from the active
-release. Use them for a hosted build with the configured API origin.
+The planner reads the `active`
+[catalogue](../../../../../specs/planner-release.md#catalogue) entry at page load.
+`obc planner` builds with `VITE_PLANNER_CONFIG`, the same entry with local URLs.
+`VITE_CATALOG_URL` gives the map builder another device catalogue.
 
-| Variable | Value |
-| --- | --- |
-| `VITE_PLANNER_TILEJSON_URL` | Hosted basemap TileJSON |
-| `VITE_PLANNER_PMTILES_URL` | Local basemap archive, when TileJSON is absent |
-| `VITE_PLANNER_PLACES_URL` | Rider places TileJSON or PMTiles archive |
-| `VITE_PLANNER_ROUTING_URL` | Routing API prefix |
-| `VITE_PLANNER_SEARCH_URL` | Search API prefix |
-| `VITE_PLANNER_SEARCH_REGIONS` | Comma-separated region IDs |
-| `VITE_PLANNER_DEM_URL` | Terrarium WebP XYZ template |
-| `VITE_PLANNER_TERRAIN_ATTRIBUTION` | Elevation source credits |
-| `VITE_PLANNER_GLYPHS_URL` | Font template |
-| `VITE_PLANNER_SPRITES_URL` | Sprite directory |
-| `VITE_PLANNER_MAP_BOUNDS` | `west,south,east,north` |
-
-Basemap zooms are 0–14. Terrain zooms are 0–12, with neighbouring tiles for
-contours. The browser creates contours from terrain tiles. Highlighted places
-read the zoom 11 places archive.
+Basemap zooms are 0–14; terrain zooms are 0–12. Browser contours use terrain
+neighbours. Highlighted places use zoom 11.
 
 Extract a smaller map archive with bounds inside its source coverage:
 
 ```sh
-python3 tools/planner_maps.py compact /srv/planner/bw/maps/terrain.pmtiles \
+python3 -m tools.planner_maps compact /srv/planner/bw/maps/terrain.pmtiles \
   /srv/planner/terrain.pmtiles --bbox=7.8,47.9,8.1,48.2 --terrain
 ```
 
 Omit `--terrain` for a basemap. The command uses `uv` with pinned dependencies.
 A map cutout does not change routing or search coverage.
 Use `--no-recompress` to crop compressed terrain without encoding it again.
-
-Build and install a local runtime bundle:
-
-```sh
-cargo build --release -p route-build --bin route-extract -p route-server --bin route-server
-python3 tools/planner_cutout.py /srv/planner/bw /srv/planner/freiburg \
-  --bbox=7.77,47.965,7.96,48.06 --region freiburg
-python3 tools/planner_offline.py pack /srv/planner/freiburg /srv/planner/bundle
-python3 tools/planner_offline.py verify /srv/planner/bundle
-python3 tools/planner_offline.py install /srv/planner/bundle /srv/planner/offline
-```
-
-Installation also accepts an HTTP(S) bundle directory URL. Rerun to resume.
-The [bundle contract](../../../../../specs/planner-offline.md) defines activation,
-retained releases, deduplication, and size fields.
 
 ## Checks
 
@@ -195,7 +167,14 @@ npx vitest run src/lib/planner/ src/components/planner/
 npm run check
 ```
 
-The full type check needs the generated WASM packages.
+Type checking needs generated WASM.
+Sunlight benchmark:
+
+```sh
+node ../../tools/planner_sun_bench.mjs http://127.0.0.1:4175
+```
+
+[Sunlight index](../../../../../specs/planner-sun-tiles.md).
 See the [search README](../../../../../apps/planner-search/README.md) for its
 code and real-data suites. iOS rendering and offline downloads have separate
 validation.

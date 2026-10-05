@@ -35,14 +35,16 @@ pub const PHOTO_REQUESTS_DOC: &str = "photo-requests.json";
 /// carries the digest of everything else in the directory, so it is never part of that digest.
 pub const DECLARATION_DOC: &str = "landmarks.json";
 
-/// The credit the artifact class owes as a whole: the three projects every record is made of.
-/// Each record keeps its own licence and notices, because those differ per article and per photo.
-///
-/// It lives here, beside the compiler that writes those records, so the catalog publishes a credit
-/// it never retypes.
-pub const ATTRIBUTION: &str = "landmark text from Wikipedia and structured data from Wikidata, \u{00a9} the \
-contributors; photos from Wikimedia Commons, \u{00a9} the photographers. Each record states the licence and the \
-notices of its own text and photo.";
+/// The credit the artifact class owes as a whole, from the Wikipedia and Commons entries of
+/// data/sources.toml. Wikidata is CC0 and asks for none. Each record keeps its own licence and
+/// notices, because those differ per article and per photo.
+pub fn attribution() -> String {
+    format!(
+        "{}; {}. Each record states the licence and the notices of its own text and photo.",
+        obc_data::sources::attribution("wikipedia"),
+        obc_data::sources::attribution("commons")
+    )
+}
 
 /// One digest over every file of an artifact but its own declaration, and their total size.
 ///

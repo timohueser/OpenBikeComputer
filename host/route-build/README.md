@@ -7,33 +7,41 @@ The importer clips the graph at those bounds. It does not fetch missing data.
 ```sh
 cargo run --release -p route-build -- \
   /data/freiburg-regbez.osm.pbf --output /data/routes/freiburg \
-  --region freiburg --country DE --bounds 7.5,47.7,8.5,48.4 --profiles all
+  --region freiburg --country DE --bounds 7.5,47.7,8.5,48.4 --profiles all \
+  --countries DE
 ```
 
 The output directory must not exist. The builder writes objects to a temporary
 directory and publishes the manifest with a directory rename. Keep old packages
 until their consumers finish. Do not edit an installed package in place.
 
-## Bounding box extraction
+The builder also writes `overlays.sqlite` into the output directory: the route
+networks and access restrictions of the source data, bound to the new manifest
+identity. The [planner release contract](../../specs/planner-release.md) gives
+its layout. The source OSM objects stay in memory only; the package does not
+keep them. The index omits proposed routes. Access markings are snapshot data,
+not live closures.
 
-Extract from an installed routing package without OSM import or terrain sampling:
+| Overlay feature | Minimum zoom |
+| --- | --- |
+| National or international route | 6 |
+| Regional route | 8 |
+| Local route | 11 |
+| Construction or conditional access | 10 |
+| Other access restriction | 13 |
+| Directional rule | 14 |
+| Pushing section | 15 |
 
-```sh
-cargo run --release -p route-build --bin route-extract -- /data/routes/bw \
-  --output /data/routes/freiburg --region freiburg --bounds 7.77,47.965,7.96,48.06
-```
+## Route catalog
 
-The bounds must lie inside the source coverage. The output retains all source
-profiles. Query endpoints stay inside the requested bounds. Each road that
-intersects the bounds stays complete, so route geometry can leave the box.
-Routes are exact within this retained graph. Outside connections can be absent.
-
-The command rebuilds the shared graph, each profile, and its search bounds from
-prepared costs and turns.
-It copies source OSM pages unless `--runtime` is set. Use compiled source overlays
-with a runtime cutout. The JSON report gives the OSM byte count, the total
-routing size, preparation time, and `geometry_bounds`. Include these geometry
-bounds when you prepare dependent maps and terrain.
+With `--countries`, the builder also writes `route-catalog.json`, the signed
+routes in the format of [the catalog contract](../../specs/route-catalog.md). It
+prints a JSON report: the counts, the dropped relations by reason and the
+shaping points. The catalog needs the `touring`, `road`, `gravel`, `mtb` and
+`hiking` profiles. Name the region's countries, so that the catalog can omit
+route marks in France. When France is the only country, no record has a route
+mark. A region with France and another country fails. The builder checks these
+options before the import.
 
 ## Terrain
 
@@ -62,10 +70,14 @@ between their endpoints. Without terrain, climb and slope remain unknown.
 | Node identity | Shared OSM node IDs create junctions; geometry crossings do not |
 | Via-node turn restrictions | Mode-specific forbidden transitions |
 | Via-way restrictions | Exclude affected member roads for the restricted mode |
-| Conditional access or turns | Exclude affected rider modes; ignore motor-only and hazardous-load conditions; no date evaluation |
-| Destination, private or unsupported access | Conservative exclusion |
+| `yes`, `designated`, `official`, `permissive`, `mtb`, `optional_sidepath` | Keep the mode |
+| `no`; `dismount` for riding | Exclude the mode |
+| Any other access value, on a way or a node | Keep the mode at three times the road cost, or 300 more at a node; the route reports a possible closure (`route_build::source::classify`) |
+| Conditional access | Keep the mode; the route reports a possible closure |
+| Conditional turns | Ignored; a turn restriction never closes its member roads |
+| Barrier nodes | Pass gates, bollards, toll booths, cattle grids, kerbs and blocks; stiles admit walkers; unknown barriers admit walking and pushing, and the route reports them |
 | Bridge and tunnel | Preserve structure flag for terrain |
-| Source data | All tags, way node IDs, relation members and roles retained |
+| Source data | All tags, way node IDs, relation members and roles feed costs, closures, overlays and the catalog |
 | Road suitability | Highway, surface, smoothness, tracktype and difficulty remain distinct |
 
 Read the manifest warnings before publishing. The importer does not yet model
@@ -77,28 +89,12 @@ this German regional importer as a worldwide release pipeline.
 
 Pass `--profiles all` to prepare all 21 metrics, or supply comma-separated IDs.
 Rebuild packages after changing the profile code. Rider validation is required.
-Use `route-select` to remove profiles without preparing retained metrics again:
-
-```sh
-cargo run --release -p route-build --bin route-select -- \
-  /data/routes/old --output /data/routes/selected \
-  --profiles touring,touring/less-climbing
-```
-
-It copies the complete object closure for the selected profiles. The source
-package stays unchanged. Build the overlay index for the new manifest.
-Omit `--profiles` to keep all profiles. Add `--runtime` only after all runtime
-attributes and overlays are prepared. It omits build-only OSM tables. Retain
-the input package on the preparation host and bind the compiled overlay index
-to the new manifest before sealing the runtime release.
 
 | Road profile | Preference |
 | --- | --- |
 | `road` | BRouter fastbike road classes, turns and downhill costs |
 | `road/shorter` | Same road suitability; no terrain penalty; lower turn cost |
-| `road/smoother` | Higher costs for rough surfaces and poor smoothness |
 | `road/less-climbing` | Additional uphill cost above the slope threshold |
-| `road/quieter` | Road class, signed speed, cycle lanes and bicycle routes |
 
 Road weights derive from the MIT-licensed BRouter
 [fastbike](https://github.com/abrensch/brouter/blob/29898106b555e342ff3ade7ae3e9c1ae6644a43b/misc/profiles2/fastbike.brf),
@@ -118,14 +114,15 @@ profiles. Preserve [the licence notice](LICENSE.brouter) when redistributing the
 | Pushing | Allowed where permitted, with distance and entry costs; no cycling permission implied |
 
 Touring, gravel, MTB and hiking use separate surface and road-class tables.
-Each has shorter, smoother and less-climbing variants. Shorter ignores road
-class and climb preferences but keeps surface preferences. Smoother raises
-surface costs. Access rules apply to every variant.
+Each has shorter and less-climbing variants. Shorter ignores road class, climb
+preferences and signed cycle routes but keeps surface preferences. Access rules
+apply to every variant.
 
-The package includes source OSM pages, geometry, snap cells, a shared directed
-graph, profile costs, and compressed landmark bounds. Source pages stay outside
-the query caches.
-It is separate from map tiles. See [the package contract](../../specs/route-package.md).
+The package includes geometry, snap cells, a shared directed graph, profile
+costs and snap bits, possible closures, and compressed landmark bounds. A
+profile's snap bits mark the roads in a large strongly connected part of its
+graph (`connectivity`); the build log counts the roads in fragments and prints
+the landmark scale. It is separate from map tiles. See [the package contract](../../specs/route-package.md).
 Preserve OpenStreetMap attribution and ODbL notices when distributing the data.
 
 ```sh

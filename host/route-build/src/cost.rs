@@ -1,67 +1,91 @@
 //! Compile source attributes and terrain into additive routing costs.
-use crate::road_bike::{self, WayCost};
+use crate::{road_bike, source::Id, Graph};
 use route_engine::{
-    cost::{turn, CostBasis, CostParameters, RoadCost},
-    model::{Graph, Profile, Weighting, BIKE, FOOT, PUSH},
-    osm::Id,
+    closures::Closure,
+    cost::{turn, CostBasis, RoadCost},
+    model::{Profile, Road, Weighting, BIKE, FOOT, PUSH},
 };
 use std::collections::HashMap;
+
+/// A road that the rider may have no access to costs three times its length. An ordinary route
+/// takes it only where every other way is more than three times as long as the road; a shaping
+/// point on the road still takes the route through it.
+const UNCERTAIN_ACCESS: f64 = 3.0;
+
+/// Passing a node that the rider may have no access to, such as a private gate, costs as much as
+/// 300 m of good road. A factor on the arriving road would cost nothing where the gate is near a
+/// junction.
+const UNCERTAIN_NODE: f64 = 300.0;
+
+/// The modes that an access value makes doubtful, on each road and at each node. Seasonal and
+/// conditional closures depend on the ride, so they are not doubts.
+#[derive(Default)]
+pub struct Doubts {
+    pub roads: Vec<u8>,
+    pub nodes: HashMap<u32, u8>,
+}
+
+impl Doubts {
+    pub fn modes(closures: &[(u8, Closure)]) -> u8 {
+        closures.iter().filter(|(_, closure)| closure.kind.avoided()).fold(0, |modes, (bits, _)| modes | bits)
+    }
+}
 
 pub struct Costing<'a> {
     graph: &'a Graph,
     profile: &'a Profile,
-    ways: Vec<Option<WayCost>>,
+    doubts: &'a Doubts,
+    /// The exact factors each road's curve compiles from; `None` where the profile excludes it.
+    pub bases: Vec<Option<CostBasis>>,
     pub roads: Vec<Option<RoadCost>>,
 }
 
 impl<'a> Costing<'a> {
-    pub fn new(graph: &'a Graph, profile: &'a Profile) -> Result<Self, String> {
+    pub fn new(graph: &'a Graph, profile: &'a Profile, doubts: &'a Doubts) -> Result<Self, String> {
         profile.validate()?;
         if graph.node_access.len() != graph.points.len() || graph.node_ids.len() != graph.points.len() {
             return Err("Graph nodes lack source identities or access".into());
         }
         let cycle_routes = cycle_routes(graph);
-        let mut ways = Vec::with_capacity(graph.roads.len());
+        let mut bases = Vec::with_capacity(graph.roads.len());
         let mut roads = Vec::with_capacity(graph.roads.len());
-        for road in &graph.roads {
+        for (id, road) in graph.roads.iter().enumerate() {
             if road.shape.len() < 2 {
                 return Err("Road has no geometry".into());
             }
-            let way = if !profile.permits(road) {
+            let mode = profile.mode(road);
+            let basis = if !profile.permits(road) {
                 None
             } else {
                 match &profile.weighting {
                     Weighting::RoadBike(variant) => {
                         let source = graph.osm.ways.get(&road.way).ok_or("Road lacks source OSM way")?;
-                        road_bike::way(road, &source.tags, *variant, cycle_routes.contains_key(&road.way))
+                        road_bike::way(road, &source.tags, *variant, mode == PUSH)
                     }
-                    Weighting::Weighted { surface, road: weights, .. } => Some(WayCost {
+                    Weighting::Weighted { surface, road: weights, .. } => Some(CostBasis {
                         factor: surface[road.surface as usize]
                             * *weights.get(road.class as usize).ok_or("Unknown road class")?
-                            * if !profile.walking && road.access & BIKE == 0 { 4.0 } else { 1.0 },
+                            * if mode == PUSH { 4.0 } else { 1.0 },
                         turn: 0.0,
                         ferry: road.class == 6,
-                        pushing: !profile.walking && road.access & BIKE == 0,
                     }),
                 }
             };
-            let way = way.map(|mut cost| {
-                if !profile.walking && !cost.pushing && !cost.ferry && !profile.name.ends_with("/shorter") {
+            let basis = basis.map(|mut cost| {
+                if doubts.roads.get(id).is_some_and(|&modes| modes & mode != 0) {
+                    cost.factor *= UNCERTAIN_ACCESS;
+                }
+                if mode == BIKE && !cost.ferry {
                     if let Some(&rank) = cycle_routes.get(&road.way) {
-                        let touring = profile.name.split('/').next() == Some("touring");
-                        cost.factor *= 1.0 - f64::from(rank) * if touring { 0.1 } else { 0.04 };
+                        cost.factor *= 1.0 - f64::from(rank) * profile.route_bonus;
                     }
                 }
                 cost
             });
-            roads.push(way.map(|w| parameters(road, w).compile(road, profile)).transpose()?);
-            ways.push(way);
+            roads.push(basis.map(|basis| basis.compile(road, profile)).transpose()?);
+            bases.push(basis);
         }
-        Ok(Self { graph, profile, ways, roads })
-    }
-
-    pub fn basis(&self, road: usize) -> Option<CostBasis> {
-        self.ways[road].map(|way| CostBasis { factor: way.factor, turn: way.turn, ferry: way.ferry })
+        Ok(Self { graph, profile, doubts, bases, roads })
     }
 
     pub fn transition(&self, before: u32, after: u32) -> Option<u64> {
@@ -69,23 +93,24 @@ impl<'a> Costing<'a> {
         if a.to != b.from || !self.graph.permits_turn(before, after, self.profile.walking) {
             return None;
         }
-        let access = self.graph.node_access[b.from as usize];
-        let allowed = if self.profile.walking {
-            access & FOOT != 0
-        } else {
-            access & BIKE != 0 || self.profile.pushing && access & PUSH != 0
-        };
-        if !allowed {
+        // A U-turn onto the reverse of the same road does not pass the node, so a closed gate at
+        // the end of a spur still lets the rider turn back; its access and doubt do not apply.
+        let passes = !(a.way == b.way && a.from == b.to && a.to == b.from);
+        let access = if passes { self.graph.node_access[b.from as usize] } else { BIKE | FOOT | PUSH };
+        if access & self.profile.modes() == 0 {
             return None;
         }
-        let (wa, wb) = (self.ways[before as usize]?, self.ways[after as usize]?);
-        if (wa.pushing || wb.pushing || access & BIKE == 0) && !self.graph.permits_turn(before, after, true) {
+        let (wa, wb) = (self.bases[before as usize]?, self.bases[after as usize]?);
+        let pushing = |road: &Road| self.profile.mode(road) == PUSH;
+        if (pushing(a) || pushing(b) || access & BIKE == 0) && !self.graph.permits_turn(before, after, true) {
             return None;
         }
+        let doubt = passes && self.doubts.nodes.get(&b.from).is_some_and(|&modes| modes & self.profile.mode(b) != 0);
+        let doubt = if doubt { UNCERTAIN_NODE } else { 0.0 };
         if !matches!(self.profile.weighting, Weighting::RoadBike(_)) {
-            return Some(0);
+            return Some(doubt as u64);
         }
-        let mut cost = turn(a.shape[a.shape.len() - 2], a.shape[a.shape.len() - 1], b.shape[1], wb.turn);
+        let mut cost = doubt + turn(a.shape[a.shape.len() - 2], a.shape[a.shape.len() - 1], b.shape[1], wb.turn);
         if self.graph.osm.nodes.get(&self.graph.node_ids[b.from as usize]).is_some_and(|node| {
             road_bike::tag(&node.tags, "highway") == "traffic_signals"
                 || road_bike::tag(&node.tags, "highway") == "crossing"
@@ -96,15 +121,11 @@ impl<'a> Costing<'a> {
         if wb.ferry && !wa.ferry {
             cost += 10_000.0;
         }
-        if !wa.pushing && (wb.pushing || access & BIKE == 0) {
+        if !pushing(a) && (pushing(b) || access & BIKE == 0) {
             cost += 300.0;
         }
         Some(cost.round() as u64)
     }
-}
-
-fn parameters(road: &route_engine::model::Road, way: WayCost) -> CostParameters {
-    CostParameters { distance: road.length_m as f64 * way.factor, turn: way.turn, ferry: way.ferry }
 }
 
 fn cycle_routes(graph: &Graph) -> HashMap<i64, u8> {
@@ -174,16 +195,13 @@ mod tests {
             access: BIKE,
             difficulty: 255,
             hiking_difficulty: None,
-            uncertain_access: false,
             structure: false,
             shape,
         }
     }
     fn cost(road: &Road, name: &str) -> RoadCost {
         let profile = Profile::presets().into_iter().find(|p| p.name == name).unwrap();
-        parameters(road, WayCost { factor: 1.0, turn: 90.0, ferry: false, pushing: false })
-            .compile(road, &profile)
-            .unwrap()
+        CostBasis { factor: 1.0, turn: 90.0, ferry: false }.compile(road, &profile).unwrap()
     }
     fn point(lon: i32, elevation: f32) -> Point {
         Point { lat: 0, lon, elevation }
@@ -191,7 +209,7 @@ mod tests {
 
     #[test]
     fn cycling_networks_favour_touring_by_level_without_discounting_walks_or_pushing() {
-        use route_engine::osm::{Relation, Way};
+        use crate::source::{Relation, Way};
         let shape = vec![point(0, 0.0), point(1000, 0.0)];
         let mut graph = Graph {
             points: shape.clone(),
@@ -206,10 +224,8 @@ mod tests {
         );
         let profiles = Profile::presets();
         let cost = |graph: &Graph, name: &str| {
-            Costing::new(graph, profiles.iter().find(|p| p.name == name).unwrap()).unwrap().roads[0]
-                .as_ref()
-                .unwrap()
-                .total()
+            let profile = profiles.iter().find(|p| p.name == name).unwrap();
+            Costing::new(graph, profile, &Doubts::default()).unwrap().roads[0].as_ref().unwrap().total()
         };
         let ordinary = cost(&graph, "touring");
         let walking = cost(&graph, "hiking");
@@ -289,22 +305,51 @@ mod tests {
         };
         graph.osm.ways.insert(
             1,
-            route_engine::osm::Way {
+            crate::source::Way {
                 id: 1,
                 nodes: vec![0, 1, 2],
                 tags: [("highway".into(), "residential".into())].into_iter().collect(),
             },
         );
         for profile in Profile::presets().into_iter().filter(|p| ["road", "touring"].contains(&p.name.as_str())) {
-            assert!(Costing::new(&graph, &profile).unwrap().transition(0, 1).is_some());
+            assert!(Costing::new(&graph, &profile, &Doubts::default()).unwrap().transition(0, 1).is_some());
             for edge in 0..2 {
                 graph.roads[edge].access = FOOT | PUSH;
-                assert!(Costing::new(&graph, &profile).unwrap().transition(0, 1).is_none());
+                assert!(Costing::new(&graph, &profile, &Doubts::default()).unwrap().transition(0, 1).is_none());
                 graph.roads[edge].access = BIKE;
             }
             graph.node_access[1] = FOOT | PUSH;
-            assert!(Costing::new(&graph, &profile).unwrap().transition(0, 1).is_none());
+            assert!(Costing::new(&graph, &profile, &Doubts::default()).unwrap().transition(0, 1).is_none());
             graph.node_access[1] = BIKE | FOOT | PUSH;
+        }
+    }
+
+    #[test]
+    fn an_access_value_costs_a_road_three_times_and_a_node_a_fixed_charge() {
+        use route_engine::closures::Kind;
+        let points = vec![point(0, 0.0), point(1000, 0.0), point(2000, 0.0)];
+        let mut graph = Graph {
+            node_ids: vec![0, 1, 2],
+            node_access: vec![BIKE | FOOT | PUSH; 3],
+            roads: vec![road(points[..2].to_vec()), Road { from: 1, to: 2, ..road(points[1..].to_vec()) }],
+            points,
+            ..Graph::default()
+        };
+        let tags = [("highway".into(), "residential".into())].into_iter().collect();
+        graph.osm.ways.insert(1, crate::source::Way { id: 1, nodes: vec![0, 1, 2], tags });
+        let closure = |kind| (BIKE, Closure { kind, condition: String::new() });
+        assert_eq!(Doubts::modes(&[closure(Kind::Seasonal), closure(Kind::Conditional)]), 0);
+        assert_eq!(Doubts::modes(&[closure(Kind::Discouraged)]), BIKE);
+        for name in ["touring", "road"] {
+            let profile = Profile::presets().into_iter().find(|p| p.name == name).unwrap();
+            let none = Doubts::default();
+            let open = Costing::new(&graph, &profile, &none).unwrap();
+            let doubts = Doubts { roads: vec![BIKE, FOOT | PUSH], nodes: [(1, BIKE)].into_iter().collect() };
+            let doubted = Costing::new(&graph, &profile, &doubts).unwrap();
+            let total = |costing: &Costing, road: usize| costing.roads[road].as_ref().unwrap().total();
+            assert!(total(&doubted, 0).abs_diff(3 * total(&open, 0)) <= 2, "{name}");
+            assert_eq!(total(&doubted, 1), total(&open, 1), "{name}");
+            assert_eq!(doubted.transition(0, 1), open.transition(0, 1).map(|cost| cost + 300), "{name}");
         }
     }
 

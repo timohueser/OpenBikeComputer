@@ -1,23 +1,26 @@
 //! A routing library independent of transport, filesystem, map rendering and itinerary policy.
 mod alternatives;
+pub mod answer;
 pub mod base;
 pub mod blocks;
+pub mod closures;
 pub mod cost;
 pub mod data;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod directory;
-pub mod endpoints;
 pub mod geometry;
 pub mod landmarks;
 pub mod model;
-pub mod osm;
 pub mod package;
 mod queue;
 pub mod router;
 pub mod search;
+pub mod shape;
 pub mod snap;
 pub mod storage;
 pub mod table;
+#[cfg(not(target_arch = "wasm32"))]
+pub use directory::open;
 pub use router::{Control, Request, Route, Router};
 
 #[derive(Debug, thiserror::Error)]
@@ -36,6 +39,10 @@ pub enum Error {
     Cancelled,
     #[error("Routing resource limit reached")]
     Limit,
+    #[error("The line exceeds the shaping limits")]
+    LineTooLong,
+    #[error("No plan follows the line on roads")]
+    NotReproducible,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

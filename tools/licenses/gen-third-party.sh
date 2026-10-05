@@ -37,12 +37,12 @@ if [ "$have" != "$PINNED" ] && [ "${OBC_LICENSES_ANY_VERSION:-0}" != "1" ]; then
     exit 1
 fi
 
-# artifact-title | manifest | what it is | target triple (optional)
+# artifact-title | manifest | what it is | target triple (optional) | feature flags (optional)
 ARTIFACTS=(
     "Device firmware (\`UPDATE.BIN\`)|firmware/obc-fw-nrf54l/Cargo.toml|the image the device runs, and the one served from updates.openbikecomputer.com"
     "Bootloader (\`obc-boot\`)|firmware/obc-boot/Cargo.toml|flashed once at manufacture; it installs the image above"
     "Desktop application|apps/obc-desktop/Cargo.toml|the Rust half of the desktop app — its web half ships its own notices beside the bundle"
-    "iOS route library (\`route-server\`)|apps/route-server/Cargo.toml|the static library that the iOS companion links for offline routing. The app carries this file. The list has all crates of the library, also the crates that the app link removes|aarch64-apple-ios"
+    "iOS route library (\`route-server\`)|apps/route-server/Cargo.toml|the static library that the iOS companion links for offline routing. The app carries this file. The list has all crates of the library, also the crates that the app link removes|aarch64-apple-ios|--no-default-features"
 )
 
 # Make the output byte-stable across machines. cargo-about fills gaps in a crate's own licence
@@ -80,9 +80,14 @@ trap 'rm -f "$tmp"' EXIT
     echo
     echo "- **The map builder's web bundle** emits \`third-party-licenses.txt\` beside itself at"
     echo "  build time, generated from the modules the bundler actually included."
-    echo "- **Map data** is © OpenStreetMap contributors, under the"
+    echo "- **Map data** is $(python3 "$ROOT/tools/data_registry.py" attribution osm-planet), under the"
     echo "  [ODbL](https://www.openstreetmap.org/copyright); terrain is Copernicus GLO-30. Both"
     echo "  credits ship on the device (Settings ▸ System ▸ About) and in every published catalog."
+    echo
+    echo "One crate is not GPL-3.0: \`host/obc-data\` is MIT OR Apache-2.0 and depends on no GPL"
+    echo "crate, which the \`deny\` CI job checks. Data steps that call the GPL map tools belong in a"
+    echo "separate GPL-3.0-only crate, and an \`obc-data\` binary that links them is GPL-3.0-only as a"
+    echo "whole."
     echo
     echo "GEOS deserves a line, because deny.toml's note about it predates the current tree:"
     echo "\`geos-src\` declares MIT for the *wrapper* while the C++ sources it carries are"
@@ -94,12 +99,12 @@ trap 'rm -f "$tmp"' EXIT
     echo
 
     for entry in "${ARTIFACTS[@]}"; do
-        IFS='|' read -r title manifest blurb target <<<"$entry"
+        IFS='|' read -r title manifest blurb target flags <<<"$entry"
         echo "## $title"
         echo
         echo "_${blurb}._"
         echo
-        cargo about generate --manifest-path "$ROOT/$manifest" -c "$CFG" ${target:+--target "$target"} "$TPL"
+        cargo about generate --manifest-path "$ROOT/$manifest" -c "$CFG" ${target:+--target "$target"} ${flags:-} "$TPL"
         echo
     done
 } | canonicalize >"$tmp"

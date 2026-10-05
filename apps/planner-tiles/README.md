@@ -1,7 +1,8 @@
 # Planner tiles
 
-Serve immutable regional PMTiles from the `obc-maps` R2 bucket. The Worker uses
-the upstream PMTiles reader. It caches tile responses at the Cloudflare edge.
+Serve the map packs of grid planner releases from the `obc-maps` R2 bucket. The
+Worker uses the upstream PMTiles reader. It caches tile responses at the
+Cloudflare edge.
 
 ## Build and deploy
 
@@ -30,18 +31,27 @@ npm run deploy --prefix apps/planner-tiles
 
 | Path | Result |
 | --- | --- |
-| `/releases/ID/basemap.json` | Vector TileJSON |
-| `/releases/ID/basemap/Z/X/Y.mvt` | Vector tile, zoom 0–14 |
+| `/releases/ID/basemap.json` | Vector TileJSON from the release's `maps/basemap.json` |
+| `/releases/ID/basemap/Z/X/Y.mvt` | Vector tile |
 | `/releases/ID/places.json` | Rider places TileJSON |
-| `/releases/ID/places/Z/X/Y.mvt` | Rider places tile, zoom 11 |
+| `/releases/ID/places/Z/X/Y.mvt` | Rider places tile |
+| `/releases/ID/overlays.json` | Route network and access TileJSON |
+| `/releases/ID/overlays/Z/X/Y.mvt` | Route network and access tile |
 | `/releases/ID/terrain.json` | Terrain TileJSON |
-| `/releases/ID/terrain/Z/X/Y.webp` | Terrarium tile, zoom 0–12 |
+| `/releases/ID/terrain/Z/X/Y.webp` | Terrarium tile |
+| `/releases/ID/LAYER.json` | TileJSON of a data layer of the release, such as `snow` |
+| `/releases/ID/LAYER/Z/X/Y` | Data layer tile; a tile that is not MVT or WebP keeps its gzip encoding, `application/octet-stream` |
+| `/releases/ID/routes/tiles/9-X-Y.json` | Route catalog cell of a grid release; 404 for a cell outside the grid |
 
-`ID` is the SHA-256 of `release.json`. Grid archives use the canonical object pool and its small public pointers.
-The [release contract](../../specs/planner-release.md#canonical-grid-storage)
+The pack header gives the zoom levels and the tile type. A tile extension is
+optional and must match the tile type. TileJSON tile URLs have no extension.
+
+`ID` is the SHA-256 of `release.json`. Packs come from the canonical object pool
+through its small public pointers. The
+[release contract](../../specs/planner-release.md#canonical-grid-storage)
 defines those paths. Queries and unknown paths
-return 404. An absent tile returns 204. A grid tile without a pack is absent.
-An absent archive returns 404.
+return 404. An absent tile returns 204. A tile without a pack is absent.
+A release without `public/grid.json`, or an archive without a TileJSON pointer, returns 404.
 Read failures return 503 with no cache. The domain root returns 404.
 
 The service also serves release font, sprite, and device catalog paths.

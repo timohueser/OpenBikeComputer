@@ -14,12 +14,6 @@ public struct TripDayRoute: Equatable, Sendable {
     public let distanceMeters: Double
     public let elevationGainMeters: Double
     public let estimatedDuration: TimeInterval
-    /// Metres along the route where it joins the trip's main line: past the spur back from a
-    /// stop, else 0.
-    public let joinMeters: UInt32
-    /// Metres along the route where it leaves the main line for a spur to a stop; `UInt32.max`
-    /// for a day that ends on the line.
-    public let leaveMeters: UInt32
 }
 
 extension TripDayRoute {
@@ -55,14 +49,10 @@ extension Trip {
             let totals = RouteObjectCodec.totals(of: payload)
             let distance = Double(totals?.distanceMeters ?? 0)
             let ascent = Double(totals?.ascentMeters ?? 0)
-            // The route's own metres, as the device measures them along the decoded points.
-            let along = MeasuredLine(coordinates: points.map(\.coordinate)).vertices
             return TripDayRoute(
                 day: day, name: name, points: points, payload: payload, crc32: CRC32.checksum(payload),
                 distanceMeters: distance, elevationGainMeters: ascent,
-                estimatedDuration: bikeType.estimatedDuration(distanceMeters: distance, ascentMeters: ascent),
-                joinMeters: UInt32(along[cut.joinIndex].distance.rounded()),
-                leaveMeters: cut.leaveIndex.map { UInt32(along[$0].distance.rounded()) } ?? .max)
+                estimatedDuration: bikeType.estimatedDuration(distanceMeters: distance, ascentMeters: ascent))
         }
     }
 
@@ -89,9 +79,7 @@ extension Trip {
         TripObjectCodec.Trip(
             key: key, name: name,
             startDate: UInt16(clamping: max(startDay?.daysSince1970 ?? 0, 0)),
-            days: zip(days, dayObjectIDs).map { day, id in
-                TripObjectCodec.Day(routeID: id, joinMeters: day.joinMeters, leaveMeters: day.leaveMeters)
-            })
+            days: dayObjectIDs.prefix(days.count).map(TripObjectCodec.Day.whole))
     }
 }
 

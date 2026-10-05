@@ -78,9 +78,7 @@ struct OBCCompanionApp: App {
                 importAtLaunch: Self.launchImport(),
                 firmwareDemoAtLaunch: Self.launchFirmwareDemo(),
                 syncTiming: Self.launchSyncTiming(),
-                placeName: Self.makePlaceName(),
-                stopSearch: Self.makeStopSearch(),
-                legRouter: Self.makeLegRouter())
+                placeName: Self.makePlaceName())
                 .environment(\.obcPlannerSource, Self.plannerSource)
                 .environment(\.obcOfflineMaps, Self.offlineMaps)
                 .obcAppearance()
@@ -127,25 +125,6 @@ struct OBCCompanionApp: App {
         if mockControl != nil { return nil }
         #endif
         return PlaceNames.locality(at:)
-    }
-
-    /// Stops near a trip line use the published planner search. Fixture runs use the fixed stops near the
-    /// fixture trips, offline and deterministic. A trip imported in any other Debug run needs the
-    /// real search: the fixed stops lie in Wisconsin.
-    static func makeStopSearch() -> any StopSearch {
-        #if DEBUG
-        if mockControl != nil, launchOptions.fixtures != nil { return MockStopSearch() }
-        #endif
-        return OnlineStopSearch(source: plannerSource)
-    }
-
-    /// Online routing uses the published planner release. Fixture runs route offline with the
-    /// mock, which `-OBCRouter` can make fail.
-    static func makeLegRouter() -> any LegRouter {
-        #if DEBUG
-        if mockControl != nil, launchOptions.fixtures != nil { return MockLegRouter(failure: launchOptions.routerFailure) }
-        #endif
-        return OnlineLegRouter(service: plannerSource)
     }
 
     static func makeUpdateSurfaceStore() -> any UpdateSurfaceStore {

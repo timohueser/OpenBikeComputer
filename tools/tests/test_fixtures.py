@@ -58,18 +58,14 @@ class FixtureRegistryTests(unittest.TestCase):
             catalog = Catalog(catalog_path)
             store = Store(catalog, root / "cache")
             args = Namespace(package="sample", archive=archive)
-            env = {
-                "OBC_FIXTURE_R2_BUCKET": "test-fixtures",
-                "OBC_FIXTURE_R2_ENDPOINT": "https://example.eu.r2.cloudflarestorage.com",
-                "OBC_FIXTURE_R2_ACCESS_KEY_ID": "test-key",
-                "OBC_FIXTURE_R2_SECRET_ACCESS_KEY": "test-secret",
-            }
             for status in (0, 1):
                 with self.subTest(upload_status=status):
                     events = []
 
                     def upload(command, **_kwargs):
-                        self.assertIn("--immutable", command)
+                        client = command[command.index("r2"):]
+                        self.assertEqual(client[:4], ["r2", "--fixtures", "put", "--immutable"])
+                        self.assertEqual(client[-1], f"v1/packages/{digest}.tar.gz")
                         events.append("upload")
                         return Namespace(returncode=status)
 
@@ -79,13 +75,11 @@ class FixtureRegistryTests(unittest.TestCase):
                         events.append("verify")
 
                     with (
-                        patch.dict("os.environ", env),
-                        patch("tools.fixtures.shutil.which", return_value="rclone"),
                         patch("tools.fixtures.subprocess.run", side_effect=upload),
                         patch("tools.fixtures._verify_public_object", side_effect=verify),
                     ):
                         if status:
-                            with self.assertRaisesRegex(FixtureError, "rclone failed"):
+                            with self.assertRaisesRegex(FixtureError, "R2 client failed"):
                                 command_publish(catalog, store, args)
                         else:
                             command_publish(catalog, store, args)

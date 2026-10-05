@@ -35,12 +35,6 @@ pub struct NavCacheStats {
     pub index_hits: u32,
     /// Route-private index windows filled from the source.
     pub index_misses: u32,
-    /// Junction records decoded by cached navigation walks.
-    #[cfg(feature = "nav-metrics")]
-    pub decoded_junctions: u64,
-    /// Quadtree nodes requested, independent of index-window fills.
-    #[cfg(feature = "nav-metrics")]
-    pub quadtree_visits: u64,
 }
 
 impl NavCacheStats {
@@ -72,16 +66,12 @@ pub struct NavTileCache {
     /// The shared index-block driver, sixteen windows wide; its counters are this cache's index
     /// hit and miss counts.
     index: IndexBlockCache<NAV_INDEX_BLOCKS>,
-    #[cfg(feature = "nav-metrics")]
-    pub(super) decoded_junctions: u64,
-    #[cfg(feature = "nav-metrics")]
-    quadtree_visits: u64,
 }
 
 // Unlike `MapCache`, this cache may take the `u64`'s 8-byte alignment: it lives in the scratch
 // arena's route arm rather than in a `.bss` slot the boot task fills, so no placement of it sits
 // on a poll frame.
-#[cfg(all(target_pointer_width = "32", not(feature = "nav-metrics")))]
+#[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::size_of::<NavTileCache>() == 24_984);
 
 impl NavTileCache {
@@ -93,10 +83,6 @@ impl NavTileCache {
             hits: 0,
             misses: 0,
             index: IndexBlockCache::new(),
-            #[cfg(feature = "nav-metrics")]
-            decoded_junctions: 0,
-            #[cfg(feature = "nav-metrics")]
-            quadtree_visits: 0,
         }
     }
 
@@ -108,11 +94,6 @@ impl NavTileCache {
         self.hits = 0;
         self.misses = 0;
         self.index.reset();
-        #[cfg(feature = "nav-metrics")]
-        {
-            self.decoded_junctions = 0;
-            self.quadtree_visits = 0;
-        }
     }
 
     /// Snapshot of the hit/miss counters since the last [`NavTileCache::reset`].
@@ -123,10 +104,6 @@ impl NavTileCache {
             misses: self.misses,
             index_hits: self.index.hits(),
             index_misses: self.index.misses(),
-            #[cfg(feature = "nav-metrics")]
-            decoded_junctions: self.decoded_junctions,
-            #[cfg(feature = "nav-metrics")]
-            quadtree_visits: self.quadtree_visits,
         }
     }
 
@@ -157,10 +134,6 @@ impl NavTileCache {
         index: &dyn QuadIndex,
         idx: usize,
     ) -> Result<u32, IoError> {
-        #[cfg(feature = "nav-metrics")]
-        {
-            self.quadtree_visits += 1;
-        }
         let byte_index = (idx as u64).checked_mul(4).ok_or(IoError::BadOffset)?;
         let off = index.index_offset().checked_add(byte_index).ok_or(IoError::BadOffset)?;
         let mut word = [0u8; 4];

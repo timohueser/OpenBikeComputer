@@ -38,8 +38,8 @@
 {"id": "fr-038", "lang": "fr", "text": "80 km par jour", "scope": "in", "request": {"type": "split", "per_day": {"value": 80, "unit": "km"}}}
 {"id": "fr-039", "lang": "fr", "text": "fussioner les jours 2 et 3", "scope": "in", "request": {"type": "join", "day": 2}, "note": "typo"}
 {"id": "fr-040", "lang": "fr", "text": "inverser le sens", "scope": "in", "request": {"type": "reverse"}}
-{"id": "fr-041", "lang": "fr", "text": "plus de dénivelé le jour 3", "scope": "in", "request": {"type": "reroute", "where": {"day": 3}, "goal": "most_climbing"}}
-{"id": "fr-042", "lang": "fr", "text": "eviter le gravier demain", "scope": "in", "request": {"type": "reroute", "where": {"day": "tomorrow"}, "goal": "least_unpaved"}, "note": "accent missing"}
+{"id": "fr-041", "lang": "fr", "text": "plus de dénivelé le jour 3", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
+{"id": "fr-042", "lang": "fr", "text": "eviter le gravier demain", "scope": "out", "request": {"type": "none"}, "note": "accent missing; re-routing part of the plan is not in the language"}
 {"id": "fr-043", "lang": "fr", "text": "est-ce que le Galibier vaut le coup ?", "scope": "out", "request": {"type": "none"}}
 {"id": "fr-044", "lang": "fr", "text": "campings près d'un supermarché à la fin du jour 4", "scope": "out", "request": {"type": "places", "what": ["campsite"], "where": {"day": 4, "part": "end"}, "ignored": ["près d'un supermarché"]}}
 {"id": "fr-045", "lang": "fr", "text": "quel temps fera-t-il le jour 3", "scope": "out", "request": {"type": "none"}}

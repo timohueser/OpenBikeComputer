@@ -3,7 +3,7 @@ import SwiftUI
 import OBCDomain
 
 /// The trip review's parts on the sample Alps line: the map with the ridden part, the totals, a
-/// ridden day, a day with two rides, the transfer lines and the offer.
+/// ridden day, a day with two rides, and the transfer lines.
 struct TripReviewGallerySection: View {
     @State private var transfer: TransferKind? = .train
 
@@ -40,14 +40,10 @@ struct TripReviewGallerySection: View {
                 number: 2, title: nil, header: "Tue 30 Sep · Oberwald → Brig · 46 km", note: "", photos: [],
                 thumbnails: [:], rides: [Self.ride("Day 2 Brig", 28_100), Self.ride("Day 2 Brig (2)", 17_900)],
                 onOpenRide: { _ in })
-            OBCQuietRow(
-                systemImage: "arrow.left.and.right", title: "Days 3–5 are longer now. Even them out?", onOpen: {},
-                onDismiss: {})
             OBCGroupedSection {
                 TripDayRow(
                     color: OBCTheme.stageColor(index: 2), number: 3, title: "to Brig", detail: "Wed 1 Oct · 61.0 km",
-                    fraction: 1, showsDivider: false)
-                TripTransferRow(kind: transfer, meters: 34_000) { transfer = $0 }
+                    fraction: 1)
                 TripDayRow(
                     color: OBCTheme.stageColor(index: 3), number: 4, title: "to Spiez", detail: "Thu 2 Oct · 38.0 km",
                     fraction: 38 / 61, showsDivider: false)

@@ -1,4 +1,4 @@
-/** The host the journeys build the planner basemap against (see `pretest` in package.json). It is decoration; no journey needs a tile. */
+/** The host the journeys build the planner basemap against (see `basemap-config.json`). It is decoration; no journey needs a tile. */
 export const BASEMAP = 'basemap.test';
 
 /** One transparent pixel, so the sprite sheet loads without a failure. */

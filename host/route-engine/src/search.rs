@@ -1,6 +1,7 @@
 use crate::queue::Queue;
 use crate::{
     base::{Costs, Graph},
+    landmarks::Potential,
     Error, Result,
 };
 
@@ -18,7 +19,6 @@ struct LabelBlock {
 struct Labels {
     blocks: Vec<Vec<LabelBlock>>,
     spare: Vec<Vec<LabelBlock>>,
-    count: usize,
 }
 impl Labels {
     fn reset(&mut self, nodes: usize) -> Result<()> {
@@ -33,7 +33,6 @@ impl Labels {
         }
         self.blocks.try_reserve_exact(blocks).map_err(|_| Error::Limit)?;
         self.blocks.resize_with(blocks, Vec::new);
-        self.count = 0;
         Ok(())
     }
     fn cost(&self, node: usize) -> u64 {
@@ -63,9 +62,6 @@ impl Labels {
         }
         let block = &mut slot[0];
         let index = n % LABEL_BLOCK;
-        if block.costs[index] == u64::MAX {
-            self.count += 1;
-        }
         block.costs[index] = cost;
         block.parents[index] = parent;
         block.origins[index] = origin;
@@ -86,10 +82,10 @@ pub struct Workspace {
     heaps: [Queue; 2],
 }
 
+/// A search enters or leaves at the arrival state of a road, which is its road id.
 pub struct Seed {
     pub node: u32,
     pub cost: u64,
-    pub road: u32,
     pub choice: u8,
 }
 
@@ -98,7 +94,6 @@ pub struct Query<'a> {
     pub starts: &'a [Seed],
     pub ends: &'a [Seed],
     pub ceiling: u64,
-    pub max_labels: usize,
     pub max_roads: usize,
     pub heap_bytes: usize,
     pub cancelled: &'a dyn Fn() -> bool,
@@ -124,13 +119,10 @@ impl Workspace {
         side: usize,
         value: (u64, u8, u32),
         budget: usize,
-        potential: &mut Option<&mut dyn FnMut(u32) -> Result<i128>>,
+        potential: Option<&Potential<'_>>,
     ) -> Result<()> {
         let (cost, origin, node) = value;
-        let p = match potential {
-            Some(potential) => potential(node)?,
-            None => 0,
-        };
+        let p = potential.map_or(0, |potential| potential.get(node));
         let priority = if side == 0 { (cost as i128 * 2).checked_add(p) } else { (cost as i128 * 2).checked_sub(p) }
             .ok_or(Error::Limit)?;
         if priority == i128::MAX {
@@ -150,9 +142,9 @@ impl Workspace {
         graph: &Graph,
         costs: &Costs,
         query: Query<'_>,
-        mut potential: Option<&mut dyn FnMut(u32) -> Result<i128>>,
+        potential: Option<&Potential<'_>>,
     ) -> Result<Option<Found>> {
-        let Query { starts, ends, ceiling, max_labels, max_roads, heap_bytes, cancelled } = query;
+        let Query { starts, ends, ceiling, max_roads, heap_bytes, cancelled } = query;
         if starts.is_empty() || ends.is_empty() {
             return Ok(None);
         }
@@ -172,13 +164,8 @@ impl Workspace {
                 if (seed.cost, seed.choice)
                     < (self.labels[side].cost(seed.node as usize), self.labels[side].origin(seed.node as usize))
                 {
-                    if self.labels[side].cost(seed.node as usize) == u64::MAX
-                        && self.labels[0].count + self.labels[1].count >= max_labels
-                    {
-                        return Err(Error::Limit);
-                    }
                     self.labels[side].set(seed.node, seed.cost, u32::MAX, seed.choice)?;
-                    self.push(side, (seed.cost, seed.choice, seed.node), heap_bytes, &mut potential)?;
+                    self.push(side, (seed.cost, seed.choice, seed.node), heap_bytes, potential)?;
                 }
             }
         }
@@ -238,13 +225,8 @@ impl Workspace {
                 {
                     continue;
                 }
-                if self.labels[side].cost(to as usize) == u64::MAX
-                    && self.labels[0].count + self.labels[1].count >= max_labels
-                {
-                    return Err(Error::Limit);
-                }
                 self.labels[side].set(to, next, arc as u32, origin)?;
-                self.push(side, (next, origin, to), heap_bytes, &mut potential)?;
+                self.push(side, (next, origin, to), heap_bytes, potential)?;
                 let opposite = self.labels[1 - side].cost(to as usize);
                 if opposite != u64::MAX {
                     let joined = next.checked_add(opposite).ok_or(Error::Limit)?;
@@ -298,7 +280,7 @@ impl Workspace {
             })
             .ok_or_else(|| Error::InvalidData("Missing target witness".into()))?;
         let mut roads = Vec::with_capacity(arcs.len() + 1);
-        roads.push(starts[source].road);
+        roads.push(starts[source].node);
         let mut check = starts[source].cost.checked_add(ends[target].cost).ok_or(Error::Limit)?;
         for arc in arcs {
             check = check.checked_add(costs.arc(graph, arc as usize)).ok_or(Error::Limit)?;
@@ -348,9 +330,11 @@ mod tests {
             let edges: Vec<_> = (1..nodes as u32).map(|to| (to - 1, to)).collect();
             let graph = graph(nodes, &edges);
             let costs = Costs { roads: Numbers::U8(vec![1; nodes]), turns: Numbers::U8(vec![0; edges.len()]).into() };
-            for (from, to, limit) in [(0, nodes - 1, 2), (0, nodes - 1, usize::MAX), (nodes - 1, 0, usize::MAX)] {
-                let starts = [Seed { node: from as u32, cost: 0, road: from as u32, choice: 0 }];
-                let ends = [Seed { node: to as u32, cost: 0, road: to as u32, choice: 0 }];
+            // A queue too small for its first entry aborts the search with labels already set.
+            for (from, to, heap_bytes) in [(0, nodes - 1, 1), (0, nodes - 1, 1024 * 1024), (nodes - 1, 0, 1024 * 1024)]
+            {
+                let starts = [Seed { node: from as u32, cost: 0, choice: 0 }];
+                let ends = [Seed { node: to as u32, cost: 0, choice: 0 }];
                 let result = workspace.run(
                     &graph,
                     &costs,
@@ -358,13 +342,12 @@ mod tests {
                         starts: &starts,
                         ends: &ends,
                         ceiling: u64::MAX,
-                        max_labels: limit,
                         max_roads: nodes,
-                        heap_bytes: 1024 * 1024,
+                        heap_bytes,
                         cancelled: &|| false,
                     },
                 );
-                if limit == 2 {
+                if heap_bytes == 1 {
                     assert!(matches!(result, Err(Error::Limit)));
                 } else if from > to {
                     assert!(result.unwrap().is_none());
@@ -401,7 +384,7 @@ mod tests {
             let turns: Vec<_> =
                 edges.iter().map(|_| if random() % 7 == 0 { u64::MAX } else { random() % 11 }).collect();
             let costs = Costs { roads: Numbers::U64(roads.clone()), turns: Numbers::U64(turns.clone()).into() };
-            let columns: Vec<std::sync::Arc<Vec<u16>>> = (0..6)
+            let columns: Vec<Vec<u16>> = (0..6)
                 .map(|landmark| {
                     let mut distances = vec![u16::MAX; nodes];
                     distances[landmark] = 0;
@@ -412,17 +395,22 @@ mod tests {
                                 .min((roads[to as usize] / 8 + old[to as usize] as u64).min(u16::MAX as u64) as u16);
                         }
                     }
-                    std::sync::Arc::new(distances)
+                    distances
                 })
                 .collect();
+            let guide = crate::landmarks::Guide {
+                mapping: std::sync::Arc::new((0..nodes as u32).collect()),
+                scale: 8,
+                columns,
+            };
             for case in 0..16 {
                 let starts = [
-                    Seed { node: (case % nodes) as u32, cost: 7, road: (case % nodes) as u32, choice: 3 },
-                    Seed { node: ((case + 2) % nodes) as u32, cost: 11, road: ((case + 2) % nodes) as u32, choice: 1 },
+                    Seed { node: (case % nodes) as u32, cost: 7, choice: 3 },
+                    Seed { node: ((case + 2) % nodes) as u32, cost: 11, choice: 1 },
                 ];
                 let ends = [
-                    Seed { node: ((case + trial) % nodes) as u32, cost: 17, road: 99, choice: 2 },
-                    Seed { node: ((case + trial + 4) % nodes) as u32, cost: 0, road: 98, choice: 0 },
+                    Seed { node: ((case + trial) % nodes) as u32, cost: 17, choice: 2 },
+                    Seed { node: ((case + trial + 4) % nodes) as u32, cost: 0, choice: 0 },
                 ];
                 let mut distances = vec![(u64::MAX, u8::MAX); nodes];
                 for s in &starts {
@@ -442,24 +430,13 @@ mod tests {
                     .filter(|end| distances[end.node as usize].0 != u64::MAX)
                     .map(|end| (distances[end.node as usize].0 + end.cost, end.choice, distances[end.node as usize].1))
                     .min();
-                let selected =
-                    crate::landmarks::select(columns.len(), 8, &starts, &ends, |i, node| Ok(columns[i][node as usize]))
-                        .unwrap();
-                let prepared = crate::landmarks::Prepared {
-                    mapping: std::sync::Arc::new((0..nodes as u32).collect()),
-                    columns: selected
-                        .into_iter()
-                        .map(|(i, from, to)| (std::sync::Arc::clone(&columns[i]), from, to))
-                        .collect(),
-                    scale: 8,
-                };
+                let potential = guide.potential(&starts, &ends).unwrap();
                 for (arc, &(from, to)) in edges.iter().enumerate() {
                     let weight = costs.arc(&g, arc);
                     if weight != u64::MAX {
-                        assert!(prepared.get(from) - prepared.get(to) <= 2 * weight as i128);
+                        assert!(potential.get(from) - potential.get(to) <= 2 * weight as i128);
                     }
                 }
-                let mut heuristic = |node| Ok(prepared.get(node));
                 for guided in [false, true] {
                     let result = workspace
                         .run_with_potential(
@@ -469,12 +446,11 @@ mod tests {
                                 starts: &starts,
                                 ends: &ends,
                                 ceiling: u64::MAX,
-                                max_labels: 1000,
                                 max_roads: 1000,
                                 heap_bytes: 1024 * 1024,
                                 cancelled: &|| false,
                             },
-                            guided.then_some(&mut heuristic),
+                            guided.then_some(&potential),
                         )
                         .unwrap();
                     assert_eq!(
@@ -482,7 +458,7 @@ mod tests {
                         expected
                     );
                     if let Some(result) = result {
-                        assert_eq!(result.roads[0], starts[result.source].road);
+                        assert_eq!(result.roads[0], starts[result.source].node);
                         assert_eq!(result.roads.last().copied(), Some(ends[result.target].node));
                         let mut total = starts[result.source].cost + ends[result.target].cost;
                         for pair in result.roads.windows(2) {
@@ -497,8 +473,8 @@ mod tests {
         }
         let g = graph(2, &[(0, 1)]);
         let costs = Costs { roads: Numbers::U8(vec![1, 1]), turns: Numbers::U8(vec![0]).into() };
-        let starts = [Seed { node: 0, cost: 0, road: 0, choice: 0 }];
-        let ends = [Seed { node: 1, cost: 0, road: 1, choice: 0 }];
+        let starts = [Seed { node: 0, cost: 0, choice: 0 }];
+        let ends = [Seed { node: 1, cost: 0, choice: 0 }];
         assert!(matches!(
             workspace.run(
                 &g,
@@ -507,23 +483,6 @@ mod tests {
                     starts: &starts,
                     ends: &ends,
                     ceiling: u64::MAX,
-                    max_labels: 1,
-                    max_roads: 100,
-                    heap_bytes: 1024,
-                    cancelled: &|| false
-                }
-            ),
-            Err(Error::Limit)
-        ));
-        assert!(matches!(
-            workspace.run(
-                &g,
-                &costs,
-                Query {
-                    starts: &starts,
-                    ends: &ends,
-                    ceiling: u64::MAX,
-                    max_labels: 100,
                     max_roads: 100,
                     heap_bytes: 1024,
                     cancelled: &|| true
@@ -540,7 +499,6 @@ mod tests {
                     starts: &starts,
                     ends: &ends,
                     ceiling: u64::MAX,
-                    max_labels: 100,
                     max_roads: 100,
                     heap_bytes: 0,
                     cancelled: &|| false
@@ -550,7 +508,7 @@ mod tests {
         ));
         let g = graph(1, &[]);
         let costs = Costs { roads: Numbers::U8(vec![1]), turns: Numbers::U8(vec![]).into() };
-        let ends = [Seed { node: 0, cost: 3, road: 0, choice: 0 }, Seed { node: 0, cost: 1, road: 0, choice: 1 }];
+        let ends = [Seed { node: 0, cost: 3, choice: 0 }, Seed { node: 0, cost: 1, choice: 1 }];
         let result = workspace
             .run(
                 &g,
@@ -559,7 +517,6 @@ mod tests {
                     starts: &starts,
                     ends: &ends,
                     ceiling: u64::MAX,
-                    max_labels: 2,
                     max_roads: 100,
                     heap_bytes: 1024,
                     cancelled: &|| false,

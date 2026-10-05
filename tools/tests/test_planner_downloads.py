@@ -1,5 +1,7 @@
 """Area selections reuse published bytes, preserve coverage, and support resume."""
 
+import gzip
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -24,7 +26,7 @@ class PlannerDownloads(unittest.TestCase):
         for name, data in {"routing/packs/" + "c" * 64 + "/pages.bin": b"abcdef",
                            "routing/packs/" + "c" * 64 + "/pages.idx": b"index", "search/left.sqlite": b"left places",
                            "search/right.sqlite": b"right places", "maps/tiles/basemap/0-0-0.pmtiles": b"tiles",
-                           "offline/fonts/Sans.pbf": b"glyphs"}.items():
+                           "maps/tiles/places/0-0-0.pmtiles": b"places", "maps/tiles/overlays/6-33-22.pmtiles": b"networks", "offline/fonts/Sans.pbf": b"glyphs"}.items():
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
@@ -45,7 +47,11 @@ class PlannerDownloads(unittest.TestCase):
             "routing_source": "b" * 64, "files": files,
             "shared": {f"maps/assets/fonts/Sans/{name}.pbf": "offline/fonts/Sans.pbf" for name in ("0-255", "256-511")},
             "map_blocks": [{"kind": "basemap", "tile": [0,0,0], "bounds": [-180,-85,180,85],
-                            "files": ["maps/tiles/basemap/0-0-0.pmtiles"]}], "cells": cells}
+                            "files": ["maps/tiles/basemap/0-0-0.pmtiles"]},
+                           {"kind": "places", "tile": [0,0,0], "bounds": [-180,-85,180,85],
+                            "files": ["maps/tiles/places/0-0-0.pmtiles"]},
+                           {"kind": "overlays", "tile": [6,33,22], "bounds": [5.625,45.09,11.25,48.92],
+                            "files": ["maps/tiles/overlays/6-33-22.pmtiles"]}], "cells": cells}
         (self.source / "catalog.json").write_bytes(runtime.encoded(publication))
         self.service = downloads.Downloads(self.source, self.root / "cache", 1000000)
 
@@ -62,11 +68,19 @@ class PlannerDownloads(unittest.TestCase):
         manifest = json.loads((directory / "release.json").read_bytes())
         bundle = json.loads((directory / "bundle.json").read_bytes())
         self.assertEqual(manifest["bounds"], [7, 47, 8, 49])
+        self.assertEqual(manifest["offline"]["cells"], [{"id": "left", "bounds": [7,47,8,49], "files": ["search/left.sqlite"]}])
         self.assertIn("search/left.sqlite", bundle["files"])
+        self.assertIn("maps/tiles/places/0-0-0.pmtiles", bundle["files"])
+        self.assertIn("maps/places.json", bundle["files"])
         self.assertNotIn("search/right.sqlite", bundle["files"])
         fonts = [bundle["files"][f"maps/assets/fonts/Sans/{name}.pbf"] for name in ("0-255", "256-511")]
         self.assertEqual(fonts, [self.service.publication["files"]["offline/fonts/Sans.pbf"]] * 2)
         self.assertEqual(manifest["files"]["maps/assets/fonts/Sans/0-255.pbf"]["bytes"], len(b"glyphs"))
+        self.assertIn("maps/tiles/overlays/6-33-22.pmtiles", bundle["files"])
+        overlays = bundle["files"]["maps/overlays.json"]["transport"]["sha256"]
+        tilejson = json.loads(gzip.decompress((directory / "objects" / overlays).read_bytes()))
+        self.assertEqual((tilejson["tiles"], tilejson["minzoom"]),
+                         ([f"https://offline.openbikecomputer.invalid/{first['id']}/overlays/{{z}}/{{x}}/{{y}}"], 6))
         static = bundle["files"]["routing/packs/" + "c" * 64 + "/pages.bin"]["transport"]["sha256"]
         self.assertFalse((directory / "objects" / static).exists())
         self.assertEqual(before, {p.name: p.read_bytes() for p in (self.source / "objects").iterdir()})
@@ -80,7 +94,7 @@ class PlannerDownloads(unittest.TestCase):
         self.assertEqual(first["state"], "ready")
         self.assertEqual(second["state"], "ready")
         self.assertNotEqual(first["id"], second["id"])
-        self.assertEqual(self.service.status(first["id"])["state"], "ready")
+        self.assertIsNotNone(self.service.selection(first["id"]))
 
     def test_invalid_coverage_and_disk_capacity_do_not_leave_selections(self):
         for value in ([0, 0, 1, 1], [7, 47, 7, 48], [7, 47, float("nan"), 48], [True, 47, 8, 48]):
@@ -126,8 +140,8 @@ class PlannerDownloads(unittest.TestCase):
         shutil.rmtree(self.service.cache / third["id"])
         os.utime(directory, (1, 1))
         self.assertEqual(third, self.service.prepare(self.request()))
-        self.assertEqual(self.service.status(first["id"])["state"], "failed")
-        self.assertEqual(self.service.status(second["id"])["state"], "ready")
+        self.assertIsNone(self.service.selection(first["id"]))
+        self.assertIsNotNone(self.service.selection(second["id"]))
 
     def serve(self):
         server = downloads.ThreadingHTTPServer(("127.0.0.1", 0), downloads.handler(self.service))
@@ -138,13 +152,16 @@ class PlannerDownloads(unittest.TestCase):
         self.addCleanup(close)
         return f"http://127.0.0.1:{server.server_port}"
 
-    def test_generated_metadata_travels_gzip_and_installs_decoded(self):
+    def test_generated_metadata_travels_gzip_and_decodes_to_the_release_file(self):
         job = self.service.prepare(self.request())
-        bundle = json.loads((self.service.cache / job["id"] / "bundle.json").read_bytes())
-        self.assertEqual(bundle["files"]["routing/blocks.json"]["transport"]["encoding"], "gzip")
-        result = offline.install(f"{self.serve()}/bundles/{job['id']}", self.root / "installed")
-        blocks = json.loads((self.root / "installed/releases" / result["release"] / "routing/blocks.json").read_bytes())
-        self.assertEqual(blocks["archives"], ["c" * 64])
+        base = f"{self.serve()}/bundles/{job['id']}"
+        with urlopen(f"{base}/bundle.json") as response:
+            entry = json.load(response)["files"]["routing/blocks.json"]
+        self.assertEqual(entry["transport"]["encoding"], "gzip")
+        with urlopen(f"{base}/objects/{entry['transport']['sha256']}") as response:
+            data = gzip.decompress(response.read())
+        self.assertEqual((len(data), hashlib.sha256(data).hexdigest()), (entry["bytes"], entry["sha256"]))
+        self.assertEqual(json.loads(data)["archives"], ["c" * 64])
 
     def test_http_supports_exact_ranges_and_rejects_traversal(self):
         job = self.service.prepare(self.request())
@@ -152,7 +169,8 @@ class PlannerDownloads(unittest.TestCase):
         bundle = json.loads((self.service.cache / job["id"] / "bundle.json").read_bytes())
         digest = bundle["files"]["routing/packs/" + "c" * 64 + "/pages.bin"]["transport"]["sha256"]
         url = f"{base}/bundles/{job['id']}/objects/{digest}"
-        with urlopen(Request(url, headers={"Range": "bytes=2-4"})) as response:
+        # A selection being built holds the cache lock; object reads never wait for it.
+        with self.service.lock, urlopen(Request(url, headers={"Range": "bytes=2-4"}), timeout=5) as response:
             self.assertEqual(response.status, 206)
             self.assertEqual(response.headers["Content-Range"], "bytes 2-4/6")
             self.assertEqual(response.read(), b"cde")

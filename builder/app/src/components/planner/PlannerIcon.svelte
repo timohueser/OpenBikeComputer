@@ -1,7 +1,18 @@
 <script lang="ts">
     /** `path` draws a 24 px stroke path instead of a named icon. */
     let { name = 'pin', path, size = 18 }: { name?: string; path?: string; size?: number } = $props();
+    const bikeFrame = 'M5 17 8 10h8l-4 7h7l-3-7-4 7L8 10M16 10l1-3m-2 0h4';
+    const dropBars = 'M8 10l.5-3H5a1.5 1.5 0 0 0 0 3h.5';
+    const bikes: Record<string, { bars: string; tires: number; rack?: string }> = {
+        road: { bars: dropBars, tires: 1.6 },
+        gravel: { bars: dropBars, tires: 2.1 },
+        touring: { bars: 'M8 10V6H5', tires: 1.8, rack: 'M17 12h5' },
+        mtb: { bars: 'M8 10l.5-3H5', tires: 2.5 },
+    };
+    const bike = $derived(!path ? bikes[name] : undefined);
     const paths: Record<string, string> = {
+        hiking: 'M15 4a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Zm-3 3 4 4h3M13 6l-3 7 5 3-1 6m-4-9-3 5-4 3M11 7l-3-1-2 6 3 1m11-3-2 12',
+        'less-climbing': 'M3 17h18M5 13l4-5 4 5 3-3 3 3',
         calendar: 'M4 5h16v16H4V5Zm0 5h16M8 3v4m8-4v4M8 14h2m4 0h2m-8 3h2',
         clock: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 4v5l3 2',
         locate: 'M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10Zm0-5v3m0 14v3M2 12h3m14 0h3',
@@ -23,6 +34,7 @@
         sliders: 'M4 4v5m0 4v7M12 4v11m0 4v1M20 4v1m0 4v11M1 9h6m2 6h6m2-10h6',
         route: 'M5 3a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm14 14a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM7 5h8a4 4 0 0 1 0 8H9a4 4 0 0 0 0 8h8',
         undo: 'M4 10h10a6 6 0 0 1 0 12M4 10l5-5m-5 5 5 5',
+        loop: 'M17 4.5A8 8 0 1 0 20 11M20 4v7h-7', diamond: 'M12 3 21 12 12 21 3 12Z',
         redo: 'M20 10H10a6 6 0 0 0 0 12m10-12-5-5m5 5-5 5',
         fit: 'M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M9 12h6m-3-3v6',
         plus: 'M5 12h14m-7-7v14', minus: 'M5 12h14',
@@ -30,6 +42,17 @@
         sun: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 2v2m0 16v2M2 12h2m16 0h2M5 5l1 1m12 12 1 1M5 19l1-1M18 6l1-1',
         trash: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6m4-6v6',
         mountain: 'm2 20 7-13 4 7 3-5 6 11H2Zm4-7 3 1 2-3',
+        wind: 'M3 8h10a3 3 0 1 0-3-3M3 12h15a3 3 0 1 1-3 3M3 16h7',
+        snow: 'M12 2v20M3.3 7l17.4 10M3.3 17 20.7 7M9.5 3.5 12 6l2.5-2.5M9.5 20.5 12 18l2.5 2.5M18.1 5.6 17.2 9l3.4.9M20.6 14.1 17.2 15l.9 3.4M3.4 14.1 6.8 15l-.9 3.4M5.9 5.6 6.8 9l-3.4.9',
+        weather: 'M7 19h10a4 4 0 0 0 .7-7.9A5.5 5.5 0 0 0 7.2 10 4.5 4.5 0 0 0 7 19Z',
     };
 </script>
-<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={path ?? paths[name] ?? paths.pin} /></svg>
+<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{#if bike}
+    <g stroke-width="1.6">
+        <circle cx="5" cy="17" r="3.5" stroke-width={bike.tires} />
+        <circle cx="19" cy="17" r="3.5" stroke-width={bike.tires} />
+        <path d={bikeFrame} />
+        <path d={bike.bars} />
+        {#if bike.rack}<path d={bike.rack} />{/if}
+    </g>
+{:else}<path d={path ?? paths[name] ?? paths.pin} />{/if}</svg>

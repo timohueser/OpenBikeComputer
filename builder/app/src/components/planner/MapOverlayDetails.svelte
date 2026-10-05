@@ -2,22 +2,36 @@
     import Icon from './PlannerIcon.svelte';
     import TrailMarker from './TrailMarker.svelte';
     import { trailMarker } from '../../lib/planner/trail-markers';
-    import { networkNames, routeWebsite, type OverlaySelection } from '../../lib/planner/route-overlays';
-    let { selection, onclose, onuse }: { selection: OverlaySelection; onclose: () => void; onuse: () => void } = $props();
+    import { networkName, routeKindTitles, routeWebsite, type OverlaySelection } from '../../lib/planner/route-overlays';
+    import type { Coordinate } from '../../lib/planner/map-types';
+    let { selection, onclose, onuse, canPlan, onplan }: {
+        selection: OverlaySelection; onclose: () => void; onuse: () => void;
+        /** Whether a route is in the route catalog, so "Plan this route" can plan it. */
+        canPlan?: (id: number, at: Coordinate) => Promise<'plan' | 'too-long' | 'missing'>;
+        onplan?: (id: number) => void;
+    } = $props();
+    let plannable = $state<Record<number, 'plan' | 'too-long' | 'missing'>>({});
+    $effect(() => {
+        const { routes = [], coordinate } = selection;
+        let current = true;
+        plannable = {};
+        for (const { id } of canPlan ? routes : []) canPlan!(id, coordinate).then(status => { if (current) plannable = { ...plannable, [id]: status }; }, () => {});
+        return () => { current = false; };
+    });
     const access: Record<string, { title: string; detail: string }> = {
         construction: { title: 'Under construction', detail: 'OSM maps this section as construction. The router excludes it.' },
         closed: { title: 'No access', detail: 'The mapped rules exclude this travel mode. This is not just a requirement to dismount.' },
-        private: { title: 'Private access', detail: 'Permission is required. The router does not assume you have access.' },
-        limited: { title: 'Limited access', detail: 'Access is reserved for destinations, customers or deliveries. The router excludes through travel.' },
+        private: { title: 'Private access', detail: 'Permission is required. The router avoids this road where it can, and the route notes it.' },
+        limited: { title: 'Limited access', detail: 'Access is limited, for example to destinations, farm traffic or permit holders. The router avoids this road where it can, and the route notes it.' },
         push: { title: 'Dismount and push', detail: 'Riding is not allowed here. You can push your bike; the router can include this as a walking section.' },
         no_bikes: { title: 'No bicycles', detail: 'Walking is allowed, but taking a bicycle through is restricted, including pushing.' },
         directional: { title: 'Directional access', detail: 'Access differs by direction. Check the mapped rules below.' },
-        conditional: { title: 'Conditional access', detail: 'Access depends on conditions. The router excludes affected modes; dates and conditions are not evaluated yet.' },
+        conditional: { title: 'Conditional access', detail: 'Access depends on conditions. The router does not evaluate them; the route notes them.' },
     };
     const restriction = $derived(access[selection.status ?? ''] ?? access.closed);
     const title = $derived(selection.kind === 'access'
         ? restriction.title
-        : selection.kind === 'cycling' ? 'Cycling routes' : 'Hiking routes');
+        : routeKindTitles[selection.kind]);
     function permission(values: boolean[] | undefined, bit: number) {
         if ((selection.conditional ?? 0) & bit) return 'Conditional';
         return values?.every(Boolean) ? 'Allowed' : values?.some(Boolean) ? 'One direction' : 'Not allowed';
@@ -40,8 +54,11 @@
                 <div>
                     {#if website}<a href={website} target="_blank" rel="noreferrer">{route.name || route.ref || 'Unnamed route'}{route.name && route.ref ? ` · ${route.ref}` : ''}</a>
                     {:else}<b class="route-name">{route.name || route.ref || 'Unnamed route'}{route.name && route.ref ? ` · ${route.ref}` : ''}</b>{/if}
-                    <span>{networkNames[route.network] ?? 'Network level unspecified'}</span>
+                    <span>{networkName(route)}</span>
                     {#if route.kind === 'hiking' && route.symbol_text}<span>{route.symbol_text}</span>{/if}
+                    {#if plannable[route.id] === 'plan'}<button class="plan" onclick={() => onplan?.(route.id)}>Plan this route</button>
+                    {:else if plannable[route.id] === 'too-long'}<span>Too long for one plan · Plan a stage in the Routes view</span>
+                    {:else if plannable[route.id] === 'missing'}<span>Not in the route catalog</span>{/if}
                 </div>
             </li>
         {/each}</ul>
@@ -61,6 +78,7 @@
     button:hover { background: var(--parchment-2); }
     .close { display: grid; place-items: center; padding: 6px; border: 0; }
     .use { width: 100%; margin-top: 4px; }
+    .plan { margin-top: 6px; min-height: 30px; font-weight: 600; font-size: 12.5px; }
     a { color: var(--link); text-underline-offset: 3px; overflow-wrap: anywhere; }
     details { margin: 10px 0; }
     summary { cursor: pointer; }

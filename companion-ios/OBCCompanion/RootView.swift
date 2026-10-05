@@ -14,9 +14,10 @@ struct RootView: View {
     @State private var onboarding: OnboardingProgress
     @State private var onboardingFirmware: FirmwareUpdateModel
     @State private var onboardingUpload: UploadRequest?
-    @State private var pendingSetupRoute: RouteID?
     @State private var setupRouteError: String?
     @State private var importModel: ImportFlowModel
+    /// The line the "Make a trip" sheet leaves; it shows once the sheet has gone.
+    @State private var joinNotice: String?
     /// The foreground-only link policy: a real background transition suspends the link, after
     /// draining any in-flight transfer; foreground re-raises it over the bonded reconnect path.
     @State private var lifecycleModel: LinkLifecycleModel
@@ -34,6 +35,7 @@ struct RootView: View {
     private let bondStore: any BondStore
     private let library: any LibraryStore
     private let photoLibrary: any PhotoLibrary
+    private let lastBikeType: LastBikeTypeStore
     /// Names places from coordinates; nil in mock runs.
     private let placeName: (@Sendable (Coordinate) async -> String?)?
     /// The proactive-update preferences: the auto-check toggle, the answered ledger and the
@@ -69,14 +71,13 @@ struct RootView: View {
         // The sync coordinator's own timing seam, threaded so the composition root can park the
         // post-sync confirmation for an automated capture. Untouched in every ordinary run.
         syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing(),
-        placeName: (@Sendable (Coordinate) async -> String?)? = nil,
-        stopSearch: (any StopSearch)? = nil,
-        legRouter: (any LegRouter)? = nil
+        placeName: (@Sendable (Coordinate) async -> String?)? = nil
     ) {
         self.transport = transport
         self.bondStore = bondStore
         self.library = library
         self.photoLibrary = photoLibrary
+        self.lastBikeType = lastBikeType
         self.placeName = placeName
         self.updateSurface = updateSurface
         self.importAtLaunch = importAtLaunch
@@ -111,18 +112,14 @@ struct RootView: View {
             // config disagrees, which heals a rename whose write never landed.
             nameReconciler: DeviceNameReconciler(transport: transport, bondStore: bondStore),
             transferActivity: transferActivity,
-            placeName: placeName,
-            stopSearch: stopSearch,
-            legRouter: legRouter
+            placeName: placeName
         ))
         _importModel = State(initialValue: ImportFlowModel(
-            // The decode stays app-side, because OBCUI does not import OBCFormats; the flow model
-            // gets a closure over it, and a narrow bond check for the framing.
+            // The decode stays app-side, because OBCUI does not import OBCFormats.
             decode: { data, fileName in
                 try importer.importRoute(from: data, fileExtension: (fileName as NSString).pathExtension)
             },
             library: library,
-            isBonded: { bondStore.load() != nil },
             lastBikeType: lastBikeType
         ))
         _reachability = State(initialValue: ReachabilityStore(reachability))
@@ -183,16 +180,26 @@ struct RootView: View {
             }
         }
         // Everything below hangs outside the launch gate: a share can arrive before pairing, so
-        // the import cover and its alert must present over the pairing flow too.
-        .fullScreenCover(item: $importModel.pendingImport, onDismiss: {
-            if let id = pendingSetupRoute {
-                pendingSetupRoute = nil
-                sendSetupRoute(id)
-            }
-        }) { pending in
-            importLanding(for: pending)
+        // the import sheets and alerts must present over the pairing flow too.
+        .obcChoiceSheet(
+            choiceTitle,
+            isPresented: choiceShown,
+            actions: [
+                OBCSheetAction("Keep the file's line") { importModel.choose(.keepLine) },
+                OBCSheetAction("Plan it on roads") { importModel.choose(.planOnRoads) },
+            ],
+            onDismiss: { importModel.proceed(using: plannerSource) }
+        )
+        .overlay { if let planning = importModel.planning { planningCover(planning) } }
+        .onChange(of: importModel.landed?.id) {
+            guard let file = importModel.landed else { return }
+            importModel.landed = nil
+            land(file)
         }
-        .fullScreenCover(item: $importModel.pendingJoin) { join in
+        .fullScreenCover(item: $importModel.pendingJoin, onDismiss: {
+            importModel.notice = joinNotice
+            joinNotice = nil
+        }) { join in
             joinSheet(for: join)
         }
         // The share sheet can hand over anything; say what we accept.
@@ -200,6 +207,11 @@ struct RootView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text("OBC imports GPX and TCX route files. That one looked like something else.")
+        }
+        .alert(importModel.notice ?? "", isPresented: Binding(
+            get: { importModel.notice != nil }, set: { if !$0 { importModel.notice = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
         }
         // A trip change that did not go as asked says so, in one line, where the rider made it.
         .alert(
@@ -408,43 +420,43 @@ struct RootView: View {
     // presentation modifiers form one expression, and each addition pushed inference time up
     // until the compiler gave up. Keep new presentation logic in helpers like these, not inline.
 
-    /// The import cover's content: save, upload and pair-detour actions around one pending import.
-    private func importLanding(for pending: PendingImport) -> some View {
-        ImportLandingHost(
-            transport: transport,
-            route: pending.route,
-            fileName: pending.fileName,
-            source: pending.source,
-            bikeType: pending.bikeType,
-            deviceName: mainModel.deviceName,
-            noDevicePaired: pending.noDevicePaired,
-            // A trip is app-local, so the trip rows work with no device paired just the same.
-            trips: mainModel.tripPickerItems,
-            isOnboarding: launchModel.phase == .setup && onboarding.stage == .route,
-            replacing: pending.replacing,
-            onSave: { detail, tripSelection in
-                mainModel.addImportedRoute(pending.record(for: detail))
-                if launchModel.phase == .setup, onboarding.stage == .route {
-                    pendingSetupRoute = detail.summary.id
-                    importModel.closeImport()
-                    return
-                }
-                // A trip choice moves the route into the trip and opens the trip page.
-                // A new trip from one file opens in the day editor's split mode.
-                if let tripID = mainModel.fileRoute(detail.summary.id, into: tripSelection) {
-                    path = [.trip(id: tripID)]
-                    if case .new = tripSelection { path.append(.dayEditor(id: tripID, isSplitMode: true)) }
-                }
-                importModel.closeImport()
-            },
-            // Save first, so a pairing detour does not cost the import, then start the scan.
-            onPair: { detail in
-                mainModel.addImportedRoute(pending.record(for: detail))
-                importModel.closeImport()
-                launchModel.startPairing()
-            },
-            onCancel: { importModel.closeImport() }
+    /// The keep-or-plan sheet's title: the file's name, or the number of files.
+    private var choiceTitle: String {
+        guard let files = importModel.pendingChoice else { return "" }
+        return files.count == 1 ? files[0].fileName : "\(files.count) files"
+    }
+
+    /// Presentation binding for the keep-or-plan sheet; dismissal cancels.
+    private var choiceShown: Binding<Bool> {
+        Binding(
+            get: { importModel.pendingChoice != nil },
+            set: { if !$0 { importModel.cancelChoice() } }
         )
+    }
+
+    private func planningCover(_ planning: (file: Int, of: Int)) -> some View {
+        ZStack {
+            OBCTheme.page.ignoresSafeArea()
+            VStack(spacing: 20) {
+                ProgressView(planning.of == 1 ? "Planning on roads…" : "Planning file \(planning.file) of \(planning.of)…")
+                Button("Cancel") { importModel.cancelPlanning() }
+                    .buttonStyle(.obcGhost)
+                    .accessibilityIdentifier("import.cancelPlanning")
+            }
+            .padding(.horizontal, 32)
+        }
+        .accessibilityIdentifier("import.planning")
+    }
+
+    /// One imported file: saved at once, then its detail opens. During setup it goes to the device instead.
+    private func land(_ file: PendingImport) {
+        let id = save(file)
+        importModel.notice = ImportFlowModel.notice(for: [file])
+        if launchModel.phase == .setup, onboarding.stage == .route {
+            sendSetupRoute(id)
+        } else if launchModel.phase == .main {
+            path = [.route(id: id)]
+        }
     }
 
     /// Several files at once: one trip with a day per file, or each file as a route.
@@ -454,31 +466,39 @@ struct RootView: View {
                 TripJoinSheet.File(id: index, fileName: file.fileName, points: file.route.points)
             },
             onMakeTrip: { ordered in
+                let files = ordered.map { join.files[$0.id] }
+                // The sheet offers Make trip only for at most `PlannerPlan.maxDays` files.
+                let days = files.filter { Trip.isDay($0.route.points) }
                 // A file too short to be a day stays a route, and the rider is told.
-                let short = ordered.filter { !Trip.isDay($0.points) }
-                for file in short { saveAsRoute(join.files[file.id]) }
+                let short = files.filter { !Trip.isDay($0.route.points) }
+                short.forEach { save($0) }
                 mainModel.noteTooShort(short.map(\.fileName))
                 let tripID = mainModel.createTrip(
-                    name: "New trip", files: ordered.map(\.points),
-                    dayNames: ordered.map { ($0.fileName as NSString).deletingPathExtension },
-                    waypoints: ordered.map { join.files[$0.id].route.waypoints })
+                    name: "New trip", files: days.map(\.route.points),
+                    dayNames: days.map { ($0.fileName as NSString).deletingPathExtension },
+                    waypoints: days.map(\.route.waypoints),
+                    plan: PlannerPlan.trip(days: days.compactMap(\.plan)))
+                joinNotice = ImportFlowModel.notice(for: join.files)
                 importModel.closeJoin()
                 if let tripID { path = [.trip(id: tripID)] }
             },
             onNotNow: {
-                join.files.forEach(saveAsRoute)
+                join.files.forEach { save($0) }
+                joinNotice = ImportFlowModel.notice(for: join.files)
                 importModel.closeJoin()
             }
         )
     }
 
-    /// Save one file of a join as a route, with the summary the import landing would make.
-    private func saveAsRoute(_ file: PendingImport) {
+    /// Save one imported file as a route, with its plan.
+    @discardableResult
+    private func save(_ file: PendingImport) -> RouteID {
         let detail = RouteDetailModel(
             transport: transport, dressing: .imported(file.route, fileName: file.fileName),
-            bikeType: file.bikeType
+            bikeType: file.bikeType, importedRouteID: file.replacing?.id
         ).makeDetail()
         mainModel.addImportedRoute(file.record(for: detail))
+        return detail.summary.id
     }
 
     /// The collision sheet's title: the imported route's name, or the file name, quoted.
@@ -510,10 +530,33 @@ struct RootView: View {
         switch destination {
         case .planner(let sample):
             PlannerPreviewView(
-                onSave: savePlannerPreview,
+                onSave: { savePlannerPreview($0, bikeType: $0.bikeType) },
                 onClose: { path.removeAll() },
                 sample: sample, source: plannerSource
             )
+        case .editRoute(let id):
+            if let plan = mainModel.plannedPlan(for: id) {
+                PlannerPreviewView(
+                    editing: plan,
+                    // The route keeps the bike type set in its detail unless the planner changed the activity.
+                    onSave: { saved in
+                        savePlannerPreview(saved, bikeType: saved.plan.bike == plan.bike ? nil : saved.bikeType,
+                                           replacing: saved.inPlace ? id : nil, keeping: id)
+                    },
+                    onClose: { path.removeLast() },
+                    source: plannerSource
+                )
+            }
+        case .editTrip(let id):
+            if let plan = mainModel.tripPlan(for: id) {
+                PlannerPreviewView(
+                    editing: plan,
+                    // As for a route: the trip keeps its bike type unless the planner changed the activity.
+                    onSave: { saved in saveTripPlan(saved, bikeType: saved.plan.bike == plan.bike ? nil : saved.bikeType, editing: id) },
+                    onClose: { path.removeLast() },
+                    source: plannerSource
+                )
+            }
         case .route(let id):
             if let route = mainModel.routes.first(where: { $0.id == id }) {
                 RouteDetailScreen(
@@ -538,12 +581,7 @@ struct RootView: View {
                     },
                     onRename: { mainModel.renameRoute(id, to: $0) },
                     onBikeTypeChange: { mainModel.setBikeType(id, to: $0) },
-                    // Reverse lands a flipped copy alongside the original and opens it.
-                    onReverse: {
-                        if let reversedID = mainModel.reverseRoute(id) {
-                            path.append(.route(id: reversedID))
-                        }
-                    },
+                    onEdit: { path.append(.editRoute(id: id)) },
                     onUploaded: { objectID, crc in
                         if let objectID {
                             mainModel.markRouteUploaded(
@@ -558,6 +596,8 @@ struct RootView: View {
                         path.append(.trip(id: tripID))
                     }
                 )
+                // Saved changes build the screen again: its model holds the line it was built with.
+                .id(mainModel.routeEditCount)
             }
         case .ride(let id):
             if let ride = mainModel.rides.first(where: { $0.id == id }) {
@@ -617,19 +657,12 @@ struct RootView: View {
                     }
                 },
                 onOpenRide: { path.append(.ride(id: $0)) },
-                onEvenOut: { offer in Task { await mainModel.evenOutDays(id, from: offer.fixedBefore) } },
-                onEditDays: { path.append(.dayEditor(id: id, isSplitMode: false)) },
+                onEdit: { path.append(.editTrip(id: id)) },
                 onOpenDay: { path.append(.tripDay(id: id, day: $0)) },
                 encodeGPX: { GPXTripEncoder.encode($0) },
                 uploadTiming: TripUploadModel.Timing(
                     doneAutoDismiss: OBCCompanionApp.launchUploadTiming().doneAutoDismiss)
             )
-        case .dayEditor(let id, let isSplitMode):
-            DayEditorHost(make: { mainModel.dayEditor(id, isSplitMode: isSplitMode) }) {
-                if let index = path.lastIndex(of: .dayEditor(id: id, isSplitMode: isSplitMode)) {
-                    path.removeSubrange(index...)
-                }
-            }
         case .tripDay(let id, let day):
             if let trip = mainModel.trip(id), let route = mainModel.tripDays(id).first(where: { $0.day == day }) {
                 RouteDetailScreen(
@@ -688,7 +721,7 @@ struct RootView: View {
 
     }
 
-    /// Edit or save a ride. Saving uses the import landing and its name-collision rule.
+    /// Edit or save a ride. Saving keeps the ride's line, with the import's name-collision rule.
     private func rideEditMenu(for ride: Ride) -> RideEditMenu {
         let id = ride.id
         let fileName = GPXFile.fileName(for: ride.summary.name)
@@ -704,8 +737,7 @@ struct RootView: View {
             },
             onRevert: { mainModel.revertRide(id) },
             onSaveAsRoute: ride.plannedRoute().map { route in
-                { importModel.open(route: route, fileName: fileName, fileData: Data(),
-                                   source: .ride(ride.summary.date), bikeType: ride.summary.bikeType) }
+                { importModel.open(route: route, fileName: fileName, fileData: Data(), bikeType: ride.summary.bikeType) }
             }
         )
     }
@@ -725,8 +757,24 @@ struct RootView: View {
         { path.append(.planner(sample: false)) }
     }
 
-    private func savePlannerPreview(_ route: ImportedRoute, bikeType: BikeType) {
+    /// A nil bike type takes the type of the route the plan came from, else the last bike type, as
+    /// an import does. `replacing` saves the changes to that route; else the plan lands as a new route.
+    /// A plan with nights is a trip: it saves as one, or replaces the route it edits with one, and
+    /// the trip page opens.
+    private func savePlannerPreview(_ saved: PlannerPreviewSave, bikeType: BikeType?,
+                                    replacing id: RouteID? = nil, keeping source: RouteID? = nil) {
+        let route = saved.route, plan = saved.plan
         guard let end = route.points.last, route.points.count > 1, let name = route.name else { return }
+        let bikeType = bikeType ?? source.map(mainModel.plannedBikeType(for:)) ?? lastBikeType.value
+        if plan.days > 1 {
+            let tripID = if let id {
+                mainModel.replaceRouteWithTrip(id, plan: plan, line: route.points, pointIndices: saved.pointIndices, bikeType: bikeType)
+            } else {
+                mainModel.createTrip(name: name, plan: plan, line: route.points, pointIndices: saved.pointIndices, bikeType: bikeType)
+            }
+            if let tripID { path = [.trip(id: tripID)] }
+            return
+        }
         let fileName = GPXFile.fileName(for: name)
         let line = MeasuredLine(routePoints: route.points)
         let trip = Trip(
@@ -738,38 +786,46 @@ struct RootView: View {
         let detail = RouteDetailModel(
             transport: transport, dressing: .imported(route, fileName: fileName), bikeType: bikeType
         ).makeDetail()
-        mainModel.addImportedRoute(PlannedRouteRecord(
+        let record = PlannedRouteRecord(
             summary: detail.summary, route: route, bikeType: bikeType,
-            sourceFileName: fileName, sourceFileData: GPXTripEncoder.encode(trip)
-        ))
+            sourceFileName: fileName, sourceFileData: GPXTripEncoder.encode(trip), plan: plan
+        )
+        if let id {
+            mainModel.saveRouteChanges(id, to: record)
+            path.removeLast()
+            return
+        }
+        mainModel.addImportedRoute(record)
         mainModel.searchText = ""
         path.removeAll()
     }
-}
 
-/// Owns the day editor's draft for the screen's life. The destination body runs on every pass
-/// of the root, so the model is made once, on appear, not in the body.
-private struct DayEditorHost: View {
-    let make: () -> TripDayEditorModel?
-    let onClose: () -> Void
-    @State private var model: TripDayEditorModel?
-
-    var body: some View {
-        if let model {
-            TripDayEditorView(model: model, onClose: onClose)
-        } else {
-            OBCTheme.page.ignoresSafeArea().onAppear { model = make() }
+    /// "Save changes" writes the plan into the trip it edits; "Save as copy" makes a new trip and
+    /// opens it. A nil bike type keeps the trip's.
+    private func saveTripPlan(_ saved: PlannerPreviewSave, bikeType: BikeType?, editing id: TripID) {
+        let line = saved.route.points
+        if saved.inPlace {
+            mainModel.saveTripChanges(id, plan: saved.plan, line: line, pointIndices: saved.pointIndices)
+            if let bikeType { mainModel.setTripBikeType(id, to: bikeType) }
+            path.removeLast()
+            return
         }
+        let bikeType = bikeType ?? mainModel.trip(id)?.bikeType ?? lastBikeType.value
+        guard let copy = mainModel.createTrip(name: saved.route.name ?? "New trip", plan: saved.plan, line: line,
+                                              pointIndices: saved.pointIndices, bikeType: bikeType) else { return }
+        path = [.trip(id: copy)]
     }
 }
 
 /// Library destinations carry ids so a rename mid-stack reads the live summary.
 enum MainDestination: Hashable {
     case planner(sample: Bool)
+    /// The planner on a saved route's plan.
+    case editRoute(id: RouteID)
     case route(id: RouteID)
     case trip(id: TripID)
-    /// The trip's day editor, in split mode when one file just became the trip.
-    case dayEditor(id: TripID, isSplitMode: Bool)
+    /// The planner on a saved trip's plan.
+    case editTrip(id: TripID)
     case tripDay(id: TripID, day: Int)
     case ride(id: RideID)
     case trash
@@ -791,7 +847,7 @@ import OBCMock
     RootView(transport: MockTransport(control: control), bondStore: MockBondStore(control: control))
 }
 
-#Preview("Import landing (E1)") {
+#Preview("Import choice") {
     let control = MockControl(scenario: .happyPath)
     RootView(
         transport: MockTransport(control: control),

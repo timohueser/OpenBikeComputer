@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare and serve a local planner map with the PMTiles deployment layout."""
+"""Planner map archive helpers, and a command that compacts an archive to a smaller box."""
 
 import argparse
 import hashlib
@@ -8,23 +8,23 @@ import json
 import math
 import os
 from pathlib import Path
-import shutil
 import signal
 import socket
 import subprocess
-import tempfile
+import threading
 import time
-from urllib.request import urlopen
+import tomllib
 import zipfile
-
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "builder/app"
-DATA = APP / "public/data/planner"
-ASSETS_REV = "028c18f713baecad011301ff7a69acc39bcc2ae7"
+# Child processes start in their own session, so an interrupt reaches only this process. A caller that
+# runs producers in threads sets STOPPING and stops these; `run` then starts no new process.
+RUNNING, STOPPING = set(), threading.Event()
+# The versions live is built from. data/env/live.toml is their one home.
+PINS = tomllib.loads((ROOT / "data/env/live.toml").read_text())["pins"]
+ASSETS_REV = PINS["protomaps-assets"]
 ASSETS_URL = f"https://codeload.github.com/protomaps/basemaps-assets/zip/{ASSETS_REV}"
-SPRITES_LICENSE_URL = "https://raw.githubusercontent.com/tangrams/icons/92510779634f4a006c61ea70e50cb8c52c765a81/LICENSE.md"
-BW_BOUNDS = "7.45,47.5,10.5,49.85"
 
 
 def bounds(value):
@@ -43,14 +43,23 @@ def run(*args, **kwargs):
     if kwargs.pop("capture_output", False):
         kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     process = subprocess.Popen([str(arg) for arg in args], start_new_session=True, **kwargs)
+    RUNNING.add(process)
     try:
+        if STOPPING.is_set(): raise RuntimeError("The bake is stopping")
         stdout, stderr = process.communicate(input_data)
     except BaseException:
         stop_process(process)
         raise
+    finally:
+        RUNNING.discard(process)
     if process.returncode:
         raise subprocess.CalledProcessError(process.returncode, args, stdout, stderr)
     return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+
+
+def stop_running():
+    for process in list(RUNNING):
+        stop_process(process)
 
 
 def stop_process(process):
@@ -65,23 +74,24 @@ def stop_process(process):
         process.wait()
 
 
+def mercator(lon, lat, zoom):
+    """Fractional Web Mercator XYZ tile coordinates of a point."""
+    count = 1 << zoom
+    return (lon + 180) / 360 * count, (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * count
+
+
+def tile_bounds(z, x, y):
+    n = 1 << z
+    latitude = lambda row: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * row / n))))
+    return [x / n * 360 - 180, latitude(y + 1), (x + 1) / n * 360 - 180, latitude(y)]
+
+
 def terrain_bounds(region):
     # Contours start at zoom 10 and read a 3×3 tile neighbourhood.
     count = 1 << 10
-    west, south, east, north = region
-
-    def tile_y(latitude):
-        return (1 - math.asinh(math.tan(math.radians(latitude))) / math.pi) / 2 * count
-
-    def latitude(y):
-        return math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / count))))
-
-    left = max(0, math.floor((west + 180) / 360 * count) - 1)
-    right = min(count, math.floor((east + 180) / 360 * count) + 2)
-    top = max(0, math.floor(tile_y(north)) - 1)
-    bottom = min(count, math.floor(tile_y(south)) + 2)
-    return [left / count * 360 - 180, latitude(bottom),
-            right / count * 360 - 180, latitude(top)]
+    left, top = (max(0, math.floor(value) - 1) for value in mercator(region[0], region[3], 10))
+    right, bottom = (min(count - 1, math.floor(value) + 1) for value in mercator(region[2], region[1], 10))
+    return tile_bounds(10, left, bottom)[:2] + tile_bounds(10, right, top)[2:]
 
 
 def install_assets(data, destination):
@@ -117,57 +127,19 @@ def verify_archive(pmtiles, path, tile_type, zoom):
 
 def compact_archive(source, destination, region, terrain=False, recompress=True):
     run("uv", "run", "--with-requirements", ROOT / "tools/requirements-planner-maps.txt",
-        "python", ROOT / "tools/planner_map_archive.py", source, destination,
+        "python", "-m", "tools.planner_map_archive", source, destination,
         "--bbox=" + ",".join(map(str, region)), *(["--terrain"] if terrain else []),
         *([] if recompress else ["--no-recompress"]), cwd=ROOT)
 
 
-def places_archive(basemap, destination):
+def places_archive(pois, destination):
     run("uv", "run", "--with-requirements", ROOT / "tools/requirements-planner-maps.txt",
-        "python", ROOT / "tools/planner_places.py", basemap, destination, cwd=ROOT)
+        "python", "-m", "tools.planner_places", pois, destination, cwd=ROOT)
 
 
-def prepare(args):
-    if DATA.exists():
-        raise ValueError(f"{DATA} already exists. Move it aside before preparing another map.")
-    DATA.parent.mkdir(parents=True, exist_ok=True)
-    # Publish only a complete bundle. A failed download leaves the current map untouched.
-    with tempfile.TemporaryDirectory(prefix=".planner-", dir=DATA.parent) as directory:
-        stage = Path(directory)
-        for name, source, kind, zoom in [("basemap", args.basemap, "mvt", 14),
-                                         ("terrain", args.terrain, "webp", 12)]:
-            path = stage / f"{name}.pmtiles"
-            extract_bounds = terrain_bounds(args.bbox) if name == "terrain" else args.bbox
-            run(args.pmtiles, "extract", source, str(path),
-                "--bbox=" + ",".join(map(str, extract_bounds)), f"--maxzoom={zoom}")
-            if name == "terrain":
-                compact = stage / "compact.pmtiles"
-                compact_archive(path, compact, args.bbox, terrain=True)
-                compact.replace(path)
-            verify_archive(args.pmtiles, path, kind, zoom)
-        places_archive(stage / "basemap.pmtiles", stage / "places.pmtiles")
-        with urlopen(ASSETS_URL, timeout=120) as response:
-            install_assets(response.read(), stage / "assets")
-        with urlopen(SPRITES_LICENSE_URL, timeout=30) as response:
-            (stage / "assets/sprites/LICENSE.txt").write_bytes(response.read())
-        manifest = {
-            "bounds": args.bbox,
-            "terrain_bounds": terrain_bounds(args.bbox),
-            "sources": {"basemap": args.basemap, "terrain": args.terrain,
-                        "assets": ASSETS_URL, "sprites_license": SPRITES_LICENSE_URL},
-            "files": {},
-        }
-        for path in sorted(stage.rglob("*")):
-            if path.is_file():
-                with path.open("rb") as stream:
-                    digest = hashlib.file_digest(stream, "sha256").hexdigest()
-                manifest["files"][path.relative_to(stage).as_posix()] = {
-                    "bytes": path.stat().st_size, "sha256": digest,
-                }
-        (stage / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        stage.rename(DATA)
-    size = sum(item["bytes"] for item in manifest["files"].values())
-    print(f"Prepared {DATA} ({size / 1024**2:.1f} MiB)")
+def overlays_archive(index, destination):
+    run("uv", "run", "--with-requirements", ROOT / "tools/requirements-planner-maps.txt",
+        "python", "-m", "tools.planner_overlays", index, destination, cwd=ROOT)
 
 
 def check_port(port):
@@ -176,11 +148,12 @@ def check_port(port):
         listener.bind(("127.0.0.1", port))
 
 
-def check_bundle(full=False):
-    manifest = json.loads((DATA / "manifest.json").read_text())
+def check_bundle(folder, full=False):
+    """The manifest of the map bundle in `folder`, once its files match it."""
+    manifest = json.loads((folder / "manifest.json").read_text())
     for name, item in manifest["files"].items():
-        path = DATA / name
-        if not path.resolve().is_relative_to(DATA.resolve()):
+        path = folder / name
+        if not path.resolve().is_relative_to(folder.resolve()):
             raise ValueError(f"Map path is outside the bundle: {name}")
         if path.stat().st_size != item["bytes"]:
             raise ValueError(f"Incomplete map bundle: {name}")
@@ -189,32 +162,6 @@ def check_bundle(full=False):
                 if hashlib.file_digest(stream, "sha256").hexdigest() != item["sha256"]:
                     raise ValueError(f"Map checksum mismatch: {name}")
     return manifest
-
-
-def preview(args):
-    manifest = check_bundle()
-    tile_origin = f"http://127.0.0.1:{args.tile_port}"
-    base = "/@fs" + str(DATA.resolve())
-    env = {
-        **os.environ,
-        "OBC_PLANNER_MAPS_DIR": str(DATA.resolve()),
-        "OBC_PLANNER_TILES_URL": tile_origin,
-        "OBC_PLANNER_ROUTING_URL": args.routing,
-        "VITE_PLANNER_ROUTING_URL": "/routing",
-        "VITE_PLANNER_PMTILES_URL": base + "/basemap.pmtiles",
-        "VITE_PLANNER_PLACES_URL": base + "/places.pmtiles",
-        "VITE_PLANNER_DEM_URL": "/tiles/terrain/{z}/{x}/{y}.webp",
-        "VITE_PLANNER_GLYPHS_URL": base + "/assets/fonts/{fontstack}/{range}.pbf",
-        "VITE_PLANNER_SPRITES_URL": base + "/assets/sprites/v4",
-        "VITE_PLANNER_MAP_BOUNDS": ",".join(map(str, manifest["bounds"])),
-    }
-    commands = [
-        ([args.pmtiles, "serve", str(DATA), "--interface=127.0.0.1",
-          f"--port={args.tile_port}", f"--public-url={tile_origin}"], ROOT),
-        (["npm", "run", "dev", "--", "--mode", "web", "--host", "127.0.0.1",
-          "--port", str(args.port), "--strictPort"], APP),
-    ]
-    return commands, env
 
 
 def supervise(commands, env, ready=None):
@@ -233,46 +180,21 @@ def supervise(commands, env, ready=None):
             stop_process(child)
 
 
-def serve(args):
-    if args.port == args.tile_port:
-        raise ValueError("The page and tile ports must differ.")
-    check_port(args.port)
-    check_port(args.tile_port)
-    commands, env = preview(args)
-    print(f"Planner: http://127.0.0.1:{args.port}/planner.html", flush=True)
-    print(f"Routing: {args.routing} (start route-server separately)", flush=True)
-    supervise(commands, env)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pmtiles", default=os.environ.get("PMTILES", "pmtiles"))
     commands = parser.add_subparsers(dest="command", required=True)
-    download = commands.add_parser("prepare", help="Extract Baden-Württemberg and copy map assets")
-    download.add_argument("--basemap", required=True, help="Protomaps PMTiles source URL or file")
-    download.add_argument("--terrain", default="https://download.mapterhorn.com/planet.pmtiles")
-    download.add_argument("--bbox", type=bounds, default=BW_BOUNDS)
     compact = commands.add_parser("compact", help="Extract a box and losslessly compress its terrain")
     compact.add_argument("source", type=Path)
     compact.add_argument("output", type=Path)
     compact.add_argument("--bbox", type=bounds, required=True)
     compact.add_argument("--terrain", action="store_true")
     compact.add_argument("--no-recompress", action="store_true")
-    preview = commands.add_parser("serve", help="Run the map tile server and planner")
-    preview.add_argument("--port", type=int, default=4175)
-    preview.add_argument("--tile-port", type=int, default=8789)
-    preview.add_argument("--routing", default="http://127.0.0.1:8788")
     args = parser.parse_args()
-    if args.command != "compact" and not shutil.which(args.pmtiles):
-        parser.error("Install the PMTiles CLI, or pass --pmtiles /path/to/pmtiles.")
     def stop(_signum, _frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop)
     try:
-        if args.command == "compact":
-            compact_archive(args.source, args.output, args.bbox, args.terrain, not args.no_recompress)
-        else:
-            (prepare if args.command == "prepare" else serve)(args)
+        compact_archive(args.source, args.output, args.bbox, args.terrain, not args.no_recompress)
     except KeyboardInterrupt:
         pass
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:

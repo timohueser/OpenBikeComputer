@@ -1,25 +1,13 @@
 use std::path::Path;
+use tokio::signal::unix::{signal, SignalKind};
 use tower_http::cors::CorsLayer;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let directory =
-        std::env::args().nth(1).ok_or("Usage: route-server PACKAGE_DIRECTORY [--verify|--build-overlays]")?;
-    if std::env::args().nth(2).as_deref() == Some("--build-overlays") {
-        route_server::prepare_overlays(Path::new(&directory))?;
-        eprintln!("Overlay index prepared");
-        return Ok(());
-    }
+    let directory = std::env::args().nth(1).ok_or("Usage: route-server PACKAGE_DIRECTORY [--verify]")?;
     if std::env::args().nth(2).as_deref() == Some("--verify") {
         let path = Path::new(&directory);
-        if path.join("blocks.json").exists() {
-            route_engine::blocks::Files::open(path)?.verify()?;
-        } else {
-            route_engine::directory::Directory::open(path)?.verify()?;
-        }
-        if path.join("overlays.sqlite").exists() || path.join("layers").exists() {
-            route_server::OverlaySource::open(path)?;
-        }
+        route_engine::open(path)?.verify()?;
         eprintln!("Package object closure verified");
         return Ok(());
     }
@@ -37,9 +25,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let listener = tokio::net::TcpListener::bind(&address).await?;
     eprintln!("Routing service listening on {address}");
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut interrupt = signal(SignalKind::interrupt())?;
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+        .with_graceful_shutdown(async move {
+            tokio::select! {
+                _ = terminate.recv() => {}
+                _ = interrupt.recv() => {}
+            }
         })
         .await?;
     Ok(())

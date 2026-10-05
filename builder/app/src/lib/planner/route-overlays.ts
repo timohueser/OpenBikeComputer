@@ -1,9 +1,9 @@
-import type { ExpressionSpecification, GeoJSONSource, Map, MapGeoJSONFeature, MapMouseEvent } from 'maplibre-gl';
-import type { Feature, FeatureCollection } from 'geojson';
+import type { ExpressionSpecification, FilterSpecification, Map, MapGeoJSONFeature, MapMouseEvent, VectorSourceSpecification } from 'maplibre-gl';
+import { PMTiles } from 'pmtiles';
 import type { Coordinate } from './map-types';
-import { trailMarker } from './trail-markers';
+import { releaseFetch, releaseUrl } from './release';
 
-export interface OverlayOptions { network: 'cycling' | 'hiking' | 'none'; access: boolean }
+export interface OverlayOptions { network: 'cycling' | 'hiking' | 'mtb' | 'none'; access: boolean }
 export type AccessMode = 'cycling' | 'walking';
 export interface NetworkRoute { id: number; kind: string; network: string; rank: number; name: string; ref: string; website?: string | null; symbol?: string; symbol_text?: string }
 export interface OverlaySelection {
@@ -27,30 +27,49 @@ export const networkLevels = [
     { label: 'Local', color: '#4f8b24', dark: '#a4cf67', rank: 1 },
     { label: 'Unspecified network', color: '#626a70', dark: '#b0b8be', rank: 0 },
 ];
-export const networkNames: Record<string, string> = {
-    icn: 'International cycling route', ncn: 'National cycling route', rcn: 'Regional cycling route', lcn: 'Local cycling route',
-    iwn: 'International hiking route', nwn: 'National hiking route', rwn: 'Regional hiking route', lwn: 'Local hiking route',
-};
+const networkScopes: Record<string, string> = { i: 'International', n: 'National', r: 'Regional', l: 'Local' };
+export const routeKindTitles: Record<string, string> = { cycling: 'Cycling routes', hiking: 'Hiking routes', mtb: 'Mountain bike routes' };
+const routeKinds: Record<string, string> = { cycling: 'cycling route', hiking: 'hiking route', mtb: 'mountain bike route' };
+/** MTB routes use the cycling network values `icn` to `lcn`. */
+export function networkName({ kind, network }: Pick<NetworkRoute, 'kind' | 'network'>): string {
+    const scope = networkScopes[/^([inrl])[cw]n$/.exec(network)?.[1] ?? ''];
+    return scope && routeKinds[kind] ? `${scope} ${routeKinds[kind]}` : 'Network level unspecified';
+}
 const source = 'route-overlays';
 const labelZoom = 11;
-const interactiveLayers = ['network-cycling', 'network-hiking', 'hiking-markers', 'access-symbols'];
-const empty: FeatureCollection = { type: 'FeatureCollection', features: [] };
-const endpoint = import.meta.env.VITE_PLANNER_ROUTING_URL ?? '/routing';
-type OverlayCollection = FeatureCollection & { package: string; coverage: [number, number, number, number]; routes?: Record<string, NetworkRoute> };
-type CachedOverlay = { bounds: number[]; zoom: number; key: string; data: OverlayCollection };
-const contains = (outer: number[], inner: number[]) => inner[0] >= outer[0] && inner[1] >= outer[1] && inner[2] <= outer[2] && inner[3] <= outer[3];
-const renderFeature = ({ type, id, geometry, properties }: Feature): Feature => {
-    const { kind, rank, ref, marker, status } = properties ?? {};
-    return { type, id, geometry, properties: { kind, rank, ref, marker, status } };
-};
+const interactiveLayers = ['network-cycling', 'network-hiking', 'network-mtb', 'hiking-markers', 'access-symbols'];
+const layers = {
+    cycling: ['network-cycling', 'network-cycling-labels'],
+    hiking: ['network-hiking', 'network-hiking-labels', 'hiking-markers'],
+    mtb: ['network-mtb', 'network-mtb-labels'],
+    access: ['access-lines', 'access-symbols'],
+} as const;
 
-export function overlaySelection(feature: Pick<MapGeoJSONFeature, 'properties'>, coordinate: Coordinate, catalog?: Record<string, NetworkRoute>): OverlaySelection {
+/** The vector source of an overlay archive, and the routing package that the archive was baked from. */
+interface Archive { source: VectorSourceSpecification; minzoom: number; bounds: number[]; routingPackage: string }
+
+/** Reads a TileJSON URL ending in `.json`, or a PMTiles archive. */
+export async function overlayArchive(url: string): Promise<Archive> {
+    if (!url.endsWith('.json')) {
+        const archive = new PMTiles(url);
+        const [header, metadata] = await Promise.all([archive.getHeader(), archive.getMetadata() as Promise<Record<string, string>>]);
+        return { source: { type: 'vector', url: `pmtiles://${url}`, attribution: metadata.attribution }, minzoom: header.minZoom,
+            bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat], routingPackage: metadata.routing_package };
+    }
+    const response = await releaseFetch(url);
+    if (!response.ok) throw new Error('Route networks and access could not load.');
+    const { tiles, minzoom, maxzoom, bounds, attribution, routing_package } = await response.json();
+    return { source: { type: 'vector', tiles: tiles.map(releaseUrl), minzoom, maxzoom, bounds, attribution }, minzoom, bounds, routingPackage: routing_package };
+}
+
+/** Details of an overlay feature. Vector tiles carry lists as JSON text; a route line names its routes by ID. */
+export function overlaySelection(feature: Pick<MapGeoJSONFeature, 'id' | 'sourceLayer' | 'properties'>, coordinate: Coordinate,
+    catalog: Record<string, NetworkRoute>, mode: AccessMode): OverlaySelection {
     const p = feature.properties;
-    // Vector workers encode nested GeoJSON properties as JSON strings.
-    const nested = <T>(value: T | string | undefined): T | undefined => typeof value === 'string' ? JSON.parse(value) : value;
-    const routes = nested<(NetworkRoute | number)[]>(p.routes)?.map(route => typeof route === 'number' ? catalog?.[route] : route).filter((route): route is NetworkRoute => !!route);
-    return { ...p, way: Number(p.way), kind: p.kind, coordinate, tags: nested(p.tags), routes,
-        riding: nested(p.riding), walking: nested(p.walking), pushing: nested(p.pushing) };
+    const json = <T>(value: unknown): T | undefined => typeof value === 'string' ? JSON.parse(value) : undefined;
+    return { coordinate, way: Number(feature.id), kind: feature.sourceLayer ?? '', name: p.name, ref: p.ref, status: p[`${mode}_status`],
+        conditional: p.conditional, tags: json(p.tags), riding: json(p.riding), walking: json(p.walking), pushing: json(p.pushing),
+        routes: json<number[]>(p.routes)?.map(id => catalog[id]).filter((route): route is NetworkRoute => !!route) };
 }
 
 export function routeWebsite(value?: string | null): string | null {
@@ -62,68 +81,78 @@ export function routeWebsite(value?: string | null): string | null {
     } catch { return null; }
 }
 
-/** An independent viewport source; route edits never wait for this layer. */
+const networkOpacity: ExpressionSpecification = ['case', ['boolean', ['feature-state', 'hover'], false], 1, 0.8];
+
+const accessStatus = (mode: AccessMode): ExpressionSpecification => ['get', `${mode}_status`];
+
+/** Route networks and access restrictions from the overlay tiles; route edits never wait for this layer. */
 export class RouteOverlays {
     private options: OverlayOptions = { network: 'none', access: false };
     private accessMode: AccessMode = 'cycling';
-    private abort?: AbortController;
-    private cache: CachedOverlay[] = [];
-    private package?: string;
-    private displayed?: OverlayCollection;
-    private displayedKey?: string;
-    private properties = new globalThis.Map<string | number | undefined, Feature['properties']>();
-    private pending?: { bounds: number[]; zoom: number; key: string; task: Promise<void> };
-    private disposed = false;
-    private hovered?: string | number;
+    private theme: 'light' | 'dark' = 'light';
+    private archive?: Promise<Archive>;
+    private loaded?: Archive;
+    private failure = '';
+    private routingPackage?: string;
+    private installable = false;
+    private hovered?: { sourceLayer: string; id: string | number };
+    private faded = false;
 
-    constructor(private map: Map, private status: (message: string, retry?: boolean) => void) {
-        map.on('moveend', this.refresh);
+    constructor(private map: Map, private url: string, private status: (message: string, retry?: boolean) => void) {
+        map.on('moveend', this.report);
     }
 
-    install(theme: 'light' | 'dark') {
-        if (this.map.getSource(source)) return;
-        this.abort?.abort();
-        this.pending = undefined;
-        this.displayed = undefined;
-        this.map.addSource(source, { type: 'geojson', data: empty, attribution: '<a href="https://www.openstreetmap.org/copyright">Route networks & access © OpenStreetMap</a>' });
+    /** Called once the basemap is complete; the archive loads when an overlay is first shown. */
+    async install(theme: 'light' | 'dark') {
+        this.theme = theme;
+        this.installable = true;
+        if (this.map.getSource(source) || (this.options.network === 'none' && !this.options.access)) return;
+        this.archive ??= overlayArchive(this.url);
+        try {
+            this.loaded = await this.archive;
+            this.failure = '';
+        } catch (error) {
+            this.archive = undefined;
+            this.failure = error instanceof Error ? error.message : 'Route networks and access could not load.';
+            this.report();
+            return;
+        }
+        // A theme change during the request installs into the new style instead.
+        if (theme !== this.theme || this.map.getSource(source)) return;
+        this.hovered = undefined;
+        this.map.addSource(source, this.loaded.source);
         const before = this.map.getStyle().layers?.find(layer => layer.type === 'symbol')?.id;
-        const color: ExpressionSpecification = ['step', ['get', 'rank'], networkLevels[3][theme === 'dark' ? 'dark' : 'color'],
-            1, networkLevels[2][theme === 'dark' ? 'dark' : 'color'], 2, networkLevels[1][theme === 'dark' ? 'dark' : 'color'],
-            3, networkLevels[0][theme === 'dark' ? 'dark' : 'color']];
-        for (const activity of ['cycling', 'hiking']) {
+        const shade = (level: number) => networkLevels[level][theme === 'dark' ? 'dark' : 'color'];
+        const color: ExpressionSpecification = ['step', ['get', 'rank'], shade(3), 1, shade(2), 2, shade(1), 3, shade(0)];
+        const hovered = (on: number, off: number): ExpressionSpecification => ['case', ['boolean', ['feature-state', 'hover'], false], on, off];
+        for (const activity of ['cycling', 'hiking', 'mtb']) {
             this.map.addLayer({
-                id: `network-${activity}`, type: 'line', source, filter: ['==', ['get', 'kind'], activity],
+                id: `network-${activity}`, type: 'line', source, 'source-layer': activity,
                 layout: { 'line-join': 'round', 'line-sort-key': ['get', 'rank'] },
-                paint: { 'line-color': color,
-                    'line-opacity': ['case', ['boolean', ['feature-state', 'hover'], false], 1, 0.8],
-                    'line-width': ['interpolate', ['linear'], ['zoom'],
-                        6, ['case', ['boolean', ['feature-state', 'hover'], false], 2.4, 1.2],
-                        10, ['case', ['boolean', ['feature-state', 'hover'], false], 3, 1.8],
-                        13, ['case', ['boolean', ['feature-state', 'hover'], false], 4.4, 3.2],
-                        17, ['case', ['boolean', ['feature-state', 'hover'], false], 6.2, 5]] },
+                paint: { 'line-color': color, 'line-opacity': networkOpacity,
+                    'line-width': ['interpolate', ['linear'], ['zoom'], 6, hovered(2.4, 1.2), 10, hovered(3, 1.8), 13, hovered(4.4, 3.2), 17, hovered(6.2, 5)] },
             }, before);
             this.map.addLayer({
-                id: `network-${activity}-labels`, type: 'symbol', source, minzoom: labelZoom,
-                filter: ['all', ['==', ['get', 'kind'], activity], ['!=', ['get', 'ref'], '']],
+                id: `network-${activity}-labels`, type: 'symbol', source, 'source-layer': activity, minzoom: labelZoom,
+                filter: ['!=', ['get', 'ref'], ''],
                 layout: { 'symbol-placement': 'line', 'symbol-spacing': 350, 'text-field': ['get', 'ref'],
                     'text-font': ['Noto Sans Medium'], 'text-size': 11, 'text-offset': [0, 0.8], 'text-max-width': 8 },
                 paint: { 'text-color': color, 'text-halo-color': theme === 'dark' ? '#181d19' : '#ffffff', 'text-halo-width': 2 },
             }, before);
         }
-        this.map.addLayer({ id: 'hiking-markers', type: 'symbol', source, minzoom: 14,
-            filter: ['all', ['==', ['get', 'kind'], 'hiking'], ['!=', ['get', 'marker'], '']],
-            layout: { 'symbol-placement': 'line', 'symbol-spacing': 500, 'icon-image': ['get', 'marker'],
+        this.map.addLayer({ id: 'hiking-markers', type: 'symbol', source, 'source-layer': 'hiking', minzoom: 14, filter: ['has', 'marker'],
+            layout: { 'symbol-placement': 'line', 'symbol-spacing': 500, 'icon-image': ['concat', 'trail:', ['get', 'marker']],
                 'icon-size': 0.72, 'icon-rotation-alignment': 'viewport', 'icon-padding': 24 } }, before);
-        this.map.addLayer({ id: 'access-lines', type: 'line', source, filter: ['==', ['get', 'kind'], 'access'],
-            paint: { 'line-color': theme === 'dark' ? '#727367' : '#aaa99e', 'line-width': 0.8,
-                'line-opacity': ['match', ['get', 'status'], ['push', 'directional'], 0, 0.25] } }, before);
-        this.map.addLayer({ id: 'access-symbols', type: 'symbol', source, minzoom: 12, filter: ['==', ['get', 'kind'], 'access'],
+        this.map.addLayer({ id: 'access-lines', type: 'line', source, 'source-layer': 'access',
+            paint: { 'line-color': theme === 'dark' ? '#727367' : '#aaa99e', 'line-width': 0.8 } }, before);
+        this.map.addLayer({ id: 'access-symbols', type: 'symbol', source, 'source-layer': 'access', minzoom: 12,
             layout: { 'symbol-placement': 'line', 'symbol-spacing': 450, 'icon-size': 0.7, 'icon-padding': 8,
-                'icon-rotation-alignment': 'viewport',
-                'icon-image': ['match', ['get', 'status'], 'push', `push-${theme}`, 'no_bikes', `no-bikes-${theme}`,
-                    ['conditional', 'directional', 'limited'], `conditional-${theme}`, `access-${theme}`] } }, before);
+                'icon-rotation-alignment': 'viewport' } }, before);
         this.sync();
-        void this.refresh();
+    }
+
+    retry() {
+        void this.install(this.theme);
     }
 
     set(options: OverlayOptions, mode: AccessMode = 'cycling') {
@@ -131,19 +160,56 @@ export class RouteOverlays {
         this.options = { ...options };
         this.accessMode = mode;
         this.sync();
-        void this.refresh();
+        if (this.installable) void this.install(this.theme);
     }
 
+    /** Fades the networks, so the routes of the Routes view stand out over them. */
+    fade(faded: boolean) {
+        this.faded = faded;
+        this.sync();
+    }
+
+    /** The routing package of the latest route. The router excludes what the overlay shows as closed, so both must match. */
+    verify(routingPackage?: string) {
+        this.routingPackage = routingPackage;
+        this.sync();
+    }
+
+    private get mismatch() {
+        return !!this.routingPackage && !!this.loaded && this.loaded.routingPackage !== this.routingPackage;
+    }
+
+    // A hidden layer leaves its source unused, so MapLibre requests none of its tiles.
     private sync() {
-        for (const [kind, ids] of [
-            ['cycling', ['network-cycling', 'network-cycling-labels']],
-            ['hiking', ['network-hiking', 'network-hiking-labels', 'hiking-markers']],
-            ['access', ['access-lines', 'access-symbols']],
-        ] as const) {
-            const shown = kind === 'access' ? this.options.access : this.options.network === kind;
+        for (const [kind, ids] of Object.entries(layers)) {
+            const shown = !this.mismatch && (kind === 'access' ? this.options.access : this.options.network === kind);
             for (const id of ids) if (this.map.getLayer(id)) this.map.setLayoutProperty(id, 'visibility', shown ? 'visible' : 'none');
         }
+        for (const activity of ['cycling', 'hiking', 'mtb']) {
+            if (this.map.getLayer(`network-${activity}`)) this.map.setPaintProperty(`network-${activity}`, 'line-opacity', this.faded ? 0.3 : networkOpacity);
+        }
+        if (this.map.getLayer('access-lines')) {
+            const status = accessStatus(this.accessMode);
+            const filter: FilterSpecification = ['>=', ['zoom'], ['coalesce', ['get', `${this.accessMode}_minzoom`], 99]];
+            for (const id of layers.access) this.map.setFilter(id, filter);
+            this.map.setPaintProperty('access-lines', 'line-opacity', ['match', status, ['push', 'directional'], 0, 0.25]);
+            this.map.setLayoutProperty('access-symbols', 'icon-image', ['match', status, 'push', `push-${this.theme}`, 'no_bikes', `no-bikes-${this.theme}`,
+                ['conditional', 'directional', 'limited'], `conditional-${this.theme}`, `access-${this.theme}`]);
+        }
+        this.report();
     }
+
+    private report = () => {
+        const view = this.map.getBounds();
+        const b = this.loaded?.bounds;
+        if (this.options.network === 'none' && !this.options.access) this.status('');
+        else if (this.failure) this.status(this.failure, true);
+        else if (this.mismatch) this.status('Route networks and access come from other map data than the router.');
+        else if (this.loaded && this.map.getZoom() < this.loaded.minzoom) this.status('Zoom in to see route networks and access restrictions.');
+        else if (b && (view.getWest() > b[2] || view.getEast() < b[0] || view.getSouth() > b[3] || view.getNorth() < b[1])) {
+            this.status('Outside the routing region. Route networks and access data are unavailable here.');
+        } else this.status('');
+    };
 
     private featureAt(event: MapMouseEvent): MapGeoJSONFeature | undefined {
         const visible = interactiveLayers.filter(id => this.map.getLayer(id) && this.map.getLayoutProperty(id, 'visibility') !== 'none');
@@ -155,160 +221,29 @@ export class RouteOverlays {
 
     hit(event: MapMouseEvent): OverlaySelection | null {
         const feature = this.featureAt(event);
-        return feature ? this.selection(feature, [event.lngLat.lng, event.lngLat.lat]) : null;
-    }
-
-    selection(feature: Pick<MapGeoJSONFeature, 'id' | 'properties'>, coordinate: Coordinate): OverlaySelection {
-        // A worker can still show the preceding viewport while its update runs.
-        const previous = this.properties.has(feature.id) ? undefined
-            : this.cache.find(item => item.data.features.some(row => row.id === feature.id));
-        const properties = this.properties.get(feature.id)
-            ?? previous?.data.features.find(row => row.id === feature.id)?.properties ?? feature.properties;
-        return overlaySelection({ properties }, coordinate, previous?.data.routes ?? this.displayed?.routes);
+        if (!feature) return null;
+        // The tile of the line holds its routes in its `routes` layer.
+        const ids: number[] = typeof feature.properties.routes === 'string' ? JSON.parse(feature.properties.routes) : [];
+        const routes = ids.length ? this.map.querySourceFeatures(source, { sourceLayer: 'routes', filter: ['in', ['id'], ['literal', ids]] }) : [];
+        const catalog = Object.fromEntries(routes.map(route => [route.id, { ...route.properties, id: Number(route.id) } as NetworkRoute]));
+        return overlaySelection(feature, [event.lngLat.lng, event.lngLat.lat], catalog, this.accessMode);
     }
 
     hover(event?: MapMouseEvent): boolean {
         const feature = event ? this.featureAt(event) : undefined;
-        const id = feature?.properties.kind === 'access' ? undefined : feature?.id;
-        if (id !== this.hovered) {
+        const next = feature && feature.sourceLayer !== 'access' && feature.id !== undefined ? { sourceLayer: feature.sourceLayer!, id: feature.id } : undefined;
+        if (next?.id !== this.hovered?.id || next?.sourceLayer !== this.hovered?.sourceLayer) {
             if (this.map.getSource(source)) {
-                if (this.hovered !== undefined) this.map.setFeatureState({ source, id: this.hovered }, { hover: false });
-                if (id !== undefined) this.map.setFeatureState({ source, id }, { hover: true });
+                if (this.hovered) this.map.setFeatureState({ source, ...this.hovered }, { hover: false });
+                if (next) this.map.setFeatureState({ source, ...next }, { hover: true });
             }
-            this.hovered = id;
+            this.hovered = next;
         }
         return !!feature;
     }
 
-    refresh = async () => {
-        const target = this.map.getSource(source) as GeoJSONSource | undefined;
-        if (!target || this.disposed) return;
-        this.hover();
-        const selected = [this.options.network === 'none' ? '' : this.options.network, this.options.access ? 'access' : ''].filter(Boolean).join(',');
-        const key = `${selected}:${this.accessMode}`;
-        const zoom = Math.floor(this.map.getZoom());
-        if (!selected || zoom < 6) {
-            this.abort?.abort();
-            this.pending = undefined;
-            this.displayed = undefined;
-            target.setData(empty);
-            this.status(selected ? 'Zoom in to see route networks and access restrictions.' : '');
-            return;
-        }
-        const view = this.map.getBounds();
-        const b = [view.getWest(), view.getSouth(), view.getEast(), view.getNorth()];
-        const cached = this.cache.find(item => item.key === key && item.zoom === zoom && contains(item.bounds, b));
-        if (cached) {
-            this.abort?.abort();
-            this.pending = undefined;
-            this.show(target, cached.data, `${key}:${zoom}`);
-            this.cache = [cached, ...this.cache.filter(item => item !== cached)];
-            this.coverageStatus(b, cached.data);
-            return;
-        }
-        if (this.pending?.key === key && this.pending.zoom === zoom && contains(this.pending.bounds, b)) return this.pending.task;
-        this.abort?.abort();
-        // Stable bounds let HTTP caches reuse replies across nearby views and users.
-        const step = 360 / (2 ** zoom * 8);
-        const dx = (b[2] - b[0]) * 0.15, dy = (b[3] - b[1]) * 0.15;
-        const bounds = [Math.max(-180, Math.floor((b[0] - dx) / step) * step), Math.max(-90, Math.floor((b[1] - dy) / step) * step),
-            Math.min(180, Math.ceil((b[2] + dx) / step) * step), Math.min(90, Math.ceil((b[3] + dy) / step) * step)];
-        const abort = this.abort = new AbortController();
-        this.status('Loading route networks and access…');
-        const task = this.load(target, bounds, zoom, selected, key, abort);
-        this.pending = { bounds, zoom, key, task };
-        await task;
-        if (this.pending?.task === task) this.pending = undefined;
-    };
-
-    private async load(target: GeoJSONSource, bounds: number[], zoom: number, selected: string, key: string, abort: AbortController) {
-        try {
-            const url = `${endpoint}/v1/overlays?${new URLSearchParams({ bbox: bounds.join(','), zoom: String(zoom), layers: selected, mode: this.accessMode })}`;
-            let response = await fetch(url, { signal: abort.signal });
-            for (let retry = 0; response.status === 503 && retry < 2; retry++) {
-                await new Promise(resolve => setTimeout(resolve, 250 * (retry + 1)));
-                if (abort.signal.aborted || this.disposed) return;
-                response = await fetch(url, { signal: abort.signal });
-            }
-            const data = await response.json() as OverlayCollection & { message?: string };
-            if (!response.ok) throw new Error(data.message ?? 'Map overlays could not load.');
-            if (abort.signal.aborted || this.disposed) return;
-            if (this.package !== data.package) {
-                this.package = data.package;
-                this.cache = [];
-                this.displayed = undefined;
-                this.displayedKey = undefined;
-                this.properties.clear();
-                this.hover();
-            }
-            const markers = new globalThis.Map<string, boolean>();
-            const supported = (symbol?: string) => {
-                if (!symbol) return false;
-                if (!markers.has(symbol)) markers.set(symbol, !!trailMarker(symbol));
-                return markers.get(symbol);
-            };
-            for (const feature of data.features) {
-                const p = feature.properties;
-                if (p?.kind === 'hiking') {
-                    const routes: NetworkRoute[] = data.routes ? p.routes.map((id: number) => data.routes![id]) : p.routes;
-                    const symbol = routes?.find(route => supported(route.symbol))?.symbol;
-                    p.marker = symbol ? `trail:${symbol}` : '';
-                }
-            }
-            const shared = new globalThis.Map<string | number | undefined, Feature>();
-            for (const item of this.cache) {
-                if (item.data.package !== data.package || item.key !== key || item.zoom !== zoom) continue;
-                for (const feature of item.data.features) shared.set(feature.id, feature);
-                if (data.routes && item.data.routes) {
-                    for (const id of Object.keys(data.routes)) data.routes[id] = item.data.routes[id] ?? data.routes[id];
-                }
-            }
-            // Complete features are immutable for one release, layer/mode selection and zoom.
-            data.features = data.features.map(feature => shared.get(feature.id) ?? feature);
-            this.cache = [{ bounds, zoom, key, data }, ...this.cache].slice(0, 6);
-            this.show(target, data, `${key}:${zoom}`);
-            const view = this.map.getBounds();
-            this.coverageStatus([view.getWest(), view.getSouth(), view.getEast(), view.getNorth()], data);
-        } catch (error) {
-            if (abort.signal.aborted || this.disposed) return;
-            this.displayed = undefined;
-            target.setData(empty);
-            this.status(error instanceof Error ? error.message : 'Map overlays could not load.', true);
-        }
-    }
-
-    private show(target: GeoJSONSource, data: OverlayCollection, key: string) {
-        if (this.displayed === data) return;
-        const previous = this.displayed;
-        this.displayed = data;
-        this.properties = new globalThis.Map(data.features.map(feature => [feature.id, feature.properties]));
-        const viewKey = `${data.package}:${key}`;
-        const sameView = this.displayedKey === viewKey;
-        this.displayedKey = viewKey;
-        // Symbol collision placement depends on feature order.
-        if (previous && sameView && this.map.getZoom() < labelZoom) {
-            // Within a release, IDs and zoom determine complete geometry and properties.
-            const before = new Set(previous.features.map(feature => feature.id));
-            const after = new Set(data.features.map(feature => feature.id));
-            const remove = [...before].filter(id => !after.has(id)) as (string | number)[];
-            const add = data.features.filter(feature => !before.has(feature.id)).map(renderFeature);
-            if (remove.length || add.length) void target.updateData({ remove, add });
-        } else {
-            // Catalogues serve popups; the renderer only needs features.
-            void target.setData({ type: 'FeatureCollection', features: data.features.map(renderFeature) });
-        }
-    }
-
-    private coverageStatus(view: number[], data: OverlayCollection) {
-        const b = data.coverage;
-        this.status(b && (view[0] > b[2] || view[2] < b[0] || view[1] > b[3] || view[3] < b[1])
-            ? 'Outside the routing region. Route networks and access data are unavailable here.' : '');
-    }
-
     destroy() {
         this.hover();
-        this.disposed = true;
-        this.abort?.abort();
-        this.map.off('moveend', this.refresh);
+        this.map.off('moveend', this.report);
     }
 }

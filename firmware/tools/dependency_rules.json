@@ -41,7 +41,8 @@
     "host": [
       "obc-bake",
       "obc-bench",
-      "obc-companion-core",
+      "obc-data",
+      "obc-data-steps",
       "obc-dem",
       "obc-desktop",
       "obc-file-source",
@@ -52,6 +53,8 @@
       "obc-ios-host",
       "obc-mkimage",
       "obc-pack",
+      "obc-places",
+      "obc-search-bake",
       "obc-replay",
       "obc-sim",
       "obc-skin-preview",

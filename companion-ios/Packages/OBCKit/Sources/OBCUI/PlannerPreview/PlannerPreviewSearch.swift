@@ -11,6 +11,8 @@ struct PlannerPreviewSearch: View {
     let onRequestChange: (PlannerPreviewPlaceQuery?) -> Void
     var viewBounds: [Double]? = nil
     let isInMapView: (PlannerPreviewPlace) -> Bool
+    /// The routes row above the places of a name search, with its line of filters. Nil without a route catalog.
+    var routes: (subtitle: String, open: (PlannerPreviewPlace) -> Void)?
     @State private var query: String
     @State private var request: PlannerPreviewPlaceQuery?
     @State private var activeEditor: PlannerPreviewQueryField?
@@ -37,6 +39,10 @@ struct PlannerPreviewSearch: View {
 
     func withViewBounds(_ bounds: [Double]?) -> Self {
         var copy = self; copy.viewBounds = bounds; return copy
+    }
+
+    func withRoutes(_ routes: (subtitle: String, open: (PlannerPreviewPlace) -> Void)?) -> Self {
+        var copy = self; copy.routes = routes; return copy
     }
 
     /// One prompt for the drawer's search button and the field it opens.
@@ -183,6 +189,20 @@ struct PlannerPreviewSearch: View {
                         .buttonStyle(.obcPrimary).accessibilityIdentifier("planner.searchReview")
                 }
             } else {
+                if let routes, request?.kinds.isEmpty ?? true, let place = routesPlace(result.places) {
+                    Button { isFocused = false; routes.open(place) } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "signpost.right").frame(width: 24).foregroundStyle(OBCTheme.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Signed routes near \(place.name)").font(.system(.body, weight: .semibold)).foregroundStyle(OBCTheme.ink)
+                                Text(routes.subtitle).font(.subheadline).foregroundStyle(OBCTheme.secondary)
+                            }
+                            Spacer(minLength: 8)
+                            Image(systemName: "chevron.right").font(.system(.caption, weight: .semibold)).foregroundStyle(OBCTheme.secondary)
+                        }.frame(minHeight: 52).contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityIdentifier("planner.searchRoutes")
+                    Divider().overlay(OBCTheme.hairline)
+                }
                 Button("Show \(result.places.count) \(result.places.count == 1 ? "place" : "places") on map", systemImage: "map") { submit() }
                     .buttonStyle(.obcPrimary).accessibilityIdentifier("planner.searchShowPlaces")
                 ForEach(result.places) { place in
@@ -192,6 +212,13 @@ struct PlannerPreviewSearch: View {
                 }
             }
         }
+    }
+
+    /// The start of the routes row: the place with the typed name, else the best match.
+    private func routesPlace(_ places: [PlannerPreviewPlace]) -> PlannerPreviewPlace? {
+        let fold = { (text: String) in text.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .trimmingCharacters(in: .whitespacesAndNewlines) }
+        return places.first { fold($0.name) == fold(query) } ?? places.first
     }
 
     private static func interpret(_ query: String, model: PlannerPreviewModel) -> PlannerPreviewPlaceQuery? {
