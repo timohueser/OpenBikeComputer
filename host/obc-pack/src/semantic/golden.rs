@@ -4,9 +4,12 @@ use sha2::{Digest, Sha256};
 fn geom_digest(geom: &Geom, hash: &mut Sha256) {
     fn points(points: &[(f64, f64)], hash: &mut Sha256) {
         hash.update((points.len() as u64).to_le_bytes());
+        // Native hypot can differ in the last bit. Picodegrees are one million times
+        // finer than the stored microdegree coordinates.
         for &(x, y) in points {
-            hash.update(x.to_bits().to_le_bytes());
-            hash.update(y.to_bits().to_le_bytes());
+            assert!(x.is_finite() && y.is_finite());
+            hash.update(((x * 1e12).round_ties_even() as i64).to_le_bytes());
+            hash.update(((y * 1e12).round_ties_even() as i64).to_le_bytes());
         }
     }
     match geom {
@@ -97,11 +100,11 @@ fn semantic_ladders_preserve_geometry_and_labels() {
         (0, 0, 15_000, 15_000),
         &[20.0, 35.0, 50.0, 90.0, 130.0],
         &[
-            "1f77ba58a0cb0ec27b1705d181e8f54124446ac507c7da56826242829dea8bc7",
-            "8f50057a56d5b1e075d832e1db190ffe8b30c612752224f2611404ad332733a8",
-            "fc4fa50828ae35c4d6e59200d8cae1a48a42f7661004875543bd58c59483d4bb",
-            "5ad3b531745fe7f5c043f01769978fa44b5091c6223f392e74185a91fd29d93d",
-            "bdae03444101c7d428b25c51728e81a85d9d8e812af8b6ad6d53852ceca2437e",
+            "1842b065a9b8449a5b7f1984e5b7bab36ef45f6059f425b30d454124ff6ffd5e",
+            "63de17805b625ea151d31374d706762acb51e2758e8ddaa13889d1523b896a42",
+            "591cd83f02d53dd696550d5539638aeec9975a08404dc04fbace114723ee50cd",
+            "46c2d3b016afbbfea011e1ce8b834ecb2c12f537593d8124328da75ef823ce8e",
+            "e8edf1baa3d24a674d1b166fef96c78d2486466a71e804beda7ff30f370e127d",
         ],
     );
     compare(
@@ -110,9 +113,9 @@ fn semantic_ladders_preserve_geometry_and_labels() {
         (0, 0, 120_000, 120_000),
         &[20.0, 35.0, 50.0],
         &[
-            "9ad4fd1ef3267e077c2a812d41209b92297ec69cf9e99d3ac985ec67d00ad1e2",
-            "f13833df7f90e5767223ec1639ecfad53bd305efddf387e73bbd05490df0acf5",
-            "3a828e518b06a05c20fbb07f691ed3e56199ff920f3a2cc5da8186041c340c51",
+            "ec90ebe61fe74cf6d2476c5f512d78a1c2850201012377cd35e5da491e23cee5",
+            "6f3f82f298d5dd99255dc025a803bcb23150212bb176fcb00f2b190425ff8356",
+            "3b6121ed9967c9da3756afb62358f151ef3effccfc41c8bed97f36443a57e34c",
         ],
     );
     compare(
