@@ -10,6 +10,8 @@ and the [PMTiles CLI](https://docs.protomaps.com/pmtiles/cli).
 Authenticate `gh` for the query model release. Set the R2 credential in
 `tools/obc.local`. The [region recipe](../../../../../tools/planner-regions/baden-wuerttemberg-switzerland.json)
 pins the OSM extract, map, elevation, and data-layer inputs, and routing profiles.
+Its box is the [region file](../../../../../data/regions/baden-wuerttemberg-switzerland.toml)
+with the same id.
 
 Map and search builders need Linux, Java 21, Maven, PostgreSQL 17,
 PostGIS 3, osm2pgsql 2, zstd, and `nominatim-db` as pinned in

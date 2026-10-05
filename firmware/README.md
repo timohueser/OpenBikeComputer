@@ -210,8 +210,8 @@ a different pairing is a re-bake, not a format change.
 and a box, and byte-identical output for identical inputs is a contract pinned by a digest test. A
 source void becomes `NODATA` and nothing is ever inpainted.
 
-Anything derived from GLO-30 must carry the Copernicus credit; `bake` prints it, and
-`obc_elevation::COPERNICUS_ATTRIBUTION` is its single copy in the repo.
+Anything derived from GLO-30 must carry the Copernicus credit; `bake` prints it. Its single copy
+is the `copernicus-glo-30` entry of [`data/sources.toml`](../data/sources.toml).
 
 For a published catalog, use `obc bake terrain`, which drives this crate as a library over the
 curated coverage (see the root [README](../README.md#baking-and-publishing-the-catalog)). The two
