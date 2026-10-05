@@ -118,9 +118,9 @@ fn actual_store_replace_reopen_reconcile_and_identity_guards() {
     let mut image = load_image(&store, &mut bytes).unwrap();
     assert_eq!(image.rows().count(), 0);
     image.set(row(route)).unwrap();
-    let first = publish_image(&store, &mut image, Some(route), false).unwrap();
+    let first = publish_image(&store, &mut image, Some(route), None).unwrap();
     image.set(row(ride)).unwrap();
-    let second = publish_image(&store, &mut image, Some(ride), false).unwrap();
+    let second = publish_image(&store, &mut image, Some(ride), None).unwrap();
     assert_eq!(first.id, second.id);
     assert_eq!(second.revision, Revision(2));
     assert_eq!(store.entries().filter(|e| e.kind == ObjectKind::Metadata).count(), 1);
@@ -128,12 +128,12 @@ fn actual_store_replace_reopen_reconcile_and_identity_guards() {
     let mut other_bytes = [0; MAX_LEN];
     let mut rival_image = load_image(&store, &mut other_bytes).unwrap();
     image.set(Row { timestamp: 8888, ..row(route) }).unwrap();
-    publish_image(&store, &mut image, Some(route), false).unwrap();
-    assert_eq!(publish_image(&store, &mut rival_image, Some(route), false), Err(Error::Stale));
+    publish_image(&store, &mut image, Some(route), None).unwrap();
+    assert_eq!(publish_image(&store, &mut rival_image, Some(route), None), Err(Error::Stale));
     store.commit(&[Mutation::Remove { id: ride.id, revision: ride.revision }]).unwrap();
     assert!(image.reconcile(&store).unwrap());
     assert_eq!(image.rows().collect::<Vec<_>>(), [Row { timestamp: 8888, ..row(route) }]);
-    publish_image(&store, &mut image, Some(route), false).unwrap();
+    publish_image(&store, &mut image, Some(route), None).unwrap();
     disk.reboot();
     let reopened = FlatStore::mount(&disk);
 
@@ -142,7 +142,7 @@ fn actual_store_replace_reopen_reconcile_and_identity_guards() {
     assert_eq!(loaded.rows().next().unwrap().timestamp, 8888);
     let other_disk = SparseDisk::blank(BLOCKS, 2);
     let other = FlatStore::initialize(&other_disk, StoreId([3; 16])).unwrap();
-    assert_eq!(publish_image(&other, &mut loaded, Some(route), false), Err(Error::WrongStore));
+    assert_eq!(publish_image(&other, &mut loaded, Some(route), None), Err(Error::WrongStore));
     let new_route = EntryMeta { revision: Revision(2), ..route };
     let mut allocation = reopened.allocate(5).unwrap();
     reopened.write(&mut allocation, b"route").unwrap();
@@ -152,7 +152,7 @@ fn actual_store_replace_reopen_reconcile_and_identity_guards() {
             Mutation::Put { meta: new_route, source: PutSource::Fresh(allocation) },
         ])
         .unwrap();
-    assert_eq!(publish_image(&reopened, &mut loaded, Some(route), false), Err(Error::Stale));
+    assert_eq!(publish_image(&reopened, &mut loaded, Some(route), None), Err(Error::Stale));
 }
 
 #[test]
@@ -187,10 +187,10 @@ fn prepublication_commit_error_keeps_old_metadata_readable() {
     let mut bytes = [0; MAX_LEN];
     let mut image = load_image(&store, &mut bytes).unwrap();
     image.set(row(target)).unwrap();
-    publish_image(&store, &mut image, Some(target), false).unwrap();
+    publish_image(&store, &mut image, Some(target), None).unwrap();
     image.set(Row { timestamp: 9999, ..row(target) }).unwrap();
     store.device().fault_next(MediaOp::Sync);
-    assert_eq!(publish_image(&store, &mut image, Some(target), false), Err(Error::Store(StoreError::Media)));
+    assert_eq!(publish_image(&store, &mut image, Some(target), None), Err(Error::Store(StoreError::Media)));
     assert!(store.device().fired());
     assert_eq!(load_image(&store, &mut bytes).unwrap().rows().next().unwrap().timestamp, 1234);
     disk.reboot();
@@ -210,12 +210,12 @@ fn power_cut_at_final_gate_sync_recovers_a_complete_generation() {
         let mut bytes = [0; MAX_LEN];
         let mut image = load_image(&store, &mut bytes).unwrap();
         image.set(row(target)).unwrap();
-        publish_image(&store, &mut image, Some(target), false).unwrap();
+        publish_image(&store, &mut image, Some(target), None).unwrap();
         image.set(Row { timestamp: 9999, ..row(target) }).unwrap();
         if let Some(op) = cut {
             disk.plan(FaultPlan { op, when: When::After });
         }
-        let result = publish_image(&store, &mut image, Some(target), false);
+        let result = publish_image(&store, &mut image, Some(target), None);
         let last_sync = disk.ledger().iter().rev().find(|(_, op, _)| *op == MediaOp::Sync).unwrap().0;
         if cut.is_some() {
             assert_eq!(result, Err(Error::RemountRequired));
@@ -242,11 +242,11 @@ fn leases_preserve_old_bytes_without_admitting_old_source_or_metadata_heads() {
     let mut bytes = [0; MAX_LEN];
     let mut image = load_image(&store, &mut bytes).unwrap();
     image.set(row(route)).unwrap();
-    let old = publish_image(&store, &mut image, Some(route), false).unwrap();
+    let old = publish_image(&store, &mut image, Some(route), None).unwrap();
     let old_bytes = image.bytes().to_vec();
     let metadata_lease = store.open(old.id, Some(old.revision)).unwrap();
     image.set(Row { timestamp: 9999, ..row(route) }).unwrap();
-    publish_image(&store, &mut image, Some(route), false).unwrap();
+    publish_image(&store, &mut image, Some(route), None).unwrap();
     let mut readback = [0; MAX_LEN];
     assert_eq!(store.read(&metadata_lease, 0, &mut readback).unwrap(), old_bytes.len());
     assert_eq!(&readback[..old_bytes.len()], old_bytes);
@@ -260,10 +260,10 @@ fn leases_preserve_old_bytes_without_admitting_old_source_or_metadata_heads() {
             Mutation::Put { meta: next, source: PutSource::Fresh(allocation) },
         ])
         .unwrap();
-    assert_eq!(publish_image(&store, &mut image, Some(route), false), Err(Error::Stale));
+    assert_eq!(publish_image(&store, &mut image, Some(route), None), Err(Error::Stale));
     assert!(image.reconcile(&store).unwrap());
     assert_eq!(image.rows().count(), 0);
-    publish_image(&store, &mut image, None, false).unwrap();
+    publish_image(&store, &mut image, None, None).unwrap();
 
     assert_eq!(load_image(&store, &mut readback).unwrap().rows().count(), 0);
     store.close(route_lease);
@@ -283,10 +283,10 @@ fn precommit_payload_failure_can_retry_without_leaking_a_reservation() {
     }
     for _ in 0..3 {
         device.fault_next(MediaOp::Write);
-        assert_eq!(publish_image(&store, &mut image, None, false), Err(Error::Store(StoreError::Media)));
+        assert_eq!(publish_image(&store, &mut image, None, None), Err(Error::Store(StoreError::Media)));
         assert!(device.fired());
     }
-    publish_image(&store, &mut image, None, false).unwrap();
+    publish_image(&store, &mut image, None, None).unwrap();
 }
 
 #[test]
@@ -299,17 +299,17 @@ fn reloading_the_writer_does_not_refresh_an_older_images_publication_authority()
     let mut bytes = [0; MAX_LEN];
     let mut old = load_image(&store, &mut bytes).unwrap();
     old.set(row(route)).unwrap();
-    publish_image(&store, &mut old, Some(route), false).unwrap();
+    publish_image(&store, &mut old, Some(route), None).unwrap();
 
     let mut other = [0; MAX_LEN];
     let mut latest = load_image(&store, &mut other).unwrap();
     latest.set(row(ride)).unwrap();
-    publish_image(&store, &mut latest, Some(ride), false).unwrap();
+    publish_image(&store, &mut latest, Some(ride), None).unwrap();
     let mut refreshed_bytes = [0; MAX_LEN];
     let _refreshed = load_image(&store, &mut refreshed_bytes).unwrap();
-    assert_eq!(publish_image(&store, &mut old, Some(route), false), Err(Error::Stale));
+    assert_eq!(publish_image(&store, &mut old, Some(route), None), Err(Error::Stale));
     let mut synthetic = Image::empty(CARD, &mut other).unwrap();
-    assert_eq!(publish_image(&store, &mut synthetic, None, false), Err(Error::Stale));
+    assert_eq!(publish_image(&store, &mut synthetic, None, None), Err(Error::Stale));
 }
 
 #[test]
@@ -369,7 +369,7 @@ fn write_proof<D: BlockDevice>(store: &FlatStore<D>, source: EntryMeta) -> Resul
     let mut bytes = [0; MAX_LEN];
     let mut image = load_image(store, &mut bytes)?;
     image.set(row(source))?;
-    publish_image(store, &mut image, Some(source), false)
+    publish_image(store, &mut image, Some(source), None)
 }
 
 pub(super) fn checkpoint(route: EntryMeta, original: Option<EntryMeta>) -> NavigatorCheckpoint {
@@ -442,7 +442,7 @@ fn archive_and_checkpoint_writes_share_current_image_and_exact_target_validation
     let mut stale = load_image(&store, &mut draft_bytes).unwrap();
     stale.set_checkpoint(Some(cp)).unwrap();
     archive_ride(&store, CARD, ride.id, ride.revision, ride.payload_len, ride.payload_crc).unwrap();
-    assert_eq!(publish_image(&store, &mut stale, None, true), Err(Error::Stale));
+    assert_eq!(publish_image(&store, &mut stale, None, None), Err(Error::Stale));
     write_checkpoint(&store, CARD, store.sequence(), None, Some(cp)).unwrap();
     archive_ride(&store, CARD, ride.id, ride.revision, ride.payload_len, ride.payload_crc).unwrap();
     assert_eq!(read_checkpoint(&store), Ok(Some(cp)));

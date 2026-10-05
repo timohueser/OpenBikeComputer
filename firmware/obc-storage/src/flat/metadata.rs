@@ -309,7 +309,7 @@ fn publish_image<D: BlockDevice>(
     store: &FlatStore<D>,
     image: &mut Image<'_>,
     target: Option<EntryMeta>,
-    checkpoint_edit: bool,
+    accepted: Option<EntryMeta>,
 ) -> Result<EntryMeta, Error> {
     check_mode(store)?;
     let identity = image.store_id();
@@ -324,17 +324,6 @@ fn publish_image<D: BlockDevice>(
     if found.iter().take(image.rows().count()).any(|&v| !v) || (target.is_some() && !target_present) {
         return Err(Error::Stale);
     }
-    let accepted = if checkpoint_edit {
-        validate_checkpoint(store, image.checkpoint())?;
-        image
-            .checkpoint()
-            .map(|checkpoint| checkpoint_source(store, checkpoint.route))
-            .transpose()?
-            .filter(|entry| !entry.flags.has(EntryFlags::ASSISTANT_ACCEPTED))
-            .map(|entry| EntryMeta { flags: EntryFlags::ASSISTANT_ACCEPTED, ..entry })
-    } else {
-        None
-    };
     let (id, revision) = match head {
         Some(head) => (head.id, Revision(head.revision.0.checked_add(1).ok_or(Error::Invalid)?)),
         None => (store.next_object_id(), Revision(1)),
@@ -459,34 +448,17 @@ pub fn reconcile<D: BlockDevice>(store: &FlatStore<D>) -> Result<(), Error> {
 /// Stage callback values until success; a later streamed read can fail.
 #[inline(never)]
 pub fn read_rows<D: BlockDevice>(store: &FlatStore<D>, mut accept: impl FnMut(Row)) -> Result<(), Error> {
-    Reader::with(store, |reader| {
-        let mut keep = [false; MAX_RIDES];
-        let mut reader = reader;
-        let rows = reader.as_ref().map_or(0, |r| r.layout.rows);
-        let mut i = 0;
-        let mut row = if rows != 0 { Some(reader.as_mut().unwrap().row(store, 0)?) } else { None };
-        for entry in store.entries() {
-            while row.is_some_and(|row| row.id < entry.id) {
-                i += 1;
-                row = if i < rows { Some(reader.as_mut().unwrap().row(store, i)?) } else { None };
-            }
-            if let Some(row) = row {
-                keep[i] |= row.matches(entry);
+    let mut reader = Reader::open(store)?;
+    let keep = Reader::matching_rows(store, reader.as_mut())?;
+    durable(store)?;
+    if let Some(reader) = reader.as_mut() {
+        for (i, keep) in keep.iter().enumerate().take(reader.layout.rows) {
+            if *keep {
+                accept(reader.row(i)?);
             }
         }
-        if !store.entries_ok() {
-            return Err(Error::Store(StoreError::Media));
-        }
-        durable(store)?;
-        if let Some(reader) = reader {
-            for (i, keep) in keep.iter().enumerate().take(rows) {
-                if *keep {
-                    accept(reader.row(store, i)?);
-                }
-            }
-        }
-        Ok(())
-    })
+    }
+    Ok(())
 }
 /// Every proof row as the last commit left it, with no reconcile and no barrier. Policy reads
 /// [`read_rows`]; this reads back what a receipt committed, so an observer sees the same identity
@@ -497,14 +469,12 @@ pub fn read_rows<D: BlockDevice>(store: &FlatStore<D>, mut accept: impl FnMut(Ro
 /// `WrongStore` error, never a row. Callback values are tentative until success.
 #[inline(never)]
 pub fn census<D: BlockDevice>(store: &FlatStore<D>, mut accept: impl FnMut(Row)) -> Result<StoreId, Error> {
-    Reader::with(store, |reader| {
-        if let Some(reader) = reader {
-            for i in 0..reader.layout.rows {
-                accept(reader.row(store, i)?);
-            }
+    if let Some(mut reader) = Reader::open(store)? {
+        for i in 0..reader.layout.rows {
+            accept(reader.row(i)?);
         }
-        Ok(store.store_id())
-    })
+    }
+    Ok(store.store_id())
 }
 
 fn durable<D: BlockDevice>(store: &FlatStore<D>) -> Result<(), Error> {
@@ -571,14 +541,17 @@ fn checkpoint_source<D: BlockDevice>(store: &FlatStore<D>, source: PayloadFinger
 fn validate_checkpoint<D: BlockDevice>(
     store: &FlatStore<D>,
     checkpoint: Option<NavigatorCheckpoint>,
-) -> Result<(), Error> {
-    if let Some(checkpoint) = checkpoint {
-        checkpoint_source(store, checkpoint.route)?;
-        if let Some(original) = checkpoint.original {
-            checkpoint_source(store, original)?;
-        }
+    require_accepted: bool,
+) -> Result<Option<EntryMeta>, Error> {
+    let Some(checkpoint) = checkpoint else { return Ok(None) };
+    let route = checkpoint_source(store, checkpoint.route)?;
+    if require_accepted && !route.flags.has(EntryFlags::ASSISTANT_ACCEPTED) {
+        return Err(Error::Invalid);
     }
-    Ok(())
+    if let Some(original) = checkpoint.original {
+        checkpoint_source(store, original)?;
+    }
+    Ok(Some(route))
 }
 
 /// Serialize this with archive proof updates. No draft survives the call.
@@ -621,12 +594,12 @@ enum Edit<'a> {
 fn edit<D: BlockDevice>(store: &FlatStore<D>, edit: Edit<'_>) -> Result<u32, Error> {
     let mut bytes = [0; MAX_LEN];
     let mut image = load_image(store, &mut bytes)?;
-    let (target, checkpoint_edit) = match edit {
+    let (target, accepted) = match edit {
         Edit::Reconcile => {
             if !image.reconcile(store)? {
                 return Ok(0);
             }
-            (None, false)
+            (None, None)
         }
         Edit::Archive(target) => {
             image.reconcile(store)?;
@@ -645,13 +618,15 @@ fn edit<D: BlockDevice>(store: &FlatStore<D>, edit: Edit<'_>) -> Result<u32, Err
                 timestamp: 0,
                 kind: ObjectKind::Ride,
             })?;
-            (Some(target), false)
+            (Some(target), None)
         }
         Edit::Checkpoint { expected, next } => {
             if image.checkpoint() != expected {
                 return Err(Error::Stale);
             }
-            validate_checkpoint(store, next)?;
+            let accepted = validate_checkpoint(store, next, false)?
+                .filter(|entry| !entry.flags.has(EntryFlags::ASSISTANT_ACCEPTED))
+                .map(|entry| EntryMeta { flags: EntryFlags::ASSISTANT_ACCEPTED, ..entry });
             if expected == next {
                 verify_checkpoint_payloads(store, next)?;
                 durable(store)?;
@@ -659,15 +634,15 @@ fn edit<D: BlockDevice>(store: &FlatStore<D>, edit: Edit<'_>) -> Result<u32, Err
             }
             image.reconcile(store)?;
             image.set_checkpoint(next)?;
-            (None, true)
+            (None, accepted)
         }
         Edit::Progress { new, stored } => {
             image.reconcile(store)?;
             record_progress(&mut image, new, stored)?;
-            (None, false)
+            (None, None)
         }
     };
-    publish_image(store, &mut image, target, checkpoint_edit)?;
+    publish_image(store, &mut image, target, accepted)?;
     Ok(0)
 }
 
@@ -710,18 +685,16 @@ fn record_progress(image: &mut Image<'_>, new: TripProgress, stored: &dyn Fn(u64
 /// reads its metres as 0. Stage callback values until the read succeeds.
 #[inline(never)]
 pub fn read_progress<D: BlockDevice>(store: &FlatStore<D>, mut accept: impl FnMut(TripProgress)) -> Result<(), Error> {
-    Reader::with(store, |reader| {
-        if let Some(reader) = reader {
-            for i in 0..reader.layout.records {
-                let mut record = reader.progress(store, i)?;
-                if route_revision(store, record.day_route.id)? != Some(record.day_route.revision) {
-                    record.metres = 0;
-                }
-                accept(record);
+    if let Some(mut reader) = Reader::open(store)? {
+        for i in 0..reader.layout.records {
+            let mut record = reader.progress(i)?;
+            if route_revision(store, record.day_route.id)? != Some(record.day_route.revision) {
+                record.metres = 0;
             }
+            accept(record);
         }
-        Ok(())
-    })
+    }
+    Ok(())
 }
 
 fn route_revision<D: BlockDevice>(store: &FlatStore<D>, id: u64) -> Result<Option<u64>, Error> {
@@ -733,19 +706,14 @@ fn route_revision<D: BlockDevice>(store: &FlatStore<D>, id: u64) -> Result<Optio
 }
 
 fn read_checkpoint_value<D: BlockDevice>(store: &FlatStore<D>) -> Result<Option<NavigatorCheckpoint>, Error> {
-    Reader::with(store, |reader| reader.map_or(Ok(None), |reader| reader.checkpoint(store)))
+    Reader::open(store)?.map_or(Ok(None), |mut reader| reader.checkpoint())
 }
 
 /// A validated recovery offer. No checkpoint means ordinary boot behavior.
 #[inline(never)]
 pub fn read_checkpoint<D: BlockDevice>(store: &FlatStore<D>) -> Result<Option<NavigatorCheckpoint>, Error> {
     let checkpoint = read_checkpoint_value(store)?;
-    if let Some(checkpoint) = checkpoint {
-        if !checkpoint_source(store, checkpoint.route)?.flags.has(EntryFlags::ASSISTANT_ACCEPTED) {
-            return Err(Error::Invalid);
-        }
-    }
-    validate_checkpoint(store, checkpoint)?;
+    validate_checkpoint(store, checkpoint, true)?;
     verify_checkpoint_payloads(store, checkpoint)?;
     durable(store)?;
     Ok(checkpoint)

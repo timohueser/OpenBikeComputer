@@ -7,9 +7,10 @@ pub(super) struct Layout {
     pub(super) records: usize,
 }
 
-pub(super) struct Reader {
+pub(super) struct Reader<'a, D: BlockDevice> {
+    store: &'a FlatStore<D>,
     head: EntryMeta,
-    handle: crate::flat::Handle,
+    handle: Option<crate::flat::Handle>,
     pub(super) layout: Layout,
     cache: [u8; 512],
     cached_at: usize,
@@ -70,52 +71,70 @@ impl Layout {
     }
 }
 
-impl Reader {
+impl<'a, D: BlockDevice> Reader<'a, D> {
     #[inline(never)]
-    pub(super) fn with<D: BlockDevice, T>(
-        store: &FlatStore<D>,
-        visit: impl FnOnce(Option<&mut Self>) -> Result<T, Error>,
-    ) -> Result<T, Error> {
+    pub(super) fn open(store: &'a FlatStore<D>) -> Result<Option<Self>, Error> {
         check_mode(store)?;
         let Some(head) = singleton(store)? else {
-            return visit(None);
+            return Ok(None);
         };
         let len = usize::try_from(head.payload_len).map_err(|_| Error::Capacity)?;
         if len > MAX_LEN {
             return Err(Error::Capacity);
         }
-        let handle = store.open(head.id, Some(head.revision))?;
-        let mut reader = Self { head, handle, layout: Layout::default(), cache: [0; 512], cached_at: usize::MAX };
-        let result = (|| {
-            reader.validate(store, len)?;
-            visit(Some(&mut reader))
-        })();
-        store.close(reader.handle);
-        result
+        let handle = Some(store.open(head.id, Some(head.revision))?);
+        let mut reader =
+            Self { store, head, handle, layout: Layout::default(), cache: [0; 512], cached_at: usize::MAX };
+        reader.validate(len)?;
+        Ok(Some(reader))
     }
 
     #[inline(never)]
-    fn validate<D: BlockDevice>(&mut self, store: &FlatStore<D>, len: usize) -> Result<(), Error> {
+    pub(super) fn matching_rows(
+        store: &FlatStore<D>,
+        mut reader: Option<&mut Self>,
+    ) -> Result<[bool; MAX_RIDES], Error> {
+        let mut keep = [false; MAX_RIDES];
+        let rows = reader.as_ref().map_or(0, |r| r.layout.rows);
+        let mut i = 0;
+        let mut row = if rows != 0 { Some(reader.as_mut().unwrap().row(0)?) } else { None };
+        for entry in store.entries() {
+            while row.is_some_and(|row| row.id < entry.id) {
+                i += 1;
+                row = if i < rows { Some(reader.as_mut().unwrap().row(i)?) } else { None };
+            }
+            if let Some(row) = row {
+                keep[i] |= row.matches(entry);
+            }
+        }
+        if !store.entries_ok() {
+            return Err(Error::Store(StoreError::Media));
+        }
+        Ok(keep)
+    }
+
+    #[inline(never)]
+    fn validate(&mut self, len: usize) -> Result<(), Error> {
         let mut crc = obc_crc::Crc32::new();
         for offset in (0..len).step_by(512) {
-            self.fill(store, offset)?;
+            self.fill(offset)?;
             crc.update(&self.cache[..(len - offset).min(512)]);
         }
         if crc.finalize() != self.head.payload_crc || len < HEADER_LEN {
             return Err(Error::Invalid);
         }
-        let (layout, identity) = Layout::parse(len, &mut |offset, out| self.read(store, offset, out))?;
-        if identity != store.store_id() {
+        let (layout, identity) = Layout::parse(len, &mut |offset, out| self.read(offset, out))?;
+        if identity != self.store.store_id() {
             return Err(Error::WrongStore);
         }
         self.layout = layout;
         Ok(())
     }
 
-    fn fill<D: BlockDevice>(&mut self, store: &FlatStore<D>, at: usize) -> Result<(), Error> {
+    fn fill(&mut self, at: usize) -> Result<(), Error> {
         if self.cached_at != at {
             let want = (self.head.payload_len as usize - at).min(512);
-            if store.read(&self.handle, at as u64, &mut self.cache[..want])? != want {
+            if self.store.read(self.handle.as_ref().unwrap(), at as u64, &mut self.cache[..want])? != want {
                 return Err(Error::Invalid);
             }
             self.cached_at = at;
@@ -123,15 +142,10 @@ impl Reader {
         Ok(())
     }
 
-    fn read<D: BlockDevice>(
-        &mut self,
-        store: &FlatStore<D>,
-        mut offset: usize,
-        mut out: &mut [u8],
-    ) -> Result<(), Error> {
+    fn read(&mut self, mut offset: usize, mut out: &mut [u8]) -> Result<(), Error> {
         while !out.is_empty() {
             let at = offset / 512 * 512;
-            self.fill(store, at)?;
+            self.fill(at)?;
             let from = offset - at;
             let take = out.len().min(512 - from);
             out[..take].copy_from_slice(&self.cache[from..from + take]);
@@ -141,31 +155,32 @@ impl Reader {
         Ok(())
     }
 
-    pub(super) fn row<D: BlockDevice>(&mut self, store: &FlatStore<D>, i: usize) -> Result<Row, Error> {
+    pub(super) fn row(&mut self, i: usize) -> Result<Row, Error> {
         let mut bytes = [0; ROW_LEN];
-        self.read(store, HEADER_LEN + i * ROW_LEN, &mut bytes)?;
+        self.read(HEADER_LEN + i * ROW_LEN, &mut bytes)?;
         Row::decode(&bytes)
     }
 
-    pub(super) fn checkpoint<D: BlockDevice>(
-        &mut self,
-        store: &FlatStore<D>,
-    ) -> Result<Option<NavigatorCheckpoint>, Error> {
+    pub(super) fn checkpoint(&mut self) -> Result<Option<NavigatorCheckpoint>, Error> {
         if self.layout.checkpoint_len == 0 {
             return Ok(None);
         }
         let mut bytes = [0; CHECKPOINT_LEN];
-        self.read(store, HEADER_LEN + self.layout.rows * ROW_LEN, &mut bytes)?;
+        self.read(HEADER_LEN + self.layout.rows * ROW_LEN, &mut bytes)?;
         Ok(NavigatorCheckpoint::decode(&bytes))
     }
 
-    pub(super) fn progress<D: BlockDevice>(&mut self, store: &FlatStore<D>, i: usize) -> Result<TripProgress, Error> {
+    pub(super) fn progress(&mut self, i: usize) -> Result<TripProgress, Error> {
         let mut bytes = [0; RECORD_LEN];
-        self.read(
-            store,
-            HEADER_LEN + self.layout.rows * ROW_LEN + self.layout.checkpoint_len + i * RECORD_LEN,
-            &mut bytes,
-        )?;
+        self.read(HEADER_LEN + self.layout.rows * ROW_LEN + self.layout.checkpoint_len + i * RECORD_LEN, &mut bytes)?;
         TripProgress::decode(&bytes).ok_or(Error::Invalid)
+    }
+}
+
+impl<D: BlockDevice> Drop for Reader<'_, D> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            self.store.close(handle);
+        }
     }
 }
