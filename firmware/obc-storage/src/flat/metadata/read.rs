@@ -14,6 +14,9 @@ pub(super) struct Reader<'a, D: BlockDevice> {
     pub(super) layout: Layout,
     cache: [u8; 512],
     cached_at: usize,
+    // Cumulative CRC states bind each refill to the validated snapshot.
+    anchors: [obc_crc::Crc32; MAX_LEN.div_ceil(512)],
+    validated: bool,
 }
 
 type ReadAt<'a> = dyn FnMut(usize, &mut [u8]) -> Result<(), Error> + 'a;
@@ -83,8 +86,16 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
             return Err(Error::Capacity);
         }
         let handle = Some(store.open(head.id, Some(head.revision))?);
-        let mut reader =
-            Self { store, head, handle, layout: Layout::default(), cache: [0; 512], cached_at: usize::MAX };
+        let mut reader = Self {
+            store,
+            head,
+            handle,
+            layout: Layout::default(),
+            cache: [0; 512],
+            cached_at: usize::MAX,
+            anchors: [obc_crc::Crc32::new(); MAX_LEN.div_ceil(512)],
+            validated: false,
+        };
         reader.validate(len)?;
         Ok(Some(reader))
     }
@@ -104,10 +115,12 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
         for offset in (0..len).step_by(512) {
             self.fill(offset)?;
             crc.update(&self.cache[..(len - offset).min(512)]);
+            self.anchors[offset / 512] = crc;
         }
         if crc.finalize() != self.head.payload_crc || len < HEADER_LEN {
             return Err(Error::Invalid);
         }
+        self.validated = true;
         let (layout, identity) = Layout::parse(len, &mut |offset, out| self.read(offset, out))?;
         if identity != self.store.store_id() {
             return Err(Error::WrongStore);
@@ -118,9 +131,18 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
 
     fn fill(&mut self, at: usize) -> Result<(), Error> {
         if self.cached_at != at {
+            self.cached_at = usize::MAX;
             let want = (self.head.payload_len as usize - at).min(512);
             if self.store.read(self.handle.as_ref().unwrap(), at as u64, &mut self.cache[..want])? != want {
                 return Err(Error::Invalid);
+            }
+            if self.validated {
+                let page = at / 512;
+                let mut crc = if page == 0 { obc_crc::Crc32::new() } else { self.anchors[page - 1] };
+                crc.update(&self.cache[..want]);
+                if crc != self.anchors[page] {
+                    return Err(Error::Invalid);
+                }
             }
             self.cached_at = at;
         }

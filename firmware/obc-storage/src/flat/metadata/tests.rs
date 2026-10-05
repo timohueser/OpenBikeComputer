@@ -628,6 +628,70 @@ fn a_late_stream_failure_invalidates_the_census_and_releases_its_handle() {
 }
 
 #[test]
+fn a_successful_changed_read_after_the_barrier_keeps_published_policy_rows() {
+    use core::cell::Cell;
+    struct CorruptRead<'a> {
+        disk: &'a SparseDisk,
+        enabled: Cell<bool>,
+        armed: Cell<bool>,
+        changed: Cell<Option<Row>>,
+    }
+    impl BlockDevice for &CorruptRead<'_> {
+        type Error = crate::flat::sim::DiskError;
+        fn block_count(&self) -> Result<u64, Self::Error> {
+            self.disk.block_count()
+        }
+        fn read(&self, lba: u64, bytes: &mut [u8]) -> Result<(), Self::Error> {
+            self.disk.read(lba, bytes)?;
+            if self.armed.get() && &bytes[..4] != b"OBRM" {
+                self.armed.set(false);
+                bytes[28] ^= 1;
+                self.changed.set(Some(Row::decode(&bytes[..ROW_LEN]).unwrap()));
+            }
+            Ok(())
+        }
+        fn write(&self, lba: u64, bytes: &[u8]) -> Result<(), Self::Error> {
+            self.disk.write(lba, bytes)
+        }
+        fn sync(&self) -> Result<(), Self::Error> {
+            self.disk.sync()?;
+            self.armed.set(self.enabled.get());
+            Ok(())
+        }
+    }
+    let disk = SparseDisk::blank(BLOCKS, 13);
+    let device =
+        CorruptRead { disk: &disk, enabled: Cell::new(false), armed: Cell::new(false), changed: Cell::new(None) };
+    let store = FlatStore::initialize(&device, CARD).unwrap();
+    let rides: Vec<_> = (0..13).map(|_| publish(&store, ObjectKind::Ride, b"ride")).collect();
+    let mut bytes = [0; MAX_LEN];
+    let mut image = Image::empty(CARD, &mut bytes).unwrap();
+    for &ride in &rides {
+        image.set(row(ride)).unwrap();
+    }
+    publish(&store, ObjectKind::Metadata, image.bytes());
+    device.enabled.set(true);
+    let old = std::vec![Row { timestamp: 99, ..row(rides[0]) }];
+    let mut published = old.clone();
+    let mut staged = Vec::new();
+    let result = read_rows(&store, |row| staged.push(row));
+    if result.is_ok() {
+        published = staged.clone();
+    }
+    assert_eq!(result, Err(Error::Invalid));
+    assert_eq!(published, old);
+    assert_eq!(staged.len(), 12);
+    assert_eq!(device.changed.get(), Some(Row { timestamp: 1235, ..row(rides[12]) }));
+    let handles: Vec<_> = rides[..super::super::store::MAX_OPEN_OBJECTS]
+        .iter()
+        .map(|ride| store.open(ride.id, Some(ride.revision)).unwrap())
+        .collect();
+    for handle in handles {
+        store.close(handle);
+    }
+}
+
+#[test]
 fn progress_records_survive_row_and_checkpoint_edits_and_a_remount() {
     let disk = SparseDisk::blank(BLOCKS, 1);
     let store = FlatStore::initialize(&disk, CARD).unwrap();
