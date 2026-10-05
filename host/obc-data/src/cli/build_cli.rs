@@ -201,8 +201,10 @@ fn run_build(
             None => Err(outdated(file)),
             Some(version) => fetch(wanted).map_err(|e| match e.fix == e.code.fix() {
                 true => {
-                    let source = &wanted.source;
-                    e.fix(format!("{} reads `{source}@{version}`, and the store lacks it: plan again.", file.display()))
+                    let (plan, source) = (file.display(), &wanted.source);
+                    let fix =
+                        format!("{} Or plan again: {plan} reads `{source}@{version}`, which the store lacks.", e.fix);
+                    e.fix(fix)
                 }
                 false => e,
             }),
@@ -396,8 +398,11 @@ fn product_bug(name: &str, message: String) -> Error {
     Code::Failed.error(message).fix(fix)
 }
 
+/// The fetch rounds of one product: a loop guard, far above the two that the planner needs.
+const ROUNDS: usize = 8;
+
 /// The steps of every product, and the products that give `Unplanned::Invalid`. A product whose
-/// step list reads snapshots that the store lacks gets them fetched, and is asked once more. The
+/// step list reads snapshots that the store lacks gets them fetched, as [`product_steps`] says. The
 /// fetch for a `--move SOURCE` names its version in `env`, so every product reads that one version.
 pub(super) fn steps(
     products: &[&dyn Product],
@@ -432,8 +437,9 @@ pub(super) fn check_layers(products: &[&dyn Product], env: &Env) -> Result<(), E
     Ok(())
 }
 
-/// The steps of one product, after the fetches that its step list needs. `Ok(Err(reason))` when
-/// the product is blocked (`Unplanned::Invalid`).
+/// The steps of one product, after the fetches that its step list needs: it is asked again while
+/// each round names only new fetches, at most [`ROUNDS`] times. `Ok(Err(reason))` when the
+/// product is blocked (`Unplanned::Invalid`).
 pub(super) fn product_steps(
     product: &dyn Product,
     env: &mut Env,
@@ -442,17 +448,23 @@ pub(super) fn product_steps(
     fetch: &mut impl FnMut(&Wanted) -> Result<String, Error>,
 ) -> Result<Result<Vec<Step>, String>, Error> {
     let name = product.name();
+    // A refusal belongs to the product that is listed now.
+    env.refused.borrow_mut().clear();
     let mut listed = product.steps(env, regions, store);
-    if let Err(Unplanned::NeedsFetch(fetches)) = &listed {
-        for wanted in fetches.clone() {
-            let named = env.version(&wanted.source, &wanted.params).ok().flatten().map(str::to_string);
-            let version = wanted.version.or(named);
-            let wanted = Wanted { version, ..wanted };
-            let fetched = fetch(&wanted)?;
+    // A fetch can name the next one, such as the `.poly` that gives the box of a capture.
+    let mut fetched: Vec<Wanted> = Vec::new();
+    for _ in 0..ROUNDS {
+        let Err(Unplanned::NeedsFetch(fetches)) = &listed else { break };
+        if fetches.iter().any(|wanted| fetched.contains(wanted)) {
+            break;
+        }
+        for wanted in fetches {
+            let version = fetch(wanted)?;
             if env.moves_to_newest(&wanted.source) {
-                env.moves.insert(wanted.source, Some(fetched));
+                env.moves.insert(wanted.source.clone(), Some(version));
             }
         }
+        fetched.extend(fetches.iter().cloned());
         listed = product.steps(env, regions, store);
     }
     let steps = match listed {
@@ -542,6 +554,41 @@ mod tests {
         let err = steps(&[&Indexed], &mut env(&["snow"]), &regions, &fixture.store, |_| Ok("1".into())).err().unwrap();
         let message = "data/env/live.toml: no product has the optional layer `snow`";
         assert_eq!((err.code, err.message.as_str()), (Code::InvalidData, message));
+    }
+
+    /// The test pipeline, once the store has `index@1` and then `box@1`, which only the index names.
+    struct Chained;
+
+    impl Product for Chained {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+
+        fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<Vec<Step>, Unplanned> {
+            Indexed.steps(env, regions, store)?;
+            match snapshot_files(store, "box", "1", &[], &[]).map_err(Unplanned::Failed)? {
+                Some(_) => Ok(pipeline()),
+                None => Err(Unplanned::NeedsFetch(vec![Wanted {
+                    source: "box".into(),
+                    version: Some("1".into()),
+                    params: Vec::new(),
+                }])),
+            }
+        }
+    }
+
+    #[test]
+    fn a_fetch_that_names_the_next_fetch_gets_another_round() {
+        let fixture = fixture("cli-two-rounds");
+        let regions = Regions::new(Vec::new()).unwrap();
+        let fetched = std::cell::RefCell::new(Vec::new());
+        let fetch = |wanted: &Wanted| {
+            fixture.fetched(&wanted.source, "file.txt", wanted.source.as_bytes());
+            fetched.borrow_mut().push(wanted.source.clone());
+            Ok("1".into())
+        };
+        let (listed, _) = steps(&[&Chained], &mut env(&[]), &regions, &fixture.store, fetch).unwrap();
+        assert_eq!((listed.len(), fetched.into_inner()), (3, vec!["index".to_string(), "box".to_string()]));
     }
 
     /// No steps, once the store has the outline of `area=europe/monaco`.

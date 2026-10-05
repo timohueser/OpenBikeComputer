@@ -9,8 +9,8 @@ use crate::store::{FileRecord, Snapshot, Store};
 
 /// The daily diffs of version `E` from `from=B`: the diff and the `state.txt` of each sequence
 /// after the sequence of `B` up to the sequence of `E`, and the `state.txt` of `B`. The states
-/// name the day of each sequence, so a record of any `E` serves any start. A step applies the
-/// diffs to the planet of `B` with `osmium apply-changes`; the fetch does not.
+/// name the day of each sequence, so a record of any `E` serves any start. The fetch does not
+/// apply the diffs.
 pub fn replication(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
     let source = request.source;
     let directory = source.fetch.url.as_deref().unwrap_or_default();

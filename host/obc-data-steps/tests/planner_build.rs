@@ -1,12 +1,15 @@
 //! The planner layers of `obc data build` over a road grid of nine junctions near Freiburg
-//! (`data/planner.osm`): the routing package verifies, and a second plan builds nothing.
+//! (`data/planner.osm`): the routing package verifies, the overlays derive from it, and a second
+//! plan builds nothing.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use obc_data::engine::plan::plan;
 use obc_data::engine::release::release;
-use obc_data::engine::runs::{Context, Limits, Run};
+use obc_data::engine::runs::{Context, Limits, Run as RunLog};
+use obc_data::engine::{Built, Run, Step};
 use obc_data::env::Env;
 use obc_data::fetch::http::Http;
 use obc_data::product::Product;
@@ -41,7 +44,7 @@ fn fetched(store: &Store, source: &str, version: &str, params: Vec<(String, Stri
 }
 
 #[test]
-fn a_build_makes_a_routing_package_that_verifies_and_a_second_plan_builds_nothing() {
+fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_nothing() {
     let temp = Temp(std::env::temp_dir().join(format!("obc-data-planner-{}", std::process::id())));
     let _ = std::fs::remove_dir_all(&temp.0);
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -56,18 +59,25 @@ fn a_build_makes_a_routing_package_that_verifies_and_a_second_plan_builds_nothin
 
     let region = parse_region(AREA, "name = \"Test\"\nkind = \"geofabrik\"\ncountries = [\"DE\"]\n").unwrap();
     let regions = Regions::new(vec![region]).unwrap();
-    let live = BTreeMap::from([
-        ((GLO30.into(), Vec::new()), ["1".to_string()].into()),
-        ((TILE_LIST.into(), Vec::new()), ["1".to_string()].into()),
-    ]);
-    let env = Env { name: "test".into(), region: AREA.into(), live, ..Env::default() };
-    let steps = Planner.steps(&env, &regions, &store).unwrap();
+    // The assets and the model read no layer, so this build leaves them out.
+    let live = [GLO30, TILE_LIST, "protomaps-assets", "tangrams-icons", "query-model"]
+        .map(|id| ((id.to_string(), Vec::new()), BTreeSet::from(["1".to_string()])));
+    let env = Env { name: "test".into(), region: AREA.into(), live: BTreeMap::from(live), ..Env::default() };
+    let steps = |python: bool| {
+        let mut steps = Planner.steps(&env, &regions, &store).unwrap();
+        steps.retain(|step| matches!(step.run, Run::Rust(_)) || python && step.name == "planner/overlays");
+        steps
+    };
+    let http = Http::new();
+    let context = Context { store: &store, root: &root, sources: &[], http: &http, limits: Limits::machine() };
+    let build = |steps: &[Step]| -> Vec<Built> {
+        let mut run = RunLog::create(&store, "build test").unwrap();
+        let built = run.build(&context, steps, &plan(&store, &root, steps).unwrap()).unwrap();
+        run.finish(None).unwrap();
+        built
+    };
 
-    let first = plan(&store, &root, &steps).unwrap();
-    let mut run = Run::create(&store, "build test").unwrap();
-    let context = Context { store: &store, root: &root, sources: &[], http: &Http::new(), limits: Limits::machine() };
-    let built = run.build(&context, &steps, &first).unwrap();
-    run.finish(None).unwrap();
+    let built = build(&steps(false));
     let names: Vec<&str> = built.iter().map(|built| built.receipt.step.as_str()).collect();
     assert_eq!(names.len(), 3);
     for name in ["planner/osm", "planner/terrain", "planner/routing"] {
@@ -90,6 +100,25 @@ fn a_build_makes_a_routing_package_that_verifies_and_a_second_plan_builds_nothin
         assert!(paths.contains(&path), "{path} is not in the layer");
     }
 
-    assert_eq!(plan(&store, &root, &Planner.steps(&env, &regions, &store).unwrap()).unwrap().groups.len(), 0);
-    assert!(release(&store, &root, "planner", &steps).unwrap().is_some(), "the store has every layer");
+    if Command::new("uv").arg("--version").output().is_err() {
+        // CI installs uv, so there a missing uv is a failure, not a skip.
+        assert!(std::env::var_os("CI").is_none(), "uv is absent: CI must test the Python step planner/overlays");
+        eprintln!("uv is absent: the Python step planner/overlays is not tested");
+        return;
+    }
+    // Machine setup, which a set-up machine has done: the step itself runs offline.
+    let sync = Command::new("uv")
+        .args(["sync", "--locked", "--inexact", "--group", "planner-maps"])
+        .current_dir(&root)
+        .status();
+    assert!(sync.unwrap().success(), "uv sync of the group planner-maps");
+    let built = build(&steps(true));
+    let overlays = &built.iter().find(|built| built.receipt.step == "planner/overlays").unwrap().receipt;
+    assert_eq!(overlays.command.as_ref().unwrap()[..4], ["uv", "run", "--locked", "--offline"]);
+    let archive = std::fs::read(store.object(&overlays.files[0].sha256)).unwrap();
+    assert_eq!((&archive[..7], archive[7]), (&b"PMTiles"[..], 3), "overlays.pmtiles is a PMTiles v3 archive");
+    assert!(overlays.metrics["tiles"].as_u64().unwrap() > 0, "the cycle route draws tiles");
+
+    assert_eq!(plan(&store, &root, &steps(true)).unwrap().groups.len(), 0);
+    assert!(release(&store, &root, "planner", &steps(true)).unwrap().is_some(), "the store has every layer");
 }

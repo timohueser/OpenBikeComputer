@@ -1,6 +1,6 @@
 """Bake the planner climate layer of one region: `climate.pmtiles`, as `specs/planner-climate-tiles.md` defines it.
 
-    uv run --with-requirements tools/requirements-planner-climate.txt python -m tools.planner_climate REGION
+    uv run --locked --group planner-climate python -m tools.planner_climate REGION
 
 The source is ERA5-Land, read from the ECMWF ARCO geo-chunked Zarr stores with the CDS personal access
 token in `~/.cdsapirc`. The bake reads only the source chunks around the region and keeps them in
@@ -27,7 +27,7 @@ import urllib.request
 
 import numpy as np
 
-from . import data_registry, planner_maps as maps
+from . import planner_geo as geo, step_request
 
 YEARS = 10
 WEEKS = 52
@@ -66,7 +66,7 @@ OROGRAPHY = ("https://confluence.ecmwf.int/download/attachments/140385202/geo_12
 GRAVITY = 9.80665
 DOI = "10.24381/cds.e2161bac"
 CACHE = Path.home() / ".cache/obc/planner/sources/era5-land"
-RECIPES = maps.ROOT / "tools/planner-regions"
+RECIPES = Path(__file__).resolve().parent / "planner-regions"
 USER_AGENT = "OpenBikeComputer planner climate bake (https://github.com/timohueser/OpenBikeComputer)"
 
 # Hourly inputs in display units.
@@ -487,14 +487,15 @@ def tiles(region, values):
     return result
 
 
-def bake(bounds, first_year, source, output, key=None):
-    """Write the archive; return the tile count of each zoom."""
+def bake(bounds, first_year, source, output, credit, key=None):
+    """Write the archive; return the tile count of each zoom. `credit` is the attribution of ERA5-Land,
+    with `{year}`."""
     from pmtiles.tile import Compression, TileType, tileid_to_zxy
     from pmtiles.writer import Writer
 
     region = Region(bounds)
     weekly, monthly, rose = climate(region, first_year, source)
-    archive = tiles(region, planes(region, first_year, weekly, monthly, rose, orography(region, key)))
+    archive = tiles(region, planes(region, first_year, weekly, monthly, rose, orography(region, key, cache=source.cache)))
     west, south, east, north = bounds
     e7 = lambda value: round(value * 1e7)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -509,7 +510,7 @@ def bake(bounds, first_year, source, output, key=None):
                 "center_zoom": OVERVIEW, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2),
             }, {
                 "first_year": first_year, "years": YEARS, "source": "era5-land",
-                "attribution": data_registry.attribution("era5-land", year=first_year + YEARS),
+                "attribution": credit.format(year=first_year + YEARS),
                 "wet_day_mm": WET_MM, "rain_factors": list(RAIN_FACTORS), "wind_factor": WIND_FACTOR,
                 "inputs": {"doi": DOI, "orography_sha256": OROGRAPHY[1], "chunks": source.fingerprint()},
             })
@@ -522,10 +523,25 @@ def bake(bounds, first_year, source, output, key=None):
     return {zoom: zooms.count(zoom) for zoom in LEVELS}
 
 
+def step():
+    """The `obc data` step `planner/climate`: `climate.pmtiles` from the source chunks and the
+    orography of the `era5-land` snapshot."""
+    request = step_request.read()
+    options = request["options"]
+    output = Path(request["output"])
+    cache = step_request.view(step_request.files(request, "era5-land"), output.with_name("era5-land"))
+    source = Source(final_hour(options["first_year"]), cache=cache)
+    counts = bake(options["bounds"], options["first_year"], source, output / "climate.pmtiles", options["attribution"])
+    step_request.metrics(request, {"tiles": {str(zoom): count for zoom, count in counts.items()}})
+
+
 def main():
+    # The step gets its credit in its options, so only this command line reads the registry.
+    from . import data_registry
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("region", nargs="?", help="region id: the recipe in tools/planner-regions, the box in data/regions/ and the default output folder")
-    parser.add_argument("--bounds", type=maps.bounds, help="west,south,east,north instead of the box of the region in data/regions/")
+    parser.add_argument("--bounds", type=geo.bounds, help="west,south,east,north instead of the box of the region in data/regions/")
     parser.add_argument("--first-year", type=int, help="the first of the ten years; default: the recipe's `climate.first_year`")
     parser.add_argument("--output", type=Path, help="default: ~/.cache/obc/planner/REGION/maps/climate.pmtiles")
     parser.add_argument("--check", action="store_true", help="bake from the cache only and compare with the output")
@@ -544,21 +560,22 @@ def main():
         return
     output = args.output or Path.home() / ".cache/obc/planner" / args.region / "maps/climate.pmtiles"
     final = final_hour(first_year)
+    credit = data_registry.SOURCES["era5-land"]["attribution"]
     start = time.monotonic()
     if args.check:
         with tempfile.TemporaryDirectory() as directory:
-            bake(bounds, first_year, Source(final), Path(directory) / output.name)
+            bake(bounds, first_year, Source(final), Path(directory) / output.name, credit)
             if (Path(directory) / output.name).read_bytes() != output.read_bytes():
                 sys.exit(f"{output} differs from a bake of the cached sources")
         print(f"{output} equals a bake of the cached sources")
         return
     key = token()
     source = Source(final, key)
-    counts = bake(bounds, first_year, source, output, key)
+    counts = bake(bounds, first_year, source, output, credit, key)
     print(json.dumps({"output": str(output), "bytes": output.stat().st_size, "tiles": counts,
                       "downloaded_bytes": source.downloaded, "source_chunks": sum(map(len, source.digests.values())),
                       "seconds": round(time.monotonic() - start)}))
 
 
 if __name__ == "__main__":
-    main()
+    step() if sys.argv[1:] == ["--step"] else main()

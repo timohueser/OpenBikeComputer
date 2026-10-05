@@ -1,0 +1,22 @@
+# The Python packages of the planner layers: one group per kind of step. `uv sync --all-groups`
+# sets up a machine; the steps run `uv run --locked --offline --group <group>`.
+
+[project]
+name = "openbikecomputer-tools"
+version = "0"
+# rasterio and numba need Python 3.12 or later.
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+planner-maps = ["pmtiles==3.8.1", "pillow==12.3.0"]
+# Zarr chunks are Blosc and the orography is HDF5.
+planner-climate = [{ include-group = "planner-maps" }, "numpy==2.5.3", "numcodecs==0.17.0", "h5py==3.16.0"]
+# rasterio brings its own GDAL wheel.
+planner-snow = [{ include-group = "planner-maps" }, "rasterio==1.5.2", "numpy==2.5.3"]
+planner-sun = [{ include-group = "planner-maps" }, "numpy==2.5.3", "numba==0.68.0"]
+
+[tool.uv]
+package = false
+# The oldest uv that reads uv.lock and runs `uv run --group`.
+required-version = ">=0.5.0"

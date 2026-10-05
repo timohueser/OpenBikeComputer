@@ -35,7 +35,8 @@ impl Product for Maps {
         let outlines = outlines(env, regions, store, &mut wanted)?;
         let tile_list = text(env, store, TILE_LIST, &[], &mut wanted)?;
         // The version of the tiles: the fetch of a tile is in the plan of the step that reads it.
-        let glo30 = version(env, store, GLO30, &[]).map_err(invalid)?.map_err(|fetch| wanted.push(fetch)).ok();
+        let glo30 =
+            version(env, store, GLO30, &[]).map_err(Unplanned::Failed)?.map_err(|fetch| wanted.push(fetch)).ok();
         let (Some(outlines), Some(tile_list), Some(glo30)) = (outlines, tile_list, glo30) else {
             return Err(Unplanned::NeedsFetch(wanted));
         };

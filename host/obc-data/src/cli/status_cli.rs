@@ -137,14 +137,11 @@ pub fn status(root: &Path, products: &[&dyn Product], check: bool, json: bool) -
         let reason = row.reason.clone().unwrap_or_default();
         attention.push(Attention { kind, about: row.source.id.clone(), reason });
     }
-    let mut conflicts: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    for ((source, _), read) in loaded.env.live.iter().filter(|(_, read)| read.len() > 1) {
-        conflicts.entry(source).or_default().extend(read.iter().map(String::as_str));
-    }
-    for (source, versions) in conflicts {
-        let versions = versions.into_iter().collect::<Vec<_>>().join(" and ");
-        let reason = format!("live reads one fetch of it at {versions}: plan with `--move {source}@VERSION`");
-        attention.push(Attention { kind: AttentionKind::Blocked, about: source.into(), reason });
+    for source in loaded.env.refused.borrow().iter() {
+        let reads = loaded.env.live.iter().filter(|((id, _), _)| id == source).flat_map(|(_, read)| read);
+        let versions = reads.map(String::as_str).collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>();
+        let reason = format!("live reads it at {}: plan with `--move {source}@VERSION`", versions.join(" and "));
+        attention.push(Attention { kind: AttentionKind::Blocked, about: source.clone(), reason });
     }
     for dir in import::plan(&store, &old_dirs()?)?.dirs.into_iter().filter(|dir| dir.files > 0) {
         let reason =
@@ -187,9 +184,11 @@ fn layer_states(
     mut fetch: impl FnMut(&Wanted) -> Result<String, Error>,
 ) -> Result<BTreeMap<String, Result<Vec<LayerStatus>, String>>, Error> {
     check_layers(products, env)?;
-    let (mut listed, mut found) = (Vec::new(), BTreeMap::new());
+    let (mut listed, mut found, mut refused) = (Vec::new(), BTreeMap::new(), BTreeSet::new());
     for product in products {
-        match product_steps(*product, env, regions, store, &mut fetch) {
+        let steps = product_steps(*product, env, regions, store, &mut fetch);
+        refused.extend(env.refused.borrow().iter().cloned());
+        match steps {
             Ok(Ok(steps)) => {
                 found.insert(product.name().to_string(), Ok(Vec::new()));
                 listed.push((product.name().to_string(), steps));
@@ -204,6 +203,8 @@ fn layer_states(
             Err(e) => return Err(e),
         }
     }
+    // Each product clears the refusals of the one before.
+    *env.refused.borrow_mut() = refused;
     while let Some((name, reason)) = reads_unknown(&listed, &found) {
         listed.retain(|(product, _)| *product != name);
         found.insert(name, Err(reason));

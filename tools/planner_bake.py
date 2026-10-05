@@ -10,7 +10,7 @@ import sys
 import tempfile
 import threading
 
-from . import data_registry, planner_components as components, planner_maps as maps, planner_sources as sources
+from . import data_registry, planner_assets, planner_components as components, planner_maps as maps, planner_sources as sources
 from . import planner_prepare as preparation, planner_release as releases
 from .planner_runtime import open_url
 
@@ -44,12 +44,12 @@ def source_search(stage, osm, cache, config):
 
 
 def source_records(stage, search):
-    maps.run("uv", "run", "--with-requirements", SEARCH / "requirements-build.txt", "python", SEARCH / "split.py",
+    maps.run("uv", "run", "--no-project", "--with-requirements", SEARCH / "requirements-build.txt", "python", SEARCH / "split.py",
              search / "search.jsonl.zst", stage, cwd=maps.ROOT)
 
 
 def build_search(stage, records, config, component):
-    maps.run("uv", "run", "--with-requirements", SEARCH / "requirements-build.txt", "python", SEARCH / "build.py",
+    maps.run("uv", "run", "--no-project", "--with-requirements", SEARCH / "requirements-build.txt", "python", SEARCH / "build.py",
              records / f"{component}.jsonl.zst", "--component", component, "--output", stage,
              "--region", config["region"], "--bounds", ",".join(map(str, config["bounds"])),
              "--countries", ",".join(config["countries"]), "--osm-sha256", config["osm"]["sha256"],
@@ -68,7 +68,7 @@ def build_places(stage, pois, config):
 
 def build_assets(stage):
     with open_url(sources.ASSETS_URL, timeout=120) as response:
-        maps.install_assets(response.read(), stage / "assets")
+        planner_assets.install_assets(response.read(), stage / "assets")
     icons = data_registry.fetch(f"tangrams-icons@{sources.VERSIONS['tangrams-icons']}")[0]
     (stage / "assets/sprites/LICENSE.txt").write_bytes(icons.read_bytes())
 
@@ -141,7 +141,7 @@ def layer_options(config, name):
 
 def build_layer(stage, config, name, terrain=None):
     options = [item for key, value in layer_options(config, name).items() for item in (f"--{key.replace('_', '-')}", str(value))]
-    maps.run("uv", "run", "--with-requirements", maps.ROOT / f"tools/requirements-planner-{name}.txt",
+    maps.run("uv", "run", "--locked", "--group", f"planner-{name}",
              "python", "-m", f"tools.planner_{name}", config["region"], "--bounds", ",".join(map(str, config["bounds"])),
              *options, *(["--terrain", terrain / "terrain.pmtiles"] if name == "sun" else []), "--output", stage / f"{name}.pmtiles", cwd=maps.ROOT)
     if not releases.archive_metadata(stage / f"{name}.pmtiles").get(releases.DATA_LAYERS[name]):
@@ -192,9 +192,9 @@ def specifications(config, prepared=None):
             "time_zone": config["time_zone"], "component": component, "schema": 5},
             ["source-records"], [*common, SEARCH / f"{component}.py"])
     add("basemap", build_basemap, {}, dependencies=["source-basemap"])
-    map_requirements = maps.ROOT / "tools/requirements-planner-maps.txt"
+    map_requirements = maps.ROOT / "uv.lock"
     add("places", build_places, {}, dependencies=["pois"], paths=[maps.ROOT / path for path in
-        ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_places.py", "tools/requirements-planner-maps.txt", "builder/app/src/lib/planner/poi-kinds.json")])
+        ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_places.py", "uv.lock", "builder/app/src/lib/planner/poi-kinds.json")])
     rust_manifests = [maps.ROOT / path for path in ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "host/obc-dem/Cargo.toml"]]
     elevation_paths = components.rust_sources("host/obc-dem")
     elevation = {"sources": config["terrain"], "producer": components.implementation(paths=elevation_paths)}
@@ -205,12 +205,12 @@ def specifications(config, prepared=None):
     add("routing", build_routing, {"osm": osm, "elevation": elevation, **credits("osm-planet", "copernicus-glo-30")}, {"region": config["region"], "access": config["access"], "countries": config["countries"], "profiles": config["profiles"]}, paths=routing_paths,
         functions=[terrain_inputs])
     add("overlays", build_overlays, credits("osm-planet"), dependencies=["routing"], paths=[maps.ROOT / path for path in
-        ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_overlays.py", "tools/requirements-planner-maps.txt")])
-    add("assets", build_assets, {"assets": sources.ASSETS_URL, "tangrams-icons": sources.VERSIONS["tangrams-icons"]}, paths=[maps.ROOT / "tools/planner_maps.py"])
+        ("tools/planner_overlays.py", "tools/planner_geo.py", "tools/planner_mvt.py", "tools/step_request.py", "tools/data_registry.py", "uv.lock")])
+    add("assets", build_assets, {"assets": sources.ASSETS_URL, "tangrams-icons": sources.VERSIONS["tangrams-icons"]}, paths=[maps.ROOT / "tools/planner_sources.py", maps.ROOT / "tools/planner_assets.py"])
     add("model", build_model, {}, paths=[SEARCH / "setup.py", SEARCH / "query/artifacts.py", SEARCH / "query/schema.py"])
     for name in releases.DATA_LAYERS:
         if name in config:
-            paths = [maps.ROOT / f"tools/planner_{name}.py", maps.ROOT / f"tools/requirements-planner-{name}.txt"]
+            paths = [maps.ROOT / f"tools/planner_{name}.py", maps.ROOT / "uv.lock"]
             if name == "sun": paths.extend(maps.ROOT / path for path in ("tools/planner_sun_horizons.py", "tools/planner_map_archive.py"))
             inputs = {"hansen-gfc": sources.VERSIONS["hansen-gfc"]} if name == "snow" else {}
             inputs.update(credits(*layer_credits(config, name)))

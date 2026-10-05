@@ -98,7 +98,7 @@ class BlendTest(unittest.TestCase):
         self.assertEqual(snow.max_zoom(20, equator), 13)
 
     def test_tile_rows_run_from_north_to_south(self):
-        west, south, east, north = snow.maps.tile_bounds(9, 268, 179)
+        west, south, east, north = snow.geo.tile_bounds(9, 268, 179)
         rows = np.full((1, 2, 40, 40), snow.NO_SNOW, np.uint8)
         rows[:, :, :20] = 50
         transform = Affine.translation(west, north) @ Affine.scale((east - west) / 40, -(north - south) / 40)
@@ -112,7 +112,7 @@ class BakeTest(unittest.TestCase):
         from pmtiles.reader import MmapSource, all_tiles
 
         # One zoom-11 tile, so no tile has pixels outside the bounds.
-        bounds = snow.maps.tile_bounds(11, 1079, 724)
+        bounds = snow.geo.tile_bounds(11, 1079, 724)
         west, north = 9.6, 46.6
         grid = snow.Grid("EPSG:4326", Affine.translation(west, north) @ Affine.scale(0.001, -0.001), (300, 300))
         chunks = []
@@ -123,7 +123,7 @@ class BakeTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "snow.pmtiles"
-            snow.bake(source, 2016, 2, "copernicus-hr-wsi", bounds, output)
+            snow.bake(source, 2016, 2, "copernicus-hr-wsi", bounds, output, "HR-WSI")
             with output.open("rb") as file:
                 stored = {z for (z, _, _), _ in all_tiles(MmapSource(file))}
         self.assertEqual(len(chunks), 1)

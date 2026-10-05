@@ -53,8 +53,9 @@ version = "date"
 refresh = 90
 redistribute = true
 
+# The OSM paths and tracks of a box: the Overpass answer to the trail query of `tools/planner_snow.py`.
 [[source]]
-id = "osm-overpass"
+id = "osm-trails"
 kind = "data"
 licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"

@@ -73,13 +73,24 @@ fn a_plan_of_live_builds_the_layers_of_each_product_and_a_build_refuses_another_
     let error: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(error["error"]["fix"], "Plan with `--move copernicus-glo-30@VERSION`.");
 
-    let out = obc_data(&temp, &["plan", "live", "--move", "copernicus-glo-30@2022-05-09", "--json"]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Every manual source moves to a version, so the plan fetches nothing.
+    let moves = [
+        ("copernicus-glo-30", "2022-05-09"),
+        ("protomaps-assets", "028c18f713baecad011301ff7a69acc39bcc2ae7"),
+        ("tangrams-icons", "92510779634f4a006c61ea70e50cb8c52c765a81"),
+        ("query-model", "spike/query-parser-v2"),
+    ];
+    let mut args = vec!["plan".to_string(), "live".into(), "--json".into()];
+    args.extend(moves.iter().flat_map(|(source, version)| ["--move".into(), format!("{source}@{version}")]));
+    let out = obc_data(&temp, &args.iter().map(String::as_str).collect::<Vec<_>>());
+    assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stderr), String::from_utf8_lossy(&out.stdout));
     let mut plan: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(plan["env"], "live");
-    assert_eq!(plan["moves"], serde_json::json!({"copernicus-glo-30": "2022-05-09"}));
+    let moved: serde_json::Map<_, _> =
+        moves.iter().map(|(source, version)| (source.to_string(), (*version).into())).collect();
+    assert_eq!(plan["moves"], serde_json::Value::Object(moved));
     let ids: Vec<&str> = plan["groups"].as_array().unwrap().iter().map(|group| group["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["maps/terrain/0037-0032", "planner/osm", "planner/terrain"]);
+    assert_eq!(ids, ["maps/terrain/0037-0032", "planner/osm", "planner/terrain", "planner/assets", "planner/model"]);
     assert_eq!(plan["groups"][0]["fetches"][0]["source"], "copernicus-glo-30");
 
     plan["groups"] = serde_json::json!([{"id": "planner/routing", "fetches": [], "builds": []}]);

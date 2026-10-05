@@ -22,7 +22,8 @@ obc suites select --base REF [--release]  # the plan as text or json
 the working tree, prints every selected unit with a reason, and stops at the first failure. A
 suite whose `platforms` exclude the host is reported as skipped, never as passed. Every Cargo
 command needs the CI-pinned runner: `cargo install cargo-nextest --version 0.9.143 --locked`.
-The Python suites need `pip install -r tools/requirements-test.txt`.
+The Python suites need `pip install -r tools/requirements-test.txt --group planner-snow --group planner-sun`
+(pip 25.1 or later).
 
 ## Routes
 

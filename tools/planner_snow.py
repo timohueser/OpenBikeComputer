@@ -1,6 +1,6 @@
 """Bake the planner snow layer of one region: `snow.pmtiles`, as `specs/planner-snow-tiles.md` defines it.
 
-    uv run --with-requirements tools/requirements-planner-snow.txt python -m tools.planner_snow REGION
+    uv run --locked --group planner-snow python -m tools.planner_snow REGION
 
 The default source is NASA MODIS daily snow cover from the anonymous Microsoft Planetary Computer
 copy. It ends in June 2025. The bake reads only the region window of each daily file and writes no
@@ -31,7 +31,7 @@ import urllib.request
 
 import numpy as np
 
-from . import data_registry, planner_maps as maps, planner_sources as sources
+from . import planner_geo as geo, step_request
 
 NO_SNOW, FULL, NO_DATA = 253, 254, 255
 LAST_STEP = 182
@@ -39,12 +39,10 @@ TILE = 256
 # `canopy`: MODIS sees the canopy, not the snow under it. The Copernicus input corrects for trees.
 # `smooth`: 20 m day values are noisy, so the lower zooms smooth them before they blend.
 SOURCES = {
-    "nasa-modis": {"resolution_m": 500, "canopy": True, "smooth": False,
-                   "attribution": f"{data_registry.attribution('modis-snow')}; tree canopy: {data_registry.attribution('hansen-gfc')}"},
-    "copernicus-hr-wsi": {"resolution_m": 20, "canopy": False, "smooth": True,
-                          "attribution": data_registry.attribution("hr-wsi", year=dt.date.today().year)},
+    "nasa-modis": {"resolution_m": 500, "canopy": True, "smooth": False},
+    "copernicus-hr-wsi": {"resolution_m": 20, "canopy": False, "smooth": True},
 }
-CANOPY = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-{0}/Hansen_GFC-2023-{0}_treecover2000_{{}}.tif".format(sources.VERSIONS["hansen-gfc"])
+CANOPY = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-{0}/Hansen_GFC-2023-{0}_treecover2000_{1}.tif"
 # The owner chose 75 % canopy cover as "dense": below it, MODIS still sees the snow between the trees.
 DENSE_CANOPY_PERCENT = 75
 STAC = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
@@ -226,18 +224,18 @@ def canopy_tiles(bounds):
             for lon in range(math.floor(west / 10) * 10, math.ceil(east / 10) * 10, 10)]
 
 
-def canopy_cover(z, x, y):
-    """Mean tree canopy cover in percent of each pixel of tile z/x/y, in the year 2000."""
+def canopy_cover(z, x, y, version):
+    """Mean tree canopy cover in percent of each pixel of tile z/x/y, in the year 2000, from Hansen GFC `version`."""
     import rasterio
     from rasterio.transform import from_bounds
     from rasterio.warp import Resampling, reproject, transform_bounds
     from rasterio.windows import Window, from_bounds as window_from_bounds
 
-    bounds = maps.tile_bounds(z, x, y)
+    bounds = geo.tile_bounds(z, x, y)
     cover = np.zeros((TILE, TILE), np.float32)
     target = from_bounds(*transform_bounds("EPSG:4326", "EPSG:3857", *bounds), TILE, TILE)
     for name in canopy_tiles(bounds):
-        with rasterio.open(CANOPY.format(name)) as src:
+        with rasterio.open(CANOPY.format(version, name)) as src:
             window = window_from_bounds(*bounds, src.transform).intersection(Window(0, 0, src.width, src.height))
             window = window.round_offsets().round_lengths()
             reproject(src.read(1, window=window).astype(np.float32), cover, src_transform=src.window_transform(window),
@@ -246,8 +244,8 @@ def canopy_cover(z, x, y):
     return cover
 
 
-def trails(bounds):
-    """OSM `highway=path|track` segments inside the bounds: midpoint longitude, latitude and length in metres."""
+def overpass_trails(bounds):
+    """The Overpass answer, in JSON, with the OSM `highway=path|track` ways that the bounds touch."""
     west, south, east, north = bounds
     query = f'[out:json][timeout:180];way["highway"~"^(path|track)$"]({south},{west},{north},{east});out geom;'
     request = urllib.request.Request(OVERPASS, data=urllib.parse.urlencode({"data": query}).encode(),
@@ -255,31 +253,17 @@ def trails(bounds):
     for attempt in range(4):
         try:
             with urllib.request.urlopen(request, timeout=300) as response:
-                ways = json.load(response)["elements"]
-            break
+                return response.read()
         except urllib.error.HTTPError as error:
             # Overpass answers 429 and 504 when it is busy.
             if error.code not in (429, 504) or attempt == 3:
                 raise
             time.sleep(60 * (attempt + 1))
-    lon, lat, metres = [], [], []
-    for way in ways:
-        points = np.radians([[p["lon"], p["lat"]] for p in way.get("geometry", [])])
-        if len(points) < 2:
-            continue
-        a, b = points[:-1], points[1:]
-        h = np.sin((b[:, 1] - a[:, 1]) / 2) ** 2 + np.cos(a[:, 1]) * np.cos(b[:, 1]) * np.sin((b[:, 0] - a[:, 0]) / 2) ** 2
-        metres.append(2 * 6371008.8 * np.arcsin(np.sqrt(h)))
-        mid = np.degrees((a + b) / 2)
-        lon.append(mid[:, 0])
-        lat.append(mid[:, 1])
-    lon, lat, metres = (np.concatenate(v) for v in (lon, lat, metres))
-    inside = (lon >= west) & (lon <= east) & (lat >= south) & (lat <= north)
-    return lon[inside], lat[inside], metres[inside]
 
 
-def bake(source, first_season, seasons, name, bounds, output, trail_segments=None, workers=4):
-    """Write the archive; return the tile count and, with trail segments, the share of trail length on no data.
+def bake(source, first_season, seasons, name, bounds, output, credit, canopy=None, workers=4):
+    """Write the archive with the attribution `credit`; return the tile count. With the Hansen GFC version
+    `canopy`, dense tree canopy is no data.
 
     `source(bounds)` gives the season planes and their grid around the bounds of one chunk tile. The chunks
     bake in `workers` threads: numpy, zlib and GDAL release the GIL. CDSE S3 allows 4 connections per user.
@@ -291,53 +275,42 @@ def bake(source, first_season, seasons, name, bounds, output, trail_segments=Non
     chunk = min(CHUNK_ZOOM, top)
     west, south, east, north = bounds
     tiles = {}
-    if trail_segments is not None:
-        lon, lat, metres = trail_segments
-        n = 2 ** top * TILE
-        px = ((lon + 180) / 360 * n).astype(np.int64)
-        py = ((1 - np.log(np.tan(np.radians(lat)) + 1 / np.cos(np.radians(lat))) / np.pi) / 2 * n).astype(np.int64)
 
     def area(z, x, y):
         """The part of the bounds in tile z/x/y, or None."""
-        w, s, e, n_ = maps.tile_bounds(z, x, y)
+        w, s, e, n_ = geo.tile_bounds(z, x, y)
         if w >= east or e <= west or s >= north or n_ <= south:
             return None
         return max(w, west), max(s, south), min(e, east), min(n_, north)
 
     def build(z, x, y, planes=None, grid=None):
-        """The body of tile z/x/y and its trail length on no data. Its tiles and those below go into `tiles`."""
+        """The body of tile z/x/y. Its tiles and those below go into `tiles`."""
         if area(z, x, y) is None:
-            return None, 0.0
+            return None
         if z == chunk and planes is None:
             return chunks[x, y].result()
-        masked = 0.0
         if z == top:
             body = sample(planes, grid, z, x, y)
             lon_c, lat_c = tile_lonlat(z, x, y)
             outside = ((lon_c < west) | (lon_c > east) | (lat_c < south) | (lat_c > north)).reshape(TILE, TILE)
             body[:, :, outside] = NO_DATA
-            if SOURCES[name]["canopy"]:
-                body[:, :, canopy_cover(z, x, y) > DENSE_CANOPY_PERCENT] = NO_DATA
-            if trail_segments is not None:
-                here = (px // TILE == x) & (py // TILE == y)
-                missing = (body[:, 0] == NO_DATA).all(0)
-                masked = metres[here][missing[py[here] % TILE, px[here] % TILE]].sum()
+            if canopy:
+                body[:, :, canopy_cover(z, x, y, canopy) > DENSE_CANOPY_PERCENT] = NO_DATA
         else:
             children = {(dx, dy): build(z + 1, 2 * x + dx, 2 * y + dy, planes, grid) for dx in (0, 1) for dy in (0, 1)}
-            masked = sum(length for _, length in children.values())
-            body = parent({key: child for key, (child, _) in children.items()}, seasons, SOURCES[name]["smooth"])
+            body = parent(children, seasons, SOURCES[name]["smooth"])
         if (body != NO_DATA).any():
             tiles[zxy_to_tileid(z, x, y)] = gzip.compress(body.tobytes(), mtime=0)
-        return body, masked
+        return body
 
-    x0, y0 = maps.mercator(west, north, chunk)
-    x1, y1 = maps.mercator(east, south, chunk)
+    x0, y0 = geo.mercator(west, north, chunk)
+    x1, y1 = geo.mercator(east, south, chunk)
     pool = ThreadPoolExecutor(workers)
     try:
         chunks = {(x, y): pool.submit(lambda x, y, part: build(chunk, x, y, *source(part)), x, y, part)
                   for x in range(int(x0), int(x1) + 1)
                   for y in range(int(y0), int(y1) + 1) if (part := area(chunk, x, y))}
-        _, masked = build(0, 0, 0)
+        build(0, 0, 0)
     finally:
         pool.shutdown(cancel_futures=True)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -354,15 +327,14 @@ def bake(source, first_season, seasons, name, bounds, output, trail_segments=Non
                 "center_zoom": top, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2),
             }, {
                 "first_season": first_season, "seasons": seasons, "step_days": 2, "source": name,
-                "resolution_m": meta["resolution_m"], "attribution": meta["attribution"],
+                "resolution_m": meta["resolution_m"], "attribution": credit,
             })
             stream.flush()
             os.replace(stream.name, output)
         except BaseException:
             os.unlink(stream.name)
             raise
-    share = None if trail_segments is None else masked / max(trail_segments[2].sum(), 1e-9)
-    return len(tiles), share
+    return len(tiles)
 
 
 def http_json(url, body=None):
@@ -589,20 +561,44 @@ def fetch(source, bounds, first_season, last_season, out):
         print(f"Season {season}/{(season + 1) % 100:02d}: {len(hrefs)} files", file=sys.stderr, flush=True)
 
 
+def step():
+    """The `obc data` step `planner/snow`: `snow.pmtiles` from the HR-WSI Snow Phenology windows of
+    the `hr-wsi` snapshot."""
+    request = step_request.read()
+    options = request["options"]
+    bounds, (first, last) = options["bounds"], options["seasons"]
+    files = {}
+    for name, path in sorted(step_request.files(request, "hr-wsi").items()):
+        season, layer = re.fullmatch(r".*_(\d{4})0901P1Y_.*_(SCO|SCM|SCD)\.tif", name).groups()
+        files.setdefault(int(season), {}).setdefault(layer, []).append(str(path))
+    seasons = range(first, last + 1)
+    count = bake(lambda chunk: copernicus_planes(files, chunk, seasons), first, len(seasons), "copernicus-hr-wsi", bounds,
+                 Path(request["output"]) / "snow.pmtiles", options["attribution"].format(year=options["year"]))
+    step_request.metrics(request, {"tiles": count})
+
+
 def main():
+    # The step gets its credit and its versions in its options, so only this command line reads
+    # the registry and the versions.
+    from . import data_registry, planner_sources
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("region", nargs="?", help="region id: a box region in data/regions/ and the default output folder")
-    parser.add_argument("--bounds", type=maps.bounds, help="west,south,east,north instead of the box of the region in data/regions/")
+    parser.add_argument("--bounds", type=geo.bounds, help="west,south,east,north instead of the box of the region in data/regions/")
     parser.add_argument("--output", type=Path, help="default: ~/.cache/obc/planner/REGION/maps/snow.pmtiles")
     parser.add_argument("--source", choices=SOURCES, default="nasa-modis")
     parser.add_argument("--first-season", type=int, default=2000, help="the first NASA season")
     parser.add_argument("--last-season", type=int, default=2024, help="the last NASA season (2024 ends in June 2025)")
-    parser.add_argument("--trails", action="store_true", help="report the share of OSM path and track length with no data in every season")
     parser.add_argument("--fetch", type=Path, help="only write the source windows of the seasons to this directory")
+    parser.add_argument("--fetch-trails", type=Path, help="only write the Overpass answer of the trails to trails.json in this directory")
     args = parser.parse_args()
-    if not args.region and not (args.fetch and args.bounds):
-        parser.error("give a region, or --bounds with --fetch")
+    if not args.region and not ((args.fetch or args.fetch_trails) and args.bounds):
+        parser.error("give a region, or --bounds with --fetch or --fetch-trails")
     bounds = args.bounds or data_registry.region_box(args.region)
+    if args.fetch_trails:
+        args.fetch_trails.mkdir(parents=True, exist_ok=True)
+        (args.fetch_trails / "trails.json").write_bytes(overpass_trails(bounds))
+        return
     if args.fetch:
         fetch(args.source, bounds, args.first_season, args.last_season, args.fetch)
         return
@@ -616,13 +612,15 @@ def main():
         planes, grid = nasa_planes(bounds, args.first_season, args.last_season)
         seasons = range(args.first_season, args.first_season + planes.shape[0])
         source = lambda chunk: (planes, grid)
-    count, share = bake(source, seasons.start, len(seasons), args.source, bounds, output, trails(bounds) if args.trails else None)
-    report = {"output": str(output), "bytes": output.stat().st_size, "tiles": count, "seasons": len(seasons),
-              "total_s": round(time.monotonic() - start)}
-    if share is not None:
-        report["no_data_trail_share"] = round(share, 3)
-    print(json.dumps(report))
+    if SOURCES[args.source]["canopy"]:
+        credit = f"{data_registry.attribution('modis-snow')}; tree canopy: {data_registry.attribution('hansen-gfc')}"
+        canopy = planner_sources.VERSIONS["hansen-gfc"]
+    else:
+        credit, canopy = data_registry.attribution("hr-wsi", year=dt.date.today().year), None
+    count = bake(source, seasons.start, len(seasons), args.source, bounds, output, credit, canopy)
+    print(json.dumps({"output": str(output), "bytes": output.stat().st_size, "tiles": count, "seasons": len(seasons),
+                      "total_s": round(time.monotonic() - start)}))
 
 
 if __name__ == "__main__":
-    main()
+    step() if sys.argv[1:] == ["--step"] else main()

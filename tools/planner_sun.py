@@ -8,6 +8,7 @@ import json
 import math
 import os
 from pathlib import Path
+import sys
 import tempfile
 from zoneinfo import ZoneInfo
 
@@ -17,6 +18,7 @@ from pmtiles.reader import Reader
 from pmtiles.tile import Compression, TileType, zxy_to_tileid
 from pmtiles.writer import Writer
 
+from . import step_request
 from .planner_map_archive import tile_window
 
 SIZE, DEM_ZOOM, INDEX_ZOOM, UNKNOWN = 512, 12, 10, 32767
@@ -124,6 +126,20 @@ def bake(terrain, output, bounds, timezone, distance_m, horizon_samples=32, hori
     print(json.dumps({"index_tiles": count, "index_payload_bytes": payload, "archive_bytes": output.stat().st_size}))
 
 
+def step():
+    """The `obc data` step `planner/sun`: `sun.pmtiles` from the terrain of `planner/terrain`, read
+    as a PMTiles archive that the step converts beside its output."""
+    from pmtiles.convert import mbtiles_to_pmtiles
+
+    request = step_request.read()
+    options = request["options"]
+    output = Path(request["output"])
+    terrain = output.with_name("terrain.pmtiles")
+    mbtiles_to_pmtiles(request["layers"]["planner/terrain"]["terrain.mbtiles"], terrain, None)
+    bake(terrain, output / "sun.pmtiles", options["bounds"], options["time_zone"], options["distance_m"],
+         options["horizon_samples"], options["horizon_directions"])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("region")
@@ -143,4 +159,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    step() if sys.argv[1:] == ["--step"] else main()
