@@ -130,23 +130,37 @@ impl Viewport {
     /// and this separating-axis test rejects the disjoint ones before they consume frame scratch.
     #[inline]
     pub(crate) fn bbox_might_be_visible(&self, bbox: &BBox, margin_px: i32) -> bool {
+        let (x0, x1) = (-margin_px, self.w as i32 + margin_px);
+        let (y0, y1) = (-margin_px, self.h as i32 + margin_px);
+        let (xmin, xmax) = (x0.min(x1), x0.max(x1));
+        let (ymin, ymax) = (y0.min(y1), y0.max(y1));
+        if self.sin_c == 0.0 {
+            let a = self.to_screen(bbox.min_lon, bbox.min_lat);
+            let b = self.to_screen(bbox.max_lon, bbox.max_lat);
+            return a.0.max(b.0) >= xmin && a.0.min(b.0) <= xmax && a.1.max(b.1) >= ymin && a.1.min(b.1) <= ymax;
+        }
         let quad = [
             self.to_screen(bbox.min_lon, bbox.min_lat),
             self.to_screen(bbox.min_lon, bbox.max_lat),
             self.to_screen(bbox.max_lon, bbox.max_lat),
             self.to_screen(bbox.max_lon, bbox.min_lat),
         ];
-        let screen = [
-            (-margin_px, -margin_px),
-            (-margin_px, self.h as i32 + margin_px),
-            (self.w as i32 + margin_px, self.h as i32 + margin_px),
-            (self.w as i32 + margin_px, -margin_px),
-        ];
+        let screen = [(xmin, ymin), (xmin, ymax), (xmax, ymax), (xmax, ymin)];
         let e0 = (quad[1].0 as i64 - quad[0].0 as i64, quad[1].1 as i64 - quad[0].1 as i64);
         let e1 = (quad[3].0 as i64 - quad[0].0 as i64, quad[3].1 as i64 - quad[0].1 as i64);
-        [(1_i64, 0_i64), (0, 1), (-e0.1, e0.0), (-e1.1, e1.0)]
-            .into_iter()
-            .all(|axis| projections_overlap(&quad, &screen, axis))
+        if quad.iter().all(|p| p.0 < screen[0].0)
+            || quad.iter().all(|p| p.0 > screen[2].0)
+            || quad.iter().all(|p| p.1 < screen[0].1)
+            || quad.iter().all(|p| p.1 > screen[2].1)
+        {
+            return false;
+        }
+        let bounded = quad
+            .iter()
+            .chain(&screen)
+            .fold(0u32, |bits, &(x, y)| bits | x.wrapping_add(32768) as u32 | y.wrapping_add(32768) as u32)
+            < 65536;
+        [(-e0.1, e0.0), (-e1.1, e1.0)].into_iter().all(|axis| projections_overlap(&quad, &screen, axis, bounded))
     }
 
     /// Whether decoded geometry can paint the panel: the exact second stage after
@@ -208,7 +222,22 @@ impl Viewport {
 }
 
 #[inline]
-fn projections_overlap(a: &[(i32, i32); 4], b: &[(i32, i32); 4], axis: (i64, i64)) -> bool {
+fn projections_overlap(a: &[(i32, i32); 4], b: &[(i32, i32); 4], axis: (i64, i64), bounded: bool) -> bool {
+    if bounded {
+        // Packed coordinates bound the bbox normals to 17 bits, so these sums cannot overflow.
+        let dot =
+            |(x, y): (i32, i32)| i64::from(x) * i64::from(axis.0 as i32) + i64::from(y) * i64::from(axis.1 as i32);
+        let mut low = i64::MAX;
+        let mut high = i64::MIN;
+        for &p in a {
+            let v = dot(p);
+            low = low.min(v);
+            high = high.max(v);
+        }
+        let rect_low = dot((if axis.0 < 0 { b[2].0 } else { b[0].0 }, if axis.1 < 0 { b[2].1 } else { b[0].1 }));
+        let rect_high = dot((if axis.0 < 0 { b[0].0 } else { b[2].0 }, if axis.1 < 0 { b[0].1 } else { b[2].1 }));
+        return high >= rect_low && rect_high >= low;
+    }
     let project = |points: &[(i32, i32); 4]| {
         let mut low = i64::MAX;
         let mut high = i64::MIN;
@@ -339,7 +368,7 @@ mod differential {
         let mut seed = 0x2389_ab17u32;
         for case in 0..16_384 {
             let zoom = [0.001, 0.125, 1.0, 16.0, 1e-7][case % 5];
-            let course = case as f32 * 0.019;
+            let course = if case % 5 == 0 { 0.0 } else { case as f32 * 0.019 };
             let viewport = Viewport::new_rotated(240.0, 320.0, 17, -29, zoom, course);
             let old = legacy::Viewport::new_rotated(240.0, 320.0, 17, -29, zoom, course);
             let mut points = [(0, 0); 4];

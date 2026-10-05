@@ -23,9 +23,8 @@ pub(crate) struct PackedEdge {
 const _: () = assert!(core::mem::size_of::<PackedEdge>() == core::mem::size_of::<Point>());
 const _: () = assert!(core::mem::align_of::<PackedEdge>() <= core::mem::align_of::<Point>());
 
-/// Scan-convert retained screen-space rings after building their non-horizontal edges once, which
-/// takes ring partitioning, horizontal-edge rejection and point loads out of every scanline while
-/// keeping the crossing expression and the half-open edge rule bit for bit.
+/// Fill retained rings with an active-edge table in the phase-shared point buffer. Crossings keep
+/// the exact f32 expression and half-open row rule; equal adjacent spans share one rectangle.
 pub(crate) fn fill_polygon_edges<D, L>(
     target: &mut D,
     points: &[ScreenPoint],
@@ -73,30 +72,71 @@ pub(crate) fn fill_polygon_edges<D, L>(
         return;
     }
 
+    if let [a, b] = edges.as_slice() {
+        if a.xi == a.xj && b.xi == b.xj && a.yi.min(a.yj) == b.yi.min(b.yj) && a.yi.max(a.yj) == b.yi.max(b.yj) {
+            let left = i32::from(a.xi.min(b.xi)).max(0);
+            let right = i32::from(a.xi.max(b.xi)).min(w - 1);
+            let bottom = ymax.min(i32::from(a.yi.max(a.yj)) - 1);
+            if left <= right && ymin <= bottom {
+                let _ = target.fill_solid(
+                    &Rectangle::new(
+                        Point::new(left, ymin),
+                        Size::new((right - left + 1) as u32, (bottom - ymin + 1) as u32),
+                    ),
+                    color,
+                );
+            }
+            return;
+        }
+    }
+
+    edges.sort_unstable_by_key(|edge| edge.yi.min(edge.yj));
+    // The active prefix shares the sorted pending table; expired slots receive new edges.
+    let mut pending = 0;
+    let mut active = 0;
+    let mut run = None;
     for y in ymin..=ymax {
         let yc = y as f32 + 0.5;
+        while pending < edges.len() && i32::from(edges[pending].yi.min(edges[pending].yj)) <= y {
+            edges.swap(active, pending);
+            active += 1;
+            pending += 1;
+        }
         xs.clear();
         let mut saturated = false;
-        for edge in edges.iter() {
+        let mut i = 0;
+        while i < active {
+            let edge = edges[i];
+            if i32::from(edge.yi.max(edge.yj)) <= y {
+                active -= 1;
+                edges.swap(i, active);
+                continue;
+            }
             let (xi, yi) = (edge.xi as f32, edge.yi as f32);
             let (xj, yj) = (edge.xj as f32, edge.yj as f32);
-            if ((yi <= yc && yc < yj) || (yj <= yc && yc < yi))
-                && xs.push(xi + (yc - yi) / (yj - yi) * (xj - xi)).is_err()
-            {
+            if xs.push(xi + (yc - yi) / (yj - yi) * (xj - xi)).is_err() {
                 saturated = true;
                 break;
             }
+            i += 1;
         }
         if saturated || xs.len() < 2 {
+            continue;
+        }
+        if xs.len() == 2 {
+            let (a, b) = (xs[0], xs[1]);
+            let (left, right) = if a < b { (a, b) } else { (b, a) };
+            extend_span(target, &mut run, left, right, y, w, color);
             continue;
         }
         xs.sort_unstable_by(crate::sort::crossings);
         let mut k = 0;
         while k + 1 < xs.len() {
-            fill_span(target, xs[k], xs[k + 1], y, w, color);
+            extend_span(target, &mut run, xs[k], xs[k + 1], y, w, color);
             k += 2;
         }
     }
+    flush_span(target, &mut run, color);
 }
 
 /// Project a feature's microdegree rings into `screen` and scanline-fill them. Retained as the
@@ -232,6 +272,51 @@ where
     let x1 = (libm::ceilf(right) as i32).min(w - 1);
     if x1 >= x0 {
         let _ = target.fill_solid(&Rectangle::new(Point::new(x0, y), Size::new((x1 - x0 + 1) as u32, 1)), color);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SpanRun {
+    left: i32,
+    right: i32,
+    top: i32,
+    bottom: i32,
+}
+
+#[inline]
+fn extend_span<D: DrawTarget>(
+    target: &mut D,
+    run: &mut Option<SpanRun>,
+    left: f32,
+    right: f32,
+    y: i32,
+    w: i32,
+    color: D::Color,
+) {
+    let left = (libm::floorf(left) as i32).max(0);
+    let right = (libm::ceilf(right) as i32).min(w - 1);
+    if let Some(prior) = run {
+        if prior.left == left && prior.right == right && prior.bottom + 1 == y {
+            prior.bottom = y;
+            return;
+        }
+    }
+    flush_span(target, run, color);
+    if left <= right {
+        *run = Some(SpanRun { left, right, top: y, bottom: y });
+    }
+}
+
+#[inline]
+fn flush_span<D: DrawTarget>(target: &mut D, run: &mut Option<SpanRun>, color: D::Color) {
+    if let Some(span) = run.take() {
+        let _ = target.fill_solid(
+            &Rectangle::new(
+                Point::new(span.left, span.top),
+                Size::new((span.right - span.left + 1) as u32, (span.bottom - span.top + 1) as u32),
+            ),
+            color,
+        );
     }
 }
 
