@@ -58,15 +58,8 @@ is never handed a general network proxy.
 ## Basemap
 
 The region picker, ride library and route previews draw the same basemap from
-`tiles.openbikecomputer.com`. Builds without planner settings read the active release from
-`https://maps.openbikecomputer.com/planner/catalog.json`. To pin a release, write its settings
-before the build:
-
-```sh
-python3 tools/planner.py site-config \
-  --catalog https://maps.openbikecomputer.com/planner/catalog.json \
-  --output builder/app/.env.local
-```
+`tiles.openbikecomputer.com`. Each map reads the active release from
+`https://maps.openbikecomputer.com/planner/catalog.json` when it opens.
 
 The basemap needs WebGL2 and shows detail only within the published tile coverage. If it cannot
 load, the map shows a notice and keeps the selection or route overlays. It sends no tile requests
