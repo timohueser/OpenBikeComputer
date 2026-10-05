@@ -33,7 +33,7 @@ mutations with `STATUS`; a lost create uses its catalog fingerprint. The checked
 
 ## Object formats
 
-- Routes are OBCR v3 files. GPX and TCX conversion happens on the phone, and the device stores the
+- Routes are OBCR v5 files. GPX and TCX conversion happens on the phone, and the device stores the
   OBCR bytes verbatim. The device never parses XML.
 - Ride bytes are recorded samples plus an OBRF footer. The phone decodes them to `Ride` before
   archiving or exporting GPX.
@@ -62,7 +62,7 @@ leaves the local archive intact and the device confirmation pending in the sync 
 reconnect revalidates and retries without downloading saved rides. A changed source is terminal
 for that receipt.
 
-## Two deltas from the spec
+## Names and imports
 
 - **The device name lives in Config.** Renaming is a `Config` object write; there is no rename
   command. The UTF-8 name is capped at 48 bytes and truncated only at a Character boundary.

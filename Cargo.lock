@@ -896,17 +896,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chrono"
-version = "0.4.45"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
-dependencies = [
- "iana-time-zone",
- "num-traits",
- "windows-link",
-]
-
-[[package]]
 name = "clap"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2447,30 +2436,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iana-time-zone"
-version = "0.1.65"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e31bc9ad994ba00e440a8aa5c9ef0ec67d5cb5e5cb0cc7f8b744a35b389cc470"
-dependencies = [
- "android_system_properties",
- "core-foundation-sys",
- "iana-time-zone-haiku",
- "js-sys",
- "log",
- "wasm-bindgen",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "iana-time-zone-haiku"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "icu_collections"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3259,20 +3224,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "obc-companion-core"
-version = "0.1.0"
-dependencies = [
- "heapless 0.8.0",
- "obc-elevation",
- "obc-formats",
- "obc-reader",
- "obc-route",
- "obcm-assemble",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "obc-crc"
 version = "0.1.0"
 
@@ -3283,7 +3234,9 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "toml",
+ "ureq",
 ]
 
 [[package]]
@@ -3352,7 +3305,6 @@ name = "obc-formats"
 version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
- "obc-crc",
  "obc-ports",
 ]
 
@@ -3403,14 +3355,12 @@ dependencies = [
 name = "obc-ios-host"
 version = "0.1.0"
 dependencies = [
- "embedded-graphics",
  "obc-app",
  "obc-display",
  "obc-formats",
  "obc-host-core",
  "obc-platform",
  "obc-ports",
- "obc-reader",
  "obc-render",
  "obc-route",
  "obc-storage",
@@ -3568,14 +3518,12 @@ dependencies = [
 name = "obc-sim"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "cpal",
  "eframe",
  "embedded-graphics",
  "heapless 0.8.0",
  "image",
  "obc-app",
- "obc-ble",
  "obc-dfu",
  "obc-display",
  "obc-file-source",
@@ -3600,7 +3548,6 @@ name = "obc-skin-preview"
 version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
- "embedded-graphics",
  "js-sys",
  "obc-formats",
  "obc-host-core",
@@ -3662,7 +3609,6 @@ version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
  "miniz_oxide",
- "obc-crc",
  "obc-dfu",
  "obc-elevation",
  "obc-formats",
@@ -3704,7 +3650,6 @@ name = "obc-web-demo"
 version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
- "embedded-graphics",
  "js-sys",
  "obc-app",
  "obc-display",

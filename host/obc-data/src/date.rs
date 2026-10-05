@@ -1,4 +1,4 @@
-//! Calendar dates as days since 1970-01-01, and UTC timestamps.
+//! Calendar dates as days since 1970-01-01, and UTC times: a pin's age, a retrieval time, an HTTP date.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -26,31 +26,34 @@ pub fn parse(text: &str) -> Option<i64> {
 
 /// Today in UTC, as days since 1970-01-01.
 pub fn today() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| (elapsed.as_secs() / 86_400) as i64)
+    (now() / 86_400) as i64
 }
 
-/// The current time in UTC as `YYYY-MM-DDTHH:MM:SSZ`.
-pub fn now() -> String {
-    timestamp(SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs()))
+/// Seconds since 1970-01-01 UTC.
+pub fn now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
 }
 
-fn timestamp(seconds: u64) -> String {
-    let (year, month, day) = civil_from_days((seconds / 86_400) as i64);
+/// Days since 1970-01-01 as `YYYY-MM-DD`.
+pub fn format(days: i64) -> String {
+    let (year, month, day) = civil_from_days(days);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// Seconds since 1970-01-01 as `YYYY-MM-DDTHH:MM:SSZ`.
+pub fn timestamp(seconds: u64) -> String {
     let time = seconds % 86_400;
-    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z", time / 3600, time % 3600 / 60, time % 60)
+    format!("{}T{:02}:{:02}:{:02}Z", format((seconds / 86_400) as i64), time / 3600, time / 60 % 60, time % 60)
 }
 
-/// Howard Hinnant's `civil_from_days`, the inverse of [`days_from_civil`].
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
-    let days = days + 719_468;
-    let era = days.div_euclid(146_097);
-    let day_of_era = days - era * 146_097;
-    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let shifted_month = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
-    let month = if shifted_month < 10 { shifted_month + 3 } else { shifted_month - 9 };
-    (year_of_era + era * 400 + i64::from(month <= 2), month, day)
+/// The day of an HTTP date such as `Sun, 06 Nov 1994 08:49:37 GMT`, as `YYYY-MM-DD`.
+pub fn from_http(value: &str) -> Option<String> {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let mut words = value.split_whitespace().skip(1);
+    let (day, month, year) = (words.next()?, words.next()?, words.next()?);
+    let month = MONTHS.iter().position(|name| *name == month)? + 1;
+    let text = format!("{year}-{month:02}-{day:0>2}");
+    parse(&text).map(|_| text)
 }
 
 /// Howard Hinnant's `days_from_civil`: a year starts in March, so the leap day is the last day.
@@ -63,9 +66,23 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
+/// The inverse of `days_from_civil`.
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let days = days + 719_468;
+    let era = days.div_euclid(146_097);
+    let day_of_era = days - era * 146_097;
+    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 { shifted_month + 3 } else { shifted_month - 9 };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    (year, month, day)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse, timestamp};
+    use super::{format, from_http, parse, timestamp};
 
     #[test]
     fn dates_count_days_and_reject_impossible_days() {
@@ -78,9 +95,13 @@ mod tests {
     }
 
     #[test]
-    fn timestamps_are_utc_and_invert_dates() {
-        assert_eq!(timestamp(0), "1970-01-01T00:00:00Z");
-        let leap_day = parse("2024-02-29").unwrap() as u64 * 86_400;
-        assert_eq!(timestamp(leap_day + 3661), "2024-02-29T01:01:01Z");
+    fn dates_format_back_and_read_from_http_headers() {
+        for text in ["1970-01-01", "2024-02-29", "2026-10-05", "1999-12-31"] {
+            assert_eq!(format(parse(text).unwrap()), text);
+        }
+        assert_eq!(timestamp(86_400 + 3_723), "1970-01-02T01:02:03Z");
+        assert_eq!(from_http("Mon, 05 Oct 2026 03:43:59 GMT").as_deref(), Some("2026-10-05"));
+        assert_eq!(from_http("Mon, 32 Oct 2026 03:43:59 GMT"), None);
+        assert_eq!(from_http("yesterday"), None);
     }
 }

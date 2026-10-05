@@ -13,7 +13,7 @@ The workspace is rooted at the repo root (`../Cargo.toml`) and spans `firmware/`
 rule `firmware/tools/check_dependencies.py` enforces. Dev-dependencies cross the boundary on
 purpose, because a dev-dep never enters the `no_std` build, so `cargo test` wants GEOS.
 
-Three crates are excluded from the workspace and built from **inside their own directory**, each
+Four crates are excluded from the workspace and built from **inside their own directory**, each
 with its own `Cargo.lock`, `fmt`, `clippy`, `test` and CI job:
 
 | Crate | Why it stands alone |
@@ -21,6 +21,7 @@ with its own `Cargo.lock`, `fmt`, `clippy`, `test` and CI job:
 | [`obc-fw-nrf54l`](obc-fw-nrf54l/README.md) | the board: its own MCU target and `.cargo/config.toml` |
 | [`obc-boot`](obc-boot/README.md) | the 32 KB bootloader, same target, its own link script |
 | [`obc-desktop`](../apps/obc-desktop/README.md) | the Tauri app: a platform webview |
+| [`obc-sensor-sim`](obc-sensor-sim/README.md) | the sensor simulator: its own MCU target |
 
 ## Prerequisites
 
@@ -53,11 +54,8 @@ cd firmware/obc-fw-nrf54l && cargo build --release    # see that crate's README 
 ## Test
 
 ```sh
-cargo test                # the whole host workspace
-cargo test -p obc-pack    # just the packer
+obc test -p obc-pack      # test only the crates you changed
 ```
-
-`cargo test` does not touch the three excluded crates.
 
 The frozen resource numbers are in [`tools/resource_baseline.json`](tools/resource_baseline.json),
 enforced by [`tools/resource_guard.py`](tools/resource_guard.py). A build with
@@ -83,18 +81,19 @@ regenerates it in the same pull request, with the reason stated.
 
 ## Format
 
-`rustfmt.toml` is committed, so let rustfmt own style. Formatting takes four invocations, and CI
+`rustfmt.toml` is committed, so let rustfmt own style. Formatting takes five invocations, and CI
 checks all of them: the workspace is a *virtual* manifest, so `--all` is required or it formats
-nothing, and `--all` skips the three excluded crates.
+nothing, and `--all` skips the four excluded crates.
 
 ```sh
 cargo fmt --all                                             # the workspace
 cargo fmt --manifest-path firmware/obc-fw-nrf54l/Cargo.toml
 cargo fmt --manifest-path firmware/obc-boot/Cargo.toml
 cargo fmt --manifest-path apps/obc-desktop/Cargo.toml
+cargo fmt --manifest-path firmware/obc-sensor-sim/Cargo.toml
 ```
 
-`obc fmt` runs all four.
+`obc fmt` runs all five.
 
 ## Run the simulator
 
@@ -102,6 +101,7 @@ cargo fmt --manifest-path apps/obc-desktop/Cargo.toml
 `obc pack <region.osm.pbf>`.
 
 ```sh
+obc sim                                                # the Grimsel demo
 ./target/release/obc-sim map.obcm                      # device look, 240×320, 3× window scale
 ./target/release/obc-sim map.obcm --size 480x640 --scale 2
 ./target/release/obc-sim map.obcm --gpx ride.gpx       # replay a GPX as a fake GPS

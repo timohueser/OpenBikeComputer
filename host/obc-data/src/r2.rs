@@ -249,7 +249,7 @@ impl Bucket {
             self.get(REMOVAL_LOG, &log)?;
         }
         let mut history = std::fs::read_to_string(&log).map_err(|e| format!("{}: {e}", log.display()))?;
-        history.push_str(&removal_lines(objects, reason, &user(), &crate::date::now()));
+        history.push_str(&removal_lines(objects, reason, &user(), &crate::date::timestamp(crate::date::now())));
         std::fs::write(&log, history).map_err(|e| format!("{}: {e}", log.display()))?;
         self.put(&log, REMOVAL_LOG, &Upload::default())?;
 

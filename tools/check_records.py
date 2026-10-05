@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Fail when a record's signature appears outside the changelog.
+"""Fail when a record's signature appears outside the pull request.
 
 An issue or pull-request number, or a date, marks a record of what happened. Records live in
-the pull request and in the generated changelog. Everywhere else the text states what is,
+the pull request. Everywhere else the text states what is,
 without its history.
 
 Checked: every tracked Markdown file outside code fences and SVG, and every comment in Rust,
 Swift, TypeScript, Svelte, JavaScript and Python (docstrings included). Not checked: the
-changelog, the blog, licences and legal pages, vendored code, links to another project's
+blog, licences and legal pages, vendored code, links to another project's
 issues, dates before 2025, and dates inside code comments (test data and examples use them).
 """
 
@@ -19,12 +19,12 @@ import sys
 from pathlib import Path
 
 GOVERNS = ['**/*.md', '**/*.rs', '**/*.swift', '**/*.ts', '**/*.svelte', '**/*.js', '**/*.py']
-RULE = 'An issue number or a date belongs in the pull request and the changelog, not in a document or a comment.'
+RULE = 'An issue number or a date belongs in the pull request, not in a document or a comment.'
 
 ROOT = Path(__file__).resolve().parents[1]
 
 EXEMPT = (
-    "CHANGELOG.md", "THIRD-PARTY.md", "LICENSE", "LICENSE.hardware", "docs/BLOG.md",
+    "THIRD-PARTY.md", "LICENSE", "LICENSE.hardware", "docs/BLOG.md",
     "docs/content/blog/", "docs/content/impressum.md", "docs/content/datenschutz.md",
     "vendor/", "node_modules/", "tools/check_records.py",
 )
@@ -99,7 +99,7 @@ def main() -> int:
         for p in problems:
             print(f"  {p}")
         return 1
-    print("records: no issue numbers or dates outside the changelog")
+    print("records: no issue numbers or dates outside the pull requests")
     return 0
 
 

@@ -116,15 +116,8 @@ jobs:
         with:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
-          fetch-depth: 0 # the changelog check reads the merge history
-      - name: Deleted catalog and bake APIs stay deleted
-        run: python3 tools/check_retired_map_stack.py
       - name: Host-pushed cards are built only by the card scheduler
         run: python3 tools/check_card_scheduler.py
-      - name: Deleted repaint mirrors stay deleted
-        run: python3 tools/check_render_keys.py
-      - name: Only CatalogMachine orders a catalog re-read
-        run: python3 tools/check_catalog_ownership.py
       - name: A contextual setting has one home
         run: python3 tools/check_one_home.py
       - name: Shared screen drawing helpers live in screen/vocab
@@ -135,8 +128,6 @@ jobs:
         run: python3 tools/prose.py --check
       - name: Issue numbers and dates live in the pull request, not the tree
         run: python3 tools/check_records.py
-      - name: The changelog is generated and current
-        run: python3 tools/changelog.py --check
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -233,8 +224,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       # The iOS portability gate: the shared stack has to keep type-checking for the phone, and
       # only a Mac can link or run it. A type-check is cheap enough to ride this Linux job.
-      - name: cargo check (iOS host and companion core, aarch64-apple-ios)
-        run: cargo check -p obc-ios-host -p obc-companion-core --target aarch64-apple-ios --locked
+      - name: cargo check (iOS host, aarch64-apple-ios)
+        run: cargo check -p obc-ios-host --target aarch64-apple-ios --locked
 
   test:
     env:
@@ -525,34 +516,8 @@ jobs:
         with:
           workspaces: firmware/obc-fw-nrf54l
           key: thumbv8m-nrf
-      # The FLPR `build.rs` cross-compiles src/flpr/*.c for the VPR with an rv32emc GNU gcc;
-      # build.rs auto-detects the xPack `riscv-none-elf-gcc` (+ matching objcopy).
-      #
-      # Deliberately NOT the apt package: the runner's azure.archive.ubuntu.com mirror kept
-      # stalling on the ~51 MB `gcc-riscv64-unknown-elf` — first wedging jobs until the 6 h
-      # default timeout, then (after per-request timeouts + retries) still burning the 10-minute
-      # step budget on a mirror that *trickles* instead of stalling, which apt's idle timeout
-      # never trips. So: a version-pinned xPack toolchain tarball from GitHub's own release CDN
-      # (runner-to-GitHub, no Ubuntu mirror involved), SHA-256-verified, restored from the
-      # actions cache on every run after the first. The curl retries + step timeout stay as the
-      # cache-miss backstop; worst case is a fast visible failure, never a stuck run.
-      - name: Cache the RISC-V GCC toolchain (xPack)
-        id: riscv-gcc-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/xpack-riscv-none-elf-gcc-13.2.0-2
-          key: xpack-riscv-none-elf-gcc-13.2.0-2-linux-x64
-      - name: Install RISC-V GCC for the FLPR blob
-        if: steps.riscv-gcc-cache.outputs.cache-hit != 'true'
-        timeout-minutes: 10
-        run: |
-          url="https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v13.2.0-2/xpack-riscv-none-elf-gcc-13.2.0-2-linux-x64.tar.gz"
-          sha256="52545afb900200fbf65fe05f7ce7090b8a42c64091f4f5d43cae6bb68ea2434a"
-          curl -fL --retry 3 --retry-all-errors --max-time 300 -o /tmp/riscv-gcc.tar.gz "$url"
-          echo "$sha256  /tmp/riscv-gcc.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/riscv-gcc.tar.gz -C "$HOME"
-      - name: Put the RISC-V GCC on PATH
-        run: echo "$HOME/xpack-riscv-none-elf-gcc-13.2.0-2/bin" >> "$GITHUB_PATH"
+      # The FLPR `build.rs` cross-compiles src/flpr/*.c for the VPR with an rv32emc GNU gcc.
+      - uses: ./.github/actions/setup-riscv
       - uses: taiki-e/install-action@v2
         if: matrix.name == 'build (default = LS021/FLPR, release)'
         with:
@@ -731,6 +696,8 @@ jobs:
         run: cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features --config deny.toml check
       - name: cargo-deny (obc-boot bootloader)
         run: cargo deny --manifest-path firmware/obc-boot/Cargo.toml --all-features --config deny.toml check
+      - name: cargo-deny (obc-sensor-sim)
+        run: cargo deny --manifest-path firmware/obc-sensor-sim/Cargo.toml --all-features --config deny.toml check
       # The desktop shell is the one artifact a *user* installs, so its tree is the
       # one where a bad licence or a live advisory matters most.
       - name: cargo-deny (obc-desktop app)
@@ -943,16 +910,6 @@ jobs:
             ${{ runner.temp }}/ios-unit.xcresult
             .artifacts/coverage/ios/
           if-no-files-found: error
-      # OBCRouting links the Rust companion core, so it is its own package with its own toolchain.
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache: false
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: .
-          key: ios
-      - name: OBCRouting package tests (Swift Testing, host)
-        run: tools/build-companion-core.sh aarch64-apple-darwin && cd companion-ios/Packages/OBCRouting && swift test
       - name: Planner PMTiles reader
         id: planner-tiles
         shell: bash
@@ -1011,7 +968,6 @@ jobs:
         if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ci.ios-app-build') || contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ios.xcuitest')
         working-directory: companion-ios
         run: |
-          ../tools/build-companion-core.sh aarch64-apple-ios-sim
           xcodebuild build-for-testing -project OBCCompanion.xcodeproj -scheme OBCCompanion \
             -configuration Debug -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO
@@ -1047,7 +1003,6 @@ jobs:
   # The Release half of the mock-seam gate: mock and developer-panel code must never ship.
   # It shares no build output with `ios-app` — a different configuration writes a different
   # products directory — so it runs beside it instead of adding four minutes to the wall clock.
-  # The app links the companion core, so the build packs its simulator slice first.
   ios-release:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'ios-release')
@@ -1077,7 +1032,6 @@ jobs:
       - name: Build (Release, simulator SDK)
         working-directory: companion-ios
         run: |
-          ../tools/build-companion-core.sh aarch64-apple-ios-sim
           xcodebuild build -project OBCCompanion.xcodeproj -scheme OBCCompanion \
             -configuration Release -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO

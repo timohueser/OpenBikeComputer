@@ -6,8 +6,8 @@ import { testConfig } from "./test-support/planner/config";
 
 // One frontend, three hosts. Which host `$host` resolves to is decided here, at
 // build time — a conditional alias, not a runtime `if` — so the two hosts you did not
-// build have no path into the module graph at all. That is what keeps the FastAPI
-// job-polling client out of the static web bundle, rather than trusting a bundler to
+// build have no path into the module graph at all. That is what keeps the dev
+// server's client out of the static web bundle, rather than trusting a bundler to
 // notice that a branch is unreachable. src/lib/platform/bundle.test.ts asserts it
 // against the real emitted chunks.
 const HOSTS = {

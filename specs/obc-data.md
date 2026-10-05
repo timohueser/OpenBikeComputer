@@ -1,8 +1,8 @@
 # obc data
 
 `obc data` reads the data registry: the external sources that a bake uses, the regions, and
-the pins of an environment. The crate is `host/obc-data`. All files are TOML. A file with an
-unknown key is refused.
+the pins of an environment. It fetches sources into the store. The crate is `host/obc-data`.
+All files under `data/` are TOML. A file with an unknown key is refused.
 
 ## Files
 
@@ -88,31 +88,122 @@ unions. A union that contains itself, or names a region that does not exist, is 
 | State | When |
 | --- | --- |
 | `blocked` | A `data` or `asset` source has no `licence`, or its credential is not on this machine |
-| `stale` | The pin is a date, `refresh` is in days, and the pin is older than `refresh` |
+| `stale` | The pin is a date, `refresh` is in days, the pin is older than `refresh`, and the newest upstream version is later than the pin |
 | `ok` | Otherwise. A source with no pin, or with `refresh = "manual"`, is never stale |
 
-The age of a pin is the number of days from its date to today (UTC).
+The age of a pin is the number of days from its date to today (UTC). When a pin is older than
+`refresh` and the newest upstream version is not known, the state is `ok` and the reason says
+`upstream unknown`, and whether the source cannot be checked or the check failed.
+
+## Store
+
+The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomputer/store/`.
+
+| Path | Holds |
+| --- | --- |
+| `objects/<ab>/<sha256>` | One file, named by the lowercase hex SHA-256 of its bytes; `<ab>` is its first two characters. Read-only |
+| `snapshots/<source>/<version>.json` | The snapshot record of one source version |
+| `upstream/<source>.json` | The last upstream check of a source: `checked` (seconds since 1970-01-01 UTC), `version` (a string, or `null` when the check failed) and `error` (only when it failed) |
+| `partial/` | Downloads that are not complete, and the validators that resume them |
+| `locks/` | One lock file per key |
+
+Rules:
+
+- An object is complete. A download goes to `partial/` and moves into `objects/` with one
+  rename after the digest check.
+- A record goes to a temporary file in its directory and replaces the old record with one
+  rename.
+- One process at a time downloads a URL, and one process at a time writes a snapshot record.
+
+A snapshot record is a JSON object:
+
+| Key | Meaning |
+| --- | --- |
+| `source` | The source id |
+| `version` | The version, as a pin names it |
+| `files` | One item per file: `name` (the last segment of the URL), `url`, `size` in bytes, `sha256` and `retrieved` (`YYYY-MM-DDTHH:MM:SSZ`) |
+
+A version is one or more segments joined by `/`. A segment has letters, digits, `.`, `_`, `+`
+and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` date, and a
+`digest` version is 64 lowercase hex digits.
+
+## Fetch
+
+A fetch fills each `{name}` of `fetch.url`: `{version}` from the version, and each other name
+from a `NAME=VALUE` argument. A name can have more than one value; then the fetch gets one file
+for each value. A file that the snapshot record of the version has, and whose object exists,
+comes from the store with no request. The fetch records each file when its download is complete,
+so a fetch that fails keeps the files before the failure. A record that has the URL with another
+SHA-256 fails the fetch.
+
+Which version a fetch gets:
+
+- A URL with `{version}` gives the version that it names.
+- A URL without `{version}` gives only the newest file upstream. For a `date` source without a
+  version, a `HEAD` request for each URL, with one retry, gives the latest `Last-Modified` day,
+  and that day is the version. A date version accepts a file that changed on or before that day; a later file
+  fails the fetch before its body is read. A response without `Last-Modified` counts as changed
+  today.
+- A `release` or `commit` version of a URL without `{version}` is only a name. The fetch accepts
+  it only when the record of the version has the URL, and so pins its bytes.
+- For a `digest` source, the version is the SHA-256 of its one file.
+
+A download stops after four failed tries in a row, and waits 2, 4 and 8 seconds between them. A
+try that adds bytes to a resumed part resets the count; a try that starts the file again does
+not. A try receives its body for at most 15 minutes, so a
+stalled transfer becomes a retry. It retries a connection error, a cut-off or stalled body, a
+refused resume and HTTP 408, 429 and 5xx. It keeps the bytes it has in `partial/`. The next
+try, or the next fetch, asks for the rest with `Range` and `If-Range`, with the strong `ETag`
+or else the `Last-Modified` of the first response. A `206` answer with another validator, or a
+whole file, restarts the file. A `416` answer whose `Content-Range` is the size of the part
+means the part is complete. A file with no validator resumes only when its digest is known.
+The digest check compares the SHA-256 with the `digest` version, or with the record of the
+version. A file that fails it is deleted.
+
+| `fetch.kind` | Fetcher |
+| --- | --- |
+| `http`, `geofabrik`, `glo30`, `github` | One file per URL, as above |
+| `osm`, `dtm`, `capture` | None yet; the fetch fails |
+| `by-hand`, `installed` | None; the fetch fails |
+
+The upstream check finds the newest version of a source with one request, which has 15 seconds.
+The store keeps its answer, or its failure, for one hour.
+
+| Source | Check |
+| --- | --- |
+| `osm` | `HEAD` of the URL, not following the redirect; the day in the `planet-YYMMDD` file name of its `Location` |
+| `capture` | Today, with no request: a query service answers with current data |
+| `github`, `commit` | The GitHub API: the newest commit of the default branch |
+| `github`, `release` | The GitHub API: the tag of the newest release that has the asset of the URL |
+| `http`, `geofabrik` or `glo30`, `date`, and a URL without `{name}` | `HEAD` of the URL; the `Last-Modified` day |
+| Every other source | None; the source cannot be checked |
 
 ## Commands
 
 | Command | Output |
 | --- | --- |
-| `obc data sources [--json]` | Every source with licence, R2 copy, live pin, age, policy and state. Rows are in kind order: data, then assets, then tools |
+| `obc data sources [--json]` | Every source with licence, R2 copy, live pin, newest upstream version, age, policy and state. Rows are in kind order: data, then assets, then tools |
+| `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the live pin, or else the newest file upstream. Writes the store path of each file |
+| `obc data refresh SOURCE [NAME=VALUE…] [--env ENV] [--json]` | Fetches the newest upstream version, checked now, and writes it to `[pins]` of `data/env/ENV.toml` (default `live`). `ENV` is lowercase kebab-case. The edit keeps comments, line order and CRLF line ends. Writes the store path of each file |
 | `obc data region [list] [--json]` | Every region with its name and definition |
 | `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
 
 `--json` writes one JSON document to standard output:
 
 - `sources`: `{"sources": [...]}`. Each item has the keys of its `[[source]]` table, and
-  `pin`, `age_days`, `state` and `reason` (`null` when the state is `ok`).
+  `pin`, `upstream` (the newest upstream version, or `null`), `age_days`, `state` and `reason`
+  (`null` when there is nothing to say).
+- `fetch` and `refresh`: the snapshot, `{"source": ..., "version": ..., "files": [...]}`, with
+  the requested files only. Each file has the keys of the record and `path`, its object.
 - `region list`: `{"regions": [...]}`. Each item has `id`, `name`, `kind` and the key its
   kind names. A `box` is an object with `west`, `south`, `east` and `north`.
 - `region show`: the region item, and `leaves` (the region ids it resolves to) and
   `bounds` (a box or `null`).
 
 A command that fails writes the reason to standard error. The exit status is 0 when the command
-succeeds, 1 when a file under `data/` is not valid, and 2 for a usage error, which includes an
-unknown region id.
+succeeds, 1 when a file under `data/` is not valid or a fetch fails, and 2 for a usage error,
+which includes an unknown region id, an unknown source id and a missing or invalid environment
+name.
 
 ## R2 client
 
@@ -164,8 +255,8 @@ Rules:
   changes nothing.
 - `delete` appends one line per object to `removed.jsonl` at the bucket root before it deletes:
   `{"by": USER, "bytes": N, "key": KEY, "reason": TEXT, "removed": "YYYY-MM-DDTHH:MM:SSZ"}`,
-  with non-ASCII characters as `\uXXXX` escapes. When the delete fails, the error names the
-  keys that the bucket still holds.
+  with the escapes of Python's `json.dumps`: `\uXXXX` for DEL and for each character outside
+  ASCII. When the delete fails, the error names the keys that the bucket still holds.
 
 The exit status is 0 on success, 1 when R2 or rclone fails or the person answers no, and 2 for a
 usage error or a delete without consent.
