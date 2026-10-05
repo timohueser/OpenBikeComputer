@@ -280,6 +280,10 @@ version. A file that fails it is deleted.
 | `capture` | A program writes the files, see below |
 | `by-hand`, `installed` | None; the fetch fails |
 
+A `glo30` tile that answers 404 is at sea: the fetch gives no file for it, and its request record
+has only the other files. Without a version, a fetch whose every tile answers 404 fails, because
+no day names it.
+
 A `geofabrik` URL with `{yymmdd}` names the day of the data of the extract. Without a version, the
 fetch reads the day from the `timestamp` of `<area>-updates/state.txt`; for more than one area,
 it takes the earliest day.
@@ -390,7 +394,8 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   and so does a repository root that is not a git checkout. A crate adds its `Cargo.toml`, `build.rs`
   and `src/` the same way. Each path dependency that is not a dev-dependency adds the same,
   and so do its own path dependencies, as `cargo metadata --no-deps` lists them. A path
-  dependency must be a workspace member. A `.rs` file of a crate also adds each file that it
+  dependency must be a workspace member. The engine crate `obc-data` and its path dependencies
+  are never code: the engine only selects inputs, and what it selects is in the input digests. A `.rs` file of a crate also adds each file that it
   names in `include_str!`, `include_bytes!`, `include!` or `#[path = "…"]`, and an added `.rs`
   file adds its own. The name is a string literal, normal or raw, relative to the file, or a
   `concat!` of string literals, relative to the file or after `env!("CARGO_MANIFEST_DIR")`.
