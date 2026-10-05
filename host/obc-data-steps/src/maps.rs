@@ -279,7 +279,7 @@ mod tests {
             for input in &step.inputs {
                 match input {
                     Input::Snapshot { source, .. } => assert!(!osm(source), "{} reads {source}", step.name),
-                    Input::Layer(name) => pending.push(by_name[name.as_str()]),
+                    Input::Layer { name, .. } => pending.push(by_name[name.as_str()]),
                 }
             }
         }

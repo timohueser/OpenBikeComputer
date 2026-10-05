@@ -43,8 +43,9 @@ pub enum Input {
         /// Without params: the names of the files the step reads, or none for every file.
         files: Vec<String>,
     },
-    /// The layer of another step.
-    Layer(String),
+    /// The layer of another step. `files` names the paths in the layer that the step reads, or
+    /// none for every file.
+    Layer { name: String, files: Vec<String> },
 }
 
 /// The code that makes a layer. When in doubt, declare more: too much costs a rebuild, too little
@@ -178,7 +179,11 @@ pub fn recipe(step: &Step, code: &str) -> String {
                 let params = crate::store::sorted(params);
                 serde_json::json!({"kind": InputKind::Snapshot, "name": source, "version": version, "params": params, "files": files})
             }
-            Input::Layer(name) => serde_json::json!({"kind": InputKind::Layer, "name": name}),
+            Input::Layer { name, files } => {
+                let mut files = files.clone();
+                files.sort();
+                serde_json::json!({"kind": InputKind::Layer, "name": name, "files": files})
+            }
         })
         .collect();
     inputs.sort_by_key(|input| input.to_string());
@@ -249,7 +254,7 @@ impl Step {
     /// The names of the layers it reads.
     fn layers(&self) -> impl Iterator<Item = &str> {
         self.inputs.iter().filter_map(|input| match input {
-            Input::Layer(name) => Some(name.as_str()),
+            Input::Layer { name, .. } => Some(name.as_str()),
             Input::Snapshot { .. } => None,
         })
     }
@@ -344,6 +349,19 @@ pub fn snapshot_files(
     })
 }
 
+/// The files of a layer that `selected` names, or all of them when it names none, and the selected
+/// paths that the layer lacks.
+fn select_layer<'a>(files: &'a [LayerFile], selected: &'a [String]) -> (Vec<&'a LayerFile>, Vec<&'a str>) {
+    let chosen = files.iter().filter(|file| selected.is_empty() || selected.contains(&file.path)).collect();
+    let missing = selected.iter().filter(|path| !files.iter().any(|file| &file.path == *path));
+    (chosen, missing.map(String::as_str).collect())
+}
+
+/// The digest of the files of a layer that `selected` names: what a step that reads them keys.
+fn layer_digest(files: &[LayerFile], selected: &[String]) -> String {
+    digest(select_layer(files, selected).0.into_iter().map(|file| (file.path.as_str(), file.sha256.as_str())))
+}
+
 /// Link each file of `files` (a path such as `layer/a.pbf`, and its object) into the new directory
 /// `dir`, for a tool that reads a directory. `dir` must not be in the output of the step; the
 /// directory beside it, `request.output.with_file_name("view")`, goes when the step ends.
@@ -407,13 +425,13 @@ fn prepare(
                 let files = files.into_iter().map(|file| (file.name, file.sha256, file.size));
                 (InputKind::Snapshot, source, files.collect())
             }
-            Input::Layer(name) => {
-                let files = layers[name.as_str()].files.iter();
-                (
-                    InputKind::Layer,
-                    name,
-                    files.map(|file| (file.path.clone(), file.sha256.clone(), file.size)).collect(),
-                )
+            Input::Layer { name, files: selected } => {
+                let (files, missing) = select_layer(&layers[name.as_str()].files, selected);
+                if let Some(path) = missing.first() {
+                    return Err(format!("layer `{name}` has no file {path}"));
+                }
+                let files = files.into_iter().map(|file| (file.path.clone(), file.sha256.clone(), file.size));
+                (InputKind::Layer, name, files.collect())
             }
         };
         let digest = digest(files.iter().map(|(name, sha256, _)| (name.as_str(), sha256.as_str())));
@@ -720,6 +738,10 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         }
     }
 
+    pub(crate) fn layer(name: &str, files: &[&str]) -> Input {
+        Input::Layer { name: name.into(), files: files.iter().map(|file| file.to_string()).collect() }
+    }
+
     /// Two fetched sources and three steps, the second a Python command. The last step is listed
     /// first: the engine orders them. `test/upper` selects `head.txt`; `test/join` reads every file
     /// of `tail@1`.
@@ -727,14 +749,8 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         let join = Code { paths: vec!["join.py".into()], crates: Vec::new() };
         let python = Run::Command(vec!["python3".into(), "join.py".into()]);
         vec![
-            step("test/count", vec![Input::Layer("test/join".into())], steps_crate(), "count", Run::Rust(count)),
-            step(
-                "test/join",
-                vec![Input::Layer("test/upper".into()), snapshot("tail", "1", &[])],
-                join,
-                "joined.txt",
-                python,
-            ),
+            step("test/count", vec![layer("test/join", &[])], steps_crate(), "count", Run::Rust(count)),
+            step("test/join", vec![layer("test/upper", &[]), snapshot("tail", "1", &[])], join, "joined.txt", python),
             step(
                 "test/upper",
                 vec![snapshot("head", "1", &["head.txt"])],
@@ -811,6 +827,37 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         assert_eq!(fetches[0].files, ["x"], "a missing file is a fetch");
         let err = fixture.build(&steps).err().unwrap();
         assert_eq!(err, "fetch head@1: no source `head` in data/sources.toml");
+    }
+
+    #[test]
+    fn a_layer_input_keys_and_passes_only_the_files_it_selects() {
+        fn split(request: &Request) -> Result<(), String> {
+            fs::create_dir(request.output.join("leaves")).map_err(|e| e.to_string())?;
+            for (name, object) in &request.snapshots["head"] {
+                fs::copy(object, request.output.join("leaves").join(name)).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        }
+        fn one(request: &Request) -> Result<(), String> {
+            let [object] = request.layers["test/leaves"].values().collect::<Vec<_>>()[..] else {
+                return Err("the step reads more than one file".into());
+            };
+            fs::copy(object, request.output.join("one.txt")).map(drop).map_err(|e| e.to_string())
+        }
+        let steps = |file: &str| {
+            vec![
+                step("test/leaves", vec![snapshot("head", "1", &[])], steps_crate(), "leaves", Run::Rust(split)),
+                step("test/one", vec![layer("test/leaves", &[file])], steps_crate(), "one.txt", Run::Rust(one)),
+            ]
+        };
+        let fixture = fixture("engine-layer-files");
+        fixture.build(&steps("leaves/head.txt")).unwrap();
+        fixture.fetched("head", "other.txt", b"other\n");
+        let built = fixture.build(&steps("leaves/head.txt")).unwrap();
+        assert_eq!(summary(&built), [("test/leaves", false), ("test/one", true)]);
+
+        let err = fixture.build(&steps("leaves/x.txt")).err().unwrap();
+        assert!(err.contains("layer `test/leaves` has no file leaves/x.txt"), "{err}");
     }
 
     #[test]

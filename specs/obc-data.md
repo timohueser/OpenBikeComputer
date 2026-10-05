@@ -376,7 +376,7 @@ A step declares:
 | Field | Meaning |
 | --- | --- |
 | `name` | The layer name: lowercase kebab-case segments joined by `/` |
-| `inputs` | Snapshots, as `source`, `version`, `params` and `files`. With `params` (the `NAME=VALUE` of the fetch), the step reads the files that a fetch with them gives, and `files` is empty. Without, `files` names the files that the step reads, or is empty for every file. The layers of other steps, by name |
+| `inputs` | Snapshots, as `source`, `version`, `params` and `files`. With `params` (the `NAME=VALUE` of the fetch), the step reads the files that a fetch with them gives, and `files` is empty. Without, `files` names the files that the step reads, or is empty for every file. The layers of other steps, as `name` and `files`: the paths in the layer that the step reads, or none for every file |
 | `options` | A JSON object |
 | `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. A Rust step declares the crate of its function |
 | `outputs` | Paths in the output directory. A path is a file, or a directory whose files are all part of the layer. The step must write each path and no other file. A symbolic link fails the step |
@@ -388,7 +388,8 @@ The digest of a list of files is the SHA-256 of the text that `sha256sum` writes
 line `<sha256>  <name>` with a final newline per file, in byte order of the names.
 
 - The digest of a snapshot input lists its selected files by `name`.
-- The digest of a layer lists its files by `path`.
+- The digest of a layer lists its files by `path`. The digest of a layer input lists the files
+  that it selects.
 - The code hash lists the code files by their path relative to the repository root, with `/`.
   A path adds the files that `git ls-files --cached --others --exclude-standard` lists for
   it: the files that git tracks or does not ignore. A path that lists no file fails the step,
@@ -428,7 +429,7 @@ Python step that ships adds a `uv.lock`; from then on, a Python step runs with
 binary, but its code hash comes from the files in the repository root. `obc data` runs with
 `cargo run` in the checkout that it reads, so the two are the same sources.
 
-The recipe of a step is the SHA-256 of the same object, with each input as `{"kind", "name"}`
+The recipe of a step is the SHA-256 of the same object, with each input as `{"kind", "name", "files"}`
 for a layer and `{"kind", "name", "version", "params", "files"}` for a snapshot, `params` and
 `files` sorted, and the inputs sorted by their compact JSON. It holds no digest, so a plan has it
 also for a step whose key waits for a fetch or another build.
@@ -442,7 +443,7 @@ same fields.
 | --- | --- |
 | `step` | The layer name |
 | `snapshots` | `{source: {file name: object path}}` |
-| `layers` | `{layer name: {path in the layer: object path}}` |
+| `layers` | `{layer name: {path in the layer: object path}}`, with the files that the input selects |
 | `options` | The options |
 | `output` | An empty directory. The layer is the files that the step writes in it |
 | `metrics` | A path. The step can write a JSON object there, for example the size of each section |
