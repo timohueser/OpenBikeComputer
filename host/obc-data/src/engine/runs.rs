@@ -441,6 +441,17 @@ pub fn list(store: &Store) -> Result<Vec<Summary>, String> {
 pub fn details(store: &Store, id: &str) -> Result<Details, String> {
     let runs = all(store)?;
     let at = runs.iter().position(|run| run.summary.id == id).ok_or_else(|| format!("no run `{id}`"))?;
+    Ok(with_history(&runs, at))
+}
+
+/// What `details` gives for every run, newest first, from one read of the runs.
+pub fn all_details(store: &Store) -> Result<Vec<Details>, String> {
+    let runs = all(store)?;
+    Ok((0..runs.len()).rev().map(|at| with_history(&runs, at)).collect())
+}
+
+/// Run `at` of `runs`, oldest first, with the users of each step and its time in an earlier run.
+fn with_history(runs: &[Details], at: usize) -> Details {
     let mut details = runs[at].clone();
     let mut users: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for receipt in runs[at].steps.iter().filter_map(|step| step.receipt.as_ref()) {
@@ -455,7 +466,7 @@ pub fn details(store: &Store, id: &str) -> Result<Details, String> {
             earlier.receipt.as_ref().map(|receipt| receipt.wall_ms)
         });
     }
-    Ok(details)
+    details
 }
 
 /// Every run, oldest first.

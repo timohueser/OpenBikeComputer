@@ -1865,7 +1865,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "$ref": "#/$defs/Refresh"
         },
         "snapshots": {
-          "description": "The versions in the local store, newest first.",
+          "description": "The versions in the local store, the one fetched last first.",
           "items": {
             "$ref": "#/$defs/Stored"
           },

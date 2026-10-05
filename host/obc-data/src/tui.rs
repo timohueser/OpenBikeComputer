@@ -1,18 +1,21 @@
 //! The TUI of `obc data`. Each screen shows what a command writes with `--json`, and the bar
 //! names that command. The only change it makes is a `refresh`, through the same function.
 
+use std::io::Stdout;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind,
 };
-use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use ratatui::crossterm::{cursor, execute};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
-use ratatui::{DefaultTerminal, Frame};
+use ratatui::{Frame, Terminal};
 
 use obc_data::engine::runs::{self, Details, Outcome, Summary};
 use obc_data::sources::{Kind, State};
@@ -91,9 +94,7 @@ struct App {
     overlay: Option<Overlay>,
     sources: Vec<SourceRow>,
     /// Running runs first, then newest first.
-    runs: Vec<Summary>,
-    /// The selected run, once it is read.
-    details: Option<Details>,
+    runs: Vec<Details>,
     source: usize,
     run: usize,
     /// The first line that an overlay shows.
@@ -104,37 +105,48 @@ struct App {
     hits: Vec<(Rect, Hit)>,
 }
 
+type Tui = Terminal<CrosstermBackend<Stdout>>;
+
+/// How often Runs reads the runs again while one runs.
+const TICK: Duration = Duration::from_secs(1);
+
 pub fn run(root: &Path) -> Result<(), Error> {
     let store = Store::open()?;
     let mut app = App::new(source_rows(&registry(root)?)?, list_runs(&store)?);
-    let mut terminal = start()?;
-    let result = run_loop(root, &store, &mut app, &mut terminal);
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        stop();
+        previous(info);
+    }));
+    let result = start().inspect_err(|_| stop()).and_then(|mut tui| run_loop(root, &store, &mut app, &mut tui));
     stop();
     result
 }
 
-fn run_loop(root: &Path, store: &Store, app: &mut App, terminal: &mut DefaultTerminal) -> Result<(), Error> {
+fn run_loop(root: &Path, store: &Store, app: &mut App, tui: &mut Tui) -> Result<(), Error> {
+    let io = |e: std::io::Error| e.to_string();
+    let mut read = Instant::now();
     loop {
-        if app.details.as_ref().map(|d| d.summary.id.as_str()) != app.run_id() {
-            app.details = app.run_id().map(|id| runs::details(store, id)).transpose()?;
-        }
-        terminal.draw(|frame| app.draw(frame)).map_err(|e| e.to_string())?;
+        tui.draw(|frame| app.draw(frame)).map_err(io)?;
         let screen = app.screen;
-        if !event::poll(Duration::from_secs(1)).map_err(|e| e.to_string())? {
-            if app.screen == Screen::Runs && app.runs.iter().any(|r| r.outcome == Outcome::Running) {
-                (app.runs, app.details) = (list_runs(store)?, None);
-            }
-            continue;
+        let mut effect = Effect::None;
+        // A mouse move is an event too, so the tick is timed, not the wait for an event.
+        if event::poll(TICK.saturating_sub(read.elapsed())).map_err(io)? {
+            effect = match event::read().map_err(io)? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => app.key(key.code),
+                Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
+                    app.click(mouse.column, mouse.row)
+                }
+                _ => Effect::None,
+            };
         }
-        let effect = match event::read().map_err(|e| e.to_string())? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => app.key(key.code),
-            Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
-                app.click(mouse.column, mouse.row)
-            }
-            _ => Effect::None,
-        };
-        if app.screen == Screen::Runs && screen != Screen::Runs {
-            (app.runs, app.details) = (list_runs(store)?, None);
+        let running = app.runs.iter().any(|run| run.summary.outcome == Outcome::Running);
+        let tick = read.elapsed() >= TICK;
+        if app.screen == Screen::Runs && (screen != Screen::Runs || (tick && running)) {
+            app.runs = list_runs(store)?;
+        }
+        if tick || app.screen != screen {
+            read = Instant::now();
         }
         match effect {
             Effect::None => {}
@@ -143,35 +155,41 @@ fn run_loop(root: &Path, store: &Store, app: &mut App, terminal: &mut DefaultTer
                 // The fetch writes its progress to the terminal.
                 stop();
                 let result = refresh(root, &id, &[], "live", false);
-                *terminal = start()?;
                 app.notice = result.err().map(|e| e.message);
                 app.sources = source_rows(&registry(root)?)?;
+                *tui = start()?;
+                // Keys typed during the fetch are not for the TUI.
+                while event::poll(Duration::ZERO).map_err(io)? {
+                    event::read().map_err(io)?;
+                }
             }
         }
     }
 }
 
-fn start() -> Result<DefaultTerminal, Error> {
-    let terminal = ratatui::try_init().map_err(|e| e.to_string())?;
-    execute!(std::io::stdout(), EnableMouseCapture).map_err(|e| e.to_string())?;
-    Ok(terminal)
+fn start() -> Result<Tui, Error> {
+    let io = |e: std::io::Error| e.to_string();
+    terminal::enable_raw_mode().map_err(io)?;
+    execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture).map_err(io)?;
+    Ok(Terminal::new(CrosstermBackend::new(std::io::stdout())).map_err(io)?)
 }
 
+/// Undo `start`, also after a panic or a `start` that failed half way.
 fn stop() {
-    let _ = execute!(std::io::stdout(), DisableMouseCapture);
-    ratatui::restore();
+    let _ = execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen, cursor::Show);
+    let _ = terminal::disable_raw_mode();
 }
 
-fn list_runs(store: &Store) -> Result<Vec<Summary>, Error> {
-    let mut runs = runs::list(store)?;
-    runs.sort_by_key(|run| run.outcome != Outcome::Running);
+fn list_runs(store: &Store) -> Result<Vec<Details>, Error> {
+    let mut runs = runs::all_details(store)?;
+    runs.sort_by_key(|run| run.summary.outcome != Outcome::Running);
     Ok(runs)
 }
 
 impl App {
-    fn new(sources: Vec<SourceRow>, runs: Vec<Summary>) -> Self {
-        let (screen, overlay, details, notice, hits) = (Screen::Sources, None, None, None, Vec::new());
-        Self { screen, overlay, sources, runs, details, source: 0, run: 0, scroll: 0, notice, hits }
+    fn new(sources: Vec<SourceRow>, runs: Vec<Details>) -> Self {
+        let (screen, overlay, notice, hits) = (Screen::Sources, None, None, Vec::new());
+        Self { screen, overlay, sources, runs, source: 0, run: 0, scroll: 0, notice, hits }
     }
 
     fn rows(&self) -> usize {
@@ -191,7 +209,7 @@ impl App {
     }
 
     fn run_id(&self) -> Option<&str> {
-        self.runs.get(self.run).map(|run| run.id.as_str())
+        self.runs.get(self.run).map(|run| run.summary.id.as_str())
     }
 
     /// The newest upstream version of the selected source, when it is not the pin.
@@ -325,20 +343,9 @@ impl App {
     fn draw_sources(&mut self, frame: &mut Frame, area: Rect) {
         let header = ["SOURCE", "LICENCE", "R2 COPY", "LIVE PIN", "AGE", "POLICY", "STATE"];
         let mut table = vec![header.map(String::from).to_vec()];
-        table.extend(self.sources.iter().map(|row| {
-            let s = &row.source;
-            vec![
-                s.id.clone(),
-                row.licence(),
-                if s.r2_copy { "yes" } else { "no" }.into(),
-                row.short(row.pin.as_deref()),
-                row.age_days.map_or("—".into(), |age| format!("{age} d")),
-                s.refresh.to_string(),
-                row.state.to_string(),
-            ]
-        }));
+        table.extend(self.sources.iter().map(SourceRow::cells));
         let widths = widths(&table);
-        let mut lines = vec![Line::from(row_text(&table[0], &widths)).dim()];
+        let mut lines = Vec::new();
         let mut at = Vec::new();
         let mut end = 0;
         for (i, (row, cells)) in self.sources.iter().zip(&table[1..]).enumerate() {
@@ -355,33 +362,37 @@ impl App {
                 end = lines.len() - 1;
             }
         }
-        self.draw_lines(frame, area, lines, &at, end);
+        self.draw_lines(frame, area, Line::from(row_text(&table[0], &widths)), lines, &at, end);
     }
 
     fn draw_runs(&mut self, frame: &mut Frame, area: Rect) {
         let mut table = vec![["WHEN", "COMMAND", "", "TOOK", "MOVED"].map(String::from).to_vec()];
         table.extend(self.runs.iter().map(|run| {
+            let run = &run.summary;
             let when = run.started.get(..16).unwrap_or(&run.started).replace('T', " ");
             let took = run.wall_ms.map_or("—".into(), duration);
             vec![when, run.command.clone(), mark(run.outcome).into(), took, moved(run)]
         }));
         let widths = widths(&table);
-        let mut lines = vec![Line::from(row_text(&table[0], &widths)).dim()];
+        let mut lines = Vec::new();
         for (i, cells) in table[1..].iter().enumerate() {
             let line = Line::from(row_text(cells, &widths));
             lines.push(if i == self.run { line.reversed() } else { line });
         }
-        let height = (lines.len() as u16).min(area.height / 2);
+        let height = (lines.len() as u16 + 1).min(area.height / 2);
         let [list, steps] = Layout::vertical([Constraint::Length(height + 1), Constraint::Fill(1)]).areas(area);
-        let at: Vec<usize> = (1..lines.len()).collect();
-        self.draw_lines(frame, list, lines, &at, self.run + 1);
-        if let Some(details) = self.details.as_ref().filter(|d| Some(d.summary.id.as_str()) == self.run_id()) {
-            frame.render_widget(Paragraph::new(steps_lines(details)), steps);
+        let at: Vec<usize> = (0..lines.len()).collect();
+        self.draw_lines(frame, list, Line::from(row_text(&table[0], &widths)), lines, &at, self.run);
+        if let Some(run) = self.runs.get(self.run) {
+            frame.render_widget(Paragraph::new(steps_lines(run)), steps);
         }
     }
 
-    /// Draw `lines` scrolled so that line `end` shows, and note where row `i` starts: `at[i]`.
-    fn draw_lines(&mut self, frame: &mut Frame, area: Rect, lines: Vec<Line>, at: &[usize], end: usize) {
+    /// Draw `header`, and under it `lines` scrolled so that line `end` shows. Row `i` starts at
+    /// line `at[i]`.
+    fn draw_lines(&mut self, frame: &mut Frame, area: Rect, header: Line, lines: Vec<Line>, at: &[usize], end: usize) {
+        let [head, area] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+        frame.render_widget(header.dim(), head);
         let offset = (end + 1).saturating_sub(area.height as usize);
         for (row, &line) in at.iter().enumerate() {
             if let Some(y) = line.checked_sub(offset).filter(|&y| y < area.height as usize) {
@@ -399,8 +410,12 @@ impl App {
         if let Some(notice) = &self.notice {
             spans.push(Span::styled(notice.clone(), Color::Red));
         }
-        frame.render_widget(Line::from(spans), area);
-        frame.render_widget(Line::from(self.command()).dim().right_aligned(), area);
+        let keys = Line::from(spans);
+        let command = self.command();
+        if keys.width() + 1 + command.chars().count() <= area.width as usize {
+            frame.render_widget(Line::from(command).dim().right_aligned(), area);
+        }
+        frame.render_widget(keys, area);
     }
 
     fn draw_overlay(&mut self, frame: &mut Frame, body: Rect, overlay: Overlay) {
@@ -413,13 +428,13 @@ impl App {
             }
         };
         let width = body.width * 4 / 5;
-        let inner = width.saturating_sub(2).max(1) as usize;
-        let height = lines.iter().map(|line| line.width().div_ceil(inner).max(1)).sum::<usize>() + 2;
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false }).block(Block::bordered().title(title));
+        // `line_count` adds the top and bottom border but wraps at the width it is given.
+        let height = paragraph.line_count(width.saturating_sub(2));
         let area = body.centered(Constraint::Length(width), Constraint::Length(height as u16)).intersection(body);
-        self.scroll = self.scroll.min(height - area.height as usize);
+        self.scroll = self.scroll.min(height.saturating_sub(area.height as usize));
         frame.render_widget(Clear, area);
-        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false }).scroll((self.scroll as u16, 0));
-        frame.render_widget(paragraph.block(Block::bordered().title(title)), area);
+        frame.render_widget(paragraph.scroll((self.scroll as u16, 0)), area);
     }
 }
 
@@ -439,7 +454,7 @@ fn expansion(row: &SourceRow) -> Vec<Line<'static>> {
     let s = &row.source;
     let mut lines = Vec::new();
     if s.kind != Kind::Tool {
-        let licence = [Some(row.licence()), s.obligations.clone(), s.licence_url.clone()];
+        let licence = [s.licence.clone().or(Some("not recorded".into())), s.obligations.clone(), s.licence_url.clone()];
         lines.push(line("licence", licence.into_iter().flatten().collect::<Vec<_>>().join(" · ")));
         lines.push(line("attribution", s.attribution.clone().unwrap_or_else(|| "—".into())));
     }
@@ -487,7 +502,6 @@ fn pin(row: &SourceRow, newer: Option<&str>) -> Vec<Line<'static>> {
         row.snapshots.iter().map(|snapshot| (snapshot.version.clone(), bytes(snapshot.bytes))).collect();
     if let Some(pin) = row.pin.clone().filter(|pin| !versions.iter().any(|(version, _)| version == pin)) {
         versions.push((pin, "—".into()));
-        versions.sort_by(|a, b| b.0.cmp(&a.0));
     }
     let width = versions.iter().map(|(version, _)| version.len()).chain(newer.map(str::len)).max().unwrap_or(0);
     let mut lines: Vec<Line> = versions
@@ -577,14 +591,19 @@ mod tests {
             snapshots: vec![Stored { version: "2024-01-02".into(), bytes: 1_000_000 }],
             source,
         });
-        let run = |id: &str| Summary {
-            id: id.into(),
-            command: "build test".into(),
-            started: "2024-01-10T12:00:00Z".into(),
-            outcome: Outcome::Ok,
-            wall_ms: Some(1000),
-            bytes_fetched: 0,
-            bytes_built: 10,
+        let run = |id: &str| Details {
+            summary: Summary {
+                id: id.into(),
+                command: "build test".into(),
+                started: "2024-01-10T12:00:00Z".into(),
+                outcome: Outcome::Ok,
+                wall_ms: Some(1000),
+                bytes_fetched: 0,
+                bytes_built: 10,
+            },
+            error: None,
+            fetches: Vec::new(),
+            steps: Vec::new(),
         };
         App::new(sources.collect(), vec![run("2024-01-10-120000"), run("2024-01-09-120000")])
     }

@@ -229,7 +229,7 @@ struct Sources<'a> {
 }
 
 /// A source of `data/sources.toml` with its live pin, its snapshots and its state.
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Serialize, JsonSchema)]
 struct SourceRow {
     #[serde(flatten)]
     source: Source,
@@ -239,12 +239,12 @@ struct SourceRow {
     age_days: Option<i64>,
     state: State,
     reason: Option<String>,
-    /// The versions in the local store, newest first.
+    /// The versions in the local store, the one fetched last first.
     snapshots: Vec<Stored>,
 }
 
 /// A version of a source in the local store.
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Serialize, JsonSchema)]
 struct Stored {
     version: String,
     /// The size of its files.
@@ -260,9 +260,19 @@ impl SourceRow {
         })
     }
 
-    fn licence(&self) -> String {
-        let none = if self.source.kind == Kind::Tool { "—" } else { "not recorded" };
-        self.source.licence.clone().unwrap_or_else(|| none.into())
+    /// Source, licence, R2 copy, live pin, age, policy and state.
+    fn cells(&self) -> Vec<String> {
+        let s = &self.source;
+        let none = if s.kind == Kind::Tool { "—" } else { "not recorded" };
+        vec![
+            s.id.clone(),
+            s.licence.clone().unwrap_or_else(|| none.into()),
+            if s.r2_copy { "yes" } else { "no" }.into(),
+            self.short(self.pin.as_deref()),
+            self.age_days.map_or("—".into(), |age| format!("{age} d")),
+            s.refresh.to_string(),
+            self.state.to_string(),
+        ]
     }
 }
 
@@ -287,12 +297,13 @@ fn source_rows(registry: &Registry) -> Result<Vec<SourceRow>, Error> {
             let base = source.fetch.from.as_ref().and_then(|from| registry.pins.get(from)).map(String::as_str);
             let present = source.credential.as_ref().is_none_or(|c| c.present());
             let status = sources::status(source, pin, base, upstream, today, present);
-            let mut snapshots: Vec<Stored> = store
-                .snapshots(&source.id)?
+            let mut snapshots = store.snapshots(&source.id)?;
+            // `retrieved` is `YYYY-MM-DDTHH:MM:SSZ`, so it sorts as text.
+            snapshots.sort_by_cached_key(|s| std::cmp::Reverse(s.files.iter().map(|f| f.retrieved.clone()).max()));
+            let snapshots = snapshots
                 .into_iter()
                 .map(|s| Stored { bytes: s.files.iter().map(|f| f.size).sum(), version: s.version })
                 .collect();
-            snapshots.sort_by(|a, b| b.version.cmp(&a.version));
             Ok(SourceRow {
                 source: source.clone(),
                 pin: pin.map(str::to_string),
@@ -320,20 +331,12 @@ fn print_sources(registry: &Registry, json: bool) -> Result<(), Error> {
             table.push(vec![String::new()]);
             table.push(vec!["tools".into()]);
         }
-        let state = match &row.reason {
-            Some(reason) => format!("{}: {reason}", row.state),
-            None => row.state.to_string(),
-        };
-        table.push(vec![
-            s.id.clone(),
-            row.licence(),
-            if s.r2_copy { "yes" } else { "no" }.into(),
-            row.short(row.pin.as_deref()),
-            row.short(row.upstream.as_deref()),
-            row.age_days.map_or("—".into(), |age| format!("{age} d")),
-            s.refresh.to_string(),
-            state,
-        ]);
+        let mut cells = row.cells();
+        cells.insert(4, row.short(row.upstream.as_deref()));
+        if let Some(reason) = &row.reason {
+            cells[7] = format!("{}: {reason}", row.state);
+        }
+        table.push(cells);
     }
     print_table(&table);
     Ok(())
