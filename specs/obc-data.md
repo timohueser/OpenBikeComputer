@@ -140,8 +140,8 @@ Which version a fetch gets:
 
 - A URL with `{version}` gives the version that it names.
 - A URL without `{version}` gives only the newest file upstream. For a `date` source without a
-  version, one `HEAD` request for each URL gives the latest `Last-Modified` day, and that day is
-  the version. A date version accepts a file that changed on or before that day; a later file
+  version, a `HEAD` request for each URL, with one retry, gives the latest `Last-Modified` day,
+  and that day is the version. A date version accepts a file that changed on or before that day; a later file
   fails the fetch before its body is read. A response without `Last-Modified` counts as changed
   today.
 - A `release` or `commit` version of a URL without `{version}` is only a name. The fetch accepts
@@ -149,7 +149,8 @@ Which version a fetch gets:
 - For a `digest` source, the version is the SHA-256 of its one file.
 
 A download stops after four failed tries in a row, and waits 2, 4 and 8 seconds between them. A
-try that adds bytes resets the count. A try receives its body for at most 15 minutes, so a
+try that adds bytes to a resumed part resets the count; a try that starts the file again does
+not. A try receives its body for at most 15 minutes, so a
 stalled transfer becomes a retry. It retries a connection error, a cut-off or stalled body, a
 refused resume and HTTP 408, 429 and 5xx. It keeps the bytes it has in `partial/`. The next
 try, or the next fetch, asks for the rest with `Range` and `If-Range`, with the strong `ETag`

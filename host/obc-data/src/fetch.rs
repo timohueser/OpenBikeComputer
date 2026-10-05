@@ -77,7 +77,9 @@ fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, Stri
     // The day of the newest file names a date version, so a file already in the store needs no download.
     let version = match &request.version {
         None if source.version == VersionScheme::Date => {
-            let days: Result<Vec<_>, _> = urls.iter().map(|url| http.modified(url)).collect();
+            // One retry, as a HEAD is cheap and a failure stops the whole fetch.
+            let days: Result<Vec<_>, _> =
+                urls.iter().map(|url| http.modified(url).or_else(|_| http.modified(url))).collect();
             Some(
                 days?
                     .into_iter()

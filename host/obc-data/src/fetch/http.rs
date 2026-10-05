@@ -25,7 +25,9 @@ pub struct Downloaded {
     pub size: u64,
 }
 
-/// Failed tries in a row before a download gives up. A try that adds bytes resets the count.
+/// Failed tries in a row before a download gives up. A try that adds bytes to a resumed part
+/// resets the count; a try that starts the file again does not, so a file that cannot resume
+/// still gives up.
 const ATTEMPTS: u32 = 4;
 /// The longest time one try receives a body: a stalled transfer fails, and the next try resumes it.
 const BODY: Duration = Duration::from_secs(15 * 60);
@@ -39,6 +41,8 @@ pub struct Http {
 
 enum Failure {
     Retry(String),
+    /// Retry, after a try that added bytes to a resumed part.
+    Grew(String),
     Final(String),
 }
 
@@ -103,22 +107,20 @@ impl Http {
         let validator = store.partial(&format!("{}.validator", key(url)));
         let partial = part.parent().unwrap_or(store.root());
         fs::create_dir_all(partial).map_err(|e| format!("{}: {e}", partial.display()))?;
-        let length = |path: &Path| fs::metadata(path).map_or(0, |metadata| metadata.len());
         let mut failures = 0;
         loop {
-            let before = length(&part);
-            match self.attempt(url, &part, &validator, expect) {
+            let (why, grew) = match self.attempt(url, &part, &validator, expect) {
                 Ok(()) => break,
                 Err(Failure::Final(why)) => return Err(why),
-                Err(Failure::Retry(why)) => {
-                    failures = if length(&part) > before { 1 } else { failures + 1 };
-                    if failures == ATTEMPTS {
-                        return Err(why);
-                    }
-                    eprintln!("obc data: {why} — retrying");
-                    std::thread::sleep(self.backoff * 2u32.pow(failures - 1));
-                }
+                Err(Failure::Retry(why)) => (why, false),
+                Err(Failure::Grew(why)) => (why, true),
+            };
+            failures = if grew { 1 } else { failures + 1 };
+            if failures == ATTEMPTS {
+                return Err(why);
             }
+            eprintln!("obc data: {why} — retrying");
+            std::thread::sleep(self.backoff * 2u32.pow(failures - 1));
         }
         let _ = fs::remove_file(&validator);
         let (sha256, size) = store::hash_file(&part)?;
@@ -189,18 +191,21 @@ impl Http {
         }
         let mut reader = response.body_mut().as_reader();
         let mut buffer = vec![0; 1 << 16];
+        let mut grew = false;
+        let retry = |grew: bool, why: String| if append && grew { Failure::Grew(why) } else { Failure::Retry(why) };
         loop {
-            let read = reader.read(&mut buffer).map_err(|e| Failure::Retry(format!("GET {url}: {e}")))?;
+            let read = reader.read(&mut buffer).map_err(|e| retry(grew, format!("GET {url}: {e}")))?;
             if read == 0 {
                 break;
             }
             file.write_all(&buffer[..read]).map_err(|e| Failure::Final(format!("{}: {e}", part.display())))?;
+            grew = true;
         }
         file.sync_all().map_err(|e| Failure::Final(format!("{}: {e}", part.display())))?;
         let length = fs::metadata(part).map_or(0, |metadata| metadata.len());
         match total {
             Some(total) if total != length => {
-                Err(Failure::Retry(format!("GET {url}: the connection closed at {length} of {total} bytes")))
+                Err(retry(grew, format!("GET {url}: the connection closed at {length} of {total} bytes")))
             }
             _ => Ok(()),
         }
