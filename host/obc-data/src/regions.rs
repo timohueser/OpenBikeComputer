@@ -4,10 +4,11 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Degrees, longitude first.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, JsonSchema)]
 pub struct Bbox {
     pub west: f64,
     pub south: f64,
@@ -42,7 +43,7 @@ impl Bbox {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Area {
     /// The Geofabrik area whose path is the region id.
@@ -60,7 +61,7 @@ pub enum Area {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct Region {
     pub id: String,
     pub name: String,

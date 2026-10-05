@@ -6,6 +6,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::{read_records, sorted, Requested, Snapshot, Store};
@@ -49,19 +50,23 @@ impl Roots {
     }
 }
 
-#[derive(Debug, Default, Serialize)]
+/// What `gc store` deletes, or deleted, and what stays.
+#[derive(Debug, Default, Serialize, JsonSchema)]
+#[schemars(rename = "GcPlan")]
 pub struct Plan {
-    /// `source@version` of each snapshot record that no pin names.
+    /// `source@version` of each snapshot record that nothing reaches.
     pub snapshots: Vec<String>,
     /// SHA-256 and size of each object that nothing reaches.
     pub objects: Vec<(String, u64)>,
+    /// The size of `objects`.
     pub remove_bytes: u64,
+    /// The objects that stay, and their size.
     pub keep_objects: u64,
     pub keep_bytes: u64,
 }
 
 /// What a collection deletes. A snapshot record is reached when a pin names it, or when it is the
-/// newest record of its source. An object is reached when a pin, a fixture, a planner recipe or an
+/// newest record of its source or of a request. An object is reached when a pin, a fixture, a planner recipe or an
 /// import record names it, or a reached record or layer has it. A layer is reached when each input
 /// is: a snapshot input whose digest is of all the files, or of one file, of a reached record of
 /// its source, and a layer input whose digest is of a reached layer.
@@ -153,11 +158,11 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     Ok(plan)
 }
 
-/// Delete what nothing reaches, and say what. It refuses to start while a fetch, a build or an
-/// import holds the store.
-pub fn apply(store: &Store, roots: &Roots) -> Result<Plan, String> {
+/// Delete what nothing reaches, and say what. `None`, and nothing deleted, while a fetch, a build or
+/// an import holds the store.
+pub fn apply(store: &Store, roots: &Roots) -> Result<Option<Plan>, String> {
     let Some(_alone) = store.try_alone()? else {
-        return Err("a fetch, a build or an import uses the store; collect when it ends".into());
+        return Ok(None);
     };
     let plan = plan(store, roots)?;
     for snapshot in &plan.snapshots {
@@ -168,7 +173,7 @@ pub fn apply(store: &Store, roots: &Roots) -> Result<Plan, String> {
     for (sha256, _) in &plan.objects {
         remove(&store.object(sha256))?;
     }
-    Ok(plan)
+    Ok(Some(plan))
 }
 
 fn remove(path: &Path) -> Result<(), String> {
@@ -379,9 +384,9 @@ mod tests {
         );
 
         let using = store.using().unwrap();
-        assert!(apply(&store, &roots).unwrap_err().contains("uses the store"), "a running fetch stops a collection");
+        assert!(apply(&store, &roots).unwrap().is_none(), "a running fetch stops a collection");
         drop(using);
-        assert_eq!(apply(&store, &roots).unwrap().objects, plan.objects, "it deletes what the plan names");
+        assert_eq!(apply(&store, &roots).unwrap().unwrap().objects, plan.objects, "it deletes what the plan names");
         assert!(store.snapshot("land", "2026-08-01").unwrap().is_none());
         assert!(store.object(&sha256_hex(b"land b")).is_file(), "a file of the pinned record stays");
         assert!(!store.object(&sha256_hex(b"stale")).exists());

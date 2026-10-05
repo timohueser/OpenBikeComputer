@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// The removal history, at the bucket root, so that no prefix delete removes it.
@@ -39,7 +40,7 @@ impl Credentials {
 }
 
 /// One object in the bucket.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Object {
     pub key: String,
     pub bytes: u64,

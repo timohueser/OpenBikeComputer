@@ -1,6 +1,7 @@
 //! `obc data`: read the sources and the regions, fetch sources into the store, and show runs. Read
 //! commands change nothing in `data/`.
 
+mod api;
 mod r2_cli;
 mod runs_cli;
 
@@ -8,8 +9,10 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use schemars::JsonSchema;
 use serde::Serialize;
 
+use api::{print_json, Code, Error};
 use obc_data::fetch::http::Http;
 use obc_data::fetch::upstream::{self, Upstream};
 use obc_data::fetch::{self, osm, Request};
@@ -20,6 +23,9 @@ use obc_data::store::{self, gc, import, FileRecord, Snapshot, Store};
 #[derive(Parser)]
 #[command(name = "obc data", about = "Data sources, regions and pins")]
 struct Cli {
+    /// Write JSON to standard output, also when the command fails.
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -27,18 +33,13 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Every source with licence, R2 copy, live pin, newest upstream version, age, policy and state.
-    Sources {
-        #[arg(long)]
-        json: bool,
-    },
+    Sources,
     /// Fetch a source version into the store, and print the store path of each file.
     Fetch {
         /// SOURCE or SOURCE@VERSION. Without a version: the live pin, or else upstream's newest file.
         target: String,
         /// NAME=VALUE for each `{name}` in the URL of the source, such as `tile=…` or `area=…`.
         params: Vec<String>,
-        #[arg(long)]
-        json: bool,
     },
     /// Fetch the newest upstream version of a source and pin it in an environment.
     Refresh {
@@ -47,15 +48,11 @@ enum Command {
         params: Vec<String>,
         #[arg(long, default_value = "live")]
         env: String,
-        #[arg(long)]
-        json: bool,
     },
     /// The regions in data/regions/.
     Region {
         #[command(subcommand)]
         action: Option<RegionAction>,
-        #[arg(long, global = true)]
-        json: bool,
     },
     /// The runs in the store, newest first; with RUN, its steps.
     Runs(runs_cli::Runs),
@@ -79,8 +76,6 @@ enum StoreAction {
     Import {
         #[arg(long)]
         apply: bool,
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -90,8 +85,6 @@ enum GcWhat {
     Store {
         #[arg(long)]
         apply: bool,
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -103,40 +96,31 @@ enum RegionAction {
     Show { id: String },
 }
 
-/// Why a command failed, and its exit status: 1 for a problem in the files, 2 for a usage error.
-struct Failure {
-    status: u8,
-    message: String,
-}
-
-impl From<String> for Failure {
-    fn from(message: String) -> Self {
-        Self { status: 1, message }
-    }
-}
-
-impl From<&str> for Failure {
-    fn from(message: &str) -> Self {
-        message.to_string().into()
-    }
-}
-
 fn main() -> ExitCode {
-    // clap exits with status 2 on a usage error.
-    match run(Cli::parse()) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(failure) => {
-            eprintln!("obc data: {}", failure.message);
-            ExitCode::from(failure.status)
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        // The arguments did not parse, so `--json` is only known as a word among them.
+        Err(e) if e.use_stderr() && std::env::args_os().any(|arg| arg == "--json") => {
+            let text = e.render().to_string();
+            let first = text.split("\n\n").next().unwrap_or_default().trim_start_matches("error: ");
+            let message: Vec<&str> = first.lines().map(str::trim).collect();
+            return Code::Usage.error(message.join(" ")).report(true);
         }
+        Err(e) => e.exit(),
+    };
+    let json = cli.json;
+    match run(cli) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => error.report(json),
     }
 }
 
-fn run(cli: Cli) -> Result<(), Failure> {
+fn run(cli: Cli) -> Result<(), Error> {
+    let json = cli.json;
     match cli.command {
-        Command::Sources { json } => print_sources(&Registry::load(&root()?)?, json),
-        Command::Fetch { target, params, json } => {
-            let registry = Registry::load(&root()?)?;
+        Command::Sources => print_sources(&registry(&root()?)?, json),
+        Command::Fetch { target, params } => {
+            let registry = registry(&root()?)?;
             let (id, version) = match target.split_once('@') {
                 Some((id, version)) => (id, Some(version.to_string())),
                 None => (target.as_str(), None),
@@ -144,27 +128,27 @@ fn run(cli: Cli) -> Result<(), Failure> {
             let source = find(&registry, id)?;
             let version = version.or_else(|| registry.pins.get(id).cloned());
             let store = Store::open()?;
-            let params = osm::with_base(source, &registry.pins, parse_params(&params)?)?;
+            let params = osm::with_base(source, &registry.pins, parse_params(&params)?).map_err(not_the_base)?;
             let request = Request { source, version, params };
-            print_snapshot(&store, &fetch::fetch(&store, &Http::new(), &request)?, json)
+            print_snapshot(&store, &fetched(source, fetch::fetch(&store, &Http::new(), &request))?, json)
         }
-        Command::Refresh { source, params, env, json } => refresh(&root()?, &source, &params, &env, json),
-        Command::Region { action, json } => {
-            let regions = Regions::load(&root()?)?;
+        Command::Refresh { source, params, env } => refresh(&root()?, &source, &params, &env, json),
+        Command::Region { action } => {
+            let regions = Regions::load(&root()?).map_err(|e| Code::InvalidData.error(e))?;
             match action {
                 None | Some(RegionAction::List) => print_regions(&regions, json),
                 Some(RegionAction::Show { id }) => print_region(&regions, &id, json),
             }
         }
-        Command::Runs(runs) => runs_cli::run(runs),
-        Command::Store { action: StoreAction::Import { apply, json } } => store_import(apply, json),
-        Command::Gc { what: GcWhat::Store { apply, json } } => gc_store(&root()?, apply, json),
-        Command::R2(r2) => r2_cli::run(r2),
+        Command::Runs(runs) => runs_cli::run(runs, json),
+        Command::Store { action: StoreAction::Import { apply } } => store_import(apply, json),
+        Command::Gc { what: GcWhat::Store { apply } } => gc_store(&root()?, apply, json),
+        Command::R2(r2) => r2_cli::run(r2, json),
     }
 }
 
-fn store_import(apply: bool, json: bool) -> Result<(), Failure> {
-    let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
+fn store_import(apply: bool, json: bool) -> Result<(), Error> {
+    let home = std::env::var_os("HOME").ok_or_else(|| Code::Usage.error("HOME is not set"))?;
     let (store, dirs) = (Store::open()?, import::old_dirs(Path::new(&home)));
     let plan = if apply { import::apply(&store, &dirs)? } else { import::plan(&store, &dirs)? };
     if json {
@@ -195,9 +179,16 @@ fn store_import(apply: bool, json: bool) -> Result<(), Failure> {
     Ok(())
 }
 
-fn gc_store(root: &Path, apply: bool, json: bool) -> Result<(), Failure> {
-    let (store, roots) = (Store::open()?, gc::Roots::from_repo(root)?);
-    let plan = if apply { gc::apply(&store, &roots)? } else { gc::plan(&store, &roots)? };
+fn gc_store(root: &Path, apply: bool, json: bool) -> Result<(), Error> {
+    let (store, roots) = (Store::open()?, gc::Roots::from_repo(root).map_err(|e| Code::InvalidData.error(e))?);
+    let plan = match apply {
+        false => gc::plan(&store, &roots)?,
+        true => gc::apply(&store, &roots)?.ok_or_else(|| {
+            Code::Usage
+                .error("a fetch, a build or an import uses the store; nothing was deleted")
+                .fix("Run `obc data gc store --apply` again when the fetch, the build or the import ends.")
+        })?,
+    };
     if json {
         return print_json(&plan);
     }
@@ -223,39 +214,51 @@ fn bytes(bytes: u64) -> String {
     }
 }
 
-fn root() -> Result<std::path::PathBuf, Failure> {
+fn root() -> Result<std::path::PathBuf, Error> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    Ok(obc_data::find_root(&cwd).ok_or("no data/sources.toml above the current directory")?)
+    obc_data::find_root(&cwd).ok_or_else(|| Code::Usage.error("no data/sources.toml above the current directory"))
 }
 
-fn usage(message: &str) -> Failure {
-    Failure { status: 2, message: message.into() }
+fn registry(root: &Path) -> Result<Registry, Error> {
+    Registry::load(root).map_err(|e| Code::InvalidData.error(e))
 }
 
-fn find<'a>(registry: &'a Registry, id: &str) -> Result<&'a Source, Failure> {
-    registry.sources.iter().find(|s| s.id == id).ok_or_else(|| usage(&format!("no source `{id}`")))
+fn find<'a>(registry: &'a Registry, id: &str) -> Result<&'a Source, Error> {
+    registry.sources.iter().find(|s| s.id == id).ok_or_else(|| Code::Usage.error(format!("no source `{id}`")))
 }
 
-fn parse_params(params: &[String]) -> Result<Vec<(String, String)>, Failure> {
+fn parse_params(params: &[String]) -> Result<Vec<(String, String)>, Error> {
     params
         .iter()
         .map(|param| match param.split_once('=') {
             Some((name, value)) if !name.is_empty() && !value.is_empty() => Ok((name.into(), value.into())),
-            _ => Err(usage(&format!("`{param}` is not NAME=VALUE"))),
+            _ => Err(Code::Usage.error(format!("`{param}` is not NAME=VALUE"))),
         })
         .collect()
 }
 
-fn refresh(root: &Path, id: &str, params: &[String], env: &str, json: bool) -> Result<(), Failure> {
-    let registry = Registry::load(root)?;
+/// `osm::with_base` refuses a `from=` that is not the pin of the base source.
+fn not_the_base(message: String) -> Error {
+    Code::Usage.error(message).fix("Leave out `from=`: the fetch takes the pin of the base source.")
+}
+
+/// A fetch that fails while the credential of its source is not on this machine is blocked.
+fn fetched(source: &Source, result: Result<Snapshot, String>) -> Result<Snapshot, Error> {
+    let blocked = source.credential.as_ref().is_some_and(|credential| !credential.present());
+    result.map_err(|e| if blocked { Code::Blocked } else { Code::FetchFailed }.error(e))
+}
+
+fn refresh(root: &Path, id: &str, params: &[String], env: &str, json: bool) -> Result<(), Error> {
+    let registry = registry(root)?;
     let source = find(&registry, id)?;
     if !obc_data::is_kebab(env) {
-        return Err(usage(&format!("`{env}` is not an environment name")));
+        return Err(Code::Usage.error(format!("`{env}` is not an environment name")));
     }
     let path = root.join("data/env").join(format!("{env}.toml"));
-    let text = std::fs::read_to_string(&path).map_err(|e| usage(&format!("{}: {e}", path.display())))?;
-    let pins = sources::parse_pins(&text, &registry.sources).map_err(|e| format!("{}: {e}", path.display()))?;
-    let params = osm::with_base(source, &pins, parse_params(params)?)?;
+    let text = std::fs::read_to_string(&path).map_err(|e| Code::Usage.error(format!("{}: {e}", path.display())))?;
+    let invalid = |e| Code::InvalidData.error(format!("{}: {e}", path.display()));
+    let pins = sources::parse_pins(&text, &registry.sources).map_err(invalid)?;
+    let params = osm::with_base(source, &pins, parse_params(params)?).map_err(not_the_base)?;
     let (store, http) = (Store::open()?, Http::new());
     let version = upstream::newest(&store, &http, source, 0).version().map(str::to_string);
     // The `geofabrik` fetcher finds the newest day of a URL with `{yymmdd}` itself.
@@ -263,58 +266,71 @@ fn refresh(root: &Path, id: &str, params: &[String], env: &str, json: bool) -> R
         url.contains("{version}") || (source.fetch.kind == FetchKind::Http && url.contains("{yymmdd}"))
     });
     if version.is_none() && (named || matches!(source.version, VersionScheme::Release | VersionScheme::Commit)) {
-        return Err(format!("the newest version of `{id}` is not known: fetch {id}@VERSION and pin it by hand").into());
+        let message = format!("the newest version of `{id}` is not known: fetch {id}@VERSION and pin it by hand");
+        return Err(Code::FetchFailed.error(message));
     }
     // The diffs of a source that starts at this pin end at its own pin, so they cannot start after it.
     if let Some(version) = &version {
         let starts_here = registry.sources.iter().filter(|s| s.fetch.from.as_deref() == Some(id));
         let mut pinned = starts_here.filter_map(|s| Some((&s.id, pins.get(&s.id)?)));
         if let Some((diffs, pin)) = pinned.find(|(_, pin)| version > *pin) {
-            return Err(format!("`{id}` {version} is after the `{diffs}` pin {pin}: refresh {diffs} first").into());
+            let message = format!("`{id}` {version} is after the `{diffs}` pin {pin}");
+            return Err(Code::Usage.error(message).fix(format!("Refresh `{diffs}` first.")));
         }
     }
-    let snapshot = fetch::fetch(&store, &http, &Request { source, version, params })?;
+    let snapshot = fetched(source, fetch::fetch(&store, &http, &Request { source, version, params }))?;
     let text = sources::set_pin(&text, id, &snapshot.version);
-    sources::parse_pins(&text, &registry.sources).map_err(|e| format!("{}: {e}", path.display()))?;
+    sources::parse_pins(&text, &registry.sources).map_err(invalid)?;
     store::write_atomic(&path, text.as_bytes())?;
     eprintln!("obc data: pinned {id} = \"{}\" in data/env/{env}.toml", snapshot.version);
     print_snapshot(&store, &snapshot, json)
 }
 
-fn print_snapshot(store: &Store, snapshot: &Snapshot, json: bool) -> Result<(), Failure> {
+/// The requested files of a snapshot.
+#[derive(Serialize, JsonSchema)]
+struct Fetched<'a> {
+    source: &'a str,
+    version: &'a str,
+    files: Vec<FetchedFile<'a>>,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct FetchedFile<'a> {
+    #[serde(flatten)]
+    file: &'a FileRecord,
+    /// The object in the store.
+    path: &'a Path,
+}
+
+fn print_snapshot(store: &Store, snapshot: &Snapshot, json: bool) -> Result<(), Error> {
     let paths: Vec<_> = snapshot.files.iter().map(|file| store.object(&file.sha256)).collect();
     if json {
-        #[derive(Serialize)]
-        struct File<'a> {
-            #[serde(flatten)]
-            file: &'a FileRecord,
-            path: &'a Path,
-        }
-        #[derive(Serialize)]
-        struct Fetched<'a> {
-            source: &'a str,
-            version: &'a str,
-            files: Vec<File<'a>>,
-        }
-        let files = snapshot.files.iter().zip(&paths).map(|(file, path)| File { file, path }).collect();
+        let files = snapshot.files.iter().zip(&paths).map(|(file, path)| FetchedFile { file, path }).collect();
         return print_json(&Fetched { source: &snapshot.source, version: &snapshot.version, files });
     }
     paths.iter().for_each(|path| println!("{}", path.display()));
     Ok(())
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+struct Sources<'a> {
+    sources: &'a [SourceRow<'a>],
+}
+
+/// A source of `data/sources.toml` with its live pin and its state.
+#[derive(Serialize, JsonSchema)]
 struct SourceRow<'a> {
     #[serde(flatten)]
     source: &'a Source,
     pin: Option<&'a str>,
+    /// The newest upstream version.
     upstream: Option<&'a str>,
     age_days: Option<i64>,
     state: State,
     reason: Option<String>,
 }
 
-fn print_sources(registry: &Registry, json: bool) -> Result<(), Failure> {
+fn print_sources(registry: &Registry, json: bool) -> Result<(), Error> {
     let today = obc_data::date::today();
     let mut sorted: Vec<&Source> = registry.sources.iter().collect();
     sorted.sort_by_key(|source| source.kind);
@@ -345,11 +361,7 @@ fn print_sources(registry: &Registry, json: bool) -> Result<(), Failure> {
         })
         .collect();
     if json {
-        #[derive(Serialize)]
-        struct Listing<'a> {
-            sources: &'a [SourceRow<'a>],
-        }
-        return print_json(&Listing { sources: &rows });
+        return print_json(&Sources { sources: &rows });
     }
     let mut table = vec![cells(["SOURCE", "LICENCE", "R2 COPY", "LIVE PIN", "UPSTREAM", "AGE", "POLICY", "STATE"])];
     let mut tools = false;
@@ -396,13 +408,14 @@ fn definition(region: &Region) -> String {
     }
 }
 
-fn print_regions(regions: &Regions, json: bool) -> Result<(), Failure> {
+#[derive(Serialize, JsonSchema)]
+struct RegionList<'a> {
+    regions: Vec<&'a Region>,
+}
+
+fn print_regions(regions: &Regions, json: bool) -> Result<(), Error> {
     if json {
-        #[derive(Serialize)]
-        struct Listing<'a> {
-            regions: Vec<&'a Region>,
-        }
-        return print_json(&Listing { regions: regions.iter().collect() });
+        return print_json(&RegionList { regions: regions.iter().collect() });
     }
     let mut table = vec![cells(["REGION", "NAME", "DEFINITION"])];
     table.extend(regions.iter().map(|r| vec![r.id.clone(), r.name.clone(), definition(r)]));
@@ -410,17 +423,20 @@ fn print_regions(regions: &Regions, json: bool) -> Result<(), Failure> {
     Ok(())
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 struct RegionDetail<'a> {
     #[serde(flatten)]
     region: &'a Region,
+    /// The region ids that it resolves to.
     leaves: Vec<&'a str>,
+    /// Its box, when every part is a box.
     bounds: Option<Bbox>,
 }
 
-fn print_region(regions: &Regions, id: &str, json: bool) -> Result<(), Failure> {
-    let region = regions.get(id).ok_or_else(|| Failure { status: 2, message: format!("no region `{id}`") })?;
-    let detail = RegionDetail { region, leaves: regions.leaves(id)?, bounds: regions.bounds(id) };
+fn print_region(regions: &Regions, id: &str, json: bool) -> Result<(), Error> {
+    let region = regions.get(id).ok_or_else(|| Code::Usage.error(format!("no region `{id}`")))?;
+    let leaves = regions.leaves(id).map_err(|e| Code::InvalidData.error(e))?;
+    let detail = RegionDetail { region, leaves, bounds: regions.bounds(id) };
     if json {
         return print_json(&detail);
     }
@@ -444,24 +460,26 @@ fn cells<const N: usize>(row: [&str; N]) -> Vec<String> {
     row.iter().map(|c| c.to_string()).collect()
 }
 
-fn print_json(value: &impl Serialize) -> Result<(), Failure> {
-    println!("{}", serde_json::to_string_pretty(value).map_err(|e| e.to_string())?);
-    Ok(())
+fn print_table(rows: &[Vec<String>]) {
+    print!("{}", table(rows));
 }
 
-fn print_table(rows: &[Vec<String>]) {
+fn table(rows: &[Vec<String>]) -> String {
     let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
     let widths: Vec<usize> = (0..columns)
         .map(|i| {
             rows.iter().filter(|r| r.len() > 1).filter_map(|r| r.get(i)).map(|c| c.chars().count()).max().unwrap_or(0)
         })
         .collect();
+    let mut text = String::new();
     for row in rows {
         let line: Vec<String> = row
             .iter()
             .enumerate()
             .map(|(i, cell)| if i + 1 == row.len() { cell.clone() } else { format!("{cell:<w$}", w = widths[i]) })
             .collect();
-        println!("{}", line.join("  "));
+        text += &line.join("  ");
+        text.push('\n');
     }
+    text
 }

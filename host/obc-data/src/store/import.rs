@@ -8,6 +8,7 @@ use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{create_parent, hash_file, Store};
@@ -17,7 +18,9 @@ use crate::date;
 pub const OLD_DIRS: [&str; 5] =
     [".cache/obcm", ".cache/obc/planner", ".cache/openbikecomputer", "obc-bake", "obc-reference"];
 
-#[derive(Debug, Default, Serialize)]
+/// What `store import` moves, or moved, and what stays.
+#[derive(Debug, Default, Serialize, JsonSchema)]
+#[schemars(rename = "ImportPlan")]
 pub struct Plan {
     pub dirs: Vec<DirPlan>,
     /// The size of every file.
@@ -26,10 +29,13 @@ pub struct Plan {
     pub new_bytes: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
+#[schemars(rename = "ImportDir")]
 pub struct DirPlan {
+    /// The directory, without symbolic links when it is present.
     pub dir: PathBuf,
     pub present: bool,
+    /// The regular files that it moves, or moved, and their size.
     pub files: u64,
     pub bytes: u64,
     /// What stays in the directory: symbolic links and other entries that are not regular files,
