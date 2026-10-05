@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::plan::Plan;
@@ -58,7 +59,7 @@ pub struct Context<'a> {
 }
 
 /// One line of `runs/<id>.jsonl`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Event {
     Started {
@@ -342,7 +343,7 @@ pub fn check_id(id: &str) -> Result<(), String> {
     Err(format!("`{id}` is not a run id: YYYY-MM-DD-HHMMSS"))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Outcome {
     Running,
@@ -352,7 +353,7 @@ pub enum Outcome {
 }
 
 /// A run, as `obc data runs` lists it.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Summary {
     pub id: String,
@@ -369,7 +370,7 @@ pub struct Summary {
 }
 
 /// A run with its fetches and steps, as `obc data runs RUN` shows it.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Details {
     #[serde(flatten)]
@@ -380,7 +381,7 @@ pub struct Details {
     pub steps: Vec<RunStep>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RunFetch {
     pub source: String,
@@ -392,7 +393,7 @@ pub struct RunFetch {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RunStep {
     pub step: String,

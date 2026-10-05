@@ -90,6 +90,18 @@ fn delete_without_a_terminal_needs_yes_and_changes_nothing() {
     let out = obc_data_r2(&temp, &["delete", "uploads/stray.obcm", "--reason", "a stray upload"]);
     assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stdout).contains("uploads/stray.obcm"), "the plan is shown");
+
+    // With `--json`, standard output is only the error, also for an argument that clap refuses.
+    for (args, code) in [
+        (&["delete", "uploads/stray.obcm", "--reason", "a stray upload", "--json"][..], "no_terminal"),
+        (&["delete", "uploads/stray.obcm", "--json"], "usage"),
+    ] {
+        let out = obc_data_r2(&temp, args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        let error: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(error["error"]["code"], code, "{error}");
+        assert!(!error["error"]["message"].as_str().unwrap().is_empty() && error["error"]["fix"].is_string());
+    }
     assert!(temp.bucket().join("uploads/stray.obcm").exists());
     assert!(!temp.bucket().join(REMOVAL_LOG).exists());
 }
