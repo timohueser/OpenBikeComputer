@@ -639,6 +639,7 @@ triggers = [
 id = "ci.ios-device-build"
 scoped = true
 rust_packages = ["obc-ios-host"]
+rust_excludes = ["firmware/obc-app/src/harness/**"]
 route = "ordinary"
 command = "xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -scheme OBCDevice"
 jobs = ["ios-app"]

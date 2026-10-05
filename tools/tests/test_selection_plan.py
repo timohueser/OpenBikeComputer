@@ -509,6 +509,7 @@ class ShippedPlanTests(unittest.TestCase):
             "apps/planner-search/server.mjs", "apps/planner-search/tests/native.test.mjs",
             "apps/planner-search/query/train.py", "firmware/obc-crc/tests/crc.rs",
             "apps/obc-ios-host/src/tests.rs", "host/obc-host-core/src/flat_routes/tests.rs",
+            "firmware/obc-app/src/harness/route_import.rs",
         ]
         for path in unrelated:
             with self.subTest(path=path):
