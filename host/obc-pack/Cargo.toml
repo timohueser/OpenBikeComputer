@@ -61,11 +61,9 @@ rayon = "1"
 # `sha256` this crate publishes, so the digest is a contract, not a convenience —
 # use the reviewed implementation rather than hand-rolling one.
 sha2 = "0.11"
-# The land-polygon dataset, fetched and unpacked in process rather than by shelling
-# out to `curl` and `unzip` (#907 — Windows has neither as a given, and a
-# subprocess cannot be cancelled or report progress). `ureq` is blocking and
-# rustls-by-default, so no OpenSSL system dependency follows it onto macOS or
-# Windows; it is the same client the desktop app already used.
+# The live catalog that the bakery's version guard reads (`net::get_text`). `ureq` is
+# blocking and rustls-by-default, so no OpenSSL system dependency follows it onto macOS
+# or Windows.
 ureq = "3"
 # Reading one deflate archive. Default features are off on purpose: they would drag
 # in bzip2 and zstd, both C libraries, and the whole point of #907 is that libGEOS

@@ -128,7 +128,7 @@ pub trait LandmarkCapture {
 
 /// The real capture: `tools/landmark_capture.py`.
 ///
-/// Spawned rather than linked, the way the planet bake spawns `pyosmium-up-to-date`: the tool is
+/// Spawned rather than linked, the way the planet bake spawns `osmium`: the tool is
 /// the repository's one rate-limited, resumable API client, and a second implementation of its
 /// politeness and its content addressing is the last thing this stage should own.
 pub struct PythonCapture {

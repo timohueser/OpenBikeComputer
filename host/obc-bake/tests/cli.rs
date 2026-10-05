@@ -136,29 +136,13 @@ fn a_region_outside_the_curated_list_is_refused() {
 fn all_checks_osmium_before_touching_the_planet_source() {
     let out = obc_bake()
         .env("OBC_OSMIUM", "/definitely/not/an/osmium-binary")
-        .args(["bake", "--all", "--source", "http://127.0.0.1:1/planet.osm.pbf", "--presets-dir"])
+        .args(["bake", "--all", "--presets-dir"])
         .arg(repo("builder/presets"))
         .output()
         .expect("run");
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("is required for `obc bake --all`"), "{err}");
-    assert!(!err.contains("HEAD http"), "the prerequisite check must happen before network I/O: {err}");
-}
-
-#[test]
-fn all_checks_replication_tool_before_touching_the_planet_source() {
-    let out = obc_bake()
-        .env("OBC_OSMIUM", "true")
-        .env("OBC_PYOSMIUM_UP_TO_DATE", "/definitely/not/a/pyosmium-up-to-date-binary")
-        .args(["bake", "--all", "--source", "http://127.0.0.1:1/planet.osm.pbf", "--presets-dir"])
-        .arg(repo("builder/presets"))
-        .output()
-        .expect("run");
-    assert!(!out.status.success());
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("obc doctor --install"), "{err}");
-    assert!(!err.contains("HEAD http"), "the prerequisite check must happen before network I/O: {err}");
 }
 
 #[test]
