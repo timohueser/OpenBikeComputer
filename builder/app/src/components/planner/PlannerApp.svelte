@@ -95,7 +95,8 @@
         : routingStatus);
     let list = $state<'plan' | 'ways'>('plan');
     const needsAlternatives = $derived(!!session.line && !session.line.alternativesReady);
-    $effect(() => { if (list === 'ways' && !session.dragging) return session.findAlternatives(); });
+    // A label edit keeps the line, so it does not cancel the request.
+    $effect(() => { if (list === 'ways' && !session.dragging && session.line) return untrack(() => session.findAlternatives()); });
     let searching = $state(false);
     let planEditing = $state(false);
     // Riding numbers stay stable when the itinerary includes rest days.
