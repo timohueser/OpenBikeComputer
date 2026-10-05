@@ -1,12 +1,12 @@
 //! Bounded visit construction. The owner keeps output A unsealed and reuses B for each leg.
 //! This module owns route policy and composition. Platform adapters own reservations and searches.
-use crate::convert::{ObcrEmitter, RouteStats};
+use crate::compose::{Compose, Part, Seam, Segment, Source, WaypointMap};
+use crate::convert::{ObcrWriter, RouteStats};
 use crate::reader::WaypointCursor;
 use crate::walk::{walk, Records, Step};
-use crate::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
-use heapless::Vec;
+use crate::{RouteReader, MAX_POINTS_PER_CHUNK};
 use obc_formats::bike::BikeType;
-use obc_formats::io::{put_i16, put_i32, put_u16, put_u32, ByteSink, Error};
+use obc_formats::io::{ByteSink, Error};
 use obc_formats::obcm::{PoiMetadata, SourceId};
 use obc_formats::obcr::{RouteSourceKey, VisitDescriptor, WaypointProvenance, HEADER_FULL_LEN, WAYPOINT_LEN};
 
@@ -247,23 +247,15 @@ enum Phase {
 /// Final emitter state lives in a named arena partition alongside the leg planner. No source,
 /// route index or reservation is owned here. Each step writes one chunk or one waypoint record.
 pub struct VisitBuilder {
-    em: ObcrEmitter,
+    compose: Compose,
     easier: Option<crate::easier::Anchors>,
     descriptor: Option<VisitDescriptor>,
     original: RouteSourceKey,
     anchors: [u32; 3],
     accepted_rejoin_m: u32,
     phase: Phase,
-    chunk: usize,
-    segment_started: bool,
-    last: Option<(i32, i32)>,
-    last_ele: i16,
-    seam_incomplete: bool,
     cursor: Option<WaypointCursor>,
     ordinal: u16,
-    count: u16,
-    waypoint_offset: u32,
-    header: [u8; HEADER_FULL_LEN],
     stats: Option<RouteStats>,
 }
 impl VisitBuilder {
@@ -333,46 +325,30 @@ impl VisitBuilder {
     ) -> Result<(), Error> {
         use core::ptr::addr_of_mut;
         unsafe {
-            ObcrEmitter::init_in_place(addr_of_mut!((*slot).em));
+            Compose::init_in_place(addr_of_mut!((*slot).compose));
             addr_of_mut!((*slot).descriptor).write(descriptor);
             addr_of_mut!((*slot).easier).write(None);
             addr_of_mut!((*slot).original).write(original);
             addr_of_mut!((*slot).anchors).write(anchors);
             addr_of_mut!((*slot).accepted_rejoin_m).write(0);
             addr_of_mut!((*slot).phase).write(Phase::Begin);
-            addr_of_mut!((*slot).chunk).write(0);
-            addr_of_mut!((*slot).segment_started).write(false);
-            addr_of_mut!((*slot).last).write(None);
-            addr_of_mut!((*slot).last_ele).write(i16::MIN);
-            addr_of_mut!((*slot).seam_incomplete).write(false);
             addr_of_mut!((*slot).cursor).write(None);
             addr_of_mut!((*slot).ordinal).write(0);
-            addr_of_mut!((*slot).count).write(0);
-            addr_of_mut!((*slot).waypoint_offset).write(0);
-            addr_of_mut!((*slot).header).write([0; HEADER_FULL_LEN]);
             addr_of_mut!((*slot).stats).write(None);
             let Self {
-                em: _,
+                compose: _,
                 easier: _,
                 descriptor: _,
                 original: _,
                 anchors: _,
                 accepted_rejoin_m: _,
                 phase: _,
-                chunk: _,
-                segment_started: _,
-                last: _,
-                last_ele: _,
-                seam_incomplete: _,
                 cursor: _,
                 ordinal: _,
-                count: _,
-                waypoint_offset: _,
-                header: _,
                 stats: _,
             } = &*slot;
-            (*slot).em.set_attribution_map(Some(map));
-            (*slot).em.set_flags(obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE);
+            (*slot).compose.writer.set_attribution_map(Some(map));
+            (*slot).compose.writer.set_flags(obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE);
         }
         Ok(())
     }
@@ -402,9 +378,9 @@ impl VisitBuilder {
             return Ok(None);
         }
         anchors.advance(original)?;
-        let from = self.last.unwrap_or(origin);
+        let from = self.compose.last.unwrap_or(origin);
         while obc_map_scene::ground_dist_m(from, anchors.target) <= APPROACH_TOLERANCE_M {
-            anchors.reached(self.em.distance_m(), original.total_distance_m);
+            anchors.reached(self.compose.writer.distance_m(), original.total_distance_m);
             if anchors.finished {
                 self.phase = Phase::Geometry;
                 return Ok(None);
@@ -417,11 +393,24 @@ impl VisitBuilder {
         self.easier.as_ref().is_some_and(|a| a.finished)
     }
 
+    /// Enable the writer checksum before the first output step.
+    pub fn enable_checksum(&mut self) -> Result<(), Error> {
+        if !matches!(self.phase, Phase::Begin | Phase::BeginPrefix) {
+            return Err(Error::BadOffset);
+        }
+        self.compose.writer.enable_checksum();
+        Ok(())
+    }
+    /// The checksum of the complete stored output, including its patched header.
+    pub fn checksum(&self) -> Option<u32> {
+        (self.phase == Phase::Done).then(|| self.compose.writer.checksum()).flatten()
+    }
+
     pub fn begin(&mut self, sink: &mut dyn ByteSink) -> Result<(), Error> {
         if !matches!(self.phase, Phase::Begin | Phase::BeginPrefix) {
             return Err(Error::BadOffset);
         }
-        ObcrEmitter::begin(sink)?;
+        ObcrWriter::begin(sink)?;
         self.phase = if self.descriptor.is_some() {
             if self.phase == Phase::BeginPrefix || self.anchors[1] > self.anchors[0] {
                 Phase::Prefix
@@ -452,8 +441,7 @@ impl VisitBuilder {
         if self.append_chunk(original, self.anchors[0], self.anchors[1], sink)? {
             return Ok(false);
         }
-        self.chunk = 0;
-        self.segment_started = false;
+        self.compose.next_segment(0);
         self.phase = Phase::Outbound;
         Ok(true)
     }
@@ -486,10 +474,10 @@ impl VisitBuilder {
     ) -> Result<(), Error> {
         let descriptor = self.descriptor.as_mut().ok_or(Error::BadOffset)?;
         if self.phase != Phase::Outbound
-            || self.chunk != 0
+            || self.compose.chunk != 0
             || descriptor.target_kind != (target.metadata.source.0 >> 62) as u8
             || descriptor.target_id != target.metadata.source.0 & ((1 << 62) - 1)
-            || self.em.attribution_map() != Some(target.map)
+            || self.compose.writer.attribution_map() != Some(target.map)
         {
             return Err(Error::BadOffset);
         }
@@ -521,41 +509,40 @@ impl VisitBuilder {
             // lie beside the road, so the anchor counts as reached there, and no connector with
             // unknown height and surface is added.
             if self
+                .compose
                 .last
                 .is_none_or(|last| obc_map_scene::ground_dist_m(last, anchors.target) > crate::nav::SNAP_RADIUS_M)
             {
                 self.phase = Phase::RejectedGeometry;
                 return Err(Error::BadOffset);
             }
-            self.chunk = 0;
-            self.segment_started = false;
+            self.compose.next_segment(0);
             return Ok(true);
         }
         if self.phase == Phase::Outbound {
             let descriptor = self.descriptor.as_mut().ok_or(Error::BadOffset)?;
-            if self.last.is_none_or(|p| {
+            if self.compose.last.is_none_or(|p| {
                 obc_map_scene::ground_dist_m(p, (descriptor.target_lon, descriptor.target_lat)) > APPROACH_TOLERANCE_M
             }) {
                 self.phase = Phase::RejectedGeometry;
                 return Err(Error::BadOffset);
             }
-            descriptor.accepted_anchors_m[1] = self.em.distance_m();
+            descriptor.accepted_anchors_m[1] = self.compose.writer.distance_m();
             self.phase = Phase::Return;
         } else {
-            self.accepted_rejoin_m = self.em.distance_m();
+            self.accepted_rejoin_m = self.compose.writer.distance_m();
             if let Some(descriptor) = &mut self.descriptor {
                 descriptor.accepted_anchors_m[2] = self.accepted_rejoin_m;
             }
             self.phase = Phase::Tail;
         }
-        self.chunk = 0;
-        self.segment_started = false;
+        self.compose.next_segment(0);
         Ok(true)
     }
 
     pub fn finish_easier_leg(&mut self, original: &RouteReader) -> Result<(), Error> {
         let anchors = self.easier.as_mut().ok_or(Error::BadOffset)?;
-        anchors.reached(self.em.distance_m(), original.total_distance_m);
+        anchors.reached(self.compose.writer.distance_m(), original.total_distance_m);
         if anchors.finished {
             self.phase = Phase::Geometry;
         }
@@ -583,14 +570,13 @@ impl VisitBuilder {
                 }
             }
             Phase::Geometry => {
-                self.em.set_bike_type(original.bike_type());
-                let mut capture = HeaderSink { sink, header: &mut self.header };
-                self.stats = Some(self.em.finish(
-                    &mut capture,
+                self.compose.writer.set_bike_type(original.bike_type());
+                self.compose.writer.finish_geometry(sink)?;
+                self.stats = Some(self.compose.writer.seal(
+                    sink,
                     if self.easier.is_some() { "Easier route" } else { "Visit" },
-                    &mut Vec::new(),
+                    None,
                 )?);
-                self.waypoint_offset = self.em.geometry_end();
                 self.cursor = Some(WaypointCursor::new(original.source())?);
                 self.phase = Phase::Waypoints;
             }
@@ -601,55 +587,28 @@ impl VisitBuilder {
                 };
                 let ordinal = self.ordinal;
                 self.ordinal = self.ordinal.checked_add(1).ok_or(Error::TooLarge)?;
-                let departure = self.anchors[0];
-                if w.dist_along_m < departure {
-                    return Ok(None);
-                }
-                if (w.dist_along_m > self.anchors[1] && w.dist_along_m < rejoin)
-                    || w.dist_along_m > original.total_distance_m
-                {
-                    return Err(Error::BadOffset);
-                }
-                w.provenance.get_or_insert(WaypointProvenance { source: self.original, ordinal });
-                w.dist_along_m = if let Some(anchors) = &self.easier {
-                    anchors.mapped(w.dist_along_m)?
-                } else if w.dist_along_m < self.anchors[1] {
-                    w.dist_along_m - departure
-                } else if w.dist_along_m == original.total_distance_m {
-                    self.em.distance_m()
-                } else {
-                    self.accepted_rejoin_m.saturating_add(w.dist_along_m - rejoin).min(self.em.distance_m())
+                let map = WaypointMap::Visit {
+                    anchors: self.anchors,
+                    tail: self.accepted_rejoin_m,
+                    easier: self.easier.as_ref(),
                 };
+                let Some(along) =
+                    map.map(w.dist_along_m, original.total_distance_m, self.compose.writer.distance_m())?
+                else {
+                    return Ok(None);
+                };
+                w.provenance.get_or_insert(WaypointProvenance { source: self.original, ordinal });
+                w.dist_along_m = along;
                 // The retained tail has the same orientation and access geometry, so its signed
                 // lateral offset is unchanged.
-                let mut bytes = [0; WAYPOINT_LEN];
-                put_u32(&mut bytes, 0, w.dist_along_m);
-                put_i32(&mut bytes, 4, w.lon);
-                put_i32(&mut bytes, 8, w.lat);
-                put_i16(&mut bytes, 12, w.ele);
-                bytes[14] = w.category_id;
-                bytes[15] = w.name.len() as u8;
-                put_i16(&mut bytes, 16, w.lateral_offset_m);
-                bytes[20..20 + w.name.len()].copy_from_slice(w.name.as_bytes());
-                bytes[44..80].copy_from_slice(&w.provenance.unwrap().encode());
-                sink.write(&bytes)?;
-                self.count = self.count.checked_add(1).ok_or(Error::TooLarge)?;
+                self.compose.writer.write_waypoint(sink, &w)?;
             }
             Phase::Descriptor => {
-                let offset = self
-                    .waypoint_offset
-                    .checked_add(u32::from(self.count) * WAYPOINT_LEN as u32)
-                    .ok_or(Error::TooLarge)?;
-                if let Some(descriptor) = self.descriptor {
-                    sink.write(&descriptor.encode().map_err(|_| Error::BadOffset)?)?;
-                    self.header[118] = 1;
-                    put_u32(&mut self.header, 120, offset);
-                    put_u32(&mut self.header, 124, 80);
-                }
-                put_u32(&mut self.header, 112, if self.count == 0 { 0 } else { self.waypoint_offset });
-                put_u16(&mut self.header, 116, self.count);
-                sink.patch_at(0, &self.header)?;
-                self.stats.as_mut().ok_or(Error::BadOffset)?.waypoint_count = self.count;
+                self.stats = Some(self.compose.writer.seal(
+                    sink,
+                    if self.easier.is_some() { "Easier route" } else { "Visit" },
+                    self.descriptor,
+                )?);
                 self.phase = Phase::Done;
                 return Ok(self.stats);
             }
@@ -666,89 +625,28 @@ impl VisitBuilder {
         to: u32,
         sink: &mut dyn ByteSink,
     ) -> Result<bool, Error> {
-        if self.chunk >= route.chunks().len() || route.chunks()[self.chunk].cum_distance_m > to {
-            return Ok(false);
+        let route_join = self.descriptor.is_some() && matches!(self.phase, Phase::Outbound | Phase::Tail);
+        let tolerance = if route_join { crate::nav::SNAP_RADIUS_M } else { APPROACH_TOLERANCE_M };
+        if self.compose.source().is_none() {
+            let source = if matches!(self.phase, Phase::Prefix | Phase::Tail) { Source::Original } else { Source::Leg };
+            self.compose.plan(&[Part {
+                source,
+                segment: Segment::Stored { lo: from, hi: to, retain_end: true, read_to_end: false },
+                seam: Seam::Joined { tolerance },
+                chunk: 0,
+            }])?;
         }
-        // A stored total is floored to metres. Keep the final stored endpoint, not a second
-        // sub-metre clip of it, or consecutive legs would no longer have the same seam.
-        let upper = if to == route.total_distance_m { u32::MAX } else { to };
-        let k = self.chunk;
-        let whole = route.total_distance_m == 0 && route.chunks()[k].point_count == 1;
-        // `(seam, gap)` of the chunk's first point, set once that point arrives.
-        let mut start: Option<(bool, f32)> = None;
-        let mut source_surface = false;
-        let mut push = |p: RoutePoint| -> Result<(), Error> {
-            let coord = (p.lon, p.lat);
-            let first = start.is_none();
-            let (seam, gap) = match start {
-                Some(start) => start,
-                None => {
-                    // The chunk counts as consumed once it decodes, whatever its geometry.
-                    self.chunk += 1;
-                    let seam = !self.segment_started && self.last.is_some();
-                    let gap = self.last.map_or(0.0, |last| obc_map_scene::ground_dist_m(last, coord));
-                    let route_join = self.descriptor.is_some() && matches!(self.phase, Phase::Outbound | Phase::Tail);
-                    let tolerance = if route_join { crate::nav::SNAP_RADIUS_M } else { APPROACH_TOLERANCE_M };
-                    if seam && gap > tolerance {
-                        self.phase = Phase::RejectedGeometry;
-                        return Err(Error::BadOffset);
-                    }
-                    self.segment_started = true;
-                    source_surface = route.attribution_map()? == self.em.attribution_map();
-                    *start.insert((seam, gap))
-                }
-            };
-            let connector = first && seam && gap > APPROACH_TOLERANCE_M;
-            if first && ((seam && !connector) || self.last == Some(coord)) {
-                // Coalesce sub-metre quantization at the existing endpoint and add no connector.
-                self.seam_incomplete |= self.last != Some(coord) || self.last_ele != p.ele;
-                return Ok(());
+        let step = self.compose.step(route, sink);
+        if self.compose.rejected {
+            self.phase = Phase::RejectedGeometry;
+        }
+        let step = step?;
+        if let Some(distance) = step.connector_m.filter(|_| self.phase == Phase::Tail) {
+            self.accepted_rejoin_m = distance;
+            if let Some(descriptor) = &mut self.descriptor {
+                descriptor.accepted_anchors_m[2] = distance;
             }
-            // Imported route geometry can differ from the normal graph snap. Retain both ends
-            // and charge the connection to the visit; it has no mapped surface or elevation.
-            self.em.set_surface(if source_surface && !connector { p.surface } else { 0 });
-            self.em.set_elevation_incomplete(p.elevation_incomplete || self.seam_incomplete || connector);
-            self.em.push_retained(sink, p.lon, p.lat, p.ele)?;
-            if connector && self.phase == Phase::Tail {
-                self.accepted_rejoin_m = self.em.distance_m();
-                if let Some(descriptor) = &mut self.descriptor {
-                    descriptor.accepted_anchors_m[2] = self.accepted_rejoin_m;
-                }
-            }
-            self.last = Some(coord);
-            self.last_ele = p.ele;
-            self.seam_incomplete = false;
-            Ok(())
-        };
-        let found = if whole {
-            route.with_chunk(k, |mut points| points.try_for_each(&mut push))??;
-            true
-        } else {
-            route.clip_chunk(k, from, upper, &mut push)?
-        };
-        if !found {
-            self.chunk += 1;
         }
-        Ok(true)
-    }
-}
-
-struct HeaderSink<'a> {
-    sink: &'a mut dyn ByteSink,
-    header: &'a mut [u8; HEADER_FULL_LEN],
-}
-impl ByteSink for HeaderSink<'_> {
-    fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        self.sink.write(bytes)
-    }
-    fn write_chunk(&mut self, anchor: (i32, i32, i16), body: &[u8]) -> Result<(), Error> {
-        self.sink.write_chunk(anchor, body)
-    }
-    fn patch_at(&mut self, at: u32, bytes: &[u8]) -> Result<(), Error> {
-        if at != 0 || bytes.len() != self.header.len() {
-            return Err(Error::BadOffset);
-        }
-        self.header.copy_from_slice(bytes);
-        self.sink.patch_at(at, bytes)
+        Ok(step.more)
     }
 }

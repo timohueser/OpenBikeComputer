@@ -278,11 +278,11 @@ impl Executor {
                 } else {
                     context.progress_m
                 };
+                self.measuring = matches!(work, PlannerWork::MeasureRoute(_));
                 if self.begin_route(app, guard.as_mut().unwrap(), elev).is_err() {
                     return self.fail(NavigatorError::Unavailable);
                 }
                 self.choice = VisitChoice::new();
-                self.measuring = matches!(work, PlannerWork::MeasureRoute(_));
                 self.phase = if self.measuring { Phase::Step(Work::Begin) } else { Phase::AllocateA };
                 None
             }
@@ -324,6 +324,9 @@ impl Executor {
         let route = RouteReader::new(original, self.original.as_ref().ok_or(())?);
         if !app.assistant_easier_original(c, &route, elev) {
             return Err(());
+        }
+        if self.measuring {
+            builder.enable_checksum().map_err(|_| ())?;
         }
         if matches!(c.purpose, ReviewPurpose::Easier(_)) {
             builder.prepare_easier(&route).map_err(|_| ())?;
@@ -615,7 +618,11 @@ impl Executor {
                     {
                         NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged }
                     } else if self.measuring {
-                        match core::mem::take(guard.visit_measure_parts().3).finish(elev) {
+                        let (builder, _, _, measure) = guard.visit_measure_parts();
+                        let Some(crc) = builder.checksum() else {
+                            return self.fail(NavigatorError::Unavailable);
+                        };
+                        match core::mem::take(measure).finish(elev, stats, crc) {
                             Ok((costs, crc)) => app.assistant_easier_measured(token, costs, crc),
                             Err(_) => NavigatorOutcome::Failed { token, error: NavigatorError::Unavailable },
                         }

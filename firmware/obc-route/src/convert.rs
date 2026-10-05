@@ -61,7 +61,7 @@ pub fn gpx_to_obcr_attributed(
     map_source: Option<obc_formats::obcr::RouteSourceKey>,
     mut surface: impl FnMut((i32, i32), (i32, i32)) -> Result<u8, Error>,
 ) -> Result<RouteStats, Error> {
-    let mut em = ObcrEmitter::new(sink)?;
+    let mut em = ObcrWriter::new(sink)?;
     em.set_attribution_map(map_source);
     em.set_bike_type(bike);
 
@@ -160,7 +160,7 @@ pub fn gpx_to_obcr_attributed(
 /// The streaming OBCR writer shared by [`gpx_to_obcr`] and the nav router's emit
 /// ([`crate::nav`]). It owns every format and geometry invariant, so the two OBCR producers stay
 /// byte-compatible by construction.
-pub(crate) struct ObcrEmitter {
+pub(crate) struct ObcrWriter {
     enc: Encoder,
     /// Cumulative raw-path distance. `f64` because an `f32` running total drifts over the
     /// thousands of segments of a long route.
@@ -173,7 +173,7 @@ pub(crate) struct ObcrEmitter {
     last_kept: Option<Cand>,
     pending: Option<Cand>,
     /// Elevation-detail keep threshold (m). `0` turns it off. See
-    /// [`keep_elevation_detail`](ObcrEmitter::keep_elevation_detail).
+    /// [`keep_elevation_detail`](ObcrWriter::keep_elevation_detail).
     ele_keep_m: i16,
     surface: u8,
     /// A pushed point had no elevation, or an incomplete one.
@@ -181,9 +181,11 @@ pub(crate) struct ObcrEmitter {
     flags: u8,
     bike: BikeType,
     map_source: Option<obc_formats::obcr::RouteSourceKey>,
+    waypoint_count: u16,
+    completed_crc: Option<u32>,
 }
 
-impl ObcrEmitter {
+impl ObcrWriter {
     /// # Safety
     /// `slot` must be aligned, writable and exclusively owned for a complete emitter.
     pub(crate) unsafe fn init_in_place(slot: *mut Self) {
@@ -203,6 +205,8 @@ impl ObcrEmitter {
             addr_of_mut!((*slot).flags).write(0);
             addr_of_mut!((*slot).bike).write(BikeType::default());
             addr_of_mut!((*slot).map_source).write(None);
+            addr_of_mut!((*slot).waypoint_count).write(0);
+            addr_of_mut!((*slot).completed_crc).write(None);
             let Self {
                 enc: _,
                 cum_dist: _,
@@ -218,18 +222,20 @@ impl ObcrEmitter {
                 flags: _,
                 bike: _,
                 map_source: _,
+                waypoint_count: _,
+                completed_crc: _,
             } = &*slot;
         }
     }
     /// Reserve the header on `sink`. The body follows at `data_offset = HEADER_FULL_LEN`.
-    pub(crate) fn new(sink: &mut dyn ByteSink) -> Result<ObcrEmitter, Error> {
+    pub(crate) fn new(sink: &mut dyn ByteSink) -> Result<ObcrWriter, Error> {
         Self::begin(sink)?;
         Ok(Self::empty())
     }
 
     /// Construct in the owner's workspace before streaming starts. Nothing is written to a sink.
     pub(crate) fn empty() -> Self {
-        ObcrEmitter {
+        ObcrWriter {
             enc: Encoder::new(HEADER_FULL_LEN as u32),
             cum_dist: 0.0,
             prev: None,
@@ -244,6 +250,8 @@ impl ObcrEmitter {
             flags: 0,
             bike: BikeType::default(),
             map_source: None,
+            waypoint_count: 0,
+            completed_crc: None,
         }
     }
 
@@ -267,6 +275,15 @@ impl ObcrEmitter {
 
     pub(crate) fn set_flags(&mut self, flags: u8) {
         self.flags = flags;
+    }
+
+    pub(crate) fn enable_checksum(&mut self) {
+        let mut crc = obc_crc::Crc32::new();
+        crc.update(&[0; HEADER_FULL_LEN]);
+        self.enc.crc = Some(crc);
+    }
+    pub(crate) fn checksum(&self) -> Option<u32> {
+        self.completed_crc
     }
 
     pub(crate) fn set_bike_type(&mut self, bike: BikeType) {
@@ -362,18 +379,88 @@ impl ObcrEmitter {
         name: &str,
         wps: &mut Vec<WpPlace, MAX_WAYPOINTS>,
     ) -> Result<RouteStats, Error> {
-        // The final point is always kept.
+        self.finish_geometry(sink)?;
+        // Stable order keeps waypoints at the same route position in source order.
+        for i in 1..wps.len() {
+            let mut j = i;
+            while j > 0 && wps[j - 1].along_m > wps[j].along_m {
+                wps.swap(j - 1, j);
+                j -= 1;
+            }
+        }
+        for w in wps.iter() {
+            self.write_waypoint_fields(
+                sink,
+                w.along_m,
+                (w.wp.lon, w.wp.lat, w.wp.ele.map_or(WAYPOINT_ELE_NONE, |e| round_i16(e as f64))),
+                w.category_id,
+                w.lateral_offset_m,
+                &w.wp.name,
+                w.provenance,
+            )?;
+        }
+        self.seal(sink, name, None)
+    }
+
+    pub(crate) fn finish_geometry(&mut self, sink: &mut dyn ByteSink) -> Result<(), Error> {
         self.flush_pending(sink)?;
         if self.emitted == 0 {
             return Err(Error::Empty);
         }
-
         self.enc.finish(sink)?;
-        let index_offset = self.enc.write_index(sink)?;
-        let wpt_offset =
-            write_waypoints(sink, wps, index_offset + self.enc.index.len() as u32 * CHUNK_META_LEN as u32)?;
+        self.enc.write_index(sink)?;
+        Ok(())
+    }
 
-        let bbox = self.bbox.unwrap_or(BBox { min_lon: 0, min_lat: 0, max_lon: 0, max_lat: 0 });
+    pub(crate) fn write_waypoint(&mut self, sink: &mut dyn ByteSink, w: &crate::reader::Waypoint) -> Result<(), Error> {
+        self.write_waypoint_fields(
+            sink,
+            w.dist_along_m,
+            (w.lon, w.lat, w.ele),
+            w.category_id,
+            w.lateral_offset_m,
+            &w.name,
+            w.provenance,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_waypoint_fields(
+        &mut self,
+        sink: &mut dyn ByteSink,
+        along: u32,
+        point: (i32, i32, i16),
+        category: u8,
+        lateral: i16,
+        name: &str,
+        provenance: Option<obc_formats::obcr::WaypointProvenance>,
+    ) -> Result<(), Error> {
+        let mut rec = [0; WAYPOINT_LEN];
+        put_u32(&mut rec, 0, along);
+        put_i32(&mut rec, 4, point.0);
+        put_i32(&mut rec, 8, point.1);
+        put_i16(&mut rec, 12, point.2);
+        rec[14] = category;
+        rec[15] = name.len() as u8;
+        put_i16(&mut rec, 16, lateral);
+        rec[WAYPOINT_NAME_OFF..WAYPOINT_NAME_OFF + name.len()].copy_from_slice(name.as_bytes());
+        if let Some(provenance) = provenance {
+            rec[44..80].copy_from_slice(&provenance.encode());
+        }
+        sink.write(&rec)?;
+        if let Some(crc) = &mut self.enc.crc {
+            crc.update(&rec);
+        }
+        self.waypoint_count = self.waypoint_count.checked_add(1).ok_or(Error::TooLarge)?;
+        Ok(())
+    }
+
+    pub(crate) fn seal(
+        &mut self,
+        sink: &mut dyn ByteSink,
+        name: &str,
+        descriptor: Option<obc_formats::obcr::VisitDescriptor>,
+    ) -> Result<RouteStats, Error> {
         let stats = RouteStats {
             point_count: self.emitted,
             chunk_count: self.enc.index.len() as u32,
@@ -382,19 +469,53 @@ impl ObcrEmitter {
             total_descent_m: self.enc.band.descent() as u32,
             min_ele_m: if self.enc.min_ele <= self.enc.max_ele { self.enc.min_ele } else { 0 },
             max_ele_m: if self.enc.min_ele <= self.enc.max_ele { self.enc.max_ele } else { 0 },
-            waypoint_count: wps.len() as u16,
+            waypoint_count: self.waypoint_count,
             has_elevation: self.enc.min_ele <= self.enc.max_ele,
             elevation_complete: !self.ele_gap,
         };
-
-        let mut header = build_header(name, &bbox, self.start, index_offset, wpt_offset, &stats);
+        let bbox = self.bbox.unwrap_or(BBox { min_lon: 0, min_lat: 0, max_lon: 0, max_lat: 0 });
+        let mut header = build_header(
+            name,
+            &bbox,
+            self.start,
+            self.enc.data_pos,
+            if self.waypoint_count == 0 { 0 } else { self.geometry_end() },
+            &stats,
+        );
         header[5] |= self.flags;
         header[BIKE_TYPE_OFF] = self.bike as u8;
         if let Some(source) = self.map_source {
             header[5] |= obc_formats::obcr::FLAG_ATTRIBUTION_MAP;
             source.encode(header[128..160].as_mut().try_into().unwrap());
         }
+        if let Some(descriptor) = descriptor {
+            let offset = self
+                .geometry_end()
+                .checked_add(u32::from(self.waypoint_count) * WAYPOINT_LEN as u32)
+                .ok_or(Error::TooLarge)?;
+            let bytes = descriptor.encode().map_err(|_| Error::BadOffset)?;
+            sink.write(&bytes)?;
+            if let Some(crc) = &mut self.enc.crc {
+                crc.update(&bytes);
+            }
+            header[118] = 1;
+            put_u32(&mut header, 120, offset);
+            put_u32(&mut header, 124, 80);
+        }
         sink.patch_at(0, &header)?;
+        if let Some(crc) = self.enc.crc {
+            let mut term = obc_crc::Crc32::from_checksum(u32::MAX);
+            term.update(&header);
+            let mut rest = (self.geometry_end() - HEADER_FULL_LEN as u32)
+                + u32::from(self.waypoint_count) * WAYPOINT_LEN as u32
+                + if descriptor.is_some() { 80 } else { 0 };
+            while rest > 0 {
+                let n = rest.min(64);
+                term.update(&[0; 64][..n as usize]);
+                rest -= n;
+            }
+            self.completed_crc = Some(crc.finalize() ^ term.finalize() ^ u32::MAX);
+        }
         Ok(stats)
     }
 }
@@ -462,39 +583,6 @@ fn signed_offset_m(d2: f32, cross: f32) -> i16 {
     }
 }
 
-/// Sort the placed waypoints by position along the route and write the fixed-record table at
-/// `offset`, right after the chunk index. Returns the table's file offset for the header
-/// extension, or 0 when there are no waypoints.
-fn write_waypoints(sink: &mut dyn ByteSink, wps: &mut Vec<WpPlace, MAX_WAYPOINTS>, offset: u32) -> Result<u32, Error> {
-    if wps.is_empty() {
-        return Ok(0);
-    }
-    // Insertion sort by `along_m`: stable, bounded by MAX_WAYPOINTS, and needs no allocator.
-    for i in 1..wps.len() {
-        let mut j = i;
-        while j > 0 && wps[j - 1].along_m > wps[j].along_m {
-            wps.swap(j - 1, j);
-            j -= 1;
-        }
-    }
-    for w in wps.iter() {
-        let mut rec = [0u8; WAYPOINT_LEN];
-        put_u32(&mut rec, 0, w.along_m);
-        put_i32(&mut rec, 4, w.wp.lon);
-        put_i32(&mut rec, 8, w.wp.lat);
-        put_i16(&mut rec, 12, w.wp.ele.map_or(WAYPOINT_ELE_NONE, |e| round_i16(e as f64)));
-        rec[14] = w.category_id; // GPX pass: the mapped symbol; splice pass: the stored byte
-        rec[15] = w.wp.name.len() as u8;
-        put_i16(&mut rec, 16, w.lateral_offset_m); // rec[18..20] reserved
-        rec[WAYPOINT_NAME_OFF..WAYPOINT_NAME_OFF + w.wp.name.len()].copy_from_slice(w.wp.name.as_bytes());
-        if let Some(provenance) = w.provenance {
-            rec[44..80].copy_from_slice(&provenance.encode());
-        }
-        sink.write(&rec)?;
-    }
-    Ok(offset)
-}
-
 #[derive(Debug, Clone, Copy)]
 struct Cand {
     lon: i32,
@@ -560,6 +648,7 @@ struct Encoder {
     band: DeadBand<f64>,
     min_ele: i16,
     max_ele: i16,
+    crc: Option<obc_crc::Crc32>,
 }
 
 impl Encoder {
@@ -576,6 +665,7 @@ impl Encoder {
             addr_of_mut!((*slot).band).write(DeadBand::new());
             addr_of_mut!((*slot).min_ele).write(i16::MAX);
             addr_of_mut!((*slot).max_ele).write(i16::MIN);
+            addr_of_mut!((*slot).crc).write(None);
             let Self {
                 index: _,
                 cur: _,
@@ -587,6 +677,7 @@ impl Encoder {
                 band: _,
                 min_ele: _,
                 max_ele: _,
+                crc: _,
             } = &*slot;
         }
     }
@@ -602,6 +693,7 @@ impl Encoder {
             band: DeadBand::new(),
             min_ele: i16::MAX,
             max_ele: i16::MIN,
+            crc: None,
         }
     }
 
@@ -668,6 +760,9 @@ impl Encoder {
             bbox_extend(&mut bbox, x, y);
         }
         sink.write_chunk((ax, ay, ae), &body)?;
+        if let Some(crc) = &mut self.crc {
+            crc.update(&body);
+        }
         let meta = ChunkMeta {
             bbox,
             anchor_lon: ax,
@@ -703,6 +798,9 @@ impl Encoder {
             put_u32(&mut m, 36, cm.byte_offset);
             put_u32(&mut m, 40, cm.byte_len);
             sink.write(&m)?;
+            if let Some(crc) = &mut self.crc {
+                crc.update(&m);
+            }
         }
         Ok(index_offset)
     }
