@@ -9,7 +9,7 @@ import sqlite3
 import subprocess
 import sys
 
-from . import planner_runtime, planner_maps, planner_mvt as mvt
+from . import planner_runtime, planner_geo, planner_maps, planner_mvt as mvt
 
 ZOOM = 9
 MAP_ZOOM = 11
@@ -22,7 +22,7 @@ LABEL_KEYS ={"name", "name:en", "pgf:name", "name2", "pgf:name2", "name3", "pgf:
 
 def tile(lon, lat, zoom=ZOOM):
     n = 1 << zoom
-    return tuple(min(n - 1, max(0, int(value))) for value in planner_maps.mercator(lon, lat, zoom))
+    return tuple(min(n - 1, max(0, int(value))) for value in planner_geo.mercator(lon, lat, zoom))
 
 
 def intersects(a, b):
@@ -34,7 +34,7 @@ def cells(bounds):
     right, bottom = tile(bounds[2], bounds[1])
     for x in range(left, right + 1):
         for y in range(top, bottom + 1):
-            b = planner_maps.tile_bounds(ZOOM, x, y)
+            b = planner_geo.tile_bounds(ZOOM, x, y)
             clipped = [max(b[0], bounds[0]), max(b[1], bounds[1]), min(b[2], bounds[2]), min(b[3], bounds[3])]
             if clipped[0] < clipped[2] and clipped[1] < clipped[3]:
                 yield f"{ZOOM}-{x}-{y}", clipped

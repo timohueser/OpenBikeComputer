@@ -218,11 +218,11 @@ class BakeTest(unittest.TestCase):
         from pmtiles.reader import MmapSource, Reader
 
         bounds = [8.0, 48.0, 8.2, 48.1]
-        height = lambda region, key=None: 300 + 40 * np.arange(len(region.rows) * len(region.cols), dtype=float).reshape(len(region.rows), -1) % 700
+        height = lambda region, key=None, cache=None: 300 + 40 * np.arange(len(region.rows) * len(region.cols), dtype=float).reshape(len(region.rows), -1) % 700
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(climate, "orography", height):
             paths = [Path(directory) / f"{k}.pmtiles" for k in range(2)]
             for path in paths:
-                counts = climate.bake(bounds, FIRST, FakeSource(), path)
+                counts = climate.bake(bounds, FIRST, FakeSource(), path, "ERA5-Land {year}")
             self.assertEqual(paths[0].read_bytes(), paths[1].read_bytes())
             self.assertEqual(counts, {8: 1, 9: 1})
             with paths[0].open("rb") as stream:

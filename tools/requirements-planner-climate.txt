@@ -1,5 +1,0 @@
-# The planner climate bake (`tools/planner_climate.py`): Zarr chunks are Blosc, the orography is HDF5.
--r requirements-planner-maps.txt
-numpy==2.5.3
-numcodecs==0.17.0
-h5py==3.16.0

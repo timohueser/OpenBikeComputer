@@ -77,7 +77,7 @@ fn a_plan_of_live_builds_the_layers_of_each_product_and_a_build_refuses_another_
     let mut plan: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(plan["env"], "live");
     let ids: Vec<&str> = plan["groups"].as_array().unwrap().iter().map(|group| group["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["maps/terrain/0037-0032", "planner/osm", "planner/terrain"]);
+    assert_eq!(ids, ["maps/terrain/0037-0032", "planner/osm", "planner/terrain", "planner/assets", "planner/model"]);
     assert_eq!(plan["groups"][0]["fetches"][0]["source"], "copernicus-glo-30");
 
     plan["groups"] = serde_json::json!([{"id": "planner/routing", "fetches": [], "builds": []}]);

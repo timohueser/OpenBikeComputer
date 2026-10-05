@@ -6,7 +6,7 @@ import re
 import shutil
 from zoneinfo import ZoneInfo
 
-from . import data_registry, planner_maps as maps
+from . import data_registry, planner_geo as geo
 
 
 def recipe(path):
@@ -24,7 +24,7 @@ def recipe(path):
         raise ValueError("Name the region's IANA time zone in the recipe") from error
     document["bounds"] = data_registry.region_box(document["region"])
     document["name"] = data_registry.region(document["region"])["name"]
-    maps.bounds(",".join(map(str, document["bounds"])))
+    geo.bounds(",".join(map(str, document["bounds"])))
     if not re.fullmatch(r"[a-f0-9]{64}", document["osm"]["sha256"]):
         raise ValueError("Pin the OSM SHA-256 in the recipe")
     profiles = document["profiles"]
