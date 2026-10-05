@@ -19,7 +19,6 @@ OBCDomain -> OBCTransport -> OBCMock
          \-> OBCFormats
 OBCUI -> OBCDomain + OBCTransport + OBCPlanner + MapLibre (iOS)
 OBCPlanner -> OBCDomain (online client, offline installation and selection)
-OBCRouting -> OBCDomain + OBCCompanionCore (Rust; standalone offline adapter)
 ```
 
 `OBCCompanion/` is the composition root and the only target that chooses a concrete transport and planner provider.
@@ -43,12 +42,6 @@ cd companion-ios
 xcodegen generate
 
 cd Packages/OBCKit
-swift test --disable-keychain --disable-netrc
-
-# Optional: test the standalone offline adapter after a Rust core change.
-cd ../../..
-obc companion-core
-cd companion-ios/Packages/OBCRouting
 swift test --disable-keychain --disable-netrc
 ```
 
