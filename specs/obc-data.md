@@ -169,7 +169,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `requests/<source>/<sha256>.json` | The files that a fetch with `NAME=VALUE` gave: `version`, `params` and `files` (names). The name is the SHA-256 of the compact JSON `[version, params]`, with `params` sorted. A record with no files selects no file |
 | `runs/<id>.jsonl` | The events of one run, see [Runs](#runs) |
 | `upstream/<source>.json` | The last upstream check of a source: `checked` (seconds since 1970-01-01 UTC), `version` (a string, or `null` when the check failed) and `error` (only when it failed) |
-| `imports/<YYYYMMDDTHHMMSSZ>.jsonl` | The import record of one `obc data store import --apply`, see [Import and collection](#import-and-collection) |
+| `imports/<YYYYMMDDTHHMMSSZ>.jsonl` | The import record of one `obc data clean --apply`, see [Clean](#clean) |
 | `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write |
 | `locks/` | One lock file per key and per run |
 
@@ -203,18 +203,23 @@ A version is one or more segments joined by `/`. A segment has letters, digits, 
 and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` date, and a
 `digest` version is 64 lowercase hex digits.
 
-### Import and collection
+### Clean
 
-`obc data store import` moves the cache directories of the older bake tools into the store:
+`obc data clean` shows one plan: the collection, then the import. With `--apply`, it asks once,
+as [Errors](#errors) says, and then collects and imports. The collection deletes only the plan
+that it showed: when the plan of now differs, it deletes nothing. The import moves the files that
+exist when it runs, and records each one.
+
+The import moves the cache directories of the older bake tools into the store:
 `~/.cache/obcm`, `~/.cache/obc/planner`, `~/.cache/openbikecomputer`, `~/obc-bake` and
 `~/obc-reference`. Each regular file becomes an object, so the same bytes are one object.
 
 - The command resolves symbolic links in the path of the store and of each directory. The store
   and the files below it stay where they are, also when the store is in one of these
   directories. A directory inside the store is refused.
-- Without `--apply`, the command hashes every file and changes nothing. It lists what stays:
-  symbolic links and other entries that are not regular files. It does not follow a link.
-- With `--apply`, one import runs at a time, and it holds the store lock shared. For each file,
+- The plan counts the files and their size, hashes nothing and changes nothing. It does not
+  follow a link. What stays is symbolic links and other entries that are not regular files.
+- One import runs at a time, and it holds the store lock shared. For each file,
   it checks the size and the modification time before and after it reads the file. On the file
   system of the store, it hashes the file in place and renames it into `objects/`, or deletes it
   when the object exists. On another file system, it copies the file to `partial/import-<pid>`,
@@ -233,31 +238,31 @@ and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` da
 The import record has one JSON object per line: `dir` (without symbolic links), `path` (below
 `dir`, with `/`), `size` and `sha256`.
 
-`obc data gc store` deletes what no environment, pin or fixture reaches. Its roots are the files
-of the checkout that it runs in, and the store:
+The collection deletes what no live release, pin or fixture reaches. Its roots are the live
+releases (see [Live](#live)), the files of the checkout that it runs in, and the store:
 
-- A snapshot record is reached when `[pins]` of a `data/env/*.toml` file names its source and
-  version. The newest record of each source, by the latest `retrieved` of its files, is also
+- A snapshot record is reached when a layer of a live release read its source and version, or
+  when `[pins]` of a `data/env/*.toml` file names them. The newest record of each source, by the latest `retrieved` of its files, is also
   reached: a bake without a pin reads it, and a source whose upstream gives only its newest file
   cannot give it again. So is the newest version of each request record (`requests/`), by the
   latest `retrieved` of its files, such as the extract of each Geofabrik area.
 - An object is reached when a reached snapshot record or a reached layer has it, or when its
-  SHA-256 is in a pin, `fixtures/catalog.toml`, a JSON or TOML file below `fixtures/sources/`, a
+  SHA-256 is a file of a live layer, or is in a pin, `fixtures/catalog.toml`, a JSON or TOML file below `fixtures/sources/`, a
   planner region recipe in `tools/planner-regions/`, or an import record. Deleting an import
   record releases its objects.
 - A layer is reached when each of its inputs is reached: a snapshot input whose digest is the
   digest of all the files, or of one file, of a reached record of its source, and a layer input
   whose digest is the digest of a reached layer.
 
-Without `--apply`, the command lists what it deletes and what stays, and changes nothing. What
-stays is one entry for each reached snapshot record, with the reasons: `pin of ENV, …`,
+The plan lists what the collection deletes and what stays. What stays is one entry for each
+reached snapshot record, with the reasons: `live PRODUCT, …`, `pin of ENV, …`,
 `newest of the source`, `newest of a request`. Then one entry for the reached layers of each step
 (`inputs kept`). Then one entry for each kind of root that names objects that no reached record
-or layer has: `pin`, `fixture`, `planner recipe` or `import record`. The size of an entry is the
-size of its files. With `--apply`, it
-takes the store lock alone, or refuses to start while a fetch, a build or an import holds it.
-Then it deletes each snapshot record and each object that is not reached, and lists them.
-Receipts, import records and upstream checks stay.
+or layer has: `live release`, `pin`, `fixture`, `planner recipe` or `import record`. The size of
+an entry is the size of its files. The collection takes the store lock alone, or refuses to start
+while a fetch, a build or an import holds it. Then it deletes each snapshot record and each object
+that is not reached. Receipts, release manifests, import records and upstream checks stay. A
+clean that cannot read live deletes nothing.
 
 ## Fetch
 
@@ -700,17 +705,51 @@ When more than one row applies, the first row gives the state. In JSON, a state 
 (the key of the live layer, or `null`), `reads` (`kind`, `name`, and `version` for a snapshot),
 `code` (`paths` and `crates`), `code_hash` and `users` (the layers that read it).
 
+## Live
+
+Live is the release that the pointer of each product names on R2. Each product has one prefix:
+`cell-catalog` for `maps`, `planner` for `planner`. The input copies are under `inputs`. Live
+owns the prefix of each product that has a live release, and `inputs` once any release is live;
+a product with nothing live owns no prefix, so nothing under it is ever a leftover. The shared
+`inputs` is owned once any release is live, so an input copy that only a product with nothing live
+would use is a leftover.
+
+| Key | Holds |
+| --- | --- |
+| `<prefix>/catalog.json` | The pointer: the document that clients read, with `"release": "<id>"`. A pointer without `release` names no release: nothing is live |
+| `<prefix>/releases/<id>.json` | The manifest of the release, as in the store. Immutable |
+| `<prefix>/releases/<id>/<path>` | A file of the release that a client finds by name. Immutable |
+| `<prefix>/objects/<sha256>` | A file of a layer of a release. Immutable |
+| `inputs/records/<source>/<version>.json` | The snapshot record of an input copy: a version of a source with `r2_copy` that a live layer read |
+| `inputs/objects/<sha256>` | A file of an input copy. Immutable |
+
+When `OBC_R2_BUCKET` or `OBC_R2_LOCAL_DIR` is set, `obc data` reads that bucket. Otherwise it
+reads the pointers, the manifests and the records at `https://maps.openbikecomputer.com/<key>`;
+a listing needs the bucket. A release id is 64 lowercase hex digits. The store keeps each manifest
+that it reads, and uses its copy only while the SHA-256 of the copy is the id and the copy is of
+the product.
+
+`status --check` lists the owned prefixes, and compares them with live:
+
+- drift: a key of a live release or of its input copies that R2 does not have, or has with
+  another size. Pointers and records of input copies have no expected size.
+- leftovers: a key under the owned prefixes that no live release uses. The files of
+  `<prefix>/releases/<id>/` of a live release are never leftovers.
+
+Exit status 1 of `status --check` is drift or leftovers, or a failure of R2. With `--json`, the
+first writes the status, and the second writes an error.
+
 ## Commands
 
 | Command | Output |
 | --- | --- |
-| `obc data [--json]` | In a terminal, and without `--json`: the TUI. Otherwise the output of `sources` |
+| `obc data [--json]` | In a terminal, and without `--json`: the TUI. Otherwise the output of `status` |
+| `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live) and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, old cache directories that `clean` imports, and with `--check` drift and leftovers. When a fetch that the step list of a product needs fails, the layer states of that product are unknown (`layers` is `null`), and attention gives the error. `--check` adds the listing of [Live](#live) and exits with 1 when it finds drift or leftovers. Without the bucket, `--check` exits with 4 before it reads anything |
 | `obc data sources [--check-now] [--json]` | Every source with licence, R2 copy, live pin, newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the live pin, or else the newest file upstream. Writes the store path of each file |
 | `obc data refresh SOURCE [NAME=VALUE…] [--env ENV] [--json]` | Fetches the newest upstream version, checked now, and writes it to `[pins]` of `data/env/ENV.toml` (default `live`). `ENV` is lowercase kebab-case. The edit keeps comments, line order and CRLF line ends. Writes the store path of each file. A version after the pin of a source whose `fetch.from` names `SOURCE` is refused before the fetch: refresh that source first |
 | `obc data policy SOURCE 7\|30\|90\|365\|manual [--json]` | Writes `refresh` of the source in `data/sources.toml`. The edit keeps comments and the other lines. A policy in days for a source without `version = "date"` is refused. Writes the source |
-| `obc data store import [--apply] [--json]` | The old cache directories, their files and sizes, and how much the store grows. `--apply` moves them into the store |
-| `obc data gc store [--apply] [--json]` | Its roots, the snapshot records and the objects that nothing reaches, and what stays and why. `--apply` deletes them and lists them |
+| `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean): the snapshot records and the objects that nothing reaches, what stays and why, and the old cache directories with their files and sizes. `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
 | `obc data region [list] [--json]` | Every region with its name and definition |
 | `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
 | `obc data plan ENV [--only GROUP,…] [--json]` | What a build of the environment fetches and builds, in groups, with estimates. It fetches what a step list depends on, see [Products](#products) |
@@ -831,8 +870,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `policy` | `Source` |
 | `region`, `region list` | `RegionList` |
 | `region show` | `RegionDetail` |
-| `store import` | `ImportPlan` |
-| `gc store` | `GcPlan` |
+| `status`, and `obc data` without a terminal | `Status` |
+| `clean`, `clean --apply` | `CleanPlan` |
 | `plan` | `EnvPlan` |
 | `build` | `Built` |
 | `runs` | `RunList` |
@@ -846,6 +885,61 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 ```json
 {
   "$defs": {
+    "Attention": {
+      "description": "Something that needs a person.",
+      "properties": {
+        "about": {
+          "description": "The source, the directory, the product, or `R2`.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/AttentionKind"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "about",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "AttentionKind": {
+      "oneOf": [
+        {
+          "const": "stale",
+          "description": "A source that is stale.",
+          "type": "string"
+        },
+        {
+          "const": "blocked",
+          "description": "A source that is blocked.",
+          "type": "string"
+        },
+        {
+          "const": "old_cache",
+          "description": "A cache directory of the older bake tools that `clean` moves into the store.",
+          "type": "string"
+        },
+        {
+          "const": "drift",
+          "description": "Keys that live uses and R2 lacks, or holds with another size.",
+          "type": "string"
+        },
+        {
+          "const": "leftovers",
+          "description": "Keys under the owned prefixes that no live release uses.",
+          "type": "string"
+        },
+        {
+          "const": "unreachable",
+          "description": "A fetch that the step list of a product needs failed, so its layer states are unknown.",
+          "type": "string"
+        }
+      ]
+    },
     "Bbox": {
       "description": "Degrees, longitude first.",
       "properties": {
@@ -962,6 +1056,56 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "product",
         "id"
+      ],
+      "type": "object"
+    },
+    "Check": {
+      "description": "The owned prefixes of R2 against live.",
+      "properties": {
+        "drift": {
+          "description": "The keys that live uses and that R2 lacks, or holds with another size.",
+          "items": {
+            "$ref": "#/$defs/Drift"
+          },
+          "type": "array"
+        },
+        "leftovers": {
+          "description": "The keys under the prefixes that no live release uses.",
+          "items": {
+            "$ref": "#/$defs/Object"
+          },
+          "type": "array"
+        },
+        "prefixes": {
+          "description": "The prefixes that were listed.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "prefixes",
+        "drift",
+        "leftovers"
+      ],
+      "type": "object"
+    },
+    "CleanPlan": {
+      "description": "What `clean` removes from the store and moves into it, or removed and moved.",
+      "properties": {
+        "import": {
+          "$ref": "#/$defs/ImportPlan",
+          "description": "The cache directories of the older bake tools."
+        },
+        "store": {
+          "$ref": "#/$defs/GcPlan",
+          "description": "The snapshot records and the objects that nothing reaches, and what stays."
+        }
+      },
+      "required": [
+        "store",
+        "import"
       ],
       "type": "object"
     },
@@ -1128,6 +1272,37 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "key",
         "file"
+      ],
+      "type": "object"
+    },
+    "Drift": {
+      "properties": {
+        "expected": {
+          "description": "The size that live needs, when it is known.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "found": {
+          "description": "The size on R2; `None` when R2 lacks the key.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "expected",
+        "found"
       ],
       "type": "object"
     },
@@ -1601,7 +1776,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "GcPlan": {
-      "description": "What `gc store` deletes, or deleted, and what stays.",
+      "description": "What `clean` deletes from the store, or deleted, and what stays.",
       "properties": {
         "keep_bytes": {
           "format": "uint64",
@@ -1702,7 +1877,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "ImportPlan": {
-      "description": "What `store import` moves, or moved, and what stays.",
+      "description": "What `clean` moves into the store, or moved, and what stays.",
       "properties": {
         "bytes": {
           "description": "The size of every file.",
@@ -1715,18 +1890,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "$ref": "#/$defs/ImportDir"
           },
           "type": "array"
-        },
-        "new_bytes": {
-          "description": "How much the store grows: the size of each content that is not an object yet, once.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
         }
       },
       "required": [
         "dirs",
-        "bytes",
-        "new_bytes"
+        "bytes"
       ],
       "type": "object"
     },
@@ -1762,7 +1930,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "A snapshot record, the layers of one step, or the objects that one kind of root names and no\nkept record or layer has.",
       "properties": {
         "because": {
-          "description": "`pin of ENV, …`, `newest of the source`, `newest of a request`, `inputs kept`, `pin`,\n`fixture`, `planner recipe` or `import record`.",
+          "description": "`live PRODUCT, …`, `pin of ENV, …`, `newest of the source`, `newest of a request`,\n`inputs kept`, `live release`, `pin`, `fixture`, `planner recipe` or `import record`.",
           "items": {
             "type": "string"
           },
@@ -1825,6 +1993,28 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "path",
         "size",
         "sha256"
+      ],
+      "type": "object"
+    },
+    "LayerStatus": {
+      "properties": {
+        "layer": {
+          "type": "string"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/State"
+        }
+      },
+      "required": [
+        "layer",
+        "state",
+        "reason"
       ],
       "type": "object"
     },
@@ -2000,6 +2190,36 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "id",
         "fetches",
         "builds"
+      ],
+      "type": "object"
+    },
+    "ProductStatus": {
+      "properties": {
+        "layers": {
+          "description": "Each layer of the environment `live`, in dependency order; `None` when a fetch that its\nstep list needs failed, and `attention` says why.",
+          "items": {
+            "$ref": "#/$defs/LayerStatus"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "product": {
+          "type": "string"
+        },
+        "release": {
+          "description": "The id of the live release; `None` when nothing is live.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "product",
+        "release",
+        "layers"
       ],
       "type": "object"
     },
@@ -2703,6 +2923,45 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "blocked"
       ],
       "type": "string"
+    },
+    "Status": {
+      "description": "What `status` writes.",
+      "properties": {
+        "attention": {
+          "items": {
+            "$ref": "#/$defs/Attention"
+          },
+          "type": "array"
+        },
+        "check": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Check"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only with `--check`."
+        },
+        "from": {
+          "description": "Where live was read: the bucket, or its public URL.",
+          "type": "string"
+        },
+        "products": {
+          "items": {
+            "$ref": "#/$defs/ProductStatus"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "from",
+        "products",
+        "attention",
+        "check"
+      ],
+      "type": "object"
     },
     "Stored": {
       "description": "A version of a source in the local store.",

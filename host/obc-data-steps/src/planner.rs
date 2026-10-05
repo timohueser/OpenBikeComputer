@@ -439,7 +439,7 @@ mod tests {
         assert_eq!(with.groups.len(), without.groups.len() + 1);
     }
 
-    /// The `tools/*.py` files that the Python file `path` imports, but in `main()`: the old command
+    /// The `tools/*.py` files that the Python file `path` imports, except in `main()`: the old command
     /// line, which no step runs.
     fn imports(path: &Path) -> Vec<String> {
         let text = std::fs::read_to_string(path).unwrap();
