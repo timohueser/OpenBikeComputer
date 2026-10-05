@@ -160,6 +160,7 @@ mod tests {
         vec![
             schema("`sources`", generator.subschema_for::<crate::cli::Sources>()),
             schema("`fetch`, `refresh`", generator.subschema_for::<crate::cli::Fetched>()),
+            schema("`policy`", generator.subschema_for::<crate::sources::Source>()),
             schema("`region`, `region list`", generator.subschema_for::<crate::cli::RegionList>()),
             schema("`region show`", generator.subschema_for::<crate::cli::RegionDetail>()),
             schema("`store import`", generator.subschema_for::<crate::store::import::Plan>()),

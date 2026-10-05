@@ -21,7 +21,7 @@ use crate::fetch::upstream::{self, Upstream};
 use crate::fetch::{self, osm, Request};
 use crate::product::Product;
 use crate::regions::{Area, Bbox, Region, Regions};
-use crate::sources::{self, FetchKind, Kind, Registry, Source, State, VersionScheme};
+use crate::sources::{self, FetchKind, Kind, Refresh, Registry, Source, State, VersionScheme};
 use crate::store::{self, gc, import, FileRecord, Snapshot, Store};
 use api::{print_json, Code, Error};
 
@@ -39,7 +39,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Every source with licence, R2 copy, live pin, newest upstream version, age, policy and state.
-    Sources,
+    Sources {
+        /// Check upstream now, not from a check of the last hour.
+        #[arg(long)]
+        check_now: bool,
+    },
     /// Fetch a source version into the store, and print the store path of each file.
     Fetch {
         /// SOURCE or SOURCE@VERSION. Without a version: the live pin, or else upstream's newest file.
@@ -55,6 +59,8 @@ enum Command {
         #[arg(long, default_value = "live")]
         env: String,
     },
+    /// Set how old the pin of a source may get before it is stale: 7, 30, 90, 365 or manual.
+    Policy { source: String, refresh: Refresh },
     /// The regions in data/regions/.
     Region {
         #[command(subcommand)]
@@ -132,10 +138,10 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<(), Error> {
     let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let Some(command) = cli.command else {
         let root = root()?;
-        return if terminal && !json { tui::run(&root) } else { print_sources(&registry(&root)?, json) };
+        return if terminal && !json { tui::run(&root) } else { print_sources(&registry(&root)?, false, json) };
     };
     match command {
-        Command::Sources => print_sources(&registry(&root()?)?, json),
+        Command::Sources { check_now } => print_sources(&registry(&root()?)?, check_now, json),
         Command::Fetch { target, params } => {
             let registry = registry(&root()?)?;
             let (id, version) = match target.split_once('@') {
@@ -150,6 +156,14 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<(), Error> {
             print_snapshot(&store, &fetched(source, fetch::fetch(&store, &Http::new(), &request))?, json)
         }
         Command::Refresh { source, params, env } => refresh(&root()?, &source, &params, &env, json),
+        Command::Policy { source, refresh } => {
+            let source = policy(&root()?, &source, refresh)?;
+            eprintln!("obc data: the policy of {} is {refresh} in data/sources.toml", source.id);
+            if json {
+                print_json(&source)?;
+            }
+            Ok(())
+        }
         Command::Region { action } => {
             let regions = Regions::load(&root()?).map_err(|e| Code::InvalidData.error(e))?;
             match action {
@@ -198,16 +212,22 @@ fn store_import(apply: bool, json: bool) -> Result<(), Error> {
     Ok(())
 }
 
-fn gc_store(root: &Path, apply: bool, json: bool) -> Result<(), Error> {
-    let (store, roots) = (Store::open()?, gc::Roots::from_repo(root).map_err(|e| Code::InvalidData.error(e))?);
-    let plan = match apply {
-        false => gc::plan(&store, &roots)?,
-        true => gc::apply(&store, &roots)?.ok_or_else(|| {
+/// The plan of `gc store`, or, with `apply`, what it deleted.
+fn collect(root: &Path, store: &Store, apply: bool) -> Result<gc::Plan, Error> {
+    let roots = gc::Roots::from_repo(root).map_err(|e| Code::InvalidData.error(e))?;
+    Ok(match apply {
+        false => gc::plan(store, &roots)?,
+        true => gc::apply(store, &roots)?.ok_or_else(|| {
             Code::Usage
                 .error("a fetch, a build or an import uses the store; nothing was deleted")
                 .fix("Run `obc data gc store --apply` again when the fetch, the build or the import ends.")
         })?,
-    };
+    })
+}
+
+fn gc_store(root: &Path, apply: bool, json: bool) -> Result<(), Error> {
+    let store = Store::open()?;
+    let plan = collect(root, &store, apply)?;
     if json {
         return print_json(&plan);
     }
@@ -220,6 +240,8 @@ fn gc_store(root: &Path, apply: bool, json: bool) -> Result<(), Error> {
     plan.objects.iter().for_each(|(sha256, size)| println!("  object {sha256}  {}", bytes(*size)));
     println!("  {} objects that nothing reaches, {}", plan.objects.len(), bytes(plan.remove_bytes));
     println!("KEEP {} objects, {}", plan.keep_objects, bytes(plan.keep_bytes));
+    let kept = plan.kept.iter().map(|kept| vec![format!("  {}", kept.entry), bytes(kept.bytes), kept.because.clone()]);
+    print_table(&kept.collect::<Vec<_>>());
     if !apply {
         println!("`--apply` deletes them. It refuses to start while a fetch, a build or an import runs.");
     }
@@ -305,6 +327,19 @@ fn refresh(root: &Path, id: &str, params: &[String], env: &str, json: bool) -> R
     print_snapshot(&store, &snapshot, json)
 }
 
+/// Set the `refresh` of `id` in `data/sources.toml`.
+fn policy(root: &Path, id: &str, refresh: Refresh) -> Result<Source, Error> {
+    find(&registry(root)?, id)?;
+    let path = root.join("data/sources.toml");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let text = sources::set_refresh(&text, id, refresh)
+        .map_err(|e| Code::InvalidData.error(format!("{}: {e}", path.display())))?;
+    let edited = sources::parse_sources(&text)
+        .map_err(|e| Code::Usage.error(e).fix(format!("Choose `manual`: `obc data policy {id} manual`.")))?;
+    store::write_atomic(&path, text.as_bytes())?;
+    Ok(edited.into_iter().find(|s| s.id == id).expect("the edit keeps the source"))
+}
+
 /// The requested files of a snapshot.
 #[derive(Serialize, JsonSchema)]
 struct Fetched<'a> {
@@ -385,16 +420,15 @@ impl SourceRow {
 }
 
 /// Every source in kind order, with its state from the newest upstream version.
-fn source_rows(registry: &Registry) -> Result<Vec<SourceRow>, Error> {
+fn source_rows(registry: &Registry, check_now: bool) -> Result<Vec<SourceRow>, Error> {
+    let max_age = if check_now { 0 } else { upstream::CACHE };
     let today = crate::date::today();
     let mut sorted: Vec<&Source> = registry.sources.iter().collect();
     sorted.sort_by_key(|source| source.kind);
     let (store, http) = (Store::open()?, Http::new());
     let newest: Vec<Upstream> = std::thread::scope(|scope| {
-        let checks: Vec<_> = sorted
-            .iter()
-            .map(|source| scope.spawn(|| upstream::newest(&store, &http, source, upstream::CACHE)))
-            .collect();
+        let checks: Vec<_> =
+            sorted.iter().map(|source| scope.spawn(|| upstream::newest(&store, &http, source, max_age))).collect();
         checks.into_iter().map(|check| check.join().unwrap_or(Upstream::Failed("panicked".into()))).collect()
     });
     sorted
@@ -425,8 +459,8 @@ fn source_rows(registry: &Registry) -> Result<Vec<SourceRow>, Error> {
         .collect()
 }
 
-fn print_sources(registry: &Registry, json: bool) -> Result<(), Error> {
-    let rows = source_rows(registry)?;
+fn print_sources(registry: &Registry, check_now: bool, json: bool) -> Result<(), Error> {
+    let rows = source_rows(registry, check_now)?;
     if json {
         return print_json(&Sources { sources: &rows });
     }
@@ -538,4 +572,47 @@ fn row_text(row: &[String], widths: &[usize]) -> String {
         .map(|(i, cell)| if i + 1 == row.len() { cell.clone() } else { format!("{cell:<w$}", w = widths[i]) })
         .collect();
     cells.join("  ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::tests::write;
+    use crate::store::tests::Scratch;
+
+    const SOURCES: &str = r#"# The sources.
+[[source]]
+id = "osm-planet"
+kind = "data"
+licence = "ODbL-1.0"
+fetch = { kind = "http", url = "https://planet.openstreetmap.org/pbf/planet-{yymmdd}.osm.pbf" }
+version = "date"
+# Seldom worth its download.
+refresh = 90
+redistribute = true
+
+[[source]]
+id = "planetiler"
+kind = "tool"
+fetch = { kind = "github", url = "https://api.github.com/repos/onthegomap/planetiler" }
+version = "release"
+refresh = "manual"
+redistribute = true
+"#;
+
+    #[test]
+    fn a_policy_edits_its_source_in_place() {
+        let scratch = Scratch::new("cli-policy");
+        let root = scratch.0.join("repository");
+        write(&root.join("data/sources.toml"), SOURCES);
+        write(&root.join("data/env/live.toml"), "[pins]\n");
+        let sources = || std::fs::read_to_string(root.join("data/sources.toml")).unwrap();
+        let refused = policy(&root, "planetiler", Refresh::Days(30)).unwrap_err();
+        assert!(refused.message.contains("needs `version = \"date\"`"), "{}", refused.message);
+        assert_eq!(policy(&root, "land", Refresh::Manual).unwrap_err().message, "no source `land`");
+        assert_eq!(sources(), SOURCES, "a refused policy changes nothing");
+
+        assert_eq!(policy(&root, "osm-planet", Refresh::Manual).unwrap().refresh, Refresh::Manual);
+        assert_eq!(sources(), SOURCES.replacen("refresh = 90", "refresh = \"manual\"", 1));
+    }
 }

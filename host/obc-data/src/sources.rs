@@ -70,8 +70,11 @@ pub enum Refresh {
     Manual,
 }
 
-/// The ages in days that `refresh` allows.
-const REFRESH_DAYS: [u16; 4] = [7, 30, 90, 365];
+impl Refresh {
+    /// Every policy that `refresh` allows.
+    pub const ALL: [Refresh; 5] =
+        [Refresh::Days(7), Refresh::Days(30), Refresh::Days(90), Refresh::Days(365), Refresh::Manual];
+}
 
 #[derive(Deserialize, Serialize)]
 #[serde(untagged)]
@@ -83,13 +86,21 @@ enum RefreshRepr {
 impl TryFrom<RefreshRepr> for Refresh {
     type Error = String;
     fn try_from(repr: RefreshRepr) -> Result<Self, String> {
-        match repr {
-            RefreshRepr::Days(days) if REFRESH_DAYS.iter().any(|&allowed| i64::from(allowed) == days) => {
-                Ok(Refresh::Days(days as u16))
-            }
-            RefreshRepr::Word(word) if word == "manual" => Ok(Refresh::Manual),
-            _ => Err(format!("`refresh` is {REFRESH_DAYS:?} days or \"manual\"")),
-        }
+        let refresh = match repr {
+            RefreshRepr::Days(days) => u16::try_from(days).ok().map(Refresh::Days),
+            RefreshRepr::Word(word) => (word == "manual").then_some(Refresh::Manual),
+        };
+        refresh
+            .filter(|refresh| Refresh::ALL.contains(refresh))
+            .ok_or("`refresh` is 7, 30, 90 or 365 days, or \"manual\"".into())
+    }
+}
+
+/// `7`, `30`, `90`, `365` or `manual`, as a command takes it.
+impl std::str::FromStr for Refresh {
+    type Err = String;
+    fn from_str(text: &str) -> Result<Self, String> {
+        text.parse().map_or(RefreshRepr::Word(text.into()), RefreshRepr::Days).try_into()
     }
 }
 
@@ -108,8 +119,8 @@ impl JsonSchema for Refresh {
     }
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        let mut values: Vec<serde_json::Value> = REFRESH_DAYS.iter().map(|&days| days.into()).collect();
-        values.push("manual".into());
+        let values: Vec<serde_json::Value> =
+            Refresh::ALL.iter().map(|refresh| serde_json::to_value(refresh).expect("a policy serializes")).collect();
         schemars::json_schema!({
             "description": "How old a pin may get, in days, before the source is stale; `manual` is never stale.",
             "enum": values
@@ -419,6 +430,28 @@ pub fn set_pin(text: &str, id: &str, version: &str) -> String {
             }
         }
     }
+    join(text, lines)
+}
+
+/// `text`, `data/sources.toml`, with the `refresh` of source `id` replaced. Comments and the other
+/// lines stay.
+pub fn set_refresh(text: &str, id: &str, refresh: Refresh) -> Result<String, String> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let header = |line: &String| line.trim_start().starts_with('[');
+    let names = |line: &String| {
+        toml::from_str::<toml::Table>(line).is_ok_and(|table| table.get("id").and_then(|v| v.as_str()) == Some(id))
+    };
+    let at = lines.iter().position(names).ok_or_else(|| format!("no source `{id}`"))?;
+    let start = lines[..at].iter().rposition(header).map_or(0, |i| i + 1);
+    let end = lines[at..].iter().position(header).map_or(lines.len(), |i| at + i);
+    let key = |line: &String| line.split_once('=').is_some_and(|(key, _)| key.trim() == "refresh");
+    let line = (start..end).find(|&i| key(&lines[i])).ok_or_else(|| format!("source `{id}` has no `refresh`"))?;
+    lines[line] = format!("refresh = {}", toml::Value::try_from(refresh).map_err(|e| e.to_string())?);
+    Ok(join(text, lines))
+}
+
+/// `lines` with the line end of `text`.
+fn join(text: &str, lines: Vec<String>) -> String {
     let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
     lines.join(newline) + newline
 }
@@ -596,6 +629,19 @@ mod tests {
         assert_eq!(set_pin("# empty\n", "osm", "2024-02-01"), "# empty\n\n[pins]\nosm = \"2024-02-01\"\n");
         let windows = "[pins] # live\r\nosm = \"2024-01-01\"\r\n";
         assert_eq!(set_pin(windows, "osm", "2024-02-01"), "[pins] # live\r\nosm = \"2024-02-01\"\r\n");
+    }
+
+    #[test]
+    fn a_policy_is_replaced_in_its_source_only() {
+        let land = OSM.replace("\"osm\"", "\"land\"");
+        let text = format!("# sources\n{OSM}{land}");
+        let edited = set_refresh(&text, "land", Refresh::Manual).unwrap();
+        let manual = land.replace("        refresh = 7", "refresh = \"manual\"");
+        assert_eq!(edited, format!("# sources\n{OSM}{manual}\n"));
+        assert_eq!(parse_sources(&edited).unwrap()[1].refresh, Refresh::Manual);
+        assert_eq!(set_refresh(&text, "qrank", Refresh::Manual).unwrap_err(), "no source `qrank`");
+        assert_eq!("30".parse(), Ok(Refresh::Days(30)));
+        assert!("14".parse::<Refresh>().is_err());
     }
 
     #[test]
