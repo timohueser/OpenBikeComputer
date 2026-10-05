@@ -76,7 +76,7 @@ pub struct EnvPlan {
     pub groups: Vec<Group>,
     /// The products that give no steps for the environment. The others plan without them.
     pub blocked: Vec<BlockedProduct>,
-    /// For `live`: the keys that an apply of the groups removes from R2.
+    /// For `live`: the keys that an apply of the plan removes from R2.
     pub remove: Vec<Removal>,
     /// For `live`: whether the plan listed R2, which needs the bucket. Without a listing, the plan
     /// has no `repair` group, and `remove` lacks the leftovers and the files that a client finds
@@ -286,7 +286,7 @@ fn run_build(
         }
         return Ok(built);
     };
-    let (next, missing) = next(root, store, products, live, &steps, &plan)?;
+    let (next, missing) = next(root, store, products, &loaded.sources, live, &steps, &plan)?;
     if let Some(layer) = missing.first() {
         return Err(Code::Failed.error(format!("the store lacks the layer `{layer}` after the build")));
     }
@@ -443,7 +443,7 @@ fn planned(
     let against = against(&live, env, &edits, &blocked, check.as_ref());
     let all = changes::changes(store, root, &steps, &against)?;
     let mut plan = env_plan(env, only, select(&all, only, true)?, blocked, Some((&live, edits)));
-    let (next, _) = next(root, store, products, &live, &steps, &plan)?;
+    let (next, _) = next(root, store, products, &loaded.sources, &live, &steps, &plan)?;
     (plan.remove, plan.listed) = (live.removed(&next, listed.as_deref()), listed.is_some());
     Ok(Planned { loaded, steps, plan, live: Some(live) })
 }
@@ -580,6 +580,7 @@ fn next(
     root: &Path,
     store: &Store,
     products: &[&dyn Product],
+    sources: &[Source],
     live: &Live,
     steps: &[Step],
     plan: &EnvPlan,
@@ -613,8 +614,15 @@ fn next(
         Input::Snapshot { source, version, .. } => Some((source.clone(), version.clone())),
         Input::Layer { .. } => None,
     }));
-    next.inputs =
-        live.inputs.iter().filter(|(read, _)| reads.contains(*read)).map(|(k, v)| (k.clone(), v.clone())).collect();
+    // A read that live does not have, such as a moved version, has the record of the store.
+    let copied = reads.into_iter().filter(|(source, _)| sources.iter().any(|s| &s.id == source && s.r2_copy));
+    for (source, version) in copied {
+        let record = match live.inputs.get(&(source.clone(), version.clone())) {
+            Some(record) => record.clone(),
+            None => store.snapshot(&source, &version)?,
+        };
+        next.inputs.insert((source, version), record);
+    }
     Ok((next, missing))
 }
 
@@ -1164,9 +1172,11 @@ mod tests {
         assert_eq!(plan.live, [LiveRelease { product: "test".into(), release: Some(release.id()) }]);
         assert_eq!((plan.groups.len(), plan.edits.len(), plan.remove.len(), plan.listed), (0, 0, 0, true));
 
-        // Head is stale, the code of join changed, R2 lost the object of count and has an old one.
+        // Head is stale, and its new version keeps the file of the old one beside a new file. The
+        // code of join changed, R2 lost the object of count and has an old one.
         upstream(&fixture, "head", "2020-02-01");
         fixture.fetched_version("head", "2020-02-01", "head.txt", b"newer\n");
+        fixture.fetched_version("head", "2020-02-01", "kept.txt", b"head\n");
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
         let bucket = fixture.scratch.0.join("bucket");
         let object = |layer: usize| format!("test/objects/{}", release.layers[layer].files[0].sha256);
@@ -1186,13 +1196,12 @@ mod tests {
         assert_eq!(steps(code), ["test/join", "test/count"]);
         assert_eq!(repair.cause, Some(Cause::Repair { keys: vec![count.clone()] }));
         assert!(repair.builds.is_empty(), "the groups make count again");
-        let head = format!("inputs/objects/{}", crate::store::sha256_hex(b"head\n"));
         let manifest = format!("test/releases/{}.json", release.id());
         let records = "inputs/records/head/2020-01-01.json".to_string();
-        let mut every = vec![head, records, join, upper, "test/objects/old".into(), manifest];
+        let mut every = vec![records, join, upper, "test/objects/old".into(), manifest];
         every.sort();
         let removed = |plan: &EnvPlan| plan.remove.iter().map(|removal| removal.key.clone()).collect::<Vec<_>>();
-        assert_eq!(removed(&plan), every, "not count, which R2 lacks");
+        assert_eq!(removed(&plan), every, "not count, which R2 lacks, nor the object that both heads have");
 
         let err = live_plan(&fixture, &remote, &["code:test/join"]).unwrap_err();
         assert_eq!(err.code, Code::Usage, "against live, --only selects moves only: {}", err.message);

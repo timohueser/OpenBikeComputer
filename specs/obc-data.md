@@ -685,7 +685,8 @@ of `live` also has:
   objects of its live layer, because its new objects are not known yet; an apply keeps an object
   that a new release uses.
 - `listed`: whether the plan listed R2. A listing needs the bucket. Without it, the plan has no
-  `repair` group, `remove` lacks the leftovers, and `bytes` is `null` for a record.
+  `repair` group, `remove` lacks the leftovers and the files of `<prefix>/releases/<id>/`, and
+  `bytes` is `null` for a record.
 
 Another environment has `[]` for `live`, `edits` and `remove`, and `false` for `listed`.
 
@@ -1558,7 +1559,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         "remove": {
-          "description": "For `live`: the keys that an apply of the groups removes from R2.",
+          "description": "For `live`: the keys that an apply of the plan removes from R2.",
           "items": {
             "$ref": "#/$defs/Removal"
           },

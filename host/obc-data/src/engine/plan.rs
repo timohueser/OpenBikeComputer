@@ -188,7 +188,8 @@ impl Group {
 impl Plan {
     /// Whether a run of `self` does the same work as a run of `other`: the same groups, fetches,
     /// recipes and keys. Estimates and fetch sizes may differ. A group against live does the same
-    /// work when it changes the same layers, by recipe, whatever the store has.
+    /// work when it changes the same layers, by recipe, whatever the store has. Its keys are not
+    /// compared: a key is `None` while the step waits for a fetch.
     pub fn same_work(&self, other: &Plan) -> bool {
         let work = |plan: &Plan| {
             let mut plan = plan.clone();
