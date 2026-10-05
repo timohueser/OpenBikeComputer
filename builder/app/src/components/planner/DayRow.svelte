@@ -6,13 +6,15 @@
     import { dayColor } from '../../lib/planner/day-colors';
     import { kindLabel } from '../../lib/planner/search/presentation';
     import { dayOverTarget, dayStops, planView, type ItineraryDay, type OvernightCandidate, type Place, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
+    import type { RoutingLine } from '../../lib/planner/routing';
 
     let {
-        trip, day, days, theme, overnightNote = '', scale, expanded, changing, candidates, conflict, selectedId, revealId, hoveredId = null, onHover, calendar,
+        trip, line, day, days, theme, overnightNote = '', scale, expanded, changing, candidates, conflict, selectedId, revealId, hoveredId = null, onHover, calendar,
         onToggle, onInspect, onShowEnd, onSelectPlace, onPick, onChangeOvernight, onEditTarget, onShowConflict,
     }: {
         overnightNote?: string;
         trip: Trip;
+        line?: RoutingLine;
         day: ItineraryDay;
         days: Day[];
         theme: 'light' | 'dark';
@@ -44,11 +46,10 @@
     const last = $derived(riding === days.length);
     const previous = $derived(days[riding - 2]);
     const start = $derived(riding === 1 ? trip.points.find(p => p.kind === 'start')!.label : previous?.pinned?.label ?? `Day ${calendar[riding - 1]} overnight`);
-    const view = $derived(planView(trip));
+    const view = $derived(planView(trip, line));
     const finish = $derived(view.stops.at(-1)!.point);
     const end = $derived(last ? finish.label : day.pinned?.label ?? 'Overnight to choose');
     const endId = $derived(last ? finish.id : day.pinned?.id ?? null);
-    const line = $derived(view.line);
     const ascentKnown = $derived(line?.unknownElevationKm === 0);
     const over = $derived(dayOverTarget(trip, day, day.ascent));
     // Both ends chosen: the figures are what the rider will ride. Otherwise they are a suggestion, shown with ≈.
@@ -58,7 +59,7 @@
         ...(over.climb > 0 ? [`${confirmed ? '' : '≈ '}↑ ${over.climb} m over target`] : []),
     ]);
     const choosing = $derived(!last && (!day.pinned || changing));
-    const stops = $derived(expanded ? dayStops(trip, day) : []);
+    const stops = $derived(expanded ? dayStops(trip, line, day) : []);
     const stopKinds: Record<string, { label: string; icon: string }> = {
         waypoint: { label: 'Visit', icon: 'flag' },
         detour: { label: 'Visit', icon: 'flag' },

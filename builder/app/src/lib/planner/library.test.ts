@@ -1,6 +1,6 @@
 import { IDBFactory } from 'fake-indexeddb';
 import { describe, expect, it } from 'vitest';
-import { emptyTrip, setEndpoint, pinNight, addRestDay, setDrawnLeg, routingKey, orderedRoutePoints, closeLoop } from './editor';
+import { emptyTrip, setEndpoint, pinNight, addRestDay, setDrawnLeg } from './editor';
 import { PlanLibrary, exportPlan, importPlan, newPlan } from './library';
 import { newVersion } from './versions';
 import { testTrip } from '../../../test-support/planner/trip';
@@ -10,7 +10,7 @@ describe('local plan library', () => {
         const factory = new IDBFactory();
         const store = new PlanLibrary(factory);
         const first = await store.save(newPlan(testTrip(), 'Weekend'));
-        const next = { ...first, versions: [newVersion(first.trip, 'Valley')] };
+        const next = { ...first, versions: [newVersion(first.trip, undefined, 'Valley')] };
         await store.save(next);
         const second = await store.save(newPlan(setEndpoint(emptyTrip(), 'start', [8, 48], 'Home'), 'Next ride'));
         await store.activate(second.id);
@@ -57,48 +57,20 @@ describe('local plan library', () => {
         await first.close(); await second.close();
     });
 
-    it('round-trips nights, dates, rest days, drawings and picked geometry with its versions under a new identity', () => {
-        const trip = { ...addRestDay(pinNight(testTrip(), 1, [7.2, 47.5], 'Camp'), 1), startDate: '2026-10-04' };
+    it('round-trips nights, dates, rest days and drawings with its versions under a new identity', () => {
+        const trip = { ...addRestDay(pinNight(testTrip(), undefined, 1, [7.2, 47.5], 'Camp'), 1), startDate: '2026-10-04' };
         const drawn = setDrawnLeg(trip, 'finish', [[7, 47.5]]);
-        const points = orderedRoutePoints(drawn);
-        const coordinates = points.map(p => p.coordinate);
-        const picked = { ...drawn, routing: { key: routingKey(drawn), choiceId: 'corridor', profile: 'touring', picked: true,
-            coordinates, elevation: coordinates.map(() => 10), elapsed: coordinates.map((_, i) => i * 10), edges: {},
-            stops: points.map((p, i) => ({ id: p.id, distance: i })), seconds: 20,
-            unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0, alternatives: [], alternativesReady: false } };
-        const plan = newPlan(picked, 'Autumn tour', [newVersion(drawn, 'Before the detour')]);
+        const plan = newPlan(drawn, 'Autumn tour', [newVersion(trip, undefined, 'Before the detour')]);
         const imported = importPlan(exportPlan(plan));
         expect(imported.id).not.toBe(plan.id);
-        expect(imported).toMatchObject({ revision: 0, name: plan.name, trip: JSON.parse(JSON.stringify(picked)), versions: JSON.parse(JSON.stringify(plan.versions)) });
+        expect(imported).toMatchObject({ revision: 0, name: plan.name, trip: JSON.parse(JSON.stringify(drawn)), versions: JSON.parse(JSON.stringify(plan.versions)) });
     });
 
-    it('requires ordered stops with increasing progress and keeps the repeated loop start', () => {
-        const loop = closeLoop(testTrip());
-        const points = orderedRoutePoints(loop);
-        const coordinates = points.map(p => p.coordinate);
-        const stops = points.map((p, i) => ({ id: p.id, distance: i }));
-        const routing = { key: routingKey(loop), choiceId: 'loop', profile: 'touring', picked: true,
-            coordinates, elevation: points.map(() => null), elapsed: points.map((_, i) => i * 10), edges: {},
-            stops, seconds: 20, unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0,
-            alternatives: [], alternativesReady: false };
-        const file = JSON.parse(exportPlan(newPlan({ ...loop, routing }, 'Loop')));
-        expect(importPlan(JSON.stringify(file)).trip.routing?.stops).toEqual(stops);
-        expect(stops[0].id).toBe(stops.at(-1)!.id);
-        for (const invalid of [[], stops.slice(0, -1), [...stops, stops[0]],
-            [stops[1], stops[0], stops[2]], stops.map((p, i) => ({ ...p, distance: i ? 1 / i : 0 })),
-            stops.map(p => ({ ...p, distance: 0 })), stops.map(p => ({ ...p, distance: p.distance + 1 }))]) {
-            expect(() => importPlan(JSON.stringify({ ...file, trip: { ...file.trip, routing: { ...routing, stops: invalid } } }))).toThrow();
-        }
-        const equalLeg = { ...routing, stops: stops.map((p, i) => ({ ...p, distance: i ? 1 : 0 })) };
-        expect(importPlan(JSON.stringify({ ...file, trip: { ...file.trip, routing: equalLeg } })).trip.routing?.stops).toEqual(equalLeg.stops);
-    });
-
-    it('rejects malformed plans, versions and picked routes without accepting part of a file', () => {
-        const file = JSON.parse(exportPlan(newPlan(testTrip(), 'Valid', [newVersion(testTrip())])));
+    it('rejects malformed plans and versions without accepting part of a file', () => {
+        const file = JSON.parse(exportPlan(newPlan(testTrip(), 'Valid', [newVersion(testTrip(), undefined)])));
         for (const invalid of [null, {}, { ...file, version: 99 }, { ...file, trip: {} },
             { ...file, trip: { ...file.trip, startDate: '2026-02-30' } },
             { ...file, trip: { ...file.trip, points: [{ ...file.trip.points[0], anchor: [999, 0] }, file.trip.points[1]] } },
-            { ...file, trip: { ...file.trip, routing: { picked: true, edges: {} } } },
             { ...file, versions: [null] }, { ...file, versions: [file.versions[0], file.versions[0]] },
             { ...file, versions: [{ ...file.versions[0], trip: {} }] }]) {
             expect(() => importPlan(JSON.stringify(invalid))).toThrow();

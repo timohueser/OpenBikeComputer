@@ -18,8 +18,8 @@ const point = (id: string, kind: RoutePoint['kind'], coordinate: [number, number
 
 async function gaps(points: RoutePoint[]) {
     const plan: Trip = { ...emptyTrip(), bike: 'hiking', points, routeOrder: points.slice(1, -1).map(point => point.id) };
-    const trip = { ...plan, routing: await calculateLine(plan, new AbortController().signal, legs) };
-    return routeGaps(planView(trip).stops, trip.routing.coordinates);
+    const line = await calculateLine(plan, new AbortController().signal, legs);
+    return routeGaps(planView(plan, line).stops, line.coordinates);
 }
 
 describe('route gaps', () => {

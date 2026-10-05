@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calculateLine, profileId, requestAlternatives, requestRoute, selectRoute, movingSecondsAt, type EngineRoute, type RouteTotals } from './routing';
+import { calculateLine, profileId, requestAlternatives, requestRoute, routingKey, movingSecondsAt, type RouteTotals } from './routing';
 import { LegCache } from './route-legs';
 import { routeService } from '../../../test-support/planner/route-service';
 import { decodeRoutes, type AnswerRoute } from './route-answer';
 import { ridingProfiles, presetName, type BikeType } from './riding-profiles';
 import { surfaceRuns, surfaceWindow } from './surface-data';
-import { planOf, planView, removeRoutePoint, storedPlan, setEndpoint, routingKey, TripHistory, type RoutePoint, type Trip } from './editor';
+import { planView, removeRoutePoint, setEndpoint, type RoutePoint, type Trip } from './editor';
 import { cumulative, type Coordinate } from './geo';
 import { testTrip } from '../../../test-support/planner/trip';
 
@@ -58,22 +58,20 @@ describe('routing integration', () => {
         expect(movingSecondsAt(line, 0.5)).toBeCloseTo(3000);
         expect(line.elevation).toEqual([200, null, 400]);
         expect(line.stops.map(s => s.distance)).toEqual(cumulative(route.geometry));
-        expect(planView({ ...plan, routing: line }).coordinates).toEqual(route.geometry);
+        expect(planView(plan, line).coordinates).toEqual(route.geometry);
     });
-    it('keeps itinerary edits outside routing and preserves a selected saved line', () => {
-        const plan = { ...trip(), routing: selectRoute(trip(), route, [route]) };
+    it('keeps itinerary edits, labels and markers outside the routing key', () => {
+        const plan = trip();
         const edited = { ...plan, days: 5, splits: { 1: .4 }, restAfter: [1], limit: 10, points: plan.points.map(p => ({ ...p, label: 'Renamed' })) };
         expect(routingKey(edited)).toBe(routingKey(plan));
-        expect(planView(edited).coordinates).toEqual(route.geometry);
-        const sameStart = setEndpoint(edited, 'start', edited.points[0].coordinate, 'New label');
-        expect(planView(sameStart).coordinates).toEqual(route.geometry);
+        expect(routingKey(setEndpoint(edited, 'start', edited.points[0].coordinate, 'New label'))).toBe(routingKey(plan));
         const marked = { ...edited, points: [...edited.points, { ...edited.points[0], id: 'note', kind: 'marker' as const }] };
         const unmarked = removeRoutePoint(marked, 'note');
-        expect(unmarked.routing).toBe(edited.routing);
+        expect([routingKey(marked), routingKey(unmarked)]).toEqual([routingKey(plan), routingKey(plan)]);
         expect(unmarked.splits).toEqual(edited.splits);
         const moved = { ...edited, points: edited.points.map(p => p.id === 'shape' ? { ...p, coordinate: [8.1, 48] as [number, number] } : p) };
         expect(routingKey(moved)).not.toBe(routingKey(plan));
-        expect(planView(moved).coordinates).toEqual([plan.points[0].coordinate]);
+        expect(routingKey({ ...plan, preset: 'Shorter' })).not.toBe(routingKey(plan));
     });
     it('requests only the legs that an edit changes, pinned to the cached legs on both sides', async () => {
         const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
@@ -124,22 +122,6 @@ describe('routing integration', () => {
         abort.abort();
         await expect(route(abort.signal)).rejects.toMatchObject({ name: 'AbortError' });
     });
-    it('keeps a picked corridor with its plan', () => {
-        const plan = trip();
-        const corridor: EngineRoute = { ...route, id: 'corridor', reason: 'corridor', geometry: [[7.8, 48], [7.9, 48.05], [8, 48]] };
-        const primary = selectRoute(plan, route, [route, corridor]);
-        const picked = { ...plan, routing: selectRoute(plan, corridor, [route, corridor]) };
-        const history = new TripHistory();
-        const shown = history.commit({ ...plan, routing: primary }, picked);
-        expect(shown.routing?.choiceId).toBe('corridor');
-        expect(planOf(shown)).toBe(picked);
-        const undone = history.undo(shown);
-        expect(undone.routing).toBeUndefined();
-        expect(storedPlan(shown).routing).toMatchObject({ choiceId: 'corridor', picked: true, alternatives: [] });
-        expect([shown.routing?.package, storedPlan(shown).routing?.package]).toEqual(['test', undefined]);
-        expect(history.redo(undone).routing?.choiceId).toBe('corridor');
-        expect(planOf({ ...picked, points: picked.points.map(p => p.id === 'shape' ? { ...p, coordinate: [7.95, 48] as Coordinate } : p) }).routing).toBeUndefined();
-    });
     it('makes visit reversals explicit and accounts for manual joins', async () => {
         const visit = { ...answer, legs: [[0, 1], [1, 1], [1, 2], [2, 2]].map(([from_index, to_index], k) => ({ ...answer.legs[0], from_index, to_index, start: `${k}`, end: `${k + 1}` })) };
         const fetch = vi.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ routes: [visit] }) })
@@ -163,7 +145,7 @@ describe('routing integration', () => {
         expect(mixed.edges).toEqual({ surfaces: [null, null, 'Paved', 'Gravel'], pushing: [null, null, false, true] });
     });
     it('aligns surface sections by distance and clips the view without changing route shares', () => {
-        const line = selectRoute(trip(), route, [route]);
+        const line = { coordinates: route.geometry, edges: route.edges };
         const data = surfaceRuns(line);
         expect(data.runs.map(run => run.surface)).toEqual(['Paved', 'Gravel']);
         expect(data.runs[0].to).toBeCloseTo(.5);
@@ -182,7 +164,7 @@ describe('routing integration', () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, json: async () => ({ code: 'no_path', message: 'No legal route.' }) }));
         const plan = trip();
         await expect(calculateLine(plan, new AbortController().signal, new LegCache())).rejects.toThrow('No legal route.');
-        expect(planView(plan).coordinates).toEqual([plan.points[0].coordinate]);
+        expect(planView(plan, undefined).coordinates).toEqual([plan.points[0].coordinate]);
     });
 });
 
