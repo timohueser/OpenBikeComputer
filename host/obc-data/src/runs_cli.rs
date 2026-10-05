@@ -1,12 +1,13 @@
 //! `obc data runs`: the runs in the store, the steps of one run, and its events as they come.
 
 use clap::Args;
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use obc_data::engine::runs::{self, Details, Event, Outcome, Summary};
 use obc_data::store::Store;
 
-use crate::{cells, print_json, print_table, usage, Failure};
+use crate::{cells, print_json, print_table, Code, Error};
 
 #[derive(Args)]
 pub struct Runs {
@@ -15,32 +16,32 @@ pub struct Runs {
     /// Write the events of RUN as they come, until it ends. The exit status is 1 when it failed.
     #[arg(long, requires = "run")]
     follow: bool,
-    #[arg(long)]
-    json: bool,
 }
 
-pub fn run(args: Runs) -> Result<(), Failure> {
+pub fn run(args: Runs, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
     let Some(id) = args.run else {
-        return list(&runs::list(&store)?, args.json);
+        return list(&runs::list(&store)?, json);
     };
-    runs::check_id(&id).map_err(|e| usage(&e))?;
+    runs::check_id(&id).map_err(|e| Code::Usage.error(e))?;
     if !store.run(&id).is_file() {
-        return Err(usage(&format!("no run `{id}`")));
+        return Err(Code::Usage.error(format!("no run `{id}`")));
     }
     if args.follow {
-        return follow(&store, &id, args.json);
+        return follow(&store, &id, json);
     }
-    show(&runs::details(&store, &id)?, args.json)
+    show(&runs::details(&store, &id)?, json)
 }
 
-fn list(runs: &[Summary], json: bool) -> Result<(), Failure> {
+/// Every run in the store, newest first.
+#[derive(Serialize, JsonSchema)]
+pub struct RunList<'a> {
+    runs: &'a [Summary],
+}
+
+fn list(runs: &[Summary], json: bool) -> Result<(), Error> {
     if json {
-        #[derive(Serialize)]
-        struct Listing<'a> {
-            runs: &'a [Summary],
-        }
-        return print_json(&Listing { runs });
+        return print_json(&RunList { runs });
     }
     let mut table = vec![cells(["RUN", "COMMAND", "", "TOOK", "FETCHED", "BUILT"])];
     for run in runs {
@@ -52,7 +53,7 @@ fn list(runs: &[Summary], json: bool) -> Result<(), Failure> {
     Ok(())
 }
 
-fn show(run: &Details, json: bool) -> Result<(), Failure> {
+fn show(run: &Details, json: bool) -> Result<(), Error> {
     if json {
         return print_json(run);
     }
@@ -116,7 +117,7 @@ fn show(run: &Details, json: bool) -> Result<(), Failure> {
     Ok(())
 }
 
-fn follow(store: &Store, id: &str, json: bool) -> Result<(), Failure> {
+fn follow(store: &Store, id: &str, json: bool) -> Result<(), Error> {
     let mut ok = false;
     runs::follow(store, id, |event| {
         if let Event::Finished { ok: finished, .. } = event {
@@ -153,7 +154,7 @@ fn follow(store: &Store, id: &str, json: bool) -> Result<(), Failure> {
         Ok(())
     })?;
     if !ok {
-        return Err(format!("run {id} failed").into());
+        return Err(Code::RunFailed.error(format!("run {id} failed")));
     }
     Ok(())
 }

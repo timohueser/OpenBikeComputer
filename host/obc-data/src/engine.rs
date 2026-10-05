@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -80,7 +81,7 @@ pub struct Request {
 }
 
 /// The record of one layer: what made it, its files, and what building it cost.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
     pub step: String,
@@ -104,7 +105,7 @@ pub struct Receipt {
     pub metrics: BTreeMap<String, Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InputRecord {
     pub kind: InputKind,
@@ -113,7 +114,7 @@ pub struct InputRecord {
     pub digest: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum InputKind {
     // In the byte order of the names: a key sorts its inputs by kind.
@@ -121,7 +122,7 @@ pub enum InputKind {
     Snapshot,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LayerFile {
     pub path: String,
@@ -163,7 +164,7 @@ pub fn key(receipt: &Receipt) -> String {
 }
 
 /// `value` with the keys of every object in byte order, whatever map serde_json was built with.
-fn sorted(value: Value) -> Value {
+pub fn sorted(value: Value) -> Value {
     match value {
         Value::Object(map) => {
             let mut entries: Vec<_> = map.into_iter().collect();

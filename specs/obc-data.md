@@ -562,38 +562,15 @@ When more than one row applies, the first row gives the state. In JSON, a state 
 | `obc data runs RUN [--json]` | One run, its fetches, and its steps: time, change since the last run that built the step, peak RAM, output, inputs, code hash and users |
 | `obc data runs RUN --follow [--json]` | The events of the run, and each new event until the run ends |
 
-`--json` writes one JSON document to standard output:
+`--json` writes one JSON document to standard output. [JSON schemas](#json-schemas) has the
+schema of each output, and [Errors](#errors) has the error codes and the exit statuses. In
+addition:
 
-- `sources`: `{"sources": [...]}`. Each item has the keys of its `[[source]]` table, and
-  `pin`, `upstream` (the newest upstream version, or `null`), `age_days`, `state` and `reason`
-  (`null` when there is nothing to say).
-- `fetch` and `refresh`: the snapshot, `{"source": ..., "version": ..., "files": [...]}`, with
-  the requested files only. Each file has the keys of the record and `path`, its object.
-- `store import`: `dirs` (one item per directory: `dir`, `present`, `files`, `bytes` and
-  `left`, the paths that stay), `bytes` (all files) and `new_bytes` (the growth of the store).
-- `gc store`: `snapshots` (`source@version` of each record that it deletes), `objects`
-  (`[sha256, size]` of each object that it deletes), `remove_bytes`, `keep_objects` and
-  `keep_bytes`.
-- `region list`: `{"regions": [...]}`. Each item has `id`, `name`, `kind` and the key its
-  kind names. A `box` is an object with `west`, `south`, `east` and `north`.
-- `region show`: the region item, and `leaves` (the region ids it resolves to) and
-  `bounds` (a box or `null`).
-- `runs`: `{"runs": [...]}`. Each item has `id`, `command`, `started`, `outcome` (`running`,
-  `ok` or `failed`), `wall_ms` (`null` until the run finishes), `bytes_fetched` (the size of
-  the files of its fetches) and `bytes_built` (the size of the layers that it built, not of the
-  layers that it reused). A run file that cannot be read is listed as `failed`, or `running`
-  while its lock is held.
-- `runs RUN`: the item of the run, and `error`, `fetches` and `steps`, in the order they
-  started. Each fetch has `source`, `version`, `params`, `bytes`, `wall_ms` and `error`. Each
-  step has `step`, `reused`, `receipt` (`null` while it runs or when it failed), `error`,
-  `users` (the steps of the run that read its layer) and `last_wall_ms` (its `wall_ms` in the
-  newest earlier run that built it, or `null`).
-- `runs RUN --follow`: one event per line, as in `runs/<id>.jsonl`.
-
-A command that fails writes the reason to standard error. The exit status is 0 when the command
-succeeds, 1 when a file under `data/` is not valid or a fetch fails, and 2 for a usage error,
-which includes an unknown region id, an unknown source id, an unknown or malformed run id and a
-missing or invalid environment name. `runs RUN --follow` exits with 1 when the run failed.
+- `fetch` and `refresh` list only the requested files.
+- `runs` lists a run file that cannot be read as `failed`, or as `running` while its lock is
+  held.
+- `runs RUN --follow` writes one event per line, as in `runs/<id>.jsonl`. When the run failed,
+  the error is the last line.
 
 ## R2 client
 
@@ -621,15 +598,14 @@ goes to rclone only in its environment, never in an argument or a file.
 | --- | --- |
 | `obc data r2 list PREFIX [--json]` | Lists every object under the folder `PREFIX`. A `PREFIX` that names an object is refused |
 | `obc data r2 stat KEY... [--json]` | Lists the objects of the keys that the bucket holds; a missing key is not an error |
-| `obc data r2 get KEY FILE` | Downloads one object |
-| `obc data r2 put FILE KEY [--cache-control V] [--content-type V] [--immutable]` | Uploads with `--checksum` and the headers given, then verifies |
-| `obc data r2 delete (KEY... \| --prefix P) --reason TEXT [--yes]` | Deletes, see below |
-
-`--json` writes `{"bucket": TEXT, "objects": [{"key", "bytes", "modified"}]}`. `bucket` names
-the bucket or the local directory, never a credential. `modified` is the upload time.
+| `obc data r2 get KEY FILE [--json]` | Downloads one object |
+| `obc data r2 put FILE KEY [--cache-control V] [--content-type V] [--immutable] [--json]` | Uploads with `--checksum` and the headers given, then verifies |
+| `obc data r2 delete (KEY... \| --prefix P) --reason TEXT [--yes] [--json]` | Deletes, see below |
 
 Rules:
 
+- The `r2` commands are plumbing below the rule of [Errors](#errors). Only `delete` asks,
+  because a delete cannot be undone. `put` and `get` never ask.
 - A key or a prefix is never empty, has no empty, `.` or `..` part, and has no control
   character. The bucket root is never a target.
 - Verify passes when the object has the size of the file, and the same MD5 when both sides
@@ -640,13 +616,1578 @@ Rules:
 - `delete --prefix P` resolves `P` to its keys first. Then explicit keys and a prefix have the
   same rules: a key that the bucket does not hold is refused, `removed.jsonl` is refused, and
   then nothing is deleted.
-- `delete` prints the plan: the bucket, and each object with its size and upload time. Then it
-  asks in the terminal. Without a terminal it needs `--yes`; without `--yes` it exits 2 and
-  changes nothing.
+- `delete` changes live. It prints the plan: the bucket, and each object with its size and
+  upload time. With `--json`, the plan goes to standard error, and the output is the objects
+  that it deleted. Then it asks as [Errors](#errors) says.
 - `delete` appends one line per object to `removed.jsonl` at the bucket root before it deletes:
   `{"by": USER, "bytes": N, "key": KEY, "reason": TEXT, "removed": "YYYY-MM-DDTHH:MM:SSZ"}`,
   with the escapes of Python's `json.dumps`: `\uXXXX` for DEL and for each character outside
   ASCII. When the delete fails, the error names the keys that the bucket still holds.
 
-The exit status is 0 on success, 1 when R2 or rclone fails or the person answers no, and 2 for a
-usage error or a delete without consent.
+## Errors
+
+A command that fails writes its error to standard error. With `--json`, it writes
+`{"error": {"code", "message", "fix"}}` on one line to standard output. The code is stable and
+sets the exit status. The message tells what failed, and the fix tells what to do.
+
+| Exit status | Meaning |
+| --- | --- |
+| 0 | The command succeeded |
+| 1 | A check found problems, or the command failed: a file is not valid; a fetch, R2, a run or the store failed; or the person did not agree |
+| 2 | Usage: an argument is not valid, or a command that changes live did not get consent |
+| 3 | The plan is outdated: live or the steps changed after the plan was made. Plan again |
+| 4 | Blocked: a credential is missing |
+| 5 | Verify failed: the bytes in a target are not the bytes that the command wrote |
+
+A command that changes live shows its plan and asks in a terminal. Without a terminal, it needs
+`--yes`, or `--plan FILE` when the command takes a plan file. Without them, it exits with 2 and
+changes nothing.
+
+### Error codes
+
+| Code | Exit | When | Fix |
+| --- | --- | --- | --- |
+| `usage` | 2 | An argument is not valid, an id names nothing, the command runs outside the repository, or
+another command must run first. | Correct the command. `obc data --help` lists the commands and their arguments. |
+| `no_terminal` | 2 | A command that changes live has no terminal to ask in, and no `--yes`. | Show the plan to a person. When they agree, run the command again with `--yes`. |
+| `not_confirmed` | 1 | The person did not answer yes. | Nothing changed. Run the command again when you want the change. |
+| `invalid_data` | 1 | A file under `data/` is not valid. | Correct the file that the message names. `specs/obc-data.md` gives its format. |
+| `fetch_failed` | 1 | A fetch or an upstream check failed. | Run the command again. A download continues where it stopped. |
+| `blocked` | 4 | A credential is missing: a fetch failed without the credential of its source, or the R2
+variables are not set. | Set the credential that the message or `obc data sources` names, then run again. |
+| `r2_failed` | 1 | R2 or rclone failed, or refused a key. | Check the key, the `OBC_R2_*` variables and that rclone is on PATH, then run again. |
+| `verify_failed` | 5 | After an upload, the object in the bucket is not the file. | Upload the file again. |
+| `run_failed` | 1 | The run that `runs RUN --follow` shows failed. | `obc data runs RUN` shows the step that failed and its error. |
+| `failed` | 1 | The store or the file system failed. | Correct the file or the directory that the message names, then run again. |
+
+## JSON schemas
+
+`--json` writes one document of the schema in this table to standard output. The schemas
+come from the Rust types in `host/obc-data`. A test fails when this section is not the one
+that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
+
+| Command | Schema |
+| --- | --- |
+| `sources` | `Sources` |
+| `fetch`, `refresh` | `Fetched` |
+| `region`, `region list` | `RegionList` |
+| `region show` | `RegionDetail` |
+| `store import` | `ImportPlan` |
+| `gc store` | `GcPlan` |
+| `runs` | `RunList` |
+| `runs RUN` | `Details` |
+| `runs RUN --follow`, one per line | `Event` |
+| `r2 list`, `r2 stat`, `r2 delete` | `Objects` |
+| `r2 get` | `Downloaded` |
+| `r2 put` | `Uploaded` |
+| Every command that fails | `Failure` |
+
+```json
+{
+  "$defs": {
+    "Bbox": {
+      "description": "Degrees, longitude first.",
+      "properties": {
+        "east": {
+          "format": "double",
+          "type": "number"
+        },
+        "north": {
+          "format": "double",
+          "type": "number"
+        },
+        "south": {
+          "format": "double",
+          "type": "number"
+        },
+        "west": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "west",
+        "south",
+        "east",
+        "north"
+      ],
+      "type": "object"
+    },
+    "Code": {
+      "description": "The kind of an error. It sets the exit status and the fix.",
+      "oneOf": [
+        {
+          "const": "usage",
+          "description": "An argument is not valid, an id names nothing, the command runs outside the repository, or\nanother command must run first.",
+          "type": "string"
+        },
+        {
+          "const": "no_terminal",
+          "description": "A command that changes live has no terminal to ask in, and no `--yes`.",
+          "type": "string"
+        },
+        {
+          "const": "not_confirmed",
+          "description": "The person did not answer yes.",
+          "type": "string"
+        },
+        {
+          "const": "invalid_data",
+          "description": "A file under `data/` is not valid.",
+          "type": "string"
+        },
+        {
+          "const": "fetch_failed",
+          "description": "A fetch or an upstream check failed.",
+          "type": "string"
+        },
+        {
+          "const": "blocked",
+          "description": "A credential is missing: a fetch failed without the credential of its source, or the R2\nvariables are not set.",
+          "type": "string"
+        },
+        {
+          "const": "r2_failed",
+          "description": "R2 or rclone failed, or refused a key.",
+          "type": "string"
+        },
+        {
+          "const": "verify_failed",
+          "description": "After an upload, the object in the bucket is not the file.",
+          "type": "string"
+        },
+        {
+          "const": "run_failed",
+          "description": "The run that `runs RUN --follow` shows failed.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "The store or the file system failed.",
+          "type": "string"
+        }
+      ]
+    },
+    "Credential": {
+      "additionalProperties": false,
+      "description": "What a fetch needs before upstream answers: environment variables, or a file.",
+      "properties": {
+        "env": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Details": {
+      "additionalProperties": false,
+      "description": "A run with its fetches and steps, as `obc data runs RUN` shows it.",
+      "properties": {
+        "bytes_built": {
+          "description": "The size of the layers that it built; a reused layer is not counted.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytes_fetched": {
+          "description": "The size of the files of its fetches.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "command": {
+          "type": "string"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fetches": {
+          "items": {
+            "$ref": "#/$defs/RunFetch"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/$defs/Outcome"
+        },
+        "started": {
+          "description": "`YYYY-MM-DDTHH:MM:SSZ`",
+          "type": "string"
+        },
+        "steps": {
+          "description": "In the order they started.",
+          "items": {
+            "$ref": "#/$defs/RunStep"
+          },
+          "type": "array"
+        },
+        "wall_ms": {
+          "description": "`None` until it finishes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "command",
+        "started",
+        "outcome",
+        "wall_ms",
+        "bytes_fetched",
+        "bytes_built",
+        "error",
+        "fetches",
+        "steps"
+      ],
+      "type": "object"
+    },
+    "Downloaded": {
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "file"
+      ],
+      "type": "object"
+    },
+    "Error": {
+      "description": "Why a command failed, and what to do about it.",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "fix": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "fix"
+      ],
+      "type": "object"
+    },
+    "Event": {
+      "description": "One line of `runs/<id>.jsonl`.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "at": {
+              "description": "`YYYY-MM-DDTHH:MM:SSZ`",
+              "type": "string"
+            },
+            "command": {
+              "type": "string"
+            },
+            "event": {
+              "const": "started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "command",
+            "at"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "event": {
+              "const": "fetch_started",
+              "type": "string"
+            },
+            "params": {
+              "items": {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "type": "array"
+              },
+              "type": "array"
+            },
+            "source": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "source",
+            "version",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "bytes": {
+              "description": "The size of the files that the fetch gave, downloaded or found in the store.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "event": {
+              "const": "fetch_finished",
+              "type": "string"
+            },
+            "params": {
+              "items": {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "type": "array"
+              },
+              "type": "array"
+            },
+            "source": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            },
+            "wall_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "event",
+            "source",
+            "version",
+            "params",
+            "bytes",
+            "wall_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "event": {
+              "const": "fetch_failed",
+              "type": "string"
+            },
+            "params": {
+              "items": {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "type": "array"
+              },
+              "type": "array"
+            },
+            "source": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "source",
+            "version",
+            "params",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "event": {
+              "const": "step_started",
+              "type": "string"
+            },
+            "step": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "step"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "event": {
+              "const": "step_finished",
+              "type": "string"
+            },
+            "receipt": {
+              "$ref": "#/$defs/Receipt"
+            },
+            "reused": {
+              "type": "boolean"
+            },
+            "step": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "step",
+            "reused",
+            "receipt"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "event": {
+              "const": "step_failed",
+              "type": "string"
+            },
+            "step": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "step",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "event": {
+              "const": "finished",
+              "type": "string"
+            },
+            "ok": {
+              "type": "boolean"
+            },
+            "wall_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "event",
+            "ok",
+            "error",
+            "wall_ms"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Failure": {
+      "description": "What `--json` writes when a command fails.",
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/Error"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "type": "object"
+    },
+    "Fetch": {
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "description": "Only for `osm`: the source whose pin is the base day, `from=`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/FetchKind"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "FetchKind": {
+      "oneOf": [
+        {
+          "enum": [
+            "http",
+            "osm",
+            "geofabrik",
+            "glo30",
+            "dtm",
+            "capture",
+            "github"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "by-hand",
+          "description": "A person orders or downloads the files.",
+          "type": "string"
+        },
+        {
+          "const": "installed",
+          "description": "A person installs it, or another source's build brings it.",
+          "type": "string"
+        }
+      ]
+    },
+    "Fetched": {
+      "description": "The requested files of a snapshot.",
+      "properties": {
+        "files": {
+          "items": {
+            "$ref": "#/$defs/FetchedFile"
+          },
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "version",
+        "files"
+      ],
+      "type": "object"
+    },
+    "FetchedFile": {
+      "properties": {
+        "name": {
+          "description": "The part of `url` that names the file within its source, unique in a record: the name a\nstep gives the file when it needs one.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The object in the store.",
+          "type": "string"
+        },
+        "retrieved": {
+          "description": "`YYYY-MM-DDTHH:MM:SSZ`",
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "url",
+        "size",
+        "sha256",
+        "retrieved",
+        "path"
+      ],
+      "type": "object"
+    },
+    "GcPlan": {
+      "description": "What `gc store` deletes, or deleted, and what stays.",
+      "properties": {
+        "keep_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "keep_objects": {
+          "description": "The objects that stay, and their size.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "objects": {
+          "description": "SHA-256 and size of each object that nothing reaches.",
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "remove_bytes": {
+          "description": "The size of `objects`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "snapshots": {
+          "description": "`source@version` of each snapshot record that nothing reaches.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "snapshots",
+        "objects",
+        "remove_bytes",
+        "keep_objects",
+        "keep_bytes"
+      ],
+      "type": "object"
+    },
+    "ImportDir": {
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dir": {
+          "description": "The directory, without symbolic links when it is present.",
+          "type": "string"
+        },
+        "files": {
+          "description": "The regular files that it moves, or moved, and their size.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "left": {
+          "description": "What stays in the directory: symbolic links and other entries that are not regular files,\nand after an import each file that changed while it was read.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "present": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "dir",
+        "present",
+        "files",
+        "bytes",
+        "left"
+      ],
+      "type": "object"
+    },
+    "ImportPlan": {
+      "description": "What `store import` moves, or moved, and what stays.",
+      "properties": {
+        "bytes": {
+          "description": "The size of every file.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dirs": {
+          "items": {
+            "$ref": "#/$defs/ImportDir"
+          },
+          "type": "array"
+        },
+        "new_bytes": {
+          "description": "How much the store grows: the size of each content that is not an object yet, once.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "dirs",
+        "bytes",
+        "new_bytes"
+      ],
+      "type": "object"
+    },
+    "InputKind": {
+      "enum": [
+        "layer",
+        "snapshot"
+      ],
+      "type": "string"
+    },
+    "InputRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/InputKind"
+        },
+        "name": {
+          "description": "The source id or the layer name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "Kind": {
+      "description": "In the order `obc data sources` lists them.",
+      "oneOf": [
+        {
+          "const": "data",
+          "description": "An input that steps read.",
+          "type": "string"
+        },
+        {
+          "const": "asset",
+          "description": "A file that ships to users as it is.",
+          "type": "string"
+        },
+        {
+          "const": "tool",
+          "description": "Code that steps run; nothing of it ships.",
+          "type": "string"
+        }
+      ]
+    },
+    "LayerFile": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "size",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "Object": {
+      "description": "One object in the bucket.",
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        },
+        "modified": {
+          "description": "The upload time that the bucket reports.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "bytes",
+        "modified"
+      ],
+      "type": "object"
+    },
+    "Objects": {
+      "description": "The objects of a bucket that a command lists or deletes.",
+      "properties": {
+        "bucket": {
+          "description": "The bucket or the local directory, never a credential.",
+          "type": "string"
+        },
+        "objects": {
+          "items": {
+            "$ref": "#/$defs/Object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "bucket",
+        "objects"
+      ],
+      "type": "object"
+    },
+    "Outcome": {
+      "oneOf": [
+        {
+          "enum": [
+            "running",
+            "ok"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "It failed, or its process ended before it finished.",
+          "type": "string"
+        }
+      ]
+    },
+    "Receipt": {
+      "additionalProperties": false,
+      "description": "The record of one layer: what made it, its files, and what building it cost.",
+      "properties": {
+        "built": {
+          "description": "`YYYY-MM-DDTHH:MM:SSZ`",
+          "type": "string"
+        },
+        "bytes_in": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytes_out": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "code": {
+          "type": "string"
+        },
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "cpu_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "digest": {
+          "description": "The digest of `files`: what a step that reads this layer puts in its key.",
+          "type": "string"
+        },
+        "files": {
+          "items": {
+            "$ref": "#/$defs/LayerFile"
+          },
+          "type": "array"
+        },
+        "inputs": {
+          "items": {
+            "$ref": "#/$defs/InputRecord"
+          },
+          "type": "array"
+        },
+        "key": {
+          "type": "string"
+        },
+        "metrics": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "options": true,
+        "outputs": {
+          "description": "The declared outputs, sorted.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "peak_rss_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "step": {
+          "type": "string"
+        },
+        "wall_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "step",
+        "key",
+        "inputs",
+        "options",
+        "code",
+        "command",
+        "outputs",
+        "digest",
+        "files",
+        "built",
+        "wall_ms",
+        "cpu_ms",
+        "peak_rss_bytes",
+        "bytes_in",
+        "bytes_out",
+        "metrics"
+      ],
+      "type": "object"
+    },
+    "Refresh": {
+      "description": "How old a pin may get, in days, before the source is stale; `manual` is never stale.",
+      "enum": [
+        7,
+        30,
+        90,
+        365,
+        "manual"
+      ]
+    },
+    "Region": {
+      "oneOf": [
+        {
+          "description": "The Geofabrik area whose path is the region id.",
+          "properties": {
+            "kind": {
+              "const": "geofabrik",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "box": {
+              "$ref": "#/$defs/Bbox"
+            },
+            "kind": {
+              "const": "box",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "box"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An Osmosis `.poly` file, relative to the region file.",
+          "properties": {
+            "kind": {
+              "const": "polygon",
+              "type": "string"
+            },
+            "polygon": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "polygon"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "union",
+              "type": "string"
+            },
+            "union": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "union"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "RegionDetail": {
+      "oneOf": [
+        {
+          "description": "The Geofabrik area whose path is the region id.",
+          "properties": {
+            "kind": {
+              "const": "geofabrik",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "box": {
+              "$ref": "#/$defs/Bbox"
+            },
+            "kind": {
+              "const": "box",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "box"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An Osmosis `.poly` file, relative to the region file.",
+          "properties": {
+            "kind": {
+              "const": "polygon",
+              "type": "string"
+            },
+            "polygon": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "polygon"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "union",
+              "type": "string"
+            },
+            "union": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "union"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "bounds": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Bbox"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its box, when every part is a box."
+        },
+        "id": {
+          "type": "string"
+        },
+        "leaves": {
+          "description": "The region ids that it resolves to.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "leaves",
+        "bounds"
+      ],
+      "type": "object"
+    },
+    "RegionList": {
+      "properties": {
+        "regions": {
+          "items": {
+            "$ref": "#/$defs/Region"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "regions"
+      ],
+      "type": "object"
+    },
+    "RunFetch": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes": {
+          "description": "`None` while it runs, and when it failed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "params": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "wall_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source",
+        "version",
+        "params",
+        "bytes",
+        "wall_ms",
+        "error"
+      ],
+      "type": "object"
+    },
+    "RunList": {
+      "description": "Every run in the store, newest first.",
+      "properties": {
+        "runs": {
+          "items": {
+            "$ref": "#/$defs/Summary"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "runs"
+      ],
+      "type": "object"
+    },
+    "RunStep": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_wall_ms": {
+          "description": "Its wall time in the newest earlier run that built it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "receipt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Receipt"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`None` while the step runs, and when it failed."
+        },
+        "reused": {
+          "type": "boolean"
+        },
+        "step": {
+          "type": "string"
+        },
+        "users": {
+          "description": "The layers of this run that read it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "step",
+        "reused",
+        "receipt",
+        "error",
+        "users",
+        "last_wall_ms"
+      ],
+      "type": "object"
+    },
+    "SourceRow": {
+      "description": "A source of `data/sources.toml` with its live pin and its state.",
+      "properties": {
+        "age_days": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "attribution": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credential": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Credential"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fetch": {
+          "$ref": "#/$defs/Fetch"
+        },
+        "hosts": {
+          "description": "Hosts the fetch reaches besides the host of `fetch.url`. `*.example.org` is any subdomain.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "licence": {
+          "description": "An SPDX id or `LicenseRef-…`. Unset blocks a data source or an asset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "licence_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "obligations": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pin": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "r2_copy": {
+          "default": false,
+          "description": "R2 keeps a copy, because upstream cannot give a version again.",
+          "type": "boolean"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "redistribute": {
+          "type": "boolean"
+        },
+        "refresh": {
+          "$ref": "#/$defs/Refresh"
+        },
+        "state": {
+          "$ref": "#/$defs/State"
+        },
+        "upstream": {
+          "description": "The newest upstream version.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "$ref": "#/$defs/VersionScheme"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "fetch",
+        "version",
+        "refresh",
+        "redistribute",
+        "r2_copy",
+        "pin",
+        "upstream",
+        "age_days",
+        "state",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "Sources": {
+      "properties": {
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/SourceRow"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sources"
+      ],
+      "type": "object"
+    },
+    "State": {
+      "description": "The state of a source or a layer. A source is only ok, stale or blocked.",
+      "enum": [
+        "ok",
+        "stale",
+        "code_changed",
+        "input_changed",
+        "not_applied",
+        "blocked"
+      ],
+      "type": "string"
+    },
+    "Summary": {
+      "additionalProperties": false,
+      "description": "A run, as `obc data runs` lists it.",
+      "properties": {
+        "bytes_built": {
+          "description": "The size of the layers that it built; a reused layer is not counted.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytes_fetched": {
+          "description": "The size of the files of its fetches.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "command": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/$defs/Outcome"
+        },
+        "started": {
+          "description": "`YYYY-MM-DDTHH:MM:SSZ`",
+          "type": "string"
+        },
+        "wall_ms": {
+          "description": "`None` until it finishes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "command",
+        "started",
+        "outcome",
+        "wall_ms",
+        "bytes_fetched",
+        "bytes_built"
+      ],
+      "type": "object"
+    },
+    "Uploaded": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "uploaded": {
+          "description": "`false` when an immutable key already held these bytes.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key",
+        "uploaded"
+      ],
+      "type": "object"
+    },
+    "VersionScheme": {
+      "description": "How upstream names a version, and so what a pin of the source looks like.",
+      "oneOf": [
+        {
+          "enum": [
+            "release",
+            "commit"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "date",
+          "description": "`YYYY-MM-DD`: the only scheme that gives a pin an age.",
+          "type": "string"
+        },
+        {
+          "const": "digest",
+          "description": "The SHA-256 of the file.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}
+```
