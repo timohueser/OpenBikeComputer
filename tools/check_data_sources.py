@@ -38,6 +38,7 @@ NOT_SOURCES = {
     "creativecommons.org": "licence text",
     "opendatacommons.org": "licence text",
     "www.openstreetmap.org": "copyright page",
+    "wiki.openstreetmap.org": "routing policy documentation",
     "docs.rs": "documentation link",
     "rclone.org": "install hint",
     "rustup.rs": "install hint",
