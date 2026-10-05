@@ -26,16 +26,18 @@ class PlannerTests(unittest.TestCase):
                     planner.verify(argparse.Namespace(data_dir=root, region=planner.REGION,
                                                       bounds=[5.95, 45.8, 10.5, 49.85]))
 
-    def test_setup_refuses_a_data_directory_of_another_region(self):
+    def test_setup_gets_a_fresh_directory_and_refuses_another_region(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "routing").mkdir()
+            root = Path(directory) / "data"
+            contents = []
+            with patch.dict(planner.COMMANDS, setup=lambda args: contents.extend(args.data_dir.glob("*"))):
+                planner.main(["setup", "--data-dir", str(root)])
+            self.assertEqual(contents, [])
+            (root / "routing").mkdir(parents=True)
             (root / "routing/manifest.json").write_text(json.dumps({"region": "freiburg"}))
-            with patch.object(sys, "argv", ["planner", "setup", "--data-dir", str(root)]), \
-                 patch.object(planner, "setup") as setup, patch("sys.stderr"):
+            with patch.dict(planner.COMMANDS, setup=lambda args: self.fail("setup ran")), patch("sys.stderr"):
                 with self.assertRaises(SystemExit):
-                    planner.main()
-                setup.assert_not_called()
+                    planner.main(["setup", "--data-dir", str(root)])
 
     def test_a_failed_start_stops_services_already_started(self):
         children = []

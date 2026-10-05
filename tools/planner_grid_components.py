@@ -126,7 +126,7 @@ def publish(source, routing, output, cache=None):
         if kind in ("basemap", "overlays", "terrain"):
             for name in entries:
                 z, x, y = map(int, Path(name).stem.split("-"))
-                map_blocks.append({"kind": kind, "tile": [z,x,y], "bounds": blocks.box(z,x,y), "files": [name]})
+                map_blocks.append({"kind": kind, "tile": [z,x,y], "bounds": maps.tile_bounds(z,x,y), "files": [name]})
         from pmtiles.reader import Reader, MmapSource
         with (source / "maps" / f"{kind}.pmtiles").open("rb") as stream:
             reader = Reader(MmapSource(stream))

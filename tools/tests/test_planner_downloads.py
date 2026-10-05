@@ -90,7 +90,7 @@ class PlannerDownloads(unittest.TestCase):
         self.assertEqual(first["state"], "ready")
         self.assertEqual(second["state"], "ready")
         self.assertNotEqual(first["id"], second["id"])
-        self.assertEqual(self.service.status(first["id"])["state"], "ready")
+        self.assertIsNotNone(self.service.selection(first["id"]))
 
     def test_invalid_coverage_and_disk_capacity_do_not_leave_selections(self):
         for value in ([0, 0, 1, 1], [7, 47, 7, 48], [7, 47, float("nan"), 48], [True, 47, 8, 48]):
@@ -136,8 +136,8 @@ class PlannerDownloads(unittest.TestCase):
         shutil.rmtree(self.service.cache / third["id"])
         os.utime(directory, (1, 1))
         self.assertEqual(third, self.service.prepare(self.request()))
-        self.assertEqual(self.service.status(first["id"])["state"], "failed")
-        self.assertEqual(self.service.status(second["id"])["state"], "ready")
+        self.assertIsNone(self.service.selection(first["id"]))
+        self.assertIsNotNone(self.service.selection(second["id"]))
 
     def serve(self):
         server = downloads.ThreadingHTTPServer(("127.0.0.1", 0), downloads.handler(self.service))
@@ -165,7 +165,8 @@ class PlannerDownloads(unittest.TestCase):
         bundle = json.loads((self.service.cache / job["id"] / "bundle.json").read_bytes())
         digest = bundle["files"]["routing/packs/" + "c" * 64 + "/pages.bin"]["transport"]["sha256"]
         url = f"{base}/bundles/{job['id']}/objects/{digest}"
-        with urlopen(Request(url, headers={"Range": "bytes=2-4"})) as response:
+        # A selection being built holds the cache lock; object reads never wait for it.
+        with self.service.lock, urlopen(Request(url, headers={"Range": "bytes=2-4"}), timeout=5) as response:
             self.assertEqual(response.status, 206)
             self.assertEqual(response.headers["Content-Range"], "bytes 2-4/6")
             self.assertEqual(response.read(), b"cde")

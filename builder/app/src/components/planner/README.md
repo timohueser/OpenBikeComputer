@@ -23,11 +23,12 @@ obc planner publish --data-dir /srv/planner/bw --apply
 obc planner deploy --data-dir /srv/planner/bw --host root@YOUR_VPS --apply
 ```
 
-`publish` and `deploy` show their action without `--apply`. Publication uploads
+`publish`, `deploy` and `finalize` show their action without `--apply`. Publication uploads
 files and verifies remote bytes. Deployment checks the routing
 package, model readiness, CORS, tiles, search, and a real route. It updates
 `planner/catalog.json` only after these pass. The
 [release contract](../../../../../specs/planner-release.md) defines the files.
+Only grid releases go online.
 
 `grid` builds reusable cells in a fresh directory. Publish and deploy one release
 at a time.
@@ -51,16 +52,17 @@ site navigation. It uses the release's device catalogue for `/builder/`.
 After the workflow succeeds, finish the rollout:
 
 ```sh
-obc planner finalize
-obc planner finalize --apply
+obc planner finalize --host root@YOUR_VPS
+obc planner finalize --host root@YOUR_VPS --apply
 ```
 
-Finalization checks the live services and web planner before it removes inactive
-planner releases and unused source mirrors from R2. It keeps one regional dataset.
-It preserves device cell objects and terrain reference data. Publication refuses
-another release while an inactive dataset remains.
+Finalization checks the live services and web planner. Then it stops the
+inactive VPS slot, removes its Caddy route and every other release directory, and
+removes inactive planner releases and unused source mirrors from R2. It keeps one
+regional dataset. It preserves device cell objects and terrain reference data.
+Publication refuses another release while an inactive dataset remains.
 
-## Replace or restore a release
+## Replace a release
 
 For a larger region, add a recipe with its ID, bounds, time zone, and pinned
 inputs. Build into a fresh data directory with `--recipe PATH`. Pass
@@ -98,29 +100,12 @@ Each kind of change goes out in one way:
 - **Code only.** For a route server or planner-search change, deploy the same
   data directory again. `deploy` restarts the active slot in place. Open pages
   see a short outage. This is accepted during development.
-- **New data release.** `deploy` installs it into the other slot. The old slot
-  serves open pages until you remove it. Then run **Deploy site** and finalize.
+- **New data release.** `deploy` installs it into the other slot and switches the
+  download service to it. The old slot serves open pages until finalize stops
+  it. Then run **Deploy site** and finalize.
 - **New catalogue field.** Deploy the release from the branch first. Merge the
   branch second. **Deploy site** fails while the live catalogue does not have
   the field.
-
-Before finalization, restore the previous release with:
-
-```sh
-obc planner rollback --apply
-```
-
-Then run **Deploy site** again and finalize. `rollback` and `site-config` need
-every catalogue field, so a rollback across a format change fails.
-
-`finalize` cleans R2 only. Remove the old VPS slot `N` and its release `OLD_ID`
-by hand:
-
-```sh
-ssh root@YOUR_VPS 'systemctl disable --now obc-planner-routing-N obc-planner-search-N'
-ssh root@YOUR_VPS 'rm /etc/caddy/planner/slot-N.caddy && caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy'
-ssh root@YOUR_VPS 'rm -rf /opt/obc-planner/releases/OLD_ID /etc/systemd/system/obc-planner-routing-N.service /etc/systemd/system/obc-planner-search-N.service && systemctl daemon-reload'
-```
 
 ## Local preview
 
@@ -147,8 +132,9 @@ cp AUXILIARY_FILE ~/.cache/obc/planner/sources/downloads/auxiliary/NAME
 | Setting | Default |
 | --- | --- |
 | `--region` | `baden-wuerttemberg-switzerland`; test regions `engadin`, `colorado-front-range` |
-| `--data-dir` | `OBC_PLANNER_DATA/REGION`; `OBC_PLANNER_DATA` is `~/.cache/obc/planner` |
-| `OBC_PLANNER_RELEASE` | `~/.cache/obc/planner/bw-online` |
+| `--data-dir` | `OBC_PLANNER_DATA/REGION` for every command; `OBC_PLANNER_DATA` is `~/.cache/obc/planner` |
+| `--recipe` | The recipe of `--region` |
+| `--host` or `OBC_PLANNER_HOST` | VPS of `deploy` and `finalize` |
 | `--port` | Planner `4175` |
 | `--tile-port` | Terrain `8789` |
 | `--route-port` | Routing `8787` |
@@ -185,7 +171,7 @@ neighbours. Highlighted places use zoom 11.
 Extract a smaller map archive with bounds inside its source coverage:
 
 ```sh
-python3 tools/planner_maps.py compact /srv/planner/bw/maps/terrain.pmtiles \
+python3 -m tools.planner_maps compact /srv/planner/bw/maps/terrain.pmtiles \
   /srv/planner/terrain.pmtiles --bbox=7.8,47.9,8.1,48.2 --terrain
 ```
 

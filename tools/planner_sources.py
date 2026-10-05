@@ -9,12 +9,8 @@ import subprocess
 import tarfile
 import tempfile
 
-try:
-    from . import planner_maps as maps
-    from .planner_runtime import digest, open_url
-except ImportError:
-    import planner_maps as maps
-    from planner_runtime import digest, open_url
+from . import planner_maps as maps
+from .planner_runtime import digest, open_url
 
 PROTOMAPS = "42ffaaa4a85a41bfcb23e43cc0f5b492a5eca123"
 PROTO_SHA = "f89ff8ee6aff13baf60c83b5e98d3811ddb946cc1089d437c435885395764696"

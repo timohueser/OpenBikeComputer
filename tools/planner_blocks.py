@@ -4,16 +4,12 @@ from collections import OrderedDict
 from contextlib import closing
 import gzip
 import json
-import math
 from pathlib import Path, PurePosixPath
 import sqlite3
 import subprocess
 import sys
 
-try:
-    from . import planner_runtime, planner_maps, planner_mvt as mvt
-except ImportError:
-    import planner_runtime, planner_maps, planner_mvt as mvt
+from . import planner_runtime, planner_maps, planner_mvt as mvt
 
 ZOOM = 9
 MAP_ZOOM = 11
@@ -26,14 +22,7 @@ LABEL_KEYS ={"name", "name:en", "pgf:name", "name2", "pgf:name2", "name3", "pgf:
 
 def tile(lon, lat, zoom=ZOOM):
     n = 1 << zoom
-    return (min(n - 1, max(0, int((lon + 180) / 360 * n))),
-            min(n - 1, max(0, int((1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * n))))
-
-
-def box(z, x, y):
-    n = 1 << z
-    latitude = lambda row: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * row / n))))
-    return [x / n * 360 - 180, latitude(y + 1), (x + 1) / n * 360 - 180, latitude(y)]
+    return tuple(min(n - 1, max(0, int(value))) for value in planner_maps.mercator(lon, lat, zoom))
 
 
 def intersects(a, b):
@@ -45,7 +34,7 @@ def cells(bounds):
     right, bottom = tile(bounds[2], bounds[1])
     for x in range(left, right + 1):
         for y in range(top, bottom + 1):
-            b = box(ZOOM, x, y)
+            b = planner_maps.tile_bounds(ZOOM, x, y)
             clipped = [max(b[0], bounds[0]), max(b[1], bounds[1]), min(b[2], bounds[2]), min(b[3], bounds[3])]
             if clipped[0] < clipped[2] and clipped[1] < clipped[3]:
                 yield f"{ZOOM}-{x}-{y}", clipped
@@ -218,11 +207,6 @@ def search_shard(source, lookup, output, bounds, metadata):
         db.close(); raise
 
 
-def publish(source, routing, output, cache=None):
-    from tools.planner_grid_components import publish as compose
-    return compose(source, routing, output, cache)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
@@ -237,9 +221,9 @@ def main():
 
 def prepare(source, output, cache_root=None):
     """Build the canonical grid from one verified regional bake."""
-    from tools.planner_components import Cache
-    cache = Cache(cache_root) if cache_root else None
-    publish(source, None, output, cache)
+    from .planner_components import Cache
+    from .planner_grid_components import publish
+    publish(source, None, output, Cache(cache_root) if cache_root else None)
     identity, _ = planner_runtime.release(output, include_sources=False)
     print(f"Prepared grid release {identity}")
 

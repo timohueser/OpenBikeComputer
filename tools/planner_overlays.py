@@ -9,7 +9,7 @@ import math
 from pathlib import Path
 import sqlite3
 
-from . import planner_mvt as mvt
+from . import planner_maps as maps, planner_mvt as mvt
 
 LAYERS = ("cycling", "hiking", "mtb", "access", "routes")
 # The basemap's deepest zoom. The planner draws deeper zooms from these tiles.
@@ -31,8 +31,7 @@ def coordinates(blob):
     points, lon, lat = array("d"), 0, 0
     for dlon, dlat in zip(values[::2], values[1::2]):
         lon, lat = lon + dlon, lat + dlat
-        points.append((lon / 1e6 + 180) / 360)
-        points.append((1 - math.asinh(math.tan(math.radians(lat / 1e6))) / math.pi) / 2)
+        points.extend(maps.mercator(lon / 1e6, lat / 1e6, 0))
     return points
 
 

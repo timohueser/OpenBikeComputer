@@ -1,18 +1,16 @@
-"""Finish a verified planner rollout with one regional dataset in R2."""
+"""Finish a verified planner rollout: one VPS slot and one regional dataset in R2."""
 
 import hashlib
 from datetime import datetime
 from html.parser import HTMLParser
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import tempfile
 from urllib.parse import urljoin, urlsplit
 
-try:
-    from . import planner_deploy as deploy, planner_release as releases, planner_sources as sources, r2
-except ImportError:
-    import planner_deploy as deploy, planner_release as releases, planner_sources as sources, r2
+from . import planner_deploy as deploy, r2
+from .planner_runtime import open_url, public_metadata, relative_path, storage_files
 
 
 def catalog(remote):
@@ -56,7 +54,7 @@ def verify_site(active, origin):
         raise ValueError("Provide an HTTPS site origin with no path")
     page = origin + "/plan/"
     modules = Modules()
-    with sources.open_url(page) as response:
+    with open_url(page) as response:
         modules.feed(response.read().decode())
     scripts = []
     for path in modules.urls:
@@ -64,7 +62,7 @@ def verify_site(active, origin):
         module = urlsplit(url)
         if (module.scheme, module.netloc) != (address.scheme, address.netloc):
             raise ValueError("Planner module uses another origin; cleanup is blocked.")
-        with sources.open_url(url) as response:
+        with open_url(url) as response:
             scripts.append(response.read().decode())
     code = "\n".join(scripts)
     if not all(active[key] in code for key in ["basemap", "places", "overlays", "terrain", "routing", "search"]):
@@ -84,18 +82,18 @@ def manifest(remote, entry):
 
 
 def referenced_keys(document, prefix):
-    keep = {prefix + "release.json"}
-    sections = {"files": {**releases.storage_files(document), **releases.public_metadata(document)},
-                "source_files": document.get("source_files", {})}
-    for section, items in sections.items():
-        for name in items:
-            path = PurePosixPath(name)
-            if path.is_absolute() or ".." in path.parts or path.as_posix() != name or "\\" in name:
-                raise ValueError("Invalid active release file")
-            if section == "source_files" and (len(path.parts) != 2 or path.parts[0] != "sources"):
-                raise ValueError("Invalid active source mirror")
-            keep.add(prefix + name if section == "files" else "planner/sources/" + path.name)
-    return keep
+    """The bucket keys of a release, each with its size; the manifest has none."""
+    keys = {prefix + "release.json": None}
+    for name, item in storage_files(document).items():
+        keys[prefix + name] = item["bytes"]
+    for name, data in public_metadata(document).items():
+        keys[prefix + name] = len(data)
+    for name, item in document.get("source_files", {}).items():
+        path = relative_path(name)
+        if len(path.parts) != 2 or path.parts[0] != "sources":
+            raise ValueError("Invalid active source mirror")
+        keys["planner/sources/" + path.name] = item["bytes"]
+    return keys
 
 
 def plan(remote, current):
@@ -106,26 +104,19 @@ def plan(remote, current):
     rows = json.loads(r2.run_rclone(["lsjson", remote.path + "/planner", "--recursive", "--files-only", "--use-server-modtime", "--no-mimetype"], remote.env, capture=True))
     found = {"planner/" + row["Path"]: row for row in rows}
     for key in found:
-        if key.startswith(("planner/releases/", "planner/sources/")) and (
-                PurePosixPath(key).as_posix() != key or ".." in PurePosixPath(key).parts or "\n" in key or "\r" in key):
-            raise ValueError("Invalid planner object key; cleanup is blocked.")
+        if key.startswith(("planner/releases/", "planner/sources/")): relative_path(key)
     if prefix + "release.json" not in found:
         raise ValueError("Active release manifest is absent")
-    sections = {"files": {**releases.storage_files(document),
-                          **{name: {"bytes": len(data)} for name, data in releases.public_metadata(document).items()}},
-                "source_files": document.get("source_files", {})}
-    for section, items in sections.items():
-        for name, item in items.items():
-            key = prefix + name if section == "files" else "planner/sources/" + PurePosixPath(name).name
-            if key not in found or found[key]["Size"] != item["bytes"]:
-                raise ValueError("Active release is incomplete; cleanup is blocked.")
+    if any(size is not None and found.get(key, {}).get("Size") != size for key, size in keep.items()):
+        raise ValueError("Active release is incomplete; cleanup is blocked.")
     stale = [r2.Target(key, row["Size"], row["ModTime"]) for key, row in found.items()
              if key.startswith(("planner/releases/", "planner/sources/")) and not key.startswith(prefix) and key not in keep]
     published = datetime.fromisoformat(found[prefix + "release.json"]["ModTime"])
     newer = [item for item in stale if datetime.fromisoformat(item.modified) > published]
     if newer:
+        # Deploying an older published release again leaves the newer one behind as `previous`.
         previous = current.get("previous")
-        abandoned = referenced_keys(*manifest(remote, previous)) if previous else set()
+        abandoned = referenced_keys(*manifest(remote, previous)) if previous else {}
         if any(item.key not in abandoned for item in newer):
             raise ValueError("Another planner upload is pending; finish it before cleanup.")
     return document, sorted(stale, key=lambda item: item.key)
@@ -134,24 +125,28 @@ def plan(remote, current):
 def finalize(args):
     # GOVERNS: specs/planner-release.md
     # RULE: Remove inactive planner data only after the live services and web planner use the active release.
+    host = deploy.checked_host(args.host)
     remote = r2.bucket_remote()
     current = catalog(remote)
     document, stale = plan(remote, current)
-    print(f"Keep planner release {current['active']['id']}.")
+    active = current["active"]
+    print(f"Keep planner release {active['id']} in slot {deploy.slot(active)}.")
+    print(f"Stop slot {1 - active['slot']} on {host} and remove its release directories.")
     print(f"Remove {len(stale)} inactive planner objects, {sum(item.bytes for item in stale) / 1e9:.2f} GB.")
     print("Device cells and terrain reference objects stay outside this cleanup.")
     if not args.apply:
         return
-    deploy.verify_services(current["active"], document, args.site_origin)
-    verify_site(current["active"], args.site_origin)
+    deploy.verify_services(active, document, args.site_origin)
+    verify_site(active, args.site_origin)
     if catalog(remote) != current:
         raise ValueError("Planner catalogue changed; repeat cleanup.")
+    deploy.retire(host, active)
     with tempfile.TemporaryDirectory() as directory:
         staging = Path(directory)
         if stale:
-            r2.append_log(remote, staging, stale, "Finalize active planner release " + current["active"]["id"])
+            r2.append_log(remote, staging, stale, "Finalize active planner release " + active["id"])
             listing = staging / "remove.txt"
-            # Keep manifests until their data is removed so a failed rollback cleanup can retry.
+            # Keep manifests until their data is removed so a failed cleanup can retry.
             for manifests in [False, True]:
                 keys = [item.key for item in stale if item.key.endswith("/release.json") == manifests]
                 if keys:
@@ -162,4 +157,4 @@ def finalize(args):
     if catalog(remote) != current:
         raise ValueError("Planner catalogue changed; repeat cleanup.")
     deploy.activate(args.public_url, {**current, "previous": None})
-    print("Planner rollout complete. R2 contains one regional planner dataset.")
+    print("Planner rollout complete. The VPS runs one slot and R2 contains one regional planner dataset.")

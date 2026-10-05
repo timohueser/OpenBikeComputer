@@ -76,8 +76,7 @@ The HTTPS prefix is `/planner-offline`. Bounds use west, south, east, north.
 | Request | Result |
 | --- | --- |
 | `GET /catalog` | `format: 1`, source `bounds`, and selection `zoom` |
-| `POST /jobs` | JSON `bounds`; returns `id`, `state: ready`, and `progress: 1` |
-| `GET /jobs/ID` | `id` and `state`, either `ready` or `failed` |
+| `POST /jobs` | JSON `bounds`; returns `id` and `state: ready` once the selection metadata exists |
 | `GET /bundles/ID/bundle.json` | Selected bundle manifest |
 | `GET /bundles/ID/release.json` | Selected release manifest |
 | `GET /bundles/ID/objects/SHA256` | Transport bytes or HTTP 307 to the immutable object pool |
