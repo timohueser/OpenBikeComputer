@@ -70,13 +70,15 @@ fn stat_tells_an_absent_object_from_an_empty_one() {
 }
 
 fn obc_data_r2(temp: &Temp, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_obc-data"))
-        .arg("r2")
-        .args(args)
-        .env("OBC_R2_LOCAL_DIR", temp.bucket())
-        .stdin(Stdio::null())
-        .output()
-        .unwrap()
+    let mut command = Command::new(env!("CARGO_BIN_EXE_obc-data"));
+    // A credential from tools/obc.local must neither reach the child nor clash with the local bucket.
+    for (name, _) in std::env::vars_os() {
+        let text = name.to_string_lossy();
+        if text.starts_with("OBC_R2_") || text.starts_with("OBC_FIXTURE_R2_") {
+            command.env_remove(&name);
+        }
+    }
+    command.arg("r2").args(args).env("OBC_R2_LOCAL_DIR", temp.bucket()).stdin(Stdio::null()).output().unwrap()
 }
 
 #[test]

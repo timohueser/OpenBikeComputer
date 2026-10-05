@@ -398,7 +398,7 @@ fn removal_lines(objects: &[Object], reason: &str, by: &str, when: &str) -> Stri
     let text = |value: &str| {
         let json = serde_json::Value::from(value).to_string();
         json.encode_utf16()
-            .map(|u| if u < 0x80 { char::from(u as u8).to_string() } else { format!("\\u{u:04x}") })
+            .map(|u| if u < 0x7f { char::from(u as u8).to_string() } else { format!("\\u{u:04x}") })
             .collect::<String>()
     };
     objects
@@ -518,9 +518,9 @@ mod tests {
     fn the_removal_log_keeps_the_python_layout() {
         let object = Object { key: "uploads/a.obcm".into(), bytes: 17, modified: String::new() };
         assert_eq!(
-            removal_lines(&[object], "a stray \"upload\" by Zoë 🚲", "rider", "2026-01-02T03:04:05Z"),
+            removal_lines(&[object], "a stray \"upload\" by Zoë 🚲\u{7f}", "rider", "2026-01-02T03:04:05Z"),
             "{\"by\": \"rider\", \"bytes\": 17, \"key\": \"uploads/a.obcm\", \"reason\": \"a stray \\\"upload\\\" by \
-             Zo\\u00eb \\ud83d\\udeb2\", \"removed\": \"2026-01-02T03:04:05Z\"}\n"
+             Zo\\u00eb \\ud83d\\udeb2\\u007f\", \"removed\": \"2026-01-02T03:04:05Z\"}\n"
         );
     }
 
