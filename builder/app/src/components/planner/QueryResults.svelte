@@ -50,7 +50,7 @@
             {#if answer.hasMore && (answer.results?.length ?? 0) < 100}<button type="button" onclick={onMore}>Show more results</button>{:else if answer.hasMore}<p>Zoom in or narrow the request to see more places.</p>{/if}
         {/if}
         {#if answer.note}<p class="note" role="status">{answer.note}</p>{/if}
-        <p class="attribution">{attribution}</p>
+        <p class="attribution"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">{attribution}</a> · ODbL</p>
     {/if}
 </div>
 <style>
@@ -66,7 +66,7 @@
     button:hover { border-color: var(--ink-soft); }
     .apply { background: var(--amber); color: var(--black, #171717); margin-block: 10px; }
     button:disabled { cursor: wait; opacity: .6; }
-    button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+    button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
     .routes-row { display: flex; align-items: center; gap: 10px; width: calc(100% + 16px); margin: 0 -8px 8px; padding: 12px 8px; border: 0; border-radius: 8px; text-align: start; }
     .routes-row:hover { background: var(--parchment-2); }
     .routes-icon { display: grid; place-items: center; flex: none; width: 30px; height: 30px; border-radius: 50%; background: color-mix(in srgb, var(--query-place) 10%, var(--panel)); color: var(--query-place); }
@@ -78,4 +78,5 @@
     .stretch { width: 100%; text-align: start; margin-block: 4px; }
     .stretch span { display: block; color: var(--ink-soft); margin-top: 4px; }
     .attribution { font-size: 11px; margin-top: 16px; }
+    a { color: inherit; text-underline-offset: 2px; }
 </style>

@@ -6,16 +6,9 @@
 // because `web`, `web` as the deploy builds it, `production` (the dev host) and
 // `desktop` are four different build inputs.
 
-import { readFileSync } from "node:fs";
 import { build } from "vite";
 import { describe, expect, it } from "vitest";
-
-/** The `attribution` of one source in data/sources.toml, the one home of every credit. */
-function registryAttribution(id: string): string {
-    const registry = readFileSync(new URL("../../../../../data/sources.toml", import.meta.url), "utf8");
-    const entry = registry.split("[[source]]").find((block) => block.includes(`\nid = "${id}"\n`)) ?? "";
-    return /\nattribution = "([^"]*)"/.exec(entry)?.[1] ?? `no attribution of ${id}`;
-}
+import { registryAttribution } from "../../../vite/registry";
 
 /** The slice of Rollup's single-input result the four blocks read — per chunk
  *  `{ fileName, isEntry, modules, code }`, per asset `{ fileName, source }`.
@@ -227,7 +220,6 @@ describe("third-party licences", () => {
         expect(notices).toContain("Redistribution and use in source and binary forms"); // BSD-2
         // Our own terms and the map data's, so a reader knows what the bundle itself is.
         expect(notices).toContain("GPL-3.0");
-        // The notice types the OSM credit, so it is compared with the registry.
         expect(notices).toContain(`Map data ${registryAttribution("osm-planet")}, under the ODbL`);
     }, 180_000);
 

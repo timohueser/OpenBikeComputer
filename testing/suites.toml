@@ -186,7 +186,7 @@ triggers = [
   "specs/vectors/**",
   "host/obc-flat-device/**",
   "apps/planner-search/query/contract.json",
-  # The bundle notice is compared with the OSM credit.
+  # The web build embeds credits from it.
   "data/sources.toml",
 ]
 

@@ -14,6 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Plugin } from "vite";
+import { registryAttribution } from "./registry";
 
 // LICENSE, LICENCE, LICENSE.md, COPYING, NOTICE — and the dual-licensed shape, where a
 // package ships one file per option (`LICENSE_MIT` + `LICENSE_APACHE-2.0`, @tauri-apps/api).
@@ -135,7 +136,7 @@ function render(notices: PackageNotice[], title: string): string {
         "no other.",
         "",
         "The application's own source is GPL-3.0: https://github.com/timohueser/OpenBikeComputer",
-        "Map data © OpenStreetMap contributors, under the ODbL: https://www.openstreetmap.org/copyright",
+        `Map data ${registryAttribution("osm-planet")}, under the ODbL: https://www.openstreetmap.org/copyright`,
         "",
         `${notices.length} package(s):`,
         ...notices.map((n) => `  - ${n.name} ${n.version} — ${n.license || "see text"}`),

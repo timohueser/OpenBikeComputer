@@ -7,11 +7,14 @@ import type { PlannerConfig } from "./config";
 /** The Terrarium terrain tiles: their pixel size and deepest zoom. */
 export const DEM_TILE = 512, DEM_MAX_ZOOM = 12;
 
-/** The credit is the release's, from data/sources.toml; Protomaps is the style the basemap is drawn with. */
+/** The `daylight-landcover` credit of data/sources.toml, which vite.config.ts embeds. */
+declare const __LANDCOVER_CREDIT__: string;
+
+/** The OSM credit is the release's; the land cover is the basemap's own; Protomaps draws the style. */
 const basemapSource = (config: BasemapConfig) => ({
     type: "vector",
     url: config.basemap,
-    attribution: `${config.attribution} · <a href="https://protomaps.com">Protomaps</a>`,
+    attribution: `<a href="https://www.openstreetmap.org/copyright">${config.attribution}</a> · ${__LANDCOVER_CREDIT__} · <a href="https://protomaps.com">Protomaps</a>`,
 } as const);
 
 type Tier = "ground" | "zone" | "detail" | "structure";

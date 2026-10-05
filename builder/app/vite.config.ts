@@ -1,5 +1,6 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { defineConfig, loadEnv } from "vite";
+import { registryAttribution } from "./vite/registry";
 import { thirdPartyLicenses } from "./vite/third-party-licenses";
 import { plannerConfig } from "./src/lib/planner/config";
 import { testConfig } from "./test-support/planner/config";
@@ -47,6 +48,8 @@ export default defineConfig(({ mode }) => {
             // The licence notices ride along with every tier's bundle — the static site and
             // the Tauri app are the same build, and both are distributions.
         plugins: [svelte(), thirdPartyLicenses()],
+        // The basemap draws Daylight land cover, whose credit lives in data/sources.toml.
+        define: { __LANDCOVER_CREDIT__: JSON.stringify(registryAttribution("daylight-landcover")) },
         resolve: {
             // Root-relative rather than an absolute path so the config needs no
             // node: builtins (and so no @types/node just to type-check itself).

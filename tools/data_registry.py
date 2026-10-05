@@ -20,11 +20,6 @@ def attribution(source, **fill):
     return SOURCES[source]["attribution"].format(**fill)
 
 
-def credits(*sources):
-    """The credits of several sources, as one line a rider reads."""
-    return "; ".join(attribution(source) for source in sources)
-
-
 def region(id):
     """The file of a region: `name`, `kind` and the key its kind names."""
     return tomllib.loads((ROOT / "data/regions" / f"{id}.toml").read_text())
