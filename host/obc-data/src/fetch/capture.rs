@@ -5,9 +5,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{check_version, file_name, record, Request};
+use super::{check_version, file_name, merge, snapshot_lock, Request};
 use crate::date;
-use crate::sources::{Registry, Source};
+use crate::sources::{Refresh, Registry, Source};
 use crate::store::{self, FileRecord, Snapshot, Store};
 
 /// The rasters of a national terrain model that cover `bbox=WEST,SOUTH,EAST,NORTH`, from the
@@ -23,7 +23,7 @@ pub fn dtm(store: &Store, request: &Request) -> Result<Snapshot, String> {
         request,
         &format!("bbox={bbox}"),
         &[source],
-        |_| 0,
+        |_| &[0],
         |work, out| {
             let mut command = python(&root, Some("tools/requirements-bake.txt"));
             command.arg("host/obc-dem/reference/ingest.py");
@@ -50,7 +50,7 @@ pub fn run(store: &Store, request: &Request) -> Result<Snapshot, String> {
                 request,
                 &format!("bbox={bbox}&seasons={seasons}"),
                 &[source],
-                |_| 0,
+                |_| &[0],
                 |_, out| {
                     let mut command = python(&root, Some("tools/requirements-planner-snow.txt"));
                     command.args(["-m", "tools.planner_snow", "--source", kind, &format!("--bounds={bbox}")]);
@@ -70,7 +70,7 @@ pub fn run(store: &Store, request: &Request) -> Result<Snapshot, String> {
                 request,
                 &format!("bbox={bbox}&first-year={first}"),
                 &[source],
-                |_| 0,
+                |_| &[0],
                 |_, out| {
                     let mut command = python(&root, Some("tools/requirements-planner-climate.txt"));
                     command.args(["-m", "tools.planner_climate", &format!("--bounds={bbox}"), "--first-year", first]);
@@ -85,29 +85,23 @@ pub fn run(store: &Store, request: &Request) -> Result<Snapshot, String> {
 
 /// One run of `tools/landmark_capture.py` captures Wikidata, Wikipedia and Commons for a region:
 /// `boundary=` and `candidates=` are its files, and `select-with=` is the `obc-bake` that selects
-/// the places. Articles go to the record of `wikipedia`, images and categories to `commons`, and
-/// the rest to `wikidata`.
+/// the places. [`landmark_owners`] splits the files into the three records.
 fn landmarks(store: &Store, request: &Request, root: &Path) -> Result<Snapshot, String> {
     let [boundary, candidates, compiler] = values(request, ["boundary", "candidates", "select-with"])?;
     // The program runs in the repository root, so a path names its file from here.
     let absolute = |path: &str| std::path::absolute(path).map_err(|e| format!("{path}: {e}"));
     let (boundary, candidates, compiler) = (absolute(boundary)?, absolute(candidates)?, absolute(compiler)?);
     let policy = root.join("host/obc-pack/src/landmarks/policy.json");
-    // The tool refuses another boundary, candidate list or policy in the same directory, so the three name the request.
+    // The files of the tool's own recipe: it refuses another of them in the same directory.
     let mut digests = String::new();
-    for file in [&boundary, &candidates, &policy] {
+    for file in [&boundary, &candidates, &policy, &root.join("specs/content-languages.json")] {
         digests += &store::hash_file(file)?.0;
     }
     let query = format!("recipe={}", &store::sha256_hex(digests.as_bytes())[..16]);
     let registry = Registry::load(root)?;
     let find = |id: &str| registry.sources.iter().find(|source| source.id == id).ok_or(format!("no source `{id}`"));
     let owners = [find("wikidata")?, find("wikipedia")?, find("commons")?];
-    let owner = |path: &str| match path.split('/').next() {
-        Some("articles") => 1,
-        Some("images" | "categories") => 2,
-        _ => 0,
-    };
-    capture(store, request, &query, &owners, owner, |_, out| {
+    capture(store, request, &query, &owners, landmark_owners, |_, out| {
         // The capture needs no package beyond the standard library.
         let mut command = python(root, None);
         command.arg("tools/landmark_capture.py");
@@ -118,16 +112,31 @@ fn landmarks(store: &Store, request: &Request, root: &Path) -> Result<Snapshot, 
     })
 }
 
+/// The records of `wikidata` (0), `wikipedia` (1) and `commons` (2) that take a file of the
+/// landmark capture, by its path, so each file has the licence of its source. Every record has the
+/// recipe, which links the three. The copies of the inputs and the archived failures are no
+/// source data, so no record takes them.
+fn landmark_owners(path: &str) -> &'static [usize] {
+    match path.split('/').next().unwrap_or_default() {
+        "recipe.json" => &[0, 1, 2],
+        "boundary.geojson" | "candidates.json" | "policy.json" | "attempts" => &[],
+        "articles" => &[1],
+        "images" | "categories" => &[2],
+        _ => &[0],
+    }
+}
+
 /// The files of `request` that `query` names: from the store, or else from the program that
 /// `command` makes. The program writes them into its second directory, and may keep downloads in
-/// its first. `owner` gives the index in `sources` of the source whose record takes a file, from
-/// its path. A run that fails keeps both directories, so the next run can resume.
+/// its first. `owners` gives the indexes in `sources` of the sources whose records take a file,
+/// from its path. A run that fails keeps both directories, so the next run can resume, unless
+/// they are older than the `refresh` of the source.
 pub fn capture(
     store: &Store,
     request: &Request,
     query: &str,
     sources: &[&Source],
-    owner: impl Fn(&str) -> usize,
+    owners: impl Fn(&str) -> &'static [usize],
     command: impl FnOnce(&Path, &Path) -> Command,
 ) -> Result<Snapshot, String> {
     let source = request.source;
@@ -159,6 +168,12 @@ pub fn capture(
     }
     let staging = store.partial(&format!("capture-{key}"));
     let staging = std::path::absolute(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
+    if let (Refresh::Days(days), Ok(modified)) = (source.refresh, fs::metadata(&staging).and_then(|m| m.modified())) {
+        // Data that old would mix with today's, so the capture starts again.
+        if modified.elapsed().is_ok_and(|age| age.as_secs() > u64::from(days) * 86_400) {
+            fs::remove_dir_all(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
+        }
+    }
     let (work, out) = (staging.join("work"), staging.join("out"));
     for dir in [&work, &out] {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -176,24 +191,37 @@ pub fn capture(
         let parts = path.strip_prefix(&out).unwrap_or(&path).components();
         let relative: Vec<_> = parts.map(|part| part.as_os_str().to_string_lossy()).collect();
         let relative = relative.join("/");
-        let index = owner(&relative);
+        let indexes = owners(&relative);
+        if indexes.is_empty() {
+            continue;
+        }
         let (sha256, size) = store::hash_file(&path)?;
         store.insert(&path, &sha256)?;
-        let url = format!("{}{relative}", prefix(sources[index]));
-        files[index].push(FileRecord {
-            name: file_name(sources[index], Some(&version), &url),
-            url,
-            size,
-            sha256,
-            retrieved: date::timestamp(date::now()),
-        });
+        for &index in indexes {
+            let url = format!("{}{relative}", prefix(sources[index]));
+            files[index].push(FileRecord {
+                name: file_name(sources[index], Some(&version), &url),
+                url,
+                size,
+                sha256: sha256.clone(),
+                retrieved: date::timestamp(date::now()),
+            });
+        }
     }
     if files.iter().all(Vec::is_empty) {
         return Err(format!("source `{}`: the capture of {query} has no file", source.id));
     }
+    // Every record is checked before one is written, so a conflict in one leaves all as they were.
+    let mut locks = Vec::new();
+    let mut merged = Vec::new();
     for (owner, files) in sources.iter().zip(&files) {
-        record(store, &owner.id, &version, files)?;
+        locks.push(store.lock(&snapshot_lock(&owner.id, &version))?);
+        merged.push(merge(store, &owner.id, &version, files)?);
     }
+    for snapshot in merged.into_iter().flatten() {
+        store.put_snapshot(&snapshot)?;
+    }
+    drop(locks);
     let _ = fs::remove_dir_all(&staging);
     let mine = sources.iter().position(|owner| owner.id == source.id);
     Ok(snapshot(mine.map(|index| files.swap_remove(index)).unwrap_or_default()))
@@ -245,7 +273,8 @@ fn python(root: &Path, requirements: Option<&str>) -> Command {
         (Some(python), _) => Command::new(python),
         (None, Some(requirements)) => {
             let mut command = Command::new("uv");
-            command.args(["run", "--with-requirements", requirements, "python"]);
+            // The pinned rasterio needs Python 3.12 or later.
+            command.args(["run", "--python", ">=3.12", "--with-requirements", requirements, "python"]);
             command
         }
         (None, None) => Command::new("python3"),
@@ -254,11 +283,16 @@ fn python(root: &Path, requirements: Option<&str>) -> Command {
     command
 }
 
-/// Every file under `dir`, sorted.
+/// Every file under `dir`, sorted, but hidden, `.part` and `.tmp` files: a killed run leaves
+/// those behind, and the next run resumes in the same directory.
 fn walk(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
     for entry in fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
         let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if name.starts_with('.') || name.ends_with(".part") || name.ends_with(".tmp") {
+            continue;
+        }
         if path.is_dir() {
             files.extend(walk(&path)?);
         } else {
@@ -267,4 +301,27 @@ fn walk(dir: &Path) -> Result<Vec<PathBuf>, String> {
     }
     files.sort();
     Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::landmark_owners;
+
+    #[test]
+    fn a_landmark_file_goes_to_the_record_of_its_licence() {
+        for (path, owners) in [
+            ("recipe.json", &[0, 1, 2][..]),
+            ("entities/batch-1.json", &[0]),
+            ("manifest.json", &[0]),
+            ("articles/Q1-de.json", &[1]),
+            ("images/Q1.json", &[2]),
+            ("categories/Foo.json", &[2]),
+            ("boundary.geojson", &[]),
+            ("candidates.json", &[]),
+            ("policy.json", &[]),
+            ("attempts/abc.response", &[]),
+        ] {
+            assert_eq!(landmark_owners(path), owners, "{path}");
+        }
+    }
 }

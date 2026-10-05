@@ -3,6 +3,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from affine import Affine
 import numpy as np
@@ -177,6 +178,14 @@ class FetchTest(unittest.TestCase):
             with rasterio.open(out / "day.tif") as src:
                 self.assertEqual(src.transform, Affine(0.01, 0, 7.19, 0, -0.01, 47.41))
                 self.assertTrue((src.read(1) == values[59:81, 19:41]).all())
+
+    def test_a_file_that_the_search_lists_twice_is_written_once(self):
+        href = lambda name: f"https://pc.test/modis/{name}.tif?token=t"
+        items = {"day1": [("MOD", 18, 4, href("a")), ("MYD", 18, 4, href("b"))], "day2": [("MOD", 18, 4, href("a"))]}
+        with tempfile.TemporaryDirectory() as out, mock.patch.object(snow, "modis_items", return_value=items), \
+                mock.patch.object(snow, "subset") as subset:
+            snow.fetch("nasa-modis", [8.3, 46.5, 8.4, 46.6], 2023, 2023, Path(out))
+        self.assertEqual(sorted(call.args[0] for call in subset.call_args_list), [href("a"), href("b")])
 
 
 if __name__ == "__main__":

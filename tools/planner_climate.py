@@ -380,7 +380,9 @@ def orography(region, key=None, cache=CACHE):
         if key is None:
             raise ValueError("ERA5-Land orography is not in the cache")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(fetch(url))
+        part = path.with_name(path.name + ".part")
+        part.write_bytes(fetch(url))
+        os.replace(part, path)
     if digest(path) != checksum:
         path.unlink()
         raise ValueError("ERA5-Land orography does not match its pinned checksum")
@@ -388,6 +390,11 @@ def orography(region, key=None, cache=CACHE):
         z = file["z"][0]
     # This file starts at 90° N and 0° E.
     return z[region.rows][:, (region.cols + GRID_COLS // 2) % GRID_COLS] / GRAVITY
+
+
+def final_hour(first_year):
+    """The store hour count from which every chunk of a bake from `first_year` is final."""
+    return hour(dt.date(first_year + YEARS, 1, 1)) + FINAL_AFTER_DAYS * 24
 
 
 def download(region, first_year, source, workers=8):
@@ -401,8 +408,7 @@ def download(region, first_year, source, workers=8):
 def fetch_sources(bounds, first_year, out):
     """Download the source chunks and the orography of a bake to `out`, for `obc data fetch`."""
     key, region = token(), Region(bounds)
-    final_hour = hour(dt.date(first_year + YEARS, 1, 1)) + FINAL_AFTER_DAYS * 24
-    download(region, first_year, Source(final_hour, key, cache=out))
+    download(region, first_year, Source(final_hour(first_year), key, cache=out))
     orography(region, key, cache=out)
 
 
@@ -526,9 +532,10 @@ def main():
     parser.add_argument("--check", action="store_true", help="bake from the cache only and compare with the output")
     parser.add_argument("--fetch", type=Path, help="only download the source chunks and the orography to this directory")
     args = parser.parse_args()
-    if not args.region and not args.bounds:
-        parser.error("give a region or --bounds")
-    recipe = json.loads((RECIPES / f"{args.region}.json").read_text()) if (RECIPES / f"{args.region}.json").exists() else {}
+    if not args.region and not (args.fetch and args.bounds):
+        parser.error("give a region, or --bounds with --fetch")
+    recipe_path = RECIPES / f"{args.region}.json"
+    recipe = json.loads(recipe_path.read_text()) if args.region and recipe_path.exists() else {}
     bounds = args.bounds or recipe["bounds"]
     first_year = args.first_year or recipe.get("climate", {}).get("first_year")
     if first_year is None:
@@ -537,17 +544,17 @@ def main():
         fetch_sources(bounds, first_year, args.fetch)
         return
     output = args.output or Path.home() / ".cache/obc/planner" / args.region / "maps/climate.pmtiles"
-    final_hour = hour(dt.date(first_year + YEARS, 1, 1)) + FINAL_AFTER_DAYS * 24
+    final = final_hour(first_year)
     start = time.monotonic()
     if args.check:
         with tempfile.TemporaryDirectory() as directory:
-            bake(bounds, first_year, Source(final_hour), Path(directory) / output.name)
+            bake(bounds, first_year, Source(final), Path(directory) / output.name)
             if (Path(directory) / output.name).read_bytes() != output.read_bytes():
                 sys.exit(f"{output} differs from a bake of the cached sources")
         print(f"{output} equals a bake of the cached sources")
         return
     key = token()
-    source = Source(final_hour, key)
+    source = Source(final, key)
     counts = bake(bounds, first_year, source, output, key)
     print(json.dumps({"output": str(output), "bytes": output.stat().st_size, "tiles": counts,
                       "downloaded_bytes": source.downloaded, "source_chunks": sum(map(len, source.digests.values())),

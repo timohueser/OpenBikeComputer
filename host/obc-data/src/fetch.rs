@@ -174,7 +174,21 @@ fn file_name(source: &Source, version: Option<&str>, url: &str) -> String {
 /// Add `files` to the snapshot record of the version. A version names one set of bytes, so a
 /// record that has a URL or a name with other bytes is an error.
 fn record(store: &Store, source: &str, version: &str, files: &[FileRecord]) -> Result<(), String> {
-    let _lock = store.lock(&format!("snapshot-{source}@{version}"))?;
+    let _lock = store.lock(&snapshot_lock(source, version))?;
+    match merge(store, source, version, files)? {
+        Some(snapshot) => store.put_snapshot(&snapshot),
+        None => Ok(()),
+    }
+}
+
+/// The lock that a writer of the record of `source@version` holds.
+fn snapshot_lock(source: &str, version: &str) -> String {
+    format!("snapshot-{source}@{version}")
+}
+
+/// The record of the version with `files` added, or `None` when it has them all already. The
+/// caller holds [`snapshot_lock`].
+fn merge(store: &Store, source: &str, version: &str, files: &[FileRecord]) -> Result<Option<Snapshot>, String> {
     let mut snapshot = store.snapshot(source, version)?.unwrap_or_else(|| Snapshot {
         source: source.into(),
         version: version.into(),
@@ -193,10 +207,7 @@ fn record(store: &Store, source: &str, version: &str, files: &[FileRecord]) -> R
             snapshot.files.push(file.clone());
         }
     }
-    if snapshot.files.len() == before {
-        return Ok(());
-    }
-    store.put_snapshot(&snapshot)
+    Ok((snapshot.files.len() > before).then_some(snapshot))
 }
 
 /// Whether a URL template names the version: `{version}`, or `{yymmdd}` for a date.
@@ -674,7 +685,13 @@ mod tests {
         let mut sea = land.clone();
         (sea.id, sea.fetch.url) = ("sea".into(), Some("https://example.org/sea".into()));
         let sources = [&land, &sea];
-        let owner = |path: &str| usize::from(path.starts_with("articles/"));
+        let owner = |path: &str| -> &'static [usize] {
+            match path {
+                "recipe.json" => &[0, 1],
+                _ if path.starts_with("articles/") => &[1],
+                _ => &[0],
+            }
+        };
         let today = Request { source: &land, version: None, params: vec![] };
         let run = |request: &Request, script: &'static str| {
             capture::capture(&store, request, "q=1", &sources, owner, move |work, out| {
@@ -689,17 +706,21 @@ mod tests {
         assert_eq!(store.snapshot("land", &version).unwrap(), None, "a failed run records nothing");
         // The next run finds what the failed one kept.
         let writes = "test -f \"$1/a.zip\" && mkdir \"$2/sub\" \"$2/articles\" && echo raster > \"$2/sub/a.tif\" \
-                      && echo crs > \"$2/sub/a.prj\" && echo text > \"$2/articles/x.json\"";
+                      && echo crs > \"$2/sub/a.prj\" && echo text > \"$2/articles/x.json\" && echo r > \"$2/recipe.json\" \
+                      && touch \"$2/sub/b.tif.part\" \"$2/c.tmp\" \"$2/.chunk-1\"";
         let snapshot = run(&today, writes).unwrap();
         let urls: Vec<_> = snapshot.files.iter().map(|file| file.url.as_str()).collect();
-        assert_eq!(urls, ["https://example.org/land#q=1/sub/a.prj", "https://example.org/land#q=1/sub/a.tif"]);
-        assert_eq!(snapshot.files[1].sha256, sha256_hex(b"raster\n"));
-        assert!(store.object(&snapshot.files[1].sha256).is_file());
+        let land_urls =
+            ["recipe.json", "sub/a.prj", "sub/a.tif"].map(|path| format!("https://example.org/land#q=1/{path}"));
+        assert_eq!(urls, land_urls, "a temporary file is no data");
+        assert_eq!(snapshot.files[2].sha256, sha256_hex(b"raster\n"));
+        assert!(store.object(&snapshot.files[2].sha256).is_file());
         let staging = store.root().join("partial").read_dir().unwrap();
         assert!(!staging.into_iter().any(|entry| entry.unwrap().file_name().to_string_lossy().starts_with("capture-")));
         let article = Request { source: &sea, version: None, params: vec![] };
         let articles = run(&article, "exit 1").unwrap();
-        assert_eq!(articles.files[0].url, "https://example.org/sea#q=1/articles/x.json");
+        let names: Vec<_> = articles.files.iter().map(|file| file.name.as_str()).collect();
+        assert_eq!(names, ["#q=1/articles/x.json", "#q=1/recipe.json"], "the recipe links the records");
         assert_eq!(run(&today, "exit 1").unwrap(), snapshot);
         let pinned = Request { version: Some(version), ..today };
         assert_eq!(run(&pinned, "exit 1").unwrap(), snapshot);

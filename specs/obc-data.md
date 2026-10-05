@@ -208,29 +208,33 @@ is the planet that is pinned. The fetch does not apply the diffs. A step does th
 `osm-replication` pin from that day.
 
 A `dtm` or `capture` fetch runs a program in the repository root, with the Python of `uv run
---with-requirements <requirements> python` (`OBC_PYTHON` replaces that Python). The program
-writes each file of the request to a directory under `partial/`, and its progress to standard
-error. The store takes every file in that directory. A failed run keeps the directory and records
-nothing; the next run of the same request, also on a later day, resumes from it. In the record,
-the `url` of a file is `<fetch.url>#<query>/<path in the directory>`. Each fetch takes the
-`NAME=VALUE` of its row, each once, and no other. A `capture` source without a row has no
-fetcher yet; the fetch fails.
+--python '>=3.12' --with-requirements <requirements> python` (`OBC_PYTHON` replaces that Python).
+The program writes each file of the request to a directory under `partial/`, and its progress to
+standard error. The store takes every file in that directory but hidden, `.part` and `.tmp`
+files. A failed run keeps the directory and writes no record; the next run of the same request,
+also on a later day, resumes from it. A directory older than the `refresh` of the source is
+deleted before the run. In the record, the `url` of a file is `<fetch.url>#<query>/<path in the
+directory>`, with the `fetch.url` of the source whose record takes the file. The fetch checks
+every record that it adds to before it writes one. Each fetch takes the `NAME=VALUE` of its row,
+each once, and no other. A `capture` source without a row has no fetcher yet; the fetch fails.
 
 | Source | `NAME=VALUE` | Program | Requirements | Query |
 | --- | --- | --- | --- | --- |
 | `dtm-*` | `bbox` | `host/obc-dem/reference/ingest.py fetch` | `tools/requirements-bake.txt` | `bbox=W,S,E,N` |
 | `modis-snow`, `hr-wsi` | `bbox`, `seasons=FIRST-LAST` | `tools/planner_snow.py --fetch` | `tools/requirements-planner-snow.txt` | `bbox=W,S,E,N&seasons=FIRST-LAST` |
 | `era5-land` | `bbox`, `first-year` | `tools/planner_climate.py --fetch` | `tools/requirements-planner-climate.txt` | `bbox=W,S,E,N&first-year=YEAR` |
-| `wikidata`, `wikipedia`, `commons` | `boundary`, `candidates`, `select-with` | `tools/landmark_capture.py --retry-failed` | none (`python3`) | `recipe=` and 16 hex digits of the SHA-256 of the joined hex SHA-256 of the boundary, the candidates and `host/obc-pack/src/landmarks/policy.json` |
+| `wikidata`, `wikipedia`, `commons` | `boundary`, `candidates`, `select-with` | `tools/landmark_capture.py --retry-failed` | none (`python3`) | `recipe=` and 16 hex digits of the SHA-256 of the joined hex SHA-256 of the boundary, the candidates, `host/obc-pack/src/landmarks/policy.json` and `specs/content-languages.json` |
 
 - `bbox` is `WEST,SOUTH,EAST,NORTH` in degrees.
 - A snow file is the window of one source raster that covers `bbox`, one pixel wider on each
   side, in the grid of the source. A season starts on 1 September.
 - An `era5-land` file is a source chunk of the ten years from `first-year`, or the orography.
 - `boundary` and `candidates` are the files of `landmark_capture.py`, and `select-with` is the
-  `obc-bake` that selects the places. One run captures the three sources. The record of
-  `wikipedia` takes `articles/`, the record of `commons` takes `images/` and `categories/`, and
-  the record of `wikidata` takes the other files. The program exits with status 2 when the
+  `obc-bake` that selects the places. One run captures the three sources, and each record takes
+  the files of its licence: `wikipedia` takes `articles/`, `commons` takes `images/` and
+  `categories/`, and `wikidata` takes the other files. Every record takes `recipe.json`, which
+  links the three. No record takes the copies of the inputs (`boundary.geojson`,
+  `candidates.json`, `policy.json`) or `attempts/`. The program exits with status 2 when the
   capture is not complete; then the fetch fails and the next run asks again for what failed.
 - The version is the day of the fetch, because the service answers with current data. Another
   day comes only from the store.

@@ -444,17 +444,24 @@ def modis_day(files, grid, origin):
     return clear(value), clear(value) & (value >= MODIS_SNOW_NDSI)
 
 
-def nasa_planes(bounds, first_season, last_season, workers=24):
-    """Season planes on the MODIS grid, streamed one season of daily files at a time."""
+def modis_seasons(bounds, first_season, last_season):
+    """(season, its first day, its files as `modis_items`) for each season, with GDAL set up to read them.
+
+    One season at a time: a read token lasts about an hour."""
     os.environ.update(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
                       GDAL_HTTP_MAX_RETRY="5", GDAL_HTTP_RETRY_DELAY="2", VSI_CACHE="FALSE")
+    for season in range(first_season, last_season + 1):
+        first = dt.date(season, 9, 1)
+        yield season, first, modis_items(bounds, first, dt.date(season + 1, 8, 31))
+
+
+def nasa_planes(bounds, first_season, last_season, workers=24):
+    """Season planes on the MODIS grid, streamed one season of daily files at a time."""
     grid, origin = modis_grid(bounds)
     state = SnowSeasons(first_season, last_season - first_season + 1, grid.shape)
     end, start = 0, time.monotonic()
     with ThreadPoolExecutor(workers) as pool:
-        for season in range(first_season, last_season + 1):
-            first, last = dt.date(season, 9, 1), dt.date(season + 1, 8, 31)
-            items = modis_items(bounds, first, last)
+        for season, first, items in modis_seasons(bounds, first_season, last_season):
             days = sorted(items)
             for day, (clear, snow) in zip(days, pool.map(lambda d: modis_day(items[d], grid, origin), days)):
                 index = season_start(first_season, season) + (day - first).days
@@ -576,11 +583,7 @@ def fetch(source, bounds, first_season, last_season, out):
         with ThreadPoolExecutor(4) as pool:
             list(pool.map(lambda path: subset(path, bounds, out), paths))
         return
-    os.environ.update(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
-                      GDAL_HTTP_MAX_RETRY="5", GDAL_HTTP_RETRY_DELAY="2", VSI_CACHE="FALSE")
-    # One season at a time: a read token lasts about an hour.
-    for season in range(first_season, last_season + 1):
-        items = modis_items(bounds, dt.date(season, 9, 1), dt.date(season + 1, 8, 31))
+    for season, _, items in modis_seasons(bounds, first_season, last_season):
         # The search can list a file twice, and two writers of one file collide.
         hrefs = {urllib.parse.urlsplit(href).path: href for files in items.values() for *_, href in files}
         with ThreadPoolExecutor(24) as pool:
@@ -599,8 +602,8 @@ def main():
     parser.add_argument("--trails", action="store_true", help="report the share of OSM path and track length with no data in every season")
     parser.add_argument("--fetch", type=Path, help="only write the source windows of the seasons to this directory")
     args = parser.parse_args()
-    if not args.region and not args.bounds:
-        parser.error("give a region or --bounds")
+    if not args.region and not (args.fetch and args.bounds):
+        parser.error("give a region, or --bounds with --fetch")
     bounds = args.bounds or json.loads((RECIPES / f"{args.region}.json").read_text())["bounds"]
     if args.fetch:
         fetch(args.source, bounds, args.first_season, args.last_season, args.fetch)
