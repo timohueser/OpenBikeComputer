@@ -393,19 +393,6 @@ impl VisitBuilder {
         self.easier.as_ref().is_some_and(|a| a.finished)
     }
 
-    /// Enable the writer checksum before the first output step.
-    pub fn enable_checksum(&mut self) -> Result<(), Error> {
-        if !matches!(self.phase, Phase::Begin | Phase::BeginPrefix) {
-            return Err(Error::BadOffset);
-        }
-        self.compose.writer.enable_checksum();
-        Ok(())
-    }
-    /// The checksum of the complete stored output, including its patched header.
-    pub fn checksum(&self) -> Option<u32> {
-        (self.phase == Phase::Done).then(|| self.compose.writer.checksum()).flatten()
-    }
-
     pub fn begin(&mut self, sink: &mut dyn ByteSink) -> Result<(), Error> {
         if !matches!(self.phase, Phase::Begin | Phase::BeginPrefix) {
             return Err(Error::BadOffset);

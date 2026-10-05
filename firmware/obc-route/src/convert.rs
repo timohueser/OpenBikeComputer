@@ -182,7 +182,6 @@ pub(crate) struct ObcrWriter {
     bike: BikeType,
     map_source: Option<obc_formats::obcr::RouteSourceKey>,
     waypoint_count: u16,
-    completed_crc: Option<u32>,
 }
 
 impl ObcrWriter {
@@ -206,7 +205,6 @@ impl ObcrWriter {
             addr_of_mut!((*slot).bike).write(BikeType::default());
             addr_of_mut!((*slot).map_source).write(None);
             addr_of_mut!((*slot).waypoint_count).write(0);
-            addr_of_mut!((*slot).completed_crc).write(None);
             let Self {
                 enc: _,
                 cum_dist: _,
@@ -223,35 +221,17 @@ impl ObcrWriter {
                 bike: _,
                 map_source: _,
                 waypoint_count: _,
-                completed_crc: _,
             } = &*slot;
         }
     }
     /// Reserve the header on `sink`. The body follows at `data_offset = HEADER_FULL_LEN`.
     pub(crate) fn new(sink: &mut dyn ByteSink) -> Result<ObcrWriter, Error> {
         Self::begin(sink)?;
-        Ok(Self::empty())
-    }
-
-    /// Construct in the owner's workspace before streaming starts. Nothing is written to a sink.
-    pub(crate) fn empty() -> Self {
-        ObcrWriter {
-            enc: Encoder::new(HEADER_FULL_LEN as u32),
-            cum_dist: 0.0,
-            prev: None,
-            bbox: None,
-            start: (0, 0),
-            emitted: 0,
-            last_kept: None,
-            pending: None,
-            ele_keep_m: 1,
-            surface: 0,
-            ele_gap: false,
-            flags: 0,
-            bike: BikeType::default(),
-            map_source: None,
-            waypoint_count: 0,
-            completed_crc: None,
+        let mut slot = core::mem::MaybeUninit::uninit();
+        // SAFETY: the local slot is aligned, writable and exclusively owned.
+        unsafe {
+            Self::init_in_place(slot.as_mut_ptr());
+            Ok(slot.assume_init())
         }
     }
 
@@ -275,15 +255,6 @@ impl ObcrWriter {
 
     pub(crate) fn set_flags(&mut self, flags: u8) {
         self.flags = flags;
-    }
-
-    pub(crate) fn enable_checksum(&mut self) {
-        let mut crc = obc_crc::Crc32::new();
-        crc.update(&[0; HEADER_FULL_LEN]);
-        self.enc.crc = Some(crc);
-    }
-    pub(crate) fn checksum(&self) -> Option<u32> {
-        self.completed_crc
     }
 
     pub(crate) fn set_bike_type(&mut self, bike: BikeType) {
@@ -448,9 +419,6 @@ impl ObcrWriter {
             rec[44..80].copy_from_slice(&provenance.encode());
         }
         sink.write(&rec)?;
-        if let Some(crc) = &mut self.enc.crc {
-            crc.update(&rec);
-        }
         self.waypoint_count = self.waypoint_count.checked_add(1).ok_or(Error::TooLarge)?;
         Ok(())
     }
@@ -495,27 +463,11 @@ impl ObcrWriter {
                 .ok_or(Error::TooLarge)?;
             let bytes = descriptor.encode().map_err(|_| Error::BadOffset)?;
             sink.write(&bytes)?;
-            if let Some(crc) = &mut self.enc.crc {
-                crc.update(&bytes);
-            }
             header[118] = 1;
             put_u32(&mut header, 120, offset);
             put_u32(&mut header, 124, 80);
         }
         sink.patch_at(0, &header)?;
-        if let Some(crc) = self.enc.crc {
-            let mut term = obc_crc::Crc32::from_checksum(u32::MAX);
-            term.update(&header);
-            let mut rest = (self.geometry_end() - HEADER_FULL_LEN as u32)
-                + u32::from(self.waypoint_count) * WAYPOINT_LEN as u32
-                + if descriptor.is_some() { 80 } else { 0 };
-            while rest > 0 {
-                let n = rest.min(64);
-                term.update(&[0; 64][..n as usize]);
-                rest -= n;
-            }
-            self.completed_crc = Some(crc.finalize() ^ term.finalize() ^ u32::MAX);
-        }
         Ok(stats)
     }
 }
@@ -648,7 +600,6 @@ struct Encoder {
     band: DeadBand<f64>,
     min_ele: i16,
     max_ele: i16,
-    crc: Option<obc_crc::Crc32>,
 }
 
 impl Encoder {
@@ -665,7 +616,6 @@ impl Encoder {
             addr_of_mut!((*slot).band).write(DeadBand::new());
             addr_of_mut!((*slot).min_ele).write(i16::MAX);
             addr_of_mut!((*slot).max_ele).write(i16::MIN);
-            addr_of_mut!((*slot).crc).write(None);
             let Self {
                 index: _,
                 cur: _,
@@ -677,26 +627,9 @@ impl Encoder {
                 band: _,
                 min_ele: _,
                 max_ele: _,
-                crc: _,
             } = &*slot;
         }
     }
-    fn new(data_offset: u32) -> Self {
-        Encoder {
-            index: Vec::new(),
-            cur: Vec::new(),
-            data_pos: data_offset,
-            chunk_start_dist: 0,
-            chunk_start_ascent: 0,
-            distance: 0.0,
-            previous: None,
-            band: DeadBand::new(),
-            min_ele: i16::MAX,
-            max_ele: i16::MIN,
-            crc: None,
-        }
-    }
-
     fn emit(&mut self, sink: &mut dyn ByteSink, c: Cand) -> Result<(), Error> {
         let before = self.distance as u32;
         let first = self.previous.is_none();
@@ -760,9 +693,6 @@ impl Encoder {
             bbox_extend(&mut bbox, x, y);
         }
         sink.write_chunk((ax, ay, ae), &body)?;
-        if let Some(crc) = &mut self.crc {
-            crc.update(&body);
-        }
         let meta = ChunkMeta {
             bbox,
             anchor_lon: ax,
@@ -798,9 +728,6 @@ impl Encoder {
             put_u32(&mut m, 36, cm.byte_offset);
             put_u32(&mut m, 40, cm.byte_len);
             sink.write(&m)?;
-            if let Some(crc) = &mut self.crc {
-                crc.update(&m);
-            }
         }
         Ok(index_offset)
     }

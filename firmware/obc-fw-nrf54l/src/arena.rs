@@ -601,8 +601,12 @@ impl NavGuard {
     pub(crate) fn begin_trim(&mut self, leg: obc_route::Leg, target_m: u32, has_elevation: bool) {
         assert!(self.phase != NavPhase::Plan);
         unsafe {
-            core::ptr::addr_of_mut!((*(arena_ptr() as *mut DetourArm)).work.trim)
-                .write(ManuallyDrop::new(obc_route::Trimmer::new(leg, target_m, has_elevation)));
+            obc_route::Trimmer::init_in_place(
+                core::ptr::addr_of_mut!((*(arena_ptr() as *mut DetourArm)).work.trim).cast(),
+                leg,
+                target_m,
+                has_elevation,
+            );
         }
         self.phase = NavPhase::Trim;
     }

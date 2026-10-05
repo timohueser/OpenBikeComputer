@@ -122,23 +122,55 @@ impl Trimmer {
     /// Only a detour is trimmed: an approach has no tail to meet before the start, and a rest is
     /// a stored route that ends where it should.
     pub fn new(leg: crate::splice::Leg, target_m: u32, has_elevation: bool) -> Self {
-        Self {
-            phase: match leg {
+        let mut slot = core::mem::MaybeUninit::uninit();
+        // SAFETY: the local slot is aligned, writable and exclusively owned.
+        unsafe {
+            Self::init_in_place(slot.as_mut_ptr(), leg, target_m, has_elevation);
+            slot.assume_init()
+        }
+    }
+
+    /// # Safety
+    /// `slot` must be aligned, writable and exclusively owned for a complete trimmer.
+    #[inline(never)]
+    pub unsafe fn init_in_place(slot: *mut Self, leg: crate::splice::Leg, target_m: u32, has_elevation: bool) {
+        use core::ptr::addr_of_mut;
+        unsafe {
+            addr_of_mut!((*slot).phase).write(match leg {
                 crate::splice::Leg::Detour => Phase::Tail,
                 _ => Phase::Terminal(TrimStep::Done(None)),
-            },
-            target_m,
-            has_elevation,
-            tail: Tail { pts: Vec::new(), bbox: BBox { min_lon: 0, max_lon: 0, min_lat: 0, max_lat: 0 }, cl: 1.0 },
-            chunk: 0,
-            distinct: 0,
-            previous: None,
-            last_seen: None,
-            since_kept: 0.0,
-            arc: 0.0,
-            trim_index: 0,
-            rejoin_m: target_m,
-            compose: Compose::empty(),
+            });
+            addr_of_mut!((*slot).target_m).write(target_m);
+            addr_of_mut!((*slot).has_elevation).write(has_elevation);
+            addr_of_mut!((*slot).tail).write(Tail {
+                pts: Vec::new(),
+                bbox: BBox { min_lon: 0, max_lon: 0, min_lat: 0, max_lat: 0 },
+                cl: 1.0,
+            });
+            addr_of_mut!((*slot).chunk).write(0);
+            addr_of_mut!((*slot).distinct).write(0);
+            addr_of_mut!((*slot).previous).write(None);
+            addr_of_mut!((*slot).last_seen).write(None);
+            addr_of_mut!((*slot).since_kept).write(0.0);
+            addr_of_mut!((*slot).arc).write(0.0);
+            addr_of_mut!((*slot).trim_index).write(0);
+            addr_of_mut!((*slot).rejoin_m).write(target_m);
+            Compose::init_in_place(addr_of_mut!((*slot).compose));
+            let Self {
+                phase: _,
+                target_m: _,
+                has_elevation: _,
+                tail: _,
+                chunk: _,
+                distinct: _,
+                previous: _,
+                last_seen: _,
+                since_kept: _,
+                arc: _,
+                trim_index: _,
+                rejoin_m: _,
+                compose: _,
+            } = &*slot;
         }
     }
 

@@ -86,22 +86,6 @@ impl Compose {
             } = &*slot;
         }
     }
-    pub fn empty() -> Self {
-        Self {
-            writer: ObcrWriter::empty(),
-            chunk: 0,
-            last: None,
-            last_ele: i16::MIN,
-            incomplete: false,
-            started: false,
-            previous: None,
-            along: 0.0,
-            points: 0,
-            rejected: false,
-            plan: heapless::Vec::new(),
-            part: 0,
-        }
-    }
     pub fn plan(&mut self, parts: &[Part]) -> Result<(), Error> {
         self.plan.clear();
         self.plan.extend_from_slice(parts).map_err(|_| Error::TooLarge)?;

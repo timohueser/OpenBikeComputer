@@ -143,7 +143,8 @@ pub struct Measure {
     points: u32,
     previous: Option<(i32, i32, i16)>,
     written: u32,
-    sealed: bool,
+    crc: obc_crc::Crc32,
+    header_term: Option<obc_crc::Crc32>,
 }
 impl Measure {
     pub fn new() -> Self {
@@ -153,7 +154,8 @@ impl Measure {
             points: 0,
             previous: None,
             written: 0,
-            sealed: false,
+            crc: obc_crc::Crc32::new(),
+            header_term: None,
         }
     }
     fn push(&mut self, p: RoutePoint, elev: &mut dyn ElevationSource) {
@@ -175,15 +177,19 @@ impl Measure {
     }
     /// The costs and the CRC-32 the store computes over the stored copy, once a [`MeasureSink`]
     /// has taken the complete stream.
-    pub fn finish(
-        self,
-        elev: &mut dyn ElevationSource,
-        stats: crate::RouteStats,
-        crc: u32,
-    ) -> Result<(Costs, u32), Error> {
-        if !self.sealed || stats.point_count != self.points {
+    pub fn finish(self, elev: &mut dyn ElevationSource, stats: crate::RouteStats) -> Result<(Costs, u32), Error> {
+        if stats.point_count != self.points {
             return Err(Error::BadOffset);
         }
+        let mut term = self.header_term.ok_or(Error::BadOffset)?;
+        // Replacing the initial zero header adds its CRC term shifted over the remaining bytes.
+        let mut rest = self.written - HEADER_FULL_LEN as u32;
+        while rest > 0 {
+            let n = rest.min(64);
+            term.update(&[0; 64][..n as usize]);
+            rest -= n;
+        }
+        let crc = self.crc.finalize() ^ term.finalize() ^ u32::MAX;
         Ok((self.costs(stats.total_distance_m, elev)?, crc))
     }
 }
@@ -193,7 +199,7 @@ impl Default for Measure {
     }
 }
 
-/// A sink that keeps no bytes. It measures each quantized chunk as the store reads it back.
+/// A sink that keeps no bytes. It measures each quantized chunk and hashes the complete stored stream.
 pub struct MeasureSink<'a> {
     measure: &'a mut Measure,
     elev: &'a mut dyn ElevationSource,
@@ -214,7 +220,8 @@ impl ByteSink for MeasureSink<'_> {
             return Err(Error::BadOffset);
         }
         m.written = u32::try_from(bytes.len()).ok().and_then(|n| m.written.checked_add(n)).ok_or(Error::TooLarge)?;
-        m.sealed = false;
+        m.crc.update(bytes);
+        m.header_term = None;
         self.appended += bytes.len();
         Ok(())
     }
@@ -243,7 +250,9 @@ impl ByteSink for MeasureSink<'_> {
         if offset != 0 || header.len() != HEADER_FULL_LEN || m.written < HEADER_FULL_LEN as u32 {
             return Err(Error::BadOffset);
         }
-        m.sealed = true;
+        let mut term = obc_crc::Crc32::from_checksum(u32::MAX);
+        term.update(header);
+        m.header_term = Some(term);
         Ok(())
     }
 }

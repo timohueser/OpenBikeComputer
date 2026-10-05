@@ -325,9 +325,6 @@ impl Executor {
         if !app.assistant_easier_original(c, &route, elev) {
             return Err(());
         }
-        if self.measuring {
-            builder.enable_checksum().map_err(|_| ())?;
-        }
         if matches!(c.purpose, ReviewPurpose::Easier(_)) {
             builder.prepare_easier(&route).map_err(|_| ())?;
         }
@@ -618,11 +615,8 @@ impl Executor {
                     {
                         NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged }
                     } else if self.measuring {
-                        let (builder, _, _, measure) = guard.visit_measure_parts();
-                        let Some(crc) = builder.checksum() else {
-                            return self.fail(NavigatorError::Unavailable);
-                        };
-                        match core::mem::take(measure).finish(elev, stats, crc) {
+                        let (_, _, _, measure) = guard.visit_measure_parts();
+                        match core::mem::take(measure).finish(elev, stats) {
                             Ok((costs, crc)) => app.assistant_easier_measured(token, costs, crc),
                             Err(_) => NavigatorOutcome::Failed { token, error: NavigatorError::Unavailable },
                         }
