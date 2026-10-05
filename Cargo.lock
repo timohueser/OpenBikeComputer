@@ -3920,6 +3920,7 @@ dependencies = [
  "obc-formats",
  "obc-link",
  "obc-reader",
+ "obc-route",
  "obcm-testkit",
 ]
 

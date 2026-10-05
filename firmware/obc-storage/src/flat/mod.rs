@@ -3,6 +3,8 @@
 // `Store`.
 pub(crate) mod bitmap;
 pub(crate) mod catalog;
+#[cfg(test)]
+mod catalog_read;
 pub mod device;
 pub mod error;
 pub(crate) mod journal;
