@@ -62,11 +62,16 @@ pub mod crest;
 pub mod fetch;
 #[cfg(feature = "geotiff")]
 pub mod geotiff;
+#[cfg(all(feature = "geotiff", feature = "fetch"))]
+pub mod planner;
 #[cfg(feature = "geotiff")]
 pub mod reference;
 #[cfg(all(feature = "geotiff", feature = "fetch"))]
 pub mod step;
 pub mod surface;
+/// The planner map terrain writer. Its own feature, because only it needs a WebP encoder and SQLite.
+#[cfg(feature = "planner")]
+pub mod terrarium;
 
 /// A geographic box in integer microdegrees — the unit every OBC coordinate is in, so the box that
 /// selects cells is exact rather than a float that nearly lands on a cell boundary.

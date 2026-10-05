@@ -1,0 +1,18 @@
+<osm version="0.6">
+  <node id="1" version="1" lat="48.0" lon="7.8"/>
+  <node id="2" version="1" lat="48.0" lon="7.805"/>
+  <node id="3" version="1" lat="48.0" lon="7.81"/>
+  <node id="4" version="1" lat="48.005" lon="7.8"/>
+  <node id="5" version="1" lat="48.005" lon="7.805"/>
+  <node id="6" version="1" lat="48.005" lon="7.81"/>
+  <node id="7" version="1" lat="48.01" lon="7.8"/>
+  <node id="8" version="1" lat="48.01" lon="7.805"/>
+  <node id="9" version="1" lat="48.01" lon="7.81"/>
+  <way id="101" version="1"><nd ref="1"/><nd ref="2"/><nd ref="3"/><tag k="highway" v="residential"/><tag k="name" v="Ost 0"/></way>
+  <way id="102" version="1"><nd ref="4"/><nd ref="5"/><nd ref="6"/><tag k="highway" v="residential"/><tag k="name" v="Ost 1"/></way>
+  <way id="103" version="1"><nd ref="7"/><nd ref="8"/><nd ref="9"/><tag k="highway" v="residential"/><tag k="name" v="Ost 2"/></way>
+  <way id="104" version="1"><nd ref="1"/><nd ref="4"/><nd ref="7"/><tag k="highway" v="track"/><tag k="tracktype" v="grade2"/></way>
+  <way id="105" version="1"><nd ref="2"/><nd ref="5"/><nd ref="8"/><tag k="highway" v="track"/><tag k="tracktype" v="grade2"/></way>
+  <way id="106" version="1"><nd ref="3"/><nd ref="6"/><nd ref="9"/><tag k="highway" v="track"/><tag k="tracktype" v="grade2"/></way>
+  <relation id="200" version="1"><member type="way" ref="101" role=""/><member type="way" ref="106" role=""/><member type="way" ref="103" role=""/><tag k="type" v="route"/><tag k="route" v="bicycle"/><tag k="network" v="lcn"/><tag k="name" v="Testweg"/></relation>
+</osm>

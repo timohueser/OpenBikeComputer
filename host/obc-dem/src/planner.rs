@@ -1,42 +1,45 @@
-//! Optional adapter to the repository's terrain readers. The routing crates need no OBC map format.
-use obc_dem::{
-    geotiff::{DemMosaic, DemTile},
-    reference::{ReferenceArchive, ReferenceTile, TileLookup, Window},
-};
-use route_engine::{model::Point, package::digest};
-use std::{
-    collections::{BTreeSet, VecDeque},
-    path::Path,
-};
+//! The heights of the planner: its terrain tiles and the slopes of its routes. The reference
+//! archive gives the height where it holds the ground, and GLO-30 elsewhere.
+
+use std::collections::{BTreeSet, VecDeque};
+use std::path::{Path, PathBuf};
+
+use obc_data::store::sha256_hex;
+
+use crate::fetch::TileId;
+use crate::geotiff::{DemMosaic, DemTile};
+use crate::reference::{ReferenceArchive, ReferenceTile, TileLookup, Window};
+
+/// The GLO-30 squares that `bounds` (west, south, east, north in degrees) touches, south to north,
+/// then west to east: the order of [`Terrain::identities`].
+pub fn tiles([west, south, east, north]: [f64; 4]) -> Vec<TileId> {
+    let lats = south.floor() as i32..=north.floor() as i32;
+    lats.flat_map(|lat| (west.floor() as i32..=east.floor() as i32).map(move |lon| TileId { lat, lon })).collect()
+}
+
+/// The GLO-30 files of `bounds` in `dir`: a square without a file is sea.
+pub fn tiles_in(dir: &Path, bounds: [f64; 4]) -> Vec<PathBuf> {
+    tiles(bounds).iter().map(|tile| dir.join(tile.file_name())).filter(|path| path.is_file()).collect()
+}
 
 pub struct Terrain {
     fallback: DemMosaic,
     reference: Option<ReferenceArchive>,
     cache: VecDeque<((u32, u32), Option<ReferenceTile>)>,
+    /// The SHA-256 of each GLO-30 file, then of each reference tile that `bounds` reaches.
     pub identities: Vec<String>,
     used: BTreeSet<String>,
 }
 
 impl Terrain {
-    pub fn open(dem: Option<&Path>, reference: Option<&Path>, bounds: [f64; 4]) -> Result<Self, String> {
+    /// The GLO-30 files `glo30`, in the order of [`tiles`], and the reference archive at
+    /// `reference`, for heights in `bounds`.
+    pub fn open(glo30: &[PathBuf], reference: Option<&Path>, bounds: [f64; 4]) -> Result<Self, String> {
         let mut fallback = DemMosaic::default();
         let mut identities = Vec::new();
-        if let Some(directory) = dem {
-            for lat in bounds[1].floor() as i32..=bounds[3].floor() as i32 {
-                for lon in bounds[0].floor() as i32..=bounds[2].floor() as i32 {
-                    let path = directory.join(format!(
-                        "Copernicus_DSM_COG_10_{}{:02}_00_{}{:03}_00_DEM.tif",
-                        if lat >= 0 { 'N' } else { 'S' },
-                        lat.abs(),
-                        if lon >= 0 { 'E' } else { 'W' },
-                        lon.abs()
-                    ));
-                    if path.is_file() {
-                        identities.push(digest(&std::fs::read(&path).map_err(|e| e.to_string())?));
-                        fallback.push(DemTile::open(&path)?);
-                    }
-                }
-            }
+        for path in glo30 {
+            identities.push(sha256_hex(&std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?));
+            fallback.push(DemTile::open(path)?);
         }
         let reference = reference.map(ReferenceArchive::open).transpose()?;
         if let Some(archive) = &reference {
@@ -51,14 +54,15 @@ impl Terrain {
         Ok(Self { fallback, reference, cache: VecDeque::new(), identities, used: BTreeSet::new() })
     }
 
-    pub fn height(&mut self, point: Point) -> Result<Option<f64>, String> {
+    /// The height in metres at `lat`, `lon` in microdegrees, or `None` where no source has one.
+    pub fn height(&mut self, lat: i32, lon: i32) -> Result<Option<f64>, String> {
         let mut best = None;
         if let Some(archive) = &self.reference {
             let window = Window {
-                lat_lo: point.lat as i64 - 32,
-                lat_hi: point.lat as i64 + 32,
-                lon_lo: point.lon as i64 - 32,
-                lon_hi: point.lon as i64 + 32,
+                lat_lo: lat as i64 - 32,
+                lat_hi: lat as i64 + 32,
+                lon_lo: lon as i64 - 32,
+                lon_hi: lon as i64 + 32,
             };
             for key in window.tiles() {
                 let tile = if let Some(index) = self.cache.iter().position(|(id, _)| id == &key) {
@@ -81,9 +85,10 @@ impl Terrain {
                 }
             }
         }
-        Ok(best.or_else(|| self.fallback.height(point.lat as f64 * 1e-6, point.lon as f64 * 1e-6)))
+        Ok(best.or_else(|| self.fallback.height(lat as f64 * 1e-6, lon as f64 * 1e-6)))
     }
 
+    /// The credits of the sources that gave a height so far.
     pub fn attribution(&self) -> Vec<String> {
         let mut credits = Vec::new();
         if let Some(archive) = &self.reference {
@@ -96,7 +101,7 @@ impl Terrain {
             );
         }
         if !self.fallback.is_empty() {
-            credits.push(obc_data::sources::attribution("copernicus-glo-30").into());
+            credits.push(obc_data::sources::attribution(crate::step::GLO30).into());
         }
         credits
     }

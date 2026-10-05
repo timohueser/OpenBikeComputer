@@ -3,14 +3,14 @@ pub mod blocks;
 pub mod catalog;
 pub mod connectivity;
 pub mod cost;
+pub mod grid;
 pub mod landmarks;
 pub mod layout;
-#[cfg(feature = "obc-terrain")]
-pub mod obc_terrain;
 pub mod osm;
 pub mod overlays;
 mod road_bike;
 pub mod source;
+pub mod step;
 pub mod terrain;
 
 use base::Dictionary;

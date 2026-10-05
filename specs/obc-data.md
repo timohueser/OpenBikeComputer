@@ -105,6 +105,7 @@ Each part of the id is lowercase kebab-case.
 | `box` | array of 4 numbers | Only for `box`: west, south, east, north in degrees, longitude first |
 | `polygon` | string | Only for `polygon`: an Osmosis `.poly` file, relative to the region file. The file must exist |
 | `union` | array of strings | Only for `union`: two or more region ids |
+| `countries` | array of strings | Optional: the ISO 3166-1 alpha-2 codes of the countries in the region, such as `DE` |
 
 A box has longitude in −180…180 and latitude in −90…90, with west < east and south < north.
 A box that crosses the antimeridian is refused. The order of the numbers is checked only
@@ -121,10 +122,20 @@ The bakes read this directory:
 | --- | --- |
 | `obc-bake` (device maps) | Every `geofabrik` region. `--regions DIR` reads another directory with this layout; `obc bake` passes the checkout's directory |
 | Planner bake | The `box` region with the id of the recipe in `tools/planner-regions/`: its `name` and its box |
+| `obc data`, product `planner` | The `geofabrik` region of the environment and its `countries` |
 | `fixtures/build-map-package.sh` | The `box` regions of the fixtures |
 
 `tools/data_registry.py box ID [--lat-first]` prints the box of a `box` region and refuses
 every other kind, so Python and shell never resolve a union or a Geofabrik area.
+
+### `data/planner.toml`
+
+The options of the [planner layers](#planner) that are the same for each region.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `routing.access` | string | The country whose access defaults the OSM import applies. The importer knows `DE` only |
+| `routing.profiles` | array of strings | The profiles of the routing package. The route catalog needs `touring`, `road`, `gravel`, `mtb` and `hiking` |
 
 ## State of a source
 
@@ -595,6 +606,26 @@ then reads the newest version of that fetch in the store.
 | `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13); `terrain/empty.json`: the ids of the cells without a height |
 
 `<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id.
+
+#### `planner`
+
+The planner has steps for a `geofabrik` region that names its `countries`: its OSM is the
+extract of that one area. The bounds of the region are the box around its `.poly`. The
+environment pins `copernicus-glo-30`. The extract, the `.poly` and the GLO-30 tile list are at
+the version of the environment, or else the newest version in the store, as for `maps`. The
+other options come from [`data/planner.toml`](#dataplannertoml). A GLO-30 input reads the tile
+of each 1° square that its box touches and that `copernicus-glo-30-tiles` names; a box at sea
+reads no snapshot. No layer reads a national terrain model yet.
+
+| Layer | Reads | Options | Files |
+| --- | --- | --- | --- |
+| `planner/osm` | `geofabrik-extracts`, `area=<region id>` | `path`: `osm.pbf` | `osm.pbf`: the extract as it is. The engine step `pass` writes it, so its code is no file |
+| `planner/terrain` | The GLO-30 tiles of `bounds` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch, and of their neighbours | `terrain.mbtiles`: lossless Terrarium WebP tiles of zooms 0 to 12, the bytes that `planner-dem` writes from the same tiles |
+| `planner/routing` | `planner/osm`, and the GLO-30 tiles of the bounds of the region | `region`, `access`, `bounds`, `profiles` and `countries` | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells, as `route-blocks` writes them; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell |
+
+A grid cell is a zoom 9 Web Mercator tile that the bounds of the region overlap, clipped to the
+bounds, with the id `9-<x>-<y>`. The JSON objects that `planner/routing` writes have their keys in
+byte order, so the bytes do not depend on the features of `serde_json` in the binary.
 
 ### Releases
 
@@ -2089,6 +2120,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ],
       "properties": {
+        "countries": {
+          "description": "The ISO 3166-1 alpha-2 codes of its countries, such as `DE`. Empty when the file names none.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "id": {
           "type": "string"
         },
@@ -2098,7 +2136,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       },
       "required": [
         "id",
-        "name"
+        "name",
+        "countries"
       ],
       "type": "object"
     },
@@ -2182,6 +2221,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ],
           "description": "Its box, when every part is a box."
         },
+        "countries": {
+          "description": "The ISO 3166-1 alpha-2 codes of its countries, such as `DE`. Empty when the file names none.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "id": {
           "type": "string"
         },
@@ -2199,6 +2245,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "id",
         "name",
+        "countries",
         "leaves",
         "bounds"
       ],

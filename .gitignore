@@ -33,6 +33,8 @@ __pycache__/
 # merge (#920): ingesting the pair must reproduce ingesting the whole.
 !builder/tests/corpus/data/tiny_west.osm.pbf
 !builder/tests/corpus/data/tiny_east.osm.pbf
+# ...and the road grid of the planner build test; its source is planner.osm beside it.
+!host/obc-data-steps/tests/data/planner.osm.pbf
 # The simulator's default route + track stores (its "SD card") — runtime artifacts.
 # obc-sim resolves these relative to the working directory, which is the repo root now
 # that the workspace is rooted here (`obc sim` runs cargo from $OBC_ROOT). Root-anchored

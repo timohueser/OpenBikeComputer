@@ -75,7 +75,7 @@ fn terrain((i, j): (i64, i64), cells: &[CellId], land: &HashSet<&str>, glo30: &s
 
 /// The outline of each region that `env.region` resolves to, or `None` while the store lacks the
 /// `.poly` of a Geofabrik area; then `wanted` has its fetch.
-fn outlines(
+pub(crate) fn outlines(
     env: &Env,
     regions: &Regions,
     store: &Store,
@@ -100,7 +100,7 @@ fn outlines(
 
 /// The text of the one file that a fetch of `source` with `params` gives, or `None` while the
 /// store lacks it; then `wanted` has its fetch.
-fn text(
+pub(crate) fn text(
     env: &Env,
     store: &Store,
     source: &str,
@@ -120,7 +120,7 @@ fn text(
     std::fs::read_to_string(path).map(Some).map_err(|e| invalid(format!("{}: {e}", path.display())))
 }
 
-fn invalid(message: String) -> Unplanned {
+pub(crate) fn invalid(message: String) -> Unplanned {
     Unplanned::Invalid(message)
 }
 
@@ -131,7 +131,7 @@ pub fn box_poly(bbox: &Bbox) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::{Path, PathBuf};
 
     use obc_data::engine::plan::{plan, Plan};
@@ -142,7 +142,7 @@ mod tests {
 
     use super::*;
 
-    struct Temp(PathBuf);
+    pub(crate) struct Temp(pub(crate) PathBuf);
 
     impl Drop for Temp {
         fn drop(&mut self) {
@@ -150,11 +150,11 @@ mod tests {
         }
     }
 
-    fn temp(name: &str) -> Temp {
+    pub(crate) fn temp(name: &str) -> Temp {
         Temp(std::env::temp_dir().join(format!("obc-data-steps-{name}-{}", std::process::id())))
     }
 
-    fn root() -> PathBuf {
+    pub(crate) fn root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
     }
 
@@ -167,7 +167,13 @@ mod tests {
 
     /// Add the files `(name, text)` to the record of `source@version`, as a fetch with `params`
     /// gives them.
-    fn fetched(store: &Store, source: &str, version: &str, params: &[(String, String)], files: &[(String, String)]) {
+    pub(crate) fn fetched(
+        store: &Store,
+        source: &str,
+        version: &str,
+        params: &[(String, String)],
+        files: &[(String, String)],
+    ) {
         let mut snapshot = store.snapshot(source, version).unwrap().unwrap_or_else(|| Snapshot {
             source: source.into(),
             version: version.into(),
