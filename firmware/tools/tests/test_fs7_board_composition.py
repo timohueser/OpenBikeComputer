@@ -100,6 +100,8 @@ class Fs7BoardCompositionTests(unittest.TestCase):
                 rescan.index(following),
                 "catalog scope requires a complete catalog and metadata load at one stable identity",
             )
+        metadata = body(rescan, "if let Err(error) = crate::flat_store::load_metadata(flat, app)", "if start !=")
+        self.assertIn("return Some(Err(catalog_metadata_error(error)))", metadata)
 
         # The executor returns the captured scope or the actual failure. Retry remains owned by
         # CatalogState; a removal does not compose a second rescan beside its outcome.
