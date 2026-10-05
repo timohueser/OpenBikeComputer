@@ -3541,6 +3541,7 @@ dependencies = [
 name = "obc-data-steps"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "obc-bake",
  "obc-data",
  "obc-dem",
@@ -3548,11 +3549,13 @@ dependencies = [
  "obc-fixtures",
  "obc-formats",
  "obc-pack",
+ "obc-search-bake",
  "route-build",
  "route-engine",
  "serde",
  "serde_json",
  "toml",
+ "zip",
 ]
 
 [[package]]
@@ -3840,6 +3843,7 @@ dependencies = [
  "clap",
  "flate2",
  "geo",
+ "obc-data",
  "obc-pack",
  "obc-places",
  "osmpbfreader",

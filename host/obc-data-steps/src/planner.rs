@@ -1,8 +1,9 @@
 //! The planner. Its layers cover the region of the environment: `planner/osm` is the OSM of the
-//! region, `planner/terrain` the terrain of the maps, and `planner/routing` the routing package
-//! with its grid. `planner/overlays`, `planner/assets`, `planner/model` and the optional layers
-//! `planner/climate`, `planner/snow` and `planner/sun` are Python steps. `data/planner.toml` holds
-//! the options that are the same for each region.
+//! region, `planner/terrain` the terrain of the maps, `planner/routing` the routing package with
+//! its grid, and `planner/search/dump` the search records of the OSM. `planner/overlays`,
+//! `planner/assets`, `planner/model`, `planner/places`, the other `planner/search/*` layers and
+//! the optional layers `planner/climate`, `planner/snow` and `planner/sun` are Python steps.
+//! `data/planner.toml` holds the options that are the same for each region.
 
 use std::collections::HashSet;
 
@@ -20,6 +21,11 @@ use serde_json::{json, Value};
 use crate::maps::{invalid, outlines, text, TILE_LIST};
 
 const EXTRACTS: &str = "geofabrik-extracts";
+const SEARCH: &str = "apps/planner-search";
+/// `apps/planner-search/records.py` and the files that it reads: the data kinds of the query
+/// contract, and the POI kinds of the web planner, which the places also read.
+const RECORDS: [&str; 3] = ["apps/planner-search/records.py", "apps/planner-search/query/contract.json", POI_KINDS];
+const POI_KINDS: &str = "builder/app/src/lib/planner/poi-kinds.json";
 /// The uv environment, and the request of a step: code of every Python step.
 const PYTHON: [&str; 4] = [".python-version", "pyproject.toml", "uv.lock", "tools/step_request.py"];
 
@@ -89,10 +95,10 @@ impl Product for Planner {
         if region.countries.is_empty() {
             return Err(invalid(format!("region `{}` names no `countries`, which the route catalog needs", region.id)));
         }
+        let Some(time_zone) = &region.time_zone else {
+            return Err(invalid(format!("region `{}` names no `time_zone`, which the search needs", region.id)));
+        };
         let on = |layer: &str| env.layers.iter().any(|name| name == layer);
-        if on("sun") && region.time_zone.is_none() {
-            return Err(invalid(format!("region `{}` names no `time_zone`, which the sun layer needs", region.id)));
-        }
         let glo30 =
             env.version(GLO30).ok_or_else(|| invalid(format!("data/env/{}.toml pins no `{GLO30}`", env.name)))?;
         let mut wanted = Vec::new();
@@ -105,6 +111,7 @@ impl Product for Planner {
             snapshot(env, store, "tangrams-icons", Vec::new(), &mut wanted)?,
         ];
         let model = snapshot(env, store, "query-model", Vec::new(), &mut wanted)?;
+        let country_data = snapshot(env, store, "nominatim-country-data", Vec::new(), &mut wanted)?;
         let (Some(outlines), Some(tile_list)) = (outlines, tile_list) else {
             return Err(Unplanned::NeedsFetch(wanted));
         };
@@ -129,12 +136,13 @@ impl Product for Planner {
             outputs: vec!["terrain.mbtiles".into()],
             run: Run::Rust(obc_dem::step::planner_terrain),
         };
+        // The last part of the id: the old planner names its files after it.
+        let name = region.id.rsplit('/').next();
         let routing = Step {
             name: "planner/routing".into(),
             inputs: std::iter::once(Input::Layer(osm.name.clone())).chain(tiles(bounds, &land, glo30)).collect(),
             options: json!({
-                // The last part of the id: the old planner names its files after it.
-                "region": region.id.rsplit('/').next(),
+                "region": name,
                 "bounds": bounds,
                 "profiles": config.routing.profiles,
                 "countries": region.countries,
@@ -149,7 +157,7 @@ impl Product for Planner {
             json!({"attribution": attribution("osm-planet")}),
             ("tools.planner_overlays", Some("planner-maps")),
             &["tools/planner_overlays.py", "tools/planner_geo.py", "tools/planner_mvt.py"],
-            "overlays.pmtiles",
+            &["overlays.pmtiles"],
         );
         let assets = python(
             "planner/assets",
@@ -157,7 +165,7 @@ impl Product for Planner {
             json!({}),
             ("tools.planner_assets", None),
             &["tools/planner_assets.py"],
-            "assets",
+            &["assets"],
         );
         let model = python(
             "planner/model",
@@ -170,9 +178,66 @@ impl Product for Planner {
                 "apps/planner-search/query/schema.py",
                 "apps/planner-search/query/contract.json",
             ],
-            "model",
+            &["model"],
         );
-        let mut steps = vec![osm, terrain, routing, overlays, assets, model];
+        let policy = python(
+            "planner/search/policy",
+            vec![country_data],
+            json!({}),
+            ("host/obc-search-bake/policy.py", Some("planner-search")),
+            &["host/obc-search-bake/policy.py"],
+            &["policy.json", "country_osm_grid.sql.gz"],
+        );
+        let dump = Step {
+            name: "planner/search/dump".into(),
+            inputs: vec![Input::Layer(osm.name.clone()), Input::Layer(policy.name.clone())],
+            options: json!({"country": region.countries[0].to_lowercase()}),
+            code: Code { paths: Vec::new(), crates: vec!["obc-search-bake".into()] },
+            outputs: vec!["search.jsonl.zst".into()],
+            run: Run::Rust(obc_search_bake::step::step),
+        };
+        let records = python(
+            "planner/search/records",
+            vec![Input::Layer(dump.name.clone())],
+            json!({}),
+            ("apps/planner-search/split.py", Some("planner-search")),
+            &[["apps/planner-search/split.py"].as_slice(), &RECORDS].concat(),
+            &["pois.jsonl.zst", "addresses.jsonl.zst"],
+        );
+        // One search database per component: the POIs and the addresses.
+        let search = |component: &str| {
+            let module = format!("{component}.py");
+            let files = ["build.py", "writer.py", "storage.py", "index.py", &module];
+            let data = ["schema.sql", "indexes.sql", "web/address-terms.json"];
+            let files: Vec<String> = files.iter().chain(&data).map(|file| format!("{SEARCH}/{file}")).collect();
+            let files: Vec<&str> = files.iter().map(String::as_str).chain(RECORDS).collect();
+            python(
+                &format!("planner/search/{component}"),
+                vec![Input::Layer(records.name.clone())],
+                json!({
+                    "component": component,
+                    "region": name,
+                    "bounds": bounds,
+                    "countries": region.countries,
+                    "time_zone": time_zone,
+                    "attribution": attribution("osm-planet"),
+                }),
+                (&format!("{SEARCH}/build.py"), Some("planner-search")),
+                &files,
+                &[component],
+            )
+        };
+        let (pois, addresses) = (search("pois"), search("addresses"));
+        let places = python(
+            "planner/places",
+            vec![Input::Layer(pois.name.clone())],
+            json!({}),
+            ("tools.planner_places", Some("planner-maps")),
+            &["tools/planner_places.py", "tools/planner_mvt.py", POI_KINDS],
+            &["places.pmtiles"],
+        );
+        let mut steps =
+            vec![osm, terrain, routing, overlays, assets, model, policy, dump, records, pois, addresses, places];
         if on("climate") {
             let first_year = config.climate.first_year;
             let params = vec![bbox.clone(), ("first-year".to_string(), first_year.to_string())];
@@ -183,7 +248,7 @@ impl Product for Planner {
                 json!({"bounds": bounds, "first_year": first_year, "attribution": attribution("era5-land")}),
                 ("tools.planner_climate", Some("planner-climate")),
                 &["tools/planner_climate.py", "tools/planner_geo.py"],
-                "climate.pmtiles",
+                &["climate.pmtiles"],
             ));
         }
         if on("snow") {
@@ -199,7 +264,7 @@ impl Product for Planner {
                 json!({"bounds": bounds, "seasons": [first, last], "year": year, "attribution": attribution("hr-wsi")}),
                 ("tools.planner_snow", Some("planner-snow")),
                 &["tools/planner_snow.py", "tools/planner_geo.py"],
-                "snow.pmtiles",
+                &["snow.pmtiles"],
             ));
         }
         if on("sun") {
@@ -220,7 +285,7 @@ impl Product for Planner {
                     "tools/planner_map_archive.py",
                     "tools/planner_geo.py",
                 ],
-                "sun.pmtiles",
+                &["sun.pmtiles"],
             ));
         }
         match wanted.is_empty() {
@@ -248,15 +313,15 @@ fn snapshot(
 
 /// A Python step: `entry`, a `tools.*` module or a script, with the argument `--step`, under `uv
 /// run` with the packages of `group` of `pyproject.toml`. `files` is its code besides [`PYTHON`]:
-/// each Python file that it imports. A credit that it writes comes in its options, so
-/// `data/sources.toml` is no code of it.
+/// each Python file that it imports, and each file that it reads from the repository. A credit
+/// that it writes comes in its options, so `data/sources.toml` is no code of it.
 fn python(
     name: &str,
     inputs: Vec<Input>,
     options: Value,
     (entry, group): (&str, Option<&str>),
     files: &[&str],
-    output: &str,
+    outputs: &[&str],
 ) -> Step {
     let mut argv: Vec<String> = ["uv", "run", "--locked", "--offline"].map(String::from).into();
     argv.extend(group.into_iter().flat_map(|group| ["--group".to_string(), group.to_string()]));
@@ -271,7 +336,7 @@ fn python(
         inputs,
         options,
         code: Code { paths, crates: Vec::new() },
-        outputs: vec![output.into()],
+        outputs: outputs.iter().map(|output| output.to_string()).collect(),
         run: Run::Command(argv),
     }
 }
@@ -330,7 +395,8 @@ mod tests {
 
     /// An environment with `layers` on that pins every source the planner reads but the extract.
     fn env(region: &str, layers: &[&str]) -> Env {
-        let pins = [GLO30, TILE_LIST, "protomaps-assets", "tangrams-icons", "query-model"].map(|source| (source, "1"));
+        let pins = [GLO30, TILE_LIST, "protomaps-assets", "tangrams-icons", "query-model", "nominatim-country-data"]
+            .map(|source| (source, "1"));
         let captures = ["era5-land", "hr-wsi"].map(|source| (source, "2026-10-01"));
         let pins = pins.into_iter().chain(captures).map(|(source, version)| (source.into(), version.into()));
         let layers = layers.iter().map(|layer| layer.to_string()).collect();
@@ -341,7 +407,8 @@ mod tests {
         let region = |id: &str, text: &str| parse_region(id, &format!("name = \"{id}\"\n{text}")).unwrap();
         Regions::new(vec![
             region(AREA, "kind = \"geofabrik\"\ncountries = [\"DE\"]\ntime_zone = \"Europe/Berlin\"\n"),
-            region("no-countries", "kind = \"geofabrik\"\n"),
+            region("no-countries", "kind = \"geofabrik\"\ntime_zone = \"Europe/Berlin\"\n"),
+            region("no-time-zone", "kind = \"geofabrik\"\ncountries = [\"DE\"]\n"),
             region("boxed", "kind = \"box\"\nbox = [7.79, 47.99, 7.82, 48.02]\ncountries = [\"DE\"]\n"),
         ])
         .unwrap()
@@ -378,10 +445,22 @@ mod tests {
 
         let steps = Planner.steps(&env(AREA, &[]), &regions(), &store(&temp, &["2026-10-01", "2026-10-02"])).unwrap();
         let names: Vec<&str> = steps.iter().map(|step| step.name.as_str()).collect();
-        let layers =
-            ["osm", "terrain", "routing", "overlays", "assets", "model"].map(|layer| format!("planner/{layer}"));
-        assert_eq!(names, layers, "no optional layer is on");
-        let [osm, terrain, routing, ..] = &steps[..] else { unreachable!() };
+        let layers = [
+            "osm",
+            "terrain",
+            "routing",
+            "overlays",
+            "assets",
+            "model",
+            "search/policy",
+            "search/dump",
+            "search/records",
+            "search/pois",
+            "search/addresses",
+            "places",
+        ];
+        assert_eq!(names, layers.map(|layer| format!("planner/{layer}")), "no optional layer is on");
+        let [osm, terrain, routing, .., pois, _, _] = &steps[..] else { unreachable!() };
         let Input::Snapshot { source, version, params, .. } = &osm.inputs[0] else { panic!("not a snapshot") };
         assert_eq!((source.as_str(), version.as_str(), params), (EXTRACTS, "2026-10-02", &area));
         // `terrain_coverage` of `tools/planner_bake.py` with a sun layer of 30 km.
@@ -395,13 +474,17 @@ mod tests {
         assert_eq!(tiles(&routing.inputs[1]), ["N47_00_E007", "N48_00_E007"]);
         assert_eq!(routing.options["bounds"], json!([7.79, 47.99, 7.82, 48.02]));
         assert_eq!((&routing.options["region"], &routing.options["countries"]), (&json!("test"), &json!(["DE"])));
+        assert_eq!(
+            (&pois.options["bounds"], &pois.options["time_zone"]),
+            (&routing.options["bounds"], &json!("Europe/Berlin"))
+        );
         // About Baden-Württemberg, and the box of the old planner recipe.
         let old = [7.03125, 47.04018214480666, 10.922533154247459, 50.07272727272727];
         assert_eq!(terrain_bounds([7.5, 47.5, 10.5, 49.8], 30_000.0), old);
         let old = [5.2734375, 45.33670190996811, 10.922970099182649, 50.28933925329178];
         assert_eq!(terrain_bounds([5.95, 45.8, 10.5, 49.85], 30_000.0), old);
 
-        for region in ["boxed", "no-countries"] {
+        for region in ["boxed", "no-countries", "no-time-zone"] {
             let result = Planner.steps(&env(region, &[]), &regions(), &store(&temp, &["2026-10-01"]));
             assert!(matches!(result, Err(Unplanned::Invalid(_))), "{region}");
         }
@@ -495,6 +578,6 @@ mod tests {
                 assert!(step.code.paths.contains(&file), "{} runs {file}, which its code does not declare", step.name);
             }
         }
-        assert_eq!(python, 6, "overlays, assets, model, climate, snow and sun");
+        assert_eq!(python, 11, "overlays, assets, model, four search layers, places, climate, snow and sun");
     }
 }

@@ -634,8 +634,8 @@ then reads the newest version of that fetch in the store.
 
 #### `planner`
 
-The planner has steps for a `geofabrik` region that names its `countries`: its OSM is the
-extract of that one area. The bounds of the region are the box around its `.poly`. The
+The planner has steps for a `geofabrik` region that names its `countries` and its `time_zone`:
+its OSM is the extract of that one area. The bounds of the region are the box around its `.poly`. The
 environment pins `copernicus-glo-30`. Every other snapshot, such as the extract, the `.poly`
 and the GLO-30 tile list, is at the version of the environment, or else the newest version in the
 store, as for `maps`. The
@@ -651,17 +651,23 @@ reads no snapshot. No layer reads a national terrain model yet.
 | `planner/overlays` | `planner/routing` | `attribution` of `osm-planet` | `overlays.pmtiles`: the route networks and the access of `routing/overlays.sqlite`, as [the planner release](planner-release.md) defines it |
 | `planner/assets` | `protomaps-assets`, `tangrams-icons` | None | `assets/fonts/` and `assets/sprites/` of the assets archive; `assets/sprites/LICENSE.txt`: the MIT notice of `tangrams-icons` |
 | `planner/model` | `query-model` | None | `model/`: `model.int8.onnx`, `tokenizer.json` and `tokenizer_config.json` of the archive, and `labels.json`, the labels of the query schema |
+| `planner/search/policy` | `nominatim-country-data` | None | `policy.json`: the country names, postcode formats and address levels of the archive; `country_osm_grid.sql.gz`: the country grid of the archive, as it is |
+| `planner/search/dump` | `planner/osm`, `planner/search/policy` | `country`: the first of `countries` in lowercase, the country of a place outside each country polygon | `search.jsonl.zst`: the search records that `obc-search-bake` writes, one JSON object per line, with the keys of each object in byte order |
+| `planner/search/records` | `planner/search/dump` | None | `pois.jsonl.zst` and `addresses.jsonl.zst`: the records of the dump with a POI and with an address |
+| `planner/search/pois`, `planner/search/addresses` | `planner/search/records` | `component` (`pois` or `addresses`); `region`, `bounds` and `countries` as for `planner/routing`; `time_zone` of the region; `attribution` of `osm-planet` | `<component>/<region>.sqlite`: the search database of the component, schema 5 |
+| `planner/places` | `planner/search/pois` | None | `places.pmtiles`: the rider places of the POI database, at zoom 11 |
 | `planner/climate` | `era5-land`, `bbox=<bounds>`, `first-year=<climate.first_year>` | `bounds`, `first_year`, and `attribution` of `era5-land`, whose `{year}` is the year after the ten years, `first_year` + 10 | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md) |
 | `planner/snow` | `hr-wsi`, `bbox=<bounds>`, `seasons=<snow.seasons>` | `bounds`, `seasons`, `attribution` of `hr-wsi`, and `year`: the year of the `hr-wsi` version, which fills its `{year}` | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md) from HR-WSI |
 | `planner/sun` | `planner/terrain` | `bounds`, `time_zone` of the region, `distance_m` (`terrain.margin_m`), `horizon_samples` and `horizon_directions` | `sun.pmtiles`: [the sun archive](planner-sun-tiles.md). `terrain_sha256` is the SHA-256 of the PMTiles archive that the step converts from `terrain.mbtiles` |
 
 `climate`, `snow` and `sun` are optional layers: a step only when `layers` of the environment
-names it. The sun layer needs the `time_zone` of the region.
+names it. The search and the sun layer use the `time_zone` of the region.
 
 A Python step runs `uv run --locked --offline --group <group> python <entry> --step` in the
 repository root, with the packages of a dependency group of `pyproject.toml`; `uv sync
---all-groups` installs them on a machine. Its code is each Python file that it imports,
-`tools/step_request.py`, `.python-version`, `pyproject.toml` and `uv.lock`. A credit that it
+--all-groups` installs them on a machine. Its code is each Python file that it imports, each
+file that it reads from the repository, `tools/step_request.py`, `.python-version`,
+`pyproject.toml` and `uv.lock`. A credit that it
 writes comes in its options, so `data/sources.toml` is no code of it.
 
 A grid cell is a zoom 9 Web Mercator tile that the bounds of the region overlap, clipped to the
