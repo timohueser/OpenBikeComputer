@@ -580,6 +580,26 @@ impl RideExec {
         self.outcomes.has_pending() || self.effects.has_pending() || !self.needs.is_empty()
     }
 
+    /// A new catalog effect supersedes a deferred current read.
+    #[inline(never)]
+    fn install_effects(&mut self, app: &App, effects: obc_app::device_core::EffectSlots) {
+        let deferred_catalog = self
+            .effects
+            .catalog
+            .take_if(|effect| matches!(effect, obc_app::catalog_state::CatalogEffect::ReadCatalog { .. }))
+            .filter(|effect| app.catalog_operation_current(effect.token()));
+        debug_assert!(
+            !self.effects.has_pending(),
+            "every staged effect is served in this frame's store phase before the next plan lands"
+        );
+        self.effects = effects;
+        if self.effects.catalog.is_empty() {
+            if let Some(effect) = deferred_catalog {
+                Self::deliver(&mut self.effects.catalog, effect, "catalog");
+            }
+        }
+    }
+
     /// A card round trip or busy catalog loan takes the short cadence so the current owner progresses.
     fn polling_store(&self) -> bool {
         self.catalog.is_some()
@@ -2617,23 +2637,7 @@ pub(crate) async fn run_app(
                 }
             }
             exec.needs = derived_needs;
-            {
-                let deferred_catalog = exec
-                    .effects
-                    .catalog
-                    .take_if(|effect| matches!(effect, obc_app::catalog_state::CatalogEffect::ReadCatalog { .. }))
-                    .filter(|effect| app.catalog_operation_current(effect.token()));
-                debug_assert!(
-                    !exec.effects.has_pending(),
-                    "every staged effect is served in this frame's store phase before the next plan lands"
-                );
-                exec.effects = effects;
-                if exec.effects.catalog.is_empty() {
-                    if let Some(effect) = deferred_catalog {
-                        RideExec::deliver(&mut exec.effects.catalog, effect, "catalog");
-                    }
-                }
-            }
+            exec.install_effects(app, effects);
 
             // The BLE acting half: what the pass just decided, out to the radio plane. Both of these
             // key on state this frame's gestures produced, so they read the app after the pass.
