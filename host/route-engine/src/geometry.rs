@@ -21,9 +21,15 @@ pub fn project(p: Point, a: Point, b: Point) -> (f64, f64) {
     (t, (a[0] + d[0] * t).hypot(a[1] + d[1] * t))
 }
 
-/// The point at parameter `t` of the segment `a`–`b`, rounded to microdegrees. Its elevation is
-/// unknown where the elevation of an end is unknown.
+/// The point at parameter `t` of the segment `a`–`b`, rounded to microdegrees. An end is itself,
+/// with its own elevation; between the ends, the elevation is unknown where an end's is unknown.
 pub fn lerp(a: Point, b: Point, t: f64) -> Point {
+    if t <= 0.0 {
+        return a;
+    }
+    if t >= 1.0 {
+        return b;
+    }
     let mix = |a: f64, b: f64| a + (b - a) * t;
     Point {
         lat: mix(a.lat as f64, b.lat as f64).round() as i32,
@@ -46,11 +52,17 @@ pub fn cumulative(line: &[Point]) -> Vec<f64> {
     along
 }
 
-/// The point `at` metres along a line of two or more points, whose `cumulative` lengths are `along`.
+/// The segment from point `k` to point `k + 1` of a line of two or more points, whose `cumulative`
+/// lengths are `along`, that holds the point `at` metres along it, and the parameter of that point.
+pub fn locate(along: &[f64], at: f64) -> (usize, f64) {
+    let i = along.partition_point(|&a| a < at).clamp(1, along.len() - 1);
+    (i - 1, ((at - along[i - 1]) / (along[i] - along[i - 1]).max(f64::MIN_POSITIVE)).clamp(0.0, 1.0))
+}
+
+/// The point `at` metres along a line, as for `locate`.
 pub fn at(line: &[Point], along: &[f64], at: f64) -> Point {
-    let i = along.partition_point(|&a| a < at).clamp(1, line.len() - 1);
-    let t = ((at - along[i - 1]) / (along[i] - along[i - 1]).max(f64::MIN_POSITIVE)).clamp(0.0, 1.0);
-    lerp(line[i - 1], line[i], t)
+    let (k, t) = locate(along, at);
+    lerp(line[k], line[k + 1], t)
 }
 
 /// The part of a line from `from` to `to` metres along it, as for `at`, without repeated points.
@@ -130,7 +142,18 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Road>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Surface, NO_ELEVATION};
+    use crate::model::Surface;
+
+    #[test]
+    fn every_vertex_keeps_its_own_height_next_to_an_unknown_one() {
+        let line: Vec<Point> = [(0, 10.0), (1_000, NO_ELEVATION), (2_000, 30.0), (3_000, 40.0)]
+            .map(|(lon, elevation)| Point { lat: 0, lon, elevation })
+            .to_vec();
+        let along = cumulative(&line);
+        assert_eq!(cut(&line, &along, 0.0, along[3]), line);
+        assert_eq!(cut(&line, &along, along[2], along[3]), line[2..]);
+        assert_eq!(at(&line, &along, (along[1] + along[2]) / 2.0).elevation, NO_ELEVATION);
+    }
 
     #[test]
     fn geometry_preserves_fields_and_float_bits_and_rejects_invalid_columns() {

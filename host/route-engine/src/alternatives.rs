@@ -69,10 +69,14 @@ impl<P: RoutingData> Router<P> {
                 [0.35, 0.65]
                     .into_iter()
                     .flat_map(|fraction| {
-                        let middle = geometry::at(line, &along, fraction * along[along.len() - 1]);
+                        let (k, t) = geometry::locate(&along, fraction * along[along.len() - 1]);
+                        // The middle stays unrounded until the offset is added.
+                        let middle = |a: i32, b: i32| a as f64 + (b - a) as f64 * t;
+                        let lon = middle(line[k].lon, line[k + 1].lon);
+                        let lat = middle(line[k].lat, line[k + 1].lat);
                         [-1.0, 1.0].map(|side| Point {
-                            lon: (middle.lon as f64 - side * dy / length * offset / scale).round() as i32,
-                            lat: (middle.lat as f64 + side * dx / length * offset).round() as i32,
+                            lon: (lon - side * dy / length * offset / scale).round() as i32,
+                            lat: (lat + side * dx / length * offset).round() as i32,
                             elevation: 0.0,
                         })
                     })

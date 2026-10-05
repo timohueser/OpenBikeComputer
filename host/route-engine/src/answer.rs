@@ -38,12 +38,7 @@ fn route(route: &Route) -> Value {
         "coordinates_udeg": coordinates,
         "elevation_dm": elevation,
         "elapsed_s": elapsed,
-        "edges": {
-            "surfaces": runs(route, |p| p.surface),
-            "pushing": runs(route, |p| p.mode == PUSH),
-            "closures": runs(route, |p| &p.closures),
-            "sac_scale": runs(route, |p| p.sac_scale),
-        },
+        "edges": edges(route),
         "legs": route.legs.iter().map(|leg| json!({
             "from_index": leg.from_index,
             "to_index": leg.to_index,
@@ -58,6 +53,19 @@ fn route(route: &Route) -> Value {
         value["via"] = json!(via);
     }
     value
+}
+
+/// The run channels; a route of one point has no edges and no channels.
+fn edges(route: &Route) -> Value {
+    if route.points.len() < 2 {
+        return json!({});
+    }
+    json!({
+        "surfaces": runs(route, |p| p.surface),
+        "pushing": runs(route, |p| p.mode == PUSH),
+        "closures": runs(route, |p| &p.closures),
+        "sac_scale": runs(route, |p| p.sac_scale),
+    })
 }
 
 /// One fact of each edge in runs: each value with the number of consecutive edges it covers.
@@ -107,17 +115,14 @@ mod tests {
         snap::Position,
     };
 
-    /// The vector's route has one value per edge in each channel; it becomes one piece per edge, so
-    /// equal neighbours must join into one run.
-    #[test]
-    fn encodes_the_shared_vector() {
-        let vector: Value = serde_json::from_str(include_str!("../../../specs/vectors/route-answer.json")).unwrap();
-        let source = &vector["route"];
-        fn value<T: serde::de::DeserializeOwned>(value: &Value) -> T {
-            serde_json::from_value(value.clone()).unwrap()
-        }
-        let position =
-            |p: &Value| Position { road: p["road"].as_u64().unwrap() as u32, fraction: value(&p["fraction"]) };
+    fn value<T: serde::de::DeserializeOwned>(value: &Value) -> T {
+        serde_json::from_value(value.clone()).unwrap()
+    }
+
+    /// A route of the vector. It has one value per edge in each channel and becomes one piece per
+    /// edge, so equal neighbours must join into one run.
+    fn source(source: &Value) -> Route {
+        let position = |p: &Value| Position { road: value(&p["road"]), fraction: value(&p["fraction"]) };
         let geometry: Vec<[f64; 2]> = value(&source["geometry"]);
         let elevation: Vec<Option<f32>> = value(&source["elevation"]);
         let points = geometry
@@ -157,9 +162,9 @@ mod tests {
                 }
             })
             .collect();
-        let route = Route {
+        Route {
             id: value(&source["id"]),
-            reason: "corridor",
+            reason: value::<String>(&source["reason"]).leak(),
             package: value(&source["package"]),
             profile: value(&source["profile"]),
             cost: 0,
@@ -168,8 +173,13 @@ mod tests {
             legs,
             snap_truncated: value(&source["snap_truncated"]),
             via: value(&source["via"]),
-        };
-        assert_eq!(source["reason"], route.reason);
-        assert_eq!(answer(&Response { routes: vec![route] }), vector["answer"]);
+        }
+    }
+
+    #[test]
+    fn encodes_the_shared_vector() {
+        let vector: Value = serde_json::from_str(include_str!("../../../specs/vectors/route-answer.json")).unwrap();
+        let routes = vector["routes"].as_array().unwrap().iter().map(source).collect();
+        assert_eq!(answer(&Response { routes }), vector["answer"]);
     }
 }
