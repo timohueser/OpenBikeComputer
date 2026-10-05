@@ -549,7 +549,7 @@ licence = "OFL-1.1 AND MIT"
 licence_url = "https://github.com/protomaps/basemaps-assets"
 obligations = "Keep the OFL text with the fonts and the MIT notice with the sprites"
 fetch = { kind = "github", url = "https://codeload.github.com/protomaps/basemaps-assets/zip/{version}" }
-hosts = ["raw.githubusercontent.com"]
+hosts = ["api.github.com", "raw.githubusercontent.com"]
 version = "commit"
 refresh = "manual"
 redistribute = true
@@ -560,6 +560,7 @@ kind = "asset"
 licence = "MIT"
 obligations = "Keep the MIT notice of mmBERT-small, the model it derives from"
 fetch = { kind = "github", url = "https://github.com/timohueser/OpenBikeComputer/releases/download/{version}/query-parser-v2-int8.tar.gz" }
+hosts = ["api.github.com"]
 version = "release"
 refresh = "manual"
 redistribute = true
@@ -582,6 +583,7 @@ kind = "tool"
 licence = "BSD-3-Clause"
 licence_url = "https://github.com/protomaps/basemaps"
 fetch = { kind = "github", url = "https://codeload.github.com/protomaps/basemaps/tar.gz/{version}" }
+hosts = ["api.github.com"]
 version = "commit"
 refresh = "manual"
 redistribute = false
@@ -592,6 +594,7 @@ kind = "tool"
 licence = "Apache-2.0"
 licence_url = "https://github.com/komoot/photon"
 fetch = { kind = "github", url = "https://github.com/komoot/photon/releases/download/{version}/photon-{version}.jar" }
+hosts = ["api.github.com"]
 version = "release"
 refresh = "manual"
 redistribute = false

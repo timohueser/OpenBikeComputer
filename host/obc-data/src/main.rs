@@ -1,12 +1,17 @@
-//! `obc data`: read the sources and the regions. Read commands change nothing.
+//! `obc data`: read the sources and the regions, and fetch sources into the store. Read commands
+//! change nothing in `data/`.
 
+use std::path::Path;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 
+use obc_data::fetch::http::Http;
+use obc_data::fetch::{self, upstream, Request};
 use obc_data::regions::{Area, Bbox, Region, Regions};
 use obc_data::sources::{self, Kind, Registry, Source, State, VersionScheme};
+use obc_data::store::{self, FileRecord, Snapshot, Store};
 
 #[derive(Parser)]
 #[command(name = "obc data", about = "Data sources, regions and pins")]
@@ -17,8 +22,27 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Every source with licence, R2 copy, live pin, age, policy and state.
+    /// Every source with licence, R2 copy, live pin, newest upstream version, age, policy and state.
     Sources {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Fetch a source version into the store, and print the store path of each file.
+    Fetch {
+        /// SOURCE or SOURCE@VERSION. Without a version: the live pin, or else upstream's newest file.
+        target: String,
+        /// NAME=VALUE for each `{name}` in the URL of the source, such as `tile=…` or `area=…`.
+        params: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Fetch the newest upstream version of a source and pin it in an environment.
+    Refresh {
+        source: String,
+        /// NAME=VALUE for each `{name}` in the URL of the source.
+        params: Vec<String>,
+        #[arg(long, default_value = "live")]
+        env: String,
         #[arg(long)]
         json: bool,
     },
@@ -73,6 +97,19 @@ fn run(cli: Cli) -> Result<(), Failure> {
     let root = obc_data::find_root(&cwd).ok_or("no data/sources.toml above the current directory")?;
     match cli.command {
         Command::Sources { json } => print_sources(&Registry::load(&root)?, json),
+        Command::Fetch { target, params, json } => {
+            let registry = Registry::load(&root)?;
+            let (id, version) = match target.split_once('@') {
+                Some((id, version)) => (id, Some(version.to_string())),
+                None => (target.as_str(), None),
+            };
+            let source = find(&registry, id)?;
+            let version = version.or_else(|| registry.pins.get(id).cloned());
+            let store = Store::open()?;
+            let request = Request { source, version, params: parse_params(&params)? };
+            print_snapshot(&store, &fetch::fetch(&store, &Http::new(), &request)?, json)
+        }
+        Command::Refresh { source, params, env, json } => refresh(&root, &source, &params, &env, json),
         Command::Region { action, json } => {
             let regions = Regions::load(&root)?;
             match action {
@@ -83,11 +120,71 @@ fn run(cli: Cli) -> Result<(), Failure> {
     }
 }
 
+fn usage(message: &str) -> Failure {
+    Failure { status: 2, message: message.into() }
+}
+
+fn find<'a>(registry: &'a Registry, id: &str) -> Result<&'a Source, Failure> {
+    registry.sources.iter().find(|s| s.id == id).ok_or_else(|| usage(&format!("no source `{id}`")))
+}
+
+fn parse_params(params: &[String]) -> Result<Vec<(String, String)>, Failure> {
+    params
+        .iter()
+        .map(|param| match param.split_once('=') {
+            Some((name, value)) if !name.is_empty() && !value.is_empty() => Ok((name.into(), value.into())),
+            _ => Err(usage(&format!("`{param}` is not NAME=VALUE"))),
+        })
+        .collect()
+}
+
+fn refresh(root: &Path, id: &str, params: &[String], env: &str, json: bool) -> Result<(), Failure> {
+    let registry = Registry::load(root)?;
+    let source = find(&registry, id)?;
+    let path = root.join("data/env").join(format!("{env}.toml"));
+    let text = std::fs::read_to_string(&path).map_err(|e| usage(&format!("{}: {e}", path.display())))?;
+    let (store, http) = (Store::open()?, Http::new());
+    let version = upstream::newest(&store, &http, source, 0);
+    let named = source.fetch.url.as_deref().is_some_and(|url| url.contains("{version}"));
+    if version.is_none() && (named || matches!(source.version, VersionScheme::Release | VersionScheme::Commit)) {
+        return Err(format!("the newest version of `{id}` is not known: fetch {id}@VERSION and pin it by hand").into());
+    }
+    let snapshot = fetch::fetch(&store, &http, &Request { source, version, params: parse_params(params)? })?;
+    let text = sources::set_pin(&text, id, &snapshot.version);
+    sources::parse_pins(&text, &registry.sources).map_err(|e| format!("{}: {e}", path.display()))?;
+    store::write_atomic(&path, text.as_bytes())?;
+    eprintln!("obc data: pinned {id} = \"{}\" in data/env/{env}.toml", snapshot.version);
+    print_snapshot(&store, &snapshot, json)
+}
+
+fn print_snapshot(store: &Store, snapshot: &Snapshot, json: bool) -> Result<(), Failure> {
+    let paths: Vec<_> = snapshot.files.iter().map(|file| store.object(&file.sha256)).collect();
+    if json {
+        #[derive(Serialize)]
+        struct File<'a> {
+            #[serde(flatten)]
+            file: &'a FileRecord,
+            path: &'a Path,
+        }
+        #[derive(Serialize)]
+        struct Fetched<'a> {
+            source: &'a str,
+            version: &'a str,
+            files: Vec<File<'a>>,
+        }
+        let files = snapshot.files.iter().zip(&paths).map(|(file, path)| File { file, path }).collect();
+        return print_json(&Fetched { source: &snapshot.source, version: &snapshot.version, files });
+    }
+    paths.iter().for_each(|path| println!("{}", path.display()));
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct SourceRow<'a> {
     #[serde(flatten)]
     source: &'a Source,
     pin: Option<&'a str>,
+    upstream: Option<String>,
     age_days: Option<i64>,
     state: State,
     reason: Option<String>,
@@ -97,13 +194,22 @@ fn print_sources(registry: &Registry, json: bool) -> Result<(), Failure> {
     let today = obc_data::date::today();
     let mut sorted: Vec<&Source> = registry.sources.iter().collect();
     sorted.sort_by_key(|source| source.kind);
+    let (store, http) = (Store::open()?, Http::new());
+    let newest: Vec<Option<String>> = std::thread::scope(|scope| {
+        let checks: Vec<_> = sorted
+            .iter()
+            .map(|source| scope.spawn(|| upstream::newest(&store, &http, source, upstream::CACHE)))
+            .collect();
+        checks.into_iter().map(|check| check.join().unwrap_or(None)).collect()
+    });
     let rows: Vec<SourceRow> = sorted
         .into_iter()
-        .map(|source| {
+        .zip(newest)
+        .map(|(source, upstream)| {
             let pin = registry.pins.get(&source.id).map(String::as_str);
             let present = source.credential.as_ref().is_none_or(|c| c.present());
-            let status = sources::status(source, pin, today, present);
-            SourceRow { source, pin, age_days: status.age_days, state: status.state, reason: status.reason }
+            let status = sources::status(source, pin, upstream.as_deref(), today, present);
+            SourceRow { source, pin, upstream, age_days: status.age_days, state: status.state, reason: status.reason }
         })
         .collect();
     if json {
@@ -113,7 +219,7 @@ fn print_sources(registry: &Registry, json: bool) -> Result<(), Failure> {
         }
         return print_json(&Listing { sources: &rows });
     }
-    let mut table = vec![cells(["SOURCE", "LICENCE", "R2 COPY", "LIVE PIN", "AGE", "POLICY", "STATE"])];
+    let mut table = vec![cells(["SOURCE", "LICENCE", "R2 COPY", "LIVE PIN", "UPSTREAM", "AGE", "POLICY", "STATE"])];
     let mut tools = false;
     for row in &rows {
         let s = row.source;
@@ -122,10 +228,12 @@ fn print_sources(registry: &Registry, json: bool) -> Result<(), Failure> {
             table.push(vec![String::new()]);
             table.push(vec!["tools".into()]);
         }
-        let pin = row.pin.map_or("—".into(), |pin| match s.version {
-            VersionScheme::Commit | VersionScheme::Digest => pin.chars().take(12).collect(),
-            _ => pin.to_string(),
-        });
+        let short = |version: Option<&str>| {
+            version.map_or("—".into(), |version| match s.version {
+                VersionScheme::Commit | VersionScheme::Digest => version.chars().take(12).collect(),
+                _ => version.to_string(),
+            })
+        };
         let licence =
             s.licence.clone().unwrap_or_else(|| if s.kind == Kind::Tool { "—" } else { "not recorded" }.into());
         let state = match &row.reason {
@@ -136,7 +244,8 @@ fn print_sources(registry: &Registry, json: bool) -> Result<(), Failure> {
             s.id.clone(),
             licence,
             if s.r2_copy { "yes" } else { "no" }.into(),
-            pin,
+            short(row.pin),
+            short(row.upstream.as_deref()),
             row.age_days.map_or("—".into(), |age| format!("{age} d")),
             s.refresh.to_string(),
             state,

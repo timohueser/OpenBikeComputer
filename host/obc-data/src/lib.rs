@@ -1,9 +1,12 @@
 //! The data registry: every external source a bake uses, every region, and the pins of an
-//! environment. `specs/obc-data.md` is the contract for the files this crate reads.
+//! environment; and the store and the fetchers that fill it. `specs/obc-data.md` is the contract
+//! for the files this crate reads and writes.
 
 pub mod date;
+pub mod fetch;
 pub mod regions;
 pub mod sources;
+pub mod store;
 
 use std::path::{Path, PathBuf};
 

@@ -323,8 +323,40 @@ pub struct Status {
     pub age_days: Option<i64>,
 }
 
-/// The state of `source` at `today`, from its pin, its policy, its licence and its credential.
-pub fn status(source: &Source, pin: Option<&str>, today: i64, credential_present: bool) -> Status {
+/// `text`, an environment file, with `id = "version"` in its `[pins]`: the pin replaced, or added
+/// after the last pin. Comments and the order of the other lines stay.
+pub fn set_pin(text: &str, id: &str, version: &str) -> String {
+    let pin = format!("{id} = \"{version}\"");
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    match lines.iter().position(|line| line.trim() == "[pins]") {
+        None => lines.extend([String::new(), "[pins]".into(), pin]),
+        Some(table) => {
+            let end = lines[table + 1..]
+                .iter()
+                .position(|l| l.trim_start().starts_with('['))
+                .map_or(lines.len(), |i| table + 1 + i);
+            let key = |line: &str| line.split_once('=').map(|(key, _)| key.trim().to_string());
+            match (table + 1..end).find(|&i| key(&lines[i]).as_deref() == Some(id)) {
+                Some(i) => lines[i] = pin,
+                None => {
+                    let last = (table + 1..end).rev().find(|&i| key(&lines[i]).is_some()).unwrap_or(table);
+                    lines.insert(last + 1, pin);
+                }
+            }
+        }
+    }
+    lines.join("\n") + "\n"
+}
+
+/// The state of `source` at `today`, from its pin, the newest upstream version, its policy, its
+/// licence and its credential. An unknown upstream version may be newer.
+pub fn status(
+    source: &Source,
+    pin: Option<&str>,
+    upstream: Option<&str>,
+    today: i64,
+    credential_present: bool,
+) -> Status {
     let age_days = pin.filter(|_| source.version == VersionScheme::Date).and_then(date::parse).map(|day| today - day);
     let (state, reason) = if source.kind != Kind::Tool && source.licence.is_none() {
         (State::Blocked, Some("no licence recorded".to_string()))
@@ -332,8 +364,9 @@ pub fn status(source: &Source, pin: Option<&str>, today: i64, credential_present
         (State::Blocked, Some(format!("credential missing: {}", credential.describe())))
     } else {
         match (source.refresh, age_days) {
-            (Refresh::Days(max), Some(age)) if age > i64::from(max) => {
-                (State::Stale, Some(format!("{age} d > {max} d")))
+            (Refresh::Days(max), Some(age)) if age > i64::from(max) && upstream.is_none_or(|u| Some(u) > pin) => {
+                let newer = upstream.map_or("upstream not checked".into(), |u| format!("upstream {u}"));
+                (State::Stale, Some(format!("{age} d > {max} d, {newer}")))
             }
             _ => (State::Ok, None),
         }
@@ -396,26 +429,29 @@ mod tests {
     }
 
     #[test]
-    fn a_pin_is_stale_when_older_than_its_policy() {
+    fn a_pin_is_stale_when_older_than_its_policy_and_upstream_is_newer() {
         let today = date::parse("2024-01-10").unwrap();
-        let fresh = status(&osm(), Some("2024-01-03"), today, true);
+        let fresh = status(&osm(), Some("2024-01-03"), Some("2024-01-09"), today, true);
         assert_eq!((fresh.state, fresh.age_days), (State::Ok, Some(7)));
-        let old = status(&osm(), Some("2024-01-02"), today, true);
-        assert_eq!((old.state, old.reason.as_deref()), (State::Stale, Some("8 d > 7 d")));
+        let old = status(&osm(), Some("2024-01-02"), Some("2024-01-09"), today, true);
+        assert_eq!((old.state, old.reason.as_deref()), (State::Stale, Some("8 d > 7 d, upstream 2024-01-09")));
+        let unchecked = status(&osm(), Some("2024-01-02"), None, today, true);
+        assert_eq!(unchecked.reason.as_deref(), Some("8 d > 7 d, upstream not checked"));
+        assert_eq!(status(&osm(), Some("2024-01-02"), Some("2024-01-02"), today, true).state, State::Ok);
         let manual = Source { refresh: Refresh::Manual, ..osm() };
-        assert_eq!(status(&manual, Some("2020-01-01"), today, true).state, State::Ok);
-        assert_eq!(status(&osm(), None, today, true).state, State::Ok);
+        assert_eq!(status(&manual, Some("2020-01-01"), None, today, true).state, State::Ok);
+        assert_eq!(status(&osm(), None, None, today, true).state, State::Ok);
     }
 
     #[test]
     fn a_missing_licence_or_credential_blocks() {
         let today = date::parse("2024-01-10").unwrap();
         let unlicensed = Source { licence: None, ..osm() };
-        assert_eq!(status(&unlicensed, Some("2024-01-09"), today, true).state, State::Blocked);
+        assert_eq!(status(&unlicensed, Some("2024-01-09"), None, today, true).state, State::Blocked);
         let tool = Source { kind: Kind::Tool, ..unlicensed };
-        assert_eq!(status(&tool, None, today, true).state, State::Ok);
+        assert_eq!(status(&tool, None, None, today, true).state, State::Ok);
         let keyed = Source { credential: Some(Credential { env: vec!["KEY".into()], file: None }), ..osm() };
-        let blocked = status(&keyed, None, today, false);
+        let blocked = status(&keyed, None, None, today, false);
         assert_eq!((blocked.state, blocked.reason.as_deref()), (State::Blocked, Some("credential missing: KEY")));
     }
 
@@ -425,6 +461,16 @@ mod tests {
         assert!(parse_pins("[pins]\nosm = \"2024-01-01\"\n", &sources).is_ok());
         assert!(parse_pins("[pins]\nosm = \"latest\"\n", &sources).unwrap_err().contains("not a YYYY-MM-DD"));
         assert!(parse_pins("[pins]\nland = \"2024-01-01\"\n", &sources).unwrap_err().contains("names no source"));
+    }
+
+    #[test]
+    fn a_pin_is_replaced_or_added_to_the_pins_table() {
+        let text = "# live\n[pins]\nosm = \"2024-01-01\"\nland = \"2024-01-01\"\n\n[other]\nx = 1\n";
+        let replaced = set_pin(text, "osm", "2024-02-01");
+        assert_eq!(replaced, text.replace("osm = \"2024-01-01\"", "osm = \"2024-02-01\""));
+        let added = set_pin(text, "qrank", "2024-02-01");
+        assert!(added.contains("land = \"2024-01-01\"\nqrank = \"2024-02-01\"\n\n[other]"), "{added}");
+        assert_eq!(set_pin("# empty\n", "osm", "2024-02-01"), "# empty\n\n[pins]\nosm = \"2024-02-01\"\n");
     }
 
     #[test]
