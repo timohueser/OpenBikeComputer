@@ -10,7 +10,7 @@
 //! the catalog.
 
 use obc_render::{OverlayChunk, RouteOverlaySource};
-use obc_route::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use obc_route::RouteReader;
 
 pub use obc_route::RouteSummary;
 
@@ -27,19 +27,6 @@ pub type Catalog = heapless::Vec<RouteSummary, MAX_ROUTES>;
 /// wrapper, because the orphan rule forbids implementing the foreign trait on the foreign reader.
 pub struct RouteOverlay<'a, 'b>(pub &'a RouteReader<'b>);
 
-/// Decode chunk `k` into `(lon, lat)` pairs. Split out `#[inline(never)]` so the `RoutePoint`
-/// decode scratch (~3 KB) lives in a frame that is popped before `visit` descends into the deep
-/// stroke/fill path; the measured stack peak on the 256 KB DK must not grow.
-#[inline(never)]
-fn decode_lonlat(rr: &RouteReader, k: usize, out: &mut [(i32, i32); MAX_POINTS_PER_CHUNK]) -> Option<usize> {
-    let mut pts = heapless::Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
-    rr.decode_chunk(k, &mut pts).ok()?;
-    for (dst, p) in out.iter_mut().zip(pts.iter()) {
-        *dst = (p.lon, p.lat);
-    }
-    Some(pts.len())
-}
-
 impl RouteOverlaySource for RouteOverlay<'_, '_> {
     fn chunk_count(&self) -> usize {
         self.0.chunks().len()
@@ -55,12 +42,8 @@ impl RouteOverlaySource for RouteOverlay<'_, '_> {
     }
 
     fn visit_points(&self, k: usize, visit: &mut dyn FnMut(&[(i32, i32)])) {
-        // Stack, not heap (`no_std`): a 2 KB `(lon, lat)` staging array in this frame; the
-        // `RoutePoint` decode scratch lives (and dies) in `decode_lonlat`'s frame. A failed
-        // decode (flaky SD) skips `visit`, per the trait contract.
-        let mut ll = [(0i32, 0i32); MAX_POINTS_PER_CHUNK];
-        if let Some(n) = decode_lonlat(self.0, k, &mut ll) {
-            visit(&ll[..n]);
-        }
+        // The corridor seam serves the same chunk slices, and skips `visit` on a failed decode
+        // (flaky SD), per this trait's contract too.
+        obc_reader::RoutePath::visit_chunk_points(self.0, k, visit);
     }
 }

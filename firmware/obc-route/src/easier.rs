@@ -1,5 +1,5 @@
 //! Fixed route trials and measured eligibility. Costs describe physical stored geometry.
-use crate::{nav::Objective, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use crate::{nav::Objective, RoutePoint, RouteReader};
 use obc_elevation::{DeadBand, ElevationSource};
 use obc_formats::{
     io::{ByteSink, ByteSource, Error},
@@ -226,15 +226,19 @@ impl ByteSink for MeasureSink<'_> {
         }
         // Each chunk repeats the last point of the chunk before it.
         match m.previous {
-            None => m.push(crate::reader::chunk_anchor(anchor), &mut **elev),
+            None => m.push(
+                RoutePoint { lon: anchor.0, lat: anchor.1, ele: anchor.2, surface: 0, elevation_incomplete: false },
+                &mut **elev,
+            ),
             Some(previous) if previous == anchor => {}
             Some(_) => return Err(Error::BadOffset),
         }
         let mut last = anchor;
-        crate::reader::decode_records((anchor.0, anchor.1), body, |p| {
+        crate::walk::validate(body)?;
+        for p in crate::walk::ChunkPoints::records(None, (anchor.0, anchor.1), body) {
             m.push(p, &mut **elev);
             last = (p.lon, p.lat, p.ele);
-        })?;
+        }
         m.previous = Some(last);
         self.write(body)
     }
@@ -298,17 +302,17 @@ impl Stations {
         let first = route.chunks().iter().rposition(|c| c.cum_distance_m <= start_m).unwrap_or(0);
         let mut along = f64::from(route.chunks().get(first).ok_or(Error::BadOffset)?.cum_distance_m);
         let mut last = None;
-        let mut points = heapless::Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
         for k in first..route.chunks().len() {
-            route.decode_chunk(k, &mut points)?;
-            for p in points.iter().skip(usize::from(k > first)) {
-                let p = (p.lon, p.lat);
-                along += last.map_or(0.0, |l| f64::from(ground_dist_m(l, p)));
-                last = Some(p);
-                if along > f64::from(start_m) {
-                    stations.push(p, elev);
+            route.with_chunk(k, |points| {
+                for p in points.skip(usize::from(k > first)) {
+                    let p = (p.lon, p.lat);
+                    along += last.map_or(0.0, |l| f64::from(ground_dist_m(l, p)));
+                    last = Some(p);
+                    if along > f64::from(start_m) {
+                        stations.push(p, elev);
+                    }
                 }
-            }
+            })?;
         }
         Ok(stations.finish(elev))
     }

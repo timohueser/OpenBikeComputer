@@ -106,7 +106,7 @@ impl RouteMatch {
     /// when the route has no decodable geometry.
     pub fn set_progress_floor(&mut self, route: &RouteReader, progress_m: u32) -> Option<crate::reader::RoutePosition> {
         let progress_m = progress_m.max(self.progress_m).max(self.floor_progress_m);
-        let pos = route.locate_progress(progress_m)?;
+        let pos = route.position_at(progress_m)?;
         self.chunk = pos.chunk;
         self.seg = pos.seg;
         self.progress_m = pos.progress_m;
@@ -132,7 +132,7 @@ impl RouteMatch {
 
     /// Resolve a persisted progress anchor without advancing the live match before its ACK.
     pub fn occurrence_at(&mut self, route: &RouteReader, progress_m: u32) -> Option<u32> {
-        let pos = route.locate_progress(progress_m)?;
+        let pos = route.position_at(progress_m)?;
         Some(((pos.chunk as u32) << 16) | pos.seg as u32)
     }
 
@@ -281,22 +281,23 @@ impl RouteMatch {
                 break;
             }
             let pc_segs = (chunks[c].point_count as usize).saturating_sub(1) as i64;
-            let decoded = route.with_chunk(c, |pts| {
-                if pts.len() >= 2 {
+            let decoded = route.with_chunk(c, |points| {
+                if pc_segs > 0 {
                     let cum0 = chunks[c].cum_distance_m as f32;
                     let mut intra = 0f32; // distance from this chunk's anchor to point s
                                           // cos(lat) barely changes across one chunk's span, so hoist it once per
                                           // chunk rather than recomputing `cosf` for every segment of the window.
-                    let cl = cos_lat(pts[0].lat);
-                    let n = pts.len();
-                    for s in 0..n - 1 {
+                    let cl = cos_lat(chunks[c].anchor_lat);
+                    let mut previous = None;
+                    for (i, point) in points.enumerate() {
+                        let b = (point.lon, point.lat);
+                        let Some(a) = previous.replace(b) else { continue };
+                        let s = i - 1;
                         let off = base_gidx + s as i64 - cur_gidx;
                         let global = (base_gidx + s as i64).max(0) as u32;
                         if bounded && off > radius {
                             return true;
                         }
-                        let a = (pts[s].lon, pts[s].lat);
-                        let b = (pts[s + 1].lon, pts[s + 1].lat);
                         let seg_len = ground_dist_m_cl(a, b, cl);
                         if cum0 + intra > ceiling_m as f32 {
                             return true;

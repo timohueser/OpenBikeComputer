@@ -492,14 +492,15 @@ fn borrowed_chunk_survives_reentrant_reads_and_identity_changes() {
     let reader = RouteReader::new_cached(&idx_a, &src_a, &cache);
     let expected = decode(&reader, 0);
     reader
-        .with_chunk(0, |points| {
-            assert_eq!(points, expected);
+        .with_chunk(0, |mut points| {
+            let first = points.next();
             let other = RouteReader::new_cached(&idx_b, &src_b, &cache);
             other.with_chunk(0, |nested| assert_eq!(nested.last().unwrap().lon, 30)).unwrap();
+            let points: Vec<_> = first.into_iter().chain(points).collect();
             assert_eq!(points, expected, "a nested read must not overwrite the borrowed slot");
         })
         .unwrap();
-    reader.with_chunk(0, |points| assert_eq!(points, expected)).unwrap();
+    reader.with_chunk(0, |points| assert_eq!(points.collect::<Vec<_>>(), expected)).unwrap();
     assert_eq!(src_a.reads.get(), 1, "both borrows use the resident points");
     assert_eq!(src_b.reads.get(), 1);
     assert!(reader.with_chunk(usize::MAX, |_| ()).is_err());

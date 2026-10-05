@@ -4,9 +4,7 @@
 
 use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_formats::obcr::WAYPOINT_ELE_NONE;
-use obc_route::{
-    for_each_waypoint, BikeType, RouteIndex, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS,
-};
+use obc_route::{for_each_waypoint, BikeType, RouteIndex, RouteReader, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS};
 
 /// Largest point count an `.obcr` can store, and so the ceiling [`gpx_to_obcr`] converts up to:
 /// every chunk full, with consecutive chunks sharing their seam vertex.
@@ -170,20 +168,22 @@ pub fn obcr_to_track(obcr: &[u8]) -> Result<Vec<f64>, ConvertFailure> {
     chunks.sort_unstable();
 
     let mut out: Vec<f64> = Vec::with_capacity(idx.point_count as usize * 3);
-    let mut buf: heapless::Vec<RoutePoint, MAX_POINTS_PER_CHUNK> = heapless::Vec::new();
     for (i, k) in chunks.iter().enumerate() {
-        reader.decode_chunk(*k, &mut buf).map_err(|_| {
-            ConvertFailure::new(
-                ErrorCode::NotRoute,
-                "A geometry chunk in this route failed to decode — the file is damaged.",
-            )
-        })?;
         let skip = usize::from(i > 0); // the shared seam vertex
-        for p in buf.iter().skip(skip) {
-            out.push(f64::from(p.lat) * 1e-6);
-            out.push(f64::from(p.lon) * 1e-6);
-            out.push(p.elevation().map_or(f64::NAN, f64::from));
-        }
+        reader
+            .with_chunk(*k, |points| {
+                for p in points.skip(skip) {
+                    out.push(f64::from(p.lat) * 1e-6);
+                    out.push(f64::from(p.lon) * 1e-6);
+                    out.push(p.elevation().map_or(f64::NAN, f64::from));
+                }
+            })
+            .map_err(|_| {
+                ConvertFailure::new(
+                    ErrorCode::NotRoute,
+                    "A geometry chunk in this route failed to decode — the file is damaged.",
+                )
+            })?;
     }
     Ok(out)
 }

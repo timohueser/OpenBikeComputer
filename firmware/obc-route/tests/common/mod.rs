@@ -9,7 +9,7 @@ use obc_formats::io::{put_i16, put_i32, put_u16, put_u32, ByteSink, Error, Slice
 use obc_formats::obcr::{
     CHUNK_META_LEN, HEADER_FULL_LEN, NAME_CAP, POINT_RECORD_LEN, VERSION, WAYPOINT_LEN, WAYPOINT_NAME_OFF,
 };
-use obc_route::{RouteIndex, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use obc_route::{RouteIndex, RoutePoint, RouteReader};
 
 /// A `ByteSink` over a growable `Vec`: the host's write-the-whole-file-to-RAM backing.
 #[derive(Default)]
@@ -37,9 +37,7 @@ pub fn convert(name: &str, gpx: &str) -> Vec<u8> {
 }
 
 pub fn decode(r: &RouteReader, k: usize) -> Vec<RoutePoint> {
-    let mut out = heapless::Vec::<_, MAX_POINTS_PER_CHUNK>::new();
-    r.decode_chunk(k, &mut out).unwrap();
-    out.to_vec()
+    r.with_chunk(k, |points| points.collect()).unwrap()
 }
 
 /// Decode an `.obcr`'s full point list, every chunk stitched in route order. Chunks repeat their
@@ -135,7 +133,7 @@ impl Default for RouteSpec<'_> {
 
 /// Serialize `spec` into an in-memory `.obcr`, returning the bytes and each chunk's data-region
 /// byte extent. A chunk's body is `(point_count - 1)` fixed 6-byte delta records: the anchor lives
-/// in the chunk-meta, not the body, which is what `decode_chunk` expects.
+/// in the chunk-meta, not the body, which is what `with_chunk` expects.
 pub fn build_obcr(spec: &RouteSpec) -> (Vec<u8>, Vec<ChunkExtent>) {
     let chunks = spec.chunks;
     assert!(!chunks.is_empty(), "a route needs at least one chunk");

@@ -8,9 +8,7 @@ pub use crate::trim::trim_detour_to_tail;
 use heapless::Vec;
 
 use crate::convert::{ObcrEmitter, RouteStats, WpPlace};
-use crate::reader::{
-    decode_route_points_between_checked, RoutePoint, RouteReader, WaypointCursor, MAX_POINTS_PER_CHUNK, MAX_WAYPOINTS,
-};
+use crate::reader::{RouteReader, WaypointCursor, MAX_WAYPOINTS};
 use obc_elevation::ELE_DEADBAND_M;
 use obc_formats::io::{ByteSink, Error};
 use obc_formats::obcr::NAME_CAP;
@@ -441,9 +439,6 @@ impl Splicer {
     /// Stream one chunk of a stored route clipped to `[lo, hi]`, elevations verbatim. A chunk that
     /// misses the interval is a no-op. `tail: true` records the first pushed point's
     /// spliced-route distance as the waypoint shift base.
-    ///
-    /// Must stay `#[inline(never)]`: the decode buffer lives in this popped frame, not the step frame.
-    #[inline(never)]
     fn push_orig_chunk(
         &mut self,
         orig: &RouteReader,
@@ -453,87 +448,74 @@ impl Splicer {
         sink: &mut dyn ByteSink,
         tail: bool,
     ) -> Result<(), Error> {
-        let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
-        let Some(n) = decode_route_points_between_checked(orig, k, lo, hi, &mut buf)? else {
-            return Ok(());
-        };
-        for p in buf[..n].iter() {
+        orig.clip_chunk(k, lo, hi, &mut |p| {
             self.em.set_surface(p.surface);
             self.em.set_elevation_incomplete(p.elevation_incomplete);
             self.push_point(sink, p.lon, p.lat, p.ele)?;
             if tail && self.tail_first_along.is_none() {
                 self.tail_first_along = Some(self.em.distance_m());
             }
-        }
+            Ok(())
+        })?;
         Ok(())
     }
 
     /// Measure one detour chunk's polyline length with the same per-segment metric the emit pass
     /// accumulates, so the blend's denominator matches its numerator, and latch the detour's
     /// first and last sampled heights on the way past.
-    ///
-    /// Must stay `#[inline(never)]`: the decode buffer lives in this popped frame, not the step frame.
-    #[inline(never)]
     fn measure_detour_chunk(&mut self, detour: &RouteReader, k: usize) -> Result<f32, Error> {
-        let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
-        detour.decode_chunk(k, &mut buf)?;
-        if k == 0 {
-            if let Some(first) = buf.first() {
-                self.det_ele_first = first.ele;
-            }
-        }
-        if let Some(last) = buf.last() {
-            self.det_ele_last = last.ele;
-        }
-        let mut len = 0.0f32;
-        for p in buf.iter() {
-            let c = (p.lon, p.lat);
-            if let Some(prev) = self.prev_det {
-                if prev != c {
-                    len += ground_dist_m(prev, c);
+        detour.with_chunk(k, |points| {
+            let mut len = 0.0f32;
+            for (i, p) in points.enumerate() {
+                if k == 0 && i == 0 {
+                    self.det_ele_first = p.ele;
                 }
+                self.det_ele_last = p.ele;
+                let c = (p.lon, p.lat);
+                if let Some(prev) = self.prev_det {
+                    if prev != c {
+                        len += ground_dist_m(prev, c);
+                    }
+                }
+                self.prev_det = Some(c);
             }
-            self.prev_det = Some(c);
-        }
-        Ok(len)
+            len
+        })
     }
 
     /// Stream one detour chunk, offsetting each sampled elevation by the blended seam residual at
     /// its arc-length position. The two ends land exactly on the stored route's seam heights, and
     /// the interior keeps the shape the terrain gave it.
-    ///
-    /// Must stay `#[inline(never)]`: the decode buffer lives in this popped frame, not the step frame.
-    #[inline(never)]
     fn push_detour_chunk(&mut self, detour: &RouteReader, k: usize, sink: &mut dyn ByteSink) -> Result<(), Error> {
-        let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
-        detour.decode_chunk(k, &mut buf)?;
-        for p in buf.iter() {
-            let c = (p.lon, p.lat);
-            if let Some(prev) = self.prev_det {
-                if prev == c {
-                    continue; // seam duplicate: no arc advance, already pushed
+        detour.with_chunk(k, |points| {
+            for p in points {
+                let c = (p.lon, p.lat);
+                if let Some(prev) = self.prev_det {
+                    if prev == c {
+                        continue; // seam duplicate: no arc advance, already pushed
+                    }
+                    self.det_along += ground_dist_m(prev, c);
                 }
-                self.det_along += ground_dist_m(prev, c);
+                self.prev_det = Some(c);
+                let t = if self.det_total > 1e-3 { (self.det_along / self.det_total).clamp(0.0, 1.0) } else { 1.0 };
+                // A missing endpoint blocks the datum alignment. Valid stored heights still survive.
+                let ele = if p.elevation().is_none() {
+                    i16::MIN
+                } else if self.ele_split == i16::MIN
+                    || self.ele_rejoin == i16::MIN
+                    || self.det_ele_first == i16::MIN
+                    || self.det_ele_last == i16::MIN
+                {
+                    p.ele
+                } else {
+                    blend_ele(p.ele, self.res_start, self.res_end, t)
+                };
+                self.em.set_surface(p.surface);
+                self.em.set_elevation_incomplete(p.elevation_incomplete);
+                self.push_point(sink, c.0, c.1, ele)?;
             }
-            self.prev_det = Some(c);
-            let t = if self.det_total > 1e-3 { (self.det_along / self.det_total).clamp(0.0, 1.0) } else { 1.0 };
-            // A missing endpoint blocks the datum alignment. Valid stored heights still survive.
-            let ele = if p.elevation().is_none() {
-                i16::MIN
-            } else if self.ele_split == i16::MIN
-                || self.ele_rejoin == i16::MIN
-                || self.det_ele_first == i16::MIN
-                || self.det_ele_last == i16::MIN
-            {
-                p.ele
-            } else {
-                blend_ele(p.ele, self.res_start, self.res_end, t)
-            };
-            self.em.set_surface(p.surface);
-            self.em.set_elevation_incomplete(p.elevation_incomplete);
-            self.push_point(sink, c.0, c.1, ele)?;
-        }
-        Ok(())
+            Ok(())
+        })?
     }
 
     /// Write the collected waypoints and patch the header, the splice's last writes.

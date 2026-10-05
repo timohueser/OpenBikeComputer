@@ -1,9 +1,7 @@
 //! Resumable first-contact trim. Each step visits at most one source chunk.
 use crate::convert::{ObcrEmitter, WpPlace};
 use crate::geo::{inflated_bbox, project_to_segment};
-use crate::reader::{
-    decode_route_points_between_checked, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK, MAX_WAYPOINTS,
-};
+use crate::reader::{RouteReader, MAX_WAYPOINTS};
 use heapless::Vec;
 use obc_elevation::ELE_DEADBAND_M;
 use obc_formats::io::{ByteSink, Error};
@@ -164,7 +162,6 @@ impl Trimmer {
         detour: &RouteReader,
         sink: &mut dyn ByteSink,
     ) -> Result<TrimStep, Error> {
-        let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
         match self.phase {
             Phase::Tail => {
                 let lo = self.target_m.min(orig.total_distance_m);
@@ -177,25 +174,24 @@ impl Trimmer {
                         return Ok(TrimStep::Running);
                     }
                     let stride = ((hi - lo) as f32 / (TRIM_TAIL_MAX_PTS - 1) as f32).max(TRIM_MIN_SAMPLE_M);
-                    if let Some(n) = decode_route_points_between_checked(orig, k, lo, hi, &mut buf)? {
-                        for p in &buf[..n] {
-                            let p = (p.lon, p.lat);
-                            if self.tail.pts.is_empty() {
-                                self.tail.cl = cos_lat(p.1);
-                                let _ = self.tail.pts.push((p.0, p.1, self.target_m));
-                                self.last_seen = Some(p);
-                                continue;
-                            }
-                            let d = ground_dist_m(self.last_seen.unwrap_or(p), p);
-                            self.arc += d;
-                            self.since_kept += d;
+                    orig.clip_chunk(k, lo, hi, &mut |p| {
+                        let p = (p.lon, p.lat);
+                        if self.tail.pts.is_empty() {
+                            self.tail.cl = cos_lat(p.1);
+                            let _ = self.tail.pts.push((p.0, p.1, self.target_m));
                             self.last_seen = Some(p);
-                            if self.since_kept >= stride && !self.tail.pts.is_full() {
-                                let _ = self.tail.pts.push((p.0, p.1, self.target_m.saturating_add(self.arc as u32)));
-                                self.since_kept = 0.0;
-                            }
+                            return Ok(());
                         }
-                    }
+                        let d = ground_dist_m(self.last_seen.unwrap_or(p), p);
+                        self.arc += d;
+                        self.since_kept += d;
+                        self.last_seen = Some(p);
+                        if self.since_kept >= stride && !self.tail.pts.is_full() {
+                            let _ = self.tail.pts.push((p.0, p.1, self.target_m.saturating_add(self.arc as u32)));
+                            self.since_kept = 0.0;
+                        }
+                        Ok(())
+                    })?;
                     return Ok(TrimStep::Running);
                 }
                 if let Some(end) = self.last_seen {
@@ -221,30 +217,36 @@ impl Trimmer {
                 if self.chunk == detour.chunks().len() {
                     return Ok(TrimStep::Done(None));
                 }
-                detour.decode_chunk(self.chunk, &mut buf)?;
-                let skip = usize::from(self.chunk > 0);
-                self.chunk += 1;
-                for p in buf.iter().skip(skip) {
-                    let near = self.tail.nearest((p.lon, p.lat));
-                    if let Some((index, Some((seg, t, d)))) = self.previous {
-                        if d <= TRIM_CONTACT_M && near.is_some_and(|(_, _, d)| d <= TRIM_CONTACT_M) {
-                            self.trim_index = index;
-                            self.rejoin_m = self.tail.progress_at(seg, t).max(self.target_m);
-                            let last_index = detour
-                                .chunks()
-                                .iter()
-                                .map(|c| c.point_count as usize)
-                                .sum::<usize>()
-                                .saturating_sub(detour.chunks().len());
-                            if index + 1 >= last_index && self.rejoin_m.saturating_sub(self.target_m) <= TRIM_NOOP_M {
-                                return Ok(TrimStep::Done(None));
+                let k = self.chunk;
+                let contact = detour.with_chunk(k, |points| {
+                    self.chunk += 1;
+                    for p in points.skip(usize::from(k > 0)) {
+                        let near = self.tail.nearest((p.lon, p.lat));
+                        if let Some((index, Some((seg, t, d)))) = self.previous {
+                            if d <= TRIM_CONTACT_M && near.is_some_and(|(_, _, d)| d <= TRIM_CONTACT_M) {
+                                self.trim_index = index;
+                                self.rejoin_m = self.tail.progress_at(seg, t).max(self.target_m);
+                                let last_index = detour
+                                    .chunks()
+                                    .iter()
+                                    .map(|c| c.point_count as usize)
+                                    .sum::<usize>()
+                                    .saturating_sub(detour.chunks().len());
+                                if index + 1 >= last_index && self.rejoin_m.saturating_sub(self.target_m) <= TRIM_NOOP_M
+                                {
+                                    return Some(TrimStep::Done(None));
+                                }
+                                self.phase = Phase::Begin;
+                                return Some(TrimStep::Running);
                             }
-                            self.phase = Phase::Begin;
-                            return Ok(TrimStep::Running);
                         }
+                        self.previous = Some((self.distinct, near));
+                        self.distinct += 1;
                     }
-                    self.previous = Some((self.distinct, near));
-                    self.distinct += 1;
+                    None
+                })?;
+                if let Some(step) = contact {
+                    return Ok(step);
                 }
             }
             Phase::Begin => {
@@ -266,20 +268,21 @@ impl Trimmer {
                 self.phase = Phase::Emit;
             }
             Phase::Emit => {
-                detour.decode_chunk(self.chunk, &mut buf)?;
-                let skip = usize::from(self.chunk > 0);
-                self.chunk += 1;
-                for p in buf.iter().skip(skip) {
-                    let ele = p.ele;
-                    self.emitter.set_surface(p.surface);
-                    self.emitter.set_elevation_incomplete(p.elevation_incomplete);
-                    self.emitter.push_retained(sink, p.lon, p.lat, ele)?;
-                    if self.distinct == self.trim_index {
-                        self.phase = Phase::Finish;
-                        break;
+                let k = self.chunk;
+                detour.with_chunk(k, |points| {
+                    self.chunk += 1;
+                    for p in points.skip(usize::from(k > 0)) {
+                        self.emitter.set_surface(p.surface);
+                        self.emitter.set_elevation_incomplete(p.elevation_incomplete);
+                        self.emitter.push_retained(sink, p.lon, p.lat, p.ele)?;
+                        if self.distinct == self.trim_index {
+                            self.phase = Phase::Finish;
+                            break;
+                        }
+                        self.distinct += 1;
                     }
-                    self.distinct += 1;
-                }
+                    Ok(())
+                })??;
             }
             Phase::Finish => {
                 let stats = self.emitter.finish(sink, detour.name(), &mut Vec::<WpPlace, MAX_WAYPOINTS>::new())?;
@@ -297,7 +300,7 @@ impl Trimmer {
 
 /// One-shot host convenience over the same bounded phases the board uses.
 ///
-/// Must stay `#[inline(never)]`: the trimmer and its decode buffer stay out of the caller's frame.
+/// Must stay `#[inline(never)]`: the trimmer stays out of the caller's frame.
 #[inline(never)]
 pub fn trim_detour_to_tail(
     leg: crate::splice::Leg,
