@@ -10,12 +10,7 @@ targets:
     sources:
       - Benchmark.swift
       - SearchBenchmark.swift
-      - SmartBenchmark.swift
-      - ParserBenchmark.swift
       - path: ../../../../apps/planner-search/native
-      - path: ../../../../target/planner-parser/app
-        type: folder
-      - MapBenchmark.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.openbikecomputer.PlannerBenchmark
@@ -24,74 +19,8 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "6.0"
-        CLANG_CXX_LANGUAGE_STANDARD: c++17
-        CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER: NO
-        ENABLE_USER_SCRIPT_SANDBOXING: NO
-        SYSTEM_HEADER_SEARCH_PATHS: ["$(inherited)", "$(SRCROOT)/../../../../target/planner-parser/ort/Headers"]
-        LIBRARY_SEARCH_PATHS: ["$(inherited)", "$(SRCROOT)/../../../../target/aarch64-apple-ios/release/examples", "$(SRCROOT)/../../../../target/planner-parser/tokenizer/target/aarch64-apple-ios/release"]
+        LIBRARY_SEARCH_PATHS: ["$(inherited)", "$(SRCROOT)/../../../../target/aarch64-apple-ios/release/examples"]
         OTHER_LDFLAGS: ["$(inherited)", "-lresolv", "-liconv"]
     dependencies:
       - framework: ../../../../target/aarch64-apple-ios/release/examples/libphone_benchmark.a
         embed: false
-      - framework: ../../../../target/aarch64-apple-ios/release/examples/libphone_overlay_benchmark.a
-        embed: false
-      - framework: ../../../../target/planner-parser/python/Python.xcframework
-        embed: true
-      - framework: ../../../../target/planner-parser/ort/onnxruntime.xcframework
-        embed: false
-      - framework: ../../../../target/planner-parser/tokenizer/target/aarch64-apple-ios/release/libobc_tokenizer_portability.a
-        embed: false
-      - sdk: CoreML.framework
-      - sdk: Network.framework
-    postBuildScripts:
-      - name: Install Python standard library
-        basedOnDependencyAnalysis: false
-        script: |
-          set -e
-          source "$PROJECT_DIR/../../../../target/planner-parser/python/Python.xcframework/build/utils.sh"
-          install_python ../../../../target/planner-parser/python/Python.xcframework app
-  PlannerHostBenchmark:
-    type: application
-    platform: iOS
-    sources:
-      - PlannerHostBenchmark.swift
-      - path: planner-host-benchmark.js
-        buildPhase: resources
-      - path: ../../../../apps/planner-native
-        excludes: [tests, '*.md', '*.sh', '*.mjs']
-      - path: ../../../../apps/planner-search/native
-      - path: ../../../../target/planner-parser/app
-        type: folder
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.openbikecomputer.PlannerBenchmark
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: Show your position in the offline planner.
-        CODE_SIGN_STYLE: Automatic
-        SWIFT_VERSION: '6.0'
-        CLANG_CXX_LANGUAGE_STANDARD: c++17
-        CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER: NO
-        ENABLE_USER_SCRIPT_SANDBOXING: NO
-        SYSTEM_HEADER_SEARCH_PATHS: ['$(inherited)', '$(SRCROOT)/../../../../target/planner-parser/ort/Headers']
-        LIBRARY_SEARCH_PATHS: ['$(inherited)', '$(SRCROOT)/../../../../target/aarch64-apple-ios/release', '$(SRCROOT)/../../../../target/planner-parser/tokenizer/target/aarch64-apple-ios/release']
-        OTHER_LDFLAGS: ['$(inherited)', '-lresolv', '-liconv']
-    dependencies:
-      - framework: ../../../../target/aarch64-apple-ios/release/libroute_server.a
-        embed: false
-      - framework: ../../../../target/planner-parser/python/Python.xcframework
-        embed: true
-      - framework: ../../../../target/planner-parser/ort/onnxruntime.xcframework
-        embed: false
-      - framework: ../../../../target/planner-parser/tokenizer/target/aarch64-apple-ios/release/libobc_tokenizer_portability.a
-        embed: false
-      - sdk: CoreML.framework
-      - sdk: Network.framework
-    postBuildScripts:
-      - name: Install Python standard library
-        basedOnDependencyAnalysis: false
-        script: |
-          set -e
-          source "$PROJECT_DIR/../../../../target/planner-parser/python/Python.xcframework/build/utils.sh"
-          install_python ../../../../target/planner-parser/python/Python.xcframework app

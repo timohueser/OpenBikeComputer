@@ -3,37 +3,9 @@ import vocabulary from '../query/lexicon/kinds.json' with {type:'json'};
 export {norm,editDistance} from './text.mjs';
 
 export const DEFAULT_VIEW = [7.77, 47.965, 7.96, 48.06];
-export const GROUPS = {
-  water: ['drinking_water', 'water_point', 'water_tap', 'spring', 'fountain'],
-  sleep: ['campsite', 'caravan_site', 'hotel', 'hostel', 'guest_house', 'motel', 'chalet', 'hut', 'shelter'],
-  lodging: ['hotel', 'hostel', 'guest_house', 'motel', 'chalet', 'hut'],
-  campsite: ['campsite', 'caravan_site'],
-  resupply: ['supermarket', 'convenience', 'bakery', 'butcher', 'marketplace'],
-  food: ['restaurant', 'cafe', 'fast_food', 'bar', 'ice_cream'],
-  bike: ['bike_shop', 'repair_station'],
-  sight: ['museum', 'castle', 'viewpoint', 'summit', 'pass', 'waterfall', 'ruins'],
-  pizza: ['restaurant', 'fast_food', 'cafe', 'pub', 'bar'],
-  kebab: ['restaurant', 'fast_food', 'cafe', 'pub', 'bar'],
-};
 const CUISINES = {
   pizza: ['pizza', 'pizzas', 'pizzen', 'pizzeria', 'pizzerias', 'pizzerien'],
   kebab: ['kebab', 'kebap', 'doner', 'doner kebab', 'doner kebap', 'doener'],
-};
-const CATEGORY_WORDS = {
-  bakery: 'bakery bakeries backerei backereien backer boulangerie boulangeries panetteria',
-  supermarket: 'supermarket supermarkets supermarkt supermarkte supermarche',
-  campsite: 'campsite campsites camping campground campingplatz campingplatze zelten',
-  hotel: 'hotel hotels', hostel: 'hostel hostels', hut: 'hut huts hutte hutten refuge',
-  pharmacy: 'pharmacy pharmacies apotheke apotheken pharmacie',
-  restaurant: 'restaurant restaurants', cafe: 'cafe cafes coffee',
-  water: 'water wasser eau', drinking_water: 'drinking water trinkwasser',
-  bike_shop: 'fahrradladen',
-  toilets: 'toilet toilets toilette toiletten wc', museum: 'museum museums museen',
-  summit: 'peak peaks summit summits gipfel berg berge', pass: 'pass passes passe col',
-  castle: 'castle castles burg burgen schloss schlosser',
-  train_station: 'station stations bahnhof bahnhofe train station',
-  sleep: 'accommodation unterkunft unterkunfte lodging',
-  resupply: 'shop shops einkaufen laden lebensmittel', shelter: 'shelter shelters schutzhutte',
 };
 
 // Owner policy: geographic prominence may break close matches; business prominence is zero.
@@ -41,10 +13,10 @@ const PROMINENT = ['country','state','city','town','village','hamlet','summit','
   'island','lake','waterfall','castle','ruins','monument','museum','attraction'];
 const prominenceSQL = `CASE WHEN p.kind IN (${PROMINENT.map(k=>"'"+k+"'").join(',')})
   THEN MIN(1,MAX(0,COALESCE(p.importance,0)))*8 ELSE 0 END`;
-function candidateOrder(view) {
+function candidateScore(view) {
   const [x,y]=center(view), scale=Math.cos(y*Math.PI/180);
   const km=`sqrt((p.lon-(${x}))*(p.lon-(${x}))*${scale*scale}+(p.lat-(${y}))*(p.lat-(${y})))*111.2`;
-  return `(${prominenceSQL}+12/(1+(${km})/20)) DESC, p.source`;
+  return `${prominenceSQL}+12/(1+(${km})/20)`;
 }
 const categoryTerms=new Map();
 for(const per of Object.values(vocabulary.terms)) for(const [kind,terms] of Object.entries(per))
@@ -54,14 +26,7 @@ export function cuisineOf(text) {
   return Object.keys(CUISINES).find(k=>CUISINES[k].includes(norm(text)))||null;
 }
 export function kindOf(text) {
-  const q = norm(text);
-  if(cuisineOf(q))return cuisineOf(q);
-  for (const [kind, words] of Object.entries(CATEGORY_WORDS)) {
-    if (q === norm(kind.replaceAll('_', ' ')) || words.split(' ').includes(q)) return kind;
-  }
-  if (['bike shop', 'bike shops', 'fahrrad geschaft'].includes(q)) return 'bike_shop';
-  if (['drinking water', 'eau potable'].includes(q)) return 'drinking_water';
-  return categoryTerms.get(q)||null;
+  return cuisineOf(text)||categoryTerms.get(norm(text))||null;
 }
 
 export function distance(a, b) {
@@ -149,9 +114,10 @@ function score(p,q,focus,fuzzy=false) {
     why:{match,proximity,importance,outdoor,correction:fuzzy}, precision:p.kind==='street'?'street':'place'};
 }
 
-function candidates(db, queries) {
-  const rows=db.candidates?db.candidates(queries):queries.flatMap(({sql,params,options})=>db.all(sql,params,options));
-  return [...new Map(rows.map(p=>[p.id,p])).values()];
+// Candidate queries select place ids by their score; the records load once.
+function candidates(view, from, params, limit, {bounds, distinct = false} = {}) {
+  return {sql:`SELECT ${distinct?'DISTINCT ':''}p.id,${candidateScore(view)} AS _score,p.source ${from}`,
+    params,order:['-_score','source'],limit,bounds};
 }
 
 function textCandidates(db, q, view) {
@@ -159,34 +125,32 @@ function textCandidates(db, q, view) {
   if(!exp) return [];
   if(!norm(q).includes(' '))exp='name : '+exp;
   if(streetNorm(q)!==norm(q))exp=`(${exp}) OR (${expression(streetNorm(q))})`;
-  const from='FROM terms JOIN places p ON p.id=terms.rowid WHERE terms MATCH ?';
+  const names='FROM {c}.names n JOIN {c}.place_records p ON p.id=n.place_id';
+  const terms='FROM {c}.terms JOIN {c}.place_records p ON p.id=terms.rowid WHERE terms MATCH ?';
   const keys=[...new Set([...spans(q),...spans(streetNorm(q))].map(p=>p.term))];
-  return candidates(db,[
-    {sql:`SELECT p.* FROM names n JOIN places p ON p.id=n.place_id WHERE n.term=?
-      ORDER BY ${candidateOrder(view)} LIMIT 400`,params:[norm(q)]},
-    {sql:`SELECT DISTINCT p.* FROM names n JOIN places p ON p.id=n.place_id WHERE n.term>=? AND n.term<?
-      ORDER BY ${candidateOrder(view)} LIMIT 100`,params:[norm(q),norm(q)+'\uffff']},
+  return db.places([
+    candidates(view,`${names} WHERE n.term=?`,[norm(q)],400),
+    candidates(view,`${names} WHERE n.term>=? AND n.term<?`,[norm(q),norm(q)+'\uffff'],100,{distinct:true}),
     // Both branches precede ranking: a local candidate survives a common global name.
-    {sql:`SELECT p.* ${from} ORDER BY rank, ${candidateOrder(view)} LIMIT 400`,params:[exp]},
-    {sql:`SELECT p.* ${from} AND ${pointBoundsSQL} ORDER BY ${candidateOrder(view)} LIMIT 800`,params:[exp,...view],options:{bounds:view}},
+    candidates(view,terms,[exp],400),
+    candidates(view,`${terms} AND ${pointBoundsSQL}`,[exp,...view],800,{bounds:view}),
     ...compactQueries(keys,compact(q),view),
   ]);
 }
 
 function compactQueries(keys,prefix,view) {
-  const joined=`FROM compact_names n JOIN places p ON p.id=n.place_id WHERE n.term IN (${keys.map(()=>'?').join(',')})`;
+  const from='FROM {c}.compact_names n JOIN {c}.place_records p ON p.id=n.place_id';
   // A common query fragment must not exhaust the budget for the complete name.
   return [
-    ...keys.map(key=>({sql:`SELECT p.* FROM compact_names n JOIN places p ON p.id=n.place_id
-      WHERE n.term=? ORDER BY ${candidateOrder(view)} LIMIT 400`,params:[key]})),
-    {sql:`SELECT DISTINCT p.* ${joined} AND ${pointBoundsSQL} ORDER BY ${candidateOrder(view)} LIMIT 800`,params:[...keys,...view],options:{bounds:view}},
-    {sql:`SELECT DISTINCT p.* FROM compact_names n JOIN places p ON p.id=n.place_id
-      WHERE n.term>=? AND n.term<? ORDER BY ${candidateOrder(view)} LIMIT 100`,params:[prefix,prefix+'\uffff']},
+    ...keys.map(key=>candidates(view,`${from} WHERE n.term=?`,[key],400)),
+    candidates(view,`${from} WHERE n.term IN (${keys.map(()=>'?').join(',')}) AND ${pointBoundsSQL}`,[...keys,...view],800,
+      {bounds:view,distinct:true}),
+    candidates(view,`${from} WHERE n.term>=? AND n.term<?`,[prefix,prefix+'\uffff'],100,{distinct:true}),
   ];
 }
 
 function compactCandidates(db,keys,prefix,view) {
-  return candidates(db,compactQueries(keys,prefix,view));
+  return db.places(compactQueries(keys,prefix,view));
 }
 
 export function named(db,q,view) {
@@ -201,10 +165,11 @@ export function named(db,q,view) {
     if(grams.length) {
       // Trigrams retrieve candidates only; edit distance decides whether a correction is allowed.
       const lengths=[...new Set(parts.flatMap(p=>Array.from({length:2*editBudget(p.term)+1},(_,i)=>p.term.length-editBudget(p.term)+i)))];
-      const terms=lengths.length?db.all(`SELECT l.term, ${grams.map(()=>'(instr(l.term,?)>0)').join('+')} hits
-        FROM fuzzy JOIN lexicon l ON l.rowid=fuzzy.rowid WHERE fuzzy MATCH ?
-        AND length(l.term) IN (${lengths.map(()=>'?').join(',')}) ORDER BY hits DESC,rank LIMIT 256`,
-        [...grams,grams.map(t=>`"${t}"`).join(' OR '),...lengths]):[];
+      // No index statistics order the terms, so the cell layout cannot change the candidates.
+      const terms=lengths.length?db.rows({sql:`SELECT l.term,${grams.map(()=>'(instr(l.term,?)>0)').join('+')} AS hits,
+        length(l.term) AS _length FROM {c}.fuzzy JOIN {c}.lexicon l ON l.rowid=fuzzy.rowid WHERE fuzzy MATCH ?
+        AND length(l.term) IN (${lengths.map(()=>'?').join(',')})`,
+        params:[...grams,grams.map(t=>`"${t}"`).join(' OR '),...lengths],order:['-hits','_length','term'],limit:256}):[];
       const corrections=[];
       for(const c of terms)for(const part of parts) {
         const budget=editBudget(part.term);
@@ -264,7 +229,7 @@ export function search(db,input) {
     const streetQuery=(text.slice(0,number.index)+' '+text.slice(number.index+number[0].length)).trim();
     const streets=named(db,streetQuery,view).filter(p=>p.kind==='street');
     for(const s of streets) {
-      const homes=db.all('SELECT * FROM addresses WHERE street_id=? AND house=?',[s.id,norm(number[0])]);
+      const homes=db.rows({sql:'SELECT * FROM {c}.addresses WHERE street_id=? AND house=?',params:[s.id,norm(number[0])]});
       for(const h of homes) {
         const km=distance([h.lon,h.lat],center(view)), proximity=12/(1+km/20);
         const ranked={...s,distance:km,score:s.score-s.why.proximity+proximity,why:{...s.why,proximity}};

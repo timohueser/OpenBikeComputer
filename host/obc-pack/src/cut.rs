@@ -19,9 +19,7 @@
 //!
 //! Merge fills and lines once, over the whole extract, before cutting. The union of a cluster of
 //! parcels must be the same geometry in both neighbours or their clips would not meet, and GEOS
-//! overlay is only guaranteed to agree when handed identical inputs. The tier-wide coverage simplify
-//! ([`crate::coverage`]) slots in at the same place for the same reason, and because it has already
-//! simplified globally, the per-cell simplify leaves what it produced alone.
+//! overlay is only guaranteed to agree when handed identical inputs.
 //!
 //! Work is organised band, then LOD, then cell, so a level's merged feature set is built once and
 //! every cell of the band reads it, and only that band's levels are resident. Cells within a band
@@ -39,7 +37,6 @@ use obc_formats::obcm::VERSION as OBCM_VERSION;
 use obc_map_scene::M_PER_DEG;
 
 use crate::config::Config;
-use crate::coverage::{coverage_simplify_fills_with, Eliminate, PredissolveCache};
 use crate::geom::{clip_to_box, footprint_below, strip_small_holes, topology_preserve_simplify, Bounds, Geom};
 use crate::grid::{
     cells_intersecting, on_grid_boundary, segment_crossing, Axis, Band, BandTable, CellId, UBox, GRID_ORIGIN,
@@ -326,29 +323,21 @@ pub fn cut_ingested(
             format!("Cutting band {} (2^{} µdeg): {} cell(s)...", band.id, band.cell_log2, cells.len()),
         );
 
-        // Per-band preparation, done once and read by every cell of the band. The memo dies with the
-        // band rather than sitting in memory through unrelated cells, and is cleared at the first
-        // tier that does not use the coverage pass.
-        let predissolved = PredissolveCache::new();
+        // Per-band preparation, done once and read by every cell of the band.
         let lod_sets: Vec<LodSet<'_>> = band
             .lods
             .iter()
             .map(|&l| {
-                if !config.lods[l].coverage_simplify {
-                    predissolved.clear();
-                }
                 prepare_lod(
                     ing,
                     config,
                     l,
                     band.cell_log2,
-                    &predissolved,
                     PreparedSemantic { features: semantic_levels[l].as_deref(), scheme: &semantic_scheme },
                     progress,
                 )
             })
             .collect();
-        drop(predissolved);
         let nav_cut = if band.has_nav() { Some(prepare_nav(ways, band.cell_log2, progress)?) } else { None };
         let poi_cells = if band.has_poi() { bucket_pois(&ing.pois, band.cell_log2) } else { HashMap::new() };
         progress.check()?;
@@ -454,9 +443,9 @@ fn select_cells(band: &Band, extract: UBox, select: &[CellId]) -> Vec<CellId> {
 struct LodSet<'a> {
     lod: usize,
     feats: Vec<(u8, Cow<'a, Geom>)>,
-    /// Parallel to `feats`: the coverage pass already cut this feature to `tol`, so
+    /// Parallel to `feats`: the semantic coverage already simplified this feature, so
     /// [`LodSet::cell_tree`] must not simplify it again (that would move the shared boundaries
-    /// the pass glued). All `false` unless the tier asked for the pass.
+    /// the coverage glued). All `false` unless the tier is semantic.
     presimplified: Vec<bool>,
     /// `(i, j)` → indices into `feats`. Membership is decided on **inclusive** bounds, so a feature
     /// reaching a seam line is a candidate on both sides and the two cells clip identical geometry.
@@ -477,19 +466,19 @@ struct PreparedSemantic<'a, 's> {
 }
 
 /// Build a level's feature set exactly as [`crate::pipeline`] does — `min_lod` filter, then the
-/// optional fill-dissolve, line-stitch and coverage passes — and index it by cell.
+/// optional fill-dissolve and line-stitch passes, plus a semantic tier's prebuilt coverage — and
+/// index it by cell.
 ///
 /// All of them run here, over the whole extract, and not per cell; see the module docs. The ordinary
-/// per-feature simplify does not, because it must run on the geometry a cell clips. The coverage
-/// pass is the exception that proves the rule: it simplifies while building one global arrangement,
-/// which is stronger than per-cell simplify, so what it produced is marked in `presimplified` and
-/// [`LodSet::cell_tree`] leaves it alone.
+/// per-feature simplify does not, because it must run on the geometry a cell clips. The semantic
+/// coverage is the exception: it is simplified as one global coverage, which is stronger than
+/// per-cell simplify, so its features are marked in `presimplified` and [`LodSet::cell_tree`] leaves
+/// them alone.
 fn prepare_lod<'a>(
     ing: &'a Ingested,
     config: &Config,
     lod: usize,
     cell_log2: u32,
-    predissolved: &PredissolveCache,
     semantic: PreparedSemantic<'a, '_>,
     progress: &Progress,
 ) -> LodSet<'a> {
@@ -520,10 +509,9 @@ fn prepare_lod<'a>(
         .collect();
     let tol = if l.simplify_m > 0.0 { l.simplify_m / M_PER_DEG } else { 0.0 };
     let line_tol = if l.line_simplify_m > 0.0 { l.line_simplify_m / M_PER_DEG } else { 0.0 };
-    // `merge_fills` is skipped on a coverage tier: the coverage pass dissolves the same
-    let want_merge_fills = config.merge_fills && !l.coverage_simplify && !l.semantic_coverage;
-    let mut presimplified = vec![false; feats.len()];
-    if want_merge_fills || config.merge_lines || l.coverage_simplify {
+    // A semantic tier skips `merge_fills`, exactly as [`crate::pipeline`] does.
+    let want_merge_fills = config.merge_fills && !l.semantic_coverage;
+    if want_merge_fills || config.merge_lines {
         let styles = config.styles();
         let mut owned: Vec<(u8, Geom)> = feats.into_iter().map(|(s, g)| (s, g.into_owned())).collect();
         if want_merge_fills {
@@ -541,30 +529,9 @@ fn prepare_lod<'a>(
             crate::pipeline::report_merge(progress, m, "line fragment", "into");
             owned = merged;
         }
-        if l.coverage_simplify {
-            // The elimination threshold is the tier's own cull pair, resolved exactly as `cull_mpp`
-            // below resolves it: on a coverage tier `min_area_px` absorbs a small face into its
-            // neighbour instead of deleting it.
-            let eliminate = Eliminate::new(config.lods.get(lod + 1).and_then(|n| n.max_mpp), l.min_area_px);
-            let (covered, c) =
-                coverage_simplify_fills_with(owned, &merge_classes(&styles), tol, eliminate, predissolved, progress);
-            crate::pipeline::report_coverage(progress, c);
-            let mut kept = Vec::with_capacity(covered.len());
-            let mut pre = Vec::with_capacity(covered.len());
-            for (style_id, g, done) in covered {
-                if g.is_empty() {
-                    continue;
-                }
-                kept.push((style_id, Cow::Owned(g)));
-                pre.push(done);
-            }
-            feats = kept;
-            presimplified = pre;
-        } else {
-            feats = owned.into_iter().filter(|(_, g)| !g.is_empty()).map(|(s, g)| (s, Cow::Owned(g))).collect();
-            presimplified = vec![false; feats.len()];
-        }
+        feats = owned.into_iter().filter(|(_, g)| !g.is_empty()).map(|(s, g)| (s, Cow::Owned(g))).collect();
     }
+    let mut presimplified = vec![false; feats.len()];
 
     if l.semantic_coverage {
         let semantic_features = semantic.features.expect("every configured semantic rung is prebuilt");
@@ -632,9 +599,9 @@ impl LodSet<'_> {
             } else {
                 clip_to_box(&simplified, square)
             };
-            // A coverage-produced feature carries this tier's `min_area_px` already, as elimination
-            // rather than a drop; culling the clipped result again would re-open the gaps the pass
-            // closed. The hole trim still runs, at the same threshold as everywhere else.
+            // A semantic coverage feature has its minimum face size already; culling the clipped
+            // result would re-open gaps the coverage closed. The hole trim still runs, at the same
+            // threshold as everywhere else.
             let from_coverage = self.presimplified[k as usize];
             flatten_culled(*style_id, clipped, self.cull_mpp, self.min_area_px, from_coverage, &mut out);
         }
@@ -645,11 +612,10 @@ impl LodSet<'_> {
 /// Append `geom`'s simple parts to `out`, dropping the ones the sub-pixel footprint cull rejects and
 /// trimming sub-pixel holes from the survivors — the pipeline's cull, applied to clipped geometry.
 ///
-/// `from_coverage` skips the footprint cull entirely. A coverage polygon clipped by a cell edge can
-/// come out as a hairline strip along the seam, far under `min_area_px`, and dropping it would open
-/// a backdrop sliver at the cell boundary, where the neighbouring cell still paints its half. The
-/// pass has already applied this tier's threshold globally, so nothing sub-threshold reaches here
-/// except these clip artefacts.
+/// `from_coverage` skips the footprint cull entirely. A semantic coverage polygon clipped by a cell
+/// edge can come out as a hairline strip along the seam, far under `min_area_px`, and dropping it
+/// would open a backdrop sliver at the cell boundary, where the neighbouring cell still paints its
+/// half.
 fn flatten_culled(
     style_id: u8,
     geom: Geom,
@@ -1226,13 +1192,11 @@ mod tests {
             nav_graph: NavGraph::default(),
         };
         let semantic_scheme = config.semantic_scheme();
-        let predissolved = PredissolveCache::new();
         let set = prepare_lod(
             &ing,
             &config,
             0,
             LOG2,
-            &predissolved,
             PreparedSemantic { features: None, scheme: &semantic_scheme },
             &Progress::silent(),
         );

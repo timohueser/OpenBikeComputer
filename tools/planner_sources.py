@@ -7,16 +7,13 @@ import shutil
 import tarfile
 import tempfile
 
-try:
-    from . import planner_maps as maps
-    from .planner_runtime import digest, open_url
-except ImportError:
-    import planner_maps as maps
-    from planner_runtime import digest, open_url
+from . import planner_maps as maps
+from .planner_runtime import digest, open_url
 
-PROTOMAPS = "42ffaaa4a85a41bfcb23e43cc0f5b492a5eca123"
+PROTOMAPS = maps.PINS["protomaps-basemaps"]
 PROTO_SHA = "f89ff8ee6aff13baf60c83b5e98d3811ddb946cc1089d437c435885395764696"
-COUNTRY_DATA_URL = "https://files.pythonhosted.org/packages/fc/9e/3f6a9706fdf54241e3adfffcb80f6fdba6d439c7506564cdc0f1b91bc5aa/nominatim_db-5.3.2-py3-none-any.whl"
+COUNTRY_DATA_VERSION = maps.PINS["nominatim-country-data"]
+COUNTRY_DATA_URL = f"https://files.pythonhosted.org/packages/fc/9e/3f6a9706fdf54241e3adfffcb80f6fdba6d439c7506564cdc0f1b91bc5aa/nominatim_db-{COUNTRY_DATA_VERSION}-py3-none-any.whl"
 COUNTRY_DATA_SHA = "c5e1c4bd27f52a48843a5fe204a1a7b5f4d4d2911880e65721b4c900b13227e5"
 
 
@@ -53,7 +50,7 @@ def basemap(osm, output, bounds, cache, auxiliary=None):
     maps.run("java", "-Xmx6g", "-jar", jar, "--download", f"--osm-path={osm}",
              f"--output={output}", "--bounds=" + ",".join(map(str, bounds)),
              "--maxzoom=14", f"--threads={os.cpu_count()}", cwd=source / "tiles")
-    return {"protomaps_commit": PROTOMAPS, "planetiler": "0.10.2",
+    return {"protomaps_commit": PROTOMAPS, "planetiler": maps.PINS["planetiler"],
             "auxiliary": {p.name: {"sha256": digest(p), "bytes": p.stat().st_size}
                           for p in sorted(directory.iterdir()) if p.is_file()}}
 

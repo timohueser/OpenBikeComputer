@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {database} from './database.mjs';
 import {resolve,findPlaces,resolvePoint} from '../resolver.mjs';
 import {lengths,at,alongRange} from '../web/geography.mjs';
-import {openingState} from '../hours.mjs';
+import {openingHours} from '../hours.mjs';
 import {validateInput} from '../validation.mjs';
 const {db,conn}=database();
 conn.exec("UPDATE place_records SET opening_hours='Mo-Sa 08:00-18:00; Su 08:00-12:00' WHERE source='n1'");
@@ -30,11 +30,12 @@ test('an empty viewport widens visibly, an explicit interval does not',()=>{
   assert.equal(explicit.results.length,0);assert.doesNotMatch(explicit.note,/widened/);
 });
 test('opening filters exclude unknown tags and require a dated trip for day filters',()=>{
-  const out=findPlaces(db,{type:'places',what:['bakery'],open:{weekday:'sun'}},context);
+  const {openingState}=openingHours('Europe/Berlin'), opening={...context,openingState};
+  const out=findPlaces(db,{type:'places',what:['bakery'],open:{weekday:'sun'}},opening);
   assert.deepEqual(out.results.map(p=>p.source),['n1']);assert.match(out.note,/unknown opening/);
-  assert.throws(()=>findPlaces(db,{type:'places',what:['bakery'],open:{day:1}},context),/start date/);
-  assert.equal(openingState({opening_hours:'Mo-Su 08:00-18:00; PH off',lat:48,lon:8,region:'Baden-Württemberg'},{weekday:'sun'},{}),'unknown');
-  assert.equal(openingState({opening_hours:'24/7',lat:48,lon:8},{now:true},{now:'2026-09-28T06:00:00Z'}),'open');
+  assert.throws(()=>findPlaces(db,{type:'places',what:['bakery'],open:{day:1}},opening),/start date/);
+  assert.equal(openingState({opening_hours:'Mo-Su 08:00-18:00; PH off',lat:48,lon:8,region:'Baden-Württemberg',country:'de'},{weekday:'sun'},{}),'unknown');
+  assert.equal(openingState({opening_hours:'24/7',lat:48,lon:8,country:'de'},{now:true},{now:'2026-09-28T06:00:00Z'}),'open');
 });
 test('route and plan mutations return reviewable commands without changing context',()=>{
   const before=JSON.stringify(context);
@@ -57,6 +58,23 @@ test('route gaps are computed from mapped positions and missing attribute data s
   assert.ok(out.stretches.length>0);assert.match(out.note,/Missing map data/);
   assert.throws(()=>resolve(db,{type:'stretches',what:'unpaved'},context),/no verified/);
 });
+test('stretch questions read the route segments of the request, longest first',()=>{
+  const unpaved=Array.from({length:25},(_,i)=>({kind:'unpaved',from:i*.2,to:i*.2+i/200}));
+  const segments=[{kind:'climb',from:.5,to:1.5,ascent:80,gradient:8},{kind:'climb',from:2,to:2.2,ascent:10,gradient:5},...unpaved];
+  const ctx={...context,plan:{...context.plan,segments}};
+  validateInput(ctx);
+  const out=resolve(db,{type:'stretches',what:'climb',min:{value:50,unit:'m'}},ctx);
+  assert.deepEqual(out.stretches.map(s=>[s.from,s.to,s.label]),[[.5,1.5,'climb']]);
+  assert.ok(out.stretches[0].coordinates.length>=2);
+  const longest=resolve(db,{type:'stretches',what:'unpaved'},ctx).stretches;
+  assert.equal(longest.length,20);assert.equal(longest[0].from,24*.2);
+});
+test('kinds expand through the query contract, and a cuisine kind keeps its filter',()=>{
+  const {db}=database([['n31','Motel Rhein','motel',7.86,47.99,'Freiburg',.1]]);
+  assert.ok(findPlaces(db,{type:'places',what:['sleep']},context).results.some(p=>p.source==='n31'));
+  const pizza=resolve(db,{type:'add_point',point:{kind:'pizza'},where:{anchor:[7.855,47.99]}},context).changes[0].point;
+  assert.equal(pizza.source,'n16');
+});
 test('time positions require a monotone time profile, and end offsets run backwards',()=>{
   assert.throws(()=>alongRange({ref:'start',at:{value:1,unit:'h'}},[0,total],context),/Riding-time/);
   const range=alongRange({ref:'end',to:{value:1,unit:'km'}},[0,total],context);
@@ -64,7 +82,7 @@ test('time positions require a monotone time profile, and end offsets run backwa
 });
 test('malformed or unbounded API data is rejected before retrieval',()=>{
   validateInput(context);
-  for(const extra of [{view:[0,0,1,Infinity]},{region:'../../data'},{request:{type:'places',what:[]}},{plan:{...context.plan,coordinates:[[NaN,0]]}},{plan:{...context.plan,km:[0]}},{request:{type:'route',to:{kind:'unknown-kind'}}}])assert.throws(()=>validateInput({...context,...extra}));
+  for(const extra of [{view:[0,0,1,Infinity]},{request:{type:'places',what:[]}},{plan:{...context.plan,coordinates:[[NaN,0]]}},{plan:{...context.plan,km:[0]}},{request:{type:'route',to:{kind:'unknown-kind'}}}])assert.throws(()=>validateInput({...context,...extra}));
 });
 
 test('every day ends resolve separately and riding-time splits use the supplied profile',()=>{

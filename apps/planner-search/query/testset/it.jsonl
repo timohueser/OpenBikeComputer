@@ -38,8 +38,8 @@
 {"id": "it-038", "lang": "it", "text": "massimo 80 km al giorno", "scope": "in", "request": {"type": "split", "per_day": {"value": 80, "unit": "km"}}}
 {"id": "it-039", "lang": "it", "text": "unisic i giorni 2 e 3", "scope": "in", "request": {"type": "join", "day": 2}, "note": "typo"}
 {"id": "it-040", "lang": "it", "text": "percoso al contrario", "scope": "in", "request": {"type": "reverse"}, "note": "typo"}
-{"id": "it-041", "lang": "it", "text": "meno dislivello il giorno 3", "scope": "in", "request": {"type": "reroute", "where": {"day": 3}, "goal": "least_climbing"}}
-{"id": "it-042", "lang": "it", "text": "evita lo sterrato domani", "scope": "in", "request": {"type": "reroute", "where": {"day": "tomorrow"}, "goal": "least_unpaved"}}
+{"id": "it-041", "lang": "it", "text": "meno dislivello il giorno 3", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
+{"id": "it-042", "lang": "it", "text": "evita lo sterrato domani", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
 {"id": "it-043", "lang": "it", "text": "vale la pena fare il Gavia?", "scope": "out", "request": {"type": "none"}}
 {"id": "it-044", "lang": "it", "text": "campeggi vicino a un supermercato alla fine del giorno 4", "scope": "out", "request": {"type": "places", "what": ["campsite"], "where": {"day": 4, "part": "end"}, "ignored": ["vicino a un supermercato"]}}
 {"id": "it-045", "lang": "it", "text": "che tempo fa il giorno 3", "scope": "out", "request": {"type": "none"}}

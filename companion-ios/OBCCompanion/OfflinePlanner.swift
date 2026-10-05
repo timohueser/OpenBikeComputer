@@ -1,21 +1,16 @@
 import Foundation
 import OBCPlanner
 
-/// Adapts verified release files to the same client contract as the online planner.
+/// Adapts an installed grid selection to the same client contract as the online planner.
 actor OfflinePlanner {
     private let directory: URL
-    private let map: OfflineMap
     private let scripts: URL
-    private let blocks: OfflineBlocks?
-    private let searchFiles: [String]
-    private let routingPackage: String
+    private let blocks: OfflineBlocks
     private var router: RouteProvider?
-    private var overlays: OverlayProvider?
     private var search: PlannerSearchRuntime?
 
-    private init(map: OfflineMap, directory: URL, scripts: URL, blocks: OfflineBlocks?, searchFiles: [String], routingPackage: String) {
-        self.map = map; self.directory = directory; self.scripts = scripts
-        self.blocks = blocks; self.searchFiles = searchFiles; self.routingPackage = routingPackage
+    private init(directory: URL, scripts: URL, blocks: OfflineBlocks) {
+        self.directory = directory; self.scripts = scripts; self.blocks = blocks
     }
 
     static func open(map: OfflineMap, directory: URL,
@@ -24,35 +19,24 @@ actor OfflinePlanner {
               let scripts else {
             throw PlannerFailure.invalidData
         }
-        let bytes = try Data(contentsOf: directory.appending(path: "release.json"))
-        let manifest = try JSONSerialization.jsonObject(with: bytes) as? [String: Any]
-        guard let routingPackage = manifest?["routing_package"] as? String else { throw PlannerFailure.invalidData }
-        let blocks = try JSONDecoder().decode(OfflineManifest.self, from: bytes).offline
-        if let blocks {
-            try blocks.validate()
-            OfflineTilesProtocol.register(id: blocks.id, directory: directory, zoom: blocks.map_zoom)
-        }
+        let manifest = try JSONDecoder().decode(OfflineManifest.self, from: Data(contentsOf: directory.appending(path: "release.json")))
+        let blocks = manifest.offline
+        try blocks.validate()
+        OfflineTilesProtocol.register(id: blocks.id, directory: directory, zoom: blocks.map_zoom)
         let assets = directory.appending(path: "maps/assets").absoluteString
-        // A download without the route files has no catalog, so the Routes view stays hidden for it.
-        let routesFile = directory.appending(path: blocks == nil ? "routes/\(map.region).json" : "routes/tiles")
-        let routes = FileManager.default.fileExists(atPath: routesFile.path)
-            ? routesFile.absoluteString + (blocks == nil ? "" : "/{cell}.json") : nil
         let release = PlannerRelease(id: map.id, region: map.region, bounds: map.bounds,
-            basemap: blocks == nil ? URL(string: "pmtiles://" + directory.appending(path: "maps/basemap.pmtiles").absoluteString)!
-                : directory.appending(path: "maps/basemap.json"),
-            places: blocks == nil ? URL(string: "pmtiles://" + directory.appending(path: "maps/places.pmtiles").absoluteString)!
-                : directory.appending(path: "maps/places.json"),
+            basemap: directory.appending(path: "maps/basemap.json"),
+            places: directory.appending(path: "maps/places.json"),
             glyphs: assets + "/fonts/{fontstack}/{range}.pbf", sprites: assets + "/sprites/v4",
-            terrain: blocks == nil ? "pmtiles://" + directory.appending(path: "maps/terrain.pmtiles").absoluteString
-                : directory.appending(path: "maps/terrain.json").absoluteString,
-            terrain_attribution: manifest?["terrain_attribution"] as? String ?? "",
+            terrain: directory.appending(path: "maps/terrain.json").absoluteString,
+            terrain_attribution: manifest.terrain_attribution ?? "",
             search: directory.appending(path: "search"), routing: directory.appending(path: "routing"),
             manifest: directory.appending(path: "release.json"),
-            routes: routes,
-            offlineCells: blocks?.cells.map(\.id))
-        let searchFiles = (manifest?["files"] as? [String: Any] ?? [:]).keys
-            .filter { $0.hasPrefix("search/") && $0.hasSuffix(".sqlite") }.sorted()
-        let runtime = OfflinePlanner(map: map, directory: directory, scripts: scripts, blocks: blocks, searchFiles: searchFiles, routingPackage: routingPackage)
+            overlays: directory.appending(path: "maps/overlays.json"),
+            routes: directory.appending(path: "routes/tiles").absoluteString + "/{cell}.json",
+            offlineCells: blocks.cells.map(\.id), attribution: manifest.attribution,
+            landcover_attribution: manifest.landcover_attribution)
+        let runtime = OfflinePlanner(directory: directory, scripts: scripts, blocks: blocks)
         return PlannerService(release: release) { try await runtime.respond($0) }
     }
 
@@ -64,28 +48,15 @@ actor OfflinePlanner {
         case "release.json": response = (200, try Data(contentsOf: directory.appending(path: "release.json")))
         case "route", "shape":
             if router == nil { router = try RouteProvider(directory: directory.appending(path: "routing")) }
-            let body = request.httpBody ?? Data()
-            response = try await url.lastPathComponent == "route" ? router!.route(body) : router!.shape(body)
-        case "overlays":
-            let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedQuery ?? ""
-            if overlays == nil { overlays = try OverlayProvider(directory: directory.appending(path: "routing")) }
-            response = try await overlays!.request(query)
+            response = try await router!.call(url.lastPathComponent, request.httpBody ?? Data())
         case "query":
             if search == nil {
-                let names = blocks?.cells.flatMap { $0.files.filter { $0.hasPrefix("search/") && $0.hasSuffix(".sqlite") } } ?? searchFiles
-                guard !names.isEmpty, names.allSatisfy({ safeFile($0) }) else { throw PlannerFailure.invalidData }
-                let databases = Array(Set(names)).sorted().map { directory.appending(path: $0) }
-                var bounds: [URL: [Double]] = [:]
-                for cell in blocks?.cells ?? [] {
-                    for name in cell.files where name.hasPrefix("search/") && name.hasSuffix(".sqlite") {
-                        bounds[directory.appending(path: name)] = cell.bounds
-                    }
-                }
-                search = try PlannerSearchRuntime(databases: databases, bounds: bounds, coverage: map.bounds,
-                    scripts: scripts, region: map.region, countryCode: "de", timeZone: "Europe/Berlin",
-                    parse: { _ in "{\"error\":\"Native search requires a structured request.\"}" })
+                let names = blocks.cells.flatMap { $0.files.filter { $0.hasPrefix("search/") && $0.hasSuffix(".sqlite") } }
+                guard !names.isEmpty else { throw PlannerFailure.invalidData }
+                search = try PlannerSearchRuntime(databases: Array(Set(names)).sorted().map { directory.appending(path: $0) },
+                    scripts: scripts)
             }
-            response = (200, try search!.request("query", body: request.httpBody ?? Data()))
+            response = (200, try search!.query(request.httpBody ?? Data()))
         default: throw PlannerFailure.invalidData
         }
         try Task.checkCancellation()
@@ -97,15 +68,17 @@ actor OfflinePlanner {
 
 }
 
-private struct OfflineManifest: Decodable { let offline: OfflineBlocks? }
+private struct OfflineManifest: Decodable {
+    let offline: OfflineBlocks
+    let terrain_attribution: String?
+    let attribution: String?
+    let landcover_attribution: String?
+}
 private struct OfflineBlocks: Decodable {
     struct Cell: Decodable {
         let id: String
         let bounds: [Double]
         let files: [String]
-        func intersects(_ box: [Double]) -> Bool {
-            bounds[0] <= box[2] && bounds[2] >= box[0] && bounds[1] <= box[3] && bounds[3] >= box[1]
-        }
     }
     let format: Int
     let zoom: Int

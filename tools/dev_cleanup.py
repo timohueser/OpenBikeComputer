@@ -19,6 +19,7 @@ SECONDS_PER_DAY = 24 * 60 * 60
 STANDALONE_TARGETS = (
     Path("firmware/obc-fw-nrf54l/target"),
     Path("firmware/obc-boot/target"),
+    Path("firmware/obc-sensor-sim/target"),
     Path("apps/obc-desktop/target"),
 )
 # Per-profile directories whose entries cargo recreates on demand. Cargo never removes

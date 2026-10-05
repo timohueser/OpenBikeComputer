@@ -1,4 +1,5 @@
-import { hasEndpoints, planView, storedPlan, type Trip } from './editor';
+import { hasEndpoints, planView, type Trip } from './editor';
+import type { RoutingLine } from './routing';
 
 export interface Version {
     id: string;
@@ -8,11 +9,12 @@ export interface Version {
     trip: Trip;
 }
 
-export function versionSummary(trip: Trip): string {
+/** A short description of a plan; without its line, the distance is pending. */
+export function versionSummary(trip: Trip, line: RoutingLine | undefined): string {
     const endpoints = trip.points.filter(p => p.kind === 'start' || p.kind === 'finish');
     if (!hasEndpoints(trip)) return endpoints.length ? `${endpoints[0].kind === 'start' ? 'Start' : 'Finish'} chosen` : 'Empty plan';
-    const view = planView(trip);
-    const distance = trip.live && !view.line ? 'Distance pending' : `${view.summary.distance.toFixed(1)} km`;
+    const view = planView(trip, line);
+    const distance = view.line ? `${view.summary.distance.toFixed(1)} km` : 'Distance pending';
     if (trip.mode === 'route') return `Single route · ${distance}`;
     const days = view.itinerary.length;
     const pinned = trip.points.filter(p => p.kind === 'night').length;
@@ -21,9 +23,9 @@ export function versionSummary(trip: Trip): string {
     return [...parts, distance].join(' · ');
 }
 
-export function newVersion(trip: Trip, name?: string): Version {
-    return { id: crypto.randomUUID(), at: new Date().toISOString(), summary: versionSummary(trip),
-        ...(name?.trim() ? { name: name.trim() } : {}), trip: storedPlan(trip) };
+export function newVersion(trip: Trip, line: RoutingLine | undefined, name?: string): Version {
+    return { id: crypto.randomUUID(), at: new Date().toISOString(), summary: versionSummary(trip, line),
+        ...(name?.trim() ? { name: name.trim() } : {}), trip };
 }
 
 export { planTitle } from './editor';

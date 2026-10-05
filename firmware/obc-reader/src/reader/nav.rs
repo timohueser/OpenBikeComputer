@@ -512,21 +512,7 @@ impl<'a> Reader<'a> {
             }
             // A failed fill skips this leaf cleanly (the cache never keeps a bad slot).
             match tiles.chunk(self.src, start, dir.chunk_size) {
-                Some(chunk) => {
-                    #[cfg(feature = "nav-metrics")]
-                    let mut decoded = 0u64;
-                    decode_nav_chunk(chunk, &mut |node| {
-                        #[cfg(feature = "nav-metrics")]
-                        {
-                            decoded += 1;
-                        }
-                        visit(node);
-                    });
-                    #[cfg(feature = "nav-metrics")]
-                    {
-                        tiles.decoded_junctions += decoded;
-                    }
-                }
+                Some(chunk) => decode_nav_chunk(chunk, &mut |node| visit(node)),
                 None => read_error = Some(IoError::Io),
             }
         })
@@ -598,10 +584,6 @@ impl<'a> Reader<'a> {
                 local[..dir.chunk_size].copy_from_slice(chunk);
             }
             decode_nav_chunk(&local[..dir.chunk_size], &mut |n| {
-                #[cfg(feature = "nav-metrics")]
-                {
-                    tiles.decoded_junctions += 1;
-                }
                 if n.lon < view.min_lon || n.lon > view.max_lon || n.lat < view.min_lat || n.lat > view.max_lat {
                     return;
                 }

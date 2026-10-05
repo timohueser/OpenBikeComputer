@@ -13,7 +13,7 @@ from rasterio.io import MemoryFile
 
 from ..lattice import Refuse
 from .protocols import TiledService, output_size
-from .base import http_get, redact
+from .base import http_get, redact, registry_credit
 
 # The sentinel IGN puts where RGE ALTI has no ground. The tail drops anything below
 # −500 m anyway; this is here so the assembled raster declares a nodata of its own.
@@ -60,7 +60,7 @@ class BilWmsSource(TiledService):
 
 FR = BilWmsSource(
     "fr", "France", "RGE ALTI 1 m", 1.0,
-    "Licence Ouverte / Open Licence", "© IGN", "NGF-IGN69", (-5.3, 41.3, 9.6, 51.1),
+    "Licence Ouverte / Open Licence", registry_credit("dtm-fr"), "NGF-IGN69", (-5.3, 41.3, 9.6, 51.1),
     url="https://data.geopf.fr/wms-r/wms",
     layer="ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES",
 )

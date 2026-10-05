@@ -3,10 +3,10 @@ import { expect, test } from '@playwright/test';
 import { CORS_PREFLIGHT, respond } from './stubs.js';
 
 const trip = {
-  live: true, mode: 'route', bike: 'touring', days: 3, budget: 'days', target: 3, limit: 50, variant: 'valley',
+  mode: 'route', bike: 'touring', days: 3, budget: 'days', target: 3, limit: 50, routeOrder: [],
   points: [
-    { id: 'start', kind: 'start', coordinate: [7.8, 48], label: 'Home', progress: 0 },
-    { id: 'finish', kind: 'finish', coordinate: [7.9, 48.1], label: 'Camp', progress: 1 },
+    { id: 'start', kind: 'start', coordinate: [7.8, 48], label: 'Home' },
+    { id: 'finish', kind: 'finish', coordinate: [7.9, 48.1], label: 'Camp' },
   ],
 };
 

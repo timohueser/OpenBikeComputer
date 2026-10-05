@@ -300,8 +300,8 @@ inspect *args:
 # back the confirmation that plan printed — a count and a digest of the whole key list —
 # so neither a stale command line nor a bucket that moved under it deletes anything.
 # The catalogue root, any object the live catalogue names (cells included, through their
-# band indexes), the reference index and `removed.jsonl` each need `--i-mean-it <key>` on
-# top. A catalogue this cannot read is a refusal. Every removal is appended to
+# band indexes) and the reference index each need `--i-mean-it <key>` on top; nothing
+# deletes `removed.jsonl`. A catalogue this cannot read is a refusal. Every removal is appended to
 # `removed.jsonl` at the bucket root.
 # Delete objects from the R2 maps bucket, with a plan first. Args: rm <KEY>… | rm --prefix P
 [group('maps')]
@@ -312,6 +312,19 @@ r2 *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/r2.py" "$@"
 
+# Read the data registry: `obc data sources` lists every source with licence, R2 copy, live
+# pin, upstream version, age, policy and state; `obc data region [list|show ID]` lists the
+# regions. `obc data fetch` puts a source version in the store; `obc data refresh` also pins
+# it. Every command takes `--json`. Read commands change nothing.
+# Data sources, regions and the store. Args: sources | region [list|show ID] | fetch SOURCE[@VERSION] | refresh SOURCE [--env ENV] [--json]
+[group('maps')]
+data *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    _run cargo run --quiet --locked -p obc-data -- "$@"
+
 # Prepare, publish, deploy or preview regional planner data. See the planner README.
 [group('maps')]
 planner *args:
@@ -321,7 +334,7 @@ planner *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/planner.py" "$@"
 
-# Bake the published cell catalog. `obc bake` processes every regions.toml entry;
+# Bake the published cell catalog. `obc bake` processes every Geofabrik region in data/regions/;
 # positional ids narrow it (`obc bake europe/austria --force`). Output goes to
 # $OBC_BAKE_TREE (default ~/obc-bake). `verify` and `publish` use that same tree
 # automatically, while an explicit tree remains available as their first argument:
@@ -337,7 +350,8 @@ planner *args:
 #
 # Publish reads its public URL and R2 credentials from tools/obc.local or the
 # environment. The clean command verifies the configured bucket by reading the
-# live catalog at OBC_R2_PREFIX, then deletes every object in that bucket.
+# live catalog at OBC_R2_PREFIX, then deletes every object under that prefix through the
+# R2 client (`obc data r2`), which asks first and logs each object in removed.jsonl.
 # Bake, verify, publish, or replace R2 objects using $OBC_BAKE_TREE
 [group('maps')]
 bake *args:
@@ -358,6 +372,9 @@ bake *args:
     if [[ -n "${OBC_REFERENCE_ARCHIVE:-}" ]]; then
       case " $* " in *" --reference "*) ;; *) reference=(--reference "$OBC_REFERENCE_ARCHIVE") ;; esac
     fi
+    # The region files of this checkout, wherever the command runs. A `--regions` on the command
+    # line comes later, and obc-bake takes the last one.
+    regions=(--regions "$OBC_ROOT/data/regions")
     case "${1:-}" in
       verify)
         shift
@@ -393,17 +410,6 @@ bake *args:
           --apply) apply=1 ;;
           *) _err "unknown clean-r2 option: '$arg'  (want: --apply)"; exit 1 ;;
         esac; done
-        command -v rclone >/dev/null 2>&1 || { _err "rclone is required for R2 cleanup"; exit 1; }
-        missing=()
-        [[ -n "${OBC_R2_BUCKET:-}" ]] || missing+=(OBC_R2_BUCKET)
-        [[ -n "${OBC_R2_ACCESS_KEY_ID:-}" ]] || missing+=(OBC_R2_ACCESS_KEY_ID)
-        [[ -n "${OBC_R2_SECRET_ACCESS_KEY:-}" ]] || missing+=(OBC_R2_SECRET_ACCESS_KEY)
-        [[ -n "${OBC_R2_ENDPOINT:-}" || -n "${OBC_R2_ACCOUNT_ID:-}" ]] || missing+=(OBC_R2_ACCOUNT_ID)
-        if (( ${#missing[@]} )); then
-          _err "missing R2 settings: ${missing[*]}"
-          _hint "put them in the gitignored tools/obc.local (see tools/obc.local.example)"
-          exit 1
-        fi
         prefix="${OBC_R2_PREFIX:-}"; prefix="${prefix#/}"; prefix="${prefix%/}"
         [[ -n "$prefix" && "$prefix" != . ]] || {
           _err "OBC_R2_PREFIX must name the catalog prefix used to verify the bucket (for example: cell-catalog)"
@@ -420,49 +426,43 @@ bake *args:
           _err "OBC_MAPS_BASE_URL '$maps_base' does not end in OBC_R2_PREFIX '$prefix'"
           exit 1
         }
-        endpoint="${OBC_R2_ENDPOINT:-https://${OBC_R2_ACCOUNT_ID}.r2.cloudflarestorage.com}"
-        export RCLONE_CONFIG_OBCR2_TYPE=s3
-        export RCLONE_CONFIG_OBCR2_PROVIDER=Cloudflare
-        export RCLONE_CONFIG_OBCR2_REGION=auto
-        export RCLONE_CONFIG_OBCR2_ENDPOINT="$endpoint"
-        export RCLONE_CONFIG_OBCR2_ACCESS_KEY_ID="$OBC_R2_ACCESS_KEY_ID"
-        export RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY="$OBC_R2_SECRET_ACCESS_KEY"
-        export RCLONE_CONFIG_OBCR2_NO_CHECK_BUCKET=true
         # The catalog prefix only: the bucket also holds the terrain reference archive
         # (host/obc-dem/reference), which is days of ingest and no part of a bake.
-        root="obcr2:${OBC_R2_BUCKET}/$prefix"
-        catalog="$root/catalog.json"
-        _say "checking live catalog before cleanup: $catalog"
-        rclone lsjson "$catalog" --stat >/dev/null || {
+        client=(cargo run --quiet --locked --manifest-path "$OBC_ROOT/Cargo.toml" -p obc-data -- r2)
+        _say "checking live catalog before cleanup: $prefix/catalog.json"
+        [[ -n "$("${client[@]}" stat "$prefix/catalog.json" --json | grep '"key"')" ]] || {
           _err "catalog is not readable at the configured prefix; refusing to purge it"
           exit 1
         }
         if (( apply )); then
-          _warn "deleting every object under the catalog prefix: $root"
-          _run rclone delete "$root" --rmdirs
+          _warn "deleting every object under the catalog prefix: $prefix"
+          _run "${client[@]}" delete --prefix "$prefix" --reason "obc bake clean-r2: purge the catalog prefix before a fresh publish"
           _ok "catalog prefix emptied; publish the verified bake tree immediately"
         else
           _say "dry run — review this list, then repeat with: obc bake clean-r2 --apply"
-          _run rclone delete "$root" --rmdirs --dry-run
+          _run "${client[@]}" list "$prefix"
         fi ;;
       terrain)
         # The terrain artifact class, on its own revision track (OBCC_Spec.md §13). Same
         # tree as `bake`, deliberately a separate command: it needs DEM tiles and no OSM
         # extract, and it must never be a step of a schema re-bake.
         shift
-        _run "$bin" terrain --out "$tree" ${reference[@]+"${reference[@]}"} "$@"
+        _run "$bin" terrain --out "$tree" "${regions[@]}" ${reference[@]+"${reference[@]}"} "$@"
         _say "bake tree: $tree — now re-bake the cells so their ascents match: obc bake" ;;
       landmarks)
         # The landmark artifact class, on its own revision track. Capture reads live Wikidata,
         # Wikipedia and Commons — the one non-reproducible step of any bake — and is resumable, so
         # an interrupted country is continued by repeating the command.
         shift
-        _run "$bin" landmarks --out "$tree" "$@"
+        _run "$bin" landmarks --out "$tree" "${regions[@]}" "$@"
         _say "bake tree: $tree — landmark artifacts under $tree/landmarks" ;;
-      regions|check-obcm-version|help|-h|--help)
+      regions)
+        shift
+        _run "$bin" regions "${regions[@]}" "$@" ;;
+      check-obcm-version|help|-h|--help)
         _run "$bin" "$@" ;;
       *)
-        _run "$bin" bake --out "$tree" ${reference[@]+"${reference[@]}"} "$@"
+        _run "$bin" bake --out "$tree" "${regions[@]}" ${reference[@]+"${reference[@]}"} "$@"
         _say "bake tree: $tree — verify with: obc bake verify" ;;
     esac
 
@@ -554,15 +554,6 @@ ios-host *args:
     cd "$OBC_ROOT"
     _run "$OBC_TOOLS/build-ios-host.sh" "$@"
 
-# Pack the companion core as target/OBCCompanionCore.xcframework, in release. Args: [RUST_TARGET]... (default: all three slices)
-[group('ios')]
-companion-core *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{lib}}"; obc_init
-    cd "$OBC_ROOT"
-    _run "$OBC_TOOLS/build-companion-core.sh" "$@"
-
 # DEVICE is a `devicectl` name or identifier; it defaults to the only paired phone.
 # Build the OBCDevice app (the firmware on a phone) and install and launch it on a paired iPhone. Args: [DEVICE]
 [group('ios')]
@@ -587,7 +578,6 @@ ios-companion *args:
     source "{{lib}}"; obc_init
     (( $# <= 1 )) || { _err "usage: obc ios-companion [DEVICE]"; exit 1; }
     device="$(ios_phone "${1:-}")"
-    _run "$OBC_TOOLS/build-companion-core.sh" aarch64-apple-ios
     ios_install OBCCompanion Release com.openbikecomputer.companion "$device"
 
 # What governs these files: contracts, guards, suites, coverage, frames, budgets. Args: PATH...
@@ -608,15 +598,6 @@ prose *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/prose.py" "$@"
 
-# Regenerate CHANGELOG.md from merged pull requests. Args: [--check|--update]
-[group('docs')]
-changelog *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{lib}}"; obc_init
-    cd "$OBC_ROOT"
-    _run python3 "$OBC_TOOLS/changelog.py" "${@:---update}"
-
 # Inspect documentation ownership or review source-related prose. Args: [status|check|review]
 [group('docs')]
 docs *args:
@@ -630,11 +611,8 @@ docs *args:
     fi
 
 # Serve the static hosted tier — the no-backend site (phase C of #894), as deployed.
-# Builds and serves it on :4173. Args: [PORT]. A catalog.json is the bakery's
-# output; without one the site says so and shows no coverage — that is OBCC_Spec.md
-# §7 refusing a manifest it has not got, not a bug.
-# Point it at a real one with OBC_CATALOG_URL=… (the deploy passes the same value as
-# VITE_CATALOG_URL from a repository variable — .github/workflows/deploy-site.yml).
+# Builds and serves it on :4173. Args: [PORT]. It reads the device catalogue of the
+# active planner release, as deployed; OBC_CATALOG_URL=… points it at another one.
 # Two deliberate differences from the deploy: this mounts the builder at the server
 # root rather than at /builder/ (nothing else is being served beside it), and it leaves
 # VITE_SITE_BASE unset, so the Docs/Home links point at the published site instead of
@@ -872,6 +850,11 @@ check *args:
       step "bootloader clippy (rtt)"       cargo clippy --locked --features rtt -- -D warnings
       step "bootloader build (release)"    cargo build --release --locked
       popd >/dev/null
+      pushd "$OBC_ROOT/firmware/obc-sensor-sim" >/dev/null
+      step "sensor sim tests and device build" bash check.sh
+      step "sensor sim clippy (host)"      cargo clippy --locked --lib --tests -- -D warnings
+      step "sensor sim clippy (device)"    cargo clippy --locked --features device --bin obc-sensor-sim --target thumbv8m.main-none-eabihf -- -D warnings
+      popd >/dev/null
     fi
     if want frontend; then
       if command -v npm >/dev/null 2>&1; then
@@ -893,6 +876,7 @@ check *args:
         step "deny (workspace)"    cargo deny --manifest-path "$OBC_ROOT/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
         step "deny (board crate)"  cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
         step "deny (bootloader)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-boot/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
+        step "deny (sensor sim)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-sensor-sim/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
         step "deny (desktop app)"  cargo deny --manifest-path "$OBC_ROOT/apps/obc-desktop/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
       else _warn "skip deny — cargo-deny not installed (cargo install cargo-deny)"; SKIPPED+=("deny"); fi
     fi

@@ -55,7 +55,7 @@ public struct PlannerPreviewView: View {
     @State private var sheetHeight: CGFloat = 340
     @State private var fitRevision = 0
     @State private var fraction: Double?
-    @State private var networkStatus: String?
+    @State private var layerStatus: String?
     @State private var results: PlannerPreviewQueryResult?
     @State private var selectedPlace: PlannerPreviewPlace?
     @State private var detailsError: String?
@@ -115,17 +115,17 @@ public struct PlannerPreviewView: View {
                               onVisibleRouteRange: { visibleRouteRange = $0 },
                               release: model.release, source: model.service,
                               hiddenCategories: hiddenCategories, highlightedCategories: highlightedCategories,
-                              onPlace: selectResult, onNetworkStatus: { networkStatus = $0 },
+                              onPlace: selectResult, onLayerStatus: { layerStatus = $0 },
                               strokes: routesOpen ? finder.strokes(plan: model.geometry) : planStrokes, focus: routesOpen ? finder.focus : nil,
                               namer: namer, onIdle: nameRouteEnds)
                 .ignoresSafeArea(edges: .bottom)
                 .overlay(alignment: .topTrailing) { if !layersShown { mapTools.padding(12) } }
                 .overlay(alignment: .topLeading) {
-                    if let networkStatus, !layersShown {
-                        Text(networkStatus).font(.caption).foregroundStyle(OBCTheme.ink)
+                    if let layerStatus, !layersShown {
+                        Text(layerStatus).font(.caption).foregroundStyle(OBCTheme.ink)
                             .padding(8).background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusSmall)).padding(12)
                     } else if attributionShown && !layersShown {
-                        Link("© OpenStreetMap", destination: URL(string: "https://www.openstreetmap.org/copyright")!)
+                        Link(model.release?.attribution ?? "", destination: URL(string: "https://www.openstreetmap.org/copyright")!)
                             .font(.caption2).foregroundStyle(OBCTheme.secondary)
                             .padding(.horizontal, 8).frame(minHeight: 44)
                             .background(OBCTheme.surface, in: RoundedRectangle(cornerRadius: OBCTheme.radiusSmall))
@@ -155,7 +155,7 @@ public struct PlannerPreviewView: View {
                                 Spacer()
                                 doneButton { infoShown = false }
                             }
-                            Link("© OpenStreetMap contributors", destination: URL(string: "https://www.openstreetmap.org/copyright")!)
+                            Link(model.release?.attribution ?? "", destination: URL(string: "https://www.openstreetmap.org/copyright")!)
                             Text("Route networks use the published OpenStreetMap data under the Open Database License.")
                                 .font(.footnote).foregroundStyle(OBCTheme.secondary)
                         }
@@ -420,7 +420,8 @@ public struct PlannerPreviewView: View {
                                   onShowPlan: { returnToPlanning(); fitRevision += 1 },
                                   onFilters: { filtersShown = true },
                                   onSelect: { route in panel = .route; Task { await finder.select(route) } },
-                                  onRetry: { Task { await finder.search(activity: model.activity) } })
+                                  onRetry: { Task { await finder.search(activity: model.activity) } },
+                                  attribution: model.release?.attribution ?? "")
                     .padding(.horizontal, 16).padding(.bottom, 16)
             }
         case .route:
@@ -613,9 +614,8 @@ public struct PlannerPreviewView: View {
                             Spacer()
                             if model.preset == preset { Image(systemName: "checkmark").fontWeight(.semibold) }
                         }.frame(minHeight: 44).contentShape(Rectangle())
-                    }.buttonStyle(.plain).disabled(preset == .smoother)
+                    }.buttonStyle(.plain)
                 }
-                Text("Smoother is not available from the route service.").font(.footnote).foregroundStyle(OBCTheme.secondary)
             }
         }
     }

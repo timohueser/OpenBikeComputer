@@ -14,14 +14,15 @@ its files are immutable.
 | `osm_sha256` | Hash of the common OSM PBF |
 | `routing_package` | Hash of `routing/manifest.json` or `routing/blocks.json` |
 | `profiles` | Sorted routing profile IDs |
-| `attribution` | OSM source credit and licence |
-| `terrain_attribution` | Elevation source credits |
+| `attribution` | OSM credit: the `osm-planet` attribution of `data/sources.toml` |
+| `landcover_attribution` | Credit of the basemap's land cover: the `daylight-landcover` attribution of `data/sources.toml`. Older releases have none |
+| `terrain_attribution` | Elevation source credits: each reference model used, and the `copernicus-glo-30` credit when the bake reads GLO-30 tiles |
 | `terrain_bounds` | Bounds that include contour neighbour tiles |
 | `sources` | Recipe hash, source identities, tool identities, and input provenance |
 | `device_catalog_source` | Original device catalogue URL |
 | `files` | Relative file names, each with `bytes` and `sha256` |
 | `source_files` | Local source mirror names, each with `bytes` and `sha256` |
-| `probe` | Regional route points, search query, and view for service deployment; absent from offline cutouts |
+| `probe` | Regional route points, search query, and view for service deployment |
 
 File paths stay inside the release directory. File hashes use lowercase
 64-character hex. Maps, search, and routing have the same OSM hash and bounds.
@@ -48,8 +49,12 @@ and `model/`. Local combined packages use `REGION.sqlite`. `routes/` contains `R
 [route catalog contract](route-catalog.md). `device/catalog.json` is a snapshot. Its file references are absolute
 URLs to the original immutable cell objects.
 
-Search packages use schema `4`. Each place stores `website`, `phone`, and
-`description` as UTF-8 text. Empty values are empty strings. The producer uses
+Search packages use schema `5`. Each place stores `website`, `phone`, and
+`description` as UTF-8 text. Empty values are empty strings. Each place stores
+`country`, the lowercase ISO 3166-1 code of its source record, and `region`, its
+state. A Swiss `region` is the German canton name of the opening hours library,
+for example `Sankt Gallen`. Opening hours select public holidays by `country` and `region`, and
+evaluate times in the metadata `time_zone`. The producer uses
 `website` before `contact:website`, and `phone` before `contact:phone`, skipping
 empty values. A description uses `description`, then `description:en`, then
 `description:de`, then the first nonempty `description:*` key in sorted order.
@@ -65,13 +70,7 @@ Route memberships are ordered relation IDs. `routes` stores each relation's JSON
 properties once. `geometries` stores the way ID, a point count, and a Postcard `Vec<[i32;2]>`.
 Each coordinate pair is longitude and latitude in microdegrees. The first pair
 is absolute; each later pair is a difference from the previous pair. Decoding
-uses checked addition. Shared geometry retains every source point. `bounds` is
-an R-tree over feature IDs with longitude, latitude, and facet axes. The facet
-is `32 * layer + minimum_zoom`. Cycling, hiking, access, and MTB have layer values
-0, 1, 2, and 3. The minimum is the lower non-null mode minimum, or 23 for an
-invisible feature. The facet has equal lower and upper bounds. The query also
-checks each mode's minimum zoom. A cutout retains every referenced geometry,
-attribute, and route.
+uses checked addition. Shared geometry retains every source point.
 
 `places.pmtiles` holds rider places from the POI search database. It has gzip MVT
 at zoom 11, extent 4096, and one `pois` layer. Each point has the database's
@@ -105,15 +104,16 @@ The tile API serves `/releases/ID/basemap.json`, vector tiles at
 `/releases/ID/basemap/Z/X/Y.mvt`, `/releases/ID/places.json`, places tiles at
 `/releases/ID/places/Z/X/Y.mvt`, `/releases/ID/overlays.json`, overlay tiles at
 `/releases/ID/overlays/Z/X/Y.mvt`, Terrarium tiles at
-`/releases/ID/terrain/Z/X/Y.webp`, and, for a release with snow,
-`/releases/ID/snow.json` and snow tiles at `/releases/ID/snow/Z/X/Y`. For a grid
-release, it serves route catalog cells at `/releases/ID/routes/tiles/9-X-Y.json`. Each
-TileJSON holds its archive metadata. Snow tiles keep their gzip encoding. An absent tile returns 204. The raw archives
+`/releases/ID/terrain/Z/X/Y.webp`, and, for each data layer of the release,
+`/releases/ID/LAYER.json` and its tiles at `/releases/ID/LAYER/Z/X/Y`. It serves
+route catalog cells at `/releases/ID/routes/tiles/9-X-Y.json`. Each
+TileJSON holds its archive metadata. Data layer tiles that are not MVT or WebP keep their
+gzip encoding. An absent tile returns 204. The raw archives
 remain downloadable from R2.
 
 Routing and search APIs have the prefix `/planner-api/releases/ID/`. The final
-path component selects `routing` or `search`. A rollout serves the active
-release and the previous release on separate VPS ports.
+path component selects `routing` or `search`. Until finalization, a rollout
+serves the active release and the previous release on separate VPS ports.
 
 ## Canonical grid storage
 
@@ -142,22 +142,26 @@ cell selection and download manifests.
 
 `planner/catalog.json` has `format: 1`, `active`, and `previous`.
 `active` contains the release `id`, manifest URL, region, bounds, attribution,
-device catalogue URL, map asset URLs, tile URLs, and routing and search API
-prefixes. `snow` is the snow TileJSON URL, only for a release with snow.
+land cover attribution when the release has one, terrain attribution, device catalogue URL, map asset URLs, tile URLs, and routing
+and search API prefixes. `name` is the name of the recipe's region in `data/regions/`. `layers` maps
+the name of each data layer of the release to its TileJSON URL.
 `routes` is the route catalog cell URL template on the tile API origin,
-`/releases/ID/routes/tiles/{cell}.json`, where `{cell}` is a cell ID `9-X-Y`. It is
-present only for a grid release. Its `slot` is `0` or `1`. `previous` has the same shape or is `null`.
+`/releases/ID/routes/tiles/{cell}.json`, where `{cell}` is a cell ID `9-X-Y`.
+Its `slot` is `0` or `1`. `previous` has the same shape or is `null`.
 
 The publisher uploads and verifies all release files before the manifest.
 The deployer verifies public services before changing the catalogue. The
 catalogue cache lifetime is 30 seconds. Immutable objects have a one-year
-cache lifetime. Rollback swaps `active` and `previous` after service checks.
-A site build reads one active catalogue entry and uses it for every planner
-endpoint and the map builder's device catalogue.
+cache lifetime. The web planner and the map builder read the catalogue at page
+load. The planner uses `active`, unchanged, as its configuration. The map builder
+uses its device catalogue. A client refuses a catalogue `format` that it does not
+know. When a release object returns 404 or no answer, a client reads the catalogue
+again, once, and retries with the new `active` entry.
 
-Finalization verifies the live services and site against `active`. It removes
-inactive planner releases and source mirrors that `active` does not name.
-It then sets `previous` to `null`. Device cell objects and terrain reference
+Finalization verifies the live services and the public catalogue against `active`. It stops
+the other VPS slot, removes its Caddy route, and deletes every other release
+directory on the VPS. It removes inactive planner releases and source mirrors
+that neither `active` nor a region recipe names. It then sets `previous` to `null`. Device cell objects and terrain reference
 objects remain outside planner cleanup. A completed rollout retains one
 regional planner dataset in R2.
 
@@ -178,7 +182,9 @@ Each file entry has `bytes` and `sha256`. Cost fields are `elapsed_seconds`,
 includes a component that builds at the same time.
 `sources.grid_components` records the partition and transport receipts.
 
-Search schema 4 metadata `component` is `pois`, `addresses`, or `all`.
+Search schema 5 metadata `component` is `pois`, `addresses`, or `all`. Metadata
+`time_zone` is the IANA time zone of the region recipe. All components and cells
+of a release have the same `time_zone`.
 Addresses own street records and house records. POIs own the other searchable
 places, including locality records. Independent POI IDs are positive integers
 below 2^52; independent address street IDs are above 2^52 and below 2^53.
@@ -189,4 +195,5 @@ Split search grids use `format: 3`. Their `metadata` describes the complete
 region. Each cell has `id`, `bounds`, and `files`. File names are relative to
 `search/`: `tiles/pois/CELL.sqlite` and `tiles/addresses/CELL.sqlite`.
 Both components are present. Offline catalogue cell files use release-relative
-paths. Consumers validate component ownership, source identity, and coverage.
+paths. Consumers require one schema and OSM snapshot in all cells, and select cells
+by the bounds in each cell's metadata.

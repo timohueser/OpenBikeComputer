@@ -1,17 +1,19 @@
 import { layers, namedFlavor, type Flavor } from "@protomaps/basemaps";
 import type { ExpressionSpecification, StyleSpecification, LayerSpecification } from "maplibre-gl";
-import { BASEMAP_URL, PLACES_URL, GLYPHS_URL, MAP_BOUNDS, SPRITES_URL, TERRAIN_ATTRIBUTION } from "./map-data";
 import { categoryIds, placeCategories, poiKinds, type PlaceCategory } from "./poi-kinds";
 import type { BasemapConfig } from "../map/basemap-config";
+import type { PlannerConfig } from "./config";
 
 /** The Terrarium terrain tiles: their pixel size and deepest zoom. */
 export const DEM_TILE = 512, DEM_MAX_ZOOM = 12;
 
-const BASEMAP_SOURCE = {
+/** The credits are the release's: the OSM data, then the basemap's land cover. Protomaps draws the style. */
+const basemapSource = (config: BasemapConfig) => ({
     type: "vector",
-    url: BASEMAP_URL,
-    attribution: '<a href="https://openstreetmap.org/copyright">© OpenStreetMap contributors</a> · <a href="https://protomaps.com">Protomaps</a>',
-} as const;
+    url: config.basemap,
+    attribution: [`<a href="https://www.openstreetmap.org/copyright">${config.attribution}</a>`, config.landcover_attribution,
+        '<a href="https://protomaps.com">Protomaps</a>'].filter(Boolean).join(" · "),
+} as const);
 
 type Tier = "ground" | "zone" | "detail" | "structure";
 
@@ -153,12 +155,12 @@ function flavor(dark: boolean): Flavor {
 }
 
 /** The shared basemap omits points of interest and planner overlays. */
-export function basemapStyle(theme: "light" | "dark", config: BasemapConfig = { basemap: BASEMAP_URL, glyphs: GLYPHS_URL, sprites: SPRITES_URL }): StyleSpecification {
+export function basemapStyle(theme: "light" | "dark", config: BasemapConfig): StyleSpecification {
     return {
         version: 8,
         glyphs: config.glyphs,
         sprite: `${config.sprites}/${theme}`,
-        sources: { basemap: { ...BASEMAP_SOURCE, url: config.basemap } },
+        sources: { basemap: basemapSource(config) },
         layers: baseLayers(theme === "dark").filter((layer) => layer.id !== "pois"),
     };
 }
@@ -173,7 +175,7 @@ export function reliefPaint(dark: boolean, snow = false) {
     };
 }
 
-export function mapStyle(theme: "light" | "dark", demUrl: string, contourUrl: string): StyleSpecification {
+export function mapStyle(theme: "light" | "dark", config: PlannerConfig, demUrl: string, contourUrl: string): StyleSpecification {
     const dark = theme === "dark";
     const base = baseLayers(dark).filter(layer => layer.id !== "pois");
     const afterLand = base.findIndex((layer) => layer.id === "land-detail") + 1;
@@ -224,13 +226,13 @@ export function mapStyle(theme: "light" | "dark", demUrl: string, contourUrl: st
     });
     return {
         version: 8,
-        glyphs: GLYPHS_URL,
-        sprite: `${SPRITES_URL}/${theme}`,
+        glyphs: config.glyphs,
+        sprite: `${config.sprites}/${theme}`,
         sources: {
-            basemap: BASEMAP_SOURCE,
-            places: { type: "vector", url: PLACES_URL.endsWith(".json") ? PLACES_URL : `pmtiles://${PLACES_URL}`, attribution: BASEMAP_SOURCE.attribution },
-            terrain: { type: "raster-dem", tiles: [demUrl], ...(MAP_BOUNDS ? { bounds: MAP_BOUNDS } : {}), tileSize: DEM_TILE, encoding: "terrarium", maxzoom: DEM_MAX_ZOOM, attribution: TERRAIN_ATTRIBUTION },
-            contours: { type: "vector", tiles: [contourUrl], ...(MAP_BOUNDS ? { bounds: MAP_BOUNDS } : {}), maxzoom: 15, attribution: TERRAIN_ATTRIBUTION },
+            basemap: basemapSource(config),
+            places: { type: "vector", url: config.places.endsWith(".json") ? config.places : `pmtiles://${config.places}`, attribution: config.attribution },
+            terrain: { type: "raster-dem", tiles: [demUrl], bounds: config.bounds, tileSize: DEM_TILE, encoding: "terrarium", maxzoom: DEM_MAX_ZOOM, attribution: config.terrain_attribution },
+            contours: { type: "vector", tiles: [contourUrl], bounds: config.bounds, maxzoom: 15, attribution: config.terrain_attribution },
         },
         layers: base,
     };

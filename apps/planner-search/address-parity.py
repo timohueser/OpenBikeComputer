@@ -22,6 +22,7 @@ def main():
     ap.add_argument('--reference-inputs', type=Path, required=True)
     ap.add_argument('--output', type=Path, required=True)
     ap.add_argument('--countries', required=True)
+    ap.add_argument('--time-zone', required=True)
     ap.add_argument('--sample-size', type=int, default=500)
     ap.add_argument('--require-equivalent', action='store_true')
     args = ap.parse_args()
@@ -37,7 +38,7 @@ def main():
     root = Path(__file__).parent
     for name, source in [('candidate', args.candidate), ('reference', args.reference)]:
         subprocess.run([sys.executable, str(root / 'build.py'), str(source), '--component', 'addresses',
-                        '--output', str(args.output / name), '--region', 'comparison',
+                        '--time-zone', args.time_zone, '--output', str(args.output / name), '--region', 'comparison',
                         '--bounds=' + ','.join(map(str, manifest['bounds'])),
                         '--countries=' + args.countries, '--osm-sha256=' + manifest['osm_sha256']], check=True)
     subprocess.run(['node', str(root / 'address-parity.mjs'),

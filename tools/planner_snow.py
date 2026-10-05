@@ -31,22 +31,20 @@ import urllib.request
 
 import numpy as np
 
-from . import planner_maps as maps
+from . import data_registry, planner_maps as maps
 
 NO_SNOW, FULL, NO_DATA = 253, 254, 255
 LAST_STEP = 182
 TILE = 256
-RECIPES = maps.ROOT / "tools/planner-regions"
 # `canopy`: MODIS sees the canopy, not the snow under it. The Copernicus input corrects for trees.
 # `smooth`: 20 m day values are noisy, so the lower zooms smooth them before they blend.
 SOURCES = {
     "nasa-modis": {"resolution_m": 500, "canopy": True, "smooth": False,
-                   "attribution": "NASA MODIS snow cover MOD10A1/MYD10A1 (NSIDC); tree canopy: Hansen/UMD/Google/USGS/NASA"},
+                   "attribution": f"{data_registry.attribution('modis-snow')}; tree canopy: {data_registry.attribution('hansen-gfc')}"},
     "copernicus-hr-wsi": {"resolution_m": 20, "canopy": False, "smooth": True,
-                          "attribution": f"© European Union, Copernicus Land Monitoring Service {dt.date.today().year}, "
-                                         "European Environment Agency (EEA): HR-WSI Snow Phenology"},
+                          "attribution": data_registry.attribution("hr-wsi", year=dt.date.today().year)},
 }
-CANOPY = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-v1.11/Hansen_GFC-2023-v1.11_treecover2000_{}.tif"
+CANOPY = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-{0}/Hansen_GFC-2023-{0}_treecover2000_{{}}.tif".format(maps.PINS["hansen-gfc"])
 # The owner chose 75 % canopy cover as "dense": below it, MODIS still sees the snow between the trees.
 DENSE_CANOPY_PERCENT = 75
 STAC = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
@@ -175,12 +173,6 @@ def tile_lonlat(z, x, y):
     return lon.ravel(), lat.ravel()
 
 
-def tile_bounds(z, x, y):
-    n = 2 ** z
-    lat = lambda row: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * row / n))))
-    return x / n * 360 - 180, lat(y + 1), (x + 1) / n * 360 - 180, lat(y)
-
-
 def sample(planes, grid, z, x, y):
     """Bilinear blend of the source planes (seasons, 2, rows, cols) at the pixel centres of a tile."""
     from rasterio.warp import transform
@@ -241,7 +233,7 @@ def canopy_cover(z, x, y):
     from rasterio.warp import Resampling, reproject, transform_bounds
     from rasterio.windows import Window, from_bounds as window_from_bounds
 
-    bounds = tile_bounds(z, x, y)
+    bounds = maps.tile_bounds(z, x, y)
     cover = np.zeros((TILE, TILE), np.float32)
     target = from_bounds(*transform_bounds("EPSG:4326", "EPSG:3857", *bounds), TILE, TILE)
     for name in canopy_tiles(bounds):
@@ -307,7 +299,7 @@ def bake(source, first_season, seasons, name, bounds, output, trail_segments=Non
 
     def area(z, x, y):
         """The part of the bounds in tile z/x/y, or None."""
-        w, s, e, n_ = tile_bounds(z, x, y)
+        w, s, e, n_ = maps.tile_bounds(z, x, y)
         if w >= east or e <= west or s >= north or n_ <= south:
             return None
         return max(w, west), max(s, south), min(e, east), min(n_, north)
@@ -338,13 +330,13 @@ def bake(source, first_season, seasons, name, bounds, output, trail_segments=Non
             tiles[zxy_to_tileid(z, x, y)] = gzip.compress(body.tobytes(), mtime=0)
         return body, masked
 
-    count = 2 ** chunk
-    row = lambda lat: int((1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * count)
+    x0, y0 = maps.mercator(west, north, chunk)
+    x1, y1 = maps.mercator(east, south, chunk)
     pool = ThreadPoolExecutor(workers)
     try:
         chunks = {(x, y): pool.submit(lambda x, y, part: build(chunk, x, y, *source(part)), x, y, part)
-                  for x in range(int((west + 180) / 360 * count), int((east + 180) / 360 * count) + 1)
-                  for y in range(row(north), row(south) + 1) if (part := area(chunk, x, y))}
+                  for x in range(int(x0), int(x1) + 1)
+                  for y in range(int(y0), int(y1) + 1) if (part := area(chunk, x, y))}
         _, masked = build(0, 0, 0)
     finally:
         pool.shutdown(cancel_futures=True)
@@ -450,17 +442,24 @@ def modis_day(files, grid, origin):
     return clear(value), clear(value) & (value >= MODIS_SNOW_NDSI)
 
 
-def nasa_planes(bounds, first_season, last_season, workers=24):
-    """Season planes on the MODIS grid, streamed one season of daily files at a time."""
+def modis_seasons(bounds, first_season, last_season):
+    """(season, its first day, its files as `modis_items`) for each season, with GDAL set up to read them.
+
+    One season at a time: a read token lasts about an hour."""
     os.environ.update(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
                       GDAL_HTTP_MAX_RETRY="5", GDAL_HTTP_RETRY_DELAY="2", VSI_CACHE="FALSE")
+    for season in range(first_season, last_season + 1):
+        first = dt.date(season, 9, 1)
+        yield season, first, modis_items(bounds, first, dt.date(season + 1, 8, 31))
+
+
+def nasa_planes(bounds, first_season, last_season, workers=24):
+    """Season planes on the MODIS grid, streamed one season of daily files at a time."""
     grid, origin = modis_grid(bounds)
     state = SnowSeasons(first_season, last_season - first_season + 1, grid.shape)
     end, start = 0, time.monotonic()
     with ThreadPoolExecutor(workers) as pool:
-        for season in range(first_season, last_season + 1):
-            first, last = dt.date(season, 9, 1), dt.date(season + 1, 8, 31)
-            items = modis_items(bounds, first, last)
+        for season, first, items in modis_seasons(bounds, first_season, last_season):
             days = sorted(items)
             for day, (clear, snow) in zip(days, pool.map(lambda d: modis_day(items[d], grid, origin), days)):
                 index = season_start(first_season, season) + (day - first).days
@@ -539,17 +538,74 @@ def copernicus_planes(files, bounds, seasons):
     return np.stack(planes), grid
 
 
+def subset(path, bounds, out):
+    """Write the window of raster `path` that covers `bounds`, one pixel wider on each side, to `out`.
+
+    The file keeps the name of the source file. A file whose raster misses the bounds writes nothing.
+    """
+    import rasterio
+    from rasterio.warp import transform_bounds
+    from rasterio.windows import Window, from_bounds
+
+    target = out / Path(urllib.parse.urlsplit(path).path).name
+    if target.exists():
+        return
+    with rasterio.open(path) as src:
+        window = from_bounds(*transform_bounds("EPSG:4326", src.crs, *bounds, densify_pts=100), src.transform)
+        # Rounded first: a bound on a pixel edge comes back a hair off it.
+        col, row = round(window.col_off, 6), round(window.row_off, 6)
+        left, top = math.floor(col) - 1, math.floor(row) - 1
+        right, bottom = math.ceil(round(col + window.width, 6)) + 1, math.ceil(round(row + window.height, 6)) + 1
+        left, top, right, bottom = max(left, 0), max(top, 0), min(right, src.width), min(bottom, src.height)
+        if left >= right or top >= bottom:
+            return
+        window = Window(left, top, right - left, bottom - top)
+        profile = {key: value for key, value in src.profile.items() if key not in ("blockxsize", "blockysize", "tiled")}
+        profile.update(driver="GTiff", width=window.width, height=window.height, transform=src.window_transform(window),
+                       compress="deflate")
+        data = src.read(window=window)
+    part = target.with_name(target.name + ".part")
+    with rasterio.open(part, "w", **profile) as dst:
+        dst.write(data)
+    os.replace(part, target)
+
+
+def fetch(source, bounds, first_season, last_season, out):
+    """Write the window of every source file of the seasons to `out`, for `obc data fetch`."""
+    out.mkdir(parents=True, exist_ok=True)
+    if source == "copernicus-hr-wsi":
+        cdse_credentials()
+        files = copernicus_files(bounds)
+        paths = {path for season in range(first_season, last_season + 1)
+                 for layer in files.get(season, {}).values() for path in layer}
+        with ThreadPoolExecutor(4) as pool:
+            list(pool.map(lambda path: subset(path, bounds, out), paths))
+        return
+    for season, _, items in modis_seasons(bounds, first_season, last_season):
+        # The search can list a file twice, and two writers of one file collide.
+        hrefs = {urllib.parse.urlsplit(href).path: href for files in items.values() for *_, href in files}
+        with ThreadPoolExecutor(24) as pool:
+            list(pool.map(lambda href: subset(href, bounds, out), hrefs.values()))
+        print(f"Season {season}/{(season + 1) % 100:02d}: {len(hrefs)} files", file=sys.stderr, flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("region", help="region name: the recipe in tools/planner-regions and the default output folder")
-    parser.add_argument("--bounds", type=maps.bounds, help="west,south,east,north instead of the recipe bounds")
+    parser.add_argument("region", nargs="?", help="region id: a box region in data/regions/ and the default output folder")
+    parser.add_argument("--bounds", type=maps.bounds, help="west,south,east,north instead of the box of the region in data/regions/")
     parser.add_argument("--output", type=Path, help="default: ~/.cache/obc/planner/REGION/maps/snow.pmtiles")
     parser.add_argument("--source", choices=SOURCES, default="nasa-modis")
     parser.add_argument("--first-season", type=int, default=2000, help="the first NASA season")
     parser.add_argument("--last-season", type=int, default=2024, help="the last NASA season (2024 ends in June 2025)")
     parser.add_argument("--trails", action="store_true", help="report the share of OSM path and track length with no data in every season")
+    parser.add_argument("--fetch", type=Path, help="only write the source windows of the seasons to this directory")
     args = parser.parse_args()
-    bounds = args.bounds or json.loads((RECIPES / f"{args.region}.json").read_text())["bounds"]
+    if not args.region and not (args.fetch and args.bounds):
+        parser.error("give a region, or --bounds with --fetch")
+    bounds = args.bounds or data_registry.region_box(args.region)
+    if args.fetch:
+        fetch(args.source, bounds, args.first_season, args.last_season, args.fetch)
+        return
     output = args.output or Path.home() / ".cache/obc/planner" / args.region / "maps/snow.pmtiles"
     start = time.monotonic()
     if args.source == "copernicus-hr-wsi":

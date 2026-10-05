@@ -3,7 +3,7 @@ name = "obc-web-assemble"
 version = "0.1.0"
 edition = "2021"
 publish = false # internal bridge crate — not published to crates.io
-description = "The hosted builder's wasm assembly bridge (epic #1016, P4b): downloaded OBCA cells → one .obcm, in the browser, through the exact obcm-assemble engine the CLI runs."
+description = "The hosted builder's wasm assembly bridge: downloaded OBCA cells → one .obcm, in the browser, through the exact obcm-assemble engine the CLI runs."
 
 # `cdylib` is what wasm-bindgen links; `rlib` keeps the crate a normal workspace library so
 # `cargo test`/`clippy` exercise the assembly driver on the host target too — which is how the

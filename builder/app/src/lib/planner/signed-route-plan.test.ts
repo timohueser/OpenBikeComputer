@@ -53,7 +53,7 @@ describe('signed route plans', () => {
 
     it('sends the turnarounds of a one-way plan with its route request', async () => {
         const plan = routePlan(record(106));
-        const trip = { ...planTrip(base(), plan, false), live: true };
+        const trip = planTrip(base(), plan, false);
         expect(orderedRoutePoints(trip).map(point => [point.kind, point.coordinate])).toEqual(
             plan.points.map((coordinate, i) => [i === 0 ? 'start' : i === plan.points.length - 1 ? 'finish' : 'via', coordinate]));
         expect(isTrip(trip)).toBe(true);

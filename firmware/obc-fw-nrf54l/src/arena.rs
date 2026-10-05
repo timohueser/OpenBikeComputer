@@ -104,7 +104,7 @@ pub(crate) struct DetourArm {
     sealed: Option<obc_storage::flat::SealedAllocation<'static>>,
     preview: heapless::Vec<(i32, i32), { obc_app::NAV_PREVIEW_MAX }>,
     preview_chunk: usize,
-    preview_index: usize,
+    preview_pick: obc_route::Pick,
 }
 #[cfg(has_nav)]
 union DetourWork {
@@ -523,7 +523,7 @@ impl NavGuard {
             core::ptr::addr_of_mut!((*arm).sealed).write(None);
             core::ptr::addr_of_mut!((*arm).preview).write(heapless::Vec::new());
             core::ptr::addr_of_mut!((*arm).preview_chunk).write(0);
-            core::ptr::addr_of_mut!((*arm).preview_index).write(0);
+            core::ptr::addr_of_mut!((*arm).preview_pick).write(obc_route::Pick::new(0, 0));
             core::ptr::addr_of_mut!((*arm).output).write_bytes(0, 1);
         }
         self.phase = NavPhase::Sources;
@@ -566,7 +566,6 @@ impl NavGuard {
         let arm = unsafe { &mut *(arena_ptr() as *mut DetourArm) };
         arm.preview.clear();
         arm.preview_chunk = 0;
-        arm.preview_index = 0;
         self.phase = NavPhase::Sources;
     }
 
@@ -582,17 +581,18 @@ impl NavGuard {
             app.set_detour_preview(&arm.preview);
             return Ok(true);
         }
-        let total = reader.chunks().iter().map(|c| c.point_count as usize - 1).sum::<usize>() + 1;
-        let keep = obc_app::NAV_PREVIEW_MAX.min(total);
-        let mut points = heapless::Vec::<obc_route::RoutePoint, { obc_route::MAX_POINTS_PER_CHUNK }>::new();
-        reader.decode_chunk(arm.preview_chunk, &mut points)?;
-        for p in points.iter().skip(usize::from(arm.preview_chunk > 0)) {
-            let next = if keep > 1 { arm.preview.len() * (total - 1) / (keep - 1) } else { 0 };
-            if arm.preview.len() < keep && arm.preview_index == next {
-                let _ = arm.preview.push((p.lon, p.lat));
-            }
-            arm.preview_index += 1;
+        if arm.preview_chunk == 0 {
+            let points = reader.segment_count() as usize + 1;
+            arm.preview_pick = obc_route::Pick::new(points, obc_app::NAV_PREVIEW_MAX);
         }
+        let skip = usize::from(arm.preview_chunk > 0);
+        reader.with_chunk(arm.preview_chunk, |points| {
+            for p in points.skip(skip) {
+                if arm.preview_pick.keep_next() {
+                    let _ = arm.preview.push((p.lon, p.lat));
+                }
+            }
+        })?;
         arm.preview_chunk += 1;
         Ok(false)
     }

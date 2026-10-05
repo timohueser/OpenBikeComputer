@@ -42,8 +42,8 @@ export function planTrip(base: Trip, { points, turnarounds }: RoutePlan, loop: b
     }
     const last = points.length - 1;
     const route = points.map((coordinate, i): RoutePoint => shape({
-        id: crypto.randomUUID(), coordinate: [...coordinate], progress: i / last,
+        id: crypto.randomUUID(), coordinate: [...coordinate],
         ...i === 0 ? { kind: 'start', label: 'Start' } : i === last ? { kind: 'finish', label: 'Finish' } : { kind: 'via', label: 'Shaping point' },
     }, i));
-    return { ...base, loop: undefined, routing: undefined, splits: undefined, points: route, routeOrder: route.slice(1, -1).map(point => point.id) };
+    return { ...base, loop: undefined, splits: undefined, points: route, routeOrder: route.slice(1, -1).map(point => point.id) };
 }

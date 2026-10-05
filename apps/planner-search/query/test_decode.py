@@ -54,8 +54,8 @@ CASES = [
      {"type": "places", "what": ["water"], "where": {"before": {"name": "Stelvio"}}}),
     ("end_day", "end [every day|DAY] at [a campsite|POINT]",
      {"type": "end_day", "day": "every", "at": {"kind": "campsite"}}),
-    ("reroute", "make [day 3|DAY] [flatter|GOAL]",
-     {"type": "reroute", "where": {"day": 3}, "goal": "least_climbing"}),
+    # The model keeps a `reroute` intent, which has no request type.
+    ("reroute", "make [day 3|DAY] [flatter|GOAL]", {"type": "none"}),
     ("split", "split into days of [about 80 km|PER_DAY]",
      {"type": "split", "per_day": km(80)}),
     ("places", "[campsites|WHAT] [with a pool|IGNORED] [end of day 4|DAY]",
@@ -118,8 +118,6 @@ CASES = [
     ("places", "[Apotheke|WHAT] [sonntags geöffnet|OPEN] in [Freiburg|NEAR]",
      {"type": "places", "what": ["pharmacy"], "open": {"weekday": "sun"},
       "where": {"near": [{"name": "Freiburg"}]}}),
-    ("reroute", "[Tag 2|DAY] [ohne Schotter|GOAL]",
-     {"type": "reroute", "where": {"day": 2}, "goal": "least_unpaved"}),
     ("stretches", "[Anstiege|WHAT] [über 500 Höhenmeter|MIN]",
      {"type": "stretches", "what": "climb", "min": {"value": 500, "unit": "m"}}),
     ("stretches", "[Lücken ohne Wasser|WHAT] in [den nächsten dreißig Kilometern|ALONG]",
@@ -195,6 +193,11 @@ def test_along_after_is_a_mark():
     assert parse_along(Span("after 100 km")) == {"ref": "start", "at": km(100)}
 
 
+def test_a_mark_after_a_point_decodes_as_the_mark():
+    text, labels = tag("[water|WHAT] [after km 80|AFTER]")
+    assert decode(text, "places", labels)["where"] == {"along": {"ref": "km", "at": km(80)}}
+
+
 @pytest.mark.parametrize("text,gold", [
     ("campsites end of day 4",
      {"type": "places", "what": ["campsite"], "where": {"day": 4, "part": "end"}}),
@@ -205,7 +208,7 @@ def test_along_after_is_a_mark():
      {"type": "places", "what": ["supermarket"], "open": {"weekday": "sun"}, "where": {"day": 3}}),
     ("wo kann ich am Ende von Tag 4 zelten",
      {"type": "places", "what": ["campsite"], "where": {"day": 4, "part": "end"}}),
-    ("make day 3 flatter", {"type": "reroute", "where": {"day": 3}, "goal": "least_climbing"}),
+    ("make day 3 flatter", {"type": "none"}),
     ("water gaps", {"type": "stretches", "what": "gap:water"}),
     ("end day 4 at saint-michel", {"type": "end_day", "day": 4, "at": {"name": "saint-michel"}}),
     ("Kandel", {"type": "place", "name": "Kandel"}),
@@ -253,14 +256,10 @@ def test_stretch_terms(text, stretch):
 
 
 FILLER = [
-    ("reroute", "[as flat as possible|GOAL] on [day 2|DAY]",
-     {"type": "reroute", "where": {"day": 2}, "goal": "least_climbing"}),
     ("places", "[water|WHAT] [along my trip|SCOPE]",
      {"type": "places", "what": ["water"], "where": {"scope": "route"}}),
     ("places", "[cafes|WHAT] [halfway through day 3|DAY]",
      {"type": "places", "what": ["cafe"], "where": {"day": 3, "part": "middle"}}),
-    ("route", "route to [Bern|TO] on [paved roads|GOAL]",
-     {"type": "route", "to": {"name": "Bern"}, "goal": "least_unpaved"}),
     ("places", "[toilets|WHAT] [on my screen|SCOPE]",
      {"type": "places", "what": ["toilets"], "where": {"scope": "view"}}),
     ("split", "split [the whole trip|SCOPE] into [80 km daily|PER_DAY]",
@@ -271,14 +270,6 @@ FILLER = [
      {"type": "route", "to": {"name": "Chur"}, "goal": "shortest"}),
     ("route", "nach [Bern|TO] [auf dem kürzesten Weg|GOAL]",
      {"type": "route", "to": {"name": "Bern"}, "goal": "shortest"}),
-    ("reroute", "[Tag 2|DAY] [so flach wie möglich|GOAL]",
-     {"type": "reroute", "where": {"day": 2}, "goal": "least_climbing"}),
-    ("reroute", "[Anstiege vermeiden|GOAL]", {"type": "reroute", "where": {"scope": "route"},
-                                              "goal": "least_climbing"}),
-    ("reroute", "[nur asphaltierte Straßen|GOAL]",
-     {"type": "reroute", "where": {"scope": "route"}, "goal": "least_unpaved"}),
-    ("reroute", "[ohne Feldwege|GOAL]",
-     {"type": "reroute", "where": {"scope": "route"}, "goal": "least_unpaved"}),
     ("places", "[Hütten|WHAT] [entlang meiner Route|SCOPE]",
      {"type": "places", "what": ["hut"], "where": {"scope": "route"}}),
     ("places", "[Bäcker|WHAT] [hier in der Gegend|SCOPE]",
@@ -409,17 +400,6 @@ ROUND3 = [
      {"type": "places", "what": ["resupply"], "radius": km(23)}),
     ("places", "[panetterie|WHAT] [nel giro di 3 km|RADIUS]",
      {"type": "places", "what": ["bakery"], "radius": km(3)}),
-    ("reroute", "refais [l'itinéraire complet|SCOPE] en [gravel|BIKE]",
-     {"type": "reroute", "where": {"scope": "route"}, "bike": "gravel"}),
-    # goals
-    ("reroute", "rendre le [jour 6|DAY] [moins dur|GOAL]",
-     {"type": "reroute", "where": {"day": 6}, "goal": "least_climbing"}),
-    ("reroute", "[jour 2|DAY] [plus dur|GOAL]", {"type": "reroute", "where": {"day": 2},
-                                                 "goal": "most_climbing"}),
-    ("reroute", "[giorno 2|DAY] [più duro|GOAL]", {"type": "reroute", "where": {"day": 2},
-                                                   "goal": "most_climbing"}),
-    ("reroute", "[jour 4|DAY] [en évitant les chemins|GOAL]",
-     {"type": "reroute", "where": {"day": 4}, "goal": "least_unpaved"}),
     # marks
     ("places", "[ponts|WHAT] [dans 3 heures|ALONG]",
      {"type": "places", "what": ["bridge"], "where": {"along": {"ref": "here", "at": h(3)}}}),

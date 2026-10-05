@@ -1,10 +1,11 @@
 use clap::Parser;
-use route_engine::{directory::Writer, model::Profile};
+use route_build::{catalog, overlays};
+use route_engine::{directory::Writer, model::Profile, package};
 use sha2::{Digest, Sha256};
 use std::{fs, io::Read, path::PathBuf};
 
 #[derive(Parser)]
-#[command(about = "Build a complete regional routing package from OSM PBF files")]
+#[command(about = "Build a regional routing package and its overlay index from OSM PBF files")]
 struct Args {
     #[arg(required = true)]
     inputs: Vec<PathBuf>,
@@ -20,6 +21,9 @@ struct Args {
     /// Comma-separated catalogue IDs, or all.
     #[arg(long, default_value = "touring,road,gravel,mtb,hiking", value_delimiter = ',')]
     profiles: Vec<String>,
+    /// The ISO codes of the region's countries. With them, the build also writes the route catalog.
+    #[arg(long, value_delimiter = ',')]
+    countries: Vec<String>,
     /// Local Copernicus GeoTIFF directory, used where the ground archive has no sample.
     #[cfg(feature = "obc-terrain")]
     #[arg(long)]
@@ -51,6 +55,7 @@ fn run(args: Args) -> Result<(), String> {
     {
         return Err("Unknown profile ID".into());
     }
+    let france = (!args.countries.is_empty()).then(|| catalog::check(&args.countries, &profiles)).transpose()?;
     let mut identities = Vec::new();
     for path in &args.inputs {
         let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
@@ -87,11 +92,24 @@ fn run(args: Args) -> Result<(), String> {
     fs::create_dir(&temp).map_err(|e| e.to_string())?;
     let result = (|| {
         let mut writer = Writer::create(&temp).map_err(|e| e.to_string())?;
+        // Only the bytes outlive this statement, not the decoded manifest.
         let manifest =
-            route_build::prepare(&graph, args.region, bounds, &profiles, identities, |bytes| writer.write(bytes))?;
-        writer.finish().map_err(|e| e.to_string())?;
-        fs::write(temp.join("manifest.json"), serde_json::to_vec(&manifest).map_err(|e| e.to_string())?)
+            serde_json::to_vec(&route_build::prepare(&graph, args.region, bounds, &profiles, identities, |bytes| {
+                writer.write(bytes)
+            })?)
             .map_err(|e| e.to_string())?;
+        writer.finish().map_err(|e| e.to_string())?;
+        fs::write(temp.join("manifest.json"), &manifest).map_err(|e| e.to_string())?;
+        // The overlay index and the route catalog read only the source objects. The road graph is
+        // freed here, so the catalog routers get its memory.
+        let osm = std::mem::take(&mut graph.osm);
+        drop(graph);
+        eprintln!("Writing the overlay index");
+        overlays::write(&temp.join(overlays::FILE), &package::digest(&manifest), bounds, &osm)?;
+        if let Some(france) = france {
+            eprintln!("Writing the route catalog");
+            println!("{}", catalog::write(&temp, osm, france)?.to_json());
+        }
         fs::rename(&temp, &args.output).map_err(|e| e.to_string())?;
         eprintln!("Ready: {}", args.output.display());
         Ok(())

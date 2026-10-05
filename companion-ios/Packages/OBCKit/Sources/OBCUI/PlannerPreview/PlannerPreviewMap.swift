@@ -47,7 +47,7 @@ struct PlannerPreviewMap: UIViewRepresentable {
     var hiddenCategories: Set<PlannerPreviewPlaceCategory> = []
     var highlightedCategories: Set<PlannerPreviewPlaceCategory> = []
     var onPlace: (PlannerPreviewPlace) -> Void = { _ in }
-    var onNetworkStatus: (String?) -> Void = { _ in }
+    var onLayerStatus: (String?) -> Void = { _ in }
     /// Lines in place of the route line, such as the signed routes over the muted plan.
     var strokes: [MapStroke]?
     /// What a fit shows in place of the route and its pins.
@@ -125,7 +125,7 @@ struct PlannerPreviewMap: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ map: OBCNativeMapView, coordinator: Coordinator) {
-        coordinator.networks.stop(); coordinator.places.stop(); map.stop()
+        coordinator.places.stop(); map.stop()
     }
 
     final class PinAnnotation: MLNPointAnnotation {
@@ -158,17 +158,13 @@ struct PlannerPreviewMap: UIViewRepresentable {
         private var reportedRange: ClosedRange<Double>?
         private var hasReportedRange = false
         private var reportedViewport: MKMapRect?
-        let networks = NativeViewportLayer(identifier: "networks")
         let places = NativeViewportLayer(identifier: "highlighted-places")
-        private var layerStatuses: [String: String] = [:]
         private var reportedLayerStatus: String?
 
-        private func reportLayerStatus(_ status: String?, layer: String) {
-            layerStatuses[layer] = status
-            let message = layerStatuses.keys.sorted().compactMap { layerStatuses[$0] }.first
-            guard message != reportedLayerStatus else { return }
-            reportedLayerStatus = message
-            parent.onNetworkStatus(message)
+        private func reportLayerStatus(_ status: String?) {
+            guard status != reportedLayerStatus else { return }
+            reportedLayerStatus = status
+            parent.onLayerStatus(status)
         }
 
         init(_ parent: PlannerPreviewMap) {
@@ -199,18 +195,9 @@ struct PlannerPreviewMap: UIViewRepresentable {
             updateNetworks(map)
         }
         func updateNetworks(_ map: OBCNativeMapView) {
-            networks.status = { [weak self] in self?.reportLayerStatus($0, layer: "networks") }
             let network = parent.showCycling ? "cycling" : parent.showHiking ? "hiking" : "none"
-            if map.style?.source(withIdentifier: "networks") is MLNVectorTileSource {
-                networks.update(map, key: nil, release: nil) { _, _, _ in Data() }
-                for id in ["planner-networks", "planner-network-labels"] {
-                    for kind in ["cycling", "hiking"] { map.style?.layer(withIdentifier: "\(id)-\(kind)")?.isVisible = kind == network }
-                }
-                return
-            }
-            let source = parent.source
-            networks.update(map, key: network == "none" ? nil : network, release: map.selectedRelease, minimumZoom: 6) { bounds, zoom, release in
-                try await source.overlays(bounds: bounds, zoom: zoom, network: network, release: release)
+            for id in ["planner-networks", "planner-network-labels"] {
+                for kind in ["cycling", "hiking"] { map.style?.layer(withIdentifier: "\(id)-\(kind)")?.isVisible = kind == network }
             }
         }
         func updatePOIs(_ map: OBCNativeMapView) {
@@ -225,7 +212,7 @@ struct PlannerPreviewMap: UIViewRepresentable {
             }
             let source = parent.source
             let categories = highlighted.intersection(shown)
-            places.status = { [weak self] in self?.reportLayerStatus($0, layer: "places") }
+            places.status = { [weak self] in self?.reportLayerStatus($0) }
             places.update(map, key: categories.isEmpty ? nil : categories.sorted().joined(separator: ","),
                           release: map.selectedRelease, maximumZoom: 13) { bounds, _, release in
                 var query = PlannerSearchQuery(text: "places", view: bounds)

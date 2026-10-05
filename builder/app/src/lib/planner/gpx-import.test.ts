@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applyBudget, orderedRoutePoints, planView, type DrawnCoordinate } from './editor';
+import { applyBudget, dayStops, orderedRoutePoints, planView, type DrawnCoordinate } from './editor';
 import { cumulative, kilometres, type Coordinate } from './geo';
 import { profileAscent } from './profile-data';
 import { importedTrip, planOnRoads, readTracks } from './gpx-import';
@@ -25,7 +25,7 @@ describe('GPX import', () => {
         expect(micro(file.line)).toEqual(micro([noisy[0], noisy[24], noisy[25], noisy[26], noisy[49]]));
         const trip = importedTrip({ bike: 'gravel' }, [file]);
         expect(isTrip(trip)).toBe(true);
-        expect(trip).toMatchObject({ mode: 'route', bike: 'gravel', live: true });
+        expect(trip).toMatchObject({ mode: 'route', bike: 'gravel' });
         expect(orderedRoutePoints(trip).map(p => [p.kind, p.leg])).toEqual([['start', undefined], ['finish', 'drawn']]);
         expect(trip.points[1].drawn).toEqual(file.line);
         expect((await calculateLine(trip, new AbortController().signal, new LegCache())).unknownElevationKm).toBeGreaterThan(0);
@@ -42,14 +42,14 @@ describe('GPX import', () => {
         expect(trip).toMatchObject({ mode: 'trip', days: 3, target: 3 });
         expect(orderedRoutePoints(trip).map(p => [p.id.startsWith('night') ? p.id : p.kind, p.leg]))
             .toEqual([['start', undefined], ['night-1', 'drawn'], ['night-2', 'drawn'], ['via', 'transfer'], ['finish', 'drawn']]);
-        const routed = { ...trip, routing: await calculateLine(trip, new AbortController().signal, new LegCache()) };
-        const ridden = planView(routed).total - kilometres(second.at(-1)!, third[0]);
-        expect(planView(routed).summary.distance).toBeCloseTo(ridden, 9);
-        expect(routed.routing.seconds).toBeCloseTo(ridden / 19 * 3600, 6);
-        expect(routed.routing.unroutedKm).toBeCloseTo(ridden, 9);
-        expect(routed.routing.unknownElevationKm).toBe(0);
-        expect(profileAscent(0, 1, routed.routing)).toBe(57);
-        const days = planView(routed).days;
+        const line = await calculateLine(trip, new AbortController().signal, new LegCache());
+        const ridden = planView(trip, line).total - kilometres(second.at(-1)!, third[0]);
+        expect(planView(trip, line).summary.distance).toBeCloseTo(ridden, 9);
+        expect(line.seconds).toBeCloseTo(ridden / 19 * 3600, 6);
+        expect(line.unroutedKm).toBeCloseTo(ridden, 9);
+        expect(line.unknownElevationKm).toBe(0);
+        expect(profileAscent(0, 1, line)).toBe(57);
+        const days = planView(trip, line).days;
         expect(days.reduce((km, day) => km + day.distance, 0)).toBeCloseTo(ridden, 9);
         expect(days[2].hours).toBeCloseTo(cumulative(third).at(-1)! / 19, 6);
     });
@@ -59,8 +59,7 @@ describe('GPX import', () => {
         const [file] = readTracks([{ name: 'walk.gpx', text: gpx(track([7.6, 47.5], 801)) }]);
         const days = async (bike: 'hiking' | 'gravel') => {
             const trip = importedTrip({ bike }, [file]);
-            const routed = { ...trip, routing: await calculateLine(trip, new AbortController().signal, new LegCache()) };
-            return applyBudget(routed, 'hours', 6, 0).days;
+            return applyBudget(trip, await calculateLine(trip, new AbortController().signal, new LegCache()), 'hours', 6, 0).days;
         };
         expect([await days('hiking'), await days('gravel')]).toEqual([3, 1]);
     });
@@ -74,13 +73,18 @@ describe('GPX import', () => {
         const markers = [{ kind: 'marker', label: 'Spring & bench', coordinate: [7.61, 47.501], note: 'Cold water' }, { kind: 'marker', label: 'Marker', coordinate: [7.62, 47.499] }];
         expect(trip.points.filter(p => p.kind === 'marker')).toMatchObject(markers);
         expect(trip.points.at(-1)).not.toHaveProperty('note');
-        expect(importPlan(exportPlan(newPlan(trip, 'ride'))).trip.points.filter(p => p.kind === 'marker')).toMatchObject(markers);
+        expect(importPlan(exportPlan(newPlan(trip, 'ride'), [])).plan.trip.points.filter(p => p.kind === 'marker')).toMatchObject(markers);
     });
 
-    it('keeps a valid plan when a file with waypoints has a zero-length line', () => {
-        const trip = importedTrip({}, readTracks([{ name: 'still.gpx', text: gpx([[7.6, 47.5], [7.6, 47.5]], undefined, '<wpt lat="47.51" lon="7.6"/>') }]));
-        expect(isTrip(trip)).toBe(true);
-        expect(trip.points.find(p => p.kind === 'marker')!.progress).toBe(.5);
+    it('keeps a waypoint in the day of its file where the trip rides back on the same road', async () => {
+        const out = track([7.6, 47.5], 20);
+        const lines = readTracks([{ name: 'out.gpx', text: gpx(out) },
+            { name: 'back.gpx', text: gpx(out.slice().reverse(), undefined, '<wpt lat="47.5" lon="7.605"><name>Spring</name></wpt>') }]);
+        const trip = importedTrip({}, lines);
+        const line = await calculateLine(trip, new AbortController().signal, new LegCache());
+        const days = planView(trip, line).days;
+        expect(days.map(day => dayStops(trip, line, day).map(stop => stop.point.label))).toEqual([[], ['Spring']]);
+        expect(dayStops(trip, line, days[1])[0].km).toBeCloseTo(kilometres(out.at(-1)!, [7.605, 47.5]), 6);
     });
 
     it('rejects more files than a trip has days', () => {
@@ -104,8 +108,6 @@ describe('GPX import', () => {
         expect(orderedRoutePoints(trip).map(p => [p.kind, p.leg, p.turnaround])).toEqual([
             ['start', undefined, undefined], ['via', undefined, true], ['night', undefined, undefined], ['finish', 'drawn', undefined]]);
         expect(trip.points.filter(p => p.kind === 'marker').map(p => p.label)).toEqual(['Hut', 'Cafe', 'Gate']);
-        // A waypoint at the first point of file 2 starts day 2.
-        expect(trip.points.find(p => p.label === 'Gate')!.progress).toBe(1 / 2);
         expect(trip.routeOrder).toHaveLength(2);
     });
 });

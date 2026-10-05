@@ -23,19 +23,18 @@ obc-map-scene = { path = "../../firmware/obc-map-scene" }
 # The normative OBCM version the bake and the published-catalog guard compare against, and the
 # OBCT facts the terrain stage validates a pairing with.
 obc-formats = { path = "../../firmware/obc-formats" }
+# The data registry and the one R2 client: the regions a bake reads, the credits a catalog carries,
+# and `obc bake publish --target r2`. A GPL crate may depend on this MIT crate; never the reverse.
+obc-data = { path = "../obc-data" }
 # The terrain stage (#1071) drives `obc-dem` as a library rather than as a subprocess: `bake_cell`
 # is already a pure function of (mosaic, cell) and `write_cell_file` already writes the one
 # container OBCT defines, so shelling out would only insert a second naming scheme between the
-# rasteriser and the catalog's object layout. It also carries the Copernicus credit the catalog
-# stamps, so there is exactly one copy of that wording in the repository.
+# rasteriser and the catalog's object layout.
 # `fetch` too, not just `geotiff`: since the terrain stage runs itself (a248a4c3) the bakery
 # fetches missing GLO-30 tiles into its cache, so the HTTP client legitimately follows `obc-dem`
 # into this tree. Declared here rather than inherited by workspace feature unification, so a
 # standalone `cargo check -p obc-bake` matches what the workspace builds.
 obc-dem = { path = "../obc-dem", default-features = false, features = ["geotiff", "fetch"] }
-# The Copernicus credit the terrain stage stamps into every catalog entry. It is a `const` in the
-# elevation leaf, which this crate reads through rather than copying the wording.
-obc-elevation = { path = "../../firmware/obc-elevation" }
 # Skin previews are not screenshots of a second renderer. The bakery restamps a
 # canonical tiny OBCM through the assembly engine's production skin resolver and
 # renders it through the same `RenderScratch` the device runs.
@@ -49,10 +48,6 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 heapless = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-# The curated region list is TOML, not JSON, for one reason: it is the file whose
-# *comments* are the deliverable — why a region is on the shelf, and why its
-# neighbour is not. Everything else the bakery reads or writes stays JSON.
-toml = "0.9"
 # Content hashes: the idempotency key over the extract, and the artifact digests the
 # sidecar records. Same implementation the catalog generator publishes with.
 sha2 = "0.11"

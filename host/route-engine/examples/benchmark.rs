@@ -8,13 +8,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cases: Vec<benchmark::Case> =
         serde_json::from_slice(&std::fs::read(args.next().ok_or("Missing request corpus")?)?)?;
     let iterations = args.next().map(|s| s.parse()).transpose()?.unwrap_or(3);
-    let memory_mib: usize = args.next().map(|s| s.parse()).transpose()?.unwrap_or(768);
-    let memory = memory_mib.checked_mul(1024 * 1024).ok_or("Invalid routing memory budget")?;
+    let memory_mib: Option<usize> = args.next().map(|s| s.parse()).transpose()?;
+    let memory =
+        memory_mib.map(|mib| mib.checked_mul(1024 * 1024).ok_or("Invalid routing memory budget")).transpose()?;
     let mode = args.next();
-    let options = benchmark::Options {
-        retained: mode.as_deref() == Some("retained"),
-        extra_index_memory: std::env::var_os("ROUTE_BENCH_INDEX_MEMORY").is_some(),
-    };
+    let options = benchmark::Options { retained: mode.as_deref() == Some("retained") };
     let result = benchmark::run(std::path::Path::new(&package), &cases, iterations, memory, options)?;
     serde_json::to_writer(std::io::stdout(), &result)?;
     Ok(())

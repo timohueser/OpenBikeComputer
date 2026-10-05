@@ -1,8 +1,14 @@
-//! Possible closures as a sparse side table: only the few roads with one have entries.
+//! Possible closures: one small table of distinct closure sets, and a paged column that names
+//! the set of each road, so a selection loads only the pages of its roads.
+use crate::{
+    base::{Column, Numbers},
+    table::{valid_digest, Table},
+};
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::{Entry, HashMap};
 
 /// Why the rider may have no access to a road that the router keeps open.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// `access=permit`.
@@ -33,77 +39,94 @@ impl Kind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Closure {
     pub kind: Kind,
     /// The OSM condition, or the OSM access value for the other kinds.
     pub condition: String,
 }
 
+/// The closures of one road: `(modes, closure)` entries, such as `(BIKE, Seasonal "Nov-May")`.
+pub type Set = Vec<(u8, Closure)>;
+
+/// The manifest's reference to the closures of a package.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Index {
+    /// The `Vec<Set>` object of distinct sets.
+    pub sets: String,
+    /// One set id per directed road; the all-ones value means no possible closure.
+    pub roads: Column,
+}
+
+impl Index {
+    pub fn valid(&self, roads: u32) -> bool {
+        valid_digest(&self.sets) && self.roads.values.len == roads && self.roads.values.valid()
+    }
+    pub fn tables(&self) -> [&Table; 1] {
+        [&self.roads.values]
+    }
+}
+
 /// The router blocks a mode only where the rider surely has no access. Roads where the rider may
 /// have no access stay open, and the route reports them.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Closures {
-    /// `(road, entry)` pairs sorted by road. A road can have more than one entry.
-    pub roads: Vec<(u32, u16)>,
-    /// Distinct `(modes, closure)` entries, such as `(BIKE, Seasonal "Nov-May")`.
-    pub entries: Vec<(u8, Closure)>,
+    pub sets: Vec<Set>,
+    /// The set id of each road; `u64::MAX` for none. Empty when the package has no closures.
+    pub roads: Numbers,
+}
+
+impl Default for Closures {
+    fn default() -> Self {
+        Self { sets: Vec::new(), roads: Numbers::U8(Vec::new()) }
+    }
 }
 
 impl Closures {
-    /// Builds the table from roads in ascending order and the closures of each.
-    pub fn build(roads: impl IntoIterator<Item = (u32, Vec<(u8, Closure)>)>) -> Result<Self, String> {
-        let mut table = Self::default();
-        for (road, closures) in roads {
-            let mut entries = Vec::with_capacity(closures.len());
+    /// The table from the closures of each road, in road order. A set keeps the order of its
+    /// first mentions: access values before conditions, as the source lists them.
+    pub fn build(roads: impl IntoIterator<Item = Set>) -> Result<Self, String> {
+        let mut sets: Vec<Set> = Vec::new();
+        let mut known: HashMap<Set, u64> = HashMap::new();
+        let mut ids = Vec::new();
+        for closures in roads {
+            let mut set: Set = Vec::with_capacity(closures.len());
             for closure in closures {
-                let entry = match table.entries.iter().position(|known| *known == closure) {
-                    Some(entry) => entry,
-                    None => {
-                        table.entries.push(closure);
-                        table.entries.len() - 1
-                    }
-                };
-                entries.push(u16::try_from(entry).map_err(|_| "Too many closures")?);
+                if !set.contains(&closure) {
+                    set.push(closure);
+                }
             }
-            entries.sort_unstable();
-            entries.dedup();
-            table.roads.extend(entries.into_iter().map(|entry| (road, entry)));
+            ids.push(if set.is_empty() {
+                u64::MAX
+            } else {
+                match known.entry(set) {
+                    Entry::Occupied(id) => *id.get(),
+                    Entry::Vacant(slot) => {
+                        sets.push(slot.key().clone());
+                        *slot.insert(sets.len() as u64 - 1)
+                    }
+                }
+            });
         }
-        table.valid(u32::MAX).then_some(table).ok_or_else(|| "Unsorted closures".into())
+        u32::try_from(sets.len()).map_err(|_| "Too many closure sets")?;
+        Ok(Self { sets, roads: Numbers::U64(ids) })
     }
 
-    pub fn valid(&self, roads: u32) -> bool {
-        self.roads.windows(2).all(|pair| pair[0] < pair[1])
-            && self.roads.iter().all(|&(road, entry)| road < roads && (entry as usize) < self.entries.len())
+    pub fn valid(&self) -> bool {
+        (0..self.roads.len()).all(|road| {
+            let set = self.roads.get(road);
+            set == u64::MAX || (set as usize) < self.sets.len()
+        })
     }
 
     /// The closures that concern `mode` on `road`, or `None`.
     pub fn closing(&self, road: u32, mode: u8) -> Option<Vec<Closure>> {
-        let start = self.roads.partition_point(|&(id, _)| id < road);
-        let closures: Vec<Closure> = self.roads[start..]
-            .iter()
-            .take_while(|&&(id, _)| id == road)
-            .map(|&(_, entry)| &self.entries[entry as usize])
-            .filter(|(modes, _)| modes & mode != 0)
-            .map(|(_, closure)| closure.clone())
-            .collect();
+        if road as usize >= self.roads.len() {
+            return None;
+        }
+        let set = self.sets.get(usize::try_from(self.roads.get(road as usize)).ok()?)?;
+        let closures: Vec<Closure> =
+            set.iter().filter(|(modes, _)| modes & mode != 0).map(|(_, closure)| closure.clone()).collect();
         (!closures.is_empty()).then_some(closures)
-    }
-
-    /// The table for new road IDs, where `ids[new]` is the old road ID.
-    pub fn select(&self, ids: impl IntoIterator<Item = u32>) -> Self {
-        let mut roads: Vec<(u32, u16)> = ids
-            .into_iter()
-            .enumerate()
-            .flat_map(|(new, old)| {
-                let new = new as u32;
-                let start = self.roads.partition_point(|&(id, _)| id < old);
-                self.roads[start..].iter().take_while(move |&&(id, _)| id == old).map(move |&(_, entry)| (new, entry))
-            })
-            .collect();
-        roads.sort_unstable();
-        Self { roads, entries: self.entries.clone() }
     }
 }
 
@@ -118,27 +141,30 @@ mod tests {
         let (permit, season, wet) =
             (closure(Kind::Permit, "permit"), closure(Kind::Seasonal, "Nov-May"), closure(Kind::Conditional, "wet"));
         let table = Closures::build([
-            (1, vec![(BIKE, season.clone())]),
-            (
-                3,
-                vec![
-                    (BIKE | FOOT | PUSH, permit.clone()),
-                    (BIKE, season.clone()),
-                    (FOOT | PUSH, wet.clone()),
-                    (BIKE, season.clone()),
-                ],
-            ),
-            (7, vec![(BIKE, season.clone())]),
+            vec![],
+            vec![(BIKE, season.clone())],
+            vec![],
+            vec![
+                (BIKE | FOOT | PUSH, permit.clone()),
+                (BIKE, season.clone()),
+                (FOOT | PUSH, wet.clone()),
+                (BIKE, season.clone()),
+            ],
+            vec![],
+            vec![],
+            vec![],
+            vec![(BIKE, season.clone())],
         ])
         .unwrap();
-        assert_eq!(table.entries.len(), 3);
-        assert_eq!(table.closing(3, BIKE), Some(vec![season.clone(), permit.clone()]));
+        assert_eq!(table.sets.len(), 2);
+        assert_eq!(table.sets[1].len(), 3);
+        assert!(table.valid());
+        assert_eq!(table.closing(3, BIKE), Some(vec![permit.clone(), season.clone()]));
         assert_eq!(table.closing(3, PUSH), Some(vec![permit.clone(), wet]));
         assert_eq!(table.closing(7, FOOT), None);
         assert_eq!(table.closing(5, BIKE), None);
-        let selected = table.select([7, 5, 3]);
-        assert_eq!(selected.closing(0, BIKE), Some(vec![season]));
-        assert_eq!(selected.closing(2, FOOT), table.closing(3, FOOT));
-        assert!(Closures::build([(7, vec![(BIKE, permit.clone())]), (3, vec![(BIKE, permit)])]).is_err());
+        assert_eq!(table.closing(99, BIKE), None);
+        assert_eq!(Closures::default().closing(0, BIKE), None);
+        assert!(!Closures { sets: vec![], roads: Numbers::U8(vec![0]) }.valid());
     }
 }

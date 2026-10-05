@@ -3,14 +3,17 @@
     import Icon from './PlannerIcon.svelte';
     import DayRow from './DayRow.svelte';
     import type { Day, ItineraryDay, OvernightCandidate, Place, RoutePoint, Trip } from '../../lib/planner/editor';
+    import type { RoutingLine } from '../../lib/planner/routing';
 
     let {
-        trip, itinerary, days, theme, overnightNote = '', expandedDay, changing, candidates, conflicts, selectedId, revealId, hoveredId = null, onHover,
+        trip, line, itinerary, days, theme, overnightNote = '', expandedDay, changing, candidates, conflicts, selectedId, revealId, hoveredId = null, onHover,
         onToggle, onOverview, onInspect, onShowEnd, onSelectPlace, onPick, onChangeOvernight, onEditTarget, onShowConflict,
         onAddRest, onRemoveRest, onNameRest,
     }: {
         overnightNote?: string;
         trip: Trip;
+        /** The line of the trip, once it is calculated. */
+        line?: RoutingLine;
         itinerary: ItineraryDay[];
         days: Day[];
         theme: 'light' | 'dark';
@@ -118,7 +121,7 @@
         {:else}
             {@const conflict = conflictOf(day.ridingNumber)}
             <DayRow
-                {trip} {day} {days} {theme} {scale} {changing} {selectedId} {revealId} {hoveredId} {onHover} {calendar}
+                {trip} {line} {day} {days} {theme} {scale} {changing} {selectedId} {revealId} {hoveredId} {onHover} {calendar}
                 expanded={expandedDay === day.ridingNumber}
                 candidates={expandedDay === day.ridingNumber ? candidates : []}
                 conflict={conflict ? calendar[conflict[0].night!] : null}

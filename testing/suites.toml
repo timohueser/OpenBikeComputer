@@ -14,10 +14,11 @@ schema = 2
 
 # ── Cargo packages with facts Cargo cannot derive ───────────────────────────
 
-# The vector files are a contract, not a dependency: a codec consumer never imports them.
+# The vector files are a contract, not a dependency: a codec consumer never imports them. The About
+# credits are tested against data/sources.toml, which obc-data embeds without a Cargo edge to it.
 [[package]]
 name = "obc-app"
-triggers = ["specs/vectors/**"]
+triggers = ["specs/vectors/**", "data/sources.toml"]
 
 # The captured planner export is under `fixtures/`, which already selects every unit that declares
 # fixture inputs. Its SwiftPM duplicate is not, and only this suite holds the two identical.
@@ -73,10 +74,15 @@ name = "obc-sim"
 triggers = ["fixtures/catalog.toml"]
 
 # Both compile the shipped preset in with `include_str!` and own the guard that fails when the
-# skin-preview fixture no longer matches it; no Cargo edge carries that.
+# skin-preview fixture no longer matches it; obc-bake also reads data/regions/. No Cargo edge carries that.
 [[package]]
 name = "obc-bake"
-triggers = ["builder/presets/**", "host/obc-bake/regions.toml"]
+triggers = ["builder/presets/**", "data/regions/**", "data/sources.toml"]
+
+# Its tests load the checked-in registry and regions; no Cargo edge carries that.
+[[package]]
+name = "obc-data"
+triggers = ["data/**"]
 
 [[package]]
 name = "obc-skin-preview"
@@ -86,9 +92,14 @@ triggers = ["builder/presets/**"]
 name = "obc-bench"
 triggers = ["host/obc-bench/golden.txt"]
 
+# Both write credits from data/sources.toml, which obc-data embeds without a Cargo edge to it.
 [[package]]
 name = "obc-pack"
-triggers = ["builder/presets/**"]
+triggers = ["builder/presets/**", "data/sources.toml"]
+
+[[package]]
+name = "route-build"
+triggers = ["data/sources.toml"]
 
 # Both read the checked-in assembly fixture, so a change under `fixtures/` reaches them.
 [[package]]
@@ -115,11 +126,6 @@ triggers = ["firmware/obc-fw-nrf54l/src/detour.rs", "firmware/obc-fw-nrf54l/src/
 [[package]]
 name = "route-engine"
 triggers = ["specs/vectors/route-answer.json"]
-
-# The phone's router test reads the web builder's fixture; no Cargo edge carries that.
-[[package]]
-name = "obc-companion-core"
-triggers = ["apps/obc-web-assemble/tests/fixture/**"]
 
 [[package]]
 name = "obc-ios-host"
@@ -179,6 +185,9 @@ triggers = [
   "builder/app/vite.config.ts",
   "specs/vectors/**",
   "host/obc-flat-device/**",
+  "apps/planner-search/query/contract.json",
+  # The web build embeds credits from it.
+  "data/sources.toml",
 ]
 
 # The whole app is the subject, the bridge fixture is the input, and the shared catalog
@@ -217,6 +226,7 @@ triggers = [
   "builder/app/tests/browser/package.json",
   "builder/app/package.json",
   "builder/app/vite.config.ts",
+  "apps/planner-search/query/contract.json",
 ]
 
 # The job table is not derived from the builders it describes, so the unit tests that pin
@@ -235,6 +245,13 @@ triggers = [
   "tools/*.py",
   "tools/**/*.py",
   "tools/planner-regions/**",
+  # The planner tools read their pinned versions, credits and region boxes from them.
+  "data/env/live.toml",
+  "data/sources.toml",
+  "data/regions/**",
+  # The footers that test_data_registry.py compares with the registry.
+  "docs/templates/*.html",
+  "builder/app/src/App.svelte",
   "testing/*.toml",
   "docs/testing.md",
   ".github/workflows/**",
@@ -268,7 +285,7 @@ id = "python.dem-reference"
 route = "ordinary"
 command = "rm -rf .artifacts/python/dem-reference && python3 -m xmlrunner discover -s host/obc-dem/reference/tests -v -o .artifacts/python/dem-reference"
 jobs = ["test"]
-triggers = ["host/obc-dem/reference/**", "tools/requirements-bake.txt"]
+triggers = ["host/obc-dem/reference/**", "tools/requirements-bake.txt", "data/sources.toml", "tools/data_registry.py"]
 
 [[suite]]
 id = "python.builder"
@@ -290,7 +307,9 @@ route = "ordinary"
 command = "npm ci --prefix companion-ios/ReplayAssets && npm test --prefix companion-ios/ReplayAssets"
 jobs = ["ios-unit"]
 platforms = ["linux", "macos"]
-triggers = ["companion-ios/ReplayAssets/**", "companion-ios/Packages/OBCKit/Sources/OBCUI/Resources/Replay/**"]
+triggers = ["companion-ios/ReplayAssets/**", "companion-ios/Packages/OBCKit/Sources/OBCUI/Resources/Replay/**",
+  # The replay-assets prepare step transpiles the web map style.
+  "builder/app/src/lib/planner/map-style.ts", "data/sources.toml"]
 
 [[suite]]
 id = "swift.obckit-host"
@@ -303,31 +322,20 @@ triggers = [
   "companion-ios/Packages/OBCKit/Package.swift",
   "companion-ios/Packages/OBCKit/Sources/**",
   "companion-ios/Packages/OBCKit/Tests/**",
+  "companion-ios/ReplayAssets/prepare.mjs",
+  # The replay-assets prepare step transpiles the web map style.
+  "builder/app/src/lib/planner/map-style.ts",
+  "data/sources.toml",
+  "apps/planner-search/query/contract.json",
   "specs/vectors/**",
 ]
-sleep_exception = { reason = "Condition polling has a 30-second default deadline; negative observation windows and mock/model timing assertions use bounded real time.", issue = "#1788" }
-
-# The phone's router over the Rust core. Packing first keeps the core current, and cargo
-# is incremental, so an unchanged core packs quickly.
-[[suite]]
-id = "swift.obcrouting-host"
-route = "ordinary"
-command = "tools/build-companion-core.sh aarch64-apple-darwin && cd companion-ios/Packages/OBCRouting && swift test"
-jobs = ["ios-unit"]
-platforms = ["macos"]
-triggers = [
-  "companion-ios/Packages/OBCRouting/**",
-  "companion-ios/Packages/OBCKit/Package.swift",
-  "companion-ios/Packages/OBCKit/Sources/OBCDomain/**",
-  "apps/obc-companion-core/**",
-  "apps/obc-web-assemble/tests/fixture/**",
-  "tools/build-companion-core.sh",
-]
+# These tests wait on real time: condition polling has a 30-second default deadline, and
+# negative observation windows and mock/model timing assertions use bounded real time.
 
 [[suite]]
 id = "ios.xcuitest"
 route = "ordinary"
-command = "tools/build-companion-core.sh aarch64-apple-ios-sim && companion-ios/scripts/capture-website-screenshots.sh --check"
+command = "companion-ios/scripts/capture-website-screenshots.sh --check"
 jobs = ["ios-app"]
 platforms = ["macos"]
 triggers = [
@@ -380,7 +388,7 @@ route = "ordinary"
 command = "obc check device board wasm"
 jobs = ["boot", "builder-python", "desktop", "device", "embedded", "ui-snapshots", "wasm"]
 foundation = true
-triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
+triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/install-riscv.sh"]
 
 [[suite]]
 id = "ci.dependencies"
@@ -471,7 +479,21 @@ route = "ordinary"
 command = "tools/licenses/gen-third-party.sh --check"
 jobs = ["deny"]
 foundation = true
-triggers = ["Cargo.lock", "apps/route-server/Cargo.toml", "host/route-engine/Cargo.toml", "builder/app/package-lock.json", "about.toml", "THIRD-PARTY.md", "tools/licenses/**"]
+triggers = ["Cargo.lock", "apps/route-server/Cargo.toml", "host/route-engine/Cargo.toml", "builder/app/package-lock.json", "about.toml", "THIRD-PARTY.md", "tools/licenses/**", "data/sources.toml", "tools/data_registry.py"]
+
+[[suite]]
+id = "ci.obc-data-licence"
+route = "ordinary"
+command = "python3 tools/check_obc_data_licence.py"
+jobs = ["deny"]
+triggers = ["Cargo.lock", "host/obc-data/Cargo.toml", "tools/check_obc_data_licence.py"]
+
+[[suite]]
+id = "ci.data-sources-guard"
+route = "required"
+command = "python3 tools/check_data_sources.py"
+jobs = ["guards"]
+triggers = ["tools/check_data_sources.py", "data/sources.toml"]
 
 [[suite]]
 id = "ci.fixture-policy"
@@ -486,20 +508,6 @@ route = "required"
 command = "python3 tools/check_card_scheduler.py"
 jobs = ["guards"]
 triggers = ["tools/check_card_scheduler.py"]
-
-[[suite]]
-id = "ci.render-key-guard"
-route = "required"
-command = "python3 tools/check_render_keys.py"
-jobs = ["guards"]
-triggers = ["tools/check_render_keys.py"]
-
-[[suite]]
-id = "ci.catalog-ownership-guard"
-route = "required"
-command = "python3 tools/check_catalog_ownership.py"
-jobs = ["guards"]
-triggers = ["tools/check_catalog_ownership.py"]
 
 [[suite]]
 id = "ci.one-home-guard"
@@ -523,27 +531,9 @@ jobs = ["guards"]
 triggers = ["tools/prose.py", "testing/prose-baseline.json"]
 
 [[suite]]
-id = "ci.changelog"
-route = "required"
-command = "python3 tools/changelog.py --check"
-jobs = ["guards"]
-triggers = ["tools/changelog.py", "CHANGELOG.md"]
-
-[[suite]]
-id = "ci.retired-map-stack"
-route = "required"
-command = "python3 tools/check_retired_map_stack.py"
-jobs = ["guards"]
-triggers = ["tools/check_retired_map_stack.py"]
-
-# Only a Mac can link or run the iOS crates, so Linux type-checks them instead. They
-# compose many crates and no build graph carries the iOS target edge, so the check rides
-# every run of the `clippy` job rather than naming a few of them as triggers. No `obc check`
-# gate runs it, so a local run never claims it.
-[[suite]]
 id = "ci.ios-host-portability"
 route = "required"
-command = "cargo check -p obc-ios-host -p obc-companion-core --target aarch64-apple-ios --locked"
+command = "cargo check -p obc-ios-host --target aarch64-apple-ios --locked"
 jobs = ["clippy"]
 ci_only = true
 
@@ -553,7 +543,7 @@ ci_only = true
 [[suite]]
 id = "ci.ios-app-build"
 route = "ordinary"
-command = "tools/build-companion-core.sh aarch64-apple-ios-sim && xcodebuild build-for-testing -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion"
+command = "xcodebuild build-for-testing -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion"
 jobs = ["ios-app"]
 platforms = ["macos"]
 triggers = [
@@ -563,12 +553,12 @@ triggers = [
   "companion-ios/ReplayAssets/**",
   "companion-ios/Packages/OBCKit/Package.swift",
   "companion-ios/Packages/OBCKit/Sources/**",
-  "companion-ios/Packages/OBCRouting/**",
-  "apps/obc-companion-core/**",
-  "tools/build-companion-core.sh",
   "tools/build-planner-ios.sh",
   "apps/planner-native/*.swift",
   "apps/planner-search/**",
+  # The project step runs apps/planner-search/native-build.mjs, which loads the notice module.
+  "builder/app/vite/**",
+  "data/sources.toml",
   "host/route-engine/**",
   "apps/route-server/**",
   "host/route-build/**",
@@ -580,7 +570,7 @@ triggers = [
 [[suite]]
 id = "ci.ios-release-build"
 route = "ordinary"
-command = "tools/build-companion-core.sh aarch64-apple-ios-sim && xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion -configuration Release"
+command = "xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion -configuration Release"
 jobs = ["ios-release"]
 platforms = ["macos"]
 triggers = [
@@ -589,12 +579,12 @@ triggers = [
   "companion-ios/ReplayAssets/**",
   "companion-ios/Packages/OBCKit/Package.swift",
   "companion-ios/Packages/OBCKit/Sources/**",
-  "companion-ios/Packages/OBCRouting/**",
-  "apps/obc-companion-core/**",
-  "tools/build-companion-core.sh",
   "tools/build-planner-ios.sh",
   "apps/planner-native/*.swift",
   "apps/planner-search/**",
+  # The project step runs apps/planner-search/native-build.mjs, which loads the notice module.
+  "builder/app/vite/**",
+  "data/sources.toml",
   "host/route-engine/**",
   "apps/route-server/**",
   "host/route-build/**",
@@ -766,31 +756,12 @@ triggers = ["companion-ios/OBCCompanionUITests/**"]
 
 
 [[suite]]
-id = "planner.native-http"
+id = "planner.native-tiles"
 route = "ordinary"
-command = "bash apps/planner-native/test-http.sh"
+command = "bash apps/planner-native/test-tiles.sh"
 jobs = ["ios-unit"]
 platforms = ["macos"]
-triggers = ["apps/planner-native/PlannerHTTPServer.swift", "apps/planner-native/tests/**", "apps/planner-native/test-http.sh"]
-
-[[suite]]
-id = "planner.native-host"
-route = "ordinary"
-command = "bash apps/planner-native/test-host.sh"
-jobs = ["ios-unit"]
-platforms = ["macos"]
-triggers = [
-  "apps/planner-native/*.swift",
-  "apps/planner-native/build.mjs",
-  "apps/planner-native/test-host.sh",
-  "apps/planner-search/native/*.swift",
-  "apps/planner-search/native-build.mjs",
-  "host/route-engine/examples/phone/prepare-parser.py",
-  "host/route-engine/examples/phone/parser_notices.py",
-  "host/route-engine/examples/phone/parser-notices.json",
-  "host/route-engine/examples/phone/PlannerHostBenchmark.swift",
-  "host/route-engine/examples/phone/planner-host-benchmark.js",
-]
+triggers = ["apps/planner-native/PMTilesArchive.swift", "apps/planner-native/tests/**", "apps/planner-native/test-tiles.sh"]
 
 [[suite]]
 id = "planner.search"

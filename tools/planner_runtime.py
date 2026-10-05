@@ -1,4 +1,4 @@
-"""Portable planner release identity and file verification."""
+"""Planner release identity and file verification."""
 
 import hashlib
 import json
@@ -8,6 +8,8 @@ from urllib.request import Request, urlopen
 
 # Optional data layers. Each is one archive `maps/NAME.pmtiles`, baked by `tools/planner_NAME.py` when
 # the region recipe has the field NAME. The value is a metadata key that every complete archive has.
+# The catalogue entry lists each layer in `layers`; the web planner shows it through its module in
+# builder/app/src/lib/planner/layers/registry.ts.
 DATA_LAYERS = {"snow": "seasons", "climate": "years", "sun": "sun_format"}
 
 
@@ -26,13 +28,24 @@ def open_url(url, timeout=60):
     return urlopen(request, timeout=timeout)
 
 
+def read_url(url):
+    with open_url(url) as response:
+        return json.load(response)
+
+
+def relative_path(name):
+    """A release file name or bucket key: a normalized relative POSIX path on one line."""
+    path = PurePosixPath(name)
+    if not path.parts or path.is_absolute() or ".." in path.parts or path.as_posix() != name or any(c in name for c in "\\\r\n"):
+        raise ValueError(f"Invalid path {name!r}")
+    return path
+
+
 def storage_files(document):
     """Map the published object names to their stored size and digest."""
     result = {}
     for name, item in document["files"].items():
-        path = PurePosixPath(name)
-        if path.is_absolute() or ".." in path.parts or path.as_posix() != name or "\\" in name:
-            raise ValueError("Invalid release file")
+        relative_path(name)
         stored = item["transport"] if document.get("grid") else item
         if document.get("grid") and not re.fullmatch(r"[a-f0-9]{64}", stored.get("sha256", "")):
             raise ValueError("Invalid release checksum")

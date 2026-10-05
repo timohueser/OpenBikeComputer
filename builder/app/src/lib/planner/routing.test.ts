@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calculateLine, profileId, requestAlternatives, requestRoute, selectRoute, movingSecondsAt, type EngineRoute, type RouteTotals } from './routing';
+import { calculateLine, profileId, regionProfiles, requestAlternatives, requestRoute, routingKey, movingSecondsAt, type RouteTotals } from './routing';
 import { LegCache } from './route-legs';
 import { routeService } from '../../../test-support/planner/route-service';
 import { decodeRoutes, type AnswerRoute } from './route-answer';
-import { ridingProfiles, presetName, type BikeType } from './riding-profiles';
+import { presetName, presetNames, servedPresets, type BikeType } from './riding-profiles';
 import { surfaceRuns, surfaceWindow } from './surface-data';
-import { initialTrip, planOf, planView, removeRoutePoint, storedPlan, setEndpoint, routingKey, TripHistory, type RoutePoint, type Trip } from './editor';
+import { planView, removeRoutePoint, setEndpoint, type RoutePoint, type Trip } from './editor';
 import { cumulative, type Coordinate } from './geo';
+import { testTrip } from '../../../test-support/planner/trip';
 
 const totals = (metres: number, unknown = 0, pushing = 0): RouteTotals =>
     ({ distance_m: metres, ascent_m: 0, seconds: metres, surface_m: [unknown, metres - unknown, 0, 0, 0, 0], unknown_elevation_m: metres, pushing_m: pushing });
@@ -20,23 +21,22 @@ const answer: AnswerRoute = {
 };
 const [route] = decodeRoutes({ routes: [answer] });
 function trip(): Trip {
-    return { ...initialTrip(), live: true, points: [
-        { id: 'start', kind: 'start', coordinate: [7.8, 48], label: 'Start', progress: 0 },
-        { id: 'shape', kind: 'via', coordinate: [7.9, 48], label: 'Shape', progress: .5 },
-        { id: 'finish', kind: 'finish', coordinate: [8, 48], label: 'End', progress: 1 },
+    return { ...testTrip(), routeOrder: ['shape'], points: [
+        { id: 'start', kind: 'start', coordinate: [7.8, 48], label: 'Start' },
+        { id: 'shape', kind: 'via', coordinate: [7.9, 48], label: 'Shape' },
+        { id: 'finish', kind: 'finish', coordinate: [8, 48], label: 'End' },
     ] };
 }
 afterEach(() => vi.unstubAllGlobals());
 describe('routing integration', () => {
-    it('round-trips every rider-visible preset through the routing API identifier', () => {
-        for (const [bike, profile] of Object.entries(ridingProfiles)) {
-            for (const preset of profile.presets) {
-                const id = profileId({ ...trip(), bike: bike as BikeType, preset });
-                expect(id.split('/')[0]).toBe(bike);
-                expect(presetName(id)).toBe(preset);
-            }
-        }
-        expect(profileId({ ...trip(), bike: 'road', preset: 'Quieter' })).toBe('road/quieter');
+    it('offers the presets of the profiles that the region serves, each with its own profile ID', async () => {
+        const profiles = ['gravel', 'gravel/shorter', 'hiking/less-climbing'];
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ package: 'test', profiles }) }));
+        const served = await regionProfiles();
+        expect([servedPresets('gravel', served), servedPresets('hiking', served), servedPresets('road', served), servedPresets('road', undefined)])
+            .toEqual([['Balanced', 'Shorter'], ['Less climbing'], [], presetNames]);
+        for (const id of profiles) expect(profileId({ ...trip(), bike: id.split('/')[0] as BikeType, preset: presetName(id) })).toBe(id);
+        expect(profileId({ ...trip(), bike: 'road', preset: 'Quieter' })).toBe('road');
     });
     it('keeps directed shaping context in one request and preserves unknown elevation', async () => {
         const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [answer] }) });
@@ -45,34 +45,32 @@ describe('routing integration', () => {
         const line = await calculateLine(plan, new AbortController().signal, new LegCache());
         expect(fetch).toHaveBeenCalledTimes(1);
         expect(JSON.parse(fetch.mock.calls[0][1].body).alternatives).toBe(false);
-        expect(line.alternativesReady).toBe(false);
+        expect(line.primary?.geometry).toEqual(route.geometry);
         expect(line.edges).toEqual({ surfaces: ['Paved', 'Gravel'], pushing: [false, true] });
         expect(line.package).toBe('test');
         expect(JSON.parse(fetch.mock.calls[0][1].body).points).toEqual(plan.points.map(p => p.coordinate));
         fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ routes: [{ ...answer, id: 'shorter', reason: 'shorter' }] }) });
-        const alternatives = await requestAlternatives(plan, line, new AbortController().signal);
+        const alternatives = await requestAlternatives(plan, line.primary!, new AbortController().signal);
         const { alternatives: _primaryOnly, ...request } = JSON.parse(fetch.mock.calls[0][1].body);
         expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ ...request, alternatives_only: true });
         expect(alternatives.map(r => r.id)).toEqual(['primary', 'shorter']);
         expect(movingSecondsAt(line, 0.5)).toBeCloseTo(3000);
         expect(line.elevation).toEqual([200, null, 400]);
         expect(line.stops.map(s => s.distance)).toEqual(cumulative(route.geometry));
-        expect(planView({ ...plan, routing: line }).coordinates).toEqual(route.geometry);
+        expect(planView(plan, line).coordinates).toEqual(route.geometry);
     });
-    it('keeps itinerary edits outside routing and preserves a selected saved line', () => {
-        const plan = { ...trip(), routing: selectRoute(trip(), route, [route]) };
+    it('keeps itinerary edits, labels and markers outside the routing key', () => {
+        const plan = trip();
         const edited = { ...plan, days: 5, splits: { 1: .4 }, restAfter: [1], limit: 10, points: plan.points.map(p => ({ ...p, label: 'Renamed' })) };
         expect(routingKey(edited)).toBe(routingKey(plan));
-        expect(planView(edited).coordinates).toEqual(route.geometry);
-        const sameStart = setEndpoint(edited, 'start', edited.points[0].coordinate, 'New label');
-        expect(planView(sameStart).coordinates).toEqual(route.geometry);
+        expect(routingKey(setEndpoint(edited, 'start', edited.points[0].coordinate, 'New label'))).toBe(routingKey(plan));
         const marked = { ...edited, points: [...edited.points, { ...edited.points[0], id: 'note', kind: 'marker' as const }] };
         const unmarked = removeRoutePoint(marked, 'note');
-        expect(unmarked.routing).toBe(edited.routing);
+        expect([routingKey(marked), routingKey(unmarked)]).toEqual([routingKey(plan), routingKey(plan)]);
         expect(unmarked.splits).toEqual(edited.splits);
         const moved = { ...edited, points: edited.points.map(p => p.id === 'shape' ? { ...p, coordinate: [8.1, 48] as [number, number] } : p) };
         expect(routingKey(moved)).not.toBe(routingKey(plan));
-        expect(planView(moved).coordinates).toEqual([plan.points[0].coordinate]);
+        expect(routingKey({ ...plan, preset: 'Shorter' })).not.toBe(routingKey(plan));
     });
     it('requests only the legs that an edit changes, pinned to the cached legs on both sides', async () => {
         const fetch = vi.fn<(url: string, init: RequestInit) => Promise<unknown>>(routeService('one'));
@@ -80,7 +78,7 @@ describe('routing integration', () => {
         const body = (call: number) => JSON.parse(fetch.mock.calls[call][1].body as string);
         const cache = new LegCache();
         const signal = new AbortController().signal;
-        const plan: Trip = { ...trip(), points: [7.8, 7.85, 7.9, 7.95, 8].map((lon, i) => ({ id: `p${i}`, kind: i ? i < 4 ? 'via' : 'finish' : 'start', coordinate: [lon, 48], label: '', progress: i / 4 })) };
+        const plan: Trip = { ...trip(), routeOrder: ['p1', 'p2', 'p3'], points: [7.8, 7.85, 7.9, 7.95, 8].map((lon, i) => ({ id: `p${i}`, kind: i ? i < 4 ? 'via' : 'finish' : 'start', coordinate: [lon, 48], label: '' })) };
         const move = (lon: number): Trip => ({ ...plan, points: plan.points.map(p => p.id === 'p2' ? { ...p, coordinate: [lon, 48.01] } : p) });
         const coordinates = (trip: Trip) => trip.points.map(p => p.coordinate);
         const whole = await calculateLine(plan, signal, cache);
@@ -123,22 +121,6 @@ describe('routing integration', () => {
         abort.abort();
         await expect(route(abort.signal)).rejects.toMatchObject({ name: 'AbortError' });
     });
-    it('keeps a picked corridor with its plan', () => {
-        const plan = trip();
-        const corridor: EngineRoute = { ...route, id: 'corridor', reason: 'corridor', geometry: [[7.8, 48], [7.9, 48.05], [8, 48]] };
-        const primary = selectRoute(plan, route, [route, corridor]);
-        const picked = { ...plan, routing: selectRoute(plan, corridor, [route, corridor]) };
-        const history = new TripHistory();
-        const shown = history.commit({ ...plan, routing: primary }, picked);
-        expect(shown.routing?.choiceId).toBe('corridor');
-        expect(planOf(shown)).toBe(picked);
-        const undone = history.undo(shown);
-        expect(undone.routing).toBeUndefined();
-        expect(storedPlan(shown).routing).toMatchObject({ choiceId: 'corridor', picked: true, alternatives: [] });
-        expect([shown.routing?.package, storedPlan(shown).routing?.package]).toEqual(['test', undefined]);
-        expect(history.redo(undone).routing?.choiceId).toBe('corridor');
-        expect(planOf({ ...picked, points: picked.points.map(p => p.id === 'shape' ? { ...p, coordinate: [7.95, 48] as Coordinate } : p) }).routing).toBeUndefined();
-    });
     it('makes visit reversals explicit and accounts for manual joins', async () => {
         const visit = { ...answer, legs: [[0, 1], [1, 1], [1, 2], [2, 2]].map(([from_index, to_index], k) => ({ ...answer.legs[0], from_index, to_index, start: `${k}`, end: `${k + 1}` })) };
         const fetch = vi.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ routes: [visit] }) })
@@ -162,7 +144,7 @@ describe('routing integration', () => {
         expect(mixed.edges).toEqual({ surfaces: [null, null, 'Paved', 'Gravel'], pushing: [null, null, false, true] });
     });
     it('aligns surface sections by distance and clips the view without changing route shares', () => {
-        const line = selectRoute(trip(), route, [route]);
+        const line = { coordinates: route.geometry, edges: route.edges };
         const data = surfaceRuns(line);
         expect(data.runs.map(run => run.surface)).toEqual(['Paved', 'Gravel']);
         expect(data.runs[0].to).toBeCloseTo(.5);
@@ -181,7 +163,7 @@ describe('routing integration', () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, json: async () => ({ code: 'no_path', message: 'No legal route.' }) }));
         const plan = trip();
         await expect(calculateLine(plan, new AbortController().signal, new LegCache())).rejects.toThrow('No legal route.');
-        expect(planView(plan).coordinates).toEqual([plan.points[0].coordinate]);
+        expect(planView(plan, undefined).coordinates).toEqual([plan.points[0].coordinate]);
     });
 });
 
@@ -198,7 +180,7 @@ describe('joins beside manual legs', () => {
         return { ok: true, json: async () => ({ routes }) };
     };
     const point = (id: string, kind: RoutePoint['kind'], lon: number, extra: Partial<RoutePoint> = {}): RoutePoint =>
-        ({ id, kind, label: id, coordinate: [lon, 48], progress: 0, ...extra });
+        ({ id, kind, label: id, coordinate: [lon, 48], ...extra });
 
     it('knows the heights of a routed day beside a transfer or a drawn line with heights', async () => {
         vi.stubGlobal('fetch', vi.fn(snapping));

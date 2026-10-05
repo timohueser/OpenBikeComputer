@@ -1,4 +1,5 @@
-use route_engine::model::{Graph, Point, NO_ELEVATION};
+use crate::Graph;
+use route_engine::model::{Point, NO_ELEVATION};
 
 /// Samples ground heights before metric preparation. A missing sample stays unknown.
 pub fn apply(graph: &mut Graph, mut height: impl FnMut(Point) -> Result<Option<f64>, String>) -> Result<(), String> {

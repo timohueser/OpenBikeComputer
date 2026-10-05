@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { closureNote, closureStretches } from './route-closures';
-import { selectRoute, type RouteClosure } from './routing';
+import type { RouteClosure } from './routing';
 import { decodeRoutes } from './route-answer';
-import { initialTrip } from './editor';
 
 const closure = (kind: RouteClosure['kind'], condition: string): RouteClosure => ({ kind, condition });
 
@@ -16,7 +15,7 @@ describe('possible closures', () => {
             edges: { closures: [[null, 1], [[permit, closure('seasonal', 'Oct 14th - May 31st')], 1], [[permit, closure('seasonal', 'oct 14-may 31')], 2], [null, 1]] },
             totals: { distance_m: 0, ascent_m: 0, seconds: 0, surface_m: [0, 0, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 },
         }] });
-        const line = selectRoute(initialTrip(), route, [route]);
+        const line = { coordinates: route.geometry, edges: route.edges };
         const [stretch, ...others] = closureStretches(line);
         expect(others).toEqual([]);
         expect(stretch.coordinates).toEqual([[0.01, 0], [0.02, 0], [0.03, 0], [0.04, 0]]);

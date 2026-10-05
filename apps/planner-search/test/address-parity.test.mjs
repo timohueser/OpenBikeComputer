@@ -1,6 +1,10 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {database} from './database.mjs';
+import {database as fixture} from './database.mjs';
+function database() {
+  const {db,conn}=fixture();
+  return {conn,db:{...db,all:(sql,params=[])=>conn.prepare(sql).all(...params)}};
+}
 import {compareAddresses,equivalent} from '../address-parity.mjs';
 
 test('parity measures missing houses and lookup regressions from the reference population',()=>{

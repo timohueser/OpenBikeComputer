@@ -17,10 +17,9 @@ A file is UTF-8 JSON: `{"format": 1, "routes": [...]}`. The records are in
 ascending `id` order. A grid release has no region file.
 
 A grid cell is a Web Mercator tile at zoom 9 whose box overlaps the release
-bounds with a positive area. `routing/layers.json` lists the same cells. Each
-grid cell has a file. A cell with no routes has an empty `routes` list. Equal
-files share one object in the pool. A record is in the file of each grid cell
-in its `cells`, with all of its fields.
+bounds with a positive area. Each grid cell has a file. A cell with no routes
+has an empty `routes` list. Equal files share one object in the pool. A record
+is in the file of each grid cell in its `cells`, with all of its fields.
 
 The tile API serves a cell file at `/releases/ID/routes/tiles/9-X-Y.json`. An
 offline selection holds the files of its `offline.cells`. A client reads only

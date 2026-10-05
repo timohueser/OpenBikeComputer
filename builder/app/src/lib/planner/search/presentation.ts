@@ -1,22 +1,20 @@
 import type { Place } from '../editor';
-import { poiKinds, type PlaceCategory } from '../poi-kinds';
+import { placeCategories, poiKinds, type PlaceCategory } from '../poi-kinds';
 import type { QueryPoint, Where, QueryRequest, SearchPlace } from './types';
+import contract from '../../../../../../apps/planner-search/query/contract.json' with { type: 'json' };
+
+/** The query language that search accepts. */
+export { contract };
 export const kindLabel = (kind: string) => kind.replaceAll('_', ' ');
-export const kindGroups: Record<PlaceCategory, string[]> = {
-    water: ['water','drinking_water','water_point','water_tap','fountain','spring'],
-    camp: ['campsite'], shelter: ['shelter'], rest: [], hotel: ['sleep','lodging','hotel','hostel','guest_house','motel','hut'],
-    shop: ['resupply','supermarket','convenience','bakery','butcher','marketplace','fuel','shop'],
-    food: ['food','cafe','restaurant','fast_food','bar','ice_cream','pub','pizza','kebab'],
-    bike: ['bike','bike_shop','repair_station','charging'], toilets: ['toilets','shower','laundry'],
-    pharmacy: ['pharmacy','medical','hospital','doctor','clinic'], station: ['transport','train_station','bus_stop','ferry'],
-    peak: ['summit','pass'], viewpoint: ['swimming','lake','beach','swimming_pool','sight','viewpoint','castle','church','monastery','museum','ruins','waterfall','tower','bridge'],
-};
-export const allKinds = [...new Set([...Object.values(kindGroups).flat().filter(k => !['water_point','clinic','shop','pub','pizza','kebab'].includes(k)), 'atm', 'town'])];
+export const allKinds = Object.keys(contract.kinds);
+const kinds: Record<string, { category: string | null }> = contract.kinds, dataKinds: Record<string, string> = contract.data;
+/** The map category of a query kind or a search-data kind, such as `shop` for `shop=yes`. A kind without one shows as a
+ * viewpoint. */
 export function category(kind: string): PlaceCategory {
-    return poiKinds[kind]?.category ?? (Object.entries(kindGroups).find(([, kinds]) => kinds.includes(kind))?.[0] ?? 'viewpoint') as PlaceCategory;
+    return (poiKinds[kind]?.category ?? kinds[kind]?.category ?? kinds[dataKinds[kind]]?.category ?? (Object.hasOwn(placeCategories, kind) ? kind : 'viewpoint')) as PlaceCategory;
 }
 export function asPlace(p: SearchPlace): Place {
-    return { id: p.source, placeKind: p.kind, label: p.name, kind: 'place', category: category(p.kind), coordinate: [p.lon, p.lat], progress: 0,
+    return { id: p.source, placeKind: p.kind, label: p.name, kind: 'place', category: category(p.kind), coordinate: [p.lon, p.lat],
         locality: p.city, openingHours: p.opening_hours, hoursStatus: p.hoursStatus, website: p.website, phone: p.phone, detailsLoaded: true,
         description: p.precision === 'street' ? 'Street location only' : p.description ?? '' };
 }

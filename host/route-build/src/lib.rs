@@ -1,25 +1,57 @@
 mod base;
 pub mod blocks;
 pub mod catalog;
+pub mod connectivity;
 pub mod cost;
-pub mod extract;
 pub mod landmarks;
 pub mod layout;
 #[cfg(feature = "obc-terrain")]
 pub mod obc_terrain;
 pub mod osm;
+pub mod overlays;
 mod road_bike;
+pub mod source;
 pub mod terrain;
 
+use base::Dictionary;
 use route_engine::{
-    closures::Closures,
-    endpoints::Dictionary,
-    model::{Graph, Profile},
+    closures::{self, Closures},
+    model::{Point, Profile, Road},
     package::{self, Manifest, CELL, ROADS_PER_PAGE},
     storage,
     table::Table,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+/// The imported region: directed roads, their junctions and turn rules, and the source OSM
+/// objects that costs, closures, the overlay index and the route catalog read.
+#[derive(Clone, Debug, Default)]
+pub struct Graph {
+    pub points: Vec<Point>,
+    pub node_ids: Vec<i64>,
+    pub node_access: Vec<u8>,
+    pub osm: source::Data,
+    pub roads: Vec<Road>,
+    /// Forbidden transitions between directed roads. Sorted for binary search.
+    pub forbidden: Vec<(u32, u32)>,
+    pub forbidden_foot: Vec<(u32, u32)>,
+    pub warnings: Vec<String>,
+}
+
+impl Graph {
+    pub fn departures(&self) -> Vec<Vec<u32>> {
+        let mut result = vec![Vec::new(); self.points.len()];
+        for (id, road) in self.roads.iter().enumerate() {
+            result[road.from as usize].push(id as u32);
+        }
+        result
+    }
+
+    pub fn permits_turn(&self, from: u32, to: u32, walking: bool) -> bool {
+        let forbidden = if walking { &self.forbidden_foot } else { &self.forbidden };
+        forbidden.binary_search(&(from, to)).is_err()
+    }
+}
 
 /// Writes a closed regional package with all legal transitions and complete road geometry.
 /// The caller publishes the manifest only after all objects have been written.
@@ -47,89 +79,6 @@ pub fn prepare(
             }
         }
     }
-    let (mut manifest, edges) = prepare_base(graph, region, bounds, source_sha256, &mut write)?;
-    fn pairs(tags: &route_engine::osm::Tags) -> impl Iterator<Item = (&str, &str)> + Clone {
-        tags.iter().map(|(k, v)| (k.as_str(), v.as_str()))
-    }
-    let ways: Vec<_> = graph
-        .roads
-        .iter()
-        .map(|road| {
-            let direction = if road.reversed { "backward" } else { "forward" };
-            graph
-                .osm
-                .ways
-                .get(&road.way)
-                .map_or_else(Vec::new, |way| route_engine::osm::closures(pairs(&way.tags), &[direction]))
-        })
-        .collect();
-    let nodes: HashMap<u32, _> = (0..graph.points.len() as u32)
-        .filter_map(|point| {
-            let node = graph.osm.nodes.get(graph.node_ids.get(point as usize)?)?;
-            let closures = osm::node_closures(pairs(&node.tags));
-            (!closures.is_empty()).then_some((point, closures))
-        })
-        .collect();
-    let doubts = cost::Doubts {
-        roads: ways.iter().map(|closures| cost::Doubts::modes(closures)).collect(),
-        nodes: nodes.iter().map(|(&point, closures)| (point, cost::Doubts::modes(closures))).collect(),
-    };
-    // A road reports the closures of its way and of the node where it arrives.
-    let closures =
-        Closures::build(ways.into_iter().zip(&graph.roads).enumerate().map(|(id, (mut closures, road))| {
-            closures.extend(nodes.get(&road.to).into_iter().flatten().cloned());
-            (id as u32, closures)
-        }))?;
-    let mut dictionary = Dictionary::default();
-    let junctions = landmarks::Junctions::new(graph.roads.iter().map(|r| (r.from, r.to)))?;
-    let mut landmarks = junctions.index(&mut write)?;
-    for profile in profiles {
-        eprintln!("Preparing profile {}", profile.name);
-        if manifest.metrics.contains_key(&profile.name) {
-            return Err("Duplicate metric identity".into());
-        }
-        let costing = cost::Costing::new(graph, profile, &doubts)?;
-        let road_costs: Vec<_> =
-            costing.roads.iter().map(|cost| cost.as_ref().map_or(u64::MAX, |cost| cost.total())).collect();
-        landmarks.profiles.insert(profile.name.clone(), junctions.prepare(&road_costs, &mut write)?);
-        let turns: Vec<_> =
-            edges.iter().map(|&(before, after)| costing.transition(before, after).unwrap_or(u64::MAX)).collect();
-        manifest.metrics.insert(
-            profile.name.clone(),
-            base::metric(
-                profile,
-                (0..graph.roads.len()).map(|road| costing.basis(road)),
-                &road_costs,
-                &turns,
-                &mut dictionary,
-                &mut write,
-            )?,
-        );
-    }
-    manifest.costs = Table::write(&dictionary.into_values(), &mut write)?;
-    manifest.landmarks = Some(landmarks);
-    manifest.closures = write_closures(&closures, &mut write)?;
-    Ok(manifest)
-}
-
-/// Writes the table only when a road has a possible closure.
-fn write_closures(
-    closures: &Closures,
-    write: &mut impl FnMut(&[u8]) -> Result<String, String>,
-) -> Result<Option<String>, String> {
-    if closures.roads.is_empty() {
-        return Ok(None);
-    }
-    write(&storage::encode(closures)?).map(Some)
-}
-
-fn prepare_base(
-    graph: &Graph,
-    region: String,
-    bounds: [f64; 4],
-    source_sha256: Vec<String>,
-    mut write: impl FnMut(&[u8]) -> Result<String, String>,
-) -> Result<(Manifest, Vec<(u32, u32)>), String> {
     let edges = base::edges(&graph.roads)?;
     let roads = u32::try_from(graph.roads.len()).map_err(|_| "Too many roads")?;
     let mut manifest = Manifest {
@@ -139,32 +88,15 @@ fn prepare_base(
         region,
         bounds,
         source_sha256,
-        attribution: "© OpenStreetMap contributors; ODbL 1.0".into(),
+        attribution: obc_data::sources::attribution("osm-planet").into(),
         warnings: graph.warnings.clone(),
         roads,
         graph: route_engine::base::write_topology(roads, &edges, &mut write)?,
         geometry: Table::default(),
-        osm: package::OsmPages::default(),
         spatial: BTreeMap::new(),
         metrics: BTreeMap::new(),
         costs: Table::default(),
     };
-    macro_rules! source_pages {
-        ($field:ident) => {
-            let keys = graph
-                .osm
-                .$field
-                .values()
-                .collect::<Vec<_>>()
-                .chunks(128)
-                .map(|page| write(&storage::encode(&page)?))
-                .collect::<Result<Vec<_>, String>>()?;
-            manifest.osm.$field = Table::write(&keys, &mut write)?;
-        };
-    }
-    source_pages!(nodes);
-    source_pages!(ways);
-    source_pages!(relations);
     let mut cells = BTreeMap::<(i32, i32), BTreeSet<u32>>::new();
     for (id, road) in graph.roads.iter().enumerate() {
         if road.shape.len() < 2 || road.class > 6 {
@@ -199,5 +131,86 @@ fn prepare_base(
     for (group, cells) in groups {
         manifest.spatial.insert(group, write(&storage::encode(&cells)?)?);
     }
-    Ok((manifest, edges))
+    fn pairs(tags: &source::Tags) -> impl Iterator<Item = (&str, &str)> + Clone {
+        tags.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+    let ways: Vec<_> = graph
+        .roads
+        .iter()
+        .map(|road| {
+            let direction = if road.reversed { "backward" } else { "forward" };
+            graph.osm.ways.get(&road.way).map_or_else(Vec::new, |way| source::closures(pairs(&way.tags), &[direction]))
+        })
+        .collect();
+    let nodes: HashMap<u32, _> = (0..graph.points.len() as u32)
+        .filter_map(|point| {
+            let node = graph.osm.nodes.get(graph.node_ids.get(point as usize)?)?;
+            let closures = osm::node_closures(pairs(&node.tags));
+            (!closures.is_empty()).then_some((point, closures))
+        })
+        .collect();
+    let doubts = cost::Doubts {
+        roads: ways.iter().map(|closures| cost::Doubts::modes(closures)).collect(),
+        nodes: nodes.iter().map(|(&point, closures)| (point, cost::Doubts::modes(closures))).collect(),
+    };
+    // A road reports the closures of its way and of the node where it arrives.
+    let closures = Closures::build(ways.into_iter().zip(&graph.roads).map(|(mut closures, road)| {
+        closures.extend(nodes.get(&road.to).into_iter().flatten().cloned());
+        closures
+    }))?;
+    let mut dictionary = Dictionary::default();
+    let junctions = landmarks::Junctions::new(graph.roads.iter().map(|r| (r.from, r.to)))?;
+    let mut landmarks = junctions.index(&mut write)?;
+    let states = connectivity::States::new(graph.roads.len(), &edges);
+    for profile in profiles {
+        eprintln!("Preparing profile {}", profile.name);
+        if manifest.metrics.contains_key(&profile.name) {
+            return Err("Duplicate metric identity".into());
+        }
+        let costing = cost::Costing::new(graph, profile, &doubts)?;
+        let road_costs: Vec<_> =
+            costing.roads.iter().map(|cost| cost.as_ref().map_or(u64::MAX, |cost| cost.total())).collect();
+        let columns = junctions.prepare(&road_costs, &mut write)?;
+        let turns: Vec<_> =
+            edges.iter().map(|&(before, after)| costing.transition(before, after).unwrap_or(u64::MAX)).collect();
+        let allowed = states.snappable(&road_costs, &turns);
+        let fragments = road_costs.iter().filter(|&&c| c != u64::MAX).count()
+            - allowed.iter().map(|word| word.count_ones() as usize).sum::<usize>();
+        eprintln!(
+            "Profile {}: {fragments} roads in fragments are not snappable; landmark scale {}",
+            profile.name, columns.scale
+        );
+        landmarks.profiles.insert(profile.name.clone(), columns);
+        manifest.metrics.insert(
+            profile.name.clone(),
+            base::metric(
+                profile,
+                costing.bases.iter().copied(),
+                &road_costs,
+                &turns,
+                &allowed,
+                &mut dictionary,
+                &mut write,
+            )?,
+        );
+    }
+    manifest.costs = Table::write(&dictionary.into_values(), &mut write)?;
+    manifest.landmarks = Some(landmarks);
+    manifest.closures = write_closures(&closures, &mut write)?;
+    Ok(manifest)
+}
+
+/// Writes the sets object and the per-road column only when a road has a possible closure.
+fn write_closures(
+    closures: &Closures,
+    write: &mut impl FnMut(&[u8]) -> Result<String, String>,
+) -> Result<Option<closures::Index>, String> {
+    let ids: Vec<u64> = (0..closures.roads.len()).map(|road| closures.roads.get(road)).collect();
+    if ids.iter().all(|&id| id == u64::MAX) {
+        return Ok(None);
+    }
+    Ok(Some(closures::Index {
+        sets: write(&storage::encode(&closures.sets)?)?,
+        roads: route_engine::base::write_column(&ids, write)?,
+    }))
 }

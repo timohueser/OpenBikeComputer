@@ -1,4 +1,5 @@
 use route_engine::{
+    data::{RoutingData, Selection},
     directory::Directory,
     package::{digest, Package, Source},
     Control, Request, Router,
@@ -60,15 +61,15 @@ pub struct Report {
 #[derive(Default)]
 pub struct Options {
     pub retained: bool,
-    pub extra_index_memory: bool,
 }
 
 /// A cold sample starts a new router. It does not flush the operating system file cache.
+/// Without a budget, the package's default budget applies.
 pub fn run(
     path: &Path,
     cases: &[Case],
     iterations: usize,
-    memory_budget_bytes: usize,
+    memory_budget_bytes: Option<usize>,
     options: Options,
 ) -> Result<Report, Box<dyn std::error::Error>> {
     if cases.is_empty() || iterations == 0 {
@@ -77,15 +78,11 @@ pub fn run(
     let started = Instant::now();
     let manifest = std::fs::read(path.join("manifest.json"))?;
     let source = Directory::source(path)?;
-    let checked = Package::open(source.clone(), &manifest)?;
-    let memory_budget_bytes = memory_budget_bytes.saturating_add(if options.extra_index_memory {
-        checked.manifest().landmarks.as_ref().map_or(0, |index| index.decoded_bytes())
-    } else {
-        0
-    });
+    let checked = Selection::whole(Package::open(source.clone(), &manifest)?);
+    let memory_budget_bytes = memory_budget_bytes.unwrap_or_else(|| checked.default_budget());
     let mut report = Report {
         package: checked.identity().into(),
-        profiles: checked.manifest().metrics.keys().cloned().collect(),
+        profiles: checked.profiles().into_iter().map(str::to_owned).collect(),
         memory_budget_bytes,
         initialization_ms: started.elapsed().as_secs_f64() * 1000.0,
         samples: Vec::new(),
@@ -98,7 +95,7 @@ pub fn run(
             } else {
                 let reads = Rc::new(Reads::default());
                 let package = Package::open(Counted { source: source.clone(), reads: reads.clone() }, &manifest)?;
-                let router = Router::new(package, memory_budget_bytes);
+                let router = Router::new(Selection::whole(package), memory_budget_bytes);
                 (router, reads)
             };
             let mut request = case.request.clone();
@@ -135,7 +132,7 @@ pub fn run(
                     Ok(response) => {
                         sample.route_count = response.routes.len();
                         sample.cost = response.routes.first().map(|r| r.cost);
-                        sample.distance_m = response.routes.first().map(|r| r.totals.distance_m);
+                        sample.distance_m = response.routes.first().map(|r| r.totals().distance_m);
                         let mut value = route_engine::answer::answer(&response);
                         for route in value["routes"].as_array_mut().ok_or("Missing routes")? {
                             let route = route.as_object_mut().ok_or("Invalid route")?;

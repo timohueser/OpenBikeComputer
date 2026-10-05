@@ -52,7 +52,7 @@ final class OfflineTilesProtocol: URLProtocol, @unchecked Sendable {
     private static func tile(_ request: URLRequest) throws -> Data? {
         guard let url = request.url else { throw URLError(.badURL) }
         let parts = url.path.split(separator: "/").map(String.init)
-        guard parts.count == 5, ["basemap", "places", "terrain"].contains(parts[1]),
+        guard parts.count == 5, ["basemap", "places", "overlays", "terrain"].contains(parts[1]),
               let z = Int(parts[2]), (0...22).contains(z), let x = Int(parts[3]), let y = Int(parts[4]),
               (0..<(1 << z)).contains(x), (0..<(1 << z)).contains(y), let (root, zoom) = locations.get(parts[0]) else {
             throw URLError(.fileDoesNotExist)

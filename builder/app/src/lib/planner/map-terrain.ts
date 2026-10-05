@@ -1,6 +1,5 @@
 import contour from 'maplibre-contour';
 import type * as maplibre from 'maplibre-gl';
-import { clientConfig } from './client-config';
 
 /** The plugin's worker messages give up after 20 s, so a longer fetch limit has no effect. */
 const DEM_TIMEOUT_MS = 20_000;
@@ -23,7 +22,6 @@ export function terrainSource(url: string) {
     let users = 0;
     return {
         acquire(library: typeof maplibre) {
-            if (clientConfig.terrainWorkerUrl) contour.workerUrl = new URL(clientConfig.terrainWorkerUrl, window.location.href).href;
             source ??= new contour.DemSource({ url, maxzoom: 12, worker: true, cacheSize: 64, encoding: 'terrarium', timeoutMs: DEM_TIMEOUT_MS });
             if (users++ === 0) source.setupMaplibre(library);
             let active = true;

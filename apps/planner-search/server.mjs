@@ -1,18 +1,20 @@
 import http from 'node:http';
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { parserProcess } from './parser.mjs';
 import { searchRuntime } from './runtime.mjs';
 import {openRegion} from './installation.mjs';
 import { openingHours } from './hours.mjs';
-import { routeQuery } from './routing.mjs';
 import { RequestError } from './validation.mjs';
 import { allowedOrigin } from './origins.mjs';
 
 const root = import.meta.dirname,
   data = path.resolve(process.env.OBC_SEARCH_DATA || path.join(root, 'data'));
-process.env.TZ = 'Europe/Berlin';
-const hours = openingHours({countryCode:'de',timeZone:'Europe/Berlin'});
+// One process serves one region; the deployment runs one process per region.
+const region = process.env.OBC_SEARCH_REGIONS || 'baden-wuerttemberg';
+if (!/^[a-z][a-z0-9-]{0,63}$/.test(region)) throw new Error(`Invalid search region: ${region}`);
+const installed = openRegion(data, region);
+if (!installed) throw new Error(`Missing search data for ${region} in ${data}.`);
+const { db, bytes } = installed;
 const parser = parserProcess(
   process.env.OBC_SEARCH_PYTHON || path.join(root, '.venv/bin/python'),
   path.join(data, 'model'),
@@ -24,15 +26,7 @@ const parser = parserProcess(
     setTimeout(() => process.exit(1), 1000).unref();
   },
 );
-const databases = new Map();
-for (const region of (process.env.OBC_SEARCH_REGIONS || 'germany,baden-wuerttemberg').split(',')) {
-  if (!/^[a-z][a-z0-9-]{0,63}$/.test(region)) throw new Error(`Invalid search region: ${region}`);
-  const installed = openRegion(data,region);
-  if (!installed) continue;
-  databases.set(region, {...installed,
-    runtime: searchRuntime({db:installed.db,parser,hours,region,attribution:installed.metadata.attribution}),
-  });
-}
+const runtime = searchRuntime({ db, parser, hours: openingHours(db.metadata.time_zone) });
 const origins = new Set((process.env.OBC_SEARCH_ORIGINS || '').split(',').filter(Boolean));
 let active = 0;
 const server = http.createServer(async (req, res) => {
@@ -65,32 +59,12 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/planner-search/status' && req.method === 'GET') {
       json(200, {
         parser: parser.status(),
-        regions: [...databases].map(([id, v]) => ({
-          id,
-          metadata: v.metadata,
-          bytes: v.bytes,
-        })),
+        regions: [{ id: region, metadata: db.metadata, bytes }],
       });
       return;
     }
-    if (url.pathname === '/api/planner-search/sample' && req.method === 'GET') {
-      const xml = readFileSync(
-        process.env.OBC_SEARCH_SAMPLE || path.resolve(
-          root,
-          '../../fixtures/sources/route-import/komoot-schwarzwald.gpx',
-        ),
-        'utf8',
-      );
-      const coordinates = [
-        ...xml.matchAll(/<trkpt lat="([^"]+)" lon="([^"]+)"/g),
-      ].map((m) => [Number(m[2]), Number(m[1])]);
-      json(200, { coordinates });
-      return;
-    }
     if (
-      !['/api/planner-search/query', '/api/planner-search/route', '/api/planner-search/reverse'].includes(
-        url.pathname,
-      ) ||
+      !['/api/planner-search/query', '/api/planner-search/reverse'].includes(url.pathname) ||
       req.method !== 'POST'
     ) {
       json(404, { error: 'Not found.' });
@@ -113,27 +87,11 @@ const server = http.createServer(async (req, res) => {
     } catch {
       throw new RequestError('The request body is not JSON.');
     }
-    if (url.pathname === '/api/planner-search/route') {
-      try {
-        json(200, await routeQuery(input));
-      } catch (error) {
-        json(400, { error: error.message });
-      }
-      return;
-    }
-    const region = input?.region || 'baden-wuerttemberg',
-      database = databases.get(region);
-    if (!database) {
-      json(503, {
-        error: 'Search does not cover this region.',
-      });
-      return;
-    }
     if (url.pathname === '/api/planner-search/reverse') {
-      json(200, database.runtime.reverse(input?.coordinate));
+      json(200, runtime.reverse(input?.coordinate));
       return;
     }
-    json(200, await database.runtime.query(input));
+    json(200, await runtime.query(input));
   } catch (error) {
     if (error instanceof RequestError) json(400, { error: error.message });
     else {
@@ -157,9 +115,7 @@ const stop = () => {
   if (stopping) return;
   stopping = true;
   parser.close();
-  server.close(() => {
-    for (const v of databases.values()) v.close();
-  });
+  server.close(() => db.close());
 };
 process.on('SIGINT', stop);
 process.on('SIGTERM', stop);

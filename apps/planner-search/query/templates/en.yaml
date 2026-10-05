@@ -283,9 +283,6 @@ stretches:
   closure:
     pl: [closures, road closures, closed roads, closed sections, roadworks]
     sg: [closure, road closure, closed road]
-  main_road:
-    pl: [main roads, busy roads, major roads, highways, roads with traffic, heavy traffic]
-    sg: [main road, busy road, major road, highway]
 
 banks:
   WHAT:
@@ -353,7 +350,7 @@ banks:
       - ["<tomorrow>", {day: tomorrow}]
       - ["<tomorrow morning>", {day: tomorrow, part: start}]
       - ["<tonight>", {day: today, part: end}]
-    # a day without a part: end_day, reroute, split
+    # a day without a part: end_day, split
     plain:
       - ["<day {n}>", {day: $n}]
       - ["<day {n}>", {day: $n}]
@@ -422,8 +419,6 @@ banks:
       - ["(on the way|along the way|en route)", route]
     line:
       - ["(the|my) (route|track|line|plan)", route]
-    whole:
-      - ["the (whole|entire) (route|trip|tour)", route]
 
   ALONG:
     default:
@@ -530,28 +525,15 @@ banks:
     default:
       - ["(shortest|most direct|quickest)", shortest]
       - ["(flattest|easiest|flat)", least_climbing]
-      - ["(paved|fully paved|asphalt)", least_unpaved]
-      - ["(hilliest|hardest|hilly)", most_climbing]
       - ["(balanced|normal|standard)", balanced]
     post:
       - ["(avoiding|avoid) (climbs|hills)", least_climbing]
       - ["with <(the least|less|minimal) climbing>", least_climbing]
       - ["<as flat as possible>", least_climbing]
       - ["with <(fewer|no big) climbs>", least_climbing]
-      - ["(avoiding|avoid) (gravel|unpaved roads|dirt)", least_unpaved]
-      - ["on <paved roads> (only|)", least_unpaved]
-      - ["(paved only|asphalt only|without gravel|no gravel)", least_unpaved]
-      - ["with <less gravel>", least_unpaved]
       - ["the (shortest|most direct) way", shortest]
       - ["<as short as possible>", shortest]
-      - ["with <(the most|max|lots of) climbing>", most_climbing]
-      - ["<as hilly as possible>", most_climbing]
       - ["<balanced>", balanced]
-    cmp:
-      - ["(flatter|less hilly|easier)", least_climbing]
-      - ["(shorter|more direct)", shortest]
-      - ["(hillier|harder|more hilly)", most_climbing]
-      - ["<less gravel>", least_unpaved]
 
   DAYS:
     default:
@@ -1051,33 +1033,6 @@ templates:
     - "I want to (ride|do) (this|the route|the trip) in the (other|opposite) direction"
     - "(reverse|invert) the (order|direction) of the (route|days|stages)"
     - "(go|ride) (north|south|east|west) to (south|north|west|east) instead"
-
-  reroute:
-    - "(reroute|replan|re-route|recalculate) {DAY:plain} {GOAL:post}"
-    - "(make|can you make) {DAY:plain} {GOAL:cmp}(?|)"
-    - "{GOAL:post} {DAY:dated}"
-    - "{GOAL:cmp} (route|way|option) {DAY:dated}"
-    - "(reroute|replan|re-route|recalculate) {ALONG:range} {GOAL:post}"
-    - "(reroute|replan) (between|from) {NEAR:.name} (and|to) {NEAR:.name} {GOAL:post}"
-    - "(reroute|replan|redo) {DAY:plain} (for|with) (the|my|a) {BIKE:noun}"
-    - "{DAY:plain} (with|on) (the|my|a) {BIKE:noun} (instead|please|)"
-    - "(switch|change) {DAY:plain} to (the|my|a) {BIKE:noun}"
-    - "(reroute|replan) {SCOPE:whole} {GOAL:post}"
-    - "(reroute|replan) (after|from) {AFTER:.name} {GOAL:post}"
-    - "(reroute|replan) after {AFTER:.day+along} {GOAL:post}"
-    - "(reroute|replan) before {BEFORE:.day+along} {GOAL:post}"
-    - "(reroute|replan) (before|up to) {BEFORE:.name} {GOAL:post}"
-    - "{GOAL:cmp} {ALONG:range}"
-    - "(reroute|replan) {DAY:plain} (for|with) (the|my|a) {BIKE:noun} {GOAL:post}"
-    - "(is there|find) a {GOAL:cmp} (way|route|option) {DAY:dated}(?|)"
-    - "{DAY:plain} {GOAL}"
-    - "(recompute|recalculate|redo) {DAY:plain} (as|) {GOAL}"
-    - "(make|replan) {ALONG:range} (for|with) (the|my|a) {BIKE:noun}"
-    - "(reroute|replan) {SCOPE:whole} for (the|my|a) {BIKE:noun}"
-    - "{GOAL:cmp} (between|from) {NEAR:.name} (and|to) {NEAR:.name}"
-    - "[avoid climbing|avoid hills|less climbing|GOAL=least_climbing] {ALONG:range}"
-    - "(reroute|replan) {DAY:plain} {GOAL:post} {IGNORED:route}"
-    - "(please|can you) (reroute|replan) {DAY:plain} {GOAL:post}(?|)"
 
   stretches:
     - "{WHAT:gap_n}"

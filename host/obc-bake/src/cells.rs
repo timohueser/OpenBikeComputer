@@ -1,12 +1,12 @@
 //! The cell bake: named regions in, an [`OBCA`](../../../specs/OBCA_Spec.md) cell store plus an
 //! [`OBCC`](../../../specs/OBCC_Spec.md) catalog out.
 //!
-//! `regions.toml` stays the curation surface — a region is still one reviewable line — but it names
+//! `data/regions/` stays the curation surface — a region is still one reviewable file — but it names
 //! a selection rather than an artifact: the set of grid cells its coverage polygon touches, per
 //! band. Two regions that share ground share the same cells, and the store pays for them once.
 //!
 //! ```text
-//! regions.toml ──▶ .poly ──▶ coverage ──▶ per-band cell sets
+//! data/regions ──▶ .poly ──▶ coverage ──▶ per-band cell sets
 //!                    │                         │
 //!                    │                    group by source set
 //!                    ▼                         ▼

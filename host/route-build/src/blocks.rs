@@ -1,6 +1,7 @@
 //! Publication selects original pages. It does not change cost or geometry encodings.
 use route_engine::{
     blocks::Manifest,
+    model::Road,
     package::{Package, Source},
     table::{self, Table},
     Error,
@@ -28,7 +29,7 @@ pub fn ranges(ids: impl IntoIterator<Item = u32>) -> Vec<[u32; 2]> {
 }
 
 /// Select whole roads which intersect the coverage, including crossing segments with no vertex inside it.
-pub fn roads(input: &mut Package<impl Source>, bounds: [f64; 4]) -> Result<Vec<u32>> {
+pub fn roads(input: &Package<impl Source>, bounds: [f64; 4]) -> Result<Vec<u32>> {
     let mut candidates = BTreeSet::new();
     let cell = |v: f64| ((v * 1e6).floor() as i32).div_euclid(route_engine::package::CELL);
     for lat in cell(bounds[1])..=cell(bounds[3]) {
@@ -38,11 +39,33 @@ pub fn roads(input: &mut Package<impl Source>, bounds: [f64; 4]) -> Result<Vec<u
     }
     let mut selected = Vec::new();
     for id in candidates {
-        if crate::extract::intersects(&input.road(id)?, bounds) {
+        if intersects(&input.road(id)?, bounds) {
             selected.push(id);
         }
     }
     Ok(selected)
+}
+
+fn intersects(road: &Road, bounds: [f64; 4]) -> bool {
+    road.shape.windows(2).any(|pair| {
+        let a = [pair[0].lon as f64 * 1e-6, pair[0].lat as f64 * 1e-6];
+        let b = [pair[1].lon as f64 * 1e-6, pair[1].lat as f64 * 1e-6];
+        let (mut start, mut end) = (0.0f64, 1.0f64);
+        for axis in 0..2 {
+            let delta = b[axis] - a[axis];
+            if delta == 0.0 {
+                if a[axis] < bounds[axis] || a[axis] > bounds[axis + 2] {
+                    return false;
+                }
+            } else {
+                let low = (bounds[axis] - a[axis]) / delta;
+                let high = (bounds[axis + 2] - a[axis]) / delta;
+                start = start.max(low.min(high));
+                end = end.min(low.max(high));
+            }
+        }
+        start <= end
+    })
 }
 
 pub fn prepare(input: &Package<impl Source>, bounds: [f64; 4], roads: &[u32]) -> Result<Selection> {
@@ -85,16 +108,16 @@ pub fn prepare(input: &Package<impl Source>, bounds: [f64; 4], roads: &[u32]) ->
     }
     retain(&mut data.graph.first, &row_pages, &mut objects)?;
     retain(&mut data.graph.head, &arc_pages, &mut objects)?;
-    for table in [&mut data.graph.reverse_first, &mut data.graph.reverse_tail, &mut data.graph.reverse_offsets.values] {
-        table.retain(&BTreeSet::new())?;
-    }
     let geometry: BTreeSet<_> = roads.iter().map(|id| id / route_engine::package::ROADS_PER_PAGE).collect();
     retain(&mut data.geometry, &pages(geometry.iter().copied()), &mut objects)?;
     for page in geometry {
         objects.insert(input.key(&data.geometry, page)?);
     }
     objects.extend(data.costs.blocks.iter().cloned());
-    objects.extend(data.closures.iter().cloned());
+    if let Some(index) = &mut data.closures {
+        objects.insert(index.sets.clone());
+        retain(&mut index.roads.values, &road_pages, &mut objects)?;
+    }
     let allowed = pages(roads.iter().map(|id| id / 64));
     for metric in data.metrics.values_mut() {
         retain(&mut metric.allowed, &allowed, &mut objects)?;
@@ -104,14 +127,13 @@ pub fn prepare(input: &Package<impl Source>, bounds: [f64; 4], roads: &[u32]) ->
     }
     if let Some(index) = &mut data.landmarks {
         let junctions: Vec<u32> =
-            route_engine::landmarks::read_selected(input, &index.mapping, roads.iter().copied(), index.junctions - 1)?;
+            route_engine::landmarks::read(input, &index.mapping, roads.iter().copied(), index.junctions - 1)?;
         let junction_pages = pages(junctions.into_iter());
         retain(&mut index.mapping, &road_pages, &mut objects)?;
-        for column in index.profiles.values_mut().flatten() {
+        for column in index.profiles.values_mut().flat_map(|columns| &mut columns.tables) {
             retain(column, &junction_pages, &mut objects)?;
         }
     }
-    data.osm = Default::default();
     data.spatial.clear();
     let snap = snap(input, bounds)?;
     objects.extend(snap.values().cloned());

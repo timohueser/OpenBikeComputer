@@ -2,12 +2,15 @@
     import Icon from './PlannerIcon.svelte';
     import Select from './PlannerSelect.svelte';
     import VersionsMenu from './VersionsMenu.svelte';
-    import { ridingProfiles, type BikeType } from '../../lib/planner/riding-profiles';
+    import { onMount } from 'svelte';
+    import { ridingProfiles, servedPresets, type BikeType } from '../../lib/planner/riding-profiles';
     import { planTitle, type Trip } from '../../lib/planner/editor';
+    import { regionProfiles, type RoutingLine } from '../../lib/planner/routing';
     import type { Version } from '../../lib/planner/versions';
 
-    let { trip, name, versions, canUndo, canRedo, draftSavedAt, draftError, onChange, onUndo, onRedo, onRestore, onVersions, onNew, onLibrary, ready }: {
+    let { trip, line, name, versions, canUndo, canRedo, draftSavedAt, draftError, onChange, onUndo, onRedo, onRestore, onVersions, onNew, onLibrary, ready }: {
         trip: Trip;
+        line?: RoutingLine;
         name: string;
         versions: Version[];
         ready: boolean;
@@ -26,6 +29,12 @@
 
     const bike = $derived(trip.bike ?? 'touring');
     const title = $derived(name || planTitle(trip));
+    // The profiles of the routing region; until they arrive, every activity and preset shows.
+    let profiles = $state<string[]>();
+    // An activity that the region does not serve stays listed while the plan uses it.
+    const activities = $derived(Object.entries(ridingProfiles).filter(([value]) => value === bike || servedPresets(value as BikeType, profiles).length));
+
+    onMount(() => { regionProfiles().then(found => profiles = found, () => {}); });
 </script>
 
 <div class="trip-bar" inert={!ready}>
@@ -36,13 +45,13 @@
     </div>
     <div class="ride">
         <div class="preference"><span>Activity</span>
-            <Select label="Activity" value={bike} options={Object.entries(ridingProfiles).map(([value, profile]) => ({ value, label: profile.label, icon: profile.icon }))} onChange={(value) => {
+            <Select label="Activity" value={bike} options={activities.map(([value, profile]) => ({ value, label: profile.label, icon: profile.icon }))} onChange={(value) => {
                 const next = value as BikeType;
-                onChange({ bike: next, preset: ridingProfiles[next].presets[0] }, 'Bike profile changed');
+                onChange({ bike: next, preset: servedPresets(next, profiles)[0] }, 'Bike profile changed');
             }} />
         </div>
         <div class="preference"><span>Preset</span>
-            <Select label="Preset" value={trip.preset ?? 'Balanced'} options={ridingProfiles[bike].presets.map(value => ({ value, label: value, icon: value === 'Less climbing' ? 'less-climbing' : value === 'Shorter' ? 'arrow' : 'sliders' }))}
+            <Select label="Preset" value={trip.preset ?? 'Balanced'} options={servedPresets(bike, profiles).map(value => ({ value, label: value, icon: value === 'Less climbing' ? 'less-climbing' : value === 'Shorter' ? 'arrow' : 'sliders' }))}
                 onChange={(preset) => onChange({ preset }, 'Route preference changed')} />
         </div>
     </div>
@@ -51,7 +60,7 @@
         <button type="button" class="icon" disabled={!canUndo} onclick={onUndo} aria-label="Undo" title="Undo"><Icon name="undo" /></button>
         <button type="button" class="icon" disabled={!canRedo} onclick={onRedo} aria-label="Redo" title="Redo"><Icon name="redo" /></button>
         <button type="button" class="planner-action" disabled={!ready} onclick={onLibrary}>My plans</button>
-        <VersionsMenu {trip} {versions} {draftSavedAt} {draftError} {onRestore} onChange={onVersions} />
+        <VersionsMenu {trip} {line} {versions} {draftSavedAt} {draftError} {onRestore} onChange={onVersions} />
     </div>
 </div>
 

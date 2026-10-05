@@ -1,3 +1,4 @@
+import {nativeCells} from './federation.mjs';
 import {search} from './web/engine.mjs';
 import {reverseAddress} from './web/reverse.mjs';
 import {searchCases,reverseCases} from './benchmark-cases.mjs';
@@ -8,12 +9,8 @@ function canonical(value) {
   return value;
 }
 
-export function run(all, digest) {
-  const db = {all(sql,params=[]) {
-    const result = JSON.parse(all(sql,JSON.stringify(params)));
-    if (result.error) throw new Error(result.error);
-    return result.rows;
-  }};
+export function run(native, digest) {
+  const db = nativeCells(native);
   const samples = [];
   for (const input of searchCases(db)) {
     const result = search(db,input), elapsedMs = result.elapsed;

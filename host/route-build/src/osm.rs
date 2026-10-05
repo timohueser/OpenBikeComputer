@@ -1,8 +1,8 @@
 //! Streaming regional OSM import.
+use crate::{source, Graph};
 use osmpbfreader::{OsmId, OsmObj, OsmPbfReader, Relation, Tags, Way};
 use route_engine::closures::{Closure, Kind};
-use route_engine::model::{Graph, Point, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH};
-use route_engine::osm as source;
+use route_engine::model::{Point, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::path::PathBuf;
@@ -24,7 +24,6 @@ struct Attributes {
     access: [u8; 2],
     difficulty: u8,
     hiking_difficulty: Option<u8>,
-    uncertain_access: bool,
     structure: bool,
 }
 
@@ -113,15 +112,12 @@ fn attributes(tags: &Tags, counts: &mut Counts) -> Option<Attributes> {
         }
         None => None,
     };
-    let uncertain_access = ["access", "bicycle", "foot"].iter().all(|key| tag(tags, key).is_none())
-        && matches!(highway, "path" | "track" | "cycleway" | "bridleway");
     Some(Attributes {
         class,
         surface,
         access: modes,
         difficulty,
         hiking_difficulty,
-        uncertain_access,
         structure: ["bridge", "tunnel"].iter().any(|key| tag(tags, key).is_some_and(|v| v != "no")),
     })
 }
@@ -494,7 +490,6 @@ fn build_graph(
     }
     counts.insert("retained directed roads", graph.roads.len());
     counts.insert("retained graph nodes", graph.points.len());
-    counts.insert("roads with uncertain default access", graph.roads.iter().filter(|r| r.uncertain_access).count());
     counts.insert("roads with unknown surface", graph.roads.iter().filter(|r| r.surface == Surface::Unknown).count());
     graph.warnings = counts.into_iter().filter(|(_, n)| *n != 0).map(|(label, n)| format!("{label}: {n}")).collect();
     graph.warnings.push("No DEM applied; elevation is unknown and climbing costs are not validated".into());
@@ -555,7 +550,6 @@ fn emit_run(
             access,
             difficulty: way.attributes.difficulty,
             hiking_difficulty: way.attributes.hiking_difficulty,
-            uncertain_access: way.attributes.uncertain_access,
             structure: way.attributes.structure,
             shape,
         });
@@ -635,21 +629,6 @@ mod tests {
         assert_eq!(graph.osm.ways[&10].nodes, [1, 2]);
         assert_eq!(graph.osm.relations[&20].members, [(source::Id::Way(10), "forward".into())]);
         assert_eq!(graph.osm.relations[&21].members, [(source::Id::Relation(20), "section".into())]);
-        let profile = Profile::presets().into_iter().find(|p| p.name == "road/quieter").unwrap();
-        let mut objects = HashMap::new();
-        let manifest =
-            crate::prepare(&graph, "source-test".into(), [9.0, 46.0, 11.0, 48.0], &[profile], vec![], |bytes| {
-                let key = route_engine::package::digest(bytes);
-                objects.insert(key.clone(), bytes.to_vec());
-                Ok(key)
-            })
-            .unwrap();
-        let pages: Vec<String> = route_engine::storage::decode(&objects[&manifest.osm.ways.blocks[0]]).unwrap();
-        let retained: Vec<source::Way> = route_engine::storage::decode(&objects[&pages[0]]).unwrap();
-        assert_eq!(retained[0].tags, expected);
-        let pages: Vec<String> = route_engine::storage::decode(&objects[&manifest.osm.relations.blocks[0]]).unwrap();
-        let relations: Vec<source::Relation> = route_engine::storage::decode(&objects[&pages[0]]).unwrap();
-        assert_eq!(relations.len(), 2);
     }
 
     #[test]
@@ -868,8 +847,15 @@ mod tests {
             Ok(key)
         })
         .unwrap();
-        let table: route_engine::closures::Closures =
-            route_engine::storage::decode(&objects[&manifest.closures.unwrap()]).unwrap();
+        struct Memory(HashMap<String, Vec<u8>>);
+        impl route_engine::package::Source for Memory {
+            fn read(&self, key: &str) -> route_engine::Result<Vec<u8>> {
+                self.0.get(key).cloned().ok_or_else(|| route_engine::Error::MissingRegion(key.into()))
+            }
+        }
+        use route_engine::data::RoutingData;
+        let package = route_engine::package::Package::open(Memory(objects), &serde_json::to_vec(&manifest).unwrap());
+        let table = route_engine::data::Selection::whole(package.unwrap()).closures().unwrap();
         let arriving =
             |id: i64| graph.roads.iter().position(|r| !r.reversed && r.to as usize == point(id)).unwrap() as u32;
         let closure = |kind, condition: &str| Some(vec![Closure { kind, condition: condition.into() }]);
@@ -963,12 +949,14 @@ mod tests {
             .iter()
             .position(|r| graph.node_ids[r.from as usize] == 2 && graph.node_ids[r.to as usize] == 3)
             .unwrap() as u32;
-        let mut profile = Profile::presets().into_iter().find(|p| p.name == "road").unwrap();
+        let profile = Profile::presets().into_iter().find(|p| p.name == "road").unwrap();
         assert_eq!(
             crate::cost::Costing::new(&graph, &profile, &Default::default()).unwrap().transition(before, after),
             Some(300)
         );
-        profile.pushing = false;
+        // A crossing that bans pushing as well closes the transition for a cyclist.
+        let mut graph = graph;
+        graph.node_access[graph.roads[before as usize].to as usize] = FOOT;
         assert_eq!(
             crate::cost::Costing::new(&graph, &profile, &Default::default()).unwrap().transition(before, after),
             None

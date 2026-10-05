@@ -40,7 +40,7 @@ struct PlannerServiceTests {
         let host = URL(string: "https://planner.test")!
         let release = PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: [7, 47, 9, 49], basemap: host, places: host,
                                      glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host,
-                                     manifest: host.appending(path: "manifest.json"))
+                                     manifest: host.appending(path: "manifest.json"), overlays: host)
         let service = PlannerService(release: release) { request in
             let ok = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             guard request.url!.lastPathComponent == "route" else {
@@ -131,15 +131,6 @@ struct PlannerServiceTests {
         query.source = "n456"
         await #expect(throws: PlannerFailure.invalidData) { try await service.search(query, release: release) }
     }
-    @Test func overlaysKeepOnlyNativeStyleDataAndCheckReleaseIdentity() async throws {
-        let service = client(), release = try await service.release()
-        let data = try await service.overlays(bounds: [7.9,47.9,8.2,48.2], zoom: 13.7, network: "hiking", release: release)
-        let collection = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        let feature = try #require((collection["features"] as? [[String: Any]])?.first)
-        let properties = try #require(feature["properties"] as? [String: Any])
-        #expect(properties["kind"] as? String == "hiking" && properties["rank"] as? Int == 2)
-        #expect(properties["tags"] == nil && collection["routes"] == nil)
-    }
     @Test func longRoutesFitTheSearchContractAndKeepTheirEnds() async throws {
         let service = client(), release = try await service.release()
         var query = PlannerSearchQuery(text: "long route")
@@ -161,7 +152,7 @@ struct PlannerServiceTests {
     func shapesALineInOneRequest(_ status: Int, _ failure: PlannerFailure?) async throws {
         let host = URL(string: "https://planner.test")!
         let release = PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: [7, 47, 9, 49], basemap: host, places: host,
-                                     glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host, manifest: host)
+                                     glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host, manifest: host, overlays: host)
         let sent = Bodies()
         let service = PlannerService(release: release) { request in
             #expect(request.url?.path == "/v1/shape" && request.timeoutInterval == 40)
@@ -180,11 +171,53 @@ struct PlannerServiceTests {
         let query = try #require(try JSONSerialization.jsonObject(with: await sent.values[0]) as? [String: Any])
         #expect(query["profile"] as? String == "gravel" && query["line"] as? [[Double]] == [[8, 48], [8.1, 48.1]])
     }
+    /// A 404 from a release object reads the catalogue again, once, and repeats the request with the new active release.
+    @Test func aRemovedReleaseReadsTheCatalogueAgainAndRetries() async throws {
+        let sent = Bodies()
+        let service = PlannerService(catalogURL: URL(string: "https://planner.test/catalog.json")!) { request in
+            let url = request.url!.absoluteString
+            await sent.append(Data(url.utf8))
+            let catalogs = await sent.values.filter { $0 == Data("https://planner.test/catalog.json".utf8) }.count
+            let body: [String: Any] = url.hasSuffix("/catalog.json") ? ["format": 1, "active": catalogRelease(catalogs == 1 ? "a" : "b")]
+                : ["routing_package": packageID, "profiles": ["gravel"]]
+            let status = url.hasPrefix("https://planner.test/a/") ? 404 : 200
+            return (try JSONSerialization.data(withJSONObject: body), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+        }
+        let old = try await service.release()
+        let profiles = try await service.profiles(release: old)
+        let urls = await sent.values.map { String(decoding: $0, as: UTF8.self) }
+        #expect(profiles == ["gravel"])
+        #expect(urls == ["https://planner.test/catalog.json", "https://planner.test/a/manifest.json",
+                         "https://planner.test/catalog.json", "https://planner.test/b/manifest.json"])
+    }
+    /// Route catalog cells that answer 404 load from the new active release, after one catalogue read.
+    @Test func aRemovedReleaseLoadsItsRouteCellFromTheNewRelease() async throws {
+        func release(_ id: String) -> PlannerRelease {
+            let host = URL(string: "https://planner.test/\(id)")!
+            return PlannerRelease(id: String(repeating: id, count: 64), region: "test", bounds: [7, 47, 9, 49], basemap: host, places: host,
+                                  glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host,
+                                  manifest: host, overlays: host, routes: "https://planner.test/\(id)/{cell}.json")
+        }
+        let next = release("b"), reads = Bodies()
+        let transport: RouteCatalog.Transport = { request in
+            let status = request.url!.absoluteString.hasPrefix("https://planner.test/a/") ? 404 : 200
+            return (Data(#"{"format": 1, "routes": []}"#.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+        }
+        let active: @Sendable () async throws -> PlannerRelease = { await reads.append(Data()); return next }
+        let made = RouteCatalog(release: release("a"), transport: transport, active: active)
+        let catalog = try #require(made)
+        async let first = catalog.loadCell("9-267-178")
+        async let second = catalog.loadCell("9-268-178")
+        let counts = try await [first?.count, second?.count]
+        let readCount = await reads.values.count
+        #expect(counts == [0, 0])
+        #expect(readCount == 1)
+    }
     /// A line over the service's 200 km cap fails before any request.
     @Test func aTooLongLineFailsWithoutARequest() async throws {
         let host = URL(string: "https://planner.test")!
         let release = PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: [7, 47, 9, 49], basemap: host, places: host,
-                                     glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host, manifest: host)
+                                     glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host, manifest: host, overlays: host)
         let sent = Bodies()
         let service = PlannerService(release: release) { request in
             await sent.append(request.httpBody ?? Data())
@@ -201,6 +234,15 @@ private let a = Coordinate(latitude: 48, longitude: 8)
 private let b = Coordinate(latitude: 48.1, longitude: 8.1)
 private let packageID = String(repeating: "b", count: 64)
 private let goodRoute = "good"
+
+/// A catalogue entry whose objects live under `https://planner.test/ID/`.
+private func catalogRelease(_ id: Character) -> [String: Any] {
+    let host = "https://planner.test/\(id)"
+    return ["id": String(repeating: id, count: 64), "region": "test", "bounds": [7, 47, 9, 49], "basemap": host + "/basemap.json",
+            "glyphs": host + "/fonts/{fontstack}/{range}.pbf", "sprites": host + "/sprites", "terrain": host + "/{z}/{x}/{y}.webp",
+            "terrain_attribution": "Terrain", "search": host + "/search", "routing": host + "/routing",
+            "manifest": host + "/manifest.json", "overlays": host + "/overlays.json"]
+}
 
 private actor Bodies {
     var values: [Data] = []
@@ -222,7 +264,7 @@ private final class StubHTTP: URLProtocol, @unchecked Sendable {
             let kind = components.queryItems!.first!.value!
             let suffix = "?route=" + kind.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
             let release: [String: Any] = ["id": String(repeating: "a", count: 64), "region": "test", "bounds": [7, 47, 9, 49],
-                "basemap": host + "/basemap.json", "places": host + "/places.json", "glyphs": host + "/fonts/{fontstack}/{range}.pbf", "sprites": host + "/sprites", "terrain": host + "/{z}/{x}/{y}.webp", "terrain_attribution": "Terrain", "search": host + "/search", "routing": host + "/" + kind, "manifest": host + "/manifest.json" + suffix]
+                "basemap": host + "/basemap.json", "places": host + "/places.json", "glyphs": host + "/fonts/{fontstack}/{range}.pbf", "sprites": host + "/sprites", "terrain": host + "/{z}/{x}/{y}.webp", "terrain_attribution": "Terrain", "search": host + "/search", "routing": host + "/" + kind, "manifest": host + "/manifest.json" + suffix, "overlays": host + "/overlays.json"]
             data = try! JSONSerialization.data(withJSONObject: ["format": 1, "active": release])
         } else if url.lastPathComponent == "manifest.json" {
             data = try! JSONSerialization.data(withJSONObject: ["routing_package": packageID, "profiles": ["gravel", "gravel/shorter"]])
@@ -247,13 +289,6 @@ private final class StubHTTP: URLProtocol, @unchecked Sendable {
             data = try! JSONSerialization.data(withJSONObject: ["results": [["source": "n123", "name": "Camp", "kind": "campsite",
                 "city": "Freiburg", "lon": 8, "lat": 48, "opening_hours": "24/7", "website": "camp.example",
                 "phone": "+49 123", "description": "Small tents only.", "position": ["along": 0.4, "distance": 0.02]]]])
-        } else if url.lastPathComponent == "overlays" {
-            let params = Dictionary(uniqueKeysWithValues: components.queryItems!.map { ($0.name, $0.value!) })
-            precondition(request.httpMethod == "GET" && params["layers"] == "hiking" && params["zoom"] == "13.0" && params["mode"] == "walking")
-            data = try! JSONSerialization.data(withJSONObject: ["type": "FeatureCollection", "package": packageID,
-                "routes": ["123": ["name": "Trail"]], "features": [["type": "Feature",
-                "geometry": ["type": "LineString", "coordinates": [[8,48],[8.1,48.1]]],
-                "properties": ["kind": "hiking", "rank": 2, "ref": "Trail", "tags": ["name": "Trail"]]]]])
         } else {
             code = Int(url.path.split(separator: "/")[0])!
             let kind = String(url.path.split(separator: "/")[1])

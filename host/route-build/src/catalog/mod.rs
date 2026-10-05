@@ -2,11 +2,12 @@
 //! `specs/route-catalog.md` is the contract.
 mod assemble;
 
+use crate::source::{Data, Id, Relation, Tags};
 use route_engine::{
-    data::RoutingData,
+    data::{RoutingData, Selection},
     directory::Directory,
-    osm::{Id, Node, Relation, Tags, Way},
-    package::{Package, Source},
+    model::Profile,
+    package::Source,
     shape::{self, distance, Failure, Limits, P},
     Control, Router,
 };
@@ -24,6 +25,8 @@ const ROUNDTRIP_M: f64 = 200.0;
 const DESCRIPTION_CHARS: usize = 200;
 /// The memory of all routers together; it limits the number of workers.
 const ROUTERS_MEMORY: usize = 6 << 30;
+/// The profiles a route is checked with.
+const PROFILES: [&str; 5] = ["touring", "road", "gravel", "mtb", "hiking"];
 /// The line keeps every point of the plan route within this distance.
 const LINE_TOLERANCE_M: f64 = 50.0;
 /// Router calls for the search of one route, for each profile that it checks. A search that needs
@@ -228,70 +231,45 @@ impl Report {
     }
 }
 
-/// Reads the items of a source OSM table that `keep` accepts, by ID.
-macro_rules! read {
-    ($package:expr, $table:ident, $type:ty, $keep:expr) => {{
-        let mut items = BTreeMap::<i64, $type>::new();
-        for key in $package.keys(&$package.manifest().osm.$table).map_err(|e| e.to_string())? {
-            for item in $package.read::<Vec<$type>>(&key).map_err(|e| e.to_string())? {
-                if $keep(item.id) {
-                    items.insert(item.id, item);
-                }
-            }
+/// Checks the catalog options before the import. The answer says whether the records leave out
+/// route marks: when France is the only country.
+pub fn check(countries: &[String], profiles: &[Profile]) -> Result<bool, String> {
+    if let Some(profile) = PROFILES.iter().find(|&&name| !profiles.iter().any(|p| p.name == name)) {
+        return Err(format!("The route catalog needs the {profile} profile"));
+    }
+    match countries {
+        [only] => Ok(only == "FR"),
+        _ if countries.iter().any(|c| c == "FR") => {
+            Err("A region with France and another country needs a country lookup for route marks".into())
         }
-        items
-    }};
+        _ => Ok(false),
+    }
 }
 
-/// Writes `route-catalog.json` into a routing package with source OSM tables. A present file is
-/// current: the package is immutable, and the file only moves on with it.
-pub fn build(directory: &Path, countries: &[String]) -> Result<Option<Report>, String> {
-    let output = directory.join(FILE);
-    if output.exists() {
-        return Ok(None);
-    }
-    let france = match countries {
-        [only] => only == "FR",
-        _ if countries.iter().any(|c| c == "FR") => {
-            return Err("A region with France and another country needs a country lookup for route marks".into())
-        }
-        _ => false,
-    };
+/// Writes `route-catalog.json` into the routing package in `directory`, from the source OSM
+/// objects of its import. `france` comes from `check`.
+pub fn write(directory: &Path, osm: Data, france: bool) -> Result<Report, String> {
     let started = std::time::Instant::now();
     let package = Directory::open(directory).map_err(|e| e.to_string())?;
-    if package.manifest().osm.tables().all(|table| table.len == 0) {
-        return Err("The routing package has no source OSM tables".into());
-    }
-    for profile in ["touring", "road", "gravel", "mtb", "hiking"] {
-        package.metric(profile).map_err(|_| format!("The routing package lacks the {profile} profile"))?;
-    }
-    let relations = read!(package, relations, Relation, |_| true);
-    // A router keeps the costs of up to three profiles, so a bicycle route does not decode costs
-    // at each leg, and a search space of `SEARCH_BYTES`.
-    let costs = 3 * ["touring", "road", "gravel", "mtb", "hiking"]
-        .iter()
-        .map(|p| package.metric(p).map_or(0, |metric| metric.weights.decoded_bytes()))
-        .max()
-        .unwrap_or(0);
+    // The routers share one graph, one junction mapping and the five prepared profiles; each
+    // adds its own label blocks and a search space of `SEARCH_BYTES`.
+    let routing = Selection::whole(package);
+    let shared = routing.shared_bytes(PROFILES).map_err(|e| e.to_string())?;
     let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let workers = cpus.min(ROUTERS_MEMORY / (costs + SEARCH_BYTES)).max(1);
-    let (records, report) = catalog(&package, relations, france, workers)?;
-    let partial = directory.join(format!(".{FILE}.partial"));
+    let workers = cpus.min(ROUTERS_MEMORY.saturating_sub(shared) / (routing.router_bytes() + SEARCH_BYTES)).max(1);
+    let (records, report) = catalog(&routing, osm, france, workers)?;
     let bytes = serde_json::to_vec(&json!({"format": 1, "routes": records})).map_err(|e| e.to_string())?;
-    std::fs::write(&partial, bytes).map_err(|e| e.to_string())?;
-    std::fs::rename(&partial, &output).map_err(|e| e.to_string())?;
-    Ok(Some(Report { seconds: started.elapsed().as_secs_f64(), ..report }))
+    std::fs::write(directory.join(FILE), bytes).map_err(|e| e.to_string())?;
+    Ok(Report { seconds: started.elapsed().as_secs_f64(), ..report })
 }
 
 fn catalog<S: Source + Clone + Send>(
-    package: &Package<S>,
-    relations: BTreeMap<i64, Relation>,
+    selection: &Selection<S>,
+    osm: Data,
     france: bool,
     workers: usize,
-) -> Result<(Vec<Value>, Report), String>
-where
-    Package<S>: RoutingData + Send,
-{
+) -> Result<(Vec<Value>, Report), String> {
+    let Data { nodes, mut ways, relations } = osm;
     let mut report = Report::default();
     let mut drops = BTreeMap::<i64, Reason>::new();
     let is_route = |id: &i64| relations.get(id).is_some_and(|r| matches!(tag(&r.tags, "type"), "route" | "superroute"));
@@ -323,11 +301,10 @@ where
         .filter(|(_, role)| assemble::is_main(role))
         .filter_map(|(id, _)| if let Id::Way(id) = id { Some(*id) } else { None })
         .collect();
-    let ways = read!(package, ways, Way, |id| needed.contains(&id));
+    ways.retain(|id, _| needed.contains(id));
     let needed: HashSet<i64> = ways.values().flat_map(|w| w.nodes.iter().copied()).collect();
-    let nodes = read!(package, nodes, Node, |id| needed.contains(&id));
-    let points: HashMap<i64, P> = nodes.values().map(|n| (n.id, [n.point.lon, n.point.lat])).collect();
-    drop(nodes);
+    let points: HashMap<i64, P> =
+        nodes.into_values().filter(|n| needed.contains(&n.id)).map(|n| (n.id, [n.point.lon, n.point.lat])).collect();
     jobs.retain_mut(|job| {
         for (id, role) in &job.relation.members {
             let Id::Way(id) = id else { continue };
@@ -354,7 +331,7 @@ where
     let queue = Mutex::new(jobs);
     let started = std::time::Instant::now();
     let results = Mutex::new(Vec::new());
-    let mut forks: Vec<_> = (0..workers.max(1)).map(|_| package.fork()).collect();
+    let mut forks: Vec<_> = (0..workers.max(1)).map(|_| selection.fork()).collect();
     std::thread::scope(|scope| {
         for routing in forks.drain(..) {
             let (queue, results, points) = (&queue, &results, &points);
@@ -542,7 +519,7 @@ fn route<D: RoutingData>(
     let mut cover = BTreeSet::new();
     cells(&geometry, &mut cover);
     let mut record = header(job.relation, &job.kind, france);
-    let totals = &plan.route.totals;
+    let totals = plan.route.totals();
     record.insert("loop".into(), json!(closed));
     record.insert("length_m".into(), json!(totals.distance_m));
     record.insert("ascent_m".into(), json!(totals.ascent_m));
@@ -580,24 +557,27 @@ fn route<D: RoutingData>(
     })
 }
 
-/// The length of the plan route with each grade, and the hardest explicit grade, from the grade
-/// channel of the route edges.
+/// The length of the plan route with each grade, and the hardest explicit grade, from the grades
+/// of the route pieces.
 fn grade_lengths(route: &route_engine::Route, geometry: &[P], mtb: bool) -> ([u64; 6], Option<usize>) {
-    let runs = route.edges.runs(if mtb { "mtb_scale" } else { "sac_scale" });
-    let values = runs.iter().flat_map(|(value, edges)| std::iter::repeat_n(value.as_u64(), *edges));
     let mut lengths = [0.0f64; 6];
     let mut hardest = None;
-    for (w, value) in geometry.windows(2).zip(values) {
-        let explicit = value.filter(|&d| d <= 6).map(|d| if mtb { d.min(5) } else { d.max(1) - 1 } as usize);
-        let length = distance(w[0], w[1]);
-        lengths[explicit.unwrap_or(0)] += length;
-        if length > 0.0 {
-            hardest = hardest.max(explicit);
+    let mut start = 0;
+    for piece in route.pieces() {
+        let grade = if mtb { piece.mtb_scale } else { piece.sac_scale };
+        let explicit = grade.filter(|&d| d <= 6).map(|d| if mtb { d.min(5) } else { d.max(1) - 1 } as usize);
+        for w in geometry[start..=piece.end].windows(2) {
+            let length = distance(w[0], w[1]);
+            lengths[explicit.unwrap_or(0)] += length;
+            if length > 0.0 {
+                hardest = hardest.max(explicit);
+            }
         }
+        start = piece.end;
     }
     // Scaled to the route length, so that the six rounded lengths add up to it within 3 m.
     let sum: f64 = lengths.iter().sum();
-    let scale = if sum > 0.0 { route.totals.distance_m as f64 / sum } else { 0.0 };
+    let scale = if sum > 0.0 { route.totals().distance_m as f64 / sum } else { 0.0 };
     (lengths.map(|l| (l * scale).round() as u64), hardest)
 }
 

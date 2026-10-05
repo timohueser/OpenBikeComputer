@@ -9,7 +9,7 @@ import math
 from pathlib import Path
 import sqlite3
 
-from . import planner_mvt as mvt
+from . import data_registry, planner_maps as maps, planner_mvt as mvt
 
 LAYERS = ("cycling", "hiking", "mtb", "access", "routes")
 # The basemap's deepest zoom. The planner draws deeper zooms from these tiles.
@@ -31,8 +31,7 @@ def coordinates(blob):
     points, lon, lat = array("d"), 0, 0
     for dlon, dlat in zip(values[::2], values[1::2]):
         lon, lat = lon + dlon, lat + dlat
-        points.append((lon / 1e6 + 180) / 360)
-        points.append((1 - math.asinh(math.tan(math.radians(lat / 1e6))) / math.pi) / 2)
+        points.extend(maps.mercator(lon / 1e6, lat / 1e6, 0))
     return points
 
 
@@ -193,7 +192,7 @@ def derive(index, destination):
                          "min_lon_e7": e7(west), "min_lat_e7": e7(south), "max_lon_e7": e7(east), "max_lat_e7": e7(north),
                          "center_zoom": min_zoom, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2)}, {
             "name": "OpenBikeComputer route networks and access",
-            "attribution": '<a href="https://www.openstreetmap.org/copyright">Route networks & access © OpenStreetMap</a>',
+            "attribution": f'<a href="https://www.openstreetmap.org/copyright">Route networks & access {data_registry.attribution("osm-planet")}</a>',
             "routing_package": package,
             "vector_layers": [{"id": name, "minzoom": min_zoom, "maxzoom": MAX_ZOOM} for name in LAYERS]})
     partial.replace(destination)

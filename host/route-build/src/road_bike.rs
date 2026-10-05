@@ -1,22 +1,15 @@
 //! OSM preferences adapted from BRouter fastbike, trekking and gravel (see LICENSE.brouter).
+use crate::source::Tags;
 use route_engine::{
-    model::{Road, RoadBike, BIKE},
-    osm::Tags,
+    cost::CostBasis,
+    model::{Road, RoadBike},
 };
 
 pub fn tag<'a>(tags: &'a Tags, key: &str) -> &'a str {
     tags.get(key).map(String::as_str).unwrap_or("")
 }
 
-#[derive(Clone, Copy)]
-pub struct WayCost {
-    pub factor: f64,
-    pub turn: f64,
-    pub ferry: bool,
-    pub pushing: bool,
-}
-
-pub fn way(road: &Road, tags: &Tags, variant: RoadBike, cycle_route: bool) -> Option<WayCost> {
+pub fn way(road: &Road, tags: &Tags, variant: RoadBike, pushing: bool) -> Option<CostBasis> {
     let highway = tag(tags, "highway");
     let ferry = tag(tags, "route") == "ferry";
     if matches!(highway, "motorway" | "motorway_link" | "construction" | "proposed" | "abandoned") {
@@ -50,7 +43,7 @@ pub fn way(road: &Road, tags: &Tags, variant: RoadBike, cycle_route: bool) -> Op
     let rough = matches!(smoothness, "bad" | "very_bad" | "horrible" | "very_horrible" | "impassable");
     let unpaved = !(paved || matches!(surface, "fine_gravel" | "cobblestone") || smoothness == "intermediate")
         && (explicit_unpaved || rough);
-    let cycleway = route_engine::osm::cycleway(|key| tags.get(key).map(String::as_str), road.reversed);
+    let cycleway = crate::source::cycleway(|key| tags.get(key).map(String::as_str), road.reversed);
     let designated = tag(tags, "bicycle") == "designated" || tag(tags, "bicycle_road") == "yes";
     let mut factor: f64 = match highway {
         "trunk" | "trunk_link" => 10.0,
@@ -121,56 +114,6 @@ pub fn way(road: &Road, tags: &Tags, variant: RoadBike, cycle_route: bool) -> Op
         "sand" | "mud" | "rock" | "stone" => 30.0,
         _ => 1.0,
     };
-    if !ferry {
-        factor = factor.max(surface_floor);
-    }
-    if variant == RoadBike::Quieter && !ferry {
-        let bike_hint = designated || cycleway || cycle_route;
-        let quiet: f64 = match highway {
-            "primary" | "primary_link" => {
-                if bike_hint {
-                    1.2
-                } else {
-                    3.0
-                }
-            }
-            "secondary" | "secondary_link" => {
-                if bike_hint {
-                    1.1
-                } else {
-                    1.6
-                }
-            }
-            "tertiary" | "tertiary_link" => {
-                if bike_hint {
-                    1.0
-                } else {
-                    1.4
-                }
-            }
-            "unclassified" => {
-                if bike_hint {
-                    1.0
-                } else {
-                    1.3
-                }
-            }
-            _ => 1.0,
-        };
-        factor = factor.max(quiet);
-        if !bike_hint {
-            let key = if road.reversed { "maxspeed:backward" } else { "maxspeed:forward" };
-            let speed = tags.get(key).or_else(|| tags.get("maxspeed")).and_then(|v| speed(v));
-            factor *= match speed {
-                Some(s) if s > 90.0 => 1.8,
-                Some(s) if s > 80.0 => 1.6,
-                Some(s) if s > 70.0 => 1.4,
-                Some(s) if s > 60.0 => 1.3,
-                Some(s) if s > 50.0 => 1.1,
-                _ => 1.0,
-            };
-        }
-    }
     let roughness: f64 = match smoothness {
         "excellent" | "" | "unknown" => 1.0,
         "good" => 1.1,
@@ -182,17 +125,9 @@ pub fn way(road: &Road, tags: &Tags, variant: RoadBike, cycle_route: bool) -> Op
         "impassable" => return None,
         _ => 1.0,
     };
-    if variant == RoadBike::Smoother && !ferry {
-        let surface_penalty: f64 = match surface {
-            "paving_stones" | "concrete:plates" | "concrete:lanes" => 1.3,
-            "sett" | "cobblestone" => 3.0,
-            _ => 1.0,
-        };
-        factor *= roughness.powi(2).max(surface_penalty).max(if unpaved { 2.0 } else { 1.0 });
-    } else if !ferry {
-        factor *= roughness;
+    if !ferry {
+        factor = factor.max(surface_floor) * roughness;
     }
-    let pushing = road.access & BIKE == 0;
     if pushing {
         let oneway = tags
             .get("oneway:bicycle")
@@ -212,7 +147,7 @@ pub fn way(road: &Road, tags: &Tags, variant: RoadBike, cycle_route: bool) -> Op
             5.0
         };
     }
-    Some(WayCost {
+    Some(CostBasis {
         factor,
         turn: if tag(tags, "junction") == "roundabout" {
             0.0
@@ -222,23 +157,13 @@ pub fn way(road: &Road, tags: &Tags, variant: RoadBike, cycle_route: bool) -> Op
             90.0
         },
         ferry,
-        pushing,
     })
-}
-
-fn speed(value: &str) -> Option<f64> {
-    let value = value.trim();
-    if let Some(mph) = value.strip_suffix("mph") {
-        mph.trim().parse::<f64>().ok().map(|v| v * 1.609344)
-    } else {
-        value.parse().ok()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use route_engine::model::{Point, Surface, FOOT, PUSH};
+    use route_engine::model::{Point, Surface, BIKE, FOOT, PUSH};
 
     fn road() -> Road {
         Road {
@@ -254,7 +179,6 @@ mod tests {
             access: BIKE | FOOT | PUSH,
             difficulty: 255,
             hiking_difficulty: None,
-            uncertain_access: false,
             structure: false,
             shape: vec![Point::default(); 2],
         }
@@ -287,9 +211,7 @@ mod tests {
             let source = tags(&[("highway", "track"), ("tracktype", tracktype)]);
             assert_eq!(way(&road(), &source, RoadBike::Balanced, false).unwrap().factor, factor);
         }
-        for variant in
-            [RoadBike::Balanced, RoadBike::Shorter, RoadBike::Smoother, RoadBike::LessClimbing, RoadBike::Quieter]
-        {
+        for variant in [RoadBike::Balanced, RoadBike::Shorter, RoadBike::LessClimbing] {
             let unknown = tags(&[("highway", "residential")]);
             let asphalt = tags(&[("highway", "residential"), ("surface", "asphalt")]);
             assert_eq!(
@@ -304,39 +226,23 @@ mod tests {
             let gravel = tags(&[("highway", "tertiary"), ("surface", "gravel")]);
             assert!(way(&road(), &gravel, variant, false).unwrap().factor >= 10.0);
         }
+        assert_eq!(
+            way(&road(), &tags(&[("highway", "residential"), ("surface", "sett")]), RoadBike::Balanced, false)
+                .unwrap()
+                .factor,
+            1.2
+        );
+        assert!(way(&road(), &tags(&[("highway", "path"), ("smoothness", "impassable")]), RoadBike::Balanced, false)
+            .is_none());
     }
 
     #[test]
-    fn road_variants_distinguish_roughness_and_directional_traffic_context() {
-        let cobbles = tags(&[("highway", "residential"), ("surface", "sett")]);
-        assert_eq!(way(&road(), &cobbles, RoadBike::Balanced, false).unwrap().factor, 1.2);
-        assert!((way(&road(), &cobbles, RoadBike::Smoother, false).unwrap().factor - 3.6).abs() < 1e-10);
-        let primary = tags(&[
-            ("highway", "primary"),
-            ("maxspeed:forward", "100"),
-            ("maxspeed:backward", "50"),
-            ("cycleway:right", "lane"),
-        ]);
-        assert_eq!(way(&road(), &primary, RoadBike::Quieter, false).unwrap().factor, 1.2);
+    fn pushing_costs_a_fixed_charge_and_more_against_a_one_way() {
+        let primary = tags(&[("highway", "primary"), ("oneway", "yes")]);
+        assert_eq!(way(&road(), &primary, RoadBike::Balanced, false).unwrap().factor, 1.2);
+        assert_eq!(way(&road(), &primary, RoadBike::Balanced, true).unwrap().factor, 6.2);
         let reverse = Road { reversed: true, ..road() };
-        assert_eq!(way(&reverse, &primary, RoadBike::Quieter, false).unwrap().factor, 3.0);
-        assert_eq!(way(&reverse, &primary, RoadBike::Quieter, true).unwrap().factor, 1.2);
-        let mut fast = primary.clone();
-        fast.remove("cycleway:right");
-        assert_eq!(way(&road(), &fast, RoadBike::Quieter, false).unwrap().factor, 5.4);
-        for side in ["cycleway:left", "cycleway:right", "cycleway:both"] {
-            for (direction, expected) in [("yes", [1.2, 5.4]), ("-1", [5.4, 1.2]), ("no", [1.2, 1.2])] {
-                let source = tags(&[
-                    ("highway", "primary"),
-                    ("maxspeed", "100"),
-                    (side, "track"),
-                    (&format!("{side}:oneway"), direction),
-                ]);
-                assert_eq!(way(&road(), &source, RoadBike::Quieter, false).unwrap().factor, expected[0]);
-                assert_eq!(way(&reverse, &source, RoadBike::Quieter, false).unwrap().factor, expected[1]);
-            }
-        }
-        let blocked = tags(&[("highway", "path"), ("smoothness", "impassable")]);
-        assert!(way(&road(), &blocked, RoadBike::Balanced, false).is_none());
+        assert_eq!(way(&reverse, &primary, RoadBike::Balanced, true).unwrap().factor, 51.2);
+        assert_eq!(way(&road(), &primary, RoadBike::Shorter, false).unwrap().turn, 30.0);
     }
 }

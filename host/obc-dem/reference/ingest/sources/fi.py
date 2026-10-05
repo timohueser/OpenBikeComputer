@@ -11,12 +11,12 @@ comes back quietly coarser. `request_boxes` already keeps a box inside the pixel
 the native step.
 """
 
-from .base import Credential
+from .base import Credential, registry_credit
 from .protocols import Wcs20Source
 
 FI = Wcs20Source(
     "fi", "Finland", "Korkeusmalli 2 m (NLS)", 2.0,
-    "CC BY 4.0", "© Maanmittauslaitos", "N2000", (19.0, 59.7, 31.6, 70.1),
+    "CC BY 4.0", registry_credit("dtm-fi"), "N2000", (19.0, 59.7, 31.6, 70.1),
     credential=Credential("fi", "api-key"),
     url="https://avoin-karttakuva.maanmittauslaitos.fi/ortokuvat-ja-korkeusmallit/wcs/v2",
     coverage="korkeusmalli_2m",

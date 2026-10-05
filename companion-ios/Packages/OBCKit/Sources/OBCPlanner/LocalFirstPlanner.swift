@@ -92,17 +92,6 @@ public actor LocalFirstPlanner: PlannerDataSource {
         catch { throw try fallbackError(error) }
     }
 
-    public func overlays(bounds: [Double], zoom: Double, network: String, release: PlannerRelease) async throws -> Data {
-        for map in try await installed() where map.contains(bounds) {
-            do {
-                let source = try await source(map), local = try await source.release()
-                return try await source.overlays(bounds: bounds, zoom: zoom, network: network, release: local)
-            } catch { try cancellation(error) }
-        }
-        // Online maps draw networks from the release's tiles.
-        throw PlannerFailure.offlineUnavailable
-    }
-
     public func profiles(release: PlannerRelease) async throws -> [String]? {
         if release.isLocal, let map = try await installed().first(where: { $0.id == release.id }) {
             let source = try await source(map)

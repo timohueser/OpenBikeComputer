@@ -26,7 +26,7 @@ def finish(db, path, meta):
     db.commit()
     db.executescript((ROOT / 'indexes.sql').read_text())
     index_search(db)
-    meta = {**meta, 'schema': 4, 'counts': counts}
+    meta = {**meta, 'schema': 5, 'counts': counts}
     db.executemany('INSERT INTO metadata VALUES (?,?)', ((k, json.dumps(v, ensure_ascii=False)) for k, v in meta.items()))
     db.commit()
     db.close()

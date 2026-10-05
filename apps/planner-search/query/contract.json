@@ -1,0 +1,667 @@
+{
+ "types": [
+  "places",
+  "place",
+  "route",
+  "stretches",
+  "end_day",
+  "add_point",
+  "remove_point",
+  "split",
+  "join",
+  "reverse",
+  "none"
+ ],
+ "kinds": {
+  "water": {
+   "parent": null,
+   "category": "water",
+   "data": [
+    "drinking_water",
+    "water_point",
+    "fountain",
+    "spring",
+    "water_tap"
+   ]
+  },
+  "drinking_water": {
+   "parent": "water",
+   "category": "water",
+   "data": [
+    "drinking_water",
+    "water_point"
+   ]
+  },
+  "fountain": {
+   "parent": "water",
+   "category": "water",
+   "data": [
+    "fountain"
+   ]
+  },
+  "spring": {
+   "parent": "water",
+   "category": "water",
+   "data": [
+    "spring"
+   ]
+  },
+  "water_tap": {
+   "parent": "water",
+   "category": "water",
+   "data": [
+    "water_tap"
+   ]
+  },
+  "sleep": {
+   "parent": null,
+   "category": "hotel",
+   "data": [
+    "campsite",
+    "shelter",
+    "hotel",
+    "hostel",
+    "guest_house",
+    "motel",
+    "hut",
+    "caravan_site",
+    "chalet"
+   ]
+  },
+  "campsite": {
+   "parent": "sleep",
+   "category": "camp",
+   "data": [
+    "campsite",
+    "caravan_site"
+   ]
+  },
+  "shelter": {
+   "parent": "sleep",
+   "category": "shelter",
+   "data": [
+    "shelter"
+   ]
+  },
+  "lodging": {
+   "parent": "sleep",
+   "category": "hotel",
+   "data": [
+    "hotel",
+    "hostel",
+    "guest_house",
+    "motel",
+    "hut",
+    "chalet"
+   ]
+  },
+  "hotel": {
+   "parent": "lodging",
+   "category": "hotel",
+   "data": [
+    "hotel"
+   ]
+  },
+  "hostel": {
+   "parent": "lodging",
+   "category": "hotel",
+   "data": [
+    "hostel"
+   ]
+  },
+  "guest_house": {
+   "parent": "lodging",
+   "category": "hotel",
+   "data": [
+    "guest_house"
+   ]
+  },
+  "motel": {
+   "parent": "lodging",
+   "category": "hotel",
+   "data": [
+    "motel"
+   ]
+  },
+  "hut": {
+   "parent": "lodging",
+   "category": "hotel",
+   "data": [
+    "hut"
+   ]
+  },
+  "resupply": {
+   "parent": null,
+   "category": "shop",
+   "data": [
+    "supermarket",
+    "convenience",
+    "bakery",
+    "butcher",
+    "marketplace",
+    "fuel"
+   ]
+  },
+  "supermarket": {
+   "parent": "resupply",
+   "category": "shop",
+   "data": [
+    "supermarket"
+   ]
+  },
+  "convenience": {
+   "parent": "resupply",
+   "category": "shop",
+   "data": [
+    "convenience"
+   ]
+  },
+  "bakery": {
+   "parent": "resupply",
+   "category": "shop",
+   "data": [
+    "bakery"
+   ]
+  },
+  "butcher": {
+   "parent": "resupply",
+   "category": "shop",
+   "data": [
+    "butcher"
+   ]
+  },
+  "marketplace": {
+   "parent": "resupply",
+   "category": "shop",
+   "data": [
+    "marketplace"
+   ]
+  },
+  "fuel": {
+   "parent": "resupply",
+   "category": "shop",
+   "data": [
+    "fuel"
+   ]
+  },
+  "food": {
+   "parent": null,
+   "category": "food",
+   "data": [
+    "cafe",
+    "restaurant",
+    "fast_food",
+    "bar",
+    "pub",
+    "ice_cream"
+   ]
+  },
+  "cafe": {
+   "parent": "food",
+   "category": "food",
+   "data": [
+    "cafe"
+   ]
+  },
+  "restaurant": {
+   "parent": "food",
+   "category": "food",
+   "data": [
+    "restaurant"
+   ]
+  },
+  "fast_food": {
+   "parent": "food",
+   "category": "food",
+   "data": [
+    "fast_food"
+   ]
+  },
+  "bar": {
+   "parent": "food",
+   "category": "food",
+   "data": [
+    "bar",
+    "pub"
+   ]
+  },
+  "ice_cream": {
+   "parent": "food",
+   "category": "food",
+   "data": [
+    "ice_cream"
+   ]
+  },
+  "pharmacy": {
+   "parent": null,
+   "category": "pharmacy",
+   "data": [
+    "pharmacy"
+   ]
+  },
+  "medical": {
+   "parent": null,
+   "category": "pharmacy",
+   "data": [
+    "hospital",
+    "doctor",
+    "clinic"
+   ]
+  },
+  "hospital": {
+   "parent": "medical",
+   "category": "pharmacy",
+   "data": [
+    "hospital"
+   ]
+  },
+  "doctor": {
+   "parent": "medical",
+   "category": "pharmacy",
+   "data": [
+    "doctor",
+    "clinic"
+   ]
+  },
+  "bike": {
+   "parent": null,
+   "category": "bike",
+   "data": [
+    "bike_shop",
+    "repair_station",
+    "charging"
+   ]
+  },
+  "bike_shop": {
+   "parent": "bike",
+   "category": "bike",
+   "data": [
+    "bike_shop"
+   ]
+  },
+  "repair_station": {
+   "parent": "bike",
+   "category": "bike",
+   "data": [
+    "repair_station"
+   ]
+  },
+  "charging": {
+   "parent": "bike",
+   "category": "bike",
+   "data": [
+    "charging"
+   ]
+  },
+  "toilets": {
+   "parent": null,
+   "category": "toilets",
+   "data": [
+    "toilets"
+   ]
+  },
+  "shower": {
+   "parent": null,
+   "category": "toilets",
+   "data": [
+    "shower"
+   ]
+  },
+  "laundry": {
+   "parent": null,
+   "category": "toilets",
+   "data": [
+    "laundry"
+   ]
+  },
+  "atm": {
+   "parent": null,
+   "category": null,
+   "data": [
+    "atm"
+   ]
+  },
+  "transport": {
+   "parent": null,
+   "category": "station",
+   "data": [
+    "train_station",
+    "bus_stop",
+    "ferry"
+   ]
+  },
+  "train_station": {
+   "parent": "transport",
+   "category": "station",
+   "data": [
+    "train_station"
+   ]
+  },
+  "bus_stop": {
+   "parent": "transport",
+   "category": "station",
+   "data": [
+    "bus_stop"
+   ]
+  },
+  "ferry": {
+   "parent": "transport",
+   "category": "station",
+   "data": [
+    "ferry"
+   ]
+  },
+  "swimming": {
+   "parent": null,
+   "category": null,
+   "data": [
+    "lake",
+    "beach",
+    "swimming_pool"
+   ]
+  },
+  "lake": {
+   "parent": "swimming",
+   "category": null,
+   "data": [
+    "lake"
+   ]
+  },
+  "beach": {
+   "parent": "swimming",
+   "category": null,
+   "data": [
+    "beach"
+   ]
+  },
+  "swimming_pool": {
+   "parent": "swimming",
+   "category": null,
+   "data": [
+    "swimming_pool"
+   ]
+  },
+  "sight": {
+   "parent": null,
+   "category": null,
+   "data": [
+    "viewpoint",
+    "castle",
+    "church",
+    "monastery",
+    "museum",
+    "ruins",
+    "waterfall",
+    "pass",
+    "summit",
+    "tower",
+    "bridge"
+   ]
+  },
+  "viewpoint": {
+   "parent": "sight",
+   "category": "viewpoint",
+   "data": [
+    "viewpoint"
+   ]
+  },
+  "castle": {
+   "parent": "sight",
+   "category": null,
+   "data": [
+    "castle"
+   ]
+  },
+  "church": {
+   "parent": "sight",
+   "category": null,
+   "data": [
+    "church"
+   ]
+  },
+  "monastery": {
+   "parent": "sight",
+   "category": null,
+   "data": [
+    "monastery"
+   ]
+  },
+  "museum": {
+   "parent": "sight",
+   "category": null,
+   "data": [
+    "museum"
+   ]
+  },
+  "ruins": {
+   "parent": "sight",
+   "category": null,
+   "data": [
+    "ruins"
+   ]
+  },
+  "waterfall": {
+   "parent": "sight",
+   "category": null,
+   "data": [
+    "waterfall"
+   ]
+  },
+  "pass": {
+   "parent": "sight",
+   "category": "peak",
+   "data": [
+    "pass"
+   ]
+  },
+  "summit": {
+   "parent": "sight",
+   "category": "peak",
+   "data": [
+    "summit"
+   ]
+  },
+  "tower": {
+   "parent": "sight",
+   "category": null,
+   "data": [
+    "tower"
+   ]
+  },
+  "bridge": {
+   "parent": "sight",
+   "category": null,
+   "data": [
+    "bridge"
+   ]
+  },
+  "town": {
+   "parent": null,
+   "category": null,
+   "data": [
+    "city",
+    "town",
+    "village",
+    "hamlet"
+   ]
+  }
+ },
+ "data": {
+  "drinking_water": "drinking_water",
+  "water_point": "drinking_water",
+  "fountain": "fountain",
+  "spring": "spring",
+  "water_tap": "water_tap",
+  "campsite": "campsite",
+  "shelter": "shelter",
+  "hotel": "hotel",
+  "hostel": "hostel",
+  "guest_house": "guest_house",
+  "motel": "motel",
+  "hut": "hut",
+  "supermarket": "supermarket",
+  "convenience": "convenience",
+  "bakery": "bakery",
+  "butcher": "butcher",
+  "marketplace": "marketplace",
+  "fuel": "fuel",
+  "cafe": "cafe",
+  "restaurant": "restaurant",
+  "fast_food": "fast_food",
+  "bar": "bar",
+  "pub": "bar",
+  "ice_cream": "ice_cream",
+  "pharmacy": "pharmacy",
+  "hospital": "hospital",
+  "doctor": "doctor",
+  "clinic": "doctor",
+  "bike_shop": "bike_shop",
+  "repair_station": "repair_station",
+  "charging": "charging",
+  "toilets": "toilets",
+  "shower": "shower",
+  "laundry": "laundry",
+  "atm": "atm",
+  "train_station": "train_station",
+  "bus_stop": "bus_stop",
+  "ferry": "ferry",
+  "lake": "lake",
+  "beach": "beach",
+  "swimming_pool": "swimming_pool",
+  "viewpoint": "viewpoint",
+  "castle": "castle",
+  "church": "church",
+  "monastery": "monastery",
+  "museum": "museum",
+  "ruins": "ruins",
+  "waterfall": "waterfall",
+  "pass": "pass",
+  "summit": "summit",
+  "tower": "tower",
+  "bridge": "bridge",
+  "city": "town",
+  "town": "town",
+  "village": "town",
+  "hamlet": "town",
+  "caravan_site": "campsite",
+  "chalet": "lodging"
+ },
+ "categories": {
+  "water": [
+   "water"
+  ],
+  "camp": [
+   "campsite"
+  ],
+  "shelter": [
+   "shelter"
+  ],
+  "hotel": [
+   "lodging"
+  ],
+  "shop": [
+   "resupply"
+  ],
+  "food": [
+   "food"
+  ],
+  "pharmacy": [
+   "pharmacy",
+   "medical"
+  ],
+  "bike": [
+   "bike"
+  ],
+  "toilets": [
+   "toilets",
+   "shower",
+   "laundry"
+  ],
+  "station": [
+   "transport"
+  ],
+  "viewpoint": [
+   "viewpoint"
+  ],
+  "peak": [
+   "pass",
+   "summit"
+  ]
+ },
+ "cuisines": {
+  "pizza": "food",
+  "kebab": "food"
+ },
+ "stretches": [
+  "climb",
+  "descent",
+  "steep",
+  "unpaved",
+  "unknown_surface",
+  "pushing",
+  "closure"
+ ],
+ "bikes": [
+  "road",
+  "gravel",
+  "mtb",
+  "touring"
+ ],
+ "goals": [
+  "balanced",
+  "shortest",
+  "least_climbing"
+ ],
+ "parts": [
+  "start",
+  "middle",
+  "end"
+ ],
+ "weekdays": [
+  "mon",
+  "tue",
+  "wed",
+  "thu",
+  "fri",
+  "sat",
+  "sun"
+ ],
+ "point_kinds": [
+  "visit",
+  "stop",
+  "pass"
+ ],
+ "scopes": [
+  "route",
+  "view",
+  "here"
+ ],
+ "refs": [
+  "km",
+  "start",
+  "end",
+  "here"
+ ],
+ "units": {
+  "along": [
+   "km",
+   "h"
+  ],
+  "radius": [
+   "km"
+  ],
+  "every": [
+   "km",
+   "h"
+  ],
+  "per_day": [
+   "km",
+   "h"
+  ],
+  "min": [
+   "km",
+   "m",
+   "%"
+  ]
+ }
+}

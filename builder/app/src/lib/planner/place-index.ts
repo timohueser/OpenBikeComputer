@@ -1,8 +1,8 @@
 import { VectorTile } from '@mapbox/vector-tile';
 import { PbfReader } from 'pbf';
-import { anchorProgress, type Place } from './editor';
+import type { Place } from './editor';
 import { kmPerDegree, routeDistance, type Coordinate } from './geo';
-import { openTileArchive, type TileArchive } from './layers/tile-archive';
+import { openSource, requestSignal, type Source } from './layers/archive';
 import { poiKinds } from './poi-kinds';
 
 /** Place tile feature IDs put the OSM element type in the high bits above its 44-bit ID. */
@@ -18,7 +18,7 @@ export function poiPlace(id: string | number | undefined, kind: string, name: un
     if (!known) return null;
     return {
         id: osmSource(id) ?? `poi-${id}`, kind: 'place', placeKind: kind, label: String(name ?? known.label), coordinate,
-        progress: anchorProgress(coordinate), category: known.category, description: known.label,
+        category: known.category, description: known.label,
     };
 }
 
@@ -49,12 +49,12 @@ export function corridorTiles(coordinates: Coordinate[], bufferKm: number, zoom:
     return [...keys];
 }
 
-let source: Promise<TileArchive> | undefined;
+let source: Promise<Source> | undefined;
 const tiles = new Map<string, Promise<Place[]>>();
 
 /** Rider places within `bufferKm` of the route, from the archive's most detailed tiles. Each tile loads once per session. */
 export async function corridorPlaces(url: string, coordinates: Coordinate[], bufferKm = 5): Promise<Place[]> {
-    source ??= openTileArchive(url, 'Place').catch(error => { source = undefined; throw error; });
+    source ??= openSource(url).catch(error => { source = undefined; throw error; });
     const archive = await source;
     // The maximum zoom sets how many tiles a corridor loads; place archives go to zoom 14 at most.
     if (!Number.isInteger(archive.maxZoom) || archive.maxZoom < 0 || archive.maxZoom > 14) throw new Error('Invalid place tile source.');
@@ -67,9 +67,9 @@ export async function corridorPlaces(url: string, coordinates: Coordinate[], buf
     return [...new Map(loaded.flat().map(place => [place.id, place])).values()].filter(place => Number.isFinite(distance(place.coordinate)));
 }
 
-async function loadTile(source: TileArchive, key: string): Promise<Place[]> {
+async function loadTile(source: Source, key: string): Promise<Place[]> {
     const [z, x, y] = key.split('/').map(Number);
-    const tile = await source.get(z, x, y);
+    const tile = await source.get(z, x, y, requestSignal());
     const layer = tile && new VectorTile(new PbfReader(new Uint8Array(tile))).layers.pois;
     if (!layer) return [];
     const found: Place[] = [];

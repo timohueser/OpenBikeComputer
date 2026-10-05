@@ -13,10 +13,11 @@ class Street:
     bbox: list
     context: str
     aliases: set
+    country: str
 
 
 def add(writer, p, record):
-    ns, kind, source, lon, lat, city, postcode, bbox, region, context = record
+    ns, kind, source, lon, lat, city, postcode, bbox, region, context, country = record
     street = p.get('address', {}).get('street', '')
     house = p.get('housenumber', '')
     if kind == 'street' and ns:
@@ -29,8 +30,8 @@ def add(writer, p, record):
         if group is None:
             stable = 's' + hashlib.sha1('|'.join(key).encode()).hexdigest()[:20]
             sid = writer.place(stable, street, street, 'street', lon, lat, city, postcode,
-                             0.05, bbox, region, context)
-            group = Street(sid, priority, lon, lat, list(bbox), context, aliases)
+                             0.05, bbox, region, context, country)
+            group = Street(sid, priority, lon, lat, list(bbox), context, aliases, country)
             writer.streets[key] = group
         else:
             group.aliases.update(aliases)
@@ -47,4 +48,4 @@ def finish(writer):
         aliases = ';'.join(sorted(group.aliases))
         writer.db.execute('UPDATE place_records SET aliases=?,lon=?,lat=?,context_id=?,west=?,south=?,east=?,north=? WHERE id=?',
                           (None if aliases == street else aliases, group.lon, group.lat,
-                           writer.context_id(city, postcode, region, group.context), *group.bbox, group.id))
+                           writer.context_id(city, postcode, region, group.context, group.country), *group.bbox, group.id))

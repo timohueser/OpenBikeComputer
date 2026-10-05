@@ -1,7 +1,7 @@
 import { cumulative } from './geo';
 import type { RoutingLine, Surface } from './routing';
 
-export function surfaceRuns(line?: RoutingLine) {
+export function surfaceRuns(line?: Pick<RoutingLine, 'coordinates' | 'edges'>) {
     const lengths = cumulative(line?.coordinates ?? []);
     const total = lengths.at(-1) ?? 0;
     const runs: { surface: Surface; pushing: boolean | null; from: number; to: number }[] = [];

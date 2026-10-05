@@ -1,4 +1,4 @@
-"""Offline selections carry one font file per stack with the glyph ranges the region's labels use."""
+"""Grid cells carry joined fonts and their route records."""
 
 import json
 from pathlib import Path

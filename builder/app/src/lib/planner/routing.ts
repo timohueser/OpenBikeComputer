@@ -1,6 +1,8 @@
 import { presetSuffix, ridingProfiles } from './riding-profiles';
-import { orderedRoutePoints, routingKey, type DrawnCoordinate, type Trip } from './editor';
+import { orderedRoutePoints, type DrawnCoordinate, type Trip } from './editor';
 import { cumulative, firstIndex, type Coordinate } from './geo';
+import { config } from './map-data';
+import { releaseFetch } from './release';
 import { decodeRoutes } from './route-answer';
 import type { LegCache } from './route-legs';
 
@@ -37,8 +39,6 @@ export interface Edges {
     closures?: (RouteClosure[] | null)[];
     /** The SAC hiking grade of each edge: 0 (`strolling`) or 1 (T1) to 6 (T6). */
     sac_scale?: (number | null)[];
-    /** The MTB grade of each edge: 0 (S0) to 6 (S6). */
-    mtb_scale?: (number | null)[];
 }
 
 /** Appends the edges `from` to `to` of `source`, or null edges without a source, to `target`, which holds `length` edges.
@@ -63,18 +63,19 @@ export interface EngineRoute {
     totals: RouteTotals;
     legs: RouteLeg[];
     snap_truncated: boolean;
+    /** A corridor alternative's shaping point: a request through the start, this point and the finish gives the same line. */
+    via?: Coordinate;
 }
+/** The calculated line of a plan. It is not part of the plan: the planner calculates it again from the plan's points. */
 export interface RoutingLine {
-    choiceId: string;
-    key: string;
     coordinates: Coordinate[];
     elevation: (number | null)[];
     elapsed: number[];
     edges: Edges;
     stops: { id: string; distance: number }[];
     seconds: number;
-    alternatives: EngineRoute[];
-    alternativesReady: boolean;
+    /** The route of a line that is one routed run through all points of its plan; only such a line has alternatives. */
+    primary?: EngineRoute;
     profile: string;
     unknownSurfaceKm: number;
     pushingKm: number;
@@ -83,11 +84,8 @@ export interface RoutingLine {
     unknownElevationKm: number;
     /** Routing package of the routed legs. */
     package?: string;
-    /** A picked alternative with the profile of its primary route, such as another corridor. No request for its plan returns it. */
-    picked?: boolean;
 }
 
-const endpoint = import.meta.env.VITE_PLANNER_ROUTING_URL ?? '/routing';
 /** Longer than the deadlines of the route service, so its own error arrives first. A hung call frees its caller. */
 const timeoutMs = { '/v1/route': 20_000, '/v1/shape': 40_000 };
 
@@ -96,7 +94,7 @@ async function post(path: keyof typeof timeoutMs, body: unknown, signal?: AbortS
     const timeout = AbortSignal.timeout(timeoutMs[path]);
     let response: Response | undefined, data: { code?: string; message?: string } | undefined;
     try {
-        response = await fetch(`${endpoint}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        response = await releaseFetch(`${config.routing}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
             signal: signal ? AbortSignal.any([signal, timeout]) : timeout, body: JSON.stringify(body) });
         data = await response.json();
     } catch (error) {
@@ -108,6 +106,18 @@ async function post(path: keyof typeof timeoutMs, body: unknown, signal?: AbortS
     }
     if (!response.ok) throw Object.assign(new Error(data?.message ?? 'Routing is unavailable. Retry shortly.'), { code: data?.code });
     return data;
+}
+
+let region: Promise<string[]> | undefined;
+
+/** The profile IDs that the routing region serves (`GET /v1/region`), asked once a page; a failed request is asked again. */
+export function regionProfiles(): Promise<string[]> {
+    return region ??= (async () => {
+        const response = await releaseFetch(`${config.routing}/v1/region`, { signal: AbortSignal.timeout(timeoutMs['/v1/route']) });
+        const profiles = (await response.json() as { profiles?: unknown } | null)?.profiles;
+        if (!response.ok || !Array.isArray(profiles) || !profiles.every(p => typeof p === 'string')) throw new Error('The routing service returned an invalid region.');
+        return profiles;
+    })().catch(error => { region = undefined; throw error; });
 }
 
 /** With `'only'`, the answer leaves out the primary route and can be empty. */
@@ -135,11 +145,10 @@ export async function requestShape(line: Coordinate[], profile: string): Promise
     return { points, turnarounds };
 }
 
-/** The primary route and the alternatives of a line whose alternatives are not ready. Such a line is one routed request
- * through the points of its plan. It holds its primary route, unless it was stored without its routes (`storedPlan`). */
-export async function requestAlternatives(trip: Trip, line: RoutingLine, signal: AbortSignal): Promise<EngineRoute[]> {
+/** The primary route of the line of `trip`, then its alternatives. */
+export async function requestAlternatives(trip: Trip, primary: EngineRoute, signal: AbortSignal): Promise<EngineRoute[]> {
     const points = orderedRoutePoints(trip).map(point => point.coordinate);
-    return [...line.alternatives, ...await requestRoute(points, line.profile, signal, line.alternatives.length ? 'only' : true)];
+    return [primary, ...await requestRoute(points, primary.profile, signal, 'only')];
 }
 
 export function profileId(trip: Trip): string {
@@ -147,25 +156,23 @@ export function profileId(trip: Trip): string {
     return `${trip.bike ?? 'touring'}${variant ? `/${variant}` : ''}`;
 }
 
-export function selectRoute(trip: Trip, route: EngineRoute, alternatives: EngineRoute[]): RoutingLine {
-    const points = orderedRoutePoints(trip);
-    const distance = cumulative(route.geometry);
-    const primary = alternatives[0] ?? route;
-    return {
-        choiceId: route.id, key: routingKey(trip), coordinates: route.geometry, elevation: route.elevation, elapsed: route.elapsed, edges: route.edges, seconds: route.totals.seconds,
-        profile: route.profile, package: route.package, alternatives, alternativesReady: true, unknownSurfaceKm: route.totals.surface_m[0] / 1000, pushingKm: route.totals.pushing_m / 1000, unroutedKm: 0,
-        unknownElevationKm: route.totals.unknown_elevation_m / 1000,
-        stops: [{ id: points[0].id, distance: 0 }, ...route.legs.map((leg, i) => ({ id: points[i + 1].id, distance: distance[leg.to_index] }))],
-        picked: route.id !== primary.id && route.profile === primary.profile,
-    };
+const keys = new WeakMap<Trip, string>();
+
+/** What the line of a trip depends on, so equal keys share one line. Itinerary edits and labels never change it. */
+export function routingKey(trip: Trip): string {
+    let key = keys.get(trip);
+    if (key === undefined) {
+        key = JSON.stringify([trip.bike ?? 'touring', trip.preset ?? 'Balanced', orderedRoutePoints(trip).map(p => [p.id, p.coordinate, p.leg ?? 'routed', p.drawn ?? [], p.kind === 'detour', p.anchor, p.turnaround])]);
+        keys.set(trip, key);
+    }
+    return key;
 }
 
 /** Consecutive routed legs form one run, so a shaping point keeps its road direction. */
 export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCache): Promise<RoutingLine> {
     const points = orderedRoutePoints(trip);
     if (points.length < 2) throw new Error('Choose a start and finish to calculate a route.');
-    const result: RoutingLine = { choiceId: '', key: routingKey(trip), coordinates: [], elevation: [], elapsed: [], edges: {}, stops: [], seconds: 0,
-        alternatives: [], alternativesReady: true, profile: profileId(trip), unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
+    const result: RoutingLine = { coordinates: [], elevation: [], elapsed: [], edges: {}, stops: [], seconds: 0, profile: profileId(trip), unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
     // Seconds per kilometre on a manual leg or connector.
     const pace = 3600 / ridingProfiles[trip.bike ?? 'touring'].kmh;
     let distance = 0;
@@ -241,7 +248,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         const canOfferAlternatives = i === 1 && until === points.length - 1 && !turnarounds.length;
         const route = await legs.route(expanded, turnarounds, result.profile, signal);
         result.package = route.package;
-        if (canOfferAlternatives) { result.alternatives = [route]; result.choiceId = route.id; result.alternativesReady = false; }
+        if (canOfferAlternatives) result.primary = route;
         const start = append(route.geometry, route.elevation, route.elapsed, route.edges);
         const lengths = cumulative(route.geometry);
         result.unknownSurfaceKm += route.totals.surface_m[0] / 1000;

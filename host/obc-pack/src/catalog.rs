@@ -312,10 +312,8 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
         regions,
         cell_index,
         terrain: terrain_entry,
-        landmarks: landmarks.map(|store| LandmarkEntry {
-            attribution: crate::landmarks::ATTRIBUTION.to_string(),
-            artifacts: store.artifacts,
-        }),
+        landmarks: landmarks
+            .map(|store| LandmarkEntry { attribution: crate::landmarks::attribution(), artifacts: store.artifacts }),
         network_terrain_revision: cells.terrain_revision,
     };
     pinned_artifacts.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));

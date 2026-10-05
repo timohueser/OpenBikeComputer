@@ -27,7 +27,7 @@ import urllib.request
 
 import numpy as np
 
-from . import planner_maps as maps
+from . import data_registry, planner_maps as maps
 
 YEARS = 10
 WEEKS = 52
@@ -370,17 +370,19 @@ class Source:
                 for variable, chunks in self.digests.items()}
 
 
-def orography(region, key=None):
+def orography(region, key=None, cache=CACHE):
     """ERA5-Land orography in metres (rows, cols)."""
     import h5py
 
     url, checksum = OROGRAPHY
-    path = CACHE / Path(url).name
+    path = cache / Path(url).name
     if not path.exists():
         if key is None:
             raise ValueError("ERA5-Land orography is not in the cache")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(fetch(url))
+        part = path.with_name(path.name + ".part")
+        part.write_bytes(fetch(url))
+        os.replace(part, path)
     if digest(path) != checksum:
         path.unlink()
         raise ValueError("ERA5-Land orography does not match its pinned checksum")
@@ -390,12 +392,30 @@ def orography(region, key=None):
     return z[region.rows][:, (region.cols + GRID_COLS // 2) % GRID_COLS] / GRAVITY
 
 
-def climate(region, first_year, source, workers=8):
-    """Weekly fields, monthly mean temperatures and the wind rose over the padded region grid."""
-    start, end, times, spatial = chunk_plan(region, first_year)
+def final_hour(first_year):
+    """The store hour count from which every chunk of a bake from `first_year` is final."""
+    return hour(dt.date(first_year + YEARS, 1, 1)) + FINAL_AFTER_DAYS * 24
+
+
+def download(region, first_year, source, workers=8):
+    """Make every source chunk of the bake a path in the cache of `source`."""
+    _, _, times, spatial = chunk_plan(region, first_year)
     names = [(variable, f"{t}.{y}.{x}") for y, x in spatial for variable in SOURCE for t in times]
     with ThreadPoolExecutor(workers) as pool:
         list(pool.map(lambda name: source.path(*name), names))
+
+
+def fetch_sources(bounds, first_year, out):
+    """Download the source chunks and the orography of a bake to `out`, for `obc data fetch`."""
+    key, region = token(), Region(bounds)
+    download(region, first_year, Source(final_hour(first_year), key, cache=out))
+    orography(region, key, cache=out)
+
+
+def climate(region, first_year, source, workers=8):
+    """Weekly fields, monthly mean temperatures and the wind rose over the padded region grid."""
+    start, end, times, spatial = chunk_plan(region, first_year)
+    download(region, first_year, source, workers)
     shape = (len(region.rows), len(region.cols))
     weekly = {name: np.full((YEARS, WEEKS, *shape), np.nan) for name in WEEKLY}
     monthly = {name: np.full((12, *shape), np.nan) for name in ("tmax", "tmin")}
@@ -489,8 +509,7 @@ def bake(bounds, first_year, source, output, key=None):
                 "center_zoom": OVERVIEW, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2),
             }, {
                 "first_year": first_year, "years": YEARS, "source": "era5-land",
-                "attribution": f"Contains modified Copernicus Climate Change Service information {first_year + YEARS}: "
-                               f"ERA5-Land (doi:{DOI})",
+                "attribution": data_registry.attribution("era5-land", year=first_year + YEARS),
                 "wet_day_mm": WET_MM, "rain_factors": list(RAIN_FACTORS), "wind_factor": WIND_FACTOR,
                 "inputs": {"doi": DOI, "orography_sha256": OROGRAPHY[1], "chunks": source.fingerprint()},
             })
@@ -505,29 +524,36 @@ def bake(bounds, first_year, source, output, key=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("region", help="region name: the recipe in tools/planner-regions and the default output folder")
-    parser.add_argument("--bounds", type=maps.bounds, help="west,south,east,north instead of the recipe bounds")
+    parser.add_argument("region", nargs="?", help="region id: the recipe in tools/planner-regions, the box in data/regions/ and the default output folder")
+    parser.add_argument("--bounds", type=maps.bounds, help="west,south,east,north instead of the box of the region in data/regions/")
     parser.add_argument("--first-year", type=int, help="the first of the ten years; default: the recipe's `climate.first_year`")
     parser.add_argument("--output", type=Path, help="default: ~/.cache/obc/planner/REGION/maps/climate.pmtiles")
     parser.add_argument("--check", action="store_true", help="bake from the cache only and compare with the output")
+    parser.add_argument("--fetch", type=Path, help="only download the source chunks and the orography to this directory")
     args = parser.parse_args()
-    recipe = json.loads((RECIPES / f"{args.region}.json").read_text()) if (RECIPES / f"{args.region}.json").exists() else {}
-    bounds = args.bounds or recipe["bounds"]
+    if not args.region and not (args.fetch and args.bounds):
+        parser.error("give a region, or --bounds with --fetch")
+    recipe_path = RECIPES / f"{args.region}.json"
+    recipe = json.loads(recipe_path.read_text()) if args.region and recipe_path.exists() else {}
+    bounds = args.bounds or data_registry.region_box(args.region)
     first_year = args.first_year or recipe.get("climate", {}).get("first_year")
     if first_year is None:
         parser.error("Pin the first year with --first-year or the recipe field `climate.first_year`")
+    if args.fetch:
+        fetch_sources(bounds, first_year, args.fetch)
+        return
     output = args.output or Path.home() / ".cache/obc/planner" / args.region / "maps/climate.pmtiles"
-    final_hour = hour(dt.date(first_year + YEARS, 1, 1)) + FINAL_AFTER_DAYS * 24
+    final = final_hour(first_year)
     start = time.monotonic()
     if args.check:
         with tempfile.TemporaryDirectory() as directory:
-            bake(bounds, first_year, Source(final_hour), Path(directory) / output.name)
+            bake(bounds, first_year, Source(final), Path(directory) / output.name)
             if (Path(directory) / output.name).read_bytes() != output.read_bytes():
                 sys.exit(f"{output} differs from a bake of the cached sources")
         print(f"{output} equals a bake of the cached sources")
         return
     key = token()
-    source = Source(final_hour, key)
+    source = Source(final, key)
     counts = bake(bounds, first_year, source, output, key)
     print(json.dumps({"output": str(output), "bytes": output.stat().st_size, "tiles": counts,
                       "downloaded_bytes": source.downloaded, "source_chunks": sum(map(len, source.digests.values())),

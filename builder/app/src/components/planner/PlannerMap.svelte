@@ -1,7 +1,10 @@
 <script module lang="ts">
     import { terrainRetry, terrainSource } from '../../lib/planner/map-terrain';
-    import { TERRAIN_URL } from '../../lib/planner/map-data';
-    const terrain = terrainSource(TERRAIN_URL);
+    import { config } from '../../lib/planner/map-data';
+    import { releaseProtocol, releaseUrl } from '../../lib/planner/release';
+    const terrain = terrainSource(config.terrain);
+    // MapLibre loads the release objects of the style through `releaseProtocol`.
+    const styleConfig = { ...config, basemap: releaseUrl(config.basemap), glyphs: releaseUrl(config.glyphs), sprites: releaseUrl(config.sprites) };
 </script>
 
 <script lang="ts">
@@ -15,7 +18,6 @@
     import "maplibre-gl/dist/maplibre-gl.css";
     import { mapStyle, poiFilter } from "../../lib/planner/map-style";
     import { mapIcon } from "../../lib/planner/map-icons";
-    import { MAP_BOUNDS, OVERLAYS_URL } from "../../lib/planner/map-data";
     import { categoryIds, placeCategories, type PlaceCategory } from "../../lib/planner/poi-kinds";
     import { poiPlace } from "../../lib/planner/place-index";
     import type { Place } from "../../lib/planner/editor";
@@ -430,15 +432,16 @@
         maplibregl.setWorkerUrl(mapWorkerUrl);
         const protocol = new Protocol();
         maplibregl.addProtocol("pmtiles", protocol.tile);
+        maplibregl.addProtocol("release", releaseProtocol);
         const terrainLease = terrain.acquire(maplibregl);
         dem = terrainLease.dem;
         const contourUrl = dem.contourProtocolUrl({ thresholds: { 10: [200, 1000], 11: [100, 500], 13: [50, 250], 14: [20, 100] }, contourLayer: "contours", elevationKey: "ele", levelKey: "level" });
         insertDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-insert-dot" }) });
         hoverDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-hover-dot" }) });
         try {
-            map = new maplibregl.Map({ container, center, zoom, maxBounds: MAP_BOUNDS, style: mapStyle(theme, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false });
+            map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, styleConfig, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false });
             signedLayer = new SignedRoutesLayer(map);
-            overlayLayer = new RouteOverlays(map, OVERLAYS_URL, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; });
+            overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; });
             fitInitialRoute();
             map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 90, unit: "metric" }), "bottom-left");
@@ -456,6 +459,12 @@
                 if ('name' in event.error && event.error.name === "AbortError") return;
                 if (terrainError(event)) {
                     console.warn("Planner terrain:", event.error);
+                    return;
+                }
+                // Data layers are decoration too, and each shows its own error. Their sources are named by the layer id.
+                const source = (event as { sourceId?: string }).sourceId;
+                if (source && dataLayer?.layers.some(layer => source === layer.id || source.startsWith(`${layer.id}-`))) {
+                    console.warn("Planner data layer:", event.error);
                     return;
                 }
                 failure = "Some map data could not load. Check your connection, then retry.";
@@ -535,7 +544,7 @@
         if (!map || !ready || appliedTheme === theme) return;
         appliedTheme = theme;
         ready = false;
-        map.setStyle(mapStyle(theme, dem.sharedDemProtocolUrl, dem.contourProtocolUrl({ thresholds: { 10: [200, 1000], 11: [100, 500], 13: [50, 250], 14: [20, 100] }, contourLayer: "contours", elevationKey: "ele", levelKey: "level" })));
+        map.setStyle(mapStyle(theme, styleConfig, dem.sharedDemProtocolUrl, dem.contourProtocolUrl({ thresholds: { 10: [200, 1000], 11: [100, 500], 13: [50, 250], 14: [20, 100] }, contourLayer: "contours", elevationKey: "ele", levelKey: "level" })));
     });
     $effect(() => {
         coordinates;

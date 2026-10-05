@@ -1,32 +1,10 @@
 //! The route answer that clients decode, as `specs/route-api.md` specifies it.
 use crate::{
-    model::Totals,
-    router::{Response, Route},
+    model::{Totals, NO_ELEVATION, PUSH},
+    router::{Piece, Response, Route},
 };
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
-
-/// The facts of each geometry edge: named channels, each in the run encoding of `specs/route-api.md`.
-/// A route pushes every channel once per edge.
-#[derive(Clone, Debug, Default, Serialize)]
-pub struct Edges(BTreeMap<&'static str, Vec<(Value, usize)>>);
-
-impl Edges {
-    pub fn push(&mut self, channel: &'static str, value: impl Serialize) {
-        let value = json!(value);
-        let runs = self.0.entry(channel).or_default();
-        match runs.last_mut() {
-            Some((last, length)) if *last == value => *length += 1,
-            _ => runs.push((value, 1)),
-        }
-    }
-
-    /// The runs of one channel: each value with the number of edges it covers.
-    pub fn runs(&self, channel: &str) -> &[(Value, usize)] {
-        self.0.get(channel).map_or(&[], Vec::as_slice)
-    }
-}
 
 pub fn answer(response: &Response) -> Value {
     json!({ "routes": response.routes.iter().map(route).collect::<Vec<_>>() })
@@ -35,16 +13,24 @@ pub fn answer(response: &Response) -> Value {
 fn route(route: &Route) -> Value {
     let mut previous = [0i64; 2];
     let coordinates: Vec<i64> = route
-        .geometry
+        .points
         .iter()
-        .flat_map(|&[lon, lat]| [delta(&mut previous[0], lon, 1e6), delta(&mut previous[1], lat, 1e6)])
+        .flat_map(|p| {
+            let current = [p.lon as i64, p.lat as i64];
+            let delta = [current[0] - previous[0], current[1] - previous[1]];
+            previous = current;
+            delta
+        })
         .collect();
     let mut height = 0;
-    let elevation: Vec<Option<i64>> =
-        route.elevation.iter().map(|metres| metres.map(|metres| delta(&mut height, metres as f64, 10.0))).collect();
+    let elevation: Vec<Option<i64>> = route
+        .points
+        .iter()
+        .map(|p| (p.elevation != NO_ELEVATION).then(|| delta(&mut height, p.elevation as f64, 10.0)))
+        .collect();
     let mut time = 0;
     let elapsed: Vec<i64> = route.elapsed.iter().map(|&seconds| delta(&mut time, seconds, 1.0)).collect();
-    json!({
+    let mut value = json!({
         "id": route.id,
         "reason": route.reason,
         "package": route.package,
@@ -52,17 +38,53 @@ fn route(route: &Route) -> Value {
         "coordinates_udeg": coordinates,
         "elevation_dm": elevation,
         "elapsed_s": elapsed,
-        "edges": route.edges,
-        "legs": route.legs.iter().zip(&route.attachments[1..]).map(|(leg, end)| json!({
+        "edges": edges(route),
+        "legs": route.legs.iter().map(|leg| json!({
             "from_index": leg.from_index,
             "to_index": leg.to_index,
-            "start": leg.start_attachment.position.id(),
-            "end": end.position.id(),
+            "start": leg.start.id(),
+            "end": leg.end.id(),
             "totals": totals(&leg.totals),
         })).collect::<Vec<_>>(),
         "snap_truncated": route.snap_truncated,
-        "totals": totals(&route.totals),
+        "totals": totals(&route.totals()),
+    });
+    if let Some(via) = route.via {
+        value["via"] = json!(via);
+    }
+    value
+}
+
+/// The run channels; a route of one point has no edges and no channels.
+fn edges(route: &Route) -> Value {
+    if route.points.len() < 2 {
+        return json!({});
+    }
+    json!({
+        "surfaces": runs(route, |p| p.surface),
+        "pushing": runs(route, |p| p.mode == PUSH),
+        "closures": runs(route, |p| &p.closures),
+        "sac_scale": runs(route, |p| p.sac_scale),
     })
+}
+
+/// One fact of each edge in runs: each value with the number of consecutive edges it covers.
+fn runs<'a, T: PartialEq + Serialize>(route: &'a Route, fact: impl Fn(&'a Piece) -> T) -> Value {
+    let mut runs: Vec<(T, usize)> = Vec::new();
+    let mut previous = 0;
+    for piece in route.pieces() {
+        let edges = piece.end - previous;
+        previous = piece.end;
+        if edges == 0 {
+            continue;
+        }
+        let value = fact(piece);
+        match runs.last_mut() {
+            Some((last, length)) if *last == value => *length += edges,
+            _ => runs.push((value, edges)),
+        }
+    }
+    json!(runs)
 }
 
 fn totals(totals: &Totals) -> Value {
@@ -88,61 +110,76 @@ fn delta(previous: &mut i64, value: f64, scale: f64) -> i64 {
 mod tests {
     use super::*;
     use crate::{
-        model::Point,
+        model::{Point, Surface, BIKE},
         router::Leg,
-        snap::{Candidate, Position},
+        snap::Position,
     };
+
+    fn value<T: serde::de::DeserializeOwned>(value: &Value) -> T {
+        serde_json::from_value(value.clone()).unwrap()
+    }
+
+    /// A route of the vector. It has one value per edge in each channel and becomes one piece per
+    /// edge, so equal neighbours must join into one run.
+    fn source(source: &Value) -> Route {
+        let position = |p: &Value| Position { road: value(&p["road"]), fraction: value(&p["fraction"]) };
+        let geometry: Vec<[f64; 2]> = value(&source["geometry"]);
+        let elevation: Vec<Option<f32>> = value(&source["elevation"]);
+        let points = geometry
+            .iter()
+            .zip(elevation)
+            .map(|(&[lon, lat], height)| Point {
+                lon: (lon * 1e6).round() as i32,
+                lat: (lat * 1e6).round() as i32,
+                elevation: height.unwrap_or(NO_ELEVATION),
+            })
+            .collect();
+        let edges = &source["edges"];
+        let piece = |end: usize| Piece {
+            road: 0,
+            from: 0.0,
+            to: 1.0,
+            end,
+            surface: value::<Surface>(&edges["surfaces"][end - 1]),
+            mode: if edges["pushing"][end - 1] == true { PUSH } else { BIKE },
+            closures: value(&edges["closures"][end - 1]),
+            sac_scale: value(&edges["sac_scale"][end - 1]),
+            mtb_scale: None,
+        };
+        let legs = source["legs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|leg| {
+                let (from_index, to_index) = (value(&leg["from_index"]), value(&leg["to_index"]));
+                Leg {
+                    start: position(&leg["start"]),
+                    end: position(&leg["end"]),
+                    from_index,
+                    to_index,
+                    totals: value(&leg["totals"]),
+                    pieces: (from_index + 1..=to_index).map(piece).collect(),
+                }
+            })
+            .collect();
+        Route {
+            id: value(&source["id"]),
+            reason: value::<String>(&source["reason"]).leak(),
+            package: value(&source["package"]),
+            profile: value(&source["profile"]),
+            cost: 0,
+            points,
+            elapsed: value(&source["elapsed"]),
+            legs,
+            snap_truncated: value(&source["snap_truncated"]),
+            via: value(&source["via"]),
+        }
+    }
 
     #[test]
     fn encodes_the_shared_vector() {
         let vector: Value = serde_json::from_str(include_str!("../../../specs/vectors/route-answer.json")).unwrap();
-        let source = &vector["route"];
-        let attachment = |position: &Value| Candidate {
-            position: Position {
-                road: position["road"].as_u64().unwrap() as u32,
-                fraction: position["fraction"].as_f64().unwrap(),
-            },
-            projected: Point::default(),
-            snap_distance_m: 0.0,
-            segment: 0,
-            segment_fraction: 0.0,
-        };
-        let source_legs = source["legs"].as_array().unwrap();
-        let legs = source_legs
-            .iter()
-            .map(|leg| Leg {
-                start_attachment: attachment(&leg["start"]),
-                from_index: leg["from_index"].as_u64().unwrap() as usize,
-                to_index: leg["to_index"].as_u64().unwrap() as usize,
-                totals: serde_json::from_value(leg["totals"].clone()).unwrap(),
-                roads: vec![],
-            })
-            .collect();
-        let attachments = std::iter::once(attachment(&source_legs[0]["start"]))
-            .chain(source_legs.iter().map(|leg| attachment(&leg["end"])))
-            .collect();
-        assert_eq!(source["reason"], "primary");
-        let mut edges = Edges::default();
-        for index in 0..source["geometry"].as_array().unwrap().len() - 1 {
-            for (channel, values) in source["edges"].as_object().unwrap() {
-                edges.push(channel.clone().leak(), &values[index]);
-            }
-        }
-        let route = Route {
-            id: serde_json::from_value(source["id"].clone()).unwrap(),
-            reason: "primary",
-            package: serde_json::from_value(source["package"].clone()).unwrap(),
-            profile: serde_json::from_value(source["profile"].clone()).unwrap(),
-            cost: 0,
-            geometry: serde_json::from_value(source["geometry"].clone()).unwrap(),
-            elevation: serde_json::from_value(source["elevation"].clone()).unwrap(),
-            edges,
-            elapsed: serde_json::from_value(source["elapsed"].clone()).unwrap(),
-            legs,
-            attachments,
-            snap_truncated: serde_json::from_value(source["snap_truncated"].clone()).unwrap(),
-            totals: serde_json::from_value(source["totals"].clone()).unwrap(),
-        };
-        assert_eq!(answer(&Response { routes: vec![route] }), vector["answer"]);
+        let routes = vector["routes"].as_array().unwrap().iter().map(source).collect();
+        assert_eq!(answer(&Response { routes }), vector["answer"]);
     }
 }

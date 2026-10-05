@@ -1,19 +1,8 @@
 # Offline planner bundle
 
-A bundle contains the runtime files from one [planner release](planner-release.md).
-It omits source mirrors. It preserves the exact release manifest and every runtime
-file. It does not combine routing graphs or change coverage.
-
-A geographic cutout is a new release. It rebuilds routing for whole intersecting
-roads and retains all source profiles. Its declared bounds limit route endpoints.
-It omits source OSM tables after routing and overlays are compiled.
-Map and overlay selection covers both these bounds and the complete retained road
-geometry. Terrain adds its tile neighbours. Search includes its address and context
-dependencies. Intersecting overlay features keep complete geometry and properties.
-The [route catalog](route-catalog.md) keeps each route record whose line is inside the
-bounds, and a long route only with all of its stages.
-The source release identity and geometry envelope are recorded in `sources.extraction`.
-Old and new graphs do not combine into a regional union.
+A bundle carries one [planner release](planner-release.md) that the download
+service selects from a grid publication. It preserves the exact release manifest
+and every runtime file. It omits source mirrors.
 
 ## Transfer layout
 
@@ -36,42 +25,6 @@ has `bytes`, `sha256`, and `encoding`. Encoding is `identity` or `gzip`. Decoded
 bytes match the release entry. Repeated content uses one object. Paths are relative,
 contain no `..`, and cannot replace `release.json`.
 
-## Local installation
-
-| Path | Content |
-| --- | --- |
-| `objects/SHA256` | Verified decoded file bytes |
-| `downloads/SHA256` | Incomplete or complete transport bytes pending verification |
-| `releases/ID/` | Original runtime file layout, linked to verified objects |
-| `active.json` | Active release `release` ID and `region` |
-
-The installer locks one destination at a time. It resumes transport downloads by
-byte offset. An HTTP 206 response must match the requested range and complete
-object size. An HTTP 200 response restarts the object. A short download stays
-available for resumption. A complete object with a wrong hash is discarded.
-
-Activation follows verification of the complete decoded runtime closure. Files
-and directories are synchronized before the atomic activation write. A failure
-keeps the previous activation. Old releases and verified objects stay installed.
-This layout does not provide eviction or combine separately prepared regions.
-
-## Size fields
-
-The pack and install commands return JSON. `transfer_bytes` includes both
-manifests and each distinct transport object. `installed_bytes` counts the logical
-release files and release manifest, so it counts a shared font file once for
-each range path. `unique_installed_bytes` deduplicates equal runtime files by
-their decoded hashes.
-
-An install also reports bytes received in this run as `downloaded_bytes`, and
-file bytes already retained as `retained_before_bytes`. `stored_bytes` counts
-distinct installed file inodes, including retained releases, objects, downloads,
-and activation metadata. `peak_install_bytes` includes transient decoded files
-and activation writes. `peak_added_bytes` and `added_stored_bytes` subtract the
-initial retained total. `download_cache_bytes` counts pending transport files.
-These are file byte counts. They exclude filesystem allocation overhead and
-caches made by the application.
-
 ## Grid publication and selection
 
 A grid release has `grid: {format: 2, zoom: 9, map_zoom: 11}`. Selection cells
@@ -79,17 +32,17 @@ use Web Mercator XYZ coordinates at zoom 9. Cell IDs are `9-X-Y`. A requested
 rectangle selects every intersecting cell, clipped to the release bounds.
 The returned coverage contains the complete requested rectangle.
 
-The publisher creates routing page packs, search databases, overlay databases,
-and PMTiles packs once. Map packs group each tile under its ancestor at
-`min(tile_zoom, 11)`. Original compressed tile payloads remain unchanged.
+The publisher creates routing page packs, search databases, and PMTiles packs
+once. Map packs group each tile under its ancestor at `min(tile_zoom, 11)`.
+Original compressed tile payloads remain unchanged.
 A routing pack contains pages with the same cell consumers, up to 16 MiB.
-Search and overlays retain whole intersecting records and their dependencies.
+Search retains whole intersecting records and their dependencies.
 Each cell also has its [route catalog](route-catalog.md) file.
 
 `offline/catalog.json` has `format: 3`. It lists cell bounds, logical file
 names, map packs, and routing cell descriptors. Its map packs omit the online
-places and overlays archives. Each routing descriptor has a manifest path and
-SHA-256, source adjacency ranges, and retained geometry bounds. `shared` maps
+places archive. Each routing descriptor has a manifest path and SHA-256, source
+adjacency ranges, and retained geometry bounds. `shared` maps
 each map asset path of a selection to its publication file. Files carry the
 decoded and transport hashes above.
 The service selects these objects and writes only the small selection manifests.
@@ -107,11 +60,14 @@ reads only the glyphs of the requested range from the file. A missing range
 file stops the labels of each tile that requests it.
 
 The selected release has `offline.format: 2`, `id`, `zoom`, `map_zoom`,
-`source_routing`, and `cells`. Each cell has `id` and `bounds`.
-`routing/layers.json` lists every required overlay cell ID. A missing listed
-cell is an error. `routing/blocks.json` follows the
-[routing selection contract](route-package.md#grid-selections).
-Map selection covers retained road geometry; terrain includes tile neighbours.
+`source_routing`, and `cells`. Each cell has `id`, `bounds`, and `files`: the
+cell's search databases and route catalog file.
+`routing/blocks.json` follows the [routing selection contract](route-package.md#grid-selections).
+Map selection takes basemap, overlay and terrain packs. It covers retained road
+geometry; terrain includes tile neighbours. `maps/basemap.json`,
+`maps/overlays.json` and `maps/terrain.json` are TileJSON for these packs. Their
+tile URLs use the host `offline.openbikecomputer.invalid`, which the app serves
+from the installed packs.
 
 ## Download service
 
@@ -120,8 +76,7 @@ The HTTPS prefix is `/planner-offline`. Bounds use west, south, east, north.
 | Request | Result |
 | --- | --- |
 | `GET /catalog` | `format: 1`, source `bounds`, and selection `zoom` |
-| `POST /jobs` | JSON `bounds`; returns `id`, `state: ready`, and `progress: 1` |
-| `GET /jobs/ID` | `id` and `state`, either `ready` or `failed` |
+| `POST /jobs` | JSON `bounds`; returns `id` and `state: ready` once the selection metadata exists |
 | `GET /bundles/ID/bundle.json` | Selected bundle manifest |
 | `GET /bundles/ID/release.json` | Selected release manifest |
 | `GET /bundles/ID/objects/SHA256` | Transport bytes or HTTP 307 to the immutable object pool |
@@ -139,10 +94,17 @@ server language model and device catalog.
 
 ## iOS library
 
-The iOS installer uses the object and release layout above. `maps.json` replaces
-`active.json` with a list of installed maps. Each entry contains `id`, `name`,
-`region`, `bounds`, and `installedBytes`. `pending.json` holds one resumable
-download. `downloads/SHA256.resume` holds opaque URLSession resume data.
+| Path | Content |
+| --- | --- |
+| `objects/SHA256` | Verified decoded file bytes |
+| `downloads/SHA256` | Incomplete or complete transport bytes pending verification |
+| `downloads/SHA256.resume` | Opaque URLSession resume data |
+| `releases/ID/` | Original runtime file layout, linked to verified objects |
+| `maps.json` | List of installed maps |
+| `pending.json` | One resumable download |
+
+Each `maps.json` entry contains `id`, `name`, `region`, `bounds`, and
+`installedBytes`.
 
 The app checks free space before transfer. Its estimate includes filesystem
 allocation, missing decoded objects, the four largest temporary compressed
@@ -152,7 +114,7 @@ The library is excluded from device backups. Deletion retains shared objects
 that another map or the pending download needs.
 
 Each download prohibits cellular, expensive and constrained networks unless
-the user allows them. Maps, routes, search and overlays first use a complete
-installed release that covers the request. Routing graphs are not combined.
+the user allows them. Maps, routes and search first use a complete installed
+release that covers the request. Routing graphs are not combined.
 A failed local request falls back to the online service. A valid empty local
 search result does not need a network request.

@@ -6,7 +6,6 @@ import {
   routePositions,
   distinct,
   rank,
-  GROUPS,
   norm,
 } from './web/engine.mjs';
 import {
@@ -22,21 +21,18 @@ import {
   crossesView,
   kmQuantity,
 } from './web/geography.mjs';
-import { openingState } from './hours.mjs';
 import { routeResults } from './web/route-results.mjs';
+import contract from './query/contract.json' with { type: 'json' };
 
-const groups = {
-  ...GROUPS,
-  water: ['drinking_water', 'water_point', 'water_tap', 'spring', 'fountain'],
-  resupply: [...GROUPS.resupply, 'fuel'],
-  medical: ['hospital', 'doctor', 'clinic'],
-  bike: [...GROUPS.bike, 'charging'],
-  transport: ['train_station', 'bus_stop', 'ferry'],
-  swimming: ['lake', 'beach', 'swimming_pool'],
-  sight: [...GROUPS.sight, 'church', 'monastery', 'tower', 'bridge'],
-  town: ['city', 'town', 'village', 'hamlet'],
-};
-const kindsOf = (what) => [...new Set(what.flatMap((k) => groups[k] || [k]))];
+/** The kind whose places a cuisine kind filters, or the kind itself. */
+export const baseKind = (k) => (Object.hasOwn(contract.cuisines, k) ? contract.cuisines[k] : k);
+/** The search-data kinds of `what`. A cuisine kind finds places of its kind that serve it. */
+function placeKinds(what, cuisine) {
+  return {
+    kinds: [...new Set(what.flatMap((k) => contract.kinds[baseKind(k)].data))],
+    cuisine: cuisine || what.find((k) => baseKind(k) !== k),
+  };
+}
 const label = (value) => value.replaceAll('_', ' ');
 const pointResult = (coordinate, name, extra = {}) => ({
   coordinate,
@@ -86,7 +82,9 @@ export function resolvePoint(db, point, context, focus = centre(context.view)) {
     });
   }
   if (point.kind) {
-    const [p] = categoryRows(db, kindsOf([point.kind]), around(focus, 25), focus, 1);
+    const { kinds, cuisine } = placeKinds([point.kind]);
+    const rows = categoryRows(db, kinds, around(focus, 25), focus, cuisine ? undefined : 1);
+    const p = cuisine ? rows.find((p) => servesCuisine(p, cuisine)) : rows[0];
     if (!p || distance([p.lon, p.lat], focus) > 25)
       throw new Error(
         `No mapped ${label(point.kind)} within 25 km of this point.`,
@@ -242,14 +240,16 @@ function categoryRows(db, kinds, bounds, focus, limit = 2001) {
   const x = focus[0],
     y = focus[1],
     cos = Math.cos((y * Math.PI) / 180) ** 2;
-  return db.all(
-    `SELECT p.* FROM spatial s JOIN places p ON p.id=s.id
+  return db.places([{
+    sql: `SELECT p.id,(p.lon-?)*(p.lon-?)*?+(p.lat-?)*(p.lat-?) AS _distance,p.source
+    FROM {c}.spatial s JOIN {c}.place_records p ON p.id=s.id
     WHERE s.east>=? AND s.north>=? AND s.west<=? AND s.south<=?
-    AND p.kind IN (${kinds.map(() => '?').join(',')})
-    ORDER BY (p.lon-?)*(p.lon-?)*?+(p.lat-?)*(p.lat-?), p.source LIMIT ${limit}`,
-    [...bounds, ...kinds, x, x, cos, y, y],
-    {bounds},
-  );
+    AND p.kind IN (${kinds.map(() => '?').join(',')})`,
+    params: [x, x, cos, y, y, ...bounds, ...kinds],
+    order: ['_distance', 'source'],
+    limit,
+    bounds,
+  }]);
 }
 // `all` adds every sorted match with its route position for internal callers.
 export function findPlaces(db, request, context, { all = false } = {}) {
@@ -288,7 +288,7 @@ export function findPlaces(db, request, context, { all = false } = {}) {
     };
   }
   const sc = scope(db, request, context),
-    kinds = kindsOf(request.what);
+    { kinds, cuisine } = placeKinds(request.what, request.cuisine);
   if (request.open?.day)
     context = { ...context, openDate: dayDate(request.open.day, context) };
   const implicit =
@@ -331,8 +331,8 @@ export function findPlaces(db, request, context, { all = false } = {}) {
             pos.along > sc.range[1] + 1e-7))
       )
         return [];
-      if (request.cuisine && !servesCuisine(p, request.cuisine)) return [];
-      const opening = (context.openingState || openingState)(p, request.open, context);
+      if (cuisine && !servesCuisine(p, cuisine)) return [];
+      const opening = request.open ? context.openingState(p, request.open, context) : null;
       if (opening === 'unknown') unknown++;
       if (opening && opening !== 'open') return [];
       return [
@@ -421,6 +421,12 @@ export function resolve(db, request, context) {
     total = ds.at(-1);
   const changes = [];
   let description = '';
+  // The longest stretches first. Only the shown ones get coordinates: each slice reads the line.
+  const longest = (stretches, name) =>
+    stretches
+      .sort((a, b) => b.to - b.from - (a.to - a.from))
+      .slice(0, 20)
+      .map((s) => ({ ...s, label: name, coordinates: slice(line, s.from, s.to, ds) }));
   if (request.type === 'route') {
     const from = resolvePoint(
       db,
@@ -526,7 +532,7 @@ export function resolve(db, request, context) {
     const matched = request.point.name
       ? points.filter((p) => norm(p.label) === norm(request.point.name))
       : request.point.kind
-        ? points.filter((p) => p.placeKind === request.point.kind)
+        ? points.filter((p) => placeKinds([request.point.kind]).kinds.includes(p.placeKind))
         : points.filter(
             (p) =>
               distance(
@@ -584,15 +590,6 @@ export function resolve(db, request, context) {
     lineOf(context);
     changes.push({ op: 'reverse' });
     description = 'Reverse the route';
-  } else if (request.type === 'reroute') {
-    const sc = scope(db, request, context);
-    changes.push({
-      op: 'reroute',
-      range: sc.range || planRange(context),
-      bike: request.bike,
-      goal: request.goal,
-    });
-    description = `Re-route ${sc.area.toLowerCase()}`;
   } else if (request.type === 'stretches') {
     const sc = scope(db, request, context),
       range = sc.range || planRange(context);
@@ -621,19 +618,13 @@ export function resolve(db, request, context) {
           .sort((a, b) => a - b),
         range[1],
       ];
-      const stretches = positions
+      const gaps = positions
         .slice(1)
-        .map((to, i) => ({
-          from: positions[i],
-          to,
-          label: `No mapped ${label(request.what.slice(4))}`,
-          coordinates: slice(line, positions[i], to, ds),
-        }))
-        .filter((s) => s.to - s.from >= (request.min?.value || 0))
-        .sort((a, b) => b.to - b.from - (a.to - a.from));
+        .map((to, i) => ({ from: positions[i], to }))
+        .filter((s) => s.to - s.from >= (request.min?.value || 0));
       return {
         type: 'stretches',
-        stretches: stretches.slice(0, 20),
+        stretches: longest(gaps, `No mapped ${label(request.what.slice(4))}`),
         area: sc.area,
         note: 'Gaps use mapped places within 1 km of the line. Missing map data can make a gap look longer.',
       };
@@ -643,7 +634,7 @@ export function resolve(db, request, context) {
       throw new Error(
         'This route has no verified surface, gradient or access data yet.',
       );
-    const stretches = segments
+    const found = segments
       .filter(
         (s) =>
           s.kind === request.what && s.to >= range[0] && s.from <= range[1],
@@ -661,13 +652,8 @@ export function resolve(db, request, context) {
             : request.min.unit === 'm'
               ? s.ascent
               : s.gradient) >= request.min.value,
-      )
-      .map((s) => ({
-        ...s,
-        label: label(request.what),
-        coordinates: slice(line, s.from, s.to, ds),
-      }));
-    return { type: 'stretches', stretches, area: sc.area };
+      );
+    return { type: 'stretches', stretches: longest(found, label(request.what)), area: sc.area };
   } else throw new Error('This request type is not supported.');
   return {
     type: 'change',

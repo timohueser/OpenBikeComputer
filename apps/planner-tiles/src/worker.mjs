@@ -19,9 +19,10 @@ export function reply(body, { status, headers }) {
 }
 const notFound = () => new Response('Tile not found', { status: 404, headers: { ...headers, 'Cache-Control': 'no-store' } });
 
-// Zooms and tile format come from each archive's header; PMTiles tile IDs end at zoom 26.
+// Zooms and tile format come from each archive's header; PMTiles tile IDs end at zoom 26. An archive
+// name is served when the release publishes its TileJSON pointer.
 export function tileRoute(path) {
-  const match = /^\/releases\/([a-f0-9]{64})\/(basemap|places|overlays|terrain|snow|climate|sun)(?:\.json|\/(0|[1-9]\d?)\/(0|[1-9]\d*)\/(0|[1-9]\d*)(\.mvt|\.webp)?)$/.exec(path);
+  const match = /^\/releases\/([a-f0-9]{64})\/([a-z]{1,32})(?:\.json|\/(0|[1-9]\d?)\/(0|[1-9]\d*)\/(0|[1-9]\d*)(\.mvt|\.webp)?)$/.exec(path);
   if (!match) return null;
   const [, release, name, z, x, y, ext] = match;
   if (z !== undefined && (Number(z) > 26 || Number(x) >= 2 ** Number(z) || Number(y) >= 2 ** Number(z))) return null;
@@ -59,48 +60,34 @@ export default {
       let response;
       if (asset) {
         response = await publicFile(env.BUCKET, prefix, asset.file, asset.type, headers);
+      } else if (!route.tile) {
+        const pointer = await objectPointer(env.BUCKET, prefix, `maps/${route.name}.json`);
+        if (pointer.decoded_bytes > 1024 * 1024) throw new Error('TileJSON exceeds metadata limit');
+        const data = await (await publicFile(env.BUCKET, prefix, `maps/${route.name}.json`, 'application/json', headers)).json();
+        data.tiles = [`${url.origin}/releases/${route.release}/${route.name}/{z}/{x}/{y}`];
+        response = reply(JSON.stringify(data), { status: 200, headers: { ...headers, 'Content-Type': 'application/json' } });
       } else {
+        await objectPointer(env.BUCKET, prefix, `maps/${route.name}.json`);
         const grid = await gridConfig(env.BUCKET, prefix);
-        const base = `${url.origin}/releases/${route.release}/${route.name}`;
+        // A grid has packs only where an archive has tiles, so a tile without a pack is absent.
+        const pointer = await objectPointer(env.BUCKET, prefix, packName(route.name, route.tile, grid.map_zoom))
+          .catch(error => { if (error instanceof MissingArchive) return null; throw error; });
         let data, tileHeaders = {};
-        if (grid && !route.tile) {
-          const pointer = await objectPointer(env.BUCKET, prefix, `maps/${route.name}.json`);
-          if (pointer.decoded_bytes > 1024 * 1024) throw new Error('TileJSON exceeds metadata limit');
-          data = await (await publicFile(env.BUCKET, prefix, `maps/${route.name}.json`, 'application/json', headers)).json();
-        } else {
-          let path = `${prefix}/maps/${route.name}.pmtiles`;
-          if (grid) {
-            // A grid has packs only where an archive has tiles, so a tile without a pack is absent.
-            const pointer = await objectPointer(env.BUCKET, prefix, packName(route.name, route.tile, grid.map_zoom))
-              .catch(error => { if (error instanceof MissingArchive) return null; throw error; });
-            if (pointer && pointer.encoding !== 'identity') throw new Error('PMTiles must support byte ranges');
-            path = pointer?.path;
-          }
-          if (path) {
-            const source = new R2Source(env.BUCKET, path);
-            const archive = new PMTiles(source, directories, decompress);
-            const header = await archive.getHeader();
-            if (!route.tile) {
-              const metadata = await archive.getMetadata();
-              data = { ...metadata, tilejson: '3.0.0', scheme: 'xyz', minzoom: header.minZoom, maxzoom: header.maxZoom,
-                bounds: route.name === 'sun' && Array.isArray(metadata.bounds) ? metadata.bounds : [header.minLon, header.minLat, header.maxLon, header.maxLat],
-                center: [header.centerLon, header.centerLat, header.centerZoom] };
-            } else if (route.ext !== undefined && route.ext !== tileTypeExt(header.tileType)) {
-              return notFound();
-            } else if (route.tile[0] >= header.minZoom && route.tile[0] <= header.maxZoom) {
-              // Edge compression skips unknown content types, so these tiles keep their stored encoding.
-              const raw = !(header.tileType in contentTypes);
-              data = await (raw ? new PMTiles(source, directories, keep) : archive).getZxy(...route.tile);
-              tileHeaders = { 'Content-Type': contentTypes[header.tileType] ?? 'application/octet-stream',
-                ...(raw && header.tileCompression === Compression.Gzip ? { 'Content-Encoding': 'gzip' } : {}) };
-            }
+        if (pointer) {
+          if (pointer.encoding !== 'identity') throw new Error('PMTiles must support byte ranges');
+          const source = new R2Source(env.BUCKET, pointer.path);
+          const archive = new PMTiles(source, directories, decompress);
+          const header = await archive.getHeader();
+          if (route.ext !== undefined && route.ext !== tileTypeExt(header.tileType)) return notFound();
+          if (route.tile[0] >= header.minZoom && route.tile[0] <= header.maxZoom) {
+            // Edge compression skips unknown content types, so these tiles keep their stored encoding.
+            const raw = !(header.tileType in contentTypes);
+            data = await (raw ? new PMTiles(source, directories, keep) : archive).getZxy(...route.tile);
+            tileHeaders = { 'Content-Type': contentTypes[header.tileType] ?? 'application/octet-stream',
+              ...(raw && header.tileCompression === Compression.Gzip ? { 'Content-Encoding': 'gzip' } : {}) };
           }
         }
-        if (!route.tile) data.tiles = [`${base}/{z}/{x}/{y}`];
-        response = reply(route.tile ? data?.data : JSON.stringify(data), {
-          status: route.tile && !data ? 204 : 200,
-          headers: { ...headers, ...(route.tile ? tileHeaders : { 'Content-Type': 'application/json' }) },
-        });
+        response = reply(data?.data, { status: data ? 200 : 204, headers: { ...headers, ...tileHeaders } });
       }
       ctx.waitUntil(caches.default.put(cacheKey, reply(response.clone().body, response)));
       return request.method === 'HEAD' ? new Response(null, response) : response;

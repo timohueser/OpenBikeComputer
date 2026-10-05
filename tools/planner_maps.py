@@ -13,20 +13,17 @@ import socket
 import subprocess
 import threading
 import time
+import tomllib
 import zipfile
-
-try:
-    from .planner_runtime import DATA_LAYERS
-except ImportError:
-    from planner_runtime import DATA_LAYERS
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "builder/app"
-DATA = None  # the maps folder of the data directory in use; its caller sets it
 # Child processes start in their own session, so an interrupt reaches only this process. A caller that
 # runs producers in threads sets STOPPING and stops these; `run` then starts no new process.
 RUNNING, STOPPING = set(), threading.Event()
-ASSETS_REV = "028c18f713baecad011301ff7a69acc39bcc2ae7"
+# The versions live is built from. data/env/live.toml is their one home.
+PINS = tomllib.loads((ROOT / "data/env/live.toml").read_text())["pins"]
+ASSETS_REV = PINS["protomaps-assets"]
 ASSETS_URL = f"https://codeload.github.com/protomaps/basemaps-assets/zip/{ASSETS_REV}"
 SPRITES_LICENSE_URL = "https://raw.githubusercontent.com/tangrams/icons/92510779634f4a006c61ea70e50cb8c52c765a81/LICENSE.md"
 
@@ -78,23 +75,24 @@ def stop_process(process):
         process.wait()
 
 
+def mercator(lon, lat, zoom):
+    """Fractional Web Mercator XYZ tile coordinates of a point."""
+    count = 1 << zoom
+    return (lon + 180) / 360 * count, (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * count
+
+
+def tile_bounds(z, x, y):
+    n = 1 << z
+    latitude = lambda row: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * row / n))))
+    return [x / n * 360 - 180, latitude(y + 1), (x + 1) / n * 360 - 180, latitude(y)]
+
+
 def terrain_bounds(region):
     # Contours start at zoom 10 and read a 3×3 tile neighbourhood.
     count = 1 << 10
-    west, south, east, north = region
-
-    def tile_y(latitude):
-        return (1 - math.asinh(math.tan(math.radians(latitude))) / math.pi) / 2 * count
-
-    def latitude(y):
-        return math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / count))))
-
-    left = max(0, math.floor((west + 180) / 360 * count) - 1)
-    right = min(count, math.floor((east + 180) / 360 * count) + 2)
-    top = max(0, math.floor(tile_y(north)) - 1)
-    bottom = min(count, math.floor(tile_y(south)) + 2)
-    return [left / count * 360 - 180, latitude(bottom),
-            right / count * 360 - 180, latitude(top)]
+    left, top = (max(0, math.floor(value) - 1) for value in mercator(region[0], region[3], 10))
+    right, bottom = (min(count - 1, math.floor(value) + 1) for value in mercator(region[2], region[1], 10))
+    return tile_bounds(10, left, bottom)[:2] + tile_bounds(10, right, top)[2:]
 
 
 def install_assets(data, destination):
@@ -130,7 +128,7 @@ def verify_archive(pmtiles, path, tile_type, zoom):
 
 def compact_archive(source, destination, region, terrain=False, recompress=True):
     run("uv", "run", "--with-requirements", ROOT / "tools/requirements-planner-maps.txt",
-        "python", ROOT / "tools/planner_map_archive.py", source, destination,
+        "python", "-m", "tools.planner_map_archive", source, destination,
         "--bbox=" + ",".join(map(str, region)), *(["--terrain"] if terrain else []),
         *([] if recompress else ["--no-recompress"]), cwd=ROOT)
 
@@ -151,11 +149,12 @@ def check_port(port):
         listener.bind(("127.0.0.1", port))
 
 
-def check_bundle(full=False):
-    manifest = json.loads((DATA / "manifest.json").read_text())
+def check_bundle(folder, full=False):
+    """The manifest of the map bundle in `folder`, once its files match it."""
+    manifest = json.loads((folder / "manifest.json").read_text())
     for name, item in manifest["files"].items():
-        path = DATA / name
-        if not path.resolve().is_relative_to(DATA.resolve()):
+        path = folder / name
+        if not path.resolve().is_relative_to(folder.resolve()):
             raise ValueError(f"Map path is outside the bundle: {name}")
         if path.stat().st_size != item["bytes"]:
             raise ValueError(f"Incomplete map bundle: {name}")
@@ -164,36 +163,6 @@ def check_bundle(full=False):
                 if hashlib.file_digest(stream, "sha256").hexdigest() != item["sha256"]:
                     raise ValueError(f"Map checksum mismatch: {name}")
     return manifest
-
-
-def preview(args):
-    manifest = check_bundle()
-    tile_origin = f"http://127.0.0.1:{args.tile_port}"
-    base = "/@fs" + str(DATA.resolve())
-    env = {
-        **os.environ,
-        "OBC_PLANNER_MAPS_DIR": str(DATA.resolve()),
-        "OBC_PLANNER_TILES_URL": tile_origin,
-        "OBC_PLANNER_ROUTING_URL": args.routing,
-        "VITE_PLANNER_ROUTING_URL": "/routing",
-        "VITE_PLANNER_PMTILES_URL": base + "/basemap.pmtiles",
-        "VITE_PLANNER_PLACES_URL": base + "/places.pmtiles",
-        "VITE_PLANNER_OVERLAYS_URL": base + "/overlays.pmtiles",
-        # Without its archive, the planner offers no such data layer.
-        **{f"VITE_PLANNER_{layer.upper()}_URL": f"{base}/{layer}.pmtiles" if f"{layer}.pmtiles" in manifest["files"] else ""
-           for layer in DATA_LAYERS},
-        "VITE_PLANNER_DEM_URL": "/tiles/terrain/{z}/{x}/{y}.webp",
-        "VITE_PLANNER_GLYPHS_URL": base + "/assets/fonts/{fontstack}/{range}.pbf",
-        "VITE_PLANNER_SPRITES_URL": base + "/assets/sprites/v4",
-        "VITE_PLANNER_MAP_BOUNDS": ",".join(map(str, manifest["bounds"])),
-    }
-    commands = [
-        ([args.pmtiles, "serve", str(DATA), "--interface=127.0.0.1",
-          f"--port={args.tile_port}", f"--public-url={tile_origin}"], ROOT),
-        (["npm", "run", "dev", "--", "--mode", "web", "--host", "127.0.0.1",
-          "--port", str(args.port), "--strictPort"], APP),
-    ]
-    return commands, env
 
 
 def supervise(commands, env, ready=None):

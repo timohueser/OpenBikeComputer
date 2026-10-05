@@ -13,7 +13,7 @@ import shutil
 import threading
 from urllib.parse import unquote, urlsplit
 
-from . import planner_runtime, planner_blocks, planner_maps, planner_grid, planner_map_archive
+from . import planner_grid, planner_map_archive, planner_maps, planner_runtime
 
 
 def contains(outer, inner):
@@ -50,12 +50,11 @@ class Downloads:
         if not cells: raise ValueError("This area has no published map data.")
         actual = [min(c["bounds"][0] for c in cells), min(c["bounds"][1] for c in cells),
                   max(c["bounds"][2] for c in cells), max(c["bounds"][3] for c in cells)]
-        identity = hashlib.sha256(planner_runtime.encoded({"format": 3, "source": self.identity, "bounds": actual})).hexdigest()
-        with self.lock:
-            destination = self.cache / identity
-            if not (destination / "bundle.json").exists():
-                self.quote(destination, actual, cells, identity)
-        return {"id": identity, "state": "ready", "progress": 1}
+        identity = hashlib.sha256(planner_runtime.encoded({"format": 4, "source": self.identity, "bounds": actual})).hexdigest()
+        destination = self.cache / identity
+        if not (destination / "bundle.json").exists():
+            self.quote(destination, actual, cells, identity)
+        return {"id": identity, "state": "ready"}
 
     @staticmethod
     def overlaps(a, b):
@@ -91,53 +90,55 @@ class Downloads:
             files[name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "transport": transport}
             return files[name]["sha256"]
         package = metadata("routing/blocks.json", graph)
-        metadata("routing/layers.json", [c["id"] for c in cells])
-        for kind in ("basemap", "places", "terrain"):
+        for kind, minzoom, maxzoom in (("basemap", 0, 14), ("places", 11, 11), ("overlays", 6, 14), ("terrain", 0, 12)):
             metadata(f"maps/{kind}.json", {"tilejson": "3.0.0", "tiles": [
                 f"https://offline.openbikecomputer.invalid/{identity}/{kind}/{{z}}/{{x}}/{{y}}"],
-                "minzoom": 11 if kind == "places" else 0, "maxzoom": {"basemap": 14, "places": 11, "terrain": 12}[kind],
-                "bounds": terrain if kind == "terrain" else geometry})
+                "minzoom": minzoom, "maxzoom": maxzoom, "bounds": terrain if kind == "terrain" else geometry})
         release = {**self.manifest, "format": 1, "region": graph["data"]["region"], "bounds": actual,
                    "routing_package": package, "source_files": {}, "terrain_bounds": terrain,
                    "offline": {"format": 2, "id": identity, "zoom": publication["zoom"], "map_zoom": publication["map_zoom"],
                                "source_routing": publication["routing_source"],
-                               "cells": [{"id": c["id"], "bounds": c["bounds"]} for c in cells]},
+                               "cells": [{"id": c["id"], "bounds": c["bounds"], "files": c["files"]} for c in cells]},
                    "files": {name: {k: item[k] for k in ("bytes", "sha256")} for name, item in files.items()}}
         encoded = planner_runtime.encoded(release)
         bundle = planner_runtime.encoded({"format": 1, "release": {"bytes": len(encoded),
             "sha256": hashlib.sha256(encoded).hexdigest()}, "files": files})
         origin = planner_runtime.encoded({"source": str(self.source), "objects_url": self.objects_url})
         needed = len(encoded) + len(bundle) + len(origin) + sum(map(len, generated.values()))
-        if needed > self.max_cache_bytes or shutil.disk_usage(self.cache).free < needed:
+        if needed > self.max_cache_bytes:
             raise ValueError("The download service has no space for a new selection.")
-        entries = sorted((p for p in self.cache.iterdir() if p.is_dir() and re.fullmatch(r"[0-9a-f]{64}", p.name)),
-                         key=lambda p: p.stat().st_mtime)
-        sizes = {p: sum(f.stat().st_size for f in p.rglob("*") if f.is_file()) for p in entries}
-        used = sum(sizes.values())
-        for path in entries:
-            if used + needed <= self.max_cache_bytes: break
-            shutil.rmtree(path)
-            used -= sizes[path]
-        temporary = self.cache / ("." + destination.name + ".work")
-        shutil.rmtree(temporary, ignore_errors=True)
-        try:
-            (temporary / "objects").mkdir(parents=True)
-            for sha, data in generated.items(): (temporary / "objects" / sha).write_bytes(data)
-            (temporary / "release.json").write_bytes(encoded)
-            (temporary / "bundle.json").write_bytes(bundle)
-            (temporary / "origin.json").write_bytes(origin)
-            temporary.rename(destination)
-        finally:
+        # Only cache writes take the lock; a reader answers 404 for a selection evicted under it.
+        with self.lock:
+            if (destination / "bundle.json").exists(): return
+            if shutil.disk_usage(self.cache).free < needed:
+                raise ValueError("The download service has no space for a new selection.")
+            entries = sorted((p for p in self.cache.iterdir() if p.is_dir() and re.fullmatch(r"[0-9a-f]{64}", p.name)),
+                             key=lambda p: p.stat().st_mtime)
+            sizes = {p: sum(f.stat().st_size for f in p.rglob("*") if f.is_file()) for p in entries}
+            used = sum(sizes.values())
+            for path in entries:
+                if used + needed <= self.max_cache_bytes: break
+                shutil.rmtree(path)
+                used -= sizes[path]
+            temporary = self.cache / ("." + destination.name + ".work")
             shutil.rmtree(temporary, ignore_errors=True)
+            try:
+                (temporary / "objects").mkdir(parents=True)
+                for sha, data in generated.items(): (temporary / "objects" / sha).write_bytes(data)
+                (temporary / "release.json").write_bytes(encoded)
+                (temporary / "bundle.json").write_bytes(bundle)
+                (temporary / "origin.json").write_bytes(origin)
+                temporary.rename(destination)
+            finally:
+                shutil.rmtree(temporary, ignore_errors=True)
 
-    def status(self, identity):
-        if not re.fullmatch(r"[0-9a-f]{64}", identity): raise ValueError("Invalid download.")
+    def selection(self, identity):
+        """The directory of a prepared selection, marked as recently used, or None once it is evicted."""
         directory = self.cache / identity
-        ready = (directory / "bundle.json").exists()
-        if ready:
-            try: os.utime(directory, None)
-            except FileNotFoundError: ready = False
-        return {"id": identity, "state": "ready" if ready else "failed"}
+        if not (directory / "bundle.json").exists(): return None
+        try: os.utime(directory, None)
+        except FileNotFoundError: return None
+        return directory
 
 
 def handler(downloads):
@@ -162,7 +163,7 @@ def handler(downloads):
                 request = json.loads(self.rfile.read(size))
                 if not isinstance(request, dict):
                     raise ValueError("Invalid selection.")
-                self.json(downloads.prepare(request), 202)
+                self.json(downloads.prepare(request))
             except (ValueError, TypeError) as error:
                 self.json({"message": str(error)}, 400)
 
@@ -174,15 +175,13 @@ def handler(downloads):
             if path == "/catalog":
                 return self.json({"format": 1, "bounds": downloads.manifest["bounds"],
                                   "zoom": downloads.publication["zoom"]})
-            if re.fullmatch(r"/jobs/[0-9a-f]{64}", path):
-                return self.json(downloads.status(path.split("/")[-1]))
             match = re.fullmatch(r"/bundles/([0-9a-f]{64})/(bundle.json|release.json|objects/[0-9a-f]{64})", path)
-            with downloads.lock:
-                if not match or downloads.status(match[1])["state"] != "ready":
-                    return self.json({"message": "Download not found. Prepare the map again."}, 404)
-                file = downloads.cache / match[1] / match[2]
+            directory = match and downloads.selection(match[1])
+            try:
+                if not directory: raise FileNotFoundError
+                file = directory / match[2]
                 if not file.is_file() and match[2].startswith("objects/"):
-                    origin = json.loads((downloads.cache / match[1] / "origin.json").read_bytes())
+                    origin = json.loads((directory / "origin.json").read_bytes())
                     if origin["objects_url"]:
                         self.send_response(307)
                         self.send_header("Location", origin["objects_url"] + "/" + file.name)
@@ -190,10 +189,9 @@ def handler(downloads):
                         self.end_headers()
                         return
                     file = Path(origin["source"]) / match[2]
-                try:
-                    stream = file.open("rb")
-                except FileNotFoundError:
-                    return self.json({"message": "File not found."}, 404)
+                stream = file.open("rb")
+            except FileNotFoundError:
+                return self.json({"message": "Download not found. Prepare the map again."}, 404)
             # An open descriptor remains valid if the selection is evicted.
             with stream:
                 self.send_file(stream, match[1], file.name)

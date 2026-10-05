@@ -1,13 +1,17 @@
 """Build searchable regional SQLite files from a enriched OSM search dump."""
 import argparse
 import io
+import sys
 import time
 import re
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from writer import Writer
 
 ROOT = Path(__file__).parent
+sys.path.insert(0, str(ROOT.parents[1] / "tools"))
+from data_registry import attribution  # noqa: E402
 
 
 def main():
@@ -24,6 +28,7 @@ def main():
     ap.add_argument('--bounds', help='West,south,east,north for one regional package')
     ap.add_argument('--countries', default='de', help='Comma-separated country codes')
     ap.add_argument('--osm-sha256', help='Identity of the OSM input used by the search baker')
+    ap.add_argument('--time-zone', required=True, type=ZoneInfo, help='IANA time zone of the region calendar')
     args = ap.parse_args()
     if not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', args.region):
         ap.error('Invalid region ID')
@@ -41,7 +46,8 @@ def main():
     start = time.monotonic()
     n = 0
     outlines = []
-    meta = {'schema': 4, 'source': args.dump.name, 'attribution': '© OpenStreetMap contributors, ODbL 1.0'}
+    meta = {'source': args.dump.name, 'time_zone': args.time_zone.key,
+            'attribution': attribution("osm-planet")}
     if bounds:
         meta.update(bounds=bounds, countries=countries)
     if args.osm_sha256:
@@ -63,7 +69,7 @@ def main():
                     ap.error('This source contains addresses only; use --component addresses')
                 if generator != 'photon':
                     meta['source_generator'] = generator
-                    meta['attribution'] = f'© OpenStreetMap contributors, ODbL 1.0; prepared by {generator}'
+                    meta['attribution'] = f'{attribution("osm-planet")}; prepared by {generator}'
             if obj['type'] != 'Place':
                 continue
             for p in obj['content']:

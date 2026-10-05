@@ -2,8 +2,9 @@
 
 `POST /v1/route` on the [route service](../apps/route-server/README.md) calculates
 routes. `POST /v1/shape` finds the plan points of a route that follows a line. The
-native provider (`planner_router_request`, `planner_router_shape`) returns the same
-bytes for the same request. Request and answer bodies are UTF-8 JSON.
+native provider answers both with the same code (`planner_router_call` with the call
+`route` or `shape`). `GET /v1/region` describes the routing package. Request and
+answer bodies are UTF-8 JSON.
 
 ## Request
 
@@ -43,6 +44,7 @@ it. Each route has these fields:
 | `legs` | `{"from_index", "to_index", "start", "end", "totals"}` for each pair of request points |
 | `snap_truncated` | `true` when the service dropped road candidates for a request point |
 | `totals` | `distance_m`, `ascent_m`, `seconds`, `surface_m`, `unknown_elevation_m` and `pushing_m`, all integers |
+| `via` | Only on a `corridor` route: a `[longitude, latitude]` pair in degrees. A request with the points start, `via` and finish, and the other fields unchanged, gives the same line |
 
 ### Deltas
 
@@ -73,7 +75,6 @@ every edge. A client accepts a channel that it does not know.
 | `pushing` | `true` where the rider must push the bicycle |
 | `closures` | `null`, or a list of possible closures, each `{"kind", "condition"}` |
 | `sac_scale` | The OSM `sac_scale` as an integer from `0` (`strolling`) through `1` (`hiking`, T1) to `6` (`difficult_alpine_hiking`, T6), or `null` when the way has none |
-| `mtb_scale` | The OSM `mtb:scale` as an integer from `0` (S0) to `6` (S6), or `null` when the way has no grade from 0 to 6; `2+` and `1-` count as their digit |
 
 The router blocks a mode only for the access value `no`; `dismount` blocks
 riding only. It uses an edge that is possibly closed for the mode that the route
@@ -124,7 +125,7 @@ sum of the leg totals is the route total. Only `seconds` can differ, by up to
 
 Coordinates are exact: the routing engine stores microdegrees. Heights are
 within 0.05 m of the engine value. Elapsed and total seconds are within 0.5 s.
-The [vector](vectors/route-answer.json) gives one route before and after
+The [vector](vectors/route-answer.json) gives two routes before and after
 encoding. The encoder test and each decoder test read it.
 
 ## Compression
@@ -166,25 +167,48 @@ itself. A hairpin bend is not a turnaround.
 One shape request uses one profile and at most 200 route calculations. Each has
 the limits of a route request. The deadline is 30 s.
 
+## Region
+
+`GET /v1/region` answers with these fields:
+
+| Field | Value |
+| --- | --- |
+| `package` | Routing package identity |
+| `region` | Region ID |
+| `bounds` | `[west, south, east, north]` in degrees |
+| `profiles` | The profile IDs that requests can use |
+| `attribution` | Data credits |
+| `warnings` | Strings that name known limits of the package data |
+
+A profile ID is an activity, such as `touring`, or an activity, `/` and a variant:
+`touring/shorter` or `touring/less-climbing`. The web planner offers the presets of
+the profiles that the region serves.
+
 ## Errors
 
 An error answer is `{"code", "message"}`. It never contains a substitute route.
 
-The service attaches each point to the nearest road that the profile can use,
-within 250 m. When none is that near, it uses the nearest one within 1 km. When
-no route reaches the nearest road of a point that is not on a road, it uses the
-next nearest road within 1 km. When that retry reaches a limit, the error stays
-`no_path`. `no_snap` means that no such road is within 1 km.
+The service attaches each point to the nearest road that the profile can use
+and that lies in a large connected part of its road graph, within 250 m. When
+none is that near, it uses the nearest such road within 1 km. `no_snap` means
+that no such road is within 1 km. `no_path` means that no legal route joins two
+consecutive points; the service does not try other roads for them.
 
 `line_too_long` means that a shape line has more than 2,000 points or is longer
 than 200 km. `line_not_reproducible` means that the search found no plan of at
 most 64 points that follows the line, within its 200 route calculations.
 
+`busy` means that no worker became free within 1 s. `internal` means that the
+service failed, not the request or the data. Send the request again. A body
+larger than the limit is an `invalid_request`. A call other than `route` and
+`shape` is `not_found`.
+
 | Code | Status |
 | --- | --- |
 | `invalid_request` | 400 |
+| `not_found` | 404 |
 | `no_snap`, `no_path`, `missing_region` | 422 |
 | `line_too_long`, `line_not_reproducible` | 422 |
 | `cancelled` | 408 |
 | `busy`, `limit` | 503 |
-| `invalid_data` | 500 |
+| `invalid_data`, `internal` | 500 |

@@ -10,8 +10,9 @@ import sys
 import tempfile
 import threading
 
-from . import planner_components as components, planner_maps as maps, planner_sources as sources
+from . import data_registry, planner_components as components, planner_maps as maps, planner_sources as sources
 from . import planner_prepare as preparation, planner_release as releases
+from .planner_runtime import open_url
 
 
 SEARCH = maps.ROOT / "apps/planner-search"
@@ -51,7 +52,8 @@ def build_search(stage, records, config, component):
     maps.run("uv", "run", "--with-requirements", SEARCH / "requirements-build.txt", "python", SEARCH / "build.py",
              records / f"{component}.jsonl.zst", "--component", component, "--output", stage,
              "--region", config["region"], "--bounds", ",".join(map(str, config["bounds"])),
-             "--countries", ",".join(config["countries"]), "--osm-sha256", config["osm"]["sha256"], cwd=maps.ROOT)
+             "--countries", ",".join(config["countries"]), "--osm-sha256", config["osm"]["sha256"],
+             "--time-zone", config["time_zone"], cwd=maps.ROOT)
     releases.search_metadata(stage / f"{config['region']}.sqlite", full=True)
     (stage / "regions.geojson").unlink(missing_ok=True)
 
@@ -65,9 +67,9 @@ def build_places(stage, pois, config):
 
 
 def build_assets(stage):
-    with sources.open_url(maps.ASSETS_URL, timeout=120) as response:
+    with open_url(maps.ASSETS_URL, timeout=120) as response:
         maps.install_assets(response.read(), stage / "assets")
-    with sources.open_url(maps.SPRITES_LICENSE_URL, timeout=30) as response:
+    with open_url(maps.SPRITES_LICENSE_URL, timeout=30) as response:
         (stage / "assets/sprites/LICENSE.txt").write_bytes(response.read())
 
 
@@ -117,16 +119,14 @@ def build_terrain(stage, args, config):
 
 
 def build_routing(stage, osm, args, config):
-    maps.run("cargo", "build", "--locked", "--release", "-p", "route-build", "-p", "route-server", "-p", "obc-dem",
+    maps.run("cargo", "build", "--locked", "--release", "-p", "route-build", "-p", "obc-dem",
              "--features", "route-build/planner-dem", cwd=maps.ROOT)
     reference = terrain_inputs(args, config)
     routing = stage / "routing"
     maps.run(maps.ROOT / "target/release/route-build", osm(), "--output", routing, "--region", config["region"],
              "--country", config["access"], "--bounds", ",".join(map(str, config["bounds"])),
-             "--profiles", ",".join(config["profiles"]), "--dem", args.dem_dir, *reference)
-    maps.run(maps.ROOT / "target/release/route-server", routing, "--build-overlays")
-    maps.run(maps.ROOT / "target/release/route-catalog", routing, "--countries", ",".join(config["countries"]))
-    preparation.runtime_routing(routing)
+             "--profiles", ",".join(config["profiles"]), "--countries", ",".join(config["countries"]),
+             "--dem", args.dem_dir, *reference)
     for path in routing.iterdir(): path.rename(stage / path.name)
     routing.rmdir()
 
@@ -135,8 +135,13 @@ def build_overlays(stage, routing):
     maps.overlays_archive(routing / "overlays.sqlite", stage / "overlays.pmtiles")
 
 
+def layer_options(config, name):
+    """The sunlight index evaluates local clock times in the region's time zone."""
+    return {**config[name], "time_zone": config["time_zone"]} if name == "sun" else config[name]
+
+
 def build_layer(stage, config, name, terrain=None):
-    options = [item for key, value in config[name].items() for item in (f"--{key.replace('_', '-')}", str(value))]
+    options = [item for key, value in layer_options(config, name).items() for item in (f"--{key.replace('_', '-')}", str(value))]
     maps.run("uv", "run", "--with-requirements", maps.ROOT / f"tools/requirements-planner-{name}.txt",
              "python", "-m", f"tools.planner_{name}", config["region"], "--bounds", ",".join(map(str, config["bounds"])),
              *options, *(["--terrain", terrain / "terrain.pmtiles"] if name == "sun" else []), "--output", stage / f"{name}.pmtiles", cwd=maps.ROOT)
@@ -150,6 +155,18 @@ def build_model(stage):
     (stage / "query-parser-v2-int8.tar.gz").unlink(missing_ok=True)
 
 
+def credits(*ids):
+    """The registry credits a component writes. data/sources.toml is in no hashed path, so they are its inputs."""
+    return {"credits": {id: data_registry.SOURCES[id]["attribution"] for id in ids}}
+
+
+def layer_credits(config, name):
+    """The sources whose credit a data layer writes: the snow layer credits its chosen source only."""
+    if name == "snow":
+        return ["modis-snow", "hansen-gfc"] if config["snow"]["source"] == "nasa-modis" else ["hr-wsi"]
+    return ["era5-land"] if name == "climate" else []
+
+
 def specifications(config, prepared=None):
     bounds = config["bounds"]
     osm = config["osm"]["sha256"]
@@ -161,15 +178,19 @@ def specifications(config, prepared=None):
     supplied = json.loads((prepared / "inputs.json").read_bytes()) if prepared else None
     if supplied and (supplied["osm_sha256"] != osm or supplied["bounds"] != bounds):
         raise ValueError("Prepared inputs do not match the region recipe")
-    add("source-basemap", source_basemap, {"osm": osm, "protomaps": sources.PROTOMAPS, "archive": sources.PROTO_SHA},
+    # A pin read from data/env/live.toml is in no hashed path, so it is an input of the component it changes.
+    add("source-basemap", source_basemap, {"osm": osm, "protomaps": sources.PROTOMAPS, "archive": sources.PROTO_SHA,
+                                           "planetiler": maps.PINS["planetiler"]},
         config.get("auxiliary", {}), functions=[sources.basemap, sources.download])
-    add("source-search", source_search, {"osm": osm, "country_data": sources.COUNTRY_DATA_SHA}, {"country": config["countries"][0]},
+    add("source-search", source_search, {"osm": osm, "country_data": sources.COUNTRY_DATA_SHA, "country_data_version": sources.COUNTRY_DATA_VERSION}, {"country": config["countries"][0]},
         paths=[*components.rust_sources("host/obc-search-bake"), maps.ROOT / "host/obc-search-bake/policy.py"], functions=[sources.search_dump, sources.download])
-    add("source-records", source_records, {}, dependencies=["source-search"],
+    data_kinds = sorted(json.loads((SEARCH / "query/contract.json").read_bytes())["data"])
+    add("source-records", source_records, {"data_kinds": data_kinds}, dependencies=["source-search"],
         paths=[SEARCH / "split.py", SEARCH / "records.py", SEARCH / "requirements-build.txt", maps.ROOT / "builder/app/src/lib/planner/poi-kinds.json"])
     common = [SEARCH / path for path in ["build.py", "writer.py", "records.py", "storage.py", "index.py", "schema.sql", "indexes.sql", "web/address-terms.json", "requirements-build.txt"]]
     for component in ["pois", "addresses"]:
-        add(component, build_search, {"osm": osm}, {"region": config["region"], "countries": config["countries"], "component": component, "schema": 4},
+        add(component, build_search, {"osm": osm, **credits("osm-planet")}, {"region": config["region"], "countries": config["countries"],
+            "time_zone": config["time_zone"], "component": component, "schema": 5},
             ["source-records"], [*common, SEARCH / f"{component}.py"])
     add("basemap", build_basemap, {}, dependencies=["source-basemap"])
     map_requirements = maps.ROOT / "tools/requirements-planner-maps.txt"
@@ -180,12 +201,12 @@ def specifications(config, prepared=None):
     elevation = {"sources": config["terrain"], "producer": components.implementation(paths=elevation_paths)}
     terrain_paths = [*rust_manifests, *elevation_paths, map_requirements, maps.ROOT / "tools/planner_map_archive.py",
                      *[maps.ROOT / path for path in ["host/route-build/src/obc_terrain.rs", "host/route-build/src/bin/planner-dem.rs", "host/route-engine/src/model.rs"]]]
-    add("terrain", build_terrain, {"elevation": elevation}, {"terrain_bounds": terrain_coverage(config)}, paths=terrain_paths,
+    add("terrain", build_terrain, {"elevation": elevation, **credits("copernicus-glo-30")}, {"terrain_bounds": terrain_coverage(config)}, paths=terrain_paths,
         functions=[terrain_inputs, terrain_coverage, maps.compact_archive, maps.verify_archive])
-    routing_paths = components.rust_sources("host/route-build", "apps/route-server")
-    add("routing", build_routing, {"osm": osm, "elevation": elevation}, {"region": config["region"], "access": config["access"], "countries": config["countries"], "profiles": config["profiles"]}, paths=routing_paths,
-        functions=[terrain_inputs, preparation.runtime_routing])
-    add("overlays", build_overlays, {}, dependencies=["routing"], paths=[maps.ROOT / path for path in
+    routing_paths = components.rust_sources("host/route-build")
+    add("routing", build_routing, {"osm": osm, "elevation": elevation, **credits("osm-planet", "copernicus-glo-30")}, {"region": config["region"], "access": config["access"], "countries": config["countries"], "profiles": config["profiles"]}, paths=routing_paths,
+        functions=[terrain_inputs])
+    add("overlays", build_overlays, credits("osm-planet"), dependencies=["routing"], paths=[maps.ROOT / path for path in
         ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_overlays.py", "tools/requirements-planner-maps.txt")])
     add("assets", build_assets, {"assets": maps.ASSETS_URL, "license": maps.SPRITES_LICENSE_URL}, paths=[maps.ROOT / "tools/planner_maps.py"])
     add("model", build_model, {}, paths=[SEARCH / "setup.py", SEARCH / "query/artifacts.py", SEARCH / "query/schema.py"])
@@ -193,7 +214,9 @@ def specifications(config, prepared=None):
         if name in config:
             paths = [maps.ROOT / f"tools/planner_{name}.py", maps.ROOT / f"tools/requirements-planner-{name}.txt"]
             if name == "sun": paths.extend(maps.ROOT / path for path in ("tools/planner_sun_horizons.py", "tools/planner_map_archive.py"))
-            add(name, build_layer, {}, config[name], dependencies=["terrain"] if name == "sun" else [], paths=paths)
+            inputs = {"hansen-gfc": maps.PINS["hansen-gfc"]} if name == "snow" else {}
+            inputs.update(credits(*layer_credits(config, name)))
+            add(name, build_layer, inputs, layer_options(config, name), dependencies=["terrain"] if name == "sun" else [], paths=paths)
     return result
 
 

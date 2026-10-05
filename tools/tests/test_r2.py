@@ -1,7 +1,8 @@
-"""`obc r2 rm`, with rclone replaced by a recorder.
+"""`obc r2 rm`, with the R2 client replaced by a recorder.
 
-rclone is not a test dependency, so what the tests hold is what this tool owns: what the
-plan says, what lets it run, what it refuses to touch, and the order the calls go out in.
+The client has its own tests in host/obc-data, so what these tests hold is what this tool
+owns: what the plan says, what lets it run, what it refuses to touch, and the order the
+calls go out in.
 The catalogue the guard reads is the shipped example document, not a hand-made one, because
 the guard's whole job is to match the shape the publisher really writes. No test reaches the
 network.
@@ -90,7 +91,6 @@ class Rm(unittest.TestCase):
     def setUp(self):
         self.calls, self.sent = [], {}
         self.bucket = dict(BUCKET)
-        self.log = None
         for name, value in (
             ("OBC_R2_ACCOUNT_ID", "acc"), ("OBC_R2_BUCKET", "maps"), ("OBC_R2_PREFIX", PREFIX),
             ("OBC_R2_ACCESS_KEY_ID", "key"), ("OBC_R2_SECRET_ACCESS_KEY", "s3cret"),
@@ -100,9 +100,9 @@ class Rm(unittest.TestCase):
             os.environ[name] = value
             self.addCleanup(lambda n=name, p=previous: os.environ.__setitem__(n, p) if p
                             else os.environ.pop(n, None))
-        real = r2.run_rclone
-        r2.run_rclone = self.record
-        self.addCleanup(lambda: setattr(r2, "run_rclone", real))
+        real = r2.r2_client
+        r2.r2_client = self.record
+        self.addCleanup(lambda: setattr(r2, "r2_client", real))
 
     def body(self, key):
         """What the fake bucket hands back for one key."""
@@ -113,33 +113,34 @@ class Rm(unittest.TestCase):
             return json.dumps(CATALOG)
         if r2.BAND_INDEX.search(key):
             return json.dumps(CELL_INDEX if key == BAND_INDEX else {"cells": []})
-        if key == r2.REMOVAL_LOG:
-            return self.log
         return "{}"
 
-    def record(self, argv, env, capture=False):
-        self.calls.append((argv, env))
-        place = argv[1].removeprefix("OBCR2:maps").strip("/") if len(argv) > 1 else ""
-        if argv[0] == "lsf":  # does the bucket hold this one object?
-            name = argv[argv.index("--include") + 1].lstrip("/")
-            key = f"{place}/{name}" if place else name
-            held = key in self.bucket or (key == r2.REMOVAL_LOG and self.log is not None)
-            return f"{name}\n" if held else ""
-        if argv[0] == "lsjson" and "--files-from" in argv:
-            asked = Path(argv[argv.index("--files-from") + 1]).read_text(encoding="utf-8").split()
-            return json.dumps([{"Path": key, "Size": self.bucket[key], "ModTime": "2026-09-01T10:11:12Z"}
-                               for key in asked if key in self.bucket])
-        if argv[0] == "lsjson":
-            head = f"{place}/"
-            return json.dumps([{"Path": key[len(head):], "Size": size, "ModTime": "2026-09-01T10:11:12Z"}
-                               for key, size in sorted(self.bucket.items()) if key.startswith(head)])
-        if argv[0] == "copyto" and argv[1].startswith("OBCR2:"):  # a read out of the bucket
-            Path(argv[2]).write_text(self.body(place), encoding="utf-8")
-        if argv[0] == "copyto" and argv[2].startswith("OBCR2:"):  # a write back into it
-            self.sent[argv[2].removeprefix("OBCR2:maps/")] = Path(argv[1]).read_text(encoding="utf-8")
-        if argv[0] == "deletefile":
-            self.bucket.pop(place, None)
+    def record(self, args, capture=False):
+        """`obc data r2 ARGS` against the fake bucket."""
+
+        self.calls.append(args)
+        command, rest = args[0], [arg for arg in args[1:] if arg != "--json"]
+
+        def rows(keys):
+            return json.dumps({"bucket": "r2 bucket maps", "objects": [
+                {"key": key, "bytes": self.bucket[key], "modified": "2026-09-01T10:11:12Z"} for key in keys]})
+
+        if command == "list":
+            return rows(key for key in sorted(self.bucket) if key.startswith(f"{rest[0]}/"))
+        if command == "stat":
+            return rows(key for key in rest if key in self.bucket)
+        if command == "get":
+            Path(rest[1]).write_text(self.body(rest[0]), encoding="utf-8")
+        if command == "put":
+            self.sent[rest[1]] = Path(rest[0]).read_text(encoding="utf-8")
+        if command == "delete":
+            for key in self.deleted_by(args):
+                self.bucket.pop(key)
         return ""
+
+    @staticmethod
+    def deleted_by(args):
+        return args[1:args.index("--reason")]
 
     def rm(self, *args):
         self.printed = io.StringIO()
@@ -147,11 +148,10 @@ class Rm(unittest.TestCase):
             return r2.main(["rm", *args])
 
     def read_keys(self):
-        return [argv[1].removeprefix("OBCR2:maps/") for argv, _ in self.calls
-                if argv[0] == "copyto" and argv[1].startswith("OBCR2:")]
+        return [args[1] for args in self.calls if args[0] == "get"]
 
     def deleted(self):
-        return [argv[1].removeprefix("OBCR2:maps/") for argv, _ in self.calls if argv[0] == "deletefile"]
+        return [key for args in self.calls if args[0] == "delete" for key in self.deleted_by(args)]
 
     def apply(self, key, *args, reason="a bad ingest"):
         return self.rm(key, *args, "--apply", "--reason", reason,
@@ -163,6 +163,7 @@ class Rm(unittest.TestCase):
         self.assertEqual(self.rm(STRAY), 0)
         printed = self.printed.getvalue()
         self.assertIn(STRAY, printed)
+        self.assertIn("r2 bucket maps: 1 object(s)", printed)  # the bucket the owner confirms
         self.assertIn("17", printed)                     # the size, from the listing
         self.assertIn("2026-09-01T10:11:12Z", printed)   # and the last-modified
         self.assertIn(f'--confirm "{r2.confirmation([STRAY])}"', printed)
@@ -182,7 +183,7 @@ class Rm(unittest.TestCase):
     def test_a_prefix_wider_than_one_call_takes_is_refused(self):
         self.bucket = {f"uploads/{n:04d}.obcm": 10 for n in range(r2.RM_CAP + 1)}
         self.assertEqual(self.rm("--prefix", "uploads"), 1)
-        self.assertNotIn("--files-from", [word for argv, _ in self.calls for word in argv])
+        self.assertNotIn("stat", [args[0] for args in self.calls])
         self.assertEqual(self.deleted(), [])
 
     def test_a_prefix_inside_the_cap_plans_every_object_under_it(self):
@@ -194,18 +195,20 @@ class Rm(unittest.TestCase):
 
     # ── what the catalogue protects ─────────────────────────────────────────
 
-    def test_the_catalogue_root_the_log_and_the_archive_index_refuse(self):
-        self.bucket[r2.REMOVAL_LOG] = 40
-        self.log = "{}\n"
+    def test_the_catalogue_root_and_the_archive_index_refuse(self):
         for key, word in ((f"{PREFIX}/catalog.json", "catalogue root"),
                           (f"{PREFIX}/LICENSE.txt", "catalogue root"),
                           (f"{PREFIX}/regions/europe.json", "catalogue root"),
-                          (r2.REMOVAL_LOG, "removal history"),
                           (ARCHIVE_INDEX, "reference archive index")):
             with self.subTest(key=key):
                 self.assertEqual(self.rm(key), 1)
                 self.assertIn(word, self.printed.getvalue())
                 self.assertEqual(self.deleted(), [])
+
+    def test_the_removal_log_is_never_deleted(self):
+        self.bucket[r2.REMOVAL_LOG] = 40
+        self.assertEqual(self.rm(r2.REMOVAL_LOG, "--i-mean-it", r2.REMOVAL_LOG), 1)
+        self.assertEqual(self.calls, [])
 
     def test_an_object_the_root_names_by_absolute_url_is_protected(self):
         """The real root names its band indexes by URL, never by bucket key."""
@@ -289,14 +292,11 @@ class Rm(unittest.TestCase):
 
     # ── what an apply does, and in which order ──────────────────────────────
 
-    def test_the_log_goes_first_then_the_index_then_the_objects(self):
+    def test_the_index_goes_up_before_the_client_logs_and_deletes(self):
         self.assertEqual(self.apply(TILE), 0)
-        writes = [n for n, (argv, _) in enumerate(self.calls)
-                  if argv[0] == "copyto" and argv[2].startswith("OBCR2:")]
-        deletes = [n for n, (argv, _) in enumerate(self.calls) if argv[0] == "deletefile"]
-        self.assertEqual([self.calls[n][0][2].removeprefix("OBCR2:maps/") for n in writes],
-                         [r2.REMOVAL_LOG, ARCHIVE_INDEX])
-        self.assertLess(max(writes), min(deletes))
+        order = [args[0] for args in self.calls if args[0] in ("put", "delete")]
+        self.assertEqual(order, ["put", "delete"])
+        self.assertEqual(list(self.sent), [ARCHIVE_INDEX])
 
         index = json.loads(self.sent[ARCHIVE_INDEX])
         self.assertEqual(index["tiles"], {"0100/0200": "es"})
@@ -304,23 +304,11 @@ class Rm(unittest.TestCase):
         self.assertEqual(sorted(index["sources"]), ["es"])  # `ch` holds no other tile
         self.assertEqual(self.deleted(), [TILE])
 
-    def test_the_log_keeps_who_when_what_and_why(self):
-        self.log = '{"key": "uploads/old.obcm"}\n'
-        self.assertEqual(self.apply(STRAY, reason="a stray upload"), 0)
-        kept, added = self.sent[r2.REMOVAL_LOG].splitlines()
-        self.assertEqual(json.loads(kept)["key"], "uploads/old.obcm")  # the history is appended to
-        record = json.loads(added)
-        self.assertEqual(record["key"], STRAY)
-        self.assertEqual(record["bytes"], 17)
-        self.assertEqual(record["reason"], "a stray upload")
-        self.assertTrue(record["removed"].endswith("Z") and record["by"])
+    def test_the_reason_reaches_the_removal_log_of_the_client(self):
+        """The client writes `removed.jsonl`; `rm` hands it the reason and its own consent."""
 
-    def test_the_secret_is_in_the_environment_only(self):
-        self.rm(STRAY)
-        argv, env = self.calls[0]
-        self.assertEqual(env["RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY"], "s3cret")
-        self.assertEqual(env["RCLONE_CONFIG_OBCR2_ENDPOINT"], "https://acc.r2.cloudflarestorage.com")
-        self.assertNotIn("s3cret", " ".join(argv))
+        self.assertEqual(self.apply(STRAY, reason="a stray upload"), 0)
+        self.assertEqual(self.calls[-1], ["delete", STRAY, "--reason", "a stray upload", "--yes"])
 
     def test_the_archive_sits_where_the_ingest_tool_publishes_it(self):
         """One definition of the bucket, so a delete cannot land beside a publish."""

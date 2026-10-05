@@ -24,9 +24,9 @@ final class NativeViewportLayer {
     private var task: Task<Void, Never>?
     private var files: [URL] = []
 
-    func update(_ map: OBCNativeMapView, key: String?, release: PlannerRelease?, minimumZoom: Double = 0,
-                maximumZoom: Double = 24, load: @escaping @Sendable ([Double], Double, PlannerRelease) async throws -> Data) {
-        guard let key, let release, map.zoomLevel >= minimumZoom, map.zoomLevel < maximumZoom else {
+    func update(_ map: OBCNativeMapView, key: String?, release: PlannerRelease?, maximumZoom: Double = 24,
+                load: @escaping @Sendable ([Double], Double, PlannerRelease) async throws -> Data) {
+        guard let key, let release, map.zoomLevel < maximumZoom else {
             task?.cancel(); pending = nil; failed = nil
             clear(map)
             status(nil)

@@ -1,4 +1,5 @@
 import {DatabaseSync} from 'node:sqlite';
+import {openCells} from './cells.mjs';
 import {pathToFileURL} from 'node:url';
 import {search,around,distance} from './web/engine.mjs';
 import {reverseAddress} from './web/reverse.mjs';
@@ -104,7 +105,8 @@ function open(file) {
   const conn=new DatabaseSync(file,{readOnly:true});
   conn.exec('PRAGMA cache_size=-32768; PRAGMA mmap_size=0');
   const statements=new Map();
-  return {conn,iterate(sql) {return conn.prepare(sql).iterate()},all(sql,params=[]) {
+  const cells=openCells([file]);
+  return {...cells,close(){cells.close();conn.close()},iterate(sql) {return conn.prepare(sql).iterate()},all(sql,params=[]) {
     if(!statements.has(sql))statements.set(sql,conn.prepare(sql));
     return statements.get(sql).all(...params);
   }};
@@ -120,5 +122,5 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href) {
     const report={osmSha256:identity(a),...compareAddresses(a,b,{sampleSize:Number(sample)})};
     console.log(JSON.stringify({...report,equivalent:equivalent(report)},null,2));
     if(process.argv.includes('--require-equivalent')&&!equivalent(report))process.exitCode=1;
-  } finally {a.conn.close();b.conn.close()}
+  } finally {a.close();b.close()}
 }

@@ -37,14 +37,9 @@ def category(p):
             'ferry_terminal': 'ferry', 'public_bath': 'shower'}.get(v, v)
 
 
-SERVICES = {'bakery', 'supermarket', 'convenience', 'campsite', 'hotel', 'hostel', 'hut',
-    'guest_house', 'drinking_water', 'water_point', 'spring', 'pharmacy',
-    'bike_shop', 'repair_station', 'restaurant', 'cafe', 'shelter', 'toilets',
-    'train_station', 'museum', 'viewpoint', 'pass', 'summit', 'fast_food',
-    'water_tap', 'fountain', 'motel', 'butcher', 'marketplace', 'fuel',
-    'bar', 'ice_cream', 'hospital', 'doctor', 'clinic', 'charging', 'shower',
-    'laundry', 'atm', 'bus_stop', 'ferry', 'lake', 'beach', 'swimming_pool',
-    'castle', 'church', 'monastery', 'ruins', 'waterfall', 'tower', 'bridge'}
+# A place that the query language finds by kind stays without a name; a settlement does not.
+_CONTRACT = json.loads((Path(__file__).parent / 'query/contract.json').read_text())
+SERVICES = set(_CONTRACT['data']) - set(_CONTRACT['kinds']['town']['data'])
 
 
 def usable(p):

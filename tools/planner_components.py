@@ -5,14 +5,14 @@ import fcntl
 import hashlib
 import inspect
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import resource
 import re
 import tempfile
 import time
 import tomllib
 
-from .planner_runtime import digest, encoded
+from .planner_runtime import digest, encoded, relative_path
 
 
 def implementation(functions=(), paths=()):
@@ -59,18 +59,11 @@ def identity(spec):
     return hashlib.sha256(encoded(spec)).hexdigest()
 
 
-def safe_name(name):
-    path = PurePosixPath(name)
-    if not path.parts or path.is_absolute() or ".." in path.parts or str(path) != name or "\\" in name:
-        raise ValueError("Invalid component file name")
-    return name
-
-
 def verify(root, receipt, full=True):
     if receipt.get("format") != 1 or identity(receipt["spec"]) != receipt.get("key") or not receipt.get("files"):
         raise ValueError("Invalid component receipt")
     for name, entry in receipt["files"].items():
-        path = root / safe_name(name)
+        path = root / relative_path(name)
         if not path.resolve().is_relative_to(root.resolve()) or path.stat().st_size != entry["bytes"]:
             raise ValueError(f"Missing or changed component file: {name}")
         if full and digest(path) != entry["sha256"]:
