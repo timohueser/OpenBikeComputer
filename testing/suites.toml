@@ -78,6 +78,11 @@ triggers = ["fixtures/catalog.toml"]
 name = "obc-bake"
 triggers = ["builder/presets/**", "host/obc-bake/regions.toml"]
 
+# Its tests load the checked-in registry and regions; no Cargo edge carries that.
+[[package]]
+name = "obc-data"
+triggers = ["data/**"]
+
 [[package]]
 name = "obc-skin-preview"
 triggers = ["builder/presets/**"]
@@ -476,6 +481,20 @@ command = "tools/licenses/gen-third-party.sh --check"
 jobs = ["deny"]
 foundation = true
 triggers = ["Cargo.lock", "apps/route-server/Cargo.toml", "host/route-engine/Cargo.toml", "builder/app/package-lock.json", "about.toml", "THIRD-PARTY.md", "tools/licenses/**"]
+
+[[suite]]
+id = "ci.obc-data-licence"
+route = "ordinary"
+command = "python3 tools/check_obc_data_licence.py"
+jobs = ["deny"]
+triggers = ["Cargo.lock", "host/obc-data/Cargo.toml", "tools/check_obc_data_licence.py"]
+
+[[suite]]
+id = "ci.data-sources-guard"
+route = "required"
+command = "python3 tools/check_data_sources.py"
+jobs = ["guards"]
+triggers = ["tools/check_data_sources.py", "data/sources.toml"]
 
 [[suite]]
 id = "ci.fixture-policy"

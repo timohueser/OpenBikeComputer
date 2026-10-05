@@ -591,6 +591,7 @@ class ShippedPlanTests(unittest.TestCase):
                 "ci.card-scheduler-guard",
                 "ci.catalog-ownership-guard",
                 "ci.changelog",
+                "ci.data-sources-guard",
                 "ci.fixture-policy",
                 "ci.ios-host-portability",
                 "ci.one-home-guard",

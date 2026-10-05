@@ -312,6 +312,18 @@ r2 *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/r2.py" "$@"
 
+# Read the data registry: `obc data sources` lists every source with licence, R2 copy, live
+# pin, age, policy and state; `obc data region [list|show ID]` lists the regions. Every
+# command takes `--json`. Read commands change nothing.
+# Read data sources and regions. Args: sources | region [list|show ID] [--json]
+[group('maps')]
+data *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    _run cargo run --quiet --locked -p obc-data -- "$@"
+
 # Prepare, publish, deploy or preview regional planner data. See the planner README.
 [group('maps')]
 planner *args:

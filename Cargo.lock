@@ -3276,6 +3276,16 @@ name = "obc-crc"
 version = "0.1.0"
 
 [[package]]
+name = "obc-data"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "obc-dem"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,4 @@
+name = "Freiburg to Emmendingen"
+kind = "box"
+# west, south, east, north
+box = [7.77, 47.97, 7.93, 48.14]
