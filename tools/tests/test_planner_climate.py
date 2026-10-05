@@ -222,7 +222,7 @@ class BakeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(climate, "orography", height):
             paths = [Path(directory) / f"{k}.pmtiles" for k in range(2)]
             for path in paths:
-                counts = climate.bake(bounds, FIRST, FakeSource(), path)
+                counts = climate.bake(bounds, FIRST, FakeSource(), path, "ERA5-Land {year}")
             self.assertEqual(paths[0].read_bytes(), paths[1].read_bytes())
             self.assertEqual(counts, {8: 1, 9: 1})
             with paths[0].open("rb") as stream:

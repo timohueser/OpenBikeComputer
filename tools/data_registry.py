@@ -1,5 +1,5 @@
-"""The data registry for Python steps: the credit of a source, the box of a region, and the files of
-a source from the store.
+"""The data registry for Python steps: the credit of a source, its live pin, the box of a region,
+and the files of a source from the store.
 
 specs/obc-data.md defines the files and `obc data` checks them. This module reads only what
 Python steps need, so it adds no rule of its own. Shell scripts call it as
@@ -22,6 +22,11 @@ OBC_DATA = ["cargo", "run", "--quiet", "--locked", "--manifest-path", str(ROOT /
 def attribution(source, **fill):
     """The credit of a source as the product must show it. `fill` gives `{year}` and `{month}`."""
     return SOURCES[source]["attribution"].format(**fill)
+
+
+def pin(source):
+    """The version of `source` that live is built from: data/env/live.toml."""
+    return tomllib.loads((ROOT / "data/env/live.toml").read_text())["pins"][source]
 
 
 def fetch(source, *params):

@@ -60,6 +60,7 @@ def step():
 
     request = step_request.read()
     (archive,) = step_request.files(request, 'query-model').values()
+    verify(archive, MODEL_SHA)
     install_model(archive, Path(request['output']))
 
 

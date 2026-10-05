@@ -10,6 +10,7 @@ use obc_data::engine::{Code, Input, Run, Step};
 use obc_data::env::Env;
 use obc_data::product::{version, Product, Unplanned, Wanted};
 use obc_data::regions::{Area, Regions};
+use obc_data::sources::attribution;
 use obc_data::store::Store;
 use obc_dem::step::GLO30;
 use route_build::grid::{mercator, tile_bounds};
@@ -20,7 +21,7 @@ use crate::maps::{invalid, outlines, text, TILE_LIST};
 
 const EXTRACTS: &str = "geofabrik-extracts";
 /// The uv environment, and the request of a step: code of every Python step.
-const PYTHON: [&str; 3] = ["pyproject.toml", "uv.lock", "tools/step_request.py"];
+const PYTHON: [&str; 4] = [".python-version", "pyproject.toml", "uv.lock", "tools/step_request.py"];
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -145,17 +146,17 @@ impl Product for Planner {
         let overlays = python(
             "planner/overlays",
             vec![Input::Layer(routing.name.clone())],
-            json!({}),
+            json!({"attribution": attribution("osm-planet")}),
             ("tools.planner_overlays", Some("planner-maps")),
-            &["tools/planner_overlays.py", "tools/planner_maps.py", "tools/planner_mvt.py", "tools/data_registry.py"],
+            &["tools/planner_overlays.py", "tools/planner_geo.py", "tools/planner_mvt.py", "tools/data_registry.py"],
             "overlays.pmtiles",
         );
         let assets = python(
             "planner/assets",
             assets,
             json!({}),
-            ("tools.planner_maps", None),
-            &["tools/planner_maps.py"],
+            ("tools.planner_assets", None),
+            &["tools/planner_assets.py"],
             "assets",
         );
         let model = python(
@@ -178,26 +179,26 @@ impl Product for Planner {
             steps.push(python(
                 "planner/climate",
                 vec![snapshot(env, store, "era5-land", params, &mut wanted)?],
-                json!({"bounds": bounds, "first_year": first_year}),
+                // `{year}` is the last of the ten years.
+                json!({"bounds": bounds, "first_year": first_year, "attribution": attribution("era5-land")}),
                 ("tools.planner_climate", Some("planner-climate")),
-                &["tools/planner_climate.py", "tools/planner_maps.py", "tools/data_registry.py"],
+                &["tools/planner_climate.py", "tools/planner_geo.py", "tools/data_registry.py"],
                 "climate.pmtiles",
             ));
         }
         if on("snow") {
             let [first, last] = config.snow.seasons;
             let seasons = ("seasons".to_string(), format!("{first}-{last}"));
-            let snow = snapshot(env, store, "hr-wsi", vec![bbox.clone(), seasons], &mut wanted)?;
+            let snow = snapshot(env, store, "hr-wsi", vec![bbox, seasons], &mut wanted)?;
             // The credit of HR-WSI names a year: the year of the capture.
             let Input::Snapshot { version, .. } = &snow else { unreachable!("a fetch is a snapshot input") };
             let year = version.get(..4).and_then(|year| year.parse::<u16>().ok());
-            let trails = snapshot(env, store, "osm-trails", vec![bbox], &mut wanted)?;
             steps.push(python(
                 "planner/snow",
-                vec![snow, trails],
-                json!({"bounds": bounds, "seasons": [first, last], "year": year}),
+                vec![snow],
+                json!({"bounds": bounds, "seasons": [first, last], "year": year, "attribution": attribution("hr-wsi")}),
                 ("tools.planner_snow", Some("planner-snow")),
-                &["tools/planner_snow.py", "tools/planner_maps.py", "tools/data_registry.py"],
+                &["tools/planner_snow.py", "tools/planner_geo.py", "tools/data_registry.py"],
                 "snow.pmtiles",
             ));
         }
@@ -217,7 +218,7 @@ impl Product for Planner {
                     "tools/planner_sun.py",
                     "tools/planner_sun_horizons.py",
                     "tools/planner_map_archive.py",
-                    "tools/planner_maps.py",
+                    "tools/planner_geo.py",
                 ],
                 "sun.pmtiles",
             ));
@@ -247,8 +248,8 @@ fn snapshot(
 
 /// A Python step: `entry`, a `tools.*` module or a script, with the argument `--step`, under `uv
 /// run` with the packages of `group` of `pyproject.toml`. `files` is its code besides [`PYTHON`]:
-/// each Python file that it imports. `tools/data_registry.py` reads `data/sources.toml`, so it
-/// brings that file.
+/// each Python file that it imports. A credit that it writes comes in its options, so
+/// `data/sources.toml` is no code of it.
 fn python(
     name: &str,
     inputs: Vec<Input>,
@@ -264,10 +265,7 @@ fn python(
         argv.push("-m".into());
     }
     argv.extend([entry.to_string(), "--step".to_string()]);
-    let mut paths: Vec<String> = PYTHON.iter().chain(files).map(|path| path.to_string()).collect();
-    if files.contains(&"tools/data_registry.py") {
-        paths.push("data/sources.toml".into());
-    }
+    let paths = PYTHON.iter().chain(files).map(|path| path.to_string()).collect();
     Step {
         name: name.into(),
         inputs,
@@ -333,7 +331,7 @@ mod tests {
     /// An environment with `layers` on that pins every source the planner reads but the extract.
     fn env(region: &str, layers: &[&str]) -> Env {
         let pins = [GLO30, TILE_LIST, "protomaps-assets", "tangrams-icons", "query-model"].map(|source| (source, "1"));
-        let captures = ["era5-land", "hr-wsi", "osm-trails"].map(|source| (source, "2026-10-01"));
+        let captures = ["era5-land", "hr-wsi"].map(|source| (source, "2026-10-01"));
         let pins = pins.into_iter().chain(captures).map(|(source, version)| (source.into(), version.into()));
         let layers = layers.iter().map(|layer| layer.to_string()).collect();
         Env { name: "test".into(), region: region.into(), layers, pins: pins.collect() }
@@ -483,6 +481,8 @@ mod tests {
                     pending.extend(imports(&root().join(&file)));
                 }
             }
+            // `tools/planner_maps.py` reads the pins of data/env/live.toml when it is imported.
+            assert!(!seen.contains("tools/planner_maps.py"), "{} imports tools/planner_maps.py", step.name);
             for file in seen {
                 assert!(step.code.paths.contains(&file), "{} runs {file}, which its code does not declare", step.name);
             }

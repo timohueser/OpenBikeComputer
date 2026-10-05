@@ -44,12 +44,12 @@ def source_search(stage, osm, cache, config):
 
 
 def source_records(stage, search):
-    maps.run("uv", "run", "--with-requirements", SEARCH / "requirements-build.txt", "python", SEARCH / "split.py",
+    maps.run("uv", "run", "--no-project", "--with-requirements", SEARCH / "requirements-build.txt", "python", SEARCH / "split.py",
              search / "search.jsonl.zst", stage, cwd=maps.ROOT)
 
 
 def build_search(stage, records, config, component):
-    maps.run("uv", "run", "--with-requirements", SEARCH / "requirements-build.txt", "python", SEARCH / "build.py",
+    maps.run("uv", "run", "--no-project", "--with-requirements", SEARCH / "requirements-build.txt", "python", SEARCH / "build.py",
              records / f"{component}.jsonl.zst", "--component", component, "--output", stage,
              "--region", config["region"], "--bounds", ",".join(map(str, config["bounds"])),
              "--countries", ",".join(config["countries"]), "--osm-sha256", config["osm"]["sha256"],
@@ -193,7 +193,7 @@ def specifications(config, prepared=None):
     add("basemap", build_basemap, {}, dependencies=["source-basemap"])
     map_requirements = maps.ROOT / "uv.lock"
     add("places", build_places, {}, dependencies=["pois"], paths=[maps.ROOT / path for path in
-        ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_places.py", "uv.lock", "builder/app/src/lib/planner/poi-kinds.json")])
+        ("tools/planner_maps.py", "tools/planner_geo.py", "tools/planner_mvt.py", "tools/planner_places.py", "uv.lock", "builder/app/src/lib/planner/poi-kinds.json")])
     rust_manifests = [maps.ROOT / path for path in ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "host/obc-dem/Cargo.toml"]]
     elevation_paths = components.rust_sources("host/obc-dem")
     elevation = {"sources": config["terrain"], "producer": components.implementation(paths=elevation_paths)}
@@ -204,8 +204,8 @@ def specifications(config, prepared=None):
     add("routing", build_routing, {"osm": osm, "elevation": elevation, **credits("osm-planet", "copernicus-glo-30")}, {"region": config["region"], "access": config["access"], "countries": config["countries"], "profiles": config["profiles"]}, paths=routing_paths,
         functions=[terrain_inputs])
     add("overlays", build_overlays, credits("osm-planet"), dependencies=["routing"], paths=[maps.ROOT / path for path in
-        ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_overlays.py", "uv.lock")])
-    add("assets", build_assets, {"assets": maps.ASSETS_URL, "tangrams-icons": maps.PINS["tangrams-icons"]}, paths=[maps.ROOT / "tools/planner_maps.py"])
+        ("tools/planner_maps.py", "tools/planner_geo.py", "tools/planner_mvt.py", "tools/planner_overlays.py", "uv.lock")])
+    add("assets", build_assets, {"assets": maps.ASSETS_URL, "tangrams-icons": maps.PINS["tangrams-icons"]}, paths=[maps.ROOT / "tools/planner_maps.py", maps.ROOT / "tools/planner_assets.py"])
     add("model", build_model, {}, paths=[SEARCH / "setup.py", SEARCH / "query/artifacts.py", SEARCH / "query/schema.py"])
     for name in releases.DATA_LAYERS:
         if name in config:

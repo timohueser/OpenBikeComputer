@@ -264,6 +264,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.143,cargo-llvm-cov@0.9.1
+      # The planner Python steps run under uv: obc-data-steps runs one in its tests.
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.8.17"
       - name: Cache content-addressed developer fixtures
         uses: actions/cache@v4
         with:

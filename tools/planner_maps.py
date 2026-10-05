@@ -3,7 +3,6 @@
 
 import argparse
 import hashlib
-import io
 import json
 import math
 import os
@@ -11,13 +10,12 @@ from pathlib import Path
 import signal
 import socket
 import subprocess
-import sys
 import threading
 import time
 import tomllib
-import zipfile
 
-from . import step_request
+from .planner_assets import install_assets
+from .planner_geo import bounds, mercator, tile_bounds
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "builder/app"
@@ -28,16 +26,6 @@ RUNNING, STOPPING = set(), threading.Event()
 PINS = tomllib.loads((ROOT / "data/env/live.toml").read_text())["pins"]
 ASSETS_REV = PINS["protomaps-assets"]
 ASSETS_URL = f"https://codeload.github.com/protomaps/basemaps-assets/zip/{ASSETS_REV}"
-
-
-def bounds(value):
-    try:
-        west, south, east, north = map(float, value.split(","))
-        if -180 <= west < east <= 180 and -85 <= south < north <= 85:
-            return [west, south, east, north]
-    except ValueError:
-        pass
-    raise argparse.ArgumentTypeError("Use west,south,east,north in degrees.")
 
 
 def run(*args, **kwargs):
@@ -77,52 +65,12 @@ def stop_process(process):
         process.wait()
 
 
-def mercator(lon, lat, zoom):
-    """Fractional Web Mercator XYZ tile coordinates of a point."""
-    count = 1 << zoom
-    return (lon + 180) / 360 * count, (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * count
-
-
-def tile_bounds(z, x, y):
-    n = 1 << z
-    latitude = lambda row: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * row / n))))
-    return [x / n * 360 - 180, latitude(y + 1), (x + 1) / n * 360 - 180, latitude(y)]
-
-
 def terrain_bounds(region):
     # Contours start at zoom 10 and read a 3×3 tile neighbourhood.
     count = 1 << 10
     left, top = (max(0, math.floor(value) - 1) for value in mercator(region[0], region[3], 10))
     right, bottom = (min(count - 1, math.floor(value) + 1) for value in mercator(region[2], region[1], 10))
     return tile_bounds(10, left, bottom)[:2] + tile_bounds(10, right, top)[2:]
-
-
-def install_assets(data, destination):
-    with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        for entry in archive.infolist():
-            parts = Path(entry.filename).parts[1:]
-            if entry.is_dir() or not parts or ".." in parts:
-                continue
-            if parts[0] not in {"fonts", "sprites"}:
-                continue
-            path = destination.joinpath(*parts)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(archive.read(entry))
-    for name in ["fonts/OFL.txt", "fonts/Noto Sans Regular/0-255.pbf",
-                 "sprites/v4/light.json", "sprites/v4/dark@2x.png"]:
-        if not (destination / name).is_file():
-            raise ValueError(f"Map assets are missing {name}")
-
-
-def assets_step():
-    """The `obc data` step `planner/assets`: the fonts and sprites of the Protomaps assets, with the
-    MIT notice of the Mapzen icons beside the sprites."""
-    request = step_request.read()
-    (archive,) = step_request.files(request, "protomaps-assets").values()
-    (notice,) = step_request.files(request, "tangrams-icons").values()
-    output = Path(request["output"]) / "assets"
-    install_assets(archive.read_bytes(), output)
-    (output / "sprites/LICENSE.txt").write_bytes(notice.read_bytes())
 
 
 def verify_archive(pmtiles, path, tile_type, zoom):
@@ -216,4 +164,4 @@ def main():
 
 
 if __name__ == "__main__":
-    assets_step() if sys.argv[1:] == ["--step"] else main()
+    main()

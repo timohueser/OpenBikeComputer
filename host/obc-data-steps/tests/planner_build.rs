@@ -101,6 +101,8 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
     }
 
     if Command::new("uv").arg("--version").output().is_err() {
+        // CI installs uv, so there a missing uv is a failure, not a skip.
+        assert!(std::env::var_os("CI").is_none(), "uv is absent: CI must test the Python step planner/overlays");
         eprintln!("uv is absent: the Python step planner/overlays is not tested");
         return;
     }

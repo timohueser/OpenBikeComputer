@@ -333,7 +333,7 @@ is the planet that is pinned. The fetch does not apply the diffs. A step does th
 `osm-replication` pin from that day.
 
 A `dtm` or `capture` fetch runs a program in the repository root, with the Python of `uv run
-<packages> python`: `--python '>=3.12' --with-requirements <file>` for a requirements file, and
+<packages> python`: `--no-project --python '>=3.12' --with-requirements <file>` for a requirements file, and
 `--locked --group <group>` for a dependency group of `pyproject.toml` (`OBC_PYTHON` replaces that
 Python).
 The program writes each file of the request to a directory under `partial/`, and its progress to
@@ -643,11 +643,11 @@ reads no snapshot. No layer reads a national terrain model yet.
 | `planner/osm` | `geofabrik-extracts`, `area=<region id>` | `path`: `osm.pbf` | `osm.pbf`: the extract as it is. The engine step `pass` writes it, so its code is no file |
 | `planner/terrain` | The GLO-30 tiles of `bounds` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours, widened to `terrain.margin_m` around the bounds | `terrain.mbtiles`: lossless Terrarium WebP tiles of zooms 0 to 12, the bytes that `planner-dem` writes from the same tiles |
 | `planner/routing` | `planner/osm`, and the GLO-30 tiles of the bounds of the region | `region` (the last part of the region id), `bounds`, `profiles` and `countries`. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells, as `route-blocks` writes them; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
-| `planner/overlays` | `planner/routing` | None | `overlays.pmtiles`: the route networks and the access of `routing/overlays.sqlite`, as [the planner release](planner-release.md) defines it |
+| `planner/overlays` | `planner/routing` | `attribution` of `osm-planet` | `overlays.pmtiles`: the route networks and the access of `routing/overlays.sqlite`, as [the planner release](planner-release.md) defines it |
 | `planner/assets` | `protomaps-assets`, `tangrams-icons` | None | `assets/fonts/` and `assets/sprites/` of the assets archive; `assets/sprites/LICENSE.txt`: the MIT notice of `tangrams-icons` |
 | `planner/model` | `query-model` | None | `model/`: `model.int8.onnx`, `tokenizer.json` and `tokenizer_config.json` of the archive, and `labels.json`, the labels of the query schema |
-| `planner/climate` | `era5-land`, `bbox=<bounds>`, `first-year=<climate.first_year>` | `bounds`, `first_year` | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md) |
-| `planner/snow` | `hr-wsi`, `bbox=<bounds>`, `seasons=<snow.seasons>`; `osm-trails`, `bbox=<bounds>` | `bounds`, `seasons`, and `year`: the year of the `hr-wsi` version, which its credit names | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md) from HR-WSI. The metric `no_data_trail_share` is the share of the trail length with no data in every season |
+| `planner/climate` | `era5-land`, `bbox=<bounds>`, `first-year=<climate.first_year>` | `bounds`, `first_year`, and `attribution` of `era5-land`, whose `{year}` is the last of the ten years | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md) |
+| `planner/snow` | `hr-wsi`, `bbox=<bounds>`, `seasons=<snow.seasons>` | `bounds`, `seasons`, `attribution` of `hr-wsi`, and `year`: the year of the `hr-wsi` version, which fills its `{year}` | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md) from HR-WSI |
 | `planner/sun` | `planner/terrain` | `bounds`, `time_zone` of the region, `distance_m` (`terrain.margin_m`), `horizon_samples` and `horizon_directions` | `sun.pmtiles`: [the sun archive](planner-sun-tiles.md). `terrain_sha256` is the SHA-256 of the PMTiles archive that the step converts from `terrain.mbtiles` |
 
 `climate`, `snow` and `sun` are optional layers: a step only when `layers` of the environment
@@ -656,8 +656,8 @@ names it. The sun layer needs the `time_zone` of the region.
 A Python step runs `uv run --locked --offline --group <group> python <entry> --step` in the
 repository root, with the packages of a dependency group of `pyproject.toml`; `uv sync
 --all-groups` installs them on a machine. Its code is each Python file that it imports,
-`tools/step_request.py`, `pyproject.toml` and `uv.lock`, and `data/sources.toml` when it imports
-`tools/data_registry.py`.
+`tools/step_request.py`, `.python-version`, `pyproject.toml` and `uv.lock`. A credit that it
+writes comes in its options, so `data/sources.toml` is no code of it.
 
 A grid cell is a zoom 9 Web Mercator tile that the bounds of the region overlap, clipped to the
 bounds, with the id `9-<x>-<y>`. The JSON objects that `planner/routing` writes have their keys in

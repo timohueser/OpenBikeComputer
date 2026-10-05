@@ -26,8 +26,10 @@ pub fn dtm(store: &Store, request: &Request) -> Result<Snapshot, String> {
         |_| &[0],
         |work, out| {
             // The pinned rasterio needs Python 3.12 or later.
-            let mut command =
-                python(&root, &["--python", ">=3.12", "--with-requirements", "tools/requirements-bake.txt"]);
+            let mut command = python(
+                &root,
+                &["--no-project", "--python", ">=3.12", "--with-requirements", "tools/requirements-bake.txt"],
+            );
             command.arg("host/obc-dem/reference/ingest.py");
             command.args(["fetch", &key, &format!("--bbox={bbox}"), "--work"]).arg(work).arg("--out").arg(out);
             command
