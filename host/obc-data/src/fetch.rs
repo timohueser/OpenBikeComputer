@@ -62,10 +62,7 @@ fn fetch_files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot
 /// or times out, the newest version in the store that has the requested files serves, with a
 /// warning, so a bake works offline. Every other error stays an error.
 pub fn live(id: &str, version: Option<&str>, params: Vec<(String, String)>) -> Result<Fetched, LiveError> {
-    let starts = [std::env::current_dir().ok(), std::env::current_exe().ok()];
-    let root = starts.into_iter().flatten().find_map(|start| crate::find_root(&start));
-    let root = root.ok_or("no data/sources.toml above the current directory or the program")?;
-    let registry = Registry::load(&root)?;
+    let registry = Registry::live()?;
     let source = registry.sources.iter().find(|s| s.id == id).ok_or_else(|| format!("no source `{id}`"))?;
     let version = version.map(str::to_string).or_else(|| registry.pins.get(id).cloned());
     let params = osm::with_base(source, &registry.pins, params)?;

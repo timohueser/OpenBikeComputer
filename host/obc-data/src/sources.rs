@@ -328,6 +328,14 @@ impl Registry {
             .map_err(|e| format!("data/env/live.toml: {e}"))?;
         Ok(Self { sources, pins })
     }
+
+    /// The registry of the repository above the current directory, or else above the running
+    /// program.
+    pub fn live() -> Result<Self, String> {
+        let starts = [std::env::current_dir().ok(), std::env::current_exe().ok()];
+        let root = starts.into_iter().flatten().find_map(|start| crate::find_root(&start));
+        Self::load(&root.ok_or("no data/sources.toml above the current directory or the program")?)
+    }
 }
 
 /// A source of the `data/sources.toml` that this build embeds. A product that carries a credit

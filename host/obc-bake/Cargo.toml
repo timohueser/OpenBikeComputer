@@ -9,9 +9,8 @@ description = "The bakery: bake the curated region list into a catalog tree and 
 # The packer, linked rather than spawned: `pipeline::pack` is the one code path
 # both hosts already share (#906), and it hands back the byte count and a cancel
 # token instead of a subprocess whose stdout would have to be scraped. It also
-# brings the catalog generator (`obc_pack::catalog`) and the downloader
-# (`obc_pack::net`), so the bakery adds no second HTTP client or second manifest
-# writer to the tree.
+# brings the catalog generator (`obc_pack::catalog`), so the bakery adds no second
+# manifest writer to the tree.
 obc-pack = { path = "../obc-pack" }
 # The shared file adapter the verifier reads an artifact through, never resident.
 obc-file-source = { path = "../obc-file-source" }
@@ -51,10 +50,6 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # Content hashes: the idempotency key over the extract, and the artifact digests the
 # sidecar records. Same implementation the catalog generator publishes with.
 sha2 = "0.11"
-# One conditional-`HEAD` per extract (Last-Modified + Content-Length) to decide
-# whether a cached PBF is still current, and the guard's manifest fetch. The bulk
-# download itself goes through `obc_pack::net`.
-ureq = "3"
 
 [dev-dependencies]
 # The shared scratch-path helper the CLI tests build their throwaway paths with.

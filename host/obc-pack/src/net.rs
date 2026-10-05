@@ -1,114 +1,26 @@
-//! Fetching bytes over HTTPS, and unpacking a `.zip`, in process, with no `curl` and no `unzip`.
+//! Reading a small document over HTTPS, and unpacking a `.zip`, in process, with no `curl` and no
+//! `unzip`.
 //!
-//! `unzip` is on essentially no Windows box, and doing it in process buys three things a
-//! subprocess could not give. Cancellation: the token is checked every chunk and every archive
-//! entry, where a `Command::status()` blocks until the child exits. Progress: the percentage
-//! arrives through [`Progress`] like every other stage, instead of a meter on a stderr nobody sees.
-//! Zip-slip safety: [`ZipFile::enclosed_name`] refuses a hostile `../../etc/whatever` entry.
+//! `unzip` is on essentially no Windows box, and doing it in process buys two things a subprocess
+//! could not give. Cancellation: the token is checked every archive entry, where a
+//! `Command::status()` blocks until the child exits. Zip-slip safety:
+//! [`ZipFile::enclosed_name`] refuses a hostile `../../etc/whatever` entry.
 //!
-//! Bake data comes from the store of `obc-data`. The downloads here are the planet of
-//! `obc bake --all` and the live catalog that the guard reads.
+//! Bake data comes from the store of `obc-data`. The one read here is the live catalog that the
+//! guard reads.
 //!
 //! [`ZipFile::enclosed_name`]: zip::read::ZipFile::enclosed_name
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
 
 use crate::progress::Progress;
-
-/// Read size for the download loop. Big enough that the syscall overhead is
-/// irrelevant on a 950 MB body, small enough that a cancel lands promptly.
-const CHUNK: usize = 1 << 16;
-
-/// How many times a download is attempted before giving up. An attempt restarts from zero rather
-/// than resuming, because the servers involved are not guaranteed to honour a `Range` request and a
-/// silently truncated dataset is far worse than a slow one.
-/// `curl --retry 3` this replaced — and, like it, an attempt restarts from zero
-/// rather than resuming, because the servers involved are not guaranteed to honour
-/// a `Range` request and a silently truncated dataset is far worse than a slow one.
-const ATTEMPTS: usize = 3;
 
 /// Small documents, such as a region index or a catalog manifest, are read whole: each is parsed as
 /// one document and a partial one is worthless.
 pub fn get_text(url: &str) -> Result<String, String> {
     let mut resp = ureq::get(url).call().map_err(|e| format!("GET {url}: {e}"))?;
     resp.body_mut().read_to_string().map_err(|e| format!("read {url}: {e}"))
-}
-
-/// Download `url` to `dest`, reporting percentage through `on_pct` and honouring `progress`'s cancel
-/// token. Returns the number of bytes written.
-///
-/// The write goes to a `.part` sibling and is renamed on completion, so an interrupted download can
-/// never be mistaken for a cached extract on the next run. A region is hundreds of megabytes, so the
-/// token is checked every chunk.
-///
-/// A failed attempt is retried up to [`ATTEMPTS`] times unless it failed because the run was
-/// cancelled: retrying a cancellation would make the stop button do nothing.
-///
-/// A failed attempt is retried up to [`ATTEMPTS`] times *unless* it failed because
-pub fn download(url: &str, dest: &Path, progress: &Progress, mut on_pct: impl FnMut(u8)) -> Result<u64, String> {
-    let dir = dest.parent().ok_or("download destination has no directory")?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    // Appended to the whole file name, not `with_extension`: that replaces the extension, so
-    // `x.zip` and `x.obcd` downloading side by side would share one `x.part`, and a dotted stem
-    // would lose a segment.
-    let mut part_name = dest.file_name().ok_or("download destination has no file name")?.to_os_string();
-    part_name.push(".part");
-    let part = dest.with_file_name(part_name);
-
-    let mut last_err = String::new();
-    for attempt in 1..=ATTEMPTS {
-        match download_once(url, &part, progress, &mut on_pct) {
-            Ok(done) => {
-                std::fs::rename(&part, dest).map_err(|e| format!("install {}: {e}", dest.display()))?;
-                return Ok(done);
-            }
-            Err(e) => {
-                let _ = std::fs::remove_file(&part);
-                if progress.is_cancelled() {
-                    return Err(e);
-                }
-                last_err = e;
-                if attempt < ATTEMPTS {
-                    progress.warn(format!("{last_err} — retrying ({attempt}/{})", ATTEMPTS - 1));
-                }
-            }
-        }
-    }
-    Err(last_err)
-}
-
-/// One attempt: the whole body to `part`, or an error and whatever is on disk.
-fn download_once(url: &str, part: &Path, progress: &Progress, on_pct: &mut impl FnMut(u8)) -> Result<u64, String> {
-    let mut resp = ureq::get(url).call().map_err(|e| format!("GET {url}: {e}"))?;
-    let total: u64 =
-        resp.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok()).unwrap_or(0);
-
-    let mut reader = resp.body_mut().as_reader();
-    let mut file = std::fs::File::create(part).map_err(|e| format!("create {}: {e}", part.display()))?;
-    let mut buf = vec![0u8; CHUNK];
-    let mut done: u64 = 0;
-    let mut last_pct = u8::MAX;
-    loop {
-        progress.check()?;
-        let n = reader.read(&mut buf).map_err(|e| format!("read {url}: {e}"))?;
-        if n == 0 {
-            break;
-        }
-        file.write_all(&buf[..n]).map_err(|e| format!("write {}: {e}", part.display()))?;
-        done += n as u64;
-        // No Content-Length ⇒ no percentage to report. The bar stays where the
-        // phase put it rather than inventing motion.
-        if let Some(pct) = (done * 100).checked_div(total) {
-            let pct = (pct as u8).min(100);
-            if pct != last_pct {
-                last_pct = pct;
-                on_pct(pct);
-            }
-        }
-    }
-    file.flush().map_err(|e| format!("flush {}: {e}", part.display()))?;
-    Ok(done)
 }
 
 /// Extract every entry of the zip at `archive` beneath `dest_dir`, creating it.

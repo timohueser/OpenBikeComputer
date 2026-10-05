@@ -43,14 +43,14 @@ usage:
         --regions DIR        region files (default: data/regions/ of the repository)
         --presets-dir DIR    schema.json + skins/ (default: builder/presets)
         --source SOURCE      directory of extracts (default: Geofabrik from the store), or planet
-                             PBF URL/file with --all
-        --cache DIR          planet, shards and DEM tile links
+                             PBF file with --all (default: osm-planet and osm-replication)
+        --cache DIR          planet with its diffs applied, shards and DEM tile links
         --force              re-bake even when unchanged
         --no-land            skip land generation
         --chunk-size N       override schema chunk_size
         --fail-fast          stop at the first failure
         --summary-json FILE  write the machine-readable run summary
-        --all                update/bake the whole planet through resumable source shards
+        --all                bake the whole planet through resumable source shards
         --no-terrain         skip the automatic terrain stage below
         --peaks FILE         embed compiled peak peaks.json and its photos
         --dem-sources DIR    source DEM GeoTIFFs for it (default: fetched into <cache>/dem)
@@ -403,7 +403,7 @@ fn run_planet_bake(
     regions: Vec<obc_bake::regions::Region>,
     presets_dir: &Path,
 ) -> Result<(), String> {
-    use obc_bake::planet::{ReplicationUpdater as _, ShardRunner as _};
+    use obc_bake::planet::ShardRunner as _;
 
     let schema = obc_bake::presets::load_schema(presets_dir)?;
     obc_bake::previews::check_source(&schema.config)?;
@@ -420,19 +420,16 @@ fn run_planet_bake(
     };
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
     let progress = obc_pack::progress::Progress::stdout();
-    // Fail before an 80+ GB transfer when the required source-sharding tool is unavailable. Tests
-    // inject the runner at the library boundary; the CLI uses the real executable.
+    // Fail before an 80+ GB transfer when Osmium, which applies the diffs and shards the planet, is
+    // unavailable. Tests inject the runner at the library boundary; the CLI uses the real executable.
     let runner = obc_bake::planet::OsmiumRunner::default();
     runner.check()?;
-    let updater = obc_bake::planet::PyOsmiumUpdater::default();
-    let source = flags.get("source");
-    let remote_source = source.is_none_or(|value| value.starts_with("http://") || value.starts_with("https://"));
-    if remote_source {
-        updater.check()?;
-    }
+    obc_bake::planet::check_pinned(flags.get("source"))?;
     let polygons = obc_bake::source::GeofabrikExtracts;
     let region_presets = obc_bake::planet::resolve_region_presets(&regions, &polygons, &bands, &progress)?;
-    let input = obc_bake::planet::resolve_planet_with(source, &cache, &progress, &updater)?;
+    // Held until the bake has read the planet: the sharder below reads it too.
+    let _planet = obc_bake::planet::lock_cache(&cache, &progress)?;
+    let input = obc_bake::planet::resolve_planet(flags.get("source"), &cache, &runner, &progress)?;
     let shards = obc_bake::planet::PlanetSharder { input: &input, cache: &cache, runner: &runner }.run(&progress)?;
     let cutter = obc_bake::cells::ObcCutter {
         no_land: flags.has("no-land"),
@@ -738,8 +735,8 @@ fn run_guard(args: &[String]) -> Result<(), String> {
     }
 }
 
-/// Where the planet, its shards, the DEM tile links and the raw landmark captures go. Downloads go
-/// to the store.
+/// Where the planet with its diffs applied, its shards, the DEM tile links and the raw landmark
+/// captures go. Downloads go to the store.
 fn default_cache_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("OBCM_CACHE_DIR") {
         return PathBuf::from(dir).join("geofabrik");
