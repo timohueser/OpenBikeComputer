@@ -372,9 +372,21 @@ class FixedEntryTests(unittest.TestCase):
         self.assertEqual(parsed.entry_cost("branches"), 4)
         self.assertEqual(parsed.entry_cost("body_store"), 0)
 
+    def test_fixed_pair_save_counts_both_words_before_the_body(self):
+        for instruction in ["strd r2, r3, [sp, #-8]!", "strd.w r8, lr, [sp, #-0x8]!"]:
+            with self.subTest(instruction=instruction):
+                parsed = resource_guard.parse_disassembly(
+                    "000229b4 <read_rows>:\n    229b4: b580 push {r7, lr}\n"
+                    "    229b6: 466f mov r7, sp\n"
+                    f"    229b8: e96d 2302 {instruction}\n"
+                    "    229bc: 466b mov r3, sp\n    229c4: b002 add sp, #8\n"
+                )
+                self.assertEqual(parsed.entry_cost("read_rows"), 16)
+
     def test_unsupported_guarded_entry_never_passes_with_a_partial_cost(self):
         for instruction in ["sub.w sp, sp, r0", "vpush {d15-d8}", "push {future}", "<unknown>",
-                            "str r8, [sp, #-8]!", "str r8, [sp], #-4", "strd r8, r9, [sp, #-8]!",
+                            "str r8, [sp, #-8]!", "str r8, [sp], #-4", "strd r8, r9, [sp, #-16]!",
+                            "strd future, r9, [sp, #-8]!", "strd r8, sp, [sp, #-8]!",
                             "str future, [sp, #-4]!", "stmdb sp!, {r8}"]:
             with self.subTest(instruction=instruction):
                 parsed = resource_guard.parse_disassembly(
