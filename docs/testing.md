@@ -66,7 +66,6 @@ A `[[suite]]` entry is verification no Cargo package owns:
 | `fixtures` | captured or production-shaped inputs it needs |
 | `platforms`, `foundation`, `ci_only` | platform restriction; selected by manifest or toolchain changes; not reproducible locally |
 | `package`, `targets` | Cargo test targets this suite owns, which then belong to no tier |
-| `sleep_exception` | a bounded real sleep, with a reason and an open issue |
 
 Neither entry lists dependencies, test counts, durations or source files; Cargo and the result
 artifacts supply those. The CI job table is in `tools/test_plan.py`; `obc suites validate-filters`
