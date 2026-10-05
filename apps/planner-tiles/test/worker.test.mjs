@@ -10,7 +10,7 @@ test('tile routes bound archive selection and coordinates', () => {
   assert.deepEqual(tileRoute(`${base}/sun/10/535/356.webp`).tile, [10, 535, 356]);
   assert.equal(tileRoute(`${base}/terrain.json`).name, 'terrain');
   for (const path of [`${base}/terrain/12/4096/0.webp`, `${base}/basemap/27/0/0.mvt`, `${base}/places/0/0/0.png`,
-    `${base}/Other.json`, '/cell-catalog/catalog.json', `${base}/basemap/01/0/0.mvt`]) {
+    `${base}/Other.json`, `${base}/${'a'.repeat(33)}.json`, '/cell-catalog/catalog.json', `${base}/basemap/01/0/0.mvt`]) {
     assert.equal(tileRoute(path), null, path);
   }
 });

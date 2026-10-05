@@ -31,14 +31,15 @@ describe("shared basemap hosting", () => {
         }
     });
 
-    it("uses the planner config that the build carries", async () => {
-        const local = { basemap: "pmtiles://http://127.0.0.1:4175/@fs/data/maps/basemap.pmtiles",
-            glyphs: "http://127.0.0.1:4175/@fs/data/maps/assets/fonts/{fontstack}/{range}.pbf", sprites: "http://127.0.0.1:4175/@fs/data/maps/assets/sprites/v4" };
-        vi.stubEnv("VITE_PLANNER_CONFIG", JSON.stringify({ name: "Local", ...local }));
+    it("uses the planner config that the build carries, with local paths on the page origin", async () => {
+        vi.stubGlobal("location", { href: "http://localhost:4175/" });
+        vi.stubEnv("VITE_PLANNER_CONFIG", JSON.stringify({ name: "Local", basemap: "pmtiles:///@fs/data/maps/basemap.pmtiles",
+            glyphs: "/@fs/data/maps/assets/fonts/{fontstack}/{range}.pbf", sprites: "/@fs/data/maps/assets/sprites/v4" }));
         const fetch = vi.fn();
         vi.stubGlobal("fetch", fetch);
         const { basemapConfig } = await import("./basemap-config");
-        expect(await basemapConfig()).toEqual(local);
+        expect(await basemapConfig()).toEqual({ basemap: "pmtiles://http://localhost:4175/@fs/data/maps/basemap.pmtiles",
+            glyphs: "http://localhost:4175/@fs/data/maps/assets/fonts/{fontstack}/{range}.pbf", sprites: "http://localhost:4175/@fs/data/maps/assets/sprites/v4" });
         expect(fetch).not.toHaveBeenCalled();
     });
 

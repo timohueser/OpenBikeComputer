@@ -82,19 +82,19 @@ def verify_local(args):
 
 
 def preview_config(args, manifest):
-    """The planner config of the local services: the fields of a catalogue entry, with local URLs."""
-    origin = f"http://127.0.0.1:{args.port}"
-    files = f"{origin}/@fs{args.data_dir}/maps"
+    """The planner config of the local services: the fields of a catalogue entry, with root-relative
+    paths that the planner resolves against its page, so localhost and 127.0.0.1 both stay on one origin."""
+    files = f"/@fs{args.data_dir}/maps"
     return {"name": args.name, "region": args.region, "bounds": manifest["bounds"],
             "basemap": f"pmtiles://{files}/basemap.pmtiles", "places": files + "/places.pmtiles",
-            "overlays": files + "/overlays.pmtiles", "terrain": origin + "/tiles/terrain/{z}/{x}/{y}.webp",
+            "overlays": files + "/overlays.pmtiles", "terrain": "/tiles/terrain/{z}/{x}/{y}.webp",
             "terrain_attribution": manifest["terrain_attribution"],
             # Without its archive, the planner offers no such data layer.
             "layers": {layer: f"{files}/{layer}.pmtiles" for layer in DATA_LAYERS if f"{layer}.pmtiles" in manifest["files"]},
             "glyphs": files + "/assets/fonts/{fontstack}/{range}.pbf", "sprites": files + "/assets/sprites/v4",
-            "routing": origin + "/routing", "search": origin + "/api/planner-search",
+            "routing": "/routing", "search": "/api/planner-search",
             # The routing step bakes the route catalog of the region, which the planner reads as one file.
-            "routes": f"{origin}/@fs{args.data_dir}/routing/route-catalog.json"}
+            "routes": f"/@fs{args.data_dir}/routing/route-catalog.json"}
 
 
 def serve(args):

@@ -1,4 +1,4 @@
-import type { PlannerConfig } from "../planner/config";
+import { configUrl, type PlannerConfig } from "../planner/config";
 
 export type BasemapConfig = Pick<PlannerConfig, "basemap" | "glyphs" | "sprites">;
 
@@ -12,8 +12,7 @@ export async function basemapConfig(): Promise<BasemapConfig> {
         if (!response.ok) throw new Error(`Basemap catalog: HTTP ${response.status}`);
         active = (await response.json()).active;
     }
-    if (![active?.basemap, active?.glyphs, active?.sprites].every((value) => typeof value === "string" && /^[a-z]+:\/\//.test(value))) {
-        throw new Error("Basemap catalog has no active map endpoints.");
-    }
-    return { basemap: active.basemap, glyphs: active.glyphs, sprites: active.sprites };
+    const [basemap, glyphs, sprites] = [active?.basemap, active?.glyphs, active?.sprites].map((value) => configUrl(value, globalThis.location?.href));
+    if (!basemap || !glyphs || !sprites) throw new Error("Basemap catalog has no active map endpoints.");
+    return { basemap, glyphs, sprites };
 }

@@ -16,12 +16,13 @@ await mkdir(cache, { recursive: true });
 await cp(new URL('../../builder/app/src/lib/planner/poi-kinds.json', import.meta.url), new URL('poi-kinds.json', cache));
 for (const name of ['poi-kinds', 'map-style']) {
   let text = await readFile(new URL(`../../builder/app/src/lib/planner/${name}.ts`, import.meta.url), 'utf8');
-  text = text.replaceAll('"./map-data"', '"./obc-map-data.mjs"').replaceAll('"./poi-kinds"', '"./poi-kinds.mjs"');
+  text = text.replaceAll('"./poi-kinds"', '"./poi-kinds.mjs"');
   await writeFile(new URL(`${name}.mjs`, cache), ts.transpileModule(text, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
   }).outputText);
 }
-await writeFile(new URL('obc-map-data.mjs', cache), `export const BASEMAP_URL='__BASEMAP__',GLYPHS_URL='__GLYPHS__',SPRITES_URL='__SPRITES__',MAP_BOUNDS=null,TERRAIN_ATTRIBUTION='__TERRAIN_ATTRIBUTION__';`);
+// OBCNativeMapView replaces these placeholders and sets the terrain bounds of the release.
+const config = { basemap: '__BASEMAP__', glyphs: '__GLYPHS__', sprites: '__SPRITES__', terrain_attribution: '__TERRAIN_ATTRIBUTION__' };
 const { mapStyle } = await import(new URL('map-style.mjs', cache).href);
 const { poiKinds } = await import(new URL('poi-kinds.mjs', cache).href);
 const maps = new URL('../Packages/OBCKit/Sources/OBCUI/Resources/Map/', import.meta.url);
@@ -29,7 +30,7 @@ await mkdir(maps, { recursive: true });
 await writeFile(new URL('poi-kinds.json', maps), JSON.stringify(poiKinds));
 await cp(new URL('../../apps/planner-search/query/contract.json', import.meta.url), new URL('contract.json', maps));
 for (const theme of ['light', 'dark']) {
-  const style = mapStyle(theme, '__TERRAIN__', '__CONTOURS__');
+  const style = mapStyle(theme, config, '__TERRAIN__', '__CONTOURS__');
   // The web renderer generates contours from DEM tiles; native uses the DEM hillshade.
   style.layers = style.layers.filter(layer => layer.source !== 'contours');
   delete style.sources.contours;

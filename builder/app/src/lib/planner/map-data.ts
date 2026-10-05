@@ -3,7 +3,7 @@ import type { Coordinate } from "./map-types";
 import type { CatalogRecord } from "./signed-routes";
 
 /** The planner config of this build. */
-export const config = plannerConfig(import.meta.env.VITE_PLANNER_CONFIG);
+export const config = plannerConfig(import.meta.env.VITE_PLANNER_CONFIG, globalThis.location?.href);
 
 export const MAP_VIEWS: { name: string; center: Coordinate; zoom: number }[] = [
     { name: "Freiburg · street detail", center: [7.849, 47.997], zoom: 14 },

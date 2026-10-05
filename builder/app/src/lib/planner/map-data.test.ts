@@ -37,10 +37,17 @@ describe('planner config', () => {
         }
     });
 
+    it('resolves the paths of a local preview against the page, and keeps template tokens', () => {
+        const local = plannerConfig(JSON.stringify({ ...testConfig, basemap: 'pmtiles:///@fs/data/maps/basemap.pmtiles',
+            terrain: '/tiles/terrain/{z}/{x}/{y}.webp', layers: { snow: '/@fs/data/maps/snow.pmtiles' } }), 'http://localhost:4175/planner.html');
+        expect([local.basemap, local.terrain, local.layers.snow, local.search]).toEqual(['pmtiles://http://localhost:4175/@fs/data/maps/basemap.pmtiles',
+            'http://localhost:4175/tiles/terrain/{z}/{x}/{y}.webp', 'http://localhost:4175/@fs/data/maps/snow.pmtiles', testConfig.search]);
+    });
+
     it('refuses a config without a field that the planner reads', () => {
         expect(plannerConfig(JSON.stringify(testConfig))).toEqual(testConfig);
         const { layers: _, ...withoutLayers } = testConfig;
-        for (const [config, field] of [[withoutLayers, 'layers'], [{ ...testConfig, terrain: '/tiles/{z}/{x}/{y}.webp' }, 'terrain'],
+        for (const [config, field] of [[withoutLayers, 'layers'], [{ ...testConfig, terrain: 'tiles/{z}/{x}/{y}.webp' }, 'terrain'],
             [{ ...testConfig, bounds: [10.5, 47.5, 7.45, 49.85] }, 'bounds'], [{ ...testConfig, name: '' }, 'name']] as const) {
             expect(() => plannerConfig(JSON.stringify(config))).toThrow(`invalid fields: ${field}.`);
         }

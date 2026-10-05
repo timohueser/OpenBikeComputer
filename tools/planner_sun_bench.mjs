@@ -14,7 +14,7 @@ try {
     const bundle = (await readdir(assets)).find(name => /^sun-worker-.*\.js$/.test(name));
     if (!bundle) throw new Error('Build the planner before benchmarking');
     const result = await page.evaluate(async workerUrl => {
-        const { DATA_URLS, TERRAIN_URL } = await import('/src/lib/planner/map-data.ts');
+        const { config } = await import('/src/lib/planner/map-data.ts');
         const worker = new Worker(workerUrl, { type: 'module' });
         let serial = 0;
         const jobs = new Map();
@@ -29,7 +29,7 @@ try {
             const cancel = () => { worker.postMessage({ cancel: id }); jobs.delete(id); reject(signal.reason); };
             signal.addEventListener('abort', cancel, { once: true });
             jobs.set(id, { resolve: value => { signal.removeEventListener('abort', cancel); resolve(value); }, reject });
-            worker.postMessage({ id, url: DATA_URLS.sun, dem: TERRAIN_URL, ...payload });
+            worker.postMessage({ id, url: config.layers.sun, dem: config.terrain, ...payload });
         });
         const client = {
             metrics,
