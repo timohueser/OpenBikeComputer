@@ -312,11 +312,12 @@ r2 *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/r2.py" "$@"
 
-# Read the data registry: `obc data sources` lists every source with licence, R2 copy, live
-# pin, upstream version, age, policy and state; `obc data region [list|show ID]` lists the
-# regions. `obc data fetch` puts a source version in the store; `obc data refresh` also pins
-# it. `obc data plan ENV` shows what a build of an environment fetches and builds; `obc data build
-# ENV` builds it into the store. Every command takes `--json`. Read commands change nothing.
+# Read the data registry: a bare `obc data` opens the TUI in a terminal; `obc data sources`
+# lists every source with licence, R2 copy, live pin, upstream version, age, policy and state;
+# `obc data region [list|show ID]` lists the regions. `obc data fetch` puts a source version in
+# the store; `obc data refresh` also pins it. `obc data plan ENV` shows what a build of an
+# environment fetches and builds; `obc data build ENV` builds it into the store. Every command
+# takes `--json`. Read commands change nothing.
 # Data sources, regions and the store. Args: sources | region [list|show ID] | fetch SOURCE[@VERSION] | refresh SOURCE [--env ENV] | plan ENV [--only G,…] | build ENV [--only G,…] [--plan FILE] | store import [--apply] | gc store [--apply] [--json]
 [group('maps')]
 data *args:

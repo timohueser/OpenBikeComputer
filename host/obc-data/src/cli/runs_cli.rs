@@ -4,7 +4,7 @@ use clap::Args;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::engine::runs::{self, Details, Event, Outcome, Summary};
+use crate::engine::runs::{self, Details, Event, Outcome, RunStep, Summary};
 use crate::store::Store;
 
 use super::{cells, print_json, print_table, Code, Error};
@@ -82,29 +82,13 @@ fn show(run: &Details, json: bool) -> Result<(), Error> {
     let mut table = vec![cells(["STEP", "TOOK", "Δ LAST RUN", "PEAK RAM", "OUTPUT", "READS", "CODE", "USED BY"])];
     for step in &run.steps {
         let receipt = step.receipt.as_ref();
-        let took = match receipt {
-            Some(_) if step.reused => "reused".into(),
-            Some(receipt) => duration(receipt.wall_ms),
-            None if step.error.is_some() => "—".into(),
-            None => "running".into(),
-        };
-        let change = match (receipt.filter(|_| !step.reused), step.last_wall_ms) {
-            (Some(receipt), Some(last)) if receipt.wall_ms == last => "=".into(),
-            (Some(receipt), Some(last)) if receipt.wall_ms > last => format!("+{}", duration(receipt.wall_ms - last)),
-            (Some(receipt), Some(last)) => format!("−{}", duration(last - receipt.wall_ms)),
-            _ => "—".into(),
-        };
-        let output = match (&step.error, receipt) {
-            (Some(error), _) => format!("✗ {error}"),
-            (None, Some(receipt)) => bytes(receipt.bytes_out),
-            (None, None) => "—".into(),
-        };
+        let [took, change, ram, output] = step_cells(step);
         let reads = receipt.map(|r| r.inputs.iter().map(|input| input.name.as_str()).collect::<Vec<_>>().join(", "));
         table.push(vec![
             step.step.clone(),
             took,
             change,
-            receipt.and_then(|receipt| receipt.peak_rss_bytes).map_or("—".into(), bytes),
+            ram,
             output,
             reads.unwrap_or_default(),
             receipt.map(|receipt| receipt.code[..12].to_string()).unwrap_or_default(),
@@ -159,13 +143,37 @@ fn follow(store: &Store, id: &str, json: bool) -> Result<(), Error> {
     Ok(())
 }
 
+/// The time of a step, its change since the last run that built it, its peak RAM and its output.
+pub(super) fn step_cells(step: &RunStep) -> [String; 4] {
+    let receipt = step.receipt.as_ref();
+    let took = match receipt {
+        Some(_) if step.reused => "reused".into(),
+        Some(receipt) => duration(receipt.wall_ms),
+        None if step.error.is_some() => "—".into(),
+        None => "running".into(),
+    };
+    let change = match (receipt.filter(|_| !step.reused), step.last_wall_ms) {
+        (Some(receipt), Some(last)) if receipt.wall_ms == last => "=".into(),
+        (Some(receipt), Some(last)) if receipt.wall_ms > last => format!("+{}", duration(receipt.wall_ms - last)),
+        (Some(receipt), Some(last)) => format!("−{}", duration(last - receipt.wall_ms)),
+        _ => "—".into(),
+    };
+    let ram = receipt.and_then(|receipt| receipt.peak_rss_bytes).map_or("—".into(), bytes);
+    let output = match (&step.error, receipt) {
+        (Some(error), _) => format!("✗ {error}"),
+        (None, Some(receipt)) => bytes(receipt.bytes_out),
+        (None, None) => "—".into(),
+    };
+    [took, change, ram, output]
+}
+
 /// `SOURCE@VERSION NAME=VALUE…`
 fn fetched(source: &str, version: &str, params: &[(String, String)]) -> String {
     let params = params.iter().map(|(name, value)| format!(" {name}={value}"));
     format!("{source}@{version}{}", params.collect::<String>())
 }
 
-fn mark(outcome: Outcome) -> &'static str {
+pub(super) fn mark(outcome: Outcome) -> &'static str {
     match outcome {
         Outcome::Running => "◐",
         Outcome::Ok => "✓",
