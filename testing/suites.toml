@@ -516,13 +516,6 @@ jobs = ["guards"]
 triggers = ["fixtures/catalog.toml", "tools/check_fixture_policy.py", "tools/fixtures.py"]
 
 [[suite]]
-id = "ci.card-scheduler-guard"
-route = "required"
-command = "python3 tools/check_card_scheduler.py"
-jobs = ["guards"]
-triggers = ["tools/check_card_scheduler.py"]
-
-[[suite]]
 id = "ci.prose"
 route = "required"
 command = "python3 tools/prose.py --check"

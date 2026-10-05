@@ -116,8 +116,6 @@ jobs:
         with:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
-      - name: Host-pushed cards are built only by the card scheduler
-        run: python3 tools/check_card_scheduler.py
       - name: Every fetched host is a declared data source
         run: python3 tools/check_data_sources.py
       - name: Prose budgets, published pages and links

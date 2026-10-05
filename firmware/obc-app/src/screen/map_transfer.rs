@@ -18,6 +18,7 @@ use obc_render::{
     Surface,
 };
 
+use crate::card_scheduler::CardPermit;
 use crate::input::Gesture;
 use crate::settings::Language;
 use crate::{t, Msg};
@@ -87,7 +88,7 @@ pub struct MapTransferScreen {
 }
 
 impl MapTransferScreen {
-    pub fn new(state: MapTransfer) -> Self {
+    pub(crate) fn new(_permit: CardPermit, state: MapTransfer) -> Self {
         MapTransferScreen { state }
     }
 

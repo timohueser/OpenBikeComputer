@@ -12,6 +12,7 @@ use super::vocab::card::{ActionRows, CardEvent};
 use super::vocab::chrome::title_frame;
 use super::vocab::rows::{draw_prompt, PromptOption};
 use super::{Ctx, Render, Transition};
+use crate::card_scheduler::CardPermit;
 use crate::input::Gesture;
 use crate::{Msg, RecorderIntent};
 
@@ -42,7 +43,7 @@ pub struct ArrivalScreen {
 }
 
 impl ArrivalScreen {
-    pub(crate) fn new(view: ArrivalView) -> Self {
+    pub(crate) fn new(_permit: CardPermit, view: ArrivalView) -> Self {
         ArrivalScreen { view, rows: ActionRows::new(0) }
     }
 
