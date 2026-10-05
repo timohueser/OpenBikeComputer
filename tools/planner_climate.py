@@ -27,7 +27,7 @@ import urllib.request
 
 import numpy as np
 
-from . import planner_maps as maps
+from . import data_registry, planner_maps as maps
 
 YEARS = 10
 WEEKS = 52
@@ -489,8 +489,7 @@ def bake(bounds, first_year, source, output, key=None):
                 "center_zoom": OVERVIEW, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2),
             }, {
                 "first_year": first_year, "years": YEARS, "source": "era5-land",
-                "attribution": f"Contains modified Copernicus Climate Change Service information {first_year + YEARS}: "
-                               f"ERA5-Land (doi:{DOI})",
+                "attribution": data_registry.attribution("era5-land", year=first_year + YEARS),
                 "wet_day_mm": WET_MM, "rain_factors": list(RAIN_FACTORS), "wind_factor": WIND_FACTOR,
                 "inputs": {"doi": DOI, "orography_sha256": OROGRAPHY[1], "chunks": source.fingerprint()},
             })
@@ -505,14 +504,14 @@ def bake(bounds, first_year, source, output, key=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("region", help="region name: the recipe in tools/planner-regions and the default output folder")
-    parser.add_argument("--bounds", type=maps.bounds, help="west,south,east,north instead of the recipe bounds")
+    parser.add_argument("region", help="region id: the recipe in tools/planner-regions, the box in data/regions/ and the default output folder")
+    parser.add_argument("--bounds", type=maps.bounds, help="west,south,east,north instead of the box of the region in data/regions/")
     parser.add_argument("--first-year", type=int, help="the first of the ten years; default: the recipe's `climate.first_year`")
     parser.add_argument("--output", type=Path, help="default: ~/.cache/obc/planner/REGION/maps/climate.pmtiles")
     parser.add_argument("--check", action="store_true", help="bake from the cache only and compare with the output")
     args = parser.parse_args()
     recipe = json.loads((RECIPES / f"{args.region}.json").read_text()) if (RECIPES / f"{args.region}.json").exists() else {}
-    bounds = args.bounds or recipe["bounds"]
+    bounds = args.bounds or data_registry.region_box(args.region)
     first_year = args.first_year or recipe.get("climate", {}).get("first_year")
     if first_year is None:
         parser.error("Pin the first year with --first-year or the recipe field `climate.first_year`")

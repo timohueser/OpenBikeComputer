@@ -83,9 +83,10 @@ Elevation: [Mapzen terrain tiles on AWS](https://registry.opendata.aws/terrain-t
 PNG encoding. The provider does not version these tiles, so a fresh download can change generated
 heights.
 
-Attribution: [Mapzen and its elevation data providers](https://github.com/tilezen/joerd/blob/master/docs/attribution.md).
+Attribution: the `mapzen-terrain-tiles` credit of [`data/sources.toml`](../../../data/sources.toml), with
+the [providers' notices](https://github.com/tilezen/joerd/blob/master/docs/attribution.md).
 Europe terrain data produced using Copernicus data and information funded by the European Union —
 EU-DEM layers. Austria terrain data © offene Daten Österreichs — Digitales Geländemodell (DGM)
 Österreich. Global terrain includes USGS SRTM data.
 
-Peak catalogue: © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright).
+Peak catalogue: the `osm-planet` credit of the same file.

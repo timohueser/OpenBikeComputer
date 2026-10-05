@@ -16,8 +16,10 @@
     import type { Bounds, CatalogRecord, RouteShape, RouteSort } from '../../lib/planner/signed-routes';
     import type { BikeType } from '../../lib/planner/riding-profiles';
 
-    let { finder, activity, theme = 'light', current = null, placeName, findPlaces, onClose, onPlan }: {
+    let { finder, activity, theme = 'light', current = null, placeName, findPlaces, onClose, onPlan, attribution }: {
         finder: RouteFinder;
+        /** The map data credit of the release. */
+        attribution: string;
         activity: BikeType;
         theme?: 'light' | 'dark';
         /** The plan that the view hides, for the line that leads back to it. */
@@ -288,7 +290,7 @@
                         <button type="button" class="more" onclick={() => finder.shown += 20}>Show 20 more</button>
                     {/if}
                 {/if}
-                <p class="attribution">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a> · ODbL</p>
+                <p class="attribution"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">{attribution}</a> · ODbL</p>
             </div>
         </div>
     {/if}

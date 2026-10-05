@@ -5,7 +5,9 @@
     import type { SearchPlace, SearchState } from '../../lib/planner/search/types';
     import type { Place } from '../../lib/planner/editor';
     import type { Coordinate } from '../../lib/planner/geo';
-    let { state, selectedId, hoveredId = null, onHover, applying = false, applyError = '', routes, onRoutes, onSelect, onApply, onMore, onRetry, onStretch }: {
+    let { state, selectedId, hoveredId = null, onHover, applying = false, applyError = '', routes, onRoutes, onSelect, onApply, onMore, onRetry, onStretch, attribution }: {
+        /** The map data credit of the release. */
+        attribution: string;
         state: SearchState; selectedId: string | null; hoveredId?: string | null; onHover?: (id: string | null) => void; applying?: boolean; applyError?: string;
         /** What a search for signed routes near the found place lists, such as "Hiking · loops within 10 km". Absent without a route catalog. */
         routes?: string; onRoutes?: (place: SearchPlace) => void;
@@ -48,7 +50,7 @@
             {#if answer.hasMore && (answer.results?.length ?? 0) < 100}<button type="button" onclick={onMore}>Show more results</button>{:else if answer.hasMore}<p>Zoom in or narrow the request to see more places.</p>{/if}
         {/if}
         {#if answer.note}<p class="note" role="status">{answer.note}</p>{/if}
-        <p class="attribution">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a> · ODbL</p>
+        <p class="attribution"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">{attribution}</a> · ODbL</p>
     {/if}
 </div>
 <style>

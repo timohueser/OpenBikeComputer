@@ -2,7 +2,7 @@
 //! out.
 //!
 //! ```text
-//! regions.toml ──▶ .poly ──▶ coverage ──▶ terrain cell set
+//! data/regions ──▶ .poly ──▶ coverage ──▶ terrain cell set
 //!                                              │
 //!    source GeoTIFFs ──▶ obc-dem::bake_cell ───┤
 //!                                              ▼
@@ -973,7 +973,7 @@ mod tests {
             posting_log2: 9,
             cell_log2: 19,
             revision: 1,
-            attribution: obc_elevation::COPERNICUS_ATTRIBUTION.into(),
+            attribution: obc_data::sources::attribution("copernicus-glo-30").into(),
             references: Vec::new(),
         }
     }

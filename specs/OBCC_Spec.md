@@ -126,6 +126,9 @@ catalog and MAY be supplied explicitly for reproducible output.
 | `license` | string | SPDX-style identifier of the licence the store is offered under. |
 | `license_url` | string | Where that licence's text lives. |
 
+The producer takes `attribution`, `license` and `license_url` from the
+`osm-planet` entry of `data/sources.toml` ([obc-data](obc-data.md)).
+
 The cell store is a derivative database of its source dataset, and this block is
 the machine-readable statement of that fact.
 
@@ -601,7 +604,8 @@ OBCM store is an input to a terrain bake.
 display terrain — the map builder, the docs, anything that ships derived rasters —
 MUST take the string from the catalog rather than hard-coding it, so a dataset change
 carries its own notice with it. A producer MUST NOT publish a terrain block with an
-empty `attribution`.
+empty `attribution`. The producer takes it from the `data/sources.toml` entry whose
+id is `dataset_id`.
 
 **The obligation covers every entry of `references` as well.** A consumer that
 displays `attribution` MUST display every listed reference's `attribution` in the same
@@ -639,7 +643,7 @@ A catalog with no `landmarks` block is complete and valid.
 
 ```jsonc
 "landmarks": {
-  "attribution": "landmark text from Wikipedia and structured data from Wikidata, …",
+  "attribution": "landmark text from Wikipedia, …",
   "artifacts": [
     {
       "region_id": "europe/switzerland",
@@ -693,7 +697,8 @@ against the digest the content document declares for it.
 `attribution` carries the class's required credit verbatim, and §13.5's display
 rule applies to it word for word: a consumer that shows landmark content MUST take
 the string from the catalog rather than hard-code it. A producer MUST NOT publish
-a landmark block with an empty `attribution`.
+a landmark block with an empty `attribution`. The producer joins the `wikipedia`
+and `commons` credits of `data/sources.toml`; Wikidata is CC0 and owes none.
 
 `licenses` is the licence obligation made checkable per artifact: every licence the
 artifact's texts and photos are under, so a store can be audited without fetching

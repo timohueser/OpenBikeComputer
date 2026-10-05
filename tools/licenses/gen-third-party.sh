@@ -80,7 +80,7 @@ trap 'rm -f "$tmp"' EXIT
     echo
     echo "- **The map builder's web bundle** emits \`third-party-licenses.txt\` beside itself at"
     echo "  build time, generated from the modules the bundler actually included."
-    echo "- **Map data** is © OpenStreetMap contributors, under the"
+    echo "- **Map data** is $(python3 "$ROOT/tools/data_registry.py" attribution osm-planet), under the"
     echo "  [ODbL](https://www.openstreetmap.org/copyright); terrain is Copernicus GLO-30. Both"
     echo "  credits ship on the device (Settings ▸ System ▸ About) and in every published catalog."
     echo

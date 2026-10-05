@@ -82,10 +82,9 @@ pub struct Catalog {
 
 /// §3.1's source declaration: what the cells derive from and what that obliges.
 ///
-/// The values are [`OSM_SOURCE`]'s constants rather than tree inputs, because the packer
-/// ingests exactly one dataset — the day a second source exists is the day this becomes
-/// data, not before (the OBCM v13 lesson). Consumers that describe the map data take
-/// these strings from the catalog rather than hard-coding them (§3.1).
+/// The credit and the licence come from the `osm-planet` entry of data/sources.toml rather than
+/// from tree inputs, because the packer ingests exactly one dataset. Consumers that describe the
+/// map data take these strings from the catalog rather than hard-coding them (§3.1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SourceEntry {
     /// Kebab-case id of the source dataset.
@@ -100,11 +99,13 @@ pub struct SourceEntry {
 
 /// The one source the packer ingests, as the catalog publishes it.
 pub fn osm_source() -> SourceEntry {
+    let osm = obc_data::sources::embedded("osm-planet");
+    let missing = "osm-planet records its licence";
     SourceEntry {
         dataset_id: "openstreetmap".into(),
-        attribution: "\u{00a9} OpenStreetMap contributors".into(),
-        license: "ODbL-1.0".into(),
-        license_url: "https://opendatacommons.org/licenses/odbl/1-0/".into(),
+        attribution: obc_data::sources::attribution(&osm.id).into(),
+        license: osm.licence.clone().expect(missing),
+        license_url: osm.licence_url.clone().expect(missing),
     }
 }
 
@@ -542,7 +543,7 @@ pub struct RegionTerrain {
 pub struct LandmarkEntry {
     /// The class's required credit, verbatim, for the same reason the terrain block carries
     /// one: a consumer that shows landmark content reads the credit from the catalog rather
-    /// than hard-coding it. The producer stamps `obc_pack::landmarks::ATTRIBUTION` here.
+    /// than hard-coding it. The producer stamps `obc_pack::landmarks::attribution()` here.
     pub attribution: String,
     /// One per region with a compiled artifact, sorted by `region_id`.
     pub artifacts: Vec<LandmarkArtifactEntry>,

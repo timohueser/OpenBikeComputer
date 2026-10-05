@@ -977,12 +977,12 @@
                 <button type="button" class="back-to-routes" onclick={() => openRoutes()}><Icon name="back" size={15} />Find another route</button>
             {/if}
             {#if routesOpen}
-                <SignedRoutes {finder} activity={bike} {theme} onClose={closeRoutes} onPlan={planSignedRoute} {placeName}
+                <SignedRoutes {finder} activity={bike} {theme} attribution={config.attribution} onClose={closeRoutes} onPlan={planSignedRoute} {placeName}
                     current={hasEndpoints && total > 0 ? { title: planTitle(trip), km: view.summary.distance } : null}
                     findPlaces={(text, signal) => searchPlaces(text, searchContext, 6, signal).then(answer => routesPlaces(answer.results ?? [], text))} />
             {:else if searching}
                 <div class="pane-scroll">
-                    <QueryResults routes={config.routes ? `${ridingProfiles[bike].label} · ${routesNoun()} within ${finder.filters.radiusKm} km` : undefined}
+                    <QueryResults attribution={config.attribution} routes={config.routes ? `${ridingProfiles[bike].label} · ${routesNoun()} within ${finder.filters.radiusKm} km` : undefined}
                         onRoutes={place => openRoutes({ coordinate: [place.lon, place.lat], name: place.name })} state={searchState} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
                 </div>
             {:else if !hasEndpoints}

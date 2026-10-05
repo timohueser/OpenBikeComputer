@@ -12,7 +12,7 @@ The credit the agency asks for names the month of the delivery, so the row's att
 holds `{month}` and `{year}` and `credit` fills them from the day the ingest fetched.
 """
 
-from .base import Credential
+from .base import Credential, registry_credit
 from .protocols import Wcs10Source
 
 # The months as the Danish credit spells them, because the credit sentence is Danish.
@@ -30,7 +30,7 @@ class DhmWcs(Wcs10Source):
 
 DK = DhmWcs(
     "dk", "Denmark", "DHM/Terræn 0.4 m", 0.4,
-    "CC BY 4.0", "Indeholder data fra Klimadatastyrelsen, Danmarks Højdemodel, {month} {year}",
+    "CC BY 4.0", registry_credit("dtm-dk"),
     "DVR90", (8.008, 54.435, 15.598, 57.769),
     credential=Credential("dk", "token"),
     url="https://api.dataforsyningen.dk/dhm_wcs_DAF",

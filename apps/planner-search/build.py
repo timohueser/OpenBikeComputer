@@ -1,6 +1,7 @@
 """Build searchable regional SQLite files from a Photon/Nominatim JSON dump."""
 import argparse
 import io
+import sys
 import time
 import re
 from pathlib import Path
@@ -9,6 +10,8 @@ from zoneinfo import ZoneInfo
 from writer import Writer
 
 ROOT = Path(__file__).parent
+sys.path.insert(0, str(ROOT.parents[1] / "tools"))
+from data_registry import attribution  # noqa: E402
 
 
 def main():
@@ -44,7 +47,7 @@ def main():
     n = 0
     outlines = []
     meta = {'source': args.dump.name, 'time_zone': args.time_zone.key,
-            'attribution': '© OpenStreetMap contributors, ODbL 1.0; prepared by Nominatim / Photon'}
+            'attribution': f'{attribution("osm-planet")}; prepared by Nominatim / Photon'}
     if bounds:
         meta.update(bounds=bounds, countries=countries)
     if args.osm_sha256:

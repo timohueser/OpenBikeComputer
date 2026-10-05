@@ -721,8 +721,11 @@ impl eframe::App for FeederApp {
                     );
                 }
                 ui.horizontal(|ui| {
-                    ui.weak("Place search ©");
-                    ui.hyperlink_to("OpenStreetMap contributors", "https://www.openstreetmap.org/copyright");
+                    ui.weak("Place search:");
+                    ui.hyperlink_to(
+                        obc_data::sources::attribution("osm-planet"),
+                        "https://www.openstreetmap.org/copyright",
+                    );
                 });
             });
             ui.add_space(6.0);

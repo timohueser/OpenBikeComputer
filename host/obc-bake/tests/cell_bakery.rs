@@ -111,8 +111,10 @@ const WEST_CORE: &str = "18/1204/1052";
 const EAST_CORE: &str = "18/1204/1054";
 const SEAM_CELL: &str = "18/1204/1053";
 
-fn regions_toml() -> &'static str {
-    "regions = [\n  { id = \"europe/west\", name = \"West\" },\n  { id = \"europe/east\", name = \"East\" },\n]\n"
+fn regions() -> Vec<Region> {
+    [("europe/west", "West"), ("europe/east", "East")]
+        .map(|(id, name)| Region { id: id.into(), name: name.into() })
+        .into()
 }
 
 /// Cuts the real cutter over a synthetic ingest.
@@ -272,7 +274,7 @@ fn fixture_dirs(name: &str) -> Fixture {
     std::fs::write(presets_dir.join("skins/testskin.json"), SKIN_JSON).unwrap();
     let schema = obc_bake::presets::load_schema(&presets_dir).expect("the test schema loads");
     let skins = obc_bake::presets::load_skins(&presets_dir, None).expect("the test skin loads");
-    let regions = obc_bake::regions::parse(regions_toml()).expect("region list parses");
+    let regions = regions();
     Fixture { tree: dir.join("tree"), dir, regions, schema, skins, extracts }
 }
 
@@ -519,7 +521,7 @@ fn the_landmark_class_is_published_credited_and_verified() {
     let generated = f.catalog();
 
     let landmarks = generated.root.landmarks.as_ref().expect("the catalog records the class");
-    assert_eq!(landmarks.attribution, obc_pack::landmarks::ATTRIBUTION, "the credit is the compiler's, not retyped");
+    assert_eq!(landmarks.attribution, obc_pack::landmarks::attribution(), "the credit is the compiler's, not retyped");
     let artifact = &landmarks.artifacts[0];
     assert_eq!((artifact.region_id.as_str(), artifact.records, artifact.photos), ("europe/west", 1, 1));
     assert_eq!(artifact.licenses, vec![ARTICLE_LICENSE.to_string(), PHOTO_LICENSE.to_string()]);
@@ -528,7 +530,7 @@ fn the_landmark_class_is_published_credited_and_verified() {
 
     // The licence obligation reaches the document a person reads.
     let license = obc_pack::catalog::license_txt(&generated.root);
-    assert!(license.contains(obc_pack::landmarks::ATTRIBUTION), "{license}");
+    assert!(license.contains(&obc_pack::landmarks::attribution()), "{license}");
     assert!(license.contains(PHOTO_LICENSE), "every licence the artifact uses:\n{license}");
 
     // Every file of the artifact is published, on a stable key: nothing pins them.
@@ -582,7 +584,7 @@ fn the_landmark_class_is_published_credited_and_verified() {
     // of these thirty cells holds the section, so a sampled check would pass the store.
     let regenerated = f.catalog();
     assert!(regenerated.root.landmarks.is_none());
-    assert!(!obc_pack::catalog::license_txt(&regenerated.root).contains(obc_pack::landmarks::ATTRIBUTION));
+    assert!(!obc_pack::catalog::license_txt(&regenerated.root).contains(&obc_pack::landmarks::attribution()));
     let report = obc_bake::verify::verify_cell_tree(&f.tree, Default::default()).expect("verify runs");
     let named: Vec<&String> = report.problems.iter().filter(|p| p.contains("carries a landmark section")).collect();
     assert_eq!(named.len(), 1, "a cell's landmark bytes with no catalog credit: {:?}", report.problems);
@@ -605,9 +607,8 @@ fn terrain_doc(revision: u32, dataset_version: &str) -> TerrainDoc {
         posting_log2: TERRAIN_POSTING_LOG2,
         cell_log2: TERRAIN_CELL_LOG2,
         revision,
-        // The credit comes from `obc-dem`'s own `const` and is never retyped, here or anywhere:
-        // this assertion is why the bakery reaches for the library rather than a CLI.
-        attribution: obc_elevation::COPERNICUS_ATTRIBUTION.into(),
+        // The credit comes from data/sources.toml and is never retyped, here or anywhere.
+        attribution: obc_data::sources::attribution("copernicus-glo-30").into(),
         // The run fills this from the cutter's own archive, so what a caller passes is ignored.
         references: Vec::new(),
     }
@@ -786,8 +787,8 @@ fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
     assert_eq!((terrain.posting_log2, terrain.cell_log2), (TERRAIN_POSTING_LOG2, TERRAIN_CELL_LOG2));
     assert_eq!(
         terrain.attribution,
-        obc_elevation::COPERNICUS_ATTRIBUTION,
-        "§13.5: the credit comes from obc-elevation's const"
+        obc_data::sources::attribution("copernicus-glo-30"),
+        "§13.5: the credit comes from data/sources.toml"
     );
     // The reference models the cells' crest lifts came from travel with the map, per cell in the
     // sidecar and once in the block. The wording is the archive's, not this crate's.
