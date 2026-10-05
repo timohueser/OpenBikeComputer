@@ -3159,6 +3159,7 @@ dependencies = [
  "embedded-graphics",
  "heapless 0.8.0",
  "libm",
+ "obc-data",
  "obc-elevation",
  "obc-fixtures",
  "obc-formats",
@@ -3182,7 +3183,6 @@ dependencies = [
  "image",
  "obc-data",
  "obc-dem",
- "obc-elevation",
  "obc-file-source",
  "obc-formats",
  "obc-map-scene",
@@ -3194,7 +3194,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "toml",
  "ureq",
 ]
 
@@ -3232,6 +3231,7 @@ name = "obc-data"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "libc",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -3243,6 +3243,7 @@ dependencies = [
 name = "obc-dem"
 version = "0.1.0"
 dependencies = [
+ "obc-data",
  "obc-elevation",
  "obc-fixtures",
  "obc-formats",
@@ -3405,6 +3406,7 @@ dependencies = [
  "heapless 0.8.0",
  "image",
  "indexmap",
+ "obc-data",
  "obc-dem",
  "obc-elevation",
  "obc-file-source",
@@ -3593,6 +3595,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "obc-app",
+ "obc-data",
  "obc-platform",
  "obc-ports",
  "obc-replay",
@@ -4685,6 +4688,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "image",
+ "obc-data",
  "obc-dem",
  "osmpbfreader",
  "postcard",

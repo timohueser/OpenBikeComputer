@@ -67,8 +67,9 @@ fn bake_then_publish_is_the_whole_loop() {
         "testland\n1\n  7.790 47.980\n  7.830 47.980\n  7.830 48.010\n  7.790 48.010\n  7.790 47.980\nEND\nEND\n",
     )
     .unwrap();
-    let regions = dir.join("regions.toml");
-    std::fs::write(&regions, "regions = [ { id = \"europe/testland\", name = \"Testland\" } ]\n").unwrap();
+    let regions = dir.join("regions");
+    std::fs::create_dir_all(regions.join("europe")).unwrap();
+    std::fs::write(regions.join("europe/testland.toml"), "name = \"Testland\"\nkind = \"geofabrik\"\n").unwrap();
     let tree = dir.join("tree");
     let presets = fixture_presets(&dir);
 
@@ -128,7 +129,7 @@ fn a_region_outside_the_curated_list_is_refused() {
     let out = obc_bake().args(["bake", "--out", "/tmp/nope", "europe/france"]).output().expect("run");
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("not in the curated region list"), "{err}");
+    assert!(err.contains("not a Geofabrik region in data/regions/"), "{err}");
 }
 
 #[test]

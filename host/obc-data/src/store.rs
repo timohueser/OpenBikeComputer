@@ -1,12 +1,16 @@
-//! The local store: read-only objects named by their SHA-256, and the snapshot records that say
-//! which objects are which source version. `specs/obc-data.md` describes the layout.
+//! The local store: read-only objects named by their SHA-256, the snapshot records that say
+//! which objects are which source version, and the receipts that say which objects are which
+//! layer. `specs/obc-data.md` describes the layout.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use crate::engine::Receipt;
 
 /// The files of one source version, as fetched.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -105,12 +109,7 @@ impl Store {
     }
 
     pub fn snapshot(&self, source: &str, version: &str) -> Result<Option<Snapshot>, String> {
-        let path = self.snapshot_path(source, version);
-        match fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text).map(Some).map_err(|e| format!("{}: {e}", path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(format!("{}: {e}", path.display())),
-        }
+        read_record(&self.snapshot_path(source, version))
     }
 
     /// Every snapshot record of `source` whose version is one path segment.
@@ -132,9 +131,34 @@ impl Store {
     }
 
     pub fn put_snapshot(&self, snapshot: &Snapshot) -> Result<(), String> {
-        let text = serde_json::to_string_pretty(snapshot).map_err(|e| e.to_string())?;
-        write_atomic(&self.snapshot_path(&snapshot.source, &snapshot.version), text.as_bytes())
+        write_record(&self.snapshot_path(&snapshot.source, &snapshot.version), snapshot)
     }
+
+    fn layer_path(&self, key: &str) -> PathBuf {
+        self.root.join("layers").join(format!("{key}.json"))
+    }
+
+    /// The receipt of the layer with this key.
+    pub fn layer(&self, key: &str) -> Result<Option<Receipt>, String> {
+        read_record(&self.layer_path(key))
+    }
+
+    pub fn put_layer(&self, receipt: &Receipt) -> Result<(), String> {
+        write_record(&self.layer_path(&receipt.key), receipt)
+    }
+}
+
+fn read_record<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
+    match fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str(&text).map(Some).map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+fn write_record(path: &Path, record: &impl Serialize) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(record).map_err(|e| e.to_string())?;
+    write_atomic(path, text.as_bytes())
 }
 
 /// Write `bytes` to a temporary file beside `path`, then rename it: a reader sees the old file or

@@ -31,20 +31,18 @@ import urllib.request
 
 import numpy as np
 
-from . import planner_maps as maps
+from . import data_registry, planner_maps as maps
 
 NO_SNOW, FULL, NO_DATA = 253, 254, 255
 LAST_STEP = 182
 TILE = 256
-RECIPES = maps.ROOT / "tools/planner-regions"
 # `canopy`: MODIS sees the canopy, not the snow under it. The Copernicus input corrects for trees.
 # `smooth`: 20 m day values are noisy, so the lower zooms smooth them before they blend.
 SOURCES = {
     "nasa-modis": {"resolution_m": 500, "canopy": True, "smooth": False,
-                   "attribution": "NASA MODIS snow cover MOD10A1/MYD10A1 (NSIDC); tree canopy: Hansen/UMD/Google/USGS/NASA"},
+                   "attribution": f"{data_registry.attribution('modis-snow')}; tree canopy: {data_registry.attribution('hansen-gfc')}"},
     "copernicus-hr-wsi": {"resolution_m": 20, "canopy": False, "smooth": True,
-                          "attribution": f"© European Union, Copernicus Land Monitoring Service {dt.date.today().year}, "
-                                         "European Environment Agency (EEA): HR-WSI Snow Phenology"},
+                          "attribution": data_registry.attribution("hr-wsi", year=dt.date.today().year)},
 }
 CANOPY = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-{0}/Hansen_GFC-2023-{0}_treecover2000_{{}}.tif".format(maps.PINS["hansen-gfc"])
 # The owner chose 75 % canopy cover as "dense": below it, MODIS still sees the snow between the trees.
@@ -593,8 +591,8 @@ def fetch(source, bounds, first_season, last_season, out):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("region", nargs="?", help="region name: the recipe in tools/planner-regions and the default output folder")
-    parser.add_argument("--bounds", type=maps.bounds, help="west,south,east,north instead of the recipe bounds")
+    parser.add_argument("region", nargs="?", help="region id: a box region in data/regions/ and the default output folder")
+    parser.add_argument("--bounds", type=maps.bounds, help="west,south,east,north instead of the box of the region in data/regions/")
     parser.add_argument("--output", type=Path, help="default: ~/.cache/obc/planner/REGION/maps/snow.pmtiles")
     parser.add_argument("--source", choices=SOURCES, default="nasa-modis")
     parser.add_argument("--first-season", type=int, default=2000, help="the first NASA season")
@@ -604,7 +602,7 @@ def main():
     args = parser.parse_args()
     if not args.region and not (args.fetch and args.bounds):
         parser.error("give a region, or --bounds with --fetch")
-    bounds = args.bounds or json.loads((RECIPES / f"{args.region}.json").read_text())["bounds"]
+    bounds = args.bounds or data_registry.region_box(args.region)
     if args.fetch:
         fetch(args.source, bounds, args.first_season, args.last_season, args.fetch)
         return

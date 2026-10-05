@@ -21,12 +21,12 @@ covered, 1 m to 5 m, so claiming one number would be a claim about data nobody h
 the run prints the step each delivered raster actually has instead.
 """
 
-from .base import ManualSource
+from .base import ManualSource, registry_credit
 
 AU = ManualSource(
     "au", "Australia", "ELVIS DEM 1–5 m, per order", None,
     "CC BY 4.0 (the licensor is the contributing agency named in the order)",
-    "Sourced from ELVIS – Elevation and Depth, © the contributing agency",
+    registry_credit("dtm-au"),
     "AHD (Australian Height Datum)", (112.0, -44.0, 154.0, -9.0),
     confirm_datum="AHD",
     why="ELVIS answers no box: the order is a web form and the delivery is a link sent "

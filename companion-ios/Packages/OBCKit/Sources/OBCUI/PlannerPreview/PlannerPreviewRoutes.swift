@@ -112,6 +112,8 @@ struct PlannerRoutesList: View {
     let onFilters: () -> Void
     let onSelect: (CatalogRecord) -> Void
     let onRetry: () -> Void
+    /// The map data credit of the release.
+    let attribution: String
 
     private var graded: Bool { PlannerRoutesText.graded(activity) }
     private var place: String { finder.start?.name ?? "the start" }
@@ -175,7 +177,7 @@ struct PlannerRoutesList: View {
             if finder.matches.count > finder.shown {
                 Button("Show 20 more") { finder.shown += 20 }.frame(minHeight: 44)
             }
-            Text("© OpenStreetMap contributors").font(.caption2).foregroundStyle(OBCTheme.secondary)
+            Text(attribution).font(.caption2).foregroundStyle(OBCTheme.secondary)
         }
     }
 

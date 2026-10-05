@@ -114,7 +114,7 @@ The generator, templates, decoder, training, and ONNX export code live in `query
 Use [its README](query/README.md) to restore training data and retrain. Keep the held-out
 sentences separate from template and lexicon changes.
 
-Search data is © OpenStreetMap contributors, [ODbL 1.0](https://www.openstreetmap.org/copyright).
+Search data carries the `osm-planet` credit of [`data/sources.toml`](../../data/sources.toml).
 The category vocabulary derives from the iD tagging schema (ISC). The model derives from
 [mmBERT-small](https://huggingface.co/jhu-clsp/mmBERT-small) (MIT). German address terms derive from libpostal (MIT). See the adjacent
 `LICENSE.*` files. `opening_hours` is an npm dependency under LGPL-3.0.

@@ -55,6 +55,31 @@ Rules:
 - A credential has `env` or `file`, not both.
 - An `osm` fetch has `from`, and `from` names a source. No other fetch has `from`.
 
+`attribution` is the one copy of a credit. Every product that carries a credit takes it from
+here:
+
+| Product | Credit |
+| --- | --- |
+| Device-map catalog `source` and `LICENSE.txt` | `attribution`, `licence` and `licence_url` of `osm-planet` |
+| Device-map catalog `terrain.attribution` | The source whose id is the terrain `dataset_id` |
+| Device-map catalog `landmarks.attribution` | `wikipedia`, then `commons` |
+| Planner release `attribution`, routing package, search, route overlays | `osm-planet` |
+| Planner release `landcover_attribution` | `daylight-landcover`; the basemaps show it after `attribution` |
+| Planner `terrain_attribution` | `copernicus-glo-30`, after the reference models |
+| Planner climate and snow layers | `era5-land`; `modis-snow` and `hansen-gfc`, or `hr-wsi` |
+| Reference archive manifests | `dtm-<key>` for the national model with that key |
+
+A credit that a rider reads is the `attribution` text. An SPDX `licence` id goes only into a
+field for programs, such as the catalog `license`.
+
+Rust code reads the file that the build embeds (`obc_data::sources::attribution`). Python
+reads it through `tools/data_registry.py`, and shell through
+`tools/data_registry.py attribution ID`. The web bundle notice reads it at build time through
+`builder/app/vite/third-party-licenses.ts`. The web planner, the map builder and the iOS planner show the
+planner release `attribution`. Text that no step can generate keeps a copy, and a test
+compares the copy with this file: the device About page, and the footers of the site, the
+docs and the map builder.
+
 ### `data/env/<environment>.toml`
 
 `[pins]` maps a source id to the version that the environment is built from. Each pin names
@@ -83,6 +108,17 @@ A `geofabrik` region is the Geofabrik area whose path is the region id, for exam
 `europe/germany/baden-wuerttemberg`. A union resolves to the regions in it that are not
 unions. A union that contains itself, or names a region that does not exist, is refused.
 
+The bakes read this directory:
+
+| Reader | Regions |
+| --- | --- |
+| `obc-bake` (device maps) | Every `geofabrik` region. `--regions DIR` reads another directory with this layout; `obc bake` passes the checkout's directory |
+| Planner bake | The `box` region with the id of the recipe in `tools/planner-regions/`: its `name` and its box |
+| `fixtures/build-map-package.sh` | The `box` regions of the fixtures |
+
+`tools/data_registry.py box ID [--lat-first]` prints the box of a `box` region and refuses
+every other kind, so Python and shell never resolve a union or a Geofabrik area.
+
 ## State of a source
 
 `obc data sources` computes the state of each source when it runs. It stores nothing.
@@ -105,8 +141,9 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | --- | --- |
 | `objects/<ab>/<sha256>` | One file, named by the lowercase hex SHA-256 of its bytes; `<ab>` is its first two characters. Read-only |
 | `snapshots/<source>/<version>.json` | The snapshot record of one source version |
+| `layers/<key>.json` | The receipt of the layer with that key, see [Layers](#layers) |
 | `upstream/<source>.json` | The last upstream check of a source: `checked` (seconds since 1970-01-01 UTC), `version` (a string, or `null` when the check failed) and `error` (only when it failed) |
-| `partial/` | Downloads that are not complete, and the validators that resume them |
+| `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write |
 | `locks/` | One lock file per key |
 
 Rules:
@@ -115,7 +152,8 @@ Rules:
   rename after the digest check.
 - A record goes to a temporary file in its directory and replaces the old record with one
   rename.
-- One process at a time downloads a URL, and one process at a time writes a snapshot record.
+- One process at a time downloads a URL, one process at a time writes a snapshot record, and one
+  process at a time builds a layer key.
 
 A snapshot record is a JSON object:
 
@@ -255,6 +293,109 @@ The store keeps its answer, or its failure, for one hour.
 | `github`, `release` | The GitHub API: the tag of the newest release that has the asset of the URL |
 | `http`, `geofabrik` or `glo30`, `date`, and a URL without `{name}` | `HEAD` of the URL; the `Last-Modified` day |
 | Every other source | None; the source cannot be checked |
+
+## Layers
+
+A step makes one layer from snapshots, the layers of other steps and options. The engine builds
+the steps in dependency order. It builds a step only when the store has no receipt for the key
+of the step, or when an object of that receipt is missing.
+
+A step declares:
+
+| Field | Meaning |
+| --- | --- |
+| `name` | The layer name: lowercase kebab-case segments joined by `/` |
+| `inputs` | Snapshots, as `source`, `version` and `files`: the names of the files that the step reads, or none for every file. The layers of other steps, by name |
+| `options` | A JSON object |
+| `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. A Rust step declares the crate of its function |
+| `outputs` | Paths in the output directory. A path is a file, or a directory whose files are all part of the layer. The step must write each path and no other file. A symbolic link fails the step |
+| `run` | A Rust function in the process, or a command: a program and its arguments. No argument names a path outside the repository root: no argument is an absolute path, contains `=/` or has a `..` segment between `/` and `=` |
+
+### Keys
+
+The digest of a list of files is the SHA-256 of the text that `sha256sum` writes for them: one
+line `<sha256>  <name>` with a final newline per file, in byte order of the names.
+
+- The digest of a snapshot input lists its selected files by `name`.
+- The digest of a layer lists its files by `path`.
+- The code hash lists the code files by their path relative to the repository root, with `/`.
+  A path adds the files that `git ls-files --cached --others --exclude-standard` lists for
+  it: the files that git tracks or does not ignore. A path that lists no file fails the step,
+  and so does a repository root that is not a git checkout. A crate adds its `Cargo.toml`, `build.rs`
+  and `src/` the same way. Each path dependency that is not a dev-dependency adds the same,
+  and so do its own path dependencies, as `cargo metadata --no-deps` lists them. A path
+  dependency must be a workspace member. A `.rs` file of a crate also adds each file that it
+  names in `include_str!`, `include_bytes!`, `include!` or `#[path = "…"]`, and an added `.rs`
+  file adds its own. The name is a string literal, normal or raw, relative to the file, or a
+  `concat!` of string literals, relative to the file or after `env!("CARGO_MANIFEST_DIR")`.
+  These are not code unless the step declares them: a name that a literal with an escape, a
+  constant or another macro gives; `#[path]` in an inline module; a file that `build.rs` reads;
+  and `Cargo.lock`.
+
+The key is the SHA-256 of this JSON object, as the compact output of `serde_json` with the keys
+of each object in byte order:
+
+| Key | Value |
+| --- | --- |
+| `step` | The layer name |
+| `command` | The program and its arguments, or `null` for a Rust step |
+| `inputs` | One `{"kind", "name", "digest"}` per input, sorted by `kind`, then `name`. `kind` is `snapshot` or `layer`; `name` is the source id or the layer name |
+| `options` | The options |
+| `code` | The code hash |
+| `outputs` | The declared outputs, sorted |
+
+An input layer enters a key with its digest, not with its key. A rebuild that gives the same
+files gives the same digest, so the keys of the layers that read it do not change, and the
+engine reuses them. A snapshot version enters a key the same way, by the digest of its files.
+
+A key holds no version of an installed tool, such as the Python interpreter or Java. The first
+Python step that ships adds a `uv.lock`; from then on, a Python step runs with
+`uv run --locked` and declares `uv.lock` as code. A Rust step runs the code of
+the running binary, but its code hash comes from the files in the repository root. `obc data`
+runs with `cargo run` in the checkout that it reads, so the two are the same sources.
+
+### The step contract
+
+A step gets a request. A command reads it as JSON on standard input; a Rust function gets the
+same fields.
+
+| Key | Value |
+| --- | --- |
+| `step` | The layer name |
+| `snapshots` | `{source: {file name: object path}}` |
+| `layers` | `{layer name: {path in the layer: object path}}` |
+| `options` | The options |
+| `output` | An empty directory. The layer is the files that the step writes in it |
+| `metrics` | A path. The step can write a JSON object there, for example the size of each section |
+
+A command starts in the repository root. Its standard output and standard error go to the
+standard error of the engine. Exit status 0 is success. The objects are read-only. While a step
+runs, `output` and `metrics` are in `partial/layer-<key>/`; the engine removes that directory
+when the step ends, also when it fails. A failed step writes no receipt.
+
+### Offline
+
+A step reads only its inputs: the snapshots, the layers and the options in its request. A step
+does not use the network; fetchers are the only network users. The engine does not enforce this.
+A step that needs a package or a tool finds it installed, or reads it as a snapshot.
+
+### Receipt
+
+`layers/<key>.json` is the receipt of one layer, a JSON object:
+
+| Key | Meaning |
+| --- | --- |
+| `step`, `key`, `options`, `code`, `command`, `outputs` | As in the key |
+| `inputs` | As in the key |
+| `digest` | The digest of `files` |
+| `files` | One item per file: `path` in the layer, `size` in bytes and `sha256`, sorted by `path` |
+| `built` | `YYYY-MM-DDTHH:MM:SSZ` |
+| `wall_ms` | The time from start to end, in milliseconds |
+| `cpu_ms` | User and system time in milliseconds of the command and the children it waited for (`wait4`). For a Rust step, of the whole process, so it is exact only while no other step runs. `null` when the system does not report it |
+| `peak_rss_bytes` | The peak resident set of the command or of a child it waited for. For a Rust step, the peak of the process when the step raised it, else `null` |
+| `bytes_in` | The size of the input files |
+| `bytes_out` | The size of `files` |
+| `metrics` | The JSON object the step wrote, or `{}` |
 
 ## Commands
 

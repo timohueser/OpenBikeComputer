@@ -14,6 +14,7 @@ describe("shared basemap hosting", () => {
             basemap: "https://tiles.openbikecomputer.com/releases/id/basemap.json",
             glyphs: "https://maps.openbikecomputer.com/releases/id/fonts/{fontstack}/{range}.pbf",
             sprites: "https://maps.openbikecomputer.com/releases/id/sprites",
+            attribution: "Test map data",
         };
         const fetch = vi.fn().mockResolvedValue(Response.json({ format: 1, active }));
         vi.stubGlobal("fetch", fetch);
@@ -26,6 +27,7 @@ describe("shared basemap hosting", () => {
             const style = basemapStyle(theme, config);
             expect(validateStyleMin(style)).toEqual([]);
             expect(style.sources.basemap).toHaveProperty("url", active.basemap);
+            expect((style.sources.basemap as { attribution: string }).attribution).toContain(active.attribution);
             expect(style.glyphs).toBe(active.glyphs);
             expect(style.sprite).toBe(`${active.sprites}/${theme}`);
         }
@@ -34,12 +36,14 @@ describe("shared basemap hosting", () => {
     it("uses the planner config that the build carries, with local paths on the page origin", async () => {
         vi.stubGlobal("location", { href: "http://localhost:4175/" });
         vi.stubEnv("VITE_PLANNER_CONFIG", JSON.stringify({ name: "Local", basemap: "pmtiles:///@fs/data/maps/basemap.pmtiles",
-            glyphs: "/@fs/data/maps/assets/fonts/{fontstack}/{range}.pbf", sprites: "/@fs/data/maps/assets/sprites/v4" }));
+            glyphs: "/@fs/data/maps/assets/fonts/{fontstack}/{range}.pbf", sprites: "/@fs/data/maps/assets/sprites/v4",
+            attribution: "Local map data" }));
         const fetch = vi.fn();
         vi.stubGlobal("fetch", fetch);
         const { basemapConfig } = await import("./basemap-config");
         expect(await basemapConfig()).toEqual({ basemap: "pmtiles://http://localhost:4175/@fs/data/maps/basemap.pmtiles",
-            glyphs: "http://localhost:4175/@fs/data/maps/assets/fonts/{fontstack}/{range}.pbf", sprites: "http://localhost:4175/@fs/data/maps/assets/sprites/v4" });
+            glyphs: "http://localhost:4175/@fs/data/maps/assets/fonts/{fontstack}/{range}.pbf", sprites: "http://localhost:4175/@fs/data/maps/assets/sprites/v4",
+            attribution: "Local map data" });
         expect(fetch).not.toHaveBeenCalled();
     });
 

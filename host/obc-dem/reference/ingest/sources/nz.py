@@ -17,6 +17,7 @@ pixels, so only the window the box needs is read.
 
 import math
 
+from .base import registry_credit
 from .cog import CogWindows
 from .protocols import projected_box
 
@@ -62,8 +63,7 @@ class Nztopo50Cogs(CogWindows):
 NZ = Nztopo50Cogs(
     "nz", "New Zealand", "LiDAR DEM 1 m (LINZ)", 1.0,
     "CC BY 4.0",
-    "Sourced from the LINZ Data Service and licensed by Toitū Te Whenua Land Information "
-    "New Zealand, for re-use under CC BY 4.0",
+    registry_credit("dtm-nz"),
     "NZVD2016 (EPSG:7839), normal-orthometric",
     (166.3, -47.4, 178.9, -34.0),
     base="https://nz-elevation.s3.ap-southeast-2.amazonaws.com"

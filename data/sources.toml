@@ -475,7 +475,7 @@ id = "modis-snow"
 kind = "data"
 licence = "LicenseRef-NASA-EOSDIS"
 licence_url = "https://nsidc.org/data/mod10a1/versions/61"
-attribution = "MODIS MOD10A1 v061, Hall & Riggs, NASA NSIDC DAAC, doi:10.5067/MODIS/MOD10A1.061"
+attribution = "MODIS MOD10A1/MYD10A1 v061, Hall & Riggs, NASA NSIDC DAAC, doi:10.5067/MODIS/MOD10A1.061, doi:10.5067/MODIS/MYD10A1.061"
 obligations = "Cite the dataset"
 fetch = { kind = "capture", url = "https://planetarycomputer.microsoft.com/api/stac/v1/search" }
 version = "date"

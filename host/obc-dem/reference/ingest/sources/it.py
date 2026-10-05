@@ -10,6 +10,7 @@ answered: Piedmont publishes 5 m with no documented vertical datum, Lombardy ask
 email request, and Aosta Valley needs an Italian identity login.
 """
 
+from .base import registry_credit
 from .bulk import BulkSource
 from .grid import grid_squares
 from .protocols import Wcs20Source
@@ -19,7 +20,7 @@ from .protocols import Wcs20Source
 # and the decimetres a geoid model would move them cannot make or unmake a 10 m lift.
 BZ = Wcs20Source(
     "it-bz", "Italy, South Tyrol", "DTM 2.5 m (Provincia autonoma di Bolzano)", 2.5,
-    "CC0 1.0", "Autonome Provinz Bozen – Provincia autonoma di Bolzano",
+    "CC0 1.0", registry_credit("dtm-it-bz"),
     "Italian levelling network (m s.l.m.), geoid model not named by the province",
     (10.3, 46.2, 12.5, 47.1),
     url="https://geoservices9.civis.bz.it/geoserver/ows",
@@ -51,7 +52,7 @@ class TrentoGrids(BulkSource):
 
 TN = TrentoGrids(
     "it-tn", "Italy, Trentino", "DTM 0.5 m (Provincia autonoma di Trento)", 0.5,
-    "CC BY 4.0", "Provincia autonoma di Trento",
+    "CC BY 4.0", registry_credit("dtm-it-tn"),
     "Italian levelling network (m s.l.m.), orthometric", (10.4, 45.6, 12.0, 46.6),
     grid_epsg=25832,
     base="https://siatservices.provincia.tn.it/stemdata/2014_lidar_dtm_asc/",
