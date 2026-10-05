@@ -370,7 +370,7 @@ route = "ordinary"
 command = "obc check device board wasm"
 jobs = ["boot", "builder-python", "desktop", "device", "embedded", "ui-snapshots", "wasm"]
 foundation = true
-triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
+triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/install-riscv.sh"]
 
 [[suite]]
 id = "ci.dependencies"
