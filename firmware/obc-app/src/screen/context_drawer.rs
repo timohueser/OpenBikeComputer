@@ -560,7 +560,7 @@ macro_rules! row_tables {
     ($table:ty; $($(#[$attr:meta])* $vis:vis static $name:ident = $value:expr;)+) => {
         $($(#[$attr])* $vis static $name: $table = $value;)+
         #[cfg(test)]
-        pub(super) const TABLES: &[&$table] = &[$(&$name),+];
+        pub(in crate::screen) const TABLES: &[&$table] = &[$(&$name),+];
     };
 }
 
@@ -1436,6 +1436,8 @@ mod tests {
     /// choice fits the editor line.
     #[test]
     fn every_label_and_choice_fits_the_sheet_in_every_language() {
+        use crate::screen::settings::page::{Item, TABLES as SETTINGS_TABLES};
+
         const W: i32 = 240;
         // The row kit's geometry: the row area is inset `ROW_X` from both screen edges, the text
         // starts 10 px inside it, the chevron column is 28 px and the switch column 58 px.
@@ -1447,19 +1449,7 @@ mod tests {
         let choice_room = W - 48 - 12;
         let mut buf = heapless::String::<24>::new();
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
-            for menu in [
-                &RIDE,
-                &MAP,
-                &MAP_DISPLAY,
-                &MAP_ICONS,
-                &MAP_POI_CATEGORIES,
-                &UP_AHEAD,
-                &ROUTE_PLAN,
-                &FIND_PLACE,
-                &ASSISTANT_RESUME,
-                &ASSISTANT_VISIT,
-                &LANDMARK_CONTENT,
-            ] {
+            for menu in TABLES {
                 for row in menu.rows {
                     let label = t(row.label, lang);
                     let room = match row.action {
@@ -1479,21 +1469,10 @@ mod tests {
                     }
                 }
             }
-            // The settings pages' values, which no sheet table declares.
-            for v in [
-                ContextValue::IdleReturn,
-                ContextValue::Theme,
-                ContextValue::Brightness,
-                ContextValue::FixInterval,
-                ContextValue::StatCycle,
-                ContextValue::ClimbMode,
-                ContextValue::WaypointMode,
-                ContextValue::Units,
-                ContextValue::UtcOffset,
-                ContextValue::MaxHr,
-                ContextValue::Ftp,
-                ContextValue::Sound,
-            ] {
+            for v in SETTINGS_TABLES.iter().flat_map(|menu| menu.rows).filter_map(|row| match row.item {
+                Item::Value(value) => Some(value),
+                _ => None,
+            }) {
                 for ordinal in 0..v.count() {
                     buf.clear();
                     let choice = choice_text(v, ordinal, lang, &mut buf);

@@ -658,7 +658,7 @@ mod tests {
         use obc_render::text::{text_width, Font};
         let area_w = 240 - 2 * rows::ROW_X;
         for lang in Language::ALL {
-            for menu in [&HUB, &RIDE, &DISPLAY, &SOUND, &CONNECTIONS, &POWER, &SYSTEM, &DATETIME, &FIRMWARE] {
+            for menu in TABLES {
                 for row in menu.rows {
                     let label = t(row.label, lang);
                     assert!(
