@@ -50,24 +50,22 @@ pub fn planet(store: &Store, http: &Http, request: &Request) -> Result<Snapshot,
         if day > newest_day {
             return Err(format!("source `{}`: the newest daily diff is of {}", source.id, date::format(newest_day)));
         }
-        // One diff per day: the sequence of a day follows from the newest, and its state proves it.
-        let first = newest.checked_sub((newest_day - monday) as u64);
-        let first =
-            first.ok_or_else(|| format!("source `{}`: the daily replication starts after {weekly}", source.id))?;
-        for (sequence, want) in [(first, monday), (first + days, day)] {
-            let (_, got) = state(http, &format!("{replication}{}.state.txt", path(sequence)))?;
-            if got != want {
-                return Err(format!(
-                    "source `{}`: the daily diff {sequence} is of {}, not {}: the replication has a gap",
-                    source.id,
-                    date::format(got),
-                    date::format(want)
-                ));
-            }
+        let first = sequence(http, &replication, (newest, newest_day), monday)?;
+        let last = sequence(http, &replication, (newest, newest_day), day)?;
+        if last.checked_sub(first) != Some(days) {
+            return Err(format!(
+                "source `{}`: the daily diffs {first} to {last} are not one per day from {weekly} to {version}",
+                source.id
+            ));
         }
-        diffs = (first + 1..=first + days).map(|sequence| format!("{replication}{}.osc.gz", path(sequence))).collect();
+        diffs = (first + 1..=last).map(|sequence| format!("{replication}{}.osc.gz", path(sequence))).collect();
     }
-    let planet = get(store, http, source, Some(&weekly), &planet_url, false, None)?;
+    let planet = get(store, http, source, Some(&weekly), &planet_url, false, None).map_err(|error| {
+        match error.ends_with("HTTP 404") {
+            true => format!("{error}: a planet appears some days after its Monday, and a week can be missing"),
+            false => error,
+        }
+    })?;
     if days > 0 {
         record(store, &source.id, &version, std::slice::from_ref(&planet))?;
     }
@@ -92,18 +90,41 @@ pub fn extract(store: &Store, http: &Http, request: &Request) -> Result<Snapshot
             // Geofabrik makes every area each day, so the earliest of the newest days has every extract.
             let mut day = i64::MAX;
             for url in expand(&states, None, &request.params)? {
-                day = day.min(state(http, &url)?.1);
+                day = day.min(state(http, &url).map_err(hint)?.1);
             }
             date::format(day)
         }
     };
     let request = Request { source: request.source, version: Some(version), params: request.params.clone() };
-    files(store, http, &request).map_err(|error| match error.ends_with("HTTP 404") {
-        true => {
-            format!("{error}: Geofabrik keeps the extracts of about the last month, and of the first of each month")
-        }
+    files(store, http, &request).map_err(hint)
+}
+
+fn hint(error: String) -> String {
+    match error.ends_with("HTTP 404") {
+        true => format!(
+            "{error}: Geofabrik keeps the extracts of about the last month, and of the first of each month, \
+             or the area does not exist"
+        ),
         false => error,
-    })
+    }
+}
+
+/// The sequence of the daily diff of `day`. It follows from the newest sequence when the
+/// replication has one diff per day; when its state names another day, the difference moves it
+/// once more.
+fn sequence(http: &Http, replication: &str, (newest, newest_day): (u64, i64), day: i64) -> Result<u64, String> {
+    let mut guess = newest as i64 - (newest_day - day);
+    for _ in 0..2 {
+        if guess < 0 {
+            break;
+        }
+        let (_, got) = state(http, &format!("{replication}{}.state.txt", path(guess as u64)))?;
+        if got == day {
+            return Ok(guess as u64);
+        }
+        guess += day - got;
+    }
+    Err(format!("{replication}: no daily diff of {}", date::format(day)))
 }
 
 /// The sequence number and the day of an Osmosis replication `state.txt`.

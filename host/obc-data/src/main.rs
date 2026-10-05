@@ -157,6 +157,7 @@ fn refresh(root: &Path, id: &str, params: &[String], env: &str, json: bool) -> R
     let text = std::fs::read_to_string(&path).map_err(|e| usage(&format!("{}: {e}", path.display())))?;
     let (store, http) = (Store::open()?, Http::new());
     let version = upstream::newest(&store, &http, source, 0).version().map(str::to_string);
+    // Only `{version}`: for a URL with `{yymmdd}`, the fetcher of its kind finds the newest day.
     let named = source.fetch.url.as_deref().is_some_and(|url| url.contains("{version}"));
     if version.is_none() && (named || matches!(source.version, VersionScheme::Release | VersionScheme::Commit)) {
         return Err(format!("the newest version of `{id}` is not known: fetch {id}@VERSION and pin it by hand").into());

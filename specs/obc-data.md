@@ -175,19 +175,20 @@ it takes the earliest day.
 
 An `osm` URL is `<server>/pbf/…{yymmdd}…`. Planets are weekly, on Mondays. Version `V` of the
 planet is the planet of the Monday on or before `V`, then one diff of
-`<server>/replication/day/` for each later day up to `V`, in order. The diff of a day has the
-sequence number of the newest diff, less the days between the two. The fetch reads the
-`state.txt` of the first and the last sequence, and fails when its `timestamp` is not the
-expected day. The record of `V` is complete when it has the planet and one diff for each day; then
+`<server>/replication/day/` for each later day up to `V`, in order. The fetch finds the sequence
+of the Monday and of `V`: first the newest sequence less the days between, then, when the
+`timestamp` of that `state.txt` is another day, moved by the difference once. It fails when it
+finds no sequence of the day, or when the diffs are not one per day. The record of `V` is complete when it has the planet and one diff for each day; then
 the fetch makes no request. The fetch does not apply the diffs: a step does that with
 `osmium apply-changes`.
 
 A `dtm` fetch takes `bbox=WEST,SOUTH,EAST,NORTH` in degrees and no other `NAME=VALUE`. It runs
-`python3 host/obc-dem/reference/ingest.py fetch` (`OBC_PYTHON` replaces `python3`) with the
-directories `--work` and `--out` under `partial/`. The program writes each file of the request to
+`host/obc-dem/reference/ingest.py fetch` with `uv run --with-requirements
+tools/requirements-bake.txt python` (`OBC_PYTHON` replaces that Python), with the directories
+`--work` and `--out` under `partial/`. The program writes each file of the request to
 `--out`, and its progress to standard error. The store takes every file in `--out`. A failed run
-keeps `--work` and records nothing. In the record, the `url` of a file is
-`<fetch.url>#bbox=W,S,E,N/<path in --out>`.
+keeps `--work` and records nothing; the next run of the same request, also on a later day,
+reuses it. In the record, the `url` of a file is `<fetch.url>#bbox=W,S,E,N/<path in --out>`.
 
 - The version is the day of the fetch, because the service answers with current data. Another
   day comes only from the store.

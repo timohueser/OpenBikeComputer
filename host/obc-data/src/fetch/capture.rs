@@ -23,8 +23,7 @@ pub fn dtm(store: &Store, request: &Request) -> Result<Snapshot, String> {
     let root = crate::find_root(&cwd).ok_or("no data/sources.toml above the current directory")?;
     let key = source.id.strip_prefix("dtm-").unwrap_or(&source.id).to_string();
     capture(store, request, &format!("bbox={bbox}"), |work, out| {
-        let python = std::env::var_os("OBC_PYTHON").unwrap_or_else(|| "python3".into());
-        let mut command = Command::new(python);
+        let mut command = python(&root.join("tools/requirements-bake.txt"));
         command.arg(root.join("host/obc-dem/reference/ingest.py"));
         command.args(["fetch", &key, &format!("--bbox={bbox}"), "--work"]).arg(work).arg("--out").arg(out);
         command
@@ -45,7 +44,8 @@ pub fn capture(
     let version = request.version.clone().unwrap_or_else(|| today.clone());
     check_version(source, &version)?;
     let prefix = format!("{}#{query}/", source.fetch.url.as_deref().unwrap_or_default());
-    let key = store::sha256_hex(format!("{version} {prefix}").as_bytes())[..32].to_string();
+    // Not the version: a run that failed one day resumes the next.
+    let key = store::sha256_hex(prefix.as_bytes())[..32].to_string();
     let _lock = store.lock(&format!("capture-{key}"))?;
     let snapshot = |files| Snapshot { source: source.id.clone(), version: version.clone(), files };
     let stored: Vec<FileRecord> = store.snapshot(&source.id, &version)?.map_or_else(Vec::new, |snapshot| {
@@ -97,6 +97,16 @@ pub fn capture(
     record(store, &source.id, &version, &files)?;
     let _ = fs::remove_dir_all(&staging);
     Ok(snapshot(files))
+}
+
+/// `OBC_PYTHON`, or else a Python with the packages of `requirements` (`uv run`).
+fn python(requirements: &Path) -> Command {
+    if let Some(python) = std::env::var_os("OBC_PYTHON") {
+        return Command::new(python);
+    }
+    let mut command = Command::new("uv");
+    command.args(["run", "--with-requirements"]).arg(requirements).arg("python");
+    command
 }
 
 /// `WEST,SOUTH,EAST,NORTH` in degrees, written back in one form, so one box is one request.

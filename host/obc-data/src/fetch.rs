@@ -13,9 +13,11 @@ use crate::store::{FileRecord, Snapshot, Store};
 
 pub struct Request<'a> {
     pub source: &'a Source,
-    /// `None` takes the newest file upstream has, which only a URL without `{version}` can give.
+    /// `None` takes the newest version upstream has. A URL with `{version}` cannot give it; for a
+    /// URL with `{yymmdd}`, the fetcher of its kind finds the newest day.
     pub version: Option<String>,
-    /// A value for each `{name}` of the URL but `{version}`. A name may repeat: one file per value.
+    /// A value for each `{name}` of the URL but `{version}` and `{yymmdd}`, or the `NAME=VALUE` of a
+    /// program fetcher. A name may repeat: one file per value.
     pub params: Vec<(String, String)>,
 }
 
@@ -448,10 +450,12 @@ mod tests {
         };
         let (url, log) = serve(move |_, headers| match header(headers, ":path").unwrap_or_default() {
             "/pbf/planet-260928.osm.pbf" => whole(b"planet"),
-            "/replication/day/state.txt" => state(5136, "2026-10-05"),
+            // 2026-10-01 has no diff, so the days before it are one sequence further back.
+            "/replication/day/state.txt" => state(5136, "2026-10-06"),
+            "/replication/day/000/005/128.state.txt" => state(5128, "2026-09-27"),
             "/replication/day/000/005/129.state.txt" => state(5129, "2026-09-28"),
+            "/replication/day/000/005/130.state.txt" => state(5130, "2026-09-29"),
             "/replication/day/000/005/131.state.txt" => state(5131, "2026-09-30"),
-            // A missed day: the sequence of 2026-10-01 is of the day after.
             "/replication/day/000/005/132.state.txt" => state(5132, "2026-10-02"),
             path @ ("/replication/day/000/005/130.osc.gz" | "/replication/day/000/005/131.osc.gz") => {
                 whole(path.as_bytes())
@@ -471,7 +475,7 @@ mod tests {
         assert_eq!(log.lock().unwrap().len(), asked, "a complete record needs no request");
         let thursday = Request { version: Some("2026-10-01".into()), ..wednesday };
         let err = fetch(&store, &quick(), &thursday).unwrap_err();
-        assert!(err.contains("5132 is of 2026-10-02, not 2026-10-01"), "{err}");
+        assert!(err.contains("no daily diff of 2026-10-01"), "{err}");
     }
 
     #[test]
