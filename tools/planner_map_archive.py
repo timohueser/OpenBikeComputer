@@ -15,7 +15,7 @@ import sys
 import tempfile
 import time
 
-from .planner_maps import bounds, mercator
+from .planner_geo import bounds, mercator
 
 
 def tile_window(region, zoom, halo=0):

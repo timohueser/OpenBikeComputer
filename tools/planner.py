@@ -153,7 +153,7 @@ def grid(args):
     if not args.input_release: raise ValueError("Provide --input-release for grid publication")
     # The grid producers need the map packages of their own environment.
     try:
-        run("uv", "run", "--with-requirements", ROOT / "tools/requirements-planner-maps.txt",
+        run("uv", "run", "--locked", "--group", "planner-maps",
             "python", "-m", "tools.planner_blocks", args.input_release, args.data_dir, "--source-cache", args.source_cache)
     except subprocess.CalledProcessError as error:
         raise ValueError(f"grid step failed with exit status {error.returncode}") from None

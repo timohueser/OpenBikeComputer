@@ -84,10 +84,20 @@ triggers = ["builder/presets/**", "data/regions/**", "data/sources.toml"]
 name = "obc-data"
 triggers = ["data/**"]
 
-# Its tests plan the checked-in live environment.
+# Its tests plan the checked-in live environment, and run the Python steps and read their imports.
 [[package]]
 name = "obc-data-steps"
-triggers = ["data/**"]
+triggers = [
+  "data/**",
+  ".python-version",
+  "pyproject.toml",
+  "uv.lock",
+  "tools/step_request.py",
+  "tools/data_registry.py",
+  "tools/planner_*.py",
+  "apps/planner-search/setup.py",
+  "apps/planner-search/query/*.py",
+]
 
 [[package]]
 name = "obc-skin-preview"
@@ -244,9 +254,7 @@ command = "mkdir -p .artifacts/coverage/repository-tools && rm -rf .artifacts/py
 jobs = ["guards", "selection"]
 triggers = [
   "tools/requirements-test.txt",
-  "tools/requirements-planner-maps.txt",
-  "tools/requirements-planner-snow.txt",
-  "tools/requirements-planner-sun.txt",
+  "pyproject.toml",
   "tools/*.py",
   "tools/**/*.py",
   "tools/planner-regions/**",
@@ -759,7 +767,7 @@ route = "ordinary"
 command = "bash apps/planner-native/test-tiles.sh"
 jobs = ["ios-unit"]
 platforms = ["macos"]
-triggers = ["apps/planner-native/PMTilesArchive.swift", "apps/planner-native/tests/**", "apps/planner-native/test-tiles.sh"]
+triggers = ["apps/planner-native/PMTilesArchive.swift", "apps/planner-native/tests/**", "apps/planner-native/test-tiles.sh", "pyproject.toml"]
 
 [[suite]]
 id = "planner.search"

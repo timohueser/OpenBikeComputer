@@ -63,7 +63,7 @@ class OverlayArchive(unittest.TestCase):
                     (2, json.dumps(access)), (3, json.dumps({"rank": 1, "ref": "L1", "routes": [2]}))])
                 db.executemany("INSERT INTO features(kind, cycling_minzoom, walking_minzoom, geometry, attributes) VALUES (?, ?, ?, ?, ?)", [
                     ("cycling", 6, 6, 1, 1), ("cycling", 6, 6, 2, 1), ("access", 15, None, 3, 2), ("cycling", 11, 11, 4, 3)])
-            overlays.derive(index, target)
+            overlays.derive(index, target, "© OpenStreetMap contributors")
             with target.open("rb") as stream:
                 reader = Reader(MmapSource(stream))
                 metadata = reader.metadata()
