@@ -104,8 +104,8 @@ pub fn status(root: &Path, products: &[&dyn Product], check: bool, json: bool) -
         return Err(error);
     }
     let live = read_live(&remote, &registry, products, &store)?;
-    loaded.env.live = live.versions();
-    let rows = source_rows(&registry, &loaded.env.live, false)?;
+    loaded.env.live = live.versions().map_err(|e| Code::Blocked.error(e))?;
+    let rows = source_rows(&registry, Some(&live.by_source()), false)?;
     let statuses = rows.iter().map(|row| {
         let status = sources::Status { state: row.state, reason: row.reason.clone(), age_days: row.age_days };
         (row.source.id.clone(), status)

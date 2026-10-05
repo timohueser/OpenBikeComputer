@@ -54,7 +54,8 @@ pub fn undo(root: &Path, name: &str, json: bool) -> Result<(), Error> {
         return Err(Code::Usage.error(format!("`{name}` is not an environment name")));
     }
     let file = format!("data/env/{name}.toml");
-    let shown = Command::new("git").arg("-C").arg(root).args(["show", &format!("HEAD:{file}")]).output();
+    // `./` names the file from `root`, which need not be the top of the repository.
+    let shown = Command::new("git").arg("-C").arg(root).args(["show", &format!("HEAD:./{file}")]).output();
     let shown = shown.map_err(|e| format!("git: {e}"))?;
     if !shown.status.success() {
         let why = String::from_utf8_lossy(&shown.stderr).trim().to_string();
@@ -148,7 +149,8 @@ mod tests {
 
         let refused = undo(&root, "live", false).unwrap_err();
         assert!(refused.message.contains("has no committed version"), "{}", refused.message);
-        git(&root, &["init", "--quiet"]);
+        // The repository is above `root`.
+        git(&scratch.0, &["init", "--quiet"]);
         write(&root.join("data/env/live.toml"), LIVE);
         git(&root, &["add", "data/env/live.toml"]);
         git(&root, &["-c", "user.name=test", "-c", "user.email=test@example.org", "commit", "--quiet", "-m", "live"]);

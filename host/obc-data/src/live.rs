@@ -13,6 +13,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::engine::release::{Layer, Release};
+use crate::env::Versions;
 use crate::fetch::http::{self, Http};
 use crate::product::Product;
 use crate::r2::{Bucket, Credentials, Object};
@@ -129,10 +130,29 @@ impl Live {
         reads.map(|(source, read)| (source.clone(), read.version.clone())).collect()
     }
 
-    /// Source id to the version that the live layers read: the newest, when two layers read two.
-    pub fn versions(&self) -> BTreeMap<String, String> {
-        // The set is in order, so the newest version of a source comes last and stays.
-        self.snapshots().into_iter().collect()
+    /// The version of each fetch that the live layers read. Two layers that read one fetch at two
+    /// versions are refused: no order of versions can choose between them.
+    pub fn versions(&self) -> Result<Versions, String> {
+        let mut versions = Versions::new();
+        let layers = self.releases().flat_map(|(_, _, release)| &release.layers);
+        for (source, read) in layers.flat_map(|layer| &layer.snapshots) {
+            let fetch = (source.clone(), read.params.clone());
+            if let Some(other) = versions.insert(fetch, read.version.clone()).filter(|other| *other != read.version) {
+                return Err(format!(
+                    "the live layers read `{source}` {:?} at two versions, {other} and {}: plan with \
+                     `--move {source}@VERSION` to read one",
+                    read.params, read.version
+                ));
+            }
+        }
+        Ok(versions)
+    }
+
+    /// Source id to a version that the live layers read, for a table. Of a source that they read
+    /// at more versions, the first in order: for a date, the oldest.
+    pub fn by_source(&self) -> BTreeMap<String, String> {
+        // A later entry of `collect` replaces an earlier one, so the first in order stays.
+        self.snapshots().into_iter().rev().collect()
     }
 
     /// The keys that live uses, with their size: `None` for a pointer, which changes, and for a
@@ -363,6 +383,33 @@ pub(crate) mod tests {
         assert_eq!(check.drift, [Drift { key: object, expected: Some(4), found: None }]);
         let leftovers: Vec<&str> = check.leftovers.iter().map(|object| object.key.as_str()).collect();
         assert_eq!(leftovers, ["test-catalog/objects/old"]);
+    }
+
+    #[test]
+    fn live_reads_one_version_of_each_fetch() {
+        let reading = |version: &str, params: &[(&str, &str)]| {
+            let mut release = release(b"layer");
+            let read = release.layers[0].snapshots.get_mut("land").unwrap();
+            read.version = version.into();
+            read.params = params.iter().map(|(name, value)| (name.to_string(), value.to_string())).collect();
+            release
+        };
+        let live = |releases: Vec<Release>| {
+            let products = releases.into_iter().map(|release| LiveProduct {
+                product: "test".into(),
+                prefix: "test-catalog".into(),
+                release: Some((release.id(), release)),
+            });
+            Live { products: products.collect(), ..Live::default() }
+        };
+        let (a, b) = ([("area", "a")], [("area", "b")]);
+        let areas = live(vec![reading("2026-10-02", &a), reading("2026-10-01", &b), reading("2026-10-02", &a)]);
+        let versions = areas.versions().unwrap();
+        assert_eq!(versions.values().collect::<Vec<_>>(), ["2026-10-02", "2026-10-01"], "one per params");
+        assert_eq!(areas.by_source()["land"], "2026-10-01", "the table shows the oldest day");
+
+        let err = live(vec![reading("0.9.0", &[]), reading("0.10.2", &[])]).versions().unwrap_err();
+        assert!(err.contains("0.9.0") && err.contains("--move land@VERSION"), "{err}");
     }
 
     /// A product whose pointer an older publish wrote, without `release`.

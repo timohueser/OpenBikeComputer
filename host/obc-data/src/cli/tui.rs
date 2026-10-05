@@ -25,7 +25,8 @@ use crate::store::{gc, import, Store};
 
 use super::runs_cli::{bytes, duration, mark, step_cells};
 use super::{
-    clean, clean_plan, live_versions, policy, registry, row_text, source_rows, widths, CleanPlan, Error, SourceRow,
+    clean, clean_plan, live_column, live_unknown, policy, registry, row_text, source_rows, widths, CleanPlan, Error,
+    SourceRow,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,8 +112,8 @@ struct App {
     screen: Screen,
     overlay: Option<Overlay>,
     sources: Vec<SourceRow>,
-    /// Source id to the version that the live releases read.
-    live: std::collections::BTreeMap<String, String>,
+    /// Source id to a version that the live releases read; `None` when R2 could not be read.
+    live: Option<std::collections::BTreeMap<String, String>>,
     /// Sources shows a check of upstream from now, not from the last hour.
     checked_now: bool,
     /// The check of upstream runs.
@@ -156,9 +157,10 @@ static NO_PLAN: CleanPlan = CleanPlan {
 
 pub fn run(root: &Path, products: &[&dyn Product]) -> Result<(), Error> {
     let store = Store::open()?;
-    let live = live_versions(root, products, &store)?;
-    let mut app = App::new(source_rows(&registry(root)?, &live, false)?, list_runs(&store)?);
-    app.live = live;
+    let live = live_column(products, &store);
+    let mut app = App::new(source_rows(&registry(root)?, live.as_ref().ok(), false)?, list_runs(&store)?);
+    app.notice = live.as_ref().err().map(live_unknown);
+    app.live = live.ok();
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         stop();
@@ -271,7 +273,7 @@ impl App {
             screen: Screen::Sources,
             overlay: None,
             sources,
-            live: Default::default(),
+            live: None,
             checked_now: false,
             checking: false,
             store: None,
@@ -289,7 +291,7 @@ impl App {
 
     /// Read the sources again; with `check_now`, after a check of upstream now.
     fn reload(&mut self, root: &Path, check_now: bool) -> Result<(), Error> {
-        self.sources = source_rows(&registry(root)?, &self.live, check_now)?;
+        self.sources = source_rows(&registry(root)?, self.live.as_ref(), check_now)?;
         self.checked_now = check_now;
         Ok(())
     }
@@ -765,6 +767,7 @@ mod tests {
     fn app() -> App {
         let sources = parse_sources(SOURCES).unwrap().into_iter().map(|source| SourceRow {
             live: Some(if source.kind == Kind::Tool { "0.10.2" } else { "2024-01-02" }.into()),
+            live_unknown: false,
             upstream: (source.kind == Kind::Data).then(|| "2024-01-09".into()),
             age_days: None,
             state: State::Ok,

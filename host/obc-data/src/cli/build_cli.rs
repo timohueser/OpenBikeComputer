@@ -14,7 +14,7 @@ use crate::engine::plan::{self, Estimate, Group, Plan};
 use crate::engine::release;
 use crate::engine::runs::{Context, Limits, Run};
 use crate::engine::Step;
-use crate::env::Env;
+use crate::env::{Env, Versions};
 use crate::fetch::{self, http::Http, Request};
 use crate::product::{Product, Unplanned, Wanted};
 use crate::regions::Regions;
@@ -41,8 +41,8 @@ pub struct BuildArgs {
     /// Only these groups, by id.
     #[arg(long, value_delimiter = ',')]
     only: Vec<String>,
-    /// Build the groups of this output of `plan ENV --json`, with its moves. Exit status 3 when the
-    /// plan of now differs.
+    /// Build the groups of this output of `plan ENV --json`, with its versions. Exit status 3 when
+    /// the plan of now differs.
     #[arg(long)]
     plan: Option<PathBuf>,
     /// Read this version of a source instead of the version of live; without a version, the newest
@@ -61,9 +61,20 @@ pub struct EnvPlan {
     /// The version of each source that `--move` names. A `--move SOURCE` has the newest version
     /// upstream that the plan fetched.
     pub moves: BTreeMap<String, String>,
+    /// The version of each fetch that the step lists read. `build --plan` reads exactly these.
+    pub versions: Vec<FetchVersion>,
     /// The groups that `--only` selected, or none for every group.
     pub only: Vec<String>,
     pub groups: Vec<Group>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FetchVersion {
+    pub source: String,
+    /// The `NAME=VALUE`s of the fetch, sorted.
+    pub params: Vec<(String, String)>,
+    pub version: String,
 }
 
 /// What a build did.
@@ -148,23 +159,30 @@ fn run_build(
     http: &Http,
     products: &[&dyn Product],
     args: &BuildArgs,
-    live: BTreeMap<String, String>,
+    live: Versions,
 ) -> Result<Built, Error> {
     let mut loaded = load(root, &args.env)?;
     loaded.env.live = live;
     let saved = args.plan.as_deref().map(|file| read_plan(file, &loaded.env).map(|plan| (file, plan))).transpose()?;
-    loaded.env.moves = match &saved {
+    match &saved {
         Some((_, saved)) => {
-            saved.moves.iter().map(|(source, version)| (source.clone(), Some(version.clone()))).collect()
+            let versions = saved.versions.iter().map(|v| ((v.source.clone(), v.params.clone()), v.version.clone()));
+            loaded.env.planned = Some(versions.collect());
         }
-        None => moves(&loaded.sources, &args.moves)?,
-    };
-    let fetch = fetcher(store, http, &loaded.sources, &loaded.env);
+        None => loaded.env.moves = moves(&loaded.sources, &args.moves)?,
+    }
+    let mut fetch = fetcher(store, http, &loaded.sources, &loaded.env);
     let (env, regions) = (&mut loaded.env, &loaded.regions);
     let (steps, now) = match &saved {
         None => planned(root, store, products, env, regions, fetch)?,
-        // `plan` fetched what each step list reads: a step list that needs a fetch now is new.
-        Some((file, _)) => planned(root, store, products, env, regions, |_| Err(outdated(file)))?,
+        // A fetch without a version is one that the plan does not name.
+        Some((file, _)) => planned(root, store, products, env, regions, |wanted| match &wanted.version {
+            None => Err(outdated(file)),
+            Some(version) => fetch(wanted).map_err(|e| {
+                let source = &wanted.source;
+                e.fix(format!("{} reads `{source}@{version}`, and the store lacks it: plan again.", file.display()))
+            }),
+        })?,
     };
     let wanted = match saved {
         None => select(&now, &args.only)?,
@@ -217,8 +235,21 @@ fn outdated(file: &Path) -> Error {
 
 fn env_plan(env: &Env, only: &[String], plan: Plan) -> EnvPlan {
     let moves = env.moves.iter().filter_map(|(source, version)| Some((source.clone(), version.clone()?)));
-    let (name, region, layers) = (env.name.clone(), env.region.clone(), env.layers.clone());
-    EnvPlan { env: name, region, layers, moves: moves.collect(), only: only.to_vec(), groups: plan.groups }
+    let read = env.read.borrow();
+    let versions = read.iter().map(|((source, params), version)| FetchVersion {
+        source: source.clone(),
+        params: params.clone(),
+        version: version.clone(),
+    });
+    EnvPlan {
+        env: env.name.clone(),
+        region: env.region.clone(),
+        layers: env.layers.clone(),
+        moves: moves.collect(),
+        versions: versions.collect(),
+        only: only.to_vec(),
+        groups: plan.groups,
+    }
 }
 
 fn select(plan: &Plan, only: &[String]) -> Result<Plan, Error> {
@@ -245,9 +276,9 @@ pub(super) fn load(root: &Path, name: &str) -> Result<Loaded, Error> {
     Ok(Loaded { env, sources: registry.sources, regions })
 }
 
-/// Source id to the version that the live releases read, for the environment `live`. Another
+/// The version of each fetch that the live releases read, for the environment `live`. Another
 /// environment has no live release.
-fn live(root: &Path, products: &[&dyn Product], store: &Store, env: &str) -> Result<BTreeMap<String, String>, Error> {
+fn live(root: &Path, products: &[&dyn Product], store: &Store, env: &str) -> Result<Versions, Error> {
     match env {
         "live" => live_versions(root, products, store),
         _ => Ok(BTreeMap::new()),
@@ -296,18 +327,37 @@ pub(super) fn fetcher<'a>(
     env: &Env,
 ) -> impl FnMut(&Wanted) -> Result<String, Error> + 'a {
     let newest: BTreeSet<String> = env.moves.keys().filter(|source| env.moves_to_newest(source)).cloned().collect();
+    let moved: BTreeSet<String> = env.moves.keys().cloned().collect();
+    let live: BTreeSet<(String, String)> =
+        env.live.iter().map(|((source, _), version)| (source.clone(), version.clone())).collect();
     move |wanted| {
         let source = sources
             .iter()
             .find(|source| source.id == wanted.source)
             .ok_or_else(|| Code::InvalidData.error(format!("no source `{}` in data/sources.toml", wanted.source)))?;
+        let pick = format!("Plan with `--move {}@VERSION`.", source.id);
         if wanted.version.is_none() && source.refresh == Refresh::Manual && !newest.contains(&source.id) {
             let message =
                 format!("source `{}` is manual, and neither live nor the store has a version of it", source.id);
-            return Err(Code::Blocked.error(message).fix(format!("Plan with `--move {}@VERSION`.", source.id)));
+            return Err(Code::Blocked.error(message).fix(pick));
+        }
+        let unnamed = fetch::params(source).into_iter().find(|name| wanted.params.iter().all(|(n, _)| n != name));
+        if let Some(name) = unnamed.filter(|_| wanted.version.is_none()) {
+            let message = format!("source `{}` is fetched per `{name}=`: it has no one newest version", source.id);
+            return Err(Code::Usage.error(message).fix(pick));
         }
         let request = Request { source, version: wanted.version.clone(), params: wanted.params.clone() };
-        fetched(source, fetch::fetch(store, http, &request)).map(|snapshot| snapshot.version)
+        let of_live =
+            |version: &String| !moved.contains(&source.id) && live.contains(&(source.id.clone(), version.clone()));
+        fetched(source, fetch::fetch(store, http, &request)).map(|snapshot| snapshot.version).map_err(|e| {
+            match e.code == Code::FetchFailed && wanted.version.as_ref().is_some_and(of_live) {
+                true => e.fix(format!(
+                    "Upstream can stop serving an old version: plan with `--move {}` to read the newest.",
+                    source.id
+                )),
+                false => e,
+            }
+        })
     }
 }
 
@@ -331,6 +381,11 @@ pub(super) fn steps(
     let mut all = Vec::new();
     for product in products {
         all.extend(product_steps(*product, env, regions, store, &mut fetch)?);
+    }
+    let read = env.read.borrow();
+    if let Some(source) = env.moves.keys().find(|moved| !read.keys().any(|(source, _)| source == *moved)) {
+        let message = format!("--move {source}: no step list of `{}` reads `{source}`", env.name);
+        return Err(Code::Usage.error(message));
     }
     Ok(all)
 }
@@ -357,7 +412,7 @@ pub(super) fn product_steps(
     let mut listed = product.steps(env, regions, store);
     if let Err(Unplanned::NeedsFetch(fetches)) = &listed {
         for wanted in fetches.clone() {
-            let version = wanted.version.or_else(|| env.version(&wanted.source).map(str::to_string));
+            let version = wanted.version.or_else(|| env.version(&wanted.source, &wanted.params).map(str::to_string));
             let wanted = Wanted { version, ..wanted };
             let fetched = fetch(&wanted)?;
             if env.moves_to_newest(&wanted.source) {
@@ -391,8 +446,8 @@ mod tests {
     use std::cell::Cell;
 
     use super::*;
-    use crate::engine::snapshot_files;
     use crate::engine::tests::{fixture, pipeline, write, JOIN};
+    use crate::engine::{snapshot_files, Input};
 
     /// The test pipeline, listed once the store has the snapshot `index@1`.
     struct Indexed;
@@ -499,6 +554,67 @@ mod tests {
         let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&land), &live);
         steps(&[&Outlined], &mut live, &regions, &fixture.store, fetch).unwrap();
         assert_eq!(log.lock().unwrap().len(), requests, "without a move or live, the store serves");
+
+        live.moves.insert("qrank".into(), None);
+        let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&land), &live);
+        let err = steps(&[&Outlined], &mut live, &regions, &fixture.store, fetch).err().unwrap();
+        assert_eq!(
+            (err.code, err.message.as_str()),
+            (Code::Usage, "--move qrank: no step list of `live` reads `qrank`")
+        );
+        let mut fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&land), &live);
+        let err = fetch(&Wanted { source: "land".into(), version: None, params: Vec::new() }).unwrap_err();
+        assert!(err.message.contains("fetched per `area=`"), "{}", err.message);
+    }
+
+    /// The test pipeline, with `head` at the version that `product::version` gives.
+    struct Versioned;
+
+    impl Product for Versioned {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+
+        fn steps(&self, env: &Env, _: &Regions, store: &Store) -> Result<Vec<Step>, Unplanned> {
+            let head = crate::product::version(env, store, "head", &[]).map_err(Unplanned::Invalid)?;
+            let head = head.map_err(|wanted| Unplanned::NeedsFetch(vec![wanted]))?;
+            let mut steps = pipeline();
+            for input in steps.iter_mut().flat_map(|step| &mut step.inputs) {
+                if let Input::Snapshot { source, version, .. } = input {
+                    if source == "head" {
+                        version.clone_from(&head);
+                    }
+                }
+            }
+            Ok(steps)
+        }
+    }
+
+    #[test]
+    fn a_build_of_a_plan_reads_the_versions_of_the_plan_and_not_a_newer_one() {
+        let fixture = fixture("cli-versions");
+        let root = fixture.root();
+        write(&root.join("data/sources.toml"), include_str!("../../../../data/sources.toml"));
+        write(&root.join("data/regions/monaco.toml"), "name = \"Monaco\"\nkind = \"geofabrik\"\n");
+        write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
+        let http = Http::new();
+        let build = |plan: Option<PathBuf>| {
+            let args = BuildArgs { env: "live".into(), only: Vec::new(), plan, moves: Vec::new() };
+            run_build(&root, &fixture.store, &http, &[&Versioned], &args, Default::default()).unwrap().releases
+        };
+        let first = build(None)[0].id.clone();
+        let mut loaded = load(&root, "live").unwrap();
+        let (env, regions) = (&mut loaded.env, &loaded.regions);
+        let (_, plan) = planned(&root, &fixture.store, &[&Versioned], env, regions, |_| unreachable!()).unwrap();
+        let saved = env_plan(&loaded.env, &[], plan);
+        assert_eq!(saved.versions, [FetchVersion { source: "head".into(), params: Vec::new(), version: "1".into() }]);
+        let file = root.join("plan.json");
+        write(&file, &serde_json::to_string(&saved).unwrap());
+
+        // Another checkout fetches a newer `head` into the store and builds it.
+        fixture.fetched_version("head", "2", "head.txt", b"newer\n");
+        assert_ne!(build(None)[0].id, first);
+        assert_eq!(build(Some(file))[0].id, first, "the plan reads head@1");
     }
 
     #[test]

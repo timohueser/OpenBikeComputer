@@ -43,8 +43,8 @@ usage:
         --regions DIR        region files (default: data/regions/ of the repository)
         --presets-dir DIR    schema.json + skins/ (default: builder/presets)
         --source SOURCE      directory of extracts (default: Geofabrik from the store), or planet
-                             PBF file with --all (default: osm-planet and osm-replication)
-        --cache DIR          planet with its diffs applied, shards and DEM tile links
+                             PBF file with --all (required)
+        --cache DIR          planet shards and DEM tile links
         --force              re-bake even when unchanged
         --no-land            skip land generation
         --chunk-size N       override schema chunk_size
@@ -420,16 +420,14 @@ fn run_planet_bake(
     };
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
     let progress = obc_pack::progress::Progress::stdout();
-    // Fail before an 80+ GB transfer when Osmium, which applies the diffs and shards the planet, is
-    // unavailable. Tests inject the runner at the library boundary; the CLI uses the real executable.
+    // Fail before the planet is read when Osmium, which shards the planet, is unavailable. Tests inject the runner at the library boundary; the CLI uses the real executable.
     let runner = obc_bake::planet::OsmiumRunner::default();
     runner.check()?;
-    obc_bake::planet::check_planet(flags.get("source"))?;
+    let input = obc_bake::planet::resolve_planet(flags.get("source"), &progress)?;
     let polygons = obc_bake::source::GeofabrikExtracts;
     let region_presets = obc_bake::planet::resolve_region_presets(&regions, &polygons, &bands, &progress)?;
     // Held until the bake has read the planet: the sharder below reads it too.
     let _planet = obc_bake::planet::lock_cache(&cache, &progress)?;
-    let input = obc_bake::planet::resolve_planet(flags.get("source"), &cache, &runner, &progress)?;
     let shards = obc_bake::planet::PlanetSharder { input: &input, cache: &cache, runner: &runner }.run(&progress)?;
     let cutter = obc_bake::cells::ObcCutter {
         no_land: flags.has("no-land"),

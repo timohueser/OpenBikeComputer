@@ -80,7 +80,10 @@ fn a_build_writes_the_terrain_cells_of_obc_bake_terrain_and_they_read_as_the_gri
     let region = parse_region("grimsel-east", REGION).unwrap();
     let Area::Box { bbox } = region.area else { unreachable!() };
     let regions = Regions::new(vec![region]).unwrap();
-    let live = BTreeMap::from([(GLO30.to_string(), VERSION.to_string()), (TILE_LIST.to_string(), VERSION.to_string())]);
+    let live = BTreeMap::from([
+        ((GLO30.into(), Vec::new()), VERSION.into()),
+        ((TILE_LIST.into(), Vec::new()), VERSION.into()),
+    ]);
     let env = Env { name: "test".into(), region: "grimsel-east".into(), live, ..Env::default() };
     let built = layer(&store_with_tile(&temp.0, &tile), &root, &regions, &env);
 

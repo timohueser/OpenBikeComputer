@@ -164,7 +164,8 @@ mod tests {
 
     /// The Grimsel box of `data/regions/`, which the leaf edge at 8.388608° cuts in two.
     fn grimsel(glo30: &str) -> (Env, Regions) {
-        let live = BTreeMap::from([(GLO30.to_string(), glo30.to_string()), (TILE_LIST.to_string(), "1".to_string())]);
+        let live =
+            BTreeMap::from([((GLO30.into(), Vec::new()), glo30.into()), ((TILE_LIST.into(), Vec::new()), "1".into())]);
         let env = Env { name: "test".into(), region: "grimsel".into(), live, ..Env::default() };
         (env, Regions::load(&root()).unwrap())
     }

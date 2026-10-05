@@ -558,20 +558,28 @@ run. A run without a `finished` event whose lock is free has failed. A command t
 
 ### Versions
 
-A step list gets the version of each source that it reads from one function
-(`obc_data::product::version`), in this order:
+A step list gets the version of each fetch that it reads, a source with its `NAME=VALUE`s, from
+one function (`obc_data::product::version`), in this order:
 
 1. `--move SOURCE@VERSION` of the plan or the build. `--move SOURCE` without a version is the
-   newest version upstream.
-2. For the environment `live`, the version that the live releases read. When two live layers read
-   two versions of a source, the newest serves. Another environment has no live release.
+   newest version upstream. A `--move` of a source that no step list reads is refused.
+2. For the environment `live`, the version that the live releases read for the fetch. For a fetch
+   that they do not read, the version that they read for every fetch of the source, when it is one
+   version. When two live layers read one fetch at two versions, the command fails with `blocked`:
+   no order of versions chooses, so `--move SOURCE@VERSION` must. Another environment has no live
+   release.
 3. The newest version of the fetch in the store.
-4. The newest version upstream: the product names the fetch, and `plan` or `build` fetches it.
+4. The newest version upstream: the product names the fetch, and `plan` or `build` fetches it. A
+   source whose URL needs a `NAME=VALUE`, such as the GLO-30 tiles, has no one newest version: a
+   fetch of it without that value fails with `usage` and the fix `Plan with --move
+   SOURCE@VERSION`.
 
 A source with `refresh = "manual"` moves only with `--move`: step 4 does not fetch it, and the
 command fails with `blocked` and the fix `Plan with --move SOURCE@VERSION`. Before the first apply,
 nothing is live, so a plan takes the versions of the store and of upstream. The fetch of a
-`--move SOURCE` names its version, and every product of the plan reads that version.
+`--move SOURCE` names its version, and every product of the plan reads that version. Upstream can
+stop serving an old version, such as a Geofabrik extract of an earlier day: when the fetch of a
+version that live reads fails, the fix names `--move SOURCE`.
 
 ### Products
 
@@ -590,13 +598,15 @@ names fetches the second time, or a step name without `<product>/`, fails the co
 
 `plan ENV` plans the steps of every product together. `--json` writes the plan with `env`,
 `region` and `layers` of the environment, `moves`, the version of each `--move` (a `--move SOURCE`
-has the version that its fetch gave), and `only`, the groups that `--only` selected or `[]` for
-every group. `build ENV --plan FILE` builds the groups of that file with its `moves`, or those of
-them that its own `--only` selects; it takes no `--move`. It refuses the file, with exit status 3,
-before it fetches or builds:
+has the version that its fetch gave), `versions`, the version of each fetch that the step lists
+read, and `only`, the groups that `--only` selected or `[]` for every group. `build ENV --plan
+FILE` builds the groups of that file, or those of them that its own `--only` selects; it takes no
+`--move`. Its step lists read the `versions` of the file and no other version. A version that the
+store lacks is fetched; when that fetch fails, the command fails with its code and the fix says to
+plan again. It refuses the file, with exit status 3, before it builds:
 
 - when `env`, `region` or `layers` differ from the environment;
-- when a product names a fetch: `plan` fetched what each step list reads;
+- when a step list reads a fetch that `versions` does not name;
 - when the groups that `only` selects in the plan of now differ from the groups of the file,
   apart from `estimate` and `bytes`.
 
@@ -697,7 +707,7 @@ first writes the status, and the second writes an error.
 | --- | --- |
 | `obc data [--json]` | In a terminal, and without `--json`: the TUI. Otherwise the output of `status` |
 | `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live) and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, old cache directories that `clean` imports, and with `--check` drift and leftovers. When a fetch that the step list of a product needs fails, the layer states of that product are unknown (`layers` is `null`), and attention gives the error. `--check` adds the listing of [Live](#live) and exits with 1 when it finds drift or leftovers. Without the bucket, `--check` exits with 4 before it reads anything |
-| `obc data sources [--check-now] [--json]` | Every source with licence, R2 copy, live version (`—` when live does not read it), newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
+| `obc data sources [--check-now] [--json]` | Every source with licence, R2 copy, live version (`—` when live does not read it; `?` with one warning when R2 cannot be read; the oldest when live reads more), newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
 | `obc data policy SOURCE 7\|30\|90\|365\|manual [--json]` | Writes `refresh` of the source in `data/sources.toml`. The edit keeps comments and the other lines. A policy in days for a source without `version = "date"` is refused. Writes the source |
 | `obc data region ENV ID [--json]` | Writes `region` of `data/env/ENV.toml`. Writes the environment |
@@ -717,9 +727,10 @@ schema of each output, and [Errors](#errors) has the error codes and the exit st
 addition:
 
 - `fetch` lists only the requested files.
-- `region ENV ID`, `layer` and `undo` write `data/env/ENV.toml` and nothing else. They keep its
-  comments, its other lines and its line ends, and they never commit. A refused edit changes
-  nothing.
+- `region ENV ID`, `layer` and `undo` write `data/env/ENV.toml` and nothing else, and they never
+  commit. `region` and `layer` keep its comments and its other lines, write `region` and `layers`
+  on one line each, and end each line with `\r\n` when the file has one, or else `\n`. A refused
+  edit changes nothing.
 - `runs` lists a run file that cannot be read as `failed`, or as `running` while its lock is
   held.
 - `runs RUN --follow` writes one event per line, as in `runs/<id>.jsonl`. When the run failed,
@@ -1298,6 +1309,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "region": {
           "type": "string"
+        },
+        "versions": {
+          "description": "The version of each fetch that the step lists read. `build --plan` reads exactly these.",
+          "items": {
+            "$ref": "#/$defs/FetchVersion"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -1305,6 +1323,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "region",
         "layers",
         "moves",
+        "versions",
         "only",
         "groups"
       ],
@@ -1672,6 +1691,40 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         }
       ]
+    },
+    "FetchVersion": {
+      "additionalProperties": false,
+      "properties": {
+        "params": {
+          "description": "The `NAME=VALUE`s of the fetch, sorted.",
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "params",
+        "version"
+      ],
+      "type": "object"
     },
     "Fetched": {
       "description": "The requested files of a snapshot.",

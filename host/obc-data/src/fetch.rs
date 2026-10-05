@@ -324,9 +324,8 @@ fn fixed(name: &str) -> bool {
     name == "version" || name == "yymmdd"
 }
 
-/// The URLs of `template` with every `{name}` filled: `{version}` from the version, `{yymmdd}`
-/// from a date version, every other name from `params`.
-fn expand(template: &str, version: Option<&str>, params: &[(String, String)]) -> Result<Vec<String>, String> {
+/// Each `{name}` of `template`, once, in order.
+fn placeholders(template: &str) -> Vec<&str> {
     let mut names: Vec<&str> = Vec::new();
     for piece in template.split('{').skip(1) {
         let name = piece.split_once('}').map_or(piece, |(name, _)| name);
@@ -334,6 +333,19 @@ fn expand(template: &str, version: Option<&str>, params: &[(String, String)]) ->
             names.push(name);
         }
     }
+    names
+}
+
+/// The names of the `NAME=VALUE`s that a fetch of `source` needs.
+pub(crate) fn params(source: &Source) -> Vec<&str> {
+    let names = placeholders(source.fetch.url.as_deref().unwrap_or_default());
+    names.into_iter().filter(|name| !fixed(name)).collect()
+}
+
+/// The URLs of `template` with every `{name}` filled: `{version}` from the version, `{yymmdd}`
+/// from a date version, every other name from `params`.
+fn expand(template: &str, version: Option<&str>, params: &[(String, String)]) -> Result<Vec<String>, String> {
+    let names = placeholders(template);
     if let Some((name, _)) = params.iter().find(|(name, _)| fixed(name) || !names.contains(&name.as_str())) {
         return Err(format!("`{name}=` names no placeholder of {template}"));
     }
