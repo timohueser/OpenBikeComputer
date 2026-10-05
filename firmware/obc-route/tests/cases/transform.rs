@@ -89,17 +89,9 @@ impl ByteSink for Sink {
     }
 }
 
-fn budget(orig: &Source, detour: &Source, sink: &mut Sink, trim: bool) {
+fn budget(orig: &Source, detour: &Source, sink: &mut Sink) {
     let reads: Vec<_> = orig.reads.take().into_iter().chain(detour.reads.take()).collect();
-    if trim || reads.len() != 2 {
-        assert!(reads.len() <= 1, "one chunk or waypoint per step: {reads:?}");
-    } else {
-        assert_eq!(
-            reads,
-            [(0, obc_formats::obcr::HEADER_FULL_LEN), (112, obc_formats::obcr::HEADER_FULL_LEN - 112)],
-            "only the fixed waypoint header needs two reads"
-        );
-    }
+    assert!(reads.len() <= 1, "one chunk, header or waypoint per step: {reads:?}");
     assert!(reads.iter().map(|(_, len)| len).sum::<usize>() <= 255 * obc_formats::obcr::POINT_RECORD_LEN);
     assert!(sink.bytes <= 16 * 1024, "one board output stage, including final index: {}", sink.bytes);
     sink.bytes = 0;
@@ -112,7 +104,7 @@ fn trim(orig: &Source, detour: &Source, target: u32, elevation: bool, sink: &mut
     let mut state = Trimmer::new(Leg::Detour, target, elevation);
     for _ in 0..oi.chunks().len() + 2 * di.chunks().len() + 8 {
         let step = state.step(&o, &d, sink);
-        budget(orig, detour, sink, true);
+        budget(orig, detour, sink);
         if step != TrimStep::Running {
             assert_eq!(state.step(&o, &d, sink), step);
             assert!(orig.reads.borrow().is_empty() && detour.reads.borrow().is_empty());
@@ -208,7 +200,7 @@ fn splice_paces_all_waypoints_and_refuses_source_failure_after_seams() {
     let mut completed = None;
     for _ in 0..90 {
         let step = state.step(&o, &d, &mut sink);
-        budget(&orig, &det, &mut sink, false);
+        budget(&orig, &det, &mut sink);
         if let SpliceStep::Done(stats) = step {
             completed = Some(stats);
             break;
@@ -222,7 +214,7 @@ fn splice_paces_all_waypoints_and_refuses_source_failure_after_seams() {
     );
     assert!(matches!(state.step(&o, &d, &mut sink), SpliceStep::Done(_)));
     assert_eq!(sink.bytes, 0);
-    for fault in [3, 4, 70] {
+    for fault in [3, 4, 69] {
         let source = Source::new(&original);
         source.fail_at.set(Some(fault));
         let orig = RouteReader::new(&oi, &source);

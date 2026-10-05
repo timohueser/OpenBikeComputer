@@ -391,3 +391,33 @@ fn combined_summaries_stream_once_and_keep_climb_gap_and_read_error_behavior() {
         }
     }
 }
+
+/// A chunk decodes whole or not at all, so a corrupt record drops its whole chunk from every
+/// walk alike: the climb detector skips it exactly as the combined pass does.
+#[test]
+fn a_corrupt_record_drops_its_whole_chunk() {
+    use crate::common::{build_obcr, ChunkIn, RouteSpec};
+    let chunks: Vec<_> = (0..8)
+        .map(|k| ChunkIn {
+            points: (0..32)
+                .map(|i| (k * 31 + i) * 200)
+                .map(|lon| (lon, 0, (100 + (lon / 200 % 70) * 3) as i16))
+                .collect(),
+            cum_distance_m: k as u32 * 690,
+            cum_ascent_m: 0,
+        })
+        .collect();
+    let (mut bytes, extents) =
+        build_obcr(&RouteSpec { chunks: &chunks, totals: (5520, 600, 500), seam_shared: true, ..Default::default() });
+    // The reserved flag bits of chunk 3's tenth record.
+    bytes[extents[3].start as usize + 9 * obc_formats::obcr::POINT_RECORD_LEN + 6] = 0x10;
+    let src = SliceSource(&bytes);
+    let index = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&index, &src);
+
+    assert!(route.with_chunk(3, |_| unreachable!("no point of a corrupt chunk is walked")).is_err());
+    let mut profile = obc_route::Profile::EMPTY;
+    let climbs = route.elevation_profile_and_climbs_into(&mut profile);
+    assert!(!climbs.is_empty());
+    assert_eq!(route.detect_climbs().as_slice(), climbs.as_slice());
+}
