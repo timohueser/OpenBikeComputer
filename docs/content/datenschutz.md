@@ -2,7 +2,6 @@
 lang: de
 title: Datenschutzerklärung
 description: Informationen zur Datenverarbeitung auf openbikecomputer.com.
-copy: ai
 ---
 
 # Datenschutzerklärung

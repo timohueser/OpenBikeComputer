@@ -1,7 +1,6 @@
 ---
 title: The companion link
 description: How the device and a client move stored objects over Bluetooth and USB.
-copy: ai
 ---
 
 # The companion link

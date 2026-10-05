@@ -1,7 +1,6 @@
 ---
 title: Firmware updates
 description: How a firmware package is released, delivered, validated, installed, and rolled back.
-copy: ai
 ---
 
 # Firmware updates

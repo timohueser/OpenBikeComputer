@@ -2,7 +2,6 @@
 lang: en
 title: Privacy notice
 description: How openbikecomputer.com processes personal data. English translation of the Datenschutzerklärung.
-copy: ai
 ---
 
 # Privacy notice
