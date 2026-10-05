@@ -2,6 +2,7 @@
 //! environment. `specs/obc-data.md` is the contract for the files this crate reads.
 
 pub mod date;
+pub mod r2;
 pub mod regions;
 pub mod sources;
 

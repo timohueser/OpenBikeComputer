@@ -1,5 +1,7 @@
 //! `obc data`: read the sources and the regions. Read commands change nothing.
 
+mod r2_cli;
+
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -29,6 +31,8 @@ enum Command {
         #[arg(long, global = true)]
         json: bool,
     },
+    /// Plumbing for scripts: list, read, upload and delete objects in an R2 bucket.
+    R2(r2_cli::R2),
 }
 
 #[derive(Subcommand)]
@@ -69,18 +73,22 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<(), Failure> {
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let root = obc_data::find_root(&cwd).ok_or("no data/sources.toml above the current directory")?;
     match cli.command {
-        Command::Sources { json } => print_sources(&Registry::load(&root)?, json),
+        Command::Sources { json } => print_sources(&Registry::load(&root()?)?, json),
         Command::Region { action, json } => {
-            let regions = Regions::load(&root)?;
+            let regions = Regions::load(&root()?)?;
             match action {
                 None | Some(RegionAction::List) => print_regions(&regions, json),
                 Some(RegionAction::Show { id }) => print_region(&regions, &id, json),
             }
         }
+        Command::R2(r2) => r2_cli::run(r2),
     }
+}
+
+fn root() -> Result<std::path::PathBuf, Failure> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    Ok(obc_data::find_root(&cwd).ok_or("no data/sources.toml above the current directory")?)
 }
 
 #[derive(Serialize)]
