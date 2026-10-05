@@ -1221,7 +1221,11 @@ pub(crate) async fn run_app(
                             };
                             RideExec::deliver(&mut exec.outcomes.catalog, outcome, "catalog");
                         } else {
-                            RideExec::deliver(&mut exec.effects.catalog, effect, "catalog");
+                            RideExec::deliver(
+                                &mut exec.effects.catalog,
+                                CatalogEffect::ReadCatalog { token },
+                                "catalog",
+                            );
                         }
                     }
                     CatalogEffect::ReadCatalog { .. } => {}
