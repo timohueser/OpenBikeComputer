@@ -15,8 +15,8 @@ impl Head {
 type Decode<'a> = dyn FnMut(Head, bool, &dyn ByteSource) -> Result<(), Error> + 'a;
 
 /// Read the newest bounded catalog into caller-owned staging. Route entries include only heads.
-/// The accepted flag belongs to the selected revision. Malformed objects are omitted; media and
-/// open failures abort the scan. Callback values are tentative until the scan succeeds.
+/// The accepted flag belongs to the selected revision. Decoder errors other than `Io` are omitted;
+/// an `Io` or open failure aborts the scan. Callback values are tentative until the scan succeeds.
 #[inline(never)]
 pub fn scan<D: BlockDevice>(
     store: &FlatStore<D>,

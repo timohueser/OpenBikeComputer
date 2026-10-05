@@ -2611,7 +2611,11 @@ pub(crate) async fn run_app(
             }
             exec.needs = derived_needs;
             {
-                let deferred_catalog = exec.effects.catalog.take().filter(|effect| app.catalog_effect_current(effect));
+                let deferred_catalog = exec
+                    .effects
+                    .catalog
+                    .take_if(|effect| matches!(effect, obc_app::catalog_state::CatalogEffect::ReadCatalog { .. }))
+                    .filter(|effect| app.catalog_effect_current(effect));
                 debug_assert!(
                     !exec.effects.has_pending(),
                     "every staged effect is served in this frame's store phase before the next plan lands"
