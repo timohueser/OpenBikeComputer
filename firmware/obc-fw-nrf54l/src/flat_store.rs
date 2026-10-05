@@ -1675,10 +1675,10 @@ fn retain_newest<const N: usize>(entries: &mut heapless::Vec<CatalogHead, N>, en
 
 /// Catalog projections live only for the synchronous scan that publishes them.
 pub(crate) struct CatalogScratch {
-    pub(crate) route_heads: heapless::Vec<obc_storage::flat::catalog_read::Head, { obc_app::MAX_ROUTES }>,
+    pub(crate) route_heads: [obc_storage::flat::catalog_read::Head; obc_app::MAX_ROUTES],
     pub(crate) routes: heapless::Vec<obc_route::RouteSummary, { obc_app::MAX_ROUTES }>,
     pub(crate) route_ids: heapless::Vec<u64, { obc_app::MAX_ROUTES }>,
-    pub(crate) trip_heads: heapless::Vec<obc_storage::flat::catalog_read::Head, { obc_app::MAX_TRIPS }>,
+    pub(crate) trip_heads: [obc_storage::flat::catalog_read::Head; obc_app::MAX_TRIPS],
     pub(crate) trips: heapless::Vec<obc_route::TripMeta, { obc_app::MAX_TRIPS }>,
     pub(crate) trip_ids: heapless::Vec<u64, { obc_app::MAX_TRIPS }>,
 }

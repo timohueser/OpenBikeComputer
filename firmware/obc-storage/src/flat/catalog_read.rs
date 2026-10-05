@@ -8,34 +8,41 @@ pub struct Head {
     pub revision: Revision,
 }
 
+impl Head {
+    pub const EMPTY: Self = Self { id: ObjectId::NONE, revision: Revision(0) };
+}
+
 type Decode<'a> = dyn FnMut(Head, bool, &dyn ByteSource) -> Result<(), Error> + 'a;
 
 /// Read the newest bounded catalog into caller-owned staging. Route entries include only heads.
 /// The accepted flag belongs to the selected revision. Malformed objects are omitted; media and
 /// open failures abort the scan. Callback values are tentative until the scan succeeds.
 #[inline(never)]
-pub fn scan<D: BlockDevice, const N: usize>(
+pub fn scan<D: BlockDevice>(
     store: &FlatStore<D>,
     kind: ObjectKind,
-    heads: &mut heapless::Vec<Head, N>,
+    heads: &mut [Head],
     decode: &mut Decode<'_>,
 ) -> Result<(), StoreError> {
-    const { assert!(N <= 64) };
-    heads.clear();
+    if heads.len() > u64::BITS as usize {
+        return Err(StoreError::Invalid);
+    }
+    let capacity = heads.len();
+    let mut len = 0;
     for entry in
         store.entries().filter(|entry| entry.kind == kind && (kind != ObjectKind::Route || entry.flags.is_route_head()))
     {
-        let at = heads.iter().position(|head| entry.id > head.id).unwrap_or(heads.len());
-        if at < N {
-            if heads.is_full() {
-                let _ = heads.pop();
-            }
-            let _ = heads.insert(at, Head { id: entry.id, revision: entry.revision });
+        let at = heads[..len].iter().position(|head| entry.id > head.id).unwrap_or(len);
+        if at < capacity {
+            heads.copy_within(at..len.min(capacity - 1), at + 1);
+            heads[at] = Head { id: entry.id, revision: entry.revision };
+            len = (len + 1).min(capacity);
         }
     }
     if !store.entries_ok() {
         return Err(StoreError::Media);
     }
+    let heads = &heads[..len];
     let mut accepted = 0u64;
     if kind == ObjectKind::Route {
         for meta in store.entries().filter(|meta| meta.flags.has(EntryFlags::ASSISTANT_ACCEPTED)) {

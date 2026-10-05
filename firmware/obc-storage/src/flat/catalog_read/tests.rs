@@ -101,35 +101,30 @@ fn original_trips<D: BlockDevice>(store: &FlatStore<D>) -> Result<Trips, ()> {
 
 fn current_routes<D: BlockDevice>(store: &FlatStore<D>) -> Result<Routes, ()> {
     let mut routes = Routes::default();
-    super::scan(
-        store,
-        ObjectKind::Route,
-        &mut heapless::Vec::<super::Head, 64>::new(),
-        &mut |head, accepted, source| {
-            let (summary, flags) = RouteSummary::read_with_flags(source)?;
-            let index = routes.summaries.len();
-            if obc_formats::obcr::disposable_navigation(flags) {
-                routes.temporary |= 1 << index;
-            }
-            let candidate = flags & obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE != 0;
-            if candidate || flags & (obc_formats::obcr::FLAG_BUILT_DAY | obc_formats::obcr::FLAG_TEMPORARY) != 0 {
-                routes.internal |= 1 << index;
-            }
-            if candidate && !accepted {
-                routes.candidates |= 1 << index;
-            }
-            routes.summaries.push(summary);
-            routes.ids.push(head.id.0);
-            Ok(())
-        },
-    )
+    super::scan(store, ObjectKind::Route, &mut [super::Head::EMPTY; 64], &mut |head, accepted, source| {
+        let (summary, flags) = RouteSummary::read_with_flags(source)?;
+        let index = routes.summaries.len();
+        if obc_formats::obcr::disposable_navigation(flags) {
+            routes.temporary |= 1 << index;
+        }
+        let candidate = flags & obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE != 0;
+        if candidate || flags & (obc_formats::obcr::FLAG_BUILT_DAY | obc_formats::obcr::FLAG_TEMPORARY) != 0 {
+            routes.internal |= 1 << index;
+        }
+        if candidate && !accepted {
+            routes.candidates |= 1 << index;
+        }
+        routes.summaries.push(summary);
+        routes.ids.push(head.id.0);
+        Ok(())
+    })
     .map_err(|_| ())?;
     Ok(routes)
 }
 
 fn current_trips<D: BlockDevice>(store: &FlatStore<D>) -> Result<Trips, ()> {
     let mut trips = Trips::default();
-    super::scan(store, ObjectKind::Trip, &mut heapless::Vec::<super::Head, 16>::new(), &mut |head, _, source| {
+    super::scan(store, ObjectKind::Trip, &mut [super::Head::EMPTY; 16], &mut |head, _, source| {
         trips.metas.push(TripMeta::read(source)?);
         trips.ids.push(head.id.0);
         Ok(())

@@ -123,20 +123,13 @@ fn note_catalog_uploads(app: &App, facts: &mut obc_app::device_core::ExternalFac
 }
 
 #[inline(never)]
-async fn read_catalogs(
+fn read_catalogs(
     flat: &'static obc_storage::flat::FlatStore<crate::flat_store::FlatCard>,
     app: &mut App,
     facts: &mut obc_app::device_core::ExternalFacts,
     #[cfg(has_nav)] nav: Option<&mut crate::arena::NavGuard>,
 ) -> Option<Result<obc_app::device_core::StoreRevision, obc_app::catalog_state::CatalogError>> {
     use obc_app::catalog_state::CatalogError;
-    if !crate::arena::catalog_available() {
-        return None;
-    }
-    app.begin_catalog_refresh();
-    if let Err(error) = metadata_call(crate::flat_store::Request::ReconcileMetadata).await {
-        return Some(Err(catalog_metadata_error(error)));
-    }
     let start = crate::flat_store::catalog_scope(flat);
     let (routes_loaded, trips_loaded) = {
         let mut catalogs = crate::arena::claim_catalogs(
@@ -1185,14 +1178,21 @@ pub(crate) async fn run_app(
                     // indices by durable object id.
                     CatalogEffect::ReadCatalog { token } if app.catalog_effect_current(&effect) => {
                         let old_source = crate::flat_store::route_source_key();
-                        let read = read_catalogs(
-                            flat,
-                            app,
-                            &mut exec.facts,
-                            #[cfg(has_nav)]
-                            nav_guard.as_mut(),
-                        )
-                        .await;
+                        let read = if crate::arena::catalog_available() {
+                            app.begin_catalog_refresh();
+                            match metadata_call(crate::flat_store::Request::ReconcileMetadata).await {
+                                Ok(()) => read_catalogs(
+                                    flat,
+                                    app,
+                                    &mut exec.facts,
+                                    #[cfg(has_nav)]
+                                    nav_guard.as_mut(),
+                                ),
+                                Err(error) => Some(Err(catalog_metadata_error(error))),
+                            }
+                        } else {
+                            None
+                        };
                         if let Some(read) = read {
                             let active = app.active_route_index();
                             crate::flat_store::reconcile_route(
@@ -1221,7 +1221,7 @@ pub(crate) async fn run_app(
                             };
                             RideExec::deliver(&mut exec.outcomes.catalog, outcome, "catalog");
                         } else {
-                            exec.effects.catalog.try_put(effect).unwrap();
+                            RideExec::deliver(&mut exec.effects.catalog, effect, "catalog");
                         }
                     }
                     CatalogEffect::ReadCatalog { .. } => {}
@@ -2610,15 +2610,17 @@ pub(crate) async fn run_app(
                 }
             }
             exec.needs = derived_needs;
-            let deferred_catalog = exec.effects.catalog.take().filter(|effect| app.catalog_effect_current(effect));
-            debug_assert!(
-                !exec.effects.has_pending(),
-                "every staged effect is served in this frame's store phase before the next plan lands"
-            );
-            exec.effects = effects;
-            if exec.effects.catalog.is_empty() {
-                if let Some(effect) = deferred_catalog {
-                    exec.effects.catalog.try_put(effect).unwrap();
+            {
+                let deferred_catalog = exec.effects.catalog.take().filter(|effect| app.catalog_effect_current(effect));
+                debug_assert!(
+                    !exec.effects.has_pending(),
+                    "every staged effect is served in this frame's store phase before the next plan lands"
+                );
+                exec.effects = effects;
+                if exec.effects.catalog.is_empty() {
+                    if let Some(effect) = deferred_catalog {
+                        RideExec::deliver(&mut exec.effects.catalog, effect, "catalog");
+                    }
                 }
             }
 

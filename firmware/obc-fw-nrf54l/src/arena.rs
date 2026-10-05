@@ -397,13 +397,15 @@ pub(crate) fn claim_catalogs<'a>(#[cfg(has_nav)] nav: Option<&'a mut NavGuard>) 
         Some(claim_render().ok()?)
     };
     let loan = CatalogLoan { render, _nav: PhantomData };
-    // SAFETY: the loan holds the exclusive owner. Every vector is initialized before Deref.
+    // SAFETY: the loan holds the exclusive owner. Every field is initialized before Deref.
     unsafe {
         let slot = arena_ptr().cast::<u8>().add(CATALOG_OFFSET).cast::<crate::flat_store::CatalogScratch>();
-        core::ptr::addr_of_mut!((*slot).route_heads).write(heapless::Vec::new());
+        core::ptr::addr_of_mut!((*slot).route_heads)
+            .write([obc_storage::flat::catalog_read::Head::EMPTY; obc_app::MAX_ROUTES]);
         core::ptr::addr_of_mut!((*slot).routes).write(heapless::Vec::new());
         core::ptr::addr_of_mut!((*slot).route_ids).write(heapless::Vec::new());
-        core::ptr::addr_of_mut!((*slot).trip_heads).write(heapless::Vec::new());
+        core::ptr::addr_of_mut!((*slot).trip_heads)
+            .write([obc_storage::flat::catalog_read::Head::EMPTY; obc_app::MAX_TRIPS]);
         core::ptr::addr_of_mut!((*slot).trips).write(heapless::Vec::new());
         core::ptr::addr_of_mut!((*slot).trip_ids).write(heapless::Vec::new());
     }
