@@ -42,6 +42,7 @@
       "obc-bake",
       "obc-bench",
       "obc-data",
+      "obc-data-steps",
       "obc-dem",
       "obc-desktop",
       "obc-file-source",

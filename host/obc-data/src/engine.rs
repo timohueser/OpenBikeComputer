@@ -6,6 +6,7 @@
 mod code;
 pub mod plan;
 mod process;
+pub mod release;
 pub mod runs;
 pub mod state;
 
@@ -163,6 +164,34 @@ pub fn key(receipt: &Receipt) -> String {
     sha256_hex(&serde_json::to_vec(&sorted(spec)).expect("JSON values serialize"))
 }
 
+/// The recipe of a step with code hash `code`: its key without the digests of its inputs. A plan
+/// holds it for each build, also for one whose key waits for a fetch or another build.
+pub fn recipe(step: &Step, code: &str) -> String {
+    let mut inputs: Vec<Value> = step
+        .inputs
+        .iter()
+        .map(|input| match input {
+            Input::Snapshot { source, version, params, files } => {
+                let mut files = files.clone();
+                files.sort();
+                let params = crate::store::sorted(params);
+                serde_json::json!({"kind": InputKind::Snapshot, "name": source, "version": version, "params": params, "files": files})
+            }
+            Input::Layer(name) => serde_json::json!({"kind": InputKind::Layer, "name": name}),
+        })
+        .collect();
+    inputs.sort_by_key(|input| input.to_string());
+    let spec = serde_json::json!({
+        "step": step.name,
+        "command": step.command(),
+        "inputs": inputs,
+        "options": step.options,
+        "code": code,
+        "outputs": step.sorted_outputs(),
+    });
+    sha256_hex(&serde_json::to_vec(&sorted(spec)).expect("JSON values serialize"))
+}
+
 /// `value` with the keys of every object in byte order, whatever map serde_json was built with.
 pub fn sorted(value: Value) -> Value {
     match value {
@@ -295,6 +324,50 @@ fn select<'a>(snapshot: &'a Snapshot, selected: &'a [String]) -> (Vec<&'a FileRe
     let files = snapshot.files.iter().filter(|file| selected.is_empty() || selected.contains(&file.name)).collect();
     let missing = selected.iter().filter(|name| !snapshot.files.iter().any(|file| &file.name == *name));
     (files, missing.map(String::as_str).collect())
+}
+
+/// The object of each file that a snapshot input with these fields reads, by file name, or `None`
+/// while the store lacks one. A product reads a file that its step list depends on this way.
+pub fn snapshot_files(
+    store: &Store,
+    source: &str,
+    version: &str,
+    params: &[(String, String)],
+    files: &[String],
+) -> Result<Option<BTreeMap<String, PathBuf>>, String> {
+    Ok(match selection(store, source, version, params, files)? {
+        Selection::Present(files) => {
+            Some(files.into_iter().map(|file| (file.name, store.object(&file.sha256))).collect())
+        }
+        Selection::Lacks(_) => None,
+    })
+}
+
+/// Link each file of `files` (a path such as `layer/a.pbf`, and its object) into the new directory
+/// `dir`, for a tool that reads a directory. `dir` must not be in the output of the step; the
+/// directory beside it, `request.output.with_file_name("view")`, goes when the step ends.
+pub fn view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), String> {
+    fs::create_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for (name, object) in files {
+        if name.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+            return Err(format!("{name} is not a relative path"));
+        }
+        let link = dir.join(name);
+        fs::create_dir_all(link.parent().expect("a joined path has a parent"))
+            .map_err(|e| format!("{}: {e}", link.display()))?;
+        symlink(object, &link).map_err(|e| format!("{}: {e}", link.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn symlink(object: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(object, link)
+}
+
+#[cfg(not(unix))]
+fn symlink(object: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(object, link)
 }
 
 /// The receipt of `step` before it runs, with its key, and its request. `layers` holds the
@@ -804,6 +877,18 @@ mod x;
         write(&scratch.0.join("gen/deep.bin"), "2\n");
         assert_ne!(hash(&[]), changed, "a file that a module file includes is code");
         assert_ne!(hash(&["Cargo.lock"]), hash(&[]));
+    }
+
+    #[test]
+    fn a_view_links_each_file_to_its_object() {
+        let scratch = Scratch::new("engine-view");
+        let object = scratch.0.join("object");
+        write(&object, "tile");
+        let files = BTreeMap::from([("tiles/a.pbf".to_string(), object.clone())]);
+        view(&files, &scratch.0.join("view")).unwrap();
+        assert_eq!(fs::read_link(scratch.0.join("view/tiles/a.pbf")).unwrap(), object);
+        let outside = BTreeMap::from([("../a.pbf".to_string(), object)]);
+        assert_eq!(view(&outside, &scratch.0.join("other")).unwrap_err(), "../a.pbf is not a relative path");
     }
 
     #[test]

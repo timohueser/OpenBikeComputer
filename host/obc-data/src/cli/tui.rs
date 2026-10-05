@@ -17,12 +17,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
-use obc_data::engine::runs::{self, Details, Outcome, Summary};
-use obc_data::sources::{Kind, State};
-use obc_data::store::Store;
+use crate::engine::runs::{self, Details, Outcome, Summary};
+use crate::sources::{Kind, State};
+use crate::store::Store;
 
-use crate::runs_cli::{bytes, duration, mark, step_cells};
-use crate::{refresh, registry, row_text, source_rows, widths, Error, SourceRow};
+use super::runs_cli::{bytes, duration, mark, step_cells};
+use super::{refresh, registry, row_text, source_rows, widths, Error, SourceRow};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -558,8 +558,8 @@ mod tests {
     use ratatui::Terminal;
 
     use super::*;
-    use crate::Stored;
-    use obc_data::sources::parse_sources;
+    use crate::cli::Stored;
+    use crate::sources::parse_sources;
 
     const SOURCES: &str = r#"
         [[source]]

@@ -3,12 +3,13 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{order, prepare, reusable, select, selection, Codes, Input, Receipt, Selection, Step};
+use super::{order, prepare, recipe, reusable, select, selection, Codes, Input, Receipt, Selection, Step};
 use crate::store::{sorted, Store};
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
     pub groups: Vec<Group>,
@@ -17,8 +18,9 @@ pub struct Plan {
 /// One change: builds that read each other's layers, and the fetches that they need. A group
 /// never needs a build of another group, so each can be selected alone. Two groups can need the
 /// same fetch.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(rename = "PlanGroup")]
 pub struct Group {
     /// The step of its first build. It names the group only in the plan that it comes from.
     pub id: String,
@@ -27,8 +29,9 @@ pub struct Group {
     pub builds: Vec<Build>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(rename = "PlanFetch")]
 pub struct Fetch {
     pub source: String,
     pub version: String,
@@ -40,16 +43,19 @@ pub struct Fetch {
     pub bytes: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(rename = "PlanBuild")]
 pub struct Build {
     pub step: String,
+    /// The key of the step without the digests of its inputs.
+    pub recipe: String,
     /// `None` until the layers and snapshots that it reads are in the store.
     pub key: Option<String>,
     pub estimate: Option<Estimate>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Estimate {
     pub wall_ms: u64,
@@ -57,28 +63,54 @@ pub struct Estimate {
     pub peak_rss_bytes: Option<u64>,
 }
 
+/// A step in dependency order, with what the store has for it.
+pub(super) struct Walked<'a> {
+    pub step: &'a Step,
+    /// The code hash.
+    pub code: String,
+    /// The snapshot inputs whose files the store lacks.
+    pub fetches: Vec<Fetch>,
+    /// `None` until the store has every snapshot and layer that the step reads.
+    pub key: Option<String>,
+    /// The layer of `key` in the store, with all of its objects.
+    pub stored: Option<Receipt>,
+}
+
+/// Each step in dependency order, with its key and its stored layer. `plan` and
+/// `release::release` reuse the same layers.
+pub(super) fn walk<'a>(store: &Store, root: &Path, steps: &'a [Step]) -> Result<Vec<Walked<'a>>, String> {
+    let mut codes = Codes::default();
+    let mut reused: HashMap<&str, Receipt> = HashMap::new();
+    let mut walked = Vec::new();
+    for step in order(steps)? {
+        let named = |e: String| format!("step `{}`: {e}", step.name);
+        let code = codes.get(root, &step.code).map_err(named)?.0.clone();
+        let fetches = missing(store, step)?;
+        let (mut key, mut stored) = (None, None);
+        if fetches.is_empty() && step.layers().all(|name| reused.contains_key(name)) {
+            let (receipt, _) = prepare(store, step, &reused, &code).map_err(named)?;
+            stored = reusable(store, &receipt.key)?;
+            if let Some(stored) = &stored {
+                reused.insert(&step.name, stored.clone());
+            }
+            key = Some(receipt.key);
+        }
+        walked.push(Walked { step, code, fetches, key, stored });
+    }
+    Ok(walked)
+}
+
 /// What building `steps` needs: a fetch for each snapshot input whose files the store lacks, and a
 /// build for each layer whose key has no layer in the store, or whose key waits for a fetch or
 /// another build.
 pub fn plan(store: &Store, root: &Path, steps: &[Step]) -> Result<Plan, String> {
     let receipts = store.layers()?;
-    let mut codes = Codes::default();
-    let mut reused: HashMap<&str, Receipt> = HashMap::new();
     let mut builds: Vec<(&Step, Build, Vec<Fetch>)> = Vec::new();
-    for step in order(steps)? {
-        let fetches = missing(store, step)?;
-        let waits = step.layers().any(|name| !reused.contains_key(name));
-        let mut key = None;
-        if fetches.is_empty() && !waits {
-            let (receipt, _) = prepare(store, step, &reused, &codes.get(root, &step.code)?.0)
-                .map_err(|e| format!("step `{}`: {e}", step.name))?;
-            if let Some(stored) = reusable(store, &receipt.key)? {
-                reused.insert(&step.name, stored);
-                continue;
-            }
-            key = Some(receipt.key);
+    for Walked { step, code, fetches, key, stored } in walk(store, root, steps)? {
+        if stored.is_none() {
+            let (recipe, estimate) = (recipe(step, &code), estimate(&receipts, step));
+            builds.push((step, Build { step: step.name.clone(), recipe, key, estimate }, fetches));
         }
-        builds.push((step, Build { step: step.name.clone(), key, estimate: estimate(&receipts, step) }, fetches));
     }
 
     // A build joins the builds whose layers it reads.
@@ -109,6 +141,20 @@ pub fn plan(store: &Store, root: &Path, steps: &[Step]) -> Result<Plan, String> 
 }
 
 impl Plan {
+    /// Whether a run of `self` does the same work as a run of `other`: the same groups, fetches,
+    /// recipes and keys. Estimates and fetch sizes may differ.
+    pub fn same_work(&self, other: &Plan) -> bool {
+        let work = |plan: &Plan| {
+            let mut plan = plan.clone();
+            for group in &mut plan.groups {
+                group.fetches.iter_mut().for_each(|fetch| fetch.bytes = None);
+                group.builds.iter_mut().for_each(|build| build.estimate = None);
+            }
+            plan
+        };
+        work(self) == work(other)
+    }
+
     /// The plan with only the groups `ids` names.
     pub fn only(&self, ids: &[String]) -> Result<Plan, String> {
         if let Some(id) = ids.iter().find(|id| !self.groups.iter().any(|group| &group.id == *id)) {

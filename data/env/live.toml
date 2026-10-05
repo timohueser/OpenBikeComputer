@@ -1,6 +1,11 @@
 # The live environment. `[pins]` names the version of each source that live is built from.
 # The planner tools read the pins they use. The digests of their other downloads stay next to that code.
 
+# Both products build this region: a file in data/regions/.
+region = "europe/germany/baden-wuerttemberg"
+# The optional planner layers that are on.
+layers = []
+
 [pins]
 hansen-gfc = "v1.11"
 natural-earth = "b9e2e7b3d5c2c59593f6eafc19be2ba87fb04788a90c57ccd6cf32a587b6ecc3"

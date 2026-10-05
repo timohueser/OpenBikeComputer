@@ -18,7 +18,7 @@ def r2_put(path, key, *options):
     """Upload one file through the R2 client of host/obc-data, which also verifies it.
 
     The workflow builds the client in a step without secrets; this step only runs the binary."""
-    client = Path(__file__).resolve().parents[3] / "target" / "debug" / "obc-data"
+    client = Path(__file__).resolve().parents[3] / "target" / "debug" / "obc-data-plumbing"
     subprocess.run([str(client), "r2", "put", *options, str(path), key], check=True)
 
 

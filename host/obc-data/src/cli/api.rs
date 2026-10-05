@@ -43,8 +43,10 @@ pub enum Code {
     R2Failed,
     /// After an upload, the object in the bucket is not the file.
     VerifyFailed,
-    /// The run that `runs RUN --follow` shows failed.
+    /// A run failed: the build, or the run that `runs RUN --follow` shows.
     RunFailed,
+    /// The plan file is not the plan of now: live, the steps or the store changed after it was made.
+    PlanOutdated,
     /// The store or the file system failed.
     Failed,
 }
@@ -53,6 +55,7 @@ impl Code {
     pub fn exit(self) -> u8 {
         match self {
             Code::Usage | Code::NoTerminal => 2,
+            Code::PlanOutdated => 3,
             Code::Blocked => 4,
             Code::VerifyFailed => 5,
             Code::NotConfirmed
@@ -75,6 +78,9 @@ impl Code {
             Code::R2Failed => "Check the key, the `OBC_R2_*` variables and that rclone is on PATH, then run again.",
             Code::VerifyFailed => "Upload the file again.",
             Code::RunFailed => "`obc data runs RUN` shows the step that failed and its error.",
+            Code::PlanOutdated => {
+                "Make the plan again with `obc data plan ENV --json`, read it, and pass the new file."
+            }
             Code::Failed => "Correct the file or the directory that the message names, then run again.",
         }
     }
@@ -143,8 +149,8 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::*;
-    use crate::{r2_cli, runs_cli};
-    use obc_data::engine::runs::{Details, Event};
+    use crate::cli::{build_cli, r2_cli, runs_cli};
+    use crate::engine::runs::{Details, Event};
 
     const UPDATE: &str = "OBC_UPDATE_DATA_SPEC";
 
@@ -152,12 +158,14 @@ mod tests {
     fn outputs(generator: &mut SchemaGenerator) -> Vec<(&'static str, Value)> {
         let schema = |commands, schema: schemars::Schema| (commands, schema.to_value());
         vec![
-            schema("`sources`", generator.subschema_for::<crate::Sources>()),
-            schema("`fetch`, `refresh`", generator.subschema_for::<crate::Fetched>()),
-            schema("`region`, `region list`", generator.subschema_for::<crate::RegionList>()),
-            schema("`region show`", generator.subschema_for::<crate::RegionDetail>()),
-            schema("`store import`", generator.subschema_for::<obc_data::store::import::Plan>()),
-            schema("`gc store`", generator.subschema_for::<obc_data::store::gc::Plan>()),
+            schema("`sources`", generator.subschema_for::<crate::cli::Sources>()),
+            schema("`fetch`, `refresh`", generator.subschema_for::<crate::cli::Fetched>()),
+            schema("`region`, `region list`", generator.subschema_for::<crate::cli::RegionList>()),
+            schema("`region show`", generator.subschema_for::<crate::cli::RegionDetail>()),
+            schema("`store import`", generator.subschema_for::<crate::store::import::Plan>()),
+            schema("`gc store`", generator.subschema_for::<crate::store::gc::Plan>()),
+            schema("`plan`", generator.subschema_for::<build_cli::EnvPlan>()),
+            schema("`build`", generator.subschema_for::<build_cli::Built>()),
             schema("`runs`", generator.subschema_for::<runs_cli::RunList>()),
             schema("`runs RUN`", generator.subschema_for::<Details>()),
             schema("`runs RUN --follow`, one per line", generator.subschema_for::<Event>()),
@@ -185,7 +193,7 @@ mod tests {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "$defs": generator.take_definitions(true),
         });
-        let document = serde_json::to_string_pretty(&obc_data::engine::sorted(document)).unwrap();
+        let document = serde_json::to_string_pretty(&crate::engine::sorted(document)).unwrap();
         text + "\n```json\n" + &document + "\n```\n"
     }
 

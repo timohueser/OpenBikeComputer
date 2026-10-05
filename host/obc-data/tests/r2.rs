@@ -70,7 +70,7 @@ fn stat_tells_an_absent_object_from_an_empty_one() {
 }
 
 fn obc_data_r2(temp: &Temp, args: &[&str]) -> std::process::Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_obc-data"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_obc-data-plumbing"));
     // A credential from tools/obc.local must neither reach the child nor clash with the local bucket.
     for (name, _) in std::env::vars_os() {
         let text = name.to_string_lossy();

@@ -295,15 +295,19 @@ pub fn parse_sources(text: &str) -> Result<Vec<Source>, String> {
     Ok(file.source)
 }
 
+/// An environment file. `crate::env` checks `region` and `layers`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct EnvFile {
+pub(crate) struct EnvFile {
+    pub(crate) region: Option<String>,
     #[serde(default)]
-    pins: BTreeMap<String, String>,
+    pub(crate) layers: Vec<String>,
+    #[serde(default)]
+    pub(crate) pins: BTreeMap<String, String>,
 }
 
-/// Parse the `[pins]` of an environment file: source id to version.
-pub fn parse_pins(text: &str, sources: &[Source]) -> Result<BTreeMap<String, String>, String> {
+/// Parse an environment file and check its `[pins]`.
+pub(crate) fn parse_env(text: &str, sources: &[Source]) -> Result<EnvFile, String> {
     let file: EnvFile = toml::from_str(text).map_err(|e| e.to_string())?;
     for (id, pin) in &file.pins {
         let source = sources.iter().find(|s| &s.id == id).ok_or_else(|| format!("pin `{id}` names no source"))?;
@@ -311,7 +315,12 @@ pub fn parse_pins(text: &str, sources: &[Source]) -> Result<BTreeMap<String, Str
             return Err(format!("pin `{id}` = `{pin}` is not a YYYY-MM-DD date"));
         }
     }
-    Ok(file.pins)
+    Ok(file)
+}
+
+/// Parse the `[pins]` of an environment file: source id to version.
+pub fn parse_pins(text: &str, sources: &[Source]) -> Result<BTreeMap<String, String>, String> {
+    parse_env(text, sources).map(|file| file.pins)
 }
 
 /// The sources and the live pins of the repository at `root`.
