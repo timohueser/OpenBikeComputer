@@ -14,6 +14,11 @@ pub trait Product {
     /// Kebab-case. Each of its layer names starts with `<name>/`.
     fn name(&self) -> &'static str;
 
+    /// The folder of its releases on R2.
+    fn prefix(&self) -> &'static str {
+        self.name()
+    }
+
     /// The optional layers that `layers` of an environment can switch on.
     fn optional(&self) -> &'static [&'static str] {
         &[]

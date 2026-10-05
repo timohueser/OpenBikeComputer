@@ -1,6 +1,6 @@
 //! The TUI of `obc data`. Each screen shows what a command writes with `--json`, and the bar
 //! names that command. Each change goes through the function of its command: `refresh`, `policy`
-//! and `gc store --apply`.
+//! and `clean --apply`.
 
 use std::io::Stdout;
 use std::path::Path;
@@ -19,11 +19,12 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
 use crate::engine::runs::{self, Details, Outcome, Summary};
+use crate::product::Product;
 use crate::sources::{Kind, Refresh, State, VersionScheme};
-use crate::store::{gc, Store};
+use crate::store::{gc, import, Store};
 
 use super::runs_cli::{bytes, duration, mark, step_cells};
-use super::{clean, collect, policy, refresh, registry, row_text, source_rows, widths, Error, SourceRow};
+use super::{clean, clean_plan, policy, refresh, registry, row_text, source_rows, widths, CleanPlan, Error, SourceRow};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -75,9 +76,9 @@ enum Effect {
     Policy(String, Refresh),
     /// `obc data sources --check-now`.
     CheckNow,
-    /// `obc data gc store`, for Clean.
+    /// `obc data clean`, for Clean.
     PlanClean,
-    /// `obc data gc store --apply` of the plan that Clean shows.
+    /// `obc data clean --apply` of the plan that Clean shows.
     Clean,
 }
 
@@ -117,8 +118,8 @@ struct App {
     checked_now: bool,
     /// The check of upstream runs.
     checking: bool,
-    /// The plan of `gc store`, once Store has shown.
-    store: Option<gc::Plan>,
+    /// The plan of `clean`, once Store has shown.
+    store: Option<CleanPlan>,
     /// Running runs first, then newest first.
     runs: Vec<Details>,
     source: usize,
@@ -142,16 +143,19 @@ type Tui = Terminal<CrosstermBackend<Stdout>>;
 const TICK: Duration = Duration::from_secs(1);
 
 /// The plan before Store has one.
-static NO_PLAN: gc::Plan = gc::Plan {
-    kept: Vec::new(),
-    snapshots: Vec::new(),
-    objects: Vec::new(),
-    remove_bytes: 0,
-    keep_objects: 0,
-    keep_bytes: 0,
+static NO_PLAN: CleanPlan = CleanPlan {
+    store: gc::Plan {
+        kept: Vec::new(),
+        snapshots: Vec::new(),
+        objects: Vec::new(),
+        remove_bytes: 0,
+        keep_objects: 0,
+        keep_bytes: 0,
+    },
+    import: import::Plan { dirs: Vec::new(), bytes: 0 },
 };
 
-pub fn run(root: &Path) -> Result<(), Error> {
+pub fn run(root: &Path, products: &[&dyn Product]) -> Result<(), Error> {
     let store = Store::open()?;
     let mut app = App::new(source_rows(&registry(root)?, false)?, list_runs(&store)?);
     let previous = std::panic::take_hook();
@@ -159,12 +163,13 @@ pub fn run(root: &Path) -> Result<(), Error> {
         stop();
         previous(info);
     }));
-    let result = start().inspect_err(|_| stop()).and_then(|mut tui| run_loop(root, &store, &mut app, &mut tui));
+    let result =
+        start().inspect_err(|_| stop()).and_then(|mut tui| run_loop(root, products, &store, &mut app, &mut tui));
     stop();
     result
 }
 
-fn run_loop(root: &Path, store: &Store, app: &mut App, tui: &mut Tui) -> Result<(), Error> {
+fn run_loop(root: &Path, products: &[&dyn Product], store: &Store, app: &mut App, tui: &mut Tui) -> Result<(), Error> {
     let io = |e: std::io::Error| e.to_string();
     let mut read = Instant::now();
     loop {
@@ -218,15 +223,16 @@ fn run_loop(root: &Path, store: &Store, app: &mut App, tui: &mut Tui) -> Result<
                 result
             }
             Effect::PlanClean => {
-                let result = collect(root, store).map(|plan| app.store = Some(plan));
+                let result = clean_plan(root, products, store).map(|plan| app.store = Some(plan));
                 if result.is_err() {
                     app.overlay = None;
                 }
                 result
             }
             Effect::Clean => {
-                let result = clean(root, store, app.store.as_ref()).map(drop);
-                match collect(root, store) {
+                let confirmed = app.store.as_ref().unwrap_or(&NO_PLAN);
+                let result = clean(root, products, store, &confirmed.store).map(drop);
+                match clean_plan(root, products, store) {
                     Ok(plan) => app.store = Some(plan),
                     Err(error) => app.notice = Some(error.message),
                 }
@@ -297,9 +303,10 @@ impl App {
     fn rows(&self) -> usize {
         match self.screen {
             Screen::Sources => self.sources.len(),
-            Screen::Store => {
-                self.store.as_ref().map_or(0, |plan| plan.kept.len() + usize::from(!plan.objects.is_empty()))
-            }
+            Screen::Store => self
+                .store
+                .as_ref()
+                .map_or(0, |plan| plan.store.kept.len() + usize::from(!plan.store.objects.is_empty())),
             Screen::Runs => self.runs.len(),
         }
     }
@@ -337,9 +344,7 @@ impl App {
             Action::Open(Overlay::Policy) => {
                 self.sources.get(self.source).is_some_and(|row| row.source.version == VersionScheme::Date)
             }
-            Action::Open(Overlay::Clean) => {
-                self.store.as_ref().is_some_and(|plan| !plan.snapshots.is_empty() || !plan.objects.is_empty())
-            }
+            Action::Open(Overlay::Clean) => self.store.as_ref().is_some_and(|plan| !plan.is_empty()),
             _ => true,
         }
     }
@@ -466,8 +471,8 @@ impl App {
                 Refresh::Days(days) => format!("obc data policy {id} {days}"),
                 Refresh::Manual => format!("obc data policy {id} manual"),
             },
-            (Some(Overlay::Clean), _) if self.asking => "obc data gc store --apply".into(),
-            (Some(Overlay::Clean), _) | (None, Screen::Store) => "obc data gc store".into(),
+            (Some(Overlay::Clean), _) if self.asking => "obc data clean --apply".into(),
+            (Some(Overlay::Clean), _) | (None, Screen::Store) => "obc data clean".into(),
             (None, Screen::Sources) if self.checked_now => "obc data sources --check-now".into(),
             (None, Screen::Sources) => "obc data sources".into(),
             (None, Screen::Runs) => self.run_id().map_or("obc data runs".into(), |id| format!("obc data runs {id}")),
@@ -527,7 +532,7 @@ impl App {
 
     fn draw_store(&mut self, frame: &mut Frame, area: Rect) {
         let mut table = vec![["ENTRY", "SIZE", "KEPT BECAUSE"].map(String::from).to_vec()];
-        let plan = self.store.as_ref().unwrap_or(&NO_PLAN);
+        let plan = &self.store.as_ref().unwrap_or(&NO_PLAN).store;
         table
             .extend(plan.kept.iter().map(|kept| vec![kept.entry.clone(), bytes(kept.bytes), kept.because.join(" · ")]));
         let unused = !plan.objects.is_empty();
@@ -640,21 +645,19 @@ impl App {
 
     fn clean_lines(&self) -> Vec<Line<'static>> {
         let plan = self.store.as_ref().unwrap_or(&NO_PLAN);
-        if plan.snapshots.is_empty() && plan.objects.is_empty() {
+        if plan.is_empty() {
             return vec![Line::from("nothing to clean")];
         }
+        let gc = &plan.store;
         let mut lines: Vec<Line> =
-            plan.snapshots.iter().map(|snapshot| Line::from(format!("snapshot {snapshot}"))).collect();
-        let objects = gc::objects_text(plan.objects.len() as u64);
-        lines.push(Line::from(format!("{objects}  {}", bytes(plan.remove_bytes))));
+            gc.snapshots.iter().map(|snapshot| Line::from(format!("snapshot {snapshot}"))).collect();
+        let objects = gc::objects_text(gc.objects.len() as u64);
+        lines.push(Line::from(format!("{objects}  {}", bytes(gc.remove_bytes))));
+        for dir in plan.import.dirs.iter().filter(|dir| dir.files > 0) {
+            lines.push(Line::from(format!("move {}  {} files  {}", dir.dir.display(), dir.files, bytes(dir.bytes))));
+        }
         if self.asking {
-            let records = match plan.snapshots.len() {
-                1 => "1 record".to_string(),
-                records => format!("{records} records"),
-            };
-            let what = if plan.objects.is_empty() { records } else { bytes(plan.remove_bytes) };
-            let question = format!("Remove {what} from the store?");
-            lines.extend([Line::default(), Line::from(question).bold()]);
+            lines.extend([Line::default(), Line::from(plan.question()).bold()]);
         }
         lines
     }
@@ -831,13 +834,14 @@ mod tests {
             steps: Vec::new(),
         };
         let mut app = App::new(sources.collect(), vec![run("2024-01-10-120000"), run("2024-01-09-120000")]);
-        app.store = Some(gc::Plan {
+        let store = gc::Plan {
             kept: vec![Kept { entry: "osm@2024-01-02".into(), bytes: 1_000_000, because: vec!["pin of live".into()] }],
             snapshots: vec!["osm@2023-12-01".into()],
             objects: vec![("ab".repeat(32), 1_000_000)],
             remove_bytes: 1_000_000,
             ..gc::Plan::default()
-        });
+        };
+        app.store = Some(CleanPlan { store, ..CleanPlan::default() });
         app
     }
 
@@ -859,9 +863,9 @@ mod tests {
             states.push(opened(overlay, 1, 1));
         }
         states.push(App { asking: true, ..opened(Overlay::Clean, 0, 0) });
-        states.push(App { store: Some(gc::Plan::default()), ..opened(Overlay::Clean, 0, 0) });
+        states.push(App { store: Some(CleanPlan::default()), ..opened(Overlay::Clean, 0, 0) });
         states.push(App { screen: Screen::Store, ..app() });
-        states.push(App { screen: Screen::Store, store: Some(gc::Plan::default()), ..app() });
+        states.push(App { screen: Screen::Store, store: Some(CleanPlan::default()), ..app() });
         states.push(App { screen: Screen::Runs, ..app() });
         for app in states {
             let keys = app.bindings();
@@ -902,18 +906,18 @@ mod tests {
     fn a_clean_needs_a_then_y() {
         let mut app = App { screen: Screen::Store, ..app() };
         assert_eq!(app.key(KeyCode::Char('c')), Effect::PlanClean, "the plan of now");
-        assert_eq!((app.overlay, app.command().as_str()), (Some(Overlay::Clean), "obc data gc store"));
+        assert_eq!((app.overlay, app.command().as_str()), (Some(Overlay::Clean), "obc data clean"));
         for key in [KeyCode::Enter, KeyCode::Char('y')] {
             assert_eq!(app.key(key), Effect::None);
         }
         app.key(KeyCode::Char('a'));
-        assert_eq!(app.command(), "obc data gc store --apply");
+        assert_eq!(app.command(), "obc data clean --apply");
         app.key(KeyCode::Esc);
         assert_eq!((app.overlay, app.asking), (Some(Overlay::Clean), false));
         app.key(KeyCode::Char('a'));
         assert_eq!(app.key(KeyCode::Char('y')), Effect::Clean);
         assert_eq!(app.overlay, None);
-        let mut empty = App { store: Some(gc::Plan::default()), ..app };
+        let mut empty = App { store: Some(CleanPlan::default()), ..app };
         empty.act(Action::Open(Overlay::Clean));
         assert_eq!(empty.key(KeyCode::Char('a')), Effect::None, "an empty plan has nothing to clean");
     }

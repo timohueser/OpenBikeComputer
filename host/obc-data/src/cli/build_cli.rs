@@ -222,13 +222,13 @@ fn select(plan: &Plan, only: &[String]) -> Result<Plan, Error> {
 }
 
 /// An environment, with the sources and the regions that it was read with.
-struct Loaded {
-    env: Env,
-    sources: Vec<Source>,
-    regions: Regions,
+pub(super) struct Loaded {
+    pub(super) env: Env,
+    pub(super) sources: Vec<Source>,
+    pub(super) regions: Regions,
 }
 
-fn load(root: &Path, name: &str) -> Result<Loaded, Error> {
+pub(super) fn load(root: &Path, name: &str) -> Result<Loaded, Error> {
     let registry = registry(root)?;
     if !crate::is_kebab(name) || !root.join("data/env").join(format!("{name}.toml")).is_file() {
         return Err(Code::Usage.error(format!("no environment `{name}` in data/env/")));
@@ -252,7 +252,7 @@ fn planned(
 }
 
 /// Fetch what a product names, with the code of a failed fetch: `fetch_failed` or `blocked`.
-fn fetcher<'a>(
+pub(super) fn fetcher<'a>(
     store: &'a Store,
     http: &'a Http,
     sources: &'a [Source],
@@ -275,50 +275,68 @@ fn product_bug(name: &str, message: String) -> Error {
 
 /// The steps of every product, and the products that give `Unplanned::Invalid`. A product whose
 /// step list reads snapshots that the store lacks gets them fetched, and is asked once more.
-fn steps(
+pub(super) fn steps(
     products: &[&dyn Product],
     env: &Env,
     regions: &Regions,
     store: &Store,
     mut fetch: impl FnMut(&Wanted) -> Result<(), Error>,
 ) -> Result<(Vec<Step>, Vec<BlockedProduct>), Error> {
+    check_layers(products, env)?;
+    let (mut all, mut blocked) = (Vec::new(), Vec::new());
+    for product in products {
+        match product_steps(*product, env, regions, store, &mut fetch)? {
+            Ok(steps) => all.extend(steps),
+            Err(reason) => blocked.push(BlockedProduct { product: product.name().into(), reason }),
+        }
+    }
+    Ok((all, blocked))
+}
+
+/// Refuse an optional layer of `env` that no product has.
+pub(super) fn check_layers(products: &[&dyn Product], env: &Env) -> Result<(), Error> {
     let offered = |layer: &&String| products.iter().any(|product| product.optional().contains(&layer.as_str()));
     if let Some(layer) = env.layers.iter().find(|layer| !offered(layer)) {
         let message = format!("data/env/{}.toml: no product has the optional layer `{layer}`", env.name);
         return Err(Code::InvalidData.error(message));
     }
-    let (mut all, mut blocked) = (Vec::new(), Vec::new());
-    for product in products {
-        let name = product.name();
-        let mut listed = product.steps(env, regions, store);
-        if let Err(Unplanned::NeedsFetch(fetches)) = &listed {
-            fetches.iter().try_for_each(&mut fetch)?;
-            listed = product.steps(env, regions, store);
-        }
-        let steps = match listed {
-            Ok(steps) => steps,
-            Err(Unplanned::NeedsFetch(fetches)) => {
-                let wanted = fetches
-                    .iter()
-                    .map(|f| format!("{}@{}", f.source, f.version.as_deref().unwrap_or("newest")))
-                    .collect::<Vec<_>>();
-                return Err(product_bug(
-                    name,
-                    format!("product `{name}` still needs {} after the fetch", wanted.join(", ")),
-                ));
-            }
-            Err(Unplanned::Invalid(reason)) => {
-                blocked.push(BlockedProduct { product: name.into(), reason });
-                continue;
-            }
-            Err(Unplanned::Failed(e)) => return Err(Code::Failed.error(format!("product `{name}`: {e}"))),
-        };
-        if let Some(step) = steps.iter().find(|step| !step.name.starts_with(&format!("{name}/"))) {
-            return Err(product_bug(name, format!("step `{}` of product `{name}` is not named `{name}/…`", step.name)));
-        }
-        all.extend(steps);
+    Ok(())
+}
+
+/// The steps of one product, after the fetches that its step list needs. `Ok(Err(reason))` when
+/// the product is blocked (`Unplanned::Invalid`).
+pub(super) fn product_steps(
+    product: &dyn Product,
+    env: &Env,
+    regions: &Regions,
+    store: &Store,
+    fetch: &mut impl FnMut(&Wanted) -> Result<(), Error>,
+) -> Result<Result<Vec<Step>, String>, Error> {
+    let name = product.name();
+    let mut listed = product.steps(env, regions, store);
+    if let Err(Unplanned::NeedsFetch(fetches)) = &listed {
+        fetches.iter().try_for_each(&mut *fetch)?;
+        listed = product.steps(env, regions, store);
     }
-    Ok((all, blocked))
+    let steps = match listed {
+        Ok(steps) => steps,
+        Err(Unplanned::NeedsFetch(fetches)) => {
+            let wanted = fetches
+                .iter()
+                .map(|f| format!("{}@{}", f.source, f.version.as_deref().unwrap_or("newest")))
+                .collect::<Vec<_>>();
+            return Err(product_bug(
+                name,
+                format!("product `{name}` still needs {} after the fetch", wanted.join(", ")),
+            ));
+        }
+        Err(Unplanned::Invalid(reason)) => return Ok(Err(reason)),
+        Err(Unplanned::Failed(e)) => return Err(Code::Failed.error(format!("product `{name}`: {e}"))),
+    };
+    if let Some(step) = steps.iter().find(|step| !step.name.starts_with(&format!("{name}/"))) {
+        return Err(product_bug(name, format!("step `{}` of product `{name}` is not named `{name}/…`", step.name)));
+    }
+    Ok(Ok(steps))
 }
 
 #[cfg(test)]
