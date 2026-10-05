@@ -668,7 +668,7 @@ bytes is the id.
 | Command | Output |
 | --- | --- |
 | `obc data [--json]` | In a terminal, and without `--json`: the TUI. Otherwise the output of `status` |
-| `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live) and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, old cache directories that `clean` imports, and with `--check` drift and leftovers. `--check` adds the listing of [Live](#live) and exits with 1 when it finds drift or leftovers |
+| `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live) and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, old cache directories that `clean` imports, and with `--check` drift and leftovers. When a fetch that a step list needs fails, the layer states are unknown (`layers` is `null`), and attention says `upstream not reachable` with the error. `--check` adds the listing of [Live](#live) and exits with 1 when it finds drift or leftovers |
 | `obc data sources [--check-now] [--json]` | Every source with licence, R2 copy, live pin, newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the live pin, or else the newest file upstream. Writes the store path of each file |
 | `obc data refresh SOURCE [NAME=VALUE…] [--env ENV] [--json]` | Fetches the newest upstream version, checked now, and writes it to `[pins]` of `data/env/ENV.toml` (default `live`). `ENV` is lowercase kebab-case. The edit keeps comments, line order and CRLF line ends. Writes the store path of each file. A version after the pin of a source whose `fetch.from` names `SOURCE` is refused before the fetch: refresh that source first |
@@ -855,6 +855,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         {
           "const": "leftovers",
           "description": "Keys under the owned prefixes that no live release uses.",
+          "type": "string"
+        },
+        {
+          "const": "unreachable",
+          "description": "A fetch that the step list needs failed, so the layer states are unknown.",
           "type": "string"
         }
       ]
@@ -2090,11 +2095,14 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "ProductStatus": {
       "properties": {
         "layers": {
-          "description": "Each layer of the environment `live`, in dependency order.",
+          "description": "Each layer of the environment `live`, in dependency order; `None` when its steps cannot\nbe listed, and `attention` says why.",
           "items": {
             "$ref": "#/$defs/LayerStatus"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "product": {
           "type": "string"

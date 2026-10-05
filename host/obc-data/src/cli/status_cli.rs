@@ -9,12 +9,12 @@ use clap::Args;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::build_cli::{fetcher, load, steps};
+use super::build_cli::{fetcher, load, steps, Loaded};
 use super::{bytes, cells, old_dirs, print_json, print_table, read_live, registry, source_rows, Code, Error};
-use crate::engine::state::{self, Environment};
+use crate::engine::state::{self, Environment, LayerState};
 use crate::fetch::http::Http;
 use crate::live::{Check, Remote};
-use crate::product::Product;
+use crate::product::{Product, Wanted};
 use crate::sources::{self, State};
 use crate::store::{import, Store};
 
@@ -42,8 +42,9 @@ pub struct ProductStatus {
     pub product: String,
     /// The id of the live release; `None` when nothing is live.
     pub release: Option<String>,
-    /// Each layer of the environment `live`, in dependency order.
-    pub layers: Vec<LayerStatus>,
+    /// Each layer of the environment `live`, in dependency order; `None` when its steps cannot
+    /// be listed, and `attention` says why.
+    pub layers: Option<Vec<LayerStatus>>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -75,6 +76,8 @@ pub enum AttentionKind {
     Drift,
     /// Keys under the owned prefixes that no live release uses.
     Leftovers,
+    /// A fetch that the step list needs failed, so the layer states are unknown.
+    Unreachable,
 }
 
 impl AttentionKind {
@@ -85,6 +88,7 @@ impl AttentionKind {
             AttentionKind::OldCache => "old cache",
             AttentionKind::Drift => "drift",
             AttentionKind::Leftovers => "leftovers",
+            AttentionKind::Unreachable => "unreachable",
         }
     }
 }
@@ -103,17 +107,22 @@ pub fn status(root: &Path, products: &[&dyn Product], check: bool, json: bool) -
     });
     let environment = Environment { sources: statuses.collect(), live: live.layers() };
     let http = Http::new();
-    let steps = steps(products, &loaded.env, &loaded.regions, &store, fetcher(&store, &http, &loaded.sources))?;
-    let layers = state::state(&store, root, &steps, &environment)?;
+    let layers = layer_states(root, &store, products, &loaded, &environment, fetcher(&store, &http, &loaded.sources))?;
     let products = live.products.iter().map(|product| {
         let prefix = format!("{}/", product.product);
-        let layers = layers.iter().filter(|layer| layer.layer.starts_with(&prefix));
-        let layers = layers.map(|l| LayerStatus { layer: l.layer.clone(), state: l.state, reason: l.reason.clone() });
+        let layers = layers.as_ref().ok().map(|layers| {
+            let layers = layers.iter().filter(|layer| layer.layer.starts_with(&prefix));
+            layers.map(|l| LayerStatus { layer: l.layer.clone(), state: l.state, reason: l.reason.clone() }).collect()
+        });
         let release = product.release.as_ref().map(|(id, _)| id.clone());
-        ProductStatus { product: product.product.clone(), release, layers: layers.collect() }
+        ProductStatus { product: product.product.clone(), release, layers }
     });
 
     let mut attention = Vec::new();
+    if let Err(reason) = &layers {
+        let about = "upstream".to_string();
+        attention.push(Attention { kind: AttentionKind::Unreachable, about, reason: reason.clone() });
+    }
     for row in &rows {
         let kind = match row.state {
             State::Stale => AttentionKind::Stale,
@@ -151,19 +160,42 @@ pub fn status(root: &Path, products: &[&dyn Product], check: bool, json: bool) -
     Ok(if problems { ExitCode::FAILURE } else { ExitCode::SUCCESS })
 }
 
+/// The state of each layer of `live`. `Err` with the reason when a fetch that a step list needs
+/// fails: the rest of `status` does not need the steps.
+fn layer_states(
+    root: &Path,
+    store: &Store,
+    products: &[&dyn Product],
+    loaded: &Loaded,
+    environment: &Environment,
+    fetch: impl FnMut(&Wanted) -> Result<(), Error>,
+) -> Result<Result<Vec<LayerState>, String>, Error> {
+    match steps(products, &loaded.env, &loaded.regions, store, fetch) {
+        Ok(steps) => Ok(Ok(state::state(store, root, &steps, environment)?)),
+        Err(e) if matches!(e.code, Code::FetchFailed | Code::Blocked) => {
+            Ok(Err(format!("upstream not reachable: {}", e.message)))
+        }
+        Err(e) => Err(e),
+    }
+}
+
 fn print_status(status: &Status) {
     println!("LIVE from {}", status.from);
     let mut table = Vec::new();
     for product in &status.products {
+        let release = product.release.as_ref().map_or("nothing live".into(), |id| format!("release {}", &id[..8]));
+        let Some(layers) = &product.layers else {
+            table.push(vec![product.product.clone(), release, "unknown".into()]);
+            continue;
+        };
         let mut counts: Vec<(State, usize)> = Vec::new();
-        for layer in &product.layers {
+        for layer in layers {
             match counts.iter_mut().find(|(state, _)| *state == layer.state) {
                 Some((_, n)) => *n += 1,
                 None => counts.push((layer.state, 1)),
             }
         }
         let counts: Vec<String> = counts.into_iter().map(|(state, n)| format!("{n} {state}")).collect();
-        let release = product.release.as_ref().map_or("nothing live".into(), |id| format!("release {}", &id[..8]));
         table.push(vec![product.product.clone(), release, counts.join(" · ")]);
     }
     if !table.is_empty() {
@@ -203,4 +235,46 @@ fn print_status(status: &Status) {
 /// `1 key`, `2 keys`.
 fn keys(count: usize) -> String {
     format!("{count} key{}", if count == 1 { "" } else { "s" })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use crate::engine::Step;
+    use crate::env::Env;
+    use crate::product::Unplanned;
+    use crate::regions::Regions;
+    use crate::store::tests::Scratch;
+
+    /// A product whose step list always needs a fetch.
+    struct Fetching;
+
+    impl Product for Fetching {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+
+        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<Vec<Step>, Unplanned> {
+            let wanted = Wanted { source: "index".into(), version: None, params: Vec::new() };
+            Err(Unplanned::NeedsFetch(vec![wanted]))
+        }
+    }
+
+    #[test]
+    fn a_failed_fetch_makes_the_layer_states_unknown_and_nothing_else_fails() {
+        let scratch = Scratch::new("status-unreachable");
+        let store = Store::at(scratch.0.join("store"));
+        let env = Env { name: "live".into(), region: "monaco".into(), layers: Vec::new(), pins: BTreeMap::new() };
+        let loaded = Loaded { env, sources: Vec::new(), regions: Regions::new(Vec::new()).unwrap() };
+        let environment = Environment { sources: BTreeMap::new(), live: BTreeMap::new() };
+        let states = |code: Code| {
+            let fetch = |_: &Wanted| Err(code.error("GET https://example.org/index: unreachable"));
+            layer_states(&scratch.0, &store, &[&Fetching], &loaded, &environment, fetch)
+        };
+        let reason = states(Code::FetchFailed).unwrap().unwrap_err();
+        assert_eq!(reason, "upstream not reachable: GET https://example.org/index: unreachable");
+        assert!(states(Code::Failed).is_err(), "only a failed fetch is unknown layers");
+    }
 }
