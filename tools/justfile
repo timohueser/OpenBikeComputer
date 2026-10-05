@@ -610,15 +610,6 @@ prose *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/prose.py" "$@"
 
-# Regenerate CHANGELOG.md from merged pull requests. Args: [--check|--update]
-[group('docs')]
-changelog *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{lib}}"; obc_init
-    cd "$OBC_ROOT"
-    _run python3 "$OBC_TOOLS/changelog.py" "${@:---update}"
-
 # Inspect documentation ownership or review source-related prose. Args: [status|check|review]
 [group('docs')]
 docs *args:

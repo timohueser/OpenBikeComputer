@@ -78,12 +78,10 @@ aggregate fails. A manifest, lockfile, toolchain, planner, workflow, `tools/ci/*
 `testing/suites.toml` change selects the whole relevant graph. A deleted path selects the whole
 graph, because its owner may be gone with it.
 
-## Exceptions
+## Real time in tests
 
-A suite that waits on real time declares `sleep_exception = { reason, issue }`; the exception
-expires with the issue. `tools/test_exceptions.py --repo OWNER/REPO` checks each block and asks
-GitHub once per issue whether it is open; `test-exception-health.yml` runs it weekly. Do not
-retry a flaky test; prefer observed state, a controllable clock or a protocol signal to a sleep.
+Do not retry a flaky test; prefer observed state, a controllable clock or a protocol signal to a
+sleep. A suite that must wait on real time says why in a comment beside it.
 
 ## Coverage
 

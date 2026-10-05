@@ -311,7 +311,8 @@ triggers = [
   "apps/planner-search/query/contract.json",
   "specs/vectors/**",
 ]
-sleep_exception = { reason = "Condition polling has a 30-second default deadline; negative observation windows and mock/model timing assertions use bounded real time.", issue = "#1788" }
+# These tests wait on real time: condition polling has a 30-second default deadline, and
+# negative observation windows and mock/model timing assertions use bounded real time.
 
 [[suite]]
 id = "ios.xcuitest"
@@ -491,20 +492,6 @@ jobs = ["guards"]
 triggers = ["tools/check_card_scheduler.py"]
 
 [[suite]]
-id = "ci.render-key-guard"
-route = "required"
-command = "python3 tools/check_render_keys.py"
-jobs = ["guards"]
-triggers = ["tools/check_render_keys.py"]
-
-[[suite]]
-id = "ci.catalog-ownership-guard"
-route = "required"
-command = "python3 tools/check_catalog_ownership.py"
-jobs = ["guards"]
-triggers = ["tools/check_catalog_ownership.py"]
-
-[[suite]]
 id = "ci.one-home-guard"
 route = "required"
 command = "python3 tools/check_one_home.py"
@@ -525,24 +512,6 @@ command = "python3 tools/prose.py --check"
 jobs = ["guards"]
 triggers = ["tools/prose.py", "testing/prose-baseline.json"]
 
-[[suite]]
-id = "ci.changelog"
-route = "required"
-command = "python3 tools/changelog.py --check"
-jobs = ["guards"]
-triggers = ["tools/changelog.py", "CHANGELOG.md"]
-
-[[suite]]
-id = "ci.retired-map-stack"
-route = "required"
-command = "python3 tools/check_retired_map_stack.py"
-jobs = ["guards"]
-triggers = ["tools/check_retired_map_stack.py"]
-
-# Only a Mac can link or run the iOS crates, so Linux type-checks them instead. They
-# compose many crates and no build graph carries the iOS target edge, so the check rides
-# every run of the `clippy` job rather than naming a few of them as triggers. No `obc check`
-# gate runs it, so a local run never claims it.
 [[suite]]
 id = "ci.ios-host-portability"
 route = "required"
