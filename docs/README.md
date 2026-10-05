@@ -19,23 +19,6 @@ Every SVG has an `aria-label`, a caption outside the drawing, and a `diagram-scr
 `--diagram-width` set to its viewBox width. After a change, check the rendered page at desktop and
 phone width.
 
-## Copy ownership
-
-Every page declares `copy: ai`, `mixed` or `human` in its front matter. On a `mixed` page, human
-prose sits between `<!-- human-copy:start -->` and `<!-- human-copy:end -->`. Do not rewrite
-human-owned prose. When it is stale, add a non-rendered note beside it with the current facts and
-their source, and report it in the pull request:
-
-```md
-<!-- copy-review:
-The device now reads terrain from the combined OBCM file. See firmware/obc-reader/src/...
--->
-```
-
-`obc docs` lists the pages by ownership and every pending note; `obc docs check` validates the
-front matter and markers. `obc docs review --base origin/develop` lists the pages that link to
-files a change touched.
-
 ## Check and preview
 
 ```sh

@@ -26,8 +26,6 @@ from typing import Iterable, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import docs_copy
-import docs_review
 import test_plan
 
 #: Cargo roots beside the root workspace. Each one formats through its own manifest.
@@ -66,7 +64,6 @@ TEST_SOURCE_PATTERNS = (
 
 #: The documentation surface each documentation gate reads.
 DOCS = "docs/"
-DOCS_CONTENT = "docs/content/"
 
 #: The declared suite that owns the snapshot sweep. Its triggers define the rendering inputs.
 SWEEP = "ci.ui-snapshots"
@@ -211,7 +208,6 @@ def plan(
         or any(test_plan.glob_matches(path, pattern) for pattern in TEST_SOURCE_PATTERNS),
     )
     docs = _first_match(changed, lambda path: path.startswith(DOCS))
-    content = _first_match(changed, lambda path: path.startswith(DOCS_CONTENT))
     manifest = _first_match(changed, lambda path: Path(path).name in {"Cargo.toml", "Cargo.lock"})
     frame = _first_match(
         changed, lambda path: any(test_plan.glob_matches(path, trigger) for trigger in rendering)
@@ -231,13 +227,6 @@ def plan(
             f"documentation changed: {docs}" if docs else f"nothing under {DOCS} changed",
             bool(docs),
             covered_by="ci.docs",
-        )
-    )
-    gates.append(
-        Gate(
-            "obc docs check",
-            f"a public page changed: {content}" if content else f"no page under {DOCS_CONTENT} changed",
-            bool(content),
         )
     )
     # The licence script is called directly and not through its `obc` task: the task adds no
@@ -350,24 +339,7 @@ def surfaces(changed: Iterable[str]) -> list[str]:
     return sorted({path.split("/")[0] if "/" in path else "(repository root)" for path in changed})
 
 
-def human_pages(root: Path, changed: Iterable[str]) -> list[str]:
-    """Public pages with human-owned prose that cite a changed source."""
-
-    content = root / DOCS_CONTENT
-    pages = [path.relative_to(root).as_posix() for path in sorted(content.rglob("*.md"))]
-    queue = docs_review.review_queue(root, set(changed), pages)
-    stale = []
-    for name in sorted(queue):
-        path = root / name
-        if not path.is_relative_to(content):
-            continue
-        page, _errors = docs_copy.parse_page(path, content)
-        if page is not None and (page.copy == "human" or page.human_blocks):
-            stale.append(name)
-    return stale
-
-
-def skeleton(root: Path, changed: Sequence[str]) -> str:
+def skeleton(changed: Sequence[str]) -> str:
     lines = [
         "",
         "pull request skeleton",
@@ -375,8 +347,6 @@ def skeleton(root: Path, changed: Sequence[str]) -> str:
         f"Surfaces: {', '.join(surfaces(changed)) or 'none'}",
         "Requirements: <SYS-nnn, or `none`>",
     ]
-    for name in human_pages(root, changed):
-        lines.append(f"Copy: {name} owns human prose and cites a changed source; it may be stale.")
     return "\n".join(lines)
 
 
@@ -422,7 +392,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"  {path}", file=sys.stderr)
         print("commit these files, then run obc ready again.", file=sys.stderr)
         return 1
-    print(skeleton(root, changed))
+    print(skeleton(changed))
     return 0
 
 

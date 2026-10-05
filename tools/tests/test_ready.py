@@ -8,7 +8,6 @@ from __future__ import annotations
 import io
 import re
 import sys
-import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -64,7 +63,7 @@ class ReadyPlanTests(unittest.TestCase):
         changed = ("docs/content/riding.md",)
         self.assertEqual(
             self.running(*changed),
-            ["python3 docs/build_docs.py --check-links", "obc docs check"],
+            ["python3 docs/build_docs.py --check-links"],
         )
         skipped = self.skipped(*changed)
         self.assertEqual(skipped["cargo fmt --all"], "no Rust source changed")
@@ -246,18 +245,6 @@ class ReadyPlanTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             code, formatted = ready.run_gates(gates, Path("."), status=lambda _root: {"src/b.rs": " M"})
         self.assertEqual((code, formatted), (0, []))
-
-    def test_a_human_page_that_cites_a_changed_source_is_reported(self):
-        with tempfile.TemporaryDirectory() as scratch:
-            root = Path(scratch).resolve()
-            content = root / "docs/content"
-            content.mkdir(parents=True)
-            front = "---\ntitle: Test\ndescription: Test page.\ncopy: %s\n---\n\n# Test\n\n"
-            (content / "human.md").write_text(front % "human" + "See [src:firmware/x.rs].", encoding="utf-8")
-            (content / "draft.md").write_text(front % "ai" + "See [src:firmware/x.rs].", encoding="utf-8")
-
-            self.assertEqual(ready.human_pages(root, ["firmware/x.rs"]), ["docs/content/human.md"])
-            self.assertEqual(ready.human_pages(root, ["firmware/other.rs"]), [])
 
     def test_surfaces_name_the_changed_areas(self):
         self.assertEqual(

@@ -1,7 +1,6 @@
 ---
 title: Overview
 description: The OpenBikeComputer system, its main data paths, and its technical references.
-copy: ai
 ---
 
 # OpenBikeComputer documentation
