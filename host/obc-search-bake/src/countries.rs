@@ -1,6 +1,6 @@
 use super::{
+    features::Input,
     geometry::{coordinates, envelope, Entry},
-    input::Input,
 };
 use flate2::read::GzDecoder;
 use geo::{Area, BoundingRect, Geometry, Point, Polygon};

@@ -1,6 +1,6 @@
 use super::{
+    features::Feature,
     geometry::{coordinates, distance2},
-    input::Feature,
 };
 use geo::{LineString, Point};
 use osmpbfreader::{OsmId, Tags};

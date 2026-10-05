@@ -26,6 +26,9 @@ fn device_and_search_keep_the_same_shared_places_and_search_metadata() {
         .unwrap();
         let output = temporary.path().join(format!("{n}.jsonl.zst"));
         obc_search_bake::bake(&source, &output, "de", None, &policy).unwrap();
+        let repeated = temporary.path().join(format!("{n}-repeated.jsonl.zst"));
+        obc_search_bake::bake(&source, &repeated, "de", None, &policy).unwrap();
+        assert_eq!(fs::read(&output).unwrap(), fs::read(repeated).unwrap());
         let stream = zstd::stream::read::Decoder::new(fs::File::open(output).unwrap()).unwrap();
         let records: Vec<Value> = BufReader::new(stream)
             .lines()

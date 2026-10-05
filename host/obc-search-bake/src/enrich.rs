@@ -1,6 +1,6 @@
 use super::{
+    features::Input,
     geometry::{center, envelope, expanded, Entry},
-    input::Input,
 };
 use geo::{Distance, Euclidean, Geometry, Intersects, Point};
 use osmpbfreader::{OsmId, Tags};
@@ -302,11 +302,11 @@ impl<'a> Index<'a> {
         self.centers[i]
     }
 
-    pub fn linked_place(&self, i: usize) -> Option<&super::input::Feature> {
+    pub fn linked_place(&self, i: usize) -> Option<&super::features::Feature> {
         self.linked.get(&i).map(|&j| &self.input.features[j])
     }
 
-    pub fn place_boundary(&self, i: usize) -> Option<&super::input::Feature> {
+    pub fn place_boundary(&self, i: usize) -> Option<&super::features::Feature> {
         self.place_boundaries.get(&i).map(|&j| &self.input.features[j])
     }
 
@@ -677,14 +677,14 @@ pub fn house_addresses(tags: &Tags) -> Vec<(&str, Option<&str>)> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::features::Feature;
     use super::super::geometry::coordinates;
-    use super::super::input::Feature;
     use super::*;
     use osmpbfreader::{NodeId, WayId};
 
     fn feature(id: i64, g: Geometry, tags: &[(&str, &str)]) -> Feature {
         let mut tags: Tags = tags.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect();
-        if super::super::input::poi(&tags) {
+        if super::super::features::poi(&tags) {
             tags.insert("_poi".into(), "yes".into());
         }
         Feature {

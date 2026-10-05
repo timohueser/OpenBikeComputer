@@ -1,6 +1,6 @@
 use super::{
+    features::Input,
     geometry::{center, envelope, Entry},
-    input::Input,
 };
 use geo::{CoordsIter, Distance, Euclidean, Geometry, Intersects, Point};
 use osmpbfreader::OsmId;

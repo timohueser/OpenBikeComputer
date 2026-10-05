@@ -1,4 +1,4 @@
-use super::input::Feature;
+use super::features::Feature;
 use regex::Regex;
 use serde_json::Value;
 use std::{collections::BTreeMap, fs, path::Path};

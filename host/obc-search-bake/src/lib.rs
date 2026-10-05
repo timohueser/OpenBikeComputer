@@ -1,6 +1,7 @@
 mod areas;
 mod countries;
 mod enrich;
+mod features;
 mod geometry;
 mod input;
 mod interpolation;
@@ -51,7 +52,7 @@ pub fn bake(
     let policy_hash = hash(policy_path)?;
     let osm_hash = hash(osm)?;
     let grid_hash = country_grid.map(hash).transpose()?;
-    let input = input::read(osm)?;
+    let input = features::read(osm)?;
     eprintln!(
         "Read {} nodes, {} features; {} incomplete geometries",
         input.nodes,

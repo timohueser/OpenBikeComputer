@@ -1,4 +1,4 @@
-use super::{enrich::Index, geometry, input::Feature};
+use super::{enrich::Index, features::Feature, geometry};
 use geo::Geometry;
 use osmpbfreader::OsmId;
 use serde_json::{json, Value};
