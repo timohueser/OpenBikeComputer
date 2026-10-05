@@ -82,8 +82,8 @@ pub struct Uploaded<'a> {
 
 pub fn run(r2: R2, json: bool) -> Result<(), Error> {
     let failed = |e| Code::R2Failed.error(e);
-    let bucket =
-        Bucket::from_env(if r2.fixtures { Credentials::Fixtures } else { Credentials::Main }).map_err(failed)?;
+    let bucket = Bucket::from_env(if r2.fixtures { Credentials::Fixtures } else { Credentials::Main })
+        .map_err(|e| Code::Blocked.error(e))?;
     match r2.action {
         Action::List { prefix } => print_objects(&bucket, &bucket.list(&prefix).map_err(failed)?, json),
         Action::Stat { keys } => {

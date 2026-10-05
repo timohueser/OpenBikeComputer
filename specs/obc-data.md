@@ -506,32 +506,15 @@ When more than one row applies, the first row gives the state. In JSON, a state 
 | `obc data runs RUN [--json]` | One run, its fetches, and its steps: time, change since the last run that built the step, peak RAM, output, inputs, code hash and users |
 | `obc data runs RUN --follow [--json]` | The events of the run, and each new event until the run ends |
 
-`--json` writes one JSON document to standard output:
+`--json` writes one JSON document to standard output. [JSON schemas](#json-schemas) has the
+schema of each output, and [Errors](#errors) has the error codes and the exit statuses. In
+addition:
 
-- `sources`: `{"sources": [...]}`. Each item has the keys of its `[[source]]` table, and
-  `pin`, `upstream` (the newest upstream version, or `null`), `age_days`, `state` and `reason`
-  (`null` when there is nothing to say).
-- `fetch` and `refresh`: the snapshot, `{"source": ..., "version": ..., "files": [...]}`, with
-  the requested files only. Each file has the keys of the record and `path`, its object.
-- `region list`: `{"regions": [...]}`. Each item has `id`, `name`, `kind` and the key its
-  kind names. A `box` is an object with `west`, `south`, `east` and `north`.
-- `region show`: the region item, and `leaves` (the region ids it resolves to) and
-  `bounds` (a box or `null`).
-- `runs`: `{"runs": [...]}`. Each item has `id`, `command`, `started`, `outcome` (`running`,
-  `ok` or `failed`), `wall_ms` (`null` until the run finishes), `bytes_fetched` (the size of
-  the files of its fetches) and `bytes_built` (the size of the layers that it built, not of the
-  layers that it reused). A run file that cannot be read is listed as `failed`, or `running`
-  while its lock is held.
-- `runs RUN`: the item of the run, and `error`, `fetches` and `steps`, in the order they
-  started. Each fetch has `source`, `version`, `params`, `bytes`, `wall_ms` and `error`. Each
-  step has `step`, `reused`, `receipt` (`null` while it runs or when it failed), `error`,
-  `users` (the steps of the run that read its layer) and `last_wall_ms` (its `wall_ms` in the
-  newest earlier run that built it, or `null`).
-- `runs RUN --follow`: one event per line, as in `runs/<id>.jsonl`. When the run failed, the
-  error is the last line.
-
-[JSON schemas](#json-schemas) has the schema of each output, and
-[Errors](#errors) has the error codes and the exit statuses.
+- `fetch` and `refresh` list only the requested files.
+- `runs` lists a run file that cannot be read as `failed`, or as `running` while its lock is
+  held.
+- `runs RUN --follow` writes one event per line, as in `runs/<id>.jsonl`. When the run failed,
+  the error is the last line.
 
 ## R2 client
 
@@ -563,14 +546,10 @@ goes to rclone only in its environment, never in an argument or a file.
 | `obc data r2 put FILE KEY [--cache-control V] [--content-type V] [--immutable] [--json]` | Uploads with `--checksum` and the headers given, then verifies |
 | `obc data r2 delete (KEY... \| --prefix P) --reason TEXT [--yes] [--json]` | Deletes, see below |
 
-`list`, `stat` and `delete` with `--json` write
-`{"bucket": TEXT, "objects": [{"key", "bytes", "modified"}]}`: for `delete`, the objects that it
-deleted. `bucket` names the bucket or the local directory, never a credential. `modified` is the
-upload time. `get --json` writes `{"key", "file"}`, and `put --json` writes `{"key", "uploaded"}`;
-`uploaded` is `false` when an immutable key already holds the bytes.
-
 Rules:
 
+- The `r2` commands are plumbing below the rule of [Errors](#errors). Only `delete` asks,
+  because a delete cannot be undone. `put` and `get` never ask.
 - A key or a prefix is never empty, has no empty, `.` or `..` part, and has no control
   character. The bucket root is never a target.
 - Verify passes when the object has the size of the file, and the same MD5 when both sides
@@ -582,8 +561,8 @@ Rules:
   same rules: a key that the bucket does not hold is refused, `removed.jsonl` is refused, and
   then nothing is deleted.
 - `delete` changes live. It prints the plan: the bucket, and each object with its size and
-  upload time. With `--json`, the plan goes to standard error. Then it asks as
-  [Errors](#errors) says.
+  upload time. With `--json`, the plan goes to standard error, and the output is the objects
+  that it deleted. Then it asks as [Errors](#errors) says.
 - `delete` appends one line per object to `removed.jsonl` at the bucket root before it deletes:
   `{"by": USER, "bytes": N, "key": KEY, "reason": TEXT, "removed": "YYYY-MM-DDTHH:MM:SSZ"}`,
   with the escapes of Python's `json.dumps`: `\uXXXX` for DEL and for each character outside
@@ -601,7 +580,7 @@ sets the exit status. The message tells what failed, and the fix tells what to d
 | 1 | A check found problems, or the command failed: a file is not valid; a fetch, R2, a run or the store failed; or the person did not agree |
 | 2 | Usage: an argument is not valid, or a command that changes live did not get consent |
 | 3 | The plan is outdated: live or the steps changed after the plan was made. Plan again |
-| 4 | Blocked: a credential or a licence is missing |
+| 4 | Blocked: a credential is missing |
 | 5 | Verify failed: the bytes in a target are not the bytes that the command wrote |
 
 A command that changes live shows its plan and asks in a terminal. Without a terminal, it needs
@@ -612,12 +591,14 @@ changes nothing.
 
 | Code | Exit | When | Fix |
 | --- | --- | --- | --- |
-| `usage` | 2 | An argument is not valid, an id names nothing, or the command runs outside the repository. | Correct the command. `obc data --help` lists the commands and their arguments. |
+| `usage` | 2 | An argument is not valid, an id names nothing, the command runs outside the repository, or
+another command must run first. | Correct the command. `obc data --help` lists the commands and their arguments. |
 | `no_terminal` | 2 | A command that changes live has no terminal to ask in, and no `--yes`. | Show the plan to a person. When they agree, run the command again with `--yes`. |
 | `not_confirmed` | 1 | The person did not answer yes. | Nothing changed. Run the command again when you want the change. |
 | `invalid_data` | 1 | A file under `data/` is not valid. | Correct the file that the message names. `specs/obc-data.md` gives its format. |
 | `fetch_failed` | 1 | A fetch or an upstream check failed. | Run the command again. A download continues where it stopped. |
-| `blocked` | 4 | A fetch failed, and the credential of its source is not on this machine. | Set the credential that `obc data sources` names for the source, then run again. |
+| `blocked` | 4 | A credential is missing: a fetch failed without the credential of its source, or the R2
+variables are not set. | Set the credential that the message or `obc data sources` names, then run again. |
 | `r2_failed` | 1 | R2 or rclone failed, or refused a key. | Check the key, the `OBC_R2_*` variables and that rclone is on PATH, then run again. |
 | `verify_failed` | 5 | After an upload, the object in the bucket is not the file. | Upload the file again. |
 | `run_failed` | 1 | The run that `runs RUN --follow` shows failed. | `obc data runs RUN` shows the step that failed and its error. |
@@ -679,7 +660,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "oneOf": [
         {
           "const": "usage",
-          "description": "An argument is not valid, an id names nothing, or the command runs outside the repository.",
+          "description": "An argument is not valid, an id names nothing, the command runs outside the repository, or\nanother command must run first.",
           "type": "string"
         },
         {
@@ -704,7 +685,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "blocked",
-          "description": "A fetch failed, and the credential of its source is not on this machine.",
+          "description": "A credential is missing: a fetch failed without the credential of its source, or the R2\nvariables are not set.",
           "type": "string"
         },
         {

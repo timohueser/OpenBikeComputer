@@ -72,7 +72,7 @@ fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         // The arguments did not parse, so `--json` is only known as a word among them.
-        Err(e) if e.use_stderr() && std::env::args().any(|arg| arg == "--json") => {
+        Err(e) if e.use_stderr() && std::env::args_os().any(|arg| arg == "--json") => {
             let text = e.render().to_string();
             let first = text.split("\n\n").next().unwrap_or_default().trim_start_matches("error: ");
             let message: Vec<&str> = first.lines().map(str::trim).collect();
@@ -100,7 +100,7 @@ fn run(cli: Cli) -> Result<(), Error> {
             let source = find(&registry, id)?;
             let version = version.or_else(|| registry.pins.get(id).cloned());
             let store = Store::open()?;
-            let params = osm::with_base(source, &registry.pins, parse_params(&params)?)?;
+            let params = osm::with_base(source, &registry.pins, parse_params(&params)?).map_err(not_the_base)?;
             let request = Request { source, version, params };
             print_snapshot(&store, &fetched(source, fetch::fetch(&store, &Http::new(), &request))?, json)
         }
@@ -140,6 +140,11 @@ fn parse_params(params: &[String]) -> Result<Vec<(String, String)>, Error> {
         .collect()
 }
 
+/// `osm::with_base` refuses a `from=` that is not the pin of the base source.
+fn not_the_base(message: String) -> Error {
+    Code::Usage.error(message).fix("Leave out `from=`: the fetch takes the pin of the base source.")
+}
+
 /// A fetch that fails while the credential of its source is not on this machine is blocked.
 fn fetched(source: &Source, result: Result<Snapshot, String>) -> Result<Snapshot, Error> {
     let blocked = source.credential.as_ref().is_some_and(|credential| !credential.present());
@@ -156,7 +161,7 @@ fn refresh(root: &Path, id: &str, params: &[String], env: &str, json: bool) -> R
     let text = std::fs::read_to_string(&path).map_err(|e| Code::Usage.error(format!("{}: {e}", path.display())))?;
     let invalid = |e| Code::InvalidData.error(format!("{}: {e}", path.display()));
     let pins = sources::parse_pins(&text, &registry.sources).map_err(invalid)?;
-    let params = osm::with_base(source, &pins, parse_params(params)?)?;
+    let params = osm::with_base(source, &pins, parse_params(params)?).map_err(not_the_base)?;
     let (store, http) = (Store::open()?, Http::new());
     let version = upstream::newest(&store, &http, source, 0).version().map(str::to_string);
     // The `geofabrik` fetcher finds the newest day of a URL with `{yymmdd}` itself.
@@ -172,7 +177,8 @@ fn refresh(root: &Path, id: &str, params: &[String], env: &str, json: bool) -> R
         let starts_here = registry.sources.iter().filter(|s| s.fetch.from.as_deref() == Some(id));
         let mut pinned = starts_here.filter_map(|s| Some((&s.id, pins.get(&s.id)?)));
         if let Some((diffs, pin)) = pinned.find(|(_, pin)| version > *pin) {
-            return Err(format!("`{id}` {version} is after the `{diffs}` pin {pin}: refresh {diffs} first").into());
+            let message = format!("`{id}` {version} is after the `{diffs}` pin {pin}");
+            return Err(Code::Usage.error(message).fix(format!("Refresh `{diffs}` first.")));
         }
     }
     let snapshot = fetched(source, fetch::fetch(&store, &http, &Request { source, version, params }))?;

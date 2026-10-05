@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 pub struct Error {
     pub code: Code,
     pub message: String,
-    pub fix: &'static str,
+    pub fix: String,
 }
 
 /// What `--json` writes when a command fails.
@@ -25,7 +25,8 @@ pub struct Failure<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Code {
-    /// An argument is not valid, an id names nothing, or the command runs outside the repository.
+    /// An argument is not valid, an id names nothing, the command runs outside the repository, or
+    /// another command must run first.
     Usage,
     /// A command that changes live has no terminal to ask in, and no `--yes`.
     NoTerminal,
@@ -35,7 +36,8 @@ pub enum Code {
     InvalidData,
     /// A fetch or an upstream check failed.
     FetchFailed,
-    /// A fetch failed, and the credential of its source is not on this machine.
+    /// A credential is missing: a fetch failed without the credential of its source, or the R2
+    /// variables are not set.
     Blocked,
     /// R2 or rclone failed, or refused a key.
     R2Failed,
@@ -69,7 +71,7 @@ impl Code {
             Code::NotConfirmed => "Nothing changed. Run the command again when you want the change.",
             Code::InvalidData => "Correct the file that the message names. `specs/obc-data.md` gives its format.",
             Code::FetchFailed => "Run the command again. A download continues where it stopped.",
-            Code::Blocked => "Set the credential that `obc data sources` names for the source, then run again.",
+            Code::Blocked => "Set the credential that the message or `obc data sources` names, then run again.",
             Code::R2Failed => "Check the key, the `OBC_R2_*` variables and that rclone is on PATH, then run again.",
             Code::VerifyFailed => "Upload the file again.",
             Code::RunFailed => "`obc data runs RUN` shows the step that failed and its error.",
@@ -78,7 +80,7 @@ impl Code {
     }
 
     pub fn error(self, message: impl Into<String>) -> Error {
-        Error { code: self, message: message.into(), fix: self.fix() }
+        Error { code: self, message: message.into(), fix: self.fix().into() }
     }
 }
 
@@ -88,13 +90,13 @@ impl From<String> for Error {
     }
 }
 
-impl From<&str> for Error {
-    fn from(message: &str) -> Self {
-        Code::Failed.error(message)
-    }
-}
-
 impl Error {
+    /// Replace the fix of the code with one that fits this error better.
+    pub fn fix(mut self, fix: impl Into<String>) -> Self {
+        self.fix = fix.into();
+        self
+    }
+
     /// Write the error: as one line of JSON on standard output, which also ends a stream of JSON
     /// lines, or as text on standard error.
     pub fn report(&self, json: bool) -> ExitCode {
@@ -125,7 +127,9 @@ pub fn confirm(question: &str, yes: bool) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn print_json(value: &impl Serialize) -> Result<(), Error> {
+/// Write the output of a command. `JsonSchema` is required so that each output has a schema for
+/// `specs/obc-data.md`; `tests::outputs` lists them.
+pub fn print_json(value: &(impl Serialize + JsonSchema)) -> Result<(), Error> {
     println!("{}", serde_json::to_string_pretty(value).map_err(|e| e.to_string())?);
     Ok(())
 }

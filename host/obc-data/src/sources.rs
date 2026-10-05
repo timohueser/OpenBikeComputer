@@ -70,6 +70,9 @@ pub enum Refresh {
     Manual,
 }
 
+/// The ages in days that `refresh` allows.
+const REFRESH_DAYS: [u16; 4] = [7, 30, 90, 365];
+
 #[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 enum RefreshRepr {
@@ -81,9 +84,11 @@ impl TryFrom<RefreshRepr> for Refresh {
     type Error = String;
     fn try_from(repr: RefreshRepr) -> Result<Self, String> {
         match repr {
-            RefreshRepr::Days(days @ (7 | 30 | 90 | 365)) => Ok(Refresh::Days(days as u16)),
+            RefreshRepr::Days(days) if REFRESH_DAYS.iter().any(|&allowed| i64::from(allowed) == days) => {
+                Ok(Refresh::Days(days as u16))
+            }
             RefreshRepr::Word(word) if word == "manual" => Ok(Refresh::Manual),
-            _ => Err("`refresh` is 7, 30, 90, 365 or \"manual\"".into()),
+            _ => Err(format!("`refresh` is {REFRESH_DAYS:?} days or \"manual\"")),
         }
     }
 }
@@ -103,9 +108,11 @@ impl JsonSchema for Refresh {
     }
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mut values: Vec<serde_json::Value> = REFRESH_DAYS.iter().map(|&days| days.into()).collect();
+        values.push("manual".into());
         schemars::json_schema!({
             "description": "How old a pin may get, in days, before the source is stale; `manual` is never stale.",
-            "enum": [7, 30, 90, 365, "manual"]
+            "enum": values
         })
     }
 }
