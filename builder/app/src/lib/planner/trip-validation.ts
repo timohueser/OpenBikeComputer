@@ -1,6 +1,6 @@
 import { maxRidingDays, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
-import { ridingProfiles } from './riding-profiles';
+import { presetNames, ridingProfiles } from './riding-profiles';
 
 function record(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -66,6 +66,5 @@ export function isTrip(value: unknown): value is Trip {
         integer(Number(night), 1, days - 1) && finite(progress) && progress >= 0 && progress <= 1))) return false;
 
     if (value.bike !== undefined && (typeof value.bike !== 'string' || !Object.hasOwn(ridingProfiles, value.bike))) return false;
-    const bike = (value.bike ?? 'touring') as keyof typeof ridingProfiles;
-    return value.preset === undefined || (typeof value.preset === 'string' && ridingProfiles[bike].presets.includes(value.preset));
+    return value.preset === undefined || (typeof value.preset === 'string' && presetNames.includes(value.preset));
 }
