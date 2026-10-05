@@ -124,7 +124,7 @@ sum of the leg totals is the route total. Only `seconds` can differ, by up to
 
 Coordinates are exact: the routing engine stores microdegrees. Heights are
 within 0.05 m of the engine value. Elapsed and total seconds are within 0.5 s.
-The [vector](vectors/route-answer.json) gives one route before and after
+The [vector](vectors/route-answer.json) gives two routes before and after
 encoding. The encoder test and each decoder test read it.
 
 ## Compression
