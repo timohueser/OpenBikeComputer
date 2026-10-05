@@ -152,7 +152,7 @@ static NO_PLAN: CleanPlan = CleanPlan {
         keep_objects: 0,
         keep_bytes: 0,
     },
-    import: import::Plan { dirs: Vec::new(), bytes: 0, new_bytes: 0 },
+    import: import::Plan { dirs: Vec::new(), bytes: 0 },
 };
 
 pub fn run(root: &Path, products: &[&dyn Product]) -> Result<(), Error> {

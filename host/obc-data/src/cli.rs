@@ -191,28 +191,32 @@ impl CleanPlan {
             _ => Some(bytes(self.store.remove_bytes)),
         };
         let moves = self.import.dirs.iter().any(|dir| dir.files > 0).then(|| bytes(self.import.bytes));
+        // A process that writes an old cache while it moves can change an object.
+        const STOP: &str = "Stop the bakes, the planner and every fetch first.";
         match (removes, moves) {
             (Some(removes), Some(moves)) => {
-                format!("Remove {removes} from the local store and move {moves} of old caches into it?")
+                format!("Remove {removes} from the local store and move {moves} of old caches into it? {STOP}")
             }
             (Some(removes), None) => format!("Remove {removes} from the local store?"),
-            (None, Some(moves)) => format!("Move {moves} of old caches into the local store?"),
+            (None, Some(moves)) => format!("Move {moves} of old caches into the local store? {STOP}"),
             (None, None) => "Nothing to clean.".into(),
         }
     }
 }
 
-/// What is live now, and where it was read.
-fn read_live(registry: &Registry, products: &[&dyn Product], store: &Store) -> Result<(Remote, Live), Error> {
-    let remote = Remote::from_env().map_err(|e| Code::Blocked.error(e))?;
-    let live = Live::read(&remote, products, &registry.sources, store).map_err(|e| Code::R2Failed.error(e))?;
-    Ok((remote, live))
+fn remote() -> Result<Remote, Error> {
+    Remote::from_env().map_err(|e| Code::Blocked.error(e))
+}
+
+/// What is live now.
+fn read_live(remote: &Remote, registry: &Registry, products: &[&dyn Product], store: &Store) -> Result<Live, Error> {
+    Live::read(remote, products, &registry.sources, store).map_err(|e| Code::R2Failed.error(e))
 }
 
 /// The roots of a collection: the live releases, and the checkout at `root`.
 fn roots(root: &Path, products: &[&dyn Product], store: &Store) -> Result<gc::Roots, Error> {
     let mut roots = gc::Roots::from_repo(root).map_err(|e| Code::InvalidData.error(e))?;
-    roots.add_live(&read_live(&registry(root)?, products, store)?.1);
+    roots.add_live(&read_live(&remote()?, &registry(root)?, products, store)?);
     Ok(roots)
 }
 
@@ -231,7 +235,7 @@ fn clean_plan(root: &Path, products: &[&dyn Product], store: &Store) -> Result<C
 /// directories in.
 fn clean(root: &Path, products: &[&dyn Product], store: &Store, confirmed: &gc::Plan) -> Result<CleanPlan, Error> {
     let roots = roots(root, products, store)?;
-    let removed = gc::apply(store, &roots, Some(confirmed))?.ok_or_else(|| {
+    let removed = gc::apply(store, &roots, confirmed)?.ok_or_else(|| {
         Code::Usage
             .error("a fetch, a build or an import uses the store; nothing was deleted")
             .fix("Run `obc data clean --apply` again when the fetch, the build or the import ends.")
@@ -254,7 +258,7 @@ fn clean_command(root: &Path, products: &[&dyn Product], apply: bool, yes: bool,
     }
     if !apply {
         if !plan.is_empty() {
-            println!("`--apply` asks once, then cleans. Stop the bakes, the planner and every fetch first.");
+            println!("`--apply` asks once, then cleans.");
         }
         return Ok(());
     }
@@ -296,7 +300,6 @@ fn clean_text(store: &Store, plan: &CleanPlan) -> String {
             .iter()
             .map(|dir| vec![format!("  {}", dir.dir.display()), format!("{} files", dir.files), bytes(dir.bytes)]);
         text += &table(&rows.collect::<Vec<_>>());
-        text += &format!("  duplicates are kept once; the store grows by {}\n", bytes(plan.import.new_bytes));
     }
     text
 }

@@ -24,7 +24,8 @@ pub const PUBLIC: &str = "https://maps.openbikecomputer.com";
 /// The prefix of the input copies.
 pub const INPUTS: &str = "inputs";
 
-/// Where live is read: the bucket of `OBC_R2_*`, or its public URL when no such variable is set.
+/// Where live is read: the bucket of `OBC_R2_*` when `OBC_R2_BUCKET` or `OBC_R2_LOCAL_DIR` is
+/// set, or else its public URL.
 pub enum Remote {
     Bucket(Bucket),
     Public(String),
@@ -32,7 +33,8 @@ pub enum Remote {
 
 impl Remote {
     pub fn from_env() -> Result<Self, String> {
-        if std::env::vars_os().any(|(name, _)| name.to_string_lossy().starts_with("OBC_R2_")) {
+        let bucket = std::env::var_os("OBC_R2_BUCKET").is_some_and(|bucket| !bucket.is_empty());
+        if bucket || std::env::var_os("OBC_R2_LOCAL_DIR").is_some() {
             return Bucket::from_env(Credentials::Main).map(Remote::Bucket);
         }
         Ok(Remote::Public(PUBLIC.into()))
@@ -146,10 +148,15 @@ impl Live {
         keys
     }
 
-    /// The prefixes that live owns: those of the products, and of the input copies.
+    /// The prefixes that live owns: that of each product with a live release, and that of the
+    /// input copies once a release is live. A product with nothing live owns nothing, so what an
+    /// older publish left there is never a leftover.
     pub fn prefixes(&self) -> Vec<String> {
-        let products = self.products.iter().map(|product| product.prefix.clone());
-        products.chain([INPUTS.to_string()]).collect()
+        let mut prefixes: Vec<String> = self.releases().map(|(prefix, _, _)| prefix.to_string()).collect();
+        if !prefixes.is_empty() {
+            prefixes.push(INPUTS.into());
+        }
+        prefixes
     }
 
     /// What a listing of the owned prefixes shows against live.
@@ -168,12 +175,8 @@ impl Live {
             })
         });
         let drift = drift.collect();
-        // A pointer stays, also when it names no release, and so do the named files of a release.
-        let pointers: Vec<String> = self.products.iter().map(|p| format!("{}/catalog.json", p.prefix)).collect();
         let named: Vec<String> = self.releases().map(|(prefix, id, _)| format!("{prefix}/releases/{id}/")).collect();
-        let used = |key: &str| {
-            expected.contains_key(key) || pointers.iter().any(|p| p == key) || named.iter().any(|n| key.starts_with(n))
-        };
+        let used = |key: &str| expected.contains_key(key) || named.iter().any(|n| key.starts_with(n));
         let leftovers = listed.into_values().filter(|object| !used(&object.key));
         Ok(Check { prefixes: self.prefixes(), drift, leftovers: leftovers.collect() })
     }
@@ -210,29 +213,39 @@ fn pointer(remote: &Remote, prefix: &str) -> Result<Option<String>, String> {
     let pointer: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("{key}: {e}"))?;
     match pointer.get("release") {
         None => Ok(None),
-        Some(serde_json::Value::String(id)) if id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()) => {
+        Some(serde_json::Value::String(id))
+            if id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) =>
+        {
             Ok(Some(id.clone()))
         }
         Some(other) => Err(format!("{key}: `release` is {other}, not the SHA-256 of a manifest")),
     }
 }
 
-/// The manifest of release `id`: from the store, or else from R2 into the store.
+/// The manifest of release `id`: from the store when its copy there is that manifest, or else
+/// from R2 into the store.
 fn manifest(remote: &Remote, store: &Store, product: &str, prefix: &str, id: &str) -> Result<Release, String> {
-    if store.release(product, id).is_file() {
-        return Release::read(store, product, id);
+    let path = store.release(product, id);
+    if let Some(release) = std::fs::read(&path).ok().and_then(|bytes| verified(&bytes, product, id, "").ok()) {
+        return Ok(release);
     }
     let key = format!("{prefix}/releases/{id}.json");
     let bytes =
         remote.get(&key)?.ok_or_else(|| format!("{prefix}/catalog.json names release {id}, but {key} is missing"))?;
-    if sha256_hex(&bytes) != id {
-        return Err(format!("{key}: its SHA-256 is not its id"));
+    let release = verified(&bytes, product, id, &key)?;
+    write_atomic(&path, &bytes)?;
+    Ok(release)
+}
+
+/// The manifest in `bytes`, the file `name`, when its SHA-256 is `id` and it is of `product`.
+fn verified(bytes: &[u8], product: &str, id: &str, name: &str) -> Result<Release, String> {
+    if sha256_hex(bytes) != id {
+        return Err(format!("{name}: its SHA-256 is not its id"));
     }
-    let release: Release = serde_json::from_slice(&bytes).map_err(|e| format!("{key}: {e}"))?;
+    let release: Release = serde_json::from_slice(bytes).map_err(|e| format!("{name}: {e}"))?;
     if release.product != product {
-        return Err(format!("{key}: the manifest is of product `{}`, not `{product}`", release.product));
+        return Err(format!("{name}: the manifest is of product `{}`, not `{product}`", release.product));
     }
-    write_atomic(&store.release(product, id), &bytes)?;
     Ok(release)
 }
 
@@ -346,20 +359,39 @@ pub(crate) mod tests {
         assert_eq!(leftovers, ["test-catalog/objects/old"]);
     }
 
+    /// A product whose pointer an older publish wrote, without `release`.
+    struct Old;
+
+    impl Product for Old {
+        fn name(&self) -> &'static str {
+            "old"
+        }
+
+        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<Vec<Step>, Unplanned> {
+            Ok(Vec::new())
+        }
+    }
+
     #[test]
-    fn a_pointer_without_a_release_is_nothing_live() {
+    fn a_product_with_nothing_live_owns_no_prefix() {
         let scratch = Scratch::new("live-old");
         let (dir, store) = (scratch.0.join("bucket"), Store::at(scratch.0.join("store")));
         let remote = Remote::Bucket(Bucket::local(&dir));
+        let sources = parse_sources(LAND).unwrap();
         publish(&dir, &release(b"layer"));
-        write(&dir.join("test-catalog/catalog.json"), "{\"schema_version\": 3}");
+        write(&dir.join("old/catalog.json"), "{\"schema_version\": 3}");
+        write(&dir.join("old/cells/a.obcm"), "cell");
 
-        let live = Live::read(&remote, &[&Test], &parse_sources(LAND).unwrap(), &store).unwrap();
-        assert!(live.products[0].release.is_none() && live.inputs.is_empty());
+        let live = Live::read(&remote, &[&Test, &Old], &sources, &store).unwrap();
+        assert!(live.products[1].release.is_none(), "a pointer without `release` names nothing");
         let check = live.check(&remote).unwrap();
-        assert!(check.drift.is_empty());
-        let leftovers: Vec<&str> = check.leftovers.iter().map(|object| object.key.as_str()).collect();
-        assert_eq!(leftovers.len(), 5, "all but the pointer: {leftovers:?}");
-        assert!(!leftovers.contains(&"test-catalog/catalog.json"));
+        assert_eq!(check.prefixes, ["test-catalog", "inputs"], "only a live product owns its prefix");
+        assert!(check.drift.is_empty() && check.leftovers.is_empty(), "{check:?}");
+
+        write(&dir.join("test-catalog/catalog.json"), "{\"schema_version\": 3}");
+        let live = Live::read(&remote, &[&Test, &Old], &sources, &store).unwrap();
+        assert!(live.inputs.is_empty());
+        let check = live.check(&remote).unwrap();
+        assert!(check.prefixes.is_empty() && check.leftovers.is_empty(), "nothing live owns nothing: {check:?}");
     }
 }

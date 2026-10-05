@@ -261,39 +261,56 @@ pub(super) fn steps(
     store: &Store,
     mut fetch: impl FnMut(&Wanted) -> Result<(), Error>,
 ) -> Result<Vec<Step>, Error> {
+    check_layers(products, env)?;
+    let mut all = Vec::new();
+    for product in products {
+        all.extend(product_steps(*product, env, regions, store, &mut fetch)?);
+    }
+    Ok(all)
+}
+
+/// Refuse an optional layer of `env` that no product has.
+pub(super) fn check_layers(products: &[&dyn Product], env: &Env) -> Result<(), Error> {
     let offered = |layer: &&String| products.iter().any(|product| product.optional().contains(&layer.as_str()));
     if let Some(layer) = env.layers.iter().find(|layer| !offered(layer)) {
         let message = format!("data/env/{}.toml: no product has the optional layer `{layer}`", env.name);
         return Err(Code::InvalidData.error(message));
     }
-    let mut all = Vec::new();
-    for product in products {
-        let name = product.name();
-        let mut listed = product.steps(env, regions, store);
-        if let Err(Unplanned::NeedsFetch(fetches)) = &listed {
-            fetches.iter().try_for_each(&mut fetch)?;
-            listed = product.steps(env, regions, store);
-        }
-        let steps = match listed {
-            Ok(steps) => steps,
-            Err(Unplanned::NeedsFetch(fetches)) => {
-                let wanted = fetches
-                    .iter()
-                    .map(|f| format!("{}@{}", f.source, f.version.as_deref().unwrap_or("newest")))
-                    .collect::<Vec<_>>();
-                return Err(product_bug(
-                    name,
-                    format!("product `{name}` still needs {} after the fetch", wanted.join(", ")),
-                ));
-            }
-            Err(Unplanned::Invalid(e)) => return Err(Code::InvalidData.error(format!("product `{name}`: {e}"))),
-        };
-        if let Some(step) = steps.iter().find(|step| !step.name.starts_with(&format!("{name}/"))) {
-            return Err(product_bug(name, format!("step `{}` of product `{name}` is not named `{name}/…`", step.name)));
-        }
-        all.extend(steps);
+    Ok(())
+}
+
+/// The steps of one product, after the fetches that its step list needs.
+pub(super) fn product_steps(
+    product: &dyn Product,
+    env: &Env,
+    regions: &Regions,
+    store: &Store,
+    fetch: &mut impl FnMut(&Wanted) -> Result<(), Error>,
+) -> Result<Vec<Step>, Error> {
+    let name = product.name();
+    let mut listed = product.steps(env, regions, store);
+    if let Err(Unplanned::NeedsFetch(fetches)) = &listed {
+        fetches.iter().try_for_each(&mut *fetch)?;
+        listed = product.steps(env, regions, store);
     }
-    Ok(all)
+    let steps = match listed {
+        Ok(steps) => steps,
+        Err(Unplanned::NeedsFetch(fetches)) => {
+            let wanted = fetches
+                .iter()
+                .map(|f| format!("{}@{}", f.source, f.version.as_deref().unwrap_or("newest")))
+                .collect::<Vec<_>>();
+            return Err(product_bug(
+                name,
+                format!("product `{name}` still needs {} after the fetch", wanted.join(", ")),
+            ));
+        }
+        Err(Unplanned::Invalid(e)) => return Err(Code::InvalidData.error(format!("product `{name}`: {e}"))),
+    };
+    if let Some(step) = steps.iter().find(|step| !step.name.starts_with(&format!("{name}/"))) {
+        return Err(product_bug(name, format!("step `{}` of product `{name}` is not named `{name}/…`", step.name)));
+    }
+    Ok(steps)
 }
 
 #[cfg(test)]

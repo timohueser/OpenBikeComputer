@@ -233,14 +233,13 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
 }
 
 /// Delete what nothing reaches, and say what. `None`, and nothing deleted, while a fetch, a build or
-/// an import holds the store. With `confirmed`, a plan that removes anything else deletes nothing.
-pub fn apply(store: &Store, roots: &Roots, confirmed: Option<&Plan>) -> Result<Option<Plan>, String> {
+/// an import holds the store. A plan that removes anything but `confirmed` deletes nothing.
+pub fn apply(store: &Store, roots: &Roots, confirmed: &Plan) -> Result<Option<Plan>, String> {
     let Some(_alone) = store.try_alone()? else {
         return Ok(None);
     };
     let plan = plan(store, roots)?;
-    if confirmed.is_some_and(|confirmed| (&confirmed.snapshots, &confirmed.objects) != (&plan.snapshots, &plan.objects))
-    {
+    if (&confirmed.snapshots, &confirmed.objects) != (&plan.snapshots, &plan.objects) {
         return Err("the store changed after the plan; nothing was deleted".into());
     }
     for snapshot in &plan.snapshots {
@@ -483,12 +482,12 @@ mod tests {
         );
 
         let using = store.using().unwrap();
-        assert!(apply(&store, &roots, None).unwrap().is_none(), "a running fetch stops a collection");
+        assert!(apply(&store, &roots, &plan).unwrap().is_none(), "a running fetch stops a collection");
         drop(using);
         let older = Plan { objects: plan.objects[1..].to_vec(), ..plan.clone() };
-        assert!(apply(&store, &roots, Some(&older)).is_err(), "a plan that is not the plan of now deletes nothing");
+        assert!(apply(&store, &roots, &older).is_err(), "a plan that is not the plan of now deletes nothing");
         assert!(store.snapshot("land", "2026-08-01").unwrap().is_some());
-        let applied = apply(&store, &roots, Some(&plan)).unwrap().unwrap();
+        let applied = apply(&store, &roots, &plan).unwrap().unwrap();
         assert_eq!(applied.objects, plan.objects, "it deletes what the plan names");
         assert!(store.snapshot("land", "2026-08-01").unwrap().is_none());
         assert!(store.object(&sha256_hex(b"land b")).is_file(), "a file of the pinned record stays");

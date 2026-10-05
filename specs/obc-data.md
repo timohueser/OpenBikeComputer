@@ -192,7 +192,8 @@ and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` da
 
 `obc data clean` shows one plan: the collection, then the import. With `--apply`, it asks once,
 as [Errors](#errors) says, and then collects and imports. The collection deletes only the plan
-that it showed: when the plan of now differs, it deletes nothing.
+that it showed: when the plan of now differs, it deletes nothing. The import moves the files that
+exist when it runs, and records each one.
 
 The import moves the cache directories of the older bake tools into the store:
 `~/.cache/obcm`, `~/.cache/obc/planner`, `~/.cache/openbikecomputer`, `~/obc-bake` and
@@ -201,8 +202,8 @@ The import moves the cache directories of the older bake tools into the store:
 - The command resolves symbolic links in the path of the store and of each directory. The store
   and the files below it stay where they are, also when the store is in one of these
   directories. A directory inside the store is refused.
-- The plan hashes every file and changes nothing. It does not follow a link. What stays is
-  symbolic links and other entries that are not regular files.
+- The plan counts the files and their size, hashes nothing and changes nothing. It does not
+  follow a link. What stays is symbolic links and other entries that are not regular files.
 - One import runs at a time, and it holds the store lock shared. For each file,
   it checks the size and the modification time before and after it reads the file. On the file
   system of the store, it hashes the file in place and renames it into `objects/`, or deletes it
@@ -639,8 +640,10 @@ When more than one row applies, the first row gives the state. In JSON, a state 
 
 ## Live
 
-Live is the release that the pointer of each product names on R2. A product owns one prefix:
-`cell-catalog` for `maps`, `planner` for `planner`. The input copies are under `inputs`.
+Live is the release that the pointer of each product names on R2. Each product has one prefix:
+`cell-catalog` for `maps`, `planner` for `planner`. The input copies are under `inputs`. Live
+owns the prefix of each product that has a live release, and `inputs` once any release is live;
+a product with nothing live owns no prefix, so nothing under it is ever a leftover.
 
 | Key | Holds |
 | --- | --- |
@@ -651,24 +654,28 @@ Live is the release that the pointer of each product names on R2. A product owns
 | `inputs/records/<source>/<version>.json` | The snapshot record of an input copy: a version of a source with `r2_copy` that a live layer read |
 | `inputs/objects/<sha256>` | A file of an input copy. Immutable |
 
-With the `OBC_R2_*` variables, `obc data` reads the bucket. Without them, it reads the pointers,
-the manifests and the records at `https://maps.openbikecomputer.com/<key>`; a listing needs the
-variables. The store keeps each manifest that it reads, after it checks that the SHA-256 of the
-bytes is the id.
+When `OBC_R2_BUCKET` or `OBC_R2_LOCAL_DIR` is set, `obc data` reads that bucket. Otherwise it
+reads the pointers, the manifests and the records at `https://maps.openbikecomputer.com/<key>`;
+a listing needs the bucket. A release id is 64 lowercase hex digits. The store keeps each manifest
+that it reads, and uses its copy only while the SHA-256 of the copy is the id and the copy is of
+the product.
 
-`status --check` lists the prefixes of the products and `inputs`, and compares them with live:
+`status --check` lists the owned prefixes, and compares them with live:
 
 - drift: a key of a live release or of its input copies that R2 does not have, or has with
   another size. Pointers and records of input copies have no expected size.
-- leftovers: a key under the prefixes that no live release uses. A pointer and the files of
+- leftovers: a key under the owned prefixes that no live release uses. The files of
   `<prefix>/releases/<id>/` of a live release are never leftovers.
+
+Exit status 1 of `status --check` is drift or leftovers, or a failure of R2. With `--json`, the
+first writes the status, and the second writes an error.
 
 ## Commands
 
 | Command | Output |
 | --- | --- |
 | `obc data [--json]` | In a terminal, and without `--json`: the TUI. Otherwise the output of `status` |
-| `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live) and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, old cache directories that `clean` imports, and with `--check` drift and leftovers. When a fetch that a step list needs fails, the layer states are unknown (`layers` is `null`), and attention says `upstream not reachable` with the error. `--check` adds the listing of [Live](#live) and exits with 1 when it finds drift or leftovers |
+| `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live) and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, old cache directories that `clean` imports, and with `--check` drift and leftovers. When a fetch that the step list of a product needs fails, the layer states of that product are unknown (`layers` is `null`), and attention gives the error. `--check` adds the listing of [Live](#live) and exits with 1 when it finds drift or leftovers. Without the bucket, `--check` exits with 4 before it reads anything |
 | `obc data sources [--check-now] [--json]` | Every source with licence, R2 copy, live pin, newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the live pin, or else the newest file upstream. Writes the store path of each file |
 | `obc data refresh SOURCE [NAME=VALUE…] [--env ENV] [--json]` | Fetches the newest upstream version, checked now, and writes it to `[pins]` of `data/env/ENV.toml` (default `live`). `ENV` is lowercase kebab-case. The edit keeps comments, line order and CRLF line ends. Writes the store path of each file. A version after the pin of a source whose `fetch.from` names `SOURCE` is refused before the fetch: refresh that source first |
@@ -813,7 +820,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "Something that needs a person.",
       "properties": {
         "about": {
-          "description": "The source, the directory, or where live was read.",
+          "description": "The source, the directory, the product, or `R2`.",
           "type": "string"
         },
         "kind": {
@@ -859,7 +866,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "unreachable",
-          "description": "A fetch that the step list needs failed, so the layer states are unknown.",
+          "description": "A fetch that the step list of a product needs failed, so its layer states are unknown.",
           "type": "string"
         }
       ]
@@ -1782,18 +1789,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "$ref": "#/$defs/ImportDir"
           },
           "type": "array"
-        },
-        "new_bytes": {
-          "description": "How much the store grows: the size of each content that is not an object yet, once.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
         }
       },
       "required": [
         "dirs",
-        "bytes",
-        "new_bytes"
+        "bytes"
       ],
       "type": "object"
     },
@@ -2095,7 +2095,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "ProductStatus": {
       "properties": {
         "layers": {
-          "description": "Each layer of the environment `live`, in dependency order; `None` when its steps cannot\nbe listed, and `attention` says why.",
+          "description": "Each layer of the environment `live`, in dependency order; `None` when a fetch that its\nstep list needs failed, and `attention` says why.",
           "items": {
             "$ref": "#/$defs/LayerStatus"
           },
