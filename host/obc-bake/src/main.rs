@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use obc_bake::publish::{DirStore, ObjectStore, PublishOptions, RcloneStore};
+use obc_bake::publish::{DirStore, ObjectStore, PublishOptions, R2Store};
 use obc_pack::catalog::CatalogOptions;
 
 const USAGE: &str = "\
@@ -699,7 +699,7 @@ fn run_publish(args: &[String]) -> Result<(), String> {
     let target = flags.get("target").unwrap_or("");
     let dry_run = flags.has("dry-run") || target.is_empty();
     let store: Box<dyn ObjectStore> = match target {
-        "r2" => Box::new(RcloneStore::from_env()?),
+        "r2" => Box::new(R2Store::from_env()?),
         t if t.starts_with("dir:") => Box::new(DirStore::new(&t["dir:".len()..])),
         "" => Box::new(DirStore::new(".")), // unused: dry_run is on
         other => return Err(format!("unknown --target `{other}` (expected `r2` or `dir:PATH`)")),
