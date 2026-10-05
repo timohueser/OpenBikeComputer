@@ -433,6 +433,31 @@ class BoxService(ingest.Source):
         return [path]
 
 
+class Fetch(ArchiveCase):
+    def test_fetch_moves_the_rasters_and_their_crs_and_keeps_the_downloads(self):
+        """`obc data fetch` stores what `fetch` leaves in `--out`, and nothing else."""
+
+        class Delivered(ingest.Source):
+            def fetch(self, bbox, workdir):
+                (workdir / "a.d").mkdir(parents=True)
+                (workdir / "a.zip").write_bytes(b"download")
+                (workdir / "a.d/a.prj").write_text("crs")
+                raster = workdir / "a.d/a.asc"
+                raster.write_text("grid")
+                return [raster]
+
+        real = ingest.SOURCES["ch"]
+        ingest.SOURCES["ch"] = Delivered("ch", "Testland", "test", 1.0, "CC0", "© ch", "EGM2008",
+                                         (-180, -90, 180, 90))
+        self.addCleanup(ingest.SOURCES.__setitem__, "ch", real)
+        work, out = self.root / "work", self.root / "out"
+        code = ingest.main(["fetch", "ch", "--bbox", "8,46,9,47", "--work", str(work), "--out", str(out)])
+        self.assertEqual(code, 0)
+        moved = sorted(str(path.relative_to(out)) for path in out.rglob("*") if path.is_file())
+        self.assertEqual(moved, ["a.d/a.asc", "a.d/a.prj"])
+        self.assertTrue((work / "a.zip").is_file())
+
+
 class PerTile(ArchiveCase):
     def test_a_per_tile_run_matches_the_one_box_run_and_resumes(self):
         """`--per-tile` asks the service one tile's box at a time, keeps nothing on disk

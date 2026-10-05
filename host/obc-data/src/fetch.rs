@@ -1,7 +1,9 @@
 //! Fetchers: the only code that uses the network. A fetch puts the files of one source version in
 //! the store and records them in the snapshot of that version.
 
+pub mod capture;
 pub mod http;
+pub mod osm;
 pub mod upstream;
 
 use self::http::{Expect, Http};
@@ -11,9 +13,11 @@ use crate::store::{FileRecord, Snapshot, Store};
 
 pub struct Request<'a> {
     pub source: &'a Source,
-    /// `None` takes the newest file upstream has, which only a URL without `{version}` can give.
+    /// `None` takes the newest version upstream has. A URL of the `http` fetcher with `{version}`
+    /// or `{yymmdd}` cannot give it; the `geofabrik` and `osm` fetchers find the newest day.
     pub version: Option<String>,
-    /// A value for each `{name}` of the URL but `{version}`. A name may repeat: one file per value.
+    /// A value for each `{name}` of the URL but `{version}` and `{yymmdd}`, `from=` of the `osm`
+    /// fetcher, or the `NAME=VALUE` of a program fetcher. A name may repeat: one file per value.
     pub params: Vec<(String, String)>,
 }
 
@@ -22,10 +26,11 @@ pub struct Request<'a> {
 pub fn fetch(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
     let source = request.source;
     match source.fetch.kind {
-        FetchKind::Http | FetchKind::Geofabrik | FetchKind::Glo30 | FetchKind::Github => files(store, http, request),
-        FetchKind::Osm | FetchKind::Dtm | FetchKind::Capture => {
-            Err(format!("source `{}`: its kind of fetch has no fetcher yet", source.id))
-        }
+        FetchKind::Http | FetchKind::Glo30 | FetchKind::Github => files(store, http, request),
+        FetchKind::Geofabrik => osm::extract(store, http, request),
+        FetchKind::Osm => osm::replication(store, http, request),
+        FetchKind::Dtm => capture::dtm(store, request),
+        FetchKind::Capture => Err(format!("source `{}`: its kind of fetch has no fetcher yet", source.id)),
         FetchKind::ByHand => Err(format!(
             "source `{}`: a person downloads it from {}",
             source.id,
@@ -57,13 +62,13 @@ fn check_version(source: &Source, version: &str) -> Result<(), String> {
     Err(format!("source `{}`: the version `{version}` is not {form}", source.id))
 }
 
-/// One file per URL. A URL without `{version}` gives only upstream's newest file: a date version
-/// `V` is that file when it was last modified on or before `V`. A release or commit version of
-/// such a URL is only a name, so it needs a record that pins the bytes.
+/// One file per URL. A URL without `{version}` or `{yymmdd}` gives only upstream's newest file: a
+/// date version `V` is that file when it was last modified on or before `V`. A release or commit
+/// version of such a URL is only a name, so it needs a record that pins the bytes.
 fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
     let source = request.source;
     let template = source.fetch.url.as_deref().unwrap_or_default();
-    let named = template.contains("{version}");
+    let named = names_version(template);
     let only_a_name = !named && matches!(source.version, VersionScheme::Release | VersionScheme::Commit);
     if let Some(version) = &request.version {
         check_version(source, version)?;
@@ -90,72 +95,124 @@ fn files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, Stri
         }
         version => version.clone(),
     };
-    let mut files = Vec::new();
-    for url in &urls {
-        let _download = Http::lock(store, url)?;
-        let known = match &version {
-            Some(version) => store.snapshot(&source.id, version)?.and_then(|snapshot| snapshot.file(url).cloned()),
-            None => None,
-        };
-        if let Some(file) = known.as_ref().filter(|file| store.object(&file.sha256).is_file()) {
-            files.push(file.clone());
-            continue;
-        }
-        if only_a_name && known.is_none() {
-            return Err(format!(
-                "source `{}`: {url} does not name the version, and no snapshot record pins its bytes",
-                source.id
-            ));
-        }
-        let version = version.as_deref();
-        let expect = Expect {
-            sha256: known
-                .as_ref()
-                .map(|file| file.sha256.as_str())
-                .or(version.filter(|_| source.version == VersionScheme::Digest)),
-            modified_by: version.filter(|_| source.version == VersionScheme::Date && !named),
-        };
-        eprintln!("obc data: fetching {url}");
-        let got = http.download(store, url, &expect)?;
-        let name = url.rsplit('/').next().unwrap_or_default().to_string();
-        let file = FileRecord {
-            name,
-            url: url.clone(),
-            size: got.size,
-            sha256: got.sha256,
-            retrieved: date::timestamp(date::now()),
-        };
-        record(store, &source.id, version.unwrap_or(&file.sha256), &file)?;
-        files.push(file);
-    }
+    let modified_by = version.as_deref().filter(|_| source.version == VersionScheme::Date && !named);
+    let files = urls
+        .iter()
+        .map(|url| get(store, http, source, version.as_deref(), url, only_a_name, modified_by))
+        .collect::<Result<Vec<_>, _>>()?;
     let version = version.unwrap_or_else(|| files[0].sha256.clone());
     Ok(Snapshot { source: source.id.clone(), version, files })
 }
 
-/// Add `file` to the snapshot record of the version. A version names one set of bytes, so a
-/// record that has the URL with other bytes is an error.
-fn record(store: &Store, source: &str, version: &str, file: &FileRecord) -> Result<(), String> {
+/// The file at `url` of `version`: from the store when the record of the version has it, or else
+/// downloaded and added to that record. `pinned_only` refuses a file that no record pins.
+fn get(
+    store: &Store,
+    http: &Http,
+    source: &Source,
+    version: Option<&str>,
+    url: &str,
+    pinned_only: bool,
+    modified_by: Option<&str>,
+) -> Result<FileRecord, String> {
+    let _download = Http::lock(store, url)?;
+    let known = match version {
+        Some(version) => store.snapshot(&source.id, version)?.and_then(|snapshot| snapshot.file(url).cloned()),
+        None => None,
+    };
+    if let Some(file) = known.as_ref().filter(|file| store.object(&file.sha256).is_file()) {
+        return Ok(file.clone());
+    }
+    if pinned_only && known.is_none() {
+        return Err(format!(
+            "source `{}`: {url} does not name the version, and no snapshot record pins its bytes",
+            source.id
+        ));
+    }
+    let expect = Expect {
+        sha256: known
+            .as_ref()
+            .map(|file| file.sha256.as_str())
+            .or(version.filter(|_| source.version == VersionScheme::Digest)),
+        modified_by,
+    };
+    eprintln!("obc data: fetching {url}");
+    let got = http.download(store, url, &expect)?;
+    let file = FileRecord {
+        name: file_name(source, version, url),
+        url: url.to_string(),
+        size: got.size,
+        sha256: got.sha256,
+        retrieved: date::timestamp(date::now()),
+    };
+    record(store, &source.id, version.unwrap_or(&file.sha256), std::slice::from_ref(&file))?;
+    Ok(file)
+}
+
+/// The part of `url` that names its file within the source, unique in a record: for a program or
+/// `osm` fetcher the part after `fetch.url`; for a template, the URL from the segment of the first
+/// `{name}` that a `NAME=VALUE` fills; else the last segment.
+fn file_name(source: &Source, version: Option<&str>, url: &str) -> String {
+    let template = source.fetch.url.as_deref().unwrap_or_default();
+    let prefix = match source.fetch.kind {
+        FetchKind::Osm | FetchKind::Dtm | FetchKind::Capture => Some(template.to_string()),
+        _ => template
+            .match_indices('{')
+            .map(|(at, _)| at)
+            .find(|&at| !fixed(template[at + 1..].split('}').next().unwrap_or_default()))
+            .and_then(|at| {
+                expand(&template[..template[..at].rfind('/').map_or(0, |slash| slash + 1)], version, &[]).ok()
+            })
+            .and_then(|mut prefix| prefix.pop()),
+    };
+    match prefix.as_deref().and_then(|prefix| url.strip_prefix(prefix)).filter(|name| !name.is_empty()) {
+        Some(name) => name.to_string(),
+        None => url.rsplit('/').next().unwrap_or_default().to_string(),
+    }
+}
+
+/// Add `files` to the snapshot record of the version. A version names one set of bytes, so a
+/// record that has a URL with other bytes is an error; a name names one URL.
+fn record(store: &Store, source: &str, version: &str, files: &[FileRecord]) -> Result<(), String> {
     let _lock = store.lock(&format!("snapshot-{source}@{version}"))?;
     let mut snapshot = store.snapshot(source, version)?.unwrap_or_else(|| Snapshot {
         source: source.into(),
         version: version.into(),
         files: Vec::new(),
     });
-    match snapshot.file(&file.url) {
-        Some(old) if old.sha256 != file.sha256 => Err(format!(
-            "{source}@{version}: {} now has the SHA-256 {}, but the record has {}",
-            file.url, file.sha256, old.sha256
-        )),
-        Some(_) => Ok(()),
-        None => {
+    let before = snapshot.files.len();
+    for file in files {
+        if let Some(old) = snapshot.file(&file.url).filter(|old| old.sha256 != file.sha256) {
+            return Err(format!(
+                "{source}@{version}: {} now has the SHA-256 {}, but the record has {}",
+                file.url, file.sha256, old.sha256
+            ));
+        }
+        if let Some(old) = snapshot.files.iter().find(|old| old.name == file.name && old.url != file.url) {
+            return Err(format!("{source}@{version}: the name {} is of {} and {}", file.name, old.url, file.url));
+        }
+        if snapshot.file(&file.url).is_none() {
             snapshot.files.push(file.clone());
-            store.put_snapshot(&snapshot)
         }
     }
+    if snapshot.files.len() == before {
+        return Ok(());
+    }
+    store.put_snapshot(&snapshot)
 }
 
-/// The URLs of `template` with every `{name}` filled: `{version}` from the version, every other
-/// name from `params`.
+/// Whether a URL template names the version: `{version}`, or `{yymmdd}` for a date.
+fn names_version(template: &str) -> bool {
+    template.contains("{version}") || template.contains("{yymmdd}")
+}
+
+/// Whether `{name}` comes from the version, not from a `NAME=VALUE`.
+fn fixed(name: &str) -> bool {
+    name == "version" || name == "yymmdd"
+}
+
+/// The URLs of `template` with every `{name}` filled: `{version}` from the version, `{yymmdd}`
+/// from a date version, every other name from `params`.
 fn expand(template: &str, version: Option<&str>, params: &[(String, String)]) -> Result<Vec<String>, String> {
     let mut names: Vec<&str> = Vec::new();
     for piece in template.split('{').skip(1) {
@@ -164,14 +221,17 @@ fn expand(template: &str, version: Option<&str>, params: &[(String, String)]) ->
             names.push(name);
         }
     }
-    if let Some((name, _)) = params.iter().find(|(name, _)| name == "version" || !names.contains(&name.as_str())) {
+    if let Some((name, _)) = params.iter().find(|(name, _)| fixed(name) || !names.contains(&name.as_str())) {
         return Err(format!("`{name}=` names no placeholder of {template}"));
     }
     let mut urls = vec![template.to_string()];
     for name in names {
-        let values: Vec<&str> = match name {
-            "version" => version.into_iter().collect(),
-            _ => params.iter().filter(|(n, _)| n == name).map(|(_, value)| value.as_str()).collect(),
+        let values: Vec<String> = match name {
+            "version" => version.map(str::to_string).into_iter().collect(),
+            "yymmdd" => {
+                version.filter(|v| date::parse(v).is_some()).map(|v| v[2..].replace('-', "")).into_iter().collect()
+            }
+            _ => params.iter().filter(|(n, _)| n == name).map(|(_, value)| value.clone()).collect(),
         };
         if values.is_empty() {
             return Err(format!("{template} needs a value for `{{{name}}}`: give {name}=VALUE"));
@@ -217,9 +277,11 @@ mod tests {
             for stream in listener.incoming() {
                 let mut stream = stream.unwrap();
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut headers = Vec::new();
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
+                // The request path, as HTTP/2 names it.
+                let path = line.split_whitespace().nth(1).unwrap_or_default().to_string();
+                let mut headers = vec![(":path".to_string(), path)];
                 loop {
                     line.clear();
                     reader.read_line(&mut line).unwrap();
@@ -259,6 +321,17 @@ mod tests {
         let mut source = parse_sources(&text).unwrap().remove(0);
         source.fetch.url = Some(url.to_string());
         source
+    }
+
+    /// A source of `kind`, with its URL at the test server.
+    fn located(kind: FetchKind, url: &str) -> Source {
+        let mut source = source(url, "date");
+        source.fetch.kind = kind;
+        source
+    }
+
+    fn not_found() -> Reply {
+        Reply { status: 404, headers: vec![], body: vec![], length: 0 }
     }
 
     fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
@@ -395,6 +468,276 @@ mod tests {
         assert_eq!(urls.unwrap(), ["https://h/a/a-v1.tif", "https://h/b/b-v1.tif"]);
         assert!(expand("https://h/{area}.poly", None, &[]).unwrap_err().contains("area=VALUE"));
         assert!(expand("https://h/x", None, &params(&[("tile", "a")])).unwrap_err().contains("names no placeholder"));
+        assert_eq!(expand("https://h/p-{yymmdd}.pbf", Some("2026-09-28"), &[]).unwrap(), ["https://h/p-260928.pbf"]);
+    }
+
+    /// A replication directory at the test server, with the daily diff of each `(sequence, day)`.
+    /// Its `state.txt` is the last of them.
+    fn replication(diffs: &'static [(u32, &'static str)]) -> (Source, Log) {
+        let state = |&(sequence, day): &(u32, &str)| {
+            whole(format!("sequenceNumber={sequence}\ntimestamp={day}T00\\:00\\:00Z\n").as_bytes())
+        };
+        let (url, log) = serve(move |_, headers| {
+            let path = header(headers, ":path").unwrap_or_default();
+            if path == "/replication/day/state.txt" {
+                return state(diffs.last().unwrap());
+            }
+            for diff in diffs {
+                let stem = format!("/replication/day/000/005/{}", diff.0 - 5000);
+                if path == format!("{stem}.state.txt") {
+                    return state(diff);
+                }
+                if path == format!("{stem}.osc.gz") {
+                    return whole(path.as_bytes());
+                }
+            }
+            not_found()
+        });
+        let mut source = located(FetchKind::Osm, &url.replace("data/file.bin", "replication/day/"));
+        source.fetch.from = Some("osm-planet".into());
+        (source, log)
+    }
+
+    fn changes(snapshot: &Snapshot) -> Vec<&str> {
+        snapshot.files.iter().map(|file| file.name.as_str()).filter(|name| name.ends_with(".osc.gz")).collect()
+    }
+
+    fn from(day: &str) -> Vec<(String, String)> {
+        vec![("from".into(), day.into())]
+    }
+
+    #[test]
+    fn replication_is_the_daily_diffs_after_the_base_up_to_the_version() {
+        let (diffs, log) = replication(&[
+            (5128, "2026-09-27"),
+            (5129, "2026-09-28"),
+            (5130, "2026-09-29"),
+            (5131, "2026-09-30"),
+            (5132, "2026-10-01"),
+        ]);
+        let scratch = Scratch::new("replication");
+        let store = Store::at(&scratch.0);
+        let wednesday = Request { source: &diffs, version: Some("2026-09-30".into()), params: from("2026-09-28") };
+        let snapshot = fetch(&store, &quick(), &wednesday).unwrap();
+        assert_eq!(changes(&snapshot), ["000/005/130.osc.gz", "000/005/131.osc.gz"]);
+        assert_eq!(snapshot.files[0].name, "000/005/129.state.txt", "the state of the base day");
+        let asked = log.lock().unwrap().len();
+        assert_eq!(fetch(&store, &quick(), &wednesday).unwrap(), snapshot);
+        let later = Request { params: from("2026-09-29"), ..wednesday };
+        assert_eq!(fetch(&store, &quick(), &later).unwrap().files, snapshot.files[2..]);
+        assert_eq!(log.lock().unwrap().len(), asked, "a record that has the diffs needs no request");
+        // A refresh keeps the base and downloads the diff of the new day only.
+        let refresh = Request { source: &diffs, version: None, params: from("2026-09-28") };
+        let refreshed = fetch(&store, &quick(), &refresh).unwrap();
+        assert_eq!(refreshed.version, "2026-10-01");
+        assert_eq!(refreshed.files[..5], snapshot.files);
+        let log = log.lock().unwrap();
+        let downloads: Vec<_> =
+            log[asked..].iter().filter_map(|h| header(h, ":path")).filter(|p| p.ends_with(".osc.gz")).collect();
+        assert_eq!(downloads, ["/replication/day/000/005/132.osc.gz"]);
+    }
+
+    #[test]
+    fn replication_takes_the_base_pin_and_any_day_that_has_a_diff() {
+        // 2026-10-01 has no diff.
+        let (diffs, log) = replication(&[
+            (5128, "2026-09-27"),
+            (5129, "2026-09-28"),
+            (5130, "2026-09-29"),
+            (5131, "2026-09-30"),
+            (5132, "2026-10-02"),
+        ]);
+        let pins = std::collections::BTreeMap::from([("osm-planet".to_string(), "2026-09-28".to_string())]);
+        assert_eq!(osm::with_base(&diffs, &pins, vec![]).unwrap(), from("2026-09-28"));
+        let err = osm::with_base(&diffs, &pins, from("2026-09-29")).unwrap_err();
+        assert!(err.contains("not the `osm-planet` pin 2026-09-28"), "{err}");
+        assert_eq!(osm::with_base(&diffs, &Default::default(), from("2026-09-29")).unwrap(), from("2026-09-29"));
+        let scratch = Scratch::new("gaps");
+        let store = Store::at(&scratch.0);
+        let get = |version: &str, params: Vec<(String, String)>| {
+            fetch(&store, &quick(), &Request { source: &diffs, version: Some(version.into()), params })
+        };
+        assert!(get("2026-09-30", vec![]).unwrap_err().contains("the `osm-planet` pin"));
+        assert!(get("2026-09-30", from("2026-10-01")).unwrap_err().contains("after the version"));
+        assert!(log.lock().unwrap().is_empty());
+        let err = get("2026-10-01", from("2026-09-28")).unwrap_err();
+        assert!(err.contains("no daily diff of 2026-10-01"), "{err}");
+        assert_eq!(store.snapshot(&diffs.id, "2026-10-01").unwrap(), None, "a probe records nothing");
+        let err = get("2026-10-03", from("2026-10-03")).unwrap_err();
+        assert!(err.contains("the newest daily diff is of 2026-10-02"), "{err}");
+        let downloaded = |log: &Log| {
+            let log = log.lock().unwrap();
+            log.iter().filter_map(|h| header(h, ":path").map(str::to_string)).filter(|p| p.ends_with(".osc.gz")).count()
+        };
+        assert_eq!(downloaded(&log), 0);
+        let snapshot = get("2026-10-02", from("2026-09-28")).unwrap();
+        assert_eq!(changes(&snapshot), ["000/005/130.osc.gz", "000/005/131.osc.gz", "000/005/132.osc.gz"]);
+        // The stored states name the days, so other ranges need no request.
+        let asked = log.lock().unwrap().len();
+        assert_eq!(changes(&get("2026-09-30", from("2026-09-29")).unwrap()), ["000/005/131.osc.gz"]);
+        assert_eq!(get("2026-09-30", from("2026-09-30")).unwrap().files.len(), 1, "only the state of the base");
+        assert_eq!(log.lock().unwrap().len(), asked);
+    }
+
+    #[test]
+    fn a_day_with_two_diffs_is_no_base_and_no_version() {
+        let (diffs, _log) = replication(&[
+            (5127, "2026-09-26"),
+            (5128, "2026-09-27"),
+            (5129, "2026-09-28"),
+            (5130, "2026-09-28"),
+            (5131, "2026-09-29"),
+        ]);
+        let scratch = Scratch::new("twice");
+        let store = Store::at(&scratch.0);
+        let get = |version: &str, base: &str| {
+            fetch(&store, &quick(), &Request { source: &diffs, version: Some(version.into()), params: from(base) })
+        };
+        let twice = |result: Result<Snapshot, String>| result.unwrap_err().contains("two daily diffs of 2026-09-28");
+        assert!(twice(get("2026-09-29", "2026-09-28")));
+        assert!(twice(get("2026-09-28", "2026-09-27")));
+        assert_eq!(store.snapshot(&diffs.id, "2026-09-29").unwrap(), None);
+        // Between the base and the version, a day may have two diffs; the stored states then still
+        // refuse that day as a base.
+        assert_eq!(changes(&get("2026-09-29", "2026-09-27").unwrap()).len(), 3);
+        assert!(twice(get("2026-09-29", "2026-09-28")));
+    }
+
+    #[test]
+    fn a_file_is_named_by_the_part_of_its_url_within_the_source() {
+        use FetchKind::*;
+        for (kind, template, version, url, name) in [
+            (Http, "https://h/terrarium/{z}/{x}/{y}.png", None, "https://h/terrarium/8/1/2.png", "8/1/2.png"),
+            (
+                Http,
+                "https://h/G-{version}/H-{version}_{tile}.tif",
+                Some("v1"),
+                "https://h/G-v1/H-v1_10N.tif",
+                "H-v1_10N.tif",
+            ),
+            (
+                Http,
+                "https://h/pbf/planet-{yymmdd}.osm.pbf",
+                Some("2026-09-28"),
+                "https://h/pbf/planet-260928.osm.pbf",
+                "planet-260928.osm.pbf",
+            ),
+            (
+                Geofabrik,
+                "https://h/{area}-{yymmdd}.osm.pbf",
+                Some("2026-10-03"),
+                "https://h/europe/monaco-261003.osm.pbf",
+                "europe/monaco-261003.osm.pbf",
+            ),
+            (Osm, "https://h/day/", Some("2026-10-03"), "https://h/day/000/005/130.osc.gz", "000/005/130.osc.gz"),
+            (
+                Dtm,
+                "https://h/wcs",
+                Some("2026-10-03"),
+                "https://h/wcs#bbox=1,2,3,4/sub/a.tif",
+                "#bbox=1,2,3,4/sub/a.tif",
+            ),
+        ] {
+            assert_eq!(file_name(&located(kind, template), version, url), name, "{template}");
+        }
+        let scratch = Scratch::new("names");
+        let store = Store::at(&scratch.0);
+        let file = |url: &str, sha256: &str| FileRecord {
+            name: "a.tif".into(),
+            url: url.into(),
+            size: 1,
+            sha256: sha256.into(),
+            retrieved: String::new(),
+        };
+        record(&store, "land", "v1", &[file("https://h/1/a.tif", "aa")]).unwrap();
+        let err = record(&store, "land", "v1", &[file("https://h/2/a.tif", "aa")]).unwrap_err();
+        assert!(err.contains("the name a.tif is of https://h/1/a.tif and https://h/2/a.tif"), "{err}");
+    }
+
+    #[test]
+    fn a_latest_redirect_names_the_newest_day() {
+        let (url, log) = serve(|_, _| Reply {
+            status: 302,
+            headers: vec![("Location", "/pbf/planet-260928.osm.pbf".into())],
+            body: vec![],
+            length: 0,
+        });
+        let scratch = Scratch::new("latest");
+        let store = Store::at(&scratch.0);
+        let planet = source(&url.replace("data/file.bin", "pbf/planet-{yymmdd}.osm.pbf"), "date");
+        assert_eq!(upstream::newest(&store, &quick(), &planet, 0), Upstream::Newest("2026-09-28".into()));
+        assert_eq!(header(&log.lock().unwrap()[0], ":path"), Some("/pbf/planet-latest.osm.pbf"));
+    }
+
+    #[test]
+    fn a_geofabrik_extract_is_the_file_of_the_day_of_its_data() {
+        let (url, log) = serve(|_, headers| match header(headers, ":path").unwrap_or_default() {
+            "/europe/monaco-updates/state.txt" => whole(b"sequenceNumber=4928\ntimestamp=2026-10-03T20\\:20\\:50Z\n"),
+            "/europe/monaco-261003.osm.pbf" => whole(b"monaco"),
+            _ => not_found(),
+        });
+        let scratch = Scratch::new("geofabrik");
+        let store = Store::at(&scratch.0);
+        let extracts = located(FetchKind::Geofabrik, &url.replace("data/file.bin", "{area}-{yymmdd}.osm.pbf"));
+        let area = vec![("area".to_string(), "europe/monaco".to_string())];
+        let newest = Request { source: &extracts, version: None, params: area.clone() };
+        let snapshot = fetch(&store, &quick(), &newest).unwrap();
+        assert_eq!(
+            (snapshot.version.as_str(), snapshot.files[0].name.as_str()),
+            ("2026-10-03", "europe/monaco-261003.osm.pbf")
+        );
+        // Last-Modified is two days after the data, which a dated file does not ask.
+        assert_eq!(log.lock().unwrap().len(), 2);
+        let gone = Request { source: &extracts, version: Some("2026-08-15".into()), params: area };
+        assert!(fetch(&store, &quick(), &gone).unwrap_err().contains("first of each month"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_capture_is_stored_and_another_day_comes_only_from_the_store() {
+        let scratch = Scratch::new("capture");
+        let store = Store::at(&scratch.0);
+        let dtm = located(FetchKind::Dtm, "https://example.org/wcs");
+        let today = Request { source: &dtm, version: None, params: vec![] };
+        let script = |script: &'static str| {
+            move |work: &std::path::Path, out: &std::path::Path| {
+                let mut command = std::process::Command::new("sh");
+                command.args(["-c", script, "sh"]).arg(work).arg(out);
+                command
+            }
+        };
+        let err = capture::capture(&store, &today, "bbox=1,2,3,4", script("echo partial > \"$2/a.tif\"; exit 3"))
+            .unwrap_err();
+        assert!(err.contains("failed"), "{err}");
+        let version = date::format(date::today());
+        assert_eq!(store.snapshot("land", &version).unwrap(), None, "a failed run records nothing");
+        let writes = "mkdir \"$2/sub\" && echo raster > \"$2/sub/a.tif\" && echo crs > \"$2/sub/a.prj\" && echo zip > \"$1/a.zip\"";
+        let snapshot = capture::capture(&store, &today, "bbox=1,2,3,4", script(writes)).unwrap();
+        let urls: Vec<_> = snapshot.files.iter().map(|file| file.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            ["https://example.org/wcs#bbox=1,2,3,4/sub/a.prj", "https://example.org/wcs#bbox=1,2,3,4/sub/a.tif"]
+        );
+        assert_eq!(snapshot.files[1].sha256, sha256_hex(b"raster\n"));
+        assert!(store.object(&snapshot.files[1].sha256).is_file());
+        assert!(!store.root().join("partial").read_dir().unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("capture-")));
+        assert_eq!(capture::capture(&store, &today, "bbox=1,2,3,4", script("exit 1")).unwrap(), snapshot);
+        let pinned = Request { version: Some(version), ..today };
+        assert_eq!(capture::capture(&store, &pinned, "bbox=1,2,3,4", script("exit 1")).unwrap(), snapshot);
+        let yesterday = Request { version: Some(date::format(date::today() - 1)), ..pinned };
+        let err = capture::capture(&store, &yesterday, "bbox=1,2,3,4", script("exit 1")).unwrap_err();
+        assert!(err.contains("today's data"), "{err}");
+        let keyed = Source {
+            credential: Some(crate::sources::Credential { env: vec!["OBC_TEST_NO_SUCH_KEY".into()], file: None }),
+            ..dtm.clone()
+        };
+        let blocked = Request { source: &keyed, version: None, params: vec![] };
+        let err = capture::capture(&store, &blocked, "bbox=5,6,7,8", script("exit 1")).unwrap_err();
+        assert!(err.contains("credential missing: OBC_TEST_NO_SUCH_KEY"), "{err}");
     }
 
     fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
