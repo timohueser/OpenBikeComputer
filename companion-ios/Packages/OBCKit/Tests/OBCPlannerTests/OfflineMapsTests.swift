@@ -236,7 +236,7 @@ private actor RecordingSource: PlannerDataSource {
     func release() throws -> PlannerRelease {
         calls.append("release")
         let url = URL(string: "https://planner.test/")!
-        return PlannerRelease(id: id, region: "test", bounds: bounds, basemap: url,
+        return PlannerRelease(id: id, region: "test", bounds: bounds, basemap: url, places: url,
             glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: url, routing: url,
             manifest: local ? URL(fileURLWithPath: "/release.json") : url, overlays: url)
     }

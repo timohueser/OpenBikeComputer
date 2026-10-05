@@ -14,6 +14,14 @@ def command(*args):
     return subprocess.check_output(args, text=True).strip()
 
 
+def r2_put(path, key, *options):
+    """Upload one file through the R2 client of host/obc-data, which also verifies it.
+
+    The workflow builds the client in a step without secrets; this step only runs the binary."""
+    client = Path(__file__).resolve().parents[3] / "target" / "debug" / "obc-data-plumbing"
+    subprocess.run([str(client), "r2", "put", *options, str(path), key], check=True)
+
+
 def release_notes(candidate, repo):
     version, source = candidate["version"], candidate["sourceSha"]
     exceptions = candidate.get("exceptions", [])
@@ -123,18 +131,11 @@ def main():
                 command("gh", "release", "upload", version, str(path))
         if existing["isDraft"]:
             command("gh", "release", "edit", version, "--draft=false")
-        remote = dict(os.environ,
-            RCLONE_CONFIG_OBCR2_TYPE="s3", RCLONE_CONFIG_OBCR2_PROVIDER="Cloudflare",
-            RCLONE_CONFIG_OBCR2_REGION="auto", RCLONE_CONFIG_OBCR2_NO_CHECK_BUCKET="true",
-            RCLONE_CONFIG_OBCR2_ENDPOINT=f"https://{os.environ['OBC_R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
-            RCLONE_CONFIG_OBCR2_ACCESS_KEY_ID=os.environ["OBC_R2_ACCESS_KEY_ID"],
-            RCLONE_CONFIG_OBCR2_SECRET_ACCESS_KEY=os.environ["OBC_R2_SECRET_ACCESS_KEY"])
-        prefix = f"obcr2:{os.environ['OBC_R2_BUCKET']}/fw"
-        subprocess.run(["rclone", "copyto", "--checksum", "--immutable", "--header-upload", "Content-Type: application/octet-stream",
-                        "--header-upload", "Cache-Control: public,max-age=31536000,immutable", str(directory / "UPDATE.BIN"), f"{prefix}/{version}/UPDATE.BIN"], env=remote, check=True)
+        r2_put(directory / "UPDATE.BIN", f"fw/{version}/UPDATE.BIN", "--immutable", "--content-type", "application/octet-stream",
+               "--cache-control", "public,max-age=31536000,immutable")
         channel = "prerelease/" if prerelease else ""
-        subprocess.run(["rclone", "copyto", "--header-upload", "Content-Type: application/json", "--header-upload", "Cache-Control: public,max-age=60,must-revalidate",
-                        str(directory / "manifest.json"), f"{prefix}/{channel}manifest.json"], env=remote, check=True)
+        r2_put(directory / "manifest.json", f"fw/{channel}manifest.json", "--content-type", "application/json",
+               "--cache-control", "public,max-age=60,must-revalidate")
         with open(os.environ["GITHUB_OUTPUT"], "a") as output:
             output.write(f"source_sha={source}\nrelease_url={release_url}\n")
 

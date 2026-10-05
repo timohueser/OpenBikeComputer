@@ -5,7 +5,7 @@
 # Called by `obc doctor --install`; safe to run standalone.
 set -euo pipefail
 
-VER="${RISCV_XPACK_VER:-14.2.0-3}"          # bump here if the pin ages out
+VER="${RISCV_XPACK_VER:-13.2.0-2}"          # the version CI pins in .github/actions/setup-riscv
 TOOLS="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # this tools/ dir (holds obc.local)
 DEST="$HOME/.local/xPacks"
 

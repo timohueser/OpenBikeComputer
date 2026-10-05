@@ -1,5 +1,5 @@
 import type { Place } from '../editor';
-import { placeCategories, type PlaceCategory } from '../poi-kinds';
+import { placeCategories, poiKinds, type PlaceCategory } from '../poi-kinds';
 import type { QueryPoint, Where, QueryRequest, SearchPlace } from './types';
 import contract from '../../../../../../apps/planner-search/query/contract.json' with { type: 'json' };
 
@@ -11,7 +11,7 @@ const kinds: Record<string, { category: string | null }> = contract.kinds, dataK
 /** The map category of a query kind or a search-data kind, such as `shop` for `shop=yes`. A kind without one shows as a
  * viewpoint. */
 export function category(kind: string): PlaceCategory {
-    return (kinds[kind]?.category ?? kinds[dataKinds[kind]]?.category ?? (Object.hasOwn(placeCategories, kind) ? kind : 'viewpoint')) as PlaceCategory;
+    return (poiKinds[kind]?.category ?? kinds[kind]?.category ?? kinds[dataKinds[kind]]?.category ?? (Object.hasOwn(placeCategories, kind) ? kind : 'viewpoint')) as PlaceCategory;
 }
 export function asPlace(p: SearchPlace): Place {
     return { id: p.source, placeKind: p.kind, label: p.name, kind: 'place', category: category(p.kind), coordinate: [p.lon, p.lat],

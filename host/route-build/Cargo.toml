@@ -24,5 +24,7 @@ postcard = { version = "1", features = ["alloc"] }
 rusqlite = { version = "0.38", features = ["bundled"] }
 sha2 = "0.10"
 clap = { version = "4", features = ["derive"] }
+# The credits the routing and terrain packages carry come from data/sources.toml.
+obc-data = { path = "../obc-data" }
 obc-dem = { path = "../obc-dem", default-features = false, features = ["geotiff"], optional = true }
 image = { version = "0.25", default-features = false, features = ["webp"], optional = true }

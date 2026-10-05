@@ -678,6 +678,5 @@ describe("native discovery", () => {
 });
 
 // A map sent disk to endpoint inside Rust cannot exist until the Rust side frames records: every
-// stream record carries a `RequestId`, an absolute offset and a length, and the `usb_send_file`
-// command writes raw bytes. The heap claim that path made belongs to the shared upload loop and is
+// stream record carries a `RequestId`, an absolute offset and a length. The heap claim that path made belongs to the shared upload loop and is
 // tested where that loop lives; the CRC constant it pinned is `usb/crc32.test.ts`'s.

@@ -7,7 +7,7 @@ import shutil
 import sqlite3
 import tempfile
 
-from . import planner_cleanup as cleanup, planner_maps as maps, r2
+from . import data_registry, planner_cleanup as cleanup, planner_maps as maps, r2
 from .planner_runtime import DATA_LAYERS, digest, encoded, public_metadata, read_url, release, storage_files
 
 
@@ -102,7 +102,8 @@ def seal(data, region, device_catalog, provenance):
         files[database.relative_to(data).as_posix()] = {"bytes": database.stat().st_size, "sha256": digest(database)}
     document = {"format": 1, "region": region, "bounds": routing["bounds"], "osm_sha256": osm,
                 "routing_package": digest(data / "routing/manifest.json"), "profiles": sorted(routing["metrics"]),
-                "attribution": routing["attribution"], "terrain_attribution": map_manifest["terrain_attribution"],
+                "attribution": data_registry.attribution("osm-planet"),
+                "landcover_attribution": data_registry.attribution("daylight-landcover"), "terrain_attribution": map_manifest["terrain_attribution"],
                 "terrain_bounds": map_manifest["terrain_bounds"], "sources": provenance,
                 "device_catalog_source": device_catalog, "files": files,
                 "probe": provenance["probe"],
@@ -113,7 +114,7 @@ def seal(data, region, device_catalog, provenance):
 
 
 def endpoints(identity, document, name, public, tiles, api):
-    """The catalogue entry of a grid release, which is also the planner config of the site build."""
+    """The catalogue entry of a grid release, which the web planner reads as its config at page load."""
     tile_prefix = f"{tiles}/releases/{identity}"
     service = f"{api}/planner-api/releases/{identity}"
     return {"id": identity, "manifest": f"{public}/planner/releases/{identity}/release.json", "region": document["region"],
@@ -121,6 +122,7 @@ def endpoints(identity, document, name, public, tiles, api):
             "search": service + "/search", "basemap": tile_prefix + "/basemap.json", "places": tile_prefix + "/places.json",
             "overlays": tile_prefix + "/overlays.json",
             "attribution": document["attribution"],
+            **({"landcover_attribution": document["landcover_attribution"]} if "landcover_attribution" in document else {}),
             "terrain": tile_prefix + "/terrain/{z}/{x}/{y}.webp",
             "layers": {layer: f"{tile_prefix}/{layer}.json" for layer in DATA_LAYERS if f"maps/{layer}.json" in document["files"]},
             "glyphs": tile_prefix + "/maps/assets/fonts/{fontstack}/{range}.pbf",
@@ -129,9 +131,9 @@ def endpoints(identity, document, name, public, tiles, api):
             "routes": tile_prefix + "/routes/tiles/{cell}.json"}
 
 
-def grid_release(data):
+def grid_release(data, include_sources=True):
     """The identity and verified manifest of a grid release; only grid releases go online."""
-    identity, document = release(data)
+    identity, document = release(data, include_sources)
     if not document.get("grid"):
         raise ValueError("Online services serve grid releases only. Run obc planner grid first.")
     return identity, document
@@ -151,7 +153,7 @@ def publish(args):
     print(f"Release {identity}\n{document['region']}: {count} objects, {size / 1e9:.2f} GB")
     print(f"R2 storage ceiling for this release: ${size / 1e9 * .015:.2f}/month before the free allowance.")
     print(f"Initial object writes: approximately ${count / 1e6 * 4.5:.3f} before the free allowance.")
-    print("Publication stages data. Run deploy, Deploy site, and finalize to complete the rollout.")
+    print("Publication stages data. Run deploy and finalize to complete the rollout.")
     if not args.apply:
         return
     remote = r2.bucket_remote()
@@ -181,15 +183,3 @@ def publish(args):
                        "--immutable", "--checksum", "--header-upload", "Content-Type: application/json",
                        "--header-upload", "Cache-Control: public,max-age=31536000,immutable"], remote.env)
     print(f"Published {args.public_url}/planner/releases/{identity}/release.json")
-
-
-def site_config(catalog_url, destination):
-    """Write the build settings of the site: the active catalogue entry as the planner config, and its device catalogue."""
-    catalog = read_url(catalog_url)
-    if catalog["format"] != 1:
-        raise ValueError("Unsupported planner catalogue")
-    active = catalog["active"]
-    # Each value is one line of the environment file; ASCII JSON escapes every line break.
-    if any(c in active["device_catalog"] for c in "\r\n"):
-        raise ValueError("Invalid planner configuration")
-    destination.write_text(f"VITE_PLANNER_CONFIG={json.dumps(active)}\nVITE_CATALOG_URL={active['device_catalog']}\n")

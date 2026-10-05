@@ -71,12 +71,6 @@ def _cache_root() -> Path:
 
 
 def _full_source() -> Path:
-    bakery = _cache_root() / "geofabrik" / FULL_SOURCE_NAME
-    if bakery.is_file() and bakery.stat().st_size >= 1024:
-        return bakery
-    # Do not place a metadata-less download in the bakery's validator cache:
-    # obc-bake would correctly distrust and re-download it. The schema lab owns
-    # this fallback instead, while still reusing a real bakery download above.
     return _cache_root() / "schema-preview" / FULL_SOURCE_NAME
 
 

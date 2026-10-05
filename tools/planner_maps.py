@@ -13,6 +13,7 @@ import socket
 import subprocess
 import threading
 import time
+import tomllib
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,9 +21,10 @@ APP = ROOT / "builder/app"
 # Child processes start in their own session, so an interrupt reaches only this process. A caller that
 # runs producers in threads sets STOPPING and stops these; `run` then starts no new process.
 RUNNING, STOPPING = set(), threading.Event()
-ASSETS_REV = "028c18f713baecad011301ff7a69acc39bcc2ae7"
+# The versions live is built from. data/env/live.toml is their one home.
+PINS = tomllib.loads((ROOT / "data/env/live.toml").read_text())["pins"]
+ASSETS_REV = PINS["protomaps-assets"]
 ASSETS_URL = f"https://codeload.github.com/protomaps/basemaps-assets/zip/{ASSETS_REV}"
-SPRITES_LICENSE_URL = "https://raw.githubusercontent.com/tangrams/icons/92510779634f4a006c61ea70e50cb8c52c765a81/LICENSE.md"
 
 
 def bounds(value):
@@ -130,9 +132,9 @@ def compact_archive(source, destination, region, terrain=False, recompress=True)
         *([] if recompress else ["--no-recompress"]), cwd=ROOT)
 
 
-def places_archive(basemap, destination):
+def places_archive(pois, destination):
     run("uv", "run", "--with-requirements", ROOT / "tools/requirements-planner-maps.txt",
-        "python", "-m", "tools.planner_places", basemap, destination, cwd=ROOT)
+        "python", "-m", "tools.planner_places", pois, destination, cwd=ROOT)
 
 
 def overlays_archive(index, destination):

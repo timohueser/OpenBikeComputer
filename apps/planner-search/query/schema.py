@@ -77,6 +77,7 @@ CATEGORIES = {
 # Search-data kinds (records.category) of a kind other than its own id. A parent kind finds the
 # data kinds of its children.
 DATA_KINDS = {
+    "campsite": ["campsite", "caravan_site"], "lodging": ["chalet"],
     "drinking_water": ["drinking_water", "water_point"], "doctor": ["doctor", "clinic"],
     "bar": ["bar", "pub"], "town": ["city", "town", "village", "hamlet"],
 }

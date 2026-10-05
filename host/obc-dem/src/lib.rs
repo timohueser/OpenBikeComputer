@@ -45,9 +45,8 @@
 //! as a one-box one. A mirror of the box is enough; a cell with no coverage is byte-identical to a
 //! cell baked without a reference.
 //!
-//! `obc_elevation::COPERNICUS_ATTRIBUTION` must travel with anything derived from GLO-30. `bake`
-//! prints it, and the catalog and the builder carry it onward to a rider. It is a `const` in the
-//! elevation leaf so there is one copy of the wording in the repository.
+//! The Copernicus credit in data/sources.toml must travel with anything derived from GLO-30. `bake`
+//! prints it, and the catalog and the builder carry it onward to a rider.
 
 /// The producer half — a GeoTIFF decoder (`geotiff`) and an HTTP client (`fetch`), together the
 /// default `dem` feature. [`container`] stands without either, so the assembler can reuse the one
@@ -65,6 +64,8 @@ pub mod fetch;
 pub mod geotiff;
 #[cfg(feature = "geotiff")]
 pub mod reference;
+#[cfg(all(feature = "geotiff", feature = "fetch"))]
+pub mod step;
 pub mod surface;
 
 /// A geographic box in integer microdegrees — the unit every OBC coordinate is in, so the box that

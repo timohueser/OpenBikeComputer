@@ -1,4 +1,0 @@
-module OBCCompanionCore {
-    header "obc_companion_core.h"
-    export *
-}

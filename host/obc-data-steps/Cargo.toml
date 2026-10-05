@@ -1,0 +1,33 @@
+[package]
+name = "obc-data-steps"
+version = "0.1.0"
+edition = "2021"
+publish = false
+# It links the GPL step code of the products into the MIT library obc-data.
+license = "GPL-3.0-only"
+description = "The `obc data` binary: the commands of obc-data with the steps of each product"
+
+[[bin]]
+name = "obc-data"
+path = "src/main.rs"
+
+[features]
+external-fixtures = []
+
+[dependencies]
+obc-data = { path = "../obc-data" }
+# The step list of the device maps: the outline of a region and its cells.
+obc-bake = { path = "../obc-bake" }
+obc-pack = { path = "../obc-pack" }
+# The terrain step.
+obc-dem = { path = "../obc-dem" }
+serde_json = "1"
+
+[dev-dependencies]
+obc-elevation = { path = "../../firmware/obc-elevation" }
+obc-fixtures = { path = "../obc-fixtures" }
+obc-formats = { path = "../../firmware/obc-formats" }
+
+[[test]]
+name = "terrain_fixture"
+required-features = ["external-fixtures"]

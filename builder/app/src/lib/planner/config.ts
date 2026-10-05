@@ -3,11 +3,13 @@ import type { Archive } from './layers/data-layer';
 export type Bounds = [number, number, number, number];
 
 /**
- * The planner config: the `active` entry of the planner catalogue in specs/planner-release.md, which a
- * planner build carries as `VITE_PLANNER_CONFIG`. A local preview gives the same fields as root-relative
- * paths, so a preview opened as localhost or 127.0.0.1 stays on one origin.
+ * The planner config: the `active` entry of the planner catalogue in specs/planner-release.md. A local preview
+ * build carries it as `VITE_PLANNER_CONFIG`, with the same fields as root-relative paths, so a preview opened
+ * as localhost or 127.0.0.1 stays on one origin.
  */
 export interface PlannerConfig {
+    /** The release ID; a local preview has none. */
+    id?: string;
     name: string;
     bounds: Bounds;
     /** TileJSON URLs; a local preview gives `pmtiles://` archive paths. */
@@ -16,6 +18,10 @@ export interface PlannerConfig {
     overlays: string;
     /** A Terrarium WebP tile template. */
     terrain: string;
+    /** The OSM credit, from data/sources.toml. */
+    attribution: string;
+    /** The credit of the basemap's land cover, from data/sources.toml. Older releases have none. */
+    landcover_attribution?: string;
     terrain_attribution: string;
     glyphs: string;
     sprites: string;
@@ -41,13 +47,10 @@ export function configUrl(value: unknown, base?: string): string | undefined {
     return scheme + new URL(path, base).href.replace(/%7B/g, '{').replace(/%7D/g, '}');
 }
 
-/**
- * The config in `text`, with its paths resolved against `base`, the page. A config that the planner
- * cannot use throws, so the build that carries it fails.
- */
-export function plannerConfig(text: string | undefined, base?: string): PlannerConfig {
-    if (!text) throw new Error('Set VITE_PLANNER_CONFIG to the planner config; see the planner README.');
-    const config = JSON.parse(text);
+/** `value` as a config, with its paths resolved against `base`, the page. A config that the planner cannot use throws. */
+export function plannerConfig(value: unknown, base?: string): PlannerConfig {
+    if (!value || typeof value !== 'object') throw new Error('The planner config is not an object.');
+    const config: any = value;
     const bounds = config.bounds;
     const urls = Object.fromEntries(URLS.map((key) => [key, configUrl(config[key], base)]));
     const routes = config.routes === undefined ? undefined : configUrl(config.routes, base);
@@ -56,6 +59,8 @@ export function plannerConfig(text: string | undefined, base?: string): PlannerC
         ...URLS.filter((key) => !urls[key]),
         ...(config.routes === undefined || routes ? [] : ['routes']),
         ...(typeof config.name === 'string' && config.name ? [] : ['name']),
+        ...(typeof config.attribution === 'string' && config.attribution ? [] : ['attribution']),
+        ...(config.landcover_attribution === undefined || typeof config.landcover_attribution === 'string' ? [] : ['landcover_attribution']),
         ...(typeof config.terrain_attribution === 'string' ? [] : ['terrain_attribution']),
         ...(config.layers && typeof config.layers === 'object' && Object.values(layers).every(Boolean) ? [] : ['layers']),
         ...(Array.isArray(bounds) && bounds.length === 4 && bounds.every(Number.isFinite) && bounds[0] >= -180 && bounds[2] <= 180

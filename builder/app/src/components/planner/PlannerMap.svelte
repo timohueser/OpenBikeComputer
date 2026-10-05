@@ -1,7 +1,10 @@
 <script module lang="ts">
     import { terrainRetry, terrainSource } from '../../lib/planner/map-terrain';
     import { config } from '../../lib/planner/map-data';
+    import { releaseProtocol, releaseUrl } from '../../lib/planner/release';
     const terrain = terrainSource(config.terrain);
+    // MapLibre loads the release objects of the style through `releaseProtocol`.
+    const styleConfig = { ...config, basemap: releaseUrl(config.basemap), glyphs: releaseUrl(config.glyphs), sprites: releaseUrl(config.sprites) };
 </script>
 
 <script lang="ts">
@@ -347,7 +350,7 @@
         const { pid, kind } = feature.properties;
         if (pid) return highlightedPlaces.find((place) => place.id === pid) ?? null;
         const [longitude, latitude] = feature.geometry.coordinates;
-        return poiPlace(feature.id, String(kind), feature.properties["name:en"] ?? feature.properties.name, [longitude, latitude]);
+        return poiPlace(feature.id, String(kind), feature.properties.name, [Number(feature.properties.lon ?? longitude), Number(feature.properties.lat ?? latitude)]);
     }
 
     function legEnds(legEndId: string): [Coordinate, Coordinate] {
@@ -429,13 +432,14 @@
         maplibregl.setWorkerUrl(mapWorkerUrl);
         const protocol = new Protocol();
         maplibregl.addProtocol("pmtiles", protocol.tile);
+        maplibregl.addProtocol("release", releaseProtocol);
         const terrainLease = terrain.acquire(maplibregl);
         dem = terrainLease.dem;
         const contourUrl = dem.contourProtocolUrl({ thresholds: { 10: [200, 1000], 11: [100, 500], 13: [50, 250], 14: [20, 100] }, contourLayer: "contours", elevationKey: "ele", levelKey: "level" });
         insertDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-insert-dot" }) });
         hoverDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-hover-dot" }) });
         try {
-            map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, config, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false });
+            map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, styleConfig, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false });
             signedLayer = new SignedRoutesLayer(map);
             overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; });
             fitInitialRoute();
@@ -540,7 +544,7 @@
         if (!map || !ready || appliedTheme === theme) return;
         appliedTheme = theme;
         ready = false;
-        map.setStyle(mapStyle(theme, config, dem.sharedDemProtocolUrl, dem.contourProtocolUrl({ thresholds: { 10: [200, 1000], 11: [100, 500], 13: [50, 250], 14: [20, 100] }, contourLayer: "contours", elevationKey: "ele", levelKey: "level" })));
+        map.setStyle(mapStyle(theme, styleConfig, dem.sharedDemProtocolUrl, dem.contourProtocolUrl({ thresholds: { 10: [200, 1000], 11: [100, 500], 13: [50, 250], 14: [20, 100] }, contourLayer: "contours", elevationKey: "ele", levelKey: "level" })));
     });
     $effect(() => {
         coordinates;

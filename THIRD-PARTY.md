@@ -23,6 +23,11 @@ Two obligations live outside this file, because their artifacts are built elsewh
   [ODbL](https://www.openstreetmap.org/copyright); terrain is Copernicus GLO-30. Both
   credits ship on the device (Settings ▸ System ▸ About) and in every published catalog.
 
+One crate is not GPL-3.0: `host/obc-data` is MIT OR Apache-2.0 and depends on no GPL
+crate, which the `deny` CI job checks. Data steps that call the GPL map tools belong in a
+separate GPL-3.0-only crate, and an `obc-data` binary that links them is GPL-3.0-only as a
+whole.
+
 GEOS deserves a line, because deny.toml's note about it predates the current tree:
 `geos-src` declares MIT for the *wrapper* while the C++ sources it carries are
 **LGPL-2.1**, and that obligation follows whatever links them. Today nothing
@@ -10490,7 +10495,7 @@ SOFTWARE.
 
 ### MIT License
 
-Applies to: `adler2 2.0.1`, `itoa 1.0.18`, `proc-macro2 1.0.106`, `quote 1.0.45`, `serde 1.0.228`, `serde_core 1.0.228`, `serde_derive 1.0.228`, `serde_json 1.0.150`, `syn 2.0.117`, `thiserror-impl 2.0.18`, `thiserror 2.0.18`, `unicode-ident 1.0.24`, `zmij 1.0.21`
+Applies to: `adler2 2.0.1`, `itoa 1.0.18`, `proc-macro2 1.0.106`, `quote 1.0.45`, `serde 1.0.228`, `serde_core 1.0.228`, `serde_derive 1.0.228`, `serde_json 1.0.150`, `syn 2.0.117`, `syn 3.0.3`, `thiserror-impl 2.0.21`, `thiserror 2.0.21`, `unicode-ident 1.0.24`, `zmij 1.0.21`
 
 ```text
 Permission is hereby granted, free of charge, to any

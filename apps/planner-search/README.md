@@ -11,23 +11,20 @@ search and routing. See the
 [planner README](../../builder/app/src/components/planner/README.md).
 Run search separately below.
 
-Install Node 24 or later, Python 3.12 or later, `uv`, and the GitHub CLI. Run from the
-repository root. Allow 12 GB for sources and packages.
+To prepare dependencies and the query model separately, install Node 24 or later,
+Python 3.12 or later, `uv`, and the GitHub CLI. Run from the repository root:
 
 ```sh
-python3 apps/planner-search/setup.py --build-data
-npm start --prefix apps/planner-search
+python3 apps/planner-search/setup.py
+OBC_SEARCH_DATA=RELEASE/search npm run dev --prefix apps/planner-search
 ```
 
-Setup verifies the source and model hashes before use. It builds both SQLite packages
-from the prepared [Photon Germany dump](https://download1.graphhopper.com/public/europe/germany/).
-Release builds use a private Nominatim database and its Photon export; see the planner README.
-To use existing packages, omit `--build-data`. An interrupted build has no completion
-metadata. Build into a fresh directory with `build.py SOURCE --output DIRECTORY`.
-
-Pass `--data-dir DIRECTORY --region baden-wuerttemberg` to setup to build only BW
-in another directory. Set `OBC_SEARCH_DATA` to that directory when starting the
-search service. A regional build becomes visible only after it completes.
+Use the search directory from `obc planner prepare`. The
+[Rust baker](../../host/obc-search-bake/README.md) produces addresses, POIs, and
+localities from the release's OSM snapshot. POI tiles are a projection of this
+search database. Device and planner POIs share classification and coordinates.
+Setup verifies the query model hash. Pass `--data-dir DIRECTORY` to store it elsewhere.
+Build packages in a fresh directory. An interrupted build has no completion metadata.
 
 Build independent components from one verified enriched dump:
 
@@ -114,7 +111,7 @@ The generator, templates, decoder, training, and ONNX export code live in `query
 Use [its README](query/README.md) to restore training data and retrain. Keep the held-out
 sentences separate from template and lexicon changes.
 
-Search data is © OpenStreetMap contributors, [ODbL 1.0](https://www.openstreetmap.org/copyright).
+Search data carries the `osm-planet` credit of [`data/sources.toml`](../../data/sources.toml).
 The category vocabulary derives from the iD tagging schema (ISC). The model derives from
 [mmBERT-small](https://huggingface.co/jhu-clsp/mmBERT-small) (MIT). German address terms derive from libpostal (MIT). See the adjacent
 `LICENSE.*` files. `opening_hours` is an npm dependency under LGPL-3.0.

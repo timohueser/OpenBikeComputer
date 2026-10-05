@@ -96,7 +96,7 @@ impl Terrain {
             );
         }
         if !self.fallback.is_empty() {
-            credits.push("Copernicus DEM GLO-30; © DLR e.V.; © Airbus Defence and Space GmbH".into());
+            credits.push(obc_data::sources::attribution("copernicus-glo-30").into());
         }
         credits
     }

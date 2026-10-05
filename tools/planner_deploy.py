@@ -64,7 +64,7 @@ def deploy(args):
         raise ValueError("Provide an HTTPS --site-origin with no path")
     if args.api_url != "https://releases.openbikecomputer.com":
         raise ValueError("Configure the Caddy API virtual host before changing --api-url")
-    identity, document = releases.grid_release(args.data_dir)
+    identity, document = releases.grid_release(args.data_dir, include_sources=False)
     recipe = planner_prepare.recipe(args.recipe)
     if recipe["region"] != document["region"]:
         raise ValueError(f"Pass --region {document['region']} or its --recipe for this release")
@@ -127,7 +127,7 @@ systemctl reload caddy
     active["slot"] = target
     activate(args.public_url, {"format": 1, "active": active,
                                "previous": old if old and old["id"] != identity else current["previous"]})
-    print(f"Rollout is incomplete. After Deploy site succeeds, run: obc planner finalize --host {host} --apply")
+    print(f"Rollout is incomplete. Run: obc planner finalize --host {host} --apply")
 
 
 def install(host, data, document, base):

@@ -1,0 +1,4 @@
+name = "Grimsel climb corridor"
+kind = "box"
+# west, south, east, north
+box = [8.26, 46.54, 8.37, 46.67]

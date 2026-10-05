@@ -22,16 +22,20 @@ class Writer:
         self.next_id += 1
         if self.next_id >= (2**52 if self.component == 'pois' else 2**53):
             raise ValueError('Search identity exceeds the JavaScript integer range')
+        context_id = self.context_id(city, postcode, region, context, country)
+        self.db.execute('INSERT INTO place_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                        (self.next_id, source, name, None if aliases == name else aliases,
+                         kind, lon, lat, context_id, importance, *bbox, cuisine, opening_hours, website, phone, description))
+        return self.next_id
+
+    def context_id(self, city, postcode, region, context, country):
         key = (city, postcode, region, context, country)
         context_id = self.contexts.get(key)
         if context_id is None:
             context_id = len(self.contexts) + 1
             self.contexts[key] = context_id
             self.db.execute('INSERT INTO place_contexts VALUES (?,?,?,?,?,?)', (context_id, *key))
-        self.db.execute('INSERT INTO place_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                        (self.next_id, source, name, None if aliases == name else aliases,
-                         kind, lon, lat, context_id, importance, *bbox, cuisine, opening_hours, website, phone, description))
-        return self.next_id
+        return context_id
 
     def add(self, p):
         # Photon derives postcode centroids from addresses without an OSM identity.
@@ -63,4 +67,7 @@ class Writer:
             add(self, p, record)
 
     def finish(self, meta):
+        if self.component in ('all', 'addresses'):
+            from addresses import finish as finish_addresses
+            finish_addresses(self)
         finish(self.db, self.path, {**meta, 'component': self.component})

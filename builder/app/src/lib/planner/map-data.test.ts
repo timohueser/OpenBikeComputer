@@ -16,6 +16,8 @@ describe('planner config', () => {
             const style = mapStyle(theme, testConfig, 'dem://tiles', 'contours://tiles');
             expect(validateStyleMin(style)).toEqual([]);
             expect(style.sources.basemap).toHaveProperty('url', testConfig.basemap);
+            expect((style.sources.basemap as { attribution: string }).attribution).toContain(testConfig.attribution);
+            expect((style.sources.basemap as { attribution: string }).attribution).toContain(testConfig.landcover_attribution);
             expect(style.glyphs).toBe(testConfig.glyphs);
             expect(style.sprite).toBe(`${testConfig.sprites}/${theme}`);
             for (const source of ['terrain', 'contours']) {
@@ -38,20 +40,84 @@ describe('planner config', () => {
     });
 
     it('resolves the paths of a local preview against the page, and keeps template tokens', () => {
-        const local = plannerConfig(JSON.stringify({ ...testConfig, basemap: 'pmtiles:///@fs/data/maps/basemap.pmtiles',
-            terrain: '/tiles/terrain/{z}/{x}/{y}.webp', layers: { snow: '/@fs/data/maps/snow.pmtiles' } }), 'http://localhost:4175/planner.html');
+        const local = plannerConfig({ ...testConfig, basemap: 'pmtiles:///@fs/data/maps/basemap.pmtiles',
+            terrain: '/tiles/terrain/{z}/{x}/{y}.webp', layers: { snow: '/@fs/data/maps/snow.pmtiles' } }, 'http://localhost:4175/planner.html');
         expect([local.basemap, local.terrain, local.layers.snow, local.search]).toEqual(['pmtiles://http://localhost:4175/@fs/data/maps/basemap.pmtiles',
             'http://localhost:4175/tiles/terrain/{z}/{x}/{y}.webp', 'http://localhost:4175/@fs/data/maps/snow.pmtiles', testConfig.search]);
     });
 
     it('refuses a config without a field that the planner reads', () => {
-        expect(plannerConfig(JSON.stringify(testConfig))).toEqual(testConfig);
+        expect(plannerConfig(testConfig)).toEqual(testConfig);
         const { layers: _, ...withoutLayers } = testConfig;
         for (const [config, field] of [[withoutLayers, 'layers'], [{ ...testConfig, terrain: 'tiles/{z}/{x}/{y}.webp' }, 'terrain'],
             [{ ...testConfig, bounds: [10.5, 47.5, 7.45, 49.85] }, 'bounds'], [{ ...testConfig, name: '' }, 'name']] as const) {
-            expect(() => plannerConfig(JSON.stringify(config))).toThrow(`invalid fields: ${field}.`);
+            expect(() => plannerConfig(config)).toThrow(`invalid fields: ${field}.`);
         }
-        expect(() => plannerConfig(undefined)).toThrow('VITE_PLANNER_CONFIG');
+        expect(() => plannerConfig(undefined)).toThrow('not an object');
+    });
+});
+
+const CATALOG = 'https://maps.openbikecomputer.com/planner/catalog.json';
+const release = (id: string) => ({ ...testConfig, id, routing: `https://api.test/releases/${id}/routing` });
+
+/** The planner modules of a page with no preview config, on a stub catalogue. */
+async function page(catalogs: unknown[], objects: (url: string) => Response = () => new Response('{}')) {
+    vi.stubEnv('VITE_PLANNER_CONFIG', '');
+    const reload = vi.fn();
+    vi.stubGlobal('location', { href: 'https://openbikecomputer.com/plan/', reload });
+    const fetch = vi.fn(async (url: string) => url === CATALOG ? Response.json(catalogs.length > 1 ? catalogs.shift() : catalogs[0]) : objects(url));
+    vi.stubGlobal('fetch', fetch);
+    return { fetch, reload, load: () => import('./map-data') };
+}
+
+describe('live catalogue', () => {
+    it('gives the page the active release of the catalogue', async () => {
+        const { load } = await page([{ format: 1, active: release('a'), previous: null }]);
+        expect((await load()).config).toEqual(release('a'));
+    });
+
+    it('refuses a catalogue format that it does not know', async () => {
+        const { load } = await page([{ format: 2, active: release('a') }]);
+        await expect(load()).rejects.toThrow('format that this page does not know');
+    });
+
+    it('reads the catalogue again once after a 404 or no answer, and loads the page again on a new release', async () => {
+        const { fetch, reload, load } = await page([{ format: 1, active: release('a') }, { format: 1, active: release('b') }],
+            url => { if (url.endsWith('/route')) throw new TypeError('Failed to fetch'); return new Response('Not found', { status: 404 }); });
+        await load();
+        const { releaseFetch } = await import('./release');
+        await expect(releaseFetch('https://api.test/releases/a/routing/v1/route')).rejects.toThrow(TypeError);
+        expect((await releaseFetch('https://api.test/releases/a/routing/v1/region')).status).toBe(404);
+        await vi.waitFor(() => expect(reload).toHaveBeenCalledOnce());
+        expect(fetch.mock.calls.filter(([url]) => url === CATALOG)).toHaveLength(2);
+    });
+
+    it('loads the MapLibre objects of the release through the release fetch', async () => {
+        const tilejson = { tiles: ['https://tiles.test/releases/a/basemap/{z}/{x}/{y}.mvt'] };
+        const { fetch, load } = await page([{ format: 1, active: release('a') }], () => Response.json(tilejson));
+        await load();
+        const { releaseProtocol, releaseUrl } = await import('./release');
+        const url = releaseUrl('https://tiles.test/releases/a/basemap.json');
+        expect(url).toBe('release://tiles.test/releases/a/basemap.json');
+        expect((await releaseProtocol({ url, type: 'json' }, new AbortController())).data)
+            .toEqual({ tiles: ['release://tiles.test/releases/a/basemap/{z}/{x}/{y}.mvt'] });
+        expect(fetch).toHaveBeenLastCalledWith('https://tiles.test/releases/a/basemap.json', expect.anything());
+    });
+
+    it('keeps the page when the active release did not change, or when the plan is not saved', async () => {
+        for (const [catalogs, saved] of [[[release('a')], true], [[release('a'), release('b')], false]] as const) {
+            vi.resetModules();
+            const { fetch, reload, load } = await page(catalogs.map(active => ({ format: 1, active })), () => new Response('', { status: 404 }));
+            await load();
+            const { beforeReload, releaseFetch } = await import('./release');
+            const wait = vi.fn(async () => saved);
+            beforeReload(wait);
+            await releaseFetch('https://api.test/releases/a/routing/v1/region');
+            await vi.waitFor(() => expect(fetch.mock.calls.filter(([url]) => url === CATALOG)).toHaveLength(2));
+            await new Promise(resolve => setTimeout(resolve));
+            expect(reload).not.toHaveBeenCalled();
+            expect(wait).toHaveBeenCalledTimes(saved ? 0 : 1);
+        }
     });
 });
 

@@ -1,7 +1,6 @@
 {
   "format": 1,
   "region": "baden-wuerttemberg-switzerland",
-  "name": "Baden-Württemberg and Switzerland",
   "countries": [
     "DE",
     "CH",
@@ -24,12 +23,6 @@
     "touring",
     "touring/less-climbing",
     "touring/shorter"
-  ],
-  "bounds": [
-    5.95,
-    45.8,
-    10.5,
-    49.85
   ],
   "osm": {
     "url": "https://maps.openbikecomputer.com/planner/sources/7dd4c1fb88f8344dcb6a35a7e042b44a08b2943f4be21fed1d7d6c294ecc14a9.osm.pbf",

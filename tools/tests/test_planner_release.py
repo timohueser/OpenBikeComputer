@@ -131,20 +131,11 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "checksum mismatch"):
                 runtime.release(root)
 
-    def test_site_configuration_is_the_active_entry_and_rejects_line_injection(self):
+    def test_catalogue_entry_names_each_data_layer(self):
         document = {"region": "test", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain",
                     "files": {"maps/snow.json": {}}}
         active = release.endpoints("a" * 64, document, "Test region", "https://maps.example", "https://tiles.example", "https://api.example")
         self.assertEqual(active["layers"], {"snow": "https://tiles.example/releases/" + "a" * 64 + "/snow.json"})
-        with tempfile.TemporaryDirectory() as directory:
-            env = Path(directory) / "env"
-            with patch.object(release, "read_url", return_value={"format": 1, "active": active, "previous": None}):
-                release.site_config("https://maps.example/planner/catalog.json", env)
-                lines = env.read_text().splitlines()
-                self.assertEqual(lines, ["VITE_PLANNER_CONFIG=" + json.dumps(active), "VITE_CATALOG_URL=" + active["device_catalog"]])
-                active["device_catalog"] += "\nNODE_OPTIONS=--require=/tmp/x"
-                with self.assertRaisesRegex(ValueError, "configuration"):
-                    release.site_config("https://maps.example/planner/catalog.json", env)
 
     def test_each_region_recipe_is_valid_and_named_by_its_file(self):
         for path in (release.maps.ROOT / "tools/planner-regions").glob("*.json"):

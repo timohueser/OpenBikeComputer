@@ -1,6 +1,7 @@
-"""Build searchable regional SQLite files from a Photon/Nominatim JSON dump."""
+"""Build searchable regional SQLite files from a enriched OSM search dump."""
 import argparse
 import io
+import sys
 import time
 import re
 from pathlib import Path
@@ -9,6 +10,8 @@ from zoneinfo import ZoneInfo
 from writer import Writer
 
 ROOT = Path(__file__).parent
+sys.path.insert(0, str(ROOT.parents[1] / "tools"))
+from data_registry import attribution  # noqa: E402
 
 
 def main():
@@ -24,7 +27,7 @@ def main():
     ap.add_argument('--region', default='all')
     ap.add_argument('--bounds', help='West,south,east,north for one regional package')
     ap.add_argument('--countries', default='de', help='Comma-separated country codes')
-    ap.add_argument('--osm-sha256', help='Identity of the OSM input used by Nominatim')
+    ap.add_argument('--osm-sha256', help='Identity of the OSM input used by the search baker')
     ap.add_argument('--time-zone', required=True, type=ZoneInfo, help='IANA time zone of the region calendar')
     args = ap.parse_args()
     if not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', args.region):
@@ -44,7 +47,7 @@ def main():
     n = 0
     outlines = []
     meta = {'source': args.dump.name, 'time_zone': args.time_zone.key,
-            'attribution': '© OpenStreetMap contributors, ODbL 1.0; prepared by Nominatim / Photon'}
+            'attribution': attribution("osm-planet")}
     if bounds:
         meta.update(bounds=bounds, countries=countries)
     if args.osm_sha256:
@@ -54,6 +57,19 @@ def main():
             obj = orjson.loads(line)
             if obj['type'] == 'NominatimDumpFile':
                 meta['timestamp'] = obj['content']['data_timestamp']
+                generator = obj['content'].get('generator', 'photon')
+                source_hash = obj['content'].get('osm_sha256')
+                if source_hash and args.osm_sha256 and source_hash != args.osm_sha256:
+                    ap.error('Source and requested OSM snapshot differ')
+                if source_hash:
+                    if not re.fullmatch(r'[a-f0-9]{64}', source_hash):
+                        ap.error('Invalid source OSM digest')
+                    meta['osm_sha256'] = source_hash
+                if obj['content'].get('scope') == 'addresses' and args.component != 'addresses':
+                    ap.error('This source contains addresses only; use --component addresses')
+                if generator != 'photon':
+                    meta['source_generator'] = generator
+                    meta['attribution'] = f'{attribution("osm-planet")}; prepared by {generator}'
             if obj['type'] != 'Place':
                 continue
             for p in obj['content']:

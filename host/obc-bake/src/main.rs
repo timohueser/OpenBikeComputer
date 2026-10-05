@@ -1,7 +1,7 @@
 //! `obc-bake` CLI — flags in, [`obc_bake`] out.
 //!
 //! ```text
-//! obc-bake regions [--regions FILE]
+//! obc-bake regions [--regions DIR]
 //! obc-bake bake --out TREE --base-url URL [REGION…] [--skin ID]… [flags]
 //! obc-bake publish TREE --base-url URL [--target dir:PATH|r2] [--generated-at TS] [--dry-run]
 //! obc-bake verify TREE [--sample N]
@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use obc_bake::publish::{DirStore, ObjectStore, PublishOptions, RcloneStore};
+use obc_bake::publish::{DirStore, ObjectStore, PublishOptions, R2Store};
 use obc_pack::catalog::CatalogOptions;
 
 const USAGE: &str = "\
@@ -28,8 +28,8 @@ usage:
   obc-bake peaks --snapshot FILE --boundary GEOJSON --out DIR
       Compile pinned article and image captures offline for the map content stage.
 
-  obc-bake regions [--regions FILE]
-      List the curated regions this binary would bake.
+  obc-bake regions [--regions DIR]
+      List the Geofabrik regions in data/regions/: the regions a bake can select.
 
   obc-bake bake [REGION…] [flags]
       Bake selected regions into the shared cell tree and generate its catalog.
@@ -40,16 +40,17 @@ usage:
         --skin ID            skin to publish (repeatable; default: all skins/)
         --generated-at TS    pin the catalog's generated_at
         --base-url URL       catalog object base (default: /obc-bake while staging)
-        --regions FILE       curated region list
+        --regions DIR        region files (default: data/regions/ of the repository)
         --presets-dir DIR    schema.json + skins/ (default: builder/presets)
-        --source SOURCE      Geofabrik base/directory, or planet PBF URL/file with --all
-        --cache DIR          extract download cache
+        --source SOURCE      directory of extracts (default: Geofabrik from the store), or planet
+                             PBF file with --all (default: osm-planet and osm-replication)
+        --cache DIR          planet with its diffs applied, shards and DEM tile links
         --force              re-bake even when unchanged
         --no-land            skip land generation
         --chunk-size N       override schema chunk_size
         --fail-fast          stop at the first failure
         --summary-json FILE  write the machine-readable run summary
-        --all                update/bake the whole planet through resumable source shards
+        --all                bake the whole planet through resumable source shards
         --no-terrain         skip the automatic terrain stage below
         --peaks FILE         embed compiled peak peaks.json and its photos
         --dem-sources DIR    source DEM GeoTIFFs for it (default: fetched into <cache>/dem)
@@ -87,11 +88,11 @@ usage:
                                 of tiles for is REFUSED, with the --bbox to mirror: it
                                 would be lifted on one side of a coverage edge only.
         --allow-short-reference publish such cells anyway, and warn
-        --regions FILE          curated region list
+        --regions DIR           region files (default: data/regions/ of the repository)
         --base-url URL          catalog object base
         --generated-at TS       pin the catalog's generated_at
-        --cache DIR             extract/poly download cache
-        --source SOURCE         Geofabrik base or directory (for the .poly files)
+        --cache DIR             DEM tile links
+        --source DIR            directory of .poly files (default: Geofabrik from the store)
         --force                 re-bake even when unchanged
 
   obc-bake landmarks [REGION…] [flags]
@@ -99,9 +100,9 @@ usage:
       band. Landmarks have their OWN revision track: this never re-bakes an OBCM
       cell, and a schema bump never re-compiles a landmark artifact.
         --out TREE           output tree (default: ./obc-bake)
-        --cache DIR          extract/poly download cache; also holds the raw captures
-        --regions FILE       curated region list
-        --source SOURCE      Geofabrik base or directory (for the .poly files)
+        --cache DIR          the raw captures
+        --regions DIR        region files (default: data/regions/ of the repository)
+        --source DIR         directory of .poly files (default: Geofabrik from the store)
         --force              re-compile even when unchanged
         --no-capture         never call the capture tool; compile what the cache holds
 
@@ -211,7 +212,7 @@ fn run_regions(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The curated list narrowed by positional ids, or all of it.
+/// The Geofabrik regions narrowed by positional ids, or all of them.
 fn select_regions(
     all: Vec<obc_bake::regions::Region>,
     wanted: &[String],
@@ -221,7 +222,7 @@ fn select_regions(
     }
     for want in wanted {
         if !all.iter().any(|r| &r.id == want) {
-            return Err(format!("`{want}` is not in the curated region list — add it there first"));
+            return Err(format!("`{want}` is not a Geofabrik region in data/regions/ — add it there first"));
         }
     }
     Ok(all.into_iter().filter(|r| wanted.contains(&r.id)).collect())
@@ -300,8 +301,7 @@ fn run_cell_bake(
     };
 
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
-    let source_spec = flags.get("source").unwrap_or(obc_bake::source::GeofabrikExtracts::DEFAULT_BASE_URL);
-    let source = obc_bake::source::from_spec(source_spec, &cache);
+    let source = obc_bake::source::from_spec(flags.get("source"))?;
 
     // The terrain stage runs first, and automatically: contours are traced and the nav graph's
     // per-edge ascents integrated from whatever terrain is in the tree, so a bake without it
@@ -319,7 +319,7 @@ fn run_cell_bake(
                 posting_log2: obc_dem::bake::V1_POSTING_LOG2,
                 cell_log2: obc_dem::bake::V1_CELL_LOG2,
                 revision: 1,
-                attribution: obc_elevation::COPERNICUS_ATTRIBUTION.to_string(),
+                attribution: obc_data::sources::attribution("copernicus-glo-30").to_string(),
                 references: Vec::new(),
             }
         };
@@ -345,11 +345,12 @@ fn run_cell_bake(
         .run(&obc_pack::progress::Progress::stdout())?;
         print!("{}", summary.render());
         // The credit is a licence obligation, printed wherever the dataset was used.
-        println!("{}\n", obc_elevation::COPERNICUS_ATTRIBUTION);
+        println!("{}\n", obc_data::sources::attribution("copernicus-glo-30"));
     }
 
     let cutter = obc_bake::cells::ObcCutter {
         no_land: flags.has("no-land"),
+        land: Default::default(),
         chunk_size: match flags.get("chunk-size") {
             Some(v) => Some(v.parse().map_err(|_| "--chunk-size needs a number".to_string())?),
             None => None,
@@ -402,7 +403,7 @@ fn run_planet_bake(
     regions: Vec<obc_bake::regions::Region>,
     presets_dir: &Path,
 ) -> Result<(), String> {
-    use obc_bake::planet::{ReplicationUpdater as _, ShardRunner as _};
+    use obc_bake::planet::ShardRunner as _;
 
     let schema = obc_bake::presets::load_schema(presets_dir)?;
     obc_bake::previews::check_source(&schema.config)?;
@@ -419,23 +420,20 @@ fn run_planet_bake(
     };
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
     let progress = obc_pack::progress::Progress::stdout();
-    // Fail before an 80+ GB transfer when the required source-sharding tool is unavailable. Tests
-    // inject the runner at the library boundary; the CLI uses the real executable.
+    // Fail before an 80+ GB transfer when Osmium, which applies the diffs and shards the planet, is
+    // unavailable. Tests inject the runner at the library boundary; the CLI uses the real executable.
     let runner = obc_bake::planet::OsmiumRunner::default();
     runner.check()?;
-    let updater = obc_bake::planet::PyOsmiumUpdater::default();
-    let source = flags.get("source");
-    let remote_source = source.is_none_or(|value| value.starts_with("http://") || value.starts_with("https://"));
-    if remote_source {
-        updater.check()?;
-    }
-    let polygons =
-        obc_bake::source::GeofabrikExtracts::new(obc_bake::source::GeofabrikExtracts::DEFAULT_BASE_URL, &cache);
+    obc_bake::planet::check_pinned(flags.get("source"))?;
+    let polygons = obc_bake::source::GeofabrikExtracts;
     let region_presets = obc_bake::planet::resolve_region_presets(&regions, &polygons, &bands, &progress)?;
-    let input = obc_bake::planet::resolve_planet_with(source, &cache, &progress, &updater)?;
+    // Held until the bake has read the planet: the sharder below reads it too.
+    let _planet = obc_bake::planet::lock_cache(&cache, &progress)?;
+    let input = obc_bake::planet::resolve_planet(flags.get("source"), &cache, &runner, &progress)?;
     let shards = obc_bake::planet::PlanetSharder { input: &input, cache: &cache, runner: &runner }.run(&progress)?;
     let cutter = obc_bake::cells::ObcCutter {
         no_land: flags.has("no-land"),
+        land: Default::default(),
         chunk_size: match flags.get("chunk-size") {
             Some(value) => Some(value.parse().map_err(|_| "--chunk-size needs a number".to_string())?),
             None => None,
@@ -497,37 +495,25 @@ fn ensure_dem_sources(
     let bbox = terrain_source_bbox(&coverages, cell_log2)?;
     let dir = cache.join("dem");
     println!("Fetching GLO-30 tiles for the curated coverage into {}...", dir.display());
-    let mut downloaded = 0u64;
-    let mut cached = 0usize;
+    let (mut cached, mut linked) = (0usize, 0usize);
     let paths = obc_dem::fetch::fetch_tiles(bbox, &dir, |tile, outcome| match outcome {
         obc_dem::fetch::Fetched::Cached => cached += 1,
-        obc_dem::fetch::Fetched::Downloaded(len) => {
-            downloaded += len;
-            println!("  {} ({:.1} MB)", tile.file_name(), *len as f64 / 1e6);
+        obc_dem::fetch::Fetched::Stored(_) => {
+            linked += 1;
+            println!("  {}", tile.file_name());
         }
         obc_dem::fetch::Fetched::Absent => {}
     })?;
-    println!("{} tile(s) present ({cached} cached, {:.1} MB fetched)", paths.len(), downloaded as f64 / 1e6);
+    println!("{} tile(s) present ({cached} already there, {linked} linked from the store)", paths.len());
     Ok(dir)
 }
 
-/// Surface bounds also sample the cell's north/east edge. Keep those edges inclusive;
-/// `fetch_tiles` adds the source-post interpolation padding beyond this box.
+/// The source box of the terrain cells the coverages select.
 fn terrain_source_bbox(coverages: &[obc_bake::coverage::Coverage], cell_log2: u8) -> Result<obc_dem::BboxUdeg, String> {
     let log2 = u32::from(cell_log2);
     obc_pack::grid::CellId::new(log2, 0, 0)?;
-    let (min_lon, min_lat, max_lon, max_lat) = coverages
-        .iter()
-        .flat_map(|coverage| coverage.cells(log2))
-        .map(|cell| cell.square())
-        .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
-        .ok_or("no region resolved to a terrain cell")?;
-    Ok(obc_dem::BboxUdeg {
-        min_lat: min_lat.clamp(-90_000_000, 90_000_000) as i32,
-        min_lon: min_lon.clamp(-180_000_000, 180_000_000) as i32,
-        max_lat: max_lat.clamp(-90_000_000, 90_000_000) as i32,
-        max_lon: max_lon.clamp(-180_000_000, 180_000_000) as i32,
-    })
+    obc_bake::terrain::source_bbox(coverages.iter().flat_map(|coverage| coverage.cells(log2)))
+        .ok_or_else(|| "no region resolved to a terrain cell".into())
 }
 
 /// What the terrain stage's reference archive gives this run, in one line per source.
@@ -579,17 +565,16 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
         posting_log2: log2("posting-log2", obc_dem::bake::V1_POSTING_LOG2)?,
         cell_log2: log2("cell-log2", obc_dem::bake::V1_CELL_LOG2)?,
         revision: number("terrain-revision", 1)?,
-        // The credit is a licence obligation and is never retyped here: it comes from the one
-        // `const` in `obc-elevation`, travels into the catalog, and a consumer reads it from there.
-        attribution: obc_elevation::COPERNICUS_ATTRIBUTION.to_string(),
+        // The credit is a licence obligation and is never retyped here: it comes from
+        // data/sources.toml, travels into the catalog, and a consumer reads it from there.
+        attribution: obc_data::sources::attribution("copernicus-glo-30").to_string(),
         // Filled from the archive by the run itself: the wording lives in its `index.json`, and a
         // credit an operator could retype here is one that can go stale.
         references: Vec::new(),
     };
 
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
-    let source_spec = flags.get("source").unwrap_or(obc_bake::source::GeofabrikExtracts::DEFAULT_BASE_URL);
-    let source = obc_bake::source::from_spec(source_spec, &cache);
+    let source = obc_bake::source::from_spec(flags.get("source"))?;
     // No --sources: fetch the curated coverage's GLO-30 tiles ourselves, exactly as `bake` does.
     let sources = match flags.get("sources") {
         Some(dir) => PathBuf::from(dir),
@@ -626,7 +611,7 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
     };
     // Unconditional, and before the `?`: the credit is a licence obligation of the data that was
     // just written, so it cannot be something only a fully successful catalog pass gets to print.
-    println!("\n{}", obc_elevation::COPERNICUS_ATTRIBUTION);
+    println!("\n{}", obc_data::sources::attribution("copernicus-glo-30"));
     finished
 }
 
@@ -699,7 +684,7 @@ fn run_publish(args: &[String]) -> Result<(), String> {
     let target = flags.get("target").unwrap_or("");
     let dry_run = flags.has("dry-run") || target.is_empty();
     let store: Box<dyn ObjectStore> = match target {
-        "r2" => Box::new(RcloneStore::from_env()?),
+        "r2" => Box::new(R2Store::from_env()?),
         t if t.starts_with("dir:") => Box::new(DirStore::new(&t["dir:".len()..])),
         "" => Box::new(DirStore::new(".")), // unused: dry_run is on
         other => return Err(format!("unknown --target `{other}` (expected `r2` or `dir:PATH`)")),
@@ -739,8 +724,8 @@ fn run_guard(args: &[String]) -> Result<(), String> {
     }
 }
 
-/// Same cache root the packer and the builder use, so a developer's already-downloaded extracts are
-/// reused.
+/// Where the planet with its diffs applied, its shards, the DEM tile links and the raw landmark
+/// captures go. Downloads go to the store.
 fn default_cache_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("OBCM_CACHE_DIR") {
         return PathBuf::from(dir).join("geofabrik");
@@ -755,8 +740,7 @@ fn run_landmark_stage(args: &[String]) -> Result<(), String> {
     let regions = select_regions(obc_bake::regions::load(flags.get("regions").map(Path::new))?, &positional)?;
     let out = PathBuf::from(flags.get("out").unwrap_or("obc-bake"));
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
-    let source_spec = flags.get("source").unwrap_or(obc_bake::source::GeofabrikExtracts::DEFAULT_BASE_URL);
-    let source = obc_bake::source::from_spec(source_spec, &cache);
+    let source = obc_bake::source::from_spec(flags.get("source"))?;
     let no_capture = flags.has("no-capture");
     // Resolved even for a `--no-capture` run: a stage that cannot capture should say so at the
     // start, not after the first region turns out to need it.

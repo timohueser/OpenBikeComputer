@@ -174,8 +174,8 @@ describe('weather map labels', () => {
         const places = mapPlaces([
             feature(1, { kind: 'locality', name: 'Freiburg im Breisgau', 'name:en': 'Freiburg', population: 220286, population_rank: 10, min_zoom: 7 }),
             feature(1, { kind: 'locality', name: 'Freiburg im Breisgau', 'name:en': 'Freiburg', population: 220286, population_rank: 10, min_zoom: 7 }),
-            feature(2, { kind: 'peak', name: 'Feldberg', elevation: 1494, min_zoom: 12 }),
-            feature(3, { kind: 'peak', elevation: 1306 }),
+            feature(2, { kind: 'summit', name: 'Feldberg', elevation: 1494, min_zoom: 12 }),
+            feature(3, { kind: 'summit', elevation: 1306 }),
             feature(4, { kind: 'neighbourhood', name: 'Wiehre' }),
         ]);
         expect(places.map(place => [place.name, place.peak, place.elevation])).toEqual([['Freiburg', false, undefined], ['Feldberg', true, 1494]]);
@@ -184,9 +184,9 @@ describe('weather map labels', () => {
     it('ranks towns, then named peaks, then villages, and labels a peak only with a value', () => {
         const places = mapPlaces([
             feature(1, { kind: 'locality', name: 'Eschbach', population: 2000 }),
-            feature(2, { kind: 'peak', name: 'Feldberg', elevation: 1494 }),
+            feature(2, { kind: 'summit', name: 'Feldberg', elevation: 1494 }),
             feature(3, { kind: 'locality', name: 'Titisee-Neustadt', population: 12000 }),
-            feature(4, { kind: 'peak', name: 'Belchen', elevation: 1414 }),
+            feature(4, { kind: 'summit', name: 'Belchen', elevation: 1414 }),
         ]);
         const labels = placeLabels(places, ['18°', '9°', undefined, undefined]).features.map(({ properties }) => properties);
         expect(labels.map(label => label.name)).toEqual(['Eschbach', 'Feldberg', 'Titisee-Neustadt']);

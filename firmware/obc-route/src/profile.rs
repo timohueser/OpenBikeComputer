@@ -6,10 +6,12 @@
 
 use heapless::Vec;
 
-use crate::reader::{decode_chunk_from, parse_chunk_meta, read_header, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use crate::climb::{ClimbDetector, Climbs};
+use crate::preview::Pick;
+use crate::reader::{read_header, stored_meta, RoutePoint, RouteReader};
+use crate::walk::{column, walk, Records};
 use obc_elevation::DeadBand;
 use obc_formats::io::{ByteSource, Error};
-use obc_formats::obcr::CHUNK_META_LEN;
 use obc_map_scene::ground_dist_m;
 
 /// Finest profile resolution; supports one zoom step over the 240-pixel panel.
@@ -186,17 +188,118 @@ impl Profile {
         }
         Window { level, lo_frac: lo, hi_frac: hi }
     }
+
+    /// Widen the band of the column fraction `frac` of the profile falls in to hold `ele`.
+    fn widen(&mut self, frac: f64, ele: i16) {
+        let band = &mut self.cols[column(frac, PROFILE_COLS)];
+        *band = (band.0.min(ele), band.1.max(ele));
+    }
+
+    /// Finish a sweep: fill the band's gaps from their neighbours, or from `(min, max)` where no
+    /// column is set, then set the ascent curve, the peak and the y range.
+    fn finish(&mut self, (min, max): (i16, i16), ascent: &Ascent, total_ascent_m: u32, gaps: &[bool]) {
+        // The header extent is trusted for its two values, not for their order.
+        fill_gaps(&mut self.cols, (min.min(max), min.max(max)), |c| c.0 <= c.1);
+        for (i, _) in gaps.iter().enumerate().filter(|(_, gap)| **gap) {
+            self.cols[i] = (i16::MAX, i16::MIN);
+            self.grades[i] = i8::MIN;
+        }
+        self.cum_ascent = ascent.curve(total_ascent_m);
+        let mut peak = i16::MIN;
+        self.peak_col = 0;
+        for (i, c) in self.cols.iter().enumerate() {
+            if c.1 > peak {
+                (peak, self.peak_col) = (c.1, i);
+            }
+        }
+        (self.min_ele_m, self.max_ele_m) = (min, max);
+    }
+}
+
+/// The running ascent at the last point of each ascent column, through the shared dead-band.
+struct Ascent {
+    band: DeadBand<f32>,
+    cols: [f32; ASCENT_COLS],
+}
+
+impl Ascent {
+    fn new() -> Self {
+        Ascent { band: DeadBand::new(), cols: [0.0; ASCENT_COLS] }
+    }
+
+    fn pause(&mut self) {
+        self.band.pause();
+    }
+
+    /// A later point in the same column overwrites this one, so each column ends on its last.
+    fn push(&mut self, frac: f64, ele: i16) {
+        self.band.push(ele as f32);
+        self.cols[column(frac, ASCENT_COLS)] = self.band.ascent();
+    }
+
+    /// The curve, gap-free and non-decreasing, scaled so its last column is exactly
+    /// `total_ascent_m`. That makes "to climb" reach 0 at the route end.
+    fn curve(&self, total_ascent_m: u32) -> [u32; ASCENT_COLS] {
+        let mut raw = [0f32; ASCENT_COLS];
+        let mut run = 0f32;
+        for (r, &c) in raw.iter_mut().zip(&self.cols) {
+            run = run.max(c);
+            *r = run;
+        }
+        // Pin the endpoint after scaling, so rounding cannot miss it.
+        let mut cum = [0u32; ASCENT_COLS];
+        if raw[ASCENT_COLS - 1] > 0.0 {
+            let scale = total_ascent_m as f32 / raw[ASCENT_COLS - 1];
+            for (c, r) in cum.iter_mut().zip(raw) {
+                *c = (r * scale) as u32;
+            }
+        }
+        cum[ASCENT_COLS - 1] = total_ascent_m;
+        cum
+    }
+}
+
+/// The route profile's fold over the walk: bands, grades, unknown-elevation gaps and ascent.
+struct Sweep {
+    total_m: f64,
+    gaps: [bool; PROFILE_COLS],
+    ascent: Ascent,
+    previous: Option<(RoutePoint, usize)>,
+}
+
+impl Sweep {
+    fn push(&mut self, profile: &mut Profile, p: RoutePoint, along_m: f64) {
+        let frac = along_m / self.total_m;
+        let col = column(frac, PROFILE_COLS);
+        if let Some((a, previous_col)) = self.previous {
+            let known = !p.elevation_incomplete && a.elevation().is_some() && p.elevation().is_some();
+            let length = ground_dist_m((a.lon, a.lat), (p.lon, p.lat));
+            if length > 0.0 {
+                let grade = libm::roundf((p.ele as f32 - a.ele as f32) * 100.0 / length).clamp(-127.0, 127.0) as i8;
+                for c in previous_col..=col {
+                    profile.grades[c] = if known { grade } else { i8::MIN };
+                    self.gaps[c] |= !known;
+                }
+            }
+        }
+        self.previous = Some((p, col));
+        if p.elevation().is_none() {
+            self.gaps[col] = true;
+            self.ascent.pause();
+            return;
+        }
+        profile.widen(frac, p.ele);
+        if p.elevation_incomplete {
+            self.ascent.pause();
+        }
+        self.ascent.push(frac, p.ele);
+    }
 }
 
 impl RouteReader<'_> {
     /// Build the route's elevation [`Profile`] by streaming every chunk in order and bucketing
-    /// each point into a base-level column by its cumulative distance. Coarser levels merge when
-    /// sampled.
-    ///
-    /// Each chunk re-anchors to its stored
-    /// [`cum_distance_m`](crate::ChunkMeta::cum_distance_m) and uses the same distance metric the
-    /// converter did, so column placement matches the format exactly. Each chunk is read once, so
-    /// cache the result rather than calling this per frame.
+    /// each point into a base-level column by its along-route distance. Coarser levels merge when
+    /// sampled. Each chunk is read once, so cache the result rather than calling this per frame.
     pub fn elevation_profile(&self) -> Profile {
         let mut profile = Profile::EMPTY;
         self.elevation_profile_into(&mut profile);
@@ -205,131 +308,62 @@ impl RouteReader<'_> {
 
     /// Fill resident profile storage without returning a large temporary.
     pub fn elevation_profile_into(&self, profile: &mut Profile) {
-        self.build_profile(profile, false);
+        self.summaries(Some(profile), false);
     }
 
     /// Derive both summaries from one geometry pass. After a read error, retry the profile
     /// independently so a transient failure in climb detection does not leave it empty.
-    pub fn elevation_profile_and_climbs_into(&self, profile: &mut Profile) -> crate::Climbs {
-        let (climbs, profile_ok) = self.build_profile(profile, true);
+    pub fn elevation_profile_and_climbs_into(&self, profile: &mut Profile) -> Climbs {
+        let (climbs, profile_ok) = self.summaries(Some(profile), true);
         if !profile_ok {
             self.elevation_profile_into(profile);
         }
         climbs
     }
 
-    // Pop the summary scratch before a failed profile is retried.
+    /// One walk over the route into `profile`, and into the climb detector when `climbs` is set.
+    /// A chunk that fails to decode empties the profile (`false`) and is left out of the climbs.
+    // Out of line, so the sweep scratch is popped before a failed profile is retried.
     #[inline(never)]
-    fn build_profile(&self, profile: &mut Profile, include_climbs: bool) -> (crate::Climbs, bool) {
-        // An empty column carries the sentinel `min > max`.
-        profile.reset();
-        let Profile { cols, grades, .. } = profile;
-        let mut gaps = [false; PROFILE_COLS];
-        let mut detector = include_climbs.then(crate::climb::ClimbDetector::new);
-        let mut smooth = DeadBand::<f32>::new();
+    pub(crate) fn summaries(&self, mut profile: Option<&mut Profile>, climbs: bool) -> (Climbs, bool) {
+        let mut sweep = profile.as_deref_mut().map(|profile| {
+            profile.reset();
+            Sweep {
+                total_m: self.total_distance_m.max(1) as f64,
+                gaps: [false; PROFILE_COLS],
+                ascent: Ascent::new(),
+                previous: None,
+            }
+        });
+        let mut detector = climbs.then(ClimbDetector::new);
         let mut profile_ok = true;
-        let mut previous_sample: Option<(RoutePoint, usize)> = None;
-        // The running ascent at the last point of each ascent column, carried forward and scaled
-        // into `cum_ascent` below.
-        let mut casc = [0f32; ASCENT_COLS];
-        let total = self.total_distance_m.max(1) as f64;
-        let base_last = PROFILE_COLS - 1;
-        let asc_last = ASCENT_COLS - 1;
-
-        // The integrator runs across chunk seams: a shared seam point compares equal to itself
-        // and contributes nothing, so this stays one continuous pass.
-        let mut ascent = DeadBand::<f32>::new();
-        let n = self.chunks().len();
-        for k in 0..n {
-            // Like the converter, the small per-segment `f32` distances accumulate into an
-            // `f64` total, so a long route's column placement cannot drift.
-            let mut dist = self.chunks()[k].cum_distance_m as f64;
-            let mut prev: Option<(i32, i32)> = None;
-            let decoded = self.with_chunk(k, |points| {
-                for p in points {
-                    if let Some(pr) = prev {
-                        dist += ground_dist_m(pr, (p.lon, p.lat)) as f64;
-                    }
-                    prev = Some((p.lon, p.lat));
+        for (k, m) in self.chunks().iter().enumerate() {
+            let read = self.with_chunk(k, |points| {
+                walk(m.cum_distance_m, points).for_each(|step| {
                     if let Some(detector) = &mut detector {
-                        let ele_m = if p.elevation().is_none() || p.elevation_incomplete {
-                            smooth.pause();
-                            f32::NAN
-                        } else {
-                            smooth.push(p.ele as f32);
-                            smooth.smoothed().unwrap_or(p.ele as f32)
-                        };
-                        detector.push(crate::climb::ElePt { dist_m: dist, ele_m });
+                        detector.push_point(step.p, step.along);
                     }
-                    if !profile_ok {
-                        continue;
+                    if let (true, Some(sweep), Some(profile)) = (profile_ok, &mut sweep, profile.as_deref_mut()) {
+                        sweep.push(profile, step.p, step.along);
                     }
-                    let frac = dist / total;
-                    let col = ((frac * base_last as f64) as usize).min(base_last);
-                    if let Some((a, prev_col)) = previous_sample {
-                        let known = !p.elevation_incomplete && a.elevation().is_some() && p.elevation().is_some();
-                        let length = ground_dist_m((a.lon, a.lat), (p.lon, p.lat));
-                        if length > 0.0 {
-                            let grade =
-                                libm::roundf((p.ele as f32 - a.ele as f32) * 100.0 / length).clamp(-127.0, 127.0) as i8;
-                            for c in prev_col..=col {
-                                if known {
-                                    grades[c] = grade;
-                                } else {
-                                    gaps[c] = true;
-                                    grades[c] = i8::MIN;
-                                }
-                            }
-                        }
-                    }
-                    previous_sample = Some((*p, col));
-                    if p.elevation().is_none() {
-                        gaps[col] = true;
-                        ascent.pause();
-                        continue;
-                    }
-                    let slot = &mut cols[col];
-                    slot.0 = slot.0.min(p.ele);
-                    slot.1 = slot.1.max(p.ele);
-                    // A later point in the same column overwrites this, so the column ends on the
-                    // correct value.
-                    let acol = ((frac * asc_last as f64) as usize).min(asc_last);
-                    if p.elevation_incomplete {
-                        ascent.pause();
-                    }
-                    ascent.push(p.ele as f32);
-                    casc[acol] = ascent.ascent();
-                }
+                })
             });
-            if decoded.is_err() {
+            if read.is_err() {
                 profile_ok = false;
-                if !include_climbs {
+                if detector.is_none() {
                     break;
                 }
             }
         }
-
-        let climbs = detector.map_or_else(crate::Climbs::new, |d| d.finish());
-        if !profile_ok {
-            profile.reset();
-            return (climbs, false);
-        }
-
-        fill_gaps(&mut cols[..PROFILE_COLS], band_fallback((self.min_ele_m, self.max_ele_m)), band_is_set);
-        for (i, gap) in gaps.into_iter().enumerate() {
-            if gap {
-                cols[i] = (i16::MAX, i16::MIN);
-                grades[i] = i8::MIN;
+        let climbs = detector.map_or_else(Climbs::new, ClimbDetector::finish);
+        if let (Some(profile), Some(sweep)) = (profile, sweep) {
+            if !profile_ok {
+                profile.reset();
+            } else {
+                profile.finish((self.min_ele_m, self.max_ele_m), &sweep.ascent, self.total_ascent_m, &sweep.gaps);
             }
         }
-        let cum_ascent = cumulative_ascent(&casc, self.total_ascent_m);
-        let peak_col = peak_column(&cols[..PROFILE_COLS]);
-
-        profile.cum_ascent = cum_ascent;
-        profile.min_ele_m = self.min_ele_m;
-        profile.max_ele_m = self.max_ele_m;
-        profile.peak_col = peak_col;
-        (climbs, true)
+        (climbs, profile_ok)
     }
 }
 
@@ -358,23 +392,17 @@ pub fn ride_track_into<const N: usize>(
     preview.clear();
     let info = crate::RideInfo::read(src)?;
     let mut series = crate::ride::SeriesFill::start(facts, &info);
-    let total_points = info.point_count as usize;
-    let keep = N.min(total_points);
-    let mut next = 0usize;
+    let mut pick = Pick::new(info.point_count as usize, N);
 
     // The band is built into the result value, not a `cols` scratch: moving a local into the
-    // result would leave both live in the frame at once. The ascent curve stays a local because
-    // it integrates as `f32` and is quantised at the end.
+    // result would leave both live in the frame at once.
     out.reset();
-    let mut casc = [0f32; ASCENT_COLS];
+    let mut ascent = Ascent::new();
     let total = info.distance_m.max(1) as f64;
-    let base_last = PROFILE_COLS - 1;
-    let asc_last = ASCENT_COLS - 1;
     let (mut min_ele, mut max_ele) = (i16::MAX, i16::MIN);
 
     // The distance runs through elevation gaps, because a point without a height still moves the
     // rider; the ascent integrator runs only over real samples.
-    let mut ascent = DeadBand::<f32>::new();
     let mut dist = 0f64;
     let mut prev: Option<(i32, i32)> = None;
     const BLOCK: usize = 32;
@@ -395,11 +423,8 @@ pub fn ride_track_into<const N: usize>(
             let hr = (rec[16] != HR_NONE).then_some(rec[16]);
             let power = u16::from_le_bytes([rec[18], rec[19]]);
             series.push(facts, done + i as u32, hr, (power != PWR_NONE).then_some(power));
-            if preview.len() < keep && done as usize + i == next {
+            if pick.keep_next() {
                 let _ = preview.push(p);
-                if preview.len() < keep {
-                    next = preview.len() * (total_points - 1) / (keep - 1);
-                }
             }
             if let Some(pr) = prev {
                 dist += ground_dist_m(pr, p) as f64;
@@ -407,14 +432,8 @@ pub fn ride_track_into<const N: usize>(
             prev = Some(p);
             min_ele = min_ele.min(ele);
             max_ele = max_ele.max(ele);
-            let frac = dist / total;
-            let col = ((frac * base_last as f64) as usize).min(base_last);
-            let slot = &mut out.cols[col];
-            slot.0 = slot.0.min(ele);
-            slot.1 = slot.1.max(ele);
-            let acol = ((frac * asc_last as f64) as usize).min(asc_last);
-            ascent.push(ele as f32);
-            casc[acol] = ascent.ascent();
+            out.widen(dist / total, ele);
+            ascent.push(dist / total, ele);
         }
         done += n as u32;
     }
@@ -424,11 +443,7 @@ pub fn ride_track_into<const N: usize>(
     if min_ele > max_ele {
         (min_ele, max_ele) = (0, 0);
     }
-    fill_gaps(&mut out.cols[..PROFILE_COLS], band_fallback((min_ele, max_ele)), band_is_set);
-    out.cum_ascent = cumulative_ascent(&casc, info.climb_m as u32);
-    out.peak_col = peak_column(&out.cols[..PROFILE_COLS]);
-    out.min_ele_m = min_ele;
-    out.max_ele_m = max_ele;
+    out.finish((min_ele, max_ele), &ascent, info.climb_m as u32, &[]);
     Ok(())
 }
 
@@ -443,9 +458,8 @@ pub struct DayProfile {
     length_m: f64,
     /// Where the next stretch starts on the day.
     offset_m: f64,
-    /// The day's running ascent per ascent column, scaled to the stretches' climb at the end.
-    casc: [f32; ASCENT_COLS],
-    ascent: DeadBand<f32>,
+    /// The day's running ascent, scaled to the stretches' climb at the end.
+    ascent: Ascent,
     climb_m: u32,
     min_ele: i16,
     max_ele: i16,
@@ -458,8 +472,7 @@ impl DayProfile {
         DayProfile {
             length_m: f64::from(length_m.max(1)),
             offset_m: 0.0,
-            casc: [0.0; ASCENT_COLS],
-            ascent: DeadBand::new(),
+            ascent: Ascent::new(),
             climb_m: 0,
             min_ele: i16::MAX,
             max_ele: i16::MIN,
@@ -472,51 +485,37 @@ impl DayProfile {
         let total = f64::from(h.total_distance_m.max(1));
         let to = to_m.min(h.total_distance_m);
         let from = from_m.min(to);
-        let (base_last, asc_last) = (PROFILE_COLS - 1, ASCENT_COLS - 1);
-        let mut route_casc = [0f32; ASCENT_COLS];
-        let mut route_ascent = DeadBand::<f32>::new();
+        let mut route = Ascent::new();
         // The gap between two stretches is not climbed.
         self.ascent.pause();
-        let mut buf: Vec<RoutePoint, MAX_POINTS_PER_CHUNK> = Vec::new();
-        let mut meta_bytes = [0u8; CHUNK_META_LEN];
+        let mut records = Records::new();
         for k in 0..h.chunk_count {
-            let off = k.checked_mul(CHUNK_META_LEN as u32).and_then(|rel| h.index_offset.checked_add(rel));
-            src.read_at(off.ok_or(Error::BadOffset)?.into(), &mut meta_bytes)?;
-            let m = parse_chunk_meta(&meta_bytes, src.len())?;
-            buf.clear();
-            decode_chunk_from(src, &m, m.point_count as usize, &mut buf)?;
-            let mut dist = f64::from(m.cum_distance_m);
-            let mut prev: Option<(i32, i32)> = None;
-            for p in &buf {
-                if let Some(pr) = prev {
-                    dist += ground_dist_m(pr, (p.lon, p.lat)) as f64;
+            let m = stored_meta(src, &h, k)?;
+            if m.point_count == 0 {
+                return Err(Error::BadOffset);
+            }
+            records.read(src, &m)?;
+            for step in walk(m.cum_distance_m, records.points()) {
+                let (p, along) = (step.p, step.along);
+                if p.elevation().is_none() || p.elevation_incomplete {
+                    route.pause();
+                    self.ascent.pause();
                 }
-                prev = Some((p.lon, p.lat));
                 if p.elevation().is_none() {
-                    route_ascent.pause();
-                    self.ascent.pause();
                     continue;
                 }
-                if p.elevation_incomplete {
-                    route_ascent.pause();
-                    self.ascent.pause();
-                }
-                route_ascent.push(p.ele as f32);
-                route_casc[((dist / total * asc_last as f64) as usize).min(asc_last)] = route_ascent.ascent();
-                if dist < f64::from(from) || dist > f64::from(to) {
+                route.push(along / total, p.ele);
+                if along < f64::from(from) || along > f64::from(to) {
                     continue;
                 }
-                let frac = (self.offset_m + dist - f64::from(from)) / self.length_m;
-                let slot = &mut out.cols[((frac * base_last as f64) as usize).min(base_last)];
-                slot.0 = slot.0.min(p.ele);
-                slot.1 = slot.1.max(p.ele);
+                let frac = (self.offset_m + along - f64::from(from)) / self.length_m;
+                out.widen(frac, p.ele);
                 self.min_ele = self.min_ele.min(p.ele);
                 self.max_ele = self.max_ele.max(p.ele);
-                self.ascent.push(p.ele as f32);
-                self.casc[((frac * asc_last as f64) as usize).min(asc_last)] = self.ascent.ascent();
+                self.ascent.push(frac, p.ele);
             }
         }
-        let curve = cumulative_ascent(&route_casc, h.total_ascent_m);
+        let curve = route.curve(h.total_ascent_m);
         let at = |m: u32| ascent_at(&curve, (f64::from(m) / total) as f32);
         self.climb_m += at(to).saturating_sub(at(from));
         self.offset_m += f64::from(to - from);
@@ -525,12 +524,8 @@ impl DayProfile {
 
     /// Finish `out`, and return the day's climb.
     pub fn finish(self, out: &mut Profile) -> u32 {
-        let (min_ele, max_ele) = if self.min_ele > self.max_ele { (0, 0) } else { (self.min_ele, self.max_ele) };
-        fill_gaps(&mut out.cols[..PROFILE_COLS], (min_ele, max_ele), band_is_set);
-        out.cum_ascent = cumulative_ascent(&self.casc, self.climb_m);
-        out.peak_col = peak_column(&out.cols[..PROFILE_COLS]);
-        out.min_ele_m = min_ele;
-        out.max_ele_m = max_ele;
+        let range = if self.min_ele > self.max_ele { (0, 0) } else { (self.min_ele, self.max_ele) };
+        out.finish(range, &self.ascent, self.climb_m, &[]);
         self.climb_m
     }
 }
@@ -558,119 +553,38 @@ pub const SPARKLINE_BUCKETS: usize = 64;
 /// incomplete elevation or an unreadable chunk, because this compact band cannot hold a gap.
 ///
 /// Column placement matches [`RouteReader::elevation_profile`], so the mini band reads as a
-/// coarser copy of the full one. Call it once at commit time, never on the render path.
+/// coarser copy of the full one. It reads each chunk meta straight from the source, so it needs no
+/// [`RouteIndex`](crate::RouteIndex). Call it once at commit time, never on the render path.
 pub fn elevation_sparkline(src: &dyn ByteSource) -> Option<[u8; SPARKLINE_BUCKETS]> {
-    // This streams the chunk index and never materialises it. A `RouteIndex` is returned by
-    // value, so building one here would put tens of kB on the stack for a 64-byte result. The
-    // walk is strictly forward, so it reads each meta straight from the source. The resident cost
-    // is the point scratch alone, independent of `MAX_ROUTE_CHUNKS`.
     let h = read_header(src).ok()?;
     let lo = h.min_ele_m as i32;
     let span = h.max_ele_m as i32 - lo;
     if span <= 0 {
-        return None; // flat or no elevation: omit the band
+        return None;
     }
     let total = h.total_distance_m.max(1) as f64;
-    let last = SPARKLINE_BUCKETS - 1;
     // Peak height per bucket. `i16::MIN` marks a bucket no point landed in.
-    let mut maxes = [i16::MIN; SPARKLINE_BUCKETS];
-    let mut buf: Vec<RoutePoint, MAX_POINTS_PER_CHUNK> = Vec::new();
-    let mut meta_bytes = [0u8; CHUNK_META_LEN];
-    let src_len = src.len();
+    let mut peaks = [i16::MIN; SPARKLINE_BUCKETS];
+    let mut records = Records::new();
     for k in 0..h.chunk_count {
-        let off = h.index_offset + k * CHUNK_META_LEN as u32;
-        src.read_at(off.into(), &mut meta_bytes).ok()?;
-        let m = parse_chunk_meta(&meta_bytes, src_len).ok()?;
-        let n = m.point_count as usize;
-        buf.clear();
-        if n == 0 {
+        let m = stored_meta(src, &h, k).ok()?;
+        if m.point_count == 0 {
             return None;
         }
-        decode_chunk_from(src, &m, n, &mut buf).ok()?;
-        let mut dist = m.cum_distance_m as f64;
-        let mut prev: Option<(i32, i32)> = None;
-        for p in &buf {
-            if let Some(pr) = prev {
-                dist += ground_dist_m(pr, (p.lon, p.lat)) as f64;
-            }
-            prev = Some((p.lon, p.lat));
-            let b = ((dist / total) * last as f64) as usize;
-            let b = b.min(last);
-            p.elevation()?;
-            if p.elevation_incomplete {
-                return None;
-            }
-            if p.ele > maxes[b] {
-                maxes[b] = p.ele;
-            }
+        records.read(src, &m).ok()?;
+        for step in walk(m.cum_distance_m, records.points()) {
+            let ele = step.p.elevation().filter(|_| !step.p.elevation_incomplete)?;
+            let peak = &mut peaks[column(step.along / total, SPARKLINE_BUCKETS)];
+            *peak = (*peak).max(ele);
         }
     }
-    // Carry the last filled height across empty buckets, forward and then backward for a leading
-    // gap: the profile's gap-fill over one channel.
-    let mut carry: Option<i16> = None;
-    for m in maxes.iter_mut() {
-        match carry {
-            Some(c) if *m == i16::MIN => *m = c,
-            _ => carry = Some(*m),
-        }
-    }
-    let mut back: Option<i16> = None;
-    for m in maxes.iter_mut().rev() {
-        match back {
-            Some(b) if *m == i16::MIN => *m = b,
-            _ => back = Some(*m),
-        }
-    }
-    let mut out = [0u8; SPARKLINE_BUCKETS];
-    for (o, &m) in out.iter_mut().zip(maxes.iter()) {
-        *o = (((m as i32 - lo) * 255 / span).clamp(0, 255)) as u8;
-    }
-    Some(out)
-}
-
-/// Turn the per-column running ascent, which is set only where points landed, into a gap-free
-/// non-decreasing curve scaled so the final column is exactly `total_ascent_m`. That makes "to
-/// climb" reach 0 at the route end.
-fn cumulative_ascent(casc: &[f32; ASCENT_COLS], total_ascent_m: u32) -> [u32; ASCENT_COLS] {
-    let last_col = ASCENT_COLS - 1;
-    // Carry the running value across empty columns, keeping the curve non-decreasing.
-    let mut raw = [0f32; ASCENT_COLS];
-    let mut run = 0f32;
-    for i in 0..ASCENT_COLS {
-        run = run.max(casc[i]);
-        raw[i] = run;
-    }
-    // Pin the endpoint after scaling, so rounding cannot miss it.
-    let mut cum = [0u32; ASCENT_COLS];
-    if raw[last_col] > 0.0 {
-        let scale = total_ascent_m as f32 / raw[last_col];
-        for i in 0..ASCENT_COLS {
-            cum[i] = (raw[i] * scale) as u32;
-        }
-    }
-    cum[last_col] = total_ascent_m;
-    cum
-}
-
-fn peak_column(cols: &[(i16, i16)]) -> usize {
-    let mut peak_col = 0;
-    let mut peak = i16::MIN;
-    for (i, c) in cols.iter().enumerate() {
-        if c.1 > peak {
-            peak = c.1;
-            peak_col = i;
-        }
-    }
-    peak_col
+    fill_gaps(&mut peaks, i16::MIN, |p| *p != i16::MIN);
+    Some(peaks.map(|p| ((p as i32 - lo) * 255 / span).clamp(0, 255) as u8))
 }
 
 /// Make `cols` gap-free: each empty column inherits the nearest filled one, forward first and
 /// then backward for a leading run the forward pass cannot reach. A column still empty after both
 /// takes `fallback`, so the buffer never keeps a sentinel.
-///
-/// It is generic over the payload and its emptiness test because both elevation buffers want this
-/// carry: the route [`Profile`]'s band and the
-/// [`ClimbProfile`](crate::climb_profile::ClimbProfile)'s per-column scalar.
 pub(crate) fn fill_gaps<T: Copy>(cols: &mut [T], fallback: T, is_set: impl Fn(&T) -> bool) {
     let mut last: Option<T> = None;
     for c in cols.iter_mut() {
@@ -695,15 +609,4 @@ pub(crate) fn fill_gaps<T: Copy>(cols: &mut [T], fallback: T, is_set: impl Fn(&T
             *c = fallback;
         }
     }
-}
-
-/// An unwritten column carries the inverted sentinel `min > max`.
-fn band_is_set(c: &(i16, i16)) -> bool {
-    c.0 <= c.1
-}
-
-/// Normalize a band fallback so it reads as set: the header extent is trusted for its two values,
-/// not for their order.
-fn band_fallback(fallback: (i16, i16)) -> (i16, i16) {
-    (fallback.0.min(fallback.1), fallback.0.max(fallback.1))
 }

@@ -126,7 +126,7 @@ struct SignedRoutesTests {
         // The union of cells 9-267-177 and 9-267-178.
         let bounds = [7.734375, 47.5172006978394, 8.4375, 48.45835188280866]
         func release(_ routes: String, cells: [String]? = nil) -> PlannerRelease {
-            PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: bounds, basemap: directory, glyphs: "",
+            PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: bounds, basemap: directory, places: directory, glyphs: "",
                            sprites: "", terrain: "", terrain_attribution: "", search: directory, routing: directory,
                            manifest: directory.appending(path: "release.json"), overlays: directory, routes: routes, offlineCells: cells)
         }

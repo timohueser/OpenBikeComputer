@@ -236,6 +236,7 @@ SYMBOL_HEADER_RE = re.compile(r"^[0-9a-fA-F]+ <(.+)>:$")
 FRAME_DECREMENT_RE = re.compile(r"^subw?(?:\.w)?\s+sp,\s*(?:sp,\s*)?#(0x[0-9a-fA-F]+|\d+)$")
 PUSH_RE = re.compile(r"^(v?push)(?:\.w)?\s+\{([^}]*)\}$")
 SINGLE_SAVE_RE = re.compile(r"^str(?:\.w)?\s+(\w+),\s*\[sp,\s*#-(?:4|0x4)\]!$")
+PAIR_SAVE_RE = re.compile(r"^strd(?:\.w)?\s+(\w+),\s*(\w+),\s*\[sp,\s*#-(?:8|0x8)\]!$")
 STACK_STORE_WRITEBACK_RE = re.compile(
     r"^(?:v?str\S*|v?stm\S*)\s+.*(?:\[sp\b[^\]]*\](?:!|,)|\bsp!)"
 )
@@ -332,6 +333,7 @@ def parse_disassembly(disassembly: str) -> Disassembly:
         decrement = FRAME_DECREMENT_RE.fullmatch(asm)
         push = PUSH_RE.fullmatch(asm)
         single_save = SINGLE_SAVE_RE.fullmatch(asm)
+        pair_save = PAIR_SAVE_RE.fullmatch(asm)
         if decrement:
             frames[function] = frames.get(function, 0) + int(decrement.group(1), 0)
         elif push:
@@ -342,9 +344,10 @@ def parse_disassembly(disassembly: str) -> Disassembly:
                 entry = False
             else:
                 pushes[function] = pushes.get(function, 0) + saved
-        elif single_save:
+        elif single_save or pair_save:
             try:
-                saved = saved_register_bytes(single_save.group(1), False)
+                registers = single_save.group(1) if single_save else ", ".join(pair_save.groups())
+                saved = saved_register_bytes(registers, False)
             except ValueError as error:
                 unsupported[function] = str(error)
                 entry = False
@@ -607,7 +610,7 @@ def extract_resource_table(elf: Path) -> dict[str, int]:
         output = Path(directory) / "resources.bin"
         try:
             subprocess.run(
-                [str(objcopy), f"--dump-section={RESOURCE_SECTION}={output}", str(elf)],
+                [str(objcopy), f"--dump-section={RESOURCE_SECTION}={output}", str(elf), str(Path(directory) / "report.elf")],
                 check=True,
                 text=True,
                 capture_output=True,

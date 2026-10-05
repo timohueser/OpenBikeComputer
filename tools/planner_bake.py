@@ -10,7 +10,7 @@ import sys
 import tempfile
 import threading
 
-from . import planner_components as components, planner_maps as maps, planner_sources as sources
+from . import data_registry, planner_components as components, planner_maps as maps, planner_sources as sources
 from . import planner_prepare as preparation, planner_release as releases
 from .planner_runtime import open_url
 
@@ -38,14 +38,8 @@ def source_basemap(stage, osm, config, cache, prepared):
     (stage / "provenance.json").write_bytes(releases.encoded(info))
 
 
-def source_search(stage, osm, cache, prepared):
-    if prepared:
-        if json.loads((prepared / "inputs.json").read_bytes())["search"]["photon_sha256"] != sources.PHOTON_SHA:
-            raise ValueError("Prepared search uses another source builder")
-        preparation.link(prepared / "search.jsonl.zst", stage / "search.jsonl.zst")
-        info = json.loads((prepared / "inputs.json").read_bytes())["search"]
-    else:
-        info = sources.search_dump(osm(), stage / "search.jsonl.zst", cache)
+def source_search(stage, osm, cache, config):
+    info = sources.search_dump(osm(), stage / "search.jsonl.zst", cache, config["countries"][0])
     (stage / "provenance.json").write_bytes(releases.encoded(info))
 
 
@@ -68,15 +62,14 @@ def build_basemap(stage, source):
     preparation.link(source / "basemap.pmtiles", stage / "basemap.pmtiles")
 
 
-def build_places(stage, basemap):
-    maps.places_archive(basemap / "basemap.pmtiles", stage / "places.pmtiles")
+def build_places(stage, pois, config):
+    maps.places_archive(pois / f"{config['region']}.sqlite", stage / "places.pmtiles")
 
 
 def build_assets(stage):
     with open_url(maps.ASSETS_URL, timeout=120) as response:
         maps.install_assets(response.read(), stage / "assets")
-    with open_url(maps.SPRITES_LICENSE_URL, timeout=30) as response:
-        (stage / "assets/sprites/LICENSE.txt").write_bytes(response.read())
+    (stage / "assets/sprites/LICENSE.txt").write_bytes(data_registry.fetch("tangrams-icons")[0].read_bytes())
 
 
 def terrain_coverage(config):
@@ -160,6 +153,18 @@ def build_model(stage):
     (stage / "query-parser-v2-int8.tar.gz").unlink(missing_ok=True)
 
 
+def credits(*ids):
+    """The registry credits a component writes. data/sources.toml is in no hashed path, so they are its inputs."""
+    return {"credits": {id: data_registry.SOURCES[id]["attribution"] for id in ids}}
+
+
+def layer_credits(config, name):
+    """The sources whose credit a data layer writes: the snow layer credits its chosen source only."""
+    if name == "snow":
+        return ["modis-snow", "hansen-gfc"] if config["snow"]["source"] == "nasa-modis" else ["hr-wsi"]
+    return ["era5-land"] if name == "climate" else []
+
+
 def specifications(config, prepared=None):
     bounds = config["bounds"]
     osm = config["osm"]["sha256"]
@@ -171,42 +176,45 @@ def specifications(config, prepared=None):
     supplied = json.loads((prepared / "inputs.json").read_bytes()) if prepared else None
     if supplied and (supplied["osm_sha256"] != osm or supplied["bounds"] != bounds):
         raise ValueError("Prepared inputs do not match the region recipe")
-    add("source-basemap", source_basemap, {"osm": osm, "protomaps": sources.PROTOMAPS, "archive": sources.PROTO_SHA},
+    # A pin read from data/env/live.toml is in no hashed path, so it is an input of the component it changes.
+    add("source-basemap", source_basemap, {"osm": osm, "protomaps": sources.PROTOMAPS, "archive": sources.PROTO_SHA,
+                                           "planetiler": maps.PINS["planetiler"]},
         config.get("auxiliary", {}), functions=[sources.basemap, sources.download])
-    add("source-search", source_search, {"osm": osm, "nominatim": "5.3.2", "photon": sources.PHOTON_SHA},
-        functions=[sources.search_dump, sources.download])
-    # Of the query contract, records.py reads only the data kinds.
+    add("source-search", source_search, {"osm": osm, "country_data": sources.COUNTRY_DATA_SHA, "country_data_version": maps.PINS["nominatim-country-data"]}, {"country": config["countries"][0]},
+        paths=[*components.rust_sources("host/obc-search-bake"), maps.ROOT / "host/obc-search-bake/policy.py"], functions=[sources.search_dump, sources.download])
     data_kinds = sorted(json.loads((SEARCH / "query/contract.json").read_bytes())["data"])
     add("source-records", source_records, {"data_kinds": data_kinds}, dependencies=["source-search"],
-        paths=[SEARCH / "split.py", SEARCH / "records.py", SEARCH / "requirements-build.txt"])
+        paths=[SEARCH / "split.py", SEARCH / "records.py", SEARCH / "requirements-build.txt", maps.ROOT / "builder/app/src/lib/planner/poi-kinds.json"])
     common = [SEARCH / path for path in ["build.py", "writer.py", "records.py", "storage.py", "index.py", "schema.sql", "indexes.sql", "web/address-terms.json", "requirements-build.txt"]]
     for component in ["pois", "addresses"]:
-        add(component, build_search, {"osm": osm}, {"region": config["region"], "countries": config["countries"],
+        add(component, build_search, {"osm": osm, **credits("osm-planet")}, {"region": config["region"], "countries": config["countries"],
             "time_zone": config["time_zone"], "component": component, "schema": 5},
             ["source-records"], [*common, SEARCH / f"{component}.py"])
     add("basemap", build_basemap, {}, dependencies=["source-basemap"])
     map_requirements = maps.ROOT / "tools/requirements-planner-maps.txt"
-    add("places", build_places, {}, dependencies=["basemap"], paths=[maps.ROOT / path for path in
+    add("places", build_places, {}, dependencies=["pois"], paths=[maps.ROOT / path for path in
         ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_places.py", "tools/requirements-planner-maps.txt", "builder/app/src/lib/planner/poi-kinds.json")])
     rust_manifests = [maps.ROOT / path for path in ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "host/route-build/Cargo.toml", "host/route-engine/Cargo.toml", "host/obc-dem/Cargo.toml"]]
     elevation_paths = [*components.rust_sources("host/obc-dem"), maps.ROOT / "host/route-build/src/obc_terrain.rs"]
     elevation = {"sources": config["terrain"], "producer": components.implementation(paths=elevation_paths)}
     terrain_paths = [*rust_manifests, *elevation_paths, map_requirements, maps.ROOT / "tools/planner_map_archive.py",
                      *[maps.ROOT / path for path in ["host/route-build/src/obc_terrain.rs", "host/route-build/src/bin/planner-dem.rs", "host/route-engine/src/model.rs"]]]
-    add("terrain", build_terrain, {"elevation": elevation}, {"terrain_bounds": terrain_coverage(config)}, paths=terrain_paths,
+    add("terrain", build_terrain, {"elevation": elevation, **credits("copernicus-glo-30")}, {"terrain_bounds": terrain_coverage(config)}, paths=terrain_paths,
         functions=[terrain_inputs, terrain_coverage, maps.compact_archive, maps.verify_archive])
     routing_paths = components.rust_sources("host/route-build")
-    add("routing", build_routing, {"osm": osm, "elevation": elevation}, {"region": config["region"], "countries": config["countries"], "profiles": config["profiles"]}, paths=routing_paths,
+    add("routing", build_routing, {"osm": osm, "elevation": elevation, **credits("osm-planet", "copernicus-glo-30")}, {"region": config["region"], "countries": config["countries"], "profiles": config["profiles"]}, paths=routing_paths,
         functions=[terrain_inputs])
-    add("overlays", build_overlays, {}, dependencies=["routing"], paths=[maps.ROOT / path for path in
+    add("overlays", build_overlays, credits("osm-planet"), dependencies=["routing"], paths=[maps.ROOT / path for path in
         ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_overlays.py", "tools/requirements-planner-maps.txt")])
-    add("assets", build_assets, {"assets": maps.ASSETS_URL, "license": maps.SPRITES_LICENSE_URL}, paths=[maps.ROOT / "tools/planner_maps.py"])
+    add("assets", build_assets, {"assets": maps.ASSETS_URL, "tangrams-icons": maps.PINS["tangrams-icons"]}, paths=[maps.ROOT / "tools/planner_maps.py"])
     add("model", build_model, {}, paths=[SEARCH / "setup.py", SEARCH / "query/artifacts.py", SEARCH / "query/schema.py"])
     for name in releases.DATA_LAYERS:
         if name in config:
             paths = [maps.ROOT / f"tools/planner_{name}.py", maps.ROOT / f"tools/requirements-planner-{name}.txt"]
             if name == "sun": paths.extend(maps.ROOT / path for path in ("tools/planner_sun_horizons.py", "tools/planner_map_archive.py"))
-            add(name, build_layer, {}, layer_options(config, name), dependencies=["terrain"] if name == "sun" else [], paths=paths)
+            inputs = {"hansen-gfc": maps.PINS["hansen-gfc"]} if name == "snow" else {}
+            inputs.update(credits(*layer_credits(config, name)))
+            add(name, build_layer, inputs, layer_options(config, name), dependencies=["terrain"] if name == "sun" else [], paths=paths)
     return result
 
 
@@ -220,20 +228,20 @@ def execute(args, config, cache, specs, active):
         return path
     callbacks = {
         "source-basemap": lambda stage: source_basemap(stage, osm, config, cache.root / "downloads", args.inputs),
-        "source-search": lambda stage: source_search(stage, osm, cache.root / "downloads", args.inputs),
+        "source-search": lambda stage: source_search(stage, osm, cache.root / "downloads", config),
         "source-records": lambda stage: source_records(stage, built["source-search"][0]),
         **{name: (lambda stage, name=name: build_search(stage, built["source-records"][0], config, name)) for name in ["pois", "addresses"]},
         "basemap": lambda stage: build_basemap(stage, built["source-basemap"][0]),
-        "places": lambda stage: build_places(stage, built["basemap"][0]),
+        "places": lambda stage: build_places(stage, built["pois"][0], config),
         "terrain": lambda stage: build_terrain(stage, args, config),
         "routing": lambda stage: build_routing(stage, osm, args, config),
         "overlays": lambda stage: build_overlays(stage, built["routing"][0]),
         "assets": build_assets, "model": build_model,
         **{name: (lambda stage, name=name: build_layer(stage, config, name, built["terrain"][0] if name == "sun" else None)) for name in releases.DATA_LAYERS if name in config}}
     def produce(name):
-        if name in active and args.inputs and name in ("source-basemap", "source-search"):
+        if name in active and args.inputs and name == "source-basemap":
             supplied = json.loads((args.inputs / "inputs.json").read_bytes())
-            filename = "basemap.pmtiles" if name == "source-basemap" else "search.jsonl.zst"
+            filename = "basemap.pmtiles"
             if sources.digest(args.inputs / filename) != supplied["files"][filename]:
                 raise ValueError(f"Prepared input checksum mismatch: {filename}")
         return cache.build(specs[name], callbacks[name]) if name in active else cache.read(specs[name])

@@ -2,9 +2,8 @@
 //! crafted fixes. The fixes are built from the decoded geometry, so the assertions do not depend on
 //! which vertices survived decimation.
 
-use heapless::Vec as HVec;
 use obc_formats::io::SliceSource;
-use obc_route::{RouteIndex, RouteMatch, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
+use obc_route::{RouteIndex, RouteMatch, RoutePoint, RouteReader};
 
 use crate::common::convert;
 
@@ -21,11 +20,9 @@ fn gpx_from(pts: &[(f64, f64, f64)]) -> String {
 /// Decode the whole route to a flat polyline (dropping each chunk's shared seam point).
 fn decode_all(r: &RouteReader) -> Vec<RoutePoint> {
     let mut all = Vec::new();
-    let mut buf: HVec<RoutePoint, MAX_POINTS_PER_CHUNK> = HVec::new();
     for k in 0..r.chunks().len() {
-        r.decode_chunk(k, &mut buf).unwrap();
         let skip = if all.is_empty() { 0 } else { 1 };
-        all.extend(buf.iter().skip(skip).copied());
+        r.with_chunk(k, |points| all.extend(points.skip(skip))).unwrap();
     }
     all
 }

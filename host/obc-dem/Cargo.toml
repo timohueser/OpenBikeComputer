@@ -13,21 +13,19 @@ description = "Copernicus GLO-30 GeoTIFF -> OBCT terrain cells (obc-dem fetch / 
 # exists to refuse.
 #
 # The two producer halves are separate features because they are separate costs: `geotiff` is a
-# decoder, `fetch` is an HTTP client with a TLS stack behind it. The bakery (`obc-bake`) drives
-# `bake_cell` over tiles an operator already has and never downloads one, so it takes `geotiff`
-# alone and no `ureq`/rustls/ring reaches its dependency tree. `dem` is both, and stays the default
-# because the `obc-dem` binary is both.
+# decoder, `fetch` is the store of `obc-data` with its HTTP client and TLS stack. `dem` is both,
+# and stays the default because the `obc-dem` binary is both.
 [features]
 default = ["dem"]
 dem = ["geotiff", "fetch"]
 geotiff = ["dep:tiff", "dep:serde_json"]
-fetch = ["dep:ureq"]
+fetch = ["dep:obc-data"]
 external-fixtures = []
 
 [[bin]]
 name = "obc-dem"
 path = "src/main.rs"
-required-features = ["geotiff", "fetch"]
+required-features = ["dem"]
 
 [dependencies]
 # The OBCT byte authority: magic, header offsets, sentinels, and the layout arithmetic that turns a
@@ -51,10 +49,9 @@ tiff = { version = "0.11", default-features = false, features = ["deflate"], opt
 # because the index grows fields (`sha256`, `contributors`) that this reader must tolerate rather
 # than refuse. Already in the workspace lockfile (`obc-pack` and `obc-bake` both use it).
 serde_json = { version = "1", optional = true }
-# `fetch` only. Blocking and rustls-by-default, so no OpenSSL follows it onto macOS or Windows —
-# the same client `obc-pack`'s land-dataset download and the desktop app already use (#907: libGEOS
-# stays the last native dependency in the tree, and this crate has none at all).
-ureq = { version = "3", optional = true }
+# `fetch` only: the store and its fetcher for the tiles. The binary also prints the Copernicus
+# credit from data/sources.toml.
+obc-data = { path = "../obc-data", optional = true }
 
 [dev-dependencies]
 # Digest pins on fixture output — the "same inputs ⇒ byte-identical cells" contract, checked rather

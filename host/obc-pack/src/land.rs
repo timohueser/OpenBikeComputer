@@ -30,8 +30,6 @@ use crate::progress::Progress;
 const R: f64 = 6_378_137.0;
 const WEB_MERCATOR_MAX_LAT: f64 = 85.051_128_78;
 
-const LAND_URL: &str = "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip";
-
 // --- Reprojection (closed-form spherical Web Mercator) ---------------------
 
 /// EPSG:3857 → EPSG:4326: (meters east, meters north) → (lon°, lat°).
@@ -79,9 +77,22 @@ fn reproject_geom(g: &mut Geom) {
 // --- Public entry ----------------------------------------------------------
 
 /// Land polygons for `bbox_deg = (min_lon, min_lat, max_lon, max_lat)`, clipped and
-/// reprojected to degrees. One [`Geom::Polygon`] per face.
-pub fn get_land_polygons(bbox_deg: (f64, f64, f64, f64), progress: &Progress) -> Result<Vec<Geom>, String> {
-    let shp = ensure_dataset(progress)?;
+/// reprojected to degrees. One [`Geom::Polygon`] per face. `zip` is the dataset from the store;
+/// without it, the store fetches the source `land-polygons` at its live pin, or else the newest one.
+pub fn get_land_polygons(
+    bbox_deg: (f64, f64, f64, f64),
+    zip: Option<&Path>,
+    progress: &Progress,
+) -> Result<Vec<Geom>, String> {
+    let fetched;
+    let zip = match zip {
+        Some(zip) => zip,
+        None => {
+            fetched = obc_data::fetch::live("land-polygons", None, Vec::new())?;
+            &fetched.paths[0]
+        }
+    };
+    let shp = ensure_dataset(&cache_dir()?, zip, progress)?;
     let (min_lon, min_lat, max_lon, max_lat) = bbox_deg;
     // EPSG:3857 has no finite representation at the poles. The source dataset itself ends at the
     // Web-Mercator limit, so the geographic overhang of the outermost cells is provably empty here.
@@ -359,46 +370,30 @@ pub(crate) fn cache_dir() -> Result<PathBuf, String> {
     Ok(PathBuf::from(home).join(".cache/obcm/land"))
 }
 
-/// Return the cached `land_polygons.shp`, downloading and extracting the dataset on first use
-/// (~950 MB). There is no freshness check: delete the cache directory to force a refresh.
+/// Return the `land_polygons.shp` of `zip`, a zip of the store. It unpacks into
+/// `<cache>/<object name>/`, so another version unpacks again; see [`prune`] for the others.
 ///
-/// Concurrency-safe: download and extract go to pid-suffixed temp paths, then the extracted
-/// directory is renamed into place. Two cold-cache packers racing each other both succeed, and the
-/// loser's rename fails against the winner's directory.
+/// Concurrency-safe: the extract goes to a pid-suffixed temp path, then the extracted directory is
+/// renamed into place. Two cold-cache packers racing each other both succeed, and the loser's
+/// rename fails against the winner's directory.
 ///
-/// Both steps run in process ([`crate::net`]), which a subprocess could not be: they are cancellable
-/// and report a percentage, and `unzip` is not a Windows program.
-fn ensure_dataset(progress: &Progress) -> Result<PathBuf, String> {
-    let dir = cache_dir()?;
+/// The unpack runs in process ([`crate::net`]), which a subprocess could not: it is cancellable,
+/// and `unzip` is not a Windows program.
+fn ensure_dataset(cache: &Path, zip: &Path, progress: &Progress) -> Result<PathBuf, String> {
+    let name = zip.file_name().ok_or_else(|| format!("{} is not a file", zip.display()))?;
+    let dir = cache.join(name);
     let dataset = dir.join("land-polygons-split-3857");
     let shp = dataset.join("land_polygons.shp");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    // The time of `used` is the last time a packer took this version.
+    std::fs::write(dir.join(USED), b"").map_err(|e| format!("{}: {e}", dir.display()))?;
+    prune(cache, name);
     if shp.exists() {
         return Ok(shp);
     }
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let pid = std::process::id();
-    let zip = dir.join(format!("land-polygons-{pid}.zip"));
-    let extract_dir = dir.join(format!("extract-{pid}"));
-    // Reported rather than printed: in a host with a log pane this is the one step that can stall a
-    // first build for minutes, and a silent app is indistinguishable from a hung one.
-    progress.warn(format!("Downloading land polygons (~950 MB, one-time) from {LAND_URL} ..."));
-    let mut last = 0u8;
-    let downloaded = net::download(LAND_URL, &zip, progress, |pct| {
-        // Every 5 %: a one-time 950 MB download over a slow link is minutes of silence otherwise,
-        // and per-percent lines would bury the build log.
-        if pct >= last + 5 || pct == 100 {
-            last = pct;
-            progress.warn(format!("  land polygons: {pct}%"));
-        }
-    });
-    if let Err(e) = downloaded {
-        let _ = std::fs::remove_file(&zip);
-        return Err(e);
-    }
+    let extract_dir = dir.join(format!("extract-{}", std::process::id()));
     progress.warn("Extracting land polygons ...");
-    let extracted = net::extract_zip(&zip, &extract_dir, progress);
-    let _ = std::fs::remove_file(&zip);
-    if let Err(e) = extracted {
+    if let Err(e) = net::extract_zip(zip, &extract_dir, progress) {
         let _ = std::fs::remove_dir_all(&extract_dir);
         return Err(e);
     }
@@ -409,15 +404,68 @@ fn ensure_dataset(progress: &Progress) -> Result<PathBuf, String> {
     if !shp.exists() {
         return Err(match installed {
             Err(e) => format!("install land dataset {}: {e}", dataset.display()),
-            Ok(()) => format!("land dataset missing after download: {}", shp.display()),
+            Ok(()) => format!("land dataset missing after unpacking {}", zip.display()),
         });
     }
     Ok(shp)
 }
 
+const USED: &str = "used";
+
+/// Another version that no packer took for this long is a 2.3 GB directory that nothing reads
+/// again. A bake runs for up to a day and reads its version all that time, so a version used in
+/// the last two days stays.
+const UNUSED: std::time::Duration = std::time::Duration::from_secs(2 * 24 * 60 * 60);
+
+/// Delete each unpacked version in `cache` but `keep` that no packer took for [`UNUSED`].
+fn prune(cache: &Path, keep: &std::ffi::OsStr) {
+    for entry in std::fs::read_dir(cache).into_iter().flatten().flatten() {
+        let other = entry.file_name();
+        let digest = other.len() == 64 && other.to_string_lossy().bytes().all(|b| b.is_ascii_hexdigit());
+        let path = entry.path();
+        let used = std::fs::metadata(path.join(USED)).or_else(|_| std::fs::metadata(&path)).and_then(|m| m.modified());
+        let unused = used.ok().and_then(|time| time.elapsed().ok()).is_some_and(|age| age > UNUSED);
+        if digest && other != keep && unused {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A zip from the store unpacks in a directory named by its object. Another version that no
+    /// packer took for two days goes; one in use stays.
+    #[test]
+    fn a_zip_from_the_store_unpacks_under_its_object_name_alone() {
+        let dir = std::env::temp_dir().join(format!("obc-pack-land-zip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("objects")).unwrap();
+        let name = "c4871013".repeat(8);
+        let object = dir.join("objects").join(&name);
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&object).unwrap());
+        let options: zip::write::FileOptions<'_, ()> = Default::default();
+        zip.start_file("land-polygons-split-3857/land_polygons.shp", options).unwrap();
+        std::io::Write::write_all(&mut zip, b"shapefile").unwrap();
+        zip.finish().unwrap();
+
+        let cache = dir.join("land");
+        let (older, recent) = (cache.join("0".repeat(64)), cache.join("1".repeat(64)));
+        for (version, age) in [(&older, 3), (&recent, 1)] {
+            std::fs::create_dir_all(version).unwrap();
+            let used = std::fs::File::create(version.join(USED)).unwrap();
+            let days = std::time::Duration::from_secs(age * 24 * 60 * 60);
+            used.set_modified(std::time::SystemTime::now() - days).unwrap();
+        }
+        let shp = ensure_dataset(&cache, &object, &Progress::silent()).unwrap();
+        assert_eq!(shp, cache.join(&name).join("land-polygons-split-3857/land_polygons.shp"));
+        assert!(!older.exists(), "a version unused for two days is deleted");
+        assert!(recent.is_dir(), "a version that a packer may still read stays");
+        assert_eq!(std::fs::read(&shp).unwrap(), b"shapefile");
+        assert!(object.is_file(), "the store keeps its object");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn square(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Geom {
         Geom::Polygon {

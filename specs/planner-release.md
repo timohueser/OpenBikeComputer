@@ -14,8 +14,9 @@ its files are immutable.
 | `osm_sha256` | Hash of the common OSM PBF |
 | `routing_package` | Hash of `routing/manifest.json` or `routing/blocks.json` |
 | `profiles` | Sorted routing profile IDs |
-| `attribution` | OSM source credit and licence |
-| `terrain_attribution` | Elevation source credits |
+| `attribution` | OSM credit: the `osm-planet` attribution of `data/sources.toml` |
+| `landcover_attribution` | Credit of the basemap's land cover: the `daylight-landcover` attribution of `data/sources.toml`. Older releases have none |
+| `terrain_attribution` | Elevation source credits: each reference model used, and the `copernicus-glo-30` credit when the bake reads GLO-30 tiles |
 | `terrain_bounds` | Bounds that include contour neighbour tiles |
 | `sources` | Recipe hash, source identities, tool identities, and input provenance |
 | `device_catalog_source` | Original device catalogue URL |
@@ -71,13 +72,15 @@ Each coordinate pair is longitude and latitude in microdegrees. The first pair
 is absolute; each later pair is a difference from the previous pair. Decoding
 uses checked addition. Shared geometry retains every source point.
 
-`places.pmtiles` holds the rider places of the basemap. It has gzip MVT tiles
-at zoom 11 only, with extent 4096 and one `pois` layer. Each feature is one
-point with the basemap feature ID and the basemap `kind`, `name`, and `name:en`
-properties. The kinds are the `kinds` keys of the web planner's
-[place categories](../builder/app/src/lib/planner/poi-kinds.json). The bake reads
-the basemap's deepest zoom. Each place occurs once, in the tile that contains it.
-A tile with no places is absent.
+`places.pmtiles` holds rider places from the POI search database. It has gzip MVT
+at zoom 11, extent 4096, and one `pois` layer. Each point has the database's
+`kind` and `name`. String properties `lon` and `lat` retain the search coordinates
+without tile quantization. The feature ID is `(type << 44) | osm_id`, where type
+is 1 for nodes, 2 for ways, and 3 for relations. OSM IDs are positive and below
+2^44. Categories are defined in the
+[place categories](../builder/app/src/lib/planner/poi-kinds.json).
+Archive metadata includes the source `osm_sha256`. Empty tiles are absent,
+except that an empty archive contains one empty tile at the southwest bound.
 
 `overlays.pmtiles` holds the route networks and access restrictions of the
 overlay index. It has gzip MVT tiles from zoom 6 to 14, with extent 4096. Its
@@ -139,8 +142,8 @@ cell selection and download manifests.
 
 `planner/catalog.json` has `format: 1`, `active`, and `previous`.
 `active` contains the release `id`, manifest URL, region, bounds, attribution,
-terrain attribution, device catalogue URL, map asset URLs, tile URLs, and routing
-and search API prefixes. `name` is the region name of the recipe. `layers` maps
+land cover attribution when the release has one, terrain attribution, device catalogue URL, map asset URLs, tile URLs, and routing
+and search API prefixes. `name` is the name of the recipe's region in `data/regions/`. `layers` maps
 the name of each data layer of the release to its TileJSON URL.
 `routes` is the route catalog cell URL template on the tile API origin,
 `/releases/ID/routes/tiles/{cell}.json`, where `{cell}` is a cell ID `9-X-Y`.
@@ -149,13 +152,16 @@ Its `slot` is `0` or `1`. `previous` has the same shape or is `null`.
 The publisher uploads and verifies all release files before the manifest.
 The deployer verifies public services before changing the catalogue. The
 catalogue cache lifetime is 30 seconds. Immutable objects have a one-year
-cache lifetime. A site build carries one active catalogue entry, unchanged, as the
-configuration of the web planner, and uses its device catalogue for the map builder.
+cache lifetime. The web planner and the map builder read the catalogue at page
+load. The planner uses `active`, unchanged, as its configuration. The map builder
+uses its device catalogue. A client refuses a catalogue `format` that it does not
+know. When a release object returns 404 or no answer, a client reads the catalogue
+again, once, and retries with the new `active` entry.
 
-Finalization verifies the live services and site against `active`. It stops
+Finalization verifies the live services and the public catalogue against `active`. It stops
 the other VPS slot, removes its Caddy route, and deletes every other release
 directory on the VPS. It removes inactive planner releases and source mirrors
-that `active` does not name. It then sets `previous` to `null`. Device cell objects and terrain reference
+that neither `active` nor a region recipe names. It then sets `previous` to `null`. Device cell objects and terrain reference
 objects remain outside planner cleanup. A completed rollout retains one
 regional planner dataset in R2.
 

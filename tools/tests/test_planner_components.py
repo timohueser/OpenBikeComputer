@@ -2,6 +2,7 @@
 
 import argparse
 from contextlib import closing
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -11,11 +12,12 @@ import time
 import unittest
 from unittest.mock import patch
 
-from tools import planner_bake as bake, planner_blocks as blocks, planner_components as components
+from tools import planner_bake as bake, planner_blocks as blocks, planner_cleanup as cleanup, planner_components as components
 from tools import planner_grid_components as grid, planner_prepare as preparation, planner_runtime as runtime
 
 
 BOUNDS = [7.75, 48, 7.76, 48.01]
+OSM_SHA256 = hashlib.sha256(b"osm").hexdigest()
 
 
 def database(path, component, name="Bakery"):
@@ -67,7 +69,11 @@ def sample_release(root, changed=False):
     document = {"format": 1, "region": "test", "bounds": BOUNDS, "terrain_bounds": BOUNDS, "osm_sha256": "a" * 64,
         "routing_package": package, "profiles": ["touring"], "sources": {},
         "files": {path.relative_to(root).as_posix(): {"bytes": path.stat().st_size, "sha256": runtime.digest(path)}
-                  for path in root.rglob("*") if path.is_file()}, "source_files": {}}
+                  for path in root.rglob("*") if path.is_file()}}
+    mirror = root / "sources" / f"{OSM_SHA256}.osm.pbf"
+    mirror.parent.mkdir()
+    mirror.write_bytes(b"osm")
+    document["source_files"] = {"sources/" + mirror.name: {"bytes": 3, "sha256": OSM_SHA256}}
     (root / "release.json").write_bytes(runtime.encoded(document))
     return document
 
@@ -79,11 +85,13 @@ class ComponentTests(unittest.TestCase):
         digest = components.digest
         cases = {
             "tools/planner_places.py": {"places"},
-            "builder/app/src/lib/planner/poi-kinds.json": {"places"},
+            "builder/app/src/lib/planner/poi-kinds.json": {"source-records", "pois", "addresses", "places"},
             "tools/planner_overlays.py": {"overlays"},
             "tools/planner_map_archive.py": {"terrain", "sun"},
             "firmware/obc-elevation/src/grid.rs": {"terrain", "routing", "overlays", "sun"},
-            "firmware/obc-formats/Cargo.toml": {"terrain", "routing", "overlays", "sun"},
+            "firmware/obc-formats/Cargo.toml": {"terrain", "routing", "overlays", "sun", "source-search", "source-records", "pois", "addresses", "places"},
+            "host/obc-places/src/lib.rs": {"source-search", "source-records", "pois", "addresses", "places"},
+            "host/obc-search-bake/src/places.rs": {"source-search", "source-records", "pois", "addresses", "places"},
             "tools/planner_sun_horizons.py": {"sun"},
         }
         for filename, expected in cases.items():
@@ -92,6 +100,16 @@ class ComponentTests(unittest.TestCase):
                 self.assertTrue(changed_path.exists())
                 with patch.object(components, "digest", side_effect=lambda path: "changed" if path == changed_path else digest(path)):
                     changed = bake.specifications(config)
+                self.assertEqual({name for name in original if original[name] != changed[name]}, expected)
+
+    def test_a_pin_from_live_toml_changes_the_key_of_the_component_it_feeds(self):
+        config = preparation.recipe(bake.maps.ROOT / "tools/planner-regions/baden-wuerttemberg-switzerland.json")
+        original = bake.specifications(config)
+        cases = {"planetiler": {"source-basemap", "basemap"},
+                 "nominatim-country-data": {"source-search", "source-records", "pois", "addresses", "places"}, "hansen-gfc": {"snow"}}
+        for pin, expected in cases.items():
+            with self.subTest(pin=pin), patch.dict(bake.maps.PINS, {pin: "bumped"}):
+                changed = bake.specifications(config)
                 self.assertEqual({name for name in original if original[name] != changed[name]}, expected)
 
     def test_composition_does_not_write_through_the_previous_device_catalogue(self):
@@ -194,15 +212,15 @@ class ComponentTests(unittest.TestCase):
         with patch.object(components, "implementation", side_effect=poi_change):
             changed = bake.specifications(config)
         self.assertNotEqual(changed["pois"], original["pois"])
-        for name in set(original) - {"pois"}: self.assertEqual(changed[name], original[name], name)
+        for name in set(original) - {"pois", "places"}: self.assertEqual(changed[name], original[name], name)
         previous = {name: {"spec": spec} for name, spec in original.items()}
         selected, active = components.plan(changed, ["pois"], previous)
-        self.assertEqual(active, {"pois", "source-records", "source-search"})
+        self.assertEqual(active, {"pois", "places", "source-records", "source-search"})
         self.assertEqual(selected["addresses"], original["addresses"])
         _, routing = components.plan(changed, ["routing"], previous)
         self.assertEqual(routing, {"routing", "overlays"})
         _, basemap = components.plan(changed, ["basemap"], previous)
-        self.assertEqual(basemap, {"basemap", "places", "source-basemap"})
+        self.assertEqual(basemap, {"basemap", "source-basemap"})
         with tempfile.TemporaryDirectory() as temporary:
             cache = components.Cache(Path(temporary))
             for spec in original.values():
@@ -211,7 +229,9 @@ class ComponentTests(unittest.TestCase):
             def build_pois(stage, records, config, component):
                 self.assertEqual(component, "pois")
                 (stage / "new-pois").write_bytes(b"metadata")
-            with patch.object(bake, "build_search", side_effect=build_pois) as build, patch.object(bake.maps, "run") as run:
+            with patch.object(bake, "build_search", side_effect=build_pois) as build, \
+                    patch.object(bake, "build_places", side_effect=lambda stage, *_: (stage / "places").write_bytes(b"places")), \
+                    patch.object(bake.maps, "run") as run:
                 bake.execute(args, config, cache, selected, active)
                 self.assertEqual(build.call_count, 1)
                 run.assert_not_called()
@@ -261,6 +281,7 @@ class ComponentTests(unittest.TestCase):
             self.assertTrue(all(item["component"].startswith(("grid-search-pois", "grid-search-lookup-pois")) for item in added), added)
             _, first = runtime.release(root / "grid-first")
             _, second = runtime.release(root / "grid-updated")
+            self.assertIn(f"planner/sources/{OSM_SHA256}.osm.pbf", cleanup.referenced_keys(second, ""))
             changed_files = {name for name in first["files"] if first["files"][name] != second["files"].get(name)}
             self.assertTrue(any(name.startswith("search/tiles/pois/") for name in changed_files))
             self.assertTrue(all(name.startswith(("search/tiles/pois/", "offline/catalog.json", "search/test.grid.json")) for name in changed_files), changed_files)

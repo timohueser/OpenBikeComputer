@@ -15,6 +15,18 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Plugin } from "vite";
 
+// This module imports nothing local: apps/planner-search/native-build.mjs loads it in plain Node,
+// which resolves no extensionless relative import.
+
+/** The `attribution` of one source in data/sources.toml, the one home of every credit. */
+export function registryAttribution(id: string): string {
+    const registry = fs.readFileSync(new URL("../../../data/sources.toml", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    const entry = registry.split("[[source]]").find((block) => block.includes(`\nid = "${id}"\n`)) ?? "";
+    const attribution = /\nattribution = "([^"]*)"/.exec(entry)?.[1];
+    if (!attribution) throw new Error(`data/sources.toml has no attribution for ${id}`);
+    return attribution;
+}
+
 // LICENSE, LICENCE, LICENSE.md, COPYING, NOTICE — and the dual-licensed shape, where a
 // package ships one file per option (`LICENSE_MIT` + `LICENSE_APACHE-2.0`, @tauri-apps/api).
 // Both are collected: the licence is the package's to choose between, not ours to narrow.
@@ -135,7 +147,7 @@ function render(notices: PackageNotice[], title: string): string {
         "no other.",
         "",
         "The application's own source is GPL-3.0: https://github.com/timohueser/OpenBikeComputer",
-        "Map data © OpenStreetMap contributors, under the ODbL: https://www.openstreetmap.org/copyright",
+        `Map data ${registryAttribution("osm-planet")}, under the ODbL: https://www.openstreetmap.org/copyright`,
         "",
         `${notices.length} package(s):`,
         ...notices.map((n) => `  - ${n.name} ${n.version} — ${n.license || "see text"}`),

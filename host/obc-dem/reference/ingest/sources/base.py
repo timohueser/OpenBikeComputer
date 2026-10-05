@@ -16,6 +16,7 @@ import base64
 import hashlib
 import os
 import shutil
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -27,7 +28,19 @@ from rasterio.crs import CRS
 
 from ..lattice import Refuse
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[5] / "tools"))
+import data_registry  # noqa: E402
+
 HTTP_TIMEOUT = 300
+
+
+def registry_credit(source):
+    """The credit of a national model as data/sources.toml holds it, the one home of the wording.
+
+    A `{month}` or `{year}` in it stays for `Source.credit` to fill.
+    """
+
+    return data_registry.SOURCES[source]["attribution"]
 
 # What one member of a delivered archive may weigh unpacked. A national DEM tile is
 # megabytes and an ELVIS order's largest file is gigabytes; nothing legitimate reaches
