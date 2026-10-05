@@ -15,6 +15,7 @@ its files are immutable.
 | `routing_package` | Hash of `routing/manifest.json` or `routing/blocks.json` |
 | `profiles` | Sorted routing profile IDs |
 | `attribution` | OSM credit: the `osm-planet` attribution of `data/sources.toml` |
+| `landcover_attribution` | Credit of the basemap's land cover: the `daylight-landcover` attribution of `data/sources.toml`. Older releases have none |
 | `terrain_attribution` | Elevation source credits: each reference model used, and the `copernicus-glo-30` credit when the bake reads GLO-30 tiles |
 | `terrain_bounds` | Bounds that include contour neighbour tiles |
 | `sources` | Recipe hash, source identities, tool identities, and input provenance |
@@ -139,7 +140,7 @@ cell selection and download manifests.
 
 `planner/catalog.json` has `format: 1`, `active`, and `previous`.
 `active` contains the release `id`, manifest URL, region, bounds, attribution,
-terrain attribution, device catalogue URL, map asset URLs, tile URLs, and routing
+land cover attribution when the release has one, terrain attribution, device catalogue URL, map asset URLs, tile URLs, and routing
 and search API prefixes. `name` is the name of the recipe's region in `data/regions/`. `layers` maps
 the name of each data layer of the release to its TileJSON URL.
 `routes` is the route catalog cell URL template on the tile API origin,

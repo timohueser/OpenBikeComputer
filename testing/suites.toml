@@ -307,7 +307,9 @@ route = "ordinary"
 command = "npm ci --prefix companion-ios/ReplayAssets && npm test --prefix companion-ios/ReplayAssets"
 jobs = ["ios-unit"]
 platforms = ["linux", "macos"]
-triggers = ["companion-ios/ReplayAssets/**", "companion-ios/Packages/OBCKit/Sources/OBCUI/Resources/Replay/**"]
+triggers = ["companion-ios/ReplayAssets/**", "companion-ios/Packages/OBCKit/Sources/OBCUI/Resources/Replay/**",
+  # The replay-assets prepare step transpiles the web map style.
+  "builder/app/src/lib/planner/map-style.ts", "data/sources.toml"]
 
 [[suite]]
 id = "swift.obckit-host"
@@ -321,6 +323,9 @@ triggers = [
   "companion-ios/Packages/OBCKit/Sources/**",
   "companion-ios/Packages/OBCKit/Tests/**",
   "companion-ios/ReplayAssets/prepare.mjs",
+  # The replay-assets prepare step transpiles the web map style.
+  "builder/app/src/lib/planner/map-style.ts",
+  "data/sources.toml",
   "apps/planner-search/query/contract.json",
   "specs/vectors/**",
 ]

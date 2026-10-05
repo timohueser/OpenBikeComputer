@@ -18,8 +18,10 @@ export interface PlannerConfig {
     overlays: string;
     /** A Terrarium WebP tile template. */
     terrain: string;
-    /** The map data credit, from data/sources.toml. */
+    /** The OSM credit, from data/sources.toml. */
     attribution: string;
+    /** The credit of the basemap's land cover, from data/sources.toml. Older releases have none. */
+    landcover_attribution?: string;
     terrain_attribution: string;
     glyphs: string;
     sprites: string;
@@ -58,6 +60,7 @@ export function plannerConfig(value: unknown, base?: string): PlannerConfig {
         ...(config.routes === undefined || routes ? [] : ['routes']),
         ...(typeof config.name === 'string' && config.name ? [] : ['name']),
         ...(typeof config.attribution === 'string' && config.attribution ? [] : ['attribution']),
+        ...(config.landcover_attribution === undefined || typeof config.landcover_attribution === 'string' ? [] : ['landcover_attribution']),
         ...(typeof config.terrain_attribution === 'string' ? [] : ['terrain_attribution']),
         ...(config.layers && typeof config.layers === 'object' && Object.values(layers).every(Boolean) ? [] : ['layers']),
         ...(Array.isArray(bounds) && bounds.length === 4 && bounds.every(Number.isFinite) && bounds[0] >= -180 && bounds[2] <= 180

@@ -88,7 +88,8 @@ def preview_config(args, manifest):
     return {"name": args.name, "region": args.region, "bounds": manifest["bounds"],
             "basemap": f"pmtiles://{files}/basemap.pmtiles", "places": files + "/places.pmtiles",
             "overlays": files + "/overlays.pmtiles", "terrain": "/tiles/terrain/{z}/{x}/{y}.webp",
-            "attribution": data_registry.attribution("osm-planet"), "terrain_attribution": manifest["terrain_attribution"],
+            "attribution": data_registry.attribution("osm-planet"),
+            "landcover_attribution": data_registry.attribution("daylight-landcover"), "terrain_attribution": manifest["terrain_attribution"],
             # Without its archive, the planner offers no such data layer.
             "layers": {layer: f"{files}/{layer}.pmtiles" for layer in DATA_LAYERS if f"{layer}.pmtiles" in manifest["files"]},
             "glyphs": files + "/assets/fonts/{fontstack}/{range}.pbf", "sprites": files + "/assets/sprites/v4",

@@ -62,7 +62,7 @@ here:
 | Device-map catalog `terrain.attribution` | The source whose id is the terrain `dataset_id` |
 | Device-map catalog `landmarks.attribution` | `wikipedia`, then `commons` |
 | Planner release `attribution`, routing package, search, route overlays | `osm-planet` |
-| Web planner and map builder basemap | The release `attribution`, then `daylight-landcover`, which the web build embeds |
+| Planner release `landcover_attribution` | `daylight-landcover`; the basemaps show it after `attribution` |
 | Planner `terrain_attribution` | `copernicus-glo-30`, after the reference models |
 | Planner climate and snow layers | `era5-land`; `modis-snow` and `hansen-gfc`, or `hr-wsi` |
 | Reference archive manifests | `dtm-<key>` for the national model with that key |
@@ -72,7 +72,7 @@ field for programs, such as the catalog `license`.
 
 Rust code reads the file that the build embeds (`obc_data::sources::attribution`). Python
 reads it through `tools/data_registry.py`, and shell through
-`tools/data_registry.py attribution ID`. The web build reads it through
+`tools/data_registry.py attribution ID`. The web bundle notice reads it at build time through
 `builder/app/vite/registry.ts`. The web planner, the map builder and the iOS planner show the
 planner release `attribution`. Text that no step can generate keeps a copy, and a test
 compares the copy with this file: the device About page, and the footers of the site, the

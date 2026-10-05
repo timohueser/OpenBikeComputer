@@ -102,7 +102,8 @@ def seal(data, region, device_catalog, provenance):
         files[database.relative_to(data).as_posix()] = {"bytes": database.stat().st_size, "sha256": digest(database)}
     document = {"format": 1, "region": region, "bounds": routing["bounds"], "osm_sha256": osm,
                 "routing_package": digest(data / "routing/manifest.json"), "profiles": sorted(routing["metrics"]),
-                "attribution": data_registry.attribution("osm-planet"), "terrain_attribution": map_manifest["terrain_attribution"],
+                "attribution": data_registry.attribution("osm-planet"),
+                "landcover_attribution": data_registry.attribution("daylight-landcover"), "terrain_attribution": map_manifest["terrain_attribution"],
                 "terrain_bounds": map_manifest["terrain_bounds"], "sources": provenance,
                 "device_catalog_source": device_catalog, "files": files,
                 "probe": provenance["probe"],
@@ -121,6 +122,7 @@ def endpoints(identity, document, name, public, tiles, api):
             "search": service + "/search", "basemap": tile_prefix + "/basemap.json", "places": tile_prefix + "/places.json",
             "overlays": tile_prefix + "/overlays.json",
             "attribution": document["attribution"],
+            **({"landcover_attribution": document["landcover_attribution"]} if "landcover_attribution" in document else {}),
             "terrain": tile_prefix + "/terrain/{z}/{x}/{y}.webp",
             "layers": {layer: f"{tile_prefix}/{layer}.json" for layer in DATA_LAYERS if f"maps/{layer}.json" in document["files"]},
             "glyphs": tile_prefix + "/maps/assets/fonts/{fontstack}/{range}.pbf",
