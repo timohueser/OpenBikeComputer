@@ -4,13 +4,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::date;
 use crate::fetch::upstream::Upstream;
 
 /// In the order `obc data sources` lists them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// An input that steps read.
@@ -21,7 +22,7 @@ pub enum Kind {
     Tool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum FetchKind {
     Http,
@@ -37,7 +38,7 @@ pub enum FetchKind {
     Installed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Fetch {
     pub kind: FetchKind,
@@ -49,7 +50,7 @@ pub struct Fetch {
 }
 
 /// How upstream names a version, and so what a pin of the source looks like.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum VersionScheme {
     /// `YYYY-MM-DD`: the only scheme that gives a pin an age.
@@ -96,6 +97,19 @@ impl From<Refresh> for RefreshRepr {
     }
 }
 
+impl JsonSchema for Refresh {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Refresh".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "How old a pin may get, in days, before the source is stale; `manual` is never stale.",
+            "enum": [7, 30, 90, 365, "manual"]
+        })
+    }
+}
+
 impl std::fmt::Display for Refresh {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -106,7 +120,7 @@ impl std::fmt::Display for Refresh {
 }
 
 /// What a fetch needs before upstream answers: environment variables, or a file.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Credential {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -134,7 +148,7 @@ fn expand_home(path: &str) -> PathBuf {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
     pub id: String,
@@ -324,7 +338,7 @@ pub fn attribution(id: &str) -> &'static str {
 }
 
 /// The state of a source or a layer. A source is only ok, stale or blocked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
     Ok,
