@@ -91,7 +91,7 @@ unions. A union that contains itself, or names a region that does not exist, is 
 | --- | --- |
 | `blocked` | A `data` or `asset` source has no `licence`, or its credential is not on this machine |
 | `stale` | The pin is a date, `refresh` is in days, the pin is older than `refresh`, and the newest upstream version is later than the pin. Or the pin is before the pin of the source that `fetch.from` names |
-| `ok` | Otherwise. A source with no pin, or with `refresh = "manual"`, is never stale |
+| `ok` | Otherwise. A source with no pin is never stale, and a source with `refresh = "manual"` is never stale by age |
 
 The age of a pin is the number of days from its date to today (UTC). When a pin is older than
 `refresh` and the newest upstream version is not known, the state is `ok` and the reason says
@@ -129,8 +129,8 @@ The `name` of a file is the part of its URL that identifies it in the source. Fo
 `dtm` or `capture` fetch, it is the URL after `fetch.url`, such as `000/005/130.osc.gz` or
 `#bbox=W,S,E,N/sub/a.tif`. For a URL template, it is the URL from the segment of the first
 `{name}` other than `{version}` and `{yymmdd}`, such as `europe/monaco-261003.osm.pbf`; without
-such a `{name}`, it is the last segment. A record that has a name with other bytes fails the
-fetch.
+such a `{name}`, it is the last segment. A name is unique in a record: a file whose name the
+record has for another URL fails the fetch.
 
 A version is one or more segments joined by `/`. A segment has letters, digits, `.`, `_`, `+`
 and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` date, and a
@@ -187,9 +187,10 @@ the bytes of the OSM data.
 
 An `osm` URL is an Osmosis replication directory that ends with `/`, such as
 `<server>/replication/day/`. A fetch of version `E` takes `from=B` and no other `NAME=VALUE`.
-Without `from=`, `B` is the pin of the `fetch.from` source in the environment; an explicit
-`from=` must be that pin, unless the environment has none. `B` is on or before `E`. The sequence
-of a day is the diff whose `state.txt` has the `timestamp` of that day. The snapshot is the
+Without `from=`, `B` is the pin of the `fetch.from` source: the live pin for `fetch`, the
+`--env` pin for `refresh`. An explicit `from=` must be that pin, unless there is none. `B` is on or before `E`. The sequence
+of a day is the one diff whose `state.txt` has the `timestamp` of that day; a day with two
+diffs has no sequence. The snapshot is the
 `state.txt` of the sequence of `B`, and the diff and the `state.txt` of each sequence after it up
 to the sequence of `E`, in order.
 
@@ -197,8 +198,9 @@ to the sequence of `E`, in order.
   any version, the fetch makes no request. The stored states name the day of each sequence.
 - Else the fetch reads the newest `state.txt` first, and fails when `E` is after its day. Then it
   finds the sequence of `B` and of `E`: the newest sequence less the days between, then, when
-  the `timestamp` of that sequence is another day, moved by the difference once. It fails before
-  a diff downloads when it finds no sequence of `B` or `E`.
+  the `timestamp` of that sequence is another day, moved by the difference once, and the states
+  of the sequences next to it. It fails before a diff downloads when it finds no sequence of `B`
+  or `E`. These reads record nothing.
 - A diff and its state never change. A file in the record of another version comes from the
   store, so a fetch of a later `E` from the same `B` downloads only the new days.
 
