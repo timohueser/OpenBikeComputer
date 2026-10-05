@@ -585,7 +585,8 @@ release of that product.
 The device maps have layers per leaf: a cell of size `2^23` µdeg of the OBCA grid that the
 outline of the region touches. The outline of a `box` region is its box; the outline of a
 `geofabrik` region is its `.poly` from `geofabrik-poly`, `area=<region id>`. The product has no
-steps for a `polygon` region yet. The environment pins `copernicus-glo-30`.
+steps for a `polygon` region yet. The environment pins `copernicus-glo-30`. Only a `geofabrik`
+region has map cells: they read the OSM of its area. Another region has terrain only.
 
 A file that the step list reads, such as a `.poly` or the GLO-30 tile list, is at the version
 of the environment. Without one, the product names a fetch of the newest version upstream, and
@@ -593,6 +594,8 @@ then reads the newest version of that fetch in the store.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
+| `maps/osm` | `geofabrik-extracts`, `area=<region id>` | `leaves`: `[i, j]` of each leaf | `osm/<i>-<j>.osm.pbf`: the `osmium extract --strategy smart --set-bounds` of the square of the leaf and one µdeg around it |
+| `maps/<band>/<i>-<j>` | `maps/osm`, the file of the leaf; `land-polygons`; `maps/terrain/<i>-<j>` when the cells of the band read heights: contours in their levels, or a nav graph or POIs | `band`: `coarse`, `mid`, `fine` or `network` of the recommended band table (`OBCA_Spec.md`); `leaf`: `[23, i, j]`; `cells`: `[ci, cj]` of each cell of the band in the leaf that the outline touches | `cells/<band>/<ci>/<cj>.obcm` for each cell with content; `cells/<band>/empty.json`: the ids of the other cells. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks |
 | `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13); `terrain/empty.json`: the ids of the cells without a height |
 
 `<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id.

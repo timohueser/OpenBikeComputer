@@ -50,8 +50,8 @@ fn fetched(store: &Store, source: &str, version: &str, params: Vec<(String, Stri
     }
 }
 
-/// The store of `temp`, with what the step list of live reads, so the plan needs no network: the
-/// `.poly` of the live region, unpinned, is a box around Freiburg.
+/// The store of `temp`, with what the step lists of live read, so the plan needs no network: the
+/// `.poly` of the live region, unpinned, is a box around Freiburg, and its extract is a stand-in.
 fn with_live_outline(temp: &Temp) {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let (sources, regions) = (Registry::load(&root).unwrap().sources, Regions::load(&root).unwrap());
@@ -60,7 +60,9 @@ fn with_live_outline(temp: &Temp) {
     let store = Store::at(temp.0.join("store"));
     let poly = "box\n1\n   7.77 47.97\n   7.93 47.97\n   7.93 48.14\n   7.77 48.14\n   7.77 47.97\nEND\nEND\n";
     let area = vec![("area".into(), "europe/germany/baden-wuerttemberg".into())];
-    fetched(&store, "geofabrik-poly", "2026-10-05", area, "europe/germany/baden-wuerttemberg.poly", poly);
+    fetched(&store, "geofabrik-poly", "2026-10-05", area.clone(), "europe/germany/baden-wuerttemberg.poly", poly);
+    fetched(&store, "geofabrik-extracts", "2026-10-05", area, "europe/germany/baden-wuerttemberg.osm.pbf", "osm");
+    fetched(&store, "land-polygons", "2026-10-05", Vec::new(), "land-polygons-split-3857.zip", "land");
     let tiles = "Copernicus_DSM_COG_10_N47_00_E007_00_DEM\nCopernicus_DSM_COG_10_N48_00_E007_00_DEM\n";
     let version = live.version("copernicus-glo-30-tiles").unwrap();
     fetched(&store, "copernicus-glo-30-tiles", version, Vec::new(), "tileList.txt", tiles);

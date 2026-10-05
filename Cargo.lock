@@ -3549,6 +3549,7 @@ dependencies = [
  "obc-formats",
  "obc-pack",
  "serde_json",
+ "zip",
 ]
 
 [[package]]

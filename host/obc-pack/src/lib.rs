@@ -44,6 +44,7 @@ pub mod progress;
 pub mod quadtree;
 pub mod semantic;
 pub mod serialize;
+pub mod step;
 pub mod terrain;
 
 pub use pipeline::{pack, PackOptions, PackSummary};

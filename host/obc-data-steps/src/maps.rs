@@ -1,21 +1,25 @@
 //! The device maps. Each layer covers one leaf of the `2^23` grid that the region touches:
-//! `maps/terrain/<i>-<j>` holds the terrain cells of the region in leaf `(i, j)`.
+//! `maps/terrain/<i>-<j>` holds the terrain cells of the region in leaf `(i, j)`, and
+//! `maps/<band>/<i>-<j>` its map cells of one band. `maps/osm` holds the OSM of each leaf.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use obc_bake::coverage::Coverage;
+use obc_bake::planet::LeafId;
 use obc_data::engine::{Code, Input, Run, Step};
 use obc_data::env::Env;
-use obc_data::product::{read, Product, Unplanned, Wanted};
+use obc_data::product::{read, version, Product, Unplanned, Wanted};
 use obc_data::regions::{Area, Bbox, Regions};
 use obc_data::store::Store;
 use obc_dem::bake::{V1_CELL_LOG2, V1_POSTING_LOG2};
 use obc_dem::step::GLO30;
-use obc_pack::grid::{id_width, CellId};
+use obc_pack::grid::{id_width, Band, BandTable, CellId};
+use obc_pack::step::LAND;
 
 /// The cell of the planet bake, and of every device-map layer.
 const LEAF_LOG2: u32 = obc_bake::planet::SOURCE_LEAF_LOG2;
 const POLY: &str = "geofabrik-poly";
+pub const EXTRACTS: &str = "geofabrik-extracts";
 /// The names of the GLO-30 tiles: a square that it does not name is sea.
 pub const TILE_LIST: &str = "copernicus-glo-30-tiles";
 
@@ -30,25 +34,116 @@ impl Product for Maps {
         let mut wanted = Vec::new();
         let outlines = outlines(env, regions, store, &mut wanted)?;
         let tile_list = text(env, store, TILE_LIST, &[], &mut wanted)?;
-        let (Some(outlines), Some(tile_list)) = (outlines, tile_list) else {
+        // The map cells read the OSM of one Geofabrik area: another kind of region has terrain only.
+        let geofabrik = regions.get(&env.region).is_some_and(|region| region.area == Area::Geofabrik);
+        let area = vec![("area".to_string(), env.region.clone())];
+        let osm_sources = match geofabrik {
+            true => (
+                snapshot_version(env, store, EXTRACTS, &area, &mut wanted)?,
+                snapshot_version(env, store, LAND, &[], &mut wanted)?,
+            ),
+            false => (None, None),
+        };
+        let (Some(outlines), Some(tile_list), true) = (outlines, tile_list, wanted.is_empty()) else {
             return Err(Unplanned::NeedsFetch(wanted));
         };
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
         let glo30 =
             env.version(GLO30).ok_or_else(|| invalid(format!("data/env/{}.toml pins no `{GLO30}`", env.name)))?;
-        let cells: BTreeSet<CellId> = outlines.iter().flat_map(|outline| outline.cells(V1_CELL_LOG2.into())).collect();
-        let mut leaves: BTreeMap<(i64, i64), Vec<CellId>> = BTreeMap::new();
-        let shift = LEAF_LOG2 - u32::from(V1_CELL_LOG2);
-        for cell in cells {
-            leaves.entry((cell.i >> shift, cell.j >> shift)).or_default().push(cell);
+        let terrain_cells = leaves(&outlines, V1_CELL_LOG2.into());
+        let mut steps: Vec<Step> =
+            terrain_cells.iter().map(|(&leaf, cells)| terrain(leaf, cells, &land, glo30)).collect();
+        let (Some(extract), Some(land_polygons)) = osm_sources else {
+            return Ok(steps);
+        };
+        let mut osm_leaves = BTreeSet::new();
+        for band in BandTable::recommended().bands {
+            let reads_terrain = obc_pack::step::reads_terrain(&band).map_err(invalid)?;
+            for (leaf, cells) in leaves(&outlines, band.cell_log2) {
+                osm_leaves.insert(leaf);
+                steps.push(map_cells(&band, leaf, &cells, &land_polygons, reads_terrain));
+            }
         }
-        Ok(leaves.into_iter().map(|(leaf, cells)| terrain(leaf, &cells, &land, glo30)).collect())
+        let extract = Input::Snapshot { source: EXTRACTS.into(), version: extract, params: area, files: Vec::new() };
+        steps.push(osm(extract, &osm_leaves));
+        Ok(steps)
+    }
+}
+
+/// The cells of size `2^log2` that an outline touches, by leaf.
+fn leaves(outlines: &[Coverage], log2: u32) -> BTreeMap<LeafId, Vec<CellId>> {
+    let cells: BTreeSet<CellId> = outlines.iter().flat_map(|outline| outline.cells(log2)).collect();
+    let mut leaves: BTreeMap<LeafId, Vec<CellId>> = BTreeMap::new();
+    let shift = LEAF_LOG2 - log2;
+    for cell in cells {
+        leaves.entry(LeafId { i: cell.i >> shift, j: cell.j >> shift }).or_default().push(cell);
+    }
+    leaves
+}
+
+/// The name of the layer of `leaf` below `prefix`.
+fn leaf_layer(prefix: &str, leaf: LeafId) -> String {
+    let width = id_width(LEAF_LOG2);
+    format!("{prefix}/{:0width$}-{:0width$}", leaf.i, leaf.j)
+}
+
+/// The version of the fetch of `source` with `params` that the step list reads, or `None` while
+/// the store has no fetch of it; then `wanted` has its fetch.
+fn snapshot_version(
+    env: &Env,
+    store: &Store,
+    source: &str,
+    params: &[(String, String)],
+    wanted: &mut Vec<Wanted>,
+) -> Result<Option<String>, Unplanned> {
+    Ok(match version(env, store, source, params).map_err(Unplanned::Invalid)? {
+        Ok(version) => Some(version),
+        Err(fetch) => {
+            wanted.push(fetch);
+            None
+        }
+    })
+}
+
+/// The OSM of each leaf: the extract of the region, cut to the square of the leaf and a halo.
+fn osm(extract: Input, leaves: &BTreeSet<LeafId>) -> Step {
+    Step {
+        name: "maps/osm".into(),
+        inputs: vec![extract],
+        options: serde_json::json!({"leaves": leaves.iter().map(|leaf| [leaf.i, leaf.j]).collect::<Vec<_>>()}),
+        code: Code { paths: Vec::new(), crates: vec!["obc-bake".into()] },
+        outputs: vec!["osm".into()],
+        run: Run::Rust(obc_bake::step::osm),
+    }
+}
+
+/// The map cells of one band in one leaf, from the OSM of the leaf, the land polygons and, for a
+/// band whose bytes read heights, the terrain of the leaf.
+fn map_cells(band: &Band, leaf: LeafId, cells: &[CellId], land_polygons: &str, reads_terrain: bool) -> Step {
+    let land_polygons =
+        Input::Snapshot { source: LAND.into(), version: land_polygons.into(), params: Vec::new(), files: Vec::new() };
+    let osm = Input::Layer { name: "maps/osm".into(), files: vec![obc_bake::step::leaf_pbf(leaf)] };
+    let mut inputs = vec![osm, land_polygons];
+    if reads_terrain {
+        inputs.push(Input::Layer { name: leaf_layer("maps/terrain", leaf), files: Vec::new() });
+    }
+    Step {
+        name: leaf_layer(&format!("maps/{}", band.id), leaf),
+        inputs,
+        options: serde_json::json!({
+            "band": band.id,
+            "leaf": [i64::from(LEAF_LOG2), leaf.i, leaf.j],
+            "cells": cells.iter().map(|cell| [cell.i, cell.j]).collect::<Vec<_>>(),
+        }),
+        code: Code { paths: Vec::new(), crates: vec!["obc-pack".into()] },
+        outputs: vec!["cells".into()],
+        run: Run::Rust(obc_pack::step::cells),
     }
 }
 
 /// The terrain cells of one leaf, from the GLO-30 tiles that the square of each cell reaches. A
 /// square that the tile list does not name is sea, and has no tile to read.
-fn terrain((i, j): (i64, i64), cells: &[CellId], land: &HashSet<&str>, glo30: &str) -> Step {
+fn terrain(leaf: LeafId, cells: &[CellId], land: &HashSet<&str>, glo30: &str) -> Step {
     let source_box = |cell: &CellId| obc_bake::terrain::source_bbox([*cell]).expect("a cell has a box");
     let tiles = cells.iter().flat_map(|cell| obc_dem::fetch::tiles_for(source_box(cell)));
     let tiles: BTreeSet<String> = tiles.map(|tile| tile.stem()).filter(|tile| land.contains(tile.as_str())).collect();
@@ -58,9 +153,8 @@ fn terrain((i, j): (i64, i64), cells: &[CellId], land: &HashSet<&str>, glo30: &s
         true => Vec::new(),
         false => vec![Input::Snapshot { source: GLO30.into(), version: glo30.into(), params, files: Vec::new() }],
     };
-    let width = id_width(LEAF_LOG2);
     Step {
-        name: format!("maps/terrain/{i:0width$}-{j:0width$}"),
+        name: leaf_layer("maps/terrain", leaf),
         inputs,
         options: serde_json::json!({
             "posting_log2": V1_POSTING_LOG2,
@@ -165,6 +259,26 @@ mod tests {
         (env, Regions::load(&root()).unwrap())
     }
 
+    /// A Geofabrik region about Freiburg, in leaf `0037-0032`, whose `.poly` the store has, and the
+    /// tile list.
+    fn freiburg(store: &Store) -> (Env, Regions) {
+        let area = [("area".to_string(), "europe/test".to_string())];
+        let poly = "test\n1\n   7.79 47.99\n   7.82 47.99\n   7.82 48.02\n   7.79 48.02\n   7.79 47.99\nEND\nEND\n";
+        fetched(store, POLY, "1", &area, &[("europe/test.poly".into(), poly.into())]);
+        with_tile_list(store, &["N47_00_E007", "N48_00_E007"]);
+        let region = obc_data::regions::parse_region("europe/test", "name = \"Test\"\nkind = \"geofabrik\"\n").unwrap();
+        let pins = BTreeMap::from([(GLO30.to_string(), "1".to_string()), (TILE_LIST.to_string(), "1".to_string())]);
+        let env = Env { name: "test".into(), region: "europe/test".into(), layers: Vec::new(), pins };
+        (env, Regions::new(vec![region]).unwrap())
+    }
+
+    /// The extract of the Freiburg region and the land polygons.
+    fn with_osm(store: &Store) {
+        let area = [("area".to_string(), "europe/test".to_string())];
+        fetched(store, EXTRACTS, "1", &area, &[("europe/test.osm.pbf".into(), "osm".into())]);
+        fetched(store, LAND, "1", &[], &[("land-polygons-split-3857.zip".into(), "land".into())]);
+    }
+
     /// Add the files `(name, text)` to the record of `source@version`, as a fetch with `params`
     /// gives them.
     fn fetched(store: &Store, source: &str, version: &str, params: &[(String, String)], files: &[(String, String)]) {
@@ -263,15 +377,42 @@ mod tests {
     }
 
     #[test]
+    fn a_band_reads_the_osm_of_its_leaf_the_land_and_the_terrain_when_its_bytes_have_heights() {
+        let temp = temp("bands");
+        let store = Store::at(temp.0.join("store"));
+        let (env, regions) = freiburg(&store);
+        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&env, &regions, &store) else { panic!("no extract") };
+        assert_eq!(wanted.iter().map(|fetch| fetch.source.as_str()).collect::<Vec<_>>(), [EXTRACTS, LAND]);
+        with_osm(&store);
+        let steps = Maps.steps(&env, &regions, &store).unwrap();
+        let reads = |name: &str| -> Vec<String> {
+            let step = steps.iter().find(|step| step.name == name).unwrap();
+            let read = |input: &Input| match input {
+                Input::Snapshot { source, .. } => source.clone(),
+                Input::Layer { name, files } => format!("{name} {files:?}"),
+            };
+            step.inputs.iter().map(read).collect()
+        };
+        let osm = r#"maps/osm ["osm/0037-0032.osm.pbf"]"#;
+        assert_eq!(reads("maps/osm"), [EXTRACTS]);
+        assert_eq!(reads("maps/coarse/0037-0032"), [osm, LAND]);
+        for band in ["mid", "fine", "network"] {
+            assert_eq!(reads(&format!("maps/{band}/0037-0032")), [osm, LAND, "maps/terrain/0037-0032 []"], "{band}");
+        }
+        assert!(steps.iter().all(|step| !step.code.paths.iter().any(|path| path == "Cargo.lock")));
+    }
+
+    #[test]
     fn no_terrain_step_reads_an_osm_source() {
         let sources = obc_data::sources::parse_sources(include_str!("../../../data/sources.toml")).unwrap();
         let osm =
             |id: &str| sources.iter().any(|source| source.id == id && source.licence.as_deref() == Some("ODbL-1.0"));
         let temp = temp("osm");
         let store = Store::at(temp.0.join("store"));
-        with_tile_list(&store, &["N46_00_E007", "N46_00_E008", "N47_00_E007", "N47_00_E008"]);
-        let (env, regions) = grimsel("1");
+        let (env, regions) = freiburg(&store);
+        with_osm(&store);
         let steps = Maps.steps(&env, &regions, &store).unwrap();
+        assert!(steps.iter().any(|step| step.name == "maps/osm"));
         let by_name: BTreeMap<&str, &Step> = steps.iter().map(|step| (step.name.as_str(), step)).collect();
         let mut pending: Vec<&Step> = steps.iter().filter(|step| step.name.starts_with("maps/terrain/")).collect();
         assert!(!pending.is_empty());

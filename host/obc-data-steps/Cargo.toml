@@ -27,7 +27,13 @@ serde_json = "1"
 obc-elevation = { path = "../../firmware/obc-elevation" }
 obc-fixtures = { path = "../obc-fixtures" }
 obc-formats = { path = "../../firmware/obc-formats" }
+# The land polygons of the map-cell fixture: a zip that the test writes.
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 
 [[test]]
 name = "terrain_fixture"
+required-features = ["external-fixtures"]
+
+[[test]]
+name = "cells_fixture"
 required-features = ["external-fixtures"]
