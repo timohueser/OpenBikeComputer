@@ -1,6 +1,6 @@
 //! OSM preferences adapted from BRouter fastbike, trekking and gravel (see LICENSE.brouter).
 use crate::country::Country;
-use crate::source::{self, Tags};
+use crate::source::{self, Oneway, Tags};
 use route_engine::{
     cost::CostBasis,
     model::{Road, RoadBike},
@@ -131,12 +131,11 @@ pub fn way(road: &Road, tags: &Tags, variant: RoadBike, pushing: bool) -> Option
         factor = factor.max(surface_floor) * roughness;
     }
     if pushing {
-        let oneway = tags
-            .get("oneway:bicycle")
-            .or_else(|| tags.get("oneway"))
-            .map(String::as_str)
-            .unwrap_or(if tag(tags, "junction") == "roundabout" { "yes" } else { "no" });
-        let wrong_way = (road.reversed && matches!(oneway, "yes" | "true" | "1")) || (!road.reversed && oneway == "-1");
+        let wrong_way = match source::oneway(get, "bicycle") {
+            Oneway::Forward => road.reversed,
+            Oneway::Backward => !road.reversed,
+            _ => false,
+        };
         factor += if wrong_way {
             match highway {
                 _ if matches!(tag(tags, "junction"), "roundabout" | "circular") => 60.0,

@@ -1,5 +1,5 @@
 //! Streaming regional OSM import.
-use crate::{country::Country, source, Graph};
+use crate::{country::Country, source, source::Oneway, Graph};
 use osmpbfreader::{OsmId, OsmObj, OsmPbfReader, Relation, Tags, Way};
 use route_engine::closures::{Closure, Kind};
 use route_engine::model::{Point, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH};
@@ -64,20 +64,12 @@ fn attributes(tags: &Tags, country: Country, counts: &mut Counts) -> Option<Attr
     let highway = tag(tags, "highway").unwrap_or("");
     let (class, defaults) = if ferry { (6, BIKE | FOOT | PUSH) } else { source::highway_access(highway, country)? };
     let mut modes = [access(tags, defaults, "forward"), access(tags, defaults, "backward")];
-    let oneway = tag(tags, "oneway").unwrap_or(if tags.contains("junction", "roundabout") { "yes" } else { "no" });
-    // A lane on a one-way road follows the road, so the side of traffic does not matter.
-    let opposite = match oneway {
-        "yes" | "1" | "true" => source::cycleway(|key| tag(tags, key), true, false),
-        "-1" | "reverse" => source::cycleway(|key| tag(tags, key), false, false),
-        _ => false,
-    };
-    let bike_oneway = tag(tags, "oneway:bicycle").unwrap_or(if opposite { "no" } else { oneway });
-    for (value, mask) in [(bike_oneway, BIKE), (tag(tags, "oneway:foot").unwrap_or("no"), FOOT | PUSH)] {
-        match value {
-            "yes" | "1" | "true" => modes[1] &= !mask,
-            "-1" | "reverse" => modes[0] &= !mask,
-            "no" | "0" | "false" => {}
-            _ => {
+    for (mode, mask) in [("bicycle", BIKE), ("foot", FOOT | PUSH)] {
+        match source::oneway(|key| tag(tags, key), mode) {
+            Oneway::Forward => modes[1] &= !mask,
+            Oneway::Backward => modes[0] &= !mask,
+            Oneway::Both | Oneway::Reversible => {}
+            Oneway::Unknown => {
                 modes[0] &= !mask;
                 modes[1] &= !mask;
                 count(counts, "excluded unsupported oneway modes");
