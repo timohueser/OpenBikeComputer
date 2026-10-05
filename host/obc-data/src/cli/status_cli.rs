@@ -329,7 +329,7 @@ mod tests {
         fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<Vec<Step>, Unplanned> {
             let code = StepCode { paths: Vec::new(), crates: Vec::new() };
             let run = Run::Command(vec!["true".into()]);
-            Ok(vec![step("reading/one", vec![Input::Layer("test/one".into())], code, "out", run)])
+            Ok(vec![step("reading/one", vec![Input::layer("test/one")], code, "out", run)])
         }
     }
 

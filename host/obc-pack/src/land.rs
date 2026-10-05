@@ -175,18 +175,19 @@ struct ShapeRecord {
 /// A `OnceLock<Result<..>>` would cache the first failure as durably as the first success, and one
 /// way this call fails is the user pressing stop: a cancelled build inside a host that links the
 /// packer in-process would then have poisoned land generation for the rest of the session. A failed
-/// or cancelled index leaves the slot empty, so the next call indexes again.
-static LAND_INDEX: Mutex<Option<Arc<Vec<ShapeRecord>>>> = Mutex::new(None);
+/// or cancelled index leaves the slot empty, so the next call indexes again. The table is of one
+/// `.shp`: each version of the land polygons unpacks to its own path.
+static LAND_INDEX: Mutex<Option<(PathBuf, Arc<Vec<ShapeRecord>>)>> = Mutex::new(None);
 
 /// The record table for `shp`: the memoized one, or a fresh scan stored on success.
 fn land_index(shp: &Path, progress: &Progress) -> Result<Arc<Vec<ShapeRecord>>, String> {
     // A poisoned lock means an earlier scan panicked, not that the slot is unusable.
     let mut slot = LAND_INDEX.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(index) = slot.as_ref() {
+    if let Some((_, index)) = slot.as_ref().filter(|(path, _)| path == shp) {
         return Ok(Arc::clone(index));
     }
     let index = Arc::new(index_shapefile(shp, progress)?);
-    *slot = Some(Arc::clone(&index));
+    *slot = Some((shp.to_path_buf(), Arc::clone(&index)));
     Ok(index)
 }
 

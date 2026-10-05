@@ -3553,6 +3553,7 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+ "zip",
 ]
 
 [[package]]

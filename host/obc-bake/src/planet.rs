@@ -250,6 +250,11 @@ impl LeafId {
     pub fn cell(self) -> CellId {
         CellId::new(SOURCE_LEAF_LOG2, self.i, self.j).expect("planned leaf is in the grid")
     }
+
+    /// The box that Osmium extracts the leaf with: its square and a halo.
+    pub fn extract_bbox(self) -> [f64; 4] {
+        LeafRect { i0: self.i, i1: self.i + 1, j0: self.j, j1: self.j + 1 }.extract_bbox()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -421,6 +426,16 @@ impl ShardRunner for OsmiumRunner {
 }
 
 impl OsmiumRunner {
+    /// The first line of `osmium --version`.
+    pub fn version(&self) -> Result<String, String> {
+        let out = Command::new(&self.binary).arg("--version").output();
+        let out = out.map_err(|e| format!("{} --version: {e}", self.binary.display()))?;
+        if !out.status.success() {
+            return Err(format!("{} --version failed with {}", self.binary.display(), out.status));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or_default().to_string())
+    }
+
     /// Write `base` with `diffs` applied to `out`, in passes of [`DIFFS_PER_PASS`] diffs. A pass
     /// writes a `.part` file, so `out` exists only when it is whole. With `delete_base`, `base`
     /// goes when the first pass is done.
