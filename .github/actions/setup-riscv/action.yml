@@ -1,0 +1,41 @@
+name: Set up the RISC-V GCC
+description: >
+  The rv32emc GNU toolchain that the board's build.rs needs for the FLPR blob. CI and the release
+  workflow both use this action, so a shipped image is built by the compiler CI tested. The xPack
+  tarball comes from GitHub's release CDN, SHA-256-verified, and is cached after the first run;
+  the apt package is not used because the runner's Ubuntu mirror stalls on it.
+
+# Keep `version` in step with RISCV_XPACK_VER in tools/install-riscv.sh.
+inputs:
+  version:
+    description: xPack riscv-none-elf-gcc release
+    default: "13.2.0-2"
+  sha256:
+    description: SHA-256 of the linux-x64 tarball for that release
+    default: "52545afb900200fbf65fe05f7ce7090b8a42c64091f4f5d43cae6bb68ea2434a"
+
+runs:
+  using: composite
+  steps:
+    - name: Cache the RISC-V GCC ${{ inputs.version }}
+      id: riscv-gcc-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/xpack-riscv-none-elf-gcc-${{ inputs.version }}
+        key: xpack-riscv-none-elf-gcc-${{ inputs.version }}-linux-x64
+
+    - name: Install the RISC-V GCC ${{ inputs.version }}
+      if: steps.riscv-gcc-cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        SHA256: ${{ inputs.sha256 }}
+      run: |
+        url="https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${VERSION}/xpack-riscv-none-elf-gcc-${VERSION}-linux-x64.tar.gz"
+        timeout 600 curl -fL --retry 3 --retry-all-errors --max-time 300 -o /tmp/riscv-gcc.tar.gz "$url"
+        echo "$SHA256  /tmp/riscv-gcc.tar.gz" | sha256sum -c -
+        tar -xzf /tmp/riscv-gcc.tar.gz -C "$HOME"
+
+    - name: Put the RISC-V GCC on PATH
+      shell: bash
+      run: echo "$HOME/xpack-riscv-none-elf-gcc-${{ inputs.version }}/bin" >> "$GITHUB_PATH"
