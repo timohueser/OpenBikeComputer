@@ -15,6 +15,8 @@ mod map_points;
 mod nav;
 pub mod places;
 mod poi;
+mod quadtree;
+use quadtree::{QuadCursor, QuadStep};
 mod settlement;
 pub use map_points::MapPointQuery;
 mod summit;
@@ -44,16 +46,16 @@ use obc_formats::obcm::{
     OffsetScale, ScaledOffset, HEADER_DARK_MARKER_COLOR_OFF, HEADER_DARK_STYLE_OFFSET_OFF, HEADER_LEN,
     HEADER_OFFSET_SCALE_OFF, HEADER_TERRAIN_LENGTH_OFF, HEADER_TERRAIN_OFFSET_OFF, LOD_ENTRY_LEN, NAV_MAX_PROFILES,
 };
-use obc_formats::obcm::{
-    BRANCH_BIT, EMPTY_LEAF, STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK,
-    STYLE_TERRAIN_LAYER_BIT, STYLE_TICKED_BIT,
-};
+#[cfg(test)]
+use obc_formats::obcm::{BRANCH_BIT, EMPTY_LEAF};
 use obc_formats::obcm::{MAGIC, STYLE_RECORD_LEN, VERSION};
+use obc_formats::obcm::{
+    STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, STYLE_TERRAIN_LAYER_BIT,
+    STYLE_TICKED_BIT,
+};
 use obc_map_scene::{BBox, LineStyle, Style, StyleFlags};
 
-/// Hard cap on quadtree recursion depth. A well-formed tree is far shallower. It matters for a
-/// corrupt one: once the node bbox subdivides to a point the quadrants stop shrinking while
-/// `intersects(view)` stays true, so an unbounded walk overflows the stack.
+/// Maximum depth of a visited quadtree leaf.
 const MAX_QUADTREE_DEPTH: u32 = 32;
 
 /// A flat `uint32` quadtree index over the header's global bbox, shared by a geometry [`Lod`] and
@@ -494,50 +496,24 @@ impl<'a> Reader<'a> {
         Ok(u32::from_le_bytes(b))
     }
 
-    /// Visit `(chunk_id, node_bbox)` for every non-empty leaf of a [`QuadIndex`] overlapping
-    /// `view`. `index` is `&dyn` so the recursive walk is not monomorphized twice.
-    fn walk_leaves<F: FnMut(u32, BBox)>(
+    fn walk_leaves(
         &self,
         index: &dyn QuadIndex,
-        idx: usize,
-        node: BBox,
         view: &BBox,
-        depth: u32,
-        visit: &mut F,
+        mut visit: impl FnMut(u32, BBox),
     ) -> Result<(), MapReadError> {
-        // The depth cap is the hard stack bound against a corrupt cyclic branch.
-        if idx >= index.node_count() || depth > MAX_QUADTREE_DEPTH || !node.intersects(view) {
-            return Ok(());
-        }
-        // Read the node before descending, so the index-cache borrow is released before a leaf's
-        // `visit` triggers a geometry-chunk read.
-        let val = self.read_node(index, idx)?;
-        if val & BRANCH_BIT == 0 {
-            if val != EMPTY_LEAF {
-                visit(val, node);
+        let mut cursor = QuadCursor::default();
+        cursor.reset();
+        loop {
+            match cursor
+                .step(self.bbox, view, index.node_count(), |idx| self.read_node(index, idx))
+                .map_err(|e| e.error)?
+            {
+                QuadStep::Leaf(chunk, node) => visit(chunk, node),
+                QuadStep::Done => return Ok(()),
+                QuadStep::Pending => {}
             }
-            return Ok(());
         }
-        let child = (val & !BRANCH_BIT) as usize;
-        // The packer flattens the quadtree breadth-first, so a branch's children lie after it. A
-        // back-reference appears only in a corrupt map and would re-enter a node on the stack.
-        if child <= idx {
-            return Err(MapReadError::Malformed);
-        }
-        // Floor-division midpoints must match the packer's split.
-        let mid_lon = (node.min_lon + node.max_lon).div_euclid(2);
-        let mid_lat = (node.min_lat + node.max_lat).div_euclid(2);
-        // NW, NE, SW, SE
-        let kids = [
-            BBox { min_lon: node.min_lon, min_lat: mid_lat, max_lon: mid_lon, max_lat: node.max_lat },
-            BBox { min_lon: mid_lon, min_lat: mid_lat, max_lon: node.max_lon, max_lat: node.max_lat },
-            BBox { min_lon: node.min_lon, min_lat: node.min_lat, max_lon: mid_lon, max_lat: mid_lat },
-            BBox { min_lon: mid_lon, min_lat: node.min_lat, max_lon: node.max_lon, max_lat: mid_lat },
-        ];
-        for (i, kb) in kids.iter().enumerate() {
-            self.walk_leaves(index, child + i, *kb, view, depth + 1, visit)?;
-        }
-        Ok(())
     }
 }
 

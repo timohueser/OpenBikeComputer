@@ -4,14 +4,14 @@ mod cache;
 
 pub use cache::{NavCacheStats, NavTileCache};
 
-use super::{aligned_index_end, fixed_chunk_range, resolve, MapReadError, QuadIndex, Reader, MAX_QUADTREE_DEPTH};
+use super::{aligned_index_end, fixed_chunk_range, resolve, MapReadError, QuadCursor, QuadIndex, QuadStep, Reader};
 use crate::Error;
 use heapless::Vec;
 use obc_formats::io::{rd_i32, rd_u16, rd_u32, ByteSource, Error as IoError};
 use obc_formats::obcm::{
-    nav_edge_id_chunk, nav_edge_id_ordinal, nav_edge_record_range, NavEdgeRecord, OffsetScale, BRANCH_BIT, CHUNK_END,
-    EMPTY_LEAF, HEADER_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_MAX_CHUNKS, NAV_MAX_PROFILES,
-    NAV_PROFILE_CLIMB_WEIGHT_OFF, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN, NAV_SNAP_RECORD_LEN,
+    nav_edge_id_chunk, nav_edge_id_ordinal, nav_edge_record_range, NavEdgeRecord, OffsetScale, CHUNK_END, HEADER_LEN,
+    NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_MAX_CHUNKS, NAV_MAX_PROFILES, NAV_PROFILE_CLIMB_WEIGHT_OFF, NAV_PROFILE_LEN,
+    NAV_PROFILE_NAME_LEN, NAV_SNAP_RECORD_LEN,
 };
 use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox, M_PER_DEG};
 
@@ -254,6 +254,39 @@ fn candidate_beats(new: &NavEdgeCandidate, old: &NavEdgeCandidate) -> bool {
     new.distance_m < old.distance_m || (new.distance_m == old.distance_m && new.edge_id < old.edge_id)
 }
 
+#[derive(Default)]
+struct EdgeCandidates {
+    best: Option<NavEdgeCandidate>,
+    ambiguous: bool,
+    read_error: Option<IoError>,
+}
+impl EdgeCandidates {
+    fn consider(&mut self, candidate: Option<NavEdgeCandidate>, max_distance: f32, require_unique: bool) -> bool {
+        let Some(candidate) = candidate else {
+            if require_unique {
+                self.read_error = Some(IoError::Io);
+                return false;
+            }
+            return true;
+        };
+        if candidate.distance_m <= max_distance {
+            if self.best.is_some_and(|old| old.edge_id != candidate.edge_id) {
+                self.ambiguous = true;
+            }
+            if self.best.is_none_or(|old| candidate_beats(&candidate, &old)) {
+                self.best = Some(candidate);
+            }
+        }
+        true
+    }
+    fn finish(self, require_unique: bool) -> Result<Option<NavEdgeCandidate>, Error> {
+        if let Some(error) = self.read_error {
+            return Err(Error::Source(error));
+        }
+        Ok(if require_unique && self.ambiguous { None } else { self.best })
+    }
+}
+
 impl<'a> Reader<'a> {
     /// The parsed nav directory. Always present; `is_empty()` for a map with no routable ways.
     #[inline]
@@ -320,7 +353,7 @@ impl<'a> Reader<'a> {
         if dir.is_empty() {
             return Ok(());
         }
-        self.walk_leaves(&dir, 0, self.bbox, view, 0, &mut |cid, _node| visit(cid)).map_err(Error::from)
+        self.walk_leaves(&dir, view, |cid, _node| visit(cid)).map_err(Error::from)
     }
 
     /// Visit every junction record of node chunk `chunk_id`, in record order. `scratch` is as for
@@ -428,7 +461,7 @@ impl<'a> Reader<'a> {
             return Ok(());
         }
         let mut read_error = None;
-        self.walk_nav_leaves(&dir, 0, self.bbox, view, 0, tiles, &mut |tiles, cid, _node| {
+        self.walk_nav_leaves(&dir, view, tiles, |tiles, cid, _node| {
             if read_error.is_some() {
                 return;
             }
@@ -490,14 +523,12 @@ impl<'a> Reader<'a> {
         if dir.is_empty() {
             return Ok(None);
         }
-        let mut best: Option<NavEdgeCandidate> = None;
-        let mut ambiguous = false;
-        let mut read_error = None;
+        let mut candidates = EdgeCandidates::default();
 
         // First the ordinary node tree, which supplies every short edge. Copy each chunk before
         // edge-pool reads can evict its cache slot.
-        self.walk_nav_leaves(&dir, 0, self.bbox, view, 0, tiles, &mut |tiles, cid, _node| {
-            if read_error.is_some() {
+        self.walk_nav_leaves(&dir, view, tiles, |tiles, cid, _node| {
+            if candidates.read_error.is_some() {
                 return;
             }
             let Some((start, end)) = dir.chunk_range(cid) else { return };
@@ -507,7 +538,7 @@ impl<'a> Reader<'a> {
             let mut local = [0u8; NAV_MAX_CHUNK_BYTES];
             {
                 let Some(chunk) = tiles.chunk(self.src, start, dir.chunk_size) else {
-                    read_error = Some(IoError::Io);
+                    candidates.read_error = Some(IoError::Io);
                     return;
                 };
                 local[..dir.chunk_size].copy_from_slice(chunk);
@@ -517,22 +548,12 @@ impl<'a> Reader<'a> {
                     return;
                 }
                 for nb in n.neighbors() {
-                    let Some(candidate) = self.project_nav_edge_cached(tiles, nb.edge_id, p) else {
-                        if require_unique {
-                            read_error = Some(IoError::Io);
-                            return;
-                        }
-                        continue;
-                    };
-                    if candidate.distance_m <= max_distance_m
-                        && best.is_some_and(|old| old.edge_id != candidate.edge_id)
-                    {
-                        ambiguous = true;
-                    }
-                    if candidate.distance_m <= max_distance_m
-                        && best.is_none_or(|old| candidate_beats(&candidate, &old))
-                    {
-                        best = Some(candidate);
+                    if !candidates.consider(
+                        self.project_nav_edge_cached(tiles, nb.edge_id, p),
+                        max_distance_m,
+                        require_unique,
+                    ) {
+                        return;
                     }
                 }
             });
@@ -541,10 +562,10 @@ impl<'a> Reader<'a> {
 
         // Then the sparse long-edge anchors. Leaves may share chunks, so filter by the absolute
         // record coordinate.
-        if dir.snap_node_count > 0 && read_error.is_none() {
+        if dir.snap_node_count > 0 && candidates.read_error.is_none() {
             let index = NavSnapIndex { index_offset: dir.snap_index_offset, node_count: dir.snap_node_count };
-            self.walk_nav_leaves(&index, 0, self.bbox, view, 0, tiles, &mut |tiles, cid, _node| {
-                if read_error.is_some() {
+            self.walk_nav_leaves(&index, view, tiles, |tiles, cid, _node| {
+                if candidates.read_error.is_some() {
                     return;
                 }
                 let Some((start, end)) = dir.snap_chunk_range(cid) else { return };
@@ -554,7 +575,7 @@ impl<'a> Reader<'a> {
                 let mut local = [CHUNK_END; NAV_CHUNK_SIZE];
                 {
                     let Some(chunk) = tiles.chunk(self.src, start, dir.chunk_size) else {
-                        read_error = Some(IoError::Io);
+                        candidates.read_error = Some(IoError::Io);
                         return;
                     };
                     local[..dir.chunk_size].copy_from_slice(chunk);
@@ -568,31 +589,18 @@ impl<'a> Reader<'a> {
                     if lon < view.min_lon || lon > view.max_lon || lat < view.min_lat || lat > view.max_lat {
                         continue;
                     }
-                    let Some(candidate) = self.project_nav_edge_cached(tiles, edge_id, p) else {
-                        if require_unique {
-                            read_error = Some(IoError::Io);
-                            return;
-                        }
-                        continue;
-                    };
-                    if candidate.distance_m <= max_distance_m
-                        && best.is_some_and(|old| old.edge_id != candidate.edge_id)
-                    {
-                        ambiguous = true;
-                    }
-                    if candidate.distance_m <= max_distance_m
-                        && best.is_none_or(|old| candidate_beats(&candidate, &old))
-                    {
-                        best = Some(candidate);
+                    if !candidates.consider(
+                        self.project_nav_edge_cached(tiles, edge_id, p),
+                        max_distance_m,
+                        require_unique,
+                    ) {
+                        return;
                     }
                 }
             })
             .map_err(Error::from)?;
         }
-        if let Some(error) = read_error {
-            return Err(Error::Source(error));
-        }
-        Ok(if require_unique && ambiguous { None } else { best })
+        candidates.finish(require_unique)
     }
 
     /// Resolve the winning candidate's endpoint ids and directional ascents through two
@@ -732,46 +740,28 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// Route-private node walk. Node words are served from [`NavTileCache`]'s sixteen windows, so
-    /// thousands of point descents do not churn the seven render-index windows. The callback gets
-    /// the mutable cache only after the node-word borrow has ended.
-    #[allow(clippy::too_many_arguments)]
-    fn walk_nav_leaves<F: FnMut(&mut NavTileCache, u32, BBox)>(
+    /// Release the route index-cache borrow before a leaf callback can read its chunk.
+    fn walk_nav_leaves(
         &self,
         index: &dyn QuadIndex,
-        idx: usize,
-        node: BBox,
         view: &BBox,
-        depth: u32,
         tiles: &mut NavTileCache,
-        visit: &mut F,
+        mut visit: impl FnMut(&mut NavTileCache, u32, BBox),
     ) -> Result<(), MapReadError> {
-        if idx >= index.node_count() || depth > MAX_QUADTREE_DEPTH || !node.intersects(view) {
-            return Ok(());
-        }
-        let val = tiles.index_node(self.src, index, idx).map_err(MapReadError::Source)?;
-        if val & BRANCH_BIT == 0 {
-            if val != EMPTY_LEAF {
-                visit(tiles, val, node);
+        let mut cursor = QuadCursor::default();
+        cursor.reset();
+        loop {
+            match cursor
+                .step(self.bbox, view, index.node_count(), |idx| {
+                    tiles.index_node(self.src, index, idx).map_err(MapReadError::Source)
+                })
+                .map_err(|e| e.error)?
+            {
+                QuadStep::Leaf(chunk, node) => visit(tiles, chunk, node),
+                QuadStep::Done => return Ok(()),
+                QuadStep::Pending => {}
             }
-            return Ok(());
         }
-        let child = (val & !BRANCH_BIT) as usize;
-        if child <= idx {
-            return Err(MapReadError::Malformed);
-        }
-        let mid_lon = (node.min_lon + node.max_lon).div_euclid(2);
-        let mid_lat = (node.min_lat + node.max_lat).div_euclid(2);
-        let kids = [
-            BBox { min_lon: node.min_lon, min_lat: mid_lat, max_lon: mid_lon, max_lat: node.max_lat },
-            BBox { min_lon: mid_lon, min_lat: mid_lat, max_lon: node.max_lon, max_lat: node.max_lat },
-            BBox { min_lon: node.min_lon, min_lat: node.min_lat, max_lon: mid_lon, max_lat: mid_lat },
-            BBox { min_lon: mid_lon, min_lat: node.min_lat, max_lon: node.max_lon, max_lat: mid_lat },
-        ];
-        for (i, child_bbox) in kids.iter().enumerate() {
-            self.walk_nav_leaves(index, child + i, *child_bbox, view, depth + 1, tiles, visit)?;
-        }
-        Ok(())
     }
 
     /// Fetch one edge polyline oriented to begin at `start`, streaming each point through `emit`

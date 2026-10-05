@@ -3,14 +3,14 @@
 use super::cache::{ChunkLoc, WalkEntry, WALK_CACHE_ENTRIES};
 use super::{
     expand_walk_bbox, index_end, intersect_bbox, CacheError, CapacityError, DecodeStatus, FeatureDecodeError,
-    FeatureReadError, MapReadError, QuadIndex, Reader, MAX_QUADTREE_DEPTH,
+    FeatureReadError, MapReadError, QuadCursor, QuadIndex, QuadStep, Reader,
 };
 use crate::Error;
 use heapless::Vec;
 use obc_formats::io::{rd_f32, rd_i16, rd_i32, rd_u16, rd_u32, ByteSource};
 use obc_formats::obcm::{
-    OffsetScale, BRANCH_BIT, CHUNK_END, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON,
-    FEATURE_FLAG_WIDE, FEATURE_HEADER_COMPACT_LEN, FEATURE_HEADER_WIDE_LEN, HEADER_LEN, LOD_ENTRY_LEN,
+    OffsetScale, CHUNK_END, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, FEATURE_FLAG_WIDE,
+    FEATURE_HEADER_COMPACT_LEN, FEATURE_HEADER_WIDE_LEN, HEADER_LEN, LOD_ENTRY_LEN,
 };
 use obc_map_scene::{BBox, Kind};
 
@@ -272,73 +272,42 @@ impl<'a> Reader<'a> {
         let cover = expand_walk_bbox(&query, &self.bbox);
         let mut entries: Vec<WalkEntry, WALK_CACHE_ENTRIES> = Vec::new();
         let mut cacheable = true;
-        self.walk_geometry_prefetch(l, 0, self.bbox, &query, &cover, 0, &mut entries, &mut cacheable, &mut visit)?;
+        self.walk_geometry_prefetch(l, &query, &cover, &mut entries, &mut cacheable, &mut visit)?;
         if cacheable {
             self.cache.try_borrow_mut().map_err(MapReadError::Cache)?.store_walk(lod as u8, cover, &entries);
         }
         Ok(())
     }
 
-    /// Geometry-only walk that opportunistically explores `cover` while preserving the exact
-    /// `primary` query's behaviour. Once the result budget overflows, later recursion shrinks back
-    /// to `primary`, and an error found only in the speculative margin abandons caching rather
-    /// than failing a query that never touched that node.
-    #[allow(clippy::too_many_arguments)]
-    fn walk_geometry_prefetch<F: FnMut(u32, BBox)>(
+    /// An error found only in the prefetched margin disables caching, not the requested query.
+    fn walk_geometry_prefetch(
         &self,
         index: &dyn QuadIndex,
-        idx: usize,
-        node: BBox,
         primary: &BBox,
         cover: &BBox,
-        depth: u32,
         entries: &mut Vec<WalkEntry, WALK_CACHE_ENTRIES>,
         cacheable: &mut bool,
-        visit: &mut F,
+        visit: &mut impl FnMut(u32, BBox),
     ) -> Result<(), MapReadError> {
-        let target = if *cacheable { cover } else { primary };
-        if idx >= index.node_count() || depth > MAX_QUADTREE_DEPTH || !node.intersects(target) {
-            return Ok(());
-        }
-        let val = match self.read_node(index, idx) {
-            Ok(val) => val,
-            Err(error) if node.intersects(primary) => return Err(error),
-            Err(_) => {
-                *cacheable = false;
-                return Ok(());
-            }
-        };
-        if val & BRANCH_BIT == 0 {
-            if val != EMPTY_LEAF {
-                if *cacheable && entries.push(WalkEntry { cid: val, node }).is_err() {
-                    *cacheable = false;
+        let mut cursor = QuadCursor::default();
+        cursor.reset();
+        loop {
+            let target = if *cacheable { cover } else { primary };
+            match cursor.step(self.bbox, target, index.node_count(), |idx| self.read_node(index, idx)) {
+                Ok(QuadStep::Done) => return Ok(()),
+                Ok(QuadStep::Pending) => {}
+                Ok(QuadStep::Leaf(cid, node)) => {
+                    if *cacheable && entries.push(WalkEntry { cid, node }).is_err() {
+                        *cacheable = false;
+                    }
+                    if node.intersects(primary) {
+                        visit(cid, node);
+                    }
                 }
-                if node.intersects(primary) {
-                    visit(val, node);
-                }
+                Err(error) if error.node.intersects(primary) => return Err(error.error),
+                Err(_) => *cacheable = false,
             }
-            return Ok(());
         }
-        let child = (val & !BRANCH_BIT) as usize;
-        if child <= idx {
-            if node.intersects(primary) {
-                return Err(MapReadError::Malformed);
-            }
-            *cacheable = false;
-            return Ok(());
-        }
-        let mid_lon = (node.min_lon + node.max_lon).div_euclid(2);
-        let mid_lat = (node.min_lat + node.max_lat).div_euclid(2);
-        let kids = [
-            BBox { min_lon: node.min_lon, min_lat: mid_lat, max_lon: mid_lon, max_lat: node.max_lat },
-            BBox { min_lon: mid_lon, min_lat: mid_lat, max_lon: node.max_lon, max_lat: node.max_lat },
-            BBox { min_lon: node.min_lon, min_lat: node.min_lat, max_lon: mid_lon, max_lat: mid_lat },
-            BBox { min_lon: mid_lon, min_lat: node.min_lat, max_lon: node.max_lon, max_lat: mid_lat },
-        ];
-        for (i, kb) in kids.iter().enumerate() {
-            self.walk_geometry_prefetch(index, child + i, *kb, primary, cover, depth + 1, entries, cacheable, visit)?;
-        }
-        Ok(())
     }
 
     /// Decode every feature in a chunk of `lod`, invoking `visit` once per feature with a

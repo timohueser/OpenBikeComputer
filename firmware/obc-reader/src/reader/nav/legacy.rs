@@ -890,3 +890,6 @@ impl<'a> LegacyReader<'a> {
         Ok(())
     }
 }
+
+use obc_formats::obcm::{BRANCH_BIT, EMPTY_LEAF};
+const MAX_QUADTREE_DEPTH: u32 = 32;
