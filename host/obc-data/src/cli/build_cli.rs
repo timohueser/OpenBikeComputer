@@ -201,13 +201,13 @@ fn select(plan: &Plan, only: &[String]) -> Result<Plan, Error> {
 }
 
 /// An environment, with the sources and the regions that it was read with.
-struct Loaded {
-    env: Env,
-    sources: Vec<Source>,
-    regions: Regions,
+pub(super) struct Loaded {
+    pub(super) env: Env,
+    pub(super) sources: Vec<Source>,
+    pub(super) regions: Regions,
 }
 
-fn load(root: &Path, name: &str) -> Result<Loaded, Error> {
+pub(super) fn load(root: &Path, name: &str) -> Result<Loaded, Error> {
     let registry = registry(root)?;
     if !crate::is_kebab(name) || !root.join("data/env").join(format!("{name}.toml")).is_file() {
         return Err(Code::Usage.error(format!("no environment `{name}` in data/env/")));
@@ -231,7 +231,7 @@ fn planned(
 }
 
 /// Fetch what a product names, with the code of a failed fetch: `fetch_failed` or `blocked`.
-fn fetcher<'a>(
+pub(super) fn fetcher<'a>(
     store: &'a Store,
     http: &'a Http,
     sources: &'a [Source],
@@ -254,7 +254,7 @@ fn product_bug(name: &str, message: String) -> Error {
 
 /// The steps of every product. A product whose step list reads snapshots that the store lacks
 /// gets them fetched, and is asked once more.
-fn steps(
+pub(super) fn steps(
     products: &[&dyn Product],
     env: &Env,
     regions: &Regions,

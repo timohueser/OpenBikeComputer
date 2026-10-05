@@ -1,4 +1,4 @@
-//! `obc data store import`: move the cache directories of the older bake tools into the store.
+//! The import of `obc data clean`: move the cache directories of the older bake tools into the store.
 //! Each file becomes an object, so the same bytes in two directories become one object. An
 //! import record keeps the old path of each file.
 
@@ -18,8 +18,8 @@ use crate::date;
 pub const OLD_DIRS: [&str; 5] =
     [".cache/obcm", ".cache/obc/planner", ".cache/openbikecomputer", "obc-bake", "obc-reference"];
 
-/// What `store import` moves, or moved, and what stays.
-#[derive(Debug, Default, Serialize, JsonSchema)]
+/// What `clean` moves into the store, or moved, and what stays.
+#[derive(Debug, Default, Clone, Serialize, JsonSchema)]
 #[schemars(rename = "ImportPlan")]
 pub struct Plan {
     pub dirs: Vec<DirPlan>,
@@ -29,7 +29,7 @@ pub struct Plan {
     pub new_bytes: u64,
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(rename = "ImportDir")]
 pub struct DirPlan {
     /// The directory, without symbolic links when it is present.
@@ -57,6 +57,14 @@ pub struct ImportedFile {
 /// The old directories below `home`.
 pub fn old_dirs(home: &Path) -> Vec<PathBuf> {
     OLD_DIRS.iter().map(|dir| home.join(dir)).collect()
+}
+
+/// The directories of `dirs` that hold files to import, with their files and size. It hashes
+/// nothing.
+pub fn waiting(store: &Store, dirs: &[PathBuf]) -> Result<Vec<DirPlan>, String> {
+    let store_root = store_root(store)?;
+    let scanned = dirs.iter().map(|dir| scan(dir, &store_root).map(|(plan, _)| plan));
+    Ok(scanned.collect::<Result<Vec<_>, _>>()?.into_iter().filter(|dir| dir.files > 0).collect())
 }
 
 /// What an import of `dirs` moves, and how much the store grows. It hashes every file and
@@ -365,6 +373,7 @@ mod tests {
             "a duplicate and a stored content are not new"
         );
         assert!(home.join("obc-bake/cells/1.obcm").is_file(), "a plan moves nothing");
+        assert_eq!(waiting(&store, &dirs).unwrap().len(), 4);
 
         let applied = apply(&store, &dirs).unwrap();
         assert_eq!((applied.bytes, applied.new_bytes), (plan.bytes, plan.new_bytes));
@@ -390,6 +399,7 @@ mod tests {
         };
         assert!(record(&store).contains(&cell));
 
+        assert!(waiting(&store, &dirs).unwrap().is_empty(), "what stays is no file to import");
         let again = super::plan(&store, &dirs).unwrap();
         assert_eq!((again.bytes, again.new_bytes), (0, 0), "the store is not imported into itself");
     }
